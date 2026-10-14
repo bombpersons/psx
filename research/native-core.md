@@ -255,6 +255,28 @@ Every voice released that way (all 24 of the BIOS boot jingle's) then held at le
 The hardware shifts instead (`>> 15`, rounding down). With that fix the jingle fades to silence by about 19 s, and the Fox intro's mix is the XA stream alone: correlation 1.0000, gain 0.500.
 The new `psx native` report field `spu.active_voices` showed the stuck voices: phase, level, volumes, start address and ADSR.
 
+### Memory cards (`memcard.rs`, SIO0)
+
+Either slot can hold a card. The protocol supports Read (52h), Write (57h) and Get ID (53h), the FLAG byte's "new card" bit (cleared by the first write), checksums (a bad checksum gives end status 4Eh), and invalid sectors.
+
+SIO0 now routes each transfer by its address byte: 01h goes to the pad (port 1), 81h to a card in the selected slot. Empty slots still read FFh with no /ACK.
+
+- **CLI:** `psx run --backend native --memcard1 PATH|new --memcard2 ...`.
+  - The image file is never modified. A card the run wrote to is saved as `memcardN.mcd` in the run directory.
+  - The report lists sectors written per slot.
+  - Card contents are part of the save state (format 3), so `--memcard*` is refused with `--from-state`.
+- **`psx memcard <image>`:** lists the saves (product code and name, blocks, size, Shift-JIS title, icon frames) and the free blocks.
+- **`Sio0::log`:** a diagnostic byte log `(time, JOY_CTRL, tx, rx, ack)`.
+
+Checks against the SCPH-7502 BIOS's own card driver, in the shell's MEMORY CARD screen:
+
+- A hand-built save (directory entry, "SC" title frame, palette and 16×16 icon) shows its icon and its title "PSX TOOLKIT TEST".
+- COPY from CARD1 to an empty CARD2, then confirm: 67 sectors written, and the save's directory entry and block are byte-identical to the source.
+- A split run across the copy (1010 + 490 frames against a straight 1500) gives an identical state, card image, RAM and VRAM.
+- The shell checks card presence every frame (`81 52`, reads the flag and 5Ah, then deselects). Directory reads end with 47h ("good").
+- The shell ignores the pad for a few seconds while it reads both cards. Input at frame 250 is dropped and input at frame 600 works, with or without saves.
+- Tomb Raider, with a new card, runs the libcard write test (frame 63, rewritten with its own contents) and then clears the flag.
+
 ### Performance
 
 The baseline was 1.2–1.3× real time, which is comparable to Redux's observed (interpreter + debugger) mode at 1.6×. Each step below was checked:

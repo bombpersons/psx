@@ -78,10 +78,17 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             }
             // Reinsert without resetting the drive: its state came from the file.
             m.bus.cdrom.disc = disc;
+            if a.cards.given() {
+                return err("invalid_arguments", "memory cards are part of the save state; drop --memcard1/--memcard2 with --from-state");
+            }
             m
         }
         None => {
             let mut m = Machine::new(bios);
+            match a.cards.load() {
+                Ok(cards) => m.bus.sio0.cards = cards,
+                Err(e) => return err("invalid_arguments", e),
+            }
             if let Some(bytes) = &exe {
                 if let Err(e) = m.sideload_exe(bytes, 500_000_000) {
                     return err("backend_failed", e);
@@ -188,6 +195,16 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     if a.save_state {
         put("state.bin", &m.save_state(media_id.clone()));
     }
+    let mut cards = Vec::new();
+    for (slot, card) in m.bus.sio0.cards.iter().enumerate() {
+        if let Some(c) = card {
+            let name = format!("memcard{}.mcd", slot + 1);
+            if c.writes > 0 {
+                put(&name, &c.data);
+            }
+            cards.push(json!({"slot": slot + 1, "sectors_written": c.writes, "file": (c.writes > 0).then_some(name)}));
+        }
+    }
     put("ram.bin", &m.bus.ram);
     put("scratch.bin", &m.bus.scratch);
     put("vram.bin", &m.bus.gpu.vram.to_bytes());
@@ -258,6 +275,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             "watch": {"hits": m.bus.obs.hit_count, "recorded": m.bus.obs.hits.len(), "shown": shown.len(), "first": shown},
             "event_logs": event_logs,
             "trace": trace_report,
+            "memcards": cards,
             "bios_call_counts": m.bus.obs.bios_counts,
             "files": files,
             "identity": {
