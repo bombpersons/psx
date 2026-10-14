@@ -58,9 +58,18 @@ impl TexelSource<Vram> for VramTexture {
     }
 }
 
-/// Hardware rejects polygons and lines whose extent reaches 1024×512.
+/// Hardware drops a primitive when any edge it draws spans 1024+ pixels
+/// horizontally or 512+ vertically. For a quad these are the edges of its two
+/// triangles: the perimeter plus the shared v1-v2 diagonal, but not v0-v3
+/// (PCSX-Redux gpu-raster-phase14/23, run on SCPH-1000/5501/7001).
 fn too_large(vs: &[Vtx]) -> bool {
-    vs.iter().any(|a| vs.iter().any(|b| (a.x - b.x).abs() >= 1024 || (a.y - b.y).abs() >= 512))
+    let over = |a: &Vtx, b: &Vtx| (a.x - b.x).abs() >= 1024 || (a.y - b.y).abs() >= 512;
+    match vs {
+        [a, b] => over(a, b),
+        [a, b, c] => over(a, b) || over(b, c) || over(c, a),
+        [a, b, c, d] => over(a, b) || over(b, d) || over(d, c) || over(c, a) || over(b, c),
+        _ => false,
+    }
 }
 
 /// Drawing environment set by GP0(E1h..E6h).
@@ -269,8 +278,17 @@ impl Gpu {
         }
     }
 
+    /// Vertex coordinates as the GPU parses them: 11-bit signed.
     fn vertex(&self, w: u32) -> (i32, i32) {
-        (sext11(w) + self.state.offset.0, sext11(w >> 16) + self.state.offset.1)
+        (sext11(w), sext11(w >> 16))
+    }
+
+    /// Add the drawing offset to a polygon or line vertex. The sum wraps to
+    /// 11 bits signed (PCSX-Redux gpu-raster-phase23 O3: vertex 1500 with offset
+    /// -1000 draws at 500, on SCPH-1000/5501/7001).
+    fn offset(&self, v: &mut Vtx) {
+        v.x = sext11((v.x + self.state.offset.0) as u32);
+        v.y = sext11((v.y + self.state.offset.1) as u32);
     }
 
     fn execute(&mut self, p: &[u32]) {
@@ -366,10 +384,16 @@ impl Gpu {
             blend: ((self.state.texpage >> 5) & 3) as u8,
             dither: self.state.dither() && (gouraud || (textured && op & 0x01 == 0)),
         };
+        // The size check sees the coordinates before the drawing offset.
         if too_large(&vs[..n]) {
             return;
         }
+        for v in vs.iter_mut().take(n) {
+            self.offset(v);
+        }
         let (r, tex) = (self.state.raster(), self.state.texture(clut));
+        // psx-spx/Mednafen order: (v0,v1,v2) first. PCSX-Redux draws (v1,v3,v2)
+        // first, which only differs where the halves overlap (self-intersecting quads).
         raster::triangle(&mut self.vram, &tex, &r, &sh, [vs[0], vs[1], vs[2]]);
         if quad {
             raster::triangle(&mut self.vram, &tex, &r, &sh, [vs[1], vs[2], vs[3]]);
@@ -383,7 +407,8 @@ impl Gpu {
             semi: op & 0x02 != 0,
             gouraud,
             blend: ((self.state.texpage >> 5) & 3) as u8,
-            dither: self.state.dither() && gouraud,
+            // psx-spx: lines are dithered whenever dithering is enabled, mono or gouraud.
+            dither: self.state.dither(),
             ..Shade::default()
         };
         let mut pts = Vec::new();
@@ -405,7 +430,10 @@ impl Gpu {
         let r = self.state.raster();
         for pair in pts.windows(2) {
             if !too_large(pair) {
-                raster::line(&mut self.vram, &r, &sh, pair[0], pair[1]);
+                let (mut a, mut b) = (pair[0], pair[1]);
+                self.offset(&mut a);
+                self.offset(&mut b);
+                raster::line(&mut self.vram, &r, &sh, a, b);
             }
         }
     }
@@ -415,6 +443,7 @@ impl Gpu {
         let textured = op & 0x04 != 0;
         let (r, g, b) = color(p[0]);
         let (x, y) = self.vertex(p[1]);
+        let (x, y) = (x + self.state.offset.0, y + self.state.offset.1);
         let mut i = 2;
         let (mut u, mut v, mut clut) = (0, 0, 0);
         if textured {

@@ -16,6 +16,7 @@ PlayStation reverse-engineering toolkit for agents and people. Sibling of
 | `psx xa <image> <path> [--channel N -o out.wav]` | List a stream's XA-ADPCM channels, or decode one channel to a 44.1 kHz WAV |
 | `psx textures <run_dir> [--page X,Y,DEPTH --clut X,Y]` | Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT pair a `--gpu-frame` capture used, full and cropped to the UVs sampled, or one page by hand |
 | Frame → Bevy | `psx textures` also writes `textures/scene.psxscene`; the template's `PsxSceneRoot` (and `cargo run -- --scene ...`) spawns it as sprites and meshes |
+| `psx gpu-replay <stream.bin> -o vram.bin` / `psx vram-diff a.bin b.bin` | Replay a GP0 stream into `psx-gpu`; diff two VRAM dumps per pixel (per-cell counts, channel deltas, diff PNG). `tools/probes/gpu/compare.sh` diffs `psx-gpu` against Redux on the GPU probe EXE |
 | `psx memcard <image.mcd>` | List the saves on a memory card image: product code, blocks, title, icon frames |
 | LibCrypt discs | Put the redump `.sbi`/`.lsd` beside the `.cue`; `psx disc` reports it and the native core's GetlocP honours it |
 | `psx sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |

@@ -64,12 +64,86 @@ The comparison is against Redux's VRAM at vsync 350, while the same logo is stat
 | Texture pages (x ≥ 640) | **0 / 196,608** (uploads are byte-exact) |
 | Framebuffer (640×512) | 2,150 / 327,680 (0.66 %) |
 
-Every differing pixel lies inside the **Gouraud-shaded diamond** and is one 5-bit step lower in green, in vertical
-stripes. Flat fills, textured text and the logo textures all match exactly. The difference is therefore
-colour-interpolation rounding in `psx-gpu`.
+Every differing pixel lay inside the **Gouraud-shaded diamond** and was one 5-bit step lower in green, in vertical
+stripes. Flat fills, textured text and the logo textures all matched exactly. **Resolved** (see "GPU accuracy"
+below): the old rasteriser floored exact barycentric colours, while the GPU walks 16.16 fixed point and rounds
+each span start to nearest. After the fix, Redux's and the native core's VRAM at vsync 350 of a standalone boot
+(`psx run --bios ... --frames 350`, both backends) are **identical over all 1024×512 pixels** (2,150 → 0).
 
-The rounding has not been tuned to Redux: Redux's software GPU is another emulator, not hardware truth. The referee should be
-a hardware-verified Gouraud test (e.g. JaCzekanski ps1-tests `gpu/`) or DuckStation regtest output.
+## GPU accuracy: rasterisation rules, a probe EXE and silicon values
+
+**Reference.** The pinned PCSX-Redux tree carries MIT-licensed GPU hardware test suites
+(`src/mips/tests/gpu-raster-phase1..23`). Their headers record pixel values read back from SCPH-1000/5501/7001
+consoles (`HW_VERIFIED`), and Redux's software GPU (`src/gpu/soft`, GPL) was tuned to them. `psx-gpu`'s rules were
+re-derived from those values and from the arithmetic Redux documents; no Redux code was copied.
+`crates/psx-gpu/tests/hardware.rs` replays the suites' primitives and checks 104 silicon pixels plus the phase-23 row-coverage scans:
+
+| Suite | What it pins | Old `psx-gpu` | Now |
+|---|---|---|---|
+| phase-22 SG_AB (24 px) | slanted gouraud colour | 13 wrong (1 LSB) | all match |
+| phase-22 SG1/SG2/SG_R/SG3 (24 px) | slanted gouraud | match | match |
+| phase-17 T1-T8, Q1-Q5 (53 px) | affine UV, quads | T2 wrong (2 px) | all match |
+| phase-23 Q2/Q3 | quad size check: v1-v2 diagonal yes, v0-v3 no | Q3 dropped | match |
+| phase-23 O1-O3 | vertex + offset wraps to 11 bits after the add | O3 off-screen | match |
+| phase-23 R1-R3, phase-10 LG | rect width `& 3FFh`; gouraud line midpoint | match | match |
+
+**Triangle rules now in `raster::triangle`.** Vertices are sorted by y. Rows run from the top vertex down to,
+not including, the bottom one. Each row covers pixels `ceil(left) ..= ceil(right) - 1`. Edge X and edge colours
+are evaluated per row in 16.16, with one truncating division. Texture coordinates instead advance by a per-row
+step that is truncated once. There is one horizontal gradient per attribute, taken from the span through the
+middle vertex: its width is clamped to at least 1/16 pixel and the quotient is truncated toward zero. Each span
+starts from the left-edge value moved to the first pixel, **plus one half** (round to nearest), then adds the
+gradient per pixel. That half is the BIOS-logo green step.
+
+**Probe EXE.** `tools/probes/gpu` (PSYQo) sends a fixed GP0 stream: 468 commands from `gen_stream.py`, the same
+words in `gp0_stream.bin`. It draws 24 test cells of 128×128 (`gen_stream.py --list`), covering gouraud and
+dither, textures in all depths, the four blend modes, lines and polylines, rects, texture windows, mask bits,
+clipping, slivers and VRAM copies. `tools/probes/gpu/compare.sh` runs it on Redux and diffs Redux's VRAM against
+`psx gpu-replay gp0_stream.bin` using `psx vram-diff`, with per-cell counts, a channel-delta histogram and a
+diff PNG. The native core running the EXE (`psx run --backend native`) gives VRAM identical to the replay.
+
+| Differing pixels vs Redux (393,216 compared) | Before | After |
+|---|---|---|
+| total | 69,023 | 5,251 |
+| gouraud tris/quads, dithered or not, slivers, semi B/2+F/2, B+F, B-F | 9,024 | 0 |
+| flat-modulated textured, 15-bit raw textured | 14,132 | 0 |
+| textured gouraud, dithered | 9,982 | 0 |
+| large primitives clipped on all sides | 13,178 | 597 |
+| flat lines | 206 | 4 |
+
+The 5,251 pixels that remain are all deliberate, and each was traced to a Redux shortcut that `psx-gpu` does not
+copy:
+
+- **Textured gouraud fast path (cells 7, 19, 22: 2,404 px).** When it is neither dithered, semi-transparent nor
+  mask-checked, Redux modulates pixels in pairs with the even pixel's colour: its packed writer takes the second
+  colour through an `int16_t`, which drops it. Emulating that removes every one of these pixels, as checked in
+  an experiment. The pairing is an emulator artifact, so it is not copied.
+- **Gouraud lines drawn right to left (cells 15, 16: about 840 px).** Redux swaps the endpoints and keeps
+  colour 0 at the new start, so the gradient runs backwards. `psx-gpu` keeps each colour on its own vertex. The
+  Bresenham positions now match exactly.
+- **Line clipping (4 px).** Redux's diagonal-line path treats the right and bottom edges of the drawing area as
+  exclusive, while its axis-aligned path treats them as inclusive. `psx-gpu` uses inclusive edges throughout.
+- **Semi-transparency with dithering (cell 12: 1,355 px).** Redux blends at 8 bits before dithering.
+  `psx-gpu` dithers the front colour and then blends at 5 bits, which is the Mednafen/DuckStation order. No
+  silicon value decides between them yet.
+- **Modulated semi-transparent texels (cell 13: 510 px).** Redux blends B/2+F/2 and B+F/4 with an unsaturated
+  modulated F (up to 62). `psx-gpu` saturates F to 31 first. This is also undecided on silicon (phase-12 does
+  not probe F > 31).
+- **Overlapping VRAM copy (cell 23: 138 px).** Redux copies forward in place, so a copy shifted right smears
+  the first pixels. `psx-gpu` reads each row before writing it.
+- **Quad halves.** Redux draws (v1,v3,v2) before (v0,v1,v2). `psx-gpu` keeps the psx-spx/Mednafen order (v0,v1,v2)
+  then (v1,v2,v3). This only matters for self-intersecting quads, so the probe uses convex quads.
+
+**Other audit changes (psx-spx).** Lines use the documented Bresenham with endpoints included, and mono lines
+are dithered too ("LINEs are dithered (no matter if they are mono or do use gouraud shading)"; Redux does not
+dither lines). The size check uses pre-offset coordinates and the triangle edges. These were already correct
+and now have tests in `tests/rules.rs`: rect X/Y flip, texture windows on rects, check/set mask on rects and
+lines, fill ignoring mask and drawing area and wrapping, row-buffered overlapping copy.
+
+**Open.** These have no silicon value yet: dither versus blend order, saturation of F before blending, the draw
+order of overlapping quad halves, overlapping copies wider than 128 pixels (Mednafen buffers in chunks of 128),
+gouraud line colour direction, and the drawing-area-equals-one-column case. "Draw to displayed field" in
+480i (E1 bit 10) is not modelled.
 
 ## Standalone boot (`psx native`)
 
