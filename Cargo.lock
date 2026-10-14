@@ -290,6 +290,7 @@ dependencies = [
 name = "psx-core"
 version = "0.1.0"
 dependencies = [
+ "psx-gpu",
  "psx-gte",
 ]
 

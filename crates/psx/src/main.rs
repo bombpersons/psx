@@ -143,6 +143,9 @@ enum Command {
         /// GDB single-step with full register comparison (about 20 steps/s).
         #[arg(long)]
         exact: bool,
+        /// Write the core's screen and VRAM as <PREFIX>.screen.png / .vram.png at the end.
+        #[arg(long)]
+        dump: Option<PathBuf>,
     },
     /// Classify a CPU address (segment, region, folded offset).
     Addr {
@@ -173,12 +176,12 @@ fn main() -> ExitCode {
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }
-    if let Command::Lockstep { bios, steps, context, exact } = &cli.command {
+    if let Command::Lockstep { bios, steps, context, exact, dump } = &cli.command {
         let root = std::env::current_dir().unwrap_or_default();
         let (ok, v) = if *exact {
             lockstep::run(&root, bios, *steps, *context)
         } else {
-            lockstep::run_trace(&root, bios, *steps, *context)
+            lockstep::run_trace(&root, bios, *steps, *context, dump.as_deref())
         };
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };

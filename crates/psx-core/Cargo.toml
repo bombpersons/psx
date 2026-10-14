@@ -7,6 +7,7 @@ license.workspace = true
 description = "Native PlayStation emulation core for the psx toolkit (in development)"
 
 [dependencies]
+psx-gpu = { workspace = true }
 psx-gte = { workspace = true }
 
 [lints.rust]
