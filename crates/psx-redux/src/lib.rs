@@ -11,6 +11,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+
+pub mod gdb;
 use sha2::{Digest, Sha256};
 
 pub const RAM_SIZE: usize = 2 * 1024 * 1024;
@@ -50,7 +52,7 @@ impl ReduxError {
 
 pub type Result<T> = std::result::Result<T, ReduxError>;
 
-fn io<T>(path: &Path, r: std::io::Result<T>) -> Result<T> {
+pub(crate) fn io<T>(path: &Path, r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| ReduxError::Io(path.to_path_buf(), e))
 }
 

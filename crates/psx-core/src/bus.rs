@@ -7,6 +7,20 @@
 pub const RAM_SIZE: usize = 2 * 1024 * 1024;
 pub const BIOS_SIZE: usize = 512 * 1024;
 pub const SCRATCH_SIZE: usize = 1024;
+pub const I_STAT: u32 = 0x1F80_1070;
+pub const I_MASK: u32 = 0x1F80_1074;
+/// DMA channel n registers: MADR at 0x1F801080 + 0x10*n, then BCR, CHCR.
+pub const DMA_BASE: u32 = 0x1F80_1080;
+pub const DPCR: u32 = 0x1F80_10F0;
+
+/// A DMA transfer the bus started but whose device side is not modelled yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnmodelledDma {
+    pub channel: u32,
+    pub madr: u32,
+    pub bcr: u32,
+    pub chcr: u32,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Width {
@@ -32,6 +46,10 @@ pub struct Bus {
     pub cache_control: u32,
     /// I/O accesses since the last [`Bus::take_io_log`].
     io_log: Vec<IoAccess>,
+    /// Set when software writes I_STAT; cleared by [`Bus::take_irq_ack`].
+    irq_acknowledged: bool,
+    /// Started transfers with no device model (their RAM/device effects are missing).
+    pub unmodelled_dma: Vec<UnmodelledDma>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -59,7 +77,52 @@ impl Bus {
             io: vec![0; 0x2000],
             cache_control: 0,
             io_log: Vec::new(),
+            irq_acknowledged: false,
+            unmodelled_dma: Vec::new(),
         }
+    }
+
+    /// CHCR was written: run the transfer immediately if it is started.
+    /// Completion interrupts are not raised yet.
+    fn dma_start(&mut self, ch: u32) {
+        let base = DMA_BASE + 0x10 * ch;
+        let (madr, bcr, chcr) = (self.io_word(base), self.io_word(base + 4), self.io_word(base + 8));
+        let sync = (chcr >> 9) & 3;
+        // Mode 0 needs the trigger bit (28); other modes start on bit 24 alone.
+        let started = chcr & (1 << 24) != 0 && (sync != 0 || chcr & (1 << 28) != 0);
+        if !started {
+            return;
+        }
+        match ch {
+            6 => {
+                // Ordering-table clear: a backwards linked list ending in 0xFFFFFF.
+                let mut addr = madr & 0x1F_FFFC;
+                let words = if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF };
+                for i in 0..words {
+                    let v = if i == words - 1 { 0x00FF_FFFF } else { addr.wrapping_sub(4) & 0x1F_FFFF };
+                    let o = addr as usize % RAM_SIZE;
+                    self.ram[o..o + 4].copy_from_slice(&v.to_le_bytes());
+                    addr = addr.wrapping_sub(4) & 0x1F_FFFC;
+                }
+            }
+            _ => self.unmodelled_dma.push(UnmodelledDma { channel: ch, madr, bcr, chcr }),
+        }
+        // Transfer done: clear start/trigger.
+        self.poke_io(base + 8, Width::Word, chcr & !((1 << 24) | (1 << 28)));
+    }
+
+    fn io_word(&self, phys: u32) -> u32 {
+        let o = (phys - 0x1F80_1000) as usize;
+        u32::from_le_bytes([self.io[o], self.io[o + 1], self.io[o + 2], self.io[o + 3]])
+    }
+
+    /// Interrupt controller output: any enabled, pending source (Cause.IP2).
+    pub fn irq_pending(&self) -> bool {
+        self.io_word(I_STAT) & self.io_word(I_MASK) & 0x7FF != 0
+    }
+
+    pub fn take_irq_ack(&mut self) -> bool {
+        std::mem::take(&mut self.irq_acknowledged)
     }
 
     pub fn take_io_log(&mut self) -> Vec<IoAccess> {
@@ -104,7 +167,18 @@ impl Bus {
             0x1F00_0000..=0x1F7F_FFFF => {}
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => put(&mut self.scratch, (p - 0x1F80_0000) as usize),
             0x1F80_1000..=0x1F80_2FFF => {
-                put(&mut self.io, (p - 0x1F80_1000) as usize);
+                if p & !3 >= DMA_BASE && p & !3 < DPCR && (p & 0xF) == 8 {
+                    put(&mut self.io, (p - 0x1F80_1000) as usize);
+                    self.dma_start((p - DMA_BASE) >> 4);
+                } else if p & !3 == I_STAT {
+                    // Interrupt acknowledge: writing 0 clears a bit, 1 leaves it.
+                    let cur = self.io_word(I_STAT);
+                    let v = cur & (value << (8 * (p & 3)) | !(u32::MAX >> (32 - 8 * n) << (8 * (p & 3))));
+                    self.poke_io(I_STAT, Width::Word, v);
+                    self.irq_acknowledged = true;
+                } else {
+                    put(&mut self.io, (p - 0x1F80_1000) as usize);
+                }
                 self.io_log.push(IoAccess { addr: p, width, write: true, value });
             }
             0x1FC0_0000..=0x1FC7_FFFF => {}
@@ -128,6 +202,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn otc_dma_builds_linked_list() {
+        let mut b = Bus::new(vec![]);
+        b.write(DMA_BASE + 0x60, Width::Word, 0x8010_0010).unwrap();
+        b.write(DMA_BASE + 0x64, Width::Word, 4).unwrap();
+        b.write(DMA_BASE + 0x68, Width::Word, 0x1100_0002).unwrap();
+        let w = |b: &mut Bus, a| b.read(a, Width::Word).unwrap();
+        assert_eq!(w(&mut b, 0x8010_0010), 0x0010_000C);
+        assert_eq!(w(&mut b, 0x8010_0004), 0x00FF_FFFF);
+        assert_eq!(w(&mut b, DMA_BASE + 0x68) & (1 << 24), 0, "busy cleared");
+    }
+
+    #[test]
+    fn i_stat_write_acknowledges() {
+        let mut b = Bus::new(vec![]);
+        b.poke_io(I_STAT, Width::Word, 0b101);
+        b.write(I_MASK, Width::Word, 0b001).unwrap();
+        assert!(b.irq_pending());
+        b.write(I_STAT, Width::Word, !0b001).unwrap();
+        assert!(!b.irq_pending());
+        assert_eq!(b.read(I_STAT, Width::Word).unwrap(), 0b100);
+    }
+
+    #[test]
     fn ram_mirrors_scratch_and_bios() {
         let mut bios = vec![0u8; 16];
         bios[0..4].copy_from_slice(&0x3C08_0013u32.to_le_bytes());
@@ -139,7 +236,7 @@ mod tests {
         b.write(0x1F80_0004, Width::Byte, 0x5A).unwrap();
         assert_eq!(b.read(0x9F80_0004, Width::Byte).unwrap(), 0x5A);
         assert!(b.read(0xBF80_0004, Width::Byte).is_err(), "no scratchpad through KSEG1");
-        b.write(0x1F80_1070, Width::Word, 7).unwrap();
+        b.write(0x1F80_1074, Width::Word, 7).unwrap();
         assert_eq!(b.take_io_log().len(), 1);
     }
 }
