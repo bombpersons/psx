@@ -74,10 +74,10 @@ pub fn parse(bytes: &[u8], lsd: bool) -> Result<BTreeMap<u32, SubQ>> {
     let bad = |m: &str| MediaError::Malformed(format!("subchannel file: {m}"));
     let mut out = BTreeMap::new();
     if lsd {
-        if bytes.len() % 15 != 0 {
+        if !bytes.len().is_multiple_of(15) {
             return Err(bad("LSD size is not a multiple of 15"));
         }
-        for r in bytes.chunks_exact(15) {
+        for r in bytes.as_chunks::<15>().0 {
             let lba = lba_of(&r[..3]).ok_or_else(|| bad("MSF before 00:02:00"))?;
             let q: [u8; 10] = r[3..13].try_into().unwrap();
             out.insert(lba, SubQ::Full(q, crc(&q) == u16::from_be_bytes([r[13], r[14]])));
