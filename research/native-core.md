@@ -249,7 +249,7 @@ Verification without listening, by comparing the emulator against the offline de
 - **Tomb Raider, CORELOGO.FMV** (from 21.16 s emulated): correlation 1.000 with gain 0.386 for the 10 s the movie reads. Nothing else plays.
 - **Save states:** a Tomb Raider split run at frame 1380, in the middle of the XA stream, matches the straight run byte for byte, including the final full state.
 
-Croc's earlier "constant drone" in the loader movies was the game's SPU voices, playing without the XA soundtrack that now sits on top of them.
+Croc's earlier "constant drone" in the loader movies is not yet explained. The SPU voices underneath the XA may be it, which is worth a listen to confirm.
 
 ### Performance
 
