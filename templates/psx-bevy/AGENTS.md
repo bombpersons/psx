@@ -6,7 +6,12 @@
   look on top of normal Bevy rendering.
 - 3D: `Mesh3d` + `MeshMaterial3d<PsxMaterial>`. Cameras need `PsxView`.
   Use normal Bevy lights and `DistanceFog`.
-- 2D: `Sprite` (with texture atlases) seen by a `Camera2d` + `PsxView`.
+- 2D: `Sprite` (with texture atlases) seen by a `Camera2d` + `PsxView`. Add
+  `SpriteMaterial<PsxSprite>` for PS1 blend modes, per-texel STP or CLUT
+  palettes (swap `palette_row` or edit the palette image); other polygons are
+  `Mesh2d` + `PsxMaterial2d`. Alpha ≈0.5 means "STP bit" (README, 2D).
+  Keep index images raw (`load_indices` / `psx_indices`), never plain `load`.
+  `PsxView` cameras need orders below `SCREEN_PASS_ORDER` (999).
 - Keep gameplay in `FixedUpdate` / `GameSystems::Game`, reading
   `ControllerState`. That is the boundary the developer MCP steps.
 - When reimplementing an original game, encode observed behaviour (from psx

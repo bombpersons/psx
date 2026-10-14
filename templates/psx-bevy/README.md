@@ -23,10 +23,13 @@ glTF scenes, `DirectionalLight`, `GlobalAmbientLight`, `DistanceFog`. The
 | Vertex wobble | Vertices snap to whole target pixels in the vertex shader | `PsxLook::vertex_snap` |
 | Affine texture warp | UVs and colours interpolate linearly in screen space (sent as A·w, divided by w per fragment) | always on |
 | Gouraud lighting | Lighting is per vertex, on gamma-encoded colour where white = neutral and textures can be brightened up to 2× | `PsxMaterial::lit` |
-| 15-bit colour + dither | The fragment shader applies the GPU's 4×4 ordered dither, then quantises to 5 bits per channel | `PsxLook::dither` |
+| Dither | `PsxMaterial`/`PsxMaterial2d` apply the GPU's 4×4 ordered dither before cutting to 5 bits per channel (sprites are not dithered, as on the PS1) | `PsxLook::dither` |
+| 15-bit framebuffer | After all `PsxView` cameras draw, one full-screen pass reduces the screen to 5 bits per channel, plain `Sprite`s included | `PsxLook::quantize` |
 | Depth cueing | Per-vertex distance with the camera's `DistanceFog` | `PsxMaterial::fog` |
-| Semi-transparency | `PsxBlend::{Half, Add, Subtract, AddQuarter}` are the four GPU equations | per material |
-| Colour-key transparency | Texels with alpha < 0.5 are discarded | `PsxMaterial::cutout` |
+| Semi-transparency | `PsxBlend::{Half, Add, Subtract, AddQuarter}` are the four GPU equations, for 3D, `Mesh2d` and sprites | per material |
+| Per-texel STP | With `PsxStp::Texel`, only texels whose alpha is ≈0.5 (the STP bit) blend; the rest are opaque | per material |
+| Colour-key transparency | Texels with alpha < 0.25 are discarded | `PsxMaterial::cutout` |
+| CLUT palettes | 8-bit index textures looked up through a palette image; swap rows or edit entries | `PsxSprite`/`PsxMaterial2d::palette` |
 
 There are no VRAM, texture-page, polygon-count or light-count budgets.
 Texture size is your choice, and there are up to 8 directional lights.
@@ -63,6 +66,49 @@ background behind 3D, reverse the order.
 Load pixel art as sRGB PNGs. Nearest sampling is the default
 (`ImagePlugin::default_nearest()`).
 
+For PS1 semi-transparency on a sprite, add `SpriteMaterial<PsxSprite>`
+(Bevy's sprite-material extension: atlases, flips and `rect` keep working).
+Other 2D polygons are `Mesh2d` + `PsxMaterial2d` (vertex colours are Gouraud
+shading and are dithered). Without a 3D camera on the screen, blending works
+on gamma-encoded colour like the GPU's; with one, Bevy composites in linear
+light, so a blend of very different colours (a dark `Subtract` shadow on
+bright sand) comes out weaker than on the PS1.
+
+```rust
+commands.spawn((
+    Sprite::from_image(asset_server.load("glow.png")),
+    SpriteMaterial(psx_sprites.add(PsxSprite::blend(PsxBlend::Add))),
+));
+```
+
+**Alpha convention.** Alpha 0 is transparent (the PS1's colour 0000h),
+≈0.5 (128) marks the STP bit, 1 is opaque. `PsxStp::All` (default) blends
+every texel of a semi-transparent surface; `PsxStp::Texel` follows the GPU
+and blends only STP texels. `Subtract` cannot both replace and subtract in
+one draw: pair a `Texel` copy with a `PsxStp::OpaqueOnly` one.
+
+**Palettes (CLUTs).** Keep pixels as 8-bit indices and colours in a palette
+image, one palette per row. Swap palettes by changing `palette_row` (flashes,
+team colours), or cycle by rotating entries in the palette `Image`'s data.
+Index images must stay raw: build them with `psx_indices` or load grayscale
+PNGs with `load_indices` (a plain `load` decodes them as sRGB colour).
+`psx_palette` builds a palette from 15-bit PS1 colours (`rgb15`, bit 15 =
+STP, 0000h transparent). `psx textures` writes captured pages this way too:
+`page_*_index.png` plus `clut_X_Y_N.png`.
+
+```rust
+let palette = images.add(psx_palette(&[&[0, rgb15(31, 0, 0), rgb15(31, 31, 0)], &[0, 0x7FFF, 0x7FFF]]));
+commands.spawn((
+    Sprite::from_image(load_indices(&asset_server, "hero_index.png")),
+    SpriteMaterial(psx_sprites.add(PsxSprite::indexed(palette, 0))), // row 1 = white flash
+));
+```
+
+The demo's gem (top left) does all three: palette cycling, a Circle-held
+flash palette, and an additive STP highlight. Next to it are a dithered
+Gouraud `Mesh2d` and a smooth gradient `Sprite` cut to 15 bits by the screen
+pass; Triangle turns the PS1 look off for comparison.
+
 
 ### Captured frames as a starting point
 
@@ -80,8 +126,15 @@ Copy `run/textures/` under `assets/` and view it with
 `Sprite` (tiles, aligned sprites) or `Mesh2d` (other polygons) in draw order,
 tagged with `PsxSceneElement { command }`, its index in the capture's
 `gpu_frame.json`. Use it as a pixel-faithful reference layout, then replace
-pieces with real game entities. Semi-transparency is approximated with 50%
-alpha, and the scene is not clipped to the original draw area.
+pieces with real game entities. Semi-transparent elements use the game's
+blend equation (`PsxSprite`, `PsxMaterial2d`, `PsxMaterial`) and, in format 2
+scenes, blend only their STP texels like the GPU; `Subtract` elements with
+STP texels spawn twice (subtracting and opaque texels). The scene is not
+clipped to the original draw area. The loader reads formats 1 and 2; format
+1 scenes (older `psx textures`) blend every texel of semi-transparent
+elements. The viewer's `--no-dither` / `--no-quantize` switch `PsxLook`
+effects off, e.g. for games that disable the GPU's dither (captures record
+it per polygon; scenes from older captures assume it is on).
 
 3D games work too. The capture matches each polygon's screen vertices to the
 GTE perspective transforms that produced them, recovering view-space 3D
