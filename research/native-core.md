@@ -393,7 +393,9 @@ Crash, N. Sanity Beach:
 - H = 288, and the screen centre comes from the GPU drawing offset (GTE OFX/OFY = 0).
 - The template rebuilds the frame as Mesh3d geometry, recognisably the same view.
 
-Known difference: the PS1 draws in painter's order without depth. Two backdrop polygons that Crash draws first (commands 15–16, z ≈ 900–1300) appear in front under Bevy's depth test.
+Known difference: the PS1 draws in painter's order without depth. Under Bevy's depth test, the sky backdrop panels that Crash draws first (commands 8–16, z ≈ 900–1500) appear in front of the far jungle that later polygons paint over them. The template's `PsxSceneDepth::Painter` mode (viewer `--painter`) handles this. It draws lifted elements in capture order with no depth test, as transparent-pass items sorted by a per-material depth bias of element index × 8192. A synthetic scene of 12 overlapping bands, each later band placed farther away, renders in capture order in painter mode and as the nearest band under depth testing. Against the emulator's frame, the mean absolute difference drops from 26.5 (depth-tested) to 10.4 (painter) per channel on 0–255.
+
+The bright green and yellow wedges at the screen edges were a different bug. Commands 16, 1536 and 1581 cross the viewport edge, and with `@interpolate(linear)` Mesa llvmpipe extrapolated their UVs and Gouraud colours (sky sampled bright green, sand at (255,255,99)). The shader now sends each affine attribute as A·w with perspective-correct interpolation and divides by the interpolated w. That is exactly screen-linear and does not depend on how the driver clips. Remaining difference in painter mode: some foliage that the game draws opaque appears faint. The likely cause, not yet verified, is that a semi-transparent polygon is blended as a whole, while on the PS1 only texels with the STP bit set blend.
 
 Template fix found on the way: `PsxMaterial`'s shader imported Bevy's `fog` binding unconditionally. That binding only exists for cameras with `DistanceFog`, so any fog-less 3D camera failed to compile the shader. Fog is now gated with `@if(DISTANCE_FOG)`.
 

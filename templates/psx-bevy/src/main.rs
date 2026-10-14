@@ -31,6 +31,8 @@ fn main() {
     let software = args.iter().any(|arg| arg == "--software");
     // --scene PATH (under assets/): view a psx-toolkit frame capture instead of the demo.
     let scene = args.iter().position(|a| a == "--scene").and_then(|i| args.get(i + 1)).cloned();
+    // --painter: draw its 3D elements in capture order without depth, as the PS1 did (P toggles).
+    let depth = if args.iter().any(|a| a == "--painter") { psx::PsxSceneDepth::Painter } else { default() };
     #[cfg(not(feature = "dev-mcp"))]
     if mcp {
         eprintln!("--mcp requires a developer build: cargo run --features dev-mcp -- --mcp");
@@ -82,8 +84,9 @@ fn main() {
                     Camera { order: 0, clear_color: ClearColorConfig::None, ..default() },
                 ));
                 commands.spawn((Camera2d, psx::PsxView, Camera { order: 1, clear_color: ClearColorConfig::None, ..default() }));
-                commands.spawn((psx::PsxSceneRoot(assets.load(path.clone())), Transform::default(), Visibility::default()));
-            });
+                commands.spawn((psx::PsxSceneRoot(assets.load(path.clone())), depth, Transform::default(), Visibility::default()));
+            })
+            .add_systems(Update, toggle_scene_depth);
         }
         None => {
             app.add_plugins(demo::DemoPlugin);
@@ -94,6 +97,19 @@ fn main() {
         app.add_plugins(dev_mcp::GameMcpPlugin);
     }
     app.run();
+}
+
+/// Scene viewer: P switches between depth-tested and painter's-order 3D.
+fn toggle_scene_depth(keys: Res<ButtonInput<KeyCode>>, mut roots: Query<&mut psx::PsxSceneDepth>) {
+    if !keys.just_pressed(KeyCode::KeyP) {
+        return;
+    }
+    for mut depth in &mut roots {
+        *depth = match *depth {
+            psx::PsxSceneDepth::Tested => psx::PsxSceneDepth::Painter,
+            psx::PsxSceneDepth::Painter => psx::PsxSceneDepth::Tested,
+        };
+    }
 }
 
 fn begin_tick(

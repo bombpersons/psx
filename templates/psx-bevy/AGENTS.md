@@ -17,6 +17,9 @@
   `psx textures` give a `.psxscene` that `PsxSceneRoot` spawns as ordinary
   sprites and meshes tagged with their GPU command (README, "Captured frames").
   Rebuild with real entities from there; it is reference data, not an engine.
+  To compare against the original frame pixel for pixel, use
+  `PsxSceneDepth::Painter` (viewer: `--painter`). The default depth-tested
+  mode can show early-drawn backdrops in front.
 - Keep game assets in `assets/`. Do not commit original disc or BIOS data.
 - Read README.md for MCP startup, screenshot targets and input lifetime.
 - Verify both `cargo build` and `cargo build --features dev-mcp` when

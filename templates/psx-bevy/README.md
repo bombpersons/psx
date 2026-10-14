@@ -21,7 +21,7 @@ glTF scenes, `DirectionalLight`, `GlobalAmbientLight`, `DistanceFog`. The
 |---|---|---|
 | Low resolution | Every `PsxView` camera renders to a 320×240 target (`PsxScreen`), shown letterboxed and nearest-sampled | `PsxScreen` size |
 | Vertex wobble | Vertices snap to whole target pixels in the vertex shader | `PsxLook::vertex_snap` |
-| Affine texture warp | UVs and colours interpolate in screen space (`@interpolate(linear)`) | always on |
+| Affine texture warp | UVs and colours interpolate linearly in screen space (sent as A·w, divided by w per fragment) | always on |
 | Gouraud lighting | Lighting is per vertex, on gamma-encoded colour where white = neutral and textures can be brightened up to 2× | `PsxMaterial::lit` |
 | 15-bit colour + dither | The fragment shader applies the GPU's 4×4 ordered dither, then quantises to 5 bits per channel | `PsxLook::dither` |
 | Depth cueing | Per-vertex distance with the camera's `DistanceFog` | `PsxMaterial::fog` |
@@ -91,10 +91,28 @@ PS1 view space into Bevy (`PsxScene::view_transform`). A `Camera3d` with
 `PsxSceneCamera` gets the game's field of view; it starts where the game's
 camera was and can be moved freely. In such scenes, 2D elements drawn before
 the first 3D polygon (clears, backdrops) go on `SCENE_BACKGROUND_LAYER` for a
-camera behind the 3D one, and later ones overlay it (HUD). The PS1 drew in
-painter's order without a depth buffer, so a backdrop polygon the game drew
-first but placed near the camera can show in front under depth testing; its
-`PsxSceneElement::command` (a low draw index) identifies it.
+camera behind the 3D one, and later ones overlay it (HUD).
+
+The PS1 drew in painter's order without a depth buffer, so a backdrop polygon
+the game drew first but placed near the camera shows in front under depth
+testing (its `PsxSceneElement::command`, a low draw index, identifies it).
+The `PsxSceneDepth` component on the root picks the mode:
+
+- `PsxSceneDepth::Tested` (default): Bevy's depth buffer. Use it to explore
+  the geometry from new camera angles.
+- `PsxSceneDepth::Painter`: each 3D element draws over the earlier ones,
+  with no depth test, as the game drew them. From the game's camera this
+  reproduces the captured frame. Viewer: `cargo run -- --scene ... --painter`,
+  and P toggles the mode.
+
+```rust
+commands.spawn((PsxSceneRoot(asset_server.load("captures/level1/scene.psxscene")), PsxSceneDepth::Painter));
+```
+
+Painter mode sets each element's `PsxMaterial::draw_order` to its index.
+You can use that field on your own meshes too: ordered surfaces skip the
+depth buffer and draw in ascending order in Bevy's sorted transparent pass.
+2D elements stay on their background or overlay camera in both modes.
 
 ## Simulation and input
 
