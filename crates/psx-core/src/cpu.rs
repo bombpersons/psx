@@ -305,7 +305,8 @@ impl Cpu {
     }
 
     fn load_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, pc: u32, info: &mut impl StepSink, rt: usize) -> Result<u32, Exception> {
-        if !addr.is_multiple_of(w as u32) {
+        // Widths are 1, 2 or 4: a mask test (is_multiple_of compiles to a divide here).
+        if addr & (w as u32 - 1) != 0 {
             self.cop0[cop0::BADVADDR] = addr;
             self.exception(Exception::LoadAddressError, pc);
             return Err(Exception::LoadAddressError);
@@ -322,7 +323,8 @@ impl Cpu {
     }
 
     fn store_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, value: u32, pc: u32, info: &mut impl StepSink) -> Result<(), Exception> {
-        if !addr.is_multiple_of(w as u32) {
+        // Widths are 1, 2 or 4: a mask test (is_multiple_of compiles to a divide here).
+        if addr & (w as u32 - 1) != 0 {
             self.cop0[cop0::BADVADDR] = addr;
             self.exception(Exception::StoreAddressError, pc);
             return Err(Exception::StoreAddressError);
