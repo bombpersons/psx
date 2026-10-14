@@ -20,6 +20,7 @@ mod replay;
 mod run;
 mod run_native;
 mod template;
+mod textures;
 mod xa_cmd;
 
 #[derive(Parser)]
@@ -69,6 +70,21 @@ enum Command {
     },
     /// List the saves on a raw 128 KiB memory card image (.mcd/.mcr).
     Memcard { image: PathBuf },
+    /// Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT
+    /// pair a `--gpu-frame` capture used (with the UV bounds sampled), or one page.
+    Textures {
+        /// A native run directory (vram.bin, and gpu_frame.json unless --page).
+        run_dir: PathBuf,
+        /// One page as X,Y,DEPTH (VRAM halfword x, line y, 4/8/15 bpp).
+        #[arg(long)]
+        page: Option<String>,
+        /// CLUT position X,Y for 4/8-bit pages.
+        #[arg(long)]
+        clut: Option<String>,
+        /// Output directory (default <run_dir>/textures).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Describe sectors: form, XA subheader, owning file and a hex preview.
     Sector {
         image: PathBuf,
@@ -312,6 +328,7 @@ fn run(cmd: Command) -> R {
         }
         Command::Extract { image, path, all, out } => extract(&image, path.as_deref(), all, &out),
         Command::Exe { source } => exe_cmd(&source),
+        Command::Textures { run_dir, page, clut, out } => textures::run(&run_dir, page.as_deref(), clut.as_deref(), out.as_deref()),
         Command::Memcard { image } => {
             let bytes = std::fs::read(&image).map_err(|e| MediaError::io(&image, e))?;
             if bytes.len() != psx_core::memcard::SIZE {

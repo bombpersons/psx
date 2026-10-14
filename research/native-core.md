@@ -352,6 +352,12 @@ Examples:
 - **Crash:** 1,939 commands, all `poly3` (the engine emits only triangles). 1,577 are textured, 305 semi-transparent, over 62 CLUTs. It draws into the right buffer (area x 512–1023, offset 768,128).
 - **SOTN:** 416 commands. The background is a grid of 189 16×16 textured rects, and characters, HUD and effects are 97 quads. There are 49 texpage/texwindow switches, all 4-bit CLUT pages at x 512–1023, with side-by-side double buffering at x 0 and 256.
 
+`psx textures <run_dir>` follows a capture. It decodes every texture page/CLUT pair the frame sampled from the run's VRAM into PNGs, with 0000h transparent:
+- `page_X_Y_Dbpp_clut_CX_CY.png` is the whole 256×256 page.
+- `..._used.png` is cropped to the UV bounds the frame actually sampled.
+
+`--page X,Y,DEPTH --clut X,Y` decodes a single page by hand. On SOTN's prologue this gives 22 pairs, including the castle tileset (bricks, railings, carpet) and Richter's sheet. A full page decoded through one palette shows tiles that use other CLUTs in the wrong colours, so the cropped images are the ones to use.
+
 ### Performance
 
 The baseline was 1.2–1.3× real time, which is comparable to Redux's observed (interpreter + debugger) mode at 1.6×. Each step below was checked:

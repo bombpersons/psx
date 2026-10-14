@@ -14,6 +14,7 @@ PlayStation reverse-engineering toolkit for agents and people. Sibling of
 | `psx extract <image> <path>\|--all -o DIR` | Files as Form 1 data. Form 2/interleaved files are written as raw `.raw` 2352-byte sectors |
 | `psx exe <file>\|<image.cue>::/PATH` | PS-X EXE header, load range, region marker and hashes |
 | `psx xa <image> <path> [--channel N -o out.wav]` | List a stream's XA-ADPCM channels, or decode one channel to a 44.1 kHz WAV |
+| `psx textures <run_dir> [--page X,Y,DEPTH --clut X,Y]` | Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT pair a `--gpu-frame` capture used, full and cropped to the UVs sampled, or one page by hand |
 | `psx memcard <image.mcd>` | List the saves on a memory card image: product code, blocks, title, icon frames |
 | LibCrypt discs | Put the redump `.sbi`/`.lsd` beside the `.cue`; `psx disc` reports it and the native core's GetlocP honours it |
 | `psx sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |
