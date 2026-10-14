@@ -37,6 +37,9 @@ Other crates:
 
 Backend findings are in [research/backend-comparison.md](research/backend-comparison.md); a worked
 provenance example (Croc's boot chain) is in [research/load-provenance.md](research/load-provenance.md).
+A 2D capture-to-template study with a rebuilt mechanic (Mega Man 8's walk and jump, verified tick-exact
+against RAM) is in [research/case-study-megaman8.md](research/case-study-megaman8.md) and
+[examples/megaman8-movement](examples/megaman8-movement/README.md).
 `psx run` needs `external/pcsx-redux` built at the pinned commit (or `PSX_REDUX_BIN`).
 
 ## Native game template
