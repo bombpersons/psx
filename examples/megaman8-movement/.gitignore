@@ -1,0 +1,3 @@
+target/
+# Your own captures/extractions of the original game: never commit them.
+assets/captures/
