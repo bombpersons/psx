@@ -24,6 +24,27 @@ pub struct RunArgs {
     pub max_events: u32,
     /// "redux" or "native".
     pub backend: String,
+    pub trace: TraceArgs,
+}
+
+/// Instruction tracing (native backend).
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct TraceArgs {
+    /// Trace instructions: trace.txt (capped by --max-events), coverage.txt and calls.json.
+    #[arg(long)]
+    pub trace: bool,
+    /// Start tracing at this frame of the run (default: the start).
+    #[arg(long, default_value_t = 0)]
+    pub trace_from_frame: u64,
+    /// Start tracing at the first execution of ADDR (hex) or a --symbols function.
+    #[arg(long)]
+    pub trace_start: Option<String>,
+    /// Stop tracing after N frames.
+    #[arg(long)]
+    pub trace_frames: Option<u64>,
+    /// Only write lines for LO-HI (hex) or a --symbols function; repeatable.
+    #[arg(long = "trace-range")]
+    pub trace_ranges: Vec<String>,
 }
 
 fn err(code: &str, message: impl std::fmt::Display) -> Value {
@@ -60,6 +81,9 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         "native" => return crate::run_native::run(root, a),
         "redux" => {}
         other => return (false, err("invalid_arguments", format!("unknown backend {other:?} (redux | native)"))),
+    }
+    if a.trace.trace {
+        return (false, err("unsupported", "--trace needs --backend native (Redux's -trace has no window or filters)"));
     }
     if let Some(p) = &a.from_state {
         if std::fs::read(p).is_ok_and(|b| b.starts_with(psx_core::state::MAGIC)) {

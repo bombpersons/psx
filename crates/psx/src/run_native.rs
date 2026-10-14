@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use psx_core::disasm::reg;
 use psx_core::state::{disc_fingerprint, MediaId, StateError};
+use psx_core::trace::{Namer, TraceConfig, Tracer};
 use psx_core::Machine;
 use serde_json::{json, Value};
 
@@ -129,6 +130,26 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         m.bus.obs.bios = Some(Vec::new());
     }
 
+    let scopes = match crate::load_symbols(&a.symbols) {
+        Ok(t) => std::rc::Rc::new(t),
+        Err(e) => return err(e.code(), e),
+    };
+    let dir = a.out.clone().unwrap_or_else(|| {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        root.join(".psx/runs").join(format!("{stamp}-{}-native", std::process::id()))
+    });
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return err("io_error", format!("{}: {e}", dir.display()));
+    }
+    let mut tracer = if a.trace.trace {
+        match make_tracer(&a, &scopes, m.bus.frames, &dir) {
+            Ok(t) => Some(t),
+            Err(e) => return err("invalid_arguments", e),
+        }
+    } else {
+        None
+    };
+
     let started = Instant::now();
     // Frames count from power-on (like the Redux backend), including any BIOS
     // boot spent before an EXE was side-loaded; after --from-state they count
@@ -145,7 +166,10 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             m.bus.sio0.buttons = events[next].1;
             next += 1;
         }
-        m.step();
+        let info = m.step();
+        if let Some(t) = &mut tracer {
+            t.after_step(&info, &m.cpu, &m.bus);
+        }
         steps += 1;
         if steps.is_multiple_of(1 << 20) && started.elapsed() > deadline {
             termination = "timeout";
@@ -154,13 +178,6 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     }
     let wall_ms = started.elapsed().as_millis();
 
-    let dir = a.out.clone().unwrap_or_else(|| {
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-        root.join(".psx/runs").join(format!("{stamp}-{}-native", std::process::id()))
-    });
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        return err("io_error", format!("{}: {e}", dir.display()));
-    }
     let mut files = serde_json::Map::new();
     let mut put = |name: &str, bytes: &[u8]| {
         let p = dir.join(name);
@@ -196,7 +213,13 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         files.insert("vram.png".into(), json!({"path": vram}));
     }
 
-    let scopes = crate::load_symbols(&a.symbols).unwrap_or_default();
+    let trace_report = match &mut tracer {
+        Some(t) => match trace_outputs(t, &m, &scopes, &dir, &mut files) {
+            Ok(v) => v,
+            Err(e) => return err("io_error", e),
+        },
+        None => Value::Null,
+    };
     let shown: Vec<Value> = hits
         .iter()
         .take(64)
@@ -234,6 +257,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             "screen": {"width": w, "height": h, "bpp": 16},
             "watch": {"hits": m.bus.obs.hit_count, "recorded": m.bus.obs.hits.len(), "shown": shown.len(), "first": shown},
             "event_logs": event_logs,
+            "trace": trace_report,
             "bios_call_counts": m.bus.obs.bios_counts,
             "files": files,
             "identity": {
@@ -245,4 +269,95 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             "wall_ms": wall_ms,
         }),
     )
+}
+
+/// Hex address (optionally 0x-prefixed) or a function name from --symbols:
+/// `(start, end of the function if known)`.
+fn resolve(spec: &str, scopes: &[crate::ScopedSymbols]) -> Result<(u32, Option<u32>), String> {
+    let hex = spec.trim_start_matches("0x").trim_start_matches("0X");
+    if let Ok(v) = u32::from_str_radix(hex, 16) {
+        return Ok((v, None));
+    }
+    scopes
+        .iter()
+        .find_map(|s| s.table.find(spec))
+        .ok_or_else(|| format!("{spec:?} is neither a hex address nor a function in --symbols"))
+}
+
+fn make_tracer(a: &RunArgs, scopes: &std::rc::Rc<Vec<crate::ScopedSymbols>>, start_frame: u64, dir: &Path) -> Result<Tracer, String> {
+    let t = &a.trace;
+    let mut ranges = Vec::new();
+    for r in &t.trace_ranges {
+        let (lo, hi) = match r.split_once('-') {
+            Some((lo, hi)) => (resolve(lo, scopes)?.0, resolve(hi, scopes)?.0),
+            None => {
+                let (lo, end) = resolve(r, scopes)?;
+                (lo, end.ok_or_else(|| format!("{r:?}: no following symbol to bound it; use LO-HI"))?)
+            }
+        };
+        if hi <= lo {
+            return Err(format!("empty trace range {r:?}"));
+        }
+        ranges.push((lo & 0x1FFF_FFFF, (lo & 0x1FFF_FFFF) + (hi - lo)));
+    }
+    let start_pc = t.trace_start.as_deref().map(|s| resolve(s, scopes).map(|r| r.0)).transpose()?;
+    let cfg = TraceConfig { from_frame: start_frame + t.trace_from_frame, start_pc, frames: t.trace_frames, ranges, max_lines: a.max_events as u64 };
+    let path = dir.join("trace.txt");
+    let file = std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let namer: Option<Namer> = if scopes.is_empty() {
+        None
+    } else {
+        let scopes = scopes.clone();
+        Some(Box::new(move |pc, ram: &[u8]| crate::name_pc(&scopes, pc, Some(ram)).map(|(n, _, _)| n)))
+    };
+    Ok(Tracer::new(cfg, Box::new(std::io::BufWriter::with_capacity(1 << 20, file)), namer))
+}
+
+fn trace_outputs(
+    t: &mut Tracer,
+    m: &Machine,
+    scopes: &[crate::ScopedSymbols],
+    dir: &Path,
+    files: &mut serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    t.finish(&m.bus).map_err(|e| e.to_string())?;
+    let name = |pc: u32| crate::name_pc(scopes, pc, Some(&m.bus.ram)).map(|(n, check, exe)| json!({"name": n, "exe": exe, "check": check.as_str()}));
+    let coverage = t.coverage();
+    let mut text = String::from("# start end instructions executions [function at start]\n");
+    for &(s, e, n, total) in &coverage {
+        let f = name(s).map(|v| format!(" {}", v["name"].as_str().unwrap_or_default())).unwrap_or_default();
+        text += &format!("{s:08x} {e:08x} {n} {total}{f}\n");
+    }
+    let mut calls: Vec<(u32, &psx_core::trace::CallStat)> = t.calls.iter().map(|(k, v)| (*k, v)).collect();
+    calls.sort_by_key(|(addr, c)| (std::cmp::Reverse(c.count), *addr));
+    let calls_json: Vec<Value> = calls
+        .iter()
+        .map(|(addr, c)| {
+            let mut callers: Vec<(&u32, &u64)> = c.callers.iter().collect();
+            callers.sort_by_key(|(site, n)| (std::cmp::Reverse(**n), **site));
+            json!({
+                "address": addr, "function": name(*addr), "count": c.count,
+                "first_frame": c.first_frame, "last_frame": c.last_frame,
+                "callers": callers.iter().take(16).map(|(site, n)| json!({"pc": site, "count": n})).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    for (file, bytes) in [("coverage.txt", text.into_bytes()), ("calls.json", serde_json::to_vec_pretty(&calls_json).unwrap())] {
+        let p = dir.join(file);
+        std::fs::write(&p, &bytes).map_err(|e| format!("{}: {e}", p.display()))?;
+        files.insert(file.into(), json!({"path": p, "sha256": sha256(&bytes)}));
+    }
+    files.insert("trace.txt".into(), json!({"path": dir.join("trace.txt")}));
+    let exceptions: serde_json::Map<String, Value> =
+        t.exceptions.iter().map(|(code, n)| (psx_core::trace::exception_name(*code).to_string(), json!(n))).collect();
+    let window = |w: Option<(u64, u64)>| w.map(|(f, c)| json!({"frame": f, "cycle": c}));
+    Ok(json!({
+        "started": window(t.started), "stopped": window(t.stopped),
+        "instructions": t.instructions,
+        "lines": t.lines, "lines_dropped": t.lines_dropped, "max_lines": t.cfg.max_lines,
+        "interrupts": t.interrupts, "exceptions": exceptions,
+        "coverage": {"runs": coverage.len(), "unique_instructions": coverage.iter().map(|c| c.2 as u64).sum::<u64>()},
+        "top_calls": calls_json.iter().take(20).cloned().collect::<Vec<_>>(),
+        "distinct_call_targets": calls_json.len(),
+    }))
 }

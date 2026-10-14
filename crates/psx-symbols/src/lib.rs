@@ -339,6 +339,13 @@ impl SymbolTable {
         self.entries.dedup_by_key(|e| e.0);
     }
 
+    /// Address of the function `name` and where the next known function starts.
+    pub fn find(&self, name: &str) -> Option<(u32, Option<u32>)> {
+        let k = self.entries.iter().position(|(_, n)| n == name)?;
+        let start = self.entries[k].0;
+        Some((start, self.entries[k + 1..].iter().map(|e| e.0).find(|&a| a > start)))
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

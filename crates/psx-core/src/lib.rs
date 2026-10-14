@@ -15,6 +15,7 @@ pub mod sio0;
 pub mod spu;
 pub mod state;
 pub mod timers;
+pub mod trace;
 
 pub use bus::{Bus, Width};
 pub use cpu::{Cpu, StepInfo};
