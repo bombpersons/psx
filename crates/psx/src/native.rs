@@ -8,12 +8,18 @@ use psx_core::disasm::disasm;
 use psx_core::{Machine, Width};
 use serde_json::{json, Value};
 
-pub fn run(bios_path: &Path, frames: u64, max_steps: u64, dump: Option<&Path>) -> (bool, Value) {
+pub fn run(bios_path: &Path, disc: Option<&Path>, frames: u64, max_steps: u64, dump: Option<&Path>) -> (bool, Value) {
     let bios = match std::fs::read(bios_path) {
         Ok(b) => b,
         Err(e) => return (false, json!({"error": {"code": "io_error", "message": format!("{}: {e}", bios_path.display())}})),
     };
     let mut m = Machine::new(bios);
+    if let Some(d) = disc {
+        match psx_media::Disc::open(d) {
+            Ok(d) => m.insert_disc(Some(d)),
+            Err(e) => return (false, json!({"error": {"code": e.code(), "message": e.to_string()}})),
+        }
+    }
     let started = Instant::now();
     let mut steps = m.run_frames(frames.saturating_sub(2), max_steps);
     // Profile the last two frames: where the CPU spends time and what it polls.
@@ -61,6 +67,7 @@ pub fn run(bios_path: &Path, frames: u64, max_steps: u64, dump: Option<&Path>) -
             "final_asm": disasm(m.bus.read(pc, Width::Word).unwrap_or(0), pc),
             "unhandled_io_reads_top": unhandled.iter().take(15).map(|(a, n)| json!({"addr": format!("0x{a:08X}"), "reads": n})).collect::<Vec<_>>(),
             "unmodelled_dma": m.bus.unmodelled_dma.len(),
+            "cdrom": {"disc": disc, "sectors_delivered": m.bus.cdrom.sectors_delivered, "unknown_commands": m.bus.cdrom.unknown_commands},
             "last_frames_profile": {
                 "hot_pcs": hot.iter().take(12).map(|(pc, n)| json!({"pc": format!("0x{pc:08X}"), "count": n, "asm": disasm(m.bus.read(*pc, Width::Word).unwrap_or(0), *pc)})).collect::<Vec<_>>(),
                 "io": hot_io.iter().take(12).map(|((a, w), n)| json!({"addr": format!("0x{a:08X}"), "write": w, "count": n})).collect::<Vec<_>>(),

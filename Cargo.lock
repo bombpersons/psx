@@ -292,6 +292,7 @@ version = "0.1.0"
 dependencies = [
  "psx-gpu",
  "psx-gte",
+ "psx-media",
 ]
 
 [[package]]
