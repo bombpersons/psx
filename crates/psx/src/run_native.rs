@@ -171,11 +171,17 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
                 gpu_cmds = m.bus.gpu.log.take();
             }
         }
-        let info = m.step();
+        // Everything above acts only when the frame counter changes, so without a
+        // tracer the machine can run the rest of the frame in one call (stopping
+        // at the next timeout check).
         if let Some(t) = &mut tracer {
+            let info = m.step();
             t.after_step(&info, &m.cpu, &m.bus);
+            steps += 1;
+        } else {
+            let check = 1u64 << 20;
+            steps += m.run_frame_steps(check - steps % check);
         }
-        steps += 1;
         if steps.is_multiple_of(1 << 20) && started.elapsed() > deadline {
             termination = "timeout";
             break;

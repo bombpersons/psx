@@ -39,6 +39,13 @@ impl Machine {
     }
 
     pub fn step(&mut self) -> StepInfo {
+        let mut info = StepInfo::default();
+        self.step_with(&mut info);
+        info
+    }
+
+    #[inline(always)]
+    fn step_with<I: cpu::StepSink>(&mut self, info: &mut I) {
         if self.bus.obs.bios.is_some() {
             self.observe_bios_call();
         }
@@ -47,9 +54,8 @@ impl Machine {
         }
         self.cpu.irq_line = self.forced_irq || self.bus.irq_line();
         let before = self.cpu.cycles;
-        let info = self.cpu.step(&mut self.bus);
+        self.cpu.step_with(&mut self.bus, info);
         self.bus.tick(self.cpu.cycles - before);
-        info
     }
 
     fn observe_bios_call(&mut self) {
@@ -121,6 +127,19 @@ impl Machine {
             self.cpu.regs[30] = sp;
         }
         Ok(())
+    }
+
+    /// Step until the frame counter changes or `max_steps` instructions have
+    /// run; returns the number executed. Equivalent to calling [`Machine::step`]
+    /// that many times, for run loops that only act at frame boundaries.
+    pub fn run_frame_steps(&mut self, max_steps: u64) -> u64 {
+        let frame = self.bus.frames;
+        let mut n = 0;
+        while n < max_steps && self.bus.frames == frame {
+            self.step_with(&mut ());
+            n += 1;
+        }
+        n
     }
 
     /// Run until `frames` more vblanks have occurred (or `max_steps`).

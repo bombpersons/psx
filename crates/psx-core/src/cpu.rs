@@ -59,6 +59,45 @@ pub struct MemAccess {
     pub store: bool,
 }
 
+/// Receives what one step did. [`StepInfo`] records it for tracing and
+/// lockstep; `()` discards it, so untraced run loops pay nothing for it.
+pub trait StepSink {
+    fn begin(&mut self, pc: u32, instruction: u32);
+    fn exception(&mut self, e: Exception);
+    fn io_load(&mut self, addr: u32, rt: u8);
+    fn mem(&mut self, m: MemAccess);
+}
+
+impl StepSink for StepInfo {
+    #[inline(always)]
+    fn begin(&mut self, pc: u32, instruction: u32) {
+        *self = StepInfo { pc, instruction, exception: None, io_load: None, mem: None };
+    }
+    #[inline(always)]
+    fn exception(&mut self, e: Exception) {
+        self.exception = Some(e as u8);
+    }
+    #[inline(always)]
+    fn io_load(&mut self, addr: u32, rt: u8) {
+        self.io_load = Some((addr, rt));
+    }
+    #[inline(always)]
+    fn mem(&mut self, m: MemAccess) {
+        self.mem = Some(m);
+    }
+}
+
+impl StepSink for () {
+    #[inline(always)]
+    fn begin(&mut self, _: u32, _: u32) {}
+    #[inline(always)]
+    fn exception(&mut self, _: Exception) {}
+    #[inline(always)]
+    fn io_load(&mut self, _: u32, _: u8) {}
+    #[inline(always)]
+    fn mem(&mut self, _: MemAccess) {}
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Cpu {
     pub regs: [u32; 32],
@@ -191,6 +230,14 @@ impl Cpu {
 
     /// Execute one instruction (or take a pending interrupt).
     pub fn step(&mut self, bus: &mut Bus) -> StepInfo {
+        let mut info = StepInfo::default();
+        self.step_with(bus, &mut info);
+        info
+    }
+
+    /// [`Cpu::step`], reporting what happened to `info`.
+    #[inline(always)]
+    pub fn step_with<I: StepSink>(&mut self, bus: &mut Bus, info: &mut I) {
         // Timing model (PCSX-Redux's, not hardware-exact): 2 cycles per
         // instruction, 20 more while executing from BIOS ROM.
         let pc = self.pc;
@@ -203,21 +250,27 @@ impl Cpu {
             self.flush_load();
             self.cop0[cop0::BADVADDR] = pc;
             self.exception(Exception::LoadAddressError, pc);
-            return StepInfo { pc, instruction: 0, exception: Some(Exception::LoadAddressError as u8), io_load: None, mem: None };
+            info.begin(pc, 0);
+            info.exception(Exception::LoadAddressError);
+            return;
         }
         let instruction = match bus.read(pc, Width::Word) {
             Ok(i) => i,
             Err(_) => {
                 self.flush_load();
                 self.exception(Exception::InstructionBusError, pc);
-                return StepInfo { pc, instruction: 0, exception: Some(Exception::InstructionBusError as u8), io_load: None, mem: None };
+                info.begin(pc, 0);
+                info.exception(Exception::InstructionBusError);
+                return;
             }
         };
         if self.interrupt_pending() {
             // EPC is the instruction about to execute; it runs after RFE.
             self.flush_load();
             self.exception(Exception::Interrupt, pc);
-            return StepInfo { pc, instruction, exception: Some(Exception::Interrupt as u8), io_load: None, mem: None };
+            info.begin(pc, instruction);
+            info.exception(Exception::Interrupt);
+            return;
         }
 
         self.pc = self.next_pc;
@@ -227,16 +280,16 @@ impl Cpu {
         // the instruction's own write lands last (a later write beats the load).
         self.load_in = std::mem::take(&mut self.load);
         self.wreg = (0, 0);
-        let mut info = StepInfo { pc, instruction, exception: None, io_load: None, mem: None };
-        if let Err(e) = self.execute(bus, instruction, pc, &mut info) {
-            info.exception = Some(e as u8);
+        info.begin(pc, instruction);
+        if let Err(e) = self.execute(bus, instruction, pc, info) {
+            info.exception(e);
         }
+        // Indices are always < 32; the mask only spares the bounds checks.
         let (lr, lv) = self.load_in;
-        self.regs[lr] = lv;
+        self.regs[lr & 31] = lv;
         let (wr, wv) = self.wreg;
-        self.regs[wr] = wv;
+        self.regs[wr & 31] = wv;
         self.regs[0] = 0;
-        info
     }
 
     fn branch_to(&mut self, target: u32) {
@@ -249,30 +302,30 @@ impl Cpu {
         self.branch_to(target);
     }
 
-    fn load_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, pc: u32, info: &mut StepInfo, rt: usize) -> Result<u32, Exception> {
+    fn load_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, pc: u32, info: &mut impl StepSink, rt: usize) -> Result<u32, Exception> {
         if !addr.is_multiple_of(w as u32) {
             self.cop0[cop0::BADVADDR] = addr;
             self.exception(Exception::LoadAddressError, pc);
             return Err(Exception::LoadAddressError);
         }
         if Bus::is_io(addr) {
-            info.io_load = Some((addr, rt as u8));
+            info.io_load(addr, rt as u8);
         }
         let v = bus.read(addr, w).map_err(|_| {
             self.exception(Exception::DataBusError, pc);
             Exception::DataBusError
         })?;
-        info.mem = Some(MemAccess { addr, value: v, width: w as u8, store: false });
+        info.mem(MemAccess { addr, value: v, width: w as u8, store: false });
         Ok(v)
     }
 
-    fn store_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, value: u32, pc: u32, info: &mut StepInfo) -> Result<(), Exception> {
+    fn store_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, value: u32, pc: u32, info: &mut impl StepSink) -> Result<(), Exception> {
         if !addr.is_multiple_of(w as u32) {
             self.cop0[cop0::BADVADDR] = addr;
             self.exception(Exception::StoreAddressError, pc);
             return Err(Exception::StoreAddressError);
         }
-        info.mem = Some(MemAccess { addr, value, width: w as u8, store: true });
+        info.mem(MemAccess { addr, value, width: w as u8, store: true });
         if self.cop0[cop0::SR] & (1 << 16) != 0 {
             return Ok(()); // cache isolated: the store hits the (unmodelled) cache only
         }
@@ -287,7 +340,7 @@ impl Cpu {
         Err(e)
     }
 
-    fn execute(&mut self, bus: &mut Bus, i: u32, pc: u32, info: &mut StepInfo) -> Result<(), Exception> {
+    fn execute(&mut self, bus: &mut Bus, i: u32, pc: u32, info: &mut impl StepSink) -> Result<(), Exception> {
         let op = i >> 26;
         let rs = ((i >> 21) & 31) as usize;
         let rt = ((i >> 16) & 31) as usize;
