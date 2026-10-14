@@ -63,6 +63,26 @@ background behind 3D, reverse the order.
 Load pixel art as sRGB PNGs. Nearest sampling is the default
 (`ImagePlugin::default_nearest()`).
 
+
+### Captured frames as a starting point
+
+The psx toolkit can turn one frame of the original game into plain data for
+this template:
+
+```sh
+psx run --backend native --bios BIOS GAME.cue --frames N+1 --gpu-frame N --out run/
+psx textures run/            # texture pages as PNGs + run/textures/scene.psxscene
+```
+
+Copy `run/textures/` under `assets/` and view it with
+`cargo run -- --scene captures/level1/scene.psxscene`. In game code, spawn
+`PsxSceneRoot(asset_server.load(...))`: each drawn element becomes a child
+`Sprite` (tiles, aligned sprites) or `Mesh2d` (other polygons) in draw order,
+tagged with `PsxSceneElement { command }`, its index in the capture's
+`gpu_frame.json`. Use it as a pixel-faithful reference layout, then replace
+pieces with real game entities. Semi-transparency is approximated with 50%
+alpha, and the scene is not clipped to the original draw area.
+
 ## Simulation and input
 
 - Gameplay runs in `FixedUpdate`, in `GameSystems::Game`, at the region's

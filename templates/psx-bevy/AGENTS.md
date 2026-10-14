@@ -13,6 +13,10 @@
   toolkit evidence: RAM watches, traces, extracted assets) in plain Rust types
   and systems. Note where a value or rule came from in a comment, such as the
   RAM address or the function that wrote it, so others can re-verify it.
+- To match an original 2D frame, start from a capture: `psx run --gpu-frame` +
+  `psx textures` give a `.psxscene` that `PsxSceneRoot` spawns as ordinary
+  sprites and meshes tagged with their GPU command (README, "Captured frames").
+  Rebuild with real entities from there; it is reference data, not an engine.
 - Keep game assets in `assets/`. Do not commit original disc or BIOS data.
 - Read README.md for MCP startup, screenshot targets and input lifetime.
 - Verify both `cargo build` and `cargo build --features dev-mcp` when

@@ -82,6 +82,9 @@ pub struct Command {
     /// E2h-E6h values: window, area corner, offset, mask bits.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<[i32; 4]>,
+    /// Drawing offset in effect (E5h): subtract it from vertices for
+    /// positions relative to the buffer being drawn (the screen origin).
+    pub offset: [i32; 2],
 }
 
 /// Decode one frame's commands, starting from the draw state in effect.
@@ -92,7 +95,7 @@ pub fn decode(start: &DrawState, commands: &[Vec<u32>]) -> Vec<Command> {
 
 fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
     let op = (p[0] >> 24) as u8;
-    let mut c = Command { index, op, words: p.len(), kind: "nop", ..Default::default() };
+    let mut c = Command { index, op, words: p.len(), kind: "nop", offset: [st.offset.0, st.offset.1], ..Default::default() };
     let word = |i: usize| p.get(i).copied().unwrap_or(0);
     let xy = |w: u32, st: &DrawState| (sext11(w) + st.offset.0, sext11(w >> 16) + st.offset.1);
     let size = |w: u32| ((((w & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1) as i32, ((((w >> 16) & 0xFFFF).wrapping_sub(1) & 0x1FF) + 1) as i32);
