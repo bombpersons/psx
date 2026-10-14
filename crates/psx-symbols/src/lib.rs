@@ -124,8 +124,8 @@ pub struct CodeIndex<'a> {
 impl<'a> CodeIndex<'a> {
     pub fn new(code: &'a [u8]) -> Self {
         let mut words: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (i, w) in code.chunks_exact(4).enumerate() {
-            words.entry(u32::from_le_bytes([w[0], w[1], w[2], w[3]])).or_default().push(i as u32 * 4);
+        for (i, w) in code.as_chunks::<4>().0.iter().enumerate() {
+            words.entry(u32::from_le_bytes(*w)).or_default().push(i as u32 * 4);
         }
         CodeIndex { code, words }
     }
