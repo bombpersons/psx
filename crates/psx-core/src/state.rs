@@ -22,7 +22,7 @@ use crate::Machine;
 
 pub const MAGIC: &[u8; 8] = b"PSXSTATE";
 /// Bumped whenever the encoded machine changes shape; older states are rejected.
-pub const FORMAT: u32 = 6;
+pub const FORMAT: u32 = 7;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaId {

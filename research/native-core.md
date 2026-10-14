@@ -142,8 +142,8 @@ The SPU models:
 
 `psx native --wav PATH` captures the mix.
 
-Not modelled yet: Gaussian interpolation (linear is used), reverb, noise, pitch modulation, volume sweeps, and CD-DA/XA input.
-Because XA input is missing, FMV soundtracks are silent.
+At the time, Gaussian interpolation (linear was used), reverb, noise, pitch modulation, volume sweeps, and CD-DA/XA input were missing, so FMV soundtracks were silent.
+All of these have since been added; see "SPU completion" below for the current state.
 
 Observations:
 
@@ -280,7 +280,7 @@ Checks against the SCPH-7502 BIOS's own card driver, in the shell's MEMORY CARD 
 ### SPU volume sweep and current-volume registers
 
 Volume registers with bit 15 set now sweep. This covers voice L/R and main L/R. Bit 14 selects exponential, bit 13 decrease, and bits 0–6 the rate.
-Sweeps step every sample through the same rate engine as ADSR (`env_step`), whether the voice is sounding or not. Sweep phase (bit 12, negative output) is not modelled.
+Sweeps step every sample through the same rate engine as ADSR (`env_step`), whether the voice is sounding or not. Sweep phase (bit 12, negative output) came later, with "SPU completion".
 Before this, a sweeping volume played at full level.
 
 The current-volume registers are now readable: main at `1F801DB8/BA`, voices at `1F801E00+4n`. They report the live level, as DuckStation and Mednafen do. Before, they read back 0, because nothing ever writes them.
@@ -368,7 +368,7 @@ The reverb follows psx-spx's "SPU Reverb Formula":
   - two all-pass filters (dAPF/vAPF).
 - **Buffer:** a ring in sound RAM from mBASE to the end. It is written only with SPUCNT bit 7 (master) set. Writing mBASE resets the buffer address.
 - **Output:** scaled by vLOUT/vROUT and mixed before the main volume.
-- **Simplification:** the hardware's 39-tap FIR resampler is replaced by averaging each input pair and holding the output for two samples.
+- **Simplification (since replaced, see "SPU completion"):** the hardware's 39-tap FIR resampler was replaced by averaging each input pair and holding the output for two samples.
 
 Save-state format 6.
 
@@ -450,6 +450,81 @@ New `psx native` tools from this trail:
 The examples `cdlog` and `iolog` log CD transfers and commands, and chosen I/O registers.
 
 CPU lockstep is unaffected: 30M instructions still match after these changes, because lockstep keeps adopting I/O values and following Redux's interrupts.
+
+### SPU completion: noise, pitch modulation, Gaussian interpolation, reverb FIR, envelope edge cases
+
+Everything below follows psx-spx's SPU chapter. Where psx-spx is silent, the choice is named with its source.
+
+- **Noise** (`NON`, `1F801D94/96`): one shared generator, clocked every sample from SPUCNT bits 8–13 (step 4–7, shift 0–15). Each sample the timer drops by the step; on underflow the level shifts left with parity `bit15^bit12^bit11^bit10^1` and the timer reloads by `20000h >> shift` (twice if still negative). A noise voice replaces its interpolated ADPCM sample with this level, then goes through ADSR and volume as usual. It still walks its ADPCM stream for IRQs and ENDX. End-without-repeat flags don't mute a noise voice; that detail is DuckStation's behaviour, not psx-spx's.
+- **Pitch modulation** (`PMON`, `1F801D90/92`; bit 0 ignored): voice N's step is `((s16)pitch × (out[N-1] + 8000h)) >> 15`, masked to 16 bits and then clipped to 4000h. `out[N-1]` is the previous voice's sample after its envelope, from the same tick.
+- **Gaussian interpolation:** the 512-entry table is transcribed from psx-spx. A test checks the table against psx-spx's own claim that every four-tap sum lies in 7F7Fh–7F81h. The index is pitch-counter bits 4–11. The taps are the newest sample and the three before it, with the previous block's last three kept across block boundaries.
+- **Reverb FIR:** the reverb now computes left on one 44.1 kHz sample and right on the next. Each side's input is decimated through the 39-tap filter (`>> 15`, DC gain 7FFEh/8000h). Each side's output is zero-stuffed back to 44.1 kHz and filtered again (`>> 14`, since half the slots are zero), then scaled by vLOUT/vROUT. This replaces the old pair-average-and-hold.
+- **One envelope engine** for ADSR and sweeps, using psx-spx's counter form (`Counter += 8000h >> max(0, shift-11)`, step when bit 15 is set):
+  - sweep phase (bit 12): an inverted increase heads to -8000h, an inverted decrease clamps at 0, and exponential decrease ignores the phase;
+  - exponential increase above 6000h quarters the step (shift < 10), halves step and rate (shift 10), or quarters the rate (shift ≥ 11);
+  - all-ones rates never step. That means 7Fh for attack, sustain and sweep, and release shift 1Fh. Other slow rates clamp the increment to 1;
+  - exponential decrease scales the step by `level >> 15`.
+- **Voice edge cases:**
+  - key off releases from any phase, including attack;
+  - ADSR register writes apply on the next envelope tick;
+  - key on clears ENDX and resets the ADPCM history and interpolation history;
+  - an end-without-repeat block (code 1) jumps to the repeat address, sets ENDX, and mutes the voice (envelope 0);
+  - all voices keep walking after they go silent ("all voices are permanently reading data from SPU RAM"), so silent voices still set ENDX and trap the IRQ address;
+  - a CPU write to the repeat address makes loop-start flags stop overwriting it until the next key on. This is Redux's and Mednafen's `IgnoreLoop`; psx-spx only says writes are useful to redirect one-shots.
+- **IRQ address:** checked on voice block fetches, FIFO/DMA writes **and DMA reads**, capture-buffer writes, and reverb RAM accesses. It is only armed with SPUCNT bits 15 and 6 both set.
+  - psx-spx doesn't know which reverb accesses trap. Here all of them do, but only while the reverb master enable is on. A game that never set up reverb (mBASE 0, so the ring sweeps all of sound RAM) would otherwise take stray interrupts.
+- **Capture buffers:** CD left/right (before volume) and voices 1 and 3 (after the envelope) are written to 000h/400h/800h/C00h at one halfword per sample. SPUSTAT bit 11 shows the half being written. Capture IRQs need RAM_CTRL (`1F801DAC`) bits 2–3, as psx-spx says.
+- **Mixing:** products use `>> 15` instead of `/ 8000h`. SPUCNT enable/unmute silence the voices only; psx-spx says they are "don't care" for CD audio. The main volume applies after the mix is clamped.
+- **Registers:** offsets 260h–3FFh no longer alias the voice registers in the plain register store.
+- **Report:** the `psx native` report gains `spu.noise_voices_seen`, `spu.pmon_voices_seen` (every voice ever given the feature) and `spu.irqs`.
+- **Save-state format 7.**
+
+**What the games use** (iolog of `1F801D90–9A`/`1F801DA4` over frames 0–5000, plus the new report fields over 7000–8000 frames):
+
+| Game | NON | PMON | EON | SPU IRQs |
+|---|---|---|---|---|
+| Croc | never | never | all 24 voices in-level | 0 |
+| Tomb Raider | never | never | 0 | 0 |
+| Symphony of the Night | never | never | 0 | 0 |
+| Mega Man 8 | never | never | 0 | 0 |
+| Crash | never | never | voices 16–17 | 0 |
+| Ape Escape | never | never | voices 2, 3, 5–7, 11, 13, 18, 19, 22, 23 (`CC28ECh`) | 2 |
+
+- None of these windows writes NON or PMON, so noise and pitch modulation are verified only by unit tests.
+- Ape Escape sets IRQA = 0 with IRQ9 enabled and takes 2 interrupts. Its run is unchanged by them: same instruction count at frame 7000, same final PC, same VRAM. Spyro's image isn't a whole number of sectors and wasn't tested.
+
+**Checks:**
+- **Unit tests (18 SPU tests):**
+  - the Gaussian table: sample entries, the 4-tap sums, monotonicity;
+  - interpolation of a constant and across block history;
+  - the noise LFSR, bit by bit, against a model, plus its rates;
+  - a noise voice through the mixer;
+  - PMON step maths and a modulated voice in the mixer;
+  - FIR tap sums, left/right alternation, the DC level through both FIRs and the impulse spread;
+  - envelope rates: the counter form, the exponential >6000h cases, exponential decrease, frozen rates;
+  - sweep phase, including Wipeout 3's frozen inverted sweep;
+  - ADSR phase transitions and mid-envelope writes;
+  - key off during attack;
+  - one-shot end jumping to a redirected repeat address and trapping an IRQ while silent;
+  - `IgnoreLoop`;
+  - IRQ on DMA read, capture-buffer IRQ and SPUSTAT bit 11;
+  - IRQ on reverb access.
+- **XA path:** Croc's FOXLOGO stream in the mix correlates 0.9899 at gain 0.467, the same as before the change (0.9899, 0.466). The gain is below 0.5 because of the right main volume 37EFh (see "current-volume registers"). Windows that are pure CD audio (Tomb Raider, SOTN, Mega Man 8 after their intros) correlate 1.000 before/after.
+- **Sound changes:**
+  - The boot chime keeps its RMS, but its spectral centroid drops from about 1.6–3.3 kHz to 0.8–2.0 kHz. The Gaussian filter rolls off the top of each sample's band where linear interpolation passed images.
+  - The reverberant tail (12–18 s) is about 10% louder with the FIR.
+  - Croc in-level and Crash's title (SPU music) correlate 0.87–0.99 with the old output.
+- **Save states:** split runs match the straight run byte for byte, including the final state: BIOS 600/301, Croc 4800/4111 (START replay), Tomb Raider 3000/1380 (inside the XA stream).
+- **Other:**
+  - CPU lockstep matched over 2M steps;
+  - speed is unchanged within noise (Croc 3000 frames with WAV capture, alternating runs: 35.0–39.0M instructions/s before, 36.2–37.1M after);
+  - Croc's frame-5600 VRAM is identical before and after.
+
+**Open:**
+- psx-spx doesn't settle whether the ADPCM filter's `(old*f0 + older*f1 + 32) / 64` rounds toward zero (as written; kept) or is an arithmetic shift.
+- Key on/off are applied at the write, in write order. The hardware latches them per sample, and its key-on startup delay isn't modelled.
+- Which reverb accesses trap the IRQ is a guess (see above).
+- Redux's "IRQ on the loop address when a block has the end flag" special case isn't modelled.
 
 ## Next
 
