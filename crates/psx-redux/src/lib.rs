@@ -121,6 +121,10 @@ pub struct Job {
     pub timeout: Duration,
     /// Pace emulation at real time instead of as fast as possible.
     pub realtime: bool,
+    /// Log CD-ROM controller and DMA3 register writes to `cd.jsonl`.
+    pub trace_cd: bool,
+    /// Log BIOS A0/B0/C0 calls to `bios.jsonl`.
+    pub trace_bios: bool,
 }
 
 pub const BUTTONS: [&str; 14] =
@@ -152,19 +156,40 @@ pub struct JobReport {
     pub watch_hits: u64,
     pub watch_hits_recorded: u64,
     pub saved_state: bool,
+    #[serde(default)]
+    pub event_logs: serde_json::Value,
+    /// `"<vector>_<fn>"` (decimal fn) → calls, when BIOS tracing is on.
+    #[serde(default)]
+    pub bios_call_counts: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WatchHit {
     pub frame: u32,
+    /// Start of the written range (for DMA, the whole transfer).
     pub address: u32,
     pub width: u32,
     pub cycle: u64,
-    pub pc: u32,
-    pub ra: u32,
-    pub sp: u32,
-    /// Aligned word at the address *before* the write executes.
-    pub old_word: u32,
+    /// `cpu` or `dma`.
+    pub writer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dma_channel: Option<u32>,
+    /// CPU writes only: the executing store's PC and context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pc: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ra: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sp: Option<u32>,
+    /// CPU writes only: value stored, decoded from the store instruction's source register.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<u32>,
+    /// Address of the decoded store (differs from `pc` for delay-slot stores).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_pc: Option<u32>,
+    /// Aligned word at the address *before* the write executes (RAM only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_word: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -229,6 +254,8 @@ fn params_lua(job: &Job, load_state: Option<&Path>) -> Result<String> {
     let _ = writeln!(s, "  frames = {},", job.frames);
     let _ = writeln!(s, "  save_state = {},", job.save_state);
     let _ = writeln!(s, "  max_watch_hits = {},", job.max_watch_hits);
+    let _ = writeln!(s, "  trace_cd = {},", job.trace_cd);
+    let _ = writeln!(s, "  trace_bios = {},", job.trace_bios);
     if let Some(p) = load_state {
         let _ = writeln!(s, "  load_state = {},", lua_string(&p.to_string_lossy()));
     }
@@ -292,8 +319,8 @@ pub fn run(backend: &Backend, job: &Job, dir: &Path) -> Result<JobOutput> {
     if backend.interpreter {
         cmd.arg("-interpreter").arg("-debugger");
     } else {
-        if !job.watches.is_empty() {
-            return Err(ReduxError::Setup("watches need the interpreter (drop --fast)".into()));
+        if !job.watches.is_empty() || job.trace_cd || job.trace_bios {
+            return Err(ReduxError::Setup("watches and traces need the interpreter (drop --fast)".into()));
         }
         cmd.arg("-dynarec").arg("-no-debugger");
     }
@@ -370,6 +397,8 @@ mod tests {
             save_state: true,
             timeout: Duration::from_secs(5),
             realtime: false,
+            trace_cd: false,
+            trace_bios: false,
         };
         let lua = params_lua(&job, Some(Path::new("/tmp/a \"b\".bin"))).unwrap();
         assert!(lua.contains("frame = 10, buttons = { \"CROSS\", \"LEFT\" }"));
