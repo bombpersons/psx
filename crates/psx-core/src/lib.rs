@@ -8,6 +8,7 @@
 pub mod bus;
 pub mod cpu;
 pub mod disasm;
+pub mod timers;
 
 pub use bus::{Bus, Width};
 pub use cpu::{Cpu, StepInfo};
@@ -31,7 +32,21 @@ impl Machine {
             self.forced_irq = false;
         }
         self.cpu.irq_line = self.forced_irq || self.bus.irq_pending();
-        self.cpu.step(&mut self.bus)
+        let before = self.cpu.cycles;
+        let info = self.cpu.step(&mut self.bus);
+        self.bus.tick(self.cpu.cycles - before);
+        info
+    }
+
+    /// Run until `frames` more vblanks have occurred (or `max_steps`).
+    pub fn run_frames(&mut self, frames: u64, max_steps: u64) -> u64 {
+        let target = self.bus.frames + frames;
+        let mut n = 0;
+        while self.bus.frames < target && n < max_steps {
+            self.step();
+            n += 1;
+        }
+        n
     }
 
     /// Take an external interrupt now and keep IP2 asserted until acknowledged.

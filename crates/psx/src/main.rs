@@ -14,6 +14,7 @@ use psx_media::{memmap, Disc, MediaError, PsxExe};
 use serde_json::{json, Value};
 
 mod lockstep;
+mod native;
 mod provenance;
 mod run;
 mod template;
@@ -147,6 +148,18 @@ enum Command {
         #[arg(long)]
         dump: Option<PathBuf>,
     },
+    /// Run the native core alone (no oracle) for N frames; reports missing hardware.
+    Native {
+        #[arg(long)]
+        bios: PathBuf,
+        #[arg(long, default_value_t = 300)]
+        frames: u64,
+        #[arg(long, default_value_t = 2_000_000_000)]
+        max_steps: u64,
+        /// Write <PREFIX>.screen.png and <PREFIX>.vram.png at the end.
+        #[arg(long)]
+        dump: Option<PathBuf>,
+    },
     /// Classify a CPU address (segment, region, folded offset).
     Addr {
         /// Hex address, e.g. 0x80010000.
@@ -173,6 +186,11 @@ fn main() -> ExitCode {
             &root,
             run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast, trace_cd, trace_bios, symbols },
         );
+        println!("{}", serde_json::to_string_pretty(&v).unwrap());
+        return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
+    }
+    if let Command::Native { bios, frames, max_steps, dump } = &cli.command {
+        let (ok, v) = native::run(bios, *frames, *max_steps, dump.as_deref());
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }
@@ -211,7 +229,7 @@ fn run(cmd: Command) -> R {
         Command::Extract { image, path, all, out } => extract(&image, path.as_deref(), all, &out),
         Command::Exe { source } => exe_cmd(&source),
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
-        Command::Run { .. } | Command::Lockstep { .. } => unreachable!("handled in main"),
+        Command::Run { .. } | Command::Lockstep { .. } | Command::Native { .. } => unreachable!("handled in main"),
         Command::Symbols { source, sigs, min_concrete, out } => symbols_cmd(&source, &sigs, min_concrete, out),
         Command::Loads { run_dir, disc, limit, symbols } => {
             let scopes = load_symbols(&symbols)?;

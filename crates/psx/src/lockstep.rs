@@ -120,6 +120,8 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
     };
     let reader = std::io::BufReader::with_capacity(1 << 20, child.stdout.take().unwrap());
     let mut m = Machine::new(bios);
+    // Interrupts come from the oracle; device timing is validated separately.
+    m.bus.irq_sources = false;
     let started = Instant::now();
     let mut history: VecDeque<String> = VecDeque::with_capacity(context + 1);
     let (mut io_injected, mut irq_injected, mut operand_checks) = (0u64, 0u64, 0u64);

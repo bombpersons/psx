@@ -6,8 +6,8 @@
 //! Cause.IP, cache isolation (SR.IsC drops stores), overflow/address-error/
 //! reserved-instruction/coprocessor-unusable exceptions, and COP2 via psx-gte.
 //!
-//! Not modelled yet: instruction cache, cycle-accurate timing (every
-//! instruction costs one cycle), the GTE-command-vs-interrupt hardware quirk.
+//! Not modelled yet: instruction cache, cycle-accurate timing (a flat
+//! per-instruction cost, see [`Cpu::step`]), the GTE-command-vs-interrupt quirk.
 
 use psx_gte::Gte;
 
@@ -172,8 +172,10 @@ impl Cpu {
 
     /// Execute one instruction (or take a pending interrupt).
     pub fn step(&mut self, bus: &mut Bus) -> StepInfo {
-        self.cycles += 1;
+        // Timing model (PCSX-Redux's, not hardware-exact): 2 cycles per
+        // instruction, 20 more while executing from BIOS ROM.
         let pc = self.pc;
+        self.cycles += if pc & 0x1FC0_0000 == 0x1FC0_0000 { 22 } else { 2 };
         self.cop0[cop0::CAUSE] = self.cause_ip();
         self.delay_slot = self.branch;
         self.branch = false;

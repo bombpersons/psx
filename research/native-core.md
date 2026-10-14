@@ -71,8 +71,37 @@ colour-interpolation rounding in `psx-gpu`.
 The rounding has not been tuned to Redux: Redux's software GPU is another emulator, not hardware truth. The referee should be
 a hardware-verified Gouraud test (e.g. JaCzekanski ps1-tests `gpu/`) or DuckStation regtest output.
 
+## Standalone boot (`psx native`)
+
+`psx native --bios <bios> --frames N --dump PREFIX` runs the core on its own, with no oracle. It reports:
+
+- frames reached, speed, and the screen/VRAM;
+- **I/O registers read that no device handles yet** (counts by address);
+- a profile of the last two frames: hot PCs, I/O traffic, I_STAT/I_MASK/SR.
+
+The profile shows what the software is waiting for.
+
+New devices for this:
+
+- **Timers** (`timers.rs`): sysclock, dotclock, hblank and sysclock/8 sources; target/0xFFFF reset; IRQ modes; reached flags. Sync modes are not modelled yet.
+- **VBlank:** PAL 50 Hz / NTSC 59.94 Hz frames on I_STAT bit 0.
+- **Timing:** flat per-instruction costs like Redux (2 cycles, +20 in BIOS ROM). Not cycle-accurate.
+- **GPUSTAT bit 31:** odd/even line from the current scanline (per field when interlaced), 0 in vblank.
+- **SPUSTAT:** mirrors SPUCNT bits 0–5. There is no SPU model yet.
+
+How the profile guided each step of the bring-up (SCPH-7502, no disc):
+
+| Step | What the profile showed | Fix |
+|---|---|---|
+| 1 | BIOS polled SPUSTAT (~1.8k reads) | SPUSTAT mirrors SPUCNT |
+| 2 | Spun on GPUSTAT bit 31 (112k polls/2 frames) | Scanline-derived bit 31 |
+| 3 | **The SCE logo is displayed by the native core**, at about 20M instructions/s (1.2–1.7× real time, release build) | none needed |
+| 4 | Stays on the logo, polling the CD-ROM status register `0x1F801800` | **next: CD-ROM controller** |
+
+CPU lockstep is unaffected: 30M instructions still match after these changes, because lockstep keeps adopting I/O values and following Redux's interrupts.
+
 ## Next
 
 - **GPU wiring:** send GP0/GP1 port writes and DMA channel 2 (block and linked-list) into `psx-gpu`, then compare the BIOS screen with Redux's.
-- **Self-contained devices:** timers, then the CD-ROM controller, so that injection counts fall towards zero.
+- **CD-ROM controller.** Commands, response FIFOs and INT1/2/3/5. Behaviour can be checked against Redux's CD traces and our load-provenance records.
 - **Game code:** lockstep from a side-loaded EXE (the probe), then from boot of Croc.
