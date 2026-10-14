@@ -8,7 +8,7 @@ use bevy::{
         render_asset::RenderAssets,
         render_resource::{
             AsBindGroup, AsBindGroupShaderType, BlendComponent, BlendFactor, BlendOperation,
-            BlendState, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+            BlendState, CompareFunction, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
         },
         texture::GpuImage,
     },
@@ -49,6 +49,12 @@ pub struct PsxMaterial {
     pub double_sided: bool,
     /// Texels with alpha < 0.5 are not drawn (the PS1's transparent colour 0x0000).
     pub cutout: bool,
+    /// Painter's order instead of the depth buffer, like the PS1's ordering
+    /// tables. When set, the surface neither tests nor writes depth and is
+    /// drawn after every surface with a lower order and before every higher
+    /// one (all ordered surfaces go through Bevy's sorted transparent pass).
+    /// Equal orders fall back to back-to-front. `None` (default) depth-tests.
+    pub draw_order: Option<u32>,
     /// Copied from the [`PsxLook`] resource; edit the resource instead.
     pub look: PsxLook,
     /// Copied from scene lights each frame they change; not set by hand.
@@ -66,6 +72,7 @@ impl Default for PsxMaterial {
             fog: true,
             double_sided: false,
             cutout: true,
+            draw_order: None,
             look: PsxLook::default(),
             lighting: PsxLighting::default(),
         }
@@ -126,13 +133,19 @@ impl AsBindGroupShaderType<PsxUniform> for PsxMaterial {
 pub struct PsxMaterialKey {
     blend: PsxBlend,
     double_sided: bool,
+    painter: bool,
 }
 
 impl From<&PsxMaterial> for PsxMaterialKey {
     fn from(m: &PsxMaterial) -> Self {
-        Self { blend: m.blend, double_sided: m.double_sided }
+        Self { blend: m.blend, double_sided: m.double_sided, painter: m.draw_order.is_some() }
     }
 }
+
+/// Sort-distance step between consecutive [`PsxMaterial::draw_order`]s. Bevy
+/// sorts transparent items by view depth (metres) plus the material's depth
+/// bias, so each step must exceed the depth range of anything on screen.
+const DRAW_ORDER_STEP: f32 = 8192.0;
 
 const SHADER: &str = concat!("embedded://", env!("CARGO_CRATE_NAME"), "/psx/shaders/psx_material.wesl");
 
@@ -148,10 +161,17 @@ impl Material for PsxMaterial {
     fn alpha_mode(&self) -> AlphaMode {
         // Semi-transparent surfaces go through Bevy's sorted transparent pass;
         // the exact equation is set in `specialize`.
+        // Painter's-order surfaces join that pass too, to be sorted by order.
         match self.blend {
-            PsxBlend::Opaque => AlphaMode::Opaque,
+            PsxBlend::Opaque if self.draw_order.is_none() => AlphaMode::Opaque,
             _ => AlphaMode::Blend,
         }
+    }
+
+    fn depth_bias(&self) -> f32 {
+        // Bevy only uses this for sorting: the transparent pass draws in
+        // ascending (view depth + bias), so a larger order draws later.
+        self.draw_order.map_or(0.0, |order| order as f32 * DRAW_ORDER_STEP)
     }
 
     fn enable_prepass() -> bool {
@@ -170,8 +190,21 @@ impl Material for PsxMaterial {
     ) -> Result<(), SpecializedMeshPipelineError> {
         let k = key.bind_group_data;
         descriptor.primitive.cull_mode = if k.double_sided { None } else { Some(Face::Back) };
+        if k.painter
+            && let Some(depth) = descriptor.depth_stencil.as_mut()
+        {
+            depth.depth_compare = Some(CompareFunction::Always);
+            depth.depth_write_enabled = Some(false);
+        }
         let color = match k.blend {
-            PsxBlend::Opaque => return Ok(()),
+            // Opaque replaces what is below (painter's-order surfaces are in
+            // the transparent pass, which would otherwise alpha-blend them).
+            PsxBlend::Opaque => {
+                if let Some(target) = descriptor.fragment.as_mut().and_then(|f| f.targets.first_mut()).and_then(|t| t.as_mut()) {
+                    target.blend = None;
+                }
+                return Ok(());
+            }
             PsxBlend::Half => BlendComponent {
                 src_factor: BlendFactor::SrcAlpha,
                 dst_factor: BlendFactor::OneMinusSrcAlpha,
