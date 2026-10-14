@@ -21,9 +21,6 @@ pub const RAM_SIZE: usize = 512 * 1024;
 /// System clocks per output sample (33.8688 MHz / 44.1 kHz).
 pub const CYCLES_PER_SAMPLE: u64 = 768;
 
-const FILTER_POS: [i32; 5] = [0, 60, 115, 98, 122];
-const FILTER_NEG: [i32; 5] = [0, 0, -52, -55, -60];
-
 /// The 512-entry 4-point Gaussian interpolation table (psx-spx "4-Point Gaussian Interpolation").
 #[rustfmt::skip]
 const GAUSS: [i32; 512] = [
@@ -703,23 +700,11 @@ impl Spu {
         let a = self.voices[i].addr as usize & (RAM_SIZE - 1) & !0xF;
         let irq = self.check_irq(a as u32, 16);
         let v = &mut self.voices[i];
-        let header = self.ram[a];
-        let shift = (header & 0xF).min(12) as i32;
-        let filter = ((header >> 4) & 7).min(4) as usize;
         v.flags = self.ram[a + 1];
         if v.flags & 4 != 0 && !v.ignore_loop {
             v.repeat = (a >> 3) as u16;
         }
-        for n in 0..28 {
-            let byte = self.ram[a + 2 + n / 2];
-            let nib = if n & 1 == 0 { byte & 0xF } else { byte >> 4 };
-            let raw = (((nib as i16) << 12) >> shift) as i32;
-            let s = raw + (v.hist[0] * FILTER_POS[filter] + v.hist[1] * FILTER_NEG[filter] + 32) / 64;
-            let s = s.clamp(-0x8000, 0x7FFF);
-            v.hist[1] = v.hist[0];
-            v.hist[0] = s;
-            v.samples[n] = s as i16;
-        }
+        psx_assets::adpcm::decode_block(&self.ram[a..a + 16], &mut v.hist, &mut v.samples);
         v.decoded = true;
         irq
     }

@@ -364,6 +364,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "png",
+ "psx-assets",
  "psx-core",
  "psx-gpu",
  "psx-media",
@@ -374,11 +375,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "psx-assets"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "psx-core"
 version = "0.1.0"
 dependencies = [
  "flate2",
  "postcard",
+ "psx-assets",
  "psx-gpu",
  "psx-gte",
  "psx-media",
