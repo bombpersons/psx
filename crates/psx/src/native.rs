@@ -214,6 +214,7 @@ pub fn run(o: Options) -> (bool, Value) {
             "unmodelled_dma": m.bus.unmodelled_dma.len(),
             "audio": audio,
             "spu": {"active_voices": m.bus.spu.active_voices(), "main_volume": [m.bus.spu.read16(0x180), m.bus.spu.read16(0x182)], "main_volume_current": [m.bus.spu.read16(0x1B8), m.bus.spu.read16(0x1BA)], "spucnt": m.bus.spu.read16(0x1AA),
+                "noise_voices_seen": m.bus.spu.noise_seen, "pmon_voices_seen": m.bus.spu.pmon_seen, "irqs": m.bus.spu.irqs,
                 "reverb": {"master": m.bus.spu.read16(0x1AA) & 0x80 != 0, "cd": m.bus.spu.read16(0x1AA) & 4 != 0,
                     "eon": m.bus.spu.read16(0x198) as u32 | (m.bus.spu.read16(0x19A) as u32) << 16,
                     "work_area": (m.bus.spu.read16(0x1A2) as u32) << 3, "out": [m.bus.spu.read16(0x184) as i16, m.bus.spu.read16(0x186) as i16]}},
