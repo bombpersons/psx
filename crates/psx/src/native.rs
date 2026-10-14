@@ -28,6 +28,13 @@ pub struct Options<'a> {
     pub wav: Option<&'a Path>,
     /// `digital` or `dualshock`.
     pub pad: &'a str,
+    /// Stop with status "timeout" once this wall-clock instant passes.
+    pub deadline: Option<Instant>,
+}
+
+/// True every 2^20 steps once `deadline` has passed (cheap enough for the step loops).
+fn late(deadline: Option<Instant>, steps: u64) -> bool {
+    steps.is_multiple_of(1 << 20) && deadline.is_some_and(|d| Instant::now() >= d)
 }
 
 pub(crate) fn write_wav(path: &Path, samples: &[i16]) -> std::io::Result<()> {
@@ -52,11 +59,11 @@ pub(crate) fn write_wav(path: &Path, samples: &[i16]) -> std::io::Result<()> {
 }
 
 /// Run until `target` frames, applying replay events and periodic snapshots.
-fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[crate::replay::Input], snap: Option<(u64, &Path)>) -> u64 {
+fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[crate::replay::Input], snap: Option<(u64, &Path)>, deadline: Option<Instant>) -> u64 {
     let mut steps = 0;
     let mut next = 0;
     let mut last_frame = u64::MAX;
-    while m.bus.frames < target && steps < max_steps {
+    while m.bus.frames < target && steps < max_steps && !late(deadline, steps) {
         let f = m.bus.frames;
         if f != last_frame {
             last_frame = f;
@@ -79,7 +86,7 @@ fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[crate:
 }
 
 pub fn run(o: Options) -> (bool, Value) {
-    let Options { bios: bios_path, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every, wav, pad } = o;
+    let Options { bios: bios_path, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every, wav, pad, deadline } = o;
     let events = match replay.map(crate::replay::load).transpose() {
         Ok(e) => e.unwrap_or_default(),
         Err(e) => return (false, json!({"error": {"code": "invalid_arguments", "message": e}})),
@@ -107,7 +114,7 @@ pub fn run(o: Options) -> (bool, Value) {
     let mut broke = Value::Null;
     if let Some(w) = watch {
         // Record every change of the watched word (first 32), with the instruction that ran.
-        while m.bus.frames < watch_after && steps < max_steps {
+        while m.bus.frames < watch_after && steps < max_steps && !late(deadline, steps) {
             m.step();
             steps += 1;
         }
@@ -115,7 +122,7 @@ pub fn run(o: Options) -> (bool, Value) {
         let mut last = m.bus.read(w, Width::Word).unwrap_or(0);
         let mut dma_seen = m.bus.recent_dma.len();
         let target = m.bus.frames + frames;
-        while m.bus.frames < target && steps < max_steps && changes.len() < 32 {
+        while m.bus.frames < target && steps < max_steps && changes.len() < 32 && !late(deadline, steps) {
             let info = m.step();
             steps += 1;
             let now = m.bus.read(w, Width::Word).unwrap_or(0);
@@ -127,11 +134,15 @@ pub fn run(o: Options) -> (bool, Value) {
             }
             dma_seen = m.bus.recent_dma.len();
         }
-        return (true, json!({"status": "watch", "addr": format!("0x{w:08X}"), "changes": changes, "frames_reached": m.bus.frames}));
+        let mut v = json!({"status": "watch", "addr": format!("0x{w:08X}"), "changes": changes, "frames_reached": m.bus.frames});
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            v["timed_out"] = json!(true);
+        }
+        return (true, v);
     }
     if let Some(bp) = brk {
         let target = m.bus.frames + frames;
-        while m.bus.frames < target && steps < max_steps {
+        while m.bus.frames < target && steps < max_steps && !late(deadline, steps) {
             if m.cpu.pc == bp {
                 broke = json!({
                     "pc": format!("0x{bp:08X}"), "frame": m.bus.frames, "step": steps,
@@ -157,13 +168,13 @@ pub fn run(o: Options) -> (bool, Value) {
         }
     }
     let snap = snapshot_every.zip(dump);
-    steps += run_with_input(&mut m, frames.saturating_sub(2), max_steps, &events, snap);
+    steps += run_with_input(&mut m, frames.saturating_sub(2), max_steps, &events, snap, deadline);
     // Profile the last two frames: where the CPU spends time and what it polls.
     m.bus.log_io = true;
     let mut pcs: std::collections::HashMap<u32, u64> = Default::default();
     let mut io: std::collections::HashMap<(u32, bool), u64> = Default::default();
     let target = m.bus.frames + frames.min(2);
-    while m.bus.frames < target && steps < max_steps {
+    while m.bus.frames < target && steps < max_steps && !late(deadline, steps) {
         let info = m.step();
         *pcs.entry(info.pc).or_default() += 1;
         for a in m.bus.take_io_log() {
@@ -201,10 +212,11 @@ pub fn run(o: Options) -> (bool, Value) {
     };
     let pc = m.cpu.pc;
     let reached = m.bus.frames >= frames;
+    let timed_out = deadline.is_some_and(|d| Instant::now() >= d);
     (
         reached,
         json!({
-            "status": if reached { "frames_reached" } else { "step_budget_exhausted" },
+            "status": if reached { "frames_reached" } else if timed_out { "timeout" } else { "step_budget_exhausted" },
             "frames": {"requested": frames, "reached": m.bus.frames, "region": if m.bus.pal() { "PAL" } else { "NTSC" }},
             "instructions": steps,
             "cycles": m.bus.now,

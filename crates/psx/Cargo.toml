@@ -16,6 +16,11 @@ png = "0.18"
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+schemars = { workspace = true }
+rmcp = { version = "=3.5.1", features = ["transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-std"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+base64 = "0.22"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -123,7 +123,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     };
     let dir = a.out.clone().unwrap_or_else(|| {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-        root.join(".psx/runs").join(format!("{stamp}-{}-native", std::process::id()))
+        root.join(".psx/runs").join(format!("{stamp}-{}-native{}", std::process::id(), crate::instance_suffix()))
     });
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return err("io_error", format!("{}: {e}", dir.display()));
