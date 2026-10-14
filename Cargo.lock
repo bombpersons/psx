@@ -280,6 +280,7 @@ dependencies = [
  "psx-gpu",
  "psx-media",
  "psx-redux",
+ "psx-symbols",
  "serde",
  "serde_json",
 ]
@@ -307,6 +308,14 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "psx-symbols"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
