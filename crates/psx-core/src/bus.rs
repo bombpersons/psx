@@ -386,7 +386,9 @@ impl Bus {
                         fired |= self.spu.fifo_write(w as u16);
                         fired |= self.spu.fifo_write((w >> 16) as u16);
                     } else {
-                        let w = self.spu.fifo_read() as u32 | (self.spu.fifo_read() as u32) << 16;
+                        let ((lo, f0), (hi, f1)) = (self.spu.fifo_read(), self.spu.fifo_read());
+                        fired |= f0 | f1;
+                        let w = lo as u32 | (hi as u32) << 16;
                         let o = addr as usize;
                         self.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
                     }
