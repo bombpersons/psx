@@ -56,6 +56,9 @@ pub fn button_from_name(name: &str) -> Option<u16> {
     })
 }
 
+/// One exchanged byte: (time, JOY_CTRL, tx, rx, ack).
+pub type ByteLog = (u64, u16, u8, u8, bool);
+
 /// The device answering the current transfer sequence.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 enum Target {
@@ -82,9 +85,9 @@ pub struct Sio0 {
     pub transfers: u64,
     /// Memory cards in slots 1 and 2.
     pub cards: [Option<MemCard>; 2],
-    /// When `Some`, every byte exchanged: (time, JOY_CTRL, tx, rx, ack).
+    /// When `Some`, every byte exchanged.
     #[serde(skip)]
-    pub log: Option<Vec<(u64, u16, u8, u8, bool)>>,
+    pub log: Option<Vec<ByteLog>>,
 }
 
 impl Sio0 {
