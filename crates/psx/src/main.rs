@@ -219,7 +219,17 @@ fn main() -> ExitCode {
     if let Command::Native { bios, disc, frames, max_steps, dump, brk, tail, watch, watch_after } = &cli.command {
         let hex = |b: &Option<String>| b.as_deref().and_then(|b| u32::from_str_radix(b.trim_start_matches("0x").trim_start_matches("0X"), 16).ok());
         let (brk, watch) = (hex(brk), hex(watch));
-        let (ok, v) = native::run(bios, disc.as_deref(), *frames, *max_steps, dump.as_deref(), brk, *tail, watch, *watch_after);
+        let (ok, v) = native::run(native::Options {
+            bios,
+            disc: disc.as_deref(),
+            frames: *frames,
+            max_steps: *max_steps,
+            dump: dump.as_deref(),
+            brk,
+            tail: *tail,
+            watch,
+            watch_after: *watch_after,
+        });
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }

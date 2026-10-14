@@ -8,7 +8,22 @@ use psx_core::disasm::disasm;
 use psx_core::{Machine, Width};
 use serde_json::{json, Value};
 
-pub fn run(bios_path: &Path, disc: Option<&Path>, frames: u64, max_steps: u64, dump: Option<&Path>, brk: Option<u32>, tail: usize, watch: Option<u32>, watch_after: u64) -> (bool, Value) {
+pub struct Options<'a> {
+    pub bios: &'a Path,
+    pub disc: Option<&'a Path>,
+    pub frames: u64,
+    pub max_steps: u64,
+    pub dump: Option<&'a Path>,
+    /// Stop at this PC and report the last `tail` instructions.
+    pub brk: Option<u32>,
+    pub tail: usize,
+    /// Report changes of this RAM word from frame `watch_after` on.
+    pub watch: Option<u32>,
+    pub watch_after: u64,
+}
+
+pub fn run(o: Options) -> (bool, Value) {
+    let Options { bios: bios_path, disc, frames, max_steps, dump, brk, tail, watch, watch_after } = o;
     let bios = match std::fs::read(bios_path) {
         Ok(b) => b,
         Err(e) => return (false, json!({"error": {"code": "io_error", "message": format!("{}: {e}", bios_path.display())}})),
