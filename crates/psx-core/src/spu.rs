@@ -69,6 +69,8 @@ pub struct Spu {
     out: Vec<i16>,
     pub capture: bool,
     pub keyed_on: u64,
+    /// CD audio input sample for the next output sample (from CD-DA/XA).
+    pub cd_in: (i16, i16),
 }
 
 impl Default for Spu {
@@ -89,6 +91,7 @@ impl Default for Spu {
             out: Vec::new(),
             capture: false,
             keyed_on: 0,
+            cd_in: (0, 0),
         }
     }
 }
@@ -233,12 +236,14 @@ impl Spu {
         }
     }
 
-    /// Advance by `cycles`; returns true if the SPU interrupt fired.
-    pub fn tick(&mut self, cycles: u64) -> bool {
+    /// Advance by `cycles`, pulling one CD audio frame per output sample from
+    /// `cd`; returns true if the SPU interrupt fired.
+    pub fn tick(&mut self, cycles: u64, cd: &mut std::collections::VecDeque<(i16, i16)>) -> bool {
         self.cycles += cycles;
         let mut irq = false;
         while self.cycles >= CYCLES_PER_SAMPLE {
             self.cycles -= CYCLES_PER_SAMPLE;
+            self.cd_in = cd.pop_front().unwrap_or((0, 0));
             irq |= self.sample();
         }
         irq
@@ -348,6 +353,13 @@ impl Spu {
                 v.decoded = false;
             }
         }
+        // CD audio input (SPUCNT bit 0) through the CD volume (0x1DB0/0x1DB2).
+        if self.cnt & 1 != 0 {
+            let (cl, cr) = self.cd_in;
+            l += cl as i32 * (self.regs[0x1B0 >> 1] as i16 as i32) / 0x8000;
+            r += cr as i32 * (self.regs[0x1B2 >> 1] as i16 as i32) / 0x8000;
+        }
+        self.cd_in = (0, 0);
         if self.capture {
             let on = self.cnt & 0x8000 != 0 && self.cnt & 0x4000 != 0;
             let mix = |x: i32, m: u16| if on { (x * vol(m) / 0x8000).clamp(-0x8000, 0x7FFF) as i16 } else { 0 };
@@ -387,7 +399,7 @@ mod tests {
         s.write16(0x182, 0x3FFF);
         s.write16(0x1AA, 0xC000); // enable, unmute
         s.write16(0x188, 1);
-        s.tick(CYCLES_PER_SAMPLE * 200);
+        s.tick(CYCLES_PER_SAMPLE * 200, &mut Default::default());
         let out = s.take_samples();
         assert_eq!(out.len(), 400);
         assert!(out.iter().any(|&x| x > 1000) && out.iter().any(|&x| x < -1000), "audible square wave");

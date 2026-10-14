@@ -235,7 +235,8 @@ pub fn run(o: Options) -> (bool, Value) {
             "unhandled_io_reads_top": unhandled.iter().take(15).map(|(a, n)| json!({"addr": format!("0x{a:08X}"), "reads": n})).collect::<Vec<_>>(),
             "unmodelled_dma": m.bus.unmodelled_dma.len(),
             "audio": audio,
-            "cdrom": {"disc": disc, "sectors_delivered": m.bus.cdrom.sectors_delivered, "unknown_commands": m.bus.cdrom.unknown_commands},
+            "cdrom": {"disc": disc, "sectors_delivered": m.bus.cdrom.sectors_delivered, "unknown_commands": m.bus.cdrom.unknown_commands,
+                "recent_commands": m.bus.cdrom.recent.iter().rev().take(24).rev().map(|(t, c, p, ints, n)| format!("frame~{} {:02X} {:02X?} -> INT{:?} x{n}", t / m.bus.frame_cycles(), c, p, ints)).collect::<Vec<_>>()},
             "last_frames_profile": {
                 "hot_pcs": hot.iter().take(12).map(|(pc, n)| json!({"pc": format!("0x{pc:08X}"), "count": n, "asm": disasm(m.bus.read(*pc, Width::Word).unwrap_or(0), *pc)})).collect::<Vec<_>>(),
                 "io": hot_io.iter().take(12).map(|((a, w), n)| json!({"addr": format!("0x{a:08X}"), "write": w, "count": n})).collect::<Vec<_>>(),

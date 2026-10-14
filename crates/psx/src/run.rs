@@ -21,6 +21,7 @@ pub struct RunArgs {
     pub trace_cd: bool,
     pub trace_bios: bool,
     pub symbols: Vec<PathBuf>,
+    pub max_events: u32,
 }
 
 fn err(code: &str, message: impl std::fmt::Display) -> Value {
@@ -93,6 +94,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         realtime: false,
         trace_cd: a.trace_cd,
         trace_bios: a.trace_bios,
+        max_events: a.max_events,
     };
     let dir = a.out.clone().unwrap_or_else(|| next_run_dir(root));
     let out = match psx_redux::run(&backend, &job, &dir) {

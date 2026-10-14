@@ -163,7 +163,7 @@ impl Bus {
         let dotclock = ((53_693_175u64 << 16) / div) / SYSCLK;
         let irq = self.timers.tick(cycles, crate::timers::Rates { dotclock, hblank });
         self.raise_irq(irq);
-        if self.spu.tick(cycles) {
+        if self.spu.tick(cycles, &mut self.cdrom.audio) {
             self.raise_irq(1 << 9);
         }
         if self.sio0.tick(self.now) {

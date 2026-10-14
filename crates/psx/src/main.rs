@@ -101,6 +101,9 @@ enum Command {
         /// `.symbols.json` (verified against RAM) or `.sym` files used to name PCs; repeatable.
         #[arg(long = "symbols")]
         symbols: Vec<PathBuf>,
+        /// Cap on recorded events per trace log.
+        #[arg(long, default_value_t = 200_000)]
+        max_events: u32,
     },
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
@@ -157,7 +160,7 @@ enum Command {
         disc: Option<PathBuf>,
         #[arg(long, default_value_t = 300)]
         frames: u64,
-        #[arg(long, default_value_t = 2_000_000_000)]
+        #[arg(long, default_value_t = 20_000_000_000)]
         max_steps: u64,
         /// Write <PREFIX>.screen.png and <PREFIX>.vram.png at the end.
         #[arg(long)]
@@ -216,11 +219,11 @@ enum TemplateAction {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast, trace_cd, trace_bios, symbols } = cli.command {
+    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast, trace_cd, trace_bios, symbols, max_events } = cli.command {
         let root = std::env::current_dir().unwrap_or_default();
         let (ok, v) = run::run(
             &root,
-            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast, trace_cd, trace_bios, symbols },
+            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast, trace_cd, trace_bios, symbols, max_events },
         );
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };

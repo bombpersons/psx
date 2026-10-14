@@ -16,11 +16,11 @@ fn main() {
         seen = log.len();
     }
     for (t, what, d) in &m.bus.cdrom.irq_log {
-        if *t > 809_000_000 && *t < 835_000_000 {
+        if *t > std::env::var("FROM_T").ok().and_then(|v| v.parse().ok()).unwrap_or(u64::MAX) {
             eprintln!("irq t={t} {what} {d:X}");
         }
     }
-    for (t, c, p) in &m.bus.cdrom.cmd_log {
+    for (t, c, p) in m.bus.cdrom.cmd_log.iter().rev().take(30).rev() {
         eprintln!("cmd t={t} frame~{} {:02X} {:02X?}", t / (33_868_800 / 50), c, p);
     }
 }

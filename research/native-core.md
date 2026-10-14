@@ -111,6 +111,25 @@ Only moving actors differ, because the timing models differ.
 `psx native --replay R.json --dump P --snapshot-every N` drives the pad and saves periodic screens.
 `tools/contact_sheet.py` tiles them into one image. One sheet covers the whole boot: Sony logo, licence screen, warning, FOX FMV, Argonaut FMV, title, intro FMV, menu and level.
 
+### Tomb Raider (PAL, German) on the native core
+
+With no device changes needed, the disc boots natively through the logos, warning, Core Design FMV and the intro FMV,
+then the passport menu. The "no formatted memory card" notice appears because no cards are inserted.
+Two CD-audio gaps then blocked "Spiel Starten". Both were found by comparing Redux's CD command trace (`psx run --trace-cd --replay`) with the native core's.
+
+1. **No CD-DA playback.** The game polls GetlocP every frame while its title music plays.
+   CD-DA is now implemented:
+   - Play from a track or from Setloc, with the head advancing at 75 sectors/s.
+   - Autopause INT4 at the end of a track, and report-mode INT1 every 10 sectors.
+   - PCM is queued into the SPU's CD input, honouring SPUCNT bit 0 and the CD volume.
+2. **Pregap positions.** After `Setloc 27:51:00` and `SeekP`, Redux saw GetlocP ×10 and then **Play**; the native core polled forever.
+   The response bytes (`psx-core` example `iolog`) showed `track 01 index 01`. But 27:51:00 lies in **track 2's pregap**
+   (INDEX 00 is at 27:47:11 and INDEX 01 at 27:49:11).
+   Positions now attribute pregaps to the following track, with index 0 and the relative time counting down to INDEX 01.
+   The game then plays track 2 exactly as it does in Redux.
+
+Result: **Lara in the Caves level, natively**, with the title music (CD-DA) mixed into the captured audio.
+
 ### SPU (`spu.rs`) and audio capture
 
 The SPU models:

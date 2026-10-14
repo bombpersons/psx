@@ -63,8 +63,12 @@ fn unbcd(v: u8) -> u32 {
 
 /// LBA (no lead-in) to absolute MSF bytes.
 fn msf(lba: u32) -> [u8; 3] {
-    let a = lba + 150;
-    [bcd(a / 4500), bcd((a / 75) % 60), bcd(a % 75)]
+    rel_msf(lba + 150)
+}
+
+/// A sector count as BCD MSF without the lead-in (track-relative times).
+fn rel_msf(sectors: u32) -> [u8; 3] {
+    [bcd(sectors / 4500), bcd((sectors / 75) % 60), bcd(sectors % 75)]
 }
 
 pub struct Cdrom {
@@ -84,8 +88,17 @@ pub struct Cdrom {
     pos: u32,
     /// Where the head is now (for seek distance).
     head: u32,
+    /// Position Getloc reports: the seek target after a seek, else the last sector read/played.
+    loc: u32,
     speed_changed: bool,
     reading: bool,
+    /// CD-DA playback in progress (head advancing through an audio track).
+    playing: bool,
+    /// Track being played, and sectors since the last position report.
+    play_track: u8,
+    report_count: u32,
+    /// Decoded CD-DA stereo samples waiting for the SPU's CD input.
+    pub audio: VecDeque<(i16, i16)>,
     next_sector_at: u64,
     /// Last delivered sector, raw 2352 bytes, and its LBA.
     sector: Vec<u8>,
@@ -96,6 +109,9 @@ pub struct Cdrom {
     pub dma_log: Vec<(u32, u32, u32)>,
     /// Commands as (time, command, params) when `log_dma` is set.
     pub cmd_log: Vec<(u64, u8, Vec<u8>)>,
+    /// The last 64 distinct commands: (time, command, params, INT types queued, repeats).
+    /// Consecutive identical commands (e.g. GetlocP polling) are counted, not stored.
+    pub recent: VecDeque<(u64, u8, Vec<u8>, Vec<u8>, u32)>,
     /// Interrupt events as (time, what, detail) when `log_dma` is set.
     pub irq_log: Vec<(u64, &'static str, u32)>,
     pub log_dma: bool,
@@ -133,14 +149,20 @@ impl Cdrom {
             setloc: None,
             pos: 0,
             head: 0,
+            loc: 0,
             speed_changed: false,
             reading: false,
+            playing: false,
+            play_track: 0,
+            report_count: 0,
+            audio: VecDeque::new(),
             next_sector_at: 0,
             sector: Vec::new(),
             sector_lba: 0,
             fifo_lba: 0,
             dma_log: Vec::new(),
             cmd_log: Vec::new(),
+            recent: VecDeque::new(),
             irq_log: Vec::new(),
             log_dma: false,
             data: Vec::new(),
@@ -256,6 +278,23 @@ impl Cdrom {
     }
 
     fn command(&mut self, cmd: u8, now: u64) {
+        let queued_before = self.queue.len();
+        let params: Vec<u8> = self.params.iter().copied().collect();
+        self.command_inner(cmd, now);
+        let ints: Vec<u8> = self.queue.iter().skip(queued_before).map(|r| r.int).collect();
+        if let Some(last) = self.recent.back_mut() {
+            if last.1 == cmd && last.2 == params && last.3 == ints {
+                last.4 += 1;
+                return;
+            }
+        }
+        if self.recent.len() >= 64 {
+            self.recent.pop_front();
+        }
+        self.recent.push_back((now, cmd, params, ints, 1));
+    }
+
+    fn command_inner(&mut self, cmd: u8, now: u64) {
         let p: Vec<u8> = self.params.drain(..).collect();
         if self.log_dma {
             self.cmd_log.push((now, cmd, p.clone()));
@@ -277,9 +316,23 @@ impl Cdrom {
                 self.respond(ack, 3, vec![self.status]);
             }
             0x03 => {
+                // Play: from the given track (BCD), else from Setloc / the current position.
                 self.reading = false;
+                if let Some(&t) = p.first().filter(|&&t| t != 0) {
+                    let track = unbcd(t);
+                    if let Some(st) = self.disc.as_ref().and_then(|d| d.tracks.iter().find(|x| x.number as u32 == track)).map(|x| x.start_lba) {
+                        self.pos = st;
+                    }
+                } else if let Some(l) = self.setloc.take() {
+                    self.pos = l;
+                }
+                self.play_track = self.track_of(self.pos).0 as u8;
+                self.report_count = 0;
                 self.status = (self.status & !(stat::READ | stat::SEEK)) | stat::PLAY | stat::MOTOR;
                 self.respond(ack, 3, vec![self.status]);
+                self.playing = true;
+                let seek = self.seek_cycles(SEEK_BASE_READ);
+                self.next_sector_at = ack + seek + SECTOR_SINGLE;
             }
             0x06 | 0x1B => {
                 if !has_disc {
@@ -289,6 +342,7 @@ impl Cdrom {
                 if let Some(l) = self.setloc.take() {
                     self.pos = l;
                 }
+                self.playing = false;
                 self.status = (self.status & !stat::PLAY) | stat::MOTOR | stat::READ;
                 self.respond(ack, 3, vec![self.status]);
                 self.reading = true;
@@ -302,6 +356,7 @@ impl Cdrom {
             }
             0x08 => {
                 self.reading = false;
+                self.playing = false;
                 self.status &= !(stat::READ | stat::PLAY | stat::SEEK);
                 self.respond(ack, 3, vec![self.status]);
                 self.status &= !stat::MOTOR;
@@ -310,11 +365,13 @@ impl Cdrom {
             0x09 => {
                 self.respond(ack, 3, vec![self.status]);
                 self.reading = false;
+                self.playing = false;
                 self.status &= !(stat::READ | stat::PLAY | stat::SEEK);
                 self.respond(ack + COMPLETE_DELAY, 2, vec![self.status]);
             }
             0x0A => {
                 self.reading = false;
+                self.playing = false;
                 self.mode = 0;
                 self.status = (self.status & stat::SHELL_OPEN) | if has_disc { stat::MOTOR } else { 0 };
                 self.respond(ack, 3, vec![self.status]);
@@ -339,11 +396,8 @@ impl Cdrom {
                 self.respond(ack, 3, v);
             }
             0x11 => {
-                let lba = self.pos.saturating_sub(1);
-                let (track, start) = self.track_of(lba);
-                let rel = msf(lba.saturating_sub(start).saturating_sub(150));
-                let abs = msf(lba);
-                self.respond(ack, 3, vec![bcd(track), 1, rel[0], rel[1], rel[2], abs[0], abs[1], abs[2]]);
+                let (track, index, rel, abs) = self.position(self.loc);
+                self.respond(ack, 3, vec![track, index, rel[0], rel[1], rel[2], abs[0], abs[1], abs[2]]);
             }
             0x13 => {
                 let last = self.disc.as_ref().map_or(1, |d| d.tracks.len() as u32);
@@ -361,12 +415,14 @@ impl Cdrom {
             }
             0x15 | 0x16 => {
                 self.reading = false;
+                self.playing = false;
                 if let Some(l) = self.setloc.take() {
                     self.pos = l;
                 }
                 self.status = (self.status & !(stat::READ | stat::PLAY)) | stat::MOTOR;
                 self.respond(ack, 3, vec![self.status | stat::SEEK]);
                 let seek = self.seek_cycles(SEEK_BASE_EXPLICIT);
+                self.loc = self.pos;
                 self.respond(ack + seek, 2, vec![self.status]);
             }
             0x19 => match p.first() {
@@ -413,11 +469,20 @@ impl Cdrom {
         }
     }
 
+    /// Track containing `lba` (pregaps belong to the following track) and its INDEX 01 LBA.
     fn track_of(&self, lba: u32) -> (u32, u32) {
         self.disc
             .as_ref()
-            .and_then(|d| d.tracks.iter().rev().find(|t| t.start_lba <= lba))
+            .and_then(|d| d.tracks.iter().rev().find(|t| t.first_lba <= lba))
             .map_or((1, 0), |t| (t.number as u32, t.start_lba))
+    }
+
+    /// Subchannel-Q style position: (track, index, relative MSF, absolute MSF).
+    /// In a pregap (index 0) the relative time counts down to INDEX 01.
+    fn position(&self, lba: u32) -> (u8, u8, [u8; 3], [u8; 3]) {
+        let (track, start) = self.track_of(lba);
+        let (index, rel) = if lba < start { (0, rel_msf(start - lba)) } else { (1, rel_msf(lba - start)) };
+        (bcd(track), index, rel, msf(lba))
     }
 
     /// Advance to `now`; returns true when the interrupt line is asserted.
@@ -425,6 +490,10 @@ impl Cdrom {
         if self.reading && now >= self.next_sector_at {
             self.next_sector_at += self.sector_period();
             self.deliver_sector(now);
+        }
+        if self.playing && now >= self.next_sector_at {
+            self.next_sector_at += SECTOR_SINGLE;
+            self.play_sector(now);
         }
         if self.iflag == 0 {
             if let Some(r) = self.queue.front() {
@@ -445,6 +514,7 @@ impl Cdrom {
         let lba = self.pos;
         self.pos += 1;
         self.head = self.pos;
+        self.loc = lba;
         let Some(disc) = &self.disc else { return };
         let raw = match disc.read_raw(lba) {
             Ok((raw, mode)) if mode != TrackMode::Audio && raw.len() == 2352 => raw,
@@ -468,6 +538,48 @@ impl Cdrom {
         self.queue.retain(|r| r.int != 1);
         let s = self.status;
         self.respond(now, 1, vec![s]);
+    }
+}
+
+impl Cdrom {
+    /// One CD-DA sector at the head: queue its PCM, report position, stop at track end.
+    fn play_sector(&mut self, now: u64) {
+        let lba = self.pos;
+        let (track, _) = self.track_of(lba);
+        let end = self.disc.as_ref().and_then(|d| d.tracks.iter().find(|t| t.number as u32 == track)).map(|t| t.first_lba + t.sectors);
+        if track as u8 != self.play_track || end.is_some_and(|e| lba >= e) {
+            // End of the track: with autopause (mode bit 1) stop and raise INT4.
+            if self.mode & 0x02 != 0 {
+                self.playing = false;
+                self.status &= !stat::PLAY;
+                self.respond(now, 4, vec![self.status]);
+                return;
+            }
+            self.play_track = track as u8;
+        }
+        if let Some(Ok((raw, mode))) = self.disc.as_ref().map(|d| d.read_raw(lba)) {
+            if mode == TrackMode::Audio && raw.len() == 2352 {
+                // Keep at most ~0.5 s buffered so a stalled consumer cannot grow it without bound.
+                if self.audio.len() < 22_050 {
+                    for f in raw.chunks_exact(4) {
+                        self.audio.push_back((i16::from_le_bytes([f[0], f[1]]), i16::from_le_bytes([f[2], f[3]])));
+                    }
+                }
+            }
+        }
+        self.loc = lba;
+        self.pos += 1;
+        self.head = self.pos;
+        // Report mode (bit 2): a position report every 10 sectors.
+        if self.mode & 0x04 != 0 {
+            self.report_count += 1;
+            if self.report_count.is_multiple_of(10) {
+                let (t, index, rel, _) = self.position(lba);
+                let s = self.status;
+                self.queue.retain(|r| r.int != 1);
+                self.respond(now, 1, vec![s, t, index, rel[0], rel[1], rel[2], 0, 0]);
+            }
+        }
     }
 }
 
