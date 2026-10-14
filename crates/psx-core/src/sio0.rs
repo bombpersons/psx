@@ -1,13 +1,14 @@
 //! Controller / memory-card serial port (psx-spx "Controllers and Memory Cards").
 //!
 //! Modelled: JOY_DATA/STAT/MODE/CTRL/BAUD, one-byte transfers with an RX
-//! FIFO, /ACK interrupts (I_STAT bit 7) after a delay, a digital pad in
-//! port 1 (ID 0x5A41) with configurable buttons, and memory cards in either
+//! FIFO, /ACK interrupts (I_STAT bit 7) after a delay, a digital pad or a
+//! DualShock in port 1 (see [`crate::pad`]), and memory cards in either
 //! slot (see [`crate::memcard`]). Empty slots read 0xFF with no /ACK.
 
 use std::collections::VecDeque;
 
 use crate::memcard::{CardSession, MemCard};
+use crate::pad::Pad;
 
 /// Delay from a byte transfer to the device's /ACK interrupt (~1 byte at 250 kHz + ack).
 const ACK_DELAY: u64 = 1_500;
@@ -85,6 +86,8 @@ pub struct Sio0 {
     pub transfers: u64,
     /// Memory cards in slots 1 and 2.
     pub cards: [Option<MemCard>; 2],
+    /// The controller in port 1 (its buttons come from `buttons`).
+    pub pad: Pad,
     /// When `Some`, every byte exchanged.
     #[serde(skip)]
     pub log: Option<Vec<ByteLog>>,
@@ -120,8 +123,8 @@ impl Sio0 {
                     self.irq_flag = false; // acknowledge
                 }
                 if v & (1 << 6) != 0 {
-                    let (cards, log) = (std::mem::take(&mut self.cards), self.log.take());
-                    *self = Sio0 { buttons: self.buttons, transfers: self.transfers, cards, log, ..Default::default() };
+                    let (cards, log, pad) = (std::mem::take(&mut self.cards), self.log.take(), std::mem::take(&mut self.pad));
+                    *self = Sio0 { buttons: self.buttons, transfers: self.transfers, cards, log, pad, ..Default::default() };
                     return;
                 }
                 if v & 2 == 0 {
@@ -158,15 +161,8 @@ impl Sio0 {
         } else {
             match &mut self.target {
                 Target::Pad => {
-                    let pressed = !self.buttons;
-                    match (self.seq, tx) {
-                        (1, 0x42) => (0x41, true),
-                        (1, _) => (0xFF, false),
-                        (2, _) => (0x5A, true),
-                        (3, _) => (pressed as u8, true),
-                        (4, _) => ((pressed >> 8) as u8, false),
-                        _ => (0xFF, false),
-                    }
+                    self.pad.buttons = self.buttons;
+                    self.pad.exchange(self.seq, tx)
                 }
                 Target::Card(slot, session) => match (self.cards[*slot].as_mut(), session) {
                     (Some(card), Some(s)) => s.exchange(card, tx),

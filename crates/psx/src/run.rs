@@ -38,11 +38,22 @@ pub struct CardArgs {
     /// Memory card in slot 2 (as --memcard1).
     #[arg(long)]
     pub memcard2: Option<String>,
+    /// Controller in port 1: `digital` (default) or `dualshock` (starts digital;
+    /// games switch it to analog; replay `sticks` drive it).
+    #[arg(long)]
+    pub pad: Option<String>,
 }
 
 impl CardArgs {
     pub fn given(&self) -> bool {
-        self.memcard1.is_some() || self.memcard2.is_some()
+        self.memcard1.is_some() || self.memcard2.is_some() || self.pad.is_some()
+    }
+
+    pub fn pad_kind(&self) -> Result<psx_core::pad::PadKind, String> {
+        match &self.pad {
+            None => Ok(psx_core::pad::PadKind::Digital),
+            Some(p) => psx_core::pad::PadKind::from_name(p).ok_or_else(|| format!("unknown pad {p:?} (digital | dualshock)")),
+        }
     }
 
     /// Load the cards for slots 1 and 2.
@@ -122,8 +133,17 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     if a.trace.trace {
         return (false, err("unsupported", "--trace needs --backend native (Redux's -trace has no window or filters)"));
     }
-    if a.cards.given() {
+    if a.cards.memcard1.is_some() || a.cards.memcard2.is_some() {
         return (false, err("unsupported", "--memcard1/--memcard2 need --backend native"));
+    }
+    let analog_pad = match a.cards.pad_kind() {
+        Ok(k) => k == psx_core::pad::PadKind::DualShock,
+        Err(e) => return (false, err("invalid_arguments", e)),
+    };
+    if let Some(p) = &a.replay {
+        if crate::replay::load(p).is_ok_and(|r| crate::replay::uses_sticks(&r)) {
+            return (false, err("unsupported", "replay sticks need --backend native --pad dualshock"));
+        }
     }
     if let Some(p) = &a.from_state {
         if std::fs::read(p).is_ok_and(|b| b.starts_with(psx_core::state::MAGIC)) {
@@ -171,6 +191,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         trace_cd: a.trace_cd,
         trace_bios: a.trace_bios,
         max_events: a.max_events,
+        analog_pad,
     };
     let dir = a.out.clone().unwrap_or_else(|| next_run_dir(root));
     let out = match psx_redux::run(&backend, &job, &dir) {

@@ -288,6 +288,24 @@ This changed Croc's flow at frame 818. Its movie player reads `1F801DB8` and onl
 With the live level 0x7FFE it leaves the right channel at the 0x37EF the game set at frame 156, so the Fox intro is slightly quieter on the right. This is now the hardware behaviour.
 Save-state format 4.
 
+### DualShock (`pad.rs`)
+
+`--pad dualshock` (native `run` and `psx native`; also the Redux backend, as its analog pad) plugs in a DualShock.
+It starts digital (ID 41h) and supports the config commands psx-spx documents: 43h enter/exit, 44h set mode and lock, 45h, 46h, 47h, 48h, 4Ch and 4Dh (rumble mapping). In analog mode it replies with ID 73h and the four stick bytes.
+Replay events take `"sticks": [lx, ly, rx, ry]` (128 = centred). Replay parsing is shared by `psx run` and `psx native` (`crates/psx/src/replay.rs`).
+The run report shows the pad's final mode, lock and motor values. Pad state is part of the save state (format 5).
+
+Two mistakes in the first version were found by reading psx-spx and Redux's `pad.cc`:
+- 45h returned type 03h, which is a DualShock 2. A PSX DualShock is 01h.
+- 43h *in config mode* returned button data. It replies with zeros.
+The replies now match Redux's analog pad byte for byte.
+
+Ape Escape (PAL, SCES-02029) requires a DualShock.
+- With a digital pad the game's pad status reads FFh and it ignores all input. Its attract demo still runs, which can look like progress.
+- With a DualShock it probes the pad: 43h, 45h, 4Ch ×2, 47h, 46h ×2, 47h. It then sets analog mode and lock (`44 01 03`), maps the motors (`4D 00 01`), and polls with 42h.
+- The game reads buttons every other frame. DOWN arrives as 4000h (PADLdown) in its button word at `0x800E5498`, and presses reset the title's idle timer.
+- **Open:** the title menu ("Spiel laden" / "Neues Spiel") ignores the D-pad and the left stick. PCSX-Redux with its analog pad and the same inputs behaves identically, so this is a gap in how the menu is driven, not a native-core divergence.
+
 ### Performance
 
 The baseline was 1.2–1.3× real time, which is comparable to Redux's observed (interpreter + debugger) mode at 1.6×. Each step below was checked:
