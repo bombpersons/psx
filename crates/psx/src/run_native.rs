@@ -142,6 +142,11 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     // boot spent before an EXE was side-loaded; after --from-state they count
     // from the restored state (Redux counts from SaveStateLoaded).
     let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
+    // GPU frame capture: (draw state and VRAM at the frame start, commands).
+    let gpu_at = a.trace.gpu_frame.map(|f| start_frame + f);
+    let mut gpu_start: Option<(psx_gpu::DrawState, psx_gpu::vram::Vram)> = None;
+    let mut gpu_cmds: Option<Vec<Vec<u32>>> = None;
+
     let target = start_frame + a.frames as u64;
     let deadline = std::time::Duration::from_secs(a.timeout_s);
     let mut next = 0;
@@ -152,6 +157,14 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         while next < events.len() && events[next].frame <= rel {
             crate::replay::apply(&mut m, &events[next]);
             next += 1;
+        }
+        if let Some(at) = gpu_at {
+            if gpu_start.is_none() && m.bus.frames == at {
+                gpu_start = Some((m.bus.gpu.state, m.bus.gpu.vram.clone()));
+                m.bus.gpu.log = Some(Vec::new());
+            } else if gpu_cmds.is_none() && m.bus.frames > at && gpu_start.is_some() {
+                gpu_cmds = m.bus.gpu.log.take();
+            }
         }
         let info = m.step();
         if let Some(t) = &mut tracer {
@@ -210,6 +223,17 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         files.insert("vram.png".into(), json!({"path": vram}));
     }
 
+    if gpu_cmds.is_none() {
+        gpu_cmds = m.bus.gpu.log.take(); // the run ended inside the captured frame
+    }
+    let gpu_report = match (&gpu_start, &gpu_cmds) {
+        (Some((state, before)), Some(cmds)) => match gpu_frame_outputs(state, before, cmds, &m, &dir, gpu_at.unwrap_or(0) - start_frame, &mut files) {
+            Ok(v) => v,
+            Err(e) => return err("io_error", e),
+        },
+        _ if gpu_at.is_some() => json!({"error": "the run ended before the requested frame"}),
+        _ => Value::Null,
+    };
     let trace_report = match &mut tracer {
         Some(t) => match trace_outputs(t, &m, &scopes, &dir, &mut files) {
             Ok(v) => v,
@@ -255,6 +279,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             "watch": {"hits": m.bus.obs.hit_count, "recorded": m.bus.obs.hits.len(), "shown": shown.len(), "first": shown},
             "event_logs": event_logs,
             "trace": trace_report,
+            "gpu_frame": gpu_report,
             "memcards": cards,
             "pad": {"kind": format!("{:?}", m.bus.sio0.pad.kind).to_lowercase(), "analog": m.bus.sio0.pad.analog, "locked": m.bus.sio0.pad.locked, "motors": [m.bus.sio0.pad.motors.0, m.bus.sio0.pad.motors.1]},
             "bios_call_counts": m.bus.obs.bios_counts,
@@ -359,4 +384,108 @@ fn trace_outputs(
         "top_calls": calls_json.iter().take(20).cloned().collect::<Vec<_>>(),
         "distinct_call_targets": calls_json.len(),
     }))
+}
+
+/// Write the decoded GPU commands of one frame, with VRAM before/after and a
+/// wireframe of every primitive drawn over the after image.
+fn gpu_frame_outputs(
+    start: &psx_gpu::DrawState,
+    before: &psx_gpu::vram::Vram,
+    cmds: &[Vec<u32>],
+    m: &Machine,
+    dir: &Path,
+    frame: u64,
+    files: &mut serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    use psx_gpu::capture::decode;
+    use std::collections::BTreeMap;
+    let decoded = decode(start, cmds);
+    let mut kinds: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut pages: BTreeMap<(i32, i32, u8), u64> = BTreeMap::new();
+    let mut cluts: BTreeMap<(i32, i32), u64> = BTreeMap::new();
+    let (mut textured, mut semi) = (0u64, 0u64);
+    for c in &decoded {
+        *kinds.entry(c.kind).or_default() += 1;
+        if c.textured {
+            textured += 1;
+            if let Some(t) = c.texpage {
+                *pages.entry((t.x, t.y, t.depth)).or_default() += 1;
+            }
+            if let Some([x, y]) = c.clut {
+                *cluts.entry((x, y)).or_default() += 1;
+            }
+        }
+        semi += c.semi as u64;
+    }
+    let summary = json!({
+        "frame": frame,
+        "commands": decoded.len(),
+        "by_kind": kinds,
+        "textured": textured,
+        "semi_transparent": semi,
+        "texture_pages": pages.iter().map(|((x, y, d), n)| json!({"x": x, "y": y, "depth": d, "uses": n})).collect::<Vec<_>>(),
+        "cluts": cluts.iter().map(|((x, y), n)| json!({"x": x, "y": y, "uses": n})).collect::<Vec<_>>(),
+        "draw_state_at_start": {"offset": start.offset, "area": start.area, "texpage": start.texpage},
+    });
+    let doc = json!({"summary": summary, "commands": decoded});
+    let p = dir.join("gpu_frame.json");
+    let bytes = serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?;
+    std::fs::write(&p, &bytes).map_err(|e| format!("{}: {e}", p.display()))?;
+    files.insert("gpu_frame.json".into(), json!({"path": p, "sha256": sha256(&bytes)}));
+
+    let png = |name: &str, rgba: &[u8], files: &mut serde_json::Map<String, Value>| {
+        let p = dir.join(name);
+        if write_png(&p, 1024, 512, rgba, png::ColorType::Rgba).is_ok() {
+            files.insert(name.into(), json!({"path": p}));
+        }
+    };
+    png("gpu_frame_before.png", &before.rgba15(0, 0, 1024, 512), files);
+    let mut after = m.bus.gpu.vram.rgba15(0, 0, 1024, 512);
+    png("gpu_frame_after.png", &after, files);
+    // Wireframe: primitives green, rects yellow, lines cyan, fills red, uploads/copies magenta.
+    let mut put = |x: i32, y: i32, c: [u8; 3]| {
+        if (0..1024).contains(&x) && (0..512).contains(&y) {
+            let i = ((y * 1024 + x) * 4) as usize;
+            after[i..i + 4].copy_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+    };
+    let mut seg = |a: (i32, i32), b: (i32, i32), c: [u8; 3]| {
+        let n = (b.0 - a.0).abs().max((b.1 - a.1).abs()).clamp(1, 2048);
+        for k in 0..=n {
+            put(a.0 + (b.0 - a.0) * k / n, a.1 + (b.1 - a.1) * k / n, c);
+        }
+    };
+    for c in &decoded {
+        let v: Vec<(i32, i32)> = c.vertices.iter().map(|v| (v.x, v.y)).collect();
+        match c.kind {
+            "poly3" | "poly4" => {
+                let col = [0, 255, 0];
+                let order: &[usize] = if v.len() == 4 { &[0, 1, 3, 2, 0] } else { &[0, 1, 2, 0] };
+                for w in order.windows(2) {
+                    seg(v[w[0]], v[w[1]], col);
+                }
+            }
+            "line" | "polyline" => {
+                for w in v.windows(2) {
+                    seg(w[0], w[1], [0, 255, 255]);
+                }
+            }
+            _ => {
+                if let Some([x, y, w, h]) = c.area {
+                    let col = match c.kind {
+                        "rect" => [255, 255, 0],
+                        "fill" => [255, 0, 0],
+                        _ => [255, 0, 255],
+                    };
+                    let (x1, y1) = (x + w - 1, y + h - 1);
+                    seg((x, y), (x1, y), col);
+                    seg((x1, y), (x1, y1), col);
+                    seg((x1, y1), (x, y1), col);
+                    seg((x, y1), (x, y), col);
+                }
+            }
+        }
+    }
+    png("gpu_frame_wire.png", &after, files);
+    Ok(summary)
 }

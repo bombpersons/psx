@@ -8,6 +8,7 @@
 //!
 //! Optional logging records every completed GP0 command for later diffing.
 
+pub mod capture;
 pub mod ot;
 pub mod prim;
 pub mod raster;

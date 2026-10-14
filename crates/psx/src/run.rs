@@ -93,6 +93,10 @@ pub struct TraceArgs {
     /// Only write lines for LO-HI (hex) or a --symbols function; repeatable.
     #[arg(long = "trace-range")]
     pub trace_ranges: Vec<String>,
+    /// Capture every GPU command of frame N of the run: gpu_frame.json (decoded
+    /// primitives, texture pages, CLUTs) and VRAM before/after/wireframe PNGs.
+    #[arg(long)]
+    pub gpu_frame: Option<u64>,
 }
 
 fn err(code: &str, message: impl std::fmt::Display) -> Value {
@@ -130,8 +134,8 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         "redux" => {}
         other => return (false, err("invalid_arguments", format!("unknown backend {other:?} (redux | native)"))),
     }
-    if a.trace.trace {
-        return (false, err("unsupported", "--trace needs --backend native (Redux's -trace has no window or filters)"));
+    if a.trace.trace || a.trace.gpu_frame.is_some() {
+        return (false, err("unsupported", "--trace and --gpu-frame need --backend native"));
     }
     if a.cards.memcard1.is_some() || a.cards.memcard2.is_some() {
         return (false, err("unsupported", "--memcard1/--memcard2 need --backend native"));
