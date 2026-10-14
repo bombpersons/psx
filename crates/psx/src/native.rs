@@ -46,7 +46,7 @@ fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[(u64, 
                 next += 1;
             }
             if let Some((every, prefix)) = snap {
-                if f > 0 && f % every == 0 {
+                if f > 0 && f.is_multiple_of(every) {
                     let (w, h, rgba) = m.bus.gpu.display_rgba();
                     let p = std::path::PathBuf::from(format!("{}.f{f:05}.png", prefix.display()));
                     let _ = crate::run::write_png(&p, w, h, &rgba, png::ColorType::Rgba);
