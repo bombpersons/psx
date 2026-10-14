@@ -11,11 +11,20 @@
 //!   screen (sprites included) is reduced to 15-bit colour after drawing.
 //! - [`PsxSceneRoot`] spawns a captured frame (`.psxscene` from the psx
 //!   toolkit) as ordinary sprites and meshes, for reference layouts.
+//! - Original `.tim` textures load as `Image`s and `.tmd` models as
+//!   [`PsxModel`]s (spawned with [`PsxModelRoot`]); see `assets.rs`.
+mod assets;
+pub mod formats;
 mod material;
 mod material2d;
 mod scene;
 
 #[allow(unused_imports)] // public API for game code
+pub use assets::{
+    PsxModel, PsxModelObject, PsxModelObjectIndex, PsxModelPart, PsxModelRoot, TimLoader, TimSettings, TimTransparency, TmdLoader,
+    TmdSettings, rgba_image,
+};
+
 pub use material::{PsxBlend, PsxMaterial, PsxStp};
 #[allow(unused_imports)] // public API for game code
 pub use material2d::{PsxMaterial2d, PsxSprite, load_indices, psx_indices, psx_palette, rgb15};
@@ -151,6 +160,7 @@ impl Plugin for PsxPlugin {
         (screen.image, screen.canvas) = (image, canvas);
 
         scene::plugin(app);
+        assets::plugin(app);
         app.add_plugins((
             MaterialPlugin::<PsxMaterial>::default(),
             Material2dPlugin::<PsxMaterial2d>::default(),

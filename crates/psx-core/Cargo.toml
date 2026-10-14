@@ -9,6 +9,7 @@ description = "Native PlayStation emulation core for the psx toolkit (in develop
 [dependencies]
 flate2 = "1"
 postcard = { version = "1", features = ["use-std"] }
+psx-assets = { workspace = true }
 psx-gpu = { workspace = true }
 psx-gte = { workspace = true }
 psx-media = { workspace = true }

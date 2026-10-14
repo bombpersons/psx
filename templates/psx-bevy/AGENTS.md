@@ -26,6 +26,9 @@
   `PsxSceneDepth::Painter` (viewer: `--painter`). The default depth-tested
   mode can show early-drawn backdrops in front.
 - Keep game assets in `assets/`. Do not commit original disc or BIOS data.
+  Original `.tim` textures and `.tmd` models (from `psx assets extract`) load
+  directly: `asset_server.load("x.tim")` is an `Image`, a `.tmd` is a
+  `PsxModel` spawned with `PsxModelRoot` (README, "Original assets").
 - Read README.md for MCP startup, screenshot targets and input lifetime.
 - Verify both `cargo build` and `cargo build --features dev-mcp` when
   changing the shell; check visual changes with `game_step` + `game_screenshot`.

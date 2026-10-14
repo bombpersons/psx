@@ -4,6 +4,7 @@ members = [
     "crates/psx",
     "crates/psx-core",
     "crates/psx-gpu",
+    "crates/psx-assets",
     "crates/psx-gte",
     "crates/psx-media",
     "crates/psx-redux",
@@ -18,6 +19,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 psx-core = { path = "crates/psx-core" }
+psx-assets = { path = "crates/psx-assets" }
 psx-gpu = { path = "crates/psx-gpu" }
 psx-gte = { path = "crates/psx-gte" }
 psx-media = { path = "crates/psx-media" }

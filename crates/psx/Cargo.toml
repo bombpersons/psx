@@ -8,6 +8,7 @@ description = "PlayStation reverse-engineering toolkit CLI"
 
 [dependencies]
 psx-media = { workspace = true }
+psx-assets = { workspace = true }
 psx-core = { workspace = true }
 psx-gpu = { workspace = true }
 psx-redux = { workspace = true }
