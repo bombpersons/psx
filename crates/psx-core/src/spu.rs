@@ -29,8 +29,8 @@ enum Phase {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Voice {
-    vol_l: u16,
-    vol_r: u16,
+    vol_l: Volume,
+    vol_r: Volume,
     pitch: u16,
     start: u16,
     adsr_lo: u16,
@@ -55,8 +55,8 @@ struct Voice {
 pub struct Spu {
     pub ram: Vec<u8>,
     voices: Vec<Voice>,
-    main_l: u16,
-    main_r: u16,
+    main_l: Volume,
+    main_r: Volume,
     cnt: u16,
     xfer_addr: u32,
     xfer_ctrl: u16,
@@ -81,8 +81,8 @@ impl Default for Spu {
         Spu {
             ram: vec![0; RAM_SIZE],
             voices: vec![Voice::default(); 24],
-            main_l: 0,
-            main_r: 0,
+            main_l: Volume::default(),
+            main_r: Volume::default(),
             cnt: 0,
             xfer_addr: 0,
             xfer_ctrl: 0,
@@ -99,9 +99,59 @@ impl Default for Spu {
     }
 }
 
-fn vol(v: u16) -> i32 {
-    // Fixed mode: 15-bit signed volume ×2. Sweep mode (bit 15) not modelled: hold.
-    if v & 0x8000 == 0 { (((v << 1) as i16) as i32).clamp(-0x8000, 0x7FFF) } else { 0x7FFF }
+/// One envelope step at `level`: `(samples until the next step, level change)`.
+/// Shared by ADSR and volume sweep (psx-spx "SPU Volume and ADSR Generator").
+fn env_step(exp: bool, increase: bool, shift: i32, step: i32, level: i32) -> (u32, i32) {
+    let mut cycles = 1u32 << (shift - 11).max(0);
+    let mut delta = step << (11 - shift).max(0);
+    if exp && increase && level > 0x6000 {
+        cycles *= 4;
+    }
+    if exp && !increase {
+        // An arithmetic shift (rounding down), as the hardware does: dividing
+        // rounds toward zero, which stalls every exponential decrease once
+        // the level drops below 0x1000 (voices then hold at 4095 forever).
+        delta = (delta * level) >> 15;
+    }
+    (cycles, delta)
+}
+
+/// A volume register: fixed (bit 15 clear: 15-bit signed volume ×2) or a
+/// sweep (bit 15 set) that ramps the current level every sample.
+/// Sweep phase (bit 12, negative output) is not modelled.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct Volume {
+    raw: u16,
+    /// Current level (what the current-volume registers read back).
+    level: i32,
+    wait: u32,
+}
+
+impl Volume {
+    fn write(&mut self, v: u16) {
+        self.raw = v;
+        if v & 0x8000 == 0 {
+            self.level = ((v << 1) as i16) as i32;
+        }
+        self.wait = 0;
+    }
+
+    #[inline]
+    fn tick(&mut self) {
+        if self.raw & 0x8000 == 0 {
+            return;
+        }
+        if self.wait > 0 {
+            self.wait -= 1;
+            return;
+        }
+        let (exp, decrease) = (self.raw & 0x4000 != 0, self.raw & 0x2000 != 0);
+        let r = (self.raw & 0x7F) as i32;
+        let step = if decrease { -8 + (r & 3) } else { 7 - (r & 3) };
+        let (cycles, delta) = env_step(exp, !decrease, r >> 2, step, self.level.max(0));
+        self.wait = cycles - 1;
+        self.level = (self.level.max(0) + delta).clamp(0, 0x7FFF);
+    }
 }
 
 /// One sounding voice, for reports.
@@ -130,8 +180,8 @@ impl Spu {
                 voice: i,
                 phase: format!("{:?}", v.phase).to_lowercase(),
                 level: v.level,
-                vol_l: v.vol_l,
-                vol_r: v.vol_r,
+                vol_l: v.vol_l.raw,
+                vol_r: v.vol_r.raw,
                 pitch: v.pitch,
                 start: (v.start as u32) << 3,
                 addr: v.addr,
@@ -163,8 +213,8 @@ impl Spu {
             0x000..=0x17F => {
                 let v = &self.voices[(off >> 4) as usize];
                 match off & 0xF {
-                    0x0 => v.vol_l,
-                    0x2 => v.vol_r,
+                    0x0 => v.vol_l.raw,
+                    0x2 => v.vol_r.raw,
                     0x4 => v.pitch,
                     0x6 => v.start,
                     0x8 => v.adsr_lo,
@@ -173,8 +223,14 @@ impl Spu {
                     _ => v.repeat,
                 }
             }
-            0x180 => self.main_l,
-            0x182 => self.main_r,
+            0x180 => self.main_l.raw,
+            0x182 => self.main_r.raw,
+            0x1B8 => self.main_l.level as u16,
+            0x1BA => self.main_r.level as u16,
+            0x200..=0x25F => {
+                let v = &self.voices[((off - 0x200) >> 2) as usize];
+                (if off & 2 == 0 { v.vol_l.level } else { v.vol_r.level }) as u16
+            }
             0x19C => self.endx as u16,
             0x19E => (self.endx >> 16) as u16,
             0x1A4 => self.irq_addr,
@@ -193,8 +249,8 @@ impl Spu {
             0x000..=0x17F => {
                 let voice = &mut self.voices[(off >> 4) as usize];
                 match off & 0xF {
-                    0x0 => voice.vol_l = v,
-                    0x2 => voice.vol_r = v,
+                    0x0 => voice.vol_l.write(v),
+                    0x2 => voice.vol_r.write(v),
                     0x4 => voice.pitch = v,
                     0x6 => voice.start = v,
                     0x8 => voice.adsr_lo = v,
@@ -203,8 +259,8 @@ impl Spu {
                     _ => voice.repeat = v,
                 }
             }
-            0x180 => self.main_l = v,
-            0x182 => self.main_r = v,
+            0x180 => self.main_l.write(v),
+            0x182 => self.main_r.write(v),
             0x188 => self.key_on(v as u32),
             0x18A => self.key_on((v as u32) << 16),
             0x18C => self.key_off(v as u32),
@@ -334,17 +390,7 @@ impl Spu {
             }
             Phase::Release => (v.adsr_hi & 0x20 != 0, false, (v.adsr_hi & 0x1F) as i32, -8, Some(0)),
         };
-        let mut cycles = 1u32 << (shift - 11).max(0);
-        let mut delta = step << (11 - shift).max(0);
-        if exp && increase && v.level > 0x6000 {
-            cycles *= 4;
-        }
-        if exp && !increase {
-            // An arithmetic shift (rounding down), as the hardware does: dividing
-            // rounds toward zero, which stalls every exponential decrease once
-            // the level drops below 0x1000 (voices then hold at 4095 forever).
-            delta = (delta * v.level) >> 15;
-        }
+        let (cycles, delta) = env_step(exp, increase, shift, step, v.level);
         v.env_wait = cycles - 1;
         v.level = (v.level + delta).clamp(0, 0x7FFF);
         match (v.phase, target) {
@@ -359,6 +405,9 @@ impl Spu {
         let (mut l, mut r) = (0i32, 0i32);
         let mut irq = false;
         for i in 0..24 {
+            // Sweeps run whether or not the voice is sounding.
+            self.voices[i].vol_l.tick();
+            self.voices[i].vol_r.tick();
             if self.voices[i].phase == Phase::Off {
                 continue;
             }
@@ -373,8 +422,8 @@ impl Spu {
             let s = prev + (((cur - prev) * frac) >> 12);
             Self::envelope(v);
             let s = s * v.level / 0x8000;
-            l += s * vol(v.vol_l) / 0x8000;
-            r += s * vol(v.vol_r) / 0x8000;
+            l += s * v.vol_l.level / 0x8000;
+            r += s * v.vol_r.level / 0x8000;
             v.counter += (v.pitch as u32).min(0x4000);
             if v.counter >> 12 >= 28 {
                 v.counter -= 28 << 12;
@@ -401,11 +450,13 @@ impl Spu {
             r += cr as i32 * (self.regs[0x1B2 >> 1] as i16 as i32) / 0x8000;
         }
         self.cd_in = (0, 0);
+        self.main_l.tick();
+        self.main_r.tick();
         if self.capture {
             let on = self.cnt & 0x8000 != 0 && self.cnt & 0x4000 != 0;
-            let mix = |x: i32, m: u16| if on { (x * vol(m) / 0x8000).clamp(-0x8000, 0x7FFF) as i16 } else { 0 };
-            self.out.push(mix(l, self.main_l));
-            self.out.push(mix(r, self.main_r));
+            let mix = |x: i32, m: &Volume| if on { (x * m.level / 0x8000).clamp(-0x8000, 0x7FFF) as i16 } else { 0 };
+            self.out.push(mix(l, &self.main_l));
+            self.out.push(mix(r, &self.main_r));
         }
         irq
     }
@@ -414,6 +465,25 @@ impl Spu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_sweeps() {
+        let mut v = Volume::default();
+        v.write(0x3FFF);
+        assert_eq!(v.level, 0x7FFE);
+        // Linear decrease, rate 0x20: reaches 0 and holds.
+        v.write(0x8000 | 0x2000 | 0x20);
+        for _ in 0..44_100 {
+            v.tick();
+        }
+        assert_eq!(v.level, 0);
+        // Exponential increase from 0 reaches full scale.
+        v.write(0x8000 | 0x4000 | 0x10);
+        for _ in 0..44_100 * 4 {
+            v.tick();
+        }
+        assert_eq!(v.level, 0x7FFF);
+    }
 
     #[test]
     fn exponential_release_reaches_silence() {

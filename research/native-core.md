@@ -277,6 +277,17 @@ Checks against the SCPH-7502 BIOS's own card driver, in the shell's MEMORY CARD 
 - The shell ignores the pad for a few seconds while it reads both cards. Input at frame 250 is dropped and input at frame 600 works, with or without saves.
 - Tomb Raider, with a new card, runs the libcard write test (frame 63, rewritten with its own contents) and then clears the flag.
 
+### SPU volume sweep and current-volume registers
+
+Volume registers with bit 15 set now sweep. This covers voice L/R and main L/R. Bit 14 selects exponential, bit 13 decrease, and bits 0–6 the rate.
+Sweeps step every sample through the same rate engine as ADSR (`env_step`), whether the voice is sounding or not. Sweep phase (bit 12, negative output) is not modelled.
+Before this, a sweeping volume played at full level.
+
+The current-volume registers are now readable: main at `1F801DB8/BA`, voices at `1F801E00+4n`. They report the live level, as DuckStation and Mednafen do. Before, they read back 0, because nothing ever writes them.
+This changed Croc's flow at frame 818. Its movie player reads `1F801DB8` and only forces the main volume to 3FFFh/3FFFh when that reads 0 (`0x80108D9C`).
+With the live level 0x7FFE it leaves the right channel at the 0x37EF the game set at frame 156, so the Fox intro is slightly quieter on the right. This is now the hardware behaviour.
+Save-state format 4.
+
 ### Performance
 
 The baseline was 1.2–1.3× real time, which is comparable to Redux's observed (interpreter + debugger) mode at 1.6×. Each step below was checked:
