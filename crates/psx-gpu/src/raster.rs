@@ -148,7 +148,7 @@ fn top_left(a: &Vtx, b: &Vtx) -> bool {
 pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     surface: &mut S,
     tex: &T,
-    r: &Raster,
+    ras: &Raster,
     sh: &Shade,
     v: [Vtx; 3],
 ) {
@@ -161,32 +161,60 @@ pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
         std::mem::swap(&mut v1, &mut v2);
         area = -area;
     }
-    let minx = v0.x.min(v1.x).min(v2.x).max(r.clip.0);
-    let maxx = v0.x.max(v1.x).max(v2.x).min(r.clip.2);
-    let miny = v0.y.min(v1.y).min(v2.y).max(r.clip.1);
-    let maxy = v0.y.max(v1.y).max(v2.y).min(r.clip.3);
+    let minx = v0.x.min(v1.x).min(v2.x).max(ras.clip.0);
+    let maxx = v0.x.max(v1.x).max(v2.x).min(ras.clip.2);
+    let miny = v0.y.min(v1.y).min(v2.y).max(ras.clip.1);
+    let maxy = v0.y.max(v1.y).max(v2.y).min(ras.clip.3);
     let (tl0, tl1, tl2) = (top_left(&v1, &v2), top_left(&v2, &v0), top_left(&v0, &v1));
-    let lerp = |w: [i64; 3], f: fn(&Vtx) -> i32| -> i32 {
-        let s = w[0] * f(&v0) as i64 + w[1] * f(&v1) as i64 + w[2] * f(&v2) as i64;
-        s.div_euclid(area) as i32
-    };
-    let inside = |w: i64, tl: bool| w > 0 || (w == 0 && tl);
+    if minx > maxx || miny > maxy {
+        return;
+    }
+    // Edge functions and attribute numerators step linearly in x, so each row
+    // is walked with additions only. Attributes keep exact floor division by the
+    // triangle area via a quotient/remainder stepper (identical results to
+    // computing `numerator.div_euclid(area)` per pixel).
+    let (e0dx, e1dx, e2dx) = (-((v2.y - v1.y) as i64), -((v0.y - v2.y) as i64), -((v1.y - v0.y) as i64));
+    let attrs: [fn(&Vtx) -> i32; 5] = [|v| v.r, |v| v.g, |v| v.b, |v| v.u, |v| v.v];
+    let n_attrs = if sh.textured { 5 } else if sh.gouraud { 3 } else { 0 };
+    // d(numerator)/dx for each attribute.
+    let mut ndx = [0i64; 5];
+    for (k, f) in attrs.iter().enumerate().take(n_attrs) {
+        ndx[k] = e0dx * f(&v0) as i64 + e1dx * f(&v1) as i64 + e2dx * f(&v2) as i64;
+    }
     for y in miny..=maxy {
+        let mut w0 = orient(&v1, &v2, minx, y);
+        let mut w1 = orient(&v2, &v0, minx, y);
+        let mut w2 = orient(&v0, &v1, minx, y);
+        // Quotient and remainder of each attribute at the row start.
+        let mut q = [0i64; 5];
+        let mut r = [0i64; 5];
+        let mut step_q = [0i64; 5];
+        let mut step_r = [0i64; 5];
+        for (k, f) in attrs.iter().enumerate().take(n_attrs) {
+            let n = w0 * f(&v0) as i64 + w1 * f(&v1) as i64 + w2 * f(&v2) as i64;
+            q[k] = n.div_euclid(area);
+            r[k] = n.rem_euclid(area);
+            step_q[k] = ndx[k].div_euclid(area);
+            step_r[k] = ndx[k].rem_euclid(area);
+        }
         for x in minx..=maxx {
-            let w0 = orient(&v1, &v2, x, y);
-            let w1 = orient(&v2, &v0, x, y);
-            let w2 = orient(&v0, &v1, x, y);
-            if !(inside(w0, tl0) && inside(w1, tl1) && inside(w2, tl2)) {
-                continue;
+            let inside = |w: i64, tl: bool| w > 0 || (w == 0 && tl);
+            if inside(w0, tl0) && inside(w1, tl1) && inside(w2, tl2) {
+                let rgb = if sh.gouraud { [q[0] as i32, q[1] as i32, q[2] as i32] } else { [v0.r, v0.g, v0.b] };
+                let uv = sh.textured.then(|| (q[3] as i32, q[4] as i32));
+                plot(surface, tex, ras, sh, x, y, rgb, uv);
             }
-            let w = [w0, w1, w2];
-            let rgb = if sh.gouraud {
-                [lerp(w, |v| v.r), lerp(w, |v| v.g), lerp(w, |v| v.b)]
-            } else {
-                [v0.r, v0.g, v0.b]
-            };
-            let uv = sh.textured.then(|| (lerp(w, |v| v.u), lerp(w, |v| v.v)));
-            plot(surface, tex, r, sh, x, y, rgb, uv);
+            w0 += e0dx;
+            w1 += e1dx;
+            w2 += e2dx;
+            for k in 0..n_attrs {
+                q[k] += step_q[k];
+                r[k] += step_r[k];
+                if r[k] >= area {
+                    r[k] -= area;
+                    q[k] += 1;
+                }
+            }
         }
     }
 }

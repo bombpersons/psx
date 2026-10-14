@@ -17,6 +17,7 @@ mod lockstep;
 mod native;
 mod provenance;
 mod run;
+mod run_native;
 mod template;
 
 #[derive(Parser)]
@@ -104,6 +105,9 @@ enum Command {
         /// Cap on recorded events per trace log.
         #[arg(long, default_value_t = 200_000)]
         max_events: u32,
+        /// Emulator: `redux` (PCSX-Redux worker, default) or `native` (psx-core).
+        #[arg(long, default_value = "redux")]
+        backend: String,
     },
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
@@ -219,11 +223,11 @@ enum TemplateAction {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast, trace_cd, trace_bios, symbols, max_events } = cli.command {
+    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast, trace_cd, trace_bios, symbols, max_events, backend } = cli.command {
         let root = std::env::current_dir().unwrap_or_default();
         let (ok, v) = run::run(
             &root,
-            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast, trace_cd, trace_bios, symbols, max_events },
+            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast, trace_cd, trace_bios, symbols, max_events, backend },
         );
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };

@@ -265,6 +265,16 @@ impl Cdrom {
         }
     }
 
+    /// (LBA in the FIFO, current FIFO offset, sector payload size).
+    pub fn fifo_state(&self) -> (u32, u32, u32) {
+        (self.fifo_lba, self.data_pos as u32, if self.mode & 0x20 != 0 { 2340 } else { 2048 })
+    }
+
+    /// Bytes left in the data FIFO.
+    pub fn fifo_remaining(&self) -> u32 {
+        self.data.len().saturating_sub(self.data_pos) as u32
+    }
+
     /// DMA channel 3: next word from the data FIFO.
     pub fn dma_word(&mut self) -> u32 {
         let b = [self.read_data_byte(), self.read_data_byte(), self.read_data_byte(), self.read_data_byte()];

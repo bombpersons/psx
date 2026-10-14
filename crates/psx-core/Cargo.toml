@@ -10,6 +10,7 @@ description = "Native PlayStation emulation core for the psx toolkit (in develop
 psx-gpu = { workspace = true }
 psx-gte = { workspace = true }
 psx-media = { workspace = true }
+serde = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

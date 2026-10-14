@@ -152,6 +152,39 @@ Observations:
   - BIOS chime, then menu sound effects 4 s apart (one per Start press), then the level 1-1 music.
   - **Open:** a constant low voice is held from about 14 to 46 s while the loader shows its screens and movies. It may be legitimate (a voice keyed alongside XA playback, which is not modelled) or an envelope bug; the BIOS-only run does not show it.
 
+### Native backend for `psx run`
+
+`psx run --backend native` runs the same bounded job on psx-core and produces the same report shape as the Redux backend:
+RAM, VRAM and screen PNGs, registers, replay, `--symbols`. Its observations come from the emulated hardware rather than from breakpoints:
+
+- **`--watch`:** each CPU store records its PC, width, old value and new value. Each DMA write records its channel and whole range.
+- **`--trace-cd`:** writes `cd_native.jsonl`, where every DMA-3 carries the exact LBA and FIFO offset the drive delivered.
+  `psx loads` reads it with evidence `native` and needs no content inference.
+- **`--trace-bios`:** A0/B0/C0 calls are recorded at the vectors with path arguments. Frequent calls are counted but not recorded.
+- **EXE side-loading:** like Redux, the BIOS runs to the shell entry 0x80030000, then the EXE is loaded.
+- **Frames** count from power-on.
+- **Save states** are not implemented natively yet. They are refused with `unsupported` rather than ignored.
+
+Checks:
+
+- **Probe watch:** the native backend reports the same writer PCs as Redux: crt0 BSS clear 0x80010044, and the counter store 0x80010380 with exact old/new values.
+- **Croc boot to frame 2400:** 5,129 CD transfers, all `native`, giving the same file→RAM spans and libcd functions as the Redux run.
+
+### Performance
+
+The baseline was 1.2–1.3× real time, which is comparable to Redux's observed (interpreter + debugger) mode at 1.6×. Each step below was checked:
+the Croc boot to frame 3000 must reach the same final PC and 4,192 sectors with byte-identical VRAM, and CPU lockstep must still match.
+
+| Change | Instructions/s | Real time |
+|---|---|---|
+| baseline | ~18.7M | 1.28× |
+| devices advance in 128-cycle batches, always flushed before I/O | ~18.7M | 1.28× (not the bottleneck) |
+| buffer the single GPR write instead of copying the register file; RAM/BIOS fast paths | 31.3M | 2.14× |
+| incremental triangle stepping (exact quotient/remainder, identical pixels) | 35.0M | 2.39× |
+| cached interrupt line, lazy Cause.IP, fat LTO + one codegen unit | **44.2M** | **3.02×** |
+
+A poor man's profiler (gdb stack sampling) guided these changes. The CPU step, execute and bus read dominate.
+
 ### Debugging trail: from a kernel overwrite to playing FMVs
 
 This trail shows the toolkit's method on a real bug. Every step used `psx` tools with evidence from both emulators.

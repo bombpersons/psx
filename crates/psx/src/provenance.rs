@@ -280,6 +280,7 @@ pub fn runs(loads: &[Load]) -> Vec<Run> {
             let next_ram = r.ram.wrapping_add(r.bytes);
             let same_sector = l.lba == r.lba + r.sectors - 1 && l.ram == next_ram;
             let rank = |e: &str| match e {
+                "native" => 3,
                 "content" => 2,
                 "ambiguous" => 1,
                 _ => 0,
@@ -423,7 +424,7 @@ fn spans(runs: &[Run], symbols: &[crate::ScopedSymbols], ram: Option<&[u8]>) -> 
         s.bytes += r.bytes as u64;
         s.runs += 1;
         match r.lba_evidence {
-            "content" => s.content += 1,
+            "native" | "content" => s.content += 1,
             "ambiguous" => s.ambiguous += 1,
             _ => s.inferred += 1,
         }
@@ -448,9 +449,48 @@ fn spans(runs: &[Run], symbols: &[crate::ScopedSymbols], ram: Option<&[u8]>) -> 
         .collect()
 }
 
+#[derive(Deserialize)]
+struct NativeTransfer {
+    frame: u64,
+    cycle: u64,
+    lba: u32,
+    fifo_offset: u32,
+    bytes: u32,
+    sector_size: u32,
+    ram: u32,
+    pc: u32,
+}
+
+/// Exact transfers recorded by the native core (`cd_native.jsonl`).
+fn native_loads(path: &Path) -> std::io::Result<Vec<Load>> {
+    let text = std::fs::read_to_string(path)?;
+    Ok(text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<NativeTransfer>(l).ok())
+        .map(|t| Load {
+            frame: t.frame as u32,
+            cycle: t.cycle,
+            lba: t.lba,
+            sector_offset: t.fifo_offset,
+            sector_size: t.sector_size,
+            ram: t.ram,
+            bytes: t.bytes,
+            pc: t.pc,
+            lba_evidence: "native",
+        })
+        .collect())
+}
+
 pub fn report(run_dir: &Path, disc_path: &Path, symbols: &[crate::ScopedSymbols]) -> Result<Value, String> {
     let disc = Disc::open(disc_path).map_err(|e| e.to_string())?;
-    let (loads, notes) = decode(&run_dir.join("cd.jsonl"), &disc).map_err(|e| format!("cd.jsonl: {e}"))?;
+    let native = run_dir.join("cd_native.jsonl");
+    let (loads, notes, method) = if native.exists() {
+        let loads = native_loads(&native).map_err(|e| format!("cd_native.jsonl: {e}"))?;
+        (loads, Vec::new(), "native core: the drive model recorded each DMA's sector and FIFO offset; runs also compared with final RAM")
+    } else {
+        let (l, n) = decode(&run_dir.join("cd.jsonl"), &disc).map_err(|e| format!("cd.jsonl: {e}"))?;
+        (l, n, "CD register protocol; each DMA3 payload matched to disc sectors by content; runs also compared with final RAM")
+    };
     let fs = FileSystem::read(&disc).ok();
     let ram = std::fs::read(run_dir.join("ram.bin")).ok();
     let mut runs = runs(&loads);
@@ -462,9 +502,10 @@ pub fn report(run_dir: &Path, disc_path: &Path, symbols: &[crate::ScopedSymbols]
         e.1 += 1;
     }
     Ok(json!({
-        "method": "CD register protocol; each DMA3 payload matched to disc sectors by content; runs also compared with final RAM",
+        "method": method,
         "transfers": loads.len(),
         "evidence": {
+            "native": loads.iter().filter(|l| l.lba_evidence == "native").count(),
             "content": loads.iter().filter(|l| l.lba_evidence == "content").count(),
             "ambiguous": loads.iter().filter(|l| l.lba_evidence == "ambiguous").count(),
             "inferred": loads.iter().filter(|l| l.lba_evidence == "inferred").count(),
