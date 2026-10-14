@@ -45,6 +45,18 @@ pub struct StepInfo {
     pub exception: Option<u8>,
     /// Destination register of a load from I/O space issued by this instruction.
     pub io_load: Option<(u32, u8)>,
+    /// The data access this instruction made (the last one for SWL/SWR).
+    pub mem: Option<MemAccess>,
+}
+
+/// One CPU data access, as seen on the bus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemAccess {
+    pub addr: u32,
+    /// Loaded value (before sign extension / merging) or stored value.
+    pub value: u32,
+    pub width: u8,
+    pub store: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -191,21 +203,21 @@ impl Cpu {
             self.flush_load();
             self.cop0[cop0::BADVADDR] = pc;
             self.exception(Exception::LoadAddressError, pc);
-            return StepInfo { pc, instruction: 0, exception: Some(Exception::LoadAddressError as u8), io_load: None };
+            return StepInfo { pc, instruction: 0, exception: Some(Exception::LoadAddressError as u8), io_load: None, mem: None };
         }
         let instruction = match bus.read(pc, Width::Word) {
             Ok(i) => i,
             Err(_) => {
                 self.flush_load();
                 self.exception(Exception::InstructionBusError, pc);
-                return StepInfo { pc, instruction: 0, exception: Some(Exception::InstructionBusError as u8), io_load: None };
+                return StepInfo { pc, instruction: 0, exception: Some(Exception::InstructionBusError as u8), io_load: None, mem: None };
             }
         };
         if self.interrupt_pending() {
             // EPC is the instruction about to execute; it runs after RFE.
             self.flush_load();
             self.exception(Exception::Interrupt, pc);
-            return StepInfo { pc, instruction, exception: Some(Exception::Interrupt as u8), io_load: None };
+            return StepInfo { pc, instruction, exception: Some(Exception::Interrupt as u8), io_load: None, mem: None };
         }
 
         self.pc = self.next_pc;
@@ -215,7 +227,7 @@ impl Cpu {
         // the instruction's own write lands last (a later write beats the load).
         self.load_in = std::mem::take(&mut self.load);
         self.wreg = (0, 0);
-        let mut info = StepInfo { pc, instruction, exception: None, io_load: None };
+        let mut info = StepInfo { pc, instruction, exception: None, io_load: None, mem: None };
         if let Err(e) = self.execute(bus, instruction, pc, &mut info) {
             info.exception = Some(e as u8);
         }
@@ -246,18 +258,21 @@ impl Cpu {
         if Bus::is_io(addr) {
             info.io_load = Some((addr, rt as u8));
         }
-        bus.read(addr, w).map_err(|_| {
+        let v = bus.read(addr, w).map_err(|_| {
             self.exception(Exception::DataBusError, pc);
             Exception::DataBusError
-        })
+        })?;
+        info.mem = Some(MemAccess { addr, value: v, width: w as u8, store: false });
+        Ok(v)
     }
 
-    fn store_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, value: u32, pc: u32) -> Result<(), Exception> {
+    fn store_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, value: u32, pc: u32, info: &mut StepInfo) -> Result<(), Exception> {
         if !addr.is_multiple_of(w as u32) {
             self.cop0[cop0::BADVADDR] = addr;
             self.exception(Exception::StoreAddressError, pc);
             return Err(Exception::StoreAddressError);
         }
+        info.mem = Some(MemAccess { addr, value, width: w as u8, store: true });
         if self.cop0[cop0::SR] & (1 << 16) != 0 {
             return Ok(()); // cache isolated: the store hits the (unmodelled) cache only
         }
@@ -433,9 +448,9 @@ impl Cpu {
                 };
                 self.load = (rt, v);
             }
-            0x28 => self.store_mem(bus, s.wrapping_add(simm), Width::Byte, t, pc)?,
-            0x29 => self.store_mem(bus, s.wrapping_add(simm), Width::Half, t, pc)?,
-            0x2B => self.store_mem(bus, s.wrapping_add(simm), Width::Word, t, pc)?,
+            0x28 => self.store_mem(bus, s.wrapping_add(simm), Width::Byte, t, pc, info)?,
+            0x29 => self.store_mem(bus, s.wrapping_add(simm), Width::Half, t, pc, info)?,
+            0x2B => self.store_mem(bus, s.wrapping_add(simm), Width::Word, t, pc, info)?,
             0x2A | 0x2E => {
                 let addr = s.wrapping_add(simm);
                 let aligned_addr = addr & !3;
@@ -452,7 +467,7 @@ impl Cpu {
                     let keep = 0x00FF_FFFFu32.checked_shr(24 - sh).unwrap_or(0);
                     (mem & keep) | (t << sh)
                 };
-                self.store_mem(bus, aligned_addr, Width::Word, v, pc)?;
+                self.store_mem(bus, aligned_addr, Width::Word, v, pc, info)?;
             }
             0x32 => {
                 let addr = s.wrapping_add(simm);
@@ -462,7 +477,7 @@ impl Cpu {
             0x3A => {
                 let addr = s.wrapping_add(simm);
                 let v = self.gte.read_data(rt);
-                self.store_mem(bus, addr, Width::Word, v, pc)?;
+                self.store_mem(bus, addr, Width::Word, v, pc, info)?;
             }
             0x30 | 0x31 | 0x33 | 0x38 | 0x39 | 0x3B => return self.fail(Exception::CoprocessorUnusable, pc),
             _ => return self.fail(Exception::ReservedInstruction, pc),

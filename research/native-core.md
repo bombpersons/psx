@@ -200,6 +200,36 @@ Checks: a straight N-frame run must equal a run split at frame K and resumed fro
 
 `state::tests` repeats the split check on a synthetic BIOS and covers the rejection of a wrong BIOS, garbage and truncated files.
 
+### Instruction trace (`trace.rs`, `psx run --backend native --trace`)
+
+The trace answers what code ran in a window and what it did. It writes three files:
+
+- **`trace.txt`:** one line per instruction: `frame cycle pc word disassembly ; effects`.
+  - The cycle is the system clock after the instruction.
+  - Effects are the register written with its new value (or HI/LO), plus the data access: `[addr]=value` for a store, or `[addr]=>value` for a load, since the register receives the value after the delay slot.
+  - Calls add `-> target Name (from site)` lines, named with `--symbols` and checked against RAM residency.
+  - Interrupts and exceptions add `!!` lines.
+  - Lines are capped by `--max-events`; coverage and calls continue past the cap.
+- **`coverage.txt`:** runs of executed words, with instruction counts, execution counts and the function name at the start. Ready for marking up a Ghidra listing.
+- **`calls.json`:** every `jal`/`jalr`/`bltzal`/`bgezal` target with its count, first and last frame, and its top call sites.
+
+The window and filters are:
+
+- `--trace-from-frame F`: start F frames into the run.
+- `--trace-start ADDR|Function`: start at the first execution of that PC.
+- `--trace-frames N`: stop after N frames.
+- `--trace-range LO-HI|Function`: write lines only for those PCs. Repeatable. A function's range ends at the next known symbol. Calls are shown when either the caller or the callee is in range.
+
+Combined with `--from-state`, an agent can jump straight to a moment and trace only the function it cares about.
+
+Example: Croc from the frame-3203 state, 300 frames, took 3.6 s.
+- That window ran 101M instructions with 874 interrupts, over 24,713 distinct instructions and 322 call targets.
+- The top calls were VSync, CheckCallback and the matrix library.
+- The game streams through libcd's low-level calls: CdControlB and CdGetSector, from its own callbacks around 0x80022xxx. It never calls CdRead.
+
+`StepInfo` now carries the instruction's data access (`MemAccess`). The untraced speed is unchanged: 43–44M instructions/s in a side-by-side run against the previous build.
+Tracing everything runs at about 28M instructions/s. CPU lockstep still matches over 10M instructions.
+
 ### Performance
 
 The baseline was 1.2–1.3× real time, which is comparable to Redux's observed (interpreter + debugger) mode at 1.6×. Each step below was checked:

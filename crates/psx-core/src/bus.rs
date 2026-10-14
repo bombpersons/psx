@@ -191,6 +191,12 @@ impl Bus {
         }
     }
 
+    /// System clocks elapsed including CPU time not yet handed to devices.
+    #[inline]
+    pub fn time(&self) -> u64 {
+        self.now + self.pending
+    }
+
     /// Bring every device up to the CPU's time.
     #[inline]
     pub fn flush(&mut self) {
