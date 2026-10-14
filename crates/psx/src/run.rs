@@ -18,6 +18,8 @@ pub struct RunArgs {
     pub timeout_s: u64,
     /// Dynarec without debugger: faster, no watches.
     pub fast: bool,
+    pub trace_cd: bool,
+    pub trace_bios: bool,
 }
 
 fn err(code: &str, message: impl std::fmt::Display) -> Value {
@@ -88,6 +90,8 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         save_state: a.save_state,
         timeout: Duration::from_secs(a.timeout_s),
         realtime: false,
+        trace_cd: a.trace_cd,
+        trace_bios: a.trace_bios,
     };
     let dir = a.out.clone().unwrap_or_else(|| next_run_dir(root));
     let out = match psx_redux::run(&backend, &job, &dir) {
@@ -102,7 +106,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             files.insert(name.into(), json!({"path": p, "sha256": h}));
         }
     };
-    for name in ["ram.bin", "scratch.bin", "vram.bin", "screen.bin", "state.bin", "writes.jsonl"] {
+    for name in ["ram.bin", "scratch.bin", "vram.bin", "screen.bin", "state.bin", "writes.jsonl", "cd.jsonl", "bios.jsonl"] {
         hash(name);
     }
     if let Ok((w, h, rgb)) = out.screen_rgb() {
@@ -132,6 +136,8 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             "registers": out.report.registers,
             "screen": out.report.screen,
             "watch": {"hits": out.report.watch_hits, "recorded": out.report.watch_hits_recorded, "shown": shown_hits.len(), "first": shown_hits},
+            "event_logs": out.report.event_logs,
+            "bios_call_counts": out.report.bios_call_counts,
             "files": files,
             "identity": {
                 "backend": backend.binary, "backend_sha256": backend.identity().ok(),

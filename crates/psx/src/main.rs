@@ -13,6 +13,7 @@ use psx_media::system_cnf::{SystemCnf, DEFAULT_BOOT};
 use psx_media::{memmap, Disc, MediaError, PsxExe};
 use serde_json::{json, Value};
 
+mod provenance;
 mod run;
 mod template;
 
@@ -86,9 +87,26 @@ enum Command {
         out: Option<PathBuf>,
         #[arg(long, default_value_t = 120)]
         timeout: u64,
-        /// Use the dynarec without the debugger: faster, but no --watch.
+        /// Use the dynarec without the debugger: faster, but no --watch or traces.
         #[arg(long)]
         fast: bool,
+        /// Log CD-ROM controller and CD DMA register writes (cd.jsonl).
+        #[arg(long)]
+        trace_cd: bool,
+        /// Log BIOS A0/B0/C0 function calls (bios.jsonl).
+        #[arg(long)]
+        trace_bios: bool,
+    },
+    /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
+    /// and verified against the run's final RAM.
+    Loads {
+        run_dir: PathBuf,
+        /// The disc image the run used.
+        #[arg(long)]
+        disc: PathBuf,
+        /// Include at most N individual runs (spans are always complete).
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
     },
     /// Classify a CPU address (segment, region, folded offset).
     Addr {
@@ -110,11 +128,11 @@ enum TemplateAction {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast } = cli.command {
+    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast, trace_cd, trace_bios } = cli.command {
         let root = std::env::current_dir().unwrap_or_default();
         let (ok, v) = run::run(
             &root,
-            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast },
+            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast, trace_cd, trace_bios },
         );
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
@@ -145,6 +163,15 @@ fn run(cmd: Command) -> R {
         Command::Exe { source } => exe_cmd(&source),
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
         Command::Run { .. } => unreachable!("handled in main"),
+        Command::Loads { run_dir, disc, limit } => {
+            let mut v = provenance::report(&run_dir, &disc).map_err(MediaError::Malformed)?;
+            if let Some(runs) = v["runs"].as_array_mut() {
+                let total = runs.len();
+                runs.truncate(limit);
+                v["runs_total"] = json!(total);
+            }
+            Ok(v)
+        }
         Command::Template { action: TemplateAction::Create { dest, name } } => template::create(&dest, name.as_deref()),
         Command::Addr { address } => {
             let a = u32::from_str_radix(address.trim_start_matches("0x").trim_start_matches("0X"), 16)
