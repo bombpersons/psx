@@ -10,6 +10,7 @@ pub mod error;
 pub mod exe;
 pub mod iso9660;
 pub mod memmap;
+pub mod str_video;
 pub mod subq;
 pub mod system_cnf;
 
