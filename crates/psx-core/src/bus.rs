@@ -12,7 +12,10 @@ pub const I_MASK: u32 = 0x1F80_1074;
 /// DMA channel n registers: MADR at 0x1F801080 + 0x10*n, then BCR, CHCR.
 pub const DMA_BASE: u32 = 0x1F80_1080;
 pub const DPCR: u32 = 0x1F80_10F0;
+pub const TIMERS: u32 = 0x1F80_1100;
 pub const GP0: u32 = 0x1F80_1810;
+/// System clock (Hz).
+pub const SYSCLK: u64 = 33_868_800;
 pub const GP1: u32 = 0x1F80_1814;
 
 /// A DMA transfer the bus started but whose device side is not modelled yet.
@@ -46,8 +49,9 @@ pub struct Bus {
     /// Physical 0x1F801000..0x1F803000 as a register file.
     pub io: Vec<u8>,
     pub cache_control: u32,
-    /// I/O accesses since the last [`Bus::take_io_log`].
+    /// I/O accesses since the last [`Bus::take_io_log`] (only when `log_io` is set).
     io_log: Vec<IoAccess>,
+    pub log_io: bool,
     /// Set when software writes I_STAT; cleared by [`Bus::take_irq_ack`].
     irq_acknowledged: bool,
     /// Started transfers with no device model (their RAM/device effects are missing).
@@ -56,6 +60,16 @@ pub struct Bus {
     /// GP1(00h)/(01h) etc. are not tracked in GPUSTAT yet; this mirrors the
     /// display/DMA bits software set so status reads are plausible.
     gpustat_dma_dir: u32,
+    pub timers: crate::timers::Timers,
+    /// System clock cycles elapsed.
+    pub now: u64,
+    next_vblank: u64,
+    /// Completed video frames (vblanks).
+    pub frames: u64,
+    /// When false, devices do not raise interrupts (lockstep supplies them).
+    pub irq_sources: bool,
+    /// Reads of I/O registers no device handles yet: physical address -> count.
+    pub unhandled_reads: std::collections::BTreeMap<u32, u64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -83,10 +97,59 @@ impl Bus {
             io: vec![0; 0x2000],
             cache_control: 0,
             io_log: Vec::new(),
+            log_io: false,
             irq_acknowledged: false,
             unmodelled_dma: Vec::new(),
             gpu: psx_gpu::Gpu::new(),
             gpustat_dma_dir: 0,
+            timers: Default::default(),
+            now: 0,
+            next_vblank: 0,
+            frames: 0,
+            irq_sources: true,
+            unhandled_reads: Default::default(),
+        }
+    }
+
+    pub fn pal(&self) -> bool {
+        self.gpu.display.pal()
+    }
+
+    /// System clocks per video frame (PAL 50 Hz, NTSC 60 Hz; field timing approximated).
+    pub fn frame_cycles(&self) -> u64 {
+        if self.pal() { SYSCLK / 50 } else { SYSCLK * 1001 / 60000 }
+    }
+
+    fn raise_irq(&mut self, bits: u32) {
+        if self.irq_sources && bits != 0 {
+            let v = self.io_word(I_STAT) | bits;
+            self.poke_io(I_STAT, Width::Word, v);
+        }
+    }
+
+    /// Advance devices by `cycles` system clocks.
+    pub fn tick(&mut self, cycles: u64) {
+        self.now += cycles;
+        if self.next_vblank == 0 {
+            self.next_vblank = self.frame_cycles();
+        }
+        let lines = if self.pal() { 314 } else { 263 };
+        let hblank = ((1u64 << 16) * lines) / self.frame_cycles();
+        // Dot clock: 53.693175 MHz / divider (10, 8, 5, 4 for widths 256, 320, 512, 640; 7 for 368).
+        let div = match self.gpu.display.width() {
+            256 => 10,
+            320 => 8,
+            368 => 7,
+            512 => 5,
+            _ => 4,
+        };
+        let dotclock = ((53_693_175u64 << 16) / div) / SYSCLK;
+        let irq = self.timers.tick(cycles, crate::timers::Rates { dotclock, hblank });
+        self.raise_irq(irq);
+        if self.now >= self.next_vblank {
+            self.next_vblank += self.frame_cycles();
+            self.frames += 1;
+            self.raise_irq(1);
         }
     }
 
@@ -147,7 +210,27 @@ impl Bus {
         v |= ((!d.enabled) as u32) << 23;
         v |= 0b111 << 26;
         v |= self.gpustat_dma_dir << 29;
+        // Bit 31: odd/even line. Toggles per field when interlaced, per scanline
+        // otherwise, and reads 0 during vblank.
+        let (line, in_vblank) = self.scanline();
+        let odd = if d.mode & 0x20 != 0 { self.frames & 1 == 1 } else { line & 1 == 1 };
+        if odd && !in_vblank {
+            v |= 1 << 31;
+        }
+        if d.mode & 0x20 != 0 && self.frames & 1 == 1 {
+            v |= 1 << 13;
+        }
         v
+    }
+
+    /// Current scanline within the frame and whether it is in vblank.
+    pub fn scanline(&self) -> (u64, bool) {
+        let fc = self.frame_cycles();
+        let lines = if self.pal() { 314 } else { 263 };
+        let into = (self.now + fc).saturating_sub(self.next_vblank.max(fc)) % fc;
+        let line = into * lines / fc;
+        let visible = if self.pal() { 288 } else { 240 };
+        (line, line >= visible)
     }
 
     /// CHCR was written: run the transfer immediately if it is started.
@@ -194,6 +277,12 @@ impl Bus {
         std::mem::take(&mut self.irq_acknowledged)
     }
 
+    fn log_access(&mut self, a: IoAccess) {
+        if self.log_io {
+            self.io_log.push(a);
+        }
+    }
+
     pub fn take_io_log(&mut self) -> Vec<IoAccess> {
         std::mem::take(&mut self.io_log)
     }
@@ -214,17 +303,32 @@ impl Bus {
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => le(&self.scratch, (p - 0x1F80_0000) as usize),
             GP0 if width == Width::Word => {
                 let v = self.gpu.gpuread().unwrap_or(0);
-                self.io_log.push(IoAccess { addr: p, width, write: false, value: v });
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
+                v
+            }
+            0x1F80_1100..=0x1F80_112F => {
+                let v = self.timers.read(((p - TIMERS) >> 4) as usize, p & 0xC) >> (8 * (p & 3));
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
             GP1 if width == Width::Word => {
                 let v = self.gpustat();
-                self.io_log.push(IoAccess { addr: p, width, write: false, value: v });
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
+                v
+            }
+            // SPUSTAT: mode bits 0-5 mirror SPUCNT; never busy (no SPU model yet).
+            0x1F80_1DAE => {
+                let v = (le(&self.io, 0x1F80_1DAA - 0x1F80_1000) & 0x3F) >> (8 * (p & 1));
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
             0x1F80_1000..=0x1F80_2FFF => {
                 let v = le(&self.io, (p - 0x1F80_1000) as usize);
-                self.io_log.push(IoAccess { addr: p, width, write: false, value: v });
+                let handled = (0x1F80_1C00..0x1F80_1E00).contains(&p) || (0x1F80_1070..0x1F80_1078).contains(&p) || (0x1F80_1080..0x1F80_1100).contains(&p);
+                if !handled {
+                    *self.unhandled_reads.entry(p).or_default() += 1;
+                }
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
             0x1FC0_0000..=0x1FC7_FFFF => le(&self.bios, (p - 0x1FC0_0000) as usize),
@@ -246,7 +350,9 @@ impl Bus {
             0x1F00_0000..=0x1F7F_FFFF => {}
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => put(&mut self.scratch, (p - 0x1F80_0000) as usize),
             0x1F80_1000..=0x1F80_2FFF => {
-                if p == GP0 && width == Width::Word {
+                if (TIMERS..TIMERS + 0x30).contains(&p) {
+                    self.timers.write(((p - TIMERS) >> 4) as usize, p & 0xC, value);
+                } else if p == GP0 && width == Width::Word {
                     self.gpu.gp0(value);
                 } else if p == GP1 && width == Width::Word {
                     if (value >> 24) & 0x3F == 0x04 {
@@ -265,7 +371,7 @@ impl Bus {
                 } else {
                     put(&mut self.io, (p - 0x1F80_1000) as usize);
                 }
-                self.io_log.push(IoAccess { addr: p, width, write: true, value });
+                self.log_access(IoAccess { addr: p, width, write: true, value });
             }
             0x1FC0_0000..=0x1FC7_FFFF => {}
             0xFFFE_0130 => self.cache_control = value,
@@ -322,6 +428,7 @@ mod tests {
         b.write(0x1F80_0004, Width::Byte, 0x5A).unwrap();
         assert_eq!(b.read(0x9F80_0004, Width::Byte).unwrap(), 0x5A);
         assert!(b.read(0xBF80_0004, Width::Byte).is_err(), "no scratchpad through KSEG1");
+        b.log_io = true;
         b.write(0x1F80_1074, Width::Word, 7).unwrap();
         assert_eq!(b.take_io_log().len(), 1);
     }
