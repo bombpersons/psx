@@ -33,6 +33,12 @@ fn main() {
     let scene = args.iter().position(|a| a == "--scene").and_then(|i| args.get(i + 1)).cloned();
     // --painter: draw its 3D elements in capture order without depth, as the PS1 did (P toggles).
     let depth = if args.iter().any(|a| a == "--painter") { psx::PsxSceneDepth::Painter } else { default() };
+    // --no-dither / --no-quantize: switch PsxLook effects off (e.g. to compare against a capture).
+    let look = psx::PsxLook {
+        dither: !args.iter().any(|a| a == "--no-dither"),
+        quantize: !args.iter().any(|a| a == "--no-quantize"),
+        ..default()
+    };
     #[cfg(not(feature = "dev-mcp"))]
     if mcp {
         eprintln!("--mcp requires a developer build: cargo run --features dev-mcp -- --mcp");
@@ -60,6 +66,7 @@ fn main() {
     )
     .insert_resource(Time::<Fixed>::from_hz(screen.region.hz()))
     .add_plugins(PsxPlugin { screen })
+    .insert_resource(look)
     .init_resource::<GameClock>()
     .init_resource::<ControllerBindings>()
     .init_resource::<ControllerState>()
