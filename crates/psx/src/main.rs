@@ -10,19 +10,23 @@ use clap::{Parser, Subcommand};
 use psx_media::disc::{sha256_bytes, sha256_file};
 use psx_media::iso9660::{Entry, FileSystem};
 use psx_media::system_cnf::{SystemCnf, DEFAULT_BOOT};
-use psx_media::{memmap, Disc, MediaError, PsxExe};
+use psx_media::{Disc, MediaError, PsxExe};
 use serde_json::{json, Value};
 
+use commands::{Ctx, Op};
+
+mod commands;
 mod lockstep;
+mod mcp;
 mod native;
 mod provenance;
 mod replay;
 mod run;
 mod run_native;
+mod str_cmd;
 mod template;
 mod textures;
 mod vram_diff;
-mod str_cmd;
 mod xa_cmd;
 
 #[derive(Parser)]
@@ -35,87 +39,25 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Tracks, volume, SYSTEM.CNF and boot executable of a disc image.
-    Disc {
-        image: PathBuf,
-        /// Also stream SHA-256 over every image file (slow for full discs).
-        #[arg(long)]
-        hash: bool,
-    },
+    Disc(commands::DiscArgs),
     /// List every ISO9660 entry with LBA, size and CD-XA attributes.
-    Ls { image: PathBuf },
+    Ls(commands::LsArgs),
     /// Extract one file, or every file with --all, into a directory.
     /// Form 2 / interleaved files are written as raw 2352-byte sectors with a `.raw` suffix.
-    Extract {
-        image: PathBuf,
-        /// ISO path, e.g. `/DATA/LEVEL1.BIN` or `cdrom:\SLUS_000.79;1`.
-        path: Option<String>,
-        #[arg(long)]
-        all: bool,
-        #[arg(short, long, default_value = "extracted")]
-        out: PathBuf,
-    },
+    Extract(commands::ExtractArgs),
     /// Parse a PS-X EXE from a file, or from a disc with `image.cue::/PATH`.
-    Exe { source: String },
+    Exe(commands::ExeArgs),
     /// List a file's XA-ADPCM audio channels (STR/XA streams), or decode one to a 44.1 kHz WAV.
-    Xa {
-        image: PathBuf,
-        /// ISO path of the stream, e.g. `/MUSIC.XA`.
-        path: String,
-        /// Channel to decode (needs -o).
-        #[arg(long)]
-        channel: Option<u8>,
-        /// Also require this subheader file number.
-        #[arg(long)]
-        file: Option<u8>,
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-    },
+    Xa(commands::XaArgs),
     /// Decode an STR movie (MDEC BS v1/v2/v3) into PNG frames, audio.wav and summary.json.
-    Str {
-        /// `image.cue::/PATH`, or the image with the ISO path as the next argument.
-        source: String,
-        path: Option<String>,
-        /// Frames to write, 1-based inclusive: `A..B`, `A..`, `..B` or `N`.
-        #[arg(long)]
-        frames: Option<String>,
-        /// XA channel for audio.wav (default: the first one present).
-        #[arg(long)]
-        channel: Option<u8>,
-        #[arg(long)]
-        no_audio: bool,
-        /// Also write an uncompressed 4:4:4 movie.y4m.
-        #[arg(long)]
-        y4m: bool,
-        #[arg(short, long)]
-        out: PathBuf,
-    },
+    Str(commands::StrArgs),
     /// List the saves on a raw 128 KiB memory card image (.mcd/.mcr).
-    Memcard { image: PathBuf },
+    Memcard(commands::MemcardArgs),
     /// Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT
     /// pair a `--gpu-frame` capture used (with the UV bounds sampled), or one page.
-    Textures {
-        /// A native run directory (vram.bin, and gpu_frame.json unless --page).
-        run_dir: PathBuf,
-        /// One page as X,Y,DEPTH (VRAM halfword x, line y, 4/8/15 bpp).
-        #[arg(long)]
-        page: Option<String>,
-        /// CLUT position X,Y for 4/8-bit pages.
-        #[arg(long)]
-        clut: Option<String>,
-        /// Output directory (default <run_dir>/textures).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-    },
+    Textures(commands::TexturesArgs),
     /// Describe sectors: form, XA subheader, owning file and a hex preview.
-    Sector {
-        image: PathBuf,
-        lba: u32,
-        #[arg(long, default_value_t = 1)]
-        count: u32,
-        /// Hex bytes shown per sector.
-        #[arg(long, default_value_t = 64)]
-        preview: usize,
-    },
+    Sector(commands::SectorArgs),
     /// Create a standalone native Bevy game project with the PS1 look.
     Template {
         #[command(subcommand)]
@@ -123,331 +65,77 @@ enum Command {
     },
     /// Run a disc, EXE or state in a PCSX-Redux worker for N frames and capture
     /// RAM, VRAM, screen, registers and optional write watches.
-    Run {
-        /// Disc image (.cue/.bin/.iso) or PS-X EXE; omit to boot the BIOS or continue a state.
-        media: Option<PathBuf>,
-        #[arg(long)]
-        bios: PathBuf,
-        #[arg(long, default_value_t = 60)]
-        frames: u32,
-        /// JSON array of {"frame": n, "buttons": ["CROSS", ...]}.
-        #[arg(long)]
-        replay: Option<PathBuf>,
-        /// Write watch `ADDR[:WIDTH]` in hex, repeatable.
-        #[arg(long = "watch")]
-        watches: Vec<String>,
-        #[arg(long)]
-        from_state: Option<PathBuf>,
-        #[arg(long)]
-        save_state: bool,
-        /// Output directory (default .psx/runs/<id>).
-        #[arg(long)]
-        out: Option<PathBuf>,
-        #[arg(long, default_value_t = 120)]
-        timeout: u64,
-        /// Use the dynarec without the debugger: faster, but no --watch or traces.
-        #[arg(long)]
-        fast: bool,
-        /// Log CD-ROM controller and CD DMA register writes (cd.jsonl).
-        #[arg(long)]
-        trace_cd: bool,
-        /// Log BIOS A0/B0/C0 function calls (bios.jsonl).
-        #[arg(long)]
-        trace_bios: bool,
-        /// `.symbols.json` (verified against RAM) or `.sym` files used to name PCs; repeatable.
-        #[arg(long = "symbols")]
-        symbols: Vec<PathBuf>,
-        /// Cap on recorded events per trace log.
-        #[arg(long, default_value_t = 200_000)]
-        max_events: u32,
-        /// Emulator: `redux` (PCSX-Redux worker, default) or `native` (psx-core).
-        #[arg(long, default_value = "redux")]
-        backend: String,
-        #[command(flatten)]
-        trace: run::TraceArgs,
-        #[command(flatten)]
-        cards: run::CardArgs,
-    },
+    Run(commands::RunCmdArgs),
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
-    Loads {
-        run_dir: PathBuf,
-        /// The disc image the run used.
-        #[arg(long)]
-        disc: PathBuf,
-        /// Include at most N individual runs (spans are always complete).
-        #[arg(long, default_value_t = 0)]
-        limit: usize,
-        /// `.symbols.json` (verified against RAM) or `.sym` files from `psx symbols`; repeatable.
-        #[arg(long = "symbols")]
-        symbols: Vec<PathBuf>,
-    },
+    Loads(commands::LoadsArgs),
     /// Name library functions in a PS-X EXE by PsyQ signature matching.
     /// Writes <out>.symbols.json, <out>.ghidra.txt (ImportSymbolsScript.py) and <out>.sym.
-    Symbols {
-        /// PS-X EXE file, or `image.cue::/PATH`.
-        source: String,
-        /// Local signature directory (`<version>/<LIB>.json` layout).
-        #[arg(long, default_value = "external/psx_psyq_signatures")]
-        sigs: PathBuf,
-        /// Minimum non-wildcard bytes for a signature to be used.
-        #[arg(long, default_value_t = 24)]
-        min_concrete: usize,
-        /// Output path prefix (default .psx/symbols/<exe name>).
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
+    Symbols(commands::SymbolsArgs),
     /// Run the native core and PCSX-Redux in lockstep from BIOS reset,
     /// comparing PC and registers after every instruction.
-    Lockstep {
-        #[arg(long)]
-        bios: PathBuf,
-        #[arg(long, default_value_t = 100_000)]
-        steps: u64,
-        /// Instructions of history shown at a divergence.
-        #[arg(long, default_value_t = 12)]
-        context: usize,
-        /// GDB single-step with full register comparison (about 20 steps/s).
-        #[arg(long)]
-        exact: bool,
-        /// Write the core's screen and VRAM as <PREFIX>.screen.png / .vram.png at the end.
-        #[arg(long)]
-        dump: Option<PathBuf>,
-    },
+    Lockstep(commands::LockstepArgs),
     /// Run the native core alone (no oracle) for N frames; reports missing hardware.
-    Native {
-        #[arg(long)]
-        bios: PathBuf,
-        /// Disc image to insert (CUE/BIN/ISO); omit for an empty drive.
-        #[arg(long)]
-        disc: Option<PathBuf>,
-        #[arg(long, default_value_t = 300)]
-        frames: u64,
-        #[arg(long, default_value_t = 20_000_000_000)]
-        max_steps: u64,
-        /// Write <PREFIX>.screen.png and <PREFIX>.vram.png at the end.
-        #[arg(long)]
-        dump: Option<PathBuf>,
-        /// Stop when the PC reaches this hex address and report the tail.
-        #[arg(long = "break")]
-        brk: Option<String>,
-        /// Instructions of history kept for --break.
-        #[arg(long, default_value_t = 48)]
-        tail: usize,
-        /// Report every change of this RAM word (hex address) with the responsible instruction.
-        #[arg(long)]
-        watch: Option<String>,
-        /// Start recording --watch changes at this frame.
-        #[arg(long, default_value_t = 0)]
-        watch_after: u64,
-        /// JSON `[{"frame": n, "buttons": ["CROSS"]}]` (frames from power-on).
-        #[arg(long)]
-        replay: Option<PathBuf>,
-        /// With --dump: also save the screen every N frames.
-        #[arg(long)]
-        snapshot_every: Option<u64>,
-        /// Capture the SPU output to a WAV file.
-        #[arg(long)]
-        wav: Option<PathBuf>,
-        /// Controller in port 1: `digital` (default) or `dualshock`.
-        #[arg(long, default_value = "digital")]
-        pad: String,
-    },
+    Native(commands::NativeArgs),
     /// Disassemble a PS-X EXE (file or `image.cue::/PATH`) at a RAM address range.
-    Disasm {
-        source: String,
-        /// Start address (hex); defaults to the entry point.
-        #[arg(long)]
-        addr: Option<String>,
-        #[arg(long, default_value_t = 32)]
-        count: u32,
-        /// `.sym` or `.symbols.json` files for labels; repeatable.
-        #[arg(long = "symbols")]
-        symbols: Vec<PathBuf>,
-    },
+    Disasm(commands::DisasmArgs),
     /// Replay a recorded GP0 stream (`[n, words..]` u32 records, e.g. tools/probes/gpu/gp0_stream.bin)
     /// into a fresh psx-gpu and write the resulting VRAM.
-    GpuReplay {
-        stream: PathBuf,
-        /// Raw VRAM output (1024x512 little-endian halfwords).
-        #[arg(long, short)]
-        out: PathBuf,
-        #[arg(long)]
-        png: Option<PathBuf>,
-    },
+    GpuReplay(commands::GpuReplayArgs),
     /// Compare two raw VRAM dumps (vram.bin) pixel by pixel.
-    VramDiff {
-        a: PathBuf,
-        b: PathBuf,
-        /// Cell size for per-block counts.
-        #[arg(long, default_value_t = 128)]
-        cell: usize,
-        /// Region `X,Y,W,H` to compare (default: all of VRAM).
-        #[arg(long)]
-        region: Option<String>,
-        /// Write a diff image (differing pixels red).
-        #[arg(long)]
-        png: Option<PathBuf>,
-        /// Differing pixels listed individually.
-        #[arg(long, default_value_t = 16)]
-        samples: usize,
-    },
+    VramDiff(commands::VramDiffArgs),
     /// Classify a CPU address (segment, region, folded offset).
-    Addr {
-        /// Hex address, e.g. 0x80010000.
-        address: String,
-    },
+    Addr(commands::AddrArgs),
+    /// Serve every command above as an MCP tool over stdin/stdout (start it in the project root).
+    Mcp(mcp::McpArgs),
 }
 
 #[derive(Subcommand)]
 enum TemplateAction {
     /// Write the psx-bevy starter into an empty or new directory.
-    Create {
-        dest: PathBuf,
-        /// Cargo package name (defaults to the directory name).
-        #[arg(long)]
-        name: Option<String>,
-    },
+    Create(commands::TemplateCreateArgs),
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast, trace_cd, trace_bios, symbols, max_events, backend, trace, cards } = cli.command {
-        let root = std::env::current_dir().unwrap_or_default();
-        let (ok, v) = run::run(
-            &root,
-            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast, trace_cd, trace_bios, symbols, max_events, backend, trace, cards },
-        );
-        println!("{}", serde_json::to_string_pretty(&v).unwrap());
-        return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
-    }
-    if let Command::Native { bios, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every, wav, pad } = &cli.command {
-        let hex = |b: &Option<String>| b.as_deref().and_then(|b| u32::from_str_radix(b.trim_start_matches("0x").trim_start_matches("0X"), 16).ok());
-        let (brk, watch) = (hex(brk), hex(watch));
-        let (ok, v) = native::run(native::Options {
-            bios,
-            disc: disc.as_deref(),
-            frames: *frames,
-            max_steps: *max_steps,
-            dump: dump.as_deref(),
-            brk,
-            tail: *tail,
-            watch,
-            watch_after: *watch_after,
-            replay: replay.as_deref(),
-            snapshot_every: *snapshot_every,
-            wav: wav.as_deref(),
-            pad,
-        });
-        println!("{}", serde_json::to_string_pretty(&v).unwrap());
-        return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
-    }
-    if let Command::Lockstep { bios, steps, context, exact, dump } = &cli.command {
-        let root = std::env::current_dir().unwrap_or_default();
-        let (ok, v) = if *exact {
-            lockstep::run(&root, bios, *steps, *context)
-        } else {
-            lockstep::run_trace(&root, bios, *steps, *context, dump.as_deref())
-        };
-        println!("{}", serde_json::to_string_pretty(&v).unwrap());
-        return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
-    }
-    match run(cli.command) {
-        Ok(v) => {
-            println!("{}", serde_json::to_string_pretty(&v).unwrap());
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            println!("{}", json!({"error": {"code": e.code(), "message": e.to_string()}}));
-            ExitCode::from(if matches!(e, MediaError::Unsupported(_)) { 2 } else { 1 })
-        }
+    let ctx = Ctx { root: std::env::current_dir().unwrap_or_default() };
+    let out = match cli.command {
+        Command::Mcp(a) => return mcp::main(ctx, a),
+        Command::Disc(a) => a.exec(&ctx),
+        Command::Ls(a) => a.exec(&ctx),
+        Command::Extract(a) => a.exec(&ctx),
+        Command::Exe(a) => a.exec(&ctx),
+        Command::Xa(a) => a.exec(&ctx),
+        Command::Str(a) => a.exec(&ctx),
+        Command::Memcard(a) => a.exec(&ctx),
+        Command::Textures(a) => a.exec(&ctx),
+        Command::Sector(a) => a.exec(&ctx),
+        Command::Template { action: TemplateAction::Create(a) } => a.exec(&ctx),
+        Command::Run(a) => a.exec(&ctx),
+        Command::Loads(a) => a.exec(&ctx),
+        Command::Symbols(a) => a.exec(&ctx),
+        Command::Lockstep(a) => a.exec(&ctx),
+        Command::Native(a) => a.exec(&ctx),
+        Command::Disasm(a) => a.exec(&ctx),
+        Command::GpuReplay(a) => a.exec(&ctx),
+        Command::VramDiff(a) => a.exec(&ctx),
+        Command::Addr(a) => a.exec(&ctx),
+    };
+    println!("{}", out.render());
+    ExitCode::from(out.exit)
+}
+
+/// A suffix that keeps per-process output directories distinct when one
+/// process (the MCP server) runs several jobs: empty the first time, then `-1`, `-2`, ...
+pub(crate) fn instance_suffix() -> String {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    match N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) {
+        0 => String::new(),
+        n => format!("-{n}"),
     }
 }
 
 type R = psx_media::Result<Value>;
-
-fn run(cmd: Command) -> R {
-    match cmd {
-        Command::Disc { image, hash } => disc_summary(&image, hash),
-        Command::Ls { image } => {
-            let disc = Disc::open(&image)?;
-            let fs = FileSystem::read(&disc)?;
-            Ok(json!({"volume": fs.volume, "entries": fs.entries.iter().map(entry_json).collect::<Vec<_>>(), "warnings": fs.warnings}))
-        }
-        Command::Extract { image, path, all, out } => extract(&image, path.as_deref(), all, &out),
-        Command::Exe { source } => exe_cmd(&source),
-        Command::Textures { run_dir, page, clut, out } => textures::run(&run_dir, page.as_deref(), clut.as_deref(), out.as_deref()),
-        Command::Memcard { image } => {
-            let bytes = std::fs::read(&image).map_err(|e| MediaError::io(&image, e))?;
-            if bytes.len() != psx_core::memcard::SIZE {
-                return Err(MediaError::Malformed(format!("{} bytes; a raw memory card image is 131072", bytes.len())));
-            }
-            let card = psx_core::memcard::MemCard::from_image(bytes);
-            let saves = card.saves();
-            let used: usize = saves.iter().map(|s| s.blocks.len()).sum();
-            let formatted = &card.sector(0)[..2] == b"MC";
-            Ok(json!({"image": image, "formatted": formatted, "blocks_used": used, "blocks_free": 15 - used.min(15), "saves": saves}))
-        }
-        Command::Xa { image, path, file, channel, out } => xa_cmd::run(&image, &path, file, channel, out.as_deref()),
-        Command::Str { source, path, frames, channel, no_audio, y4m, out } => {
-            let (image, path) = str_cmd::split_source(&source, path.as_deref())?;
-            str_cmd::run(str_cmd::Args { image: &image, path: &path, out: &out, frames: frames.as_deref(), channel, no_audio, y4m })
-        }
-        Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
-        Command::Run { .. } | Command::Lockstep { .. } | Command::Native { .. } => unreachable!("handled in main"),
-        Command::Symbols { source, sigs, min_concrete, out } => symbols_cmd(&source, &sigs, min_concrete, out),
-        Command::Disasm { source, addr, count, symbols } => {
-            let bytes = read_source(&source)?;
-            let exe = PsxExe::parse(&bytes)?;
-            let scopes = load_symbols(&symbols)?;
-            let start = match addr {
-                Some(a) => u32::from_str_radix(a.trim_start_matches("0x").trim_start_matches("0X"), 16)
-                    .map_err(|_| MediaError::Malformed(format!("bad address {a}")))?,
-                None => exe.pc,
-            } & !3;
-            let mut lines = Vec::new();
-            for i in 0..count {
-                let a = start.wrapping_add(4 * i);
-                let Some(off) = exe.addr_to_file_offset(a) else { break };
-                let Some(w) = bytes.get(off..off + 4) else { break };
-                let word = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
-                let label = scopes.iter().find_map(|s| s.table.describe(a, 0).filter(|n| !n.contains('+')));
-                lines.push(json!({"addr": format!("0x{a:08X}"), "word": format!("{word:08X}"), "asm": psx_core::disasm::disasm(word, a), "label": label}));
-            }
-            Ok(json!({"source": source, "lines": lines}))
-        }
-        Command::Loads { run_dir, disc, limit, symbols } => {
-            let scopes = load_symbols(&symbols)?;
-            let mut v = provenance::report(&run_dir, &disc, &scopes).map_err(MediaError::Malformed)?;
-            if let Some(runs) = v["runs"].as_array_mut() {
-                let total = runs.len();
-                runs.truncate(limit);
-                v["runs_total"] = json!(total);
-            }
-            Ok(v)
-        }
-        Command::Template { action: TemplateAction::Create { dest, name } } => template::create(&dest, name.as_deref()),
-        Command::GpuReplay { stream, out, png } => vram_diff::replay(&stream, &out, png.as_deref()),
-        Command::VramDiff { a, b, cell, region, png, samples } => {
-            let region = match region {
-                Some(r) => {
-                    let v: Vec<usize> = r.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-                    if v.len() != 4 {
-                        return Err(MediaError::Malformed(format!("bad region {r}, expected X,Y,W,H")));
-                    }
-                    Some((v[0], v[1], v[2], v[3]))
-                }
-                None => None,
-            };
-            vram_diff::diff(vram_diff::DiffArgs { a: &a, b: &b, cell, region, png: png.as_deref(), samples })
-        }
-        Command::Addr { address } => {
-            let a = u32::from_str_radix(address.trim_start_matches("0x").trim_start_matches("0X"), 16)
-                .map_err(|_| MediaError::Malformed(format!("bad hex address {address}")))?;
-            Ok(serde_json::to_value(memmap::resolve(a)).unwrap())
-        }
-    }
-}
 
 fn entry_json(e: &Entry) -> Value {
     json!({

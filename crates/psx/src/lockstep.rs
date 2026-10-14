@@ -89,7 +89,7 @@ fn reg_index(name: &str) -> Option<usize> {
 
 /// Fast mode: stream Redux's instruction trace and check each instruction's
 /// PC, word and source-operand values before the core executes it.
-pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump: Option<&Path>) -> (bool, Value) {
+pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump: Option<&Path>, deadline: Option<Instant>) -> (bool, Value) {
     use std::io::BufRead;
     let err = |code: &str, m: String| (false, json!({"error": {"code": code, "message": m}}));
     let backend = match Backend::from_project(root) {
@@ -100,7 +100,7 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
         Ok(b) => b,
         Err(e) => return err("io_error", format!("{}: {e}", bios_path.display())),
     };
-    let dir = root.join(".psx/lockstep").join(format!("{}", std::process::id()));
+    let dir = root.join(".psx/lockstep").join(format!("{}{}", std::process::id(), crate::instance_suffix()));
     let _ = std::fs::create_dir_all(dir.join("config"));
     let _ = std::fs::write(dir.join("config/pcsx.json"), "{\"SPU\":{\"NullSync\":true,\"Speed\":0}}\n");
     let abs = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
@@ -127,12 +127,17 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
     let (mut io_injected, mut irq_injected, mut operand_checks) = (0u64, 0u64, 0u64);
     let mut done = 0u64;
     let mut divergence = Value::Null;
+    let mut timed_out = false;
     let vectors = [0x8000_0080u32, 0xBFC0_0180];
     let mut io_dest: [Option<(u32, Width)>; 32] = [None; 32];
     for line in reader.lines() {
         let Ok(line) = line else { break };
         let Some(t) = parse_trace_line(&line) else { continue };
         if done >= steps {
+            break;
+        }
+        if done.is_multiple_of(1 << 16) && deadline.is_some_and(|d| Instant::now() >= d) {
+            timed_out = true;
             break;
         }
         if t.pc != m.cpu.pc && vectors.contains(&t.pc) && !vectors.contains(&m.cpu.pc) {
@@ -221,7 +226,7 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
         ok,
         json!({
             "mode": "trace",
-            "status": if !divergence.is_null() { "diverged" } else if done >= steps { "matched" } else { "trace_ended" },
+            "status": if !divergence.is_null() { "diverged" } else if done >= steps { "matched" } else if timed_out { "timeout" } else { "trace_ended" },
             "steps_compared": done,
             "steps_requested": steps,
             "operand_values_checked": operand_checks,
@@ -239,7 +244,7 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
 }
 
 /// Exact mode: GDB single-step, full register file after every instruction (slow).
-pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize) -> (bool, Value) {
+pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize, deadline: Option<Instant>) -> (bool, Value) {
     let err = |code: &str, m: String| (false, json!({"error": {"code": code, "message": m}}));
     let backend = match Backend::from_project(root) {
         Ok(b) => b,
@@ -249,7 +254,7 @@ pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize) -> (bool, 
         Ok(b) => b,
         Err(e) => return err("io_error", format!("{}: {e}", bios_path.display())),
     };
-    let dir = root.join(".psx/lockstep").join(format!("{}", std::process::id()));
+    let dir = root.join(".psx/lockstep").join(format!("{}{}", std::process::id(), crate::instance_suffix()));
     let mut g = match GdbSession::start(&backend, bios_path, &dir) {
         Ok(g) => g,
         Err(e) => return err(e.code(), e.to_string()),
@@ -262,8 +267,13 @@ pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize) -> (bool, 
     let mut pending_io: Option<(usize, u32, u64)> = None;
     let mut done = 0u64;
     let mut divergence = Value::Null;
+    let mut timed_out = false;
 
     for n in 0..steps {
+        if n.is_multiple_of(256) && deadline.is_some_and(|d| Instant::now() >= d) {
+            timed_out = true;
+            break;
+        }
         let info = m.step();
         if let Err(e) = g.step() {
             return err(e.code(), e.to_string());
@@ -316,11 +326,11 @@ pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize) -> (bool, 
         }
     }
     let secs = started.elapsed().as_secs_f64();
-    let ok = divergence.is_null();
+    let ok = divergence.is_null() && !timed_out;
     (
         ok,
         json!({
-            "status": if ok { "matched" } else { "diverged" },
+            "status": if ok { "matched" } else if timed_out { "timeout" } else { "diverged" },
             "steps_compared": done,
             "steps_requested": steps,
             "final_pc": h(m.cpu.pc),
