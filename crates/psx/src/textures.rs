@@ -11,6 +11,8 @@ use psx_media::MediaError;
 use serde_json::{json, Value};
 
 type R = psx_media::Result<Value>;
+/// (page x, page y, depth, clut x, clut y) -> (UV bounds u0 v0 u1 v1, uses).
+type Pairs = BTreeMap<(i64, i64, i64, i64, i64), ([i64; 4], u64)>;
 
 fn bad(m: impl std::fmt::Display) -> MediaError {
     MediaError::Malformed(m.to_string())
@@ -84,7 +86,7 @@ pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&
     let frame_path = run_dir.join("gpu_frame.json");
     let text = std::fs::read_to_string(&frame_path).map_err(|e| MediaError::io(&frame_path, e))?;
     let frame: Value = serde_json::from_str(&text).map_err(|e| bad(format!("{}: {e}", frame_path.display())))?;
-    let mut pairs: BTreeMap<(i64, i64, i64, i64, i64), ([i64; 4], u64)> = BTreeMap::new();
+    let mut pairs = Pairs::new();
     for c in frame["commands"].as_array().into_iter().flatten() {
         if c["textured"] != json!(true) {
             continue;
