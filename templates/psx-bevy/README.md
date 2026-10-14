@@ -83,6 +83,19 @@ tagged with `PsxSceneElement { command }`, its index in the capture's
 pieces with real game entities. Semi-transparency is approximated with 50%
 alpha, and the scene is not clipped to the original draw area.
 
+3D games work too. The capture matches each polygon's screen vertices to the
+GTE perspective transforms that produced them, recovering view-space 3D
+positions. Those polygons spawn as `Mesh3d` + `PsxMaterial` (pre-lit vertex
+colours, double-sided, the game's blend mode) under a child group that maps
+PS1 view space into Bevy (`PsxScene::view_transform`). A `Camera3d` with
+`PsxSceneCamera` gets the game's field of view; it starts where the game's
+camera was and can be moved freely. In such scenes, 2D elements drawn before
+the first 3D polygon (clears, backdrops) go on `SCENE_BACKGROUND_LAYER` for a
+camera behind the 3D one, and later ones overlay it (HUD). The PS1 drew in
+painter's order without a depth buffer, so a backdrop polygon the game drew
+first but placed near the camera can show in front under depth testing; its
+`PsxSceneElement::command` (a low draw index) identifies it.
+
 ## Simulation and input
 
 - Gameplay runs in `FixedUpdate`, in `GameSystems::Game`, at the region's

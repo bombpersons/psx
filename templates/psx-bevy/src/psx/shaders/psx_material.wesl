@@ -10,9 +10,12 @@
 import bevy_pbr::render::{
     mesh_functions,
     forward_io::{Vertex, decompress_vertex},
-    mesh_view_bindings::{view, fog},
+    mesh_view_bindings::view,
     view_transformations::position_world_to_clip,
 };
+// Bevy only binds fog for cameras with `DistanceFog`.
+@if(DISTANCE_FOG)
+import bevy_pbr::render::mesh_view_bindings::fog;
 
 const MAX_LIGHTS: u32 = 8u;
 
@@ -114,6 +117,7 @@ fn fragment(in: PsxVarying) -> @location(0) vec4<f32> {
     } else {
         rgb = min(rgb, vec3(1.0));
     }
+    @if(DISTANCE_FOG)
     if has(FLAG_FOG) {
         var f = 0.0;
         if fog.mode == 1u {

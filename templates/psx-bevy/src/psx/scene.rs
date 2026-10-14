@@ -7,6 +7,9 @@
 //!
 //! - rects and axis-aligned quads become `Sprite`s (`Sprite::rect` selects the
 //!   texels, flips carried over);
+//! - polygons the capture lifted back to 3D (GTE view space) become `Mesh3d`
+//!   with [`PsxMaterial`] under a child group in Bevy space, seen by a
+//!   [`PsxSceneCamera`] given the game's field of view;
 //! - other polygons become `Mesh2d` triangles with UVs and vertex colours.
 //!
 //! Every child has a [`PsxSceneElement`] naming the GPU command it came from,
@@ -16,11 +19,41 @@
 
 use bevy::{
     asset::{AssetLoader, LoadContext, RenderAssetUsages, io::Reader},
+    camera::visibility::RenderLayers,
     mesh::{Indices, PrimitiveTopology},
     prelude::*,
     sprite_render::AlphaMode2d,
 };
 use serde::Deserialize;
+
+use super::{PsxBlend, PsxMaterial};
+
+/// In scenes with 3D geometry, 2D elements drawn before the first 3D element
+/// (clears, skies) go on this layer, for a camera behind the 3D one.
+pub const SCENE_BACKGROUND_LAYER: usize = 30;
+
+/// PS1 view-space units per Bevy unit for lifted 3D geometry.
+pub const VIEW_UNITS_PER_METRE: f32 = 64.0;
+
+#[derive(Deserialize, Debug, Clone, Copy)]
+pub struct SceneVertex3d {
+    /// GTE view space: x right, y down, z forward (into the screen).
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub u: f32,
+    pub v: f32,
+    pub color: [f32; 3],
+}
+
+/// The game's perspective: `sx = ofx + h·x/z`, `sy = ofy + h·y/z` (screen pixels).
+#[allow(dead_code)] // data for game code
+#[derive(Deserialize, Debug, Clone, Copy)]
+pub struct SceneProjection {
+    pub h: f32,
+    pub ofx: f32,
+    pub ofy: f32,
+}
 
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub struct SceneVertex {
@@ -59,12 +92,25 @@ pub enum SceneElement {
         semi: bool,
         command: u32,
     },
+    Mesh3d {
+        image: Option<usize>,
+        vertices: Vec<SceneVertex3d>,
+        triangles: Vec<[u32; 3]>,
+        #[serde(default)]
+        semi: bool,
+        /// Semi-transparency equation 0-3 when `semi`.
+        #[serde(default)]
+        blend: Option<u8>,
+        command: u32,
+    },
 }
 
 #[derive(Deserialize)]
 struct SceneFile {
     format: u32,
     screen: [f32; 2],
+    #[serde(default)]
+    projection: Option<SceneProjection>,
     images: Vec<String>,
     elements: Vec<SceneElement>,
 }
@@ -74,6 +120,7 @@ struct SceneFile {
 pub struct PsxScene {
     /// Size of the captured display, in pixels.
     pub screen: Vec2,
+    pub projection: Option<SceneProjection>,
     /// Texture pages, loaded relative to the scene file.
     pub images: Vec<Handle<Image>>,
     pub elements: Vec<SceneElement>,
@@ -94,6 +141,30 @@ pub struct PsxSceneElement {
 
 #[derive(Component)]
 struct Spawned;
+
+/// A `Camera3d` given the loaded scene's field of view (at the origin, looking
+/// down -Z, which is the game's camera after the view transform).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct PsxSceneCamera;
+
+impl PsxScene {
+    /// The game's vertical field of view, when the scene has 3D geometry.
+    pub fn fov_y(&self) -> Option<f32> {
+        self.projection.map(|p| 2.0 * ((self.screen.y / 2.0) / p.h.max(1.0)).atan())
+    }
+
+    /// Horizontal scale that shows the game's pixels as on a 4:3 TV.
+    pub fn pixel_aspect(&self) -> f32 {
+        (4.0 / 3.0) / (self.screen.x / self.screen.y)
+    }
+
+    /// Transform from GTE view space into Bevy space: y and z flipped, scaled
+    /// to metres, and x scaled by [`Self::pixel_aspect`].
+    pub fn view_transform(&self) -> Transform {
+        let s = 1.0 / VIEW_UNITS_PER_METRE;
+        Transform::from_scale(Vec3::new(s * self.pixel_aspect(), -s, -s))
+    }
+}
 
 #[derive(Debug)]
 pub struct SceneLoadError(String);
@@ -126,7 +197,7 @@ impl AssetLoader for PsxSceneLoader {
             let path = load_context.path().resolve_embed_str(name).map_err(|e| SceneLoadError(e.to_string()))?;
             images.push(load_context.load(path));
         }
-        Ok(PsxScene { screen: Vec2::from(file.screen), images, elements: file.elements })
+        Ok(PsxScene { screen: Vec2::from(file.screen), projection: file.projection, images, elements: file.elements })
     }
 
     fn extensions(&self) -> &[&str] {
@@ -135,7 +206,25 @@ impl AssetLoader for PsxSceneLoader {
 }
 
 pub(super) fn plugin(app: &mut App) {
-    app.init_asset::<PsxScene>().init_asset_loader::<PsxSceneLoader>().add_systems(Update, spawn_scenes);
+    app.init_asset::<PsxScene>()
+        .init_asset_loader::<PsxSceneLoader>()
+        .add_systems(Update, (spawn_scenes, fit_scene_cameras));
+}
+
+fn fit_scene_cameras(
+    roots: Query<&PsxSceneRoot>,
+    scenes: Res<Assets<PsxScene>>,
+    mut cameras: Query<&mut Projection, With<PsxSceneCamera>>,
+) {
+    let Some(fov) = roots.iter().find_map(|r| scenes.get(&r.0).and_then(PsxScene::fov_y)) else { return };
+    for mut projection in &mut cameras {
+        if let Projection::Perspective(p) = &mut *projection
+            && p.fov != fov
+        {
+            p.fov = fov;
+            p.far = 2000.0;
+        }
+    }
 }
 
 /// Captured screen position (y down, top-left origin) to Bevy 2D (y up, centred).
@@ -149,10 +238,21 @@ fn spawn_scenes(
     scenes: Res<Assets<PsxScene>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut psx_materials: ResMut<Assets<PsxMaterial>>,
 ) {
     for (root, PsxSceneRoot(handle)) in &roots {
         let Some(scene) = scenes.get(handle) else { continue };
         commands.entity(root).insert(Spawned);
+        // Lifted 3D geometry lives in a child group carrying the view transform.
+        let group3d = commands.spawn((scene.view_transform(), Visibility::default(), ChildOf(root))).id();
+        let first3d = scene.elements.iter().position(|e| matches!(e, SceneElement::Mesh3d { .. }));
+        let background = |i: usize| first3d.is_some_and(|f| i < f);
+        // With 3D geometry, 2D elements take the same TV aspect so they line up.
+        let sx = if first3d.is_some() { scene.pixel_aspect() } else { 1.0 };
+        let place = |x: f32, y: f32| {
+            let p = to_world(scene.screen, x, y);
+            Vec2::new(p.x * sx, p.y)
+        };
         for (i, element) in scene.elements.iter().enumerate() {
             // Later commands draw on top.
             let z = i as f32 * 0.01;
@@ -169,20 +269,25 @@ fn spawn_scenes(
                         },
                         None => Sprite::from_color(Color::srgba(color[0], color[1], color[2], alpha), Vec2::ONE),
                     };
-                    sprite.custom_size = Some(Vec2::new(w, h));
+                    sprite.custom_size = Some(Vec2::new(w * sx, h));
                     sprite.flip_x = *flip_x;
                     sprite.flip_y = *flip_y;
-                    let centre = to_world(scene.screen, x + w / 2.0, y + h / 2.0);
-                    commands.spawn((
-                        sprite,
-                        Transform::from_translation(centre.extend(z)),
-                        PsxSceneElement { element: i, command: *command },
-                        ChildOf(root),
-                    ));
+                    let centre = place(x + w / 2.0, y + h / 2.0);
+                    let id = commands
+                        .spawn((
+                            sprite,
+                            Transform::from_translation(centre.extend(z)),
+                            PsxSceneElement { element: i, command: *command },
+                            ChildOf(root),
+                        ))
+                        .id();
+                    if background(i) {
+                        commands.entity(id).insert(RenderLayers::layer(SCENE_BACKGROUND_LAYER));
+                    }
                 }
                 SceneElement::Mesh { image, vertices, triangles, semi, command } => {
                     let positions: Vec<[f32; 3]> =
-                        vertices.iter().map(|v| to_world(scene.screen, v.x, v.y).extend(0.0).to_array()).collect();
+                        vertices.iter().map(|v| place(v.x, v.y).extend(0.0).to_array()).collect();
                     let uvs: Vec<[f32; 2]> = vertices.iter().map(|v| [v.u / 256.0, v.v / 256.0]).collect();
                     let alpha = if *semi { 0.5 } else { 1.0 };
                     let colors: Vec<[f32; 4]> = vertices
@@ -213,12 +318,53 @@ fn spawn_scenes(
                         },
                         ..default()
                     };
+                    let id = commands
+                        .spawn((
+                            Mesh2d(meshes.add(mesh)),
+                            MeshMaterial2d(materials.add(material)),
+                            Transform::from_xyz(0.0, 0.0, z),
+                            PsxSceneElement { element: i, command: *command },
+                            ChildOf(root),
+                        ))
+                        .id();
+                    if background(i) {
+                        commands.entity(id).insert(RenderLayers::layer(SCENE_BACKGROUND_LAYER));
+                    }
+                }
+                SceneElement::Mesh3d { image, vertices, triangles, semi, blend, command } => {
+                    let positions: Vec<[f32; 3]> = vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
+                    let uvs: Vec<[f32; 2]> = vertices.iter().map(|v| [v.u / 256.0, v.v / 256.0]).collect();
+                    let colors: Vec<[f32; 4]> = vertices
+                        .iter()
+                        .map(|v| Color::srgb(v.color[0], v.color[1], v.color[2]).to_linear().to_f32_array())
+                        .collect();
+                    let indices: Vec<u32> = triangles.iter().flatten().copied().collect();
+                    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+                        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+                        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+                        .with_inserted_indices(Indices::U32(indices));
+                    let material = PsxMaterial {
+                        texture: image.map(|i| scene.images[i].clone()),
+                        // Colours were lit by the game already; the PS1 drew both faces.
+                        lit: false,
+                        fog: false,
+                        double_sided: true,
+                        blend: match (*semi, blend.unwrap_or(0)) {
+                            (false, _) => PsxBlend::Opaque,
+                            (true, 0) => PsxBlend::Half,
+                            (true, 1) => PsxBlend::Add,
+                            (true, 2) => PsxBlend::Subtract,
+                            (true, _) => PsxBlend::AddQuarter,
+                        },
+                        ..default()
+                    };
                     commands.spawn((
-                        Mesh2d(meshes.add(mesh)),
-                        MeshMaterial2d(materials.add(material)),
-                        Transform::from_xyz(0.0, 0.0, z),
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(psx_materials.add(material)),
+                        Transform::default(),
                         PsxSceneElement { element: i, command: *command },
-                        ChildOf(root),
+                        ChildOf(group3d),
                     ));
                 }
             }
