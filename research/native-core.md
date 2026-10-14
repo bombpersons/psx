@@ -316,6 +316,8 @@ Both XA and CD-DA now pass through Mute/Demute (commands 0Bh/0Ch), the sound-map
 
 `psx xa <image> <path>` lists a stream's XA channels (file, channel, coding, sectors, duration). With `--channel N -o out.wav` it decodes one channel straight from the disc, which is useful on its own for extracting music and voice.
 
+`psx str` does the same for whole movies: it reads the BS bitstream into MDEC run-length data in software and decodes it on this MDEC model. Croc's FOX logo and Tomb Raider's Core logo match the emulator's screen bit for bit; see [str-movies.md](str-movies.md).
+
 Verification without listening, by comparing the emulator against the offline decode:
 
 - **Croc, FOXLOGO.STR** (boot, frame 1195 onwards): the frames the controller pushes to the SPU are bit-identical to `psx xa`'s decode. 474 of 480 sampled windows matched exactly; the misses were artefacts of the capture method.
