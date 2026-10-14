@@ -191,9 +191,11 @@ impl JobOutput {
         let raw = io(&p, std::fs::read(&p))?;
         let ScreenInfo { width, height, bpp } = self.report.screen;
         let rgb = if bpp == 16 {
-            raw.chunks_exact(2)
+            raw.as_chunks::<2>()
+                .0
+                .iter()
                 .flat_map(|c| {
-                    let v = u16::from_le_bytes([c[0], c[1]]);
+                    let v = u16::from_le_bytes(*c);
                     let e = |x: u16| ((x & 31) << 3 | (x & 31) >> 2) as u8;
                     [e(v), e(v >> 5), e(v >> 10)]
                 })
