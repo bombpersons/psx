@@ -335,6 +335,23 @@ With no emulator changes, all three boot on the native core (SCPH-7502) and reac
 
 These games are heavier than Croc (3.0×), which makes them good profiling targets.
 
+### GPU frame capture (`psx_gpu::capture`, `--gpu-frame N`)
+
+`psx run --backend native --gpu-frame N` logs every GP0 command of frame N of the run. `capture::decode` then replays them against a tracked draw state (E1h–E6h), so each primitive gets:
+- absolute VRAM vertices (drawing offset applied), UVs and colours;
+- its texture page (position, depth, blend) and CLUT position;
+- gouraud, raw, semi-transparency and texturing flags;
+- rect, fill, copy and upload areas.
+
+Outputs:
+- **`gpu_frame.json`:** a summary (counts by kind, texture pages and CLUTs with use counts, draw state at frame start) followed by the full command list.
+- **`gpu_frame_before.png` / `gpu_frame_after.png`:** VRAM at the frame start and end.
+- **`gpu_frame_wire.png`:** the after image with every primitive outlined. Polygons are green, rects yellow, lines cyan, fills red, and uploads/copies magenta.
+
+Examples:
+- **Crash:** 1,939 commands, all `poly3` (the engine emits only triangles). 1,577 are textured, 305 semi-transparent, over 62 CLUTs. It draws into the right buffer (area x 512–1023, offset 768,128).
+- **SOTN:** 416 commands. The background is a grid of 189 16×16 textured rects, and characters, HUD and effects are 97 quads. There are 49 texpage/texwindow switches, all 4-bit CLUT pages at x 512–1023, with side-by-side double buffering at x 0 and 256.
+
 ### Performance
 
 The baseline was 1.2–1.3× real time, which is comparable to Redux's observed (interpreter + debugger) mode at 1.6×. Each step below was checked:
