@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/psx",
+    "crates/psx-gpu",
+    "crates/psx-gte",
     "crates/psx-media",
 ]
 
@@ -12,6 +14,8 @@ rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+psx-gpu = { path = "crates/psx-gpu" }
+psx-gte = { path = "crates/psx-gte" }
 psx-media = { path = "crates/psx-media" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

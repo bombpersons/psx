@@ -1,0 +1,12 @@
+[package]
+name = "psx-gte"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Fixed-point PlayStation Geometry Transformation Engine (COP2)"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,12 @@
+[package]
+name = "psx-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Software PlayStation GPU: VRAM, GP0/GP1 command processing and rasterisation"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"

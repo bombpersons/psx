@@ -68,7 +68,7 @@ impl PsxExe {
                 self.file_size - HEADER_SIZE
             ));
         }
-        if self.text_size % 0x800 != 0 {
+        if !self.text_size.is_multiple_of(0x800) {
             w.push(format!("text_size 0x{:X} is not a multiple of 0x800", self.text_size));
         }
         if memmap::resolve(self.text_addr).region != Region::MainRam {
