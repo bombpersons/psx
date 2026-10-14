@@ -7,8 +7,10 @@
 //! modulation `texel * color / 128`, 4×4 ordered dither, 15-bit output, the
 //! four semi-transparency equations and mask bits (psx-spx "GPU").
 //!
-//! Interpolation rounding is a close approximation, not yet verified bit-exact
-//! against hardware captures.
+//! Triangle interpolation and line stepping reproduce pixel values captured on
+//! real consoles (PCSX-Redux's MIT hardware suites, checked in
+//! `tests/hardware.rs`) and match Redux's software GPU on gouraud and textured
+//! output; research/native-core.md "GPU accuracy" lists the known differences.
 
 pub const DITHER: [[i32; 4]; 4] = [[-4, 0, -3, 1], [2, -2, 3, -1], [-3, 1, -4, 0], [3, -1, 2, -2]];
 
@@ -134,17 +136,64 @@ pub fn plot<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     surface.set(x, y, (cr as u16) | ((cg as u16) << 5) | ((cb as u16) << 10) | mask_bit | set);
 }
 
-#[inline]
-fn orient(a: &Vtx, b: &Vtx, px: i32, py: i32) -> i64 {
-    (b.x - a.x) as i64 * (py - a.y) as i64 - (b.y - a.y) as i64 * (px - a.x) as i64
+/// One edge of a triangle, walked top to bottom in 16.16 fixed point.
+#[derive(Clone, Copy)]
+struct Edge {
+    top: i32,
+    height: i32,
+    x: i64,
+    dx: i64,
+    /// Attributes r, g, b, u, v at the top vertex and their change along the edge, 16.16.
+    a: [i64; 5],
+    da: [i64; 5],
 }
 
-#[inline]
-fn top_left(a: &Vtx, b: &Vtx) -> bool {
-    let (dx, dy) = (b.x - a.x, b.y - a.y);
-    dy < 0 || (dy == 0 && dx > 0)
+impl Edge {
+    fn new(p: &Vtx, q: &Vtx) -> Self {
+        let at = |v: &Vtx| [v.r, v.g, v.b, v.u, v.v].map(|c| (c as i64) << 16);
+        let (ap, aq) = (at(p), at(q));
+        Edge {
+            top: p.y,
+            height: q.y - p.y,
+            x: (p.x as i64) << 16,
+            dx: ((q.x - p.x) as i64) << 16,
+            a: ap,
+            da: std::array::from_fn(|k| aq[k] - ap[k]),
+        }
+    }
+
+    /// X at row `y` of the edge: one truncating division per row (no accumulated error).
+    fn x_at(&self, y: i32) -> i64 {
+        self.x + self.dx * (y - self.top) as i64 / self.height as i64
+    }
+
+    /// Attribute `k` at row `y`. Colours divide per row like X; texture
+    /// coordinates step by the per-row increment truncated once, so they lag
+    /// slightly on long edges.
+    fn attr_at(&self, k: usize, y: i32) -> i64 {
+        let row = (y - self.top) as i64;
+        if k < 3 {
+            self.a[k] + self.da[k] * row / self.height as i64
+        } else {
+            self.a[k] + row * (self.da[k] / self.height as i64)
+        }
+    }
 }
 
+/// Triangle scan conversion with PCSX-Redux's fixed-point rules (its software
+/// GPU is the reference this crate is diffed against; see
+/// research/native-core.md "GPU accuracy"):
+///
+/// - vertices are sorted by y; rows `top..bottom` are drawn (bottom excluded),
+///   and on each row the pixels `ceil(left) ..= ceil(right) - 1` (left edge
+///   included, right excluded);
+/// - edge X and colours are evaluated per row in 16.16 with one truncating
+///   division; texture coordinates advance by a truncated per-row step;
+/// - horizontal gradients are a single 16.16 value per attribute, derived from
+///   the span through the middle vertex (its width clamped to at least 1/16
+///   pixel), truncated toward zero;
+/// - each row starts from the left-edge value moved to the first pixel centre
+///   plus a half (round to nearest), and adds the gradient per pixel.
 pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     surface: &mut S,
     tex: &T,
@@ -152,84 +201,71 @@ pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     sh: &Shade,
     v: [Vtx; 3],
 ) {
-    let [v0, mut v1, mut v2] = v;
-    let mut area = orient(&v0, &v1, v2.x, v2.y);
-    if area == 0 {
+    // Sort by y with the same compare-and-swap sequence as the reference, so
+    // ties pick the same middle vertex.
+    let [mut a, mut b, mut c] = v;
+    if a.y > b.y {
+        std::mem::swap(&mut a, &mut b);
+    }
+    if a.y > c.y {
+        std::mem::swap(&mut a, &mut c);
+    }
+    if b.y > c.y {
+        std::mem::swap(&mut b, &mut c);
+    }
+    let height = c.y - a.y;
+    if height == 0 {
         return;
     }
-    if area < 0 {
-        std::mem::swap(&mut v1, &mut v2);
-        area = -area;
-    }
-    let minx = v0.x.min(v1.x).min(v2.x).max(ras.clip.0);
-    let maxx = v0.x.max(v1.x).max(v2.x).min(ras.clip.2);
-    let miny = v0.y.min(v1.y).min(v2.y).max(ras.clip.1);
-    let maxy = v0.y.max(v1.y).max(v2.y).min(ras.clip.3);
-    let (tl0, tl1, tl2) = (top_left(&v1, &v2), top_left(&v2, &v0), top_left(&v0, &v1));
-    if minx > maxx || miny > maxy {
+    // Fraction (16.16) of the long edge a→c above b, and the signed width of
+    // the span through b: long edge X minus b's X. Negative means b is on the
+    // right, so the right side has two sections.
+    let t = (((b.y - a.y) as i64) << 16) / height as i64;
+    let mut width = t * (c.x - a.x) as i64 + (((a.x - b.x) as i64) << 16);
+    if width == 0 {
         return;
     }
-    // Edge functions and attribute numerators step linearly in x, so each row
-    // is walked with additions only. Attributes keep exact floor division by the
-    // triangle area via a quotient/remainder stepper (identical results to
-    // computing `numerator.div_euclid(area)` per pixel).
-    let (e0dx, e1dx, e2dx) = (-((v2.y - v1.y) as i64), -((v0.y - v2.y) as i64), -((v1.y - v0.y) as i64));
-    let attrs: [fn(&Vtx) -> i32; 5] = [|v| v.r, |v| v.g, |v| v.b, |v| v.u, |v| v.v];
     let n_attrs = if sh.textured { 5 } else if sh.gouraud { 3 } else { 0 };
-    // d(numerator)/dx for each attribute.
-    let mut ndx = [0i64; 5];
-    for (k, f) in attrs.iter().enumerate().take(n_attrs) {
-        ndx[k] = e0dx * f(&v0) as i64 + e1dx * f(&v1) as i64 + e2dx * f(&v2) as i64;
+    if n_attrs > 0 {
+        width = if width < 0 { width.min(-0x1000) } else { width.max(0x1000) };
     }
-    // A pixel is inside an edge when w > 0, or w == 0 on a top-left edge.
-    let thresh = |tl: bool| if tl { 0i64 } else { 1 };
-    let (t0, t1, t2) = (thresh(tl0), thresh(tl1), thresh(tl2));
-    // Columns `[lo, hi]` (relative to minx) where `w + k*e >= t`.
-    let span = |w: i64, e: i64, t: i64, lo: &mut i64, hi: &mut i64| {
-        if e > 0 {
-            *lo = (*lo).max((t - w).div_euclid(e) + ((t - w).rem_euclid(e) != 0) as i64);
-        } else if e < 0 {
-            *hi = (*hi).min((w - t).div_euclid(-e));
-        } else if w < t {
-            *hi = -1;
-        }
-    };
-    let width = (maxx - minx) as i64;
-    for y in miny..=maxy {
-        let w0 = orient(&v1, &v2, minx, y);
-        let w1 = orient(&v2, &v0, minx, y);
-        let w2 = orient(&v0, &v1, minx, y);
-        // Only the covered span of the row is walked.
-        let (mut lo, mut hi) = (0i64, width);
-        span(w0, e0dx, t0, &mut lo, &mut hi);
-        span(w1, e1dx, t1, &mut lo, &mut hi);
-        span(w2, e2dx, t2, &mut lo, &mut hi);
-        if lo > hi {
+    let attr = |v: &Vtx, k: usize| [v.r, v.g, v.b, v.u, v.v][k] as i64;
+    let mut grad = [0i64; 5];
+    for (k, g) in grad.iter_mut().enumerate().take(n_attrs) {
+        // Attribute span width through b (scaled by 2^22), over the X span width (2^16), as 16.16.
+        let span = (t * ((attr(&c, k) - attr(&a, k)) << 6) + ((attr(&a, k) - attr(&b, k)) << 22)) as i32 as i64;
+        *g = ((span << 10) / width) as i32 as i64;
+    }
+    let long = Edge::new(&a, &c);
+    let upper = Edge::new(&a, &b);
+    let lower = Edge::new(&b, &c);
+    let b_right = width < 0;
+    let y_end = (c.y - 1).min(ras.clip.3);
+    for y in a.y.max(ras.clip.1)..=y_end {
+        let short = if y < b.y { &upper } else { &lower };
+        let (left, right) = if b_right { (&long, short) } else { (short, &long) };
+        let lx = left.x_at(y);
+        let xmin = ((lx + 0xFFFF) >> 16) as i32;
+        let xmax = (((right.x_at(y) - 1) >> 16) as i32).min(ras.clip.2);
+        if xmax < xmin {
             continue;
         }
-        // Quotient and remainder of each attribute at the span start.
-        let mut q = [0i64; 5];
-        let mut r = [0i64; 5];
-        let mut step_q = [0i64; 5];
-        let mut step_r = [0i64; 5];
-        for (k, f) in attrs.iter().enumerate().take(n_attrs) {
-            let n = (w0 + lo * e0dx) * f(&v0) as i64 + (w1 + lo * e1dx) * f(&v1) as i64 + (w2 + lo * e2dx) * f(&v2) as i64;
-            q[k] = n.div_euclid(area);
-            r[k] = n.rem_euclid(area);
-            step_q[k] = ndx[k].div_euclid(area);
-            step_r[k] = ndx[k].rem_euclid(area);
+        // Seed at the first pixel, then skip any left-clipped pixels.
+        let mut s = [0i32; 5];
+        for k in 0..n_attrs {
+            let sub = ((((xmin as i64) << 16) - lx) * grad[k]) >> 16;
+            s[k] = (left.attr_at(k, y) + sub) as i32 + 0x8000;
         }
-        for x in minx + lo as i32..=minx + hi as i32 {
-            let rgb = if sh.gouraud { [q[0] as i32, q[1] as i32, q[2] as i32] } else { [v0.r, v0.g, v0.b] };
-            let uv = sh.textured.then(|| (q[3] as i32, q[4] as i32));
+        let x0 = xmin.max(ras.clip.0);
+        for k in 0..n_attrs {
+            s[k] = s[k].wrapping_add((x0 - xmin).wrapping_mul(grad[k] as i32));
+        }
+        for x in x0..=xmax {
+            let rgb = if sh.gouraud { [s[0] >> 16, s[1] >> 16, s[2] >> 16] } else { [v[0].r, v[0].g, v[0].b] };
+            let uv = sh.textured.then(|| (s[3] >> 16, s[4] >> 16));
             plot(surface, tex, ras, sh, x, y, rgb, uv);
             for k in 0..n_attrs {
-                q[k] += step_q[k];
-                r[k] += step_r[k];
-                if r[k] >= area {
-                    r[k] -= area;
-                    q[k] += 1;
-                }
+                s[k] = s[k].wrapping_add(grad[k] as i32);
             }
         }
     }
@@ -247,21 +283,47 @@ pub fn quad<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     triangle(surface, tex, r, sh, [v[1], v[2], v[3]]);
 }
 
+/// Line with both endpoints drawn. Positions follow the Bresenham variant
+/// PCSX-Redux documents as hardware-verified (gpu-raster-phase2/10): lines are
+/// walked left to right; x-major lines start from the error term `3dy - dx`
+/// (a pixel-centre bias), y-major lines from the usual midpoint `2dx - dy`,
+/// and the minor axis steps when the error is positive. Gouraud colours are
+/// `c0 + (c1 - c0) * i / steps` in 16.16, truncated, with each colour kept on
+/// its own vertex when the endpoints are swapped.
 pub fn line<S: Surface + ?Sized>(surface: &mut S, r: &Raster, sh: &Shade, a: Vtx, b: Vtx) {
-    let (dx, dy) = (b.x - a.x, b.y - a.y);
-    let steps = dx.abs().max(dy.abs());
-    // Round-half-away-from-zero DDA; both endpoints are drawn.
-    let at = |p: i32, q: i32, i: i32| {
-        if steps == 0 {
-            return p;
-        }
-        let n = (q - p) * i;
-        p + (2 * n + n.signum() * steps) / (2 * steps)
-    };
     let sh = Shade { textured: false, ..*sh };
+    let (a, b) = if b.x < a.x { (b, a) } else { (a, b) };
+    let (dx, dy) = (b.x - a.x, (b.y - a.y).abs());
+    let sy = if b.y < a.y { -1 } else { 1 };
+    let steps = dx.max(dy);
+    let colour = |i: i32| {
+        if !sh.gouraud || steps == 0 {
+            return [a.r, a.g, a.b];
+        }
+        let at = |p: i32, q: i32| ((((p as i64) << 16) + (((q - p) as i64) << 16) * i as i64 / steps as i64) >> 16) as i32;
+        [at(a.r, b.r), at(a.g, b.g), at(a.b, b.b)]
+    };
+    let (mut x, mut y) = (a.x, a.y);
+    // Error term and its increments for a straight and a diagonal step.
+    let x_major = dx >= dy;
+    let (mut err, straight, diag) = if x_major { (3 * dy - dx, 2 * dy, 2 * (dy - dx)) } else { (2 * dx - dy, 2 * dx, 2 * (dx - dy)) };
     for i in 0..=steps {
-        let rgb = if sh.gouraud { [at(a.r, b.r, i), at(a.g, b.g, i), at(a.b, b.b, i)] } else { [a.r, a.g, a.b] };
-        plot(surface, &NoTexture, r, &sh, at(a.x, b.x, i), at(a.y, b.y, i), rgb, None);
+        plot(surface, &NoTexture, r, &sh, x, y, colour(i), None);
+        if err <= 0 {
+            err += straight;
+        } else {
+            err += diag;
+            if x_major {
+                y += sy;
+            } else {
+                x += 1;
+            }
+        }
+        if x_major {
+            x += 1;
+        } else {
+            y += sy;
+        }
     }
 }
 
