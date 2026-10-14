@@ -68,6 +68,9 @@ pub struct Bus {
     pub frames: u64,
     /// When false, devices do not raise interrupts (lockstep supplies them).
     pub irq_sources: bool,
+    pub cdrom: crate::cdrom::Cdrom,
+    cdrom_irq: bool,
+    pub sio0: crate::sio0::Sio0,
     /// Reads of I/O registers no device handles yet: physical address -> count.
     pub unhandled_reads: std::collections::BTreeMap<u32, u64>,
 }
@@ -107,6 +110,9 @@ impl Bus {
             next_vblank: 0,
             frames: 0,
             irq_sources: true,
+            cdrom: Default::default(),
+            cdrom_irq: false,
+            sio0: Default::default(),
             unhandled_reads: Default::default(),
         }
     }
@@ -146,6 +152,14 @@ impl Bus {
         let dotclock = ((53_693_175u64 << 16) / div) / SYSCLK;
         let irq = self.timers.tick(cycles, crate::timers::Rates { dotclock, hblank });
         self.raise_irq(irq);
+        if self.sio0.tick(self.now) {
+            self.raise_irq(1 << 7);
+        }
+        let cd = self.cdrom.tick(self.now);
+        if cd && !self.cdrom_irq {
+            self.raise_irq(1 << 2);
+        }
+        self.cdrom_irq = cd;
         if self.now >= self.next_vblank {
             self.next_vblank += self.frame_cycles();
             self.frames += 1;
@@ -257,6 +271,20 @@ impl Bus {
                 }
             }
             2 => self.dma_gpu(madr, bcr, chcr),
+            3 => {
+                let words = if (chcr >> 9) & 3 == 0 {
+                    if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF }
+                } else {
+                    (bcr & 0xFFFF) * (bcr >> 16).max(1)
+                };
+                let mut addr = madr & 0x1F_FFFC;
+                for _ in 0..words {
+                    let w = self.cdrom.dma_word();
+                    let o = addr as usize;
+                    self.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
+                    addr = (addr + 4) & 0x1F_FFFC;
+                }
+            }
             _ => self.unmodelled_dma.push(UnmodelledDma { channel: ch, madr, bcr, chcr }),
         }
         // Transfer done: clear start/trigger.
@@ -316,6 +344,20 @@ impl Bus {
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
+            0x1F80_1040..=0x1F80_104F => {
+                let v = self.sio0.read(p - 0x1F80_1040);
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
+                v
+            }
+            0x1F80_1800..=0x1F80_1803 => {
+                let now = self.now;
+                let mut v = 0u32;
+                for i in 0..n as u32 {
+                    v |= (self.cdrom.read((p + i).min(0x1F80_1803) - 0x1F80_1800, now) as u32) << (8 * i);
+                }
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
+                v
+            }
             // SPUSTAT: mode bits 0-5 mirror SPUCNT; never busy (no SPU model yet).
             0x1F80_1DAE => {
                 let v = (le(&self.io, 0x1F80_1DAA - 0x1F80_1000) & 0x3F) >> (8 * (p & 1));
@@ -324,7 +366,7 @@ impl Bus {
             }
             0x1F80_1000..=0x1F80_2FFF => {
                 let v = le(&self.io, (p - 0x1F80_1000) as usize);
-                let handled = (0x1F80_1C00..0x1F80_1E00).contains(&p) || (0x1F80_1070..0x1F80_1078).contains(&p) || (0x1F80_1080..0x1F80_1100).contains(&p);
+                let handled = (0x1F80_1C00..0x1F80_1E00).contains(&p) || (0x1F80_1800..0x1F80_1804).contains(&p) || (0x1F80_1070..0x1F80_1078).contains(&p) || (0x1F80_1080..0x1F80_1100).contains(&p);
                 if !handled {
                     *self.unhandled_reads.entry(p).or_default() += 1;
                 }
@@ -350,7 +392,13 @@ impl Bus {
             0x1F00_0000..=0x1F7F_FFFF => {}
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => put(&mut self.scratch, (p - 0x1F80_0000) as usize),
             0x1F80_1000..=0x1F80_2FFF => {
-                if (TIMERS..TIMERS + 0x30).contains(&p) {
+                if (0x1F80_1040..0x1F80_1050).contains(&p) {
+                    let now = self.now;
+                    self.sio0.write(p - 0x1F80_1040, value, now);
+                } else if (0x1F80_1800..0x1F80_1804).contains(&p) {
+                    let now = self.now;
+                    self.cdrom.write(p - 0x1F80_1800, value as u8, now);
+                } else if (TIMERS..TIMERS + 0x30).contains(&p) {
                     self.timers.write(((p - TIMERS) >> 4) as usize, p & 0xC, value);
                 } else if p == GP0 && width == Width::Word {
                     self.gpu.gp0(value);

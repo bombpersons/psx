@@ -6,8 +6,10 @@
 //! comparison against PCSX-Redux (`psx lockstep`), not assumed.
 
 pub mod bus;
+pub mod cdrom;
 pub mod cpu;
 pub mod disasm;
+pub mod sio0;
 pub mod timers;
 
 pub use bus::{Bus, Width};
@@ -47,6 +49,11 @@ impl Machine {
             n += 1;
         }
         n
+    }
+
+    /// Insert a disc (CUE/BIN/ISO via `psx-media`); `None` means an empty drive.
+    pub fn insert_disc(&mut self, disc: Option<psx_media::Disc>) {
+        self.bus.cdrom = cdrom::Cdrom::new(disc);
     }
 
     /// Take an external interrupt now and keep IP2 asserted until acknowledged.

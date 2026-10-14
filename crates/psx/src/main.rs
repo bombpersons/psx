@@ -152,6 +152,9 @@ enum Command {
     Native {
         #[arg(long)]
         bios: PathBuf,
+        /// Disc image to insert (CUE/BIN/ISO); omit for an empty drive.
+        #[arg(long)]
+        disc: Option<PathBuf>,
         #[arg(long, default_value_t = 300)]
         frames: u64,
         #[arg(long, default_value_t = 2_000_000_000)]
@@ -189,8 +192,8 @@ fn main() -> ExitCode {
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }
-    if let Command::Native { bios, frames, max_steps, dump } = &cli.command {
-        let (ok, v) = native::run(bios, *frames, *max_steps, dump.as_deref());
+    if let Command::Native { bios, disc, frames, max_steps, dump } = &cli.command {
+        let (ok, v) = native::run(bios, disc.as_deref(), *frames, *max_steps, dump.as_deref());
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }
