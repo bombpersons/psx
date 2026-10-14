@@ -72,8 +72,8 @@ fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[crate:
                 }
             }
         }
-        m.step();
-        steps += 1;
+        // The rest of this frame needs no per-instruction work.
+        steps += m.run_frame_steps(max_steps - steps);
     }
     steps
 }

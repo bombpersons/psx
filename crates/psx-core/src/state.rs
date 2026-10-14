@@ -196,6 +196,32 @@ mod tests {
     }
 
     #[test]
+    fn frame_batched_run_equals_single_steps() {
+        let mut single = Machine::new(counting_bios());
+        let mut batched = Machine::new(counting_bios());
+        // Crosses several vblanks (the counting loop runs from BIOS at 22 cycles/instruction).
+        let mut n = 0;
+        while n < 200_000 {
+            n += batched.run_frame_steps(200_000 - n);
+        }
+        for _ in 0..200_000 {
+            single.step();
+        }
+        assert!(batched.bus.frames > 3);
+        assert_eq!(single.save_state(None), batched.save_state(None));
+        assert_eq!(batched.run_frames(2, u64::MAX), {
+            let target = single.bus.frames + 2;
+            let mut k = 0;
+            while single.bus.frames < target {
+                single.step();
+                k += 1;
+            }
+            k
+        });
+        assert_eq!(single.save_state(None), batched.save_state(None));
+    }
+
+    #[test]
     fn rejects_other_bios_and_garbage() {
         let saved = Machine::new(counting_bios()).save_state(None);
         assert!(matches!(Machine::load_state(&saved, vec![0; 16]), Err(StateError::BiosMismatch { .. })));
