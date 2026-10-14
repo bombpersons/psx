@@ -16,12 +16,6 @@ fn err(code: &str, message: impl std::fmt::Display) -> (bool, Value) {
     (false, json!({"error": {"code": code, "message": message.to_string()}}))
 }
 
-#[derive(serde::Deserialize)]
-struct ReplayEvent {
-    frame: u64,
-    buttons: Vec<String>,
-}
-
 fn sha256(bytes: &[u8]) -> String {
     psx_redux::sha256_bytes(bytes)
 }
@@ -79,7 +73,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             // Reinsert without resetting the drive: its state came from the file.
             m.bus.cdrom.disc = disc;
             if a.cards.given() {
-                return err("invalid_arguments", "memory cards are part of the save state; drop --memcard1/--memcard2 with --from-state");
+                return err("invalid_arguments", "memory cards and the pad are part of the save state; drop --memcard1/--memcard2/--pad with --from-state");
             }
             m
         }
@@ -87,6 +81,10 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             let mut m = Machine::new(bios);
             match a.cards.load() {
                 Ok(cards) => m.bus.sio0.cards = cards,
+                Err(e) => return err("invalid_arguments", e),
+            }
+            match a.cards.pad_kind() {
+                Ok(k) => m.bus.sio0.pad.kind = k,
                 Err(e) => return err("invalid_arguments", e),
             }
             if let Some(bytes) = &exe {
@@ -99,29 +97,11 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             m
         }
     };
-    // Replay events: held buttons from each frame (frames counted from the run start).
-    let mut events: Vec<(u64, u16)> = Vec::new();
-    if let Some(p) = &a.replay {
-        let parsed: Result<Vec<ReplayEvent>, String> = std::fs::read_to_string(p)
-            .map_err(|e| e.to_string())
-            .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
-        match parsed {
-            Ok(ev) => {
-                for e in ev {
-                    let mut bits = 0u16;
-                    for b in &e.buttons {
-                        match psx_core::sio0::button_from_name(b) {
-                            Some(v) => bits |= v,
-                            None => return err("invalid_arguments", format!("unknown button {b}")),
-                        }
-                    }
-                    events.push((e.frame, bits));
-                }
-            }
-            Err(e) => return err("invalid_arguments", format!("replay {}: {e}", p.display())),
-        }
-    }
-    events.sort_by_key(|e| e.0);
+    // Replay events: pad state from each frame (frames counted from the run start).
+    let events = match a.replay.as_deref().map(crate::replay::load).transpose() {
+        Ok(e) => e.unwrap_or_default(),
+        Err(e) => return err("invalid_arguments", e),
+    };
     for w in &a.watches {
         let (addr, width) = w.split_once(':').unwrap_or((w, "4"));
         let Ok(addr) = u32::from_str_radix(addr.trim_start_matches("0x").trim_start_matches("0X"), 16) else {
@@ -169,8 +149,8 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     let mut steps: u64 = 0;
     while m.bus.frames < target {
         let rel = m.bus.frames - start_frame;
-        while next < events.len() && events[next].0 <= rel {
-            m.bus.sio0.buttons = events[next].1;
+        while next < events.len() && events[next].frame <= rel {
+            crate::replay::apply(&mut m, &events[next]);
             next += 1;
         }
         let info = m.step();
@@ -276,6 +256,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             "event_logs": event_logs,
             "trace": trace_report,
             "memcards": cards,
+            "pad": {"kind": format!("{:?}", m.bus.sio0.pad.kind).to_lowercase(), "analog": m.bus.sio0.pad.analog, "locked": m.bus.sio0.pad.locked, "motors": [m.bus.sio0.pad.motors.0, m.bus.sio0.pad.motors.1]},
             "bios_call_counts": m.bus.obs.bios_counts,
             "files": files,
             "identity": {

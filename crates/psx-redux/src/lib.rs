@@ -129,6 +129,8 @@ pub struct Job {
     pub trace_bios: bool,
     /// Per-log event cap (cd.jsonl, bios.jsonl).
     pub max_events: u32,
+    /// Port 1 is Redux's analog pad (DualShock-style config commands) instead of digital.
+    pub analog_pad: bool,
 }
 
 pub const BUTTONS: [&str; 14] =
@@ -308,7 +310,17 @@ pub fn run(backend: &Backend, job: &Job, dir: &Path) -> Result<JobOutput> {
     // clock; Speed <= 0 removes the realtime limit. Neither changes emulated state.
     let speed = if job.realtime { 1 } else { 0 };
     let cfg = dir.join("config/pcsx.json");
-    io(&cfg, std::fs::write(&cfg, format!("{{\"SPU\":{{\"NullSync\":true,\"Speed\":{speed}}}}}\n")))?;
+    // Pad 1 connected (digital = 0, analog = 1); pad 2 disconnected, matching the native core.
+    let device = job.analog_pad as u8;
+    io(
+        &cfg,
+        std::fs::write(
+            &cfg,
+            format!(
+                "{{\"SPU\":{{\"NullSync\":true,\"Speed\":{speed}}},\"pads\":[{{\"Connected\":true,\"DeviceType\":{device},\"ID\":0}},{{\"Connected\":false,\"ID\":1}}]}}\n"
+            ),
+        ),
+    )?;
     let params = dir.join("params.lua");
     io(&params, std::fs::write(&params, params_lua(job, state_copy.as_deref())?))?;
 
@@ -405,6 +417,7 @@ mod tests {
             trace_cd: false,
             trace_bios: false,
             max_events: 200_000,
+            analog_pad: false,
         };
         let lua = params_lua(&job, Some(Path::new("/tmp/a \"b\".bin"))).unwrap();
         assert!(lua.contains("frame = 10, buttons = { \"CROSS\", \"LEFT\" }"));

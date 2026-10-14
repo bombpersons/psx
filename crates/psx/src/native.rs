@@ -26,6 +26,8 @@ pub struct Options<'a> {
     pub snapshot_every: Option<u64>,
     /// Capture the SPU mix to a 44.1 kHz stereo WAV.
     pub wav: Option<&'a Path>,
+    /// `digital` or `dualshock`.
+    pub pad: &'a str,
 }
 
 pub(crate) fn write_wav(path: &Path, samples: &[i16]) -> std::io::Result<()> {
@@ -49,14 +51,8 @@ pub(crate) fn write_wav(path: &Path, samples: &[i16]) -> std::io::Result<()> {
     std::fs::write(path, b)
 }
 
-#[derive(serde::Deserialize)]
-struct ReplayEvent {
-    frame: u64,
-    buttons: Vec<String>,
-}
-
 /// Run until `target` frames, applying replay events and periodic snapshots.
-fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[(u64, u16)], snap: Option<(u64, &Path)>) -> u64 {
+fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[crate::replay::Input], snap: Option<(u64, &Path)>) -> u64 {
     let mut steps = 0;
     let mut next = 0;
     let mut last_frame = u64::MAX;
@@ -64,8 +60,8 @@ fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[(u64, 
         let f = m.bus.frames;
         if f != last_frame {
             last_frame = f;
-            while next < events.len() && events[next].0 <= f {
-                m.bus.sio0.buttons = events[next].1;
+            while next < events.len() && events[next].frame <= f {
+                crate::replay::apply(m, &events[next]);
                 next += 1;
             }
             if let Some((every, prefix)) = snap {
@@ -83,38 +79,20 @@ fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[(u64, 
 }
 
 pub fn run(o: Options) -> (bool, Value) {
-    let Options { bios: bios_path, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every, wav } = o;
-    let events: Vec<(u64, u16)> = match replay {
-        None => Vec::new(),
-        Some(p) => {
-            let parsed: Result<Vec<ReplayEvent>, String> = std::fs::read_to_string(p)
-                .map_err(|e| e.to_string())
-                .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
-            match parsed {
-                Ok(ev) => {
-                    let mut out = Vec::new();
-                    for e in ev {
-                        let mut bits = 0u16;
-                        for b in &e.buttons {
-                            match psx_core::sio0::button_from_name(b) {
-                                Some(v) => bits |= v,
-                                None => return (false, json!({"error": {"code": "invalid_arguments", "message": format!("unknown button {b}")}})),
-                            }
-                        }
-                        out.push((e.frame, bits));
-                    }
-                    out.sort_by_key(|e| e.0);
-                    out
-                }
-                Err(e) => return (false, json!({"error": {"code": "invalid_arguments", "message": format!("replay: {e}")}})),
-            }
-        }
+    let Options { bios: bios_path, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every, wav, pad } = o;
+    let events = match replay.map(crate::replay::load).transpose() {
+        Ok(e) => e.unwrap_or_default(),
+        Err(e) => return (false, json!({"error": {"code": "invalid_arguments", "message": e}})),
     };
     let bios = match std::fs::read(bios_path) {
         Ok(b) => b,
         Err(e) => return (false, json!({"error": {"code": "io_error", "message": format!("{}: {e}", bios_path.display())}})),
     };
     let mut m = Machine::new(bios);
+    match psx_core::pad::PadKind::from_name(pad) {
+        Some(k) => m.bus.sio0.pad.kind = k,
+        None => return (false, json!({"error": {"code": "invalid_arguments", "message": format!("unknown pad {pad:?} (digital | dualshock)")}})),
+    }
     if let Some(d) = disc {
         match psx_media::Disc::open(d) {
             Ok(d) => m.insert_disc(Some(d)),

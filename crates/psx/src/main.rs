@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 mod lockstep;
 mod native;
 mod provenance;
+mod replay;
 mod run;
 mod run_native;
 mod template;
@@ -211,6 +212,9 @@ enum Command {
         /// Capture the SPU output to a WAV file.
         #[arg(long)]
         wav: Option<PathBuf>,
+        /// Controller in port 1: `digital` (default) or `dualshock`.
+        #[arg(long, default_value = "digital")]
+        pad: String,
     },
     /// Disassemble a PS-X EXE (file or `image.cue::/PATH`) at a RAM address range.
     Disasm {
@@ -253,7 +257,7 @@ fn main() -> ExitCode {
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }
-    if let Command::Native { bios, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every, wav } = &cli.command {
+    if let Command::Native { bios, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every, wav, pad } = &cli.command {
         let hex = |b: &Option<String>| b.as_deref().and_then(|b| u32::from_str_radix(b.trim_start_matches("0x").trim_start_matches("0X"), 16).ok());
         let (brk, watch) = (hex(brk), hex(watch));
         let (ok, v) = native::run(native::Options {
@@ -269,6 +273,7 @@ fn main() -> ExitCode {
             replay: replay.as_deref(),
             snapshot_every: *snapshot_every,
             wav: wav.as_deref(),
+            pad,
         });
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
