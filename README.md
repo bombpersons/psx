@@ -17,6 +17,7 @@ PlayStation reverse-engineering toolkit for agents and people. Sibling of
 | `psx addr 0x80010000` | Segment, memory region and folded offset |
 | `psx run <disc\|exe> --bios B --frames N [...]` | Bounded run in an isolated PCSX-Redux process. Captures RAM, VRAM, screen, registers and an optional state. `--watch ADDR[:W]` reports CPU/DMA writers with PC and value; `--trace-cd` and `--trace-bios` log CD and BIOS activity; `--replay`, `--from-state`/`--save-state`; `--fast` uses the dynarec (no observation) |
 | `psx loads <run_dir> --disc <cue>` | Turns a `--trace-cd` run into disc file → RAM spans, verified by content |
+| `psx symbols <exe\|disc::/PATH>` | Name PsyQ library functions by signature (needs a local `external/psx_psyq_signatures`); Ghidra and `.sym` output. Pass the `.symbols.json` to `run`/`loads --symbols` to name PCs, checked against RAM residency |
 | `psx template create DIR [--name N]` | Native Bevy game starter (see below) |
 
 Input images can be `.cue`, a raw `.bin` (single data track) or a cooked `.iso`.

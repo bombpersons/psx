@@ -348,9 +348,27 @@ pub fn annotate(runs: &mut [Run], disc: &Disc, fs: Option<&FileSystem>, ram: Opt
     }
 }
 
+/// Name a PC only where its executable's code is resident: the bytes match the
+/// final RAM, and this run did not load that executable over the PC *after* the
+/// event (which would mean other code was there at the time).
+fn named(symbols: &[crate::ScopedSymbols], runs: &[Run], pc: u32, frame: u32, ram: Option<&[u8]>) -> Value {
+    let Some((name, check, exe)) = crate::name_pc(symbols, pc, ram) else { return Value::Null };
+    let pc_phys = pc & 0x1F_FFFF;
+    let loaded_later = runs.iter().any(|r| {
+        r.file.as_deref().is_some_and(|f| f.trim_start_matches('/').eq_ignore_ascii_case(&exe))
+            && r.first_frame > frame
+            && (r.ram & 0x1F_FFFF) <= pc_phys
+            && pc_phys < (r.ram & 0x1F_FFFF) + r.bytes
+    });
+    if loaded_later {
+        return Value::Null;
+    }
+    json!({"name": name, "exe": exe, "check": check.as_str()})
+}
+
 /// Runs grouped by (file, initiating PC) in order of first appearance: the
 /// readable "what loaded what, where, when" view.
-fn spans(runs: &[Run]) -> Vec<Value> {
+fn spans(runs: &[Run], symbols: &[crate::ScopedSymbols], ram: Option<&[u8]>) -> Vec<Value> {
     struct Span {
         file: Option<String>,
         pc: u32,
@@ -417,6 +435,7 @@ fn spans(runs: &[Run]) -> Vec<Value> {
             json!({
                 "file": s.file,
                 "initiating_pc": h(s.pc),
+                "initiating_function": named(symbols, runs, s.pc, s.first_frame, ram),
                 "frames": [s.first_frame, s.last_frame],
                 "file_bytes": s.file_lo.zip(s.file_hi).map(|(a, b)| [a, b]),
                 "ram": s.ram.iter().map(|(a, b)| [h(*a), h(*b)]).collect::<Vec<_>>(),
@@ -429,7 +448,7 @@ fn spans(runs: &[Run]) -> Vec<Value> {
         .collect()
 }
 
-pub fn report(run_dir: &Path, disc_path: &Path) -> Result<Value, String> {
+pub fn report(run_dir: &Path, disc_path: &Path, symbols: &[crate::ScopedSymbols]) -> Result<Value, String> {
     let disc = Disc::open(disc_path).map_err(|e| e.to_string())?;
     let (loads, notes) = decode(&run_dir.join("cd.jsonl"), &disc).map_err(|e| format!("cd.jsonl: {e}"))?;
     let fs = FileSystem::read(&disc).ok();
@@ -450,7 +469,7 @@ pub fn report(run_dir: &Path, disc_path: &Path) -> Result<Value, String> {
             "ambiguous": loads.iter().filter(|l| l.lba_evidence == "ambiguous").count(),
             "inferred": loads.iter().filter(|l| l.lba_evidence == "inferred").count(),
         },
-        "spans": spans(&runs),
+        "spans": spans(&runs, symbols, ram.as_deref()),
         "runs": runs,
         "files": by_file.into_iter().map(|(f, (bytes, runs))| json!({"file": f, "bytes": bytes, "runs": runs})).collect::<Vec<_>>(),
         "notes": notes,

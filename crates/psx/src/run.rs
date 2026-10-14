@@ -20,6 +20,7 @@ pub struct RunArgs {
     pub fast: bool,
     pub trace_cd: bool,
     pub trace_bios: bool,
+    pub symbols: Vec<PathBuf>,
 }
 
 fn err(code: &str, message: impl std::fmt::Display) -> Value {
@@ -124,7 +125,23 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         }
     }
     let complete = out.report.termination == "frames_reached" && out.report.reached_frames >= a.frames;
-    let shown_hits: Vec<_> = out.hits.iter().take(64).collect();
+    let scopes = match crate::load_symbols(&a.symbols) {
+        Ok(t) => t,
+        Err(e) => return (false, err(e.code(), e)),
+    };
+    let ram = out.ram().ok();
+    let shown_hits: Vec<Value> = out
+        .hits
+        .iter()
+        .take(64)
+        .map(|h| {
+            let mut v = serde_json::to_value(h).unwrap();
+            if let Some((name, check, exe)) = h.pc.and_then(|pc| crate::name_pc(&scopes, pc, ram.as_deref())) {
+                v["function"] = json!({"name": name, "exe": exe, "check": check.as_str()});
+            }
+            v
+        })
+        .collect();
     (
         complete,
         json!({
