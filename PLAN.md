@@ -107,6 +107,17 @@ commands:
 > 4. PsyQ library signature matching to name functions, then export symbols to Ghidra.
 > 5. VRAM/texture viewer and GPU packet log tied to the submitting code.
 > 6. Watch/trace, deterministic continuation, MCP and an artifact store.
+>
+> **Reconstruction side (done 2026-10-14):**
+> - `templates/psx-bevy` + `psx template create`: GPU-based Bevy materials give the PS1
+>   look without PS1 resource limits. Game code stays idiomatic Bevy, with 2D and 3D.
+> - `psx-gpu` (CPU, faithful) is kept for evidence work: replaying and diffing GP0 streams and decoding VRAM.
+> - `psx-gte` supports exact GTE comparisons.
+>
+> **Next steps:**
+> - TIM/TMD loaders that produce Bevy `Image`/`Mesh`.
+> - Optional 15-bit quantisation pass for sprites.
+> - Palette (CLUT) swap material for 2D.
 
 
 ### M0: Environment (≈1 day)

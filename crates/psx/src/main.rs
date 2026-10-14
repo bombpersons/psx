@@ -13,6 +13,8 @@ use psx_media::system_cnf::{SystemCnf, DEFAULT_BOOT};
 use psx_media::{memmap, Disc, MediaError, PsxExe};
 use serde_json::{json, Value};
 
+mod template;
+
 #[derive(Parser)]
 #[command(name = "psx", version, about = "PlayStation reverse-engineering toolkit")]
 struct Cli {
@@ -54,10 +56,26 @@ enum Command {
         #[arg(long, default_value_t = 64)]
         preview: usize,
     },
+    /// Create a standalone native Bevy game project with the PS1 look.
+    Template {
+        #[command(subcommand)]
+        action: TemplateAction,
+    },
     /// Classify a CPU address (segment, region, folded offset).
     Addr {
         /// Hex address, e.g. 0x80010000.
         address: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TemplateAction {
+    /// Write the psx-bevy starter into an empty or new directory.
+    Create {
+        dest: PathBuf,
+        /// Cargo package name (defaults to the directory name).
+        #[arg(long)]
+        name: Option<String>,
     },
 }
 
@@ -88,6 +106,7 @@ fn run(cmd: Command) -> R {
         Command::Extract { image, path, all, out } => extract(&image, path.as_deref(), all, &out),
         Command::Exe { source } => exe_cmd(&source),
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
+        Command::Template { action: TemplateAction::Create { dest, name } } => template::create(&dest, name.as_deref()),
         Command::Addr { address } => {
             let a = u32::from_str_radix(address.trim_start_matches("0x").trim_start_matches("0X"), 16)
                 .map_err(|_| MediaError::Malformed(format!("bad hex address {address}")))?;
