@@ -213,7 +213,10 @@ pub fn run(o: Options) -> (bool, Value) {
             "unhandled_io_reads_top": unhandled.iter().take(15).map(|(a, n)| json!({"addr": format!("0x{a:08X}"), "reads": n})).collect::<Vec<_>>(),
             "unmodelled_dma": m.bus.unmodelled_dma.len(),
             "audio": audio,
-            "spu": {"active_voices": m.bus.spu.active_voices(), "main_volume": [m.bus.spu.read16(0x180), m.bus.spu.read16(0x182)], "main_volume_current": [m.bus.spu.read16(0x1B8), m.bus.spu.read16(0x1BA)], "spucnt": m.bus.spu.read16(0x1AA)},
+            "spu": {"active_voices": m.bus.spu.active_voices(), "main_volume": [m.bus.spu.read16(0x180), m.bus.spu.read16(0x182)], "main_volume_current": [m.bus.spu.read16(0x1B8), m.bus.spu.read16(0x1BA)], "spucnt": m.bus.spu.read16(0x1AA),
+                "reverb": {"master": m.bus.spu.read16(0x1AA) & 0x80 != 0, "cd": m.bus.spu.read16(0x1AA) & 4 != 0,
+                    "eon": m.bus.spu.read16(0x198) as u32 | (m.bus.spu.read16(0x19A) as u32) << 16,
+                    "work_area": (m.bus.spu.read16(0x1A2) as u32) << 3, "out": [m.bus.spu.read16(0x184) as i16, m.bus.spu.read16(0x186) as i16]}},
             "cdrom": {"disc": disc, "sectors_delivered": m.bus.cdrom.sectors_delivered, "xa_sectors": m.bus.cdrom.xa_sectors, "unknown_commands": m.bus.cdrom.unknown_commands,
                 "recent_commands": m.bus.cdrom.recent.iter().rev().take(24).rev().map(|r| format!("frame~{} {:02X} {:02X?} -> INT{:?} x{}", r.time / m.bus.frame_cycles(), r.command, r.params, r.ints, r.repeats)).collect::<Vec<_>>()},
             "last_frames_profile": {
