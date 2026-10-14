@@ -175,7 +175,7 @@ fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i
                 let a = &c["area"];
                 // Fills ignore the drawing offset: absolute VRAM, made relative here.
                 elements.push(json!({"kind": "sprite", "image": null, "rect": [num(&a[0]) - ox, num(&a[1]) - oy, num(&a[2]), num(&a[3])],
-                    "color": colour(&verts[0]).map(|x| x), "command": c["index"]}));
+                    "color": colour(verts[0]), "command": c["index"]}));
             }
             "rect" if !verts.is_empty() => {
                 let (x, y) = pos(verts[0]);
