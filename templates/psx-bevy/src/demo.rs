@@ -6,11 +6,12 @@
 use crate::{
     GameSystems,
     controller::{Button, ControllerState},
-    psx::{PsxBlend, PsxLook, PsxMaterial, PsxScreen, PsxView},
+    psx::{PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxScreen, PsxSprite, PsxStp, PsxView, psx_indices, psx_palette, rgb15},
 };
 use bevy::{
     asset::RenderAssetUsages,
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor},
+    mesh::{Indices, PrimitiveTopology},
     pbr::{DistanceFog, FogFalloff},
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -20,8 +21,8 @@ pub struct DemoPlugin;
 
 impl Plugin for DemoPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup)
-            .add_systems(FixedUpdate, (move_player, spin, toggle_look).in_set(GameSystems::Game))
+        app.add_systems(Startup, (setup, setup_2d))
+            .add_systems(FixedUpdate, (move_player, spin, toggle_look, cycle_palette, flash_gem).in_set(GameSystems::Game))
             .add_systems(FixedUpdate, update_hud.in_set(GameSystems::Finish))
             .add_systems(Update, follow_camera);
     }
@@ -139,6 +140,98 @@ fn setup(
     }
 }
 
+/// The gem's palette: row 0 normal (entries 1-4 cycle), row 1 a white flash.
+#[derive(Resource)]
+struct GemPalette(Handle<Image>);
+
+/// 2D on the PS1 screen: a paletted sprite (CLUT swap, palette cycling and
+/// a per-texel STP highlight), a Gouraud-shaded `Mesh2d` (dithered) and a
+/// smooth 24-bit gradient sprite (cut to 15 bits by `PsxLook::quantize`).
+fn setup_2d(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut sprites: ResMut<Assets<PsxSprite>>,
+    mut materials2d: ResMut<Assets<PsxMaterial2d>>,
+    screen: Res<PsxScreen>,
+) {
+    let top = screen.height as f32 / 2.0 - 16.0;
+    // 16×16 gem as 8-bit indices: 0 transparent, 1-4 body bands, 5 outline, 6 highlight.
+    let indices = (0..16 * 16)
+        .map(|i| {
+            let (x, y) = ((i % 16) as f32 - 7.5, (i / 16) as f32 - 7.5);
+            match x.abs() + y.abs() {
+                d if d > 8.0 => 0,
+                d if d > 7.0 => 5,
+                _ if (x + 2.5).abs() + (y + 2.5).abs() < 2.0 => 6,
+                d => 1 + (d as u8 / 2) % 4,
+            }
+        })
+        .collect();
+    let body = [rgb15(4, 10, 31), rgb15(8, 16, 31), rgb15(14, 22, 31), rgb15(20, 28, 31)];
+    // Index 6 has the STP bit (8000h): with `PsxStp::Texel` only it blends (additively).
+    let normal = [0, body[0], body[1], body[2], body[3], rgb15(2, 3, 10), 0x8000 | rgb15(16, 16, 16)];
+    let flash = [0, 0x7FFF, 0x7FFF, 0x7FFF, 0x7FFF, rgb15(31, 31, 31), 0x7FFF];
+    let palette = images.add(psx_palette(&[&normal, &flash]));
+    commands.insert_resource(GemPalette(palette.clone()));
+    commands.spawn((
+        Sprite::from_image(images.add(psx_indices(16, 16, indices))),
+        SpriteMaterial(sprites.add(PsxSprite { blend: PsxBlend::Add, stp: PsxStp::Texel, ..PsxSprite::indexed(palette, 0) })),
+        Transform::from_xyz(-120.0, top, 0.0).with_scale(Vec3::splat(2.0)),
+    ));
+
+    // Gouraud quad: vertex colours interpolate; `PsxLook::dither` dithers them.
+    let quad = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[-40.0, -8.0, 0.0], [40.0, -8.0, 0.0], [-40.0, 8.0, 0.0], [40.0, 8.0, 0.0]])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0, 1.0], [1.0, 1.0], [0.0, 0.0], [1.0, 0.0]])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.02, 0.0, 0.1, 1.0], [0.6, 0.1, 0.0, 1.0], [0.0, 0.05, 0.2, 1.0], [0.9, 0.5, 0.0, 1.0]])
+        .with_inserted_indices(Indices::U32(vec![0, 1, 2, 1, 3, 2]));
+    commands.spawn((
+        Mesh2d(meshes.add(quad)),
+        MeshMaterial2d(materials2d.add(PsxMaterial2d::default())),
+        Transform::from_xyz(-40.0, top, 0.0),
+    ));
+
+    // A plain sprite with a smooth 24-bit gradient: banding shows the 15-bit screen.
+    let gradient: Vec<u8> = (0..8).flat_map(|_| (0..80u32).flat_map(|x| [(x * 3) as u8, (x * 2) as u8, 40, 255])).collect();
+    let gradient = Image::new(
+        Extent3d { width: 80, height: 8, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        gradient,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    commands.spawn((
+        Sprite { custom_size: Some(Vec2::new(80.0, 16.0)), ..Sprite::from_image(images.add(gradient)) },
+        Transform::from_xyz(60.0, top, 0.0),
+    ));
+}
+
+/// Classic palette cycling: rotate entries 1-4 of the gem's normal palette.
+fn cycle_palette(clock: Res<crate::GameClock>, palette: Res<GemPalette>, mut images: ResMut<Assets<Image>>) {
+    if !clock.frame.is_multiple_of(8) {
+        return;
+    }
+    if let Some(mut image) = images.get_mut(&palette.0)
+        && let Some(data) = image.data.as_mut()
+    {
+        // Row 0, RGBA8 entries 1..=4.
+        data[4..20].rotate_left(4);
+    }
+}
+
+/// Circle swaps the gem to its flash palette (a CLUT swap: one field).
+fn flash_gem(pad: Res<ControllerState>, gems: Query<&SpriteMaterial<PsxSprite>>, mut sprites: ResMut<Assets<PsxSprite>>) {
+    let row = u32::from(pad.held(Button::Circle));
+    for gem in &gems {
+        if sprites.get(&gem.0).is_some_and(|s| s.palette_row != row)
+            && let Some(mut sprite) = sprites.get_mut(&gem.0)
+        {
+            sprite.palette_row = row;
+        }
+    }
+}
+
 /// Gameplay runs at a fixed rate; speeds are per tick.
 fn move_player(pad: Res<ControllerState>, mut player: Query<&mut Transform, With<Player>>) {
     let dir = pad.direction();
@@ -159,8 +252,7 @@ fn spin(mut q: Query<(&Spin, &mut Transform)>) {
 fn toggle_look(pad: Res<ControllerState>, mut look: ResMut<PsxLook>) {
     if pad.pressed(Button::Triangle) {
         let on = !look.vertex_snap;
-        look.vertex_snap = on;
-        look.dither = on;
+        *look = PsxLook { vertex_snap: on, dither: on, quantize: on };
     }
 }
 
