@@ -61,6 +61,11 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         "redux" => {}
         other => return (false, err("invalid_arguments", format!("unknown backend {other:?} (redux | native)"))),
     }
+    if let Some(p) = &a.from_state {
+        if std::fs::read(p).is_ok_and(|b| b.starts_with(psx_core::state::MAGIC)) {
+            return (false, err("invalid_state", format!("{} is a psx-core state: use --backend native", p.display())));
+        }
+    }
     let mut backend = match Backend::from_project(root) {
         Ok(b) => b,
         Err(e) => return (false, err(e.code(), e)),

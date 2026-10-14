@@ -7,10 +7,14 @@ license.workspace = true
 description = "Native PlayStation emulation core for the psx toolkit (in development)"
 
 [dependencies]
+flate2 = "1"
+postcard = { version = "1", features = ["use-std"] }
 psx-gpu = { workspace = true }
 psx-gte = { workspace = true }
 psx-media = { workspace = true }
 serde = { workspace = true }
+serde_json.workspace = true
+sha2.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

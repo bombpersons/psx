@@ -45,23 +45,31 @@ pub struct IoAccess {
     pub value: u32,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Bus {
     pub ram: Vec<u8>,
+    #[serde(with = "crate::state::big_array")]
     pub scratch: [u8; SCRATCH_SIZE],
+    /// Not saved: restored from the BIOS file (its hash is in the state header).
+    #[serde(skip)]
     pub bios: Vec<u8>,
     /// Physical 0x1F801000..0x1F803000 as a register file.
     pub io: Vec<u8>,
     pub cache_control: u32,
     /// I/O accesses since the last [`Bus::take_io_log`] (only when `log_io` is set).
+    #[serde(skip)]
     io_log: Vec<IoAccess>,
+    #[serde(skip)]
     pub log_io: bool,
     /// Set when software writes I_STAT; cleared by [`Bus::take_irq_ack`].
     irq_acknowledged: bool,
     /// Started transfers with no device model (their RAM/device effects are missing).
+    #[serde(skip)]
     pub unmodelled_dma: Vec<UnmodelledDma>,
     /// MDEC-out (channel 1) transfer waiting for decoder output: (madr, bcr, chcr, words).
     pending_mdec_out: Option<(u32, u32, u32, u32)>,
     /// The most recent DMA transfers (channel, madr, bcr, chcr), newest last.
+    #[serde(skip)]
     pub recent_dma: std::collections::VecDeque<UnmodelledDma>,
     pub gpu: psx_gpu::Gpu,
     /// GP1(00h)/(01h) etc. are not tracked in GPUSTAT yet; this mirrors the
@@ -85,10 +93,12 @@ pub struct Bus {
     pub mdec: crate::mdec::Mdec,
     pub spu: crate::spu::Spu,
     /// Analysis hooks (write watches, CD transfers, BIOS calls).
+    #[serde(skip)]
     pub obs: crate::observe::Observer,
     /// PC of the instruction currently executing (set by the CPU each step).
     pub cur_pc: u32,
     /// Reads of I/O registers no device handles yet: physical address -> count.
+    #[serde(skip)]
     pub unhandled_reads: std::collections::BTreeMap<u32, u64>,
 }
 
@@ -484,6 +494,11 @@ impl Bus {
             self.irq_dirty = false;
         }
         self.irq_cache
+    }
+
+    /// Recompute derived caches after a save state was decoded.
+    pub(crate) fn after_restore(&mut self) {
+        self.irq_dirty = true;
     }
 
     pub fn take_irq_ack(&mut self) -> bool {

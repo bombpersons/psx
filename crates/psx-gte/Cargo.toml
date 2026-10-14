@@ -7,6 +7,7 @@ license.workspace = true
 description = "Fixed-point PlayStation Geometry Transformation Engine (COP2)"
 
 [dependencies]
+serde = { workspace = true, features = ["derive"] }
 
 [lints.rust]
 unsafe_code = "forbid"

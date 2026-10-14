@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use psx_core::disasm::reg;
+use psx_core::state::{disc_fingerprint, MediaId, StateError};
 use psx_core::Machine;
 use serde_json::{json, Value};
 
@@ -25,16 +26,15 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
-    if a.from_state.is_some() || a.save_state {
-        return err("unsupported", "save states are not implemented on the native backend yet (use --backend redux)");
-    }
     let bios = match std::fs::read(&a.bios) {
         Ok(b) => b,
         Err(e) => return err("io_error", format!("{}: {e}", a.bios.display())),
     };
     let bios_sha = sha256(&bios);
-    let mut m = Machine::new(bios);
-    let mut media_sha = Value::Null;
+    // Open the medium first: a restored state needs it to check identity.
+    let mut exe: Option<Vec<u8>> = None;
+    let mut disc: Option<psx_media::Disc> = None;
+    let mut media_id: Option<MediaId> = None;
     if let Some(p) = &a.media {
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         if ["exe", "ps-exe", "psx"].contains(&ext.as_str()) {
@@ -42,17 +42,55 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
                 Ok(b) => b,
                 Err(e) => return err("io_error", format!("{}: {e}", p.display())),
             };
-            media_sha = json!(sha256(&bytes));
-            if let Err(e) = m.sideload_exe(&bytes, 500_000_000) {
-                return err("backend_failed", e);
-            }
+            media_id = Some(MediaId { kind: "exe".into(), sha256: sha256(&bytes) });
+            exe = Some(bytes);
         } else {
             match psx_media::Disc::open(p) {
-                Ok(d) => m.insert_disc(Some(d)),
+                Ok(d) => {
+                    media_id = Some(MediaId { kind: "disc".into(), sha256: disc_fingerprint(&d) });
+                    disc = Some(d);
+                }
                 Err(e) => return err(e.code(), e),
             }
         }
     }
+    let mut m = match &a.from_state {
+        Some(p) => {
+            let bytes = match std::fs::read(p) {
+                Ok(b) => b,
+                Err(e) => return err("io_error", format!("{}: {e}", p.display())),
+            };
+            let (header, mut m) = match Machine::load_state(&bytes, bios) {
+                Ok(r) => r,
+                Err(e @ StateError::BiosMismatch { .. }) => return err("identity_mismatch", e),
+                Err(e) => return err("invalid_state", e),
+            };
+            if header.media != media_id {
+                return err(
+                    "identity_mismatch",
+                    format!(
+                        "state was saved with media {}, but --media is {}",
+                        serde_json::to_string(&header.media).unwrap_or_default(),
+                        serde_json::to_string(&media_id).unwrap_or_default()
+                    ),
+                );
+            }
+            // Reinsert without resetting the drive: its state came from the file.
+            m.bus.cdrom.disc = disc;
+            m
+        }
+        None => {
+            let mut m = Machine::new(bios);
+            if let Some(bytes) = &exe {
+                if let Err(e) = m.sideload_exe(bytes, 500_000_000) {
+                    return err("backend_failed", e);
+                }
+            } else if disc.is_some() {
+                m.insert_disc(disc);
+            }
+            m
+        }
+    };
     // Replay events: held buttons from each frame (frames counted from the run start).
     let mut events: Vec<(u64, u16)> = Vec::new();
     if let Some(p) = &a.replay {
@@ -93,8 +131,9 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
 
     let started = Instant::now();
     // Frames count from power-on (like the Redux backend), including any BIOS
-    // boot spent before an EXE was side-loaded.
-    let start_frame = 0;
+    // boot spent before an EXE was side-loaded; after --from-state they count
+    // from the restored state (Redux counts from SaveStateLoaded).
+    let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
     let target = start_frame + a.frames as u64;
     let deadline = std::time::Duration::from_secs(a.timeout_s);
     let mut next = 0;
@@ -129,6 +168,9 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             files.insert(name.into(), json!({"path": p, "sha256": sha256(bytes)}));
         }
     };
+    if a.save_state {
+        put("state.bin", &m.save_state(media_id.clone()));
+    }
     put("ram.bin", &m.bus.ram);
     put("scratch.bin", &m.bus.scratch);
     put("vram.bin", &m.bus.gpu.vram.to_bytes());
@@ -197,7 +239,8 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             "identity": {
                 "backend": "psx-core", "backend_version": env!("CARGO_PKG_VERSION"),
                 "timing_model": "flat per-instruction costs (Redux-like), not cycle-accurate",
-                "bios": a.bios, "bios_sha256": bios_sha, "media": a.media, "media_sha256": media_sha,
+                "bios": a.bios, "bios_sha256": bios_sha, "media": a.media, "media_identity": media_id,
+                "from_state": a.from_state, "state_format": psx_core::state::FORMAT,
             },
             "wall_ms": wall_ms,
         }),

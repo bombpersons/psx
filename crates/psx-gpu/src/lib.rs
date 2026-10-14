@@ -63,7 +63,7 @@ fn too_large(vs: &[Vtx]) -> bool {
 }
 
 /// Drawing environment set by GP0(E1h..E6h).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DrawState {
     /// E1 bits 0-13: page x/y, blend mode, depth, dither, draw-to-display, texture disable, rect flips.
     pub texpage: u16,
@@ -106,7 +106,7 @@ impl DrawState {
 }
 
 /// Display configuration set by GP1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Display {
     pub enabled: bool,
     pub start: (u16, u16),
@@ -146,7 +146,7 @@ impl Display {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 enum Transfer {
     #[default]
     None,
@@ -154,7 +154,7 @@ enum Transfer {
     ToVram { x: i32, y: i32, w: i32, h: i32, index: i32 },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Gpu {
     pub vram: Vram,
     pub state: DrawState,
@@ -164,6 +164,7 @@ pub struct Gpu {
     /// Halfwords produced by GP0(C0h) VRAM→CPU, read with [`Gpu::gpuread`].
     read_queue: std::collections::VecDeque<u32>,
     /// When `Some`, every completed GP0 command is appended (A0h includes its image data).
+    #[serde(skip)]
     pub log: Option<Vec<Vec<u32>>>,
 }
 

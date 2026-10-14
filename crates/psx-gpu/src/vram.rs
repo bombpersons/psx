@@ -3,7 +3,7 @@
 pub const WIDTH: usize = 1024;
 pub const HEIGHT: usize = 512;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Vram {
     data: Vec<u16>,
 }

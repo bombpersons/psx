@@ -23,14 +23,18 @@ enum Depth {
     Bit15 = 3,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Mdec {
     /// Words still expected for the current command, and the command word.
     remaining: u32,
     command: u32,
     params: Vec<u32>,
     out: VecDeque<u32>,
+    #[serde(with = "crate::state::big_array")]
     lum_q: [u8; 64],
+    #[serde(with = "crate::state::big_array")]
     col_q: [u8; 64],
+    #[serde(with = "crate::state::big_array")]
     scale: [i16; 64],
     dma_in: bool,
     dma_out: bool,

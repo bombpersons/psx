@@ -17,7 +17,7 @@ pub const CYCLES_PER_SAMPLE: u64 = 768;
 const FILTER_POS: [i32; 5] = [0, 60, 115, 98, 122];
 const FILTER_NEG: [i32; 5] = [0, 0, -52, -55, -60];
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Phase {
     #[default]
     Off,
@@ -27,7 +27,7 @@ enum Phase {
     Release,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Voice {
     vol_l: u16,
     vol_r: u16,
@@ -51,6 +51,7 @@ struct Voice {
     decoded: bool,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Spu {
     pub ram: Vec<u8>,
     voices: Vec<Voice>,
@@ -66,7 +67,9 @@ pub struct Spu {
     regs: Vec<u16>,
     cycles: u64,
     /// Mixed stereo output (L, R interleaved) since the last [`Spu::take_samples`].
+    #[serde(skip)]
     out: Vec<i16>,
+    #[serde(skip)]
     pub capture: bool,
     pub keyed_on: u64,
     /// CD audio input sample for the next output sample (from CD-DA/XA).
@@ -376,8 +379,7 @@ mod tests {
 
     #[test]
     fn keyed_voice_plays_looped_square_wave() {
-        let mut s = Spu::default();
-        s.capture = true;
+        let mut s = Spu { capture: true, ..Default::default() };
         // One ADPCM block at 0x1000: shift 0, filter 0, loop start+end+repeat, nibbles 7/-8.
         s.write16(0x1A6, 0x1000 >> 3);
         let mut block = [0u8; 16];
