@@ -96,6 +96,9 @@ enum Command {
         /// Log BIOS A0/B0/C0 function calls (bios.jsonl).
         #[arg(long)]
         trace_bios: bool,
+        /// `.symbols.json` (verified against RAM) or `.sym` files used to name PCs; repeatable.
+        #[arg(long = "symbols")]
+        symbols: Vec<PathBuf>,
     },
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
@@ -107,6 +110,9 @@ enum Command {
         /// Include at most N individual runs (spans are always complete).
         #[arg(long, default_value_t = 0)]
         limit: usize,
+        /// `.symbols.json` (verified against RAM) or `.sym` files from `psx symbols`; repeatable.
+        #[arg(long = "symbols")]
+        symbols: Vec<PathBuf>,
     },
     /// Name library functions in a PS-X EXE by PsyQ signature matching.
     /// Writes <out>.symbols.json, <out>.ghidra.txt (ImportSymbolsScript.py) and <out>.sym.
@@ -143,11 +149,11 @@ enum TemplateAction {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast, trace_cd, trace_bios } = cli.command {
+    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast, trace_cd, trace_bios, symbols } = cli.command {
         let root = std::env::current_dir().unwrap_or_default();
         let (ok, v) = run::run(
             &root,
-            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast, trace_cd, trace_bios },
+            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast, trace_cd, trace_bios, symbols },
         );
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
@@ -179,8 +185,9 @@ fn run(cmd: Command) -> R {
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
         Command::Run { .. } => unreachable!("handled in main"),
         Command::Symbols { source, sigs, min_concrete, out } => symbols_cmd(&source, &sigs, min_concrete, out),
-        Command::Loads { run_dir, disc, limit } => {
-            let mut v = provenance::report(&run_dir, &disc).map_err(MediaError::Malformed)?;
+        Command::Loads { run_dir, disc, limit, symbols } => {
+            let scopes = load_symbols(&symbols)?;
+            let mut v = provenance::report(&run_dir, &disc, &scopes).map_err(MediaError::Malformed)?;
             if let Some(runs) = v["runs"].as_array_mut() {
                 let total = runs.len();
                 runs.truncate(limit);
@@ -323,6 +330,83 @@ fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -> R {
     Ok(json!({"written": written, "failed": failed}))
 }
 
+/// Symbols for one executable, with its code bytes when known so that a name
+/// is only applied where that code is actually resident.
+pub(crate) struct ScopedSymbols {
+    pub name: String,
+    pub table: psx_symbols::SymbolTable,
+    /// `(text_addr, payload)` from a `.symbols.json` report; `None` for bare `.sym` files.
+    pub code: Option<(u32, Vec<u8>)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SymbolCheck {
+    /// The executable's bytes around the PC match the RAM given.
+    RamMatch,
+    /// Bare `.sym` file: no code to compare against.
+    Unverified,
+}
+
+impl SymbolCheck {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SymbolCheck::RamMatch => "ram_match",
+            SymbolCheck::Unverified => "unverified",
+        }
+    }
+}
+
+/// Load `.sym` or `.symbols.json` files. Names describe one executable's code;
+/// overlays and loaders can reuse the same addresses, so prefer `.symbols.json`.
+pub(crate) fn load_symbols(paths: &[PathBuf]) -> psx_media::Result<Vec<ScopedSymbols>> {
+    let mut out = Vec::new();
+    for p in paths {
+        let text = std::fs::read_to_string(p).map_err(|e| MediaError::io(p, e))?;
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if name.ends_with(".symbols.json") {
+            let v: Value = serde_json::from_str(&text).map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
+            let source = v["source"].as_str().unwrap_or_default().to_string();
+            let report: psx_symbols::MatchReportIn = serde_json::from_value(v["report"].clone())
+                .map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
+            let bytes = read_source(&source)?;
+            let exe = PsxExe::parse(&bytes)?;
+            out.push(ScopedSymbols {
+                name: source.rsplit(['/', '\\', ':']).next().unwrap_or(&source).trim_end_matches(";1").to_string(),
+                table: psx_symbols::SymbolTable::from_symbols(&report.symbols),
+                code: Some((exe.text_addr, exe.payload(&bytes).to_vec())),
+            });
+        } else {
+            out.push(ScopedSymbols {
+                name: name.trim_end_matches(".sym").to_string(),
+                table: psx_symbols::SymbolTable::from_sym_text(&text),
+                code: None,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Name `pc` from the first executable whose code is resident there in `ram`
+/// (2 MiB main RAM image). Without RAM, or for bare `.sym` files, the name is unverified.
+pub(crate) fn name_pc(scopes: &[ScopedSymbols], pc: u32, ram: Option<&[u8]>) -> Option<(String, SymbolCheck, String)> {
+    for s in scopes {
+        let Some(n) = s.table.describe(pc, 0x4000) else { continue };
+        match (&s.code, ram) {
+            (Some((base, code)), Some(ram)) => {
+                let off = pc.wrapping_sub(*base) as usize & !3;
+                let lo = off.saturating_sub(16);
+                let hi = (off + 16).min(code.len());
+                let r = (*base as usize & 0x1F_FFFF) + lo;
+                if lo < hi && ram.get(r..r + (hi - lo)) == Some(&code[lo..hi]) {
+                    return Some((n, SymbolCheck::RamMatch, s.name.clone()));
+                }
+            }
+            (Some(_), None) | (None, _) => return Some((n, SymbolCheck::Unverified, s.name.clone())),
+        }
+    }
+    None
+}
+
 fn read_source(source: &str) -> psx_media::Result<Vec<u8>> {
     Ok(match source.split_once("::") {
         Some((image, path)) => {
@@ -349,7 +433,13 @@ fn symbols_cmd(source: &str, sigs_dir: &Path, min_concrete: usize, out: Option<P
     }
     let with_ext = |ext: &str| PathBuf::from(format!("{}.{ext}", prefix.display()));
     let write = |p: PathBuf, text: String| std::fs::write(&p, text).map_err(|e| MediaError::io(&p, e)).map(|_| p);
-    let json_path = write(with_ext("symbols.json"), serde_json::to_string_pretty(&report).unwrap())?;
+    let doc = json!({
+        "source": source,
+        "text_addr": exe.text_addr,
+        "exe_sha256": psx_media::disc::sha256_bytes(&bytes),
+        "report": report,
+    });
+    let json_path = write(with_ext("symbols.json"), serde_json::to_string_pretty(&doc).unwrap())?;
     let ghidra = write(with_ext("ghidra.txt"), psx_symbols::to_ghidra(&report.symbols))?;
     let sym = write(with_ext("sym"), psx_symbols::to_sym(&report.symbols))?;
     let functions = report.symbols.iter().filter(|s| s.kind == psx_symbols::Kind::Function).count();

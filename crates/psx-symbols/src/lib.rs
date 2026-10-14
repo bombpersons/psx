@@ -38,6 +38,8 @@ struct RawLabel {
 #[derive(Deserialize)]
 struct RawObject {
     name: String,
+    /// Absent for data-only objects.
+    #[serde(default)]
     sig: String,
     #[serde(default)]
     labels: Vec<RawLabel>,
@@ -98,7 +100,7 @@ pub fn load_dir(root: &Path) -> Result<Vec<ObjectSig>> {
             let text = std::fs::read_to_string(f.path()).map_err(|e| Error(format!("{name}: {e}")))?;
             let objs: Vec<RawObject> =
                 serde_json::from_str(&text).map_err(|e| Error(format!("{version}/{name}: {e}")))?;
-            for o in objs {
+            for o in objs.into_iter().filter(|o| !o.sig.trim().is_empty()) {
                 let pattern = parse_sig(&o.sig)?;
                 let concrete = pattern.iter().filter(|b| b.is_some()).count();
                 out.push(ObjectSig {
@@ -279,6 +281,19 @@ pub fn match_code(code: &[u8], base: u32, sigs: &[ObjectSig], min_concrete: usiz
     MatchReport { base, code_bytes: code.len(), min_concrete, versions, chosen_version: chosen, objects, ambiguous, symbols }
 }
 
+/// The parts of a serialised [`MatchReport`] needed to rebuild a symbol table.
+#[derive(Clone, Debug, Deserialize)]
+pub struct MatchReportIn {
+    pub symbols: Vec<SymbolIn>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SymbolIn {
+    pub address: u32,
+    pub name: String,
+    pub kind: String,
+}
+
 /// Sorted function symbols with nearest-preceding lookup.
 #[derive(Clone, Debug, Default)]
 pub struct SymbolTable {
@@ -286,9 +301,9 @@ pub struct SymbolTable {
 }
 
 impl SymbolTable {
-    pub fn from_symbols(symbols: &[Symbol]) -> Self {
+    pub fn from_symbols<S: AsSymbol>(symbols: &[S]) -> Self {
         let mut entries: Vec<(u32, String)> =
-            symbols.iter().filter(|s| s.kind == Kind::Function).map(|s| (s.address, s.name.clone())).collect();
+            symbols.iter().filter(|s| s.is_function()).map(|s| (s.addr(), s.label().to_string())).collect();
         entries.sort();
         entries.dedup_by_key(|e| e.0);
         SymbolTable { entries }
@@ -303,12 +318,63 @@ impl SymbolTable {
         (off <= max_distance).then(|| if off == 0 { name.clone() } else { format!("{name}+0x{off:X}") })
     }
 
+    /// Parse `ADDRESS NAME` lines (the `.sym` format written by [`to_sym`]).
+    /// Several tables can be merged with [`SymbolTable::extend`].
+    pub fn from_sym_text(text: &str) -> Self {
+        let mut t = SymbolTable::default();
+        t.extend_sym_text(text);
+        t
+    }
+
+    pub fn extend_sym_text(&mut self, text: &str) {
+        for line in text.lines() {
+            let mut it = line.split_whitespace();
+            if let (Some(a), Some(n)) = (it.next(), it.next()) {
+                if let Ok(a) = u32::from_str_radix(a.trim_start_matches("0x"), 16) {
+                    self.entries.push((a, n.to_string()));
+                }
+            }
+        }
+        self.entries.sort();
+        self.entries.dedup_by_key(|e| e.0);
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+}
+
+pub trait AsSymbol {
+    fn addr(&self) -> u32;
+    fn label(&self) -> &str;
+    fn is_function(&self) -> bool;
+}
+
+impl AsSymbol for Symbol {
+    fn addr(&self) -> u32 {
+        self.address
+    }
+    fn label(&self) -> &str {
+        &self.name
+    }
+    fn is_function(&self) -> bool {
+        self.kind == Kind::Function
+    }
+}
+
+impl AsSymbol for SymbolIn {
+    fn addr(&self) -> u32 {
+        self.address
+    }
+    fn label(&self) -> &str {
+        &self.name
+    }
+    fn is_function(&self) -> bool {
+        self.kind == "function"
     }
 }
 
