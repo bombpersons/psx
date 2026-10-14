@@ -25,6 +25,43 @@ pub struct RunArgs {
     /// "redux" or "native".
     pub backend: String,
     pub trace: TraceArgs,
+    pub cards: CardArgs,
+}
+
+/// Memory cards (native backend).
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct CardArgs {
+    /// Memory card in slot 1: a raw 128 KiB image (.mcd/.mcr) or `new` for a formatted empty card.
+    /// The image file is never modified; a written card is saved as memcard1.mcd in the run directory.
+    #[arg(long)]
+    pub memcard1: Option<String>,
+    /// Memory card in slot 2 (as --memcard1).
+    #[arg(long)]
+    pub memcard2: Option<String>,
+}
+
+impl CardArgs {
+    pub fn given(&self) -> bool {
+        self.memcard1.is_some() || self.memcard2.is_some()
+    }
+
+    /// Load the cards for slots 1 and 2.
+    pub fn load(&self) -> Result<[Option<psx_core::memcard::MemCard>; 2], String> {
+        let one = |spec: &Option<String>| -> Result<Option<psx_core::memcard::MemCard>, String> {
+            Ok(match spec.as_deref() {
+                None => None,
+                Some("new") => Some(psx_core::memcard::MemCard::formatted()),
+                Some(p) => {
+                    let bytes = std::fs::read(p).map_err(|e| format!("{p}: {e}"))?;
+                    if bytes.len() != psx_core::memcard::SIZE {
+                        return Err(format!("{p}: {} bytes; a raw memory card image is 131072", bytes.len()));
+                    }
+                    Some(psx_core::memcard::MemCard::from_image(bytes))
+                }
+            })
+        };
+        Ok([one(&self.memcard1)?, one(&self.memcard2)?])
+    }
 }
 
 /// Instruction tracing (native backend).
@@ -84,6 +121,9 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     }
     if a.trace.trace {
         return (false, err("unsupported", "--trace needs --backend native (Redux's -trace has no window or filters)"));
+    }
+    if a.cards.given() {
+        return (false, err("unsupported", "--memcard1/--memcard2 need --backend native"));
     }
     if let Some(p) = &a.from_state {
         if std::fs::read(p).is_ok_and(|b| b.starts_with(psx_core::state::MAGIC)) {

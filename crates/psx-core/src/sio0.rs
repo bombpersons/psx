@@ -2,10 +2,12 @@
 //!
 //! Modelled: JOY_DATA/STAT/MODE/CTRL/BAUD, one-byte transfers with an RX
 //! FIFO, /ACK interrupts (I_STAT bit 7) after a delay, a digital pad in
-//! port 1 (ID 0x5A41) with configurable buttons, and nothing in port 2 or in
-//! either memory-card slot (those transfers read 0xFF with no /ACK).
+//! port 1 (ID 0x5A41) with configurable buttons, and memory cards in either
+//! slot (see [`crate::memcard`]). Empty slots read 0xFF with no /ACK.
 
 use std::collections::VecDeque;
+
+use crate::memcard::{CardSession, MemCard};
 
 /// Delay from a byte transfer to the device's /ACK interrupt (~1 byte at 250 kHz + ack).
 const ACK_DELAY: u64 = 1_500;
@@ -54,6 +56,16 @@ pub fn button_from_name(name: &str) -> Option<u16> {
     })
 }
 
+/// The device answering the current transfer sequence.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+enum Target {
+    #[default]
+    None,
+    Pad,
+    /// Card in slot 0/1, before (None) and after its command byte.
+    Card(usize, Option<CardSession>),
+}
+
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Sio0 {
     rx: VecDeque<u8>,
@@ -64,9 +76,15 @@ pub struct Sio0 {
     ack_at: Option<u64>,
     /// Position in the current pad command (0 = expecting address).
     seq: u8,
+    target: Target,
     /// Pressed buttons on the port-1 pad.
     pub buttons: u16,
     pub transfers: u64,
+    /// Memory cards in slots 1 and 2.
+    pub cards: [Option<MemCard>; 2],
+    /// When `Some`, every byte exchanged: (time, JOY_CTRL, tx, rx, ack).
+    #[serde(skip)]
+    pub log: Option<Vec<(u64, u16, u8, u8, bool)>>,
 }
 
 impl Sio0 {
@@ -99,11 +117,13 @@ impl Sio0 {
                     self.irq_flag = false; // acknowledge
                 }
                 if v & (1 << 6) != 0 {
-                    *self = Sio0 { buttons: self.buttons, transfers: self.transfers, ..Default::default() };
+                    let (cards, log) = (std::mem::take(&mut self.cards), self.log.take());
+                    *self = Sio0 { buttons: self.buttons, transfers: self.transfers, cards, log, ..Default::default() };
                     return;
                 }
                 if v & 2 == 0 {
                     self.seq = 0; // /JOYn deselected: device resets
+                    self.target = Target::None;
                 }
                 self.ctrl = v as u16 & !(1 << 4);
             }
@@ -116,22 +136,54 @@ impl Sio0 {
         self.transfers += 1;
         let port2 = self.ctrl & (1 << 13) != 0;
         let selected = self.ctrl & 2 != 0;
-        let (rx, ack) = if !selected || port2 {
+        let slot = port2 as usize;
+        let (rx, ack) = if !selected {
             (0xFF, false)
-        } else {
-            let pressed = !self.buttons;
-            match (self.seq, tx) {
-                (0, 0x01) => (0xFF, true),
-                (0, _) => (0xFF, false), // memory card (0x81) or unknown: nothing attached
-                (1, 0x42) => (0x41, true),
-                (1, _) => (0xFF, false),
-                (2, _) => (0x5A, true),
-                (3, _) => (pressed as u8, true),
-                (4, _) => ((pressed >> 8) as u8, false),
+        } else if self.seq == 0 {
+            // The address byte picks the device.
+            match tx {
+                0x01 if !port2 => {
+                    self.target = Target::Pad;
+                    (0xFF, true)
+                }
+                0x81 if self.cards[slot].is_some() => {
+                    self.target = Target::Card(slot, None);
+                    (0xFF, true)
+                }
                 _ => (0xFF, false),
             }
+        } else {
+            match &mut self.target {
+                Target::Pad => {
+                    let pressed = !self.buttons;
+                    match (self.seq, tx) {
+                        (1, 0x42) => (0x41, true),
+                        (1, _) => (0xFF, false),
+                        (2, _) => (0x5A, true),
+                        (3, _) => (pressed as u8, true),
+                        (4, _) => ((pressed >> 8) as u8, false),
+                        _ => (0xFF, false),
+                    }
+                }
+                Target::Card(slot, session) => match (self.cards[*slot].as_mut(), session) {
+                    (Some(card), Some(s)) => s.exchange(card, tx),
+                    (Some(card), session @ None) => {
+                        let (s, flag, ok) = CardSession::start(card, tx);
+                        *session = Some(s);
+                        (flag, ok)
+                    }
+                    (None, _) => (0xFF, false),
+                },
+                Target::None => (0xFF, false),
+            }
         };
-        self.seq = if ack { self.seq + 1 } else { 0 };
+        if let Some(log) = &mut self.log {
+            log.push((now, self.ctrl, tx, rx, ack));
+        }
+        self.seq = if ack { self.seq.saturating_add(1) } else { 0 };
+        if !ack {
+            self.target = Target::None;
+        }
         if self.rx.len() < 8 {
             self.rx.push_back(rx);
         }

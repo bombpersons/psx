@@ -10,6 +10,7 @@ pub mod cdrom;
 pub mod cpu;
 pub mod disasm;
 pub mod mdec;
+pub mod memcard;
 pub mod observe;
 pub mod sio0;
 pub mod spu;

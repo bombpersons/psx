@@ -66,6 +66,8 @@ enum Command {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
+    /// List the saves on a raw 128 KiB memory card image (.mcd/.mcr).
+    Memcard { image: PathBuf },
     /// Describe sectors: form, XA subheader, owning file and a hex preview.
     Sector {
         image: PathBuf,
@@ -125,6 +127,8 @@ enum Command {
         backend: String,
         #[command(flatten)]
         trace: run::TraceArgs,
+        #[command(flatten)]
+        cards: run::CardArgs,
     },
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
@@ -240,11 +244,11 @@ enum TemplateAction {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast, trace_cd, trace_bios, symbols, max_events, backend, trace } = cli.command {
+    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast, trace_cd, trace_bios, symbols, max_events, backend, trace, cards } = cli.command {
         let root = std::env::current_dir().unwrap_or_default();
         let (ok, v) = run::run(
             &root,
-            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast, trace_cd, trace_bios, symbols, max_events, backend, trace },
+            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast, trace_cd, trace_bios, symbols, max_events, backend, trace, cards },
         );
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
@@ -303,6 +307,17 @@ fn run(cmd: Command) -> R {
         }
         Command::Extract { image, path, all, out } => extract(&image, path.as_deref(), all, &out),
         Command::Exe { source } => exe_cmd(&source),
+        Command::Memcard { image } => {
+            let bytes = std::fs::read(&image).map_err(|e| MediaError::io(&image, e))?;
+            if bytes.len() != psx_core::memcard::SIZE {
+                return Err(MediaError::Malformed(format!("{} bytes; a raw memory card image is 131072", bytes.len())));
+            }
+            let card = psx_core::memcard::MemCard::from_image(bytes);
+            let saves = card.saves();
+            let used: usize = saves.iter().map(|s| s.blocks.len()).sum();
+            let formatted = &card.sector(0)[..2] == b"MC";
+            Ok(json!({"image": image, "formatted": formatted, "blocks_used": used, "blocks_free": 15 - used.min(15), "saves": saves}))
+        }
         Command::Xa { image, path, file, channel, out } => xa_cmd::run(&image, &path, file, channel, out.as_deref()),
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
         Command::Run { .. } | Command::Lockstep { .. } | Command::Native { .. } => unreachable!("handled in main"),
