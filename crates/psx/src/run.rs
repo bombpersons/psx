@@ -1,4 +1,6 @@
-//! `psx run`: bounded execution in a PCSX-Redux worker process.
+//! `psx run`: bounded execution of a disc, EXE or state, in a PCSX-Redux
+//! worker process (`--backend redux`, the default) or on the native core
+//! (`--backend native`, see `run_native`).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -26,6 +28,82 @@ pub struct RunArgs {
     pub backend: String,
     pub trace: TraceArgs,
     pub cards: CardArgs,
+    pub observe: ObserveArgs,
+}
+
+/// Per-frame observation and intervention (native backend).
+#[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct ObserveArgs {
+    /// Sample a RAM/scratchpad value at every frame boundary (vblank) into samples.csv:
+    /// `ADDR:FMT[:NAME]`, FMT one of u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F (fx16.16, fx4.12);
+    /// little-endian, read byte-exact from emulated memory; repeatable.
+    #[arg(long = "sample")]
+    #[serde(default, rename = "sample")]
+    pub samples: Vec<String>,
+    /// Sample every Nth frame only (the last frame is always sampled).
+    #[arg(long)]
+    pub sample_every: Option<u64>,
+    /// Write memory at the start of a run frame: `ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`
+    /// (VALUE decimal, -decimal or 0xHEX, or a fraction for fx formats; WIDTH 1/2/4, default 4;
+    /// default frame 0; a range re-applies it every frame). Reported under `pokes`; repeatable.
+    #[arg(long = "poke")]
+    #[serde(default, rename = "poke")]
+    pub pokes: Vec<String>,
+    /// Save the screen every N frames as screens/fNNNNNN.png (run frames).
+    #[arg(long)]
+    pub snapshot_every: Option<u64>,
+    /// Also save a state at the start of these run frames (state_fNNNNNN.bin); repeatable.
+    #[arg(long = "save-state-at")]
+    #[serde(default)]
+    pub save_state_at: Vec<u64>,
+    /// Leave stores that do not change the watched value (old == new) out of writes.jsonl.
+    #[arg(long)]
+    #[serde(default)]
+    pub watch_changes_only: bool,
+    /// Read watch: log every CPU load from `LO-HI` (hex, HI exclusive) or `ADDR[:WIDTH]` to
+    /// reads.jsonl with pc and value (capped by --max-events); repeatable. Shows which code
+    /// reads a variable, or which script bytes a bytecode interpreter consumes.
+    #[arg(long = "watch-reads")]
+    #[serde(default)]
+    pub watch_reads: Vec<String>,
+}
+
+impl ObserveArgs {
+    pub fn given(&self) -> bool {
+        !self.samples.is_empty()
+            || !self.pokes.is_empty()
+            || self.snapshot_every.is_some()
+            || !self.save_state_at.is_empty()
+            || self.watch_changes_only
+            || !self.watch_reads.is_empty()
+    }
+}
+
+/// Physical address with main RAM mirrors folded (what read watches compare).
+pub fn fold(addr: u32) -> u32 {
+    let p = addr & 0x1FFF_FFFF;
+    if p < 0x0080_0000 {
+        p & 0x1F_FFFF
+    } else {
+        p
+    }
+}
+
+/// `LO-HI` or `ADDR[:WIDTH]` (hex) as a folded `[lo, hi)` range.
+pub fn parse_range_spec(s: &str) -> Result<(u32, u32), String> {
+    let h = |x: &str| u32::from_str_radix(x.trim().trim_start_matches("0x").trim_start_matches("0X"), 16).map_err(|_| format!("bad hex address {x:?} in {s:?}"));
+    let (lo, len) = match s.split_once('-') {
+        Some((a, b)) => {
+            let (a, b) = (h(a)?, h(b)?);
+            (a, b.checked_sub(a).filter(|&n| n > 0).ok_or_else(|| format!("empty range {s:?}"))?)
+        }
+        None => match s.split_once(':') {
+            Some((a, w)) => (h(a)?, w.parse::<u32>().ok().filter(|&n| n > 0).ok_or_else(|| format!("bad width in {s:?}"))?),
+            None => (h(s)?, 4),
+        },
+    };
+    let lo = fold(lo);
+    Ok((lo, lo + len))
 }
 
 /// Memory cards (native backend).
@@ -78,7 +156,8 @@ impl CardArgs {
 /// Instruction tracing (native backend).
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct TraceArgs {
-    /// Trace instructions: trace.txt (capped by --max-events), coverage.txt and calls.json.
+    /// Trace instructions: trace.txt (capped by --max-events; its `frame` column is
+    /// absolute, see its header), coverage.txt and calls.json.
     #[arg(long)]
     #[serde(default)]
     pub trace: bool,
@@ -96,8 +175,10 @@ pub struct TraceArgs {
     #[arg(long = "trace-range")]
     #[serde(default, rename = "trace_range")]
     pub trace_ranges: Vec<String>,
-    /// Capture every GPU command of frame N of the run: gpu_frame.json (decoded
-    /// primitives, texture pages, CLUTs) and VRAM before/after/wireframe PNGs.
+    /// Capture every GPU command of run frame N: gpu_frame.json (decoded primitives,
+    /// texture pages, CLUTs), gpu_frame_vram.bin (VRAM at the end of that frame, which
+    /// `psx textures` decodes), gpu_frame_screen.png (its drawing area) and VRAM
+    /// before/after/wireframe PNGs.
     #[arg(long)]
     pub gpu_frame: Option<u64>,
 }
@@ -139,6 +220,9 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     }
     if a.trace.trace || a.trace.gpu_frame.is_some() {
         return (false, err("unsupported", "--trace and --gpu-frame need --backend native"));
+    }
+    if a.observe.given() {
+        return (false, err("unsupported", "--sample, --poke, --snapshot-every, --save-state-at, --watch-reads and --watch-changes-only need --backend native"));
     }
     if a.cards.memcard1.is_some() || a.cards.memcard2.is_some() {
         return (false, err("unsupported", "--memcard1/--memcard2 need --backend native"));
