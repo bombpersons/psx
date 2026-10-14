@@ -74,6 +74,108 @@ pub struct Spu {
     pub keyed_on: u64,
     /// CD audio input sample for the next output sample (from CD-DA/XA).
     pub cd_in: (i16, i16),
+    reverb: Reverb,
+}
+
+/// The reverb unit (psx-spx "SPU Reverb Formula"): runs at 22.05 kHz on a
+/// ring buffer in sound RAM from mBASE to the end, reading/writing it with
+/// offsets from the reverb registers. Simplified: the hardware's 39-tap FIR
+/// resampling is replaced by averaging two input samples and holding the
+/// output for two.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct Reverb {
+    /// Current buffer address (bytes).
+    addr: u32,
+    /// Second sample of the 22.05 kHz pair.
+    odd: bool,
+    /// Input held from the first sample of the pair.
+    held_in: (i32, i32),
+    out: (i32, i32),
+}
+
+/// Reverb register offsets (from 1F801C00h).
+mod rv {
+    pub const D_APF1: usize = 0x1C0;
+    pub const D_APF2: usize = 0x1C2;
+    pub const V_IIR: usize = 0x1C4;
+    pub const V_COMB: [usize; 4] = [0x1C6, 0x1C8, 0x1CA, 0x1CC];
+    pub const V_WALL: usize = 0x1CE;
+    pub const V_APF1: usize = 0x1D0;
+    pub const V_APF2: usize = 0x1D2;
+    pub const M_SAME: [usize; 2] = [0x1D4, 0x1D6];
+    pub const M_COMB12: [[usize; 2]; 2] = [[0x1D8, 0x1DA], [0x1DC, 0x1DE]];
+    pub const D_SAME: [usize; 2] = [0x1E0, 0x1E2];
+    pub const M_DIFF: [usize; 2] = [0x1E4, 0x1E6];
+    pub const M_COMB34: [[usize; 2]; 2] = [[0x1E8, 0x1EA], [0x1EC, 0x1EE]];
+    pub const D_DIFF: [usize; 2] = [0x1F0, 0x1F2];
+    pub const M_APF1: [usize; 2] = [0x1F4, 0x1F6];
+    pub const M_APF2: [usize; 2] = [0x1F8, 0x1FA];
+    pub const V_IN: [usize; 2] = [0x1FC, 0x1FE];
+    pub const V_OUT: [usize; 2] = [0x184, 0x186];
+    pub const M_BASE: usize = 0x1A2;
+}
+
+#[inline]
+fn mul15(a: i32, b: i32) -> i32 {
+    (a * b) >> 15
+}
+
+#[inline]
+fn sat(v: i32) -> i32 {
+    v.clamp(-0x8000, 0x7FFF)
+}
+
+impl Reverb {
+    /// One 22.05 kHz step for both sides; writes the buffer only when `write` (SPUCNT bit 7).
+    fn step(&mut self, ram: &mut [u8], regs: &[u16], write: bool, input: (i32, i32)) -> (i32, i32) {
+        let reg = |o: usize| regs[o >> 1] as i16 as i32;
+        let off = |o: usize| regs[o >> 1] as i64 * 8;
+        let base = regs[rv::M_BASE >> 1] as i64 * 8;
+        let size = 0x80000 - base;
+        let cur = self.addr as i64;
+        let at = |o: i64| -> usize { (base + (cur - base + o).rem_euclid(size.max(2))) as usize & 0x7FFFE };
+        let rd = |ram: &[u8], o: i64| i16::from_le_bytes([ram[at(o)], ram[at(o) + 1]]) as i32;
+        let wr = |ram: &mut [u8], o: i64, v: i32| {
+            if write {
+                let a = at(o);
+                ram[a..a + 2].copy_from_slice(&(sat(v) as i16).to_le_bytes());
+            }
+        };
+        let (iir, wall) = (reg(rv::V_IIR), reg(rv::V_WALL));
+        let mut out = [0i32; 2];
+        for side in 0..2 {
+            let other = 1 - side;
+            let x = mul15(if side == 0 { input.0 } else { input.1 }, reg(rv::V_IN[side]));
+            // Same-side and cross-side reflections (IIR).
+            let m_same = off(rv::M_SAME[side]);
+            let prev = rd(ram, m_same - 2);
+            let same = sat(mul15(sat(x + mul15(rd(ram, off(rv::D_SAME[side])), wall) - prev), iir) + prev);
+            wr(ram, m_same, same);
+            let m_diff = off(rv::M_DIFF[side]);
+            let prev = rd(ram, m_diff - 2);
+            let diff = sat(mul15(sat(x + mul15(rd(ram, off(rv::D_DIFF[other])), wall) - prev), iir) + prev);
+            wr(ram, m_diff, diff);
+            // Early echo: four comb taps.
+            let combs = [rv::M_COMB12[0][side], rv::M_COMB12[1][side], rv::M_COMB34[0][side], rv::M_COMB34[1][side]];
+            let mut o = 0;
+            for (k, m) in combs.iter().enumerate() {
+                o += mul15(reg(rv::V_COMB[k]), rd(ram, off(*m)));
+            }
+            let mut o = sat(o);
+            // Late reverb: two all-pass filters.
+            for (m_apf, d_apf, v_apf) in [(rv::M_APF1, rv::D_APF1, rv::V_APF1), (rv::M_APF2, rv::D_APF2, rv::V_APF2)] {
+                let m = off(m_apf[side]);
+                let delayed = rd(ram, m - off(d_apf));
+                o = sat(o - mul15(reg(v_apf), delayed));
+                wr(ram, m, o);
+                o = sat(mul15(o, reg(v_apf)) + delayed);
+            }
+            out[side] = sat(mul15(o, reg(rv::V_OUT[side])));
+        }
+        let next = (self.addr + 2) & 0x7FFFE;
+        self.addr = next.max(base as u32);
+        (out[0], out[1])
+    }
 }
 
 impl Default for Spu {
@@ -95,6 +197,7 @@ impl Default for Spu {
             capture: false,
             keyed_on: 0,
             cd_in: (0, 0),
+            reverb: Reverb::default(),
         }
     }
 }
@@ -265,6 +368,7 @@ impl Spu {
             0x18A => self.key_on((v as u32) << 16),
             0x18C => self.key_off(v as u32),
             0x18E => self.key_off((v as u32) << 16),
+            0x1A2 => self.reverb.addr = (v as u32) << 3,
             0x1A4 => self.irq_addr = v,
             0x1A6 => self.xfer_addr = (v as u32) << 3,
             0x1A8 => return self.fifo_write(v),
@@ -403,6 +507,9 @@ impl Spu {
 
     fn sample(&mut self) -> bool {
         let (mut l, mut r) = (0i32, 0i32);
+        // Reverb input: voices with their EON bit set (1F801D98h/9Ah).
+        let (mut rl, mut rr) = (0i32, 0i32);
+        let eon = self.regs[0x198 >> 1] as u32 | (self.regs[0x19A >> 1] as u32) << 16;
         let mut irq = false;
         for i in 0..24 {
             // Sweeps run whether or not the voice is sounding.
@@ -422,8 +529,13 @@ impl Spu {
             let s = prev + (((cur - prev) * frac) >> 12);
             Self::envelope(v);
             let s = s * v.level / 0x8000;
-            l += s * v.vol_l.level / 0x8000;
-            r += s * v.vol_r.level / 0x8000;
+            let (vl, vr) = (s * v.vol_l.level / 0x8000, s * v.vol_r.level / 0x8000);
+            l += vl;
+            r += vr;
+            if eon & (1 << i) != 0 {
+                rl += vl;
+                rr += vr;
+            }
             v.counter += (v.pitch as u32).min(0x4000);
             if v.counter >> 12 >= 28 {
                 v.counter -= 28 << 12;
@@ -446,10 +558,27 @@ impl Spu {
         // CD audio input (SPUCNT bit 0) through the CD volume (0x1DB0/0x1DB2).
         if self.cnt & 1 != 0 {
             let (cl, cr) = self.cd_in;
-            l += cl as i32 * (self.regs[0x1B0 >> 1] as i16 as i32) / 0x8000;
-            r += cr as i32 * (self.regs[0x1B2 >> 1] as i16 as i32) / 0x8000;
+            let (cl, cr) = (cl as i32 * (self.regs[0x1B0 >> 1] as i16 as i32) / 0x8000, cr as i32 * (self.regs[0x1B2 >> 1] as i16 as i32) / 0x8000);
+            l += cl;
+            r += cr;
+            // SPUCNT bit 2: CD audio into the reverb.
+            if self.cnt & 4 != 0 {
+                rl += cl;
+                rr += cr;
+            }
         }
         self.cd_in = (0, 0);
+        // Reverb at 22.05 kHz: average each input pair, hold the output for both.
+        if self.reverb.odd {
+            let (hl, hr) = self.reverb.held_in;
+            let input = (sat((hl + rl) / 2), sat((hr + rr) / 2));
+            self.reverb.out = self.reverb.step(&mut self.ram, &self.regs, self.cnt & 0x80 != 0, input);
+        } else {
+            self.reverb.held_in = (rl, rr);
+        }
+        self.reverb.odd = !self.reverb.odd;
+        l += self.reverb.out.0;
+        r += self.reverb.out.1;
         self.main_l.tick();
         self.main_r.tick();
         if self.capture {
@@ -465,6 +594,41 @@ impl Spu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reverb_delay_line_round_trips_through_sound_ram() {
+        let mut ram = vec![0u8; RAM_SIZE];
+        let mut regs = vec![0u16; 256];
+        let set = |regs: &mut Vec<u16>, off: usize, v: u16| regs[off >> 1] = v;
+        set(&mut regs, rv::M_BASE, 0xE000); // work area from 70000h
+        set(&mut regs, rv::V_IN[0], 0x7FFF);
+        set(&mut regs, rv::V_OUT[0], 0x7FFF);
+        set(&mut regs, rv::V_IIR, 0x7FFF);
+        set(&mut regs, rv::V_COMB[0], 0x7FFF);
+        set(&mut regs, rv::M_SAME[0], 0x10); // written 64 steps ahead...
+        set(&mut regs, rv::M_COMB12[0][0], 0); // ...of where comb 1 reads
+        // Keep the other taps clear of that line. With vAPF = 0 each all-pass
+        // stage is a pure delay of dAPF (8 bytes = 4 steps).
+        set(&mut regs, rv::M_DIFF[0], 0x200);
+        set(&mut regs, rv::M_APF1[0], 0x300);
+        set(&mut regs, rv::M_APF2[0], 0x380);
+        set(&mut regs, rv::D_APF1, 1);
+        set(&mut regs, rv::D_APF2, 1);
+        let mut r = Reverb { addr: 0x70000, ..Default::default() };
+        let mut outs = Vec::new();
+        for step in 0..200 {
+            let input = if step == 0 { (0x4000, 0) } else { (0, 0) };
+            outs.push(r.step(&mut ram, &regs, true, input).0);
+        }
+        let first = outs.iter().position(|&o| o != 0);
+        assert_eq!(first, Some(72), "impulse arrives after 64 + 4 + 4 steps");
+        assert!(outs[72] > 0x3000, "{}", outs[72]);
+        // Nothing is written with the master enable off.
+        let mut quiet = vec![0u8; RAM_SIZE];
+        let mut r = Reverb { addr: 0x70000, ..Default::default() };
+        r.step(&mut quiet, &regs, false, (0x4000, 0));
+        assert!(quiet.iter().all(|&b| b == 0));
+    }
 
     #[test]
     fn volume_sweeps() {

@@ -358,6 +358,28 @@ Examples:
 
 `--page X,Y,DEPTH --clut X,Y` decodes a single page by hand. On SOTN's prologue this gives 22 pairs, including the castle tileset (bricks, railings, carpet) and Richter's sheet. A full page decoded through one palette shows tiles that use other CLUTs in the wrong colours, so the cropped images are the ones to use.
 
+### SPU reverb
+
+The reverb follows psx-spx's "SPU Reverb Formula":
+- **Input:** voices with their EON bit set (`1F801D98/9A`), plus CD audio when SPUCNT bit 2 is set, scaled by vLIN/vRIN.
+- **Processing, at 22.05 kHz:**
+  - same-side and cross-side reflections through the IIR (vIIR, vWALL);
+  - four comb taps;
+  - two all-pass filters (dAPF/vAPF).
+- **Buffer:** a ring in sound RAM from mBASE to the end. It is written only with SPUCNT bit 7 (master) set. Writing mBASE resets the buffer address.
+- **Output:** scaled by vLOUT/vROUT and mixed before the main volume.
+- **Simplification:** the hardware's 39-tap FIR resampler is replaced by averaging each input pair and holding the output for two samples.
+
+Save-state format 6.
+
+**Checks:**
+- A unit test routes an impulse through a configured delay line. It must come back after exactly mLSAME + dAPF1 + dAPF2 steps (72), and nothing may be written with the master enable off.
+- The boot chime: the BIOS sends its startup sound through heavy reverb. RMS rises from 3949 to 4672 over the first 10 s, and that is where the "before/after" difference is largest.
+- Croc in-game routes all 24 voices with output volume 1024, a subtle room. SOTN and Mega Man 8 enable the master at the title; Tomb Raider and Crash leave it off there.
+- A split run during the reverberant boot chime (600 frames, split at 301) gives an identical final state.
+
+The `psx native` report's `spu.reverb` shows the master/CD enables, the EON mask, the work area and the output volume.
+
 ### Performance
 
 The baseline was 1.2–1.3× real time, which is comparable to Redux's observed (interpreter + debugger) mode at 1.6×. Each step below was checked:
