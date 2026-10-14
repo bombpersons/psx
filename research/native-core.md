@@ -50,6 +50,27 @@ The table records what each run surfaced and the fix it led to.
 
 The only unmodelled DMA in 30M instructions is channel 2 (GPU, RAM→GPU), which writes nothing to RAM.
 
+## GPU wiring: the BIOS boot logo from the native core
+
+The GP0/GP1 ports and DMA channel 2 (block and linked-list) now feed `psx-gpu`. GPUSTAT is plausible but untimed;
+in lockstep its reads are adopted from Redux like any other I/O.
+
+After 100M lockstepped instructions (no divergence, `--dump .psx/lockstep/bios100m`), the core's VRAM holds the
+**Sony Computer Entertainment logo**. It was drawn entirely by the native CPU, DMA and `psx-gpu` from the real BIOS's commands.
+The comparison is against Redux's VRAM at vsync 350, while the same logo is static on screen:
+
+| Region | Pixels differing |
+|---|---|
+| Texture pages (x ≥ 640) | **0 / 196,608** (uploads are byte-exact) |
+| Framebuffer (640×512) | 2,150 / 327,680 (0.66 %) |
+
+Every differing pixel lies inside the **Gouraud-shaded diamond** and is one 5-bit step lower in green, in vertical
+stripes. Flat fills, textured text and the logo textures all match exactly. The difference is therefore
+colour-interpolation rounding in `psx-gpu`.
+
+The rounding has not been tuned to Redux: Redux's software GPU is another emulator, not hardware truth. The referee should be
+a hardware-verified Gouraud test (e.g. JaCzekanski ps1-tests `gpu/`) or DuckStation regtest output.
+
 ## Next
 
 - **GPU wiring:** send GP0/GP1 port writes and DMA channel 2 (block and linked-list) into `psx-gpu`, then compare the BIOS screen with Redux's.

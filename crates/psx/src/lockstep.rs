@@ -89,7 +89,7 @@ fn reg_index(name: &str) -> Option<usize> {
 
 /// Fast mode: stream Redux's instruction trace and check each instruction's
 /// PC, word and source-operand values before the core executes it.
-pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize) -> (bool, Value) {
+pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump: Option<&Path>) -> (bool, Value) {
     use std::io::BufRead;
     let err = |code: &str, m: String| (false, json!({"error": {"code": code, "message": m}}));
     let backend = match Backend::from_project(root) {
@@ -198,6 +198,19 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize) -> (
     let _ = child.wait();
     let secs = started.elapsed().as_secs_f64();
     let ok = divergence.is_null() && done >= steps;
+    let mut dumped = Value::Null;
+    if let Some(prefix) = dump {
+        if let Some(parent) = prefix.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let (w, hgt, rgba) = m.bus.gpu.display_rgba();
+        let screen = std::path::PathBuf::from(format!("{}.screen.png", prefix.display()));
+        let vram = std::path::PathBuf::from(format!("{}.vram.png", prefix.display()));
+        let ok1 = crate::run::write_png(&screen, w, hgt, &rgba, png::ColorType::Rgba).is_ok();
+        let ok2 = crate::run::write_png(&vram, 1024, 512, &m.bus.gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok();
+        dumped = json!({"screen": ok1.then_some(screen), "vram": ok2.then_some(vram),
+            "display": {"start": m.bus.gpu.display.start, "width": w, "height": hgt}});
+    }
     let mut unmodelled: std::collections::BTreeMap<String, u64> = Default::default();
     for d in &m.bus.unmodelled_dma {
         *unmodelled.entry(format!("ch{}", d.channel)).or_default() += 1;
@@ -214,6 +227,7 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize) -> (
             "io_values_injected": io_injected,
             "interrupts_injected": irq_injected,
             "unmodelled_dma": unmodelled,
+            "core_dump": dumped,
             "divergence": divergence,
             "steps_per_second": (done as f64 / secs.max(1e-9)).round(),
             "compared": ["pc", "instruction word", "source operand registers before each instruction"],
