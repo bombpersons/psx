@@ -15,8 +15,28 @@ PlayStation reverse-engineering toolkit for agents and people. Sibling of
 | `psx exe <file>\|<image.cue>::/PATH` | PS-X EXE header, load range, region marker and hashes |
 | `psx sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |
 | `psx addr 0x80010000` | Segment, memory region and folded offset |
+| `psx template create DIR [--name N]` | Native Bevy game starter (see below) |
 
 Input images can be `.cue`, a raw `.bin` (single data track) or a cooked `.iso`.
+
+Other crates:
+
+- **`psx-gpu`:** a software PS1 GPU. It has VRAM, a streaming GP0/GP1 decoder and hardware pixel
+  rules, and logs GP0 commands. It is meant for replaying and diffing captured
+  draw streams and decoding VRAM, not for game code.
+- **`psx-gte`:** a register-accurate GTE (COP2) with typed helpers and libgte-style math.
+
+## Native game template
+
+```bash
+psx template create ../my-game   # standalone Bevy 0.20 project
+```
+
+[`templates/psx-bevy`](templates/psx-bevy/README.md) is idiomatic Bevy with a
+PS1 look: `PsxMaterial` gives vertex snapping, affine textures, Gouraud
+lighting, 15-bit dither, depth cue and the four blend modes. It also provides a
+low-resolution `PsxView` target, 2D sprites, DualShock input, fixed 50/60 Hz
+ticks, and a feature-gated developer MCP for stepping, input and screenshots.
 
 ## Local data (never committed)
 
