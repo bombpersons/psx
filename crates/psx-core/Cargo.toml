@@ -1,0 +1,13 @@
+[package]
+name = "psx-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Native PlayStation emulation core for the psx toolkit (in development)"
+
+[dependencies]
+psx-gte = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

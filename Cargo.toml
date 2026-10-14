@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/psx",
+    "crates/psx-core",
     "crates/psx-gpu",
     "crates/psx-gte",
     "crates/psx-media",
@@ -16,6 +17,7 @@ rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+psx-core = { path = "crates/psx-core" }
 psx-gpu = { path = "crates/psx-gpu" }
 psx-gte = { path = "crates/psx-gte" }
 psx-media = { path = "crates/psx-media" }
