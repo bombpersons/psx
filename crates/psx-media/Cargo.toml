@@ -1,0 +1,14 @@
+[package]
+name = "psx-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PlayStation disc image, ISO9660 and PS-X EXE inspection"
+
+[dependencies]
+serde = { workspace = true }
+sha2 = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
