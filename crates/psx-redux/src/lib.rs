@@ -127,6 +127,8 @@ pub struct Job {
     pub trace_cd: bool,
     /// Log BIOS A0/B0/C0 calls to `bios.jsonl`.
     pub trace_bios: bool,
+    /// Per-log event cap (cd.jsonl, bios.jsonl).
+    pub max_events: u32,
 }
 
 pub const BUTTONS: [&str; 14] =
@@ -258,6 +260,7 @@ fn params_lua(job: &Job, load_state: Option<&Path>) -> Result<String> {
     let _ = writeln!(s, "  max_watch_hits = {},", job.max_watch_hits);
     let _ = writeln!(s, "  trace_cd = {},", job.trace_cd);
     let _ = writeln!(s, "  trace_bios = {},", job.trace_bios);
+    let _ = writeln!(s, "  max_events = {},", job.max_events);
     if let Some(p) = load_state {
         let _ = writeln!(s, "  load_state = {},", lua_string(&p.to_string_lossy()));
     }
@@ -401,6 +404,7 @@ mod tests {
             realtime: false,
             trace_cd: false,
             trace_bios: false,
+            max_events: 200_000,
         };
         let lua = params_lua(&job, Some(Path::new("/tmp/a \"b\".bin"))).unwrap();
         assert!(lua.contains("frame = 10, buttons = { \"CROSS\", \"LEFT\" }"));
