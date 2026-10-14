@@ -17,6 +17,8 @@ PlayStation reverse-engineering toolkit for agents and people. Sibling of
 | `psx textures <run_dir> [--page X,Y,DEPTH --clut X,Y]` | Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT pair a `--gpu-frame` capture used, full and cropped to the UVs sampled, or one page by hand |
 | Frame → Bevy | `psx textures` also writes `textures/scene.psxscene`; the template's `PsxSceneRoot` (and `cargo run -- --scene ...`) spawns it as sprites and meshes |
 | `psx gpu-replay <stream.bin> -o vram.bin` / `psx vram-diff a.bin b.bin` | Replay a GP0 stream into `psx-gpu`; diff two VRAM dumps per pixel (per-cell counts, channel deltas, diff PNG). `tools/probes/gpu/compare.sh` diffs `psx-gpu` against Redux on the GPU probe EXE |
+| `psx assets scan <image.cue>[::/PATH] \| <file> [--json]` | Find TIM, TMD, VAB (VH+VB, or a `.VH` with its `.VB`) and VAG data in disc files, game archives and RAM dumps (`ram.bin`: relocated TMDs resolve at 0x80000000) by signature + full validation. A bare disc image scans every file; `::/DIR/` a directory. Hits inside an archive with a Croc-style `.DIR` index name their entry |
+| `psx assets extract <source> -o DIR [--kind K] [--offset HEX] [--textures SRC]` | TIM → PNG per CLUT, TMD → glTF (texture pages decoded from the TIMs in the same file or `--textures` sources, through a virtual VRAM), VAB/VAG → WAV per waveform (+ programs/tones JSON); the original bytes are written next to each. See [research/assets.md](research/assets.md) |
 | `psx memcard <image.mcd>` | List the saves on a memory card image: product code, blocks, title, icon frames |
 | LibCrypt discs | Put the redump `.sbi`/`.lsd` beside the `.cue`; `psx disc` reports it and the native core's GetlocP honours it |
 | `psx sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |
@@ -34,6 +36,8 @@ Other crates:
   rules, and logs GP0 commands. It is meant for replaying and diffing captured
   draw streams and decoding VRAM, not for game code.
 - **`psx-gte`:** a register-accurate GTE (COP2) with typed helpers and libgte-style math.
+- **`psx-assets`:** TIM/TMD/VAB/VAG parsing, SPU-ADPCM (shared with the native core's SPU),
+  the signature scanner and TMD → glTF. `tim.rs`/`tmd.rs` are copied verbatim into the template.
 
 Backend findings are in [research/backend-comparison.md](research/backend-comparison.md); a worked
 provenance example (Croc's boot chain) is in [research/load-provenance.md](research/load-provenance.md).
@@ -50,6 +54,8 @@ PS1 look: `PsxMaterial` gives vertex snapping, affine textures, Gouraud
 lighting, 15-bit dither, depth cue and the four blend modes. It also provides a
 low-resolution `PsxView` target, 2D sprites, DualShock input, fixed 50/60 Hz
 ticks, and a feature-gated developer MCP for stepping, input and screenshots.
+Extracted original `.tim` files load as Bevy `Image`s and `.tmd` models as
+`PsxModel`s (`PsxModelRoot`); `cargo run -- --model x.tmd --texture x.tim` views one.
 
 ## Local data (never committed)
 

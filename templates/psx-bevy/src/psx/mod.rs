@@ -8,8 +8,18 @@
 //! - [`PsxLook`] toggles the effects globally.
 //! - [`PsxSceneRoot`] spawns a captured frame (`.psxscene` from the psx
 //!   toolkit) as ordinary sprites and meshes, for reference layouts.
+//! - Original `.tim` textures load as `Image`s and `.tmd` models as
+//!   [`PsxModel`]s (spawned with [`PsxModelRoot`]); see `assets.rs`.
+mod assets;
+pub mod formats;
 mod material;
 mod scene;
+
+#[allow(unused_imports)] // public API for game code
+pub use assets::{
+    PsxModel, PsxModelObject, PsxModelObjectIndex, PsxModelPart, PsxModelRoot, TimLoader, TimSettings, TimTransparency, TmdLoader,
+    TmdSettings, rgba_image,
+};
 
 pub use material::{PsxBlend, PsxMaterial};
 #[allow(unused_imports)] // public API for game code
@@ -116,6 +126,7 @@ impl Plugin for PsxPlugin {
         screen.image = app.world_mut().resource_mut::<Assets<Image>>().add(image);
 
         scene::plugin(app);
+        assets::plugin(app);
         app.add_plugins(MaterialPlugin::<PsxMaterial>::default())
             .register_type::<PsxLook>()
             .init_resource::<PsxLook>()

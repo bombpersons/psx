@@ -13,6 +13,7 @@ use psx_media::system_cnf::{SystemCnf, DEFAULT_BOOT};
 use psx_media::{memmap, Disc, MediaError, PsxExe};
 use serde_json::{json, Value};
 
+mod assets_cmd;
 mod lockstep;
 mod native;
 mod provenance;
@@ -272,6 +273,12 @@ enum Command {
         #[arg(long, default_value_t = 16)]
         samples: usize,
     },
+    /// Find and convert PlayStation asset formats (TIM, TMD, VAB/VH+VB, VAG)
+    /// in disc files, archives and RAM dumps.
+    Assets {
+        #[command(subcommand)]
+        action: assets_cmd::AssetsAction,
+    },
     /// Classify a CPU address (segment, region, folded offset).
     Addr {
         /// Hex address, e.g. 0x80010000.
@@ -332,6 +339,22 @@ fn main() -> ExitCode {
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }
+    if let Command::Assets { action } = cli.command {
+        return match assets_cmd::run(action) {
+            Ok(Ok(v)) => {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                ExitCode::SUCCESS
+            }
+            Ok(Err(text)) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                println!("{}", json!({"error": {"code": e.code(), "message": e.to_string()}}));
+                ExitCode::from(1)
+            }
+        };
+    }
     match run(cli.command) {
         Ok(v) => {
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
@@ -370,7 +393,7 @@ fn run(cmd: Command) -> R {
         }
         Command::Xa { image, path, file, channel, out } => xa_cmd::run(&image, &path, file, channel, out.as_deref()),
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
-        Command::Run { .. } | Command::Lockstep { .. } | Command::Native { .. } => unreachable!("handled in main"),
+        Command::Run { .. } | Command::Lockstep { .. } | Command::Native { .. } | Command::Assets { .. } => unreachable!("handled in main"),
         Command::Symbols { source, sigs, min_concrete, out } => symbols_cmd(&source, &sigs, min_concrete, out),
         Command::Disasm { source, addr, count, symbols } => {
             let bytes = read_source(&source)?;

@@ -115,7 +115,7 @@ commands:
 > - `psx-gte` supports exact GTE comparisons.
 >
 > **Next steps:**
-> - TIM/TMD loaders that produce Bevy `Image`/`Mesh`.
+> - ~~TIM/TMD loaders that produce Bevy `Image`/`Mesh`.~~ Done: `psx-assets`, `psx assets scan/extract`, template `TimLoader`/`TmdLoader` ([research/assets.md](research/assets.md)).
 > - Optional 15-bit quantisation pass for sprites.
 > - Palette (CLUT) swap material for 2D.
 
