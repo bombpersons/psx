@@ -22,6 +22,7 @@ mod run_native;
 mod template;
 mod textures;
 mod vram_diff;
+mod str_cmd;
 mod xa_cmd;
 
 #[derive(Parser)]
@@ -68,6 +69,25 @@ enum Command {
         file: Option<u8>,
         #[arg(short, long)]
         out: Option<PathBuf>,
+    },
+    /// Decode an STR movie (MDEC BS v1/v2/v3) into PNG frames, audio.wav and summary.json.
+    Str {
+        /// `image.cue::/PATH`, or the image with the ISO path as the next argument.
+        source: String,
+        path: Option<String>,
+        /// Frames to write, 1-based inclusive: `A..B`, `A..`, `..B` or `N`.
+        #[arg(long)]
+        frames: Option<String>,
+        /// XA channel for audio.wav (default: the first one present).
+        #[arg(long)]
+        channel: Option<u8>,
+        #[arg(long)]
+        no_audio: bool,
+        /// Also write an uncompressed 4:4:4 movie.y4m.
+        #[arg(long)]
+        y4m: bool,
+        #[arg(short, long)]
+        out: PathBuf,
     },
     /// List the saves on a raw 128 KiB memory card image (.mcd/.mcr).
     Memcard { image: PathBuf },
@@ -369,6 +389,10 @@ fn run(cmd: Command) -> R {
             Ok(json!({"image": image, "formatted": formatted, "blocks_used": used, "blocks_free": 15 - used.min(15), "saves": saves}))
         }
         Command::Xa { image, path, file, channel, out } => xa_cmd::run(&image, &path, file, channel, out.as_deref()),
+        Command::Str { source, path, frames, channel, no_audio, y4m, out } => {
+            let (image, path) = str_cmd::split_source(&source, path.as_deref())?;
+            str_cmd::run(str_cmd::Args { image: &image, path: &path, out: &out, frames: frames.as_deref(), channel, no_audio, y4m })
+        }
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
         Command::Run { .. } | Command::Lockstep { .. } | Command::Native { .. } => unreachable!("handled in main"),
         Command::Symbols { source, sigs, min_concrete, out } => symbols_cmd(&source, &sigs, min_concrete, out),
