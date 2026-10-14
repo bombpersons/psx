@@ -16,6 +16,11 @@
 //! so a reimplementation can start from a pixel-faithful reference layout,
 //! then replace pieces with real game entities while keeping the evidence
 //! trail. Semi-transparency is approximated with 50% alpha blending.
+//!
+//! The PS1 had no depth buffer: it painted polygons in command order. 3D
+//! elements are depth-tested by default, which is right for exploring the
+//! geometry from new angles; [`PsxSceneDepth::Painter`] instead draws them in
+//! capture order without depth, reproducing the captured frame exactly.
 
 use bevy::{
     asset::{AssetLoader, LoadContext, RenderAssetUsages, io::Reader},
@@ -129,7 +134,24 @@ pub struct PsxScene {
 /// Spawns the scene's elements as children once it has loaded. The scene's
 /// screen centre sits at this entity's origin.
 #[derive(Component, Clone, Debug)]
+#[require(PsxSceneDepth)]
 pub struct PsxSceneRoot(pub Handle<PsxScene>);
+
+/// How a [`PsxSceneRoot`]'s lifted 3D elements are ordered. Can be changed at
+/// any time.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq, Reflect)]
+#[reflect(Component)]
+pub enum PsxSceneDepth {
+    /// Bevy's depth buffer decides visibility: geometry looks right from any
+    /// camera, but polygons the game drew first and let later ones paint over
+    /// (backdrops placed near the camera) can show in front.
+    #[default]
+    Tested,
+    /// Painter's order, as the PS1 drew: each element draws over the earlier
+    /// ones, without depth (`PsxMaterial::draw_order` = element index).
+    /// Matches the captured frame from the game's camera.
+    Painter,
+}
 
 /// Which captured element (and GPU command, `gpu_frame.json` index) an entity came from.
 #[allow(dead_code)] // read by game code
@@ -208,7 +230,32 @@ impl AssetLoader for PsxSceneLoader {
 pub(super) fn plugin(app: &mut App) {
     app.init_asset::<PsxScene>()
         .init_asset_loader::<PsxSceneLoader>()
-        .add_systems(Update, (spawn_scenes, fit_scene_cameras));
+        .register_type::<PsxSceneDepth>()
+        .add_systems(Update, ((spawn_scenes, apply_scene_depth).chain(), fit_scene_cameras));
+}
+
+/// Spawned roots whose depth mode is new or changed.
+type DepthChanged = (With<Spawned>, Or<(Changed<PsxSceneDepth>, Added<Spawned>)>);
+
+/// Sets each lifted element's [`PsxMaterial::draw_order`] from its root's
+/// [`PsxSceneDepth`], when the scene spawns or the mode changes.
+fn apply_scene_depth(
+    roots: Query<(Entity, &PsxSceneDepth), DepthChanged>,
+    children: Query<&Children>,
+    elements: Query<(&PsxSceneElement, &MeshMaterial3d<PsxMaterial>)>,
+    mut materials: ResMut<Assets<PsxMaterial>>,
+) {
+    for (root, depth) in &roots {
+        for entity in children.iter_descendants(root) {
+            let Ok((element, material)) = elements.get(entity) else { continue };
+            let order = (*depth == PsxSceneDepth::Painter).then_some(element.element as u32);
+            if materials.get(&material.0).is_some_and(|m| m.draw_order != order)
+                && let Some(mut m) = materials.get_mut(&material.0)
+            {
+                m.draw_order = order;
+            }
+        }
+    }
 }
 
 fn fit_scene_cameras(
