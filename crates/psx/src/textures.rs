@@ -106,8 +106,24 @@ fn parse_list(s: &str, n: usize) -> psx_media::Result<Vec<i32>> {
     Ok(v)
 }
 
-pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&Path>) -> R {
-    let vram = load_vram(&run_dir.join("vram.bin"))?;
+/// The VRAM to decode: `--vram` if given; for a captured frame the VRAM at
+/// the end of that frame (gpu_frame_vram.bin) when the run wrote it, else the
+/// run's final vram.bin.
+fn pick_vram(run_dir: &Path, explicit: Option<&Path>, frame_mode: bool) -> std::path::PathBuf {
+    if let Some(p) = explicit {
+        return p.to_path_buf();
+    }
+    let at_frame = run_dir.join("gpu_frame_vram.bin");
+    if frame_mode && at_frame.is_file() {
+        at_frame
+    } else {
+        run_dir.join("vram.bin")
+    }
+}
+
+pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&Path>, vram_path: Option<&Path>) -> R {
+    let vram_file = pick_vram(run_dir, vram_path, page.is_none());
+    let vram = load_vram(&vram_file)?;
     let out_dir = out.map(Path::to_path_buf).unwrap_or_else(|| run_dir.join("textures"));
     std::fs::create_dir_all(&out_dir).map_err(|e| MediaError::io(&out_dir, e))?;
     let save = |name: String, (w, h, rgba): (u32, u32, Vec<u8>)| -> psx_media::Result<Value> {
@@ -123,7 +139,7 @@ pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&
         }
         let name = format!("page_{}_{}_{}bpp{}.png", p[0], p[1], p[2], c.map(|(x, y)| format!("_clut_{x}_{y}")).unwrap_or_default());
         let file = save(name, decode_page(&vram, p[0], p[1], p[2] as u8, c, [0, 0, 255, 255])?)?;
-        return Ok(json!({"textures": [file]}));
+        return Ok(json!({"vram": vram_file, "textures": [file]}));
     }
     // Every page/CLUT pair the captured frame sampled, with the UV bounds used.
     let frame_path = run_dir.join("gpu_frame.json");
@@ -181,7 +197,8 @@ pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&
     std::fs::write(&scene_path, bytes).map_err(|e| MediaError::io(&scene_path, e))?;
     Ok(json!({
         "source": frame_path,
-        "note": "decoded from the run's final VRAM; PNG alpha 0 = transparent (0000h), 128 = STP bit (blends on semi-transparent primitives), 255 = opaque",
+        "vram": vram_file,
+        "note": "decoded from `vram`: gpu_frame_vram.bin is the VRAM at the end of the captured frame, vram.bin the run's final VRAM (older captures only have vram.bin); PNG alpha 0 = transparent (0000h), 128 = STP bit (blends on semi-transparent primitives), 255 = opaque",
         "textures": list,
         "scene": {"path": scene_path, "elements": scene["elements"].as_array().map_or(0, |a| a.len()), "skipped_primitives": scene["skipped_primitives"]},
     }))
@@ -272,7 +289,11 @@ fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i
                     let flip_x = (p[1].0 - p[0].0).signum() * (q[1].0 - q[0].0).signum() < 0;
                     let flip_y = (p[2].1 - p[0].1).signum() * (q[2].1 - q[0].1).signum() < 0;
                     if x1 > x0 && y1 > y0 && u1 > u0 && v1 > v0 {
-                        elements.push(json!({"kind": "sprite", "image": image, "rect": [x0, y0, x1 - x0, y1 - y0], "uv": [u0, v0, u1 - u0, v1 - v0],
+                        // The GPU interpolates UVs from the pixel's left/top edge, so a
+                        // mirrored quad spanning u1→u0 shows texels u1..u0+1 (not u1-1..u0):
+                        // the sprite's texture rect moves one texel up on a flipped axis.
+                        let uv = [u0 + flip_x as i64, v0 + flip_y as i64, u1 - u0, v1 - v0];
+                        elements.push(json!({"kind": "sprite", "image": image, "rect": [x0, y0, x1 - x0, y1 - y0], "uv": uv,
                             "flip_x": flip_x, "flip_y": flip_y, "color": colour(verts[0]), "semi": semi, "blend": blend, "command": c["index"]}));
                         continue;
                     }
@@ -324,6 +345,81 @@ mod tests {
         assert_eq!(&page_indices(&vram, 64, 0, 4)[..4], &[1, 2, 3, 4]);
         assert_eq!(&page_indices(&vram, 128, 0, 8)[..2], &[0xAA, 0xBB]);
         assert_eq!(clut_rgba(&vram, 0, 480, 3), vec![0, 0, 0, 128, 255, 255, 255, 255, 0, 0, 0, 0]);
+    }
+
+    /// Mirrored quads: the exported sprite, sampled the way a GPU samples a
+    /// flipped sprite (pixel centres, nearest), must show exactly the texels the
+    /// PS1 rasteriser (psx-gpu) draws, for every flip combination.
+    #[test]
+    fn mirrored_quads_sample_the_same_texels_as_the_gpu() {
+        let mut gpu = psx_gpu::Gpu::new();
+        // A 15-bit texture page at (0, 0): every texel distinct.
+        for v in 0..32 {
+            for u in 0..32 {
+                gpu.vram.set(u, v, (1 + u as u16) | (v as u16) << 5 | 0x4000);
+            }
+        }
+        gpu.gp0_all(&[0xE300_0000]);
+        gpu.gp0_all(&[0xE400_0000 | 511 << 10 | 1023]);
+        gpu.gp0_all(&[0xE500_0000]);
+        let texpage = 2u32 << 7; // 15 bpp, page (0, 0)
+        let (u0, u1, v0, v1) = (0, 15, 3, 19); // 15 texels wide, 16 tall, like Mega Man's pieces
+        let mut commands = Vec::new();
+        for (k, (fx, fy)) in [(false, false), (true, false), (false, true), (true, true)].into_iter().enumerate() {
+            let (x0, y0) = (100 + 40 * k as i64, 300);
+            let (xa, xb) = if fx { (x0 + 15, x0) } else { (x0, x0 + 15) };
+            let (ya, yb) = if fy { (y0 + 16, y0) } else { (y0, y0 + 16) };
+            let verts = [(xa, ya, u0, v0), (xb, ya, u1, v0), (xa, yb, u0, v1), (xb, yb, u1, v1)];
+            let xy = |x: i64, y: i64| (y as u32) << 16 | (x as u32 & 0xFFFF);
+            let uv = |u: i64, v: i64| (v as u32) << 8 | u as u32;
+            gpu.gp0_all(&[
+                0x2D80_8080,
+                xy(verts[0].0, verts[0].1),
+                uv(verts[0].2, verts[0].3),
+                xy(verts[1].0, verts[1].1),
+                uv(verts[1].2, verts[1].3) | texpage << 16,
+                xy(verts[2].0, verts[2].1),
+                uv(verts[2].2, verts[2].3),
+                xy(verts[3].0, verts[3].1),
+                uv(verts[3].2, verts[3].3),
+            ]);
+            commands.push(json!({"index": k, "kind": "poly4", "offset": [0, 0], "textured": true, "raw": true,
+                "texpage": {"x": 0, "y": 0, "depth": 15}, "clut": null,
+                "vertices": verts.iter().map(|&(x, y, u, v)| json!({"x": x, "y": y, "uv": [u, v], "color": [128, 128, 128]})).collect::<Vec<_>>()}));
+        }
+        let frame = json!({"commands": commands, "summary": {"display": {"width": 320, "height": 240}, "gte": {}}});
+        let mut image_of = BTreeMap::new();
+        image_of.insert((0, 0, 15, -1, -1), 0);
+        let s = scene(&frame, &["page.png".into()], &image_of);
+        let elements = s["elements"].as_array().unwrap();
+        assert_eq!(elements.len(), 4);
+        for e in elements {
+            assert_eq!(e["kind"], "sprite", "{e}");
+            let n = |v: &Value, i: usize| v[i].as_i64().unwrap();
+            let (rx, ry, rw, rh) = (n(&e["rect"], 0), n(&e["rect"], 1), n(&e["rect"], 2), n(&e["rect"], 3));
+            let (tu, tv, tw, th) = (n(&e["uv"], 0), n(&e["uv"], 1), n(&e["uv"], 2), n(&e["uv"], 3));
+            let (fx, fy) = (e["flip_x"] == json!(true), e["flip_y"] == json!(true));
+            for py in 0..rh {
+                for px in 0..rw {
+                    // Normalised pixel centre, mirrored on a flipped axis, then nearest texel.
+                    let mut s = (px as f64 + 0.5) / rw as f64;
+                    let mut t = (py as f64 + 0.5) / rh as f64;
+                    if fx {
+                        s = 1.0 - s;
+                    }
+                    if fy {
+                        t = 1.0 - t;
+                    }
+                    let (u, v) = ((tu as f64 + s * tw as f64).floor() as i32, (tv as f64 + t * th as f64).floor() as i32);
+                    assert_eq!(
+                        gpu.vram.get((rx + px) as i32, (ry + py) as i32),
+                        gpu.vram.get(u, v),
+                        "element {} pixel ({px}, {py}) samples texel ({u}, {v})",
+                        e["command"]
+                    );
+                }
+            }
+        }
     }
 
     #[test]

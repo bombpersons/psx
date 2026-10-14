@@ -236,7 +236,9 @@ RAM, VRAM and screen PNGs, registers, replay, `--symbols`. Its observations come
   `psx loads` reads it with evidence `native` and needs no content inference.
 - **`--trace-bios`:** A0/B0/C0 calls are recorded at the vectors with path arguments. Frequent calls are counted but not recorded.
 - **EXE side-loading:** like Redux, the BIOS runs to the shell entry 0x80030000, then the EXE is loaded.
-- **Frames** count from power-on, or from the restored state after `--from-state` (Redux counts from SaveStateLoaded).
+- **Frames:** the run's own frame numbers (`--frames`, replay events, `--poke`, `--gpu-frame`, `--trace-from-frame`, `--save-state-at`, the `run_frame` fields) count from power-on, or from the restored state after `--from-state` (Redux counts from SaveStateLoaded).
+  The `frame` fields in `writes.jsonl`, `reads.jsonl`, `cd_native.jsonl`, `bios.jsonl`, `samples.csv`, `calls.json` and the first column of `trace.txt` are the core's absolute vblank count since power-on; `frame = run_frame + frames.start` (the report gives `frames.start`/`frames.end`).
+- **Per-frame observation:** `--sample ADDR:FMT[:NAME]` (samples.csv, one row per vblank, read byte-exact from RAM), `--watch-reads` (reads.jsonl), `--snapshot-every N` (screens/), `--save-state-at F`; and one intervention, `--poke ADDR=VALUE[:W][@F]`. They are applied at frame boundaries from outside the core, so a run with them is bit-identical to one without (checked: RAM/VRAM/state hashes, cycles and watch hits against the previous binary on the Croc and Mega Man 8 states), apart from what a poke writes.
 - **Save states** (`--save-state` / `--from-state`): see below.
 
 Checks:

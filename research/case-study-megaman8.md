@@ -206,8 +206,10 @@ Error is exactly 0 because the constants are dyadic: every value is a multiple o
 The `vx` column is **not** compared. The original leaves a stale vx in RAM after stopping, while the demo zeroes it. That is a representation difference, not a behaviour difference.
 
 **Not verified by trajectory:**
-- the −6 px/tick clamp: falls here reach −6.0 only on the landing tick. The clamp is from the code (0x8010F7CC);
-- the high-jump flag;
+- the −6 px/tick clamp: falls here reach −6.0 only on the landing tick. The clamp is from the code (0x8010F7CC).
+  *Since verified with `--poke 8015E8AC=250.0:fx16.16@0`* (dropping Mega Man from y = 250): vy reaches −6.0 after 24 ticks of falling and stays there,
+  while y then grows by 6.25 per tick, because gravity is applied before the move and the clamp after it. The fastest fall is therefore 6.25 px/tick (312.5 px/s), not 6.0;
+- the high-jump flag. *Since verified with `--poke 8015E926=1:1@1`* (after the press tick, which clears it): the take-off speed is 0x669D8 = 6.4134521484375 and the full jump rises 79.09 px (441 → 361.91);
 - ceiling hits;
 - slopes and walls;
 - the facing-left sprite layout: the rig is mirrored about the origin, which was never captured;
@@ -280,6 +282,7 @@ The items are ordered roughly by how much time they cost. The suggestions are co
    write a wrapper file before any run worked.
    *Suggest:* a `PSX_HOME` (or `psx.toml`) for the data and output roots, and
    absolute paths in error messages.
+   *Resolved:* `psx --root DIR` / `PSX_ROOT=DIR` (every command and `psx mcp`).
 2. **Two overlapping run commands.** `psx native` has `--snapshot-every`
    (which is how I found the stage) but no `--save-state`. `psx run --backend native` has
    `--save-state`, `--gpu-frame` and `--trace` but no snapshots. Their flags also differ (`--disc` against a positional
@@ -287,6 +290,7 @@ The items are ordered roughly by how much time they cost. The suggestions are co
    stage starts, once to save a state.
    *Suggest:* fold snapshots into `psx run` (`--screens-every N`) and add
    `--save-state-at F` (repeatable), so one boot yields states at several points.
+   *Resolved:* `psx run --backend native --snapshot-every N --save-state-at F` (screens/fNNNNNN.png, state_fNNNNNN.bin); `psx native` is now described as an emulator diagnostic. Its flag spellings (`--disc`, `--watch ADDR`) still differ from `run`.
 3. **No known-good boot replays.** native-core.md says Mega Man 8 reached the
    "Intro stage, weapon menu" with a START/CROSS replay, but the replay isn't in the repo.
    *Suggest:* `tools/replays/<game>.json` with the frame to save at. Mine is in
@@ -302,10 +306,12 @@ The items are ordered roughly by how much time they cost. The suggestions are co
    frames (3901, …). Every script had to subtract the state's frame, which it
    can only learn from the first write.
    *Suggest:* emit both `frame` and `run_frame`. Also put `start_frame` in the report, which currently gives only `frames.reached`, without the base.
+   *Resolved:* `run_frame` beside `frame` in every native log, `frames.start`/`frames.end` in the report, a header in trace.txt.
 6. **Reports are long.** `psx native` printed about 300 lines of JSON (SPU voices,
    hot PCs, I/O counts) for a run whose only purpose was screenshots.
    *Suggest:* `--quiet` or a one-line summary, with the full report in the run
    directory.
+   *Resolved (for `run`):* `--brief`; the full report is always in `<run_dir>/report.json`.
 
 ### RAM analysis
 
@@ -319,16 +325,21 @@ The items are ordered roughly by how much time they cost. The suggestions are co
    `--frames 0` run) with every hit applied in order.
    *Suggest:* `--sample ADDR:fmt[,…]` writing `samples.csv`, with one row per
    frame of end-of-frame values (fmt: `u8`, `s16`, `fx16.16`). This is the single most useful missing feature for gameplay RE.
+   *Resolved:* `--sample ADDR:FMT[:NAME]`. `--frames 62 --replay cross.json --sample 8015E8AC:fx16.16:y --sample 8015E8B4:fx16.16:vy --sample 8015E89E:u8:state ...`
+   reproduces `jump_hold` with 0 mismatches over 62 ticks (row t+1 = tick t), including the landing at 441.15625; `tests/native_observe.rs` checks it.
 8. **No RAM search across runs.** `ramdiff.py` (find words whose values order as
    a hypothesis across N runs) found the player in one try. This is the
    classic cheat-search loop, and every agent will rewrite it.
    *Suggest:* `psx ramsearch run_a run_b ... --order lt|eq|changed --width 2|4`,
    aware of 16.16 values.
+   *Resolved:* `psx ram search LEFT20 idle RIGHT20 RIGHT40 --width 2 --signed --pred increased` finds exactly 0x8015E8AA, 0x8015E8D0 and 0x801C7A46; `psx ram diff` compares two runs.
 9. **No RAM poke.** I couldn't force the high-jump flag (+0x8A) or drop Mega Man from a
    height to exercise the −6 clamp, so both remain code-only claims.
    *Suggest:* `--poke ADDR=VAL[@frame]` (repeatable), recorded in the report.
+   *Resolved:* `--poke ADDR=VALUE[:W|:FMT][@F|@A..B|@A..]`. Both claims are now verified (see "Not verified by trajectory").
 10. **No struct view.** I dumped the object region side by side with a script (`dump.py`).
     *Suggest:* `psx ram run_a run_b --addr X --len N --as s16|fx`, marking differences.
+    *Resolved:* `psx ram view run_a run_b --addr X --len N --as fx16.16 --text`.
 
 ### Code reading
 
@@ -336,20 +347,24 @@ The items are ordered roughly by how much time they cost. The suggestions are co
     170-instruction state function is about 1200 lines. I piped it through a formatter
     (`dis.sh`).
     *Suggest:* text by default (`addr word asm` with labels), `--json` on demand.
+    *Resolved:* `--text` (JSON stays the default for compatibility), plus `--function ADDR` for a whole function.
 12. **`disasm` reads the EXE on disc, not the run's RAM.** Here the code was
     resident and unmodified, so it was fine. But overlays, or code loaded after boot, would
     be disassembled from the wrong bytes without a warning.
     *Suggest:* `psx disasm <run_dir> --addr …` reading `ram.bin`, and a check that
     warns when the EXE and RAM bytes differ.
+    *Resolved:* `psx disasm --ram RUN_DIR` (with an EXE source too, `warnings` reports the words that differ).
 13. **No callers or xrefs.** To find the state dispatcher I relied on the trace's
     `-> target (from site)` lines.
     *Suggest:* `psx xrefs <exe> ADDR` (static jal/j targets), or callers from `calls.json`.
+    *Resolved:* `psx xrefs ADDR|LO-HI --source EXE | --ram RUN` (calls, jumps, branches, lui pairs, gp-relative accesses, pointer words). `psx xrefs 8015E89C-8015E9A0 --ram s3900` lists 523 accesses to the player object in 205 functions.
 14. **The trace is the best tool here.** `--trace --trace-range` from a state, with
     per-instruction effects (`[8015e8b4]=0005c900`), confirmed the integration
     order and the release rule in one 3-frame run. A user label file
     (`ADDR name`) feeding `--symbols`, so traces and disasm show
     `player_jump_state` rather than raw addresses, would make iterating nicer.
     `.sym` input exists but isn't documented as a way to add your own names.
+    *Still open* (as are items 3, 4, 15, 18 and 19; 21–29 are template items, handled separately).
 15. **`psx symbols` covers libraries only.** It named 417 library functions (8.5 % of code), none in game code,
     which is expected. It took about 1 s and needs `external/` from the main checkout (item 1).
 
@@ -360,11 +375,14 @@ The items are ordered roughly by how much time they cost. The suggestions are co
     later frame. I re-ran with `--frames 2`.
     *Suggest:* save `gpu_frame_after.bin` and decode from it by default (the note
     "decoded from the run's final VRAM" is easy to miss).
+    *Resolved:* `--gpu-frame` writes `gpu_frame_vram.bin` (and `gpu_frame_after.png` now also shows the end of the captured frame, not of the run); `psx textures` decodes it by default. In a walking capture (`--frames 12 --gpu-frame 8`) 281 texels of Mega Man's page differ between the two dumps; decoded from the final VRAM only 57 of 485 mirrored-sprite pixels matched the frame, from the frame's VRAM all 487 do.
 17. **Mirrored quads are off by one texel in the scene.** Mirrored `poly4` sprites are exported as `Mesh2d`; GPU
     centre sampling then shifts them by one texel against the PS1. This accounts for all 516 differing pixels in the viewer comparison.
     *Suggest:* in the scene exporter, turn axis-aligned 1:1 quads into
     `Sprite`s with `flip_x`/`flip_y` and the corrected rect (u_lo + 1 when mirrored), as
     the demo does. That would take the viewer from 99.33 % to 100 % here.
+    *Resolved:* the exporter emits these axis-aligned quads as `sprite` elements with `flip_x`/`flip_y`; their texture rect now moves one texel on each flipped axis.
+    Sampling the exported sprites at pixel centres reproduces all 658 of Mega Man's pixels in a fresh capture of this frame (206 with the old rect); a unit test checks every flip combination against psx-gpu. The template viewer itself was not re-run.
 18. **A capture holds one pose.** Because sprites are streamed into VRAM per frame, a
     single capture contains only the current animation frame of each actor.
     *Suggest:* `--gpu-frames A..B` or `psx sprites`: record every VRAM upload
@@ -382,6 +400,7 @@ The items are ordered roughly by how much time they cost. The suggestions are co
     report's `display.start` is the other buffer. They were identical here, but
     I had to check both halves of `gpu_frame_after.png`.
     *Suggest:* write `gpu_frame_screen.png`, the captured frame's draw area.
+    *Resolved:* `gpu_frame_screen.png` (the drawing area at the end of the captured frame).
 
 ### Template
 

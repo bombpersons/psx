@@ -11,6 +11,13 @@ use serde_json::{json, Value};
 
 const BIN: &str = env!("CARGO_BIN_EXE_psx");
 
+/// The binary, working in its current directory (a PSX_ROOT in the test's environment would override it).
+fn psx() -> Command {
+    let mut c = Command::new(BIN);
+    c.env_remove("PSX_ROOT");
+    c
+}
+
 struct Rpc {
     child: Child,
     input: Option<ChildStdin>,
@@ -20,7 +27,7 @@ struct Rpc {
 
 impl Rpc {
     fn start(root: &Path) -> Self {
-        let mut child = Command::new(BIN)
+        let mut child = psx()
             .arg("mcp")
             .current_dir(root)
             .stdin(Stdio::piped())
@@ -90,7 +97,7 @@ impl Drop for Rpc {
 }
 
 fn cli(root: &Path, args: &[&str]) -> (Value, bool) {
-    let out = Command::new(BIN).args(args).current_dir(root).output().unwrap();
+    let out = psx().args(args).current_dir(root).output().unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
     (serde_json::from_str(&text).unwrap_or_else(|e| panic!("CLI {args:?} printed {text:?}: {e}")), out.status.success())
 }
@@ -122,6 +129,13 @@ fn mcp_tools_match_cli() {
     let root = scratch();
     std::fs::write(root.join("tiny.ps-exe"), tiny_exe()).unwrap();
     std::fs::write(root.join("blank.mcd"), vec![0u8; 128 * 1024]).unwrap();
+    // Two RAM snapshots: a 16.16 value that grows, and the tiny EXE's code resident at 0x80010000.
+    let mut ram = vec![0u8; 2 * 1024 * 1024];
+    ram[0x1000..0x1004].copy_from_slice(&0x0001_8000u32.to_le_bytes());
+    ram[0x10000..0x10008].copy_from_slice(&tiny_exe()[0x800..0x808]);
+    std::fs::write(root.join("ram_a.bin"), &ram).unwrap();
+    ram[0x1000..0x1004].copy_from_slice(&0x0003_0000u32.to_le_bytes());
+    std::fs::write(root.join("ram_b.bin"), &ram).unwrap();
     let stream = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/probes/gpu/gp0_stream.bin");
     let stream = stream.to_str().unwrap();
 
@@ -132,7 +146,7 @@ fn mcp_tools_match_cli() {
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for want in [
         "disc", "ls", "extract", "exe", "sector", "addr", "xa", "memcard", "textures", "run", "loads", "symbols", "disasm",
-        "lockstep", "native", "template_create", "gpu_replay", "vram_diff",
+        "lockstep", "native", "template_create", "gpu_replay", "vram_diff", "xrefs", "ram_diff", "ram_search", "ram_view",
     ] {
         assert!(names.contains(&want), "missing tool {want}: {names:?}");
     }
@@ -141,7 +155,10 @@ fn mcp_tools_match_cli() {
         assert!(t["description"].as_str().unwrap().len() > 80, "{} needs a real description", t["name"]);
     }
     let run = tools.iter().find(|t| t["name"] == "run").unwrap();
-    for field in ["bios", "frames", "backend", "watch", "trace", "gpu_frame", "memcard1", "pad", "from_state", "return_screen"] {
+    for field in [
+        "bios", "frames", "backend", "watch", "trace", "gpu_frame", "memcard1", "pad", "from_state", "return_screen", "sample", "sample_every",
+        "poke", "snapshot_every", "save_state_at", "watch_changes_only", "watch_reads", "brief",
+    ] {
         assert!(run["inputSchema"]["properties"].get(field).is_some(), "run schema lacks {field}");
     }
 
@@ -164,6 +181,26 @@ fn mcp_tools_match_cli() {
             vec!["run", "--bios", "no-such-bios.bin", "--backend", "native", "--frames", "1"],
         ),
         ("run", json!({"bios": "b.bin", "backend": "bogus"}), vec!["run", "--bios", "b.bin", "--backend", "bogus"]),
+        (
+            "run",
+            json!({"bios": "no-such-bios.bin", "backend": "redux", "sample": ["80010000:u32"]}),
+            vec!["run", "--bios", "no-such-bios.bin", "--sample", "80010000:u32"],
+        ),
+        (
+            "disasm",
+            json!({"source": "tiny.ps-exe", "function": "80010004"}),
+            vec!["disasm", "tiny.ps-exe", "--function", "80010004"],
+        ),
+        ("disasm", json!({"ram": "ram_a.bin", "addr": "80010000", "count": 2}), vec!["disasm", "--ram", "ram_a.bin", "--addr", "80010000", "--count", "2"]),
+        ("xrefs", json!({"target": "80010004", "source": "tiny.ps-exe"}), vec!["xrefs", "80010004", "--source", "tiny.ps-exe"]),
+        ("xrefs", json!({"target": "zz", "source": "tiny.ps-exe"}), vec!["xrefs", "zz", "--source", "tiny.ps-exe"]),
+        ("ram_diff", json!({"a": "ram_a.bin", "b": "ram_b.bin", "signed": true}), vec!["ram", "diff", "ram_a.bin", "ram_b.bin", "--signed"]),
+        (
+            "ram_search",
+            json!({"snapshots": ["ram_a.bin", "ram_b.bin"], "width": 4, "pred": ["increased"]}),
+            vec!["ram", "search", "ram_a.bin", "ram_b.bin", "--width", "4", "--pred", "increased"],
+        ),
+        ("ram_view", json!({"snapshots": ["ram_a.bin", "ram_b.bin"], "addr": "80001000", "len": 8, "as": "fx16.16"}), vec!["ram", "view", "ram_a.bin", "ram_b.bin", "--addr", "80001000", "--len", "8", "--as", "fx16.16"]),
     ];
     for (tool, args, argv) in cases {
         let (mcp, is_error) = {
@@ -177,6 +214,29 @@ fn mcp_tools_match_cli() {
             assert!(!ok, "{argv:?} should exit non-zero");
         }
     }
+
+    // Results that tests elsewhere rely on.
+    let (v, _, _) = rpc.tool("ram_search", json!({"snapshots": ["ram_a.bin", "ram_b.bin"], "width": 4, "pred": ["increased"]}));
+    assert_eq!(v["candidates"], 1, "{v}");
+    assert_eq!(v["matches"][0]["fx16_16"], json!([1.5, 3.0]), "{v}");
+    let (v, _, _) = rpc.tool("disasm", json!({"source": "tiny.ps-exe", "function": "80010004"}));
+    assert_eq!((v["function"]["start"].as_str(), v["function"]["end"].as_str()), (Some("0x80010000"), Some("0x8001000C")), "{v}");
+
+    // Text mode: the CLI prints the `text` field as is; MCP returns the whole JSON.
+    let (v, is_error, _) = rpc.tool("disasm", json!({"source": "tiny.ps-exe", "count": 2, "text": true}));
+    assert!(!is_error, "{v}");
+    let out = psx().args(["disasm", "tiny.ps-exe", "--count", "2", "--text"]).current_dir(&root).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(text.trim_end(), v["text"].as_str().unwrap().trim_end());
+    assert!(text.contains("80010000  24080001  li      t0, 1"), "{text}");
+
+    // --root: the same command from another directory.
+    let elsewhere = std::env::temp_dir();
+    let out = psx().args(["--root", root.to_str().unwrap(), "exe", "tiny.ps-exe"]).current_dir(&elsewhere).output().unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v, cli(&root, &["exe", "tiny.ps-exe"]).0);
+    let out = psx().args(["exe", "tiny.ps-exe"]).env("PSX_ROOT", &root).current_dir(&elsewhere).output().unwrap();
+    assert!(out.status.success(), "PSX_ROOT");
 
     // MCP-only argument checks.
     let (v, is_error, _) = rpc.tool("addr", json!({"address": "0", "adress": "1"}));
