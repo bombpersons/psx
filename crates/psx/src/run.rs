@@ -29,7 +29,7 @@ pub struct RunArgs {
 }
 
 /// Memory cards (native backend).
-#[derive(clap::Args, Clone, Debug, Default)]
+#[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct CardArgs {
     /// Memory card in slot 1: a raw 128 KiB image (.mcd/.mcr) or `new` for a formatted empty card.
     /// The image file is never modified; a written card is saved as memcard1.mcd in the run directory.
@@ -76,13 +76,15 @@ impl CardArgs {
 }
 
 /// Instruction tracing (native backend).
-#[derive(clap::Args, Clone, Debug, Default)]
+#[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct TraceArgs {
     /// Trace instructions: trace.txt (capped by --max-events), coverage.txt and calls.json.
     #[arg(long)]
+    #[serde(default)]
     pub trace: bool,
     /// Start tracing at this frame of the run (default: the start).
     #[arg(long, default_value_t = 0)]
+    #[serde(default)]
     pub trace_from_frame: u64,
     /// Start tracing at the first execution of ADDR (hex) or a --symbols function.
     #[arg(long)]
@@ -92,6 +94,7 @@ pub struct TraceArgs {
     pub trace_frames: Option<u64>,
     /// Only write lines for LO-HI (hex) or a --symbols function; repeatable.
     #[arg(long = "trace-range")]
+    #[serde(default, rename = "trace_range")]
     pub trace_ranges: Vec<String>,
     /// Capture every GPU command of frame N of the run: gpu_frame.json (decoded
     /// primitives, texture pages, CLUTs) and VRAM before/after/wireframe PNGs.
@@ -125,7 +128,7 @@ pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgb: &[u8], color: png::Col
 fn next_run_dir(root: &Path) -> PathBuf {
     let runs = root.join(".psx/runs");
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    runs.join(format!("{stamp}-{}", std::process::id()))
+    runs.join(format!("{stamp}-{}{}", std::process::id(), crate::instance_suffix()))
 }
 
 pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {

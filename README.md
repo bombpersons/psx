@@ -25,6 +25,7 @@ PlayStation reverse-engineering toolkit for agents and people. Sibling of
 | `psx loads <run_dir> --disc <cue>` | Turns a `--trace-cd` run into disc file → RAM spans, verified by content |
 | `psx symbols <exe\|disc::/PATH>` | Name PsyQ library functions by signature (needs a local `external/psx_psyq_signatures`); Ghidra and `.sym` output. Pass the `.symbols.json` to `run`/`loads --symbols` to name PCs, checked against RAM residency |
 | `psx template create DIR [--name N]` | Native Bevy game starter (see below) |
+| `psx mcp [--jobs N]` | Every command above as an MCP tool over stdio (see below) |
 
 Input images can be `.cue`, a raw `.bin` (single data track) or a cooked `.iso`.
 
@@ -38,6 +39,42 @@ Other crates:
 Backend findings are in [research/backend-comparison.md](research/backend-comparison.md); a worked
 provenance example (Croc's boot chain) is in [research/load-provenance.md](research/load-provenance.md).
 `psx run` needs `external/pcsx-redux` built at the pinned commit (or `PSX_REDUX_BIN`).
+
+## MCP server
+
+`psx mcp` serves every command as an [MCP](https://modelcontextprotocol.io) tool over
+stdin/stdout, so an agent can drive the toolkit directly. Start it **in the project
+root** (the directory holding `bios/`, `media/`, `external/`): relative paths in tool
+arguments resolve there and outputs go to its `.psx/`. With Claude Code:
+
+```bash
+cargo build --release -p psx
+cd /path/to/psx          # project root
+claude mcp add psx -- "$PWD/target/release/psx" mcp
+```
+
+Tools: `disc`, `ls`, `extract`, `exe`, `sector`, `addr`, `xa`, `memcard`, `textures`,
+`run`, `native`, `loads`, `symbols`, `disasm`, `lockstep`, `template_create`,
+`gpu_replay`, `vram_diff`.
+
+- Arguments are the CLI's long flags with `_` for `-` (`trace_cd`, `gpu_frame`,
+  `memcard1`, `from_state`); positional arguments are named fields (`image`, `source`,
+  `run_dir`); repeatable flags are arrays (`watch`, `symbols`, `trace_range`). Unknown
+  arguments are rejected.
+- A tool's `structuredContent` is exactly the JSON the CLI prints for the same command
+  (`tests/mcp_stdio.rs` checks this); errors are `{"error": {"code", "message"}}`
+  with `isError: true`. A partial run or a lockstep divergence is a result, not an error.
+- Emulation tools return paths (`run_dir`, `files`) rather than RAM, VRAM or traces.
+  Any result over 256 KiB (e.g. `ls` of a large disc) is written to `.psx/mcp/` and
+  replaced by `result_file` plus a summary of its small fields.
+- `run` and `native` take `return_screen: true` to attach the final screen PNG as
+  image content.
+- Timeouts: `run` keeps its `timeout` (default 120 s). Over MCP, `native` and
+  `lockstep` default to `timeout: 300` and stop with status `timeout`. Each call also
+  has a hard cap (its `timeout` + 60 s, otherwise 15 min). A call that overruns the
+  cap, or is cancelled, returns an error but its worker thread is not killed. Emulation,
+  `symbols` and `loads` share `--jobs` slots (default 2).
+- Logs go to stderr; stdout carries only the protocol.
 
 ## Native game template
 
