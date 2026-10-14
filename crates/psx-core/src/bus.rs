@@ -507,8 +507,14 @@ impl Bus {
         self.irq_dirty = true;
     }
 
+    #[inline]
     pub fn take_irq_ack(&mut self) -> bool {
-        std::mem::take(&mut self.irq_acknowledged)
+        // Runs every instruction: only store when the flag is set.
+        let acked = self.irq_acknowledged;
+        if acked {
+            self.irq_acknowledged = false;
+        }
+        acked
     }
 
     fn log_access(&mut self, a: IoAccess) {
