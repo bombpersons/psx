@@ -216,17 +216,27 @@ impl Bus {
         if self.next_vblank == 0 {
             self.next_vblank = self.frame_cycles();
         }
-        let lines = if self.pal() { 314 } else { 263 };
-        let hblank = ((1u64 << 16) * lines) / self.frame_cycles();
-        // Dot clock: 53.693175 MHz / divider (10, 8, 5, 4 for widths 256, 320, 512, 640; 7 for 368).
-        let div = match self.gpu.display.width() {
-            256 => 10,
-            320 => 8,
-            368 => 7,
-            512 => 5,
-            _ => 4,
+        // Both rates are 16.16 fixed point per system clock. Every case is a
+        // compile-time constant (this runs every device batch; no divides).
+        const fn hblank_rate(lines: u64, frame_cycles: u64) -> u64 {
+            ((1u64 << 16) * lines) / frame_cycles
+        }
+        let hblank = if self.pal() {
+            const { hblank_rate(314, SYSCLK / 50) }
+        } else {
+            const { hblank_rate(263, SYSCLK * 1001 / 60000) }
         };
-        let dotclock = ((53_693_175u64 << 16) / div) / SYSCLK;
+        // Dot clock: 53.693175 MHz / divider (10, 8, 5, 4 for widths 256, 320, 512, 640; 7 for 368).
+        const fn dot_rate(div: u64) -> u64 {
+            ((53_693_175u64 << 16) / div) / SYSCLK
+        }
+        let dotclock = match self.gpu.display.width() {
+            256 => const { dot_rate(10) },
+            320 => const { dot_rate(8) },
+            368 => const { dot_rate(7) },
+            512 => const { dot_rate(5) },
+            _ => const { dot_rate(4) },
+        };
         let irq = self.timers.tick(cycles, crate::timers::Rates { dotclock, hblank });
         self.raise_irq(irq);
         if self.spu.tick(cycles, &mut self.cdrom.audio) {
