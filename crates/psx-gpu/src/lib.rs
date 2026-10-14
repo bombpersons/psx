@@ -38,6 +38,7 @@ pub struct VramTexture {
 }
 
 impl TexelSource<Vram> for VramTexture {
+    #[inline(always)]
     fn texel(&self, vram: &Vram, u: i32, v: i32) -> u16 {
         let (mx, my, ox, oy) = self.window;
         let u = (u & 0xFF & !((mx as i32) * 8)) | (((ox & mx) as i32) * 8);

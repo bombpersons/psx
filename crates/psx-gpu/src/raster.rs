@@ -73,7 +73,7 @@ pub struct Shade {
 }
 
 /// Shade and write one pixel. `rgb` is the 8-bit interpolated or flat colour.
-#[inline]
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub fn plot<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     surface: &mut S,
@@ -152,6 +152,25 @@ pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     sh: &Shade,
     v: [Vtx; 3],
 ) {
+    // One specialised rasteriser per (textured, gouraud) pair, so the per-pixel
+    // loop only steps the attributes it uses and plot() folds the constant flags.
+    match (sh.textured, sh.gouraud) {
+        (false, false) => triangle_with::<S, T, false, false>(surface, tex, ras, sh, v),
+        (false, true) => triangle_with::<S, T, false, true>(surface, tex, ras, sh, v),
+        (true, false) => triangle_with::<S, T, true, false>(surface, tex, ras, sh, v),
+        (true, true) => triangle_with::<S, T, true, true>(surface, tex, ras, sh, v),
+    }
+}
+
+#[inline(always)]
+fn triangle_with<S: Surface + ?Sized, T: TexelSource<S> + ?Sized, const TEX: bool, const GOURAUD: bool>(
+    surface: &mut S,
+    tex: &T,
+    ras: &Raster,
+    sh: &Shade,
+    v: [Vtx; 3],
+) {
+    let sh = &Shade { textured: TEX, gouraud: GOURAUD, ..*sh };
     let [v0, mut v1, mut v2] = v;
     let mut area = orient(&v0, &v1, v2.x, v2.y);
     if area == 0 {
@@ -175,10 +194,11 @@ pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     // computing `numerator.div_euclid(area)` per pixel).
     let (e0dx, e1dx, e2dx) = (-((v2.y - v1.y) as i64), -((v0.y - v2.y) as i64), -((v1.y - v0.y) as i64));
     let attrs: [fn(&Vtx) -> i32; 5] = [|v| v.r, |v| v.g, |v| v.b, |v| v.u, |v| v.v];
-    let n_attrs = if sh.textured { 5 } else if sh.gouraud { 3 } else { 0 };
+    // Attributes stepped: colour (0..3) when Gouraud shaded, UV (3..5) when textured.
+    let (a_lo, a_hi) = (if GOURAUD { 0 } else { 3 }, if TEX { 5 } else { 3 });
     // d(numerator)/dx for each attribute.
     let mut ndx = [0i64; 5];
-    for (k, f) in attrs.iter().enumerate().take(n_attrs) {
+    for (k, f) in attrs.iter().enumerate().take(a_hi).skip(a_lo) {
         ndx[k] = e0dx * f(&v0) as i64 + e1dx * f(&v1) as i64 + e2dx * f(&v2) as i64;
     }
     // A pixel is inside an edge when w > 0, or w == 0 on a top-left edge.
@@ -194,6 +214,13 @@ pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
             *hi = -1;
         }
     };
+    // Per-pixel attribute steps as quotient and remainder of the x derivative.
+    let mut step_q = [0i64; 5];
+    let mut step_r = [0i64; 5];
+    for k in a_lo..a_hi {
+        step_q[k] = ndx[k].div_euclid(area);
+        step_r[k] = ndx[k].rem_euclid(area);
+    }
     let width = (maxx - minx) as i64;
     for y in miny..=maxy {
         let w0 = orient(&v1, &v2, minx, y);
@@ -210,20 +237,16 @@ pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
         // Quotient and remainder of each attribute at the span start.
         let mut q = [0i64; 5];
         let mut r = [0i64; 5];
-        let mut step_q = [0i64; 5];
-        let mut step_r = [0i64; 5];
-        for (k, f) in attrs.iter().enumerate().take(n_attrs) {
+        for (k, f) in attrs.iter().enumerate().take(a_hi).skip(a_lo) {
             let n = (w0 + lo * e0dx) * f(&v0) as i64 + (w1 + lo * e1dx) * f(&v1) as i64 + (w2 + lo * e2dx) * f(&v2) as i64;
             q[k] = n.div_euclid(area);
             r[k] = n.rem_euclid(area);
-            step_q[k] = ndx[k].div_euclid(area);
-            step_r[k] = ndx[k].rem_euclid(area);
         }
         for x in minx + lo as i32..=minx + hi as i32 {
             let rgb = if sh.gouraud { [q[0] as i32, q[1] as i32, q[2] as i32] } else { [v0.r, v0.g, v0.b] };
             let uv = sh.textured.then(|| (q[3] as i32, q[4] as i32));
             plot(surface, tex, ras, sh, x, y, rgb, uv);
-            for k in 0..n_attrs {
+            for k in a_lo..a_hi {
                 q[k] += step_q[k];
                 r[k] += step_r[k];
                 if r[k] >= area {
