@@ -174,6 +174,12 @@ enum Command {
         /// Start recording --watch changes at this frame.
         #[arg(long, default_value_t = 0)]
         watch_after: u64,
+        /// JSON `[{"frame": n, "buttons": ["CROSS"]}]` (frames from power-on).
+        #[arg(long)]
+        replay: Option<PathBuf>,
+        /// With --dump: also save the screen every N frames.
+        #[arg(long)]
+        snapshot_every: Option<u64>,
     },
     /// Disassemble a PS-X EXE (file or `image.cue::/PATH`) at a RAM address range.
     Disasm {
@@ -216,7 +222,7 @@ fn main() -> ExitCode {
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }
-    if let Command::Native { bios, disc, frames, max_steps, dump, brk, tail, watch, watch_after } = &cli.command {
+    if let Command::Native { bios, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every } = &cli.command {
         let hex = |b: &Option<String>| b.as_deref().and_then(|b| u32::from_str_radix(b.trim_start_matches("0x").trim_start_matches("0X"), 16).ok());
         let (brk, watch) = (hex(brk), hex(watch));
         let (ok, v) = native::run(native::Options {
@@ -229,6 +235,8 @@ fn main() -> ExitCode {
             tail: *tail,
             watch,
             watch_after: *watch_after,
+            replay: replay.as_deref(),
+            snapshot_every: *snapshot_every,
         });
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };

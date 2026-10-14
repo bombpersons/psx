@@ -103,6 +103,14 @@ How the profile guided each step of the bring-up (SCPH-7502, no disc):
 | 8 | Polls the MDEC status register `0x1F801824` (4.2M reads): the FOX logo movie needs the MDEC | MDEC (`mdec.rs`) |
 | 9 | **The movie plays on the native core**: the FOX logo FMV at frame ~1300 and Croc's intro FMV at frame 3000 (`CROC.EXE` running) | see the debugging trail below |
 
+| 10 | **Croc is playable natively.** Start presses take the native core through the intro, main menu and island map into level 1-1, and holding Up walks Croc down the path, collecting crystals, to the gate. | none needed |
+
+The level 1-1 frame from the native core matches the one Redux reached earlier (`croc_level1.png`): same geometry, textures, HUD and crystals.
+Only moving actors differ, because the timing models differ.
+
+`psx native --replay R.json --dump P --snapshot-every N` drives the pad and saves periodic screens.
+`tools/contact_sheet.py` tiles them into one image. One sheet covers the whole boot: Sony logo, licence screen, warning, FOX FMV, Argonaut FMV, title, intro FMV, menu and level.
+
 ### Debugging trail: from a kernel overwrite to playing FMVs
 
 This trail shows the toolkit's method on a real bug. Every step used `psx` tools with evidence from both emulators.
