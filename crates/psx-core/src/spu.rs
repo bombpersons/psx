@@ -324,7 +324,7 @@ impl Spu {
             let frac = (v.counter & 0xFFF) as i32;
             let cur = v.samples[idx.min(27)] as i32;
             let prev = if idx == 0 { v.prev as i32 } else { v.samples[idx - 1] as i32 };
-            let s = prev + ((cur - prev) * frac >> 12);
+            let s = prev + (((cur - prev) * frac) >> 12);
             Self::envelope(v);
             let s = s * v.level / 0x8000;
             l += s * vol(v.vol_l) / 0x8000;
