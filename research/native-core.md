@@ -348,7 +348,16 @@ the Croc boot to frame 3000 must reach the same final PC and 4,192 sectors with 
 | incremental triangle stepping (exact quotient/remainder, identical pixels) | 35.0M | 2.39× |
 | cached interrupt line, lazy Cause.IP, fat LTO + one codegen unit | **44.2M** | **3.02×** |
 
-A poor man's profiler (gdb stack sampling) guided these changes. The CPU step, execute and bus read dominate.
+A poor man's profiler (gdb stack sampling) guided these changes.
+
+Later, on Crash Bandicoot (the most polygon-heavy disc), sampling put about half the time in the CPU interpreter and about a third in GPU texture sampling.
+The triangle rasteriser now walks only each row's covered span. Each edge function is linear in x, so the span bounds are solved per row and the attribute steppers jump to the span start in one step.
+Results:
+- Crash: 27.2 → 31.2M instructions/s.
+- Croc: +5%.
+- VRAM and RAM are byte-identical on Crash, Croc, Tomb Raider, SOTN and Mega Man 8.
+
+A fixed-size VRAM array, to drop bounds checks, measured as noise and was not kept. The CPU step, execute and bus read dominate.
 
 ### Debugging trail: from a kernel overwrite to playing FMVs
 

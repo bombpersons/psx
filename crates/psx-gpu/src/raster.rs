@@ -181,32 +181,48 @@ pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     for (k, f) in attrs.iter().enumerate().take(n_attrs) {
         ndx[k] = e0dx * f(&v0) as i64 + e1dx * f(&v1) as i64 + e2dx * f(&v2) as i64;
     }
+    // A pixel is inside an edge when w > 0, or w == 0 on a top-left edge.
+    let thresh = |tl: bool| if tl { 0i64 } else { 1 };
+    let (t0, t1, t2) = (thresh(tl0), thresh(tl1), thresh(tl2));
+    // Columns `[lo, hi]` (relative to minx) where `w + k*e >= t`.
+    let span = |w: i64, e: i64, t: i64, lo: &mut i64, hi: &mut i64| {
+        if e > 0 {
+            *lo = (*lo).max((t - w).div_euclid(e) + ((t - w).rem_euclid(e) != 0) as i64);
+        } else if e < 0 {
+            *hi = (*hi).min((w - t).div_euclid(-e));
+        } else if w < t {
+            *hi = -1;
+        }
+    };
+    let width = (maxx - minx) as i64;
     for y in miny..=maxy {
-        let mut w0 = orient(&v1, &v2, minx, y);
-        let mut w1 = orient(&v2, &v0, minx, y);
-        let mut w2 = orient(&v0, &v1, minx, y);
-        // Quotient and remainder of each attribute at the row start.
+        let w0 = orient(&v1, &v2, minx, y);
+        let w1 = orient(&v2, &v0, minx, y);
+        let w2 = orient(&v0, &v1, minx, y);
+        // Only the covered span of the row is walked.
+        let (mut lo, mut hi) = (0i64, width);
+        span(w0, e0dx, t0, &mut lo, &mut hi);
+        span(w1, e1dx, t1, &mut lo, &mut hi);
+        span(w2, e2dx, t2, &mut lo, &mut hi);
+        if lo > hi {
+            continue;
+        }
+        // Quotient and remainder of each attribute at the span start.
         let mut q = [0i64; 5];
         let mut r = [0i64; 5];
         let mut step_q = [0i64; 5];
         let mut step_r = [0i64; 5];
         for (k, f) in attrs.iter().enumerate().take(n_attrs) {
-            let n = w0 * f(&v0) as i64 + w1 * f(&v1) as i64 + w2 * f(&v2) as i64;
+            let n = (w0 + lo * e0dx) * f(&v0) as i64 + (w1 + lo * e1dx) * f(&v1) as i64 + (w2 + lo * e2dx) * f(&v2) as i64;
             q[k] = n.div_euclid(area);
             r[k] = n.rem_euclid(area);
             step_q[k] = ndx[k].div_euclid(area);
             step_r[k] = ndx[k].rem_euclid(area);
         }
-        for x in minx..=maxx {
-            let inside = |w: i64, tl: bool| w > 0 || (w == 0 && tl);
-            if inside(w0, tl0) && inside(w1, tl1) && inside(w2, tl2) {
-                let rgb = if sh.gouraud { [q[0] as i32, q[1] as i32, q[2] as i32] } else { [v0.r, v0.g, v0.b] };
-                let uv = sh.textured.then(|| (q[3] as i32, q[4] as i32));
-                plot(surface, tex, ras, sh, x, y, rgb, uv);
-            }
-            w0 += e0dx;
-            w1 += e1dx;
-            w2 += e2dx;
+        for x in minx + lo as i32..=minx + hi as i32 {
+            let rgb = if sh.gouraud { [q[0] as i32, q[1] as i32, q[2] as i32] } else { [v0.r, v0.g, v0.b] };
+            let uv = sh.textured.then(|| (q[3] as i32, q[4] as i32));
+            plot(surface, tex, ras, sh, x, y, rgb, uv);
             for k in 0..n_attrs {
                 q[k] += step_q[k];
                 r[k] += step_r[k];
