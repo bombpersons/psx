@@ -226,7 +226,7 @@ impl Cpu {
     }
 
     fn load_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, pc: u32, info: &mut StepInfo, rt: usize) -> Result<u32, Exception> {
-        if addr % w as u32 != 0 {
+        if !addr.is_multiple_of(w as u32) {
             self.cop0[cop0::BADVADDR] = addr;
             self.exception(Exception::LoadAddressError, pc);
             return Err(Exception::LoadAddressError);
@@ -241,7 +241,7 @@ impl Cpu {
     }
 
     fn store_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, value: u32, pc: u32) -> Result<(), Exception> {
-        if addr % w as u32 != 0 {
+        if !addr.is_multiple_of(w as u32) {
             self.cop0[cop0::BADVADDR] = addr;
             self.exception(Exception::StoreAddressError, pc);
             return Err(Exception::StoreAddressError);
