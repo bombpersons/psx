@@ -12,6 +12,7 @@ pub const I_MASK: u32 = 0x1F80_1074;
 /// DMA channel n registers: MADR at 0x1F801080 + 0x10*n, then BCR, CHCR.
 pub const DMA_BASE: u32 = 0x1F80_1080;
 pub const DPCR: u32 = 0x1F80_10F0;
+pub const DICR: u32 = 0x1F80_10F4;
 pub const TIMERS: u32 = 0x1F80_1100;
 pub const GP0: u32 = 0x1F80_1810;
 /// System clock (Hz).
@@ -56,6 +57,10 @@ pub struct Bus {
     irq_acknowledged: bool,
     /// Started transfers with no device model (their RAM/device effects are missing).
     pub unmodelled_dma: Vec<UnmodelledDma>,
+    /// MDEC-out (channel 1) transfer waiting for decoder output: (madr, bcr, chcr, words).
+    pending_mdec_out: Option<(u32, u32, u32, u32)>,
+    /// The most recent DMA transfers (channel, madr, bcr, chcr), newest last.
+    pub recent_dma: std::collections::VecDeque<UnmodelledDma>,
     pub gpu: psx_gpu::Gpu,
     /// GP1(00h)/(01h) etc. are not tracked in GPUSTAT yet; this mirrors the
     /// display/DMA bits software set so status reads are plausible.
@@ -71,6 +76,7 @@ pub struct Bus {
     pub cdrom: crate::cdrom::Cdrom,
     cdrom_irq: bool,
     pub sio0: crate::sio0::Sio0,
+    pub mdec: crate::mdec::Mdec,
     /// Reads of I/O registers no device handles yet: physical address -> count.
     pub unhandled_reads: std::collections::BTreeMap<u32, u64>,
 }
@@ -103,6 +109,8 @@ impl Bus {
             log_io: false,
             irq_acknowledged: false,
             unmodelled_dma: Vec::new(),
+            recent_dma: Default::default(),
+            pending_mdec_out: None,
             gpu: psx_gpu::Gpu::new(),
             gpustat_dma_dir: 0,
             timers: Default::default(),
@@ -113,6 +121,7 @@ impl Bus {
             cdrom: Default::default(),
             cdrom_irq: false,
             sio0: Default::default(),
+            mdec: Default::default(),
             unhandled_reads: Default::default(),
         }
     }
@@ -258,6 +267,10 @@ impl Bus {
         if !started {
             return;
         }
+        if self.recent_dma.len() >= 32 {
+            self.recent_dma.pop_front();
+        }
+        self.recent_dma.push_back(UnmodelledDma { channel: ch, madr, bcr, chcr });
         match ch {
             6 => {
                 // Ordering-table clear: a backwards linked list ending in 0xFFFFFF.
@@ -271,12 +284,30 @@ impl Bus {
                 }
             }
             2 => self.dma_gpu(madr, bcr, chcr),
+            0 => {
+                let words = Self::dma_words(bcr, chcr);
+                let step: u32 = if chcr & 2 != 0 { 4u32.wrapping_neg() } else { 4 };
+                let mut addr = madr & 0x1F_FFFC;
+                for _ in 0..words {
+                    let w = self.ram_word(addr);
+                    self.mdec.write_word(w);
+                    addr = addr.wrapping_add(step) & 0x1F_FFFC;
+                }
+                self.try_mdec_out();
+            }
+            1 => {
+                // Request-driven: completes only once the MDEC has produced the data.
+                self.pending_mdec_out = Some((madr, bcr, chcr, Self::dma_words(bcr, chcr)));
+                self.try_mdec_out();
+                return;
+            }
             3 => {
                 let words = if (chcr >> 9) & 3 == 0 {
                     if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF }
                 } else {
                     (bcr & 0xFFFF) * (bcr >> 16).max(1)
                 };
+                self.cdrom.note_dma(words * 4);
                 let mut addr = madr & 0x1F_FFFC;
                 for _ in 0..words {
                     let w = self.cdrom.dma_word();
@@ -287,8 +318,62 @@ impl Bus {
             }
             _ => self.unmodelled_dma.push(UnmodelledDma { channel: ch, madr, bcr, chcr }),
         }
-        // Transfer done: clear start/trigger.
+        self.finish_dma(ch, chcr);
+    }
+
+    fn dma_words(bcr: u32, chcr: u32) -> u32 {
+        if (chcr >> 9) & 3 == 0 {
+            if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF }
+        } else {
+            (bcr & 0xFFFF) * (bcr >> 16).max(1)
+        }
+    }
+
+    /// Finish a pending MDEC-out DMA if enough decoded words are available.
+    fn try_mdec_out(&mut self) {
+        let Some((madr, _bcr, chcr, words)) = self.pending_mdec_out else { return };
+        if self.mdec.out_available() < words as usize {
+            return;
+        }
+        self.pending_mdec_out = None;
+        let step: u32 = if chcr & 2 != 0 { 4u32.wrapping_neg() } else { 4 };
+        let mut addr = madr & 0x1F_FFFC;
+        for _ in 0..words {
+            let w = self.mdec.dma_out_word();
+            let o = addr as usize;
+            self.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
+            addr = addr.wrapping_add(step) & 0x1F_FFFC;
+        }
+        self.finish_dma(1, chcr);
+    }
+
+    /// Mark channel `ch` complete: clear busy bits and flag DICR.
+    fn finish_dma(&mut self, ch: u32, chcr: u32) {
+        let base = DMA_BASE + 0x10 * ch;
         self.poke_io(base + 8, Width::Word, chcr & !((1 << 24) | (1 << 28)));
+        // A completion flag is only latched while both the channel's enable and
+        // the master enable (bit 23) are set (as PCSX-Redux does); otherwise
+        // stale flags would fire when software later enables the interrupt.
+        let dicr = self.io_word(DICR);
+        if dicr & (1 << 23) != 0 && dicr & (1 << (16 + ch)) != 0 {
+            self.set_dicr(dicr | (1 << (24 + ch)));
+        }
+    }
+
+    /// Store DICR, recompute the master flag and raise I_STAT bit 3 on its rising edge.
+    fn set_dicr(&mut self, v: u32) {
+        let old_master = self.io_word(DICR) & (1 << 31) != 0;
+        // Master flag as PCSX-Redux computes it: force, or master enable with *any*
+        // channel flag set (not ANDed with the per-channel enables, unlike the
+        // psx-spx formula). Croc's loader depends on this: enabling DMA IRQs
+        // fires once and its handler acknowledges stale flags left by the BIOS.
+        // Open question: which formula real hardware uses.
+        let master = v & (1 << 15) != 0 || (v & (1 << 23) != 0 && (v >> 24) & 0x7F != 0);
+        let v = (v & 0x7FFF_FFFF) | ((master as u32) << 31);
+        self.poke_io(DICR, Width::Word, v);
+        if master && !old_master {
+            self.raise_irq(1 << 3);
+        }
     }
 
     fn io_word(&self, phys: u32) -> u32 {
@@ -344,6 +429,11 @@ impl Bus {
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
+            0x1F80_1820 | 0x1F80_1824 if width == Width::Word => {
+                let v = self.mdec.read(p - 0x1F80_1820);
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
+                v
+            }
             0x1F80_1040..=0x1F80_104F => {
                 let v = self.sio0.read(p - 0x1F80_1040);
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
@@ -392,7 +482,10 @@ impl Bus {
             0x1F00_0000..=0x1F7F_FFFF => {}
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => put(&mut self.scratch, (p - 0x1F80_0000) as usize),
             0x1F80_1000..=0x1F80_2FFF => {
-                if (0x1F80_1040..0x1F80_1050).contains(&p) {
+                if (p == 0x1F80_1820 || p == 0x1F80_1824) && width == Width::Word {
+                    self.mdec.write(p - 0x1F80_1820, value);
+                    self.try_mdec_out();
+                } else if (0x1F80_1040..0x1F80_1050).contains(&p) {
                     let now = self.now;
                     self.sio0.write(p - 0x1F80_1040, value, now);
                 } else if (0x1F80_1800..0x1F80_1804).contains(&p) {
@@ -410,6 +503,12 @@ impl Bus {
                 } else if p & !3 >= DMA_BASE && p & !3 < DPCR && (p & 0xF) == 8 {
                     put(&mut self.io, (p - 0x1F80_1000) as usize);
                     self.dma_start((p - DMA_BASE) >> 4);
+                } else if p & !3 == DICR {
+                    // Bits 24-30 are write-1-to-clear flags; bit 31 is computed.
+                    let cur = self.io_word(DICR);
+                    let v = if width == Width::Word { value } else { (cur & !(0xFFFF << (8 * (p & 2)))) | (value << (8 * (p & 2))) };
+                    let flags = (cur & 0x7F00_0000) & !(v & 0x7F00_0000);
+                    self.set_dicr((v & 0x00FF_803F) | flags);
                 } else if p & !3 == I_STAT {
                     // Interrupt acknowledge: writing 0 clears a bit, 1 leaves it.
                     let cur = self.io_word(I_STAT);
@@ -451,6 +550,22 @@ mod tests {
         assert_eq!(w(&mut b, 0x8010_0010), 0x0010_000C);
         assert_eq!(w(&mut b, 0x8010_0004), 0x00FF_FFFF);
         assert_eq!(w(&mut b, DMA_BASE + 0x68) & (1 << 24), 0, "busy cleared");
+    }
+
+    #[test]
+    fn dma_completion_sets_dicr_flag_and_irq() {
+        let mut b = Bus::new(vec![]);
+        b.write(I_MASK, Width::Word, 1 << 3).unwrap();
+        b.write(DICR, Width::Word, (1 << 23) | (1 << 22)).unwrap(); // master + ch6 enable
+        b.write(DMA_BASE + 0x60, Width::Word, 0x8010_0010).unwrap();
+        b.write(DMA_BASE + 0x64, Width::Word, 4).unwrap();
+        b.write(DMA_BASE + 0x68, Width::Word, 0x1100_0002).unwrap();
+        let dicr = b.read(DICR, Width::Word).unwrap();
+        assert_ne!(dicr & (1 << 30), 0, "ch6 flag");
+        assert_ne!(dicr & (1 << 31), 0, "master flag");
+        assert!(b.irq_pending());
+        b.write(DICR, Width::Word, (1 << 23) | (1 << 22) | (1 << 30)).unwrap();
+        assert_eq!(b.read(DICR, Width::Word).unwrap() >> 30, 0, "flag and master cleared");
     }
 
     #[test]

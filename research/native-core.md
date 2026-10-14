@@ -100,7 +100,34 @@ How the profile guided each step of the bring-up (SCPH-7502, no disc):
 | 5 | Polls JOY_STAT `0x1F801044` (controller port) | SIO0 with a digital pad in port 1 (`sio0.rs`) |
 | 6 | **Empty drive: the BIOS shell main menu (Memory Card / CD Player) runs on the native core** | none needed |
 | 7 | **Croc inserted:** BIOS → SYSTEM.CNF → `SLES_005.93`; the loader shows `WARNINGH.IMG` (1,106 native CD sectors) | none needed |
-| 8 | Polls the MDEC status register `0x1F801824` (4.2M reads): the FOX logo movie needs the MDEC | **next: MDEC** |
+| 8 | Polls the MDEC status register `0x1F801824` (4.2M reads): the FOX logo movie needs the MDEC | MDEC (`mdec.rs`) |
+| 9 | **The movie plays on the native core**: the FOX logo FMV at frame ~1300 and Croc's intro FMV at frame 3000 (`CROC.EXE` running) | see the debugging trail below |
+
+### Debugging trail: from a kernel overwrite to playing FMVs
+
+This trail shows the toolkit's method on a real bug. Every step used `psx` tools with evidence from both emulators.
+
+1. **Symptom.** `psx native --break` showed execution reaching zeroed memory, with exception vector 0x80000080 = 0.
+2. **Who wrote it.** `--watch 0x80000080` caught `sh t1,0(a1)` at `0x8010C374`. The PsyQ symbols name that address `DecDCTvlc+0x268`, which overruns its output buffer past 2 MiB and wraps through the RAM mirror.
+3. **Why it overran.** A CD DMA log, compared with Redux's `psx loads` record, showed only 32-byte STR headers transferred and never the data.
+   `--break DecDCTvlc` showed it decoding an all-zero ring slot at frame 1225, before any sector had arrived.
+4. **Who marked the slot ready.** `--watch` on the ring slot showed `data_ready_callback` (libcd's DMA-3 completion callback) setting status 2 with no DMA.
+   The same watch in Redux (`psx run --watch 0x8017ADA0:2`) showed the correct order: DMA, StCdInterrupt=3, data_ready_callback=2.
+5. **Root cause.** I/O logs of DICR in both emulators showed stale channel 2/3 flags left by the BIOS CD routine, which writes back 0 to the flag bits.
+   Redux raises the DMA master flag when *any* flag is set, so the game's dispatcher acknowledges the stale flags early. psx-spx/DuckStation AND the flags with the enables, so the stale channel-3 flag fired later, when libcd enabled channel 3.
+   psx-core now matches Redux. Which rule real hardware follows is an **open question**.
+6. **Also fixed on the way.**
+   - Flags are only latched with the master enable on.
+   - MDEC-out DMA (channel 1) is request-driven, completing only once the decoder has produced the data.
+   - CD seek timing follows Redux's distance/speed-change model.
+
+New `psx native` tools from this trail:
+
+- `--break PC --tail N`: stop at a PC with recent history, DMA history and the vector contents.
+- `--watch ADDR --watch-after FRAME`: every change of a word, with the instruction or DMA responsible.
+- `psx disasm`: symbol-annotated disassembly of an EXE.
+
+The examples `cdlog` and `iolog` log CD transfers and commands, and chosen I/O registers.
 
 CPU lockstep is unaffected: 30M instructions still match after these changes, because lockstep keeps adopting I/O values and following Redux's interrupts.
 

@@ -21,8 +21,14 @@ const ACK_DELAY: u64 = 25_000;
 const COMPLETE_DELAY: u64 = 100_000;
 /// Init / GetID / ReadTOC completion (~15 ms; real drives can be slower).
 const SLOW_COMPLETE_DELAY: u64 = 500_000;
-/// Seek before the first sector of a read (~3 ms; no distance model).
-const SEEK_DELAY: u64 = 100_000;
+/// Seek model (PCSX-Redux's approximation): 3 µs per sector of distance plus
+/// 1 ms before a read or 167 ms for an explicit seek, plus 650 ms after a
+/// speed change. Games rely on these windows to finish setup before data flows.
+const CYCLES_PER_US: u64 = 34; // 33.8688 MHz
+const SEEK_PER_SECTOR: u64 = 3 * CYCLES_PER_US;
+const SEEK_BASE_READ: u64 = 1_000 * CYCLES_PER_US;
+const SEEK_BASE_EXPLICIT: u64 = 167_000 * CYCLES_PER_US;
+const SPEED_CHANGE_PENALTY: u64 = 650_000 * CYCLES_PER_US;
 const SECTOR_SINGLE: u64 = 33_868_800 / 75;
 const SECTOR_DOUBLE: u64 = 33_868_800 / 150;
 
@@ -76,10 +82,23 @@ pub struct Cdrom {
     setloc: Option<u32>,
     /// Next sector the head will deliver.
     pos: u32,
+    /// Where the head is now (for seek distance).
+    head: u32,
+    speed_changed: bool,
     reading: bool,
     next_sector_at: u64,
-    /// Last delivered sector, raw 2352 bytes.
+    /// Last delivered sector, raw 2352 bytes, and its LBA.
     sector: Vec<u8>,
+    sector_lba: u32,
+    /// LBA of the sector currently in the data FIFO.
+    fifo_lba: u32,
+    /// Every DMA3 transfer: (lba of FIFO data, FIFO offset, bytes). Enabled by `log_dma`.
+    pub dma_log: Vec<(u32, u32, u32)>,
+    /// Commands as (time, command, params) when `log_dma` is set.
+    pub cmd_log: Vec<(u64, u8, Vec<u8>)>,
+    /// Interrupt events as (time, what, detail) when `log_dma` is set.
+    pub irq_log: Vec<(u64, &'static str, u32)>,
+    pub log_dma: bool,
     data: Vec<u8>,
     data_pos: usize,
     filter: (u8, u8),
@@ -113,9 +132,17 @@ impl Cdrom {
             mode: 0,
             setloc: None,
             pos: 0,
+            head: 0,
+            speed_changed: false,
             reading: false,
             next_sector_at: 0,
             sector: Vec::new(),
+            sector_lba: 0,
+            fifo_lba: 0,
+            dma_log: Vec::new(),
+            cmd_log: Vec::new(),
+            irq_log: Vec::new(),
+            log_dma: false,
             data: Vec::new(),
             data_pos: 0,
             filter: (0, 0),
@@ -164,6 +191,10 @@ impl Cdrom {
                     if self.data_pos >= self.data.len() {
                         self.data = self.fifo_payload();
                         self.data_pos = 0;
+                        self.fifo_lba = self.sector_lba;
+                    }
+                    if self.log_dma {
+                        self.irq_log.push((now, "want-data", self.fifo_lba));
                     }
                 } else {
                     self.data.clear();
@@ -171,6 +202,9 @@ impl Cdrom {
                 }
             }
             (3, 1) => {
+                if self.log_dma {
+                    self.irq_log.push((now, "ack", v as u32));
+                }
                 self.iflag &= !(v & 0x1F);
                 if v & 0x40 != 0 {
                     self.params.clear();
@@ -189,6 +223,13 @@ impl Cdrom {
             self.data_pos += 1;
         }
         b
+    }
+
+    /// Record one DMA3 transfer of `bytes` starting at the current FIFO position.
+    pub fn note_dma(&mut self, bytes: u32) {
+        if self.log_dma {
+            self.dma_log.push((self.fifo_lba, self.data_pos as u32, bytes.min(self.data.len().saturating_sub(self.data_pos) as u32)));
+        }
     }
 
     /// DMA channel 3: next word from the data FIFO.
@@ -216,6 +257,9 @@ impl Cdrom {
 
     fn command(&mut self, cmd: u8, now: u64) {
         let p: Vec<u8> = self.params.drain(..).collect();
+        if self.log_dma {
+            self.cmd_log.push((now, cmd, p.clone()));
+        }
         let ack = now + ACK_DELAY;
         self.busy_until = ack;
         let has_disc = self.disc.is_some();
@@ -248,7 +292,8 @@ impl Cdrom {
                 self.status = (self.status & !stat::PLAY) | stat::MOTOR | stat::READ;
                 self.respond(ack, 3, vec![self.status]);
                 self.reading = true;
-                self.next_sector_at = ack + SEEK_DELAY + self.sector_period();
+                let seek = self.seek_cycles(SEEK_BASE_READ);
+                self.next_sector_at = ack + seek + self.sector_period();
             }
             0x07 => {
                 self.status |= stat::MOTOR;
@@ -281,6 +326,9 @@ impl Cdrom {
                 self.respond(ack, 3, vec![self.status]);
             }
             0x0E if !p.is_empty() => {
+                if (self.mode ^ p[0]) & 0x80 != 0 {
+                    self.speed_changed = true;
+                }
                 self.mode = p[0];
                 self.respond(ack, 3, vec![self.status]);
             }
@@ -318,7 +366,8 @@ impl Cdrom {
                 }
                 self.status = (self.status & !(stat::READ | stat::PLAY)) | stat::MOTOR;
                 self.respond(ack, 3, vec![self.status | stat::SEEK]);
-                self.respond(ack + COMPLETE_DELAY, 2, vec![self.status]);
+                let seek = self.seek_cycles(SEEK_BASE_EXPLICIT);
+                self.respond(ack + seek, 2, vec![self.status]);
             }
             0x19 => match p.first() {
                 Some(0x20) => self.respond(ack, 3, TEST_VERSION.to_vec()),
@@ -343,6 +392,17 @@ impl Cdrom {
                 self.respond(ack, 5, vec![self.status | stat::ERROR, 0x40]);
             }
         }
+    }
+
+    /// Seek time from the head to `pos`; moves the head and consumes a pending speed change.
+    fn seek_cycles(&mut self, base: u64) -> u64 {
+        let distance = self.head.abs_diff(self.pos) as u64;
+        let mut c = distance * SEEK_PER_SECTOR + base;
+        if std::mem::take(&mut self.speed_changed) {
+            c += SPEED_CHANGE_PENALTY;
+        }
+        self.head = self.pos;
+        c
     }
 
     fn sector_period(&self) -> u64 {
@@ -370,6 +430,9 @@ impl Cdrom {
             if let Some(r) = self.queue.front() {
                 if now >= r.at {
                     let r = self.queue.pop_front().unwrap();
+                    if self.log_dma {
+                        self.irq_log.push((now, "deliver", (r.int as u32) << 8 | r.bytes.first().copied().unwrap_or(0) as u32));
+                    }
                     self.iflag = r.int;
                     self.response = r.bytes.into();
                 }
@@ -381,6 +444,7 @@ impl Cdrom {
     fn deliver_sector(&mut self, now: u64) {
         let lba = self.pos;
         self.pos += 1;
+        self.head = self.pos;
         let Some(disc) = &self.disc else { return };
         let raw = match disc.read_raw(lba) {
             Ok((raw, mode)) if mode != TrackMode::Audio && raw.len() == 2352 => raw,
@@ -389,9 +453,16 @@ impl Cdrom {
         // XA-ADPCM enabled: real-time audio sectors go to the SPU, not the data FIFO.
         let submode = raw[18];
         if self.mode & 0x40 != 0 && submode & 0x04 != 0 && raw[15] == 2 {
+            if self.log_dma {
+                self.irq_log.push((now, "xa-skip", lba));
+            }
             return;
         }
+        if self.log_dma {
+            self.irq_log.push((now, "sector", lba));
+        }
         self.sector = raw;
+        self.sector_lba = lba;
         self.sectors_delivered += 1;
         // A newer sector replaces an undelivered INT1.
         self.queue.retain(|r| r.int != 1);
