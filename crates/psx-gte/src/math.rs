@@ -3,10 +3,10 @@
 //! These are pure functions; they do not touch a [`crate::Gte`].
 //!
 //! Exactness notes:
-//! * [`rsin`]/[`rcos`] use `round(4096 * sin(2π·a/4096))`. This is believed
-//!   to match libgte's `rcossin_tbl` (spot-checked from memory, e.g.
-//!   `rsin(1..=6) = 6, 13, 19, 25, 31, 38`), but has not been verified
-//!   against a dump of the table.
+//! * [`rsin`]/[`rcos`] use `round(4096 * sin(2π·a/4096))`. This matches
+//!   libgte's quarter-wave table entry for entry: all 1025 entries of the
+//!   table that PsyQ 4.0 `rsin` reads in Croc's PAL `CROC.EXE` (at
+//!   0x8006D5D4 in RAM) equal it (research/case-study-croc.md).
 //! * [`mul_matrix`] and [`apply_matrix_sv`] reproduce what libgte's
 //!   GTE-based `MulMatrix0`/`ApplyMatrixSV` compute (MVMVA, sf=1, lm=0),
 //!   so they are bit-exact given the same inputs.
