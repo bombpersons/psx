@@ -21,6 +21,7 @@ mod run;
 mod run_native;
 mod template;
 mod textures;
+mod vram_diff;
 mod xa_cmd;
 
 #[derive(Parser)]
@@ -244,6 +245,33 @@ enum Command {
         #[arg(long = "symbols")]
         symbols: Vec<PathBuf>,
     },
+    /// Replay a recorded GP0 stream (`[n, words..]` u32 records, e.g. tools/probes/gpu/gp0_stream.bin)
+    /// into a fresh psx-gpu and write the resulting VRAM.
+    GpuReplay {
+        stream: PathBuf,
+        /// Raw VRAM output (1024x512 little-endian halfwords).
+        #[arg(long, short)]
+        out: PathBuf,
+        #[arg(long)]
+        png: Option<PathBuf>,
+    },
+    /// Compare two raw VRAM dumps (vram.bin) pixel by pixel.
+    VramDiff {
+        a: PathBuf,
+        b: PathBuf,
+        /// Cell size for per-block counts.
+        #[arg(long, default_value_t = 128)]
+        cell: usize,
+        /// Region `X,Y,W,H` to compare (default: all of VRAM).
+        #[arg(long)]
+        region: Option<String>,
+        /// Write a diff image (differing pixels red).
+        #[arg(long)]
+        png: Option<PathBuf>,
+        /// Differing pixels listed individually.
+        #[arg(long, default_value_t = 16)]
+        samples: usize,
+    },
     /// Classify a CPU address (segment, region, folded offset).
     Addr {
         /// Hex address, e.g. 0x80010000.
@@ -375,6 +403,20 @@ fn run(cmd: Command) -> R {
             Ok(v)
         }
         Command::Template { action: TemplateAction::Create { dest, name } } => template::create(&dest, name.as_deref()),
+        Command::GpuReplay { stream, out, png } => vram_diff::replay(&stream, &out, png.as_deref()),
+        Command::VramDiff { a, b, cell, region, png, samples } => {
+            let region = match region {
+                Some(r) => {
+                    let v: Vec<usize> = r.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                    if v.len() != 4 {
+                        return Err(MediaError::Malformed(format!("bad region {r}, expected X,Y,W,H")));
+                    }
+                    Some((v[0], v[1], v[2], v[3]))
+                }
+                None => None,
+            };
+            vram_diff::diff(vram_diff::DiffArgs { a: &a, b: &b, cell, region, png: png.as_deref(), samples })
+        }
         Command::Addr { address } => {
             let a = u32::from_str_radix(address.trim_start_matches("0x").trim_start_matches("0X"), 16)
                 .map_err(|_| MediaError::Malformed(format!("bad hex address {address}")))?;
