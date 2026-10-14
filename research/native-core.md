@@ -230,6 +230,27 @@ Example: Croc from the frame-3203 state, 300 frames, took 3.6 s.
 `StepInfo` now carries the instruction's data access (`MemAccess`). The untraced speed is unchanged: 43–44M instructions/s in a side-by-side run against the previous build.
 Tracing everything runs at about 28M instructions/s. CPU lockstep still matches over 10M instructions.
 
+### XA-ADPCM audio (`xa.rs`, CD controller)
+
+With Setmode bit 6 set, Form 2 sectors with the audio submode bit go to the XA decoder instead of the data FIFO. With bit 3 set, only the Setfilter file/channel is played. The decoder:
+
+- handles 4- and 8-bit samples, mono and stereo, at 37.8 or 18.9 kHz;
+- resamples to 44.1 kHz by linear interpolation (the hardware's zig-zag filter and emphasis are not modelled);
+- feeds the same CD input queue as CD-DA.
+
+Both XA and CD-DA now pass through Mute/Demute (commands 0Bh/0Ch), the sound-map ADPCM mute bit, and the CD-to-SPU volume matrix (index 2/3 registers, applied by bit 5). The new fields bumped the save-state format to 2.
+
+`psx xa <image> <path>` lists a stream's XA channels (file, channel, coding, sectors, duration). With `--channel N -o out.wav` it decodes one channel straight from the disc, which is useful on its own for extracting music and voice.
+
+Verification without listening, by comparing the emulator against the offline decode:
+
+- **Croc, FOXLOGO.STR** (boot, frame 1195 onwards): the frames the controller pushes to the SPU are bit-identical to `psx xa`'s decode. 474 of 480 sampled windows matched exactly; the misses were artefacts of the capture method.
+  In the final SPU mix the stream correlates at 0.97 with gain 0.505, which is the game's CD volume 0x3FFF/0x8000. The game's own SPU voices make up the rest.
+- **Tomb Raider, CORELOGO.FMV** (from 21.16 s emulated): correlation 1.000 with gain 0.386 for the 10 s the movie reads. Nothing else plays.
+- **Save states:** a Tomb Raider split run at frame 1380, in the middle of the XA stream, matches the straight run byte for byte, including the final full state.
+
+Croc's earlier "constant drone" in the loader movies was the game's SPU voices, playing without the XA soundtrack that now sits on top of them.
+
 ### Performance
 
 The baseline was 1.2–1.3× real time, which is comparable to Redux's observed (interpreter + debugger) mode at 1.6×. Each step below was checked:

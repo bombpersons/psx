@@ -13,6 +13,7 @@ PlayStation reverse-engineering toolkit for agents and people. Sibling of
 | `psx ls <image>` | Every ISO9660 entry: LBA, size, CD-XA attributes, streamed flag |
 | `psx extract <image> <path>\|--all -o DIR` | Files as Form 1 data. Form 2/interleaved files are written as raw `.raw` 2352-byte sectors |
 | `psx exe <file>\|<image.cue>::/PATH` | PS-X EXE header, load range, region marker and hashes |
+| `psx xa <image> <path> [--channel N -o out.wav]` | List a stream's XA-ADPCM channels, or decode one channel to a 44.1 kHz WAV |
 | `psx sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |
 | `psx addr 0x80010000` | Segment, memory region and folded offset |
 | `psx run <disc\|exe> --bios B --frames N [...]` | Bounded run in an isolated PCSX-Redux process, or on the native core with `--backend native`. The native core gives exact observations, native save states, and `--trace` for windowed instruction traces with coverage and call summaries. Captures RAM, VRAM, screen, registers and an optional state. `--watch ADDR[:W]` reports CPU/DMA writers with PC and value; `--trace-cd` and `--trace-bios` log CD and BIOS activity; `--replay`, `--from-state`/`--save-state`; `--fast` uses the dynarec (no observation) |
