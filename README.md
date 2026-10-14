@@ -15,6 +15,8 @@ PlayStation reverse-engineering toolkit for agents and people. Sibling of
 | `psx exe <file>\|<image.cue>::/PATH` | PS-X EXE header, load range, region marker and hashes |
 | `psx sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |
 | `psx addr 0x80010000` | Segment, memory region and folded offset |
+| `psx run <disc\|exe> --bios B --frames N [...]` | Bounded run in an isolated PCSX-Redux process. Captures RAM, VRAM, screen, registers and an optional state. `--watch ADDR[:W]` reports CPU/DMA writers with PC and value; `--trace-cd` and `--trace-bios` log CD and BIOS activity; `--replay`, `--from-state`/`--save-state`; `--fast` uses the dynarec (no observation) |
+| `psx loads <run_dir> --disc <cue>` | Turns a `--trace-cd` run into disc file → RAM spans, verified by content |
 | `psx template create DIR [--name N]` | Native Bevy game starter (see below) |
 
 Input images can be `.cue`, a raw `.bin` (single data track) or a cooked `.iso`.
@@ -25,6 +27,10 @@ Other crates:
   rules, and logs GP0 commands. It is meant for replaying and diffing captured
   draw streams and decoding VRAM, not for game code.
 - **`psx-gte`:** a register-accurate GTE (COP2) with typed helpers and libgte-style math.
+
+Backend findings are in [research/backend-comparison.md](research/backend-comparison.md); a worked
+provenance example (Croc's boot chain) is in [research/load-provenance.md](research/load-provenance.md).
+`psx run` needs `external/pcsx-redux` built at the pinned commit (or `PSX_REDUX_BIN`).
 
 ## Native game template
 
