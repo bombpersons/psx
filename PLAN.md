@@ -116,8 +116,9 @@ commands:
 >
 > **Next steps:**
 > - TIM/TMD loaders that produce Bevy `Image`/`Mesh`.
-> - Optional 15-bit quantisation pass for sprites.
-> - Palette (CLUT) swap material for 2D.
+> - Done 2026-10-15: 15-bit screen pass (`PsxLook::quantize`), CLUT palettes and
+>   blend modes for 2D (`PsxSprite`, `PsxMaterial2d`), per-texel STP in captured scenes.
+> - Gamma-space blending when a 3D camera shares the screen (Bevy's 3D path composites linearly).
 
 
 ### M0: Environment (≈1 day)

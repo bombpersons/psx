@@ -34,8 +34,16 @@ const FLAG_FOG: u32 = 4u;
 const FLAG_DITHER: u32 = 8u;
 const FLAG_SNAP: u32 = 16u;
 const FLAG_CUTOUT: u32 = 32u;
-const FLAG_BLEND_HALF: u32 = 64u;
-const FLAG_BLEND_QUARTER: u32 = 128u;
+const FLAG_STP_TEXEL: u32 = 64u;
+const FLAG_OPAQUE_ONLY: u32 = 128u;
+const BLEND_SHIFT: u32 = 12u;
+const BLEND_HALF: u32 = 1u;
+const BLEND_ADD: u32 = 2u;
+const BLEND_SUBTRACT: u32 = 3u;
+const BLEND_QUARTER: u32 = 4u;
+// Texel alpha classes written by `psx textures`: 0 transparent, ~0.5 STP, 1 opaque.
+const ALPHA_TRANSPARENT: f32 = 0.25;
+const ALPHA_STP: f32 = 0.75;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> material: PsxUniform;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var color_texture: texture_2d<f32>;
@@ -118,14 +126,30 @@ fn fragment(in: PsxVarying) -> @location(0) vec4<f32> {
     let uv = in.uv_w / in.w;
     let distance = in.distance_w / in.w;
     var rgb = in.color_w / in.w;
+    // Untextured surfaces count as all-STP: a semi-transparent one blends whole.
+    var stp = true;
     if has(FLAG_TEXTURED) {
         let texel = textureSample(color_texture, color_sampler, uv);
-        if has(FLAG_CUTOUT) && texel.a < 0.5 {
+        if has(FLAG_CUTOUT) && texel.a < ALPHA_TRANSPARENT {
             discard;
         }
+        stp = texel.a < ALPHA_STP;
         rgb = linear_to_srgb(texel.rgb) * min(rgb, vec3(2.0));
     } else {
         rgb = min(rgb, vec3(1.0));
+    }
+    let blend = (material.flags >> BLEND_SHIFT) & 7u;
+    var semi = blend != 0u;
+    if has(FLAG_STP_TEXEL) {
+        semi = semi && stp;
+        // One draw cannot both replace and subtract: the opaque texels are
+        // drawn by a `PsxStp::OpaqueOnly` copy.
+        if blend == BLEND_SUBTRACT && !stp {
+            discard;
+        }
+    }
+    if has(FLAG_OPAQUE_ONLY) && stp {
+        discard;
     }
     @if(DISTANCE_FOG)
     if has(FLAG_FOG) {
@@ -141,7 +165,7 @@ fn fragment(in: PsxVarying) -> @location(0) vec4<f32> {
     }
 
     // 15-bit colour at 8-bit precision, dithered like the GPU.
-    var c8 = rgb * 255.0;
+    var c8 = round(rgb * 255.0);
     if has(FLAG_DITHER) {
         var matrix = array<f32, 16>(-4.0, 0.0, -3.0, 1.0, 2.0, -2.0, 3.0, -1.0, -3.0, 1.0, -4.0, 0.0, 3.0, -1.0, 2.0, -2.0);
         let p = vec2<u32>(in.position.xy) % vec2(4u);
@@ -149,13 +173,25 @@ fn fragment(in: PsxVarying) -> @location(0) vec4<f32> {
     }
     let q = floor(clamp(c8, vec3(0.0), vec3(255.0)) / 8.0);
     rgb = (q * 8.0 + floor(q / 4.0)) / 255.0;
+    return psx_output(rgb, semi, blend);
+}
 
-    var alpha = 1.0;
-    if has(FLAG_BLEND_HALF) {
-        alpha = 0.5;
-    }
-    if has(FLAG_BLEND_QUARTER) {
+// Premultiplied output for the fixed-function blend set by `PsxMaterial`
+// (`material.rs`, `blend_state`): the target keeps (1 − alpha) of what is
+// below. Bevy's 3D path composites in linear light.
+fn psx_output(srgb: vec3<f32>, semi: bool, blend: u32) -> vec4<f32> {
+    var rgb = srgb;
+    if semi && blend == BLEND_QUARTER {
         rgb *= 0.25;
     }
-    return vec4(srgb_to_linear(rgb), alpha);
+    rgb = srgb_to_linear(rgb);
+    // Opaque texels: (F, 1) replaces. Subtract has its own blend operation.
+    var alpha = 1.0;
+    if semi && blend == BLEND_HALF {
+        rgb *= 0.5;
+        alpha = 0.5;
+    } else if semi && (blend == BLEND_ADD || blend == BLEND_QUARTER) {
+        alpha = 0.0;
+    }
+    return vec4(rgb, alpha);
 }

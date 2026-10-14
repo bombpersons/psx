@@ -22,9 +22,13 @@ const FILES: &[(&str, &str)] = files![
     "src/dev_mcp.rs",
     "src/main.rs",
     "src/psx/material.rs",
+    "src/psx/material2d.rs",
     "src/psx/mod.rs",
     "src/psx/scene.rs",
     "src/psx/shaders/psx_material.wesl",
+    "src/psx/shaders/psx_material2d.wesl",
+    "src/psx/shaders/psx_screen.wesl",
+    "src/psx/shaders/psx_sprite.wesl",
 ];
 
 const TEMPLATE_PACKAGE: &str = "psx-game";

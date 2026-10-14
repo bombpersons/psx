@@ -69,6 +69,10 @@ pub struct Command {
     pub raw: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub semi: bool,
+    /// Polygons and lines: whether the GPU dithers this primitive (E1h bit 9
+    /// and, for polygons, gouraud shading or texture modulation).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dither: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub vertices: Vec<Vertex>,
     /// Rect/fill/copy/upload area `(x, y, w, h)` in VRAM.
@@ -151,6 +155,8 @@ fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
             if c.textured && c.texpage.is_some_and(|t| t.depth == 15) {
                 c.clut = None;
             }
+            // As the rasteriser decides (lib.rs): shaded or modulated polygons.
+            c.dither = Some(st.texpage & 0x200 != 0 && (c.gouraud || (c.textured && !c.raw)));
         }
         0x40..=0x5F => {
             c.gouraud = op & 0x10 != 0;
@@ -174,6 +180,7 @@ fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
             if c.semi {
                 c.texpage = Some(TexturePage::from_bits(st.texpage));
             }
+            c.dither = Some(st.texpage & 0x200 != 0);
         }
         0x60..=0x7F => {
             c.kind = "rect";
@@ -283,6 +290,16 @@ mod tests {
         assert_eq!(c.clut, Some([0, 511]));
         // Page 95h: x = 5*64, y = 256, depth bits 1 -> 8-bit.
         assert_eq!(c.texpage, Some(TexturePage { x: 320, y: 256, depth: 8, blend: 0 }));
+        assert_eq!(c.dither, Some(false), "E1h dither bit clear");
+    }
+
+    #[test]
+    fn dithers_shaded_polygons_when_enabled() {
+        let st = DrawState { texpage: 0x200, ..Default::default() };
+        let gouraud = vec![0x3010_2030, 0, 0x0040_5060, 0x10, 0x0070_8090, 0x0010_0000];
+        let flat = vec![0x2010_2030, 0, 0x10, 0x0010_0000];
+        let c = decode(&st, &[gouraud, flat]);
+        assert_eq!((c[0].dither, c[1].dither), (Some(true), Some(false)));
     }
 
     #[test]
