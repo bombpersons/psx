@@ -147,8 +147,7 @@ impl Machine {
         let target = self.bus.frames + frames;
         let mut n = 0;
         while self.bus.frames < target && n < max_steps {
-            self.step();
-            n += 1;
+            n += self.run_frame_steps(max_steps - n);
         }
         n
     }
