@@ -9,6 +9,7 @@ pub mod bus;
 pub mod cdrom;
 pub mod cpu;
 pub mod disasm;
+pub mod mdec;
 pub mod sio0;
 pub mod timers;
 

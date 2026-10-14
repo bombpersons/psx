@@ -162,6 +162,30 @@ enum Command {
         /// Write <PREFIX>.screen.png and <PREFIX>.vram.png at the end.
         #[arg(long)]
         dump: Option<PathBuf>,
+        /// Stop when the PC reaches this hex address and report the tail.
+        #[arg(long = "break")]
+        brk: Option<String>,
+        /// Instructions of history kept for --break.
+        #[arg(long, default_value_t = 48)]
+        tail: usize,
+        /// Report every change of this RAM word (hex address) with the responsible instruction.
+        #[arg(long)]
+        watch: Option<String>,
+        /// Start recording --watch changes at this frame.
+        #[arg(long, default_value_t = 0)]
+        watch_after: u64,
+    },
+    /// Disassemble a PS-X EXE (file or `image.cue::/PATH`) at a RAM address range.
+    Disasm {
+        source: String,
+        /// Start address (hex); defaults to the entry point.
+        #[arg(long)]
+        addr: Option<String>,
+        #[arg(long, default_value_t = 32)]
+        count: u32,
+        /// `.sym` or `.symbols.json` files for labels; repeatable.
+        #[arg(long = "symbols")]
+        symbols: Vec<PathBuf>,
     },
     /// Classify a CPU address (segment, region, folded offset).
     Addr {
@@ -192,8 +216,10 @@ fn main() -> ExitCode {
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }
-    if let Command::Native { bios, disc, frames, max_steps, dump } = &cli.command {
-        let (ok, v) = native::run(bios, disc.as_deref(), *frames, *max_steps, dump.as_deref());
+    if let Command::Native { bios, disc, frames, max_steps, dump, brk, tail, watch, watch_after } = &cli.command {
+        let hex = |b: &Option<String>| b.as_deref().and_then(|b| u32::from_str_radix(b.trim_start_matches("0x").trim_start_matches("0X"), 16).ok());
+        let (brk, watch) = (hex(brk), hex(watch));
+        let (ok, v) = native::run(bios, disc.as_deref(), *frames, *max_steps, dump.as_deref(), brk, *tail, watch, *watch_after);
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }
@@ -234,6 +260,26 @@ fn run(cmd: Command) -> R {
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
         Command::Run { .. } | Command::Lockstep { .. } | Command::Native { .. } => unreachable!("handled in main"),
         Command::Symbols { source, sigs, min_concrete, out } => symbols_cmd(&source, &sigs, min_concrete, out),
+        Command::Disasm { source, addr, count, symbols } => {
+            let bytes = read_source(&source)?;
+            let exe = PsxExe::parse(&bytes)?;
+            let scopes = load_symbols(&symbols)?;
+            let start = match addr {
+                Some(a) => u32::from_str_radix(a.trim_start_matches("0x").trim_start_matches("0X"), 16)
+                    .map_err(|_| MediaError::Malformed(format!("bad address {a}")))?,
+                None => exe.pc,
+            } & !3;
+            let mut lines = Vec::new();
+            for i in 0..count {
+                let a = start.wrapping_add(4 * i);
+                let Some(off) = exe.addr_to_file_offset(a) else { break };
+                let Some(w) = bytes.get(off..off + 4) else { break };
+                let word = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                let label = scopes.iter().find_map(|s| s.table.describe(a, 0).filter(|n| !n.contains('+')));
+                lines.push(json!({"addr": format!("0x{a:08X}"), "word": format!("{word:08X}"), "asm": psx_core::disasm::disasm(word, a), "label": label}));
+            }
+            Ok(json!({"source": source, "lines": lines}))
+        }
         Command::Loads { run_dir, disc, limit, symbols } => {
             let scopes = load_symbols(&symbols)?;
             let mut v = provenance::report(&run_dir, &disc, &scopes).map_err(MediaError::Malformed)?;
