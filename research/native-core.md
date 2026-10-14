@@ -111,6 +111,28 @@ Only moving actors differ, because the timing models differ.
 `psx native --replay R.json --dump P --snapshot-every N` drives the pad and saves periodic screens.
 `tools/contact_sheet.py` tiles them into one image. One sheet covers the whole boot: Sony logo, licence screen, warning, FOX FMV, Argonaut FMV, title, intro FMV, menu and level.
 
+### SPU (`spu.rs`) and audio capture
+
+The SPU models:
+
+- 512 KiB sound RAM, with manual and DMA-4 transfers;
+- 24 SPU-ADPCM voices, including loop flags and ENDX;
+- ADSR envelopes using psx-spx's step/shift formula;
+- key on/off, fixed volumes and the IRQ-address check;
+- 44.1 kHz stereo mixing.
+
+`psx native --wav PATH` captures the mix.
+
+Not modelled yet: Gaussian interpolation (linear is used), reverb, noise, pitch modulation, volume sweeps, and CD-DA/XA input.
+Because XA input is missing, FMV soundtracks are silent.
+
+Observations:
+
+- **BIOS boot (SCPH-7502, no disc):** silence during init, then the boot chime from 3.0 s with a second swell around 5.75 s. It then fades cleanly to silence.
+- **Croc, boot to level 1-1:**
+  - BIOS chime, then menu sound effects 4 s apart (one per Start press), then the level 1-1 music.
+  - **Open:** a constant low voice is held from about 14 to 46 s while the loader shows its screens and movies. It may be legitimate (a voice keyed alongside XA playback, which is not modelled) or an envelope bug; the BIOS-only run does not show it.
+
 ### Debugging trail: from a kernel overwrite to playing FMVs
 
 This trail shows the toolkit's method on a real bug. Every step used `psx` tools with evidence from both emulators.

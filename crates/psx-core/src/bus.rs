@@ -77,6 +77,7 @@ pub struct Bus {
     cdrom_irq: bool,
     pub sio0: crate::sio0::Sio0,
     pub mdec: crate::mdec::Mdec,
+    pub spu: crate::spu::Spu,
     /// Reads of I/O registers no device handles yet: physical address -> count.
     pub unhandled_reads: std::collections::BTreeMap<u32, u64>,
 }
@@ -122,6 +123,7 @@ impl Bus {
             cdrom_irq: false,
             sio0: Default::default(),
             mdec: Default::default(),
+            spu: Default::default(),
             unhandled_reads: Default::default(),
         }
     }
@@ -161,6 +163,9 @@ impl Bus {
         let dotclock = ((53_693_175u64 << 16) / div) / SYSCLK;
         let irq = self.timers.tick(cycles, crate::timers::Rates { dotclock, hblank });
         self.raise_irq(irq);
+        if self.spu.tick(cycles) {
+            self.raise_irq(1 << 9);
+        }
         if self.sio0.tick(self.now) {
             self.raise_irq(1 << 7);
         }
@@ -300,6 +305,26 @@ impl Bus {
                 self.pending_mdec_out = Some((madr, bcr, chcr, Self::dma_words(bcr, chcr)));
                 self.try_mdec_out();
                 return;
+            }
+            4 => {
+                let words = Self::dma_words(bcr, chcr);
+                let mut addr = madr & 0x1F_FFFC;
+                let mut fired = false;
+                for _ in 0..words {
+                    if chcr & 1 != 0 {
+                        let w = self.ram_word(addr);
+                        fired |= self.spu.fifo_write(w as u16);
+                        fired |= self.spu.fifo_write((w >> 16) as u16);
+                    } else {
+                        let w = self.spu.fifo_read() as u32 | (self.spu.fifo_read() as u32) << 16;
+                        let o = addr as usize;
+                        self.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
+                    }
+                    addr = (addr + 4) & 0x1F_FFFC;
+                }
+                if fired {
+                    self.raise_irq(1 << 9);
+                }
             }
             3 => {
                 let words = if (chcr >> 9) & 3 == 0 {
@@ -448,9 +473,14 @@ impl Bus {
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
-            // SPUSTAT: mode bits 0-5 mirror SPUCNT; never busy (no SPU model yet).
-            0x1F80_1DAE => {
-                let v = (le(&self.io, 0x1F80_1DAA - 0x1F80_1000) & 0x3F) >> (8 * (p & 1));
+            0x1F80_1C00..=0x1F80_1FFF => {
+                let mut v = 0u32;
+                let mut o = p & !1;
+                while o < p + n as u32 {
+                    v |= (self.spu.read16(o - 0x1F80_1C00) as u32) << (8 * (o - (p & !1)));
+                    o += 2;
+                }
+                let v = if p & 1 != 0 { v >> 8 } else { v };
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
@@ -482,7 +512,15 @@ impl Bus {
             0x1F00_0000..=0x1F7F_FFFF => {}
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => put(&mut self.scratch, (p - 0x1F80_0000) as usize),
             0x1F80_1000..=0x1F80_2FFF => {
-                if (p == 0x1F80_1820 || p == 0x1F80_1824) && width == Width::Word {
+                if (0x1F80_1C00..0x1F80_2000).contains(&p) {
+                    let mut fired = self.spu.write16((p & !1) - 0x1F80_1C00, value as u16);
+                    if width == Width::Word {
+                        fired |= self.spu.write16((p & !1) + 2 - 0x1F80_1C00, (value >> 16) as u16);
+                    }
+                    if fired {
+                        self.raise_irq(1 << 9);
+                    }
+                } else if (p == 0x1F80_1820 || p == 0x1F80_1824) && width == Width::Word {
                     self.mdec.write(p - 0x1F80_1820, value);
                     self.try_mdec_out();
                 } else if (0x1F80_1040..0x1F80_1050).contains(&p) {
