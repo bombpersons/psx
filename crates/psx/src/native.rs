@@ -20,10 +20,73 @@ pub struct Options<'a> {
     /// Report changes of this RAM word from frame `watch_after` on.
     pub watch: Option<u32>,
     pub watch_after: u64,
+    /// `[{frame, buttons: [names]}]`: held buttons from each frame on (frames from power-on).
+    pub replay: Option<&'a Path>,
+    /// Save the screen every N frames as <dump>.fNNNNN.png.
+    pub snapshot_every: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
+struct ReplayEvent {
+    frame: u64,
+    buttons: Vec<String>,
+}
+
+/// Run until `target` frames, applying replay events and periodic snapshots.
+fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[(u64, u16)], snap: Option<(u64, &Path)>) -> u64 {
+    let mut steps = 0;
+    let mut next = 0;
+    let mut last_frame = u64::MAX;
+    while m.bus.frames < target && steps < max_steps {
+        let f = m.bus.frames;
+        if f != last_frame {
+            last_frame = f;
+            while next < events.len() && events[next].0 <= f {
+                m.bus.sio0.buttons = events[next].1;
+                next += 1;
+            }
+            if let Some((every, prefix)) = snap {
+                if f > 0 && f % every == 0 {
+                    let (w, h, rgba) = m.bus.gpu.display_rgba();
+                    let p = std::path::PathBuf::from(format!("{}.f{f:05}.png", prefix.display()));
+                    let _ = crate::run::write_png(&p, w, h, &rgba, png::ColorType::Rgba);
+                }
+            }
+        }
+        m.step();
+        steps += 1;
+    }
+    steps
 }
 
 pub fn run(o: Options) -> (bool, Value) {
-    let Options { bios: bios_path, disc, frames, max_steps, dump, brk, tail, watch, watch_after } = o;
+    let Options { bios: bios_path, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every } = o;
+    let events: Vec<(u64, u16)> = match replay {
+        None => Vec::new(),
+        Some(p) => {
+            let parsed: Result<Vec<ReplayEvent>, String> = std::fs::read_to_string(p)
+                .map_err(|e| e.to_string())
+                .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
+            match parsed {
+                Ok(ev) => {
+                    let mut out = Vec::new();
+                    for e in ev {
+                        let mut bits = 0u16;
+                        for b in &e.buttons {
+                            match psx_core::sio0::button_from_name(b) {
+                                Some(v) => bits |= v,
+                                None => return (false, json!({"error": {"code": "invalid_arguments", "message": format!("unknown button {b}")}})),
+                            }
+                        }
+                        out.push((e.frame, bits));
+                    }
+                    out.sort_by_key(|e| e.0);
+                    out
+                }
+                Err(e) => return (false, json!({"error": {"code": "invalid_arguments", "message": format!("replay: {e}")}})),
+            }
+        }
+    };
     let bios = match std::fs::read(bios_path) {
         Ok(b) => b,
         Err(e) => return (false, json!({"error": {"code": "io_error", "message": format!("{}: {e}", bios_path.display())}})),
@@ -91,7 +154,8 @@ pub fn run(o: Options) -> (bool, Value) {
             return (false, json!({"status": "breakpoint", "break": broke}));
         }
     }
-    steps += m.run_frames(frames.saturating_sub(2).saturating_sub(m.bus.frames), max_steps);
+    let snap = snapshot_every.zip(dump);
+    steps += run_with_input(&mut m, frames.saturating_sub(2), max_steps, &events, snap);
     // Profile the last two frames: where the CPU spends time and what it polls.
     m.bus.log_io = true;
     let mut pcs: std::collections::HashMap<u32, u64> = Default::default();

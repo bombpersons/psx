@@ -30,6 +30,30 @@ pub mod button {
     pub const SQUARE: u16 = 1 << 15;
 }
 
+/// Button bit for a PCSX-Redux-style name (CROSS, START, UP, ...).
+pub fn button_from_name(name: &str) -> Option<u16> {
+    use button::*;
+    Some(match name.to_ascii_uppercase().as_str() {
+        "SELECT" => SELECT,
+        "L3" => L3,
+        "R3" => R3,
+        "START" => START,
+        "UP" => UP,
+        "RIGHT" => RIGHT,
+        "DOWN" => DOWN,
+        "LEFT" => LEFT,
+        "L2" => L2,
+        "R2" => R2,
+        "L1" => L1,
+        "R1" => R1,
+        "TRIANGLE" => TRIANGLE,
+        "CIRCLE" => CIRCLE,
+        "CROSS" => CROSS,
+        "SQUARE" => SQUARE,
+        _ => return None,
+    })
+}
+
 #[derive(Default)]
 pub struct Sio0 {
     rx: VecDeque<u8>,
