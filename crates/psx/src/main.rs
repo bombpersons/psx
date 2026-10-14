@@ -108,6 +108,21 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         limit: usize,
     },
+    /// Name library functions in a PS-X EXE by PsyQ signature matching.
+    /// Writes <out>.symbols.json, <out>.ghidra.txt (ImportSymbolsScript.py) and <out>.sym.
+    Symbols {
+        /// PS-X EXE file, or `image.cue::/PATH`.
+        source: String,
+        /// Local signature directory (`<version>/<LIB>.json` layout).
+        #[arg(long, default_value = "external/psx_psyq_signatures")]
+        sigs: PathBuf,
+        /// Minimum non-wildcard bytes for a signature to be used.
+        #[arg(long, default_value_t = 24)]
+        min_concrete: usize,
+        /// Output path prefix (default .psx/symbols/<exe name>).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Classify a CPU address (segment, region, folded offset).
     Addr {
         /// Hex address, e.g. 0x80010000.
@@ -163,6 +178,7 @@ fn run(cmd: Command) -> R {
         Command::Exe { source } => exe_cmd(&source),
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
         Command::Run { .. } => unreachable!("handled in main"),
+        Command::Symbols { source, sigs, min_concrete, out } => symbols_cmd(&source, &sigs, min_concrete, out),
         Command::Loads { run_dir, disc, limit } => {
             let mut v = provenance::report(&run_dir, &disc).map_err(MediaError::Malformed)?;
             if let Some(runs) = v["runs"].as_array_mut() {
@@ -305,6 +321,58 @@ fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -> R {
         }));
     }
     Ok(json!({"written": written, "failed": failed}))
+}
+
+fn read_source(source: &str) -> psx_media::Result<Vec<u8>> {
+    Ok(match source.split_once("::") {
+        Some((image, path)) => {
+            let disc = Disc::open(image)?;
+            let fs = FileSystem::read(&disc)?;
+            let e = fs.find(path).ok_or_else(|| MediaError::NotFound(path.to_string()))?;
+            fs.read_file(&disc, e)?
+        }
+        None => std::fs::read(source).map_err(|e| MediaError::io(source, e))?,
+    })
+}
+
+fn symbols_cmd(source: &str, sigs_dir: &Path, min_concrete: usize, out: Option<PathBuf>) -> R {
+    let bytes = read_source(source)?;
+    let exe = PsxExe::parse(&bytes)?;
+    let sigs = psx_symbols::load_dir(sigs_dir).map_err(|e| {
+        MediaError::NotFound(format!("signatures: {e} (supply a local psx_psyq_signatures checkout with --sigs)"))
+    })?;
+    let report = psx_symbols::match_code(exe.payload(&bytes), exe.text_addr, &sigs, min_concrete);
+    let stem = source.rsplit(['/', '\\', ':']).next().unwrap_or("exe").trim_end_matches(";1").to_string();
+    let prefix = out.unwrap_or_else(|| PathBuf::from(".psx/symbols").join(&stem));
+    if let Some(parent) = prefix.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| MediaError::io(parent, e))?;
+    }
+    let with_ext = |ext: &str| PathBuf::from(format!("{}.{ext}", prefix.display()));
+    let write = |p: PathBuf, text: String| std::fs::write(&p, text).map_err(|e| MediaError::io(&p, e)).map(|_| p);
+    let json_path = write(with_ext("symbols.json"), serde_json::to_string_pretty(&report).unwrap())?;
+    let ghidra = write(with_ext("ghidra.txt"), psx_symbols::to_ghidra(&report.symbols))?;
+    let sym = write(with_ext("sym"), psx_symbols::to_sym(&report.symbols))?;
+    let functions = report.symbols.iter().filter(|s| s.kind == psx_symbols::Kind::Function).count();
+    let mut libs: std::collections::BTreeMap<String, usize> = Default::default();
+    for o in &report.objects {
+        let lib = o.source.split('/').nth(1).unwrap_or("?").to_string();
+        *libs.entry(lib).or_default() += 1;
+    }
+    let matched: u64 = report.objects.iter().map(|o| o.size as u64).sum();
+    Ok(json!({
+        "exe": source,
+        "text": {"addr": format!("0x{:08X}", exe.text_addr), "bytes": exe.text_size},
+        "signatures_loaded": sigs.len(),
+        "versions": report.versions.iter().take(5).collect::<Vec<_>>(),
+        "chosen_version": report.chosen_version,
+        "objects_matched": report.objects.len(),
+        "objects_by_library": libs,
+        "functions_named": functions,
+        "code_covered_bytes": matched,
+        "code_covered_pct": (matched as f64 * 1000.0 / exe.text_size.max(1) as f64).round() / 10.0,
+        "ambiguous": report.ambiguous.len(),
+        "files": {"report": json_path, "ghidra": ghidra, "sym": sym},
+    }))
 }
 
 fn exe_cmd(source: &str) -> R {

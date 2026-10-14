@@ -10,6 +10,7 @@ description = "PlayStation reverse-engineering toolkit CLI"
 psx-media = { workspace = true }
 psx-gpu = { workspace = true }
 psx-redux = { workspace = true }
+psx-symbols = { workspace = true }
 png = "0.18"
 serde = { workspace = true }
 serde_json = { workspace = true }
