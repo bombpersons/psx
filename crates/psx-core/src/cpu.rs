@@ -210,6 +210,8 @@ impl Cpu {
         sr & 1 != 0 && (sr & self.cause_ip() & 0xFF00) != 0
     }
 
+    #[cold]
+    #[inline(never)]
     fn exception(&mut self, cause: Exception, epc_pc: u32) {
         let sr = self.cop0[cop0::SR];
         // Push the KU/IE stack (bits 0..5 shift left by two).
