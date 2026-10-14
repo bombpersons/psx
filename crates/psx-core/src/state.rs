@@ -91,6 +91,7 @@ fn disc_layout(disc: &psx_media::Disc) -> String {
     disc.tracks
         .iter()
         .map(|t| format!("{} {:?} {} {} {} {};", t.number, t.mode, t.first_lba, t.start_lba, t.sectors, t.unstored_pregap))
+        .chain(disc.subq.iter().map(|(lba, q)| format!("subq {lba} {q:?};")))
         .collect()
 }
 

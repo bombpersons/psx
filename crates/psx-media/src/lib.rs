@@ -10,6 +10,7 @@ pub mod error;
 pub mod exe;
 pub mod iso9660;
 pub mod memmap;
+pub mod subq;
 pub mod system_cnf;
 
 pub use disc::Disc;

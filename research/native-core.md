@@ -304,7 +304,24 @@ Ape Escape (PAL, SCES-02029) requires a DualShock.
 - With a digital pad the game's pad status reads FFh and it ignores all input. Its attract demo still runs, which can look like progress.
 - With a DualShock it probes the pad: 43h, 45h, 4Ch ×2, 47h, 46h ×2, 47h. It then sets analog mode and lock (`44 01 03`), maps the motors (`4D 00 01`), and polls with 42h.
 - The game reads buttons every other frame. DOWN arrives as 4000h (PADLdown) in its button word at `0x800E5498`, and presses reset the title's idle timer.
-- **Open:** the title menu ("Spiel laden" / "Neues Spiel") ignores the D-pad and the left stick. PCSX-Redux with its analog pad and the same inputs behaves identically, so this is a gap in how the menu is driven, not a native-core divergence.
+- The title menu then ignored every button. That was **LibCrypt**, not the pad: see below. Redux behaved identically only because it doesn't use SBI data either, so agreement with the oracle was not evidence here.
+
+### LibCrypt (`psx_media::subq`, CD-ROM GetlocP)
+
+PAL LibCrypt discs have about 32 sectors whose subchannel Q was deliberately corrupted at mastering. BIN/CUE rips don't carry subchannel data, so the corruption is distributed separately by redump.org as `.sbi` (Q without CRC) or `.lsd` (Q with CRC) files.
+- **Loading:** `Disc::open` picks up `<image>.sbi`/`.lsd` beside the image.
+- **Reporting:** `psx disc` reports `subchannel.overridden_sectors`.
+- **Identity:** the overrides are part of the disc fingerprint, so a save state refuses a disc with or without the wrong `.sbi`.
+
+**Drive behaviour.** The drive checks each sector's Q CRC and keeps its last *valid* Q when the check fails. On a LibCrypt sector, GetlocP therefore repeats the previous sector's position; the game reads its key bits from *which* sectors do this, not from the corrupted values.
+- `.sbi` entries are bad by definition.
+- `.lsd` CRCs are checked (CRC-16/CCITT, inverted).
+- My first version returned the corrupted Q itself, and the game still refused the disc.
+
+**Ape Escape (Germany, SCES-02029)** is redump [disc 26604](http://redump.org/disc/26604/): CRC-32 b5660f4d matches our image, and "LibCrypt: Yes".
+- **The probe:** from frame ~1157 the game issues Setloc to 16 MSF positions between 03:08 and 03:34 (LBA ~14000-16000), each followed by ReadS and GetlocP ×9.
+- **Without the `.sbi`:** the game boots and plays its attract demo, but its title menu ignores all input.
+- **With the redump `.sbi`** (32 sectors, first at LBA 14335): START on the title starts a new game. Spike walks with the left stick, and walking into a trigger opens the professor's tutorial text.
 
 ### More discs (Castlevania SOTN, Mega Man 8, Crash Bandicoot; all PAL)
 

@@ -457,8 +457,19 @@ impl Cdrom {
                 self.respond(ack, 3, v);
             }
             0x11 => {
-                let (track, index, rel, abs) = self.position(self.loc);
-                self.respond(ack, 3, vec![track, index, rel[0], rel[1], rel[2], abs[0], abs[1], abs[2]]);
+                // LibCrypt (.sbi/.lsd): the drive ignores a sector whose Q CRC is
+                // bad and reports the last valid Q, i.e. an earlier sector's.
+                let subq = |lba: u32| self.disc.as_ref().and_then(|d| d.subq.get(&lba)).copied();
+                let mut lba = self.loc;
+                while lba > 0 && subq(lba).is_some_and(|o| !o.crc_valid()) {
+                    lba -= 1;
+                }
+                let (track, index, rel, abs) = self.position(lba);
+                let mut q = [0x41, track, index, rel[0], rel[1], rel[2], 0, abs[0], abs[1], abs[2]];
+                if let Some(o) = subq(lba) {
+                    o.apply(&mut q); // a valid-CRC override (.lsd)
+                }
+                self.respond(ack, 3, vec![q[1], q[2], q[3], q[4], q[5], q[7], q[8], q[9]]);
             }
             0x13 => {
                 let last = self.disc.as_ref().map_or(1, |d| d.tracks.len() as u32);

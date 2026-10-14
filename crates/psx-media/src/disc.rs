@@ -75,6 +75,9 @@ pub struct Disc {
     pub files: Vec<ImageFile>,
     pub tracks: Vec<Track>,
     handles: Mutex<Vec<File>>,
+    /// Subchannel Q overrides (LibCrypt) by LBA, from an `.sbi`/`.lsd` beside the image.
+    pub subq: std::collections::BTreeMap<u32, crate::subq::SubQ>,
+    pub subq_source: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Disc {
@@ -95,6 +98,15 @@ impl Disc {
     /// Open a `.cue`, a bare raw `.bin` (single data track) or a cooked `.iso`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+        let mut disc = Self::open_image(path)?;
+        if let Some((src, map)) = crate::subq::load_beside(path)? {
+            disc.subq = map;
+            disc.subq_source = Some(src);
+        }
+        Ok(disc)
+    }
+
+    fn open_image(path: &Path) -> Result<Self> {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         match ext.as_str() {
             "cue" => Self::open_cue(path),
@@ -136,6 +148,8 @@ impl Disc {
                 unstored_pregap: 0,
             }],
             handles: Mutex::new(vec![handle]),
+            subq: Default::default(),
+            subq_source: None,
         })
     }
 
@@ -185,7 +199,7 @@ impl Disc {
             handles.push(File::open(&fpath).map_err(|e| MediaError::io(&fpath, e))?);
             files.push(ImageFile { name: cf.name.clone(), path: fpath, bytes });
         }
-        Ok(Disc { source: path.to_path_buf(), files, tracks, handles: Mutex::new(handles) })
+        Ok(Disc { source: path.to_path_buf(), files, tracks, handles: Mutex::new(handles), subq: Default::default(), subq_source: None })
     }
 
     pub fn track_for_lba(&self, lba: u32) -> Option<&Track> {
