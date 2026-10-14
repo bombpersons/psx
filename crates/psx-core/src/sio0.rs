@@ -54,7 +54,7 @@ pub fn button_from_name(name: &str) -> Option<u16> {
     })
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Sio0 {
     rx: VecDeque<u8>,
     mode: u16,

@@ -13,11 +13,13 @@ pub mod mdec;
 pub mod observe;
 pub mod sio0;
 pub mod spu;
+pub mod state;
 pub mod timers;
 
 pub use bus::{Bus, Width};
 pub use cpu::{Cpu, StepInfo};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Machine {
     pub cpu: Cpu,
     pub bus: Bus,

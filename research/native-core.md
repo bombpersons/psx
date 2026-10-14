@@ -162,13 +162,43 @@ RAM, VRAM and screen PNGs, registers, replay, `--symbols`. Its observations come
   `psx loads` reads it with evidence `native` and needs no content inference.
 - **`--trace-bios`:** A0/B0/C0 calls are recorded at the vectors with path arguments. Frequent calls are counted but not recorded.
 - **EXE side-loading:** like Redux, the BIOS runs to the shell entry 0x80030000, then the EXE is loaded.
-- **Frames** count from power-on.
-- **Save states** are not implemented natively yet. They are refused with `unsupported` rather than ignored.
+- **Frames** count from power-on, or from the restored state after `--from-state` (Redux counts from SaveStateLoaded).
+- **Save states** (`--save-state` / `--from-state`): see below.
 
 Checks:
 
 - **Probe watch:** the native backend reports the same writer PCs as Redux: crt0 BSS clear 0x80010044, and the counter store 0x80010380 with exact old/new values.
 - **Croc boot to frame 2400:** 5,129 CD transfers, all `native`, giving the same file→RAM spans and libcd functions as the Redux run.
+
+### Native save states (`state.rs`)
+
+`--save-state` writes `state.bin`; `--from-state` resumes from one. The layout is:
+
+- the `PSXSTATE` magic;
+- a JSON header: format version, core version, BIOS SHA-256, media identity, frames and cycles. It can be read without decoding the body (`psx_core::state::read_header`);
+- a gzip-compressed postcard encoding of the whole `Machine`: CPU + GTE, RAM, scratchpad, I/O registers, DMA (including a pending MDEC-out transfer), timers, GPU + VRAM + an in-flight VRAM upload, CD drive (queued responses, head position, FIFO, CD-DA buffer), pad port, MDEC, and SPU + sound RAM.
+
+What is not saved, and why:
+
+- **BIOS and disc.** These are reopened from files and checked against the header. A different BIOS or medium is refused with `identity_mismatch`.
+  For a side-loaded EXE, the media identity is the file's SHA-256. For a disc, it is a fingerprint: the track layout plus the raw sectors at LBA 0–23 and every 4096th sector, so a 600 MB image isn't hashed on every run.
+- **Analysis state.** Watches, traces, I/O and DMA logs, and captured audio belong to the run, not the machine.
+
+Any change to a saved struct's shape must bump `state::FORMAT`; older states are then refused rather than misread.
+A native state passed to the Redux backend, or a Redux state passed to the native one, is refused with a hint to switch backend.
+
+Sizes: 0.3 MB (probe), 0.7 MB (Tomb Raider), 1.3 MB (Croc in-game).
+
+Checks: a straight N-frame run must equal a run split at frame K and resumed from the state. The comparison is byte-identical RAM, scratchpad, VRAM, registers, cycles and instruction count, and also the final state file itself, which covers every device.
+
+| Media | Total frames | Split at | Result |
+|---|---|---|---|
+| probe EXE | 300 | 137 | identical |
+| Croc + START replay | 4600 | 3203 (START held) | identical |
+| Tomb Raider + CROSS replay | 3000 | 1777 | identical, final full state too |
+| Croc + START replay | 4800 | 4111 | identical, final full state too |
+
+`state::tests` repeats the split check on a synthetic BIOS and covers the rejection of a wrong BIOS, garbage and truncated files.
 
 ### Performance
 

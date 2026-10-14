@@ -6,7 +6,7 @@
 //! "reached" flags that clear on read; mode writes resetting the counter.
 //! Not modelled yet: the sync modes (pausing/resetting at hblank/vblank).
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Timer {
     pub counter: u32,
     pub mode: u32,
@@ -24,7 +24,7 @@ pub struct Rates {
     pub hblank: u64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Timers {
     pub t: [Timer; 3],
 }

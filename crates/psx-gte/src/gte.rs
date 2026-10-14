@@ -152,7 +152,7 @@ pub struct RtptResult {
 
 /// The complete GTE state: 32 data registers (cop2r0-31) and 32 control
 /// registers (cop2r32-63), stored in decoded form.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Gte {
     // Data registers.
     v: [[i16; 3]; 3],

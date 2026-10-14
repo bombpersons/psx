@@ -46,7 +46,7 @@ mod stat {
     pub const PLAY: u8 = 0x80;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Response {
     at: u64,
     int: u8,
@@ -82,6 +82,7 @@ pub struct RecentCommand {
     pub repeats: u32,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Cdrom {
     index: u8,
     params: VecDeque<u8>,
@@ -90,6 +91,8 @@ pub struct Cdrom {
     iflag: u8,
     queue: VecDeque<Response>,
     busy_until: u64,
+    /// Not saved: a restored machine gets the disc reinserted by the caller.
+    #[serde(skip)]
     pub disc: Option<Disc>,
     region: [u8; 4],
     status: u8,
@@ -117,14 +120,19 @@ pub struct Cdrom {
     /// LBA of the sector currently in the data FIFO.
     fifo_lba: u32,
     /// Every DMA3 transfer: (lba of FIFO data, FIFO offset, bytes). Enabled by `log_dma`.
+    #[serde(skip)]
     pub dma_log: Vec<(u32, u32, u32)>,
     /// Commands as (time, command, params) when `log_dma` is set.
+    #[serde(skip)]
     pub cmd_log: Vec<(u64, u8, Vec<u8>)>,
     /// The last 64 distinct commands. Consecutive identical commands (e.g.
     /// GetlocP polling) are counted, not stored.
+    #[serde(skip)]
     pub recent: VecDeque<RecentCommand>,
     /// Interrupt events as (time, what, detail) when `log_dma` is set.
+    #[serde(skip)]
     pub irq_log: Vec<(u64, &'static str, u32)>,
+    #[serde(skip)]
     pub log_dma: bool,
     data: Vec<u8>,
     data_pos: usize,
@@ -132,6 +140,7 @@ pub struct Cdrom {
     /// Sectors delivered as INT1 since power-on.
     pub sectors_delivered: u64,
     /// Commands the controller received that are not implemented.
+    #[serde(skip)]
     pub unknown_commands: Vec<u8>,
 }
 

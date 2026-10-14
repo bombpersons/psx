@@ -47,6 +47,7 @@ pub struct StepInfo {
     pub io_load: Option<(u32, u8)>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Cpu {
     pub regs: [u32; 32],
     pub hi: u32,
