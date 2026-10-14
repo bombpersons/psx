@@ -286,6 +286,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "psx-core"
+version = "0.1.0"
+dependencies = [
+ "psx-gte",
+]
+
+[[package]]
 name = "psx-gpu"
 version = "0.1.0"
 
