@@ -23,6 +23,7 @@ const FILES: &[(&str, &str)] = files![
     "src/main.rs",
     "src/psx/material.rs",
     "src/psx/mod.rs",
+    "src/psx/scene.rs",
     "src/psx/shaders/psx_material.wesl",
 ];
 
@@ -97,5 +98,31 @@ mod tests {
         assert!(create(&dir.join("my-game"), None).is_err());
         assert!(create(&dir.join("Bad Name!"), None).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Every file under templates/psx-bevy (except build output and local
+    /// assets) must be embedded, or `template create` silently drops it.
+    #[test]
+    fn embeds_every_template_file() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates/psx-bevy");
+        let mut found = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+                if rel == "target" || rel == "assets" {
+                    continue;
+                }
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    found.push(rel);
+                }
+            }
+        }
+        let embedded: Vec<&str> = FILES.iter().map(|(p, _)| *p).collect();
+        let missing: Vec<&String> = found.iter().filter(|f| !embedded.contains(&f.as_str())).collect();
+        assert!(missing.is_empty(), "template files not in FILES: {missing:?}");
     }
 }

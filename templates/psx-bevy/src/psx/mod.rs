@@ -6,9 +6,14 @@
 //!   `DirectionalLight`/`AmbientLight`; fog is the camera's `DistanceFog`.
 //! - 2D is plain Bevy `Sprite`s seen by a `Camera2d` with `PsxView`.
 //! - [`PsxLook`] toggles the effects globally.
+//! - [`PsxSceneRoot`] spawns a captured frame (`.psxscene` from the psx
+//!   toolkit) as ordinary sprites and meshes, for reference layouts.
 mod material;
+mod scene;
 
 pub use material::{PsxBlend, PsxMaterial};
+#[allow(unused_imports)] // public API for game code
+pub use scene::{PsxScene, PsxSceneElement, PsxSceneRoot, SceneElement};
 
 use bevy::{
     asset::embedded_asset,
@@ -110,6 +115,7 @@ impl Plugin for PsxPlugin {
         image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
         screen.image = app.world_mut().resource_mut::<Assets<Image>>().add(image);
 
+        scene::plugin(app);
         app.add_plugins(MaterialPlugin::<PsxMaterial>::default())
             .register_type::<PsxLook>()
             .init_resource::<PsxLook>()

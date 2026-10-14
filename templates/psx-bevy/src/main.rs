@@ -26,8 +26,11 @@ pub enum GameSystems {
 }
 
 fn main() {
-    let mcp = std::env::args().any(|arg| arg == "--mcp");
-    let software = std::env::args().any(|arg| arg == "--software");
+    let args: Vec<String> = std::env::args().collect();
+    let mcp = args.iter().any(|arg| arg == "--mcp");
+    let software = args.iter().any(|arg| arg == "--software");
+    // --scene PATH (under assets/): view a psx-toolkit frame capture instead of the demo.
+    let scene = args.iter().position(|a| a == "--scene").and_then(|i| args.get(i + 1)).cloned();
     #[cfg(not(feature = "dev-mcp"))]
     if mcp {
         eprintln!("--mcp requires a developer build: cargo run --features dev-mcp -- --mcp");
@@ -61,8 +64,18 @@ fn main() {
     .configure_sets(FixedUpdate, (GameSystems::Input, GameSystems::Game, GameSystems::Finish).chain())
     .configure_sets(FixedUpdate, GameSystems::Game.run_if(|clock: Res<GameClock>| clock.ticking))
     .add_systems(FixedUpdate, begin_tick.in_set(GameSystems::Input))
-    .add_systems(FixedUpdate, finish_tick.in_set(GameSystems::Finish))
-    .add_plugins(demo::DemoPlugin);
+    .add_systems(FixedUpdate, finish_tick.in_set(GameSystems::Finish));
+    match scene {
+        Some(path) => {
+            app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
+                commands.spawn((Camera2d, psx::PsxView));
+                commands.spawn((psx::PsxSceneRoot(assets.load(path.clone())), Transform::default(), Visibility::default()));
+            });
+        }
+        None => {
+            app.add_plugins(demo::DemoPlugin);
+        }
+    }
     #[cfg(feature = "dev-mcp")]
     if mcp {
         app.add_plugins(dev_mcp::GameMcpPlugin);

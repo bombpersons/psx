@@ -10,7 +10,7 @@ publish = false
 
 [features]
 default = []
-dev-mcp = ["dep:rmcp", "dep:tokio", "dep:serde", "dep:serde_json", "dep:base64", "dep:image"]
+dev-mcp = ["dep:rmcp", "dep:tokio", "dep:base64", "dep:image"]
 
 [dependencies]
 bevy = { version = "=0.20.0", default-features = false, features = [
@@ -22,8 +22,8 @@ bevy = { version = "=0.20.0", default-features = false, features = [
 bevy_render = { version = "=0.20.0", default-features = false, features = ["gles"] }
 rmcp = { version = "=3.5.1", optional = true, features = ["transport-io"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "sync", "time", "io-std"] }
-serde = { version = "1", optional = true, features = ["derive"] }
-serde_json = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 base64 = { version = "0.22", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 

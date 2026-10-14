@@ -109,13 +109,118 @@ pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&
         }
     }
     let mut list = Vec::new();
+    let mut images: Vec<String> = Vec::new();
+    let mut image_of: BTreeMap<(i64, i64, i64, i64, i64), usize> = BTreeMap::new();
     for ((px, py, d, cx, cy), (uv, uses)) in pairs {
         let clut = (cx >= 0).then_some((cx as i32, cy as i32));
         let base = format!("page_{px}_{py}_{d}bpp{}", clut.map(|(x, y)| format!("_clut_{x}_{y}")).unwrap_or_default());
         let full = save(format!("{base}.png"), decode_page(&vram, px as i32, py as i32, d as u8, clut, [0, 0, 255, 255])?)?;
+        image_of.insert((px, py, d, cx, cy), images.len());
+        images.push(format!("{base}.png"));
         let crop = [uv[0] as i32, uv[1] as i32, uv[2].max(uv[0]) as i32, uv[3].max(uv[1]) as i32];
         let used = save(format!("{base}_used.png"), decode_page(&vram, px as i32, py as i32, d as u8, clut, crop)?)?;
         list.push(json!({"page": {"x": px, "y": py, "depth": d}, "clut": clut, "uses": uses, "uv_bounds": crop, "full": full, "used": used}));
     }
-    Ok(json!({"source": frame_path, "note": "decoded from the run's final VRAM", "textures": list}))
+    let scene = scene(&frame, &images, &image_of);
+    let scene_path = out_dir.join("scene.psxscene");
+    let bytes = serde_json::to_vec_pretty(&scene).map_err(|e| bad(e.to_string()))?;
+    std::fs::write(&scene_path, bytes).map_err(|e| MediaError::io(&scene_path, e))?;
+    Ok(json!({
+        "source": frame_path, "note": "decoded from the run's final VRAM", "textures": list,
+        "scene": {"path": scene_path, "elements": scene["elements"].as_array().map_or(0, |a| a.len()), "skipped_primitives": scene["skipped_primitives"]},
+    }))
+}
+
+/// The frame's 2D layout for the Bevy template (`psx::scene`), in draw order:
+/// - `sprite`: a textured rect or axis-aligned textured quad, i.e. an image
+///   sub-rectangle at a screen rectangle (with flips), or an untextured fill;
+/// - `mesh`: any other polygon as triangles of screen position, UV and colour
+///   (quads split as the hardware draws them: 0-1-2, 1-2-3).
+///
+/// Positions are relative to the drawing offset (the buffer's screen origin).
+/// Lines are counted as skipped.
+fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i64, i64), usize>) -> Value {
+    let mut elements = Vec::new();
+    let mut skipped: BTreeMap<String, u64> = BTreeMap::new();
+    let num = |v: &Value| v.as_i64().unwrap_or(0);
+    for c in frame["commands"].as_array().into_iter().flatten() {
+        let kind = c["kind"].as_str().unwrap_or("");
+        let (ox, oy) = (num(&c["offset"][0]), num(&c["offset"][1]));
+        let textured = c["textured"] == json!(true);
+        let t = &c["texpage"];
+        let image = if textured {
+            let key = (num(&t["x"]), num(&t["y"]), t["depth"].as_i64().unwrap_or(15), c["clut"][0].as_i64().unwrap_or(-1), c["clut"][1].as_i64().unwrap_or(-1));
+            match image_of.get(&key) {
+                Some(&i) => Some(i),
+                None => continue,
+            }
+        } else {
+            None
+        };
+        let semi = c["semi"] == json!(true);
+        let blend = if semi { t["blend"].clone() } else { Value::Null };
+        // Texture modulation is colour/128 (128 = unchanged); raw textures ignore colour.
+        let raw = c["raw"] == json!(true);
+        let colour = |v: &Value| -> [f64; 3] {
+            [0, 1, 2].map(|k| {
+                let x = v["color"][k].as_f64().unwrap_or(128.0);
+                if textured { if raw { 1.0 } else { x / 128.0 } } else { x / 255.0 }
+            })
+        };
+        let verts: Vec<&Value> = c["vertices"].as_array().into_iter().flatten().collect();
+        let pos = |v: &Value| (num(&v["x"]) - ox, num(&v["y"]) - oy);
+        let uv = |v: &Value| (num(&v["uv"][0]), num(&v["uv"][1]));
+        match kind {
+            "fill" => {
+                let a = &c["area"];
+                // Fills ignore the drawing offset: absolute VRAM, made relative here.
+                elements.push(json!({"kind": "sprite", "image": null, "rect": [num(&a[0]) - ox, num(&a[1]) - oy, num(&a[2]), num(&a[3])],
+                    "color": colour(&verts[0]).map(|x| x), "command": c["index"]}));
+            }
+            "rect" if !verts.is_empty() => {
+                let (x, y) = pos(verts[0]);
+                let (w, h) = (num(&c["area"][2]), num(&c["area"][3]));
+                let (u, v) = if textured { uv(verts[0]) } else { (0, 0) };
+                elements.push(json!({"kind": "sprite", "image": image, "rect": [x, y, w, h], "uv": textured.then_some([u, v, w, h]),
+                    "flip_x": false, "flip_y": false, "color": colour(verts[0]), "semi": semi, "blend": blend, "command": c["index"]}));
+            }
+            "poly3" | "poly4" => {
+                let p: Vec<(i64, i64)> = verts.iter().map(|v| pos(v)).collect();
+                let q: Vec<(i64, i64)> = verts.iter().map(|v| uv(v)).collect();
+                let aligned = textured && p.len() == 4
+                    && p[0].1 == p[1].1 && p[2].1 == p[3].1 && p[0].0 == p[2].0 && p[1].0 == p[3].0
+                    && q[0].1 == q[1].1 && q[2].1 == q[3].1 && q[0].0 == q[2].0 && q[1].0 == q[3].0
+                    && c["gouraud"] != json!(true);
+                if aligned {
+                    let (x0, x1, y0, y1) = (p[0].0.min(p[1].0), p[0].0.max(p[1].0), p[0].1.min(p[2].1), p[0].1.max(p[2].1));
+                    let (u0, u1, v0, v1) = (q[0].0.min(q[1].0), q[0].0.max(q[1].0), q[0].1.min(q[2].1), q[0].1.max(q[2].1));
+                    // A flip is the UV running against the screen direction.
+                    let flip_x = (p[1].0 - p[0].0).signum() * (q[1].0 - q[0].0).signum() < 0;
+                    let flip_y = (p[2].1 - p[0].1).signum() * (q[2].1 - q[0].1).signum() < 0;
+                    if x1 > x0 && y1 > y0 && u1 > u0 && v1 > v0 {
+                        elements.push(json!({"kind": "sprite", "image": image, "rect": [x0, y0, x1 - x0, y1 - y0], "uv": [u0, v0, u1 - u0, v1 - v0],
+                            "flip_x": flip_x, "flip_y": flip_y, "color": colour(verts[0]), "semi": semi, "blend": blend, "command": c["index"]}));
+                        continue;
+                    }
+                }
+                let tris: &[[usize; 3]] = if p.len() == 4 { &[[0, 1, 2], [1, 2, 3]] } else { &[[0, 1, 2]] };
+                let vertices: Vec<Value> = verts.iter().map(|v| {
+                    let (x, y) = pos(v);
+                    let (u, t) = uv(v);
+                    json!({"x": x, "y": y, "u": u, "v": t, "color": colour(v)})
+                }).collect();
+                elements.push(json!({"kind": "mesh", "image": image, "vertices": vertices, "triangles": tris, "semi": semi, "blend": blend, "command": c["index"]}));
+            }
+            "line" | "polyline" => *skipped.entry(kind.to_string()).or_default() += 1,
+            _ => {}
+        }
+    }
+    let d = &frame["summary"]["display"];
+    json!({
+        "format": 1,
+        "screen": [d["width"].as_i64().unwrap_or(320), d["height"].as_i64().unwrap_or(240)],
+        "images": images,
+        "elements": elements,
+        "skipped_primitives": skipped,
+    })
 }

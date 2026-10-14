@@ -426,6 +426,7 @@ fn gpu_frame_outputs(
         "texture_pages": pages.iter().map(|((x, y, d), n)| json!({"x": x, "y": y, "depth": d, "uses": n})).collect::<Vec<_>>(),
         "cluts": cluts.iter().map(|((x, y), n)| json!({"x": x, "y": y, "uses": n})).collect::<Vec<_>>(),
         "draw_state_at_start": {"offset": start.offset, "area": start.area, "texpage": start.texpage},
+        "display": {"width": m.bus.gpu.display.width(), "height": m.bus.gpu.display.height(), "start": m.bus.gpu.display.start},
     });
     let doc = json!({"summary": summary, "commands": decoded});
     let p = dir.join("gpu_frame.json");
