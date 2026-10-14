@@ -1,6 +1,7 @@
 //! Native game shell: PlayStation-look rendering, fixed-step logic and controllers.
 mod controller;
 mod demo;
+mod model_viewer;
 #[cfg(feature = "dev-mcp")]
 mod dev_mcp;
 mod psx;
@@ -39,6 +40,9 @@ fn main() {
         quantize: !args.iter().any(|a| a == "--no-quantize"),
         ..default()
     };
+    // --model PATH.tmd [--texture PATH.tim]... [--cull] (under assets/): view an extracted original model.
+    let model = args.iter().position(|a| a == "--model").and_then(|i| args.get(i + 1)).cloned();
+    let textures: Vec<String> = args.windows(2).filter(|w| w[0] == "--texture").map(|w| w[1].clone()).collect();
     #[cfg(not(feature = "dev-mcp"))]
     if mcp {
         eprintln!("--mcp requires a developer build: cargo run --features dev-mcp -- --mcp");
@@ -95,9 +99,14 @@ fn main() {
             })
             .add_systems(Update, toggle_scene_depth);
         }
-        None => {
-            app.add_plugins(demo::DemoPlugin);
-        }
+        None => match model {
+            Some(path) => {
+                app.add_plugins(model_viewer::ModelViewerPlugin { path, textures, cull: args.iter().any(|a| a == "--cull") });
+            }
+            None => {
+                app.add_plugins(demo::DemoPlugin);
+            }
+        },
     }
     #[cfg(feature = "dev-mcp")]
     if mcp {

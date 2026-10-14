@@ -167,6 +167,42 @@ You can use that field on your own meshes too: ordered surfaces skip the
 depth buffer and draw in ascending order in Bevy's sorted transparent pass.
 2D elements stay on their background or overlay camera in both modes.
 
+### Original assets (TIM textures, TMD models)
+
+`psx assets extract` (psx toolkit) writes the original `.tim` / `.tmd` bytes
+it finds next to PNG/glTF conversions. Put them under `assets/` and load them
+like any asset:
+
+```rust
+// Image, RGBA8 sRGB, nearest sampling; colour 0x0000 has alpha 0.
+let tex: Handle<Image> = asset_server.load("enemy.tim");          // palette 0
+let alt: Handle<Image> = asset_server.load("enemy.tim#Palette2");  // other CLUT rows
+// A TMD: its texture pages are decoded from the TIMs you name, uploaded to a
+// virtual VRAM where their headers place them (default: `car.tim` if present).
+let car: Handle<PsxModel> = asset_server
+    .load_builder()
+    .with_settings(|s: &mut TmdSettings| s.textures = vec!["car.tim".into()])
+    .load("car.tmd");
+commands.spawn((PsxModelRoot(car), Transform::default()));
+```
+
+- `TimSettings { palette, transparency }`: `Cutout` (default; the GPU's
+  rule for opaque polygons), `SemiStp` (STP texels at alpha 0.5) or `Opaque`.
+- `TmdSettings { textures, units_per_metre, cull_back_faces }`: `textures`
+  may also name a game archive; every TIM inside it is uploaded.
+  `units_per_metre` defaults to 64 (as `.psxscene` captures); models are
+  rotated so PS1 y-down becomes y-up. Everything is double-sided unless
+  `cull_back_faces` (PS1 screen-clockwise front faces).
+- `PsxModelRoot` spawns one child per TMD object (`PsxModelObjectIndex`,
+  `Name` "ObjectN") and a `Mesh3d` + `PsxMaterial` per material under it:
+  lit packets use scene lights through `PsxMaterial::lit`, pre-coloured ones
+  do not, semi-transparent packets get the TSB's blend mode. Objects are
+  where the file puts them; games usually position them (limbs, doors).
+- Meshes are labeled sub-assets (`car.tmd#Object0/Part1`), so they can be
+  used with your own materials.
+- Viewer: `cargo run -- --model car.tmd [--texture car.tim]... [--cull]`
+  frames the model and turns it (`game_step` turns it under the dev MCP).
+
 ## Simulation and input
 
 - Gameplay runs in `FixedUpdate`, in `GameSystems::Game`, at the region's

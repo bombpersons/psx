@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 use commands::{Ctx, Op};
 
+mod assets_cmd;
 mod commands;
 mod lockstep;
 mod mcp;
@@ -49,6 +50,11 @@ enum Command {
     Exe(commands::ExeArgs),
     /// List a file's XA-ADPCM audio channels (STR/XA streams), or decode one to a 44.1 kHz WAV.
     Xa(commands::XaArgs),
+    /// Find and convert TIM textures, TMD models and VAB/VAG sound banks in disc files, archives or RAM dumps.
+    Assets {
+        #[command(subcommand)]
+        action: assets_cmd::AssetsAction,
+    },
     /// Decode an STR movie (MDEC BS v1/v2/v3) into PNG frames, audio.wav and summary.json.
     Str(commands::StrArgs),
     /// List the saves on a raw 128 KiB memory card image (.mcd/.mcr).
@@ -106,6 +112,8 @@ fn main() -> ExitCode {
         Command::Extract(a) => a.exec(&ctx),
         Command::Exe(a) => a.exec(&ctx),
         Command::Xa(a) => a.exec(&ctx),
+        Command::Assets { action: assets_cmd::AssetsAction::Scan(a) } => a.exec(&ctx),
+        Command::Assets { action: assets_cmd::AssetsAction::Extract(a) } => a.exec(&ctx),
         Command::Str(a) => a.exec(&ctx),
         Command::Memcard(a) => a.exec(&ctx),
         Command::Textures(a) => a.exec(&ctx),

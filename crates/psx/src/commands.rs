@@ -28,27 +28,32 @@ pub struct Outcome {
     pub exit: u8,
     /// Pretty-printed (results) or compact (media errors), as the CLI always did.
     pub pretty: bool,
+    /// Plain-text output the CLI prints instead of JSON (`assets scan` without --json).
+    pub text: Option<String>,
 }
 
 impl Outcome {
     fn media(r: psx_media::Result<Value>) -> Self {
         match r {
-            Ok(value) => Outcome { value, exit: 0, pretty: true },
+            Ok(value) => Outcome { value, exit: 0, pretty: true, text: None },
             Err(e) => Outcome {
                 value: json!({"error": {"code": e.code(), "message": e.to_string()}}),
                 exit: if matches!(e, MediaError::Unsupported(_)) { 2 } else { 1 },
                 pretty: false,
+                text: None,
             },
         }
     }
 
     fn pair((ok, value): (bool, Value)) -> Self {
-        Outcome { value, exit: if ok { 0 } else { 1 }, pretty: true }
+        Outcome { value, exit: if ok { 0 } else { 1 }, pretty: true, text: None }
     }
 
     /// The CLI's stdout text (without the trailing newline).
     pub fn render(&self) -> String {
-        if self.pretty {
+        if let Some(t) = &self.text {
+            t.trim_end_matches('\n').to_string()
+        } else if self.pretty {
             serde_json::to_string_pretty(&self.value).unwrap()
         } else {
             self.value.to_string()
@@ -250,6 +255,64 @@ impl Op for StrArgs {
                 y4m: self.y4m,
             })
         }))
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct AssetsScanArgs {
+    /// `image.cue::/PATH` (a file; `/DIR/` or `*` for many), a disc image (every
+    /// file) or a host file (`ram.bin` dumps resolve relocated TMDs at 0x80000000).
+    pub source: String,
+    /// One JSON document instead of a text table (always JSON over MCP).
+    #[arg(long)]
+    #[serde(default)]
+    pub json: bool,
+    /// Only these kinds (tim, tmd, vab, vag); repeatable.
+    #[arg(long = "kind")]
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// Address of the file's first byte when it is a RAM dump (hex).
+    #[arg(long)]
+    pub ram_base: Option<String>,
+}
+
+impl Op for AssetsScanArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        match crate::assets_cmd::scan_assets(&self) {
+            Ok(Err(table)) => Outcome { value: json!({"table": table}), exit: 0, pretty: true, text: Some(table) },
+            Ok(Ok(v)) => Outcome::media(Ok(v)),
+            Err(e) => Outcome::media(Err(e)),
+        }
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct AssetsExtractArgs {
+    /// Same syntax as `assets scan`.
+    pub source: String,
+    /// Output directory.
+    #[arg(short, long)]
+    pub out: PathBuf,
+    /// Only these kinds (tim, tmd, vab, vag); repeatable.
+    #[arg(long = "kind")]
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// Only the asset at this file offset (hex).
+    #[arg(long)]
+    pub offset: Option<String>,
+    /// More TIM sources (same syntax as `source`) uploaded to the virtual VRAM
+    /// that TMD texture pages are decoded from; repeatable.
+    #[arg(long = "textures")]
+    #[serde(default)]
+    pub textures: Vec<String>,
+    /// Address of the file's first byte when it is a RAM dump (hex).
+    #[arg(long)]
+    pub ram_base: Option<String>,
+}
+
+impl Op for AssetsExtractArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::media(crate::assets_cmd::extract_assets(&self))
     }
 }
 
