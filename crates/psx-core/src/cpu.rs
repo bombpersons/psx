@@ -79,7 +79,9 @@ impl Cpu {
     pub fn new() -> Self {
         let mut cop0 = [0; 32];
         cop0[cop0::PRID] = 0x0000_0002;
-        cop0[cop0::SR] = 1 << 22; // BEV
+        // Most SR bits are undefined at reset; this is PCSX-Redux's value
+        // (CU0 | BEV | TS) so lockstep comparison starts equal.
+        cop0[cop0::SR] = 0x1090_0000;
         Cpu {
             regs: [0; 32],
             hi: 0,

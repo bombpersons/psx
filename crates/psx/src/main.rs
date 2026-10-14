@@ -13,6 +13,7 @@ use psx_media::system_cnf::{SystemCnf, DEFAULT_BOOT};
 use psx_media::{memmap, Disc, MediaError, PsxExe};
 use serde_json::{json, Value};
 
+mod lockstep;
 mod provenance;
 mod run;
 mod template;
@@ -129,6 +130,20 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Run the native core and PCSX-Redux in lockstep from BIOS reset,
+    /// comparing PC and registers after every instruction.
+    Lockstep {
+        #[arg(long)]
+        bios: PathBuf,
+        #[arg(long, default_value_t = 100_000)]
+        steps: u64,
+        /// Instructions of history shown at a divergence.
+        #[arg(long, default_value_t = 12)]
+        context: usize,
+        /// GDB single-step with full register comparison (about 20 steps/s).
+        #[arg(long)]
+        exact: bool,
+    },
     /// Classify a CPU address (segment, region, folded offset).
     Addr {
         /// Hex address, e.g. 0x80010000.
@@ -158,6 +173,16 @@ fn main() -> ExitCode {
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }
+    if let Command::Lockstep { bios, steps, context, exact } = &cli.command {
+        let root = std::env::current_dir().unwrap_or_default();
+        let (ok, v) = if *exact {
+            lockstep::run(&root, bios, *steps, *context)
+        } else {
+            lockstep::run_trace(&root, bios, *steps, *context)
+        };
+        println!("{}", serde_json::to_string_pretty(&v).unwrap());
+        return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
+    }
     match run(cli.command) {
         Ok(v) => {
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
@@ -183,7 +208,7 @@ fn run(cmd: Command) -> R {
         Command::Extract { image, path, all, out } => extract(&image, path.as_deref(), all, &out),
         Command::Exe { source } => exe_cmd(&source),
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
-        Command::Run { .. } => unreachable!("handled in main"),
+        Command::Run { .. } | Command::Lockstep { .. } => unreachable!("handled in main"),
         Command::Symbols { source, sigs, min_concrete, out } => symbols_cmd(&source, &sigs, min_concrete, out),
         Command::Loads { run_dir, disc, limit, symbols } => {
             let scopes = load_symbols(&symbols)?;
