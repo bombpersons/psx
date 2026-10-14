@@ -17,6 +17,8 @@ pub const TIMERS: u32 = 0x1F80_1100;
 pub const GP0: u32 = 0x1F80_1810;
 /// System clock (Hz).
 pub const SYSCLK: u64 = 33_868_800;
+/// Device catch-up granularity in system clocks (see [`Bus::tick`]).
+pub const DEVICE_BATCH: u64 = 128;
 pub const GP1: u32 = 0x1F80_1814;
 
 /// A DMA transfer the bus started but whose device side is not modelled yet.
@@ -66,8 +68,12 @@ pub struct Bus {
     /// display/DMA bits software set so status reads are plausible.
     gpustat_dma_dir: u32,
     pub timers: crate::timers::Timers,
-    /// System clock cycles elapsed.
+    /// System clock cycles elapsed, as far as devices have been advanced.
     pub now: u64,
+    /// CPU cycles not yet handed to devices.
+    pending: u64,
+    irq_cache: bool,
+    irq_dirty: bool,
     next_vblank: u64,
     /// Completed video frames (vblanks).
     pub frames: u64,
@@ -78,6 +84,10 @@ pub struct Bus {
     pub sio0: crate::sio0::Sio0,
     pub mdec: crate::mdec::Mdec,
     pub spu: crate::spu::Spu,
+    /// Analysis hooks (write watches, CD transfers, BIOS calls).
+    pub obs: crate::observe::Observer,
+    /// PC of the instruction currently executing (set by the CPU each step).
+    pub cur_pc: u32,
     /// Reads of I/O registers no device handles yet: physical address -> count.
     pub unhandled_reads: std::collections::BTreeMap<u32, u64>,
 }
@@ -116,6 +126,9 @@ impl Bus {
             gpustat_dma_dir: 0,
             timers: Default::default(),
             now: 0,
+            pending: 0,
+            irq_cache: false,
+            irq_dirty: true,
             next_vblank: 0,
             frames: 0,
             irq_sources: true,
@@ -125,6 +138,19 @@ impl Bus {
             mdec: Default::default(),
             spu: Default::default(),
             unhandled_reads: Default::default(),
+            obs: Default::default(),
+            cur_pc: 0,
+        }
+    }
+
+    /// Record a DMA write of `bytes` at physical `start` if it touches a watch.
+    fn observe_dma(&mut self, ch: u32, start: u32, bytes: u32) {
+        if self.obs.active() && self.obs.overlaps(start, bytes) {
+            let (frame, cycle) = (self.frames, self.now);
+            self.obs.record(crate::observe::WriteHit {
+                frame, cycle, writer: crate::observe::Writer::Dma, address: 0x8000_0000 | (start & 0x1F_FFFF),
+                width: bytes, pc: None, value: None, old: None, dma_channel: Some(ch),
+            });
         }
     }
 
@@ -144,8 +170,32 @@ impl Bus {
         }
     }
 
-    /// Advance devices by `cycles` system clocks.
+    /// Account `cycles` of CPU time. Devices catch up in batches of
+    /// [`DEVICE_BATCH`] cycles and always before any I/O access, so software
+    /// never observes stale device state; interrupts can be up to one batch late.
+    #[inline]
     pub fn tick(&mut self, cycles: u64) {
+        self.pending += cycles;
+        if self.pending >= DEVICE_BATCH {
+            self.flush();
+        }
+    }
+
+    /// Bring every device up to the CPU's time.
+    #[inline]
+    pub fn flush(&mut self) {
+        if self.pending > 0 {
+            let c = std::mem::take(&mut self.pending);
+            self.run_devices(c);
+        }
+    }
+
+    /// System clock including CPU time not yet handed to devices.
+    pub fn cpu_now(&self) -> u64 {
+        self.now + self.pending
+    }
+
+    fn run_devices(&mut self, cycles: u64) {
         self.now += cycles;
         if self.next_vblank == 0 {
             self.next_vblank = self.frame_cycles();
@@ -281,6 +331,7 @@ impl Bus {
                 // Ordering-table clear: a backwards linked list ending in 0xFFFFFF.
                 let mut addr = madr & 0x1F_FFFC;
                 let words = if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF };
+                self.observe_dma(6, addr.wrapping_sub(4 * (words - 1)) & 0x1F_FFFC, words * 4);
                 for i in 0..words {
                     let v = if i == words - 1 { 0x00FF_FFFF } else { addr.wrapping_sub(4) & 0x1F_FFFF };
                     let o = addr as usize % RAM_SIZE;
@@ -308,6 +359,9 @@ impl Bus {
             }
             4 => {
                 let words = Self::dma_words(bcr, chcr);
+                if chcr & 1 == 0 {
+                    self.observe_dma(4, madr & 0x1F_FFFC, words * 4);
+                }
                 let mut addr = madr & 0x1F_FFFC;
                 let mut fired = false;
                 for _ in 0..words {
@@ -333,6 +387,16 @@ impl Bus {
                     (bcr & 0xFFFF) * (bcr >> 16).max(1)
                 };
                 self.cdrom.note_dma(words * 4);
+                if self.obs.cd.is_some() {
+                    let (lba, off, size) = self.cdrom.fifo_state();
+                    let t = crate::observe::CdTransfer {
+                        frame: self.frames, cycle: self.now, lba, fifo_offset: off,
+                        bytes: (words * 4).min(self.cdrom.fifo_remaining()), sector_size: size,
+                        ram: 0x8000_0000 | (madr & 0x1F_FFFC), pc: self.cur_pc,
+                    };
+                    self.obs.cd.as_mut().unwrap().push(t);
+                }
+                self.observe_dma(3, madr & 0x1F_FFFC, words * 4);
                 let mut addr = madr & 0x1F_FFFC;
                 for _ in 0..words {
                     let w = self.cdrom.dma_word();
@@ -361,6 +425,7 @@ impl Bus {
             return;
         }
         self.pending_mdec_out = None;
+        self.observe_dma(1, madr & 0x1F_FFFC, words * 4);
         let step: u32 = if chcr & 2 != 0 { 4u32.wrapping_neg() } else { 4 };
         let mut addr = madr & 0x1F_FFFC;
         for _ in 0..words {
@@ -411,6 +476,16 @@ impl Bus {
         self.io_word(I_STAT) & self.io_word(I_MASK) & 0x7FF != 0
     }
 
+    /// Cached [`Bus::irq_pending`], recomputed only after I_STAT/I_MASK change.
+    #[inline]
+    pub fn irq_line(&mut self) -> bool {
+        if self.irq_dirty {
+            self.irq_cache = self.irq_pending();
+            self.irq_dirty = false;
+        }
+        self.irq_cache
+    }
+
     pub fn take_irq_ack(&mut self) -> bool {
         std::mem::take(&mut self.irq_acknowledged)
     }
@@ -433,6 +508,22 @@ impl Bus {
 
     pub fn read(&mut self, addr: u32, width: Width) -> Result<u32, BusError> {
         let p = physical(addr);
+        // Fast paths: RAM and BIOS (the overwhelmingly common cases).
+        if p < 0x0080_0000 {
+            let o = p as usize % RAM_SIZE;
+            return Ok(match width {
+                Width::Word => u32::from_le_bytes([self.ram[o], self.ram[o + 1], self.ram[o + 2], self.ram[o + 3]]),
+                Width::Half => u16::from_le_bytes([self.ram[o], self.ram[o + 1]]) as u32,
+                Width::Byte => self.ram[o] as u32,
+            });
+        }
+        if width == Width::Word && (0x1FC0_0000..0x1FC8_0000).contains(&p) {
+            let o = (p - 0x1FC0_0000) as usize;
+            return Ok(u32::from_le_bytes([self.bios[o], self.bios[o + 1], self.bios[o + 2], self.bios[o + 3]]));
+        }
+        if (0x1F80_1000..0x1F80_3000).contains(&p) {
+            self.flush();
+        }
         let n = width as usize;
         let le = |b: &[u8], o: usize| -> u32 { b[o..o + n].iter().rev().fold(0u32, |acc, &x| (acc << 8) | x as u32) };
         Ok(match p {
@@ -501,6 +592,12 @@ impl Bus {
 
     pub fn write(&mut self, addr: u32, width: Width, value: u32) -> Result<(), BusError> {
         let p = physical(addr);
+        if (0x1F80_1000..0x1F80_3000).contains(&p) {
+            self.flush();
+            if (I_STAT..I_MASK + 4).contains(&p) {
+                self.irq_dirty = true;
+            }
+        }
         let n = width as usize;
         let put = |b: &mut [u8], o: usize| {
             for i in 0..n {
@@ -508,7 +605,18 @@ impl Bus {
             }
         };
         match p {
-            0x0000_0000..=0x007F_FFFF => put(&mut self.ram, p as usize % RAM_SIZE),
+            0x0000_0000..=0x007F_FFFF => {
+                let o = p as usize % RAM_SIZE;
+                if self.obs.active() && self.obs.overlaps(o as u32, n as u32) {
+                    let old = self.ram[o..o + n].iter().rev().fold(0u32, |acc, &x| (acc << 8) | x as u32);
+                    let (frame, cycle, pc) = (self.frames, self.cpu_now(), self.cur_pc);
+                    self.obs.record(crate::observe::WriteHit {
+                        frame, cycle, writer: crate::observe::Writer::Cpu, address: addr, width: n as u32,
+                        pc: Some(pc), value: Some(value & (u32::MAX >> (32 - 8 * n))), old: Some(old), dma_channel: None,
+                    });
+                }
+                put(&mut self.ram, o)
+            }
             0x1F00_0000..=0x1F7F_FFFF => {}
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => put(&mut self.scratch, (p - 0x1F80_0000) as usize),
             0x1F80_1000..=0x1F80_2FFF => {
@@ -567,6 +675,9 @@ impl Bus {
 
     /// Overwrite an I/O register's stored value (harness injection).
     pub fn poke_io(&mut self, phys: u32, width: Width, value: u32) {
+        if (I_STAT..I_MASK + 4).contains(&phys) {
+            self.irq_dirty = true;
+        }
         let o = (phys - 0x1F80_1000) as usize;
         for i in 0..width as usize {
             self.io[o + i] = (value >> (8 * i)) as u8;

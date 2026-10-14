@@ -22,6 +22,8 @@ pub struct RunArgs {
     pub trace_bios: bool,
     pub symbols: Vec<PathBuf>,
     pub max_events: u32,
+    /// "redux" or "native".
+    pub backend: String,
 }
 
 fn err(code: &str, message: impl std::fmt::Display) -> Value {
@@ -54,6 +56,11 @@ fn next_run_dir(root: &Path) -> PathBuf {
 }
 
 pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
+    match a.backend.as_str() {
+        "native" => return crate::run_native::run(root, a),
+        "redux" => {}
+        other => return (false, err("invalid_arguments", format!("unknown backend {other:?} (redux | native)"))),
+    }
     let mut backend = match Backend::from_project(root) {
         Ok(b) => b,
         Err(e) => return (false, err(e.code(), e)),

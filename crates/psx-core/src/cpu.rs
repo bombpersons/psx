@@ -55,6 +55,10 @@ pub struct Cpu {
     next_pc: u32,
     /// Pending delayed load `(register, value)`.
     load: (usize, u32),
+    /// The load that retires after the current instruction (taken at step start).
+    load_in: (usize, u32),
+    /// The current instruction's register write (MIPS writes at most one GPR).
+    wreg: (usize, u32),
     branch: bool,
     delay_slot: bool,
     pub cop0: [u32; 32],
@@ -89,6 +93,8 @@ impl Cpu {
             pc: 0xBFC0_0000,
             next_pc: 0xBFC0_0004,
             load: (0, 0),
+            load_in: (0, 0),
+            wreg: (0, 0),
             branch: false,
             delay_slot: false,
             cop0,
@@ -127,10 +133,8 @@ impl Cpu {
     }
 
     #[inline]
-    fn set_reg(&mut self, out: &mut [u32; 32], r: usize, v: u32) {
-        out[r] = v;
-        out[0] = 0;
-        let _ = self;
+    fn set_reg(&mut self, r: usize, v: u32) {
+        self.wreg = (r, v);
     }
 
     /// Complete an in-flight load immediately (when an exception pre-empts the
@@ -147,8 +151,10 @@ impl Cpu {
     }
 
     /// True when an interrupt would be taken before the next instruction.
+    #[inline]
     pub fn interrupt_pending(&self) -> bool {
         let sr = self.cop0[cop0::SR];
+        // Cause.IP is computed on demand (Cause reads and exceptions use cause_ip()).
         sr & 1 != 0 && (sr & self.cause_ip() & 0xFF00) != 0
     }
 
@@ -175,8 +181,8 @@ impl Cpu {
         // Timing model (PCSX-Redux's, not hardware-exact): 2 cycles per
         // instruction, 20 more while executing from BIOS ROM.
         let pc = self.pc;
+        bus.cur_pc = pc;
         self.cycles += if pc & 0x1FC0_0000 == 0x1FC0_0000 { 22 } else { 2 };
-        self.cop0[cop0::CAUSE] = self.cause_ip();
         self.delay_slot = self.branch;
         self.branch = false;
 
@@ -204,17 +210,18 @@ impl Cpu {
         self.pc = self.next_pc;
         self.next_pc = self.next_pc.wrapping_add(4);
 
-        let mut out = self.regs;
-        let (lr, lv) = self.load;
-        out[lr] = lv;
-        out[0] = 0;
-        self.load = (0, 0);
-
+        // Sources read the old register file; then the delayed load retires and
+        // the instruction's own write lands last (a later write beats the load).
+        self.load_in = std::mem::take(&mut self.load);
+        self.wreg = (0, 0);
         let mut info = StepInfo { pc, instruction, exception: None, io_load: None };
-        if let Err(e) = self.execute(bus, instruction, pc, &mut out, &mut info) {
+        if let Err(e) = self.execute(bus, instruction, pc, &mut info) {
             info.exception = Some(e as u8);
         }
-        self.regs = out;
+        let (lr, lv) = self.load_in;
+        self.regs[lr] = lv;
+        let (wr, wv) = self.wreg;
+        self.regs[wr] = wv;
         self.regs[0] = 0;
         info
     }
@@ -264,7 +271,7 @@ impl Cpu {
         Err(e)
     }
 
-    fn execute(&mut self, bus: &mut Bus, i: u32, pc: u32, out: &mut [u32; 32], info: &mut StepInfo) -> Result<(), Exception> {
+    fn execute(&mut self, bus: &mut Bus, i: u32, pc: u32, info: &mut StepInfo) -> Result<(), Exception> {
         let op = i >> 26;
         let rs = ((i >> 21) & 31) as usize;
         let rt = ((i >> 16) & 31) as usize;
@@ -276,22 +283,22 @@ impl Cpu {
         let t = self.regs[rt];
         match op {
             0x00 => match i & 0x3F {
-                0x00 => self.set_reg(out, rd, t << shamt),
-                0x02 => self.set_reg(out, rd, t >> shamt),
-                0x03 => self.set_reg(out, rd, ((t as i32) >> shamt) as u32),
-                0x04 => self.set_reg(out, rd, t << (s & 31)),
-                0x06 => self.set_reg(out, rd, t >> (s & 31)),
-                0x07 => self.set_reg(out, rd, ((t as i32) >> (s & 31)) as u32),
+                0x00 => self.set_reg(rd, t << shamt),
+                0x02 => self.set_reg(rd, t >> shamt),
+                0x03 => self.set_reg(rd, ((t as i32) >> shamt) as u32),
+                0x04 => self.set_reg(rd, t << (s & 31)),
+                0x06 => self.set_reg(rd, t >> (s & 31)),
+                0x07 => self.set_reg(rd, ((t as i32) >> (s & 31)) as u32),
                 0x08 => self.branch_to(s),
                 0x09 => {
-                    self.set_reg(out, rd, self.next_pc);
+                    self.set_reg(rd, self.next_pc);
                     self.branch_to(s);
                 }
                 0x0C => return self.fail(Exception::Syscall, pc),
                 0x0D => return self.fail(Exception::Break, pc),
-                0x10 => self.set_reg(out, rd, self.hi),
+                0x10 => self.set_reg(rd, self.hi),
                 0x11 => self.hi = s,
-                0x12 => self.set_reg(out, rd, self.lo),
+                0x12 => self.set_reg(rd, self.lo),
                 0x13 => self.lo = s,
                 0x18 => {
                     let p = (s as i32 as i64) * (t as i32 as i64);
@@ -326,21 +333,21 @@ impl Cpu {
                     }
                 }
                 0x20 => match (s as i32).checked_add(t as i32) {
-                    Some(v) => self.set_reg(out, rd, v as u32),
+                    Some(v) => self.set_reg(rd, v as u32),
                     None => return self.fail(Exception::Overflow, pc),
                 },
-                0x21 => self.set_reg(out, rd, s.wrapping_add(t)),
+                0x21 => self.set_reg(rd, s.wrapping_add(t)),
                 0x22 => match (s as i32).checked_sub(t as i32) {
-                    Some(v) => self.set_reg(out, rd, v as u32),
+                    Some(v) => self.set_reg(rd, v as u32),
                     None => return self.fail(Exception::Overflow, pc),
                 },
-                0x23 => self.set_reg(out, rd, s.wrapping_sub(t)),
-                0x24 => self.set_reg(out, rd, s & t),
-                0x25 => self.set_reg(out, rd, s | t),
-                0x26 => self.set_reg(out, rd, s ^ t),
-                0x27 => self.set_reg(out, rd, !(s | t)),
-                0x2A => self.set_reg(out, rd, ((s as i32) < (t as i32)) as u32),
-                0x2B => self.set_reg(out, rd, (s < t) as u32),
+                0x23 => self.set_reg(rd, s.wrapping_sub(t)),
+                0x24 => self.set_reg(rd, s & t),
+                0x25 => self.set_reg(rd, s | t),
+                0x26 => self.set_reg(rd, s ^ t),
+                0x27 => self.set_reg(rd, !(s | t)),
+                0x2A => self.set_reg(rd, ((s as i32) < (t as i32)) as u32),
+                0x2B => self.set_reg(rd, (s < t) as u32),
                 _ => return self.fail(Exception::ReservedInstruction, pc),
             },
             0x01 => {
@@ -349,7 +356,7 @@ impl Cpu {
                 let link = (i >> 17) & 0xF == 0x8;
                 let taken = ((s as i32) < 0) ^ ge;
                 if link {
-                    self.set_reg(out, 31, self.next_pc);
+                    self.set_reg(31, self.next_pc);
                 }
                 if taken {
                     self.rel_branch(imm);
@@ -357,7 +364,7 @@ impl Cpu {
             }
             0x02 => self.branch_to((self.pc & 0xF000_0000) | ((i & 0x03FF_FFFF) << 2)),
             0x03 => {
-                self.set_reg(out, 31, self.next_pc);
+                self.set_reg(31, self.next_pc);
                 self.branch_to((self.pc & 0xF000_0000) | ((i & 0x03FF_FFFF) << 2));
             }
             0x04 => {
@@ -381,19 +388,19 @@ impl Cpu {
                 }
             }
             0x08 => match (s as i32).checked_add(simm as i32) {
-                Some(v) => self.set_reg(out, rt, v as u32),
+                Some(v) => self.set_reg(rt, v as u32),
                 None => return self.fail(Exception::Overflow, pc),
             },
-            0x09 => self.set_reg(out, rt, s.wrapping_add(simm)),
-            0x0A => self.set_reg(out, rt, ((s as i32) < (simm as i32)) as u32),
-            0x0B => self.set_reg(out, rt, (s < simm) as u32),
-            0x0C => self.set_reg(out, rt, s & imm),
-            0x0D => self.set_reg(out, rt, s | imm),
-            0x0E => self.set_reg(out, rt, s ^ imm),
-            0x0F => self.set_reg(out, rt, imm << 16),
-            0x10 => self.cop0_op(i, pc, out)?,
+            0x09 => self.set_reg(rt, s.wrapping_add(simm)),
+            0x0A => self.set_reg(rt, ((s as i32) < (simm as i32)) as u32),
+            0x0B => self.set_reg(rt, (s < simm) as u32),
+            0x0C => self.set_reg(rt, s & imm),
+            0x0D => self.set_reg(rt, s | imm),
+            0x0E => self.set_reg(rt, s ^ imm),
+            0x0F => self.set_reg(rt, imm << 16),
+            0x10 => self.cop0_op(i, pc)?,
             0x11 | 0x13 => return self.fail(Exception::CoprocessorUnusable, pc),
-            0x12 => self.cop2_op(i, pc, out)?,
+            0x12 => self.cop2_op(i, pc)?,
             0x20 | 0x21 | 0x23 | 0x24 | 0x25 => {
                 let addr = s.wrapping_add(simm);
                 let w = match op {
@@ -413,7 +420,8 @@ impl Cpu {
                 // LWL/LWR merge with the in-flight value of rt (bypassing the load delay).
                 let addr = s.wrapping_add(simm);
                 let aligned = self.load_mem(bus, addr & !3, Width::Word, pc, info, rt)?;
-                let cur = out[rt];
+                // In-flight load to rt merges (LWL/LWR bypass the load delay).
+                let cur = if self.load_in.0 == rt { self.load_in.1 } else { self.regs[rt] };
                 let sh = (addr & 3) * 8;
                 let v = if op == 0x22 {
                     let keep = 0x00FF_FFFFu32.checked_shr(sh).unwrap_or(0);
@@ -461,7 +469,7 @@ impl Cpu {
         Ok(())
     }
 
-    fn cop0_op(&mut self, i: u32, pc: u32, out: &mut [u32; 32]) -> Result<(), Exception> {
+    fn cop0_op(&mut self, i: u32, pc: u32) -> Result<(), Exception> {
         let rt = ((i >> 16) & 31) as usize;
         let rd = ((i >> 11) & 31) as usize;
         match (i >> 21) & 31 {
@@ -483,11 +491,10 @@ impl Cpu {
             }
             _ => return self.fail(Exception::ReservedInstruction, pc),
         }
-        let _ = out;
         Ok(())
     }
 
-    fn cop2_op(&mut self, i: u32, pc: u32, out: &mut [u32; 32]) -> Result<(), Exception> {
+    fn cop2_op(&mut self, i: u32, pc: u32) -> Result<(), Exception> {
         if self.cop0[cop0::SR] & (1 << 30) == 0 {
             return self.fail(Exception::CoprocessorUnusable, pc);
         }
@@ -504,7 +511,6 @@ impl Cpu {
             0x06 => self.gte.write_ctrl(rd, self.regs[rt]),
             _ => return self.fail(Exception::ReservedInstruction, pc),
         }
-        let _ = out;
         Ok(())
     }
 

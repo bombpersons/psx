@@ -30,7 +30,8 @@ schemars = "1"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
+codegen-units = 1
 debug = 1
 
 # Captures hash and encode tens of MB per run; unoptimised builds dominate run time.

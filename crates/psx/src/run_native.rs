@@ -1,0 +1,205 @@
+//! `psx run --backend native`: the same bounded run as the Redux backend, on
+//! psx-core, with observations taken from the emulated hardware itself.
+
+use std::path::Path;
+use std::time::Instant;
+
+use psx_core::disasm::reg;
+use psx_core::Machine;
+use serde_json::{json, Value};
+
+use crate::run::{write_png, RunArgs};
+
+fn err(code: &str, message: impl std::fmt::Display) -> (bool, Value) {
+    (false, json!({"error": {"code": code, "message": message.to_string()}}))
+}
+
+#[derive(serde::Deserialize)]
+struct ReplayEvent {
+    frame: u64,
+    buttons: Vec<String>,
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    psx_redux::sha256_bytes(bytes)
+}
+
+pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
+    if a.from_state.is_some() || a.save_state {
+        return err("unsupported", "save states are not implemented on the native backend yet (use --backend redux)");
+    }
+    let bios = match std::fs::read(&a.bios) {
+        Ok(b) => b,
+        Err(e) => return err("io_error", format!("{}: {e}", a.bios.display())),
+    };
+    let bios_sha = sha256(&bios);
+    let mut m = Machine::new(bios);
+    let mut media_sha = Value::Null;
+    if let Some(p) = &a.media {
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        if ["exe", "ps-exe", "psx"].contains(&ext.as_str()) {
+            let bytes = match std::fs::read(p) {
+                Ok(b) => b,
+                Err(e) => return err("io_error", format!("{}: {e}", p.display())),
+            };
+            media_sha = json!(sha256(&bytes));
+            if let Err(e) = m.sideload_exe(&bytes, 500_000_000) {
+                return err("backend_failed", e);
+            }
+        } else {
+            match psx_media::Disc::open(p) {
+                Ok(d) => m.insert_disc(Some(d)),
+                Err(e) => return err(e.code(), e),
+            }
+        }
+    }
+    // Replay events: held buttons from each frame (frames counted from the run start).
+    let mut events: Vec<(u64, u16)> = Vec::new();
+    if let Some(p) = &a.replay {
+        let parsed: Result<Vec<ReplayEvent>, String> = std::fs::read_to_string(p)
+            .map_err(|e| e.to_string())
+            .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
+        match parsed {
+            Ok(ev) => {
+                for e in ev {
+                    let mut bits = 0u16;
+                    for b in &e.buttons {
+                        match psx_core::sio0::button_from_name(b) {
+                            Some(v) => bits |= v,
+                            None => return err("invalid_arguments", format!("unknown button {b}")),
+                        }
+                    }
+                    events.push((e.frame, bits));
+                }
+            }
+            Err(e) => return err("invalid_arguments", format!("replay {}: {e}", p.display())),
+        }
+    }
+    events.sort_by_key(|e| e.0);
+    for w in &a.watches {
+        let (addr, width) = w.split_once(':').unwrap_or((w, "4"));
+        let Ok(addr) = u32::from_str_radix(addr.trim_start_matches("0x").trim_start_matches("0X"), 16) else {
+            return err("invalid_arguments", format!("bad watch address {addr}"));
+        };
+        let width: u32 = width.parse().unwrap_or(4);
+        m.bus.obs.watch(addr, width);
+    }
+    if a.trace_cd {
+        m.bus.obs.cd = Some(Vec::new());
+    }
+    if a.trace_bios {
+        m.bus.obs.bios = Some(Vec::new());
+    }
+
+    let started = Instant::now();
+    // Frames count from power-on (like the Redux backend), including any BIOS
+    // boot spent before an EXE was side-loaded.
+    let start_frame = 0;
+    let target = start_frame + a.frames as u64;
+    let deadline = std::time::Duration::from_secs(a.timeout_s);
+    let mut next = 0;
+    let mut termination = "frames_reached";
+    let mut steps: u64 = 0;
+    while m.bus.frames < target {
+        let rel = m.bus.frames - start_frame;
+        while next < events.len() && events[next].0 <= rel {
+            m.bus.sio0.buttons = events[next].1;
+            next += 1;
+        }
+        m.step();
+        steps += 1;
+        if steps.is_multiple_of(1 << 20) && started.elapsed() > deadline {
+            termination = "timeout";
+            break;
+        }
+    }
+    let wall_ms = started.elapsed().as_millis();
+
+    let dir = a.out.clone().unwrap_or_else(|| {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        root.join(".psx/runs").join(format!("{stamp}-{}-native", std::process::id()))
+    });
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return err("io_error", format!("{}: {e}", dir.display()));
+    }
+    let mut files = serde_json::Map::new();
+    let mut put = |name: &str, bytes: &[u8]| {
+        let p = dir.join(name);
+        if std::fs::write(&p, bytes).is_ok() {
+            files.insert(name.into(), json!({"path": p, "sha256": sha256(bytes)}));
+        }
+    };
+    put("ram.bin", &m.bus.ram);
+    put("scratch.bin", &m.bus.scratch);
+    put("vram.bin", &m.bus.gpu.vram.to_bytes());
+    let jsonl = |items: Vec<Value>| items.iter().map(|v| v.to_string() + "\n").collect::<String>();
+    let hits: Vec<Value> = m.bus.obs.hits.iter().map(|h| serde_json::to_value(h).unwrap()).collect();
+    put("writes.jsonl", jsonl(hits.clone()).as_bytes());
+    let mut event_logs = serde_json::Map::new();
+    if let Some(cd) = &m.bus.obs.cd {
+        put("cd_native.jsonl", jsonl(cd.iter().map(|t| serde_json::to_value(t).unwrap()).collect()).as_bytes());
+        event_logs.insert("cd_native".into(), json!({"events": cd.len(), "recorded": cd.len()}));
+    }
+    if let Some(b) = &m.bus.obs.bios {
+        put("bios.jsonl", jsonl(b.iter().map(|t| serde_json::to_value(t).unwrap()).collect()).as_bytes());
+        event_logs.insert("bios".into(), json!({"events": b.len(), "recorded": b.len()}));
+    }
+    let (w, h, rgba) = m.bus.gpu.display_rgba();
+    let screen = dir.join("screen.png");
+    if write_png(&screen, w, h, &rgba, png::ColorType::Rgba).is_ok() {
+        files.insert("screen.png".into(), json!({"path": screen}));
+    }
+    let vram = dir.join("vram.png");
+    if write_png(&vram, 1024, 512, &m.bus.gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok() {
+        files.insert("vram.png".into(), json!({"path": vram}));
+    }
+
+    let scopes = crate::load_symbols(&a.symbols).unwrap_or_default();
+    let shown: Vec<Value> = hits
+        .iter()
+        .take(64)
+        .map(|v| {
+            let mut v = v.clone();
+            if let Some(pc) = v["pc"].as_u64() {
+                if let Some((name, check, exe)) = crate::name_pc(&scopes, pc as u32, Some(&m.bus.ram)) {
+                    v["function"] = json!({"name": name, "exe": exe, "check": check.as_str()});
+                }
+            }
+            v
+        })
+        .collect();
+    let mut registers = serde_json::Map::new();
+    registers.insert("pc".into(), json!(m.cpu.pc));
+    for i in 0..32 {
+        registers.insert(reg(i as u32).into(), json!(m.cpu.regs[i]));
+    }
+    registers.insert("hi".into(), json!(m.cpu.hi));
+    registers.insert("lo".into(), json!(m.cpu.lo));
+    registers.insert("cop0_sr".into(), json!(m.cpu.cop0[12]));
+    registers.insert("cop0_cause".into(), json!(m.cpu.cop0[13]));
+    registers.insert("cop0_epc".into(), json!(m.cpu.cop0[14]));
+    let complete = termination == "frames_reached";
+    (
+        complete,
+        json!({
+            "status": if complete { "complete" } else { "partial" },
+            "run_dir": dir,
+            "termination": termination,
+            "frames": {"requested": a.frames, "reached": m.bus.frames - start_frame, "unit": "vsync"},
+            "cpu_cycles": m.bus.now,
+            "instructions": steps,
+            "registers": registers,
+            "screen": {"width": w, "height": h, "bpp": 16},
+            "watch": {"hits": m.bus.obs.hit_count, "recorded": m.bus.obs.hits.len(), "shown": shown.len(), "first": shown},
+            "event_logs": event_logs,
+            "bios_call_counts": m.bus.obs.bios_counts,
+            "files": files,
+            "identity": {
+                "backend": "psx-core", "backend_version": env!("CARGO_PKG_VERSION"),
+                "timing_model": "flat per-instruction costs (Redux-like), not cycle-accurate",
+                "bios": a.bios, "bios_sha256": bios_sha, "media": a.media, "media_sha256": media_sha,
+            },
+            "wall_ms": wall_ms,
+        }),
+    )
+}

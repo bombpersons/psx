@@ -293,6 +293,7 @@ dependencies = [
  "psx-gpu",
  "psx-gte",
  "psx-media",
+ "serde",
 ]
 
 [[package]]
