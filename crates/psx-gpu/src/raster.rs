@@ -74,6 +74,7 @@ pub struct Shade {
 
 /// Shade and write one pixel. `rgb` is the 8-bit interpolated or flat colour.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub fn plot<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     surface: &mut S,
     tex: &T,
