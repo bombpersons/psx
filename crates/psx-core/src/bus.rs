@@ -387,14 +387,14 @@ impl Bus {
                     (bcr & 0xFFFF) * (bcr >> 16).max(1)
                 };
                 self.cdrom.note_dma(words * 4);
-                if self.obs.cd.is_some() {
-                    let (lba, off, size) = self.cdrom.fifo_state();
-                    let t = crate::observe::CdTransfer {
-                        frame: self.frames, cycle: self.now, lba, fifo_offset: off,
-                        bytes: (words * 4).min(self.cdrom.fifo_remaining()), sector_size: size,
-                        ram: 0x8000_0000 | (madr & 0x1F_FFFC), pc: self.cur_pc,
-                    };
-                    self.obs.cd.as_mut().unwrap().push(t);
+                let (lba, off, size) = self.cdrom.fifo_state();
+                let remaining = self.cdrom.fifo_remaining();
+                let (frame, cycle, pc) = (self.frames, self.now, self.cur_pc);
+                if let Some(log) = &mut self.obs.cd {
+                    log.push(crate::observe::CdTransfer {
+                        frame, cycle, lba, fifo_offset: off, bytes: (words * 4).min(remaining), sector_size: size,
+                        ram: 0x8000_0000 | (madr & 0x1F_FFFC), pc,
+                    });
                 }
                 self.observe_dma(3, madr & 0x1F_FFFC, words * 4);
                 let mut addr = madr & 0x1F_FFFC;
