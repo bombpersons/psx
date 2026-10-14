@@ -417,6 +417,12 @@ fn disc_summary(image: &Path, hash: bool) -> R {
         "tracks": disc.tracks,
         "track_summary": {"total": disc.tracks.len(), "data": disc.tracks.len() - audio, "audio": audio},
         "end_lba": disc.end_lba(),
+        // LibCrypt subchannel data: rips lack it; supply the redump .sbi/.lsd beside the image.
+        "subchannel": {
+            "source": disc.subq_source,
+            "overridden_sectors": disc.subq.len(),
+            "first_lbas": disc.subq.keys().take(4).collect::<Vec<_>>(),
+        },
     });
     let fs = match FileSystem::read(&disc) {
         Ok(fs) => fs,
