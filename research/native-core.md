@@ -249,7 +249,11 @@ Verification without listening, by comparing the emulator against the offline de
 - **Tomb Raider, CORELOGO.FMV** (from 21.16 s emulated): correlation 1.000 with gain 0.386 for the 10 s the movie reads. Nothing else plays.
 - **Save states:** a Tomb Raider split run at frame 1380, in the middle of the XA stream, matches the straight run byte for byte, including the final full state.
 
-Croc's earlier "constant drone" in the loader movies is not yet explained. The SPU voices underneath the XA may be it, which is worth a listen to confirm.
+**The drone and the lingering boot jingle** (heard in Croc's loader movies and under the Fox intro) were one SPU bug.
+Exponential envelope decreases computed `step × level / 0x8000`. Integer division rounds toward zero, so the step became 0 once the level dropped below 0x1000.
+Every voice released that way (all 24 of the BIOS boot jingle's) then held at level 4095, about 12% volume, forever.
+The hardware shifts instead (`>> 15`, rounding down). With that fix the jingle fades to silence by about 19 s, and the Fox intro's mix is the XA stream alone: correlation 1.0000, gain 0.500.
+The new `psx native` report field `spu.active_voices` showed the stuck voices: phase, level, volumes, start address and ADSR.
 
 ### Performance
 

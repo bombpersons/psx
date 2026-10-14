@@ -104,7 +104,42 @@ fn vol(v: u16) -> i32 {
     if v & 0x8000 == 0 { (((v << 1) as i16) as i32).clamp(-0x8000, 0x7FFF) } else { 0x7FFF }
 }
 
+/// One sounding voice, for reports.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct VoiceInfo {
+    pub voice: usize,
+    pub phase: String,
+    pub level: i32,
+    pub vol_l: u16,
+    pub vol_r: u16,
+    pub pitch: u16,
+    /// Start and current addresses in sound RAM (bytes).
+    pub start: u32,
+    pub addr: u32,
+    pub adsr: u32,
+}
+
 impl Spu {
+    /// Voices not in the Off phase.
+    pub fn active_voices(&self) -> Vec<VoiceInfo> {
+        self.voices
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.phase != Phase::Off)
+            .map(|(i, v)| VoiceInfo {
+                voice: i,
+                phase: format!("{:?}", v.phase).to_lowercase(),
+                level: v.level,
+                vol_l: v.vol_l,
+                vol_r: v.vol_r,
+                pitch: v.pitch,
+                start: (v.start as u32) << 3,
+                addr: v.addr,
+                adsr: (v.adsr_hi as u32) << 16 | v.adsr_lo as u32,
+            })
+            .collect()
+    }
+
     pub fn take_samples(&mut self) -> Vec<i16> {
         std::mem::take(&mut self.out)
     }
@@ -305,7 +340,10 @@ impl Spu {
             cycles *= 4;
         }
         if exp && !increase {
-            delta = delta * v.level / 0x8000;
+            // An arithmetic shift (rounding down), as the hardware does: dividing
+            // rounds toward zero, which stalls every exponential decrease once
+            // the level drops below 0x1000 (voices then hold at 4095 forever).
+            delta = (delta * v.level) >> 15;
         }
         v.env_wait = cycles - 1;
         v.level = (v.level + delta).clamp(0, 0x7FFF);
@@ -376,6 +414,16 @@ impl Spu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exponential_release_reaches_silence() {
+        // Release: exponential, rate 13 (Croc's boot voices hold at 4095 without the fix).
+        let mut v = Voice { phase: Phase::Release, level: 0x7FFF, adsr_hi: 0x20 | 13, ..Default::default() };
+        for _ in 0..44_100 * 4 {
+            Spu::envelope(&mut v);
+        }
+        assert_eq!((v.phase, v.level), (Phase::Off, 0));
+    }
 
     #[test]
     fn keyed_voice_plays_looped_square_wave() {
