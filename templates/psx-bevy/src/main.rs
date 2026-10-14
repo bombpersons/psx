@@ -68,7 +68,20 @@ fn main() {
     match scene {
         Some(path) => {
             app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-                commands.spawn((Camera2d, psx::PsxView));
+                // Background 2D (drawn before any 3D), lifted 3D geometry, then 2D on top (HUD).
+                commands.spawn((
+                    Camera2d,
+                    psx::PsxView,
+                    Camera { order: -1, ..default() },
+                    bevy::camera::visibility::RenderLayers::layer(psx::SCENE_BACKGROUND_LAYER),
+                ));
+                commands.spawn((
+                    Camera3d::default(),
+                    psx::PsxView,
+                    psx::PsxSceneCamera,
+                    Camera { order: 0, clear_color: ClearColorConfig::None, ..default() },
+                ));
+                commands.spawn((Camera2d, psx::PsxView, Camera { order: 1, clear_color: ClearColorConfig::None, ..default() }));
                 commands.spawn((psx::PsxSceneRoot(assets.load(path.clone())), Transform::default(), Visibility::default()));
             });
         }

@@ -159,6 +159,11 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             next += 1;
         }
         if let Some(at) = gpu_at {
+            // GTE projections from the frame before (packets are often built
+            // one frame ahead) through the captured frame.
+            if m.cpu.gte.projections.is_none() && gpu_cmds.is_none() && m.bus.frames + 1 >= at {
+                m.cpu.gte.projections = Some(Vec::new());
+            }
             if gpu_start.is_none() && m.bus.frames == at {
                 gpu_start = Some((m.bus.gpu.state, m.bus.gpu.vram.clone()));
                 m.bus.gpu.log = Some(Vec::new());
@@ -227,7 +232,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         gpu_cmds = m.bus.gpu.log.take(); // the run ended inside the captured frame
     }
     let gpu_report = match (&gpu_start, &gpu_cmds) {
-        (Some((state, before)), Some(cmds)) => match gpu_frame_outputs(state, before, cmds, &m, &dir, gpu_at.unwrap_or(0) - start_frame, &mut files) {
+        (Some((state, before)), Some(cmds)) => match gpu_frame_outputs(state, before, cmds, &mut m, &dir, gpu_at.unwrap_or(0) - start_frame, &mut files) {
             Ok(v) => v,
             Err(e) => return err("io_error", e),
         },
@@ -392,14 +397,67 @@ fn gpu_frame_outputs(
     start: &psx_gpu::DrawState,
     before: &psx_gpu::vram::Vram,
     cmds: &[Vec<u32>],
-    m: &Machine,
+    m: &mut Machine,
     dir: &Path,
     frame: u64,
     files: &mut serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
     use psx_gpu::capture::decode;
-    use std::collections::BTreeMap;
-    let decoded = decode(start, cmds);
+    use std::collections::{BTreeMap, HashMap};
+    let mut decoded = decode(start, cmds);
+    // Lift polygon vertices back to 3D: each vertex's screen position (minus the
+    // drawing offset) is matched to GTE SXY results. A polygon's vertices are
+    // projected together (typically one RTPT), so among all candidates the set
+    // closest together in the projection log is taken, and polygons whose
+    // vertices lie far apart in the log (coincidental matches) are not lifted.
+    const MAX_SPREAD: usize = 64;
+    let projections = m.cpu.gte.projections.take().unwrap_or_default();
+    let mut by_xy: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+    for (k, p) in projections.iter().enumerate() {
+        by_xy.entry((p.sx as i32, p.sy as i32)).or_default().push(k);
+    }
+    let (mut polys, mut lifted, mut rejected) = (0u64, 0u64, 0u64);
+    for c in decoded.iter_mut().filter(|c| c.kind == "poly3" || c.kind == "poly4") {
+        polys += 1;
+        let [ox, oy] = c.offset;
+        let cands: Vec<&Vec<usize>> = match c.vertices.iter().map(|v| by_xy.get(&(v.x - ox, v.y - oy))).collect::<Option<Vec<_>>>() {
+            Some(c) => c,
+            None => continue,
+        };
+        // Anchor on each candidate of vertex 0; take the nearest candidate of each other vertex.
+        let mut best: Option<(usize, Vec<usize>)> = None;
+        for &a in cands[0] {
+            let mut pick = vec![a];
+            for list in &cands[1..] {
+                let near = *list.iter().min_by_key(|&&k| k.abs_diff(a)).unwrap();
+                pick.push(near);
+            }
+            let spread = pick.iter().max().unwrap() - pick.iter().min().unwrap();
+            if best.as_ref().is_none_or(|(s, _)| spread < *s) {
+                best = Some((spread, pick));
+            }
+        }
+        match best {
+            Some((spread, pick)) if spread <= MAX_SPREAD => {
+                lifted += 1;
+                for (v, k) in c.vertices.iter_mut().zip(pick) {
+                    v.view = Some(projections[k].view);
+                }
+            }
+            _ => rejected += 1,
+        }
+    }
+    let ctrl = |i: usize| m.cpu.gte.read_ctrl(i);
+    let gte = json!({
+        "projections_logged": projections.len(),
+        "polygons": polys,
+        "polygons_lifted_to_3d": lifted,
+        "polygons_rejected_spread": rejected,
+        // Projection at the end of the frame: sx = ofx + H·x/z, sy = ofy + H·y/z.
+        "h": ctrl(26) as u16,
+        "ofx": ctrl(24) as i32 as f64 / 65536.0,
+        "ofy": ctrl(25) as i32 as f64 / 65536.0,
+    });
     let mut kinds: BTreeMap<&str, u64> = BTreeMap::new();
     let mut pages: BTreeMap<(i32, i32, u8), u64> = BTreeMap::new();
     let mut cluts: BTreeMap<(i32, i32), u64> = BTreeMap::new();
@@ -427,6 +485,7 @@ fn gpu_frame_outputs(
         "cluts": cluts.iter().map(|((x, y), n)| json!({"x": x, "y": y, "uses": n})).collect::<Vec<_>>(),
         "draw_state_at_start": {"offset": start.offset, "area": start.area, "texpage": start.texpage},
         "display": {"width": m.bus.gpu.display.width(), "height": m.bus.gpu.display.height(), "start": m.bus.gpu.display.start},
+        "gte": gte,
     });
     let doc = json!({"summary": summary, "commands": decoded});
     let p = dir.join("gpu_frame.json");

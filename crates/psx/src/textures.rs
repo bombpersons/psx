@@ -134,6 +134,8 @@ pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&
 /// The frame's 2D layout for the Bevy template (`psx::scene`), in draw order:
 /// - `sprite`: a textured rect or axis-aligned textured quad, i.e. an image
 ///   sub-rectangle at a screen rectangle (with flips), or an untextured fill;
+/// - `mesh3d`: a polygon whose vertices the capture lifted back to GTE view
+///   space (x right, y down, z forward), with UV and colour;
 /// - `mesh`: any other polygon as triangles of screen position, UV and colour
 ///   (quads split as the hardware draws them: 0-1-2, 1-2-3).
 ///
@@ -184,6 +186,15 @@ fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i
                 elements.push(json!({"kind": "sprite", "image": image, "rect": [x, y, w, h], "uv": textured.then_some([u, v, w, h]),
                     "flip_x": false, "flip_y": false, "color": colour(verts[0]), "semi": semi, "blend": blend, "command": c["index"]}));
             }
+            "poly3" | "poly4" if verts.iter().all(|v| v["view"].is_array()) => {
+                // Lifted to 3D by the capture (GTE view-space positions).
+                let tris: &[[usize; 3]] = if verts.len() == 4 { &[[0, 1, 2], [1, 2, 3]] } else { &[[0, 1, 2]] };
+                let vertices: Vec<Value> = verts.iter().map(|v| {
+                    let (u, t) = uv(v);
+                    json!({"x": v["view"][0], "y": v["view"][1], "z": v["view"][2], "u": u, "v": t, "color": colour(v)})
+                }).collect();
+                elements.push(json!({"kind": "mesh3d", "image": image, "vertices": vertices, "triangles": tris, "semi": semi, "blend": blend, "command": c["index"]}));
+            }
             "poly3" | "poly4" => {
                 let p: Vec<(i64, i64)> = verts.iter().map(|v| pos(v)).collect();
                 let q: Vec<(i64, i64)> = verts.iter().map(|v| uv(v)).collect();
@@ -216,9 +227,12 @@ fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i
         }
     }
     let d = &frame["summary"]["display"];
+    let g = &frame["summary"]["gte"];
     json!({
         "format": 1,
         "screen": [d["width"].as_i64().unwrap_or(320), d["height"].as_i64().unwrap_or(240)],
+        // GTE projection for mesh3d elements: sx = ofx + h·x/z, sy = ofy + h·y/z.
+        "projection": if g["h"].is_number() { json!({"h": g["h"], "ofx": g["ofx"], "ofy": g["ofy"]}) } else { Value::Null },
         "images": images,
         "elements": elements,
         "skipped_primitives": skipped,

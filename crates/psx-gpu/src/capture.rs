@@ -22,6 +22,10 @@ pub struct Vertex {
     pub uv: Option<[u8; 2]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<[u8; 3]>,
+    /// View-space position from the GTE transform that produced this screen
+    /// position, when a capture matched one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<[i32; 3]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -105,7 +109,7 @@ fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
             c.kind = "fill";
             let (x, y) = ((word(1) & 0x3F0) as i32, ((word(1) >> 16) & 0x1FF) as i32);
             c.area = Some([x, y, (((word(2) & 0x3FF) + 0xF) & !0xF) as i32, ((word(2) >> 16) & 0x1FF) as i32]);
-            c.vertices = vec![Vertex { x, y, uv: None, color: Some(rgb(p[0])) }];
+            c.vertices = vec![Vertex { x, y, uv: None, color: Some(rgb(p[0])), view: None }];
         }
         0x20..=0x3F => {
             c.gouraud = op & 0x10 != 0;
@@ -136,7 +140,7 @@ fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
                     }
                     i += 1;
                 }
-                c.vertices.push(Vertex { x, y, uv, color: Some(col) });
+                c.vertices.push(Vertex { x, y, uv, color: Some(col), view: None });
             }
             if let Some(pg) = page {
                 st.texpage = (st.texpage & !0x9FF) | (pg & 0x9FF);
@@ -164,7 +168,7 @@ fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
                 }
                 let Some(&w) = p.get(i) else { break };
                 let (x, y) = xy(w, st);
-                c.vertices.push(Vertex { x, y, uv: None, color: Some(col) });
+                c.vertices.push(Vertex { x, y, uv: None, color: Some(col), view: None });
                 i += 1;
             }
             if c.semi {
@@ -192,7 +196,7 @@ fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
                 _ => (16, 16),
             };
             c.area = Some([x, y, w, h]);
-            c.vertices = vec![Vertex { x, y, uv, color: Some(rgb(p[0])) }];
+            c.vertices = vec![Vertex { x, y, uv, color: Some(rgb(p[0])), view: None }];
             if c.textured || c.semi {
                 c.texpage = Some(TexturePage::from_bits(st.texpage));
             }

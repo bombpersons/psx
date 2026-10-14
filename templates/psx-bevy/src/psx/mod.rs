@@ -13,7 +13,7 @@ mod scene;
 
 pub use material::{PsxBlend, PsxMaterial};
 #[allow(unused_imports)] // public API for game code
-pub use scene::{PsxScene, PsxSceneElement, PsxSceneRoot, SceneElement};
+pub use scene::{PsxScene, PsxSceneCamera, PsxSceneElement, PsxSceneRoot, SCENE_BACKGROUND_LAYER, SceneElement};
 
 use bevy::{
     asset::embedded_asset,

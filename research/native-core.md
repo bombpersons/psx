@@ -380,6 +380,23 @@ Save-state format 6.
 
 The `psx native` report's `spu.reverb` shows the master/CD enables, the EON mask, the work area and the output volume.
 
+### 3D capture: lifting triangles back to view space
+
+During a `--gpu-frame` capture, the GTE logs every RTPS/RTPT vertex: its SXY result and its view-space position (`TR + RT·V`). Logging starts the frame before, because packets are often built a frame ahead.
+- **Matching:** each polygon vertex's screen position (minus the drawing offset) is matched to SXY results. Among the candidates, the set closest together in the log is taken. A polygon's vertices are projected together, so a spread over 64 entries is treated as a coincidental match and the polygon isn't lifted.
+- **Outputs:** lifted vertices carry `view` in `gpu_frame.json`, and the summary reports H/OFX/OFY and the match counts.
+- **Scene:** `psx textures` exports lifted polygons as `mesh3d` elements with the projection.
+
+Crash, N. Sanity Beach:
+- 9,534 projections logged; 1,860 of 1,939 polygons lifted; 5 rejected for spread.
+- Before the spread rule, 5,594 of 5,595 lifted vertices re-projected within 1 px of where the game drew them.
+- H = 288, and the screen centre comes from the GPU drawing offset (GTE OFX/OFY = 0).
+- The template rebuilds the frame as Mesh3d geometry, recognisably the same view.
+
+Known difference: the PS1 draws in painter's order without depth. Two backdrop polygons that Crash draws first (commands 15–16, z ≈ 900–1300) appear in front under Bevy's depth test.
+
+Template fix found on the way: `PsxMaterial`'s shader imported Bevy's `fog` binding unconditionally. That binding only exists for cameras with `DistanceFog`, so any fog-less 3D camera failed to compile the shader. Fog is now gated with `@if(DISTANCE_FOG)`.
+
 ### Performance
 
 The baseline was 1.2–1.3× real time, which is comparable to Redux's observed (interpreter + debugger) mode at 1.6×. Each step below was checked:

@@ -180,6 +180,18 @@ pub struct Gte {
     zsf3: i16,
     zsf4: i16,
     flag: u32,
+    /// When `Some`, every RTPS/RTPT vertex is recorded (analysis only, not saved).
+    #[serde(skip)]
+    pub projections: Option<Vec<Projection>>,
+}
+
+/// One perspective transform: the screen position written to SXY and the
+/// view-space position it came from (`TR + RT·V`, in model units).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Projection {
+    pub sx: i16,
+    pub sy: i16,
+    pub view: [i32; 3],
 }
 
 const fn lo(v: u32) -> i16 {
@@ -569,6 +581,10 @@ impl Gte {
         let sx = lim_g(&mut self.flag, sx >> 16, flag::SX2_SAT);
         let sy = lim_g(&mut self.flag, sy >> 16, flag::SY2_SAT);
         self.push_sxy(pack(sx, sy));
+        if let Some(log) = &mut self.projections {
+            let view = [raw[0] >> 12, raw[1] >> 12, raw[2] >> 12].map(|v| v.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+            log.push(Projection { sx, sy, view });
+        }
 
         if last {
             let d = self.dqb as i64 + self.dqa as i64 * q;
