@@ -40,6 +40,9 @@ Backend findings are in [research/backend-comparison.md](research/backend-compar
 provenance example (Croc's boot chain) is in [research/load-provenance.md](research/load-provenance.md).
 The first game case study, which traces Croc's player movement from RAM to its writers and then to the native Bevy demo
 [`examples/croc-movement`](examples/croc-movement/README.md), is in [research/case-study-croc.md](research/case-study-croc.md).
+A 2D capture-to-template study with a rebuilt mechanic (Mega Man 8's walk and jump, verified tick-exact
+against RAM) is in [research/case-study-megaman8.md](research/case-study-megaman8.md) and
+[examples/megaman8-movement](examples/megaman8-movement/README.md).
 `psx run` needs `external/pcsx-redux` built at the pinned commit (or `PSX_REDUX_BIN`).
 
 ## Native game template
