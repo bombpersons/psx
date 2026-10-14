@@ -41,13 +41,19 @@ const FLAG_BLEND_QUARTER: u32 = 128u;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var color_texture: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(2) var color_sampler: sampler;
 
+// Affine (screen-space linear) interpolation, like the PS1 rasteriser. Each
+// attribute A is sent as A·w with perspective-correct interpolation and divided
+// by the interpolated w in the fragment shader, which gives exactly the
+// screen-linear A. This avoids `@interpolate(linear)`, whose values some
+// drivers (e.g. Mesa llvmpipe) extrapolate wrongly on triangles that cross the
+// viewport edge.
 struct PsxVarying {
     @builtin(position) position: vec4<f32>,
-    // `linear` = screen-space (non perspective-correct) interpolation.
-    @location(0) @interpolate(linear) uv: vec2<f32>,
-    @location(1) @interpolate(linear) color: vec3<f32>,
+    @location(0) uv_w: vec2<f32>,
+    @location(1) color_w: vec3<f32>,
     // Distance from the camera, interpolated per vertex like the GTE's depth cue.
-    @location(2) @interpolate(linear) distance: f32,
+    @location(2) distance_w: f32,
+    @location(3) w: f32,
 };
 
 fn has(flag: u32) -> bool {
@@ -81,9 +87,11 @@ fn vertex(vertex_in: Vertex) -> PsxVarying {
 
     var out: PsxVarying;
     out.position = clip;
-    out.uv = vec2(0.0);
+    out.w = clip.w;
+    var uv = vec2(0.0);
     @if(VERTEX_UVS_A)
-    out.uv = v.uv;
+    uv = v.uv;
+    out.uv_w = uv * clip.w;
 
     var color = material.color.rgb;
     @if(VERTEX_COLORS)
@@ -99,17 +107,19 @@ fn vertex(vertex_in: Vertex) -> PsxVarying {
             light += material.light_colors[i].rgb * max(dot(n, material.light_dirs[i].xyz), 0.0);
         }
     }
-    out.color = color * light;
+    out.color_w = color * light * clip.w;
 
-    out.distance = length(world.xyz - view.world_position);
+    out.distance_w = length(world.xyz - view.world_position) * clip.w;
     return out;
 }
 
 @fragment
 fn fragment(in: PsxVarying) -> @location(0) vec4<f32> {
-    var rgb = in.color;
+    let uv = in.uv_w / in.w;
+    let distance = in.distance_w / in.w;
+    var rgb = in.color_w / in.w;
     if has(FLAG_TEXTURED) {
-        let texel = textureSample(color_texture, color_sampler, in.uv);
+        let texel = textureSample(color_texture, color_sampler, uv);
         if has(FLAG_CUTOUT) && texel.a < 0.5 {
             discard;
         }
@@ -121,11 +131,11 @@ fn fragment(in: PsxVarying) -> @location(0) vec4<f32> {
     if has(FLAG_FOG) {
         var f = 0.0;
         if fog.mode == 1u {
-            f = saturate((in.distance - fog.be.x) / max(fog.be.y - fog.be.x, 0.0001));
+            f = saturate((distance - fog.be.x) / max(fog.be.y - fog.be.x, 0.0001));
         } else if fog.mode == 2u {
-            f = 1.0 - exp(-fog.be.x * in.distance);
+            f = 1.0 - exp(-fog.be.x * distance);
         } else if fog.mode == 3u {
-            f = 1.0 - exp(-pow(fog.be.x * in.distance, 2.0));
+            f = 1.0 - exp(-pow(fog.be.x * distance, 2.0));
         }
         rgb = mix(rgb, linear_to_srgb(fog.base_color.rgb), f);
     }
