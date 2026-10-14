@@ -71,6 +71,17 @@ fn rel_msf(sectors: u32) -> [u8; 3] {
     [bcd(sectors / 4500), bcd((sectors / 75) % 60), bcd(sectors % 75)]
 }
 
+/// One entry of [`Cdrom::recent`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentCommand {
+    pub time: u64,
+    pub command: u8,
+    pub params: Vec<u8>,
+    /// INT types queued in reply.
+    pub ints: Vec<u8>,
+    pub repeats: u32,
+}
+
 pub struct Cdrom {
     index: u8,
     params: VecDeque<u8>,
@@ -109,9 +120,9 @@ pub struct Cdrom {
     pub dma_log: Vec<(u32, u32, u32)>,
     /// Commands as (time, command, params) when `log_dma` is set.
     pub cmd_log: Vec<(u64, u8, Vec<u8>)>,
-    /// The last 64 distinct commands: (time, command, params, INT types queued, repeats).
-    /// Consecutive identical commands (e.g. GetlocP polling) are counted, not stored.
-    pub recent: VecDeque<(u64, u8, Vec<u8>, Vec<u8>, u32)>,
+    /// The last 64 distinct commands. Consecutive identical commands (e.g.
+    /// GetlocP polling) are counted, not stored.
+    pub recent: VecDeque<RecentCommand>,
     /// Interrupt events as (time, what, detail) when `log_dma` is set.
     pub irq_log: Vec<(u64, &'static str, u32)>,
     pub log_dma: bool,
@@ -283,15 +294,15 @@ impl Cdrom {
         self.command_inner(cmd, now);
         let ints: Vec<u8> = self.queue.iter().skip(queued_before).map(|r| r.int).collect();
         if let Some(last) = self.recent.back_mut() {
-            if last.1 == cmd && last.2 == params && last.3 == ints {
-                last.4 += 1;
+            if last.command == cmd && last.params == params && last.ints == ints {
+                last.repeats += 1;
                 return;
             }
         }
         if self.recent.len() >= 64 {
             self.recent.pop_front();
         }
-        self.recent.push_back((now, cmd, params, ints, 1));
+        self.recent.push_back(RecentCommand { time: now, command: cmd, params, ints, repeats: 1 });
     }
 
     fn command_inner(&mut self, cmd: u8, now: u64) {
@@ -561,7 +572,7 @@ impl Cdrom {
             if mode == TrackMode::Audio && raw.len() == 2352 {
                 // Keep at most ~0.5 s buffered so a stalled consumer cannot grow it without bound.
                 if self.audio.len() < 22_050 {
-                    for f in raw.chunks_exact(4) {
+                    for f in raw.as_chunks::<4>().0 {
                         self.audio.push_back((i16::from_le_bytes([f[0], f[1]]), i16::from_le_bytes([f[2], f[3]])));
                     }
                 }
