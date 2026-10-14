@@ -11,6 +11,7 @@ pub mod cpu;
 pub mod disasm;
 pub mod mdec;
 pub mod sio0;
+pub mod spu;
 pub mod timers;
 
 pub use bus::{Bus, Width};

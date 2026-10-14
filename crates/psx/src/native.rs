@@ -24,6 +24,29 @@ pub struct Options<'a> {
     pub replay: Option<&'a Path>,
     /// Save the screen every N frames as <dump>.fNNNNN.png.
     pub snapshot_every: Option<u64>,
+    /// Capture the SPU mix to a 44.1 kHz stereo WAV.
+    pub wav: Option<&'a Path>,
+}
+
+fn write_wav(path: &Path, samples: &[i16]) -> std::io::Result<()> {
+    let data_len = (samples.len() * 2) as u32;
+    let mut b = Vec::with_capacity(44 + data_len as usize);
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&(36 + data_len).to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    b.extend_from_slice(&2u16.to_le_bytes()); // stereo
+    b.extend_from_slice(&44_100u32.to_le_bytes());
+    b.extend_from_slice(&(44_100u32 * 4).to_le_bytes());
+    b.extend_from_slice(&4u16.to_le_bytes());
+    b.extend_from_slice(&16u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        b.extend_from_slice(&s.to_le_bytes());
+    }
+    std::fs::write(path, b)
 }
 
 #[derive(serde::Deserialize)]
@@ -60,7 +83,7 @@ fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[(u64, 
 }
 
 pub fn run(o: Options) -> (bool, Value) {
-    let Options { bios: bios_path, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every } = o;
+    let Options { bios: bios_path, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every, wav } = o;
     let events: Vec<(u64, u16)> = match replay {
         None => Vec::new(),
         Some(p) => {
@@ -98,6 +121,7 @@ pub fn run(o: Options) -> (bool, Value) {
             Err(e) => return (false, json!({"error": {"code": e.code(), "message": e.to_string()}})),
         }
     }
+    m.bus.spu.capture = wav.is_some();
     let started = Instant::now();
     // Optional breakpoint with an instruction tail.
     let mut ring: std::collections::VecDeque<(u32, u32, Option<u8>)> = std::collections::VecDeque::with_capacity(tail + 1);
@@ -188,6 +212,15 @@ pub fn run(o: Options) -> (bool, Value) {
         let ok2 = crate::run::write_png(&vram, 1024, 512, &m.bus.gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok();
         dumped = json!({"screen": ok1.then_some(screen), "vram": ok2.then_some(vram)});
     }
+    let audio = match wav {
+        Some(p) => {
+            let samples = m.bus.spu.take_samples();
+            let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+            let ok = write_wav(p, &samples).is_ok();
+            json!({"wav": ok.then_some(p), "seconds": samples.len() as f64 / 88_200.0, "peak": peak, "voices_keyed": m.bus.spu.keyed_on})
+        }
+        None => Value::Null,
+    };
     let pc = m.cpu.pc;
     let reached = m.bus.frames >= frames;
     (
@@ -201,6 +234,7 @@ pub fn run(o: Options) -> (bool, Value) {
             "final_asm": disasm(m.bus.read(pc, Width::Word).unwrap_or(0), pc),
             "unhandled_io_reads_top": unhandled.iter().take(15).map(|(a, n)| json!({"addr": format!("0x{a:08X}"), "reads": n})).collect::<Vec<_>>(),
             "unmodelled_dma": m.bus.unmodelled_dma.len(),
+            "audio": audio,
             "cdrom": {"disc": disc, "sectors_delivered": m.bus.cdrom.sectors_delivered, "unknown_commands": m.bus.cdrom.unknown_commands},
             "last_frames_profile": {
                 "hot_pcs": hot.iter().take(12).map(|(pc, n)| json!({"pc": format!("0x{pc:08X}"), "count": n, "asm": disasm(m.bus.read(*pc, Width::Word).unwrap_or(0), *pc)})).collect::<Vec<_>>(),
