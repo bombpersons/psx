@@ -5,6 +5,7 @@ members = [
     "crates/psx-gpu",
     "crates/psx-gte",
     "crates/psx-media",
+    "crates/psx-redux",
 ]
 
 [workspace.package]
@@ -17,6 +18,7 @@ license = "MIT OR Apache-2.0"
 psx-gpu = { path = "crates/psx-gpu" }
 psx-gte = { path = "crates/psx-gte" }
 psx-media = { path = "crates/psx-media" }
+psx-redux = { path = "crates/psx-redux" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -26,3 +28,10 @@ schemars = "1"
 opt-level = 3
 lto = "thin"
 debug = 1
+
+# Captures hash and encode tens of MB per run; unoptimised builds dominate run time.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

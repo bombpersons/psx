@@ -8,6 +8,9 @@ description = "PlayStation reverse-engineering toolkit CLI"
 
 [dependencies]
 psx-media = { workspace = true }
+psx-gpu = { workspace = true }
+psx-redux = { workspace = true }
+png = "0.18"
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { version = "4", features = ["derive"] }

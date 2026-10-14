@@ -3,3 +3,8 @@ bios/
 .psx/
 target/
 external/
+tools/probes/*/*.o
+tools/probes/*/*.dep
+tools/probes/*/*.elf
+tools/probes/*/*.map
+tools/probes/*/*.ps-exe

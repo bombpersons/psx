@@ -207,6 +207,13 @@ brief `../MDX_AND_PS1_RESEARCH.md` stays one level up so its relative links work
 
 ## 7. Decisions (2026-10-14)
 
+0. **Native emulator (decided):** grow an in-house Rust core (`psx-core`) incrementally behind a
+   `Backend` trait, and keep PCSX-Redux as the working backend and differential oracle.
+   - Order: first finish the Redux path and its oracle harness. Then build the CPU, memory, DMA, timers and IRQs, then boot the BIOS, the probe EXE and Croc.
+   - Gates: lockstep register and RAM comparison on short windows, plus per-frame RAM, VRAM and pixel diffs against Redux. DuckStation screenshots serve as an independent check.
+   - The default backend switches per game only once the evidence matches. Every result records its backend identity.
+   - Biggest risk: CD-ROM controller timing.
+
 1. **BIOS:** supplied (see above). OpenBIOS is used only as a homebrew cross-check.
 2. **Backend:** Redux adapter first. An in-house Rust core is an optional later
    project if Redux observations prove insufficient, with Redux then becoming the oracle.
