@@ -3,12 +3,13 @@
 //! Modelled: index register; parameter, response and data FIFOs; interrupt
 //! enable/flag with acknowledge; queued responses delivered one at a time
 //! after the previous is acknowledged; the common command set; sector reads
-//! at single/double speed in 0x800/0x924-byte modes; XA audio sectors withheld
-//! from the data path when XA-ADPCM is enabled; DMA channel 3 reads.
+//! at single/double speed in 0x800/0x924-byte modes; DMA channel 3 reads;
+//! CD-DA playback and XA-ADPCM sectors (with Setfilter) decoded to the SPU's
+//! CD input through Mute/Demute and the CD volume matrix.
 //!
 //! Timings are approximations (documented per constant), not measured.
-//! Not modelled: CD-DA/XA audio output, subchannel Q beyond Getloc, the
-//! sound-map registers, seek-time physics.
+//! Not modelled: XA from RAM (sound map data out), XA emphasis and the
+//! hardware's zig-zag resampler, subchannel Q beyond Getloc, seek-time physics.
 
 use std::collections::VecDeque;
 
@@ -139,6 +140,17 @@ pub struct Cdrom {
     filter: (u8, u8),
     /// Sectors delivered as INT1 since power-on.
     pub sectors_delivered: u64,
+    /// XA-ADPCM decoder, and XA sectors decoded since power-on.
+    xa: crate::xa::XaDecoder,
+    pub xa_sectors: u64,
+    /// Mute/Demute commands: silence CD-DA and XA output.
+    muted: bool,
+    /// Sound map register bit 0: silence XA only.
+    xa_muted: bool,
+    /// CD-to-SPU volume matrix `[L->L, L->R, R->R, R->L]` (0x80 = 100%):
+    /// being written, and as applied (bit 5 of the apply register).
+    vol_pending: [u8; 4],
+    vol: [u8; 4],
     /// Commands the controller received that are not implemented.
     #[serde(skip)]
     pub unknown_commands: Vec<u8>,
@@ -189,6 +201,12 @@ impl Cdrom {
             data_pos: 0,
             filter: (0, 0),
             sectors_delivered: 0,
+            xa: Default::default(),
+            xa_sectors: 0,
+            muted: false,
+            xa_muted: false,
+            vol_pending: [0x80, 0, 0x80, 0],
+            vol: [0x80, 0, 0x80, 0],
             unknown_commands: Vec::new(),
         }
     }
@@ -255,7 +273,17 @@ impl Cdrom {
                     self.response.clear();
                 }
             }
-            _ => {} // sound map and volume registers
+            (2, 2) => self.vol_pending[0] = v,
+            (3, 2) => self.vol_pending[1] = v,
+            (1, 3) => self.vol_pending[2] = v,
+            (2, 3) => self.vol_pending[3] = v,
+            (3, 3) => {
+                self.xa_muted = v & 1 != 0;
+                if v & 0x20 != 0 {
+                    self.vol = self.vol_pending;
+                }
+            }
+            _ => {} // sound map data out / coding info (XA from RAM): not modelled
         }
     }
 
@@ -407,7 +435,10 @@ impl Cdrom {
                 self.respond(ack, 3, vec![self.status]);
                 self.respond(ack + SLOW_COMPLETE_DELAY, 2, vec![self.status]);
             }
-            0x0B | 0x0C => self.respond(ack, 3, vec![self.status]),
+            0x0B | 0x0C => {
+                self.muted = cmd == 0x0B;
+                self.respond(ack, 3, vec![self.status]);
+            }
             0x0D if p.len() >= 2 => {
                 self.filter = (p[0], p[1]);
                 self.respond(ack, 3, vec![self.status]);
@@ -553,8 +584,13 @@ impl Cdrom {
         // XA-ADPCM enabled: real-time audio sectors go to the SPU, not the data FIFO.
         let submode = raw[18];
         if self.mode & 0x40 != 0 && submode & 0x04 != 0 && raw[15] == 2 {
+            // Filter (mode bit 3): only the Setfilter file/channel is played.
+            let wanted = self.mode & 0x08 == 0 || (raw[16], raw[17]) == self.filter;
+            if wanted {
+                self.play_xa(&raw);
+            }
             if self.log_dma {
-                self.irq_log.push((now, "xa-skip", lba));
+                self.irq_log.push((now, if wanted { "xa" } else { "xa-filtered" }, lba));
             }
             return;
         }
@@ -590,11 +626,9 @@ impl Cdrom {
         if let Some(Ok((raw, mode))) = self.disc.as_ref().map(|d| d.read_raw(lba)) {
             if mode == TrackMode::Audio && raw.len() == 2352 {
                 // Keep at most ~0.5 s buffered so a stalled consumer cannot grow it without bound.
-                if self.audio.len() < 22_050 {
-                    for f in raw.as_chunks::<4>().0 {
-                        self.audio.push_back((i16::from_le_bytes([f[0], f[1]]), i16::from_le_bytes([f[2], f[3]])));
-                    }
-                }
+                let frames: Vec<(i16, i16)> =
+                    raw.as_chunks::<4>().0.iter().map(|f| (i16::from_le_bytes([f[0], f[1]]), i16::from_le_bytes([f[2], f[3]]))).collect();
+                self.push_audio(&frames, false);
             }
         }
         self.loc = lba;
@@ -609,6 +643,38 @@ impl Cdrom {
                 self.queue.retain(|r| r.int != 1);
                 self.respond(now, 1, vec![s, t, index, rel[0], rel[1], rel[2], 0, 0]);
             }
+        }
+    }
+}
+
+impl Cdrom {
+    /// Decode an XA-ADPCM sector to the SPU's CD input.
+    fn play_xa(&mut self, raw: &[u8]) {
+        let coding = crate::xa::Coding::from_byte(raw[19]);
+        let native = self.xa.decode(raw, coding);
+        let mut out = VecDeque::with_capacity(native.len() * 7 / 3 + 2);
+        self.xa.resample(&native, coding.rate, &mut out);
+        let out: Vec<(i16, i16)> = out.into();
+        self.xa_sectors += 1;
+        self.push_audio(&out, true);
+    }
+
+    /// Queue 44.1 kHz frames through mute and the volume matrix.
+    fn push_audio(&mut self, frames: &[(i16, i16)], xa: bool) {
+        // Keep at most ~1 s buffered so a stalled consumer cannot grow it without bound.
+        if self.audio.len() >= 44_100 {
+            return;
+        }
+        let silent = self.muted || (xa && self.xa_muted);
+        let [ll, lr, rr, rl] = self.vol.map(|v| v as i32);
+        for &(l, r) in frames {
+            let (l, r) = (l as i32, r as i32);
+            let out = if silent {
+                (0, 0)
+            } else {
+                (((l * ll + r * rl) >> 7).clamp(-0x8000, 0x7FFF) as i16, ((r * rr + l * lr) >> 7).clamp(-0x8000, 0x7FFF) as i16)
+            };
+            self.audio.push_back(out);
         }
     }
 }

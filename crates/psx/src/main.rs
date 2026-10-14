@@ -19,6 +19,7 @@ mod provenance;
 mod run;
 mod run_native;
 mod template;
+mod xa_cmd;
 
 #[derive(Parser)]
 #[command(name = "psx", version, about = "PlayStation reverse-engineering toolkit")]
@@ -51,6 +52,20 @@ enum Command {
     },
     /// Parse a PS-X EXE from a file, or from a disc with `image.cue::/PATH`.
     Exe { source: String },
+    /// List a file's XA-ADPCM audio channels (STR/XA streams), or decode one to a 44.1 kHz WAV.
+    Xa {
+        image: PathBuf,
+        /// ISO path of the stream, e.g. `/MUSIC.XA`.
+        path: String,
+        /// Channel to decode (needs -o).
+        #[arg(long)]
+        channel: Option<u8>,
+        /// Also require this subheader file number.
+        #[arg(long)]
+        file: Option<u8>,
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Describe sectors: form, XA subheader, owning file and a hex preview.
     Sector {
         image: PathBuf,
@@ -288,6 +303,7 @@ fn run(cmd: Command) -> R {
         }
         Command::Extract { image, path, all, out } => extract(&image, path.as_deref(), all, &out),
         Command::Exe { source } => exe_cmd(&source),
+        Command::Xa { image, path, file, channel, out } => xa_cmd::run(&image, &path, file, channel, out.as_deref()),
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
         Command::Run { .. } | Command::Lockstep { .. } | Command::Native { .. } => unreachable!("handled in main"),
         Command::Symbols { source, sigs, min_concrete, out } => symbols_cmd(&source, &sigs, min_concrete, out),
