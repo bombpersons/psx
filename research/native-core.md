@@ -306,6 +306,18 @@ Ape Escape (PAL, SCES-02029) requires a DualShock.
 - The game reads buttons every other frame. DOWN arrives as 4000h (PADLdown) in its button word at `0x800E5498`, and presses reset the title's idle timer.
 - **Open:** the title menu ("Spiel laden" / "Neues Spiel") ignores the D-pad and the left stick. PCSX-Redux with its analog pad and the same inputs behaves identically, so this is a gap in how the menu is driven, not a native-core divergence.
 
+### More discs (Castlevania SOTN, Mega Man 8, Crash Bandicoot; all PAL)
+
+With no emulator changes, all three boot on the native core (SCPH-7502) and reach gameplay with START/CROSS replays within 8000 frames. None issue unknown CD commands or unmodelled DMA.
+
+| Game | Reached | XA sectors | Speed |
+|---|---|---|---|
+| Castlevania: SOTN (SLES-00524) | Prologue: Richter on the castle stairs | 1733 (in-game music) | 1.42× |
+| Mega Man 8 (SLES-01064) | Intro stage, weapon menu | 401 (+ FMV) | 1.48× |
+| Crash Bandicoot (SCES-00344) | N. Sanity Beach | 0 | 1.20× |
+
+These games are heavier than Croc (3.0×), which makes them good profiling targets.
+
 ### Performance
 
 The baseline was 1.2–1.3× real time, which is comparable to Redux's observed (interpreter + debugger) mode at 1.6×. Each step below was checked:
