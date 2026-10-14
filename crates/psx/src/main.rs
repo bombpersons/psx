@@ -13,6 +13,7 @@ use psx_media::system_cnf::{SystemCnf, DEFAULT_BOOT};
 use psx_media::{memmap, Disc, MediaError, PsxExe};
 use serde_json::{json, Value};
 
+mod run;
 mod template;
 
 #[derive(Parser)]
@@ -61,6 +62,34 @@ enum Command {
         #[command(subcommand)]
         action: TemplateAction,
     },
+    /// Run a disc, EXE or state in a PCSX-Redux worker for N frames and capture
+    /// RAM, VRAM, screen, registers and optional write watches.
+    Run {
+        /// Disc image (.cue/.bin/.iso) or PS-X EXE; omit to boot the BIOS or continue a state.
+        media: Option<PathBuf>,
+        #[arg(long)]
+        bios: PathBuf,
+        #[arg(long, default_value_t = 60)]
+        frames: u32,
+        /// JSON array of {"frame": n, "buttons": ["CROSS", ...]}.
+        #[arg(long)]
+        replay: Option<PathBuf>,
+        /// Write watch `ADDR[:WIDTH]` in hex, repeatable.
+        #[arg(long = "watch")]
+        watches: Vec<String>,
+        #[arg(long)]
+        from_state: Option<PathBuf>,
+        #[arg(long)]
+        save_state: bool,
+        /// Output directory (default .psx/runs/<id>).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+        /// Use the dynarec without the debugger: faster, but no --watch.
+        #[arg(long)]
+        fast: bool,
+    },
     /// Classify a CPU address (segment, region, folded offset).
     Addr {
         /// Hex address, e.g. 0x80010000.
@@ -81,6 +110,15 @@ enum TemplateAction {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Command::Run { media, bios, frames, replay, watches, from_state, save_state, out, timeout, fast } = cli.command {
+        let root = std::env::current_dir().unwrap_or_default();
+        let (ok, v) = run::run(
+            &root,
+            run::RunArgs { media, bios, frames, replay, watches, from_state, save_state, out, timeout_s: timeout, fast },
+        );
+        println!("{}", serde_json::to_string_pretty(&v).unwrap());
+        return if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
+    }
     match run(cli.command) {
         Ok(v) => {
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
@@ -106,6 +144,7 @@ fn run(cmd: Command) -> R {
         Command::Extract { image, path, all, out } => extract(&image, path.as_deref(), all, &out),
         Command::Exe { source } => exe_cmd(&source),
         Command::Sector { image, lba, count, preview } => sectors(&image, lba, count, preview),
+        Command::Run { .. } => unreachable!("handled in main"),
         Command::Template { action: TemplateAction::Create { dest, name } } => template::create(&dest, name.as_deref()),
         Command::Addr { address } => {
             let a = u32::from_str_radix(address.trim_start_matches("0x").trim_start_matches("0X"), 16)
