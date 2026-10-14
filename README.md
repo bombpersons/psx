@@ -37,6 +37,8 @@ Other crates:
 
 Backend findings are in [research/backend-comparison.md](research/backend-comparison.md); a worked
 provenance example (Croc's boot chain) is in [research/load-provenance.md](research/load-provenance.md).
+The first game case study, which traces Croc's player movement from RAM to its writers and then to the native Bevy demo
+[`examples/croc-movement`](examples/croc-movement/README.md), is in [research/case-study-croc.md](research/case-study-croc.md).
 `psx run` needs `external/pcsx-redux` built at the pinned commit (or `PSX_REDUX_BIN`).
 
 ## Native game template
