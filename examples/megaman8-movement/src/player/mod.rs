@@ -7,14 +7,17 @@ use crate::stage::StagePos;
 use bevy::prelude::*;
 use movement::{Grounded, MovementPlugin, WalkGrace};
 
-#[derive(Component, Default)]
+#[derive(Component, Reflect, Default)]
+#[reflect(Component)]
 pub struct Player;
 
 /// Pixels per tick, y down (stage space).
-#[derive(Component, Default, Debug, Clone, Copy)]
+#[derive(Component, Reflect, Default, Debug, Clone, Copy)]
+#[reflect(Component)]
 pub struct Velocity(pub Vec2);
 
-#[derive(Component, Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[reflect(Component)]
 pub enum Facing {
     Left,
     #[default]
@@ -32,18 +35,25 @@ impl Facing {
 
 /// The movement state (the original's state byte at object +0x02:
 /// 0 stand, 1 step, 2 walk, 3 jump, 4 fall, 5 land).
-#[derive(Component, Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[reflect(Component)]
 pub enum PlayerState {
     #[default]
     Stand,
     /// The short "inching" step before a walk; 0 = just entered.
-    Step { ticks_left: u8 },
+    Step {
+        ticks_left: u8,
+    },
     Walk,
     /// Rising; `launched` is false on the tick the jump starts.
-    Jump { launched: bool },
+    Jump {
+        launched: bool,
+    },
     Fall,
     /// Landing pose; behaves like standing.
-    Land { ticks_left: u8 },
+    Land {
+        ticks_left: u8,
+    },
 }
 
 impl PlayerState {
