@@ -269,9 +269,9 @@ impl Cdrom {
                 if v & 0x40 != 0 {
                     self.params.clear();
                 }
-                if self.iflag == 0 {
-                    self.response.clear();
-                }
+                // The acknowledge leaves the response FIFO readable: Resident Evil's
+                // handler acks INT3 first and reads GetlocP's bytes afterwards. The next
+                // response replaces the FIFO when it is delivered (Redux `write3`/`read1`).
             }
             (2, 2) => self.vol_pending[0] = v,
             (3, 2) => self.vol_pending[1] = v,
@@ -700,5 +700,39 @@ fn region_of(d: &Disc) -> [u8; 4] {
         *b"SCEA"
     } else {
         *b"SCEI"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue `cmd` and run until its first interrupt is raised; returns the INT type.
+    fn first_response(c: &mut Cdrom, cmd: u8) -> (u8, u64) {
+        c.write(0, 1, 0);
+        c.write(2, 0x1F, 0); // enable all INTs
+        c.write(0, 0, 0);
+        c.write(1, cmd, 0);
+        let mut now = 0;
+        while !c.irq() {
+            now += 1000;
+            c.tick(now);
+        }
+        c.write(0, 1, now);
+        (c.read(3, now) & 7, now)
+    }
+
+    #[test]
+    fn acknowledge_keeps_the_response_readable() {
+        // Getstat on an empty drive: INT3 with the status byte.
+        let mut c = Cdrom::new(None);
+        let (int, now) = first_response(&mut c, 0x01);
+        assert_eq!(int, 3);
+        c.write(0, 1, now);
+        c.write(3, 0x07, now); // acknowledge before reading, as Resident Evil's handler does
+        assert!(!c.irq());
+        assert_ne!(c.read(0, now) & 0x20, 0, "RSLRRDY still set after the acknowledge");
+        assert_eq!(c.read(1, now), c.status);
+        assert_eq!(c.read(0, now) & 0x20, 0, "FIFO empty once read");
     }
 }

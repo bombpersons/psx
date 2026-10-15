@@ -629,7 +629,10 @@ impl Bus {
             }
             0x1F80_1000..=0x1F80_2FFF => {
                 let v = le(&self.io, (p - 0x1F80_1000) as usize);
-                let handled = (0x1F80_1C00..0x1F80_1E00).contains(&p) || (0x1F80_1800..0x1F80_1804).contains(&p) || (0x1F80_1070..0x1F80_1078).contains(&p) || (0x1F80_1080..0x1F80_1100).contains(&p);
+                // Memory control (1F801000-23h, RAM_SIZE 1F801060h) and SIO1's mode/control/baud
+                // (1F801058-5Fh) are plain read/write latches, so the stored value is the answer.
+                let latch = (0x1F80_1000..0x1F80_1024).contains(&p) || (0x1F80_1060..0x1F80_1064).contains(&p) || (0x1F80_1058..0x1F80_1060).contains(&p);
+                let handled = latch || (0x1F80_1C00..0x1F80_1E00).contains(&p) || (0x1F80_1800..0x1F80_1804).contains(&p) || (0x1F80_1070..0x1F80_1078).contains(&p) || (0x1F80_1080..0x1F80_1100).contains(&p);
                 if !handled {
                     *self.unhandled_reads.entry(p).or_default() += 1;
                 }
