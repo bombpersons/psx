@@ -148,9 +148,9 @@ pub fn tools() -> Vec<ToolDef> {
         def::<SectorArgs>("sector", "Describe raw disc sectors starting at `lba` (up to 256 with `count`): track, owning ISO9660 file, mode/form, XA subheader (file, channel, submode, coding) and a hex preview of the user data. Use for streamed data that the file system cannot read, or to check what a CD-ROM trace (`loads`) pointed at.").read_only(),
         def::<AddrArgs>("addr", "Classify a CPU address (hex, e.g. 0x80010000 or 1F801810): KUSEG/KSEG0/KSEG1/KSEG2 segment, physical address, region (main RAM with its mirrors folded, scratchpad, I/O, BIOS, expansion areas, cache control) and the offset into that region. Cheap; use it whenever an address from a trace or watch needs context.").read_only(),
         def::<XaArgs>("xa", "List the XA-ADPCM audio channels interleaved in a streamed file (STR movies, .XA music banks): per file/channel first LBA, sector count, duration, sample rate, bit depth and stereo flag. With `channel` and `out` it decodes that channel to a 44.1 kHz WAV (`file` also filters on the subheader file number)."),
-        def::<StrArgs>("str", "Decode a PlayStation FMV (STR/MDEC bitstream v1/v2/v3, incl. FF7-style prefixed frames) from a disc file into `out`: frame_NNNNN.png (cropped to the movie size), audio.wav (interleaved XA, same as `xa`), contact.png, frames.json and summary.json (dimensions, frame count, fps estimate, BS versions, XA channels). `source` is `image.cue::/PATH`. `frames` limits the PNGs (A..B, 1-based). Unsupported variants (polygon streams, iki, v0, encrypted) are refused with the variant named."),
-        def::<AssetsScanArgs>("assets_scan", "Find PlayStation asset formats by signature + validation inside disc files, game archives or RAM dumps: TIM textures (4/8/16/24-bit, CLUTs), TMD models (objects, primitive packets, UVs, CBA/TSB) and VAB/VH+VB/VAG sound banks. `source` is `image.cue::/PATH` (a file; `/DIR/` or `*` for many), a whole disc image, or a host file (a run's ram.bin resolves relocated TMDs at 0x80000000; `ram_base` overrides). Returns per-file hits with offsets, sizes and dimensions; set json=true (the MCP result is always JSON-wrapped).").read_only(),
-        def::<AssetsExtractArgs>("assets_extract", "Convert assets found by assets_scan into `out`: TIM → PNG per CLUT, TMD → glTF (+ texture-page PNGs from TIMs in the same file or `textures` sources, VRAM coverage reported), VAB/VAG → WAV per waveform plus a programs/tones JSON. Original bytes are written next to each conversion. `offset` (hex) limits it to one asset. Extracted files are for your local project assets (never commit originals); the psx-bevy template loads .tim and .tmd directly."),
+        def::<StrArgs>("str", "Decode a PlayStation FMV (STR/MDEC bitstream v1/v2/v3, incl. FF7-style prefixed frames) from a disc file into `out`: frame_NNNNN.png (cropped to the movie size), audio.wav (interleaved XA, same as `xa`), contact.png, frames.json and summary.json (dimensions, frame count, fps estimate, BS versions, XA channels). `source` is `image.cue::/PATH`. `frames` limits the PNGs (A..B, 1-based). Use frame_parser plus frame_parser_args for a custom per-frame wrapper returning a version-1 base64 BS payload. parser_timeout bounds each invocation. Other unsupported variants are refused with the variant named.").heavy(),
+        def::<AssetsScanArgs>("assets_scan", "Find PlayStation TIM/TMD/VAB/VAG assets by signature + validation in disc files or host files/RAM dumps. source accepts image.cue::/PATH, a directory ending in /, a whole disc image, or a host path. json=true returns structured hits (the MCP result is always JSON-wrapped). Automatically recognizes validated DOT-T sector archives and Croc sibling .DIR indexes. files[].archive lists every zero-based entry, including empty entries and archives without recognized assets. Hits retain parent-file offset plus entry index, format, archive_offset and relative offset. Scanning is bounded to each entry. archive=dot-t forces validation, archive=none disables indexing. ram_base overrides RAM address mapping; kinds filters tim/tmd/vab/vag. Use archive_parser for a version-1 JSON index, model_parser for JSON geometry, or asset_parser for a base64 standard payload; *_parser_args are literal argument arrays, parser_timeout bounds each invocation. Generate working starters with template_parser_create.").heavy(),
+        def::<AssetsExtractArgs>("assets_extract", "Convert assets found by assets_scan into out: TIM → PNG, TMD → glTF (+ texture-page PNGs from this file or textures sources), VAB/VAG → WAV and programs JSON; retain original bytes and entry provenance. offset (hex) selects an asset by parent-file offset. Alternatively, entry (zero-based integer) extracts one complete raw archive entry, including padding or an empty entry, without interpreting its payload; requires one source file and cannot combine with offset, kinds or textures. DOT-T and Croc .DIR indexes are automatic; archive=dot-t forces validated parsing and archive=none disables indexing. External archive_parser, model_parser and asset_parser hooks accept version-1 JSON; *_parser_args are literal arrays, parser_timeout bounds each invocation. Model and wrapper conversions retain original bytes, parser JSON and hashes. Generate starters with template_parser_create; see docs/external-parsers.md.").heavy(),
         def::<MemcardArgs>("memcard", "List the saves on a raw 128 KiB memory card image (.mcd/.mcr, e.g. one written by `run` with memcard1/memcard2): product code, blocks used, Shift-JIS title and icon frames, plus free blocks.").read_only(),
         def::<TexturesArgs>("textures", "Decode VRAM texture pages through their CLUTs into PNGs. Given a native run directory captured with `gpu_frame`, it decodes every texture page/CLUT pair that frame's primitives used (full page and cropped to the UV bounds actually sampled) and writes textures/scene.psxscene for the psx-bevy template. With `page` (X,Y,DEPTH in VRAM halfword units, 4/8/15 bpp) and `clut` (X,Y) it decodes one page by hand from any run's vram.bin. Frame mode decodes gpu_frame_vram.bin (VRAM at the end of the captured frame; games that stream sprite frames into VRAM every tick need it) when present, else vram.bin; `vram` overrides. Mirrored quads become flipped sprites with the PS1's texel offset."),
         def::<RunCmdArgs>("run", "Bounded emulation of a disc, PS-X EXE or BIOS boot for `frames` vsyncs, capturing ram.bin, scratch.bin, vram.bin, screen.png, vram.png, registers and optional state.bin into a run directory (default .psx/runs/<id>; returned as run_dir with every file path). Read files from there rather than expecting data inline.\n\nBackends: `redux` (default) is an isolated PCSX-Redux worker, the reference oracle; it needs external/pcsx-redux built. `native` is the in-tree psx-core: deterministic, gives exact observations (write watches with writer PC, `trace` instruction traces with coverage/calls, `gpu_frame` GPU command capture, memory cards, dualshock), and its state.bin is a native state.\n\nNative observation (backend native): `sample` [\"8015E8A8:fx16.16:x\", \"8015E89E:u8:state\"] writes samples.csv, one row per frame boundary (vblank; `sample_every` N thins it) with run_frame, frame and each value read byte-exact from RAM (formats u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F) — the direct way to get per-tick trajectories. `poke` [\"8015E926=1:1@0\", \"8015E8AC=300.5:fx16.16@5..\"] writes memory at the start of a run frame (or every frame of A..B / A..) to test a hypothesis; reported under `pokes`. `snapshot_every` N saves screens/fNNNNNN.png; `save_state_at` [F, ...] saves state_fNNNNNN.bin at those run frames (one boot, several states). `watch` [\"80012345:4\", ...] (hex ADDR[:WIDTH]) logs every store to writes.jsonl with pc/value/old (plus *_hex and *_signed); `watch_changes_only` drops stores that leave the value unchanged. `watch_reads` [\"8015E8A8:4\", \"80100000-80100400\"] logs CPU loads from those ranges to reads.jsonl and lists the top reader PCs under `read_watch` (who reads a variable; which bytes a script interpreter consumes).\n\nFrame numbering: `frames`, `replay` events, `poke`, `gpu_frame`, `trace_from_frame` and `run_frame` columns count from the run start (power-on, or the restored state with `from_state`); `frame` fields in writes.jsonl, trace.txt, samples.csv and other logs are absolute vblanks since power-on (frame = run_frame + frames.start).\n\nCaveats: BIOS boot takes ~3-5 s of frames before a disc's EXE runs. States only load on the backend that wrote them, with the same BIOS and media. `replay` is a JSON file of [{\"frame\": n, \"buttons\": [\"CROSS\", ...], \"sticks\": [lx, ly, rx, ry]}]; sticks need backend native + pad dualshock (Redux gets an analog pad with pad dualshock too). memcard1/memcard2 take a .mcd path or \"new\"; your card file is never modified, written cards go to the run directory. `trace` with trace_start/trace_range/trace_frames keeps trace.txt bounded (max_events). `gpu_frame` N captures run frame N's GPU commands (gpu_frame.json, gpu_frame_vram.bin = VRAM at the end of that frame, gpu_frame_screen.png) for `textures`. `gpu_next_draw: true` instead selects the first completed frame with GP0 polygons, lines, rectangles or fills, starting at `gpu_frame` (default 0); state-only commands and VRAM uploads/copies do not qualify. `gpu_search_frames` bounds the search (default 60, range 1..=600), within the existing `frames` budget. The run continues after selection. gpu_frame reports status, relative run_frame (also the legacy frame), absolute_frame, complete and search.frames_inspected; a miss reports status not_found and reason search_limit/run_end/timeout. Draw commands qualify even if they leave pixels unchanged. `fast` uses the Redux dynarec without observation. status \"partial\" with termination \"timeout\" means `timeout` (seconds, default 120) was hit. The full report is always written to <run_dir>/report.json; `brief` returns only a summary. Pass return_screen=true to get the final screen as an image.").heavy().screen(),
@@ -163,6 +163,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<RamSearchArgs>("ram_search", "Cheat-finder search over ordered RAM snapshots (`snapshots`: run directories or ram.bin, e.g. runs from the same state with LEFT, nothing, RIGHT held): keeps addresses whose values satisfy `pred` between consecutive snapshots (changed, unchanged, increased, decreased, delta=N, any; one for all pairs or one per pair), exact `values` per snapshot (\"441,*,376\"), and/or `between` LO..HI. `width` 1/2/4 (default 2), `signed` for signed comparison, `range` LO-HI hex. `save` writes the matches to a JSON file and `candidates` restricts a later search to them, so a search can be narrowed over several rounds. Matches show values per snapshot (and fx16.16 for width 4).").read_only(),
         def::<RamViewArgs>("ram_view", "Show a RAM window (`addr` hex, `len` bytes) from one or more snapshots side by side, decoded `as` u8/i8/x8/u16/i16/x16/u32/i32/x32/fxI.F (fx16.16, fx4.12), marking units that differ between snapshots. Use it to read a struct (an object's fields across runs). text=true gives a table in `text`.").read_only(),
         def::<LockstepArgs>("lockstep", "Emulator validation: run the native core and PCSX-Redux side by side from BIOS reset and stop at the first instruction where they disagree, with recent history. Default mode streams Redux's trace (fast, compares PC, instruction and source operands); `exact` single-steps over GDB comparing all registers (~20 steps/s, keep `steps` small). Needs external/pcsx-redux. Not needed for game RE.").heavy().default_timeout(),
+        def::<ParserTemplateArgs>("template_parser_create", "Create an executable Python 3 external parser starter, authored sample.bin and protocol documentation in dest (new or empty). kind is archive, model, asset or video. Use with assets_scan/assets_extract or str; no toolkit rebuild required."),
         def::<TemplateCreateArgs>("template_create", "Create a standalone Rust/Bevy game project with the PS1 look (vertex snapping, affine textures, dithering, low-res view, DualShock input, scene loading from `textures` output) in `dest` (new or empty directory). Pass an absolute path or one relative to the project root. `region` (ntsc/pal) and `fields_per_tick` set REGION and FIELDS_PER_TICK in src/lib.rs, i.e. the display and logic tick rate (Croc PAL: pal + 2 = 25 Hz; Mega Man 8 PAL: pal + 1 = 50 Hz); take them from the original's region and how many vblanks its main loop waits."),
         def::<GpuReplayArgs>("gpu_replay", "Replay a recorded GP0 command stream (u32 records `[n, words..]`, e.g. tools/probes/gpu/gp0_stream.bin) into a fresh software GPU and write the resulting VRAM to `out` (raw 1024x512 halfwords) and optionally `png`. Pair with vram_diff to compare against a VRAM dump from a run."),
         def::<VramDiffArgs>("vram_diff", "Compare two raw VRAM dumps (vram.bin from runs or gpu_replay) pixel by pixel: differing pixel count, per-cell counts, channel deltas, sample pixels, optional diff PNG (differing pixels red). `region` X,Y,W,H restricts the comparison (e.g. the display area)."),
@@ -224,7 +225,10 @@ fn prepare(tool: &ToolDef, args: Map<String, Value>, ctx: &Ctx) -> Result<(Value
     let known: Vec<&String> = schema["properties"].as_object().map(|p| p.keys().collect()).unwrap_or_default();
     if let Some(k) = args.keys().find(|k| !known.contains(k)) {
         let names: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-        return Err(error_value("invalid_arguments", format!("unknown argument {k:?} for {}; expected one of {}", tool.name, names.join(", "))));
+        return Err(error_value(
+            "invalid_arguments",
+            format!("unknown argument {k:?} for {}; expected one of {}", tool.name, names.join(", ")),
+        ));
     }
     if tool.default_timeout && args.get("timeout").is_none_or(Value::is_null) {
         args.insert("timeout".into(), json!(DEFAULT_TIMEOUT_S));
@@ -312,9 +316,8 @@ impl PsxServer {
         let mut defs = BTreeMap::new();
         for d in self::tools() {
             let schema = d.input_schema();
-            let tool = Tool::new(d.name, d.description, Arc::new(schema.as_object().unwrap().clone())).with_annotations(
-                ToolAnnotations::from_raw(None, Some(d.read_only), Some(false), None, Some(false)),
-            );
+            let tool = Tool::new(d.name, d.description, Arc::new(schema.as_object().unwrap().clone()))
+                .with_annotations(ToolAnnotations::from_raw(None, Some(d.read_only), Some(false), None, Some(false)));
             tools.push(tool);
             defs.insert(d.name, d);
         }
@@ -346,6 +349,8 @@ impl PsxServer {
         };
         let call = tool.call;
         let tool_name = tool.name;
+        let supervised = name.starts_with("ghidra_") ||
+            ["archive_parser", "model_parser", "asset_parser", "frame_parser"].iter().any(|key| args.get(*key).is_some_and(Value::is_string));
         let mut worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let out = match call(args, &ctx) {
@@ -360,7 +365,6 @@ impl PsxServer {
             });
             (spill(tool_name, out, &ctx), shot)
         });
-        let supervised = name.starts_with("ghidra_");
         // Also stop a supervised child if the request future itself is dropped.
         struct CancelOnDrop(tokio_util::sync::CancellationToken);
         impl Drop for CancelOnDrop {
@@ -408,7 +412,11 @@ impl ServerHandler for PsxServer {
         self.tools.iter().find(|t| t.name == name).cloned()
     }
 
-    async fn list_tools(&self, request: Option<PaginatedRequestParams>, _: RequestContext<RoleServer>) -> Result<ListToolsResult, McpError> {
+    async fn list_tools(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
         if request.is_some_and(|r| r.cursor.is_some()) {
             return Err(McpError::invalid_params("tool list is complete and has no pagination cursor", None));
         }
@@ -432,7 +440,11 @@ struct StdinPipe {
 }
 
 impl tokio::io::AsyncRead for StdinPipe {
-    fn poll_read(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buffer: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
         use std::task::Poll;
         let this = self.get_mut();
         if buffer.remaining() == 0 {

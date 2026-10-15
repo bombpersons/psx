@@ -107,6 +107,15 @@ fn tim_info(t: &Tim) -> Info {
     }
 }
 
+/// Shared model summary for the standard scanner and explicit format adapters.
+pub fn tmd_info(t: &Tmd) -> Info {
+    Info::Tmd {
+        objects: t.objects.len(), vertices: t.vertex_count(), polygons: t.polygon_count(),
+        textured: t.objects.iter().flat_map(|o| &o.polygons).filter(|p| p.textured()).count(),
+        skipped: t.objects.iter().map(|o| o.skipped).sum(), fixp: t.fixp,
+    }
+}
+
 /// Try every format at `offset`.
 pub fn probe(bytes: &[u8], offset: usize, opts: Options) -> Option<Hit> {
     let b = &bytes[offset..];
@@ -125,14 +134,12 @@ pub fn probe(bytes: &[u8], offset: usize, opts: Options) -> Option<Hit> {
             if polygons == 0 {
                 return None;
             }
-            let textured = t.objects.iter().flat_map(|o| &o.polygons).filter(|p| p.textured()).count();
-            let skipped = t.objects.iter().map(|o| o.skipped).sum();
+            let skipped: u32 = t.objects.iter().map(|o| o.skipped).sum();
             // Mostly-unparsed packets mean this is not really a TMD.
             if skipped as usize > polygons * 4 {
                 return None;
             }
-            let info = Info::Tmd { objects: t.objects.len(), vertices: t.vertex_count(), polygons, textured, skipped, fixp: t.fixp };
-            hit(Kind::Tmd, t.size, info)
+            hit(Kind::Tmd, t.size, tmd_info(&t))
         }
         b"pBAV" => {
             let v = Vab::parse(b).ok()?;

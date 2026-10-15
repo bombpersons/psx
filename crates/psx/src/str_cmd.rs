@@ -125,6 +125,8 @@ pub struct Args<'a> {
     pub channel: Option<u8>,
     pub no_audio: bool,
     pub y4m: bool,
+    pub frame_parser: Option<&'a crate::parser::Spec>,
+    pub cancel: Option<&'a tokio_util::sync::CancellationToken>,
 }
 
 /// Split `image.cue::/PATH` (or take a separate path argument).
@@ -195,7 +197,7 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
         *m.entry(BsHeader::parse(&f.data[bs_offset(&f.data)..]).map_or("too_short".into(), |h| h.variant())).or_default() += 1;
         m
     });
-    if !variants.keys().any(|v| matches!(v.as_str(), "v1" | "v2" | "v3")) {
+    if a.frame_parser.is_none() && !variants.keys().any(|v| matches!(v.as_str(), "v1" | "v2" | "v3")) {
         return Err(MediaError::Unsupported(format!(
             "{}: STR video sectors, but no BS v1/v2/v3 bitstreams (variants seen {variants:?}{}); polygon streams, iki, v0, EA and encrypted formats are not decoded",
             entry.path,
@@ -259,7 +261,32 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
             continue;
         }
         let mut rec = json!({"index": index, "str_frame": f.number, "lba": f.first_lba, "chunks": f.chunks, "missing_chunks": f.missing});
-        match decode_frame(&mut mdec, &f.data[bs_offset(&f.data)..], f.width, f.height) {
+        let normalized;
+        let data = if let Some(spec) = a.frame_parser {
+            let output = crate::parser::run(
+                spec,
+                &f.data,
+                "video",
+                &[
+                    ("PSX_SOURCE_FILE", format!("{}::{}", a.image.display(), a.path)),
+                    ("PSX_FRAME_INDEX", index.to_string()),
+                    ("PSX_STR_FRAME", f.number.to_string()),
+                    ("PSX_WIDTH", f.width.to_string()),
+                    ("PSX_HEIGHT", f.height.to_string()),
+                ],
+                a.cancel,
+            )?;
+            normalized = crate::parser::document::<crate::parser::PayloadDocument>(&output.bytes)?.decode()?;
+            let name = format!("frame_{index:05}.bs");
+            let path = a.out.join(&name);
+            std::fs::write(&path, &normalized).map_err(|e| MediaError::io(&path, e))?;
+            rec["parser"] = output.provenance;
+            rec["normalized_bs"] = json!(name);
+            normalized.as_slice()
+        } else {
+            &f.data[bs_offset(&f.data)..]
+        };
+        match decode_frame(&mut mdec, data, f.width, f.height) {
             Ok((h, rgb, end)) => {
                 quants = (quants.0.min(h.quant), quants.1.max(h.quant));
                 if !end {

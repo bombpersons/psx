@@ -26,8 +26,10 @@ integer behaviour only where the game's feel depends on it, and cite the evidenc
 | `psx textures <run_dir> [--page X,Y,DEPTH --clut X,Y] [--vram FILE]` | Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT pair a `--gpu-frame` capture used, full and cropped to the UVs sampled, or one page by hand. A capture is decoded from `gpu_frame_vram.bin`, the VRAM at the end of the captured frame (games that stream sprite frames into VRAM every tick need this), falling back to the run's final `vram.bin` |
 | Frame → Bevy | `psx textures` also writes `textures/scene.psxscene`; the template's `PsxSceneRoot` (and `cargo run -- --scene ...`) spawns it as sprites and meshes. Mirrored quads become flipped sprites with their texture rect moved one texel, as the PS1 samples them |
 | `psx gpu-replay <stream.bin> -o vram.bin` / `psx vram-diff a.bin b.bin` | Replay a GP0 stream into `psx-gpu`; diff two VRAM dumps per pixel (per-cell counts, channel deltas, diff PNG). `tools/probes/gpu/compare.sh` diffs `psx-gpu` against Redux on the GPU probe EXE |
-| `psx assets scan <image.cue>[::/PATH] \| <file> [--json]` | Find TIM, TMD, VAB (VH+VB, or a `.VH` with its `.VB`) and VAG data in disc files, game archives and RAM dumps (`ram.bin`: relocated TMDs resolve at 0x80000000) by signature + full validation. A bare disc image scans every file; `::/DIR/` a directory. Hits inside an archive with a Croc-style `.DIR` index name their entry |
+| `psx assets scan <image.cue>[::/PATH] \| <file> [--json]` | Find standard TIM/TMD/VAB/VAG assets by signature + full validation. A bare disc scans every file; `::/DIR/` selects a directory; `ram.bin` maps relocated TMDs at 0x80000000. DOT-T and Croc `.DIR` archives expose all entries, including empty entries and archives without known assets; hits carry entry indices, names where available and byte provenance. See [archive support](research/archive-support.md) |
 | `psx assets extract <source> -o DIR [--kind K] [--offset HEX] [--textures SRC]` | TIM → PNG per CLUT, TMD → glTF (texture pages decoded from the TIMs in the same file or `--textures` sources, through a virtual VRAM), VAB/VAG → WAV per waveform (+ programs/tones JSON); the original bytes are written next to each. See [research/assets.md](research/assets.md) |
+| `psx assets extract <source> --entry N -o DIR` | Extract one zero-based archive entry as raw bytes, including sector padding or an empty entry. Requires one source file; excludes `--kind`, `--offset` and `--textures`. Both asset commands accept `--archive dot-t` for explicit validation or `--archive none` for a flat scan |
+| `psx template parser DIR --kind archive\|model\|asset\|video` | Generate an executable Python parser, authored sample and protocol docs. Use `--archive-parser`, `--model-parser`, `--asset-parser` on asset commands or `--frame-parser` on `str`. Any language can implement the same stdin-bytes/stdout-JSON contract; see [external parsers](docs/external-parsers.md) |
 | `psx memcard <image.mcd>` | List the saves on a memory card image: product code, blocks, title, icon frames |
 | LibCrypt discs | Put the redump `.sbi`/`.lsd` beside the `.cue`; `psx disc` reports it and the native core's GetlocP honours it |
 | `psx sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |
@@ -119,6 +121,27 @@ Other crates:
 - **`psx-gte`:** a register-accurate GTE (COP2) with typed helpers and libgte-style math.
 - **`psx-assets`:** TIM/TMD/VAB/VAG parsing, SPU-ADPCM (shared with the native core's SPU),
   the signature scanner and TMD → glTF. `tim.rs`/`tmd.rs` are copied verbatim into the template.
+
+Archive reader planning and documented format frequencies are in
+[research/archive-survey.md](research/archive-survey.md), with a source-linked
+game catalogue and local validation candidates. Implemented archive support is
+documented in [research/archive-support.md](research/archive-support.md): DOT-T and
+Croc indexes, bounded asset scanning, full entry listings even without asset hits,
+and `assets extract SOURCE --entry N -o DIR` for a complete raw entry. Both asset
+commands accept `--archive dot-t` to force validated parsing or `--archive none`
+to disable indexing. Other families in the survey describe prospective coverage.
+
+Prefer explicit external parsers for game-specific formats. Both asset commands
+accept `--archive-parser EXEC` for an index of unchanged source spans,
+`--model-parser EXEC` for validated JSON geometry, or `--asset-parser EXEC` for
+one standard TIM/TMD/VAB/VAG payload after unpacking a wrapper. `str` accepts
+`--frame-parser EXEC` for a normalized BS frame. Repeated `--*-parser-arg=VALUE`
+passes literal arguments; `--parser-timeout` defaults to 30 seconds per call.
+Original bytes, offsets, parser output and hashes remain inspectable. Generate
+starters with `psx template parser DIR --kind KIND` (MCP `template_parser_create`).
+The [protocol reference](docs/external-parsers.md) defines limits and geometry,
+and includes a worked external King's Field RTMD decoder. Core support should
+grow for proven reuse or shared operations, rather than adding every game format.
 
 Backend findings are in [research/backend-comparison.md](research/backend-comparison.md); a worked
 provenance example (Croc's boot chain) is in [research/load-provenance.md](research/load-provenance.md).

@@ -22,6 +22,8 @@ mod ghidra;
 mod lockstep;
 mod mcp;
 mod native;
+mod parser;
+mod parser_template;
 mod provenance;
 mod ram;
 mod replay;
@@ -78,7 +80,7 @@ enum Command {
     Textures(commands::TexturesArgs),
     /// Describe sectors: form, XA subheader, owning file and a hex preview.
     Sector(commands::SectorArgs),
-    /// Create a standalone native Bevy game project with the PS1 look.
+    /// Create a native Bevy game starter or an external parser starter.
     Template {
         #[command(subcommand)]
         action: TemplateAction,
@@ -125,6 +127,8 @@ enum Command {
 enum TemplateAction {
     /// Write the psx-bevy starter into an empty or new directory.
     Create(commands::TemplateCreateArgs),
+    /// Write a working external parser, authored fixture and protocol docs.
+    Parser(commands::ParserTemplateArgs),
 }
 
 #[derive(Subcommand)]
@@ -168,6 +172,7 @@ fn main() -> ExitCode {
         Command::Textures(a) => a.exec(&ctx),
         Command::Sector(a) => a.exec(&ctx),
         Command::Template { action: TemplateAction::Create(a) } => a.exec(&ctx),
+        Command::Template { action: TemplateAction::Parser(a) } => a.exec(&ctx),
         Command::Run(a) => a.exec(&ctx),
         Command::Loads(a) => a.exec(&ctx),
         Command::Symbols(a) => a.exec(&ctx),

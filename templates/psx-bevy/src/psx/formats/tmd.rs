@@ -115,9 +115,13 @@ fn svectors(b: &[u8], at: usize, n: usize, what: &str) -> Result<Vec<[i16; 3]>, 
         .collect())
 }
 
-/// Decode one polygon packet (the words after the header). `None` when the
-/// layout implied by mode/flag does not match `ilen`.
-fn polygon(mode: u8, flag: u8, words: &[u32]) -> Option<TmdPolygon> {
+/// Byte range containing just vertex/normal u16 references within a polygon's
+/// payload (after its four-byte header), excluding any final padding halfword.
+/// This layout is shared by decoding and explicit preprocessed-TMD adapters.
+pub fn polygon_reference_range(mode: u8, flag: u8, ilen: usize) -> Option<std::ops::Range<usize>> {
+    if mode >> 5 != 1 {
+        return None;
+    }
     let n: usize = if mode & MODE_QUAD != 0 { 4 } else { 3 };
     let textured = mode & MODE_TME != 0;
     let lit = flag & FLAG_LGT == 0;
@@ -135,9 +139,23 @@ fn polygon(mode: u8, flag: u8, words: &[u32]) -> Option<TmdPolygon> {
         (true, false) => 1 + n,
         (false, _) => n,
     };
-    if n_uv + n_colors + n_index.div_ceil(2) != words.len() {
+    if n_uv + n_colors + n_index.div_ceil(2) != ilen {
         return None;
     }
+    let start = (n_uv + n_colors) * 4;
+    Some(start..start + n_index * 2)
+}
+
+/// Decode one polygon packet (the words after the header). `None` when the
+/// layout implied by mode/flag does not match `ilen`.
+fn polygon(mode: u8, flag: u8, words: &[u32]) -> Option<TmdPolygon> {
+    let references = polygon_reference_range(mode, flag, words.len())?;
+    let n: usize = if mode & MODE_QUAD != 0 { 4 } else { 3 };
+    let textured = mode & MODE_TME != 0;
+    let lit = flag & FLAG_LGT == 0;
+    let gouraud = mode & MODE_IIP != 0;
+    let n_uv = if textured { n } else { 0 };
+    let n_colors = references.start / 4 - n_uv;
     let mut p = TmdPolygon { mode, flag, ..Default::default() };
     for (i, &w) in words[..n_uv].iter().enumerate() {
         p.uvs.push([w as u8, (w >> 8) as u8]);
