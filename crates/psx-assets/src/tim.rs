@@ -363,12 +363,14 @@ impl Vram {
                 let (c, ok) = match page.bits {
                     4 => {
                         let (hw, ok) = self.at(px + u / 4, py + v);
-                        let (c, ok2) = self.at(clut.0 as usize + ((hw >> ((u % 4) * 4)) & 0xF) as usize, clut.1 as usize);
+                        let (c, ok2) =
+                            self.at(clut.0 as usize + ((hw >> ((u % 4) * 4)) & 0xF) as usize, clut.1 as usize);
                         (c, ok && ok2)
                     }
                     8 => {
                         let (hw, ok) = self.at(px + u / 2, py + v);
-                        let (c, ok2) = self.at(clut.0 as usize + ((hw >> ((u % 2) * 8)) & 0xFF) as usize, clut.1 as usize);
+                        let (c, ok2) =
+                            self.at(clut.0 as usize + ((hw >> ((u % 2) * 8)) & 0xFF) as usize, clut.1 as usize);
                         (c, ok && ok2)
                     }
                     _ => self.at(px + u, py + v),
@@ -418,7 +420,12 @@ mod tests {
         clut[16 + 1] = GREEN;
         // 8x1 pixels = 2 halfwords: indices 0,1,2,3 | 1,1,1,1
         let pixels = [0x3210, 0x1111];
-        let b = build(8, Some((VramRect { x: 0, y: 480, w: 16, h: 2 }, &clut)), VramRect { x: 640, y: 0, w: 2, h: 1 }, &pixels);
+        let b = build(
+            8,
+            Some((VramRect { x: 0, y: 480, w: 16, h: 2 }, &clut)),
+            VramRect { x: 640, y: 0, w: 2, h: 1 },
+            &pixels,
+        );
         let t = Tim::parse(&b).unwrap();
         assert_eq!((t.width(), t.height(), t.palette_count(), t.size), (8, 1, 2, b.len()));
         let p0 = t.to_rgba(0, TimAlpha::Cutout);
@@ -436,7 +443,12 @@ mod tests {
     fn eight_bit_and_black_stp_is_opaque() {
         let mut clut = vec![0u16; 256];
         clut[200] = 0x8000; // opaque black
-        let b = build(9, Some((VramRect { x: 0, y: 500, w: 256, h: 1 }, &clut)), VramRect { x: 0, y: 0, w: 1, h: 1 }, &[0x00C8]);
+        let b = build(
+            9,
+            Some((VramRect { x: 0, y: 500, w: 256, h: 1 }, &clut)),
+            VramRect { x: 0, y: 0, w: 1, h: 1 },
+            &[0x00C8],
+        );
         let t = Tim::parse(&b).unwrap();
         assert_eq!((t.width(), t.palette_count()), (2, 1));
         assert_eq!(t.to_rgba(0, TimAlpha::Cutout), vec![0, 0, 0, 255, 0, 0, 0, 0]);
@@ -481,7 +493,12 @@ mod tests {
     fn vram_pages_decode_through_cluts() {
         let mut clut = vec![0u16; 16];
         clut[5] = RED;
-        let b = build(8, Some((VramRect { x: 32, y: 500, w: 16, h: 1 }, &clut)), VramRect { x: 128, y: 256, w: 1, h: 1 }, &[0x0055]);
+        let b = build(
+            8,
+            Some((VramRect { x: 32, y: 500, w: 16, h: 1 }, &clut)),
+            VramRect { x: 128, y: 256, w: 1, h: 1 },
+            &[0x0055],
+        );
         let mut vram = Vram::default();
         vram.load_tim(&Tim::parse(&b).unwrap());
         // TSB: page 2 (x=128), y=256 (bit 4), 4-bit. CBA: x=32/16=2, y=500.
