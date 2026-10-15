@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 /// (`--root`/`PSX_ROOT` change into it before any command runs).
 pub struct Ctx {
     pub root: PathBuf,
-    /// Cooperative cancellation for supervised workers (currently Ghidra).
+    /// Cooperative cancellation for supervised workers.
     pub cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
@@ -169,7 +169,9 @@ impl Op for LsArgs {
         Outcome::media((|| {
             let disc = Disc::open(&self.image)?;
             let fs = FileSystem::read(&disc)?;
-            Ok(json!({"volume": fs.volume, "entries": fs.entries.iter().map(crate::entry_json).collect::<Vec<_>>(), "warnings": fs.warnings}))
+            Ok(
+                json!({"volume": fs.volume, "entries": fs.entries.iter().map(crate::entry_json).collect::<Vec<_>>(), "warnings": fs.warnings}),
+            )
         })())
     }
 }
@@ -249,14 +251,24 @@ pub struct StrArgs {
     #[arg(long)]
     #[serde(default)]
     pub y4m: bool,
+    /// Executable normalizing each selected frame to a standard BS payload.
+    #[arg(long)]
+    pub frame_parser: Option<PathBuf>,
+    #[arg(long = "frame-parser-arg", allow_hyphen_values = true, requires = "frame_parser")]
+    #[serde(default)]
+    pub frame_parser_args: Vec<String>,
+    #[arg(long, default_value_t = default_parser_timeout(), value_parser = clap::value_parser!(u64).range(1..=300))]
+    #[serde(default = "default_parser_timeout")]
+    pub parser_timeout: u64,
     /// Output directory for frames, audio.wav, contact.png, frames.json, summary.json.
     #[arg(short, long)]
     pub out: PathBuf,
 }
 
 impl Op for StrArgs {
-    fn exec(self, _: &Ctx) -> Outcome {
+    fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::media(crate::str_cmd::split_source(&self.source, self.path.as_deref()).and_then(|(image, path)| {
+            let frame_parser = crate::parser::Spec::new(self.frame_parser.as_ref(), &self.frame_parser_args, self.parser_timeout)?;
             crate::str_cmd::run(crate::str_cmd::Args {
                 image: &image,
                 path: &path,
@@ -265,8 +277,57 @@ impl Op for StrArgs {
                 channel: self.channel,
                 no_audio: self.no_audio,
                 y4m: self.y4m,
+                frame_parser: frame_parser.as_ref(),
+                cancel: ctx.cancel.as_ref(),
             })
         }))
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct AssetParsersArgs {
+    /// Executable returning a version-1 JSON model per file/archive entry.
+    #[arg(long, conflicts_with = "asset_parser")]
+    pub model_parser: Option<PathBuf>,
+    #[arg(long = "model-parser-arg", allow_hyphen_values = true, requires = "model_parser")]
+    #[serde(default)]
+    pub model_parser_args: Vec<String>,
+    /// Executable returning a version-1 JSON archive index; replaces built-in detection.
+    #[arg(long, conflicts_with = "archive")]
+    pub archive_parser: Option<PathBuf>,
+    #[arg(long = "archive-parser-arg", allow_hyphen_values = true, requires = "archive_parser")]
+    #[serde(default)]
+    pub archive_parser_args: Vec<String>,
+    /// Executable normalizing each source entry to a standard TIM/TMD/VAB/VAG payload.
+    #[arg(long, conflicts_with = "model_parser")]
+    pub asset_parser: Option<PathBuf>,
+    #[arg(long = "asset-parser-arg", allow_hyphen_values = true, requires = "asset_parser")]
+    #[serde(default)]
+    pub asset_parser_args: Vec<String>,
+    /// Wall-clock seconds per external invocation, 1..=300.
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=300))]
+    #[serde(default = "default_parser_timeout")]
+    pub parser_timeout: u64,
+}
+
+fn default_parser_timeout() -> u64 {
+    30
+}
+
+impl AssetParsersArgs {
+    pub fn build(&self, ctx: &Ctx, archive: Option<&str>) -> psx_media::Result<crate::parser::Parsers> {
+        if self.archive_parser.is_some() && archive.is_some() {
+            return Err(MediaError::Malformed("--archive-parser cannot combine with --archive".into()));
+        }
+        if self.model_parser.is_some() && self.asset_parser.is_some() {
+            return Err(MediaError::Malformed("choose --model-parser or --asset-parser".into()));
+        }
+        Ok(crate::parser::Parsers {
+            archive: crate::parser::Spec::new(self.archive_parser.as_ref(), &self.archive_parser_args, self.parser_timeout)?,
+            model: crate::parser::Spec::new(self.model_parser.as_ref(), &self.model_parser_args, self.parser_timeout)?,
+            asset: crate::parser::Spec::new(self.asset_parser.as_ref(), &self.asset_parser_args, self.parser_timeout)?,
+            cancel: ctx.cancel.clone(),
+        })
     }
 }
 
@@ -286,11 +347,17 @@ pub struct AssetsScanArgs {
     /// Address of the file's first byte when it is a RAM dump (hex).
     #[arg(long)]
     pub ram_base: Option<String>,
+    /// Force DOT-T validation, or disable archive detection (default: automatic).
+    #[arg(long, value_parser = ["dot-t", "none"])]
+    pub archive: Option<String>,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub parsers: AssetParsersArgs,
 }
 
 impl Op for AssetsScanArgs {
-    fn exec(self, _: &Ctx) -> Outcome {
-        match crate::assets_cmd::scan_assets(&self) {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        match crate::assets_cmd::scan_assets(&self, ctx) {
             Ok(Err(table)) => Outcome { value: json!({"text": table}), exit: 0, pretty: true, text: true },
             Ok(Ok(v)) => Outcome::media(Ok(v)),
             Err(e) => Outcome::media(Err(e)),
@@ -320,11 +387,20 @@ pub struct AssetsExtractArgs {
     /// Address of the file's first byte when it is a RAM dump (hex).
     #[arg(long)]
     pub ram_base: Option<String>,
+    /// Force DOT-T validation, or disable archive detection (default: automatic).
+    #[arg(long, value_parser = ["dot-t", "none"])]
+    pub archive: Option<String>,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub parsers: AssetParsersArgs,
+    /// Extract this zero-based archive entry as raw bytes, without conversion.
+    #[arg(long, conflicts_with_all = ["offset", "kinds", "textures", "model_parser", "asset_parser"])]
+    pub entry: Option<usize>,
 }
 
 impl Op for AssetsExtractArgs {
-    fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::assets_cmd::extract_assets(&self))
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::media(crate::assets_cmd::extract_assets(&self, ctx))
     }
 }
 
@@ -372,7 +448,13 @@ pub struct TexturesArgs {
 
 impl Op for TexturesArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::textures::run(&self.run_dir, self.page.as_deref(), self.clut.as_deref(), self.out.as_deref(), self.vram.as_deref()))
+        Outcome::media(crate::textures::run(
+            &self.run_dir,
+            self.page.as_deref(),
+            self.clut.as_deref(),
+            self.out.as_deref(),
+            self.vram.as_deref(),
+        ))
     }
 }
 
@@ -423,6 +505,21 @@ impl Op for TemplateCreateArgs {
             fields_per_tick: self.fields_per_tick.unwrap_or(1),
         };
         Outcome::media(crate::template::create(&self.dest, self.name.as_deref(), options))
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct ParserTemplateArgs {
+    /// Destination directory: new or empty.
+    pub dest: PathBuf,
+    /// Parser contract to scaffold.
+    #[arg(long, value_enum)]
+    pub kind: crate::parser_template::Kind,
+}
+
+impl Op for ParserTemplateArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::media(crate::parser_template::create(&self.dest, self.kind))
     }
 }
 
@@ -796,11 +893,19 @@ impl Op for DisasmArgs {
                     let (s, e) = crate::code::function_bounds(&code, f, &jal, count.max(16))
                         .ok_or_else(|| MediaError::Malformed(format!("0x{f:08X} is outside the code ({})", code.origin)))?;
                     let callers = crate::code::xrefs(&code, s, s + 4, false).iter().filter(|(_, r)| r.kind == "call").count();
-                    (s, e, Some(json!({"start": format!("0x{s:08X}"), "end": format!("0x{e:08X}"), "instructions": (e - s) / 4, "jal_callers": callers})))
+                    (
+                        s,
+                        e,
+                        Some(
+                            json!({"start": format!("0x{s:08X}"), "end": format!("0x{e:08X}"), "instructions": (e - s) / 4, "jal_callers": callers}),
+                        ),
+                    )
                 } else {
                     let start = match opt_hex(&addr, "address")? {
                         Some(a) => a,
-                        None => entry.ok_or_else(|| MediaError::Malformed("give --addr or --function (there is no EXE entry point with --ram alone)".into()))?,
+                        None => entry.ok_or_else(|| {
+                            MediaError::Malformed("give --addr or --function (there is no EXE entry point with --ram alone)".into())
+                        })?,
                     } & !3;
                     (start, start.wrapping_add(4 * count), None)
                 };
@@ -959,7 +1064,13 @@ impl Op for RamDiffArgs {
         Outcome::media(crate::ram::diff(
             &self.a,
             &self.b,
-            crate::ram::DiffOpts { width: self.width, range: self.range.as_deref(), min_delta: self.min_delta, signed: self.signed, limit: self.limit },
+            crate::ram::DiffOpts {
+                width: self.width,
+                range: self.range.as_deref(),
+                min_delta: self.min_delta,
+                signed: self.signed,
+                limit: self.limit,
+            },
         ))
     }
 }

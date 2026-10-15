@@ -6,7 +6,9 @@
 //! template's asset loaders (`templates/psx-bevy/src/psx/formats/`).
 
 pub mod adpcm;
+pub mod archive;
 pub mod gltf;
+pub mod model_document;
 pub mod scan;
 pub mod tim;
 pub mod tmd;

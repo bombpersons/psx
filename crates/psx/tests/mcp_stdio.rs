@@ -28,14 +28,8 @@ struct Rpc {
 
 impl Rpc {
     fn start(root: &Path) -> Self {
-        let mut child = psx()
-            .arg("mcp")
-            .current_dir(root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut child =
+            psx().arg("mcp").current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
         let input = child.stdin.take();
         let out = child.stdout.take().unwrap();
         let (tx, lines) = mpsc::channel();
@@ -126,18 +120,277 @@ fn tiny_exe() -> Vec<u8> {
 }
 
 #[test]
+fn generated_parsers_chain_and_export_through_cli_and_mcp() {
+    let root = std::env::temp_dir().join(format!("psx-parser-mcp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    for kind in ["archive", "model", "asset", "video"] {
+        let (_, ok) = cli(&root, &["template", "parser", kind, "--kind", kind]);
+        assert!(ok);
+    }
+    let mut rpc = Rpc::start(&root);
+    let (generated, ok) = cli(&root, &["template", "parser", "mcp-model", "--kind", "model"]);
+    // Regenerate into an empty directory to compare identical CLI/MCP results.
+    std::fs::remove_dir_all(root.join("mcp-model")).unwrap();
+    let (mcp, error, _) = rpc.tool("template_parser_create", json!({"dest":"mcp-model","kind":"model"}));
+    assert!(ok && !error, "{mcp}");
+    assert_eq!(generated, mcp);
+    let args = [
+        "assets",
+        "scan",
+        "archive/sample.bin",
+        "--archive-parser",
+        "./archive/parser.py",
+        "--model-parser",
+        "./model/parser.py",
+        "--json",
+    ];
+    let (scan, ok) = cli(&root, &args);
+    let (mcp, error, _) = rpc.tool(
+        "assets_scan",
+        json!({"source":"archive/sample.bin","archive_parser":"./archive/parser.py","model_parser":"./model/parser.py","json":true}),
+    );
+    assert!(ok && !error, "{scan} {mcp}");
+    assert_eq!(scan, mcp);
+    let hit = &scan["files"][0]["hits"][0];
+    assert_eq!(hit["entry"]["index"], 1);
+    assert_eq!(hit["offset"], "0x18");
+    assert_eq!(hit["vertices"], 3);
+    assert_eq!(hit["polygons"], 1);
+    assert_eq!(hit["parser"]["protocol_version"], 1);
+    assert_eq!(scan["files"][0]["archive"]["entries"][0]["size"], 0);
+    let (extract, ok) = cli(
+        &root,
+        &[
+            "assets",
+            "extract",
+            "archive/sample.bin",
+            "--archive-parser",
+            "./archive/parser.py",
+            "--model-parser",
+            "./model/parser.py",
+            "-o",
+            "converted",
+        ],
+    );
+    let (mcp, error, _) = rpc.tool(
+        "assets_extract",
+        json!({"source":"archive/sample.bin","archive_parser":"./archive/parser.py","model_parser":"./model/parser.py","out":"converted"}),
+    );
+    assert!(ok && !error, "{extract} {mcp}");
+    assert_eq!(extract, mcp);
+    let outputs = extract["assets"][0]["outputs"].as_array().unwrap();
+    let role = |name: &str| {
+        let path = outputs.iter().find(|o| o["role"] == name).unwrap()["path"].as_str().unwrap();
+        std::fs::read(root.join(path)).unwrap()
+    };
+    assert_eq!(role("original"), std::fs::read(root.join("model/sample.bin")).unwrap());
+    let doc: psx_assets::model_document::ModelDocument = serde_json::from_slice(&role("parser_document")).unwrap();
+    assert_eq!(doc.into_model().unwrap().polygon_count(), 1);
+    let gltf: Value = serde_json::from_slice(&role("gltf")).unwrap();
+    assert_eq!(gltf["meshes"].as_array().unwrap().len(), 1);
+    // The wrapper starter passes through the real TIM parser and PNG exporter.
+    let (converted, ok) = cli(&root, &["assets", "extract", "asset/sample.bin", "--asset-parser", "./asset/parser.py", "-o", "wrapped"]);
+    let (mcp, error, _) =
+        rpc.tool("assets_extract", json!({"source":"asset/sample.bin","asset_parser":"./asset/parser.py","out":"wrapped"}));
+    assert!(ok && !error, "{converted} {mcp}");
+    assert_eq!(converted, mcp);
+    assert_eq!(converted["assets"][0]["kind"], "tim");
+    // A wrapped authored sound bank uses the same adapter and standard WAV
+    // exporter. One program slot, one 16-byte ADPCM waveform, END flag set.
+    let header_size = 32 + 128*16 + 16*32 + 512;
+    let mut vab = vec![0u8; header_size+16];
+    vab[..4].copy_from_slice(b"pBAV");
+    vab[4..8].copy_from_slice(&7u32.to_le_bytes());
+    vab[12..16].copy_from_slice(&((header_size+16) as u32).to_le_bytes());
+    vab[18..20].copy_from_slice(&1u16.to_le_bytes());
+    vab[22..24].copy_from_slice(&1u16.to_le_bytes());
+    vab[header_size-512+2..header_size-512+4].copy_from_slice(&2u16.to_le_bytes());
+    vab[header_size+1] = 1;
+    vab[header_size+2..].fill(0x11);
+    let wrapped = [b"WRAP".as_slice(),&(vab.len() as u32).to_le_bytes(),&vab].concat();
+    std::fs::write(root.join("sound.dat"),wrapped).unwrap();
+    let (sound,ok) = cli(&root,&["assets","extract","sound.dat","--asset-parser","./asset/parser.py","-o","sound"]);
+    assert!(ok,"{sound}");
+    assert_eq!(sound["assets"][0]["kind"],"vab");
+    let outputs = sound["assets"][0]["outputs"].as_array().unwrap();
+    let wave = outputs.iter().find(|o| o["waveform"] == 1).unwrap();
+    assert_eq!(wave["wav"]["samples"],28);
+    assert_eq!(wave["wav"]["rate"],44100);
+    let wav = std::fs::read(root.join(wave["path"].as_str().unwrap())).unwrap();
+    assert_eq!(&wav[..4],b"RIFF");
+    // Author a small cooked ISO containing a single wrapped STR frame. The
+    // generated video parser must enable the complete STR -> MDEC -> PNG path.
+    let frame = std::fs::read(root.join("video/sample.bin")).unwrap();
+    let mut iso = vec![0u8; 24 * 2048];
+    let record = |name: &[u8], lba: u32, size: u32, flags: u8| {
+        let mut record = vec![0u8; (33 + name.len()).next_multiple_of(2)];
+        record[0] = record.len() as u8;
+        record[2..6].copy_from_slice(&lba.to_le_bytes());
+        record[6..10].copy_from_slice(&lba.to_be_bytes());
+        record[10..14].copy_from_slice(&size.to_le_bytes());
+        record[14..18].copy_from_slice(&size.to_be_bytes());
+        record[25] = flags;
+        record[28] = 1;
+        record[31] = 1;
+        record[32] = name.len() as u8;
+        record[33..33 + name.len()].copy_from_slice(name);
+        record
+    };
+    let pvd = &mut iso[16 * 2048..17 * 2048];
+    pvd[0] = 1;
+    pvd[1..6].copy_from_slice(b"CD001");
+    pvd[6] = 1;
+    pvd[80..84].copy_from_slice(&24u32.to_le_bytes());
+    pvd[128..130].copy_from_slice(&2048u16.to_le_bytes());
+    pvd[156..190].copy_from_slice(&record(&[0], 20, 2048, 2));
+    let movie = record(b"MOVIE.STR;1", 21, 2048, 0);
+    iso[20 * 2048..20 * 2048 + movie.len()].copy_from_slice(&movie);
+    let sector = &mut iso[21 * 2048..22 * 2048];
+    sector[..4].copy_from_slice(&[0x60, 1, 1, 0x80]);
+    sector[6..8].copy_from_slice(&1u16.to_le_bytes());
+    sector[8..12].copy_from_slice(&42u32.to_le_bytes());
+    sector[12..16].copy_from_slice(&(frame.len() as u32).to_le_bytes());
+    sector[16..18].copy_from_slice(&16u16.to_le_bytes());
+    sector[18..20].copy_from_slice(&16u16.to_le_bytes());
+    sector[32..32 + frame.len()].copy_from_slice(&frame);
+    std::fs::write(root.join("movie.iso"), iso).unwrap();
+    let (_, ok) = cli(&root, &["str", "movie.iso::/MOVIE.STR", "--no-audio", "-o", "unsupported"]);
+    assert!(!ok);
+    let (movie, ok) = cli(&root, &["str", "movie.iso::/MOVIE.STR", "--no-audio", "--frame-parser", "./video/parser.py", "-o", "movie"]);
+    let (mcp, error, _) =
+        rpc.tool("str", json!({"source":"movie.iso::/MOVIE.STR","no_audio":true,"frame_parser":"./video/parser.py","out":"movie"}));
+    assert!(ok && !error, "{movie} {mcp}");
+    assert_eq!(movie, mcp);
+    assert_eq!(movie["video"]["decoded"], 1);
+    let png = std::fs::read(root.join("movie/frame_00001.png")).unwrap();
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+    reader.next_frame(&mut pixels).unwrap();
+    assert!(pixels.iter().all(|&p| p == 128));
+    for args in [
+        json!({"source":"archive/sample.bin","entry":1,"model_parser":"./model/parser.py","out":"invalid"}),
+        json!({"source":"model/sample.bin","model_parser":"./model/parser.py","asset_parser":"./asset/parser.py","out":"invalid"}),
+        json!({"source":"model/sample.bin","model_parser_args":["oops"],"out":"invalid"}),
+        json!({"source":"model/sample.bin","parser_timeout":0,"out":"invalid"}),
+    ] {
+        let (_, error, _) = rpc.tool("assets_extract", args);
+        assert!(error);
+    }
+    assert!(!root.join("invalid").exists());
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn archives_scan_and_extract_match_cli_and_preserve_raw_entry_bytes() {
+    let root = std::env::temp_dir().join(format!("psx-archive-mcp-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut bytes = vec![0; 3 * 2048];
+    bytes[..10].copy_from_slice(&[3, 0, 1, 0, 1, 0, 2, 0, 3, 0]);
+    let tim: Vec<u8> = [
+        16u32.to_le_bytes().as_slice(),
+        2u32.to_le_bytes().as_slice(),
+        20u32.to_le_bytes().as_slice(),
+        &[0, 0, 0, 0, 2, 0, 2, 0],
+        &[31, 0, 0, 0, 0, 0, 0, 0],
+    ]
+    .concat();
+    bytes[2048 + 16..2048 + 16 + tim.len()].copy_from_slice(&tim);
+    std::fs::write(root.join("authored.T"), &bytes).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (scan, ok) = cli(&root, &["assets", "scan", "authored.T", "--json"]);
+    let (mcp, error, _) = rpc.tool("assets_scan", json!({"source":"authored.T", "json":true}));
+    assert!(ok && !error, "{scan} {mcp}");
+    assert_eq!(scan, mcp);
+    assert_eq!(scan["files"][0]["archive"]["entries"][0]["size"], 0);
+    assert_eq!(scan["files"][0]["hits"][0]["entry"]["index"], 1);
+    assert_eq!(scan["files"][0]["hits"][0]["entry"]["offset"], "0x10");
+
+    // Raw extraction works even for entries without known assets and for empty entries.
+    for index in 0..3 {
+        let index_string = index.to_string();
+        let (raw, ok) = cli(&root, &["assets", "extract", "authored.T", "--entry", &index_string, "-o", "raw"]);
+        let (mcp, error, _) = rpc.tool("assets_extract", json!({"source":"authored.T", "entry":index, "out":"raw"}));
+        assert!(ok && !error, "{raw} {mcp}");
+        assert_eq!(raw, mcp);
+        let output = &raw["entries"][0]["outputs"][0]["path"];
+        let actual = std::fs::read(root.join(output.as_str().unwrap())).unwrap();
+        let (start, end) = if index == 0 { (2048, 2048) } else { (index * 2048, (index + 1) * 2048) };
+        assert_eq!(actual, bytes[start..end]);
+    }
+
+    let (assets, ok) = cli(&root, &["assets", "extract", "authored.T", "-o", "converted"]);
+    let (mcp, error, _) = rpc.tool("assets_extract", json!({"source":"authored.T", "out":"converted"}));
+    assert!(ok && !error);
+    assert_eq!(assets, mcp);
+    assert_eq!(assets["extracted"], 1);
+    assert_eq!(assets["assets"][0]["file"], "authored.T");
+    assert_eq!(assets["assets"][0]["entry"]["archive_offset"], "0x800");
+    let original = assets["assets"][0]["outputs"].as_array().unwrap().iter().find(|o| o["role"] == "original").unwrap();
+    assert_eq!(std::fs::read(root.join(original["path"].as_str().unwrap())).unwrap(), tim);
+
+    // Entries are still listed when kind filtering leaves no asset hits.
+    let (filtered, error, _) = rpc.tool("assets_scan", json!({"source":"authored.T", "json":true, "kinds":["tmd"]}));
+    assert!(!error, "{filtered}");
+    assert_eq!(filtered["files"][0]["archive"]["entries"].as_array().unwrap().len(), 3);
+    assert!(filtered["files"][0]["hits"].as_array().unwrap().is_empty());
+
+    for args in [
+        json!({"source":"authored.T", "entry":3, "out":"invalid"}),
+        json!({"source":"authored.T", "entry":1, "kinds":["tim"], "out":"invalid"}),
+        json!({"source":"authored.T", "entry":1, "archive":"none", "out":"invalid"}),
+    ] {
+        let (_, error, _) = rpc.tool("assets_extract", args);
+        assert!(error);
+    }
+    assert!(!root.join("invalid").exists());
+
+    // A host archive can use the same sibling .DIR reader as a disc source.
+    let mut directory = vec![0; 28];
+    directory[..4].copy_from_slice(&1u32.to_le_bytes());
+    directory[4..13].copy_from_slice(b"CHECK.TIM");
+    directory[16..20].copy_from_slice(&(tim.len() as u32).to_le_bytes());
+    std::fs::write(root.join("named.DIR"), directory).unwrap();
+    std::fs::write(root.join("named.bin"), &tim).unwrap();
+    let (named, error, _) = rpc.tool("assets_scan", json!({"source":"named.bin", "json":true}));
+    assert!(!error, "{named}");
+    assert_eq!(named["files"][0]["archive"]["format"], "croc_dir");
+    assert_eq!(named["files"][0]["hits"][0]["entry"]["name"], "CHECK.TIM");
+    assert_eq!(named["files"][0]["hits"][0]["entry"]["offset"], "0x0");
+
+    let mut malformed = bytes;
+    malformed[8..10].copy_from_slice(&4u16.to_le_bytes());
+    std::fs::write(root.join("bad.T"), malformed).unwrap();
+    let (_, error, _) = rpc.tool("assets_scan", json!({"source":"bad.T", "archive":"dot-t", "json":true}));
+    assert!(error);
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn next_draw_captures_the_same_frame_through_cli_and_mcp() {
     let root = std::env::temp_dir().join(format!("psx-next-draw-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     // Authored BIOS: poll RAM[0], then fill 16x1 pixels with that RGB colour.
     // Pokes choose the drawing frames without copyrighted firmware or media.
     let code: [u32; 16] = [
-        0x3c09_1f80, 0x3529_1810, // t1 = GP0
-        0x8c08_0000, 0, 0x1100_fffd, 0, // poll RAM[0] (including load/branch delays)
-        0xac00_0000, 0x3c0a_0200, 0x0148_5025, // clear flag, t2 = fill opcode | colour
-        0xad2a_0000, 0xad20_0000, // fill colour, destination (0,0)
-        0x3c0a_0001, 0x354a_0010, 0xad2a_0000, // size 16x1
-        0x0bf0_0002, 0, // loop at BIOS + 8
+        0x3c09_1f80,
+        0x3529_1810, // t1 = GP0
+        0x8c08_0000,
+        0,
+        0x1100_fffd,
+        0, // poll RAM[0] (including load/branch delays)
+        0xac00_0000,
+        0x3c0a_0200,
+        0x0148_5025, // clear flag, t2 = fill opcode | colour
+        0xad2a_0000,
+        0xad20_0000, // fill colour, destination (0,0)
+        0x3c0a_0001,
+        0x354a_0010,
+        0xad2a_0000, // size 16x1
+        0x0bf0_0002,
+        0, // loop at BIOS + 8
     ];
     let bios: Vec<u8> = code.iter().flat_map(|w| w.to_le_bytes()).collect();
     std::fs::write(root.join("bios.bin"), &bios).unwrap();
@@ -145,8 +398,22 @@ fn next_draw_captures_the_same_frame_through_cli_and_mcp() {
     m.bus.frames = 37;
     std::fs::write(root.join("start.bin"), m.save_state(None)).unwrap();
     let mut rpc = Rpc::start(&root);
-    let common = ["run", "--bios", "bios.bin", "--backend", "native", "--from-state", "start.bin", "--frames", "4",
-        "--poke", "0=255:4@2", "--poke", "0=65280:4@3", "--brief"];
+    let common = [
+        "run",
+        "--bios",
+        "bios.bin",
+        "--backend",
+        "native",
+        "--from-state",
+        "start.bin",
+        "--frames",
+        "4",
+        "--poke",
+        "0=255:4@2",
+        "--poke",
+        "0=65280:4@3",
+        "--brief",
+    ];
     let mut args = common.to_vec();
     // Read watches select the per-instruction loop; MCP below uses frame batching.
     args.extend(["--gpu-next-draw", "--gpu-search-frames", "3", "--watch-reads", "0:4", "--max-events", "0", "--out", "cli"]);
@@ -259,8 +526,26 @@ fn mcp_tools_match_cli() {
     }
     let run = tools.iter().find(|t| t["name"] == "run").unwrap();
     for field in [
-        "bios", "frames", "backend", "watch", "trace", "gpu_frame", "memcard1", "pad", "from_state", "return_screen", "sample", "sample_every",
-        "poke", "snapshot_every", "save_state_at", "watch_changes_only", "watch_reads", "brief", "gpu_next_draw", "gpu_search_frames",
+        "bios",
+        "frames",
+        "backend",
+        "watch",
+        "trace",
+        "gpu_frame",
+        "memcard1",
+        "pad",
+        "from_state",
+        "return_screen",
+        "sample",
+        "sample_every",
+        "poke",
+        "snapshot_every",
+        "save_state_at",
+        "watch_changes_only",
+        "watch_reads",
+        "brief",
+        "gpu_next_draw",
+        "gpu_search_frames",
     ] {
         assert!(run["inputSchema"]["properties"].get(field).is_some(), "run schema lacks {field}");
     }
@@ -300,24 +585,25 @@ fn mcp_tools_match_cli() {
             vec!["run", "--bios", "no-such-bios.bin", "--backend", "native", "--frames", "1"],
         ),
         ("run", json!({"bios": "b.bin", "backend": "bogus"}), vec!["run", "--bios", "b.bin", "--backend", "bogus"]),
+        ("run", json!({"bios":"b.bin", "gpu_next_draw":true}), vec!["run", "--bios", "b.bin", "--gpu-next-draw"]),
         (
-            "run", json!({"bios":"b.bin", "gpu_next_draw":true}),
-            vec!["run", "--bios", "b.bin", "--gpu-next-draw"],
-        ),
-        (
-            "run", json!({"bios":"b.bin", "backend":"native", "gpu_search_frames":2}),
+            "run",
+            json!({"bios":"b.bin", "backend":"native", "gpu_search_frames":2}),
             vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-search-frames", "2"],
         ),
         (
-            "run", json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_search_frames":0}),
+            "run",
+            json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_search_frames":0}),
             vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-next-draw", "--gpu-search-frames", "0"],
         ),
         (
-            "run", json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_search_frames":601}),
+            "run",
+            json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_search_frames":601}),
             vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-next-draw", "--gpu-search-frames", "601"],
         ),
         (
-            "run", json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_frame":u64::MAX}),
+            "run",
+            json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_frame":u64::MAX}),
             vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-next-draw", "--gpu-frame", "18446744073709551615"],
         ),
         (
@@ -333,13 +619,21 @@ fn mcp_tools_match_cli() {
         ),
         ("xrefs", json!({"target": "80010004", "source": "tiny.ps-exe"}), vec!["xrefs", "80010004", "--source", "tiny.ps-exe"]),
         ("xrefs", json!({"target": "zz", "source": "tiny.ps-exe"}), vec!["xrefs", "zz", "--source", "tiny.ps-exe"]),
-        ("ram_diff", json!({"a": "ram_a.bin", "b": "ram_b.bin", "signed": true}), vec!["ram", "diff", "ram_a.bin", "ram_b.bin", "--signed"]),
+        (
+            "ram_diff",
+            json!({"a": "ram_a.bin", "b": "ram_b.bin", "signed": true}),
+            vec!["ram", "diff", "ram_a.bin", "ram_b.bin", "--signed"],
+        ),
         (
             "ram_search",
             json!({"snapshots": ["ram_a.bin", "ram_b.bin"], "width": 4, "pred": ["increased"]}),
             vec!["ram", "search", "ram_a.bin", "ram_b.bin", "--width", "4", "--pred", "increased"],
         ),
-        ("ram_view", json!({"snapshots": ["ram_a.bin", "ram_b.bin"], "addr": "80001000", "len": 8, "as": "fx16.16"}), vec!["ram", "view", "ram_a.bin", "ram_b.bin", "--addr", "80001000", "--len", "8", "--as", "fx16.16"]),
+        (
+            "ram_view",
+            json!({"snapshots": ["ram_a.bin", "ram_b.bin"], "addr": "80001000", "len": 8, "as": "fx16.16"}),
+            vec!["ram", "view", "ram_a.bin", "ram_b.bin", "--addr", "80001000", "--len", "8", "--as", "fx16.16"],
+        ),
     ];
     for (tool, args, argv) in cases {
         let (mcp, is_error) = {
@@ -414,6 +708,33 @@ fn ghidra_probe() -> Vec<u8> {
         }
     }
     b
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn external_parser_mcp_cancellation_stops_descendants() {
+    let root = std::env::temp_dir().join(format!("psx-parser-cancel-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("source.dat"),b"authored data").unwrap();
+    std::fs::write(root.join("slow.py"),"import pathlib,subprocess,sys\nsys.stdin.buffer.read()\np=subprocess.Popen(['sleep','30'])\npathlib.Path('child.pid').write_text(str(p.pid))\np.wait()\n").unwrap();
+    let mut rpc = Rpc::start(&root);
+    let id = rpc.next_id; rpc.next_id += 1;
+    rpc.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"assets_extract","arguments":{"source":"source.dat","model_parser":"python3","model_parser_args":["slow.py"],"out":"converted"}}}));
+    for _ in 0..300 {
+        if root.join("child.pid").exists() { break; }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let pid = std::fs::read_to_string(root.join("child.pid")).expect("parser starts before cancellation");
+    rpc.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id,"reason":"test"}}));
+    let running = || std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.split_whitespace().nth(2) != Some("Z"));
+    for _ in 0..300 {
+        if !running() { break; }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!running(),"parser descendant must stop after MCP cancellation");
+    drop(rpc);
+    assert!(!root.join("converted").exists());
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(target_os = "linux")]

@@ -5,6 +5,19 @@
 dumps; the template's `TimLoader`/`TmdLoader` load the extracted originals into
 Bevy. Format layouts are documented at the top of each source file.
 
+**Archive update (2026-10-15):** validated DOT-T sector tables and Croc sibling
+`.DIR` indexes now share an entry API. Scan results list entries even without
+recognized assets; asset conversion retains their index and byte provenance.
+`assets extract --entry N` writes one raw entry, including padding or an empty
+entry. See [archive-support.md](archive-support.md) for commands and validation.
+
+**Parser extension update (2026-10-15):** archive indexes, model geometry and
+asset wrapper adapters can be supplied by explicit executables; video frame
+wrappers have the same transport. `psx template parser DIR --kind KIND` generates
+runnable starters. King's Field RTMD is a worked external model decoder; RTIM
+textures remain outstanding. See [external-parsers.md](../docs/external-parsers.md)
+and [parser-extensions.md](parser-extensions.md).
+
 ## What is implemented
 
 | Format | Parsing | Conversion |

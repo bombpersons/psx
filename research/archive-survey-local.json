@@ -1,0 +1,415 @@
+{
+  "date": "2026-10-15",
+  "method": "psx ls ISO9660 metadata only; matching filenames are validation inputs, not binary-format confirmation",
+  "discs": [
+    {
+      "cue": "media/Ape Escape.cue",
+      "file_count": 69,
+      "candidate_file_count": 30,
+      "candidate_files": [
+        {
+          "path": "/KKIIDDZZ.BIN",
+          "size": 4096
+        },
+        {
+          "path": "/KKIIDDZZ.BNS",
+          "size": 890880
+        },
+        {
+          "path": "/KKIIDDZZ.DAT",
+          "size": 58318848
+        },
+        {
+          "path": "/KKIIDDZZ.HED",
+          "size": 2048
+        },
+        {
+          "path": "/MINIGAME/MINI1/CRS1.BIN",
+          "size": 185518
+        },
+        {
+          "path": "/MINIGAME/MINI1/CRS1.GRD",
+          "size": 32052
+        },
+        {
+          "path": "/MINIGAME/MINI1/CRS1V.BIN",
+          "size": 138538
+        },
+        {
+          "path": "/MINIGAME/MINI1/CRS2.BIN",
+          "size": 187943
+        },
+        {
+          "path": "/MINIGAME/MINI1/CRS2.GRD",
+          "size": 27156
+        },
+        {
+          "path": "/MINIGAME/MINI1/CRS2V.BIN",
+          "size": 143707
+        },
+        {
+          "path": "/MINIGAME/MINI1/CRS3.BIN",
+          "size": 254264
+        },
+        {
+          "path": "/MINIGAME/MINI1/CRS3.GRD",
+          "size": 54256
+        }
+      ],
+      "candidates_truncated": true,
+      "warnings": []
+    },
+    {
+      "cue": "media/Castlevania - Symphony of the Night.cue",
+      "file_count": 296,
+      "candidate_file_count": 0,
+      "candidate_files": [],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/Crash Bandicoot.cue",
+      "file_count": 91,
+      "candidate_file_count": 88,
+      "candidate_files": [
+        {
+          "path": "/S0/S0000003.NSD",
+          "size": 67056
+        },
+        {
+          "path": "/S0/S0000003.NSF",
+          "size": 6418432
+        },
+        {
+          "path": "/S0/S0000004.NSD",
+          "size": 2160
+        },
+        {
+          "path": "/S0/S0000004.NSF",
+          "size": 1900544
+        },
+        {
+          "path": "/S0/S0000005.NSD",
+          "size": 66568
+        },
+        {
+          "path": "/S0/S0000005.NSF",
+          "size": 4831232
+        },
+        {
+          "path": "/S0/S0000006.NSD",
+          "size": 67192
+        },
+        {
+          "path": "/S0/S0000006.NSF",
+          "size": 6797312
+        },
+        {
+          "path": "/S0/S0000007.NSD",
+          "size": 66408
+        },
+        {
+          "path": "/S0/S0000007.NSF",
+          "size": 5816320
+        },
+        {
+          "path": "/S0/S0000008.NSD",
+          "size": 65616
+        },
+        {
+          "path": "/S0/S0000008.NSF",
+          "size": 3735552
+        }
+      ],
+      "candidates_truncated": true,
+      "warnings": []
+    },
+    {
+      "cue": "media/Croc - Legend of the Gobbos.cue",
+      "file_count": 41,
+      "candidate_file_count": 2,
+      "candidate_files": [
+        {
+          "path": "/CROCFILE.1",
+          "size": 87088637
+        },
+        {
+          "path": "/CROCFILE.DIR",
+          "size": 15560
+        }
+      ],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/Final Fantasy VII (Disc 1).cue",
+      "file_count": 3381,
+      "candidate_file_count": 5,
+      "candidate_files": [
+        {
+          "path": "/INIT/KERNEL.BIN",
+          "size": 22104
+        },
+        {
+          "path": "/INIT/WINDOW.BIN",
+          "size": 13317
+        },
+        {
+          "path": "/MOVIE/OPENING.BIN",
+          "size": 171284
+        },
+        {
+          "path": "/MOVIE/STAFF.BIN",
+          "size": 430188
+        },
+        {
+          "path": "/MOVIE/STAFF2.BIN",
+          "size": 294712
+        }
+      ],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/Gran Turismo.cue",
+      "file_count": 26,
+      "candidate_file_count": 17,
+      "candidate_files": [
+        {
+          "path": "/ARCADE.DAT",
+          "size": 241136
+        },
+        {
+          "path": "/ARCADE2.DAT",
+          "size": 197655
+        },
+        {
+          "path": "/BG.DAT",
+          "size": 204800
+        },
+        {
+          "path": "/CAR.DAT",
+          "size": 16379904
+        },
+        {
+          "path": "/CARCADE.DAT",
+          "size": 919552
+        },
+        {
+          "path": "/CARINF.DAT",
+          "size": 135382
+        },
+        {
+          "path": "/COURSE.DAT",
+          "size": 23969792
+        },
+        {
+          "path": "/GAMEFONT.DAT",
+          "size": 23077
+        },
+        {
+          "path": "/GAMEMENU.DAT",
+          "size": 281247
+        },
+        {
+          "path": "/MESSAGES.DAT",
+          "size": 135168
+        },
+        {
+          "path": "/MUSIC.DAT",
+          "size": 157261824
+        },
+        {
+          "path": "/PITMENU.DAT",
+          "size": 42165
+        }
+      ],
+      "candidates_truncated": true,
+      "warnings": []
+    },
+    {
+      "cue": "media/Mega Man 8.cue",
+      "file_count": 142,
+      "candidate_file_count": 0,
+      "candidate_files": [],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/Metal Gear Solid (Disc 1).cue",
+      "file_count": 11,
+      "candidate_file_count": 1,
+      "candidate_files": [
+        {
+          "path": "/MGS/STAGE.DIR",
+          "size": 69918720
+        }
+      ],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/Oddworld - Abe's Oddysee.cue",
+      "file_count": 56,
+      "candidate_file_count": 0,
+      "candidate_files": [],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/PaRappa the Rapper - The Hip Hop Hero.cue",
+      "file_count": 74,
+      "candidate_file_count": 36,
+      "candidate_files": [
+        {
+          "path": "/S0/COMMON.INT",
+          "size": 114688
+        },
+        {
+          "path": "/S0/COMPO00.INT",
+          "size": 538624
+        },
+        {
+          "path": "/S0/YCOMPO.INT",
+          "size": 495616
+        },
+        {
+          "path": "/S0/ZCOMPO.INT",
+          "size": 600064
+        },
+        {
+          "path": "/S1/COMMON.INT",
+          "size": 114688
+        },
+        {
+          "path": "/S1/COMPO01.INT",
+          "size": 1523712
+        },
+        {
+          "path": "/S1/YCOMPO.INT",
+          "size": 495616
+        },
+        {
+          "path": "/S1/ZCOMPO.INT",
+          "size": 600064
+        },
+        {
+          "path": "/S2/COMMON.INT",
+          "size": 114688
+        },
+        {
+          "path": "/S2/COMPO02.INT",
+          "size": 1810432
+        },
+        {
+          "path": "/S2/YCOMPO.INT",
+          "size": 495616
+        },
+        {
+          "path": "/S2/ZCOMPO.INT",
+          "size": 600064
+        }
+      ],
+      "candidates_truncated": true,
+      "warnings": []
+    },
+    {
+      "cue": "media/Pandemonium!.cue",
+      "file_count": 8,
+      "candidate_file_count": 0,
+      "candidate_files": [],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/R-Type Delta.cue",
+      "file_count": 54,
+      "candidate_file_count": 0,
+      "candidate_files": [],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/Resident Evil.cue",
+      "file_count": 947,
+      "candidate_file_count": 0,
+      "candidate_files": [],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/Ridge Racer.cue",
+      "file_count": 13,
+      "candidate_file_count": 5,
+      "candidate_files": [
+        {
+          "path": "/TEX0.TMS",
+          "size": 699908
+        },
+        {
+          "path": "/TEX1.TMS",
+          "size": 197128
+        },
+        {
+          "path": "/TEX2.TMS",
+          "size": 140704
+        },
+        {
+          "path": "/TEX3.TMS",
+          "size": 110144
+        },
+        {
+          "path": "/TEX4.TMS",
+          "size": 14996
+        }
+      ],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/Spyro the Dragon.cue",
+      "file_count": 16,
+      "candidate_file_count": 1,
+      "candidate_files": [
+        {
+          "path": "/WAD.WAD",
+          "size": 211079168
+        }
+      ],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/Tekken 3.cue",
+      "file_count": 6,
+      "candidate_file_count": 0,
+      "candidate_files": [],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/Tomb Raider.cue",
+      "file_count": 46,
+      "candidate_file_count": 0,
+      "candidate_files": [],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/Vagrant Story.cue",
+      "file_count": 5163,
+      "candidate_file_count": 0,
+      "candidate_files": [],
+      "candidates_truncated": false,
+      "warnings": []
+    },
+    {
+      "cue": "media/WipEout.cue",
+      "file_count": 518,
+      "candidate_file_count": 0,
+      "candidate_files": [],
+      "candidates_truncated": false,
+      "warnings": []
+    }
+  ]
+}

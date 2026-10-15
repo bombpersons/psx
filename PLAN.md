@@ -16,6 +16,73 @@
 > selection to native CLI/MCP runs, with selected relative/absolute frame identity
 > and frozen per-frame artifacts. See [research/gpu-next-draw.md](research/gpu-next-draw.md).
 
+## Current toolkit queue (agreed 2026-10-15)
+
+Item 2 has external model decoding; raw texture upload decoding remains next.
+This queue takes precedence over the historical
+milestones below. Scope is the shared toolkit and starter template; use the game
+studies as validation inputs.
+
+1. **Sector-indexed archive support — done (2026-10-15).** Add a validated reader for archives such
+   as King's Field's `COM/*.T`: a little-endian u16 entry count followed by
+   count+1 u16 offsets in 2048-byte sectors. Check table bounds, ordered offsets
+   and the final file boundary; equal offsets represent empty entries. Make
+   `assets scan` and extraction entry-aware, retaining the archive entry number
+   and byte offset in provenance. Verify malformed tables with authored fixtures
+   and exercise the existing local FDAT/RTMD/RTIM/MO/ITEM0 archives.
+   The [archive survey](research/archive-survey.md) records documented reuse and
+   candidate follow-up readers; Armored Core's demo also documents this layout.
+   Implemented with shared Croc/DOT-T entries, bounded scanning/conversion,
+   CLI/MCP raw entry extraction and authored malformed fixtures. The five local
+   archives and Croc comparisons pass; see [validation](research/archive-support.md).
+2. **Preprocessed TMDs and raw texture-upload streams.** Build on archive entries
+   with explicit, validated format support or reusable decoding APIs. King's
+   Field's RTMD uses a nonstandard header and vertex/normal byte offsets in
+   place of indices; RTIM contains repeated upload rectangles and pixel data,
+   including palettes. Preserve strict standard TIM/TMD detection. Validate
+   normalized geometry and decoded uploads against the existing runtime evidence.
+   **Progress (2026-10-15):** chose agent-supplied executables for game-specific
+   formats. Shared archive/model/asset-wrapper/video-frame contracts, CLI/MCP
+   integration and `template parser --kind archive|model|asset|video` starters are
+   implemented. King's Field RTMD is a worked external parser, preserving strict
+   standard TMD detection. RTIM texture uploads remain outstanding. See
+   [external parsers](docs/external-parsers.md) and
+   [validation](research/parser-extensions.md).
+3. **Optional reciprocal depth cue in the template.** Add an authored
+   `PsxMaterial` parameter using camera depth and per-vertex colour modulation.
+   Preserve ordinary `DistanceFog` behavior when the option is disabled. Use
+   King's Field's recorded cue and large-wall comparisons to check fidelity.
+4. **Ghidra G2: runtime code and names back into traces.** Accept RAM snapshots
+   and candidate code ranges, keep same-address overlays distinct, support
+   renames/comments and export byte-bound symbols for residency-checked traces.
+   Follow the detailed scope and gates in
+   [docs/ghidra-integration.md](docs/ghidra-integration.md#g2-runtime-code-overlays-and-names-back-into-traces).
+5. **Template input rebinding and example controls UI.** Add a rebinding API to
+   the template's input controller so players can change keyboard/gamepad
+   bindings while game code continues to consume logical controller actions.
+   Provide a reusable, PS1-style example UI that displays current bindings and
+   lets players select an action and assign a new button/key. Include cancel,
+   restore-defaults, clear conflict handling and persistence of chosen bindings.
+   Document how to reuse the example; the game implementor decides where to
+   integrate it into the finished game's menus after reverse engineering.
+
+The first three items come from the King's Field study's `PSX_FEEDBACK.md`
+(local sibling project `../external_agent_tests/kings_field/`). Keep its game
+implementation separate from these shared changes.
+
+**Session handoff:** current branch `feat/gpu-next-draw`, based on
+`feat/headless-template`. Completed commits are `b447f04` (headless rendering and
+paused component editing) and `bb23a16` (bounded next-draw capture). Both are
+still on the feature branch, following the Ghidra commit `2f213c5` already merged
+into local `master`. Next-draw verification and artifact locations are recorded
+in [research/gpu-next-draw.md](research/gpu-next-draw.md). Queue item 1, the archive
+survey, external parser hooks/starters and the worked RTMD decoder are in the
+working tree and not yet committed. Item 2 is partial (RTIM remains); items 3–5
+have not been started. Continue using external examples for niche formats;
+add built-ins when reuse and validation justify them.
+
+## Original plan (historical)
+
 Response to `MDX_AND_PS1_RESEARCH.md`. Findings come from a source read of the
 PCSX-Redux and Beetle PSX HEADs and the repository metadata of other candidates,
 done on 2026-10-14. Nothing below has been built or run yet; items marked
