@@ -421,6 +421,54 @@ Results:
 
 A fixed-size VRAM array, to drop bounds checks, measured as noise and was not kept. The CPU step, execute and bus read dominate.
 
+#### Second pass: untraced run loop and a smaller hot loop
+
+The profiler for this pass was a ptrace PC sampler: attach, read RIP, detach, a few thousand times. `addr2line -i` resolves the samples to inlined source lines, and objdump annotates the hot instructions.
+It is much finer-grained than gdb backtraces. The machine is shared and noisy, so speeds were measured from CPU time (instructions per user+system second). Base and new binaries ran either alternately or concurrently in pairs, and the paired ratio was the steadiest figure.
+
+Every change keeps behaviour bit-identical:
+- VRAM/RAM hashes match on all five bench runs.
+- The save states written at the same frame are byte-identical. `wreg`/`load_in` are still serialised and updated.
+- Split save-state runs match.
+- `--trace` (trace.txt, coverage, calls), `--watch`, `--trace-cd`, `--trace-bios`, `--gpu-frame` (with the GTE projection log) and `psx native` (dumps, snapshots, WAV) produce byte-identical files to the previous build.
+- CPU lockstep still matches over 10M instructions.
+
+| Change | Effect |
+|---|---|
+| `Machine::run_frame_steps`: run to the next frame change with a no-op `StepSink`, so untraced runs never build a `StepInfo`. `psx run` uses it unless `--trace` is set, as do `psx native` and `Machine::run_frames`. Replay/GPU-capture hooks only act on frame changes; the timeout check still lands on every 2^20 steps. | with the next two rows: Crash 1.39×, others 1.6–1.8× |
+| `Bus::read`/`write`: the RAM/BIOS paths are `inline(always)`, and I/O decoding moved to out-of-line `read_slow`/`write_slow`. RAM stores only take the slow path when a write watch is armed. | (above) |
+| Triangles specialised per (textured, Gouraud): only the used attributes are stepped, per-pixel quotient/remainder steps are hoisted out of the row loop, and `plot`/`texel` are inlined | (above) |
+| `Cpu::exception` is `#[cold]`/`#[inline(never)]`. Its three inlined copies bloated the interpreter loop. `take_irq_ack` only stores when the flag is set | +18% SOTN/MM8, +9% Crash |
+| Alignment checks as `addr & (w - 1)`: `is_multiple_of(w as u32)` compiled to a `div` on every load and store | small (below noise) |
+| Timer dot-clock/hblank rates as `const` per mode (2 u64 divides per 128-cycle device batch before) | small (below noise) |
+
+Net result against the previous build, both measured on the bench script's runs:
+
+| Game (bench run) | Before, M instr/CPU-s | After | Paired ratio (2 concurrent runs) |
+|---|---|---|---|
+| Crash Bandicoot (1500 frames from a state) | 27–30 | 42–52 | **1.63×** (1.74, 1.51) |
+| Croc (4600 frames) | 36–37 | 53–82 | **2.04×** (2.05, 2.03) |
+| Tomb Raider (3400 frames) | 37–42 | 83–88 | **2.09×** (2.13, 2.04) |
+| Castlevania SOTN (3000 frames) | 35 | 69–75 | **2.18×** (2.18, 2.18) |
+| Mega Man 8 (3000 frames) | 38–43 | 79–92 | **2.14×** (2.19, 2.09) |
+
+The before/after columns are medians and bests of three interleaved runs; the spread is load from other jobs.
+Crash gains least because about 30% of its time is in the triangle rasteriser (per-pixel texel/CLUT/modulate work), not the CPU.
+
+Tried and not kept, each measured as within noise or slower:
+- Flattening the two-level opcode dispatch into one jump table: neutral.
+- GPR write-back through a local instead of the `wreg` field: +1–2%, inside noise.
+- Forcing `load_mem`/`store_mem` inline: 2–3% slower, since the larger loop body hurt.
+- Unrolling the step loop twice: slower with `execute` outlined, neutral with it inlined.
+- `rect` specialised on textured: neutral to −3%.
+- A fixed-size `Box<[u16; N]>` VRAM with a `Vec`-compatible serde: +2% best, but the median was lower.
+
+Not attempted:
+- Pre-decoded blocks. Fetch and decode are a few ALU ops after an L1/L2 hit, and dispatch mispredicts and per-step bookkeeping dominate the samples.
+- Per-row division removal in triangles. Under 1% of Crash's samples sit on the `idiv`.
+
+What remains is the interpreter dispatch (~20% of MM8 samples land on the jump-table branch), per-step bookkeeping (cycles, IRQ line, frame check), and in 3D games the per-pixel texture path.
+
 ### Debugging trail: from a kernel overwrite to playing FMVs
 
 This trail shows the toolkit's method on a real bug. Every step used `psx` tools with evidence from both emulators.
