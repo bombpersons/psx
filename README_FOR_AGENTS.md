@@ -249,6 +249,13 @@ analysis, annotation/type editing and verified symbol round trips are planned in
 
 ## Native game template
 
+The Bevy template supports optional `PsxMaterial::depth_cue` with configurable
+reciprocal coefficients and far vertex colour, or `PsxDepthCue::from_distances`.
+It uses camera depth per vertex before texture modulation and overrides camera
+fog for that material; `None` preserves ordinary `DistanceFog`. See the template
+[usage](templates/psx-bevy/README.md#3d) and
+[validation/example](research/template-depth-cue.md).
+
 ```bash
 psx template create ../my-game   # standalone Bevy 0.20 project
 psx template create ../croc --region pal --fields-per-tick 2   # 25 Hz logic, like Croc PAL

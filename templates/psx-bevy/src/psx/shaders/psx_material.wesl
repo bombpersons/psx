@@ -11,7 +11,7 @@ import bevy_pbr::render::{
     mesh_functions,
     forward_io::{Vertex, decompress_vertex},
     mesh_view_bindings::view,
-    view_transformations::position_world_to_clip,
+    view_transformations::{position_world_to_clip, position_world_to_view},
 };
 // Bevy only binds fog for cameras with `DistanceFog`.
 @if(DISTANCE_FOG)
@@ -22,6 +22,8 @@ const MAX_LIGHTS: u32 = 8u;
 struct PsxUniform {
     color: vec4<f32>,
     ambient: vec4<f32>,
+    depth_cue: vec4<f32>,
+    far_color: vec4<f32>,
     light_dirs: array<vec4<f32>, MAX_LIGHTS>,
     light_colors: array<vec4<f32>, MAX_LIGHTS>,
     light_count: u32,
@@ -36,6 +38,7 @@ const FLAG_SNAP: u32 = 16u;
 const FLAG_CUTOUT: u32 = 32u;
 const FLAG_STP_TEXEL: u32 = 64u;
 const FLAG_OPAQUE_ONLY: u32 = 128u;
+const FLAG_DEPTH_CUE: u32 = 512u;
 const BLEND_SHIFT: u32 = 12u;
 const BLEND_HALF: u32 = 1u;
 const BLEND_ADD: u32 = 2u;
@@ -59,7 +62,7 @@ struct PsxVarying {
     @builtin(position) position: vec4<f32>,
     @location(0) uv_w: vec2<f32>,
     @location(1) color_w: vec3<f32>,
-    // Distance from the camera, interpolated per vertex like the GTE's depth cue.
+    // Vertex distances interpolated for the ordinary DistanceFog path.
     @location(2) distance_w: f32,
     @location(3) w: f32,
 };
@@ -131,7 +134,16 @@ fn vertex(vertex_in: Vertex) -> PsxVarying {
             light += material.light_colors[i].rgb * max(dot(n, material.light_dirs[i].xyz), 0.0);
         }
     }
-    out.color_w = color * light * clip.w;
+    var shaded = color * light;
+    if has(FLAG_DEPTH_CUE) {
+        // Bevy looks down -Z. View-space depth also works for orthographic
+        // cameras, whose clip.w is always 1. Evaluate the reciprocal here,
+        // before interpolating colours or modulating with texture samples.
+        let depth = max(-position_world_to_view(world.xyz).z, 0.0001);
+        let cue = saturate(material.depth_cue.x + material.depth_cue.y / depth);
+        shaded = mix(shaded, material.far_color.rgb, cue);
+    }
+    out.color_w = shaded * clip.w;
 
     out.distance_w = length(world.xyz - view.world_position) * clip.w;
     return out;

@@ -11,7 +11,9 @@ comes from the `psx` module; everything else is normal Bevy code.
   feature, assets through `AssetServer`, queries instead of global state. Do not
   build an emulator, GPU command lists, VRAM managers or a CPU-like main loop.
 - 3D: `Mesh3d` + `MeshMaterial3d<PsxMaterial>`. Cameras need `PsxView`.
-  Use normal Bevy lights and `DistanceFog`.
+  Use normal Bevy lights. `DistanceFog` is the default fog; opt into per-vertex
+  reciprocal cueing with `PsxMaterial::depth_cue` / `PsxDepthCue` when supported
+  by the original's evidence. It overrides camera fog for that material.
 - 2D: `Sprite` (with texture atlases) seen by a `Camera2d` + `PsxView`. Add
   `SpriteMaterial<PsxSprite>` for PS1 blend modes, per-texel STP or CLUT
   palettes (swap `palette_row` or edit the palette image); other polygons are

@@ -55,7 +55,7 @@ glTF scenes, `DirectionalLight`, `GlobalAmbientLight`, `DistanceFog`. The
 | Gouraud lighting | Lighting is per vertex, on gamma-encoded colour where white = neutral and textures can be brightened up to 2× | `PsxMaterial::lit` |
 | Dither | `PsxMaterial`/`PsxMaterial2d` apply the GPU's 4×4 ordered dither before cutting to 5 bits per channel (sprites are not dithered, as on the PS1) | `PsxLook::dither` |
 | 15-bit framebuffer | After all `PsxView` cameras draw, one full-screen pass reduces the screen to 5 bits per channel, plain `Sprite`s included | `PsxLook::quantize` |
-| Depth cueing | Per-vertex distance with the camera's `DistanceFog` | `PsxMaterial::fog` |
+| Depth cueing | Optional reciprocal camera-depth cue on vertex colours; ordinary camera `DistanceFog` remains available | `PsxMaterial::depth_cue` / `fog` |
 | Semi-transparency | `PsxBlend::{Half, Add, Subtract, AddQuarter}` are the four GPU equations, for 3D, `Mesh2d` and sprites | per material |
 | Per-texel STP | With `PsxStp::Texel`, only texels whose alpha is ≈0.5 (the STP bit) blend; the rest are opaque | per material |
 | Colour-key transparency | Texels with alpha < 0.25 are discarded | `PsxMaterial::cutout` |
@@ -96,6 +96,57 @@ the scene spawns, or build meshes from extracted original model data.
 **Lighting:** 1000 lux of `DirectionalLight::illuminance` is full strength (1.0),
 and so is a `GlobalAmbientLight::brightness` of 1000. Lighting is gathered into
 the `PsxLighting` resource every frame.
+
+**Reciprocal depth cue:** set `PsxMaterial::depth_cue` to blend the lit vertex
+colour toward a chosen far colour before texture modulation. The cue uses
+forward camera depth in scene units, with screen-space interpolation of the
+resulting vertex colours. It works with perspective and orthographic cameras.
+
+```rust
+use game::psx::{PsxDepthCue, PsxMaterial};
+
+let material = PsxMaterial {
+    // No cue at depth 20, full cue at 100, using a reciprocal curve.
+    depth_cue: PsxDepthCue::from_distances(20.0, 100.0, Color::BLACK),
+    ..default()
+};
+```
+
+For coefficients recovered from a game, use
+`Some(PsxDepthCue { bias, scale, far_color })`. The factor is
+`clamp(bias + scale / max(view_depth, 0.0001), 0, 1)`; `bias` is dimensionless
+and `scale` is in scene units (usually negative). For example, King's Field's
+`1.25 - 0.625 * setting / depth` uses `bias: 1.25` and
+`scale: -0.625 * setting`, after converting the setting into scene units.
+The renderer has no game-specific curve constants.
+
+`far_color` is an sRGB **vertex modulation colour**: black darkens, white is
+neutral on textures, and values up to 2× white can brighten them. A coloured
+target tints the texture; it does not replace every distant texture sample with
+one flat colour. Its alpha is unused. This is the GTE colour stage followed by
+GPU texture modulation. It uses authored floats, without GTE register precision,
+reciprocal approximation or original near-plane divide limits.
+
+`depth_cue: None` is the default. Then `fog: true` uses camera `DistanceFog` as
+before; `fog: false` disables that fog. A valid `Some(...)` applies the reciprocal
+cue independently of `fog` and overrides `DistanceFog` for this material, so it
+is not fogged twice and needs no camera fog component. Invalid/non-finite cue
+coefficients or far-colour channels disable the cue; invalid distance ranges
+return `None` from the constructor.
+
+The authored `cargo run --example depth_cue` scene shows equal-size panels at
+depths 20, 40 and 100 above a large slanted wall. Its developer MCP controls can
+change the curve/colour, texture, camera projection and fog while paused:
+
+```sh
+cargo build --features dev-mcp --example depth_cue
+target/debug/examples/depth_cue --mcp --headless --software
+# Opt-in GPU/MCP verification; saves and checks the rendered PNGs:
+cargo test --features dev-mcp --test dev_mcp reciprocal_depth_cue_rendering -- --ignored --nocapture
+```
+
+Edit the named `DepthCueControls` entity's `DepthCueControls` component using
+`game_set_component` (e.g. `fields: {"far_color":[0.2,0.3,0.5]}`).
 
 ### 2D
 
