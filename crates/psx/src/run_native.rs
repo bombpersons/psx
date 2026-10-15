@@ -16,8 +16,8 @@ fn err(code: &str, message: impl std::fmt::Display) -> (bool, Value) {
     (false, json!({"error": {"code": code, "message": message.to_string()}}))
 }
 
-/// VRAM and drawing area `(x1, y1, x2, y2)` at the end of the captured GPU frame.
-type FrameEnd = (psx_gpu::vram::Vram, (i32, i32, i32, i32));
+mod gpu_capture;
+use gpu_capture::{CapturedFrame, GpuCapture};
 
 fn sha256(bytes: &[u8]) -> String {
     psx_redux::sha256_bytes(bytes)
@@ -169,12 +169,10 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     // boot spent before an EXE was side-loaded; after --from-state they count
     // from the restored state (Redux counts from SaveStateLoaded).
     let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
-    // GPU frame capture: (draw state and VRAM at the frame start, commands).
-    let gpu_at = a.trace.gpu_frame.map(|f| start_frame + f);
-    let mut gpu_start: Option<(psx_gpu::DrawState, psx_gpu::vram::Vram)> = None;
-    let mut gpu_cmds: Option<Vec<Vec<u32>>> = None;
-
-    let target = start_frame + a.frames as u64;
+    let mut gpu_capture = GpuCapture::new(&a.trace);
+    let Some(target) = start_frame.checked_add(a.frames as u64) else {
+        return err("invalid_arguments", "run frame range overflows u64");
+    };
     let deadline = std::time::Duration::from_secs(a.timeout_s);
     let mut next = 0;
     let mut termination = "frames_reached";
@@ -183,13 +181,14 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     let mut screens: Vec<Value> = Vec::new();
     let mut states: Vec<Value> = Vec::new();
     let mut boundary_err: Option<String> = None;
-    // VRAM and drawing area at the end of the captured GPU frame.
-    let mut gpu_end: Option<FrameEnd> = None;
     while m.bus.frames < target {
         let rel = m.bus.frames - start_frame;
         if rel != last_rel {
             // A frame boundary (vblank), or the run start: observe first, then intervene.
             last_rel = rel;
+            if let Some(c) = &mut gpu_capture {
+                c.boundary(&mut m, start_frame, false);
+            }
             if let Some(s) = &mut sampler {
                 s.row(rel, m.bus.frames, &m.bus.ram, &m.bus.scratch, false);
             }
@@ -205,20 +204,6 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         while next < events.len() && events[next].frame <= rel {
             crate::replay::apply(&mut m, &events[next]);
             next += 1;
-        }
-        if let Some(at) = gpu_at {
-            // GTE projections from the frame before (packets are often built
-            // one frame ahead) through the captured frame.
-            if m.cpu.gte.projections.is_none() && gpu_cmds.is_none() && m.bus.frames + 1 >= at {
-                m.cpu.gte.projections = Some(Vec::new());
-            }
-            if gpu_start.is_none() && m.bus.frames == at {
-                gpu_start = Some((m.bus.gpu.state, m.bus.gpu.vram.clone()));
-                m.bus.gpu.log = Some(Vec::new());
-            } else if gpu_cmds.is_none() && m.bus.frames > at && gpu_start.is_some() {
-                gpu_cmds = m.bus.gpu.log.take();
-                gpu_end = Some((m.bus.gpu.vram.clone(), m.bus.gpu.state.area));
-            }
         }
         // Everything above acts only when the frame counter changes, so without
         // per-instruction observers (tracer, read watches) the machine can run the
@@ -254,6 +239,9 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             termination = "timeout";
             break;
         }
+    }
+    if let Some(c) = &mut gpu_capture {
+        c.boundary(&mut m, start_frame, true);
     }
     if let Some(e) = boundary_err {
         return err("io_error", e);
@@ -358,16 +346,15 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         files.insert("vram.png".into(), json!({"path": vram}));
     }
 
-    if gpu_cmds.is_none() {
-        gpu_cmds = m.bus.gpu.log.take(); // the run ended inside the captured frame
-    }
-    let gpu_report = match (&gpu_start, &gpu_cmds) {
-        (Some((state, before)), Some(cmds)) => match gpu_frame_outputs(state, before, gpu_end.as_ref(), cmds, &mut m, &dir, gpu_at.unwrap_or(0) - start_frame, &mut files) {
-            Ok(v) => v,
-            Err(e) => return err("io_error", e),
+    let gpu_report = match &gpu_capture {
+        Some(c) => match &c.selected {
+            Some(frame) => match gpu_frame_outputs(frame, &dir, &mut files) {
+                Ok(v) => v,
+                Err(e) => return err("io_error", e),
+            },
+            None => c.missing(termination),
         },
-        _ if gpu_at.is_some() => json!({"error": "the run ended before the requested frame"}),
-        _ => Value::Null,
+        None => Value::Null,
     };
     let trace_report = match &mut tracer {
         Some(t) => match trace_outputs(t, &m, &scopes, &dir, start_frame, &mut files) {
@@ -591,27 +578,23 @@ fn trace_outputs(
 /// after image and gpu_frame_vram.bin are the VRAM at the end of that frame,
 /// not of the run), the frame's drawing area and a wireframe of every
 /// primitive drawn over the after image.
-#[allow(clippy::too_many_arguments)]
 fn gpu_frame_outputs(
-    start: &psx_gpu::DrawState,
-    before: &psx_gpu::vram::Vram,
-    end: Option<&FrameEnd>,
-    cmds: &[Vec<u32>],
-    m: &mut Machine,
+    capture: &CapturedFrame,
     dir: &Path,
-    frame: u64,
     files: &mut serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
+    let start = &capture.state;
+    let before = &capture.before;
     use psx_gpu::capture::decode;
     use std::collections::{BTreeMap, HashMap};
-    let mut decoded = decode(start, cmds);
+    let mut decoded = decode(start, &capture.commands);
     // Lift polygon vertices back to 3D: each vertex's screen position (minus the
     // drawing offset) is matched to GTE SXY results. A polygon's vertices are
     // projected together (typically one RTPT), so among all candidates the set
     // closest together in the projection log is taken, and polygons whose
     // vertices lie far apart in the log (coincidental matches) are not lifted.
     const MAX_SPREAD: usize = 64;
-    let projections = m.cpu.gte.projections.take().unwrap_or_default();
+    let projections = &capture.projections;
     let mut by_xy: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
     for (k, p) in projections.iter().enumerate() {
         by_xy.entry((p.sx as i32, p.sy as i32)).or_default().push(k);
@@ -647,16 +630,16 @@ fn gpu_frame_outputs(
             _ => rejected += 1,
         }
     }
-    let ctrl = |i: usize| m.cpu.gte.read_ctrl(i);
+    let [ofx, ofy, h] = capture.ctrl;
     let gte = json!({
         "projections_logged": projections.len(),
         "polygons": polys,
         "polygons_lifted_to_3d": lifted,
         "polygons_rejected_spread": rejected,
         // Projection at the end of the frame: sx = ofx + H·x/z, sy = ofy + H·y/z.
-        "h": ctrl(26) as u16,
-        "ofx": ctrl(24) as i32 as f64 / 65536.0,
-        "ofy": ctrl(25) as i32 as f64 / 65536.0,
+        "h": h as u16,
+        "ofx": ofx as i32 as f64 / 65536.0,
+        "ofy": ofy as i32 as f64 / 65536.0,
     });
     let mut kinds: BTreeMap<&str, u64> = BTreeMap::new();
     let mut pages: BTreeMap<(i32, i32, u8), u64> = BTreeMap::new();
@@ -675,8 +658,7 @@ fn gpu_frame_outputs(
         }
         semi += c.semi as u64;
     }
-    let summary = json!({
-        "frame": frame,
+    let mut summary = json!({
         "commands": decoded.len(),
         "by_kind": kinds,
         "textured": textured,
@@ -684,9 +666,10 @@ fn gpu_frame_outputs(
         "texture_pages": pages.iter().map(|((x, y, d), n)| json!({"x": x, "y": y, "depth": d, "uses": n})).collect::<Vec<_>>(),
         "cluts": cluts.iter().map(|((x, y), n)| json!({"x": x, "y": y, "uses": n})).collect::<Vec<_>>(),
         "draw_state_at_start": {"offset": start.offset, "area": start.area, "texpage": start.texpage},
-        "display": {"width": m.bus.gpu.display.width(), "height": m.bus.gpu.display.height(), "start": m.bus.gpu.display.start},
+        "display": {"width": capture.display.width(), "height": capture.display.height(), "start": capture.display.start},
         "gte": gte,
     });
+    summary.as_object_mut().unwrap().extend(capture.metadata.as_object().unwrap().clone());
     let doc = json!({"summary": summary, "commands": decoded});
     let p = dir.join("gpu_frame.json");
     let bytes = serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?;
@@ -700,10 +683,7 @@ fn gpu_frame_outputs(
         }
     };
     png("gpu_frame_before.png", &before.rgba15(0, 0, 1024, 512), files);
-    let (end_vram, area) = match end {
-        Some((v, a)) => (v, *a),
-        None => (&m.bus.gpu.vram, m.bus.gpu.state.area), // the run ended inside the captured frame
-    };
+    let (end_vram, area) = (&capture.after, capture.area);
     let vram_bytes = end_vram.to_bytes();
     let p = dir.join("gpu_frame_vram.bin");
     std::fs::write(&p, &vram_bytes).map_err(|e| format!("{}: {e}", p.display()))?;

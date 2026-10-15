@@ -126,6 +126,83 @@ fn tiny_exe() -> Vec<u8> {
 }
 
 #[test]
+fn next_draw_captures_the_same_frame_through_cli_and_mcp() {
+    let root = std::env::temp_dir().join(format!("psx-next-draw-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    // Authored BIOS: poll RAM[0], then fill 16x1 pixels with that RGB colour.
+    // Pokes choose the drawing frames without copyrighted firmware or media.
+    let code: [u32; 16] = [
+        0x3c09_1f80, 0x3529_1810, // t1 = GP0
+        0x8c08_0000, 0, 0x1100_fffd, 0, // poll RAM[0] (including load/branch delays)
+        0xac00_0000, 0x3c0a_0200, 0x0148_5025, // clear flag, t2 = fill opcode | colour
+        0xad2a_0000, 0xad20_0000, // fill colour, destination (0,0)
+        0x3c0a_0001, 0x354a_0010, 0xad2a_0000, // size 16x1
+        0x0bf0_0002, 0, // loop at BIOS + 8
+    ];
+    let bios: Vec<u8> = code.iter().flat_map(|w| w.to_le_bytes()).collect();
+    std::fs::write(root.join("bios.bin"), &bios).unwrap();
+    let mut m = psx_core::Machine::new(bios);
+    m.bus.frames = 37;
+    std::fs::write(root.join("start.bin"), m.save_state(None)).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let common = ["run", "--bios", "bios.bin", "--backend", "native", "--from-state", "start.bin", "--frames", "4",
+        "--poke", "0=255:4@2", "--poke", "0=65280:4@3", "--brief"];
+    let mut args = common.to_vec();
+    // Read watches select the per-instruction loop; MCP below uses frame batching.
+    args.extend(["--gpu-next-draw", "--gpu-search-frames", "3", "--watch-reads", "0:4", "--max-events", "0", "--out", "cli"]);
+    let (cli_report, ok) = cli(&root, &args);
+    assert!(ok, "{cli_report}");
+    let base = json!({"bios":"bios.bin", "backend":"native", "from_state":"start.bin", "frames":4,
+        "poke":["0=255:4@2", "0=65280:4@3"], "brief":true, "gpu_next_draw":true, "gpu_search_frames":3, "out":"mcp"});
+    let (mcp_report, error, _) = rpc.tool("run", base.clone());
+    assert!(!error, "{mcp_report}");
+    assert_eq!(cli_report["gpu_frame"], mcp_report["gpu_frame"]);
+    let capture = &mcp_report["gpu_frame"];
+    assert_eq!(capture["frame"], 2);
+    assert_eq!(capture["run_frame"], 2);
+    assert_eq!(capture["absolute_frame"], 39);
+    assert_eq!(capture["complete"], true);
+    assert_eq!(capture["draw_commands"], 1);
+    assert_eq!(capture["search"]["frames_inspected"], 3);
+    assert_eq!(mcp_report["frames"]["reached"], 4);
+    for name in ["gpu_frame.json", "gpu_frame_vram.bin", "gpu_frame_before.png", "gpu_frame_after.png", "gpu_frame_screen.png"] {
+        assert_eq!(std::fs::read(root.join("cli").join(name)).unwrap(), std::fs::read(root.join("mcp").join(name)).unwrap(), "{name}");
+    }
+    let selected = std::fs::read(root.join("mcp/gpu_frame_vram.bin")).unwrap();
+    let final_vram = std::fs::read(root.join("mcp/vram.bin")).unwrap();
+    assert_eq!(&selected[..2], &31u16.to_le_bytes()); // red, selected frame
+    assert_eq!(&final_vram[..2], &992u16.to_le_bytes()); // green, later frame
+    let full: Value = serde_json::from_slice(&std::fs::read(root.join("mcp/report.json")).unwrap()).unwrap();
+    let decoded: Value = serde_json::from_slice(&std::fs::read(root.join("mcp/gpu_frame.json")).unwrap()).unwrap();
+    assert_eq!(full["gpu_frame"], decoded["summary"]);
+
+    // Search exhaustion is explicit; the bounded run still completes normally.
+    let mut miss = base.clone();
+    miss["gpu_search_frames"] = json!(2);
+    miss["out"] = json!("miss");
+    let (report, error, _) = rpc.tool("run", miss);
+    assert!(!error, "{report}");
+    assert_eq!(report["status"], "complete");
+    assert_eq!(report["gpu_frame"]["status"], "not_found");
+    assert_eq!(report["gpu_frame"]["reason"], "search_limit");
+    assert_eq!(report["gpu_frame"]["search"]["frames_inspected"], 2);
+    assert!(!root.join("miss/gpu_frame.json").exists());
+
+    // An explicit start is inclusive and the final completed frame is eligible.
+    let mut last = base;
+    last["gpu_frame"] = json!(3);
+    last["gpu_search_frames"] = json!(1);
+    last["out"] = json!("last");
+    let (report, error, _) = rpc.tool("run", last);
+    assert!(!error, "{report}");
+    assert_eq!(report["gpu_frame"]["run_frame"], 3);
+    assert_eq!(report["gpu_frame"]["absolute_frame"], 40);
+    assert_eq!(report["gpu_frame"]["complete"], true);
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn mcp_tools_match_cli() {
     let root = scratch();
     std::fs::write(root.join("tiny.ps-exe"), tiny_exe()).unwrap();
@@ -183,7 +260,7 @@ fn mcp_tools_match_cli() {
     let run = tools.iter().find(|t| t["name"] == "run").unwrap();
     for field in [
         "bios", "frames", "backend", "watch", "trace", "gpu_frame", "memcard1", "pad", "from_state", "return_screen", "sample", "sample_every",
-        "poke", "snapshot_every", "save_state_at", "watch_changes_only", "watch_reads", "brief",
+        "poke", "snapshot_every", "save_state_at", "watch_changes_only", "watch_reads", "brief", "gpu_next_draw", "gpu_search_frames",
     ] {
         assert!(run["inputSchema"]["properties"].get(field).is_some(), "run schema lacks {field}");
     }
@@ -223,6 +300,26 @@ fn mcp_tools_match_cli() {
             vec!["run", "--bios", "no-such-bios.bin", "--backend", "native", "--frames", "1"],
         ),
         ("run", json!({"bios": "b.bin", "backend": "bogus"}), vec!["run", "--bios", "b.bin", "--backend", "bogus"]),
+        (
+            "run", json!({"bios":"b.bin", "gpu_next_draw":true}),
+            vec!["run", "--bios", "b.bin", "--gpu-next-draw"],
+        ),
+        (
+            "run", json!({"bios":"b.bin", "backend":"native", "gpu_search_frames":2}),
+            vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-search-frames", "2"],
+        ),
+        (
+            "run", json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_search_frames":0}),
+            vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-next-draw", "--gpu-search-frames", "0"],
+        ),
+        (
+            "run", json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_search_frames":601}),
+            vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-next-draw", "--gpu-search-frames", "601"],
+        ),
+        (
+            "run", json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_frame":u64::MAX}),
+            vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-next-draw", "--gpu-frame", "18446744073709551615"],
+        ),
         (
             "run",
             json!({"bios": "no-such-bios.bin", "backend": "redux", "sample": ["80010000:u32"]}),

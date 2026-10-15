@@ -520,10 +520,13 @@ fn brief(v: &Value) -> Value {
     }
     if v["gpu_frame"].is_object() {
         let g = &v["gpu_frame"];
-        b["gpu_frame"] = match g.get("error") {
-            Some(e) => json!({"error": e}),
-            None => json!({"frame": g["frame"], "commands": g["commands"]}),
-        };
+        let mut summary = serde_json::Map::new();
+        for key in ["error", "status", "reason", "mode", "search", "frame", "run_frame", "absolute_frame", "complete", "commands", "draw_commands"] {
+            if let Some(value) = g.get(key) {
+                summary.insert(key.into(), value.clone());
+            }
+        }
+        b["gpu_frame"] = Value::Object(summary);
     }
     if v["trace"].is_object() {
         let t = &v["trace"];
