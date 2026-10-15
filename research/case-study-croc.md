@@ -177,7 +177,7 @@ Jump, Y per tick (floor −225):
 
 - **State.** Components `Croc`, `Velocity`, `Facing { yaw, turn_rate }`, `Gait`, `Vertical { Grounded | Rising | Falling }` and `Ground`.
 - **Systems.** Five systems in `GameSystems::Game`, chained in the original's order. They read `ControllerState`.
-- **Units.** Lengths are Croc units, scaled into Bevy units by `units()`. Angles are radians from `turns_4096()`, and yaw is the Transform's rotation about Y. Rates are per 25 Hz tick: the fixed timestep is `region.hz() / 2`.
+- **Units.** Lengths are Croc units, scaled into Bevy units by `units()`. Angles are radians from `turns_4096()`, and yaw is the Transform's rotation about Y. Rates are per 25 Hz tick: the logic rate is `FIELDS_PER_TICK = 2` PAL fields (`src/lib.rs`).
 - **Arithmetic.** There is no fixed point, no >>12 velocities and no 16.16 turn rate.
   - Rules are written as what they do, e.g. "ease a quarter of the way to the target velocity" or "turn rate grows ×2.5 up to 63/4096 of a turn".
   - Each constant cites its address.
@@ -268,13 +268,18 @@ Ordered roughly by how much time each one cost.
     - **Fixed rate.** The template fixes `FixedUpdate` at the field rate (50/60 Hz) and suggests "count ticks with `GameClock.frame`" for half-rate games.
       Doing that makes `ControllerState::pressed` edges happen on 50 Hz ticks, so a press can land on a skipped tick and be lost. The demo sets the fixed rate to `region.hz() / 2` instead.
       Suggestion: the template README should recommend changing the fixed rate to the game's logic rate.
+      *Resolved in the template:* `TickRate` (from `REGION` and `FIELDS_PER_TICK` in `lib.rs`) sets the logic rate apart from the display, and input is sampled every rendered frame and latched until the next tick, so a short tap is not lost.
     - **Dead code.** Removing `demo.rs` makes `ControllerState::released/direction` and `Region::hz` dead code, which gives clippy warnings in a fresh game. The demo silenced them with `#[allow(dead_code)]` on the template API.
+      *Resolved:* the template is a library (`game`) plus a thin binary, so its public API is never dead code; a copy without `src/demo/` builds and passes clippy with no warnings.
     - **Shader warning.** Startup logs a WARN that `psx_material.wesl` has an unresolved import `bevy_pbr::render::view_transformations` (llvmpipe). Rendering is fine, but the warning looks like an error to an agent.
+      *Resolved:* Bevy logs this when a WESL shader is compiled before a library it imports has finished loading (it then retries). The template now adds its shaders only once every imported module is loaded (`psx/shaders.rs`). The warning could not be reproduced on demand afterwards, so the fix is tested by unit tests of the import check and by clean startup logs, not by a before/after comparison.
     - **No positions over MCP.** The dev MCP has no way to read game state. `game_status` shows only frame and buttons, so trajectories cannot be compared through MCP.
       A generic `game_query` (e.g. the Transform of entities with a marker, or a registered debug resource) would make MCP-side numeric checks possible. The demo compares in a unit test instead.
+      *Resolved:* `game_query` returns reflected components of entities by `Name` or marker, and resources, as JSON. The example declares its components `Reflect`. Tests can also live in `tests/` now, using `game::testing` to run exact ticks headless.
 11. **Emulator-like pull.** All the evidence arrives as fixed-point integers with shifts: `v - (v>>2) + target`, 16.16 turn rates, `>>12`. The quickest path is to transliterate it, as the reference model does.
     Nothing in the template or its docs suggests a conversion layer (units, angle helpers) or warns that bit-exact integer behaviour is usually not the goal.
     A short "from evidence to idiomatic rules" section in the template's AGENTS.md would help. It should cover converting fixed-point to natural units, keeping a literal model in a separate tool as evidence, and testing with tolerances.
+    *Resolved:* the template's AGENTS.md has "From evidence to idiomatic code" (README has a summary), with this study's velocity blend as an example.
 
 ## Files
 

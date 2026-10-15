@@ -8,9 +8,9 @@ use bevy::{
 };
 
 use crate::{
-    GameSystems,
     controller::{Button, ControllerState},
     psx::{PsxLook, PsxModel, PsxModelRoot, PsxView, TmdSettings},
+    shell::GameSystems,
 };
 
 pub struct ModelViewerPlugin {
@@ -82,7 +82,11 @@ fn frame_camera(
     let eye = centre + Vec3::new(0.0, 0.35, 1.0).normalize() * radius * 2.6;
     commands.entity(camera).insert((
         Transform::from_translation(eye).looking_at(centre, Vec3::Y),
-        DistanceFog { color: BACKGROUND, falloff: FogFalloff::Linear { start: radius * 3.0, end: radius * 6.0 }, ..default() },
+        DistanceFog {
+            color: BACKGROUND,
+            falloff: FogFalloff::Linear { start: radius * 3.0, end: radius * 6.0 },
+            ..default()
+        },
         Framed,
     ));
     info!("model: {} objects, bounds {min} .. {max}, {} untextured polygons", model.objects.len(), model.untextured);

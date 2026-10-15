@@ -3,9 +3,9 @@
 //! Nothing here comes from the original game's data.
 use super::movement::{Croc, Facing, Ground, units};
 use crate::{
-    GameSystems,
     controller::{Button, ControllerState},
     psx::{PsxLook, PsxMaterial, PsxScreen, PsxView},
+    shell::GameSystems,
 };
 use bevy::{
     asset::RenderAssetUsages,
@@ -156,7 +156,10 @@ fn setup(
 }
 
 /// A blob shadow on the floor under Croc shows how high he is.
-fn follow_shadow(croc: Query<(&Transform, &Ground), With<Croc>>, mut shadow: Query<&mut Transform, (With<Shadow>, Without<Croc>)>) {
+fn follow_shadow(
+    croc: Query<(&Transform, &Ground), With<Croc>>,
+    mut shadow: Query<&mut Transform, (With<Shadow>, Without<Croc>)>,
+) {
     let (Ok((croc, ground)), Ok(mut shadow)) = (croc.single(), shadow.single_mut()) else { return };
     shadow.translation = Vec3::new(croc.translation.x, ground.height + 0.01, croc.translation.z);
 }

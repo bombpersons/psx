@@ -14,8 +14,14 @@ const PAGE: &str = "captures/mm8/page_320_0_4bpp_clut_128_480.png";
 /// from the sprite origin, width, and first texel column. The game draws them
 /// mirrored (u decreasing left to right); the PS1 samples a mirrored quad from
 /// u_right - 1 down to u_left, so each piece shows texels u0..u0+w flipped.
-const PIECES: [(f32, f32, f32, f32); 6] =
-    [(4.0, 8.0, 15.0, 1.0), (-12.0, 8.0, 16.0, 16.0), (-28.0, 8.0, 16.0, 32.0), (4.0, -8.0, 16.0, 48.0), (-12.0, -8.0, 16.0, 64.0), (-4.0, -24.0, 16.0, 80.0)];
+const PIECES: [(f32, f32, f32, f32); 6] = [
+    (4.0, 8.0, 15.0, 1.0),
+    (-12.0, 8.0, 16.0, 16.0),
+    (-28.0, 8.0, 16.0, 32.0),
+    (4.0, -8.0, 16.0, 48.0),
+    (-12.0, -8.0, 16.0, 64.0),
+    (-4.0, -24.0, 16.0, 80.0),
+];
 
 #[derive(Component)]
 struct Rig;
@@ -54,7 +60,11 @@ fn dress_player(mut commands: Commands, players: Query<Entity, Added<Player>>, a
                 (Vec2::new(20.0, 16.0), Vec2::new(-2.0, 0.0), cyan),
                 (Vec2::new(28.0, 14.0), Vec2::new(-4.0, -16.0), blue),
             ] {
-                commands.spawn((Sprite::from_color(color, size), Transform::from_translation(offset.extend(0.0)), ChildOf(rig)));
+                commands.spawn((
+                    Sprite::from_color(color, size),
+                    Transform::from_translation(offset.extend(0.0)),
+                    ChildOf(rig),
+                ));
             }
         }
     }

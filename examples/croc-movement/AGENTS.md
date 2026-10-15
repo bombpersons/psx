@@ -1,30 +1,16 @@
-# Working in this game starter
+# Working in this game
 
-- Write idiomatic, modern Bevy 0.20 code: entities and components, plugins per feature,
-  assets through `AssetServer`, and queries instead of global state. Do not build an
-  emulator, GPU command lists or VRAM managers. The `psx` module supplies the PS1
-  look on top of normal Bevy rendering.
-- 3D: `Mesh3d` + `MeshMaterial3d<PsxMaterial>`. Cameras need `PsxView`.
-  Use normal Bevy lights and `DistanceFog`.
-- 2D: `Sprite` (with texture atlases) seen by a `Camera2d` + `PsxView`.
-- Keep gameplay in `FixedUpdate` / `GameSystems::Game`, reading
-  `ControllerState`. That is the boundary the developer MCP steps.
-- When reimplementing an original game, encode observed behaviour (from psx
-  toolkit evidence: RAM watches, traces, extracted assets) in plain Rust types
-  and systems. Note where a value or rule came from in a comment, such as the
-  RAM address or the function that wrote it, so others can re-verify it.
-- To match an original 2D frame, start from a capture: `psx run --gpu-frame` +
-  `psx textures` give a `.psxscene` that `PsxSceneRoot` spawns as ordinary
-  sprites and meshes tagged with their GPU command (README, "Captured frames").
-  Rebuild with real entities from there; it is reference data, not an engine.
-  To compare against the original frame pixel for pixel, use
-  `PsxSceneDepth::Painter` (viewer: `--painter`). The default depth-tested
-  mode can show early-drawn backdrops in front.
+This project was made with `psx template create`. The template's AGENTS.md
+(`templates/psx-bevy/AGENTS.md` in the psx repository) applies: idiomatic Bevy,
+one plugin per feature, rules separate from presentation, and its guide "From
+evidence to idiomatic code".
+
+- The game is the library in `src/lib.rs` (crate `game`): `REGION` is PAL and
+  `FIELDS_PER_TICK` is 2, so logic runs at Croc's 25 Hz and button edges match
+  the original's.
+- `game_query` (developer MCP) reads Croc's state, e.g.
+  `{"with":["Croc"],"components":["Transform","Vertical"]}`.
 - Keep game assets in `assets/`. Do not commit original disc or BIOS data.
-- Read the template's README (`templates/psx-bevy/README.md` in the psx
-  repository) for MCP startup, screenshot targets and input lifetime.
-- Verify both `cargo build` and `cargo build --features dev-mcp` when
-  changing the shell; check visual changes with `game_step` + `game_screenshot`.
 
 ## This project
 

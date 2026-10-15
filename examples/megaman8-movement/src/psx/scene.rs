@@ -10,12 +10,17 @@
 //! - polygons the capture lifted back to 3D (GTE view space) become `Mesh3d`
 //!   with [`PsxMaterial`] under a child group in Bevy space, seen by a
 //!   [`PsxSceneCamera`] given the game's field of view;
-//! - other polygons become `Mesh2d` triangles with UVs and vertex colours.
+//! - other polygons become `Mesh2d` triangles with UVs and vertex colours
+//!   ([`PsxMaterial2d`]).
 //!
 //! Every child has a [`PsxSceneElement`] naming the GPU command it came from,
 //! so a reimplementation can start from a pixel-faithful reference layout,
 //! then replace pieces with real game entities while keeping the evidence
-//! trail. Semi-transparency is approximated with 50% alpha blending.
+//! trail. Semi-transparent elements use the game's blend equation; in format
+//! 2 scenes only their STP texels blend (image alpha ≈ 0.5), as on the GPU.
+//! Semi-transparent sprites carry `SpriteMaterial<PsxSprite>`. A `Subtract`
+//! element with STP texels spawns twice: the subtracting texels and, with
+//! [`PsxStp::OpaqueOnly`], the opaque ones.
 //!
 //! The PS1 had no depth buffer: it painted polygons in command order. 3D
 //! elements are depth-tested by default, which is right for exploring the
@@ -27,11 +32,11 @@ use bevy::{
     camera::visibility::RenderLayers,
     mesh::{Indices, PrimitiveTopology},
     prelude::*,
-    sprite_render::AlphaMode2d,
+    sprite::SpriteAlphaMode,
 };
 use serde::Deserialize;
 
-use super::{PsxBlend, PsxMaterial};
+use super::{PsxBlend, PsxMaterial, PsxMaterial2d, PsxSprite, PsxStp, material::ALPHA_TRANSPARENT};
 
 /// In scenes with 3D geometry, 2D elements drawn before the first 3D element
 /// (clears, skies) go on this layer, for a camera behind the 3D one.
@@ -52,7 +57,6 @@ pub struct SceneVertex3d {
 }
 
 /// The game's perspective: `sx = ofx + h·x/z`, `sy = ofy + h·y/z` (screen pixels).
-#[allow(dead_code)] // data for game code
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub struct SceneProjection {
     pub h: f32,
@@ -87,6 +91,9 @@ pub enum SceneElement {
         color: [f32; 3],
         #[serde(default)]
         semi: bool,
+        /// Semi-transparency equation 0-3 when `semi`.
+        #[serde(default)]
+        blend: Option<u8>,
         command: u32,
     },
     Mesh {
@@ -95,6 +102,11 @@ pub enum SceneElement {
         triangles: Vec<[u32; 3]>,
         #[serde(default)]
         semi: bool,
+        #[serde(default)]
+        blend: Option<u8>,
+        /// The GPU dithers it (format 2; earlier scenes: assumed).
+        #[serde(default = "yes")]
+        dither: bool,
         command: u32,
     },
     Mesh3d {
@@ -103,12 +115,39 @@ pub enum SceneElement {
         triangles: Vec<[u32; 3]>,
         #[serde(default)]
         semi: bool,
-        /// Semi-transparency equation 0-3 when `semi`.
         #[serde(default)]
         blend: Option<u8>,
+        #[serde(default = "yes")]
+        dither: bool,
         command: u32,
     },
 }
+
+fn yes() -> bool {
+    true
+}
+
+impl SceneElement {
+    /// The GPU's semi-transparency equation for this element.
+    pub fn blend(&self) -> PsxBlend {
+        let (semi, blend) = match self {
+            SceneElement::Sprite { semi, blend, .. }
+            | SceneElement::Mesh { semi, blend, .. }
+            | SceneElement::Mesh3d { semi, blend, .. } => (*semi, *blend),
+        };
+        match (semi, blend.unwrap_or(0)) {
+            (false, _) => PsxBlend::Opaque,
+            (true, 0) => PsxBlend::Half,
+            (true, 1) => PsxBlend::Add,
+            (true, 2) => PsxBlend::Subtract,
+            (true, _) => PsxBlend::AddQuarter,
+        }
+    }
+}
+
+/// Oldest and newest `.psxscene` formats this loader reads. Format 2 marks
+/// STP texels with image alpha ≈ 0.5; format 1 images had only 0 and 1.
+pub const SCENE_FORMATS: std::ops::RangeInclusive<u32> = 1..=2;
 
 #[derive(Deserialize)]
 struct SceneFile {
@@ -129,6 +168,8 @@ pub struct PsxScene {
     /// Texture pages, loaded relative to the scene file.
     pub images: Vec<Handle<Image>>,
     pub elements: Vec<SceneElement>,
+    /// Images mark STP texels (format 2+), so semi-transparency is per texel.
+    pub texel_stp: bool,
 }
 
 /// Spawns the scene's elements as children once it has loaded. The scene's
@@ -154,7 +195,6 @@ pub enum PsxSceneDepth {
 }
 
 /// Which captured element (and GPU command, `gpu_frame.json` index) an entity came from.
-#[allow(dead_code)] // read by game code
 #[derive(Component, Clone, Copy, Debug)]
 pub struct PsxSceneElement {
     pub element: usize,
@@ -207,19 +247,35 @@ impl AssetLoader for PsxSceneLoader {
     type Settings = ();
     type Error = SceneLoadError;
 
-    async fn load(&self, reader: &mut dyn Reader, _: &(), load_context: &mut LoadContext<'_>) -> Result<PsxScene, SceneLoadError> {
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        load_context: &mut LoadContext<'_>,
+    ) -> Result<PsxScene, SceneLoadError> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await.map_err(|e| SceneLoadError(e.to_string()))?;
         let file: SceneFile = serde_json::from_slice(&bytes).map_err(|e| SceneLoadError(e.to_string()))?;
-        if file.format != 1 {
-            return Err(SceneLoadError(format!("unsupported format {}", file.format)));
+        if !SCENE_FORMATS.contains(&file.format) {
+            return Err(SceneLoadError(format!(
+                "unsupported format {} (this template reads {}-{}; update src/psx from a newer template)",
+                file.format,
+                SCENE_FORMATS.start(),
+                SCENE_FORMATS.end()
+            )));
         }
         let mut images = Vec::new();
         for name in &file.images {
             let path = load_context.path().resolve_embed_str(name).map_err(|e| SceneLoadError(e.to_string()))?;
             images.push(load_context.load(path));
         }
-        Ok(PsxScene { screen: Vec2::from(file.screen), projection: file.projection, images, elements: file.elements })
+        Ok(PsxScene {
+            screen: Vec2::from(file.screen),
+            projection: file.projection,
+            images,
+            elements: file.elements,
+            texel_stp: file.format >= 2,
+        })
     }
 
     fn extensions(&self) -> &[&str] {
@@ -279,13 +335,26 @@ fn to_world(screen: Vec2, x: f32, y: f32) -> Vec2 {
     Vec2::new(x - screen.x / 2.0, screen.y / 2.0 - y)
 }
 
+/// The draws an element needs: one, or for `Subtract` with STP texels, the
+/// subtracting texels plus the opaque ones (one draw cannot do both).
+fn stp_passes(blend: PsxBlend, stp: PsxStp) -> &'static [PsxStp] {
+    match (blend, stp) {
+        (PsxBlend::Opaque, _) => &[PsxStp::All],
+        (PsxBlend::Subtract, PsxStp::Texel) => &[PsxStp::Texel, PsxStp::OpaqueOnly],
+        (_, PsxStp::Texel) => &[PsxStp::Texel],
+        _ => &[PsxStp::All],
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn spawn_scenes(
     mut commands: Commands,
     roots: Query<(Entity, &PsxSceneRoot), Without<Spawned>>,
     scenes: Res<Assets<PsxScene>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut materials: ResMut<Assets<PsxMaterial2d>>,
     mut psx_materials: ResMut<Assets<PsxMaterial>>,
+    mut psx_sprites: ResMut<Assets<PsxSprite>>,
 ) {
     for (root, PsxSceneRoot(handle)) in &roots {
         let Some(scene) = scenes.get(handle) else { continue };
@@ -300,46 +369,58 @@ fn spawn_scenes(
             let p = to_world(scene.screen, x, y);
             Vec2::new(p.x * sx, p.y)
         };
+        // Per-texel STP needs a texture whose alpha marks it (format 2);
+        // untextured semi-transparent elements blend whole.
+        let stp = |image: &Option<usize>| if scene.texel_stp && image.is_some() { PsxStp::Texel } else { PsxStp::All };
         for (i, element) in scene.elements.iter().enumerate() {
             // Later commands draw on top.
             let z = i as f32 * 0.01;
+            let tag = |command: &u32| PsxSceneElement { element: i, command: *command };
+            let layer =
+                if background(i) { RenderLayers::layer(SCENE_BACKGROUND_LAYER) } else { RenderLayers::default() };
+            let blend = element.blend();
             match element {
-                SceneElement::Sprite { image, rect, uv, flip_x, flip_y, color, semi, command } => {
+                SceneElement::Sprite { image, rect, uv, flip_x, flip_y, color, command, .. } => {
                     let [x, y, w, h] = *rect;
-                    let alpha = if *semi { 0.5 } else { 1.0 };
+                    let tint = Color::srgb(color[0], color[1], color[2]);
                     let mut sprite = match image {
                         Some(i) => Sprite {
                             image: scene.images[*i].clone(),
                             rect: uv.map(|[u, v, uw, vh]| Rect::new(u, v, u + uw, v + vh)),
-                            color: Color::srgba(color[0], color[1], color[2], alpha),
+                            color: tint,
+                            // Texel 0000h is transparent; STP texels of an opaque sprite are opaque.
+                            alpha_mode: SpriteAlphaMode::Mask(ALPHA_TRANSPARENT),
                             ..default()
                         },
-                        None => Sprite::from_color(Color::srgba(color[0], color[1], color[2], alpha), Vec2::ONE),
+                        None => Sprite::from_color(tint, Vec2::ONE),
                     };
                     sprite.custom_size = Some(Vec2::new(w * sx, h));
                     sprite.flip_x = *flip_x;
                     sprite.flip_y = *flip_y;
-                    let centre = place(x + w / 2.0, y + h / 2.0);
-                    let id = commands
-                        .spawn((
-                            sprite,
-                            Transform::from_translation(centre.extend(z)),
-                            PsxSceneElement { element: i, command: *command },
+                    let transform = Transform::from_translation(place(x + w / 2.0, y + h / 2.0).extend(z));
+                    if blend == PsxBlend::Opaque {
+                        commands.spawn((sprite, transform, tag(command), layer, ChildOf(root)));
+                        continue;
+                    }
+                    for &pass in stp_passes(blend, stp(image)) {
+                        let material = SpriteMaterial(psx_sprites.add(PsxSprite { blend, stp: pass, ..default() }));
+                        commands.spawn((
+                            sprite.clone(),
+                            material,
+                            transform,
+                            tag(command),
+                            layer.clone(),
                             ChildOf(root),
-                        ))
-                        .id();
-                    if background(i) {
-                        commands.entity(id).insert(RenderLayers::layer(SCENE_BACKGROUND_LAYER));
+                        ));
                     }
                 }
-                SceneElement::Mesh { image, vertices, triangles, semi, command } => {
+                SceneElement::Mesh { image, vertices, triangles, dither, command, .. } => {
                     let positions: Vec<[f32; 3]> =
                         vertices.iter().map(|v| place(v.x, v.y).extend(0.0).to_array()).collect();
                     let uvs: Vec<[f32; 2]> = vertices.iter().map(|v| [v.u / 256.0, v.v / 256.0]).collect();
-                    let alpha = if *semi { 0.5 } else { 1.0 };
                     let colors: Vec<[f32; 4]> = vertices
                         .iter()
-                        .map(|v| Color::srgba(v.color[0], v.color[1], v.color[2], alpha).to_linear().to_f32_array())
+                        .map(|v| Color::srgb(v.color[0], v.color[1], v.color[2]).to_linear().to_f32_array())
                         .collect();
                     // Counter-clockwise in Bevy's y-up space, whatever the capture's winding.
                     let mut indices = Vec::new();
@@ -348,37 +429,32 @@ fn spawn_scenes(
                         let ccw = (b - a).perp_dot(c - a) >= 0.0;
                         indices.extend(if ccw { [t[0], t[1], t[2]] } else { [t[0], t[2], t[1]] });
                     }
-                    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-                        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-                        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-                        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
-                        .with_inserted_indices(Indices::U32(indices));
-                    let material = ColorMaterial {
-                        texture: image.map(|i| scene.images[i].clone()),
-                        // Transparent texels (0000h) are cut out; semi-transparent ones blend.
-                        alpha_mode: if *semi {
-                            AlphaMode2d::Blend
-                        } else if image.is_some() {
-                            AlphaMode2d::Mask(0.5)
-                        } else {
-                            AlphaMode2d::Opaque
-                        },
-                        ..default()
-                    };
-                    let id = commands
-                        .spawn((
-                            Mesh2d(meshes.add(mesh)),
+                    let mesh = meshes.add(
+                        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+                            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+                            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+                            .with_inserted_indices(Indices::U32(indices)),
+                    );
+                    for &pass in stp_passes(blend, stp(image)) {
+                        let material = PsxMaterial2d {
+                            texture: image.map(|i| scene.images[i].clone()),
+                            blend,
+                            stp: pass,
+                            dither: *dither,
+                            ..default()
+                        };
+                        commands.spawn((
+                            Mesh2d(mesh.clone()),
                             MeshMaterial2d(materials.add(material)),
                             Transform::from_xyz(0.0, 0.0, z),
-                            PsxSceneElement { element: i, command: *command },
+                            tag(command),
+                            layer.clone(),
                             ChildOf(root),
-                        ))
-                        .id();
-                    if background(i) {
-                        commands.entity(id).insert(RenderLayers::layer(SCENE_BACKGROUND_LAYER));
+                        ));
                     }
                 }
-                SceneElement::Mesh3d { image, vertices, triangles, semi, blend, command } => {
+                SceneElement::Mesh3d { image, vertices, triangles, dither, command, .. } => {
                     let positions: Vec<[f32; 3]> = vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
                     let uvs: Vec<[f32; 2]> = vertices.iter().map(|v| [v.u / 256.0, v.v / 256.0]).collect();
                     let colors: Vec<[f32; 4]> = vertices
@@ -386,35 +462,57 @@ fn spawn_scenes(
                         .map(|v| Color::srgb(v.color[0], v.color[1], v.color[2]).to_linear().to_f32_array())
                         .collect();
                     let indices: Vec<u32> = triangles.iter().flatten().copied().collect();
-                    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-                        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-                        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-                        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
-                        .with_inserted_indices(Indices::U32(indices));
-                    let material = PsxMaterial {
-                        texture: image.map(|i| scene.images[i].clone()),
-                        // Colours were lit by the game already; the PS1 drew both faces.
-                        lit: false,
-                        fog: false,
-                        double_sided: true,
-                        blend: match (*semi, blend.unwrap_or(0)) {
-                            (false, _) => PsxBlend::Opaque,
-                            (true, 0) => PsxBlend::Half,
-                            (true, 1) => PsxBlend::Add,
-                            (true, 2) => PsxBlend::Subtract,
-                            (true, _) => PsxBlend::AddQuarter,
-                        },
-                        ..default()
-                    };
-                    commands.spawn((
-                        Mesh3d(meshes.add(mesh)),
-                        MeshMaterial3d(psx_materials.add(material)),
-                        Transform::default(),
-                        PsxSceneElement { element: i, command: *command },
-                        ChildOf(group3d),
-                    ));
+                    let mesh = meshes.add(
+                        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+                            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+                            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+                            .with_inserted_indices(Indices::U32(indices)),
+                    );
+                    for &pass in stp_passes(blend, stp(image)) {
+                        let material = PsxMaterial {
+                            texture: image.map(|i| scene.images[i].clone()),
+                            // Colours were lit by the game already; the PS1 drew both faces.
+                            lit: false,
+                            fog: false,
+                            double_sided: true,
+                            blend,
+                            stp: pass,
+                            dither: *dither,
+                            ..default()
+                        };
+                        commands.spawn((
+                            Mesh3d(mesh.clone()),
+                            MeshMaterial3d(psx_materials.add(material)),
+                            Transform::default(),
+                            tag(command),
+                            ChildOf(group3d),
+                        ));
+                    }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_format_one_and_two_elements() {
+        let json = r#"[
+            {"kind": "sprite", "image": 0, "rect": [0, 0, 8, 8], "uv": [0, 0, 8, 8], "color": [1, 1, 1], "semi": true, "blend": 2, "command": 4},
+            {"kind": "mesh", "image": null, "vertices": [], "triangles": [], "semi": true, "command": 5},
+            {"kind": "mesh3d", "image": 1, "vertices": [], "triangles": [], "semi": false, "blend": null, "dither": false, "command": 6}
+        ]"#;
+        let elements: Vec<SceneElement> = serde_json::from_str(json).unwrap();
+        assert_eq!(elements[0].blend(), PsxBlend::Subtract);
+        assert_eq!(elements[1].blend(), PsxBlend::Half, "format 1 meshes had no blend: B/2+F/2");
+        assert!(matches!(elements[1], SceneElement::Mesh { dither: true, .. }), "dither defaults on");
+        assert!(matches!(elements[2], SceneElement::Mesh3d { dither: false, .. }));
+        assert_eq!(elements[2].blend(), PsxBlend::Opaque);
+        assert_eq!(stp_passes(PsxBlend::Subtract, PsxStp::Texel), &[PsxStp::Texel, PsxStp::OpaqueOnly]);
+        assert_eq!(stp_passes(PsxBlend::Half, PsxStp::All), &[PsxStp::All]);
     }
 }

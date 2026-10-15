@@ -7,15 +7,15 @@ use bevy::{
     render::{
         render_asset::RenderAssets,
         render_resource::{
-            AsBindGroup, AsBindGroupShaderType, BlendComponent, BlendFactor, BlendOperation,
-            BlendState, CompareFunction, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+            AsBindGroup, AsBindGroupShaderType, BlendComponent, BlendFactor, BlendOperation, BlendState,
+            CompareFunction, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
         },
         texture::GpuImage,
     },
     shader::ShaderRef,
 };
 
-use super::{PsxLighting, PsxLook, MAX_LIGHTS};
+use super::{MAX_LIGHTS, PsxLighting, PsxLook};
 
 /// PS1 semi-transparency equations (B = what is already drawn, F = this surface).
 /// 2D-only screens blend gamma-encoded colour like the GPU; with a 3D camera
@@ -115,7 +115,8 @@ pub(super) fn blend_state(blend: PsxBlend) -> Option<BlendState> {
         },
     };
     // The target keeps its alpha.
-    let alpha = BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add };
+    let alpha =
+        BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add };
     Some(BlendState { color, alpha })
 }
 
@@ -238,7 +239,7 @@ impl From<&PsxMaterial> for PsxMaterialKey {
 /// bias, so each step must exceed the depth range of anything on screen.
 const DRAW_ORDER_STEP: f32 = 8192.0;
 
-const SHADER: &str = concat!("embedded://", env!("CARGO_CRATE_NAME"), "/psx/shaders/psx_material.wesl");
+const SHADER: Handle<Shader> = super::shaders::MATERIAL;
 
 impl Material for PsxMaterial {
     fn vertex_shader() -> ShaderRef {

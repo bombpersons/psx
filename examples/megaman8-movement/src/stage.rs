@@ -9,23 +9,26 @@
 //! stands on in the capture. A real rebuild loads the stage's own collision
 //! and tile data instead (research/case-study-megaman8.md, "Rebuilding the stage").
 use crate::{
-    GameSystems,
     player::{Player, movement::PlayerMovement},
     psx::{PsxSceneElement, PsxSceneRoot, PsxView},
+    shell::GameSystems,
 };
 use bevy::prelude::*;
 
 /// Position in stage pixels (y down). Rendering rounds down to whole pixels,
 /// like the original, which draws at the integer part of its 16.16 position.
-#[derive(Component, Default, Debug, Clone, Copy)]
+#[derive(Component, Reflect, Default, Debug, Clone, Copy)]
+#[reflect(Component)]
 pub struct StagePos(pub Vec2);
 
 /// A solid rectangle in stage pixels (`min.y` is its top row).
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Reflect, Debug, Clone, Copy)]
+#[reflect(Component)]
 pub struct Solid(pub Rect);
 
 /// The visible window's top-left in stage pixels.
-#[derive(Resource, Debug, Clone, Copy)]
+#[derive(Resource, Reflect, Debug, Clone, Copy)]
+#[reflect(Resource)]
 pub struct StageCamera {
     pub pos: Vec2,
     /// Left scroll limit of this section.
@@ -91,7 +94,9 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     } else {
         // Placeholder scenery: grass strip and dirt below the floor.
         let width = 4096.0;
-        for (top, height, color) in [(FLOOR_TOP, 6.0, Color::srgb_u8(96, 200, 64)), (FLOOR_TOP + 6.0, 64.0, Color::srgb_u8(200, 176, 120))] {
+        for (top, height, color) in
+            [(FLOOR_TOP, 6.0, Color::srgb_u8(96, 200, 64)), (FLOOR_TOP + 6.0, 64.0, Color::srgb_u8(200, 176, 120))]
+        {
             commands.spawn((
                 Sprite::from_color(color, Vec2::new(width, height)),
                 Transform::from_xyz(width / 2.0, -(top + height / 2.0), -5.0),

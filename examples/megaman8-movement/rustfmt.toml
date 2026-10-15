@@ -1,0 +1,3 @@
+# Wide lines keep Bevy spawn bundles and queries readable on one line.
+max_width = 120
+use_small_heuristics = "Max"
