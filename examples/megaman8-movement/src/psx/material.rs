@@ -8,7 +8,7 @@ use bevy::{
         render_asset::RenderAssets,
         render_resource::{
             AsBindGroup, AsBindGroupShaderType, BlendComponent, BlendFactor, BlendOperation, BlendState,
-            CompareFunction, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+            CompareFunction, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, TextureFormat,
         },
         texture::GpuImage,
     },
@@ -18,9 +18,8 @@ use bevy::{
 use super::{MAX_LIGHTS, PsxLighting, PsxLook};
 
 /// PS1 semi-transparency equations (B = what is already drawn, F = this surface).
-/// 2D-only screens blend gamma-encoded colour like the GPU; with a 3D camera
-/// Bevy composites in linear light, so blends of very different colours come
-/// out somewhat brighter than on the PS1.
+/// Under a `PsxView` camera, 2D or 3D, they act on gamma-encoded colour like
+/// the GPU's (on the 15-bit values, saturating per channel), not on linear light.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Reflect)]
 pub enum PsxBlend {
     #[default]
@@ -125,6 +124,14 @@ pub(super) fn set_blend(descriptor: &mut RenderPipelineDescriptor, blend: PsxBle
     if let Some(target) = descriptor.fragment.as_mut().and_then(|f| f.targets.first_mut()).and_then(|t| t.as_mut()) {
         target.blend = blend_state(blend);
     }
+}
+
+/// Whether a main pass target stores gamma-encoded colour as plain numbers:
+/// the `Rgba8Unorm` texture of `PsxView` cameras (see `encode_psx_views`).
+/// The shader then writes encoded values and the blend works on them, as on
+/// the GPU. Other targets (sRGB, HDR) take linear light.
+pub(super) fn stores_encoded(format: TextureFormat) -> bool {
+    matches!(format, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm)
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug)]
@@ -291,6 +298,11 @@ impl Material for PsxMaterial {
         // Opaque replaces what is below (painter's-order surfaces are in
         // the transparent pass, which would otherwise alpha-blend them).
         set_blend(descriptor, k.blend);
+        if stores_encoded(key.mesh_key.target_format())
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("ENCODED_OUTPUT".into());
+        }
         Ok(())
     }
 }
@@ -305,5 +317,67 @@ mod tests {
         assert_eq!(blend_flags(PsxBlend::Subtract, PsxStp::OpaqueOnly), OPAQUE_ONLY);
         assert_eq!(blend_flags(PsxBlend::Half, PsxStp::Texel), STP_TEXEL | 1 << BLEND_SHIFT);
         assert!(blend_state(PsxBlend::Opaque).is_none());
+    }
+
+    /// 5-bit channel as the shaders and the screen pass expand it to 8 bits.
+    fn expand(q: u32) -> f32 {
+        (q * 8 + q / 4) as f32 / 255.0
+    }
+
+    /// What the shaders write on an encoded (`PsxView`) target for a
+    /// semi-transparent texel of 5-bit colour `f`: premultiplied colour and
+    /// alpha (`psx_output` in psx_material.wesl, likewise in the 2D shaders).
+    fn shader_output(blend: PsxBlend, f: u32) -> (f32, f32) {
+        match blend {
+            PsxBlend::Opaque => (expand(f), 1.0),
+            PsxBlend::Half => (f as f32 * 8.0 / 255.0 * 0.5, 0.5 + 1.0 / 512.0),
+            PsxBlend::Add => (expand(f), 0.0),
+            PsxBlend::Subtract => (expand(f), 1.0),
+            PsxBlend::AddQuarter => (expand(f / 4), 0.0),
+        }
+    }
+
+    /// The GPU's fixed-function colour blend for `state`, then the store into
+    /// the 8-bit target and the screen pass's cut to 5 bits.
+    fn blend_on_gpu(state: Option<BlendState>, (src, alpha): (f32, f32), dst: f32) -> u32 {
+        let value = match state {
+            None => src,
+            Some(BlendState { color, .. }) => {
+                let factor = |f| match f {
+                    BlendFactor::One => 1.0,
+                    BlendFactor::Zero => 0.0,
+                    BlendFactor::OneMinusSrcAlpha => 1.0 - alpha,
+                    other => panic!("unexpected factor {other:?}"),
+                };
+                let (s, d) = (src * factor(color.src_factor), dst * factor(color.dst_factor));
+                match color.operation {
+                    BlendOperation::Add => s + d,
+                    BlendOperation::ReverseSubtract => d - s,
+                    other => panic!("unexpected operation {other:?}"),
+                }
+            }
+        };
+        (value.clamp(0.0, 1.0) * 255.0).round() as u32 / 8
+    }
+
+    /// Blending gamma-encoded values (what `PsxView` targets store) gives
+    /// the GPU's 5-bit results exactly, for every pair of 5-bit colours.
+    #[test]
+    fn encoded_blend_matches_gpu() {
+        let gpu = |blend, b: u32, f: u32| match blend {
+            PsxBlend::Opaque => f,
+            PsxBlend::Half => (b + f) >> 1,
+            PsxBlend::Add => (b + f).min(31),
+            PsxBlend::Subtract => b.saturating_sub(f),
+            PsxBlend::AddQuarter => (b + (f >> 2)).min(31),
+        };
+        for blend in [PsxBlend::Opaque, PsxBlend::Half, PsxBlend::Add, PsxBlend::Subtract, PsxBlend::AddQuarter] {
+            for b in 0..32 {
+                for f in 0..32 {
+                    let got = blend_on_gpu(blend_state(blend), shader_output(blend, f), expand(b));
+                    assert_eq!(got, gpu(blend, b, f), "{blend:?} B={b} F={f}");
+                }
+            }
+        }
     }
 }
