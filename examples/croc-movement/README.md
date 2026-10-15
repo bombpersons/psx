@@ -42,7 +42,8 @@ cargo run --features dev-mcp -- --mcp   # agent driving: game_step / game_screen
   port, kept as evidence; it reproduces every fixture exactly.
 
 The simulation runs at 25 Hz, Croc's logic rate (one tick per two PAL
-vblanks), so `game_step` frames are game ticks.
+vblanks; `FIELDS_PER_TICK = 2` in `src/lib.rs`), so `game_step` frames are
+game ticks.
 
 ## Verification
 

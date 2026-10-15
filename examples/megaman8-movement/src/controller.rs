@@ -2,7 +2,7 @@
 //! mappings in [`ControllerBindings`].
 use bevy::prelude::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
 #[cfg_attr(feature = "dev-mcp", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "dev-mcp", serde(rename_all = "lowercase"))]
 pub enum Button {
@@ -42,10 +42,16 @@ impl Button {
     pub fn mask(self) -> u16 {
         1 << self as u8
     }
+    /// The bits of several buttons, as [`ControllerState::update`] takes them.
+    pub fn mask_all(buttons: &[Button]) -> u16 {
+        buttons.iter().fold(0, |bits, button| bits | button.mask())
+    }
 }
 
-/// Input sampled once per simulation tick. Edges compare consecutive ticks.
-#[derive(Resource, Default, Debug, Clone)]
+/// Input sampled once per logic tick. Edges compare consecutive ticks, and a
+/// tap shorter than a tick still counts as held for one tick.
+#[derive(Resource, Default, Debug, Clone, Reflect)]
+#[reflect(Resource)]
 pub struct ControllerState {
     held: u16,
     previous: u16,
@@ -76,7 +82,7 @@ impl ControllerState {
         let pad = Vec2::new(axis(Button::Right, Button::Left), axis(Button::Up, Button::Down));
         if self.left_stick.length_squared() > pad.length_squared() { self.left_stick } else { pad }
     }
-    #[cfg(feature = "dev-mcp")]
+    /// The held buttons.
     pub fn buttons(&self) -> Vec<Button> {
         Button::ALL.into_iter().filter(|b| self.held(*b)).collect()
     }

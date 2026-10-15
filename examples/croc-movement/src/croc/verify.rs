@@ -90,7 +90,14 @@ fn replay(rows: &[Row], mut print: impl FnMut(usize, &Row, Vec3, f32)) -> Errors
             Ground { height: LEVEL_START_FLOOR / UNITS_PER_BEVY },
         ))
         .id();
-    let mut errors = Errors { ticks: 0, max_position: 0.0, max_heading: 0.0, final_position: 0.0, path_length: 0.0, grounded_mismatches: 0 };
+    let mut errors = Errors {
+        ticks: 0,
+        max_position: 0.0,
+        max_heading: 0.0,
+        final_position: 0.0,
+        path_length: 0.0,
+        grounded_mismatches: 0,
+    };
     for (tick, pair) in rows.windows(2).enumerate() {
         let row = &pair[1];
         errors.path_length += (row.position - pair[0].position).length();
@@ -115,7 +122,9 @@ fn replay(rows: &[Row], mut print: impl FnMut(usize, &Row, Vec3, f32)) -> Errors
 
 #[test]
 fn matches_the_original_trajectories() {
-    println!("scenario        ticks  path(u)  max pos err(u)  final pos err(u)  max heading err(1/4096)  floor mismatches");
+    println!(
+        "scenario        ticks  path(u)  max pos err(u)  final pos err(u)  max heading err(1/4096)  floor mismatches"
+    );
     for (name, csv) in FIXTURES {
         let rows = parse(csv);
         let e = replay(&rows, |_, _, _, _| {});
@@ -144,7 +153,14 @@ fn print_trajectories() {
         replay(&parse(csv), |tick, row, position, heading| {
             println!(
                 "{tick:>4}  {:>6.0} {:>6.0} {:>6.0} {:>5.0}    {:>8.1} {:>8.1} {:>8.1} {:>7.1}",
-                row.position.x, row.position.y, row.position.z, row.heading, position.x, position.y, position.z, heading
+                row.position.x,
+                row.position.y,
+                row.position.z,
+                row.heading,
+                position.x,
+                position.y,
+                position.z,
+                heading
             );
         });
     }

@@ -11,8 +11,8 @@
 //! player object at 0x8015E89C; code addresses are in SLES_010.64.
 use super::{Facing, Player, PlayerState, Velocity};
 use crate::{
-    GameSystems,
     controller::{Button, ControllerState},
+    shell::GameSystems,
     stage::{Solid, StagePos},
 };
 use bevy::prelude::*;
@@ -63,11 +63,13 @@ fn horizontal(pad: &ControllerState) -> f32 {
 
 /// Grounded flag (object +0x66 bit 7): set when the floor stopped a fall this
 /// tick, or when a ground state is still standing on something.
-#[derive(Component, Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Component, Reflect, Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[reflect(Component)]
 pub struct Grounded(pub bool);
 
 /// Ticks left in which a direction press walks without the step (object +0x95).
-#[derive(Component, Default, Debug, Clone, Copy)]
+#[derive(Component, Reflect, Default, Debug, Clone, Copy)]
+#[reflect(Component)]
 pub struct WalkGrace(pub u8);
 
 /// The movement pipeline; run camera and other followers `.after(PlayerMovement)`.
@@ -80,12 +82,22 @@ impl Plugin for MovementPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
-            (control, integrate, after_move, collide_with_floor).chain().in_set(PlayerMovement).in_set(GameSystems::Game),
+            (control, integrate, after_move, collide_with_floor)
+                .chain()
+                .in_set(PlayerMovement)
+                .in_set(GameSystems::Game),
         );
     }
 }
 
-type ControlledPlayer = (&'static mut PlayerState, &'static mut Velocity, &'static mut StagePos, &'static mut Facing, &'static Grounded, &'static mut WalkGrace);
+type ControlledPlayer = (
+    &'static mut PlayerState,
+    &'static mut Velocity,
+    &'static mut StagePos,
+    &'static mut Facing,
+    &'static Grounded,
+    &'static mut WalkGrace,
+);
 
 /// Per-state input handling before the move: state changes, velocity, gravity.
 /// A state change takes effect on the next tick, as in the original state
@@ -104,7 +116,11 @@ fn control(pad: Res<ControllerState>, mut players: Query<ControlledPlayer, With<
                 grace.0 = grace.0.saturating_sub(1);
                 if let PlayerState::Land { ticks_left } = *state {
                     // 0x8010CB08: the landing pose ends on its own.
-                    next = if ticks_left <= 1 { PlayerState::Stand } else { PlayerState::Land { ticks_left: ticks_left - 1 } };
+                    next = if ticks_left <= 1 {
+                        PlayerState::Stand
+                    } else {
+                        PlayerState::Land { ticks_left: ticks_left - 1 }
+                    };
                 }
                 if dir != 0.0 {
                     next = if grace.0 > 0 { PlayerState::Walk } else { PlayerState::Step { ticks_left: 0 } };
@@ -206,10 +222,14 @@ fn after_move(
 /// replacing the integer part of y only; the sub-pixel part is kept
 /// (0x80106E40 writes the high halfword of y). Standing states stay grounded
 /// while the row under the feet is solid.
-fn collide_with_floor(solids: Query<&Solid>, mut players: Query<(&mut StagePos, &PlayerState, &mut Grounded), With<Player>>) {
+fn collide_with_floor(
+    solids: Query<&Solid>,
+    mut players: Query<(&mut StagePos, &PlayerState, &mut Grounded), With<Player>>,
+) {
     for (mut pos, state, mut grounded) in &mut players {
         let feet = pos.0.y.floor() + FEET_OFFSET;
-        let floor = solids.iter().filter(|s| s.0.min.x <= pos.0.x && pos.0.x < s.0.max.x).map(|s| s.0.min.y).reduce(f32::min);
+        let floor =
+            solids.iter().filter(|s| s.0.min.x <= pos.0.x && pos.0.x < s.0.max.x).map(|s| s.0.min.y).reduce(f32::min);
         grounded.0 = false;
         let Some(top) = floor else { continue };
         if feet > top && !matches!(state, PlayerState::Jump { .. }) {
@@ -305,13 +325,23 @@ mod tests {
             if verbose {
                 println!(
                     "{name} t={tick:3} emu x={:8.4} y={:9.5} st={} cam={} | ours x={:8.4} y={:9.5} st={} cam={} | err {err:.6}",
-                    c[1], c[2], c[5], c[6], pos.x, pos.y, state_id(state), cam
+                    c[1],
+                    c[2],
+                    c[5],
+                    c[6],
+                    pos.x,
+                    pos.y,
+                    state_id(state),
+                    cam
                 );
             }
             assert_eq!(state_id(state), c[5] as u8, "{name}: state differs at tick {tick}");
             assert_eq!(cam, c[6], "{name}: camera differs at tick {tick}");
         }
-        println!("{name}: max |error| {max_err} px over {} ticks", text.lines().filter(|l| !l.starts_with('#')).count());
+        println!(
+            "{name}: max |error| {max_err} px over {} ticks",
+            text.lines().filter(|l| !l.starts_with('#')).count()
+        );
         max_err
     }
 

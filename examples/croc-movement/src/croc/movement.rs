@@ -22,7 +22,7 @@ use std::f32::consts::TAU;
 /// PAL vblanks per game tick (25 Hz). The main loop (0x800145D8) waits until two vblanks
 /// have passed since the previous frame; every player variable is written on
 /// alternate PAL frames in all recorded runs.
-pub const VBLANKS_PER_TICK: f64 = 2.0;
+pub const VBLANKS_PER_TICK: u32 = 2;
 
 /// Display scale: Croc units per Bevy unit. Arbitrary, chosen so Croc is
 /// roughly a metre tall on screen; the rules do not depend on it.
@@ -106,16 +106,19 @@ pub const MAX_FALL_SPEED: f32 = units(576.0);
 pub const GROUND_SNAP: f32 = units(131.0);
 
 /// The player.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Reflect, Debug, Default)]
+#[reflect(Component)]
 #[require(Transform, Velocity, Facing, Gait, Vertical, Ground)]
 pub struct Croc;
 
 /// Horizontal velocity in Bevy units per tick.
-#[derive(Component, Debug, Default, Clone, Copy)]
+#[derive(Component, Reflect, Debug, Default, Clone, Copy)]
+#[reflect(Component)]
 pub struct Velocity(pub Vec3);
 
 /// Yaw (radians, larger = further left) and its current turn rate per tick.
-#[derive(Component, Debug, Default, Clone, Copy)]
+#[derive(Component, Reflect, Debug, Default, Clone, Copy)]
+#[reflect(Component)]
 pub struct Facing {
     pub yaw: f32,
     pub turn_rate: f32,
@@ -123,7 +126,8 @@ pub struct Facing {
 
 /// What the legs are doing; selects speed and turning profile (gp+0x694,
 /// 0x800751CC: 0 idle, 1/2 forward, 3 backwards).
-#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Component, Reflect, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[reflect(Component)]
 pub enum Gait {
     #[default]
     Idle,
@@ -141,12 +145,18 @@ impl Gait {
 }
 
 /// Vertical state. Speeds are positive in the direction of travel.
-#[derive(Component, Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Component, Reflect, Debug, Default, Clone, Copy, PartialEq)]
+#[reflect(Component)]
 pub enum Vertical {
     #[default]
     Grounded,
-    Rising { speed: f32, budget: f32 },
-    Falling { speed: f32 },
+    Rising {
+        speed: f32,
+        budget: f32,
+    },
+    Falling {
+        speed: f32,
+    },
 }
 
 impl Vertical {
@@ -156,7 +166,8 @@ impl Vertical {
 }
 
 /// Height of the floor under Croc (object+0x38). The demo's level is flat.
-#[derive(Component, Debug, Default, Clone, Copy)]
+#[derive(Component, Reflect, Debug, Default, Clone, Copy)]
+#[reflect(Component)]
 pub struct Ground {
     pub height: f32,
 }
@@ -171,7 +182,7 @@ impl Plugin for CrocMovementPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
-            (fall_and_rise, walk, turn, snap_to_ground, start_jump).chain().in_set(crate::GameSystems::Game),
+            (fall_and_rise, walk, turn, snap_to_ground, start_jump).chain().in_set(crate::shell::GameSystems::Game),
         );
     }
 }
@@ -224,7 +235,10 @@ fn fall_and_rise(pad: Res<ControllerState>, mut q: Query<(&mut Transform, &mut V
 
 /// Up walks forward, Down backs off; L1/R1 sidestep while walking, and
 /// Left/Right steer sideways in the air. Velocity eases towards the target.
-fn walk(pad: Res<ControllerState>, mut q: Query<(&mut Transform, &mut Velocity, &mut Gait, &Facing, &Vertical), With<Croc>>) {
+fn walk(
+    pad: Res<ControllerState>,
+    mut q: Query<(&mut Transform, &mut Velocity, &mut Gait, &Facing, &Vertical), With<Croc>>,
+) {
     for (mut transform, mut velocity, mut gait, facing, vertical) in &mut q {
         // Sidestepping checks last tick's gait (gp+0x694 is read before Up is).
         let sideways = if !vertical.grounded() {
