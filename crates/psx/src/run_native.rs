@@ -220,28 +220,36 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
                 gpu_end = Some((m.bus.gpu.vram.clone(), m.bus.gpu.state.area));
             }
         }
-        let info = m.step();
-        if let Some(t) = &mut tracer {
-            t.after_step(&info, &m.cpu, &m.bus);
-        }
-        if !read_ranges.is_empty() {
-            if let Some(acc) = info.mem.filter(|acc| !acc.store) {
-                let p = crate::run::fold(acc.addr);
-                if read_ranges.iter().any(|&(lo, hi)| p < hi && p + acc.width as u32 > lo) {
-                    read_hits += 1;
-                    *readers.entry(info.pc).or_default() += 1;
-                    if reads.len() < a.max_events as usize {
-                        reads.push(json!({
-                            "frame": m.bus.frames, "run_frame": m.bus.frames - start_frame, "cycle": m.bus.now,
-                            "pc": info.pc, "pc_hex": format!("0x{:08X}", info.pc),
-                            "address": acc.addr, "address_hex": format!("0x{:08X}", acc.addr), "width": acc.width,
-                            "value": acc.value, "value_hex": format!("0x{:0n$X}", acc.value, n = acc.width as usize * 2),
-                        }));
+        // Everything above acts only when the frame counter changes, so without
+        // per-instruction observers (tracer, read watches) the machine can run the
+        // rest of the frame in one call (stopping at the next timeout check).
+        if tracer.is_some() || !read_ranges.is_empty() {
+            let info = m.step();
+            if let Some(t) = &mut tracer {
+                t.after_step(&info, &m.cpu, &m.bus);
+            }
+            if !read_ranges.is_empty() {
+                if let Some(acc) = info.mem.filter(|acc| !acc.store) {
+                    let p = crate::run::fold(acc.addr);
+                    if read_ranges.iter().any(|&(lo, hi)| p < hi && p + acc.width as u32 > lo) {
+                        read_hits += 1;
+                        *readers.entry(info.pc).or_default() += 1;
+                        if reads.len() < a.max_events as usize {
+                            reads.push(json!({
+                                "frame": m.bus.frames, "run_frame": m.bus.frames - start_frame, "cycle": m.bus.now,
+                                "pc": info.pc, "pc_hex": format!("0x{:08X}", info.pc),
+                                "address": acc.addr, "address_hex": format!("0x{:08X}", acc.addr), "width": acc.width,
+                                "value": acc.value, "value_hex": format!("0x{:0n$X}", acc.value, n = acc.width as usize * 2),
+                            }));
+                        }
                     }
                 }
             }
+            steps += 1;
+        } else {
+            let check = 1u64 << 20;
+            steps += m.run_frame_steps(check - steps % check);
         }
-        steps += 1;
         if steps.is_multiple_of(1 << 20) && started.elapsed() > deadline {
             termination = "timeout";
             break;
