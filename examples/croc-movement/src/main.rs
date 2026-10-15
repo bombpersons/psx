@@ -2,6 +2,7 @@
 //! library in `src/lib.rs` (crate `game`).
 use bevy::prelude::*;
 use bevy::render::{RenderPlugin, settings::WgpuSettings};
+use game::model_viewer::ModelViewerPlugin;
 use game::psx::{PsxLook, PsxPlugin, PsxSceneDepth, PsxScreen, Region};
 use game::shell::ShellPlugin;
 use game::viewer::SceneViewerPlugin;
@@ -33,6 +34,9 @@ fn main() {
     // --no-dither / --no-quantize: switch PsxLook effects off (e.g. to compare against a capture).
     let look = PsxLook { dither: !flag("--no-dither"), quantize: !flag("--no-quantize"), ..default() };
 
+    // --model PATH.tmd [--texture PATH.tim]... [--cull] (under assets/): view an extracted original model.
+    let model = value("--model");
+    let textures: Vec<String> = args.windows(2).filter(|w| w[0] == "--texture").map(|w| w[1].clone()).collect();
     let screen = PsxScreen { width: 320, height: 240, region, ..default() };
     let mut app = App::new();
     app.add_plugins(
@@ -55,9 +59,10 @@ fn main() {
     )
     .add_plugins((PsxPlugin { screen }, ShellPlugin { tick: game::tick_rate(region) }))
     .insert_resource(look);
-    match scene {
-        Some(path) => app.add_plugins(SceneViewerPlugin { path, depth }),
-        None => app.add_plugins(game::GamePlugin),
+    match (scene, model) {
+        (Some(path), _) => app.add_plugins(SceneViewerPlugin { path, depth }),
+        (None, Some(path)) => app.add_plugins(ModelViewerPlugin { path, textures, cull: flag("--cull") }),
+        (None, None) => app.add_plugins(game::GamePlugin),
     };
     #[cfg(feature = "dev-mcp")]
     if mcp {

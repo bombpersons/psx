@@ -6,27 +6,28 @@
 //! game tick in level 1-1 of the PAL release, run on the psx native core from a
 //! save state at the level start. Run `cargo test -- --nocapture` to see the
 //! per-scenario errors.
-use super::movement::{Croc, CrocMovementPlugin, Facing, Ground, UNITS_PER_BEVY, turns_4096};
-use crate::controller::{Button, ControllerState};
 use bevy::prelude::*;
+use game::controller::Button;
+use game::croc::movement::{Croc, CrocMovementPlugin, Facing, Ground, UNITS_PER_BEVY, turns_4096};
+use game::testing::{TickApp, headless_app};
 use std::f32::consts::TAU;
 
 const FIXTURES: &[(&str, &str)] = &[
-    ("walk", include_str!("../../tests/fixtures/walk.csv")),
-    ("turn", include_str!("../../tests/fixtures/turn.csv")),
-    ("jump_tap", include_str!("../../tests/fixtures/jump_tap.csv")),
-    ("jump_hold", include_str!("../../tests/fixtures/jump_hold.csv")),
-    ("back_and_turn", include_str!("../../tests/fixtures/back_and_turn.csv")),
-    ("air_strafe", include_str!("../../tests/fixtures/air_strafe.csv")),
-    ("sidestep", include_str!("../../tests/fixtures/sidestep.csv")),
-    ("combo", include_str!("../../tests/fixtures/combo.csv")),
+    ("walk", include_str!("fixtures/walk.csv")),
+    ("turn", include_str!("fixtures/turn.csv")),
+    ("jump_tap", include_str!("fixtures/jump_tap.csv")),
+    ("jump_hold", include_str!("fixtures/jump_hold.csv")),
+    ("back_and_turn", include_str!("fixtures/back_and_turn.csv")),
+    ("air_strafe", include_str!("fixtures/air_strafe.csv")),
+    ("sidestep", include_str!("fixtures/sidestep.csv")),
+    ("combo", include_str!("fixtures/combo.csv")),
 ];
 
 /// The floor height at the level 1-1 start (object+0x38), in Croc units.
 const LEVEL_START_FLOOR: f32 = -225.0;
 
 struct Row {
-    buttons: u16,
+    buttons: Vec<Button>,
     /// Croc units, the original's axes.
     position: Vec3,
     /// 4096 units per turn.
@@ -51,7 +52,7 @@ fn parse(csv: &str) -> Vec<Row> {
                     "R1" => Button::R1,
                     other => panic!("unexpected button {other}"),
                 })
-                .fold(0, |bits, b| bits | b.mask());
+                .collect();
             let n = |i: usize| f[i].parse::<f32>().unwrap();
             Row { buttons, position: Vec3::new(n(2), n(3), n(4)), heading: n(5) }
         })
@@ -78,8 +79,8 @@ struct Errors {
 }
 
 fn replay(rows: &[Row], mut print: impl FnMut(usize, &Row, Vec3, f32)) -> Errors {
-    let mut app = App::new();
-    app.init_resource::<ControllerState>().add_plugins(CrocMovementPlugin);
+    let mut app = headless_app(game::tick_rate(game::REGION));
+    app.add_plugins(CrocMovementPlugin);
     let start = &rows[0];
     let croc = app
         .world_mut()
@@ -101,8 +102,7 @@ fn replay(rows: &[Row], mut print: impl FnMut(usize, &Row, Vec3, f32)) -> Errors
     for (tick, pair) in rows.windows(2).enumerate() {
         let row = &pair[1];
         errors.path_length += (row.position - pair[0].position).length();
-        app.world_mut().resource_mut::<ControllerState>().update(row.buttons, Vec2::ZERO, Vec2::ZERO);
-        app.world_mut().run_schedule(FixedUpdate);
+        app.run_tick(&row.buttons);
         let position = to_original(app.world().get::<Transform>(croc).unwrap().translation);
         let heading = app.world().get::<Facing>(croc).unwrap().yaw / TAU * 4096.0;
         let position_error = (position - row.position).length();

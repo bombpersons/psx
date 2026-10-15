@@ -4,8 +4,6 @@
 //! stand-in world (no original assets) to walk around in.
 pub mod movement;
 mod scene;
-#[cfg(test)]
-mod verify;
 
 use bevy::prelude::*;
 

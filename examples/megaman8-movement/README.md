@@ -28,6 +28,7 @@ from the decoded texture page.
 | `src/player/mod.rs` | The `Player` entity: `StagePos`, `Velocity`, `Facing`, `PlayerState`, `Grounded`, `WalkGrace` |
 | `src/player/sprite.rs` | Placeholder or captured standing pose, mirrored by `Facing` |
 | `src/stage.rs` | Stage space (pixels, y down), the `Solid` floor, the scrolling `StageCamera`, the optional captured backdrop |
+| `tests/movement.rs` | Headless replay of those recordings through the rules (`game::testing`, one 50 Hz tick per `run_tick`), plus the camera clamp |
 | `tests/data/*.csv` | Mega Man's position, velocity, state byte and camera per tick, recorded from the original with `psx run --watch` |
 | `tools/mm8_trajectories.py` | Re-records those CSVs from your own disc |
 

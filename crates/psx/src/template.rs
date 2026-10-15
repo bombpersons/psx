@@ -45,6 +45,73 @@ const FILES: &[(&str, &str)] = files![
 ];
 
 const TEMPLATE_PACKAGE: &str = "psx-game";
+/// The lines of the template's `src/lib.rs` that `create` rewrites.
+const REGION_LINE: &str = "pub const REGION: Region = Region::Ntsc;";
+const FIELDS_PER_TICK_LINE: &str = "pub const FIELDS_PER_TICK: u32 = 1;";
+
+/// The original game's video region, written as `REGION` in the generated `src/lib.rs`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TemplateRegion {
+    /// 60 Hz display.
+    #[default]
+    Ntsc,
+    /// 50 Hz display.
+    Pal,
+}
+
+impl TemplateRegion {
+    fn name(self) -> &'static str {
+        match self {
+            TemplateRegion::Ntsc => "ntsc",
+            TemplateRegion::Pal => "pal",
+        }
+    }
+
+    fn rust(self) -> &'static str {
+        match self {
+            TemplateRegion::Ntsc => "Region::Ntsc",
+            TemplateRegion::Pal => "Region::Pal",
+        }
+    }
+
+    fn hz(self) -> f64 {
+        match self {
+            TemplateRegion::Ntsc => 60.0,
+            TemplateRegion::Pal => 50.0,
+        }
+    }
+}
+
+/// Settings written into the generated project.
+#[derive(Clone, Copy, Debug)]
+pub struct TemplateOptions {
+    pub region: TemplateRegion,
+    /// Video fields (vblanks) per logic tick, 1 to 60.
+    pub fields_per_tick: u32,
+}
+
+impl Default for TemplateOptions {
+    fn default() -> Self {
+        Self { region: TemplateRegion::Ntsc, fields_per_tick: 1 }
+    }
+}
+
+/// The template's `src/lib.rs` with `REGION` and `FIELDS_PER_TICK` set.
+fn configure_lib(contents: &str, options: TemplateOptions) -> psx_media::Result<String> {
+    if !contents.contains(REGION_LINE) || !contents.contains(FIELDS_PER_TICK_LINE) {
+        return Err(MediaError::Malformed(
+            "template src/lib.rs no longer has the REGION / FIELDS_PER_TICK lines template create rewrites".into(),
+        ));
+    }
+    Ok(contents
+        .replacen(REGION_LINE, &format!("pub const REGION: Region = {};", options.region.rust()), 1)
+        .replacen(
+            FIELDS_PER_TICK_LINE,
+            &format!("pub const FIELDS_PER_TICK: u32 = {};", options.fields_per_tick),
+            1,
+        ))
+}
 
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
@@ -52,7 +119,7 @@ fn valid_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
-pub fn create(dest: &Path, name: Option<&str>) -> psx_media::Result<Value> {
+pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> psx_media::Result<Value> {
     let name = match name {
         Some(n) => n.to_string(),
         None => dest
@@ -63,6 +130,12 @@ pub fn create(dest: &Path, name: Option<&str>) -> psx_media::Result<Value> {
     if !valid_name(&name) {
         return Err(MediaError::Malformed(format!(
             "package name {name:?} must start with a-z and contain only a-z, 0-9, '-' or '_'; pass --name"
+        )));
+    }
+    if !(1..=60).contains(&options.fields_per_tick) {
+        return Err(MediaError::Malformed(format!(
+            "fields_per_tick {} must be between 1 and 60 (vblanks the original waits per game frame)",
+            options.fields_per_tick
         )));
     }
     if dest.exists() && std::fs::read_dir(dest).map_err(|e| MediaError::io(dest, e))?.next().is_some() {
@@ -80,6 +153,7 @@ pub fn create(dest: &Path, name: Option<&str>) -> psx_media::Result<Value> {
                 &format!("name = \"{TEMPLATE_PACKAGE}\""),
                 &format!("name = \"{name}\""),
             ),
+            "src/lib.rs" => configure_lib(contents, options)?,
             _ => contents.to_string(),
         };
         let path = dest.join(rel);
@@ -94,6 +168,9 @@ pub fn create(dest: &Path, name: Option<&str>) -> psx_media::Result<Value> {
         "template": "psx-bevy",
         "package": name,
         "dest": dest,
+        "region": options.region.name(),
+        "fields_per_tick": options.fields_per_tick,
+        "tick_hz": options.region.hz() / f64::from(options.fields_per_tick),
         "files": written,
         "next": ["cargo run", "cargo run --features dev-mcp -- --mcp"],
     }))
@@ -107,13 +184,34 @@ mod tests {
     fn writes_renamed_project_and_refuses_non_empty_dest() {
         let dir = std::env::temp_dir().join(format!("psx-template-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let out = create(&dir.join("my-game"), None).unwrap();
+        let out = create(&dir.join("my-game"), None, TemplateOptions::default()).unwrap();
         assert_eq!(out["package"], "my-game");
+        assert_eq!(out["region"], "ntsc");
         let toml = std::fs::read_to_string(dir.join("my-game/Cargo.toml")).unwrap();
         assert!(toml.contains("name = \"my-game\""));
         assert!(dir.join("my-game/src/psx/shaders/psx_material.wesl").exists());
-        assert!(create(&dir.join("my-game"), None).is_err());
-        assert!(create(&dir.join("Bad Name!"), None).is_err());
+        let lib = std::fs::read_to_string(dir.join("my-game/src/lib.rs")).unwrap();
+        assert!(lib.contains(REGION_LINE) && lib.contains(FIELDS_PER_TICK_LINE));
+        assert!(create(&dir.join("my-game"), None, TemplateOptions::default()).is_err());
+        assert!(create(&dir.join("Bad Name!"), None, TemplateOptions::default()).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn writes_region_and_fields_per_tick() {
+        let dir = std::env::temp_dir().join(format!("psx-template-region-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let options = TemplateOptions { region: TemplateRegion::Pal, fields_per_tick: 2 };
+        let out = create(&dir.join("croc"), None, options).unwrap();
+        assert_eq!(out["region"], "pal");
+        assert_eq!(out["tick_hz"], 25.0);
+        let lib = std::fs::read_to_string(dir.join("croc/src/lib.rs")).unwrap();
+        assert!(lib.contains("pub const REGION: Region = Region::Pal;"));
+        assert!(lib.contains("pub const FIELDS_PER_TICK: u32 = 2;"));
+        assert!(!lib.contains(REGION_LINE) && !lib.contains(FIELDS_PER_TICK_LINE));
+        let bad = TemplateOptions { fields_per_tick: 0, ..options };
+        assert!(create(&dir.join("zero"), None, bad).is_err());
+        assert!(!dir.join("zero").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
