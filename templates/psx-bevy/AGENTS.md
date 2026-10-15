@@ -18,6 +18,10 @@ comes from the `psx` module; everything else is normal Bevy code.
   `Mesh2d` + `PsxMaterial2d`. Alpha ≈0.5 means "STP bit" (README, 2D).
   Keep index images raw (`load_indices` / `psx_indices`), never plain `load`.
   `PsxView` cameras need orders below `SCREEN_PASS_ORDER` (999).
+- Blending is in gamma-encoded colour, like the GPU's (README, "Blending in
+  encoded colour"): every `PsxView` camera, 2D and 3D, draws into an encoded
+  target. So under a `PsxView` use `PsxMaterial`, never `StandardMaterial`
+  (it writes linear light and would look too dark).
 - Keep gameplay in `FixedUpdate` / `GameSystems::Game`, reading
   `ControllerState`. That is the boundary the developer MCP and the tests step.
 - Keep game assets in `assets/`. Do not commit original disc or BIOS data.

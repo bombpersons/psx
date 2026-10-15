@@ -60,6 +60,19 @@ glTF scenes, `DirectionalLight`, `GlobalAmbientLight`, `DistanceFog`. The
 | Colour-key transparency | Texels with alpha < 0.25 are discarded | `PsxMaterial::cutout` |
 | CLUT palettes | 8-bit index textures looked up through a palette image; swap rows or edit entries | `PsxSprite`/`PsxMaterial2d::palette` |
 
+**Blending in encoded colour.** The GPU blended the 15-bit values in VRAM,
+which are gamma-encoded, not linear light: a `Subtract` shadow takes 5-bit
+steps off the stored numbers. So every `PsxView` camera, 2D or 3D, draws into
+a texture holding encoded colour (`Rgba8Unorm`, Bevy's
+`CompositingSpace::Srgb`), and `PsxBlend` on `PsxMaterial`, `PsxMaterial2d`
+and `PsxSprite` is the hardware blend on those values. With the 15-bit pass on,
+results equal the GPU's 5-bit equations exactly (unit test
+`encoded_blend_matches_gpu`). Nothing to configure: pick a blend mode.
+Trade-off: Bevy's own 3D materials (`StandardMaterial`) write linear light
+and look too dark under a `PsxView`; use `PsxMaterial` there. Stock 2D
+(`Sprite`, `ColorMaterial`, text) encodes correctly. The final copy into the
+sRGB screen image decodes once, losslessly.
+
 There are no VRAM, texture-page, polygon-count or light-count budgets.
 Texture size is your choice, and there are up to 8 directional lights.
 A depth buffer replaces the PS1's ordering tables. Semi-transparent
@@ -98,10 +111,7 @@ Load pixel art as sRGB PNGs. Nearest sampling is the default
 For PS1 semi-transparency on a sprite, add `SpriteMaterial<PsxSprite>`
 (Bevy's sprite-material extension: atlases, flips and `rect` keep working).
 Other 2D polygons are `Mesh2d` + `PsxMaterial2d` (vertex colours are Gouraud
-shading and are dithered). Without a 3D camera on the screen, blending works
-on gamma-encoded colour like the GPU's; with one, Bevy composites in linear
-light, so a blend of very different colours (a dark `Subtract` shadow on
-bright sand) comes out weaker than on the PS1.
+shading and are dithered).
 
 ```rust
 commands.spawn((

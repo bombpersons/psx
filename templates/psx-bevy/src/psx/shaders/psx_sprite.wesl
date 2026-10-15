@@ -44,6 +44,22 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, c <= vec3(0.04045));
 }
 
+// B/2+F/2 on an encoded target: F is the 5-bit value without its expansion
+// bits, and the target keeps a hair under half (alpha HALF_ALPHA), so the
+// 8-bit result cuts to exactly (B+F)>>1 in 5 bits, as on the GPU
+// (`material.rs`, `encoded_blend_matches_gpu`).
+const HALF_ALPHA: f32 = 0.501953125;
+fn half_source(rgb: vec3<f32>) -> vec3<f32> {
+    let q = floor(round(clamp(rgb, vec3(0.0), vec3(1.0)) * 255.0) / 8.0);
+    return q * 8.0 / 255.0;
+}
+
+// F/4 of the GPU's B+F/4: a quarter of the 5-bit value, truncated.
+fn quarter(rgb: vec3<f32>) -> vec3<f32> {
+    let q = floor(floor(round(clamp(rgb, vec3(0.0), vec3(1.0)) * 255.0) / 8.0) / 4.0);
+    return (q * 8.0 + floor(q / 4.0)) / 255.0;
+}
+
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     var texel = sprite_functions::sample_sprite_texture(mesh.uv, mesh.instance_index);
@@ -75,14 +91,18 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     // Premultiplied output; the target keeps (1 − alpha) of what is below
     // (`material.rs`, `blend_state`).
     if semi && blend == BLEND_QUARTER {
-        rgb *= 0.25;
+        rgb = quarter(rgb);
+    }
+    @if(SRGB_OUTPUT)
+    if semi && blend == BLEND_HALF {
+        rgb = half_source(rgb);
     }
     @if(!SRGB_OUTPUT)
     rgb = srgb_to_linear(rgb);
     var alpha = 1.0;
     if semi && blend == BLEND_HALF {
         rgb *= 0.5;
-        alpha = 0.5;
+        alpha = HALF_ALPHA;
     } else if semi && (blend == BLEND_ADD || blend == BLEND_QUARTER) {
         alpha = 0.0;
     }
