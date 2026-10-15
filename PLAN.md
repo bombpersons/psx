@@ -7,6 +7,12 @@
 > snapshot/annotation/symbol milestones. Much of the original list below has shipped;
 > treat it as historical context rather than the current task queue.
 
+> **Template update (2026-10-15):** `feat/headless-template` adds offscreen GPU
+> rendering (`--mcp --headless --software`) and paused reflected component-field
+> edits (`game_set_component`) to the shared starter. See
+> [research/template-agent-tools.md](research/template-agent-tools.md) for verification.
+> The next toolkit item is capture of the next frame that actually draws.
+
 Response to `MDX_AND_PS1_RESEARCH.md`. Findings come from a source read of the
 PCSX-Redux and Beetle PSX HEADs and the repository metadata of other candidates,
 done on 2026-10-14. Nothing below has been built or run yet; items marked
