@@ -311,7 +311,7 @@ Tracing everything runs at about 28M instructions/s. CPU lockstep still matches 
 With Setmode bit 6 set, Form 2 sectors with the audio submode bit go to the XA decoder instead of the data FIFO. With bit 3 set, only the Setfilter file/channel is played. The decoder:
 
 - handles 4- and 8-bit samples, mono and stereo, at 37.8 or 18.9 kHz;
-- resamples to 44.1 kHz by linear interpolation (the hardware's zig-zag filter and emphasis are not modelled);
+- resamples to 44.1 kHz through the hardware's 25-point zig-zag interpolator (since the audio check below; it was linear interpolation before). Emphasis is not modelled;
 - feeds the same CD input queue as CD-DA.
 
 Both XA and CD-DA now pass through Mute/Demute (commands 0Bh/0Ch), the sound-map ADPCM mute bit, and the CD-to-SPU volume matrix (index 2/3 registers, applied by bit 5). The new fields bumped the save-state format to 2.
@@ -730,6 +730,74 @@ Everything below follows psx-spx's SPU chapter. Where psx-spx is silent, the cho
 - Key on/off are applied at the write, in write order. The hardware latches them per sample, and its key-on startup delay isn't modelled.
 - Which reverb accesses trap the IRQ is a guess (see above).
 - Redux's "IRQ on the loop address when a block has the end flag" special case isn't modelled.
+
+### Audio check across the compatibility survey
+
+Every disc in the survey that reaches gameplay (the 13 above plus Croc, Tomb Raider, SOTN, Mega Man 8, Crash and Ape Escape) was recorded from power-on with its survey replay (`psx native --wav`, 100–320 s each) and compared with the same replay in PCSX-Redux. Listening clips, a per-game index and the metrics are in the main checkout's `.psx/audio-check/clips/` (`README.md` there); the scripts are in `.psx/audio-check/scripts/`.
+
+**A Redux audio oracle.** Redux plays audio on its own SPU thread, paced by the audio device, so nothing on disk records what it produced. A patched build, kept out of tree in `.psx/audio-check/redux-patch/` (Redux's `spu.cc`, `xa.cc` and `psxcounters.cc` plus `psx_audio_dump.h`, linked against the pinned checkout's objects), works like this when `PSX_AUDIO_DUMP=<prefix>` is set:
+- it writes the voice mix and the CD stream (XA and CD-DA, after Redux's CD volume matrix) as chunks tagged with their emulated-time position (CPU cycles × 44100 / clock);
+- it paces the SPU thread to emulated time instead of to the device;
+- it holds the CPU at most 50 ms ahead of the SPU thread. Without that, on this loaded host the SPU thread fell up to 9 s behind and every voice played early.
+
+Run it with `PSX_REDUX_BIN=<patched binary> SDL_AUDIO_DRIVER=dummy psx run --fast ...`.
+
+**What Redux does not model** (each one looked like a native bug at first):
+- **SPU main volume** (`1F801D80/82`, "unimplemented" in `registers.cc`). Crash fades it from 3D7Ah to 0 when paused, and SOTN does the same. The native core goes quiet on pause and Redux keeps playing. Tomb Raider's boot chime is also cut at 17 s by a main-volume write.
+- **CD input volume** (`1F801DB0/B2`). Redux's CD stream skips it, so its XA and CD-DA are about 6 dB louder than the native mix (gain 0.4997 = 3FFFh/8000h).
+- **Register-write timing.** Redux applies SPU writes once per 1 ms (45-sample) mixer batch, so the native core's 25–50-sample silences between a key off and the next key on (Mega Man 8) don't show in Redux.
+
+Also, `psx-redux` writes `"NullSync"` into `pcsx.json`, but Redux's key is `UseNullSync`, so jobs actually run on SDL's audio driver (dummy when headless). This doesn't affect emulated state.
+
+**Fix: XA zig-zag interpolation** (`xa.rs`). The native XA path resampled 37.8 kHz to 44.1 kHz by linear interpolation. Against Redux's CD stream on Tomb Raider's Core logo (pure XA), that left:
+- the 8–19 kHz bands 1.6–3.7 dB low;
+- images above 20 kHz 3.7 dB high;
+- a sample-level residual of −24 dB.
+
+The core now implements psx-spx's "25-point Zigzag Interpolation": a 32-entry ring per side, and every sixth input produces seven outputs through seven 29-tap tables (`>> 15` per tap, then clamped).
+- **Tables:** transcribed from psx-spx and checked against its listing by script. Their taps sum to 73E5h–741Dh, so XA plays at 0.906× (−0.86 dB).
+- **18.9 kHz audio:** each sample enters the ring twice. This is DuckStation's reading of psx-spx's "two-step theory"; Redux enters the midpoint first instead.
+- **Six-step counter:** psx-spx says it powers up random; here it starts at 6.
+
+After the fix:
+- every band is within 0.2 dB of Redux;
+- the sample-level residual is −49.4 dB, at correlation 1.0000 and gain 0.4997.
+
+Tests: the table transcription and symmetry, the DC gain, a flat passband (10 kHz within 2% of 1 kHz, where linear interpolation loses about 2 dB) and the 7/6 and 7/3 output counts. `psx xa` uses the same resampler, so offline decodes still match the emulator.
+
+The decoder's resampler state changed shape, so the save-state format is now **8**. The two native states the examples use (`.psx/croc-study/boot`, `.psx/mm8-study/s3900`) were regenerated with their documented commands. Their RAM, VRAM and scratchpad are byte-identical to the format-7 runs, and the old files are kept beside them as `state.format7.bin`.
+
+**Checks:**
+- **19-game identity.** All 19 full runs, before and after, give the same instruction count, cycles, final PC, final VRAM and final screen. Audio doesn't feed back into emulation in any of them.
+- **Save-state split.** Tomb Raider 3000 frames, split at 1380 inside the XA stream, is byte-identical, final state included.
+- **CPU lockstep.** It matched over 5M steps.
+- **CD-DA.** The path is sample-identical to Redux (Tomb Raider title music: residual −53.5 dB).
+
+**Everything else matched or was explained.** Where both emulators were in the same game state, spectra agree (cosine 0.99–1.00 for Croc, TR, SOTN, MM8, Crash, RE, Abe, R-Type, Pandemonium, PaRappa and the GT title) and the dominant peaks are identical. That rules out pitch errors.
+- **Not found:** stuck notes, missing reverb, or missing XA/CD-DA.
+- **Silence runs that are not bugs:**
+  - PaRappa's 80 ms gating (about 1400 zero runs);
+  - Ridge Racer's 170-sample gaps in the Galaxian loader;
+  - R-Type's pause gaps.
+  All three appear in Redux too.
+- **Low hiss under Croc's loader:** the reverb buffer playing while the master enable is off. psx-spx, Redux's notes and this core all agree that the buffer always plays.
+- **Redux runs that diverged from the native ones:**
+  - Ape Escape and MGS stayed on the title;
+  - FF7 went to its save menu;
+  - Ridge Racer sat on a silent title;
+  - GT went to course select;
+  - Vagrant Story hangs at NOW LOADING, since Redux reads no SBI.
+
+  For these the native audio was judged on its own (no dropouts or clicks, plausible content).
+
+**Reserved ADPCM headers.** psx-spx says SPU-ADPCM shifts 13–15 "reportedly" act like XA's, as shift 9, while the core clamps them to 12. The new report field `spu.reserved_adpcm_blocks` counts blocks a sounding voice fetches with shift 13–15 or filter 5–7. It is 0 in all 19 games, so the choice is untested by real software and was left alone.
+
+**MGS codec voices: zero XA sectors is expected.**
+- **The disc:** a scan of Disc 1 finds 2899 XA audio sectors, all inside `/MGS/ZMOVIE.STR` (the FMVs). `VOX.DAT` and `DEMO.DAT` are Form 1 data (submode 08h).
+- **The codec:** the native trace (`--trace-cd`, frames 6251–7481) shows the game reading VOX.DAT LBAs 169199–169394 in 2340-byte mode into a RAM ring at `801E7800h`, then DMAing it to sound RAM. It plays the data on SPU voices, double-buffered by SPU interrupts (15,142 over the run).
+- **The result:** the codec audio is speech with a ~148 Hz fundamental, with no dropouts.
+
+**Open:** `crates/psx-assets` `template_copies_match` fails on this branch's base: the template's `tim.rs`/`tmd.rs` are formatted differently. It is unrelated to audio.
 
 ## Next
 
