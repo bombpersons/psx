@@ -208,7 +208,8 @@ impl Tmd {
         for k in 0..nobj {
             let o = table + k * 28;
             let f = |i: usize| u32_at(buf, o + 4 * i).unwrap_or(0);
-            let (vert_top, n_vert, normal_top, n_normal, prim_top, n_prim) = (f(0), f(1) as usize, f(2), f(3) as usize, f(4), f(5) as usize);
+            let (vert_top, n_vert, normal_top, n_normal, prim_top, n_prim) =
+                (f(0), f(1) as usize, f(2), f(3) as usize, f(4), f(5) as usize);
             if n_vert > 0x10000 || n_normal > 0x10000 || n_prim > 0x10000 {
                 return Err(format!("object {k}: implausible counts {n_vert}/{n_normal}/{n_prim}"));
             }
@@ -327,13 +328,43 @@ mod tests {
             // 0x30 lit gouraud tri: colour, (norm, vert) x3
             prim(0, 0x30, &[rgb(1, 2, 3, 0x30), word(0, 0), word(0, 1), word(0, 2)]),
             // 0x2C lit flat textured quad: 4 uv, norm0 vert0, vert1 vert2, vert3 pad
-            prim(0, 0x2C, &[uv(0, 0, 0x7FC0), uv(64, 0, 0x0085), uv(0, 64, 0), uv(64, 64, 0), word(0, 0), word(1, 2), word(3, 0)]),
+            prim(
+                0,
+                0x2C,
+                &[uv(0, 0, 0x7FC0), uv(64, 0, 0x0085), uv(0, 64, 0), uv(64, 64, 0), word(0, 0), word(1, 2), word(3, 0)],
+            ),
             // 0x35 unlit gouraud textured tri: 3 uv, 3 colours, v0 v1, v2 pad
-            prim(1, 0x35, &[uv(1, 2, 5), uv(3, 4, 6), uv(5, 6, 0), rgb(255, 0, 0, 0x35), rgb(0, 255, 0, 0), rgb(0, 0, 255, 0), word(0, 1), word(2, 0)]),
+            prim(
+                1,
+                0x35,
+                &[
+                    uv(1, 2, 5),
+                    uv(3, 4, 6),
+                    uv(5, 6, 0),
+                    rgb(255, 0, 0, 0x35),
+                    rgb(0, 255, 0, 0),
+                    rgb(0, 0, 255, 0),
+                    word(0, 1),
+                    word(2, 0),
+                ],
+            ),
             // 0x29 unlit flat quad: colour, v0 v1, v2 v3
             prim(1, 0x29, &[rgb(9, 9, 9, 0x29), word(0, 1), word(2, 3)]),
             // 0x38 lit gouraud quad with gradation colours: 4 colours, (norm, vert) x4 -> layout mismatch? GRD lit untextured gouraud = 4 colours + 4 words
-            prim(FLAG_GRD, 0x38, &[rgb(1, 1, 1, 0x38), rgb(2, 2, 2, 0), rgb(3, 3, 3, 0), rgb(4, 4, 4, 0), word(0, 0), word(0, 1), word(0, 2), word(0, 3)]),
+            prim(
+                FLAG_GRD,
+                0x38,
+                &[
+                    rgb(1, 1, 1, 0x38),
+                    rgb(2, 2, 2, 0),
+                    rgb(3, 3, 3, 0),
+                    rgb(4, 4, 4, 0),
+                    word(0, 0),
+                    word(0, 1),
+                    word(0, 2),
+                    word(0, 3),
+                ],
+            ),
             // a line (code 010): skipped
             prim(1, 0x40, &[rgb(0, 0, 0, 0x40), word(0, 1)]),
             // mismatched ilen: skipped
@@ -348,7 +379,10 @@ mod tests {
         assert_eq!(o.polygons.len(), 6);
         assert_eq!(o.skipped, 2);
         let p = &o.polygons[0];
-        assert_eq!((p.vertices.as_slice(), p.normals.as_slice(), p.color(2)), (&[0u16, 1, 2][..], &[0u16][..], [10, 20, 30]));
+        assert_eq!(
+            (p.vertices.as_slice(), p.normals.as_slice(), p.color(2)),
+            (&[0u16, 1, 2][..], &[0u16][..], [10, 20, 30])
+        );
         assert_eq!(o.polygons[1].normals.len(), 3);
         let q = &o.polygons[2];
         assert!(q.textured() && q.lit());

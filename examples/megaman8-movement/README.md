@@ -23,6 +23,7 @@ from the decoded texture page.
 
 | Module | What it is |
 |---|---|
+| `src/lib.rs` | The game as a library (`game`): PAL region, 50 Hz logic, `GamePlugin`; `src/main.rs` only opens the window |
 | `src/player/movement.rs` | The rules: states (stand, step, walk, jump, fall, land), constants with their RAM/code evidence, and the per-tick pipeline `control → integrate → after_move → collide_with_floor` in `GameSystems::Game` |
 | `src/player/mod.rs` | The `Player` entity: `StagePos`, `Velocity`, `Facing`, `PlayerState`, `Grounded`, `WalkGrace` |
 | `src/player/sprite.rs` | Placeholder or captured standing pose, mirrored by `Facing` |

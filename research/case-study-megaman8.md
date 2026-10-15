@@ -408,22 +408,28 @@ The items are ordered roughly by how much time they cost. The suggestions are co
     `PsxMaterial::textured/color` and `ControllerState::released/direction`
     unused, so clippy warns. I added `#[allow(dead_code)]` on the template modules.
     *Suggest:* make the template a lib + bin, or mark its library modules `allow(dead_code)`.
+    *Resolved:* the template is now a library (`game`) plus a thin binary; removing `src/demo/` leaves no warnings.
 22. **The template is a bin crate.** Game logic can't be reached from `tests/` integration tests, so
     trajectory tests live in `#[cfg(test)]` modules inside the bin. That works, but
     a lib would allow `tests/` and examples.
     Running systems headless was easy: `App::new()`, `configure_sets`, plugin, then `run_schedule(FixedUpdate)` per tick. This is worth documenting as *the* way to test gameplay against recorded trajectories.
+    *Resolved:* `tests/` can reach every module, and `game::testing::{headless_app, TickApp}` runs exact ticks with scripted buttons (`tests/player.rs` is the pattern), documented in README and AGENTS.md.
 23. **The region is a hard-coded NTSC default.** `main.rs` hard-codes `Region::Ntsc`, and Mega Man 8 PAL needs 50 Hz for
     per-tick constants to mean the same thing.
     *Suggest:* `psx template create --region pal` (or take it from the disc's region).
+    *Partly resolved:* the region is one constant, `REGION` in `src/lib.rs`, and `--region pal|ntsc` overrides it at run time. `psx template create --region` does not exist yet.
 24. **Screenshots need a hand-written MCP client.** The dev MCP worked first time, and step-then-screenshot is deterministic. But
     each agent needs its own JSON-RPC client.
     *Suggest:* ship a `--script plan.json` CLI mode (steps, inputs and screenshots, then exit), or the
     generic driver as `tools/mcp_drive.py`.
+    *Open.* (`game_query` now covers numeric checks without screenshots.)
 25. **The template isn't rustfmt-clean.** There is no `rustfmt.toml`, and `cargo fmt --check` reports
     diffs across the template's own files (long lines). Agents that run fmt will reformat the whole copy.
+    *Resolved:* `rustfmt.toml` (120 columns) and the template is `cargo fmt --check` clean.
 26. **Bevy build times.** The first dev-mcp build took 26 s with the warm shared target.
     `cargo build --release` took 8 min, and two clippy passes took about 10 min under
     contention on the shared target dir. That is fine, but worth knowing.
+    *Addressed:* release rebuilds all of Bevy in its own profile, which is inherent. The dev profile already builds dependencies at `opt-level = 3`, so the README now says to iterate with `cargo build`/`cargo run` and keep `--release` for shipping; dev debug info is cut to line tables (none for dependencies) to shorten links and shrink the target dir.
 
 ### Nudges toward emulator-like code
 
@@ -436,6 +442,7 @@ The items are ordered roughly by how much time they cost. The suggestions are co
     the capture is the only level-shaped thing available.
     *Suggest:* the provenance and tile tools of section 5, and a README
     example that uses the capture only in a test (render, then diff).
+    *Partly addressed:* the template README and AGENTS.md now call captures reference data, not levels, and describe rebuilding stages from decoded tile, collision and spawn data. The toolkit support (provenance, tile extraction) and a render-then-diff test example are still open.
 28. **Exact constants pull toward per-tick units.** Matching the original exactly needs per-tick fixed-point
     constants and the original's order of operations (move, then cut the rise; clamp
     after the move; keep the sub-pixel on landing). I kept these as named
@@ -446,9 +453,11 @@ The items are ordered roughly by how much time they cost. The suggestions are co
     sub-pixels per tick. The template could say explicitly which is preferred:
     a fixed-tick simulation with per-tick constants is legitimate for a 2D action
     game.
+    *Resolved:* AGENTS.md, "From evidence to idiomatic code", says when per-tick constants are the right choice, using this study's 16.16 jump speed as the example.
 29. **`Region` changes the tick rate and therefore behaviour.** It is a rendering setting in the
     template (`PsxScreen`), but it sets the fixed tick rate too.
     *Suggest:* keep the simulation rate a game-level decision, separate from the display.
+    *Resolved:* `TickRate` (from `FIELDS_PER_TICK`) is separate from `PsxScreen::region`.
 
 ### What worked well
 

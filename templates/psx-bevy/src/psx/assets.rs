@@ -27,7 +27,7 @@ use bevy::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::formats::tim::{Tim, TimAlpha, TexPage, Vram, clut_from_cba};
+use super::formats::tim::{TexPage, Tim, TimAlpha, Vram, clut_from_cba};
 use super::formats::tmd::{MODE_TGE, Tmd, TmdObject, TmdPolygon};
 use super::{PsxBlend, PsxMaterial, scene::VIEW_UNITS_PER_METRE};
 
@@ -98,12 +98,18 @@ impl AssetLoader for TimLoader {
     type Settings = TimSettings;
     type Error = PsxAssetError;
 
-    async fn load(&self, reader: &mut dyn Reader, settings: &TimSettings, load_context: &mut LoadContext<'_>) -> Result<Image, PsxAssetError> {
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        settings: &TimSettings,
+        load_context: &mut LoadContext<'_>,
+    ) -> Result<Image, PsxAssetError> {
         let bytes = read_all(reader).await?;
         let tim = Tim::parse(&bytes).map_err(|e| PsxAssetError(format!("{}: {e}", load_context.path())))?;
         let alpha = TimAlpha::from(settings.transparency);
         for p in 1..tim.palette_count() {
-            load_context.add_labeled_asset(format!("Palette{p}"), rgba_image(tim.width(), tim.height(), tim.to_rgba(p, alpha)));
+            load_context
+                .add_labeled_asset(format!("Palette{p}"), rgba_image(tim.width(), tim.height(), tim.to_rgba(p, alpha)));
         }
         Ok(rgba_image(tim.width(), tim.height(), tim.to_rgba(settings.palette, alpha)))
     }
@@ -171,7 +177,6 @@ pub struct PsxModel {
 pub struct PsxModelRoot(pub Handle<PsxModel>);
 
 /// Which TMD object a spawned child is.
-#[allow(dead_code)] // read by game code
 #[derive(Component, Clone, Copy, Debug)]
 pub struct PsxModelObjectIndex(pub usize);
 
@@ -218,9 +223,10 @@ fn add_polygon(data: &mut PartData, obj: &TmdObject, p: &TmdPolygon, scale: f32,
         for i in order {
             let v = obj.vertices[p.vertices[i] as usize];
             data.positions.push([v[0] as f32 * scale, -(v[1] as f32) * scale, -(v[2] as f32) * scale]);
-            let n = p.normal(i).and_then(|n| obj.normals.get(n as usize)).map_or(Vec3::Y, |n| {
-                Vec3::new(n[0] as f32, -(n[1] as f32), -(n[2] as f32)).normalize_or(Vec3::Y)
-            });
+            let n = p
+                .normal(i)
+                .and_then(|n| obj.normals.get(n as usize))
+                .map_or(Vec3::Y, |n| Vec3::new(n[0] as f32, -(n[1] as f32), -(n[2] as f32)).normalize_or(Vec3::Y));
             data.normals.push(n.to_array());
             data.uvs.push(p.uvs.get(i).map_or([0.0; 2], |t| [t[0] as f32 / 256.0, t[1] as f32 / 256.0]));
             // Texture modulation: 128 is neutral (up to 2x); flat colours are /255.
@@ -245,7 +251,12 @@ impl AssetLoader for TmdLoader {
     type Settings = TmdSettings;
     type Error = PsxAssetError;
 
-    async fn load(&self, reader: &mut dyn Reader, settings: &TmdSettings, load_context: &mut LoadContext<'_>) -> Result<PsxModel, PsxAssetError> {
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        settings: &TmdSettings,
+        load_context: &mut LoadContext<'_>,
+    ) -> Result<PsxModel, PsxAssetError> {
         let bytes = read_all(reader).await?;
         let tmd = Tmd::parse(&bytes).map_err(|e| PsxAssetError(format!("{}: {e}", load_context.path())))?;
 
@@ -286,7 +297,10 @@ impl AssetLoader for TmdLoader {
                         .or_insert_with(|| {
                             let (rgba, covered) = vram.decode_page(key.page, key.clut, TimAlpha::Cutout);
                             (covered > 0.0).then(|| {
-                                let label = format!("Page{}_{}_{}b_Clut{}_{}", key.page.x, key.page.y, key.page.bits, key.clut.0, key.clut.1);
+                                let label = format!(
+                                    "Page{}_{}_{}b_Clut{}_{}",
+                                    key.page.x, key.page.y, key.page.bits, key.clut.0, key.clut.1
+                                );
                                 load_context.add_labeled_asset(label, rgba_image(256, 256, rgba))
                             })
                         })
@@ -295,7 +309,11 @@ impl AssetLoader for TmdLoader {
                 if p.textured() && tex.is_none() {
                     model.untextured += 1;
                 }
-                let blend = if p.semi_transparent() { 1 + if p.textured() { TexPage::from_tsb(p.tsb).abr } else { 0 } } else { 0 };
+                let blend = if p.semi_transparent() {
+                    1 + if p.textured() { TexPage::from_tsb(p.tsb).abr } else { 0 }
+                } else {
+                    0
+                };
                 let double_sided = !settings.cull_back_faces || p.double_sided();
                 let key = PartKey { tex, blend, lit: p.lit(), double_sided };
                 add_polygon(parts.entry(key).or_default(), obj, p, scale, tex.is_some(), !double_sided);
@@ -360,7 +378,13 @@ fn spawn_models(
         commands.entity(root).insert(ModelSpawned);
         for (k, object) in model.objects.iter().enumerate() {
             let child = commands
-                .spawn((Name::new(format!("Object{k}")), PsxModelObjectIndex(k), Transform::default(), Visibility::default(), ChildOf(root)))
+                .spawn((
+                    Name::new(format!("Object{k}")),
+                    PsxModelObjectIndex(k),
+                    Transform::default(),
+                    Visibility::default(),
+                    ChildOf(root),
+                ))
                 .id();
             for part in &object.parts {
                 let material = PsxMaterial {
@@ -370,7 +394,12 @@ fn spawn_models(
                     blend: part.blend,
                     ..default()
                 };
-                commands.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(materials.add(material)), Transform::default(), ChildOf(child)));
+                commands.spawn((
+                    Mesh3d(part.mesh.clone()),
+                    MeshMaterial3d(materials.add(material)),
+                    Transform::default(),
+                    ChildOf(child),
+                ));
             }
         }
     }
