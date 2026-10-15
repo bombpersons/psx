@@ -379,11 +379,17 @@ pub struct AssetsExtractArgs {
     /// Only the asset at this file offset (hex).
     #[arg(long)]
     pub offset: Option<String>,
-    /// More TIM sources (same syntax as `source`) uploaded to the virtual VRAM
+    /// More TIM or explicitly parsed upload sources (same syntax as `source`) loaded into virtual VRAM
     /// that TMD texture pages are decoded from; repeatable.
     #[arg(long = "textures")]
     #[serde(default)]
     pub textures: Vec<String>,
+    /// Executable decoding --textures inputs as standard payloads or raw VRAM upload documents.
+    #[arg(long, requires = "textures")]
+    pub texture_parser: Option<PathBuf>,
+    #[arg(long = "texture-parser-arg", allow_hyphen_values = true, requires = "texture_parser")]
+    #[serde(default)]
+    pub texture_parser_args: Vec<String>,
     /// Address of the file's first byte when it is a RAM dump (hex).
     #[arg(long)]
     pub ram_base: Option<String>,
@@ -394,7 +400,7 @@ pub struct AssetsExtractArgs {
     #[serde(flatten)]
     pub parsers: AssetParsersArgs,
     /// Extract this zero-based archive entry as raw bytes, without conversion.
-    #[arg(long, conflicts_with_all = ["offset", "kinds", "textures", "model_parser", "asset_parser"])]
+    #[arg(long, conflicts_with_all = ["offset", "kinds", "textures", "model_parser", "asset_parser", "texture_parser"])]
     pub entry: Option<usize>,
 }
 

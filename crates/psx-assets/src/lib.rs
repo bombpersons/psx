@@ -12,6 +12,7 @@ pub mod model_document;
 pub mod scan;
 pub mod tim;
 pub mod tmd;
+pub mod upload;
 pub mod vab;
 
 pub use scan::{scan, Hit, Info, Kind};

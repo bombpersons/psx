@@ -18,7 +18,7 @@
 
 ## Current toolkit queue (agreed 2026-10-15)
 
-Item 2 has external model decoding; raw texture upload decoding remains next.
+Items 1 and 2 are implemented. Item 3 (reciprocal depth cue) is next.
 This queue takes precedence over the historical
 milestones below. Scope is the shared toolkit and starter template; use the game
 studies as validation inputs.
@@ -35,7 +35,7 @@ studies as validation inputs.
    Implemented with shared Croc/DOT-T entries, bounded scanning/conversion,
    CLI/MCP raw entry extraction and authored malformed fixtures. The five local
    archives and Croc comparisons pass; see [validation](research/archive-support.md).
-2. **Preprocessed TMDs and raw texture-upload streams.** Build on archive entries
+2. **Preprocessed TMDs and raw texture-upload streams — done (2026-10-15).** Build on archive entries
    with explicit, validated format support or reusable decoding APIs. King's
    Field's RTMD uses a nonstandard header and vertex/normal byte offsets in
    place of indices; RTIM contains repeated upload rectangles and pixel data,
@@ -45,9 +45,15 @@ studies as validation inputs.
    formats. Shared archive/model/asset-wrapper/video-frame contracts, CLI/MCP
    integration and `template parser --kind archive|model|asset|video` starters are
    implemented. King's Field RTMD is a worked external parser, preserving strict
-   standard TMD detection. RTIM texture uploads remain outstanding. See
+   standard TMD detection. Ordered raw VRAM uploads now have a validated shared
+   document/API, asset scan/extract integration and `--texture-parser` for model
+   texture sources. The external RTIM example parses all 72 nonempty banks;
+   86,032 opening-region words match captured VRAM exactly. Three model texture
+   keys remain uncovered in the selected banks; runtime differences outside
+   those opening regions are documented rather than hidden. See
    [external parsers](docs/external-parsers.md) and
-   [validation](research/parser-extensions.md).
+   [model validation](research/parser-extensions.md) /
+   [upload validation](research/raw-texture-uploads.md).
 3. **Optional reciprocal depth cue in the template.** Add an authored
    `PsxMaterial` parameter using camera depth and per-vertex colour modulation.
    Preserve ordinary `DistanceFog` behavior when the option is disabled. Use
@@ -76,9 +82,11 @@ paused component editing) and `bb23a16` (bounded next-draw capture). Both are
 still on the feature branch, following the Ghidra commit `2f213c5` already merged
 into local `master`. Next-draw verification and artifact locations are recorded
 in [research/gpu-next-draw.md](research/gpu-next-draw.md). Queue item 1, the archive
-survey, external parser hooks/starters and the worked RTMD decoder are in the
-working tree and not yet committed. Item 2 is partial (RTIM remains); items 3–5
-have not been started. Continue using external examples for niche formats;
+survey, external parser hooks/starters and the worked RTMD decoder were committed
+as `0cf07bb` (2026-10-15). The subsequent raw upload document/API, external RTIM
+example and texture-source parser integration now complete item 2. Items 3–5
+have not been started.
+Continue using external examples for niche formats;
 add built-ins when reuse and validation justify them.
 
 ## Original plan (historical)

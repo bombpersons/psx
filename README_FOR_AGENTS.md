@@ -137,6 +137,11 @@ accept `--archive-parser EXEC` for an index of unchanged source spans,
 one standard TIM/TMD/VAB/VAG payload after unpacking a wrapper. `str` accepts
 `--frame-parser EXEC` for a normalized BS frame. Repeated `--*-parser-arg=VALUE`
 passes literal arguments; `--parser-timeout` defaults to 30 seconds per call.
+For raw VRAM streams, asset parsers can return ordered rectangle/word uploads.
+`assets extract MODEL --textures BANK --texture-parser EXEC` loads those words
+before resolving model page/CLUT references, alongside `--model-parser` if needed.
+The worked King's Field RTIM/common-texture parser and runtime comparisons are in
+[raw-texture-uploads.md](research/raw-texture-uploads.md).
 Original bytes, offsets, parser output and hashes remain inspectable. Generate
 starters with `psx template parser DIR --kind KIND` (MCP `template_parser_create`).
 The [protocol reference](docs/external-parsers.md) defines limits and geometry,

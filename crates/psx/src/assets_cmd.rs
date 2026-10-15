@@ -9,6 +9,7 @@ use psx_assets::archive::{Archive, Entry};
 use psx_assets::gltf::{texture_keys, tmd_to_gltf, TextureKey};
 use psx_assets::model_document::ModelDocument;
 use psx_assets::scan::{self, Hit, Info, Kind, Options};
+use psx_assets::upload::{Upload, UploadDocument};
 use psx_assets::vab::{levels, wav_mono};
 use psx_assets::{adpcm, Tim, TimAlpha, Tmd, Vab, Vag, Vram};
 use psx_media::iso9660::FileSystem;
@@ -29,6 +30,7 @@ pub struct Item {
     pub archive: Option<Archive>,
     pub archive_parser: Option<Value>,
     pub parsed: Option<Vec<ParsedAsset>>,
+    pub uploads: Vec<ParsedUploads>,
     /// A separate `.VB` body for a lone `.VH` at offset 0, when a sibling exists.
     pub sibling_vb: Option<Vec<u8>>,
 }
@@ -37,6 +39,14 @@ pub struct ParsedAsset {
     hit: Hit,
     model: Option<Tmd>,
     normalized: Option<Vec<u8>>,
+    document: Vec<u8>,
+    provenance: Value,
+}
+
+pub struct ParsedUploads {
+    offset: usize,
+    size: usize,
+    uploads: Vec<Upload>,
     document: Vec<u8>,
     provenance: Value,
 }
@@ -66,6 +76,14 @@ fn finish_item(mut item: Item, parsers: &Parsers) -> R<Item> {
             let model = parser::document::<ModelDocument>(&output.bytes)?.into_model().map_err(MediaError::Malformed)?;
             (Hit { offset, size, kind: Kind::Tmd, info: scan::tmd_info(&model) }, Some(model), None)
         } else {
+            // Explicit upload streams have no signature and no declared pixel
+            // depth. Keep them separate from standard TIM hits.
+            let value: Value = parser::document(&output.bytes)?;
+            if value.get("uploads").is_some() {
+                let uploads = parser::document::<UploadDocument>(&output.bytes)?.decode(size).map_err(MediaError::Malformed)?;
+                item.uploads.push(ParsedUploads { offset, size, uploads, document: output.bytes, provenance: output.provenance });
+                continue;
+            }
             let normalized = parser::document::<parser::PayloadDocument>(&output.bytes)?.decode()?;
             let hits = scan::scan(&normalized, Options::default());
             if hits.len() != 1 || hits[0].offset != 0 || hits[0].size == 0 {
@@ -138,6 +156,7 @@ pub fn items(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, pa
                     archive,
                     archive_parser: None,
                     parsed: None,
+                    uploads: Vec::new(),
                     sibling_vb: vb,
                 },
                 parsers,
@@ -166,7 +185,7 @@ pub fn items(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, pa
         let archive = archive_index(&bytes, directory.as_deref(), archive_mode, ram_base.is_some())?;
         let sibling_vb = e.path.to_ascii_uppercase().ends_with(".VH").then(|| read(&with_ext(&e.path, "VB"))).flatten();
         out.push(finish_item(
-            Item { name: e.path.clone(), bytes, ram_base, archive, sibling_vb, archive_parser: None, parsed: None },
+            Item { name: e.path.clone(), bytes, ram_base, archive, sibling_vb, archive_parser: None, parsed: None, uploads: Vec::new() },
             parsers,
         )?);
     }
@@ -228,21 +247,48 @@ fn hit_json(item: &Item, h: &Hit) -> Value {
     if let Some(parsed) = parsed_asset(item, h.offset) {
         v["parser"] = parsed.provenance.clone();
     }
-    if let Some(entry) = entry_of(item, h.offset) {
-        let mut provenance = serde_json::to_value(entry).unwrap();
-        provenance["archive_offset"] = json!(format!("0x{:X}", entry.offset));
-        // Preserve Croc's existing relative `entry.offset` and optional name.
-        provenance["offset"] = json!(format!("0x{:X}", h.offset - entry.offset));
-        provenance["format"] = json!(item.archive.as_ref().unwrap().format);
-        if let Some(parser) = &item.archive_parser {
-            provenance["parser"] = parser.clone();
-        }
-        v["entry"] = provenance;
+    if let Some(entry) = entry_json(item, h.offset) {
+        v["entry"] = entry;
     }
     if let (Some(base), Info::Tmd { .. }) = (item.ram_base, &h.info) {
         v["address"] = json!(format!("0x{:08X}", base as usize + h.offset));
     }
     v
+}
+
+fn entry_json(item: &Item, offset: usize) -> Option<Value> {
+    entry_of(item, offset).map(|entry| {
+        let mut provenance = serde_json::to_value(entry).unwrap();
+        provenance["archive_offset"] = json!(format!("0x{:X}", entry.offset));
+        // Preserve Croc's existing relative `entry.offset` and optional name.
+        provenance["offset"] = json!(format!("0x{:X}", offset - entry.offset));
+        provenance["format"] = json!(item.archive.as_ref().unwrap().format);
+        if let Some(parser) = &item.archive_parser {
+            provenance["parser"] = parser.clone();
+        }
+        provenance
+    })
+}
+
+fn uploads_json(item: &Item, stream: &ParsedUploads) -> Value {
+    // Reuse the same source/entry provenance as standard hits without presenting
+    // raw words as TIM pixels or guessing which uploads are palettes.
+    let mut value = json!({"kind":"vram_uploads","offset":format!("0x{:X}",stream.offset),"size":stream.size});
+    if let Some(entry) = entry_json(item, stream.offset) {
+        value["entry"] = entry;
+    }
+    value["parser"] = stream.provenance.clone();
+    value["uploads"] = json!(stream
+        .uploads
+        .iter()
+        .enumerate()
+        .map(|(index, upload)| json!({
+            "index":index,"rect":[upload.rect.x,upload.rect.y,upload.rect.w,upload.rect.h],"words":upload.words.len(),
+            "source_offset":upload.source_offset,"source_size":upload.source_size,
+            "offset":format!("0x{:X}",stream.offset+upload.source_offset),
+        }))
+        .collect::<Vec<_>>());
+    value
 }
 
 fn describe(h: &Hit) -> String {
@@ -287,6 +333,10 @@ pub fn scan_assets(a: &crate::commands::AssetsScanArgs, ctx: &crate::commands::C
 /// `assets extract`.
 pub fn extract_assets(a: &crate::commands::AssetsExtractArgs, ctx: &crate::commands::Ctx) -> R<Value> {
     let parsers = a.parsers.build(ctx, a.archive.as_deref())?;
+    let texture_parser = parser::Spec::new(a.texture_parser.as_ref(), &a.texture_parser_args, a.parsers.parser_timeout)?;
+    if texture_parser.is_some() && a.textures.is_empty() {
+        return Err(MediaError::Malformed("--texture-parser requires at least one --textures source".into()));
+    }
     extract_cmd(ExtractArgs {
         source: &a.source,
         out: &a.out,
@@ -297,6 +347,7 @@ pub fn extract_assets(a: &crate::commands::AssetsExtractArgs, ctx: &crate::comma
         archive: a.archive.as_deref(),
         entry: a.entry,
         parsers: &parsers,
+        texture_parser: texture_parser.as_ref(),
     })
 }
 
@@ -327,6 +378,7 @@ pub fn scan_cmd(a: ScanArgs) -> R<Result<Value, String>> {
     let items = items(a.source, a.ram_base, a.archive, a.parsers)?;
     let mut files = Vec::new();
     let mut totals: BTreeMap<Kind, usize> = BTreeMap::new();
+    let (mut upload_streams, mut uploads, mut upload_words) = (0, 0, 0);
     let mut text = String::new();
     for item in &items {
         let hits: Vec<Hit> = item_hits(item).into_iter().filter(|h| a.kinds.is_empty() || a.kinds.contains(&h.kind)).collect();
@@ -339,7 +391,8 @@ pub fn scan_cmd(a: ScanArgs) -> R<Result<Value, String>> {
                 archive.entries.iter().filter(|e| e.size == 0).count()
             ));
         }
-        if hits.is_empty() && item.archive.is_none() {
+        let streams: Vec<_> = item.uploads.iter().filter(|_| a.kinds.is_empty()).collect();
+        if hits.is_empty() && streams.is_empty() && item.archive.is_none() {
             continue;
         }
         for h in &hits {
@@ -351,6 +404,21 @@ pub fn scan_cmd(a: ScanArgs) -> R<Result<Value, String>> {
         }
         let mut file =
             json!({"file": item.name, "bytes": item.bytes.len(), "hits": hits.iter().map(|h| hit_json(item, h)).collect::<Vec<_>>()});
+        if !streams.is_empty() {
+            upload_streams += streams.len();
+            file["upload_streams"] = json!(streams.iter().map(|stream| uploads_json(item, stream)).collect::<Vec<_>>());
+            for stream in &streams {
+                uploads += stream.uploads.len();
+                upload_words += stream.uploads.iter().map(|u| u.words.len()).sum::<usize>();
+                text.push_str(&format!(
+                    "{}  0x{:08X}  {} raw VRAM uploads ({} words)\n",
+                    item.name,
+                    stream.offset,
+                    stream.uploads.len(),
+                    stream.uploads.iter().map(|u| u.words.len()).sum::<usize>()
+                ));
+            }
+        }
         if let Some(archive) = &item.archive {
             file["archive"] = json!(archive);
             if let Some(parser) = &item.archive_parser {
@@ -363,9 +431,11 @@ pub fn scan_cmd(a: ScanArgs) -> R<Result<Value, String>> {
         text.push_str(&format!("{} files scanned, totals {:?}\n", items.len(), totals));
         return Ok(Err(text));
     }
-    Ok(Ok(
-        json!({"source": a.source, "files_scanned": items.len(), "totals": totals.iter().map(|(k, n)| (k.ext().to_string(), json!(n))).collect::<serde_json::Map<_, _>>(), "files": files}),
-    ))
+    let mut result = json!({"source": a.source, "files_scanned": items.len(), "totals": totals.iter().map(|(k, n)| (k.ext().to_string(), json!(n))).collect::<serde_json::Map<_, _>>(), "files": files});
+    if upload_streams != 0 {
+        result["upload_totals"] = json!({"streams":upload_streams,"uploads":uploads,"words":upload_words});
+    }
+    Ok(Ok(result))
 }
 
 pub struct ExtractArgs<'a> {
@@ -374,13 +444,14 @@ pub struct ExtractArgs<'a> {
     pub kinds: &'a [Kind],
     /// Only the hit at this offset.
     pub offset: Option<usize>,
-    /// Extra TIM sources uploaded to the virtual VRAM before each item's own TIMs.
+    /// Extra texture sources loaded before each item's own textures.
     pub textures: &'a [String],
     pub ram_base: Option<u32>,
     pub archive: Option<&'a str>,
     /// Raw entry extraction, without interpreting its payload.
     pub entry: Option<usize>,
     pub parsers: &'a Parsers,
+    pub texture_parser: Option<&'a parser::Spec>,
 }
 
 fn safe_name(s: &str) -> String {
@@ -402,21 +473,47 @@ fn wav_stats(pcm: &[i16], rate: u32) -> Value {
            "peak": (peak * 1000.0).round() / 1000.0, "rms": (rms * 10000.0).round() / 10000.0, "clipped_samples": clipped})
 }
 
-fn load_item_tims(vram: &mut Vram, item: &Item) -> usize {
-    let mut count = 0;
-    for hit in item_hits(item).into_iter().filter(|h| h.kind == Kind::Tim) {
-        let (bytes, offset, _) = decode_context(item, hit.offset);
-        if let Ok(tim) = Tim::parse(&bytes[offset..]) {
-            vram.load_tim(&tim);
-            count += 1;
+/// Apply source entries in index order (byte order for a flat file), and each
+/// upload document in its returned order. TIMs and raw streams may be interleaved.
+fn load_item_textures(vram: &mut Vram, item: &Item) -> (usize, usize) {
+    enum Source<'a> {
+        Tim(Hit),
+        Uploads(&'a ParsedUploads),
+    }
+    let order = |offset| (entry_of(item, offset).map_or(0, |e| e.index), offset);
+    let mut sources: Vec<_> =
+        item_hits(item).into_iter().filter(|h| h.kind == Kind::Tim).map(|h| (order(h.offset), Source::Tim(h))).collect();
+    sources.extend(item.uploads.iter().map(|s| (order(s.offset), Source::Uploads(s))));
+    sources.sort_by_key(|(order, _)| *order);
+    let (mut tims, mut uploads) = (0, 0);
+    for (_, source) in sources {
+        match source {
+            Source::Tim(hit) => {
+                let (bytes, offset, _) = decode_context(item, hit.offset);
+                if let Ok(tim) = Tim::parse(&bytes[offset..]) {
+                    vram.load_tim(&tim);
+                    tims += 1;
+                }
+            }
+            Source::Uploads(stream) => {
+                for upload in &stream.uploads {
+                    upload.apply(vram);
+                    uploads += 1;
+                }
+            }
         }
     }
-    count
+    (tims, uploads)
 }
 
 pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
     if a.entry.is_some()
-        && (a.offset.is_some() || !a.kinds.is_empty() || !a.textures.is_empty() || a.parsers.model.is_some() || a.parsers.asset.is_some())
+        && (a.offset.is_some()
+            || !a.kinds.is_empty()
+            || !a.textures.is_empty()
+            || a.parsers.model.is_some()
+            || a.parsers.asset.is_some()
+            || a.texture_parser.is_some())
     {
         return Err(MediaError::Malformed("raw --entry extraction cannot combine with asset selection or model/asset parsers".into()));
     }
@@ -444,23 +541,54 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
     }
     let mut base_vram = Vram::default();
     let mut texture_tims = 0;
+    let mut texture_uploads = 0;
+    let mut texture_sources = Vec::new();
+    let texture_parsers = Parsers { asset: a.texture_parser.cloned(), cancel: a.parsers.cancel.clone(), ..Default::default() };
     for t in a.textures {
-        for it in self::items(t, None, None, &Parsers::default())? {
-            texture_tims += load_item_tims(&mut base_vram, &it);
+        for it in self::items(t, None, None, &texture_parsers)? {
+            let (tims, uploads) = load_item_textures(&mut base_vram, &it);
+            texture_tims += tims;
+            texture_uploads += uploads;
+            if a.texture_parser.is_some() {
+                texture_sources.push(json!({"file":it.name,
+                    "hits":item_hits(&it).iter().map(|h|hit_json(&it,h)).collect::<Vec<_>>(),
+                    "upload_streams":it.uploads.iter().map(|s|uploads_json(&it,s)).collect::<Vec<_>>()
+                }));
+            }
         }
     }
     let mut report = Vec::new();
     let want = |k: Kind| a.kinds.is_empty() || a.kinds.contains(&k);
     for item in &items {
         let hits: Vec<Hit> = item_hits(item).into_iter().filter(|h| want(h.kind) && a.offset.is_none_or(|o| o == h.offset)).collect();
-        if hits.is_empty() {
+        let streams: Vec<_> = item.uploads.iter().filter(|s| a.kinds.is_empty() && a.offset.is_none_or(|o| o == s.offset)).collect();
+        if hits.is_empty() && streams.is_empty() {
             continue;
         }
         let dir = a.out.join(safe_name(&item.name));
         std::fs::create_dir_all(&dir).map_err(|e| MediaError::io(&dir, e))?;
+        for stream in streams {
+            let stem = format!("{:08X}", stream.offset);
+            let source = dir.join(format!("{stem}.source.bin"));
+            let document = dir.join(format!("{stem}.parser.json"));
+            write(&source, &item.bytes[stream.offset..stream.offset + stream.size])?;
+            write(&document, &stream.document)?;
+            let mut record = uploads_json(item, stream);
+            record["file"] = json!(item.name);
+            let uploads = record["uploads"].as_array_mut().unwrap();
+            for (index, upload) in stream.uploads.iter().enumerate() {
+                let path = dir.join(format!("{stem}_upload_{index:04}.words.bin"));
+                write(&path, &upload.bytes())?;
+                uploads[index]["path"] = json!(path);
+            }
+            let manifest = dir.join(format!("{stem}.uploads.json"));
+            record["outputs"] = json!([{"path":source,"role":"original"},{"path":document,"role":"parser_document"},{"path":manifest,"role":"upload_manifest"}]);
+            write(&manifest, serde_json::to_string_pretty(&record).unwrap().as_bytes())?;
+            report.push(record);
+        }
         // VRAM for this item's models: the --textures TIMs, then this item's own.
         let mut vram = base_vram.clone();
-        let own_tims = if hits.iter().any(|h| h.kind == Kind::Tmd) { load_item_tims(&mut vram, item) } else { 0 };
+        let (own_tims, own_uploads) = if hits.iter().any(|h| h.kind == Kind::Tmd) { load_item_textures(&mut vram, item) } else { (0, 0) };
         for h in &hits {
             let stem = match entry_of(item, h.offset) {
                 Some(entry) => {
@@ -537,6 +665,9 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
                             "png": (*c > 0.0).then(|| dir.join(f)), "vram_coverage": (c * 1000.0).round() / 1000.0,
                         })).collect::<Vec<_>>(),
                     });
+                    if texture_uploads + own_uploads > 0 {
+                        extra["vram_uploads"] = json!({"from_textures":texture_uploads,"from_this_file":own_uploads});
+                    }
                 }
                 Kind::Vag => {
                     let v = Vag::parse(bytes).map_err(MediaError::Malformed)?;
@@ -583,7 +714,11 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
             report.push(entry);
         }
     }
-    Ok(json!({"source": a.source, "out": a.out, "extracted": report.len(), "assets": report}))
+    let mut result = json!({"source": a.source, "out": a.out, "extracted": report.len(), "assets": report});
+    if !texture_sources.is_empty() {
+        result["texture_sources"] = json!(texture_sources);
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -619,6 +754,7 @@ mod tests {
             archive: Some(archive),
             sibling_vb: None,
             parsed: None,
+            uploads: Vec::new(),
             archive_parser: None,
         };
         assert_eq!(scan::scan(&item.bytes, Options::default()).len(), 2);
@@ -632,6 +768,43 @@ mod tests {
         assert_eq!(hit["entry"]["size"], 4096);
         assert_eq!(hit["entry"]["format"], "dot_t");
         assert!(hit["entry"].get("name").is_none());
+    }
+
+    #[test]
+    fn tims_and_raw_uploads_follow_archive_entry_order_even_when_offsets_are_unsorted() {
+        let tim = tim();
+        let hit = scan::scan(&tim, Options::default()).remove(0);
+        let mut bytes = vec![0; 129];
+        bytes[..tim.len()].copy_from_slice(&tim);
+        let archive = Archive::external(
+            vec![Entry { index: 0, name: None, offset: 128, size: 1 }, Entry { index: 1, name: None, offset: 0, size: tim.len() }],
+            bytes.len(),
+        )
+        .unwrap();
+        let item = Item {
+            name: "mixed.dat".into(),
+            bytes,
+            ram_base: None,
+            archive: Some(archive),
+            archive_parser: None,
+            sibling_vb: None,
+            parsed: Some(vec![ParsedAsset { hit, model: None, normalized: None, document: vec![], provenance: Value::Null }]),
+            uploads: vec![ParsedUploads {
+                offset: 128,
+                size: 1,
+                document: vec![],
+                provenance: Value::Null,
+                uploads: vec![Upload {
+                    source_offset: 0,
+                    source_size: 1,
+                    rect: psx_assets::tim::VramRect { x: 0, y: 0, w: 1, h: 1 },
+                    words: vec![0x3e0],
+                }],
+            }],
+        };
+        let mut vram = Vram::default();
+        assert_eq!(load_item_textures(&mut vram, &item), (1, 1));
+        assert_eq!(vram.data[0], 31, "the later TIM entry must overwrite the raw upload");
     }
 
     #[test]
