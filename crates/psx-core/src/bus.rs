@@ -216,17 +216,27 @@ impl Bus {
         if self.next_vblank == 0 {
             self.next_vblank = self.frame_cycles();
         }
-        let lines = if self.pal() { 314 } else { 263 };
-        let hblank = ((1u64 << 16) * lines) / self.frame_cycles();
-        // Dot clock: 53.693175 MHz / divider (10, 8, 5, 4 for widths 256, 320, 512, 640; 7 for 368).
-        let div = match self.gpu.display.width() {
-            256 => 10,
-            320 => 8,
-            368 => 7,
-            512 => 5,
-            _ => 4,
+        // Both rates are 16.16 fixed point per system clock. Every case is a
+        // compile-time constant (this runs every device batch; no divides).
+        const fn hblank_rate(lines: u64, frame_cycles: u64) -> u64 {
+            ((1u64 << 16) * lines) / frame_cycles
+        }
+        let hblank = if self.pal() {
+            const { hblank_rate(314, SYSCLK / 50) }
+        } else {
+            const { hblank_rate(263, SYSCLK * 1001 / 60000) }
         };
-        let dotclock = ((53_693_175u64 << 16) / div) / SYSCLK;
+        // Dot clock: 53.693175 MHz / divider (10, 8, 5, 4 for widths 256, 320, 512, 640; 7 for 368).
+        const fn dot_rate(div: u64) -> u64 {
+            ((53_693_175u64 << 16) / div) / SYSCLK
+        }
+        let dotclock = match self.gpu.display.width() {
+            256 => const { dot_rate(10) },
+            320 => const { dot_rate(8) },
+            368 => const { dot_rate(7) },
+            512 => const { dot_rate(5) },
+            _ => const { dot_rate(4) },
+        };
         let irq = self.timers.tick(cycles, crate::timers::Rates { dotclock, hblank });
         self.raise_irq(irq);
         if self.spu.tick(cycles, &mut self.cdrom.audio) {
@@ -509,8 +519,14 @@ impl Bus {
         self.irq_dirty = true;
     }
 
+    #[inline]
     pub fn take_irq_ack(&mut self) -> bool {
-        std::mem::take(&mut self.irq_acknowledged)
+        // Runs every instruction: only store when the flag is set.
+        let acked = self.irq_acknowledged;
+        if acked {
+            self.irq_acknowledged = false;
+        }
+        acked
     }
 
     fn log_access(&mut self, a: IoAccess) {
@@ -529,21 +545,34 @@ impl Bus {
         (0x1F80_1000..0x1F80_3000).contains(&p)
     }
 
+    /// Word at a RAM offset (`o` is already reduced modulo [`RAM_SIZE`]).
+    #[inline(always)]
+    fn ram_u32(&self, o: usize) -> u32 {
+        u32::from_le_bytes(self.ram[o..o + 4].try_into().unwrap())
+    }
+
+    #[inline(always)]
     pub fn read(&mut self, addr: u32, width: Width) -> Result<u32, BusError> {
         let p = physical(addr);
-        // Fast paths: RAM and BIOS (the overwhelmingly common cases).
+        // Fast paths: RAM and BIOS (the overwhelmingly common cases), inlined
+        // into the CPU; everything else goes through the out-of-line decoder.
         if p < 0x0080_0000 {
             let o = p as usize % RAM_SIZE;
             return Ok(match width {
-                Width::Word => u32::from_le_bytes([self.ram[o], self.ram[o + 1], self.ram[o + 2], self.ram[o + 3]]),
+                Width::Word => self.ram_u32(o),
                 Width::Half => u16::from_le_bytes([self.ram[o], self.ram[o + 1]]) as u32,
                 Width::Byte => self.ram[o] as u32,
             });
         }
         if width == Width::Word && (0x1FC0_0000..0x1FC8_0000).contains(&p) {
             let o = (p - 0x1FC0_0000) as usize;
-            return Ok(u32::from_le_bytes([self.bios[o], self.bios[o + 1], self.bios[o + 2], self.bios[o + 3]]));
+            return Ok(u32::from_le_bytes(self.bios[o..o + 4].try_into().unwrap()));
         }
+        self.read_slow(addr, p, width)
+    }
+
+    #[inline(never)]
+    fn read_slow(&mut self, addr: u32, p: u32, width: Width) -> Result<u32, BusError> {
         if (0x1F80_1000..0x1F80_3000).contains(&p) {
             self.flush();
         }
@@ -613,8 +642,24 @@ impl Bus {
         })
     }
 
+    #[inline(always)]
     pub fn write(&mut self, addr: u32, width: Width, value: u32) -> Result<(), BusError> {
         let p = physical(addr);
+        // Fast path: RAM with no write watch armed.
+        if p < 0x0080_0000 && !self.obs.active() {
+            let o = p as usize % RAM_SIZE;
+            match width {
+                Width::Word => self.ram[o..o + 4].copy_from_slice(&value.to_le_bytes()),
+                Width::Half => self.ram[o..o + 2].copy_from_slice(&(value as u16).to_le_bytes()),
+                Width::Byte => self.ram[o] = value as u8,
+            }
+            return Ok(());
+        }
+        self.write_slow(addr, p, width, value)
+    }
+
+    #[inline(never)]
+    fn write_slow(&mut self, addr: u32, p: u32, width: Width, value: u32) -> Result<(), BusError> {
         if (0x1F80_1000..0x1F80_3000).contains(&p) {
             self.flush();
             if (I_STAT..I_MASK + 4).contains(&p) {
