@@ -8,8 +8,8 @@
 //! CD input through Mute/Demute and the CD volume matrix.
 //!
 //! Timings are approximations (documented per constant), not measured.
-//! Not modelled: XA from RAM (sound map data out), XA emphasis and the
-//! hardware's zig-zag resampler, subchannel Q beyond Getloc, seek-time physics.
+//! Not modelled: XA from RAM (sound map data out), XA emphasis, subchannel Q
+//! beyond Getloc, seek-time physics.
 
 use std::collections::VecDeque;
 
