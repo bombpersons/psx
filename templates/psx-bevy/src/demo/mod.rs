@@ -1,13 +1,15 @@
-//! Example scene: replace this module with your game's own plugins.
+//! Example game: replace this module with your game's own plugins (and
+//! `crate::GamePlugin`'s list of them).
 //!
-//! Shows the intended shape: ordinary Bevy entities, `PsxMaterial` meshes,
-//! normal lights and fog, a 2D HUD of sprites over 3D, and gameplay in
-//! `FixedUpdate` reading `ControllerState`.
-use crate::{
-    GameSystems,
-    controller::{Button, ControllerState},
-    psx::{PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxScreen, PsxSprite, PsxStp, PsxView, psx_indices, psx_palette, rgb15},
-};
+//! Shows the intended shape: rules in their own plugin ([`player`], no
+//! rendering, tested headless in `tests/player.rs`), ordinary Bevy entities
+//! with `PsxMaterial` meshes, normal lights and fog, and a 2D HUD of sprites
+//! over 3D.
+pub mod player;
+
+use crate::prelude::*;
+use crate::psx::{PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxScreen, PsxSprite, PsxStp, PsxView};
+use crate::psx::{psx_indices, psx_palette, rgb15};
 use bevy::{
     asset::RenderAssetUsages,
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor},
@@ -16,20 +18,21 @@ use bevy::{
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
+use player::Player;
 
 pub struct DemoPlugin;
 
 impl Plugin for DemoPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, (setup, setup_2d))
-            .add_systems(FixedUpdate, (move_player, spin, toggle_look, cycle_palette, flash_gem).in_set(GameSystems::Game))
+        app.add_plugins(player::PlayerPlugin)
+            .add_systems(Startup, (setup, setup_2d))
+            .add_systems(FixedUpdate, (spin, toggle_look, cycle_palette, flash_gem).in_set(GameSystems::Game))
             .add_systems(FixedUpdate, update_hud.in_set(GameSystems::Finish))
             .add_systems(Update, follow_camera);
     }
 }
 
-#[derive(Component)]
-struct Player;
+/// Turning speed, rad/s.
 #[derive(Component)]
 struct Spin(f32);
 #[derive(Component)]
@@ -104,15 +107,21 @@ fn setup(
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
         MeshMaterial3d(materials.add(PsxMaterial::textured(crate_texture))),
-        Transform::from_xyz(0.0, 0.5, 0.0),
+        // Explicit: `Mesh3d` would otherwise insert a default Transform first.
+        Transform::from_xyz(0.0, player::GROUND_Y, 0.0),
         Player,
+        Name::new("Player"),
     ));
     for (i, x) in [-3.0, 3.0].into_iter().enumerate() {
         commands.spawn((
             Mesh3d(meshes.add(Sphere::new(0.6).mesh().ico(1).unwrap())),
-            MeshMaterial3d(materials.add(PsxMaterial::color(Color::srgb(0.3 + 0.5 * i as f32, 0.4, 0.9 - 0.5 * i as f32)))),
+            MeshMaterial3d(materials.add(PsxMaterial::color(Color::srgb(
+                0.3 + 0.5 * i as f32,
+                0.4,
+                0.9 - 0.5 * i as f32,
+            )))),
             Transform::from_xyz(x, 1.0, -2.0),
-            Spin(1.0 + i as f32),
+            Spin(1.2 * (1.0 + i as f32)),
         ));
     }
     // Additive "glow" panel: PS1 semi-transparency mode B+F.
@@ -126,7 +135,7 @@ fn setup(
             ..default()
         })),
         Transform::from_xyz(0.0, 1.5, -3.5),
-        Spin(0.5),
+        Spin(0.6),
     ));
 
     // HUD: 2D sprites in screen pixels (origin at the centre, y up).
@@ -176,15 +185,25 @@ fn setup_2d(
     commands.insert_resource(GemPalette(palette.clone()));
     commands.spawn((
         Sprite::from_image(images.add(psx_indices(16, 16, indices))),
-        SpriteMaterial(sprites.add(PsxSprite { blend: PsxBlend::Add, stp: PsxStp::Texel, ..PsxSprite::indexed(palette, 0) })),
+        SpriteMaterial(sprites.add(PsxSprite {
+            blend: PsxBlend::Add,
+            stp: PsxStp::Texel,
+            ..PsxSprite::indexed(palette, 0)
+        })),
         Transform::from_xyz(-120.0, top, 0.0).with_scale(Vec3::splat(2.0)),
     ));
 
     // Gouraud quad: vertex colours interpolate; `PsxLook::dither` dithers them.
     let quad = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[-40.0, -8.0, 0.0], [40.0, -8.0, 0.0], [-40.0, 8.0, 0.0], [40.0, 8.0, 0.0]])
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            vec![[-40.0, -8.0, 0.0], [40.0, -8.0, 0.0], [-40.0, 8.0, 0.0], [40.0, 8.0, 0.0]],
+        )
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0, 1.0], [1.0, 1.0], [0.0, 0.0], [1.0, 0.0]])
-        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.02, 0.0, 0.1, 1.0], [0.6, 0.1, 0.0, 1.0], [0.0, 0.05, 0.2, 1.0], [0.9, 0.5, 0.0, 1.0]])
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_COLOR,
+            vec![[0.02, 0.0, 0.1, 1.0], [0.6, 0.1, 0.0, 1.0], [0.0, 0.05, 0.2, 1.0], [0.9, 0.5, 0.0, 1.0]],
+        )
         .with_inserted_indices(Indices::U32(vec![0, 1, 2, 1, 3, 2]));
     commands.spawn((
         Mesh2d(meshes.add(quad)),
@@ -193,7 +212,8 @@ fn setup_2d(
     ));
 
     // A plain sprite with a smooth 24-bit gradient: banding shows the 15-bit screen.
-    let gradient: Vec<u8> = (0..8).flat_map(|_| (0..80u32).flat_map(|x| [(x * 3) as u8, (x * 2) as u8, 40, 255])).collect();
+    let gradient: Vec<u8> =
+        (0..8).flat_map(|_| (0..80u32).flat_map(|x| [(x * 3) as u8, (x * 2) as u8, 40, 255])).collect();
     let gradient = Image::new(
         Extent3d { width: 80, height: 8, depth_or_array_layers: 1 },
         TextureDimension::D2,
@@ -208,7 +228,7 @@ fn setup_2d(
 }
 
 /// Classic palette cycling: rotate entries 1-4 of the gem's normal palette.
-fn cycle_palette(clock: Res<crate::GameClock>, palette: Res<GemPalette>, mut images: ResMut<Assets<Image>>) {
+fn cycle_palette(clock: Res<GameClock>, palette: Res<GemPalette>, mut images: ResMut<Assets<Image>>) {
     if !clock.frame.is_multiple_of(8) {
         return;
     }
@@ -221,7 +241,11 @@ fn cycle_palette(clock: Res<crate::GameClock>, palette: Res<GemPalette>, mut ima
 }
 
 /// Circle swaps the gem to its flash palette (a CLUT swap: one field).
-fn flash_gem(pad: Res<ControllerState>, gems: Query<&SpriteMaterial<PsxSprite>>, mut sprites: ResMut<Assets<PsxSprite>>) {
+fn flash_gem(
+    pad: Res<ControllerState>,
+    gems: Query<&SpriteMaterial<PsxSprite>>,
+    mut sprites: ResMut<Assets<PsxSprite>>,
+) {
     let row = u32::from(pad.held(Button::Circle));
     for gem in &gems {
         if sprites.get(&gem.0).is_some_and(|s| s.palette_row != row)
@@ -232,19 +256,9 @@ fn flash_gem(pad: Res<ControllerState>, gems: Query<&SpriteMaterial<PsxSprite>>,
     }
 }
 
-/// Gameplay runs at a fixed rate; speeds are per tick.
-fn move_player(pad: Res<ControllerState>, mut player: Query<&mut Transform, With<Player>>) {
-    let dir = pad.direction();
-    for mut t in &mut player {
-        t.translation += Vec3::new(dir.x, 0.0, -dir.y) * 0.08;
-        t.translation = t.translation.clamp(Vec3::new(-10.0, 0.5, -10.0), Vec3::new(10.0, 0.5, 10.0));
-        t.rotate_y(0.03 * (f32::from(u8::from(pad.held(Button::L1))) - f32::from(u8::from(pad.held(Button::R1)))));
-    }
-}
-
-fn spin(mut q: Query<(&Spin, &mut Transform)>) {
+fn spin(time: Res<Time>, mut q: Query<(&Spin, &mut Transform)>) {
     for (spin, mut t) in &mut q {
-        t.rotate_y(0.02 * spin.0);
+        t.rotate_y(spin.0 * time.delta_secs());
     }
 }
 
@@ -256,10 +270,15 @@ fn toggle_look(pad: Res<ControllerState>, mut look: ResMut<PsxLook>) {
     }
 }
 
-fn follow_camera(player: Query<&Transform, With<Player>>, mut cam: Query<&mut Transform, (With<Camera3d>, Without<Player>)>) {
+fn follow_camera(
+    player: Query<&Transform, With<Player>>,
+    mut cam: Query<&mut Transform, (With<Camera3d>, Without<Player>)>,
+) {
     let (Ok(p), Ok(mut c)) = (player.single(), cam.single_mut()) else { return };
-    c.translation = p.translation + Vec3::new(0.0, 2.5, 6.5);
-    c.look_at(p.translation, Vec3::Y);
+    // Follow on the floor plane only, so a hop is visible against the floor.
+    let target = Vec3::new(p.translation.x, player::GROUND_Y, p.translation.z);
+    c.translation = target + Vec3::new(0.0, 2.5, 6.5);
+    c.look_at(target, Vec3::Y);
 }
 
 fn update_hud(pad: Res<ControllerState>, mut q: Query<(&Indicator, &mut Sprite)>) {

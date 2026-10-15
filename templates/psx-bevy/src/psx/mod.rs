@@ -14,23 +14,24 @@
 mod material;
 mod material2d;
 mod scene;
+mod shaders;
 
-#[allow(unused_imports)] // public API for game code
 pub use material::{PsxBlend, PsxMaterial, PsxStp};
-#[allow(unused_imports)] // public API for game code
 pub use material2d::{PsxMaterial2d, PsxSprite, load_indices, psx_indices, psx_palette, rgb15};
-#[allow(unused_imports)] // public API for game code
-pub use scene::{PsxScene, PsxSceneCamera, PsxSceneDepth, PsxSceneElement, PsxSceneRoot, SCENE_BACKGROUND_LAYER, SceneElement};
+pub use scene::{
+    PsxScene, PsxSceneCamera, PsxSceneDepth, PsxSceneElement, PsxSceneRoot, SCENE_BACKGROUND_LAYER, SceneElement,
+};
 
 use bevy::{
-    asset::embedded_asset,
     camera::{CompositingSpace, RenderTarget, visibility::RenderLayers},
     core_pipeline::tonemapping::{DebandDither, Tonemapping},
     mesh::MeshVertexBufferLayoutRef,
     pbr::MaterialPlugin,
     prelude::*,
     render::{
-        render_resource::{AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureFormat, TextureUsages},
+        render_resource::{
+            AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureFormat, TextureUsages,
+        },
         view::Msaa,
     },
     shader::ShaderRef,
@@ -136,10 +137,6 @@ pub struct PsxPlugin {
 
 impl Plugin for PsxPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "shaders/psx_material.wesl");
-        embedded_asset!(app, "shaders/psx_material2d.wesl");
-        embedded_asset!(app, "shaders/psx_sprite.wesl");
-        embedded_asset!(app, "shaders/psx_screen.wesl");
         let mut screen = self.screen.clone();
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
         let target = || Image::new_target_texture(screen.width, screen.height, TextureFormat::Rgba8UnormSrgb, None);
@@ -151,6 +148,7 @@ impl Plugin for PsxPlugin {
         (screen.image, screen.canvas) = (image, canvas);
 
         scene::plugin(app);
+        shaders::plugin(app);
         app.add_plugins((
             MaterialPlugin::<PsxMaterial>::default(),
             Material2dPlugin::<PsxMaterial2d>::default(),
@@ -181,7 +179,10 @@ fn attach_view(add: On<Add<PsxView>>, mut commands: Commands, screen: Res<PsxScr
 /// colour like the GPU's (B/2+F/2 of the stored values). Bevy's 3D path
 /// writes linear light, and all `PsxView` cameras share one main texture,
 /// so while any of them is a `Camera3d` they all stay linear.
-fn sync_compositing(mut commands: Commands, views: Query<(Entity, Has<Camera3d>, Has<CompositingSpace>), With<PsxView>>) {
+fn sync_compositing(
+    mut commands: Commands,
+    views: Query<(Entity, Has<Camera3d>, Has<CompositingSpace>), With<PsxView>>,
+) {
     let srgb = !views.iter().any(|(_, is_3d, _)| is_3d);
     for (entity, _, has_space) in &views {
         if srgb && !has_space {
@@ -214,7 +215,7 @@ impl From<&ScreenPassMaterial> for ScreenPassKey {
 
 impl Material2d for ScreenPassMaterial {
     fn fragment_shader() -> ShaderRef {
-        concat!("embedded://", env!("CARGO_CRATE_NAME"), "/psx/shaders/psx_screen.wesl").into()
+        shaders::SCREEN.into()
     }
 
     fn specialize(
@@ -275,11 +276,7 @@ pub fn fit_scale(window: Vec2, screen: Vec2) -> f32 {
     (window.x / screen.x).min(window.y / screen.y).max(0.0)
 }
 
-fn fit_display(
-    windows: Query<&Window>,
-    screen: Res<PsxScreen>,
-    mut display: Query<&mut Transform, With<DisplayQuad>>,
-) {
+fn fit_display(windows: Query<&Window>, screen: Res<PsxScreen>, mut display: Query<&mut Transform, With<DisplayQuad>>) {
     let Ok(window) = windows.single() else { return };
     let scale = fit_scale(window.size(), Vec2::new(screen.width as f32, screen.height as f32));
     for mut transform in &mut display {
@@ -313,11 +310,8 @@ fn apply_look(
     mut materials2d: ResMut<Assets<PsxMaterial2d>>,
     mut screen_pass: ResMut<Assets<ScreenPassMaterial>>,
 ) {
-    let stale: Vec<_> = materials
-        .iter()
-        .filter(|(_, m)| m.look != *look || m.lighting != *lighting)
-        .map(|(id, _)| id)
-        .collect();
+    let stale: Vec<_> =
+        materials.iter().filter(|(_, m)| m.look != *look || m.lighting != *lighting).map(|(id, _)| id).collect();
     for id in stale {
         if let Some(mut m) = materials.get_mut(id) {
             m.look = *look;
