@@ -259,6 +259,9 @@ pub struct Spu {
     pub pmon_seen: u32,
     #[serde(skip)]
     pub irqs: u64,
+    /// Analysis only: ADPCM blocks a sounding voice fetched with a reserved shift (13-15) or filter (5-7).
+    #[serde(skip)]
+    pub reserved_blocks: u64,
 }
 
 /// The reverb unit (psx-spx "SPU Reverb Formula"): runs at 22.05 kHz on a
@@ -445,6 +448,7 @@ impl Default for Spu {
             noise_seen: 0,
             pmon_seen: 0,
             irqs: 0,
+            reserved_blocks: 0,
         }
     }
 }
@@ -699,6 +703,10 @@ impl Spu {
     fn decode_block(&mut self, i: usize) -> bool {
         let a = self.voices[i].addr as usize & (RAM_SIZE - 1) & !0xF;
         let irq = self.check_irq(a as u32, 16);
+        let header = self.ram[a];
+        if (header & 0xF > 12 || header >> 4 > 4) && self.voices[i].phase != Phase::Off {
+            self.reserved_blocks += 1;
+        }
         let v = &mut self.voices[i];
         v.flags = self.ram[a + 1];
         if v.flags & 4 != 0 && !v.ignore_loop {
