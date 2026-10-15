@@ -8,6 +8,13 @@ publish = false
 # Standalone: copying the template does not require the psx workspace.
 [workspace]
 
+# The game is a library (`game`, whatever the package is called) so that
+# integration tests in `tests/` and tools can drive it; `src/main.rs` is the
+# thin executable.
+[lib]
+name = "game"
+path = "src/lib.rs"
+
 [features]
 default = []
 dev-mcp = ["dep:rmcp", "dep:tokio", "dep:base64", "dep:image"]
@@ -17,6 +24,9 @@ bevy = { version = "=0.20.0", default-features = false, features = [
   "std", "async_executor", "multi_threaded", "bevy_asset", "bevy_log", "bevy_winit",
   "bevy_core_pipeline", "bevy_pbr", "bevy_sprite_render", "bevy_gltf", "bevy_gilrs",
   "png", "x11", "wayland",
+  # Components and resources deriving `Reflect` register themselves, so the
+  # developer MCP's `game_query` can read them without `register_type` calls.
+  "reflect_auto_register",
 ] }
 # Bevy 0.20 exposes native GLES on its renderer crate, not the facade features.
 bevy_render = { version = "=0.20.0", default-features = false, features = ["gles"] }
@@ -27,8 +37,15 @@ serde_json = "1"
 base64 = { version = "0.22", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 
+# Iteration builds: your code at opt-level 1 (fast to rebuild), dependencies
+# (Bevy) at 3, so `cargo run` plays at close to release speed. Line tables
+# only keeps backtraces while cutting link time and target size.
+# `cargo build --release` compiles all of Bevy again in its own profile
+# (minutes, not seconds): use it for shipping and profiling, not iteration.
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = false

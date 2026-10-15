@@ -57,7 +57,6 @@ pub struct SceneVertex3d {
 }
 
 /// The game's perspective: `sx = ofx + h·x/z`, `sy = ofy + h·y/z` (screen pixels).
-#[allow(dead_code)] // data for game code
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub struct SceneProjection {
     pub h: f32,
@@ -196,7 +195,6 @@ pub enum PsxSceneDepth {
 }
 
 /// Which captured element (and GPU command, `gpu_frame.json` index) an entity came from.
-#[allow(dead_code)] // read by game code
 #[derive(Component, Clone, Copy, Debug)]
 pub struct PsxSceneElement {
     pub element: usize,
@@ -249,7 +247,12 @@ impl AssetLoader for PsxSceneLoader {
     type Settings = ();
     type Error = SceneLoadError;
 
-    async fn load(&self, reader: &mut dyn Reader, _: &(), load_context: &mut LoadContext<'_>) -> Result<PsxScene, SceneLoadError> {
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        load_context: &mut LoadContext<'_>,
+    ) -> Result<PsxScene, SceneLoadError> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await.map_err(|e| SceneLoadError(e.to_string()))?;
         let file: SceneFile = serde_json::from_slice(&bytes).map_err(|e| SceneLoadError(e.to_string()))?;
@@ -373,7 +376,8 @@ fn spawn_scenes(
             // Later commands draw on top.
             let z = i as f32 * 0.01;
             let tag = |command: &u32| PsxSceneElement { element: i, command: *command };
-            let layer = if background(i) { RenderLayers::layer(SCENE_BACKGROUND_LAYER) } else { RenderLayers::default() };
+            let layer =
+                if background(i) { RenderLayers::layer(SCENE_BACKGROUND_LAYER) } else { RenderLayers::default() };
             let blend = element.blend();
             match element {
                 SceneElement::Sprite { image, rect, uv, flip_x, flip_y, color, command, .. } => {
@@ -400,7 +404,14 @@ fn spawn_scenes(
                     }
                     for &pass in stp_passes(blend, stp(image)) {
                         let material = SpriteMaterial(psx_sprites.add(PsxSprite { blend, stp: pass, ..default() }));
-                        commands.spawn((sprite.clone(), material, transform, tag(command), layer.clone(), ChildOf(root)));
+                        commands.spawn((
+                            sprite.clone(),
+                            material,
+                            transform,
+                            tag(command),
+                            layer.clone(),
+                            ChildOf(root),
+                        ));
                     }
                 }
                 SceneElement::Mesh { image, vertices, triangles, dither, command, .. } => {

@@ -1,9 +1,9 @@
 //! Developer-only stdio MCP bridge. Bevy owns all game and GPU state.
 //! The server thread sends bounded commands to the main thread and awaits replies.
 use crate::{
-    GameClock,
     controller::{Button, ControllerState},
     psx::PsxScreen,
+    shell::{GameClock, InjectedInput, TickRate},
 };
 use base64::Engine;
 use bevy::render::{
@@ -13,13 +13,14 @@ use bevy::render::{
 };
 use bevy::{
     prelude::*,
+    reflect::{PartialReflect, TypeRegistration, TypeRegistry, serde::TypedReflectSerializer},
     render::view::screenshot::{Screenshot, ScreenshotCaptured},
 };
 use rmcp::{
     ErrorData, ServerHandler, ServiceExt,
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation, ListToolsResult,
+        PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
     },
     service::{RequestContext, RoleServer},
 };
@@ -50,7 +51,32 @@ enum Command {
     Pause(bool),
     Step(StepArgs),
     Screenshot(Target),
+    Query(QueryArgs),
 }
+
+/// `game_query`: reflected components of matching entities, and resources.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct QueryArgs {
+    /// Entities whose `Name` contains this text.
+    #[serde(default)]
+    name: Option<String>,
+    /// Entities that have all of these components (type names, short or full).
+    #[serde(default)]
+    with: Vec<String>,
+    /// Components to return; all reflected ones when empty.
+    #[serde(default)]
+    components: Vec<String>,
+    /// Resources to return.
+    #[serde(default)]
+    resources: Vec<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Queries wait here for the exclusive system that can read any component.
+#[derive(Resource, Default)]
+struct PendingQueries(Vec<(QueryArgs, Reply)>);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,47 +115,46 @@ struct Step {
     buttons: Vec<Button>,
     reply: Reply,
 }
+/// Pause and stepping state. Injected buttons live in [`InjectedInput`].
 #[derive(Resource)]
 pub struct Control {
     pub paused: bool,
-    pub buttons: u16,
     step: Option<Step>,
 }
 impl Default for Control {
     fn default() -> Self {
-        Self {
-            paused: true,
-            buttons: 0,
-            step: None,
-        }
+        Self { paused: true, step: None }
     }
 }
 impl Control {
     pub fn has_step(&self) -> bool {
         self.step.is_some()
     }
-    pub fn discard_cancelled_step(&mut self) {
-        if self
-            .step
-            .as_ref()
-            .is_some_and(|step| step.reply.is_closed())
-        {
+    /// Drops a step whose client went away. True if its buttons should be released.
+    pub fn discard_cancelled_step(&mut self) -> bool {
+        if self.step.as_ref().is_some_and(|step| step.reply.is_closed()) {
             self.step = None;
-            self.buttons = 0;
             self.paused = true;
+            return true;
         }
+        false
     }
-    pub fn finish_tick(&mut self, frame: u64) {
+    /// Counts a tick against the current step. True when the step finished
+    /// and its buttons should be released.
+    pub fn finish_tick(&mut self, frame: u64) -> bool {
         let Some(step) = self.step.as_mut() else {
-            return;
+            return false;
         };
         step.remaining -= 1;
-        if step.remaining == 0 {
-            let step = self.step.take().unwrap();
-            self.buttons = 0;
-            self.paused = true;
-            let _=step.reply.send(Ok(Response::Json(json!({"frame":frame,"advanced_frames":step.total,"buttons":step.buttons,"paused":true}))));
+        if step.remaining > 0 {
+            return false;
         }
+        let step = self.step.take().unwrap();
+        self.paused = true;
+        let _ = step.reply.send(Ok(Response::Json(
+            json!({"frame":frame,"advanced_frames":step.total,"buttons":step.buttons,"paused":true}),
+        )));
+        true
     }
 }
 
@@ -152,16 +177,9 @@ impl Plugin for GameMcpPlugin {
         let closed = Arc::new(AtomicBool::new(false));
         let thread_closed = closed.clone();
         std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .unwrap();
+            let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
             runtime.block_on(async move {
-                let server = GameServer {
-                    sender,
-                    slots: Arc::new(Semaphore::new(1)),
-                };
+                let server = GameServer { sender, slots: Arc::new(Semaphore::new(1)) };
                 match server.serve(rmcp::transport::stdio()).await {
                     Ok(service) => {
                         if let Err(error) = service.waiting().await {
@@ -176,20 +194,11 @@ impl Plugin for GameMcpPlugin {
         let ready = RenderReady(Arc::new(AtomicBool::new(false)));
         app.sub_app_mut(RenderApp)
             .insert_resource(ready.clone())
-            .add_systems(
-                Render,
-                mark_render_ready
-                    .after(RenderSystems::Render)
-                    .before(RenderSystems::Cleanup),
-            );
+            .add_systems(Render, mark_render_ready.after(RenderSystems::Render).before(RenderSystems::Cleanup));
         app.init_resource::<Control>()
-            .insert_resource(Bridge {
-                receiver: Mutex::new(receiver),
-                closed,
-                pending: Vec::new(),
-                ready,
-            })
-            .add_systems(PreUpdate, process_commands);
+            .init_resource::<PendingQueries>()
+            .insert_resource(Bridge { receiver: Mutex::new(receiver), closed, pending: Vec::new(), ready })
+            .add_systems(PreUpdate, (process_commands, answer_queries).chain());
     }
 }
 
@@ -215,8 +224,11 @@ fn process_commands(
     mut commands: Commands,
     mut bridge: ResMut<Bridge>,
     mut control: ResMut<Control>,
+    mut injected: ResMut<InjectedInput>,
+    mut queries: ResMut<PendingQueries>,
     screen: Res<PsxScreen>,
     clock: Res<GameClock>,
+    tick: Res<TickRate>,
     pad: Res<ControllerState>,
     mut exit: MessageWriter<AppExit>,
     adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
@@ -231,32 +243,26 @@ fn process_commands(
         if request.reply.is_closed() {
             continue;
         }
-        if matches!(&request.command, Command::Screenshot(_))
-            && !bridge.ready.0.load(Ordering::Acquire)
-        {
+        if matches!(&request.command, Command::Screenshot(_)) && !bridge.ready.0.load(Ordering::Acquire) {
             bridge.pending.push(request);
             continue;
         }
         match request.command {
             Command::Status => {
                 let renderer=adapter.as_ref().map(|info|json!({"name":info.name,"device_type":format!("{:?}",info.device_type),"backend":format!("{:?}",info.backend)}));
-                let _=request.reply.send(Ok(Response::Json(json!({"frame":clock.frame,"paused":control.paused,"screen":{"width":screen.width,"height":screen.height,"region":format!("{:?}",screen.region)},"controller_buttons":pad.buttons(),"renderer":renderer}))));
+                let _=request.reply.send(Ok(Response::Json(json!({"frame":clock.frame,"paused":control.paused,"tick_hz":tick.hz,"screen":{"width":screen.width,"height":screen.height,"region":format!("{:?}",screen.region)},"controller_buttons":pad.buttons(),"renderer":renderer}))));
             }
             Command::Input(buttons) => {
-                control.buttons = mask(&buttons);
-                let _ = request.reply.send(Ok(Response::Json(
-                    json!({"frame":clock.frame,"injected_buttons":buttons}),
-                )));
+                injected.set(&buttons);
+                let _ = request.reply.send(Ok(Response::Json(json!({"frame":clock.frame,"injected_buttons":buttons}))));
             }
             Command::Pause(paused) => {
                 control.paused = paused;
-                let _ = request.reply.send(Ok(Response::Json(
-                    json!({"frame":clock.frame,"paused":paused}),
-                )));
+                let _ = request.reply.send(Ok(Response::Json(json!({"frame":clock.frame,"paused":paused}))));
             }
             Command::Step(args) => {
                 control.paused = true;
-                control.buttons = mask(&args.buttons);
+                injected.set(&args.buttons);
                 control.step = Some(Step {
                     remaining: args.frames,
                     total: args.frames,
@@ -264,6 +270,7 @@ fn process_commands(
                     reply: request.reply,
                 });
             }
+            Command::Query(args) => queries.0.push((args, request.reply)),
             Command::Screenshot(target) => {
                 let frame = clock.frame;
                 let screenshot = match target {
@@ -287,8 +294,109 @@ fn process_commands(
     }
 }
 
-fn mask(buttons: &[Button]) -> u16 {
-    buttons.iter().fold(0, |bits, button| bits | button.mask())
+/// Answers `game_query` with full world access, so any reflected component
+/// or resource can be read.
+fn answer_queries(world: &mut World) {
+    let pending = std::mem::take(&mut world.resource_mut::<PendingQueries>().0);
+    if pending.is_empty() {
+        return;
+    }
+    let registry = world.resource::<AppTypeRegistry>().clone();
+    let registry = registry.read();
+    for (args, reply) in pending {
+        let _ = reply.send(query(world, &registry, &args).map(Response::Json));
+    }
+}
+
+fn query(world: &World, registry: &TypeRegistry, args: &QueryArgs) -> Result<Value, String> {
+    let lookup = |name: &str| {
+        registry.get_with_type_path(name).or_else(|| registry.get_with_short_type_path(name)).ok_or_else(|| {
+            if registry.is_ambiguous(name) {
+                format!("{name} is ambiguous: use its full type path")
+            } else {
+                format!("unknown type {name}: derive Reflect and add #[reflect(Component)] or #[reflect(Resource)]")
+            }
+        })
+    };
+    let serialize = |value: &dyn PartialReflect| serde_json::to_value(TypedReflectSerializer::new(value, registry));
+    let mut out = serde_json::Map::new();
+    out.insert("frame".into(), json!(world.resource::<GameClock>().frame));
+    if args.name.is_some() || !args.with.is_empty() {
+        // Component ids of `with`; a type that was never inserted matches nothing.
+        let mut with = Vec::new();
+        let mut never_inserted = false;
+        for name in &args.with {
+            match world.components().get_id(lookup(name)?.type_id()) {
+                Some(id) => with.push(id),
+                None => never_inserted = true,
+            }
+        }
+        let wanted = args.components.iter().map(|name| lookup(name)).collect::<Result<Vec<_>, String>>()?;
+        let limit = args.limit.unwrap_or(16).min(256);
+        let mut entities = Vec::new();
+        for entity in world.iter_entities().filter(|_| !never_inserted) {
+            let name = entity.get::<Name>().map(Name::as_str);
+            if args.name.as_deref().is_some_and(|n| !name.is_some_and(|name| name.contains(n)))
+                || !with.iter().all(|id| entity.contains_id(*id))
+            {
+                continue;
+            }
+            if entities.len() == limit {
+                break;
+            }
+            let registrations: Vec<&TypeRegistration> = if wanted.is_empty() {
+                entity
+                    .archetype()
+                    .components()
+                    .iter()
+                    .filter_map(|id| world.components().get_info(*id)?.type_id())
+                    .filter_map(|type_id| registry.get(type_id))
+                    .collect()
+            } else {
+                wanted.clone()
+            };
+            let mut components = serde_json::Map::new();
+            // Reflected but not serialisable (asset handles, type ids): named only.
+            let mut opaque = Vec::new();
+            for registration in registrations {
+                let Some(reflect) = registration.data::<ReflectComponent>() else { continue };
+                let Some(value) = reflect.reflect(entity) else { continue };
+                let key = registration.type_info().type_path_table().short_path();
+                let value = match serialize(value.as_partial_reflect()) {
+                    Ok(value) => value,
+                    Err(error) if !wanted.is_empty() => json!({"error": error.to_string()}),
+                    Err(_) => {
+                        opaque.push(key);
+                        continue;
+                    }
+                };
+                components.insert(key.into(), value);
+            }
+            let mut found = json!({"entity": entity.id().to_string(), "name": name, "components": components});
+            if !opaque.is_empty() {
+                found["not_serializable"] = json!(opaque);
+            }
+            entities.push(found);
+        }
+        out.insert("entities".into(), Value::Array(entities));
+    }
+    if !args.resources.is_empty() {
+        let mut resources = serde_json::Map::new();
+        for name in &args.resources {
+            let registration = lookup(name)?;
+            let value = world
+                .components()
+                .get_id(registration.type_id())
+                .and_then(|id| world.resource_entities().get(id))
+                .and_then(|entity| registration.data::<ReflectComponent>()?.reflect(world.entity(entity)))
+                .map_or(Value::Null, |value| {
+                    serialize(value.as_partial_reflect()).unwrap_or_else(|error| json!({"error": error.to_string()}))
+                });
+            resources.insert(name.clone(), value);
+        }
+        out.insert("resources".into(), Value::Object(resources));
+    }
+    Ok(Value::Object(out))
 }
 
 #[derive(Clone)]
@@ -303,12 +411,12 @@ fn tools() -> Vec<Tool> {
         ("game_screenshot","Capture actual GPU-rendered PNG pixels. Screen is the native-resolution game; window includes scaled output and letterboxing. Pause for a stable frame.",json!({"type":"object","properties":{"target":{"type":"string","enum":["screen","window"],"default":"screen"}},"additionalProperties":false})),
         ("game_step","Hold the selected buttons for exactly N simulation ticks, then release injected input and freeze. Game systems must use GameSystems::Game in FixedUpdate.",json!({"type":"object","properties":{"frames":{"type":"integer","minimum":1,"maximum":3600},"buttons":buttons.clone()},"required":["frames"],"additionalProperties":false})),
         ("game_set_input","Replace the held injected controller state. An empty array releases all injected buttons. Physical inputs are merged.",json!({"type":"object","properties":{"buttons":buttons},"required":["buttons"],"additionalProperties":false})),
+        ("game_query","Read game state as JSON: reflected components of entities whose Name contains `name` and/or that have every component in `with`, plus the listed `resources`. Components and resources must derive Reflect with #[reflect(Component)] / #[reflect(Resource)]. Type names may be short (Transform) or full paths.",json!({"type":"object","properties":{"name":{"type":"string"},"with":{"type":"array","items":{"type":"string"}},"components":{"type":"array","items":{"type":"string"},"description":"Components to return; all reflected ones when omitted"},"resources":{"type":"array","items":{"type":"string"}},"limit":{"type":"integer","minimum":1,"maximum":256,"default":16}},"additionalProperties":false})),
         ("game_pause","Pause or resume continuous simulation. Developer MCP starts paused; rendering and window events continue.",json!({"type":"object","properties":{"paused":{"type":"boolean"}},"required":["paused"],"additionalProperties":false})),
     ].into_iter().map(|(name,description,schema)|Tool::new(name,description,Arc::new(schema.as_object().unwrap().clone()))).collect()
 }
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ErrorData> {
-    serde_json::from_value(value)
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))
+    serde_json::from_value(value).map_err(|error| ErrorData::invalid_params(error.to_string(), None))
 }
 impl ServerHandler for GameServer {
     fn get_info(&self) -> ServerConfig {
@@ -346,13 +454,17 @@ impl ServerHandler for GameServer {
             "game_screenshot" => Command::Screenshot(parse::<ScreenshotArgs>(value)?.target),
             "game_set_input" => Command::Input(parse::<InputArgs>(value)?.buttons),
             "game_pause" => Command::Pause(parse::<PauseArgs>(value)?.paused),
+            "game_query" => {
+                let args = parse::<QueryArgs>(value)?;
+                if args.name.is_none() && args.with.is_empty() && args.resources.is_empty() {
+                    return Err(ErrorData::invalid_params("give name, with or resources", None));
+                }
+                Command::Query(args)
+            }
             "game_step" => {
                 let args = parse::<StepArgs>(value)?;
                 if !(1..=3600).contains(&args.frames) || args.buttons.len() > 14 {
-                    return Err(ErrorData::invalid_params(
-                        "frames must be 1..3600 and buttons at most 14",
-                        None,
-                    ));
+                    return Err(ErrorData::invalid_params("frames must be 1..3600 and buttons at most 14", None));
                 }
                 Command::Step(args)
             }
@@ -365,9 +477,7 @@ impl ServerHandler for GameServer {
         let (reply, receiver) = oneshot::channel();
         self.sender
             .try_send(Request { command, reply })
-            .map_err(|error| {
-                ErrorData::internal_error(format!("game queue unavailable: {error}"), None)
-            })?;
+            .map_err(|error| ErrorData::internal_error(format!("game queue unavailable: {error}"), None))?;
         let response = tokio::select! {
             result=tokio::time::timeout(Duration::from_secs(120),receiver)=>result
                 .map_err(|_|ErrorData::internal_error("game/render response timed out",None))?
@@ -378,10 +488,7 @@ impl ServerHandler for GameServer {
         Ok(match response {
             Response::Json(value) => CallToolResult::structured(value),
             Response::Image { png, metadata } => CallToolResult::success(vec![
-                ContentBlock::image(
-                    base64::engine::general_purpose::STANDARD.encode(png),
-                    "image/png",
-                ),
+                ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(png), "image/png"),
                 ContentBlock::text(metadata.to_string()),
             ]),
         }

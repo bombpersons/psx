@@ -31,13 +31,12 @@ use bevy::{
 };
 
 use super::{
-    PsxLook,
+    PsxBlend, PsxLook, PsxStp,
     material::{ALPHA_TRANSPARENT, DITHER, PALETTE, TEXTURED, blend_flags, drawn_blend, set_blend},
-    PsxBlend, PsxStp,
 };
 
-const MATERIAL2D_SHADER: &str = concat!("embedded://", env!("CARGO_CRATE_NAME"), "/psx/shaders/psx_material2d.wesl");
-const SPRITE_SHADER: &str = concat!("embedded://", env!("CARGO_CRATE_NAME"), "/psx/shaders/psx_sprite.wesl");
+const MATERIAL2D_SHADER: Handle<Shader> = super::shaders::MATERIAL2D;
+const SPRITE_SHADER: Handle<Shader> = super::shaders::SPRITE;
 
 /// A `Material2d` with PS1 semantics for `Mesh2d`: texture × colour
 /// modulation (white = unchanged, up to 2.0 brightens), vertex colours as
@@ -81,7 +80,6 @@ impl Default for PsxMaterial2d {
     }
 }
 
-#[allow(dead_code)] // public API for game code
 impl PsxMaterial2d {
     pub fn textured(texture: Handle<Image>) -> Self {
         Self { texture: Some(texture), ..default() }
@@ -181,7 +179,6 @@ pub struct PsxSprite {
     pub stp: PsxStp,
 }
 
-#[allow(dead_code)] // public API for game code
 impl PsxSprite {
     pub fn blend(blend: PsxBlend) -> Self {
         Self { blend, ..default() }
@@ -280,7 +277,6 @@ pub fn psx_indices(width: u32, height: u32, indices: Vec<u8>) -> Image {
 /// Loads an 8-bit grayscale PNG of palette indices (such as
 /// `page_*_index.png` from `psx textures`) as raw `R8Unorm` values. A plain
 /// `load` would decode it as sRGB colour and scramble the indices.
-#[allow(dead_code)] // public API for game code
 pub fn load_indices(assets: &AssetServer, path: impl Into<String>) -> Handle<Image> {
     assets
         .load_builder()

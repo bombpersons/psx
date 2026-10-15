@@ -7,9 +7,38 @@ Requires Rust 1.97.1+ and a desktop GPU driver (or Mesa lavapipe with `--softwar
 ```sh
 cargo run
 cargo run -- --software                 # force a software adapter
-cargo build --release                   # developer MCP is excluded
+cargo run -- --region pal               # override lib.rs REGION (display + tick rate)
+cargo test                              # headless gameplay tests (tests/)
 cargo run --features dev-mcp -- --mcp   # developer MCP over stdin/stdout
+cargo build --release                   # shipping build; developer MCP is excluded
 ```
+
+`cargo build`/`cargo run` already compile Bevy at full optimisation (only your
+own crate is built at `opt-level = 1`), so they run at close to release speed.
+`--release` builds all of Bevy a second time, which takes minutes on a cold
+target: use it for shipping and profiling, not for iteration.
+
+## Project layout
+
+The game is a library (crate `game`, `src/lib.rs`), so tests in `tests/` and
+tools can reach every module; `src/main.rs` only opens the window.
+
+| Path | Contents |
+|---|---|
+| `src/lib.rs` | `REGION`, `FIELDS_PER_TICK`, `GamePlugin` (your feature plugins), `prelude` |
+| `src/demo/` | The example game: `player.rs` (rules, no rendering) and `mod.rs` (scene, HUD). Delete it and its line in `GamePlugin` to start your own |
+| `tests/player.rs` | Headless tick tests: the pattern for comparing rules with recorded trajectories |
+| `src/psx/` | The PS1 look (materials, screen pass, `.psxscene` loader) |
+| `src/shell.rs` | `TickRate`, `GameClock`, `GameSystems`, controller sampling |
+| `src/controller.rs` | `Button`, `ControllerState`, bindings |
+| `src/testing.rs` | `headless_app`, `TickApp::run_tick(s)` |
+| `src/viewer.rs` | The `--scene` capture viewer |
+| `src/dev_mcp.rs` | Developer MCP (feature `dev-mcp`) |
+
+Write one plugin per feature (player, stage, enemies, camera, HUD), and keep each
+feature's rules (state, physics, decisions) apart from its presentation (meshes,
+sprites, animation) so the rules run headless in tests. AGENTS.md has the
+longer guide, including how to turn reverse-engineering evidence into code.
 
 ## The look, without the limits
 
@@ -110,7 +139,7 @@ Gouraud `Mesh2d` and a smooth gradient `Sprite` cut to 15 bits by the screen
 pass; Triangle turns the PS1 look off for comparison.
 
 
-### Captured frames as a starting point
+### Captured frames as reference
 
 The psx toolkit can turn one frame of the original game into plain data for
 this template:
@@ -125,8 +154,10 @@ Copy `run/textures/` under `assets/` and view it with
 `PsxSceneRoot(asset_server.load(...))`: each drawn element becomes a child
 `Sprite` (tiles, aligned sprites) or `Mesh2d` (other polygons) in draw order,
 tagged with `PsxSceneElement { command }`, its index in the capture's
-`gpu_frame.json`. Use it as a pixel-faithful reference layout, then replace
-pieces with real game entities. Semi-transparent elements use the game's
+`gpu_frame.json`. A capture is a pixel-faithful *reference*: one screen of draw
+calls with no collision, layers or entities. Rebuild the stage from decoded
+level data and use the capture to check the result (see "From evidence to
+idiomatic code" below); do not ship it as the level. Semi-transparent elements use the game's
 blend equation (`PsxSprite`, `PsxMaterial2d`, `PsxMaterial`) and, in format 2
 scenes, blend only their STP texels like the GPU; `Subtract` elements with
 STP texels spawn twice (subtracting and opaque texels). The scene is not
@@ -169,11 +200,40 @@ depth buffer and draw in ascending order in Bevy's sorted transparent pass.
 
 ## Simulation and input
 
-- Gameplay runs in `FixedUpdate`, in `GameSystems::Game`, at the region's
-  field rate. That is 60 Hz for `Region::Ntsc` and 50 Hz for `Region::Pal`, set in `main.rs`.
-  Many PS1 games simulate at half that rate; count ticks with `GameClock.frame`.
+- Gameplay runs in `FixedUpdate`, in `GameSystems::Game`, once per logic tick.
+  The tick rate is the game's, not the display's: `lib.rs` sets `REGION`
+  (60 Hz NTSC / 50 Hz PAL fields) and `FIELDS_PER_TICK`, giving
+  `TickRate::every_nth_field(REGION, FIELDS_PER_TICK)`. Many PS1 games run their
+  logic every second field (Croc PAL: 25 Hz); Mega Man 8 PAL runs every field
+  (50 Hz). Changing the `TickRate` resource at run time retunes `Time<Fixed>`.
+  `GameClock.frame` counts ticks.
+- `Res<Time>` in `FixedUpdate` is one tick long, so speeds can be written per
+  second (`speed * time.delta_secs()`) or, when the original's per-tick values
+  matter, per tick.
 - Read input from `ControllerState::{held, pressed, released}(Button::..)`,
-  `direction()` and `left_stick`/`right_stick`. Edges are per simulation tick.
+  `direction()` and `left_stick`/`right_stick`. Edges are per logic tick.
+  Devices are sampled every rendered frame and a press is kept until the next
+  tick, so a tap shorter than one tick still counts as held for one tick.
+  Do not skip ticks by counting `GameClock.frame`: presses on skipped ticks
+  would be lost. Set the tick rate instead.
+
+### Tests
+
+`game::testing::headless_app(tick_rate)` builds an app without window or GPU;
+`app.run_tick(&[Button::Cross])` runs exactly one tick with those buttons held.
+Add only rules plugins (nothing that loads assets or spawns meshes):
+
+```rust
+let mut app = headless_app(game::tick_rate(game::REGION));
+app.add_plugins(PlayerPlugin);
+let player = app.world_mut().spawn(Player).id();
+app.run_ticks(30, &[Button::Right]);
+let x = app.world().get::<Transform>(player).unwrap().translation.x;
+```
+
+To check rules against the original, record per-tick positions with the psx
+toolkit, keep them as CSV under `tests/data/`, replay the recorded buttons tick
+by tick and compare every tick (see `tests/player.rs`).
 
 | DualShock | Keyboard | Gamepad |
 |---|---|---|
@@ -183,9 +243,34 @@ depth buffer and draw in ascending order in Bevy's sorted transparent pass.
 | L2 / R2 | 1 / 3 | Left / right trigger |
 | Start / Select | Enter / Right Shift | Start / Select |
 
-The demo moves the crate with the D-pad or stick and turns it with L1/R1.
-Triangle toggles the PS1 effects so you can compare. Replace `src/demo.rs`;
-it is a wiring example, not an architecture.
+The demo moves the crate with the D-pad or stick, turns it with L1/R1 and
+hops on Cross. Triangle toggles the PS1 effects so you can compare. Replace
+`src/demo/`; it shows the wiring (a rules plugin plus presentation), not a
+game architecture to copy wholesale.
+
+## From evidence to idiomatic code
+
+Reverse-engineering evidence arrives as fixed-point RAM words, per-tick deltas
+and MIPS shifts. Turn it into rules a reader recognises; AGENTS.md has the full
+guide with examples from the Croc and Mega Man 8 studies. In short:
+
+- **Name the rule, convert units once.** Croc's `v = v - (v >> 2) + target` is
+  "ease a quarter of the way to the target each tick":
+  `velocity += (target - velocity) * VELOCITY_BLEND`, with `RUN_SPEED =
+  units(140.0)` and a `units()` helper for the original's world units.
+  MM8's 16.16 `0x0005C900` is `JUMP_SPEED: f32 = 5.785_156_3` px/tick.
+- **Cite evidence** on every constant and rule: RAM address, writer or test
+  instruction, or measurement, and what was not verified.
+- **Exact integer behaviour only where it shows**: tick counts, thresholds,
+  landing rules. Wrap it in a small documented helper with a test; keep any
+  literal model of the original code in `tools/`, not in the game.
+- **State machines are enums + systems**: one enum component with per-state
+  data, a few systems chained in the original's decision order, `match` on the
+  enum. No state bytes or per-frame dispatch tables.
+- **Captures are reference, not levels**: decode tile sets, tile layers,
+  collision and spawn lists into `assets/` and build entities from them; render
+  from the game's camera and compare against the capture to verify.
+- **Test per tick** against recorded trajectories (`tests/player.rs`).
 
 ## Agent driving (`dev-mcp`)
 
@@ -194,11 +279,19 @@ stdout is reserved for JSON-RPC and logs go to stderr. Simulation starts paused.
 
 | Tool | Arguments | Behaviour |
 |---|---|---|
-| `game_status` | `{}` | Frame, pause state, screen size/region, held buttons, renderer adapter |
+| `game_status` | `{}` | Frame, pause state, tick rate, screen size/region, held buttons, renderer adapter |
 | `game_step` | `{"frames":30,"buttons":["cross","right"]}` | Holds the buttons for exactly N ticks, then releases them and freezes |
 | `game_set_input` | `{"buttons":["start"]}` | Replaces the injected held buttons; `[]` releases them |
 | `game_pause` | `{"paused":false}` | Resumes continuous simulation or manual play |
 | `game_screenshot` | `{"target":"screen"}` or `"window"` | A real GPU-rendered PNG of the 320×240 target or of the window |
+| `game_query` | `{"name":"Player","components":["Transform","Hop"],"resources":["GameClock"]}` | Reflected components (as JSON) of entities whose `Name` contains `name` and/or that have every component in `with`, plus resources |
+
+`game_query` reads numbers instead of pixels, e.g. to compare a position with a
+recorded trajectory after `game_step`. It sees components and resources that
+derive `Reflect` with `#[reflect(Component)]` / `#[reflect(Resource)]` (they
+register themselves). Type names can be short (`Transform`) or full paths;
+without `components` it returns every reflected component of each match
+(`limit`, default 16 entities). `{"with":["Player"]}` matches by marker.
 
 Buttons are `up/down/left/right/cross/circle/square/triangle/l1/r1/l2/r2/start/select`.
 Step first, then screenshot, for reproducible observations. The first screenshot
@@ -208,6 +301,7 @@ waits until pipelines have compiled.
 
 ```sh
 cargo test
-cargo clippy --features dev-mcp
+cargo clippy --features dev-mcp --all-targets
+cargo fmt --check        # rustfmt.toml: 120 columns
 cargo build --release
 ```
