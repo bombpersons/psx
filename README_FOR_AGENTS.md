@@ -199,7 +199,9 @@ psx template create ../croc --region pal --fields-per-tick 2   # 25 Hz logic, li
 PS1 look: `PsxMaterial` gives vertex snapping, affine textures, Gouraud
 lighting, 15-bit dither, depth cue and the four blend modes. It also provides a
 low-resolution `PsxView` target, 2D sprites, DualShock input, fixed 50/60 Hz
-ticks, and a feature-gated developer MCP for stepping, input and screenshots.
+ticks, and a feature-gated developer MCP for stepping, input, screenshots and
+paused component-field edits (`game_set_component`). `--headless --software`
+renders through the GPU without a desktop; use screen screenshots in that mode.
 Extracted original `.tim` files load as Bevy `Image`s and `.tmd` models as
 `PsxModel`s (`PsxModelRoot`); `cargo run -- --model x.tmd --texture x.tim` views one.
 

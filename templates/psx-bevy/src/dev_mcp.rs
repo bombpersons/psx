@@ -13,7 +13,10 @@ use bevy::render::{
 };
 use bevy::{
     prelude::*,
-    reflect::{PartialReflect, TypeRegistration, TypeRegistry, serde::TypedReflectSerializer},
+    reflect::{
+        PartialReflect, ReflectFromReflect, ReflectMut, ReflectRef, TypeRegistration, TypeRegistry,
+        serde::{TypedReflectDeserializer, TypedReflectSerializer},
+    },
     render::view::screenshot::{Screenshot, ScreenshotCaptured},
 };
 use rmcp::{
@@ -24,7 +27,10 @@ use rmcp::{
     },
     service::{RequestContext, RoleServer},
 };
-use serde::Deserialize;
+use serde::{
+    Deserialize,
+    de::{DeserializeSeed, IntoDeserializer},
+};
 use serde_json::{Value, json};
 use std::{
     sync::{
@@ -52,6 +58,7 @@ enum Command {
     Step(StepArgs),
     Screenshot(Target),
     Query(QueryArgs),
+    SetComponent(SetComponentArgs),
 }
 
 /// `game_query`: reflected components of matching entities, and resources.
@@ -77,6 +84,20 @@ struct QueryArgs {
 /// Queries wait here for the exclusive system that can read any component.
 #[derive(Resource, Default)]
 struct PendingQueries(Vec<(QueryArgs, Reply)>);
+
+/// Only named fields of an existing, mutable component can be edited. Entity
+/// names must match exactly once; ids include the generation returned by query.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetComponentArgs {
+    entity: Option<String>,
+    name: Option<String>,
+    component: String,
+    fields: serde_json::Map<String, Value>,
+}
+
+#[derive(Resource, Default)]
+struct PendingEdits(Vec<(SetComponentArgs, Reply)>);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -197,8 +218,9 @@ impl Plugin for GameMcpPlugin {
             .add_systems(Render, mark_render_ready.after(RenderSystems::Render).before(RenderSystems::Cleanup));
         app.init_resource::<Control>()
             .init_resource::<PendingQueries>()
+            .init_resource::<PendingEdits>()
             .insert_resource(Bridge { receiver: Mutex::new(receiver), closed, pending: Vec::new(), ready })
-            .add_systems(PreUpdate, (process_commands, answer_queries).chain());
+            .add_systems(PreUpdate, (process_commands, answer_queries, answer_edits).chain());
     }
 }
 
@@ -209,7 +231,7 @@ fn mark_render_ready(
     mut settled: Local<u32>,
 ) {
     // A texture may exist before its first camera pass. Wait until the game and
-    // display views exist and every queued pipeline has compiled for a few
+    // screen-pass views exist and every queued pipeline has compiled for a few
     // consecutive frames, so the first screenshot is not an uninitialised target.
     let compiled = cache.pipelines().next().is_some()
         && cache.pipelines().all(|pipeline| matches!(&pipeline.state, CachedPipelineState::Ok(_)));
@@ -226,12 +248,14 @@ fn process_commands(
     mut control: ResMut<Control>,
     mut injected: ResMut<InjectedInput>,
     mut queries: ResMut<PendingQueries>,
+    mut edits: ResMut<PendingEdits>,
     screen: Res<PsxScreen>,
     clock: Res<GameClock>,
     tick: Res<TickRate>,
     pad: Res<ControllerState>,
     mut exit: MessageWriter<AppExit>,
     adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
+    windows: Query<(), With<bevy::window::PrimaryWindow>>,
 ) {
     if bridge.closed.load(Ordering::Acquire) {
         exit.write(AppExit::Success);
@@ -243,6 +267,12 @@ fn process_commands(
         if request.reply.is_closed() {
             continue;
         }
+        if matches!(&request.command, Command::Screenshot(Target::Window)) && windows.is_empty() {
+            let _ = request
+                .reply
+                .send(Err("No primary window in headless mode; use game_screenshot with target screen".into()));
+            continue;
+        }
         if matches!(&request.command, Command::Screenshot(_)) && !bridge.ready.0.load(Ordering::Acquire) {
             bridge.pending.push(request);
             continue;
@@ -250,7 +280,7 @@ fn process_commands(
         match request.command {
             Command::Status => {
                 let renderer=adapter.as_ref().map(|info|json!({"name":info.name,"device_type":format!("{:?}",info.device_type),"backend":format!("{:?}",info.backend)}));
-                let _=request.reply.send(Ok(Response::Json(json!({"frame":clock.frame,"paused":control.paused,"tick_hz":tick.hz,"screen":{"width":screen.width,"height":screen.height,"region":format!("{:?}",screen.region)},"controller_buttons":pad.buttons(),"renderer":renderer}))));
+                let _=request.reply.send(Ok(Response::Json(json!({"frame":clock.frame,"paused":control.paused,"headless":windows.is_empty(),"tick_hz":tick.hz,"screen":{"width":screen.width,"height":screen.height,"region":format!("{:?}",screen.region)},"controller_buttons":pad.buttons(),"renderer":renderer}))));
             }
             Command::Input(buttons) => {
                 injected.set(&buttons);
@@ -271,6 +301,7 @@ fn process_commands(
                 });
             }
             Command::Query(args) => queries.0.push((args, request.reply)),
+            Command::SetComponent(args) => edits.0.push((args, request.reply)),
             Command::Screenshot(target) => {
                 let frame = clock.frame;
                 let screenshot = match target {
@@ -308,16 +339,133 @@ fn answer_queries(world: &mut World) {
     }
 }
 
-fn query(world: &World, registry: &TypeRegistry, args: &QueryArgs) -> Result<Value, String> {
-    let lookup = |name: &str| {
-        registry.get_with_type_path(name).or_else(|| registry.get_with_short_type_path(name)).ok_or_else(|| {
-            if registry.is_ambiguous(name) {
-                format!("{name} is ambiguous: use its full type path")
-            } else {
-                format!("unknown type {name}: derive Reflect and add #[reflect(Component)] or #[reflect(Resource)]")
-            }
-        })
+fn lookup_type<'a>(registry: &'a TypeRegistry, name: &str) -> Result<&'a TypeRegistration, String> {
+    registry.get_with_type_path(name).or_else(|| registry.get_with_short_type_path(name)).ok_or_else(|| {
+        if registry.is_ambiguous(name) {
+            format!("{name} is ambiguous: use its full type path")
+        } else {
+            format!("unknown type {name}: derive Reflect and add #[reflect(Component)] or #[reflect(Resource)]")
+        }
+    })
+}
+
+fn answer_edits(world: &mut World) {
+    let pending = std::mem::take(&mut world.resource_mut::<PendingEdits>().0);
+    if pending.is_empty() {
+        return;
+    }
+    let registry = world.resource::<AppTypeRegistry>().clone();
+    let registry = registry.read();
+    for (args, reply) in pending {
+        if !reply.is_closed() {
+            let _ = reply.send(set_component(world, &registry, &args).map(Response::Json));
+        }
+    }
+}
+
+impl SetComponentArgs {
+    fn validate(&self) -> Result<(), String> {
+        if self.entity.is_some() == self.name.is_some() {
+            return Err("give exactly one of entity (id from game_query) or name (unique exact Name)".into());
+        }
+        if self.entity.as_deref().is_some_and(str::is_empty) || self.name.as_deref().is_some_and(str::is_empty) {
+            return Err("entity/name must not be empty".into());
+        }
+        if self.fields.is_empty() || self.fields.len() > 64 {
+            return Err("fields must contain 1..64 named component fields".into());
+        }
+        if serde_json::to_vec(&self.fields).map_err(|e| e.to_string())?.len() > 64 * 1024 {
+            return Err("field patch exceeds 64 KiB".into());
+        }
+        Ok(())
+    }
+}
+
+fn set_component(world: &mut World, registry: &TypeRegistry, args: &SetComponentArgs) -> Result<Value, String> {
+    args.validate()?;
+    let control = world.resource::<Control>();
+    if !control.paused || control.has_step() {
+        return Err("pause the simulation with game_pause before editing components".into());
+    }
+    let mut matches = world.iter_entities().filter(|e| match (&args.entity, &args.name) {
+        (Some(id), _) => e.id().to_string() == *id,
+        (_, Some(name)) => e.get::<Name>().is_some_and(|n| n.as_str() == name),
+        _ => false,
+    });
+    let entity = matches.next().ok_or("no entity matches this id/exact name")?.id();
+    if matches.next().is_some() {
+        return Err("entity name is not unique; use an entity id from game_query".into());
+    }
+    drop(matches);
+    let registration = lookup_type(registry, &args.component)?;
+    let access = registration.data::<ReflectComponent>().ok_or("type does not expose ReflectComponent")?;
+    let component_id = world.components().get_id(registration.type_id()).ok_or("component is not present")?;
+    if !world.components().get_info(component_id).is_some_and(|c| c.mutable()) {
+        return Err("component is immutable and cannot be edited".into());
+    }
+    if world.resource_entities().get(component_id) == Some(entity) {
+        return Err("game_set_component edits entity components, not resources".into());
+    }
+    let value = access.reflect(world.entity(entity)).ok_or("entity does not have this component")?;
+    let ReflectRef::Struct(fields) = value.reflect_ref() else {
+        return Err("component must be a reflected struct with named fields".into());
     };
+    // Build concrete, typed replacements for every selected field before taking
+    // mutable world access. Preserve all unselected/ignored fields and never
+    // apply a partially valid JSON patch to the live component.
+    let mut staged = Vec::new();
+    let mut before = serde_json::Map::new();
+    let mut after = serde_json::Map::new();
+    for (name, json) in &args.fields {
+        let field = fields.field(name).ok_or_else(|| format!("unknown or unreflected field {name}"))?;
+        let info = field.get_represented_type_info().ok_or_else(|| format!("{name}: field type is unavailable"))?;
+        let ty = registry.get(info.type_id()).ok_or_else(|| format!("{name}: field type is not registered"))?;
+        let dynamic = TypedReflectDeserializer::new(ty, registry)
+            .deserialize(json.clone().into_deserializer())
+            .map_err(|e| format!("{name}: invalid {}: {e}", info.type_path()))?;
+        let replacement = match dynamic.try_into_reflect() {
+            Ok(value) => value,
+            Err(dynamic) => ty
+                .data::<ReflectFromReflect>()
+                .and_then(|f| f.from_reflect(dynamic.as_ref()))
+                .ok_or_else(|| format!("{name}: field type does not support concrete reconstruction"))?,
+        };
+        let concrete = field.try_as_reflect().ok_or_else(|| format!("{name}: field does not support replacement"))?;
+        if concrete.as_any().type_id() != replacement.as_any().type_id() {
+            return Err(format!("{name}: replacement has the wrong concrete type"));
+        }
+        before.insert(
+            name.clone(),
+            serde_json::to_value(TypedReflectSerializer::new(field, registry)).map_err(|e| format!("{name}: {e}"))?,
+        );
+        after.insert(
+            name.clone(),
+            serde_json::to_value(TypedReflectSerializer::new(replacement.as_partial_reflect(), registry))
+                .map_err(|e| format!("{name}: {e}"))?,
+        );
+        staged.push((name.clone(), replacement));
+    }
+    let frame = world.resource::<GameClock>().frame;
+    let name = world.entity(entity).get::<Name>().map(|n| n.as_str().to_owned());
+    let mut value = access.reflect_mut(world.entity_mut(entity)).ok_or("component disappeared")?;
+    let ReflectMut::Struct(fields) = value.reflect_mut() else {
+        return Err("component reflection changed".into());
+    };
+    for (name, replacement) in staged {
+        fields
+            .field_mut(&name)
+            .and_then(PartialReflect::try_as_reflect_mut)
+            .ok_or("field reflection changed")?
+            .set(replacement)
+            .map_err(|_| format!("{name}: component rejected the typed replacement"))?;
+    }
+    Ok(
+        json!({"frame":frame,"entity":entity.to_string(),"name":name,"component":registration.type_info().type_path(),"before":before,"after":after}),
+    )
+}
+
+fn query(world: &World, registry: &TypeRegistry, args: &QueryArgs) -> Result<Value, String> {
+    let lookup = |name: &str| lookup_type(registry, name);
     let serialize = |value: &dyn PartialReflect| serde_json::to_value(TypedReflectSerializer::new(value, registry));
     let mut out = serde_json::Map::new();
     out.insert("frame".into(), json!(world.resource::<GameClock>().frame));
@@ -412,6 +560,7 @@ fn tools() -> Vec<Tool> {
         ("game_step","Hold the selected buttons for exactly N simulation ticks, then release injected input and freeze. Game systems must use GameSystems::Game in FixedUpdate.",json!({"type":"object","properties":{"frames":{"type":"integer","minimum":1,"maximum":3600},"buttons":buttons.clone()},"required":["frames"],"additionalProperties":false})),
         ("game_set_input","Replace the held injected controller state. An empty array releases all injected buttons. Physical inputs are merged.",json!({"type":"object","properties":{"buttons":buttons},"required":["buttons"],"additionalProperties":false})),
         ("game_query","Read game state as JSON: reflected components of entities whose Name contains `name` and/or that have every component in `with`, plus the listed `resources`. Components and resources must derive Reflect with #[reflect(Component)] / #[reflect(Resource)]. Type names may be short (Transform) or full paths.",json!({"type":"object","properties":{"name":{"type":"string"},"with":{"type":"array","items":{"type":"string"}},"components":{"type":"array","items":{"type":"string"},"description":"Components to return; all reflected ones when omitted"},"resources":{"type":"array","items":{"type":"string"}},"limit":{"type":"integer","minimum":1,"maximum":256,"default":16}},"additionalProperties":false})),
+        ("game_set_component","While paused, edit selected named fields of one existing reflected component. Select entity by its id from game_query, or by a unique exact name. fields maps top-level field names to typed JSON values in game_query's format (e.g. Transform translation is [x,y,z]). Validates all fields before applying; returns before/after values without advancing ticks. Unsupported, missing, immutable and ambiguous targets fail without applying the patch. Available only in dev-mcp builds.",json!({"type":"object","properties":{"entity":{"type":"string"},"name":{"type":"string"},"component":{"type":"string"},"fields":{"type":"object","minProperties":1,"maxProperties":64}},"required":["component","fields"],"oneOf":[{"required":["entity"]},{"required":["name"]}],"additionalProperties":false})),
         ("game_pause","Pause or resume continuous simulation. Developer MCP starts paused; rendering and window events continue.",json!({"type":"object","properties":{"paused":{"type":"boolean"}},"required":["paused"],"additionalProperties":false})),
     ].into_iter().map(|(name,description,schema)|Tool::new(name,description,Arc::new(schema.as_object().unwrap().clone()))).collect()
 }
@@ -461,6 +610,11 @@ impl ServerHandler for GameServer {
                 }
                 Command::Query(args)
             }
+            "game_set_component" => {
+                let args = parse::<SetComponentArgs>(value)?;
+                args.validate().map_err(|e| ErrorData::invalid_params(e, None))?;
+                Command::SetComponent(args)
+            }
             "game_step" => {
                 let args = parse::<StepArgs>(value)?;
                 if !(1..=3600).contains(&args.frames) || args.buttons.len() > 14 {
@@ -470,6 +624,7 @@ impl ServerHandler for GameServer {
             }
             _ => return Err(ErrorData::invalid_params("unknown game tool", None)),
         };
+        let validation_error = matches!(&command, Command::SetComponent(_) | Command::Screenshot(Target::Window));
         let _permit = tokio::select! {
             permit=self.slots.acquire()=>permit.map_err(|_|ErrorData::internal_error("game queue closed",None))?,
             _=context.ct.cancelled()=>return Err(ErrorData::internal_error("request cancelled",None)),
@@ -482,7 +637,7 @@ impl ServerHandler for GameServer {
             result=tokio::time::timeout(Duration::from_secs(120),receiver)=>result
                 .map_err(|_|ErrorData::internal_error("game/render response timed out",None))?
                 .map_err(|_|ErrorData::internal_error("game stopped before replying",None))?
-                .map_err(|error|ErrorData::internal_error(error,None))?,
+                .map_err(|error|if validation_error {ErrorData::invalid_params(error,None)} else {ErrorData::internal_error(error,None)})?,
             _=context.ct.cancelled()=>return Err(ErrorData::internal_error("request cancelled",None)),
         };
         Ok(match response {
@@ -493,5 +648,134 @@ impl ServerHandler for GameServer {
             ]),
         }
         .into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Component, Reflect)]
+    #[reflect(Component)]
+    struct Editable {
+        position: Vec3,
+        amount: u16,
+        phase: Phase,
+        #[reflect(ignore)]
+        private_data: String,
+    }
+    #[derive(Reflect, Debug, PartialEq)]
+    enum Phase {
+        Idle,
+        Moving { speed: f32 },
+    }
+    #[derive(Component, Reflect)]
+    #[component(immutable)]
+    #[reflect(Component)]
+    struct Immutable {
+        amount: u16,
+    }
+
+    fn app() -> (App, Entity) {
+        let mut app = App::new();
+        app.init_resource::<Control>()
+            .init_resource::<GameClock>()
+            .register_type::<Editable>()
+            .register_type::<Immutable>()
+            .register_type::<Transform>();
+        let entity = app
+            .world_mut()
+            .spawn((
+                Name::new("Player"),
+                Editable { position: Vec3::ZERO, amount: 4, phase: Phase::Idle, private_data: "keep me".into() },
+                Immutable { amount: 1 },
+            ))
+            .id();
+        (app, entity)
+    }
+    fn edit(app: &mut App, value: Value) -> Result<Value, String> {
+        let registry = app.world().resource::<AppTypeRegistry>().clone();
+        set_component(app.world_mut(), &registry.read(), &serde_json::from_value::<SetComponentArgs>(value).unwrap())
+    }
+    fn patch(fields: Value) -> Value {
+        json!({"name":"Player","component":"Editable","fields":fields})
+    }
+
+    #[test]
+    fn typed_fields_preserve_unselected_and_ignored_data_without_ticking() {
+        let (mut app, entity) = app();
+        let reply = edit(&mut app, patch(json!({"position":[2.0,3.0,4.0],"phase":{"Moving":{"speed":2.5}}}))).unwrap();
+        let state = app.world().get::<Editable>(entity).unwrap();
+        assert_eq!(state.position, Vec3::new(2.0, 3.0, 4.0));
+        assert_eq!(state.phase, Phase::Moving { speed: 2.5 });
+        assert_eq!(state.amount, 4);
+        assert_eq!(state.private_data, "keep me");
+        assert_eq!(reply["before"]["position"], json!([0.0, 0.0, 0.0]));
+        assert_eq!(reply["after"]["position"], json!([2.0, 3.0, 4.0]));
+        assert_eq!(app.world().resource::<GameClock>().frame, 0);
+    }
+    #[test]
+    fn rejects_bad_patches_before_changing_any_fields() {
+        let (mut app, entity) = app();
+        for fields in [
+            json!({"amount":7,"position":[1.0,2.0]}),
+            json!({"amount":7,"zzz":1}),
+            json!({"amount":-1}),
+            json!({"amount":70000}),
+            json!({"private_data":"overwrite"}),
+        ] {
+            assert!(edit(&mut app, patch(fields)).is_err());
+            let state = app.world().get::<Editable>(entity).unwrap();
+            assert_eq!(state.amount, 4);
+            assert_eq!(state.position, Vec3::ZERO);
+            assert_eq!(state.private_data, "keep me");
+        }
+    }
+    #[test]
+    fn edit_requires_pause_and_exact_unambiguous_target() {
+        let (mut app, entity) = app();
+        app.world_mut().resource_mut::<Control>().paused = false;
+        assert!(edit(&mut app, patch(json!({"amount":7}))).unwrap_err().contains("pause"));
+        app.world_mut().resource_mut::<Control>().paused = true;
+        let (reply, _receiver) = oneshot::channel();
+        app.world_mut().resource_mut::<Control>().step = Some(Step { remaining: 1, total: 1, buttons: vec![], reply });
+        assert!(edit(&mut app, patch(json!({"amount":7}))).unwrap_err().contains("pause"));
+        app.world_mut().resource_mut::<Control>().step = None;
+        app.world_mut().spawn(Name::new("Player"));
+        assert!(edit(&mut app, patch(json!({"amount":7}))).unwrap_err().contains("not unique"));
+        let reply =
+            edit(&mut app, json!({"entity":entity.to_string(),"component":"Editable","fields":{"amount":7}})).unwrap();
+        assert_eq!(reply["after"]["amount"], 7);
+        assert!(edit(&mut app, json!({"name":"Play","component":"Editable","fields":{"amount":8}})).is_err());
+        app.world_mut().despawn(entity);
+        assert!(
+            edit(&mut app, json!({"entity":entity.to_string(),"component":"Editable","fields":{"amount":7}})).is_err()
+        );
+    }
+    #[test]
+    fn immutable_and_missing_components_fail_cleanly() {
+        let (mut app, _) = app();
+        assert!(
+            edit(&mut app, json!({"name":"Player","component":"Immutable","fields":{"amount":7}}))
+                .unwrap_err()
+                .contains("immutable")
+        );
+        assert!(
+            edit(&mut app, json!({"name":"Player","component":"Transform","fields":{"translation":[0,0,0]}})).is_err()
+        );
+        assert!(edit(&mut app, json!({"name":"Player","component":"unknown","fields":{"amount":7}})).is_err());
+    }
+    #[test]
+    fn read_only_query_still_reports_edited_state() {
+        let (mut app, _) = app();
+        edit(&mut app, patch(json!({"amount":12}))).unwrap();
+        let registry = app.world().resource::<AppTypeRegistry>().read();
+        let output = query(
+            app.world(),
+            &registry,
+            &serde_json::from_value(json!({"name":"Player","components":["Editable"]})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(output["entities"][0]["components"]["Editable"]["amount"], 12);
     }
 }

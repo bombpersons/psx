@@ -52,6 +52,9 @@ src/psx, shell.rs, controller.rs, viewer.rs, testing.rs, dev_mcp.rs   the templa
   visuals, animation, camera). Rules then run headless in tests.
 - Name important entities (`Name::new("Player")`) and derive `Reflect` with
   `#[reflect(Component)]` on gameplay components, so `game_query` can read them.
+  In a paused developer build, `game_set_component` can edit selected named
+  fields using a unique exact entity name or the id returned by `game_query`.
+  Values use that query's JSON representation. Edits validate before applying.
 
 ## Tick rate and region
 
@@ -219,6 +222,8 @@ calls in screen space. It is for *checking* your rebuild, never for shipping:
 - `cargo test` with per-tick trajectory comparisons (above).
 - `cargo build` and `cargo build --features dev-mcp` when changing the shell.
 - Visual changes: `game_step` + `game_screenshot`, and look at the image.
+  Use `--mcp --headless --software` without a desktop; screenshot `target` must
+  be `screen` in headless mode. `tests/dev_mcp.rs` is the opt-in GPU/MCP check.
 - Numbers through MCP: `game_query` (README) reads positions and state.
 - `cargo fmt` (config in `rustfmt.toml`) and `cargo clippy --features dev-mcp --all-targets`.
 - Each copy of this template needs its own target directory. Two copies with

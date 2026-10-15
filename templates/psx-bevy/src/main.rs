@@ -12,6 +12,7 @@ fn main() {
     let flag = |name: &str| args.iter().any(|arg| arg == name);
     let value = |name: &str| args.iter().position(|arg| arg == name).and_then(|i| args.get(i + 1)).cloned();
     let mcp = flag("--mcp");
+    let headless = flag("--headless");
     #[cfg(not(feature = "dev-mcp"))]
     if mcp {
         eprintln!("--mcp requires a developer build: cargo run --features dev-mcp -- --mcp");
@@ -39,26 +40,36 @@ fn main() {
     let textures: Vec<String> = args.windows(2).filter(|w| w[0] == "--texture").map(|w| w[1].clone()).collect();
     let screen = PsxScreen { width: 320, height: 240, region, ..default() };
     let mut app = App::new();
-    app.add_plugins(
-        DefaultPlugins
-            .set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: game::TITLE.into(),
-                    resolution: (screen.width * 3, screen.height * 3).into(),
-                    ..default()
-                }),
-                ..default()
-            })
-            .set(ImagePlugin::default_nearest())
-            // Prefers hardware; --software selects a fallback adapter (e.g. Mesa lavapipe).
-            .set(RenderPlugin {
-                render_creation: WgpuSettings { force_fallback_adapter: flag("--software"), ..default() }.into(),
-                synchronous_pipeline_compilation: true,
+    let mut plugins = DefaultPlugins
+        .set(WindowPlugin {
+            primary_window: (!headless).then(|| Window {
+                title: game::TITLE.into(),
+                resolution: (screen.width * 3, screen.height * 3).into(),
                 ..default()
             }),
-    )
-    .add_plugins((PsxPlugin { screen }, ShellPlugin { tick: game::tick_rate(region) }))
-    .insert_resource(look);
+            exit_condition: if headless {
+                bevy::window::ExitCondition::DontExit
+            } else {
+                bevy::window::ExitCondition::OnAllClosed
+            },
+            ..default()
+        })
+        .set(ImagePlugin::default_nearest())
+        // Prefers hardware; --software selects a fallback adapter (e.g. Mesa lavapipe).
+        .set(RenderPlugin {
+            render_creation: WgpuSettings { force_fallback_adapter: flag("--software"), ..default() }.into(),
+            synchronous_pipeline_compilation: true,
+            ..default()
+        });
+    if headless {
+        plugins = plugins.disable::<bevy::winit::WinitPlugin>();
+        app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::from_secs_f64(
+            1.0 / region.hz(),
+        )));
+    }
+    app.add_plugins(plugins)
+        .add_plugins((PsxPlugin { screen }, ShellPlugin { tick: game::tick_rate(region) }))
+        .insert_resource(look);
     match (scene, model) {
         (Some(path), _) => app.add_plugins(SceneViewerPlugin { path, depth }),
         (None, Some(path)) => app.add_plugins(ModelViewerPlugin { path, textures, cull: flag("--cull") }),

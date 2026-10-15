@@ -296,7 +296,14 @@ fn spawn_screen_pass(
     ));
 }
 
-fn spawn_display(mut commands: Commands, screen: Res<PsxScreen>) {
+fn spawn_display(
+    mut commands: Commands,
+    screen: Res<PsxScreen>,
+    windows: Query<(), With<bevy::window::PrimaryWindow>>,
+) {
+    if windows.is_empty() {
+        return;
+    }
     commands.spawn((
         Camera2d,
         Msaa::Off,

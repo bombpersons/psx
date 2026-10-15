@@ -42,6 +42,7 @@ const FILES: &[(&str, &str)] = files![
     "src/testing.rs",
     "src/viewer.rs",
     "tests/player.rs",
+    "tests/dev_mcp.rs",
 ];
 
 const TEMPLATE_PACKAGE: &str = "psx-game";
@@ -172,7 +173,7 @@ pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> psx_
         "fields_per_tick": options.fields_per_tick,
         "tick_hz": options.region.hz() / f64::from(options.fields_per_tick),
         "files": written,
-        "next": ["cargo run", "cargo run --features dev-mcp -- --mcp"],
+        "next": ["cargo run", "cargo run --features dev-mcp -- --mcp", "cargo run --features dev-mcp -- --mcp --headless --software"],
     }))
 }
 

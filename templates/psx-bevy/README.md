@@ -10,6 +10,7 @@ cargo run -- --software                 # force a software adapter
 cargo run -- --region pal               # override lib.rs REGION (display + tick rate)
 cargo test                              # headless gameplay tests (tests/)
 cargo run --features dev-mcp -- --mcp   # developer MCP over stdin/stdout
+cargo run --features dev-mcp -- --mcp --headless --software # offscreen GPU, no desktop needed
 cargo build --release                   # shipping build; developer MCP is excluded
 ```
 
@@ -324,6 +325,12 @@ guide with examples from the Croc and Mega Man 8 studies. In short:
 Build with `--features dev-mcp` and run with `--mcp`. This starts a stdio MCP server;
 stdout is reserved for JSON-RPC and logs go to stderr. Simulation starts paused.
 
+Add `--headless` to render without X11/Wayland or a window. The normal GPU
+pipeline still draws the native-resolution screen target; `--software` selects
+a fallback adapter such as Mesa llvmpipe. A working graphics driver is required.
+Headless mode also works without MCP, running continuous simulation. It does not
+change the game's configured logic tick rate. Status reports `headless: true`.
+
 | Tool | Arguments | Behaviour |
 |---|---|---|
 | `game_status` | `{}` | Frame, pause state, tick rate, screen size/region, held buttons, renderer adapter |
@@ -332,6 +339,7 @@ stdout is reserved for JSON-RPC and logs go to stderr. Simulation starts paused.
 | `game_pause` | `{"paused":false}` | Resumes continuous simulation or manual play |
 | `game_screenshot` | `{"target":"screen"}` or `"window"` | A real GPU-rendered PNG of the 320×240 target or of the window |
 | `game_query` | `{"name":"Player","components":["Transform","Hop"],"resources":["GameClock"]}` | Reflected components (as JSON) of entities whose `Name` contains `name` and/or that have every component in `with`, plus resources |
+| `game_set_component` | `{"name":"Player","component":"Transform","fields":{"translation":[2,0.5,0]}}` | While paused, replace selected named fields of one component; return the frame and before/after values |
 
 `game_query` reads numbers instead of pixels, e.g. to compare a position with a
 recorded trajectory after `game_step`. It sees components and resources that
@@ -340,14 +348,33 @@ register themselves). Type names can be short (`Transform`) or full paths;
 without `components` it returns every reflected component of each match
 (`limit`, default 16 entities). `{"with":["Player"]}` matches by marker.
 
+To place an actor or camera for a comparison, call `game_set_component` with
+either `name` (an **exact**, unique entity name) or `entity` (the id string from
+`game_query`, including its generation), plus `component` and `fields`. Component
+type names can be short or full paths. Values use the JSON format returned by
+`game_query`; for example, a `Vec3` is a three-number array. Each selected field
+is replaced as a whole, so supply the complete vector, nested struct or enum value.
+
+The editor validates all fields and their concrete types before changing the
+component, preserves unselected/ignored fields and does not advance simulation
+ticks. It requires a reflected struct with named fields, a mutable existing
+component, and supported reflection deserialization. Missing/ambiguous targets,
+unknown fields and unsupported values fail with a readable error. Pause first
+with `game_pause` if the game is running. Resources, component insertion/removal
+and whole-component replacement are outside this tool. `game_query` stays read-only.
+The editor is compiled only with `dev-mcp`.
+
 Buttons are `up/down/left/right/cross/circle/square/triangle/l1/r1/l2/r2/start/select`.
 Step first, then screenshot, for reproducible observations. The first screenshot
-waits until pipelines have compiled.
+waits until pipelines have compiled. In headless mode use `target: "screen"`;
+`target: "window"` immediately returns a clear error because there is no window.
 
 ## Checks
 
 ```sh
 cargo test
+cargo test --features dev-mcp
+cargo test --features dev-mcp --test dev_mcp -- --ignored --nocapture # real offscreen GPU/MCP check
 cargo clippy --features dev-mcp --all-targets
 cargo fmt --check        # rustfmt.toml: 120 columns
 cargo build --release
