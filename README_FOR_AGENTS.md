@@ -33,6 +33,7 @@ integer behaviour only where the game's feel depends on it, and cite the evidenc
 | `psx sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |
 | `psx addr 0x80010000` | Segment, memory region and folded offset |
 | `psx run <disc\|exe> --bios B --frames N [...]` | Bounded run in an isolated PCSX-Redux process (default), or on the native core with `--backend native` — the backend for game RE. The native core gives exact observations, native save states, `--trace` for windowed instruction traces with coverage and call summaries, `--memcard1/2 PATH|new` for memory cards (written cards are saved to the run directory, never to your file), `--gpu-frame N` to decode one frame's GPU commands (primitives, texture pages, CLUTs, VRAM at the end of that frame, its drawing area, before/after/wireframe PNGs), and `--pad dualshock` for analog games (replay events take `"sticks": [lx, ly, rx, ry]`; Redux gets its analog pad). Captures RAM, VRAM, screen, registers and an optional state. `--watch ADDR[:W]` reports CPU/DMA writers with PC and value; `--trace-cd` and `--trace-bios` log CD and BIOS activity; `--replay`, `--from-state`/`--save-state`; `--fast` uses the dynarec (no observation). The full report is always written to `<run_dir>/report.json`; `--brief` prints a summary |
+| `psx run --backend native --gpu-next-draw [--gpu-frame F --gpu-search-frames N]` | Capture the first completed frame with draw commands, starting at F (default 0), searching at most N frames (default 60, range 1..=600) within `--frames`. Reports selected relative and absolute frame numbers, or an explicit miss. See below |
 | `psx run --backend native --sample ADDR:FMT[:NAME]` | Per-frame values: `samples.csv` with `run_frame,frame,<columns>`, one row per vblank (`--sample-every N`), read byte-exact from RAM/scratchpad as `u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F` (e.g. `fx16.16`). Row N is memory after N frames of the run |
 | `psx run --backend native --poke ADDR=VALUE[:W\|:FMT][@F\|@A..B\|@A..]` | Write memory at the start of run frame F (or every frame of a range) to test a hypothesis; listed under `pokes` in the report |
 | `psx run --backend native --watch-reads LO-HI\|ADDR[:W]` | CPU loads from a range: `reads.jsonl` and the top reader PCs (who reads a variable, which script bytes an interpreter consumes). `--watch-changes-only` drops stores that leave a watched value unchanged |
@@ -79,6 +80,36 @@ A run's own frame numbers count from the run start: power-on, or the restored st
 `cd_native.jsonl`, `bios.jsonl`, `samples.csv`, `calls.json` and the first column of `trace.txt` are absolute vblanks
 since power-on, as the core counts them. The report gives `frames.start`, and `frame = run_frame + frames.start`.
 Native logs also carry `address_hex`/`pc_hex`/`value_hex` next to the numbers, and `value_signed`/`old_signed` by store width.
+
+### Capture the next drawing frame
+
+For games that draw only every second or third vsync, use `--gpu-next-draw`:
+
+```bash
+psx run media/game.cue --backend native --bios bios/scph7502.bin --from-state state.bin \
+  --frames 120 --gpu-frame 110 --gpu-next-draw --gpu-search-frames 6 --brief
+```
+
+This searches run frames 110 through 115 inclusively and captures the first completed
+frame containing GP0 polygons, lines, rectangles/sprites or VRAM fills. State changes,
+NOPs, uploads, downloads and VRAM copies alone do not qualify. A submitted draw counts
+even if it is offscreen or leaves pixels unchanged; this selects drawing work rather
+than detecting visible changes. Without `--gpu-next-draw`, `--gpu-frame F` retains exact
+capture, including empty frames.
+
+The search never extends `--frames`, and selection does not stop the run. The selected
+frame's VRAM, display settings and GTE observations are frozen for `textures`, even if
+later frames draw again. Its report, including `--brief`, gives `status: "captured"`,
+`run_frame`, `absolute_frame`, `complete`, `draw_commands` and `search.frames_inspected`.
+For compatibility, GPU capture's legacy `frame` field remains an alias of `run_frame`.
+The same metadata appears in `gpu_frame.json` under `summary`.
+
+A miss returns `gpu_frame.status: "not_found"`, an `error` message and `reason` of
+`search_limit`, `run_end` or `timeout`. Only completed frames count as inspected, so a
+partially drawn frame at timeout is never selected by next-draw mode. The overall
+run status still describes emulation completion; inspect `gpu_frame.status` separately.
+With MCP, set `backend: "native"`, `gpu_next_draw: true` and optionally `gpu_frame`
+and `gpu_search_frames` on the existing `run` tool. No extra tool call is required.
 
 Other crates:
 

@@ -11,7 +11,10 @@
 > rendering (`--mcp --headless --software`) and paused reflected component-field
 > edits (`game_set_component`) to the shared starter. See
 > [research/template-agent-tools.md](research/template-agent-tools.md) for verification.
-> The next toolkit item is capture of the next frame that actually draws.
+
+> **GPU capture update (2026-10-15):** `feat/gpu-next-draw` adds bounded next-draw
+> selection to native CLI/MCP runs, with selected relative/absolute frame identity
+> and frozen per-frame artifacts. See [research/gpu-next-draw.md](research/gpu-next-draw.md).
 
 Response to `MDX_AND_PS1_RESEARCH.md`. Findings come from a source read of the
 PCSX-Redux and Beetle PSX HEADs and the repository metadata of other candidates,

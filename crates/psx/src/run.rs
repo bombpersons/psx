@@ -181,6 +181,14 @@ pub struct TraceArgs {
     /// before/after/wireframe PNGs.
     #[arg(long)]
     pub gpu_frame: Option<u64>,
+    /// Capture the first completed frame with GP0 drawing commands, starting at
+    /// --gpu-frame (default 0). Never extends --frames. Native backend only.
+    #[arg(long)]
+    #[serde(default)]
+    pub gpu_next_draw: bool,
+    /// Search at most N frames for --gpu-next-draw (default 60, range 1..=600).
+    #[arg(long)]
+    pub gpu_search_frames: Option<u32>,
 }
 
 fn err(code: &str, message: impl std::fmt::Display) -> Value {
@@ -213,13 +221,22 @@ fn next_run_dir(root: &Path) -> PathBuf {
 }
 
 pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
+    if a.trace.gpu_search_frames.is_some() && !a.trace.gpu_next_draw {
+        return (false, err("invalid_arguments", "--gpu-search-frames requires --gpu-next-draw"));
+    }
+    if a.trace.gpu_search_frames.is_some_and(|n| !(1..=600).contains(&n)) {
+        return (false, err("invalid_arguments", "--gpu-search-frames must be in 1..=600"));
+    }
+    if a.trace.gpu_next_draw && a.trace.gpu_frame.unwrap_or(0).checked_add(a.trace.gpu_search_frames.unwrap_or(60) as u64).is_none() {
+        return (false, err("invalid_arguments", "GPU search frame range overflows u64"));
+    }
     match a.backend.as_str() {
         "native" => return crate::run_native::run(root, a),
         "redux" => {}
         other => return (false, err("invalid_arguments", format!("unknown backend {other:?} (redux | native)"))),
     }
-    if a.trace.trace || a.trace.gpu_frame.is_some() {
-        return (false, err("unsupported", "--trace and --gpu-frame need --backend native"));
+    if a.trace.trace || a.trace.gpu_frame.is_some() || a.trace.gpu_next_draw {
+        return (false, err("unsupported", "--trace, --gpu-frame and --gpu-next-draw need --backend native"));
     }
     if a.observe.given() {
         return (false, err("unsupported", "--sample, --poke, --snapshot-every, --save-state-at, --watch-reads and --watch-changes-only need --backend native"));
