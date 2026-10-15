@@ -628,6 +628,42 @@ Not attempted:
 
 What remains is the interpreter dispatch (~20% of MM8 samples land on the jump-table branch), per-step bookkeeping (cycles, IRQ line, frame check), and in 3D games the per-pixel texture path.
 
+#### Third pass: specialised triangle and sprite loops (identical pixels)
+
+The silicon-accurate triangle rules ("GPU accuracy" above) replaced the earlier per-(textured, Gouraud) triangle specialisation. Every pixel went through the generic `plot` again: a runtime check of each flag, a clip test, a texture-depth `match` and an uncached CLUT read. Each row also did one 64-bit division per edge X and per colour. On the Crash bench (1000 frames from an N. Sanity Beach state), the ptrace PC sampler put **33.1%** of samples in `plot` and `triangle`.
+
+The changes, all in `psx-gpu` (`raster.rs`, `lib.rs`):
+- **Monomorphised pixel loop.** `raster::span` is `plot`'s arithmetic with the flags as const generics: textured, raw texture, semi-transparent, mask check, Gouraud and dither. The `consts!` macro picks the variant once per primitive. Untextured primitives run with `NoTexture`, and raw textures fix Gouraud and dither to off. That gives 16 untextured variants shared by all sources and 20 per texture source. The blend equation stays a runtime `match`, which is predictable within a primitive. The loop drops `plot`'s clip test, because rows and spans are already clipped. It reads the destination only for blending or the mask test, and it steps only the attributes the variant uses.
+- **Row stepping without division.** `Steps` keeps `d * row / h` as an exact quotient and remainder, with truncation toward zero handled by sign. Each row is then an add instead of an `idiv`, and the edge X and colours equal the per-row division bit for bit. UVs keep their truncated per-row increment. The edge walkers start at the first drawn row, so top clipping costs one division. Only the left edge carries attributes.
+- **Texture source per depth.** `Gpu::polygon`/`rectangle` dispatch to `PageTexture<0|1|2>`. Its window and page base are folded into and/or masks, and the 16- or 256-entry CLUT is copied once per primitive. The copy is used only when the drawing area cannot reach the CLUT (`clut_outside`). Otherwise, for example when a primitive draws over its own CLUT row, the generic `VramTexture` reads VRAM per texel as before.
+- **Sprites** (`rect`) run through the same `span` with U as a 16.16 accumulator stepping ±1. This helps the 2D games.
+- `line` still uses `plot`, since lines are rare.
+
+**Identity evidence:**
+- **Fuzz test against the old code.** The old `triangle`/`rect` are kept as `raster::reference` (test-only). `specialised_loops_match_plot_reference` drives two `Gpu`s through 400 × 40 random sequences over random VRAM. The sequences cover every polygon and rectangle opcode, random E1–E6 state (depth, window, blend, dither, mask set/check, inverted and edge-touching draw areas, offsets) and vertices near and far from the area. After every command the VRAM must be equal. As a mutation check, the test fails on an off-by-one in the remainder step, a changed blend rounding, a wrong dither index, or a CLUT cache that ignores `clut_outside`.
+- **Disc runs.** The suite was run with the previous binary and the new one: Crash from a state, then Crash, SOTN, MM8, Ape Escape, Resident Evil, Spyro, Tekken 3, Tomb Raider, Croc and Gran Turismo from power-on with their replays, at 1500–5200 frames. A second set ran Crash, SOTN, MM8 and RE to 8000 frames. In every run, `vram.bin`, `ram.bin`, `scratch.bin`, the instruction and cycle counts and the final registers are identical.
+- **Probe and Redux checks.** The probe stream (`psx gpu-replay tools/probes/gpu/gp0_stream.bin`) produces the same VRAM hash as before. The BIOS boot still matches Redux over all 524,288 VRAM pixels at vsync 350. CPU lockstep matches over 10M instructions.
+
+**Speed.** Instructions per CPU-second (user+system), with the previous and new suites run concurrently, 4 processes each, on a machine at load 20–60:
+
+| Game (frames) | Before, M instr/CPU-s | After | Ratio |
+|---|---|---|---|
+| Crash Bandicoot (1500 from state) | 31.7 | 37.2 | 1.17× |
+| Crash Bandicoot (3000 / 8000) | 46.2 / 36.4 | 52.1 / 42.6 | 1.13× / 1.17× |
+| Castlevania SOTN (3000 / 8000) | 44.8 / 44.4 | 54.4 / 53.3 | 1.21× / 1.20× |
+| Mega Man 8 (3000 / 8000) | 47.0 / 42.0 | 53.4 / 52.3 | 1.14× / 1.25× |
+| Ape Escape (4000) | 44.0 | 52.0 | 1.18× |
+| Resident Evil (3000 / 8000) | 51.4 / 52.2 | 58.3 / 56.1 | 1.14× / 1.07× |
+| Spyro (5200) | 40.0 | 46.5 | 1.16× |
+| Tekken 3 (5000) | 32.7 | 41.7 | 1.28× |
+| Tomb Raider (3400) | 50.2 | 53.8 | 1.07× |
+| Croc (4600) | 45.4 | 50.8 | 1.12× |
+| Gran Turismo (4000) | 43.9 | 53.7 | 1.22× |
+
+Paired runs of the two intermediate builds (before the CLUT copy and the last two tweaks) gave ratios within about ±3% of these. In the Crash profile, triangle work fell from 33.1% to 21.1% of samples, so the rasteriser itself runs about 1.8× faster. Most of what remains is the dependent texture-word → CLUT load and the three modulate clamps. The interpreter is again the larger part.
+
+Cost: the variants add about 400 KB of machine code to the `psx` binary. The generic `Surface`/`TexelSource` API, `plot`, `triangle`, `quad` and `rect` keep their signatures. Native framebuffers get the specialised loops too, with their own texel source.
+
 ### Debugging trail: from a kernel overwrite to playing FMVs
 
 This trail shows the toolkit's method on a real bug. Every step used `psx` tools with evidence from both emulators.
