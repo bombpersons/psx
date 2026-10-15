@@ -59,6 +59,97 @@ impl TexelSource<Vram> for VramTexture {
     }
 }
 
+/// [`VramTexture`] with the colour depth fixed (0 = 4-bit CLUT, 1 = 8-bit
+/// CLUT, 2 = 15-bit direct), the page base and window folded into masks and
+/// the CLUT copied out of VRAM, so the specialised pixel loops do no per-texel
+/// decoding. Only used for primitives that cannot draw over their own CLUT
+/// (see `with_page_texture!`), so every texel equals [`VramTexture::texel`].
+#[derive(Clone, Copy, Debug)]
+struct PageTexture<const DEPTH: u8> {
+    u_and: i32,
+    u_or: i32,
+    v_and: i32,
+    v_or: i32,
+    base_x: i32,
+    base_y: i32,
+    clut: [u16; 256],
+}
+
+impl<const DEPTH: u8> PageTexture<DEPTH> {
+    const CLUT_LEN: i32 = match DEPTH {
+        0 => 16,
+        1 => 256,
+        _ => 0,
+    };
+
+    fn new(t: &VramTexture, vram: &Vram) -> Self {
+        let (mx, my, ox, oy) = t.window;
+        let mut clut = [0; 256];
+        for (i, c) in clut.iter_mut().enumerate().take(Self::CLUT_LEN as usize) {
+            *c = vram.get(t.clut_x + i as i32, t.clut_y);
+        }
+        PageTexture {
+            u_and: 0xFF & !((mx as i32) * 8),
+            u_or: ((ox & mx) as i32) * 8,
+            v_and: 0xFF & !((my as i32) * 8),
+            v_or: ((oy & my) as i32) * 8,
+            base_x: ((t.texpage & 0xF) as i32) * 64,
+            base_y: (((t.texpage >> 4) & 1) as i32) * 256,
+            clut,
+        }
+    }
+
+    /// Whether drawing inside `clip` (inclusive, within VRAM) leaves the CLUT
+    /// of `t` untouched, so it can be read once per primitive.
+    fn clut_outside(t: &VramTexture, clip: (i32, i32, i32, i32)) -> bool {
+        let (x0, x1) = (t.clut_x, t.clut_x + Self::CLUT_LEN - 1);
+        t.clut_y < clip.1 || t.clut_y > clip.3 || (x1 < 1024 && (x1 < clip.0 || x0 > clip.2))
+    }
+}
+
+impl<const DEPTH: u8> TexelSource<Vram> for PageTexture<DEPTH> {
+    #[inline(always)]
+    fn texel(&self, vram: &Vram, u: i32, v: i32) -> u16 {
+        // Never negative: u_and <= 0xFF, u_or >= 0.
+        let u = (u & self.u_and) | self.u_or;
+        let y = self.base_y + ((v & self.v_and) | self.v_or);
+        match DEPTH {
+            0 => self.clut[((vram.get(self.base_x + (u >> 2), y) >> ((u & 3) * 4)) & 0xF) as usize],
+            1 => self.clut[((vram.get(self.base_x + (u >> 1), y) >> ((u & 1) * 8)) & 0xFF) as usize],
+            _ => vram.get(self.base_x + u, y),
+        }
+    }
+}
+
+/// Evaluate `$body` with `$t` bound to `$tex` as a [`PageTexture`] of its
+/// colour depth, or as the plain [`VramTexture`] when the drawing area `$clip`
+/// covers part of the CLUT (the primitive could overwrite entries it reads
+/// later).
+macro_rules! with_page_texture {
+    ($tex:expr, $vram:expr, $clip:expr, |$t:ident| $body:expr) => {{
+        let tex: &VramTexture = &$tex;
+        let clip = $clip;
+        match (tex.texpage >> 7) & 3 {
+            0 if PageTexture::<0>::clut_outside(tex, clip) => {
+                let $t = &PageTexture::<0>::new(tex, $vram);
+                $body
+            }
+            1 if PageTexture::<1>::clut_outside(tex, clip) => {
+                let $t = &PageTexture::<1>::new(tex, $vram);
+                $body
+            }
+            2 | 3 => {
+                let $t = &PageTexture::<2>::new(tex, $vram);
+                $body
+            }
+            _ => {
+                let $t = tex;
+                $body
+            }
+        }
+    }};
+}
+
 /// Hardware drops a primitive when any edge it draws spans 1024+ pixels
 /// horizontally or 512+ vertically. For a quad these are the edges of its two
 /// triangles: the perimeter plus the shared v1-v2 diagonal, but not v0-v3
@@ -393,11 +484,27 @@ impl Gpu {
             self.offset(v);
         }
         let (r, tex) = (self.state.raster(), self.state.texture(clut));
+        #[cfg(test)]
+        if tests::REFERENCE.get() {
+            raster::reference::triangle(&mut self.vram, &tex, &r, &sh, [vs[0], vs[1], vs[2]]);
+            if quad {
+                raster::reference::triangle(&mut self.vram, &tex, &r, &sh, [vs[1], vs[2], vs[3]]);
+            }
+            return;
+        }
         // psx-spx/Mednafen order: (v0,v1,v2) first. PCSX-Redux draws (v1,v3,v2)
         // first, which only differs where the halves overlap (self-intersecting quads).
-        raster::triangle(&mut self.vram, &tex, &r, &sh, [vs[0], vs[1], vs[2]]);
-        if quad {
-            raster::triangle(&mut self.vram, &tex, &r, &sh, [vs[1], vs[2], vs[3]]);
+        let vram = &mut self.vram;
+        let draw = |vram: &mut Vram, t: &dyn Fn(&mut Vram, [Vtx; 3])| {
+            t(vram, [vs[0], vs[1], vs[2]]);
+            if quad {
+                t(vram, [vs[1], vs[2], vs[3]]);
+            }
+        };
+        if !textured {
+            draw(vram, &|vram, v| raster::triangle(vram, &raster::NoTexture, &r, &sh, v));
+        } else {
+            with_page_texture!(tex, vram, r.clip, |t| draw(vram, &|vram, v| raster::triangle(vram, t, &r, &sh, v)));
         }
     }
 
@@ -468,7 +575,18 @@ impl Gpu {
         };
         let (ras, tex) = (self.state.raster(), self.state.texture(clut));
         let origin = Vtx { x, y, r, g, b, u, v };
-        raster::rect(&mut self.vram, &tex, &ras, &sh, origin, w, h, self.state.rect_flip);
+        let flip = self.state.rect_flip;
+        #[cfg(test)]
+        if tests::REFERENCE.get() {
+            raster::reference::rect(&mut self.vram, &tex, &ras, &sh, origin, w, h, flip);
+            return;
+        }
+        let vram = &mut self.vram;
+        if !textured {
+            raster::rect(vram, &raster::NoTexture, &ras, &sh, origin, w, h, flip);
+        } else {
+            with_page_texture!(tex, vram, ras.clip, |t| raster::rect(vram, t, &ras, &sh, origin, w, h, flip));
+        }
     }
 
     fn fill(&mut self, p: &[u32]) {
@@ -542,5 +660,121 @@ impl Gpu {
             px
         };
         (w, h, rgba)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Draw polygons and rectangles with `raster::reference` (per-pixel `plot`).
+        pub(crate) static REFERENCE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u32 {
+            // xorshift64*
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            (self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
+        }
+        fn below(&mut self, n: u32) -> u32 {
+            self.next() % n
+        }
+    }
+
+    /// A random vertex word near (or sometimes far from) the drawing area.
+    fn vertex(rng: &mut Rng, area: (i32, i32)) -> u32 {
+        let (x, y) = match rng.below(8) {
+            0 => (rng.next() as i32 % 1100, rng.next() as i32 % 600),
+            _ => (area.0 - 40 + rng.below(220) as i32, area.1 - 40 + rng.below(200) as i32),
+        };
+        (x as u32 & 0x7FF) | ((y as u32 & 0x7FF) << 16)
+    }
+
+    /// The specialised triangle and sprite loops write exactly the VRAM that the
+    /// per-pixel `plot` path writes, over random state, VRAM and primitives
+    /// (every polygon and rectangle opcode, depths, windows, blending, masks,
+    /// dither, clipping, offsets).
+    #[test]
+    fn specialised_loops_match_plot_reference() {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        let sequences = if cfg!(debug_assertions) { 40 } else { 400 };
+        for seq in 0..sequences {
+            let mut fast = Gpu::new();
+            for p in fast.vram.as_mut_slice() {
+                *p = rng.next() as u16;
+            }
+            let mut reference = Gpu::new();
+            reference.vram = fast.vram.clone();
+            for cmd in 0..40 {
+                let mut words = Vec::new();
+                // New drawing state every few commands.
+                if cmd % 8 == 0 {
+                    let (x1, y1) = (rng.below(1024), rng.below(512));
+                    let (x2, y2) = ((x1 + rng.below(300)).min(1023), (y1 + rng.below(260)).min(511));
+                    let (x2, y2) = if rng.below(16) == 0 { (rng.below(1024), rng.below(512)) } else { (x2, y2) };
+                    words.push(0xE100_0000 | (rng.next() & 0x3FFF));
+                    words.push(0xE200_0000 | if rng.below(3) == 0 { rng.next() & 0xF_FFFF } else { 0 });
+                    words.push(0xE300_0000 | x1 | (y1 << 10));
+                    words.push(0xE400_0000 | x2 | (y2 << 10));
+                    let (ox, oy) = (rng.below(64) as i32 - 32 + x1 as i32, rng.below(64) as i32 - 32 + y1 as i32);
+                    words.push(0xE500_0000 | (ox as u32 & 0x7FF) | ((oy as u32 & 0x7FF) << 11));
+                    words.push(0xE600_0000 | (rng.next() & 3));
+                    fast.gp0_all(&words);
+                    reference.gp0_all(&words);
+                    words.clear();
+                }
+                // Vertices are relative to the drawing offset.
+                let near = (fast.state.area.0 - fast.state.offset.0, fast.state.area.1 - fast.state.offset.1);
+                let op = if rng.below(4) == 0 { 0x60 + rng.below(32) } else { 0x20 + rng.below(32) } as u8;
+                words.push(((op as u32) << 24) | (rng.next() & 0xFF_FFFF));
+                if op < 0x40 {
+                    let n = if op & 0x08 != 0 { 4 } else { 3 };
+                    for k in 0..n {
+                        if k > 0 && op & 0x10 != 0 {
+                            words.push(rng.next() & 0xFF_FFFF);
+                        }
+                        words.push(vertex(&mut rng, near));
+                        if op & 0x04 != 0 {
+                            let hi = match k {
+                                0 => rng.below(64) | (rng.below(512) << 6),
+                                1 => (rng.next() & 0x1FF) | (rng.below(2) << 11),
+                                _ => 0,
+                            };
+                            words.push((rng.next() & 0xFFFF) | (hi << 16));
+                        }
+                    }
+                } else {
+                    words.push(vertex(&mut rng, near));
+                    if op & 0x04 != 0 {
+                        words.push((rng.next() & 0xFFFF) | ((rng.below(64) | (rng.below(512) << 6)) << 16));
+                    }
+                    if op & 0x18 == 0 {
+                        words.push(rng.below(300) | (rng.below(260) << 16));
+                    }
+                }
+                fast.gp0_all(&words);
+                REFERENCE.set(true);
+                reference.gp0_all(&words);
+                REFERENCE.set(false);
+                if fast.vram.as_slice() != reference.vram.as_slice() {
+                    let i = fast.vram.as_slice().iter().zip(reference.vram.as_slice()).position(|(a, b)| a != b).unwrap();
+                    panic!(
+                        "sequence {seq} command {cmd} {words:08X?} state {:?}: first difference at ({}, {}): {:04X} vs reference {:04X}",
+                        fast.state,
+                        i % 1024,
+                        i / 1024,
+                        fast.vram.as_slice()[i],
+                        reference.vram.as_slice()[i]
+                    );
+                }
+            }
+        }
     }
 }
