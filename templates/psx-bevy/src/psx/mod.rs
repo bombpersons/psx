@@ -7,6 +7,8 @@
 //! - 2D is plain Bevy `Sprite`s seen by a `Camera2d` with `PsxView`. Add
 //!   `SpriteMaterial<PsxSprite>` for PS1 blend modes or CLUT palettes, and
 //!   use [`PsxMaterial2d`] on `Mesh2d` polygons.
+//! - Every `PsxView` camera draws gamma-encoded colour, so [`PsxBlend`]
+//!   modes blend the stored values like the GPU, in 2D and 3D.
 //! - [`PsxLook`] toggles the effects globally. With `quantize`, the whole
 //!   screen (sprites included) is reduced to 15-bit colour after drawing.
 //! - [`PsxSceneRoot`] spawns a captured frame (`.psxscene` from the psx
@@ -38,10 +40,12 @@ use bevy::{
     pbr::MaterialPlugin,
     prelude::*,
     render::{
+        Render, RenderApp,
+        extract_component::{ExtractComponent, ExtractComponentPlugin},
         render_resource::{
             AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureFormat, TextureUsages,
         },
-        view::Msaa,
+        view::{Msaa, ResolveCompositingSpaces, ResolvedCompositingSpace, resolve_composition_spaces},
     },
     shader::ShaderRef,
     sprite_render::{Material2d, Material2dKey, Material2dPipeline, Material2dPlugin},
@@ -125,9 +129,11 @@ impl Default for PsxScreen {
     }
 }
 
-/// Marker: this camera renders into the PS1 screen target. Without 3D
-/// cameras, they composite in sRGB so blending matches the GPU's.
-#[derive(Component, Clone, Copy, Debug, Default)]
+/// Marker: this camera renders into the PS1 screen target. All `PsxView`
+/// cameras, 2D and 3D, draw and blend gamma-encoded colour like the GPU
+/// (see `encode_psx_views`).
+#[derive(Component, ExtractComponent, Clone, Copy, Debug, Default)]
+#[extract_app(RenderApp)]
 pub struct PsxView;
 
 /// Layer of the internal screen pass (canvas → screen image).
@@ -164,6 +170,7 @@ impl Plugin for PsxPlugin {
             Material2dPlugin::<PsxMaterial2d>::default(),
             Material2dPlugin::<ScreenPassMaterial>::default(),
             SpriteMaterialPlugin::<PsxSprite>::default(),
+            ExtractComponentPlugin::<PsxView>::default(),
         ))
         .register_type::<PsxLook>()
         .init_resource::<PsxLook>()
@@ -171,8 +178,18 @@ impl Plugin for PsxPlugin {
         .insert_resource(screen)
         .add_observer(attach_view)
         .add_systems(Startup, (spawn_display, spawn_screen_pass))
-        .add_systems(Update, (fit_display, sync_compositing))
+        .add_systems(Update, fit_display)
         .add_systems(PostUpdate, (gather_lighting, apply_look).chain().after(TransformSystems::Propagate));
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app.add_systems(
+                Render,
+                (
+                    hide_psx_requests.before(resolve_composition_spaces),
+                    encode_psx_views.after(resolve_composition_spaces),
+                )
+                    .in_set(ResolveCompositingSpaces),
+            );
+        }
     }
 }
 
@@ -182,24 +199,37 @@ fn attach_view(add: On<Add<PsxView>>, mut commands: Commands, screen: Res<PsxScr
         Msaa::Off,
         Tonemapping::None,
         DebandDither::Disabled,
+        // Gives the camera an `Rgba8Unorm` main texture that stores encoded
+        // values; `encode_psx_views` makes it stick for 3D cameras too.
+        CompositingSpace::Srgb,
     ));
 }
 
-/// 2D-only screens composite in sRGB, so blending works on gamma-encoded
-/// colour like the GPU's (B/2+F/2 of the stored values). Bevy's 3D path
-/// writes linear light, and all `PsxView` cameras share one main texture,
-/// so while any of them is a `Camera3d` they all stay linear.
-fn sync_compositing(
-    mut commands: Commands,
-    views: Query<(Entity, Has<Camera3d>, Has<CompositingSpace>), With<PsxView>>,
-) {
-    let srgb = !views.iter().any(|(_, is_3d, _)| is_3d);
-    for (entity, _, has_space) in &views {
-        if srgb && !has_space {
-            commands.entity(entity).insert(CompositingSpace::Srgb);
-        } else if !srgb && has_space {
-            commands.entity(entity).remove::<CompositingSpace>();
-        }
+/// The PS1 GPU blended the 15-bit values in VRAM, which are gamma-encoded:
+/// B/2+F/2, B+F, B−F and B+F/4 act on those numbers. So `PsxView` cameras
+/// draw into a main texture holding encoded colour (Bevy's
+/// `CompositingSpace::Srgb`), and the hardware blend of every PSX material
+/// works on encoded values, exactly like the GPU's.
+///
+/// Bevy grants `Srgb` only to stacks of `Camera2d`s, because its own 3D
+/// materials write linear light. [`PsxMaterial`] writes encoded colour into
+/// such a target (it checks the target format), so the PSX views keep
+/// `Srgb` with 3D cameras too: their request is set aside while Bevy
+/// resolves the other cameras ([`hide_psx_requests`]) and applied after.
+/// Bevy's 2D shaders then encode (`SRGB_OUTPUT`), clear colours are encoded,
+/// and the final copy into the sRGB canvas decodes once.
+/// `StandardMaterial` under a `PsxView` would look too dark: use `PsxMaterial`.
+fn encode_psx_views(mut views: Query<&mut ResolvedCompositingSpace, With<PsxView>>) {
+    for mut space in &mut views {
+        space.0 = Some(CompositingSpace::Srgb);
+    }
+}
+
+/// See [`encode_psx_views`]: keeps Bevy's resolver from overriding (and
+/// warning about) the PSX views' request on stacks with a `Camera3d`.
+fn hide_psx_requests(mut views: Query<&mut ResolvedCompositingSpace, With<PsxView>>) {
+    for mut space in &mut views {
+        space.0 = None;
     }
 }
 
