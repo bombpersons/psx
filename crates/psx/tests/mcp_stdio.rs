@@ -23,6 +23,7 @@ struct Rpc {
     input: Option<ChildStdin>,
     lines: mpsc::Receiver<String>,
     next_id: u64,
+    response_timeout: Duration,
 }
 
 impl Rpc {
@@ -46,7 +47,7 @@ impl Rpc {
                 }
             }
         });
-        let mut rpc = Rpc { child, input, lines, next_id: 1 };
+        let mut rpc = Rpc { child, input, lines, next_id: 1, response_timeout: Duration::from_secs(60) };
         let init = rpc.request(
             "initialize",
             json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "psx-test", "version": "1"}}),
@@ -67,7 +68,7 @@ impl Rpc {
         self.next_id += 1;
         self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
         loop {
-            let line = self.lines.recv_timeout(Duration::from_secs(60)).expect("response within 60 s");
+            let line = self.lines.recv_timeout(self.response_timeout).expect("response before deadline");
             // Everything on stdout must be protocol.
             let v: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("non-JSON stdout {line:?}: {e}"));
             if v["id"] == id {
@@ -145,8 +146,33 @@ fn mcp_tools_match_cli() {
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for want in [
-        "disc", "ls", "extract", "exe", "sector", "addr", "xa", "memcard", "textures", "run", "loads", "symbols", "disasm",
-        "lockstep", "native", "template_create", "gpu_replay", "vram_diff", "xrefs", "ram_diff", "ram_search", "ram_view",
+        "disc",
+        "ls",
+        "extract",
+        "exe",
+        "sector",
+        "addr",
+        "xa",
+        "memcard",
+        "textures",
+        "run",
+        "loads",
+        "symbols",
+        "disasm",
+        "lockstep",
+        "native",
+        "template_create",
+        "gpu_replay",
+        "vram_diff",
+        "xrefs",
+        "ram_diff",
+        "ram_search",
+        "ram_view",
+        "ghidra_doctor",
+        "ghidra_analyze",
+        "ghidra_decompile",
+        "ghidra_functions",
+        "ghidra_xrefs",
     ] {
         assert!(names.contains(&want), "missing tool {want}: {names:?}");
     }
@@ -164,6 +190,22 @@ fn mcp_tools_match_cli() {
 
     // (tool, MCP arguments, equivalent CLI arguments)
     let cases: Vec<(&str, Value, Vec<&str>)> = vec![
+        (
+            "ghidra_decompile",
+            json!({"source":"tiny.ps-exe","addr":"bad-address"}),
+            vec!["ghidra", "decompile", "--source", "tiny.ps-exe", "--addr", "bad-address"],
+        ),
+        (
+            "ghidra_decompile",
+            json!({"source":"tiny.ps-exe","addr":"80010000","ghidra_home":"no-ghidra"}),
+            vec!["ghidra", "decompile", "--source", "tiny.ps-exe", "--addr", "80010000", "--ghidra-home", "no-ghidra"],
+        ),
+        ("ghidra_doctor", json!({"ghidra_home":"no-ghidra"}), vec!["ghidra", "doctor", "--ghidra-home", "no-ghidra"]),
+        (
+            "ghidra_functions",
+            json!({"source":"tiny.ps-exe","limit":0}),
+            vec!["ghidra", "functions", "--source", "tiny.ps-exe", "--limit", "0"],
+        ),
         ("addr", json!({"address": "0x80010000"}), vec!["addr", "0x80010000"]),
         ("addr", json!({"address": "1F801810"}), vec!["addr", "1F801810"]),
         ("addr", json!({"address": "zz"}), vec!["addr", "zz"]),
@@ -186,12 +228,12 @@ fn mcp_tools_match_cli() {
             json!({"bios": "no-such-bios.bin", "backend": "redux", "sample": ["80010000:u32"]}),
             vec!["run", "--bios", "no-such-bios.bin", "--sample", "80010000:u32"],
         ),
+        ("disasm", json!({"source": "tiny.ps-exe", "function": "80010004"}), vec!["disasm", "tiny.ps-exe", "--function", "80010004"]),
         (
             "disasm",
-            json!({"source": "tiny.ps-exe", "function": "80010004"}),
-            vec!["disasm", "tiny.ps-exe", "--function", "80010004"],
+            json!({"ram": "ram_a.bin", "addr": "80010000", "count": 2}),
+            vec!["disasm", "--ram", "ram_a.bin", "--addr", "80010000", "--count", "2"],
         ),
-        ("disasm", json!({"ram": "ram_a.bin", "addr": "80010000", "count": 2}), vec!["disasm", "--ram", "ram_a.bin", "--addr", "80010000", "--count", "2"]),
         ("xrefs", json!({"target": "80010004", "source": "tiny.ps-exe"}), vec!["xrefs", "80010004", "--source", "tiny.ps-exe"]),
         ("xrefs", json!({"target": "zz", "source": "tiny.ps-exe"}), vec!["xrefs", "zz", "--source", "tiny.ps-exe"]),
         ("ram_diff", json!({"a": "ram_a.bin", "b": "ram_b.bin", "signed": true}), vec!["ram", "diff", "ram_a.bin", "ram_b.bin", "--signed"]),
@@ -246,10 +288,139 @@ fn mcp_tools_match_cli() {
     assert!(is_error, "{v}");
     let (v, is_error, _) = rpc.tool("addr", json!({}));
     assert!(is_error && v["error"]["message"].as_str().unwrap().contains("address"), "{v}");
+    let (v, is_error, _) = rpc.tool("ghidra_decompile", json!({"addr":"80010000","source":"tiny.ps-exe","analysis":"analysis.json"}));
+    assert!(is_error && v["error"]["code"] == "invalid_arguments", "{v}");
 
     let unknown = rpc.request("tools/call", json!({"name": "no_such_tool", "arguments": {}}));
     assert!(unknown.get("error").is_some(), "{unknown}");
 
     drop(rpc);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Authored MIPS, with a call delay slot, GP-relative data, BSS and COP2.
+/// No original game bytes are needed for this integration test.
+fn ghidra_probe() -> Vec<u8> {
+    let mut b = tiny_exe();
+    b[0x14..0x18].copy_from_slice(&0x8001_00C0u32.to_le_bytes());
+    b[0x28..0x2C].copy_from_slice(&0x8001_1000u32.to_le_bytes());
+    b[0x2C..0x30].copy_from_slice(&256u32.to_le_bytes());
+    let routines: &[(usize, &[u32])] = &[
+        (0, &[0x27BD_FFE8, 0xAFBF_0014, 0x0C00_4010, 0x2404_0007, 0x0C00_4020, 0, 0x8FBF_0014, 0, 0x03E0_0008, 0x27BD_0018]),
+        (0x40, &[0x8F82_0000, 0, 0x2442_0003, 0x03E0_0008, 0x0044_1021]),
+        (0x80, &[0x4802_0000, 0, 0x03E0_0008, 0]),
+        (0xC0, &[11]),
+    ];
+    for (offset, words) in routines {
+        for (i, word) in words.iter().enumerate() {
+            b[0x800 + offset + i * 4..0x804 + offset + i * 4].copy_from_slice(&word.to_le_bytes());
+        }
+    }
+    b
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ghidra_mcp_cancellation_stops_worker() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("psx-ghidra-cancel-{}", std::process::id()));
+    let install = root.join("fake-ghidra");
+    std::fs::create_dir_all(install.join("support")).unwrap();
+    std::fs::create_dir_all(install.join("Ghidra")).unwrap();
+    std::fs::write(install.join("Ghidra/application.properties"), "application.version=test\n").unwrap();
+    let launcher = install.join("support/analyzeHeadless");
+    std::fs::write(&launcher, "#!/bin/sh\nsleep 60 &\necho $! > \"$(dirname \"$0\")/child.pid\"\nwait\n").unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(root.join("probe.ps-exe"), ghidra_probe()).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let id = rpc.next_id;
+    rpc.next_id += 1;
+    rpc.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"ghidra_decompile","arguments":{"source":"probe.ps-exe","addr":"80010048","ghidra_home":install}}}));
+    let pid_file = install.join("support/child.pid");
+    for _ in 0..300 {
+        if pid_file.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(pid_file.exists(), "fake worker should start");
+    rpc.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id,"reason":"test cancellation"}}));
+    let pid = std::fs::read_to_string(pid_file).unwrap();
+    let running = || std::fs::read_to_string(format!("/proc/{}/stat", pid.trim())).is_ok_and(|s| s.split_whitespace().nth(2) != Some("Z"));
+    for _ in 0..300 {
+        if !running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!running(), "cancelled MCP worker descendant must stop");
+    drop(rpc);
+    assert!(
+        !std::fs::read_dir(root.join(".psx/ghidra")).unwrap().flatten().any(|entry| entry.path().join("analysis.json").exists()),
+        "interrupted analyses must not be cached"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[ignore = "requires installed Ghidra/Java; no game media needed"]
+fn ghidra_single_call_and_cached_cli_mcp_parity() {
+    let root = std::env::temp_dir().join(format!("psx ghidra integration {}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("probe.ps-exe"), ghidra_probe()).unwrap();
+    let mut rpc = Rpc::start(&root);
+    rpc.response_timeout = Duration::from_secs(310);
+    // Start cold through real MCP, rather than preparing a project in the test.
+    let (first, error, _) = rpc.tool("ghidra_decompile", json!({"source":"probe.ps-exe","addr":"80010048"}));
+    assert!(!error, "{first}");
+    assert_eq!(first["status"], "complete", "{first}");
+    assert_eq!(first["function"]["entry"], "0x80010040", "{first}");
+    let c = first["pseudocode"].as_str().unwrap();
+    assert!(c.contains("800100c0") && c.contains("3") && c.contains("param_1"), "{c}");
+    assert_eq!(first["callers"]["items"][0]["from"], "0x80010008", "{first}");
+    let manifest = first["analysis"].as_str().unwrap();
+    let artifact = first["artifact"].as_str().unwrap();
+    let before = std::fs::metadata(artifact).unwrap().modified().unwrap();
+    let (second, ok) = cli(&root, &["ghidra", "decompile", "--source", "probe.ps-exe", "--addr", "80010048"]);
+    assert!(ok, "{second}");
+    assert_eq!(first, second, "cached CLI/MCP result");
+    assert_eq!(before, std::fs::metadata(artifact).unwrap().modified().unwrap(), "cache must not re-decompile");
+    let (functions, error, _) = rpc.tool("ghidra_functions", json!({"analysis":manifest,"limit":1}));
+    assert!(!error && functions["functions"]["total"] == 3, "{functions}");
+    assert_eq!(functions["functions"]["next_offset"], 1);
+    let (refs, error, _) = rpc.tool("ghidra_xrefs", json!({"analysis":manifest,"addr":"800100c0"}));
+    assert!(!error && refs["references_to"]["items"][0]["from"] == "0x80010040", "{refs}");
+    // The next function requires processing the saved program in a new JVM.
+    let (cop2, error, _) = rpc.tool("ghidra_decompile", json!({"analysis":manifest,"addr":"A0010080"}));
+    assert!(!error && cop2["function"]["entry"] == "0x80010080", "{cop2}");
+    assert!(cop2["warnings"].to_string().contains("COP2"), "{cop2}");
+    let (again, error, _) = rpc.tool("ghidra_decompile", json!({"analysis":manifest,"addr":"80010048"}));
+    assert!(!error && again["pseudocode"] == first["pseudocode"], "{again}");
+    let (missing, error, _) = rpc.tool("ghidra_decompile", json!({"analysis":manifest,"addr":"800100c0"}));
+    assert!(!error && missing["status"] == "partial" && missing["decompile_status"] == "function_not_found", "{missing}");
+    assert_eq!(missing["analysis"], manifest);
+    let (exe, ok) = cli(&root, &["exe", "probe.ps-exe"]);
+    assert!(ok);
+    std::fs::write(root.join("probe.symbols.json"),serde_json::to_vec(&json!({
+        "source":root.join("probe.ps-exe"),"exe_sha256":exe["sha256"],
+        "report":{"symbols":[{"address":0x80010040u32,"name":"measured_helper","kind":"function"},{"address":0x80010048u32,"name":"inside_helper","kind":"local"}]}
+    })).unwrap()).unwrap();
+    let (named, error, _) =
+        rpc.tool("ghidra_decompile", json!({"source":"probe.ps-exe","addr":"80010048","symbols":["probe.symbols.json"]}));
+    assert!(!error && named["function"]["name"] == "measured_helper", "{named}");
+    // Respect both our project lock and externally modified Ghidra databases.
+    let lock = Path::new(manifest).parent().unwrap().join("psx.lock");
+    std::fs::write(&lock, "other owner").unwrap();
+    let (busy, error, _) = rpc.tool("ghidra_functions", json!({"analysis":manifest}));
+    assert!(error && busy["error"]["code"] == "analysis_busy", "{busy}");
+    std::fs::remove_file(lock).unwrap();
+    let project = Path::new(first["project"].as_str().unwrap()).parent().unwrap();
+    std::fs::write(project.join("external-edit"), "changed by GUI").unwrap();
+    let (stale, error, _) = rpc.tool("ghidra_functions", json!({"analysis":manifest}));
+    assert!(error && stale["error"]["code"] == "stale_analysis", "{stale}");
+    let (fresh, error, _) = rpc.tool("ghidra_decompile", json!({"source":"probe.ps-exe","addr":"80010048","reanalyze":true}));
+    assert!(!error && fresh["status"] == "complete" && fresh["project"] != first["project"], "{fresh}");
+    assert!(project.join("external-edit").exists(), "reanalyze must preserve edited projects");
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
 }

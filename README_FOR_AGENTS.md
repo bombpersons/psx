@@ -44,6 +44,8 @@ integer behaviour only where the game's feel depends on it, and cite the evidenc
 | `psx xrefs ADDR\|LO-HI [--source exe] [--ram RUN] [--gp X]` | Every static reference: jal/j/branch targets, `lui`+`addiu/ori/load/store` pairs, `gp`-relative accesses and pointer words, grouped by enclosing function |
 | `psx loads <run_dir> --disc <cue>` | Turns a `--trace-cd` run into disc file → RAM spans, verified by content |
 | `psx symbols <exe\|disc::/PATH>` | Name PsyQ library functions by signature (needs a local `external/psx_psyq_signatures`); Ghidra and `.sym` output. Pass the `.symbols.json` to `run`/`loads --symbols` to name PCs, checked against RAM residency |
+| `psx ghidra decompile --source <exe\|disc::/PATH> --addr HEX` | One-call Ghidra pseudocode for the enclosing function, with body ranges, callers/callees and diagnostics. Automatically extracts, imports, analyses and caches; returns an `analysis` manifest for follow-up queries. Optional `--symbols FILE` seeds names. See below |
+| `psx ghidra functions\|xrefs --analysis MANIFEST [...]` | Filter/paginate the function index (`--filter`, `--offset`, `--limit`) or references to/from `--addr`, without starting Ghidra again. `--source` also works and analyses automatically |
 | `psx template create DIR [--name N] [--region ntsc\|pal] [--fields-per-tick N]` | Native Bevy game starter (see below) |
 | `psx mcp [--jobs N]` | Every command above as an MCP tool over stdio (see below) |
 
@@ -112,7 +114,8 @@ claude mcp add psx -- /path/to/psx/target/release/psx --root /path/to/psx mcp
 Tools: `disc`, `ls`, `extract`, `exe`, `sector`, `addr`, `xa`, `str`, `assets_scan`,
 `assets_extract`, `memcard`, `textures`,
 `run`, `native`, `loads`, `symbols`, `disasm`, `xrefs`, `ram_diff`, `ram_search`,
-`ram_view`, `lockstep`, `template_create`, `gpu_replay`, `vram_diff`.
+`ram_view`, `lockstep`, `template_create`, `gpu_replay`, `vram_diff`,
+`ghidra_decompile`, `ghidra_functions`, `ghidra_xrefs`, `ghidra_analyze`, `ghidra_doctor`.
 
 - Arguments are the CLI's long flags with `_` for `-` (`trace_cd`, `gpu_frame`,
   `memcard1`, `from_state`); positional arguments are named fields (`image`, `source`,
@@ -131,9 +134,59 @@ Tools: `disc`, `ls`, `extract`, `exe`, `sector`, `addr`, `xa`, `str`, `assets_sc
 - Timeouts: `run` keeps its `timeout` (default 120 s). Over MCP, `native` and
   `lockstep` default to `timeout: 300` and stop with status `timeout`. Each call also
   has a hard cap (its `timeout` + 60 s, otherwise 15 min). A call that overruns the
-  cap, or is cancelled, returns an error but its worker thread is not killed. Emulation,
-  `symbols` and `loads` share `--jobs` slots (default 2).
+  cap, or is cancelled, returns an error. Ghidra workers and their decompiler
+  children are stopped; other tools' worker threads are left to finish. Emulation,
+  `symbols`, `loads` and Ghidra queries share `--jobs` slots (default 2).
 - Logs go to stderr; stdout carries only the protocol.
+
+## Ghidra: one call from a writer PC to pseudocode
+
+Call `ghidra_decompile` with just an executable source and an address inside the
+function. No preliminary `ghidra_analyze`, GUI session or custom scripts are needed:
+
+```json
+{"source":"media/Croc - Legend of the Gobbos.cue::/CROC.EXE","addr":"0x800286B0"}
+```
+
+Equivalent CLI:
+
+```sh
+psx ghidra decompile --source 'media/Croc - Legend of the Gobbos.cue::/CROC.EXE' --addr 800286B0
+```
+
+The result includes `pseudocode`, `function` (entry, name, signature, body ranges),
+paginated `callers`/`callees`, `diagnostic`, `warnings`, a cached JSON `artifact`,
+and an `analysis` manifest path. Use `analysis` instead of `source` on later calls.
+`ghidra_functions` accepts `filter`, `offset`, `limit`; `ghidra_xrefs` accepts
+`addr`, `offset`, `limit`. Both read exported indexes without launching a JVM.
+`ghidra_analyze` is optional prewarming. `ghidra_doctor` diagnoses installation/Java.
+
+The first call imports/analyzes and can take minutes; `timeout` defaults to 300 s,
+and `decompile_timeout` defaults to 30 s per function. Completed queries are cached;
+timeouts and failed decompilations are not. `status: partial` and `decompile_status`
+identify a missing function or a decompiler failure while retaining the analysis
+handle. Callers list resolved call references; unresolved indirect calls remain unknown.
+
+Requires a user-installed Ghidra and its Java prerequisite. Discovery checks
+`ghidra_home`, then `PSX_GHIDRA_HOME`, `analyzeHeadless` on PATH, then Ghidra
+directories in `~/tools`, `/opt`, and `external`. Tested with Ghidra 12.1.4 / Java 21
+on Linux. Worker supervision uses Unix process groups. Other psx commands do not
+require Ghidra. A `.sym` or `.symbols.json` file can be supplied in `symbols` to
+seed function names; no local PsyQ signature database is required for decompilation.
+
+Metadata, immutable input copies, logs and indexes live under `.psx/ghidra/`.
+Ghidra databases live under ignored `ghidra-projects/`, because Ghidra 12 rejects
+hidden directory components in project paths. Use a project root without hidden
+parent directories. The returned `project` opens in Ghidra's GUI. Close it before
+using headless queries. External project edits invalidate caches; `reanalyze: true`
+with `source` creates a fresh project and preserves the edited one. Importing GUI
+annotations back into psx is future work.
+
+This first integration accepts PS-X EXEs, not runtime RAM snapshots. Generic
+MIPS pseudocode is useful for ordinary game code; PS1 load-delay and COP2/GTE
+semantics need checking against instructions/runtime observations. Snapshot
+analysis, annotation/type editing and verified symbol round trips are planned in
+[docs/ghidra-integration.md](docs/ghidra-integration.md).
 
 ## Native game template
 
