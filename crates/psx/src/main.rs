@@ -16,11 +16,13 @@ use serde_json::{json, Value};
 use commands::{Ctx, Op};
 
 mod assets_cmd;
+mod code;
 mod commands;
 mod lockstep;
 mod mcp;
 mod native;
 mod provenance;
+mod ram;
 mod replay;
 mod run;
 mod run_native;
@@ -33,11 +35,17 @@ mod xa_cmd;
 #[derive(Parser)]
 #[command(name = "psx", version, about = "PlayStation reverse-engineering toolkit")]
 struct Cli {
+    /// Project root holding bios/, media/, external/ and .psx/ (default: $PSX_ROOT, else the
+    /// current directory). psx changes into it first, so relative paths in every argument
+    /// resolve against it and outputs go to its .psx/.
+    #[arg(long, global = true, value_name = "DIR")]
+    root: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once per process
 enum Command {
     /// Tracks, volume, SYSTEM.CNF and boot executable of a disc image.
     Disc(commands::DiscArgs),
@@ -69,8 +77,9 @@ enum Command {
         #[command(subcommand)]
         action: TemplateAction,
     },
-    /// Run a disc, EXE or state in a PCSX-Redux worker for N frames and capture
-    /// RAM, VRAM, screen, registers and optional write watches.
+    /// Run a disc, EXE or state for N frames and capture RAM, VRAM, screen and registers:
+    /// in a PCSX-Redux worker (default) or on the native core (`--backend native`: write
+    /// watches, traces, GPU frame capture, per-frame samples, pokes, screens, save states).
     Run(commands::RunCmdArgs),
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
@@ -81,10 +90,20 @@ enum Command {
     /// Run the native core and PCSX-Redux in lockstep from BIOS reset,
     /// comparing PC and registers after every instruction.
     Lockstep(commands::LockstepArgs),
-    /// Run the native core alone (no oracle) for N frames; reports missing hardware.
+    /// Emulator diagnostics: run the native core from power-on for N frames and report
+    /// how far it got and which hardware it is missing. For game RE use `run --backend native`.
     Native(commands::NativeArgs),
-    /// Disassemble a PS-X EXE (file or `image.cue::/PATH`) at a RAM address range.
+    /// Disassemble MIPS code from a PS-X EXE (file or `image.cue::/PATH`) or a run's RAM:
+    /// an address range, or a whole function; JSON lines or `--text`.
     Disasm(commands::DisasmArgs),
+    /// Cross-references to an address or range: jal/j/branch targets, lui+addiu/ori/load/store
+    /// pairs, gp-relative accesses and pointer words, in an EXE or a run's RAM.
+    Xrefs(commands::XrefsArgs),
+    /// RAM snapshot analysis across runs: diff, cheat-finder search, side-by-side view.
+    Ram {
+        #[command(subcommand)]
+        action: RamAction,
+    },
     /// Replay a recorded GP0 stream (`[n, words..]` u32 records, e.g. tools/probes/gpu/gp0_stream.bin)
     /// into a fresh psx-gpu and write the resulting VRAM.
     GpuReplay(commands::GpuReplayArgs),
@@ -102,8 +121,31 @@ enum TemplateAction {
     Create(commands::TemplateCreateArgs),
 }
 
+#[derive(Subcommand)]
+enum RamAction {
+    /// Values that differ between two ram.bin snapshots (run directories or files).
+    Diff(commands::RamDiffArgs),
+    /// Cheat-finder search: addresses whose values across ordered snapshots satisfy
+    /// predicates (changed/unchanged/increased/decreased/delta=N, exact values, bounds).
+    Search(commands::RamSearchArgs),
+    /// A memory window from one or more snapshots side by side, as u8..u32/i16/fx16.16.
+    View(commands::RamViewArgs),
+}
+
+/// `--root`, else `PSX_ROOT`: the directory to work in.
+fn project_root(flag: Option<PathBuf>) -> Option<PathBuf> {
+    flag.or_else(|| std::env::var_os("PSX_ROOT").filter(|v| !v.is_empty()).map(PathBuf::from))
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(root) = project_root(cli.root) {
+        if let Err(e) = std::env::set_current_dir(&root) {
+            let abs = std::path::absolute(&root).unwrap_or(root);
+            println!("{}", serde_json::json!({"error": {"code": "invalid_arguments", "message": format!("project root {} (--root / PSX_ROOT): {e}", abs.display())}}));
+            return ExitCode::from(1);
+        }
+    }
     let ctx = Ctx { root: std::env::current_dir().unwrap_or_default() };
     let out = match cli.command {
         Command::Mcp(a) => return mcp::main(ctx, a),
@@ -125,6 +167,10 @@ fn main() -> ExitCode {
         Command::Lockstep(a) => a.exec(&ctx),
         Command::Native(a) => a.exec(&ctx),
         Command::Disasm(a) => a.exec(&ctx),
+        Command::Xrefs(a) => a.exec(&ctx),
+        Command::Ram { action: RamAction::Diff(a) } => a.exec(&ctx),
+        Command::Ram { action: RamAction::Search(a) } => a.exec(&ctx),
+        Command::Ram { action: RamAction::View(a) } => a.exec(&ctx),
         Command::GpuReplay(a) => a.exec(&ctx),
         Command::VramDiff(a) => a.exec(&ctx),
         Command::Addr(a) => a.exec(&ctx),

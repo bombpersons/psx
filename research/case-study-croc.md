@@ -218,16 +218,25 @@ Ordered roughly by how much time each one cost.
 1. **No per-frame sampling of RAM variables.** Getting "position per frame" required `--watch` on each variable and then rebuilding values per frame from the write log.
    That only works because the game rewrites the variables every tick. Stores that write the same value (d=0) are logged too, which roughly doubles the noise.
    Suggestion: `psx run --sample ADDR:W[,ADDR:W…] [--sample-every N]`, writing `samples.csv` with one row per frame. Alternatively, `--ram-every N` could dump RAM snapshots.
+
+   *Resolved:* `psx run --backend native --sample ADDR:FMT[:NAME]` (repeatable, `--sample-every N`) writes `samples.csv` (`run_frame,frame,<values>`, one row per vblank, read byte-exact from RAM).
+   Walking forward from this study's state is one command: `--replay up.json --frames 60 --sample-every 2 --sample 800D8D8C:i32:x --sample 800D8D94:i32:z` gives z += 34, 60, 80, 94, 105, 113, 120, 124, 128, 130, 132, 134, 135, 136, 136, 137 ... per tick, reaching the measured steady state Z += 138, X += 20 on tick 20.
 2. **No RAM search/diff command.** PLAN.md M3 lists `memory.search/diff`. Finding the variables took a hand-written Python diff over 12 `ram.bin` dumps.
    Suggestion: `psx ramdiff run1 run2 … --monotonic/--changed/--constant-in A`, with filters for value range and width.
    Better still would be a `psx search` session that narrows candidates across runs, the way cheat finders do.
+
+   *Resolved:* `psx ram diff A B` (width, range, minimum delta, signed, clusters), `psx ram search RUN...` (per-pair predicates `changed/unchanged/increased/decreased/delta=N`, exact `--values`, `--between`, and `--save`/`--candidates` to narrow over rounds) and `psx ram view` (a struct side by side). Run `--poke` tests a hypothesis by writing memory at a frame.
 3. **Frame numbering is inconsistent with `--from-state`.**
    - `--frames`, `--replay` frames and `--trace-from-frame` count from the state.
    - The `frame` in `writes.jsonl` and in `trace.txt` is absolute (5401…, counted from power-on, because the state was saved at 5400).
    - native-core.md says "frames count from the restored state", which is true only for the inputs.
    Suggestion: report both `frame` (run-relative) and `abs_frame`, or document it.
+
+   *Resolved:* every native log keeps `frame` (absolute, so existing scripts still work) and adds `run_frame`; `trace.txt` has a header with the offset; the report has `frames.start`/`frames.end` and a `numbering` note. README "Frame numbers" and native-core.md document it.
 4. **`writes.jsonl` uses decimal addresses, PCs and unsigned values.** Every analysis needed hex conversion and sign fixes for s32/s16 values.
    Suggestion: hex strings for `address`/`pc` (as `psx exe`/`disasm` already use), plus a signed value or a `--watch ADDR:W:s` type.
+
+   *Resolved:* `writes.jsonl` lines add `address_hex`, `pc_hex`, `value_hex`/`old_hex` and `value_signed`/`old_signed` (by store width); `--watch-changes-only` drops the d=0 stores.
 5. **`psx disasm` prints only JSON** (one object per instruction).
    - For a whole EXE that is 618k lines, and it had to be converted to text for grep.
    - There is no function view: function boundaries had to be found by scanning for `addiu sp, sp, -N`/`jr ra`.
@@ -236,14 +245,25 @@ Ordered roughly by how much time each one cost.
    - `--format text`;
    - `--function ADDR`, which disassembles the enclosing function using prologue heuristics;
    - an `xrefs ADDR` view that also scans data words equal to code addresses.
+
+   *Resolved:* `psx disasm --text` (labels, `loc_` branch targets, resolved `lui`/`gp` addresses as `; load 0x…` notes), `--function ADDR` (any address inside; bounds from jal targets, prologues and the final `jr ra`), `--ram RUN` (code from a run's RAM), and `psx xrefs ADDR|LO-HI` (calls, jumps, branches, lui pairs, gp-relative accesses with `--gp`, and data words such as the handler table entry `0x8006B724: .word 0x8004425C`).
+   `psx xrefs 800751CC --source CROC.EXE --gp 80074B38` lists the 32 accesses to the gait variable, including the four writers found by watches.
 6. **Function ranges for `--trace-range` need hand-made bounds.** Only PsyQ library functions have symbols (20% of the code), so `--trace-range Function` only works for libraries.
    A `psx functions EXE` pass (prologue scan, `jal` targets and pointer-table targets) emitting a `.sym` file would make the trace and disasm commands far easier on game code.
+
+   *Partly resolved:* `psx disasm --function ADDR` prints a function's bounds (`function.start/end`), which `--trace-range` takes as `LO-HI`. A whole-EXE `psx functions` → `.sym` pass is still open.
 7. **Worktree workflow.** `bios/`, `media/`, `.psx/` and `external/` live only in the main checkout, so every run must `cd` there and use an absolute path to the worktree binary.
    Suggestion: a `PSX_DATA_DIR` or a `.psx/config` that resolves relative BIOS, media and `.psx` paths, independent of CWD.
+
+   *Resolved:* `psx --root DIR` or `PSX_ROOT=DIR` (also for `psx mcp`): psx works in that directory, so relative paths and `.psx/` outputs resolve there.
 8. **Stale help text.** `psx run --help` and the top-level command list say "Run … in a PCSX-Redux worker". For `--backend native` that is misleading: the native backend is now the one with `--trace`, save states and so on.
+
+   *Resolved:* the `run`, `native` and `disasm` help and MCP descriptions describe both backends and point game work at `run --backend native`.
 9. **Script-driven behaviour is opaque.** Croc's jump take-off, ground snap and stomp live in a bytecode VM (dispatchers at 0x8002AC0C and 0x8002F168, with opcode tables at 0x80010928/0x80010CE4).
    The trace shows the dispatch, but nothing in the toolkit helps decode a game's VM. An `--trace-range` on the dispatcher plus a "bytes read from range X" log would help.
    For example, `--watch-reads LO-HI` would have shown which script bytes each opcode consumed. Read watches do not exist at all; only write watches do.
+
+   *Partly resolved:* `psx run --backend native --watch-reads LO-HI|ADDR[:W]` logs CPU loads to `reads.jsonl` (pc, address, value, frames) and lists the top reader PCs. Decoding a VM is still manual.
 10. **Template nudges.**
     - **Fixed rate.** The template fixes `FixedUpdate` at the field rate (50/60 Hz) and suggests "count ticks with `GameClock.frame`" for half-rate games.
       Doing that makes `ControllerState::pressed` edges happen on 50 Hz ticks, so a press can land on a skipped tick and be lost. The demo sets the fixed rate to `region.hz() / 2` instead.
