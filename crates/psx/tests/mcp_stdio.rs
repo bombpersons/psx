@@ -196,29 +196,33 @@ fn generated_parsers_chain_and_export_through_cli_and_mcp() {
     assert!(ok && !error, "{converted} {mcp}");
     assert_eq!(converted, mcp);
     assert_eq!(converted["assets"][0]["kind"], "tim");
+    let (textured,ok)=cli(&root,&["assets","extract","model/sample.bin","--model-parser","./model/parser.py","--textures","asset/sample.bin","--texture-parser","./asset/parser.py","-o","wrapper-textures"]);
+    assert!(ok,"{textured}");
+    assert_eq!(textured["assets"][0]["details"]["vram_tims"]["from_textures"],1);
+    assert_eq!(textured["texture_sources"][0]["hits"][0]["parser"]["protocol_version"],1);
     // A wrapped authored sound bank uses the same adapter and standard WAV
     // exporter. One program slot, one 16-byte ADPCM waveform, END flag set.
-    let header_size = 32 + 128*16 + 16*32 + 512;
-    let mut vab = vec![0u8; header_size+16];
+    let header_size = 32 + 128 * 16 + 16 * 32 + 512;
+    let mut vab = vec![0u8; header_size + 16];
     vab[..4].copy_from_slice(b"pBAV");
     vab[4..8].copy_from_slice(&7u32.to_le_bytes());
-    vab[12..16].copy_from_slice(&((header_size+16) as u32).to_le_bytes());
+    vab[12..16].copy_from_slice(&((header_size + 16) as u32).to_le_bytes());
     vab[18..20].copy_from_slice(&1u16.to_le_bytes());
     vab[22..24].copy_from_slice(&1u16.to_le_bytes());
-    vab[header_size-512+2..header_size-512+4].copy_from_slice(&2u16.to_le_bytes());
-    vab[header_size+1] = 1;
-    vab[header_size+2..].fill(0x11);
-    let wrapped = [b"WRAP".as_slice(),&(vab.len() as u32).to_le_bytes(),&vab].concat();
-    std::fs::write(root.join("sound.dat"),wrapped).unwrap();
-    let (sound,ok) = cli(&root,&["assets","extract","sound.dat","--asset-parser","./asset/parser.py","-o","sound"]);
-    assert!(ok,"{sound}");
-    assert_eq!(sound["assets"][0]["kind"],"vab");
+    vab[header_size - 512 + 2..header_size - 512 + 4].copy_from_slice(&2u16.to_le_bytes());
+    vab[header_size + 1] = 1;
+    vab[header_size + 2..].fill(0x11);
+    let wrapped = [b"WRAP".as_slice(), &(vab.len() as u32).to_le_bytes(), &vab].concat();
+    std::fs::write(root.join("sound.dat"), wrapped).unwrap();
+    let (sound, ok) = cli(&root, &["assets", "extract", "sound.dat", "--asset-parser", "./asset/parser.py", "-o", "sound"]);
+    assert!(ok, "{sound}");
+    assert_eq!(sound["assets"][0]["kind"], "vab");
     let outputs = sound["assets"][0]["outputs"].as_array().unwrap();
     let wave = outputs.iter().find(|o| o["waveform"] == 1).unwrap();
-    assert_eq!(wave["wav"]["samples"],28);
-    assert_eq!(wave["wav"]["rate"],44100);
+    assert_eq!(wave["wav"]["samples"], 28);
+    assert_eq!(wave["wav"]["rate"], 44100);
     let wav = std::fs::read(root.join(wave["path"].as_str().unwrap())).unwrap();
-    assert_eq!(&wav[..4],b"RIFF");
+    assert_eq!(&wav[..4], b"RIFF");
     // Author a small cooked ISO containing a single wrapped STR frame. The
     // generated video parser must enable the complete STR -> MDEC -> PNG path.
     let frame = std::fs::read(root.join("video/sample.bin")).unwrap();
@@ -277,6 +281,107 @@ fn generated_parsers_chain_and_export_through_cli_and_mcp() {
         let (_, error, _) = rpc.tool("assets_extract", args);
         assert!(error);
     }
+    assert!(!root.join("invalid").exists());
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn raw_upload_parsers_preserve_provenance_and_texture_models_through_cli_and_mcp() {
+    let root = std::env::temp_dir().join(format!("psx-uploads-mcp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let parser = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/parsers/kings_field_rtim.py").canonicalize().unwrap();
+    let parser = parser.to_str().unwrap();
+    let mut source = Vec::new();
+    let mut append = |rect: [u16; 4], words: &[u16]| {
+        for _ in 0..2 {
+            for n in rect {
+                source.extend_from_slice(&n.to_le_bytes());
+            }
+        }
+        for n in words {
+            source.extend_from_slice(&n.to_le_bytes());
+        }
+    };
+    let mut palette = [0; 16];
+    palette[1] = 0x801f;
+    append([0, 500, 16, 1], &palette);
+    append([640, 256, 1, 1], &[0x1111]);
+    source.extend_from_slice(&[255; 16]);
+    source.extend_from_slice(b"authored nonzero padding");
+    std::fs::write(root.join("uploads.dat"), &source).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (scan, ok) = cli(&root, &["assets", "scan", "uploads.dat", "--asset-parser", "python3", "--asset-parser-arg", parser, "--json"]);
+    let (mcp, error, _) =
+        rpc.tool("assets_scan", json!({"source":"uploads.dat","asset_parser":"python3","asset_parser_args":[parser],"json":true}));
+    assert!(ok && !error, "{scan} {mcp}");
+    assert_eq!(scan, mcp);
+    assert_eq!(scan["files"][0]["hits"], json!([]));
+    assert_eq!(scan["upload_totals"],json!({"streams":1,"uploads":2,"words":17}));
+    let stream = &scan["files"][0]["upload_streams"][0];
+    assert_eq!(stream["uploads"][0]["rect"], json!([0, 500, 16, 1]));
+    assert_eq!(stream["uploads"][1]["offset"], "0x30");
+    let (extracted, ok) =
+        cli(&root, &["assets", "extract", "uploads.dat", "--asset-parser", "python3", "--asset-parser-arg", parser, "-o", "uploads"]);
+    let (mcp, error, _) =
+        rpc.tool("assets_extract", json!({"source":"uploads.dat","asset_parser":"python3","asset_parser_args":[parser],"out":"uploads"}));
+    assert!(ok && !error, "{extracted} {mcp}");
+    assert_eq!(extracted, mcp);
+    let asset = &extracted["assets"][0];
+    assert_eq!(asset["kind"], "vram_uploads");
+    let outputs = asset["outputs"].as_array().unwrap();
+    let original = outputs.iter().find(|o| o["role"] == "original").unwrap()["path"].as_str().unwrap();
+    assert_eq!(std::fs::read(root.join(original)).unwrap(), source);
+    let words = asset["uploads"][1]["path"].as_str().unwrap();
+    assert_eq!(std::fs::read(root.join(words)).unwrap(), [0x11, 0x11]);
+    let model = json!({"version":1,"objects":[{"vertices":[[0,0,0],[100,0,0],[0,100,0]],"polygons":[{"vertices":[0,1,2],"uvs":[[0,0],[1,0],[0,1]],"texture":{"page":[640,256],"depth":4,"clut":[0,500]}}]}]});
+    std::fs::write(root.join("model.dat"), b"authored geometry source").unwrap();
+    std::fs::write(root.join("model.py"), format!("import sys\nsys.stdin.buffer.read()\nprint({:?})\n", model.to_string())).unwrap();
+    let (converted, ok) = cli(
+        &root,
+        &[
+            "assets",
+            "extract",
+            "model.dat",
+            "--model-parser",
+            "python3",
+            "--model-parser-arg",
+            "model.py",
+            "--textures",
+            "uploads.dat",
+            "--texture-parser",
+            "python3",
+            "--texture-parser-arg",
+            parser,
+            "-o",
+            "textured",
+        ],
+    );
+    let (mcp,error,_)=rpc.tool("assets_extract",json!({"source":"model.dat","model_parser":"python3","model_parser_args":["model.py"],"textures":["uploads.dat"],"texture_parser":"python3","texture_parser_args":[parser],"out":"textured"}));
+    assert!(ok && !error, "{converted} {mcp}");
+    assert_eq!(converted, mcp);
+    let details = &converted["assets"][0]["details"];
+    assert_eq!(details["vram_uploads"]["from_textures"], 2);
+    assert_eq!(converted["texture_sources"][0]["upload_streams"][0]["parser"], stream["parser"]);
+    let png = details["texture_pages"][0]["png"].as_str().unwrap();
+    let mut reader = png::Decoder::new(std::io::Cursor::new(std::fs::read(root.join(png)).unwrap())).read_info().unwrap();
+    let mut rgba = vec![0; reader.output_buffer_size().unwrap()];
+    reader.next_frame(&mut rgba).unwrap();
+    assert_eq!(&rgba[..16], &[255, 0, 0, 255].repeat(4));
+    assert_eq!(&rgba[16..20], &[0; 4]);
+    let (_, error, _) = rpc.tool("assets_extract", json!({"source":"model.dat","texture_parser":"python3","out":"invalid"}));
+    assert!(error);
+    assert!(!root.join("invalid").exists());
+    // Valid duplicated dimensions with insufficient data are an error, not a
+    // stream terminator; malformed parser output must not create conversions.
+    let mut truncated = source[..48].to_vec();
+    truncated[4..6].copy_from_slice(&100u16.to_le_bytes());
+    truncated[12..14].copy_from_slice(&100u16.to_le_bytes());
+    std::fs::write(root.join("bad.dat"), truncated).unwrap();
+    let (_, error, _) =
+        rpc.tool("assets_extract", json!({"source":"bad.dat","asset_parser":"python3","asset_parser_args":[parser],"out":"invalid"}));
+    assert!(error);
     assert!(!root.join("invalid").exists());
     drop(rpc);
     std::fs::remove_dir_all(root).unwrap();
@@ -715,23 +820,28 @@ fn ghidra_probe() -> Vec<u8> {
 fn external_parser_mcp_cancellation_stops_descendants() {
     let root = std::env::temp_dir().join(format!("psx-parser-cancel-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("source.dat"),b"authored data").unwrap();
+    std::fs::write(root.join("source.dat"), b"authored data").unwrap();
     std::fs::write(root.join("slow.py"),"import pathlib,subprocess,sys\nsys.stdin.buffer.read()\np=subprocess.Popen(['sleep','30'])\npathlib.Path('child.pid').write_text(str(p.pid))\np.wait()\n").unwrap();
     let mut rpc = Rpc::start(&root);
-    let id = rpc.next_id; rpc.next_id += 1;
+    let id = rpc.next_id;
+    rpc.next_id += 1;
     rpc.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"assets_extract","arguments":{"source":"source.dat","model_parser":"python3","model_parser_args":["slow.py"],"out":"converted"}}}));
     for _ in 0..300 {
-        if root.join("child.pid").exists() { break; }
+        if root.join("child.pid").exists() {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
     let pid = std::fs::read_to_string(root.join("child.pid")).expect("parser starts before cancellation");
     rpc.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id,"reason":"test"}}));
     let running = || std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.split_whitespace().nth(2) != Some("Z"));
     for _ in 0..300 {
-        if !running() { break; }
+        if !running() {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(!running(),"parser descendant must stop after MCP cancellation");
+    assert!(!running(), "parser descendant must stop after MCP cancellation");
     drop(rpc);
     assert!(!root.join("converted").exists());
     std::fs::remove_dir_all(root).unwrap();

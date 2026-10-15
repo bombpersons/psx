@@ -61,7 +61,9 @@ The external JSON model export equals the standard normalized TMD export's
 embedded geometry buffer, buffer views, accessors and meshes, ignoring mesh
 names derived from the source filename. This checks positions, normals, UVs,
 colours and triangle topology through both paths. RTIM texture uploads are not
-decoded by this example; fully textured geometry still needs that work.
+decoded by this model example. The subsequent external RTIM example and shared
+upload support supply texture sources; see [raw-texture-uploads.md](raw-texture-uploads.md)
+for coverage and runtime comparison limits.
 
 Reproduce from the toolkit root with the local study present:
 

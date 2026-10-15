@@ -14,9 +14,11 @@ entry. See [archive-support.md](archive-support.md) for commands and validation.
 **Parser extension update (2026-10-15):** archive indexes, model geometry and
 asset wrapper adapters can be supplied by explicit executables; video frame
 wrappers have the same transport. `psx template parser DIR --kind KIND` generates
-runnable starters. King's Field RTMD is a worked external model decoder; RTIM
-textures remain outstanding. See [external-parsers.md](../docs/external-parsers.md)
-and [parser-extensions.md](parser-extensions.md).
+runnable starters. King's Field RTMD is a worked external model decoder; the
+subsequent RTIM example emits validated raw uploads for `--texture-parser`.
+See [external-parsers.md](../docs/external-parsers.md),
+[parser-extensions.md](parser-extensions.md) and
+[raw-texture-uploads.md](raw-texture-uploads.md).
 
 ## What is implemented
 
