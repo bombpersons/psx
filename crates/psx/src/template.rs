@@ -18,6 +18,7 @@ const FILES: &[(&str, &str)] = files![
     "Cargo.toml",
     "README.md",
     "rustfmt.toml",
+    "examples/depth_cue.rs",
     "src/controller.rs",
     "src/demo/mod.rs",
     "src/demo/player.rs",

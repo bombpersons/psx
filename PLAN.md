@@ -18,7 +18,7 @@
 
 ## Current toolkit queue (agreed 2026-10-15)
 
-Items 1 and 2 are implemented. Item 3 (reciprocal depth cue) is next.
+Items 1–3 are implemented. Item 4 (Ghidra runtime analysis and symbol roundtrip) is next.
 This queue takes precedence over the historical
 milestones below. Scope is the shared toolkit and starter template; use the game
 studies as validation inputs.
@@ -54,10 +54,18 @@ studies as validation inputs.
    [external parsers](docs/external-parsers.md) and
    [model validation](research/parser-extensions.md) /
    [upload validation](research/raw-texture-uploads.md).
-3. **Optional reciprocal depth cue in the template.** Add an authored
+3. **Optional reciprocal depth cue in the template — done (2026-10-15).** Add an authored
    `PsxMaterial` parameter using camera depth and per-vertex colour modulation.
    Preserve ordinary `DistanceFog` behavior when the option is disabled. Use
    King's Field's recorded cue and large-wall comparisons to check fidelity.
+   Implemented configurable bias/scale/far colour, a near/far constructor,
+   camera-space per-vertex shading and unchanged default DistanceFog behavior.
+   The authored large-wall example and headless GPU/MCP checks cover coloured
+   targets, texture modulation, perspective/orthographic cameras and fog override.
+   The recorded King's Field curve is checked against an actual light-preset
+   setting and software-GTE reference values; fixed-point precision limits and
+   whole-game comparison scope are explicit in
+   [validation](research/template-depth-cue.md).
 4. **Ghidra G2: runtime code and names back into traces.** Accept RAM snapshots
    and candidate code ranges, keep same-address overlays distinct, support
    renames/comments and export byte-bound symbols for residency-checked traces.
@@ -83,9 +91,10 @@ still on the feature branch, following the Ghidra commit `2f213c5` already merge
 into local `master`. Next-draw verification and artifact locations are recorded
 in [research/gpu-next-draw.md](research/gpu-next-draw.md). Queue item 1, the archive
 survey, external parser hooks/starters and the worked RTMD decoder were committed
-as `0cf07bb` (2026-10-15). The subsequent raw upload document/API, external RTIM
-example and texture-source parser integration now complete item 2. Items 3–5
-have not been started.
+as `0cf07bb` (2026-10-15). Raw upload support completed item 2 in commit `b214a68`.
+Item 3's configurable template depth cue, authored example, docs and GPU/MCP
+verification are complete. Next session: item 4, Ghidra runtime analysis and
+symbol roundtrip, followed by item 5, input rebinding. Items 4–5 have not been started.
 Continue using external examples for niche formats;
 add built-ins when reuse and validation justify them.
 

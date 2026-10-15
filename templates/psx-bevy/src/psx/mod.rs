@@ -3,7 +3,8 @@
 //! - Add [`PsxView`] to any `Camera3d`/`Camera2d` and it renders into the
 //!   low-resolution [`PsxScreen`] target, shown letterboxed in the window.
 //! - Use [`PsxMaterial`] on `Mesh3d` entities for PS1 shading. Lights are normal
-//!   `DirectionalLight`/`AmbientLight`; fog is the camera's `DistanceFog`.
+//!   `DirectionalLight`/`AmbientLight`; use camera `DistanceFog` or material
+//!   [`PsxDepthCue`] for reciprocal per-vertex cueing.
 //! - 2D is plain Bevy `Sprite`s seen by a `Camera2d` with `PsxView`. Add
 //!   `SpriteMaterial<PsxSprite>` for PS1 blend modes or CLUT palettes, and
 //!   use [`PsxMaterial2d`] on `Mesh2d` polygons.
@@ -27,7 +28,7 @@ pub use assets::{
     TmdLoader, TmdSettings, rgba_image,
 };
 
-pub use material::{PsxBlend, PsxMaterial, PsxStp};
+pub use material::{PsxBlend, PsxDepthCue, PsxMaterial, PsxStp};
 pub use material2d::{PsxMaterial2d, PsxSprite, load_indices, psx_indices, psx_palette, rgb15};
 pub use scene::{
     PsxScene, PsxSceneCamera, PsxSceneDepth, PsxSceneElement, PsxSceneRoot, SCENE_BACKGROUND_LAYER, SceneElement,
