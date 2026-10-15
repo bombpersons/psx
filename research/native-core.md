@@ -335,6 +335,83 @@ With no emulator changes, all three boot on the native core (SCPH-7502) and reac
 
 These games are heavier than Croc (3.0×), which makes them good profiling targets.
 
+### Compatibility survey: 13 more PAL discs
+
+Thirteen more discs from the Centuron-PSX archive were chosen to cover different hardware paths: 3D level streaming (Spyro), MDEC FMV with XA (FF7, Resident Evil), CD-DA music (WipEout, Ridge Racer), XA music timing (PaRappa), 2D (Abe, R-Type Delta), heavy polygon load (Tekken 3, Gran Turismo) and LibCrypt (Vagrant Story).
+- **Images:** every `.bin` matches the archive's size and CRC-32. Images live in the main checkout's `media/`, which is not committed.
+- **Region:** every boot EXE carries the "for Europe area" marker (`psx disc`).
+- **How:** each was run with `psx native --frames N --dump P --snapshot-every 300 --replay R`, then `tools/contact_sheet.py`. The BIOS was SCPH-7502 unless noted.
+- **Replays:** saved in `.psx/native/` (main checkout). `replay_start_cross.json` (START, then CROSS 150 frames later, every 300 frames from frame 1500) is the generic one.
+- **Contact sheets:** in `.psx/showcase/compat/`. `survey13.png` has one gameplay frame per game.
+
+| Game | Serial | Reached natively | Replay | Frames | XA sectors | Speed (CPU time) | Issues |
+|---|---|---|---|---|---|---|---|
+| Spyro the Dragon | SCES-01438 | Artisans home world: walks, frees a dragon | `replay_spyro.json` | 5200 | 511 | 2.24× | None |
+| Metal Gear Solid (Disc 1, DE) | SLES-01507 | Codec briefing, then the Docks with Snake | `replay_mgs.json` | 9000 | 0 | 2.34× | None (menus confirm with CIRCLE) |
+| Final Fantasy VII (Disc 1, DE) | SCES-00869 | Opening FMV, Cloud on the Midgar train platform | `replay_ff7.json` | 16000 | 2239 | 2.64× | None (New Game is one DOWN from the default cursor) |
+| Tekken 3 | SCES-01237 | Intro FMV, character select, Arcade fight | `replay_start_cross.json` | 9000 | 2661 | 1.79× | None |
+| Ridge Racer | SCES-00001 | Galaxian loader, menus, race; CD-DA music (13 audio tracks) | `replay_ridgeracer.json` | 6000 | 0 | 2.23× | None |
+| Resident Evil (DE) | SLES-00228 | Intro FMV, title, intro cutscene, mansion hall, dining room, inventory | `replay_start_cross.json` | 9000 | 306 | 2.74× | **Fixed:** CD response FIFO was cleared by the acknowledge (below) |
+| WipEout | SCES-00010 | Menus, Altima VII race, CD-DA music; same nose-camera view as Redux | `replay_wipeout.json` | 9000 | 130 | 2.16× | None |
+| Oddworld: Abe's Oddysee (DE) | SLES-00839 | FMV, Rupture Farms first screen | `replay_start_cross.json` | 9000 | 383 | 2.44× | None |
+| R-Type Delta | SCES-01762 | Stage 1 shooting, death, READY | `replay_start_cross.json` | 9000 | 1552 | 2.30× | None |
+| Pandemonium! | SLES-00526 | Map, Skull Fortress level | `replay_pandemonium.json` | 4800 | 223 | 2.62× | None |
+| PaRappa the Rapper | SCES-00743 | Language menu, title, stage 1 (Chop Chop Master Onion), "Try again" | `replay_parappa.json` | 12000 | 447 | 2.95× | None (the title confirms with CROSS) |
+| Gran Turismo | SCES-00984 | Arcade: car select, High Speed Ring race | `replay_gt.json` | 9000 | 1938 | 1.99× | None |
+| Vagrant Story (DE) | SLES-02756 | Intro, then the wine cellar with Ashley (needs the `.sbi`) | `replay_start_cross.json` | 9000 | 169 | 2.42× | LibCrypt: hangs without redump's `.sbi` |
+
+Across all thirteen runs there were **no unknown CD commands, no unmodelled DMA, and no unhandled I/O reads**.
+
+Some reads used to be reported as unhandled: memory control `1F801014h` (SPU_DELAY; R-Type Delta reads it about 1000 times) and `1F801060h`, and SIO1 `1F80105Ah`/`5Eh` (WipEout). These are plain read/write latches (psx-spx "Memory Control", "SIO1"), so the stored value is already the right answer. The bus now classes them as handled.
+
+Speed is emulated time over the run's user CPU time, measured as one process at a time. The machine was shared with other jobs (load average 2–9 during these runs), so treat the figures as lower bounds. Earlier wall-clock readings under a load of about 40 were as low as 0.6×. Tekken 3 and Gran Turismo are the heaviest, at 29–33M instructions per CPU-second against PaRappa's 47M.
+
+Other BIOSes: Resident Evil boots to the mansion on SCPH-1002 (v2.0), and Tekken 3 reaches a fight on the PSone SCPH-102 (v4.5).
+
+#### Fix: the CD response FIFO survives the interrupt acknowledge (Resident Evil)
+
+**Symptom.** Resident Evil went black after the Virgin logo. Redux, with the same disc, showed the intro FMV at frame 2600.
+
+**CD command logs.** These come from the `cdlog` example (`CMDS=N` now prints the last N commands) and from Redux `psx run --backend redux --trace-cd`.
+- The movie player issues: Setfilter 1/1, Setloc, SeekL, Setmode E8h, ReadS, GetlocP.
+- On the native core it then issues Setmode 80h and **Stop** about 10k cycles after GetlocP. No sector was ever transferred, and the sequence retried every 9 frames forever.
+- In Redux, the first STR sectors arrive about 1 M cycles after ReadS.
+
+**Who decided to stop.**
+- `--break 0x8007A700` (the CD-volume fade that precedes the stop) put the decision in the movie player at `0x8005BD60`.
+- `psx run --trace --trace-range 0x8005BD60-0x8005C860` over frames 1570–1630 showed what it does. After GetlocP it converts the absolute MSF from the response buffer at `0x800AFC39` to an LBA and gets `0xFFFFFF6A` (−150, i.e. 00:00:00). It requires the result to lie within [target − 100, target + 5] (target LBA 0x158A), so the check fails and it returns.
+
+**Why the position read 00:00:00.**
+- An `iolog` of `1F801800–3` showed the order. The game's interrupt handler reads IF (`E3`), writes the acknowledge `07` to `1F801803` index 1, and only then polls `1F801800` bit 5 (RSLRRDY) for response bytes.
+- psx-core cleared the response FIFO when all flags were acknowledged, so RSLRRDY read 0 and the handler stored nothing.
+- Redux's `write3` (index 1) only marks the response read. `read1` and RSLRRDY keep serving the bytes until the next response replaces them.
+
+**Fix.** The acknowledge no longer clears the FIFO. A delivered response still replaces it. A unit test (`cdrom::tests::acknowledge_keeps_the_response_readable`) acks before reading.
+
+**Result.**
+- Resident Evil plays its intro FMV, title, intro cutscene and mansion natively (`re_before_fix_sheet.png` and `re_boot_sheet.png` in `.psx/showcase/compat/`).
+- The five-game identity bench (Crash, Croc, Tomb Raider, SOTN, Mega Man 8) is byte-identical before and after: their handlers read before acknowledging.
+- CPU lockstep still matches over 5M steps.
+- A Resident Evil save-state split (3000 frames, split at 1777) is identical.
+
+**Open question.** Whether hardware clears the response FIFO when a new *command* is written (rather than when its response arrives) is not settled here.
+
+#### LibCrypt: Vagrant Story
+
+Vagrant Story (Germany, SLES-02756) is redump [disc 548](http://redump.org/disc/548/): CRC-32 d19c494b matches, and "LibCrypt: Yes".
+- **Without the `.sbi`:** after the title, the game probes Setloc 03:35:39 and nearby positions with ReadS + GetlocP ×9. It then spins in a `j .` loop at `0x80042350` behind a permanent "NOW LOADING" screen (`vagrant_nosbi_sheet.png`).
+- **With redump's `.sbi`** (32 sectors, first at LBA 13955) saved as `media/Vagrant Story.sbi`: it plays the intro and reaches the wine cellar (`vagrant_sbi_sheet.png`).
+
+This is the second title, after Ape Escape, that confirms the GetlocP "repeat the last valid Q" model. A save-state split across the probe (3000 frames, split at 1611) is identical.
+
+#### Not bugs (game input conventions)
+
+Several apparent hangs were replay mistakes, and Redux behaved the same way in each case:
+- **FF7:** the title cursor defaults to "Weiter?" (Continue). With no memory card, CIRCLE checks for a card and returns to the menu. DOWN then CIRCLE starts a new game.
+- **MGS:** the menus confirm with CIRCLE, and CROSS goes back. Alternating START/CROSS leaves it on the title.
+- **PaRappa:** the language screen needs a language, then DOWN to "Beenden". The title confirms with CROSS.
+- **WipEout:** the default nose camera shows no craft. Redux's frame at the same point looks the same.
+
 ### GPU frame capture (`psx_gpu::capture`, `--gpu-frame N`)
 
 `psx run --backend native --gpu-frame N` logs every GP0 command of frame N of the run. `capture::decode` then replays them against a tracked draw state (E1h–E6h), so each primitive gets:
