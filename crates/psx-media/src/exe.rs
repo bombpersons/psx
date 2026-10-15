@@ -11,7 +11,7 @@ use crate::memmap::{self, Region};
 pub const HEADER_SIZE: usize = 0x800;
 pub const MAGIC: &[u8; 8] = b"PS-X EXE";
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PsxExe {
     pub pc: u32,
     pub gp: u32,

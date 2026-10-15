@@ -1,6 +1,7 @@
 media/
 bios/
 .psx/
+ghidra-projects/
 target/
 external/
 tools/probes/*/*.o

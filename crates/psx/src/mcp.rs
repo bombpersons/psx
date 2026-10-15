@@ -10,7 +10,7 @@
 //! - `native` and `lockstep` get a default `timeout` (seconds) when none is given.
 //! - Every call has a hard wall-clock cap (its `timeout` + 60 s, or 15 minutes).
 //!   A job that overruns it is reported as `timeout` and left to finish in the
-//!   background; it cannot be killed from here.
+//!   background, except supervised Ghidra workers, which are stopped.
 //! - Results over 256 KiB are written to `.psx/mcp/` and replaced by a summary
 //!   with the file path.
 //! - Heavy tools (emulation, signature matching) share `--jobs` execution slots.
@@ -34,7 +34,7 @@ use crate::commands::{self, Ctx, Op, Outcome};
 
 #[derive(clap::Args)]
 pub struct McpArgs {
-    /// Concurrent heavy jobs (run, native, lockstep, symbols, loads); 1..=8.
+    /// Concurrent heavy jobs (emulation, symbols, loads, Ghidra queries); 1..=8.
     #[arg(long, default_value_t = 2)]
     pub jobs: usize,
 }
@@ -136,6 +136,11 @@ impl ToolDef {
 pub fn tools() -> Vec<ToolDef> {
     use commands::*;
     vec![
+        def::<crate::ghidra::DoctorArgs>("ghidra_doctor", "Check optional Ghidra installation discovery and Java. Normally unnecessary before queries; ghidra_decompile automatically imports and analyses an EXE. Set PSX_GHIDRA_HOME or ghidra_home if discovery fails."),
+        def::<crate::ghidra::Input>("ghidra_analyze", "Optionally prewarm a reusable Ghidra analysis from a PS-X EXE source (file or disc.cue::/PATH). Query tools analyse automatically; no setup call or custom script is required. Returns an analysis manifest handle and project path. Optional symbols seeds PsyQ/user names.").heavy(),
+        def::<crate::ghidra::DecompileArgs>("ghidra_decompile", "Get pseudocode and callers for the function containing addr (hex, e.g. a watched writer PC). Supply source (PS-X EXE file or disc.cue::/PATH) or an analysis manifest from an earlier call. Automatically extracts, imports, analyses and caches on first use; no Ghidra GUI or scripts needed. Returns inline pseudocode, function body ranges, callers/callees, warnings, artifact and analysis paths. First call can take minutes; timeout defaults to 300 seconds. Requires a local Ghidra installation; inspect warnings for PS1 COP2/load-delay limitations.").heavy(),
+        def::<crate::ghidra::FunctionsArgs>("ghidra_functions", "List Ghidra's analysed functions from source (automatically imports/analyzes an EXE) or an analysis manifest. filter matches function names case-insensitively; offset/limit paginate. Returns entries, names, signatures and body ranges without decompiling every function.").heavy(),
+        def::<crate::ghidra::XrefsArgs>("ghidra_xrefs", "Query Ghidra analysis references to/from addr (hex code or data address) using source or an analysis manifest. Automatically imports/analyzes on first use. offset/limit paginate each direction; references identify their type, call status and containing function. Unresolved indirect references are not a complete call graph.").heavy(),
         def::<DiscArgs>("disc", "First look at a PlayStation disc image (.cue preferred; raw .bin or .iso also work): tracks, volume descriptor, file/dir counts, SYSTEM.CNF (BOOT line, stack, TCB/EVENT), boot executable header (entry pc, gp, load range, region marker) and LibCrypt subchannel status. LibCrypt-protected discs need the redump .sbi/.lsd next to the .cue (same base name); `subchannel.source` reports whether it was found and the native core honours it. hash=true streams SHA-256 over the image files (slow for full CDs).").read_only(),
         def::<LsArgs>("ls", "List every ISO9660 entry: path, LBA, size, sector count, directory flag, CD-XA attributes and `streamed` (Form 2 / interleaved XA or STR data that is read raw, not via the file system). Use it to map a disc's layout before extract/sector/xa, or to identify which file an LBA belongs to. Large discs give large lists; results above 256 KiB are written to a file and the path returned.").read_only(),
         def::<ExtractArgs>("extract", "Extract one file (`path`, e.g. `/DATA/LEVEL1.BIN` or `cdrom:\\SLUS_000.79;1`) or every file (`all: true`) into `out` (default ./extracted). Form 1 files are written as user data; Form 2 / interleaved files (XA audio, STR video) are written as raw 2352-byte sectors with a `.raw` suffix. Returns per-file destination, size and SHA-256."),
@@ -321,7 +326,8 @@ impl PsxServer {
         if serde_json::to_vec(&args).map(|v| v.len()).unwrap_or(0) > ARGS_LIMIT {
             return respond(error_value("limit_exceeded", "tool arguments exceed 1 MiB"), None);
         }
-        let ctx = Ctx { root: self.root.clone() };
+        let worker_cancel = cancel.child_token();
+        let ctx = Ctx { root: self.root.clone(), cancel: Some(worker_cancel.clone()) };
         let (args, want_screen) = match prepare(tool, args, &ctx) {
             Ok(r) => r,
             Err(e) => return respond(e, None),
@@ -340,7 +346,7 @@ impl PsxServer {
         };
         let call = tool.call;
         let tool_name = tool.name;
-        let worker = tokio::task::spawn_blocking(move || {
+        let mut worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let out = match call(args, &ctx) {
                 Ok(o) => o.value,
@@ -354,13 +360,30 @@ impl PsxServer {
             });
             (spill(tool_name, out, &ctx), shot)
         });
+        let supervised = name.starts_with("ghidra_");
+        // Also stop a supervised child if the request future itself is dropped.
+        struct CancelOnDrop(tokio_util::sync::CancellationToken);
+        impl Drop for CancelOnDrop {
+            fn drop(&mut self) {
+                self.0.cancel();
+            }
+        }
+        let _cancel_on_drop = CancelOnDrop(worker_cancel.clone());
         tokio::select! {
-            r = tokio::time::timeout(cap, worker) => match r {
+            r = tokio::time::timeout(cap, &mut worker) => match r {
                 Ok(Ok((value, shot))) => respond(value, shot),
                 Ok(Err(e)) => respond(error_value("internal", format!("{name} failed: {e}")), None),
-                Err(_) => respond(error_value("timeout", format!("{name} exceeded {} s; it keeps running in the background and may still write its outputs", cap.as_secs())), None),
+                Err(_) => {
+                    worker_cancel.cancel();
+                    if supervised { let _ = tokio::time::timeout(Duration::from_secs(3), &mut worker).await; }
+                    respond(error_value("timeout", if supervised { format!("{name} exceeded {} s; worker termination requested", cap.as_secs()) } else { format!("{name} exceeded {} s; it keeps running in the background and may still write its outputs", cap.as_secs()) }), None)
+                },
             },
-            _ = cancel.cancelled() => respond(error_value("cancelled", format!("{name} was cancelled; the job keeps running in the background until its own timeout")), None),
+            _ = cancel.cancelled() => {
+                worker_cancel.cancel();
+                if supervised { let _ = tokio::time::timeout(Duration::from_secs(3), &mut worker).await; }
+                respond(error_value("cancelled", if supervised { format!("{name} was cancelled; worker termination requested") } else { format!("{name} was cancelled; the job keeps running in the background until its own timeout") }), None)
+            },
         }
     }
 }
@@ -374,6 +397,7 @@ impl ServerHandler for PsxServer {
                  Project root: {root} (bios/, media/, external/ and .psx/ outputs live here). Relative paths resolve against it; absolute paths also work. \
                  Typical flow: disc -> ls / exe (`image.cue::/PATH`) -> symbols -> run (backend native; save_state then from_state; trace_cd, watch, trace, gpu_frame) -> loads / textures / disasm. \
                  Gameplay RE: short runs from a state with different inputs -> ram_search / ram_diff to find variables -> run `sample` for per-frame values and `watch` for writers -> disasm (text, function) / xrefs -> run `poke` to test. \
+                 For pseudocode: ghidra_decompile with source (EXE or disc.cue::/PATH) and addr (writer PC); import/analysis/cache are automatic. Use its analysis handle for ghidra_functions / ghidra_xrefs or more decompiles. No separate Ghidra setup call is needed. \
                  Emulation outputs (RAM, VRAM, traces, PNGs) are files in the returned run_dir; read them from disk instead of expecting them inline. \
                  Backend native gives exact observations and native states; redux is the PCSX-Redux oracle. Results over 256 KiB come back as a result_file path.",
                 root = self.root.display()

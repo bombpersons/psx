@@ -21,6 +21,9 @@ agent tried to use it and got stuck somewhere.
   textures (TIM), 3D models (TMD to glTF) and sound banks (VAB/VAG to WAV).
 - **Memory detective work.** Cheat-finder-style RAM search, per-frame value logging,
   disassembly and cross-references, and "poke this value and see what happens".
+- **Ghidra decompilation.** Give it an executable and a code address to get the
+  function's pseudocode and callers. Import, analysis and caching happen automatically;
+  needs a local Ghidra installation.
 - **A Bevy game template** with the PS1 look built in: vertex wobble, affine textures,
   15-bit colour, dithering where the PS1 dithered, and the PS1's blend modes. Your game code stays plain
   Bevy: entities, components, systems.

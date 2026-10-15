@@ -18,6 +18,7 @@ use commands::{Ctx, Op};
 mod assets_cmd;
 mod code;
 mod commands;
+mod ghidra;
 mod lockstep;
 mod mcp;
 mod native;
@@ -47,6 +48,11 @@ struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)] // parsed once per process
 enum Command {
+    /// Ghidra analysis and decompilation; queries automatically import their source.
+    Ghidra {
+        #[command(subcommand)]
+        action: ghidra::Action,
+    },
     /// Tracks, volume, SYSTEM.CNF and boot executable of a disc image.
     Disc(commands::DiscArgs),
     /// List every ISO9660 entry with LBA, size and CD-XA attributes.
@@ -146,8 +152,9 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    let ctx = Ctx { root: std::env::current_dir().unwrap_or_default() };
+    let ctx = Ctx { root: std::env::current_dir().unwrap_or_default(), cancel: None };
     let out = match cli.command {
+        Command::Ghidra { action } => action.exec(&ctx),
         Command::Mcp(a) => return mcp::main(ctx, a),
         Command::Disc(a) => a.exec(&ctx),
         Command::Ls(a) => a.exec(&ctx),

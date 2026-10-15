@@ -20,6 +20,8 @@ use serde_json::{json, Value};
 /// (`--root`/`PSX_ROOT` change into it before any command runs).
 pub struct Ctx {
     pub root: PathBuf,
+    /// Cooperative cancellation for supervised workers (currently Ghidra).
+    pub cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 /// A command's JSON result and how the CLI prints it.

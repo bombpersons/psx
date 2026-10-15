@@ -1,5 +1,12 @@
 # psx toolkit plan (draft, 2026-10-14)
 
+> **Update (2026-10-15):** The first Ghidra integration is implemented on
+> `feat/ghidra-integration`: a single CLI/MCP call imports an EXE and returns
+> pseudocode and callers. See [research/ghidra.md](research/ghidra.md) for validation
+> and [docs/ghidra-integration.md](docs/ghidra-integration.md) for the remaining
+> snapshot/annotation/symbol milestones. Much of the original list below has shipped;
+> treat it as historical context rather than the current task queue.
+
 Response to `MDX_AND_PS1_RESEARCH.md`. Findings come from a source read of the
 PCSX-Redux and Beetle PSX HEADs and the repository metadata of other candidates,
 done on 2026-10-14. Nothing below has been built or run yet; items marked
