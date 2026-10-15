@@ -36,7 +36,7 @@ PlayStation reverse-engineering toolkit for agents and people. Sibling of
 | `psx xrefs ADDR\|LO-HI [--source exe] [--ram RUN] [--gp X]` | Every static reference: jal/j/branch targets, `lui`+`addiu/ori/load/store` pairs, `gp`-relative accesses and pointer words, grouped by enclosing function |
 | `psx loads <run_dir> --disc <cue>` | Turns a `--trace-cd` run into disc file → RAM spans, verified by content |
 | `psx symbols <exe\|disc::/PATH>` | Name PsyQ library functions by signature (needs a local `external/psx_psyq_signatures`); Ghidra and `.sym` output. Pass the `.symbols.json` to `run`/`loads --symbols` to name PCs, checked against RAM residency |
-| `psx template create DIR [--name N]` | Native Bevy game starter (see below) |
+| `psx template create DIR [--name N] [--region ntsc\|pal] [--fields-per-tick N]` | Native Bevy game starter (see below) |
 | `psx mcp [--jobs N]` | Every command above as an MCP tool over stdio (see below) |
 
 Input images can be `.cue`, a raw `.bin` (single data track) or a cooked `.iso`.
@@ -130,6 +130,7 @@ Tools: `disc`, `ls`, `extract`, `exe`, `sector`, `addr`, `xa`, `memcard`, `textu
 
 ```bash
 psx template create ../my-game   # standalone Bevy 0.20 project
+psx template create ../croc --region pal --fields-per-tick 2   # 25 Hz logic, like Croc PAL
 ```
 
 [`templates/psx-bevy`](templates/psx-bevy/README.md) is idiomatic Bevy with a

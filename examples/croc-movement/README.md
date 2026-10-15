@@ -32,8 +32,9 @@ cargo run --features dev-mcp -- --mcp   # agent driving: game_step / game_screen
   that showed them.
 - `src/croc/scene.rs`: meadow, posts, crystals, capsule Croc, chase camera
   (not the original camera), button HUD.
-- `src/croc/verify.rs`: replays recorded input sequences through the movement
-  systems and compares with the original, tick by tick.
+- `tests/trajectories.rs`: replays recorded input sequences through the
+  movement rules headless (`game::testing`, one 25 Hz tick per `run_tick`) and
+  compares with the original, tick by tick.
 - `tests/fixtures/*.csv`: Croc's position and heading per tick from the
   original (psx native core, level 1-1), with the buttons held.
 - `tools/record_trajectory.py`: records a new fixture (needs the psx toolkit,

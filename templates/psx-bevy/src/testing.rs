@@ -2,14 +2,26 @@
 //! window or GPU. The way to compare rules against trajectories recorded
 //! from the original game (see `tests/player.rs`):
 //!
-//! ```ignore
-//! use game::{controller::Button, testing::{TickApp, headless_app}};
+//! ```
+//! use bevy::prelude::*;
+//! use game::prelude::*;
+//! use game::testing::{TickApp, headless_app};
+//!
+//! // In a game these come from a feature's rules plugin (`app.add_plugins(...)`).
+//! #[derive(Component)]
+//! struct Player;
+//!
+//! fn walk(pad: Res<ControllerState>, mut players: Query<&mut Transform, With<Player>>) {
+//!     for mut transform in &mut players {
+//!         transform.translation.x += pad.direction().x;
+//!     }
+//! }
 //!
 //! let mut app = headless_app(game::tick_rate(game::REGION));
-//! app.add_plugins(game::demo::player::PlayerPlugin);
-//! let player = app.world_mut().spawn(game::demo::player::Player).id();
+//! app.add_systems(FixedUpdate, walk.in_set(GameSystems::Game));
+//! let player = app.world_mut().spawn((Player, Transform::default())).id();
 //! app.run_ticks(10, &[Button::Right]);
-//! let x = app.world().get::<Transform>(player).unwrap().translation.x;
+//! assert_eq!(app.world().get::<Transform>(player).unwrap().translation.x, 10.0);
 //! ```
 //!
 //! Only add rules plugins: anything that loads assets or spawns meshes needs

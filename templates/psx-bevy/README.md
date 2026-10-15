@@ -242,7 +242,8 @@ commands.spawn((PsxModelRoot(car), Transform::default()));
   `TickRate::every_nth_field(REGION, FIELDS_PER_TICK)`. Many PS1 games run their
   logic every second field (Croc PAL: 25 Hz); Mega Man 8 PAL runs every field
   (50 Hz). Changing the `TickRate` resource at run time retunes `Time<Fixed>`.
-  `GameClock.frame` counts ticks.
+  `GameClock.frame` counts ticks. `psx template create --region pal
+  --fields-per-tick 2` writes both constants when creating a project.
 - `Res<Time>` in `FixedUpdate` is one tick long, so speeds can be written per
   second (`speed * time.delta_secs()`) or, when the original's per-tick values
   matter, per tick.
@@ -341,3 +342,10 @@ cargo clippy --features dev-mcp --all-targets
 cargo fmt --check        # rustfmt.toml: 120 columns
 cargo build --release
 ```
+
+Give every copy of the template its own target directory (the default
+`target/` in the project). Two copies with the same package name must not share
+a `CARGO_TARGET_DIR`: they build the same `game` library under the same name
+and overwrite each other's, so tests and binaries can link the other copy's
+game code. Rename the package (`psx template create --name`) or keep separate
+targets.

@@ -217,3 +217,8 @@ calls in screen space. It is for *checking* your rebuild, never for shipping:
 - Visual changes: `game_step` + `game_screenshot`, and look at the image.
 - Numbers through MCP: `game_query` (README) reads positions and state.
 - `cargo fmt` (config in `rustfmt.toml`) and `cargo clippy --features dev-mcp --all-targets`.
+- Each copy of this template needs its own target directory. Two copies with
+  the same package name (two `psx-game`s, a project and its backup) must not
+  share a `CARGO_TARGET_DIR`: both build the same `game` library and overwrite
+  each other's, so tests and binaries silently link the other copy's code.
+  Keep the default `target/` inside the project, or rename the package.

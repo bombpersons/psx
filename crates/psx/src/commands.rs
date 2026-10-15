@@ -403,11 +403,24 @@ pub struct TemplateCreateArgs {
     /// Cargo package name (defaults to the directory name).
     #[arg(long)]
     pub name: Option<String>,
+    /// The original game's video region (`REGION` in src/lib.rs): display rate
+    /// and, with `fields_per_tick`, the logic tick rate. Default ntsc.
+    #[arg(long, value_enum)]
+    pub region: Option<crate::template::TemplateRegion>,
+    /// Video fields per logic tick (`FIELDS_PER_TICK` in src/lib.rs): 1 when
+    /// the original's main loop runs every vblank, 2 when it waits for two
+    /// (Croc PAL: 25 Hz). Default 1.
+    #[arg(long)]
+    pub fields_per_tick: Option<u32>,
 }
 
 impl Op for TemplateCreateArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::template::create(&self.dest, self.name.as_deref()))
+        let options = crate::template::TemplateOptions {
+            region: self.region.unwrap_or_default(),
+            fields_per_tick: self.fields_per_tick.unwrap_or(1),
+        };
+        Outcome::media(crate::template::create(&self.dest, self.name.as_deref(), options))
     }
 }
 

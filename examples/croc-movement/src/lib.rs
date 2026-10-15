@@ -3,12 +3,13 @@
 //! (research/case-study-croc.md in the psx repository).
 //!
 //! Built from the psx-bevy template: `src/main.rs` opens the window and adds
-//! [`GamePlugin`]; [`psx`], [`shell`], [`controller`], [`testing`], [`viewer`]
-//! and `dev_mcp` are the template's modules.
+//! [`GamePlugin`]; [`psx`], [`shell`], [`controller`], [`testing`], [`viewer`],
+//! [`model_viewer`] (`--model`) and `dev_mcp` are the template's modules.
 pub mod controller;
 pub mod croc;
 #[cfg(feature = "dev-mcp")]
 pub mod dev_mcp;
+pub mod model_viewer;
 pub mod psx;
 pub mod shell;
 pub mod testing;

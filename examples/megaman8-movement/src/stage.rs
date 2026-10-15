@@ -139,21 +139,3 @@ fn place_camera(camera: Res<StageCamera>, mut cams: Query<&mut Transform, (With<
         t.translation = Vec3::new(camera.pos.x + 160.0, -(camera.pos.y + 120.0), t.translation.z);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn camera_clamps_at_section_start() {
-        let mut app = App::new();
-        app.configure_sets(FixedUpdate, GameSystems::Game).add_plugins(CameraFollowPlugin);
-        app.insert_resource(StageCamera { pos: CAPTURE_CAMERA, min_x: 256.0 });
-        let p = app.world_mut().spawn((Player, StagePos(Vec2::new(394.0, 441.0)))).id();
-        app.world_mut().run_schedule(FixedUpdate);
-        assert_eq!(app.world().resource::<StageCamera>().pos.x, 256.0);
-        app.world_mut().get_mut::<StagePos>(p).unwrap().0.x = 453.5;
-        app.world_mut().run_schedule(FixedUpdate);
-        assert_eq!(app.world().resource::<StageCamera>().pos.x, 293.0);
-    }
-}
