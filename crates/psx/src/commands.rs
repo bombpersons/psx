@@ -16,7 +16,8 @@ use serde_json::{json, Value};
 
 /// Where a command runs: `root` is the project directory (bios/, media/,
 /// external/, .psx/). Relative paths in arguments resolve against the process
-/// working directory, which for both the CLI and `psx mcp` is that root.
+/// working directory, which for both the CLI and `psx mcp` is that root
+/// (`--root`/`PSX_ROOT` change into it before any command runs).
 pub struct Ctx {
     pub root: PathBuf,
 }
@@ -28,32 +29,41 @@ pub struct Outcome {
     pub exit: u8,
     /// Pretty-printed (results) or compact (media errors), as the CLI always did.
     pub pretty: bool,
-    /// Plain-text output the CLI prints instead of JSON (`assets scan` without --json).
-    pub text: Option<String>,
+    /// Plain-text mode (`--text`): the CLI prints `value["text"]` as is; MCP
+    /// still returns the whole JSON value (with the text in its `text` field).
+    pub text: bool,
 }
 
 impl Outcome {
     fn media(r: psx_media::Result<Value>) -> Self {
         match r {
-            Ok(value) => Outcome { value, exit: 0, pretty: true, text: None },
+            Ok(value) => Outcome { value, exit: 0, pretty: true, text: false },
             Err(e) => Outcome {
                 value: json!({"error": {"code": e.code(), "message": e.to_string()}}),
                 exit: if matches!(e, MediaError::Unsupported(_)) { 2 } else { 1 },
                 pretty: false,
-                text: None,
+                text: false,
             },
         }
     }
 
     fn pair((ok, value): (bool, Value)) -> Self {
-        Outcome { value, exit: if ok { 0 } else { 1 }, pretty: true, text: None }
+        Outcome { value, exit: if ok { 0 } else { 1 }, pretty: true, text: false }
+    }
+
+    /// A media result printed as plain text (its `text` field) when `text` is set.
+    fn media_text(r: psx_media::Result<Value>, text: bool) -> Self {
+        let mut o = Self::media(r);
+        o.text = text && o.exit == 0;
+        o
     }
 
     /// The CLI's stdout text (without the trailing newline).
     pub fn render(&self) -> String {
-        if let Some(t) = &self.text {
-            t.trim_end_matches('\n').to_string()
-        } else if self.pretty {
+        if self.text {
+            return self.value["text"].as_str().unwrap_or_default().trim_end().to_string();
+        }
+        if self.pretty {
             serde_json::to_string_pretty(&self.value).unwrap()
         } else {
             self.value.to_string()
@@ -279,7 +289,7 @@ pub struct AssetsScanArgs {
 impl Op for AssetsScanArgs {
     fn exec(self, _: &Ctx) -> Outcome {
         match crate::assets_cmd::scan_assets(&self) {
-            Ok(Err(table)) => Outcome { value: json!({"table": table}), exit: 0, pretty: true, text: Some(table) },
+            Ok(Err(table)) => Outcome { value: json!({"text": table}), exit: 0, pretty: true, text: true },
             Ok(Ok(v)) => Outcome::media(Ok(v)),
             Err(e) => Outcome::media(Err(e)),
         }
@@ -352,11 +362,15 @@ pub struct TexturesArgs {
     /// Output directory (default <run_dir>/textures).
     #[arg(short, long)]
     pub out: Option<PathBuf>,
+    /// VRAM dump to decode. Default: gpu_frame_vram.bin (the VRAM at the end of the
+    /// captured frame) when present and no --page is given, else vram.bin (end of the run).
+    #[arg(long)]
+    pub vram: Option<PathBuf>,
 }
 
 impl Op for TexturesArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::textures::run(&self.run_dir, self.page.as_deref(), self.clut.as_deref(), self.out.as_deref()))
+        Outcome::media(crate::textures::run(&self.run_dir, self.page.as_deref(), self.clut.as_deref(), self.out.as_deref(), self.vram.as_deref()))
     }
 }
 
@@ -408,10 +422,12 @@ pub struct RunCmdArgs {
     #[arg(long, default_value_t = d_frames())]
     #[serde(default = "d_frames")]
     pub frames: u32,
-    /// JSON array of {"frame": n, "buttons": ["CROSS", ...]}.
+    /// JSON array of {"frame": n, "buttons": ["CROSS", ...]}; frames count from the run start.
     #[arg(long)]
     pub replay: Option<PathBuf>,
-    /// Write watch `ADDR[:WIDTH]` in hex, repeatable.
+    /// Write watch `ADDR[:WIDTH]` in hex, repeatable. Native: every CPU/DMA store into
+    /// the range goes to writes.jsonl with pc, value, old value (hex and signed views too),
+    /// `frame` (absolute, from power-on) and `run_frame` (from the run start).
     #[arg(long = "watch")]
     #[serde(default, rename = "watch")]
     pub watches: Vec<String>,
@@ -449,7 +465,9 @@ pub struct RunCmdArgs {
     #[arg(long, default_value_t = d_max_events())]
     #[serde(default = "d_max_events")]
     pub max_events: u32,
-    /// Emulator: `redux` (PCSX-Redux worker, default) or `native` (psx-core).
+    /// Emulator: `redux` (PCSX-Redux worker process, default; needs external/pcsx-redux) or
+    /// `native` (the in-tree psx-core: exact watches, --trace, --gpu-frame, --sample, --poke,
+    /// --snapshot-every, memory cards, native states).
     #[arg(long, default_value_t = d_backend())]
     #[serde(default = "d_backend")]
     pub backend: String,
@@ -459,12 +477,51 @@ pub struct RunCmdArgs {
     #[command(flatten)]
     #[serde(flatten)]
     pub cards: crate::run::CardArgs,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub observe: crate::run::ObserveArgs,
+    /// Print a short summary (status, frames, files, samples, pokes); the full
+    /// report is always written to <run_dir>/report.json.
+    #[arg(long)]
+    #[serde(default)]
+    pub brief: bool,
+}
+
+/// The `--brief` view of a run report.
+fn brief(v: &Value) -> Value {
+    if v.get("error").is_some() {
+        return v.clone();
+    }
+    let mut b = json!({
+        "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "frames": v["frames"],
+        "report": v["report"],
+        "files": v["files"].as_object().map(|f| f.keys().cloned().collect::<Vec<_>>()),
+        "watch": {"hits": v["watch"]["hits"], "recorded": v["watch"]["recorded"]},
+    });
+    for k in ["samples", "pokes", "screens", "states", "read_watch", "wall_ms"] {
+        if !v[k].is_null() {
+            b[k] = v[k].clone();
+        }
+    }
+    if v["gpu_frame"].is_object() {
+        let g = &v["gpu_frame"];
+        b["gpu_frame"] = match g.get("error") {
+            Some(e) => json!({"error": e}),
+            None => json!({"frame": g["frame"], "commands": g["commands"]}),
+        };
+    }
+    if v["trace"].is_object() {
+        let t = &v["trace"];
+        b["trace"] = json!({"instructions": t["instructions"], "lines": t["lines"], "lines_dropped": t["lines_dropped"]});
+    }
+    b
 }
 
 impl Op for RunCmdArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         let a = self;
-        Outcome::pair(crate::run::run(
+        let short = a.brief;
+        let mut out = Outcome::pair(crate::run::run(
             &ctx.root,
             crate::run::RunArgs {
                 media: a.media,
@@ -484,8 +541,19 @@ impl Op for RunCmdArgs {
                 backend: a.backend,
                 trace: a.trace,
                 cards: a.cards,
+                observe: a.observe,
             },
-        ))
+        ));
+        // The full report always goes to the run directory.
+        if let Some(dir) = out.value["run_dir"].as_str().map(PathBuf::from) {
+            let p = dir.join("report.json");
+            out.value["report"] = json!(p);
+            let _ = std::fs::write(&p, serde_json::to_vec_pretty(&out.value).unwrap_or_default());
+        }
+        if short {
+            out.value = brief(&out.value);
+        }
+        out
     }
 }
 
@@ -656,12 +724,12 @@ impl Op for NativeArgs {
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct DisasmArgs {
-    /// PS-X EXE file, or `image.cue::/PATH`.
-    pub source: String,
+    /// PS-X EXE file, or `image.cue::/PATH`. Optional with --ram.
+    pub source: Option<String>,
     /// Start address (hex); defaults to the entry point.
     #[arg(long)]
     pub addr: Option<String>,
-    /// Instructions to decode.
+    /// Instructions to decode (with --function: the maximum function length).
     #[arg(long, default_value_t = d_count())]
     #[serde(default = "d_count")]
     pub count: u32,
@@ -669,30 +737,321 @@ pub struct DisasmArgs {
     #[arg(long = "symbols")]
     #[serde(default)]
     pub symbols: Vec<PathBuf>,
+    /// Plain-text listing (`ADDR WORD asm ; notes`, with labels for symbols and
+    /// branch targets) instead of JSON lines.
+    #[arg(long)]
+    #[serde(default)]
+    pub text: bool,
+    /// Disassemble the whole function containing this hex address: back to the
+    /// nearest jal target or `addiu sp,sp,-N` prologue, forward to its final `jr ra`.
+    #[arg(long)]
+    pub function: Option<String>,
+    /// Read code from a run's RAM (run directory or ram.bin) instead of the EXE:
+    /// overlays and code loaded at run time. With an EXE source too, warns where they differ.
+    #[arg(long)]
+    pub ram: Option<PathBuf>,
+    /// gp value (hex) for resolving gp-relative loads/stores (default: the EXE header's gp).
+    #[arg(long)]
+    pub gp: Option<String>,
+}
+
+fn opt_hex(s: &Option<String>, what: &str) -> psx_media::Result<Option<u32>> {
+    s.as_deref().map(|a| hex_u32(a).ok_or_else(|| MediaError::Malformed(format!("bad {what} {a:?} (hex)")))).transpose()
 }
 
 impl Op for DisasmArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        let DisasmArgs { source, addr, count, symbols } = self;
-        Outcome::media((|| {
-            let bytes = crate::read_source(&source)?;
-            let exe = PsxExe::parse(&bytes)?;
-            let scopes = crate::load_symbols(&symbols)?;
-            let start = match addr {
-                Some(a) => hex_u32(&a).ok_or_else(|| MediaError::Malformed(format!("bad address {a}")))?,
-                None => exe.pc,
-            } & !3;
-            let mut lines = Vec::new();
-            for i in 0..count {
-                let a = start.wrapping_add(4 * i);
-                let Some(off) = exe.addr_to_file_offset(a) else { break };
-                let Some(w) = bytes.get(off..off + 4) else { break };
-                let word = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
-                let label = scopes.iter().find_map(|s| s.table.describe(a, 0).filter(|n| !n.contains('+')));
-                lines.push(json!({"addr": format!("0x{a:08X}"), "word": format!("{word:08X}"), "asm": psx_core::disasm::disasm(word, a), "label": label}));
-            }
-            Ok(json!({"source": source, "lines": lines}))
-        })())
+        let DisasmArgs { source, addr, count, symbols, text, function, ram, gp } = self;
+        Outcome::media_text(
+            (|| {
+                let mut code = crate::code::Code::open(source.as_deref(), ram.as_deref())?;
+                if let Some(g) = opt_hex(&gp, "gp")? {
+                    code.gp = Some(g);
+                }
+                let scopes = crate::load_symbols(&symbols)?;
+                let entry = match &source {
+                    Some(s) => Some(PsxExe::parse(&crate::read_source(s)?)?.pc),
+                    None => None,
+                };
+                let (start, end, func) = if let Some(f) = opt_hex(&function, "function address")? {
+                    let jal = code.jal_targets();
+                    let (s, e) = crate::code::function_bounds(&code, f, &jal, count.max(16))
+                        .ok_or_else(|| MediaError::Malformed(format!("0x{f:08X} is outside the code ({})", code.origin)))?;
+                    let callers = crate::code::xrefs(&code, s, s + 4, false).iter().filter(|(_, r)| r.kind == "call").count();
+                    (s, e, Some(json!({"start": format!("0x{s:08X}"), "end": format!("0x{e:08X}"), "instructions": (e - s) / 4, "jal_callers": callers})))
+                } else {
+                    let start = match opt_hex(&addr, "address")? {
+                        Some(a) => a,
+                        None => entry.ok_or_else(|| MediaError::Malformed("give --addr or --function (there is no EXE entry point with --ram alone)".into()))?,
+                    } & !3;
+                    (start, start.wrapping_add(4 * count), None)
+                };
+                let (lines, listing) = crate::code::listing(&code, start, end, &crate::code::ListOpts { scopes: &scopes, text });
+                let mut warnings = Vec::new();
+                if let Some((checked, differ)) = code.exe_mismatch(start, end) {
+                    if differ > 0 {
+                        warnings.push(format!("RAM differs from the EXE in {differ} of {checked} words here: code patched or overlaid at run time (the listing shows RAM)"));
+                    } else if checked == 0 {
+                        warnings.push("this range is outside the EXE's load range: RAM only".to_string());
+                    }
+                }
+                if lines.is_empty() {
+                    warnings.push(format!("0x{start:08X} is outside the code ({}: 0x{:08X}..0x{:08X})", code.origin, code.base, code.end()));
+                }
+                let mut v = json!({"source": source.clone().unwrap_or_else(|| code.origin.clone()), "lines": lines});
+                if ram.is_some() {
+                    v["ram"] = json!(code.origin);
+                }
+                if let Some(f) = func {
+                    v["function"] = f;
+                }
+                if !warnings.is_empty() {
+                    v["warnings"] = json!(warnings);
+                }
+                if text {
+                    let mut t = String::new();
+                    if let Some(f) = v.get("function") {
+                        t += &format!(
+                            "; function {}..{} ({} instructions, {} jal callers) in {}\n",
+                            f["start"].as_str().unwrap_or(""),
+                            f["end"].as_str().unwrap_or(""),
+                            f["instructions"],
+                            f["jal_callers"],
+                            code.origin
+                        );
+                    }
+                    for w in &warnings {
+                        t += &format!("; warning: {w}\n");
+                    }
+                    v["text"] = json!(t + &listing);
+                }
+                Ok(v)
+            })(),
+            text,
+        )
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct XrefsArgs {
+    /// Target: a hex address, or a hex range LO-HI (HI exclusive) such as a whole struct.
+    pub target: String,
+    /// PS-X EXE file, or `image.cue::/PATH` (scans its load range). Optional with --ram.
+    #[arg(long)]
+    pub source: Option<String>,
+    /// Scan a run's RAM (run directory or ram.bin) instead of the EXE: all 2 MiB.
+    #[arg(long)]
+    pub ram: Option<PathBuf>,
+    /// gp value (hex) for gp-relative accesses (default: the EXE header's gp, when an EXE is given).
+    #[arg(long)]
+    pub gp: Option<String>,
+    /// Skip data words equal to the target (pointer and jump tables).
+    #[arg(long)]
+    #[serde(default)]
+    pub no_data: bool,
+    /// `.sym` or `.symbols.json` files to name the referencing functions; repeatable.
+    #[arg(long = "symbols")]
+    #[serde(default)]
+    pub symbols: Vec<PathBuf>,
+    /// References listed individually (counts are always complete).
+    #[arg(long, default_value_t = d_xref_limit())]
+    #[serde(default = "d_xref_limit")]
+    pub limit: usize,
+    /// Plain-text listing instead of JSON.
+    #[arg(long)]
+    #[serde(default)]
+    pub text: bool,
+}
+
+fn d_xref_limit() -> usize {
+    200
+}
+
+impl Op for XrefsArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        let XrefsArgs { target, source, ram, gp, no_data, symbols, limit, text } = self;
+        Outcome::media_text(
+            (|| {
+                let mut code = crate::code::Code::open(source.as_deref(), ram.as_deref())?;
+                if let Some(g) = opt_hex(&gp, "gp")? {
+                    code.gp = Some(g);
+                }
+                let addr = |s: &str| hex_u32(s).ok_or_else(|| MediaError::Malformed(format!("bad hex address {s:?}")));
+                let (lo, hi) = match target.split_once('-') {
+                    Some((l, h)) => (addr(l)?, addr(h)?),
+                    None => {
+                        let a = addr(&target)?;
+                        (a, a.wrapping_add(1))
+                    }
+                };
+                if hi <= lo {
+                    return Err(MediaError::Malformed(format!("empty range {target:?}")));
+                }
+                let scopes = crate::load_symbols(&symbols)?;
+                let (mut v, t) = crate::code::xref_report(&code, lo, hi, !no_data, &scopes, limit, text);
+                if text {
+                    v["text"] = json!(t);
+                }
+                Ok(v)
+            })(),
+            text,
+        )
+    }
+}
+
+/// `psx ram diff`.
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct RamDiffArgs {
+    /// First snapshot: a run directory or a ram.bin.
+    pub a: PathBuf,
+    /// Second snapshot.
+    pub b: PathBuf,
+    /// Unit width in bytes (aligned): 1, 2 or 4.
+    #[arg(long, default_value_t = d_width4())]
+    #[serde(default = "d_width4")]
+    pub width: u8,
+    /// Hex address range LO-HI (HI exclusive), e.g. 80100000-80200000.
+    #[arg(long)]
+    pub range: Option<String>,
+    /// Only units whose (signed, wrapping) difference is at least this large.
+    #[arg(long)]
+    pub min_delta: Option<u64>,
+    /// Show values as signed.
+    #[arg(long)]
+    #[serde(default)]
+    pub signed: bool,
+    /// Changes listed individually (counts are always complete).
+    #[arg(long, default_value_t = d_ram_limit())]
+    #[serde(default = "d_ram_limit")]
+    pub limit: usize,
+}
+
+fn d_width4() -> u8 {
+    4
+}
+fn d_width2() -> u8 {
+    2
+}
+fn d_ram_limit() -> usize {
+    100
+}
+
+impl Op for RamDiffArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::media(crate::ram::diff(
+            &self.a,
+            &self.b,
+            crate::ram::DiffOpts { width: self.width, range: self.range.as_deref(), min_delta: self.min_delta, signed: self.signed, limit: self.limit },
+        ))
+    }
+}
+
+/// `psx ram search`.
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct RamSearchArgs {
+    /// Snapshots in order: run directories or ram.bin files (e.g. runs with LEFT, idle, RIGHT held).
+    #[arg(required = true)]
+    pub snapshots: Vec<PathBuf>,
+    /// Unit width in bytes: 1, 2 or 4.
+    #[arg(long, default_value_t = d_width2())]
+    #[serde(default = "d_width2")]
+    pub width: u8,
+    /// Compare values as signed (for increased/decreased, --values and --between).
+    #[arg(long)]
+    #[serde(default)]
+    pub signed: bool,
+    /// Predicate between consecutive snapshots: changed, unchanged, increased,
+    /// decreased, delta=N or any. One applies to every pair; or give one per pair
+    /// (comma-separated or repeated).
+    #[arg(long = "pred")]
+    #[serde(default, rename = "pred")]
+    pub preds: Vec<String>,
+    /// Exact value per snapshot, comma-separated, `*` for any: `441,*,376`.
+    #[arg(long)]
+    pub values: Option<String>,
+    /// Every snapshot's value within LO..HI (inclusive).
+    #[arg(long)]
+    pub between: Option<String>,
+    /// Hex address range LO-HI (HI exclusive).
+    #[arg(long)]
+    pub range: Option<String>,
+    /// Address alignment in bytes (default: the width).
+    #[arg(long)]
+    pub align: Option<usize>,
+    /// Only consider the addresses an earlier search saved with --save (narrowing session).
+    #[arg(long)]
+    pub candidates: Option<PathBuf>,
+    /// Save the matching addresses as JSON for a later --candidates.
+    #[arg(long)]
+    pub save: Option<PathBuf>,
+    /// Matches listed individually (the count is always complete).
+    #[arg(long, default_value_t = d_ram_limit())]
+    #[serde(default = "d_ram_limit")]
+    pub limit: usize,
+}
+
+impl Op for RamSearchArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::media(crate::ram::search(
+            &self.snapshots,
+            crate::ram::SearchOpts {
+                width: self.width,
+                signed: self.signed,
+                preds: &self.preds,
+                values: self.values.as_deref(),
+                between: self.between.as_deref(),
+                range: self.range.as_deref(),
+                align: self.align,
+                candidates: self.candidates.as_deref(),
+                save: self.save.as_deref(),
+                limit: self.limit,
+            },
+        ))
+    }
+}
+
+/// `psx ram view`.
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct RamViewArgs {
+    /// One or more snapshots (run directories or ram.bin), shown side by side.
+    #[arg(required = true)]
+    pub snapshots: Vec<PathBuf>,
+    /// Start address (hex).
+    #[arg(long)]
+    pub addr: String,
+    /// Bytes to show (at most 64 KiB).
+    #[arg(long, default_value_t = d_view_len())]
+    #[serde(default = "d_view_len")]
+    pub len: usize,
+    /// Value format: u8 i8 x8 u16 i16 x16 u32 i32 x32 or fxI.F (e.g. fx16.16).
+    #[arg(long = "as", default_value_t = d_view_fmt())]
+    #[serde(default = "d_view_fmt", rename = "as")]
+    pub fmt: String,
+    /// Plain-text table (rows that differ between snapshots marked `*`).
+    #[arg(long)]
+    #[serde(default)]
+    pub text: bool,
+}
+
+fn d_view_len() -> usize {
+    64
+}
+fn d_view_fmt() -> String {
+    "x32".into()
+}
+
+impl Op for RamViewArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        let text = self.text;
+        Outcome::media_text(
+            crate::ram::view(&self.snapshots, &self.addr, self.len, &self.fmt).map(|(mut v, t)| {
+                if text {
+                    v["text"] = json!(t);
+                }
+                v
+            }),
+            text,
+        )
     }
 }
 
