@@ -1,0 +1,161 @@
+//! Explicit per-request project roots without changing the MCP server's process CWD.
+//! Closing the worker's input cooperatively cancels supervised descendants first.
+use super::{error_value, Ctx, Outcome, ARGS_LIMIT};
+use serde_json::{json, Value};
+use std::{
+    io::{BufRead, Read, Write},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
+};
+
+pub(super) fn resolve(default: &Path, value: Option<&Value>) -> Result<PathBuf, Value> {
+    let Some(value) = value else { return Ok(default.to_owned()) };
+    let path = value
+        .as_str()
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| error_value("invalid_arguments", "project_root must be a nonempty directory path"))?;
+    let absolute = default.join(path);
+    let root = absolute.canonicalize().map_err(|e| {
+        error_value("io_error", format!("project_root {} (base {}): {e}", absolute.display(), default.display()))
+    })?;
+    if !root.is_dir() {
+        return Err(error_value("invalid_arguments", format!("project_root {} is not a directory", root.display())));
+    }
+    Ok(root)
+}
+
+struct Worker(Child);
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.0.stdin.take();
+        if self.0.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        // Ordinary descendants inherit this process group. Ghidra and external
+        // parsers have their own supervisors; stdin EOF signals their token.
+        #[cfg(unix)]
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &format!("-{}", self.0.id())])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+pub(super) fn call(tool: &str, args: Value, ctx: &Ctx) -> Result<Value, String> {
+    let mut command = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+    command
+        .env_remove("PSX_ROOT")
+        .current_dir(&ctx.root)
+        .arg("__mcp-call")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = Worker(command.spawn().map_err(|e| format!("project worker in {}: {e}", ctx.root.display()))?);
+    writeln!(child.0.stdin.as_mut().unwrap(), "{}", json!({"tool":tool,"arguments":args}))
+        .map_err(|e| e.to_string())?;
+    let output = child.0.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        output.take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let mut cancelled_at = None;
+    let status = loop {
+        if ctx.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            if cancelled_at.is_none() {
+                child.0.stdin.take();
+                cancelled_at = Some(Instant::now());
+            }
+            if cancelled_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(2)) {
+                return Err("project worker cancelled; termination requested".into());
+            }
+        }
+        if let Some(status) = child.0.try_wait().map_err(|e| e.to_string())? {
+            break status;
+        }
+        if reader.is_finished() {
+            // Also handles a worker exceeding the output cap without blocking
+            // forever on a full stdout pipe.
+            if let Some(status) = child.0.try_wait().map_err(|e| e.to_string())? {
+                break status;
+            }
+            child.0.kill().map_err(|e| e.to_string())?;
+            break child.0.wait().map_err(|e| e.to_string())?;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let bytes = reader.join().map_err(|_| "project worker output reader failed")?.map_err(|e| e.to_string())?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err("project worker response exceeds 64 MiB".into());
+    }
+    let mut value: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("project worker exited {status} without a valid result: {e}"))?;
+    if value.is_object() {
+        value["project_root"] = json!(ctx.root);
+    }
+    propagate_root(&mut value, &ctx.root);
+    Ok(value)
+}
+
+fn propagate_root(value: &mut Value, root: &Path) {
+    match value {
+        Value::Object(map) => {
+            // Concrete continuation calls must retain the project selection.
+            if map.get("tool").and_then(Value::as_str).is_some_and(|name| super::tools().iter().any(|t| t.name == name))
+                && map.get("arguments").is_some_and(Value::is_object)
+            {
+                map.get_mut("arguments").unwrap()["project_root"] = json!(root);
+            }
+            for child in map.values_mut() {
+                propagate_root(child, root);
+            }
+        }
+        Value::Array(values) => values.iter_mut().for_each(|v| propagate_root(v, root)),
+        _ => {}
+    }
+}
+
+/// Private CLI entry point used by the MCP adapter. No shell interpolation or
+/// persistent configuration is involved; it dispatches the same typed Op.
+pub(crate) fn worker(ctx: &Ctx) -> Outcome {
+    fn run(ctx: &Ctx) -> Result<Outcome, String> {
+        let mut input = std::io::BufReader::new(std::io::stdin()).take(ARGS_LIMIT as u64 + 4096);
+        let mut line = String::new();
+        input.read_line(&mut line).map_err(|e| e.to_string())?;
+        if !line.ends_with('\n') {
+            return Err("project worker request exceeds limit or is incomplete".into());
+        }
+        let request: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
+        let name = request["tool"].as_str().ok_or("project worker request needs a tool")?;
+        let tool = super::tools().into_iter().find(|t| t.name == name).ok_or("unknown project worker tool")?;
+        let token = tokio_util::sync::CancellationToken::new();
+        let cancellation = token.clone();
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut input, &mut std::io::sink());
+            cancellation.cancel();
+        });
+        let ctx = Ctx { root: ctx.root.clone(), cancel: Some(token) };
+        let mut result = (tool.call)(request["arguments"].clone(), &ctx)?;
+        result.text = false; // The private transport always carries JSON, even for text-mode tools.
+        if result.value["error"].is_object() {
+            result.value["error"]["project_root"] = json!(ctx.root);
+            result.value["error"]["path_resolution"] =
+                json!("Relative paths are resolved against project_root, not the client working directory.");
+        }
+        Ok(result)
+    }
+    run(ctx).unwrap_or_else(|error| Outcome {
+        value: error_value("invalid_arguments", error),
+        exit: 1,
+        pretty: false,
+        text: false,
+    })
+}

@@ -5,7 +5,7 @@ use psx_core::Machine;
 use psx_gpu::{vram::Vram, Display, DrawState};
 use serde_json::{json, Value};
 
-use crate::run::TraceArgs;
+use crate::run::{GpuDrawFilter, TraceArgs};
 
 #[derive(Clone)]
 pub(super) struct Projection {
@@ -38,6 +38,7 @@ pub(super) struct GpuCapture {
     from: u64,
     limit: u32,
     next_draw: bool,
+    filter: GpuDrawFilter,
     inspected: u32,
     active: Option<Candidate>,
     previous: Vec<Projection>,
@@ -58,6 +59,7 @@ impl GpuCapture {
             from: args.gpu_frame.unwrap_or(0),
             limit: if args.gpu_next_draw { args.gpu_search_frames.unwrap_or(60) } else { 1 },
             next_draw: args.gpu_next_draw,
+            filter: args.gpu_draw_filter.unwrap_or_default(),
             inspected: 0,
             active: None,
             previous: Vec::new(),
@@ -68,6 +70,7 @@ impl GpuCapture {
     fn metadata(&self) -> Value {
         json!({
             "mode": if self.next_draw { "next_draw" } else { "exact" },
+            "draw_filter": self.filter,
             "search": {"from_run_frame": self.from, "max_frames": self.limit, "frames_inspected": self.inspected},
         })
     }
@@ -82,7 +85,17 @@ impl GpuCapture {
             let current = projections(m);
             self.inspected += u32::from(complete);
             let draw_commands = commands.iter().filter(|c| draws(c)).count();
-            if !self.next_draw || (complete && draw_commands > 0) {
+            let primitives = commands.iter().filter(|c| c.first().is_some_and(|w| matches!(w >> 24, 0x20..=0x7f))).count();
+            let textured = commands.iter().filter(|c| c.first().is_some_and(|w| {
+                let op = w >> 24;
+                matches!(op, 0x20..=0x3f | 0x60..=0x7f) && op & 4 != 0
+            })).count();
+            let qualifying = match self.filter {
+                GpuDrawFilter::Any => draw_commands,
+                GpuDrawFilter::Primitives => primitives,
+                GpuDrawFilter::Textured => textured,
+            };
+            if !self.next_draw || (complete && qualifying > 0) {
                 let mut all_projections = c.prior_projections;
                 all_projections.extend(current);
                 let mut metadata = self.metadata();
@@ -93,6 +106,12 @@ impl GpuCapture {
                 metadata["absolute_frame"] = json!(c.absolute_frame);
                 metadata["complete"] = json!(complete);
                 metadata["draw_commands"] = json!(draw_commands);
+                metadata["content"] = json!({
+                    "kind": if textured>0 {"textured_primitives"} else if primitives>0 {"primitives"}
+                        else if draw_commands>0 {"fills_only"} else if commands.is_empty() {"empty"} else {"no_draws"},
+                    "fills":draw_commands-primitives,"primitives":primitives,"textured_primitives":textured,
+                    "note":"Content classification does not establish gameplay readiness."
+                });
                 self.selected = Some(CapturedFrame {
                     state: c.state,
                     before: c.before,
@@ -148,7 +167,7 @@ impl GpuCapture {
         v["status"] = json!("not_found");
         v["reason"] = json!(reason);
         v["error"] = json!(if self.next_draw {
-            "no completed frame with draw commands in the searched window"
+            "no completed frame with qualifying draw commands in the searched window"
         } else {
             "the run ended before the requested frame"
         });
@@ -233,6 +252,31 @@ mod tests {
             assert!(frame.commands.is_empty());
             assert_eq!(frame.metadata["complete"], complete);
             assert_eq!(frame.metadata["mode"], "exact");
+            assert_eq!(frame.metadata["content"]["kind"], "empty");
+        }
+    }
+
+    #[test]
+    fn draw_filters_skip_fills_and_optionally_untextured_primitives() {
+        for (filter, expected) in [(GpuDrawFilter::Primitives, 1), (GpuDrawFilter::Textured, 2)] {
+            let mut m = Machine::new(vec![]);
+            let mut c = GpuCapture::new(&TraceArgs { gpu_next_draw:true, gpu_search_frames:Some(3),
+                gpu_draw_filter:Some(filter), ..Default::default() }).unwrap();
+            c.boundary(&mut m, 0, false);
+            m.bus.gpu.gp0_all(&[0x020000ff, 0, 0x00010010]);
+            advance(&mut c, &mut m, 0, false);
+            assert!(c.selected.is_none(), "fills must not satisfy the stricter filters");
+            m.bus.gpu.gp0_all(&[0x600000ff, 0, 0x00010001]);
+            advance(&mut c, &mut m, 0, false);
+            if expected == 2 {
+                assert!(c.selected.is_none());
+                m.bus.gpu.gp0_all(&[0x64000080, 0, 0, 0x00010001]);
+                advance(&mut c, &mut m, 0, true);
+            }
+            let frame = c.selected.as_ref().unwrap();
+            assert_eq!(frame.metadata["run_frame"], expected);
+            assert_eq!(frame.metadata["content"]["primitives"], 1);
+            assert_eq!(frame.metadata["content"]["textured_primitives"], u32::from(expected == 2));
         }
     }
 

@@ -24,6 +24,7 @@ mod bound_symbols;
 mod code;
 mod commands;
 mod ghidra;
+mod guide;
 mod lockstep;
 mod mcp;
 mod native;
@@ -56,6 +57,10 @@ struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)] // parsed once per process
 enum Command {
+    #[command(name = "__mcp-call", hide = true)]
+    McpCall,
+    /// Read built-in investigation workflows and tool-usage guidance.
+    Guide(guide::GuideArgs),
     /// Discover build, project defaults, BIOS candidates and backend capabilities.
     Context(context::ArgsContext),
     /// Inspect artifacts: directory inventory, paginated JSON/logs/CSV, text, hex or PNG.
@@ -173,6 +178,8 @@ fn main() -> ExitCode {
     }
     let ctx = Ctx { root: std::env::current_dir().unwrap_or_default(), cancel: None };
     let out = match cli.command {
+        Command::McpCall => mcp::project::worker(&ctx),
+        Command::Guide(a) => a.exec(&ctx),
         Command::Context(a) => a.exec(&ctx),
         Command::ArtifactRead(a) => a.exec(&ctx),
         Command::Bios { action } => action.exec(&ctx),
@@ -205,6 +212,7 @@ fn main() -> ExitCode {
         Command::VramDiff(a) => a.exec(&ctx),
         Command::Addr(a) => a.exec(&ctx),
     };
+    let out = out.with_path_context(&ctx);
     println!("{}", out.render());
     ExitCode::from(out.exit)
 }
@@ -411,6 +419,12 @@ fn symbols_cmd(source: &str, sigs_dir: &Path, min_concrete: usize, out: Option<P
         "code_covered_bytes": matched,
         "code_covered_pct": (matched as f64 * 1000.0 / exe.text_size.max(1) as f64).round() / 10.0,
         "ambiguous": report.ambiguous.len(),
+        "interpretation": {
+            "scope":"PsyQ library signatures, not a catalogue of game-specific functions; low coverage alone is not a failure.",
+            "chosen_version":"Best-scoring installed signature set, not proof of a game's exact SDK version.",
+            "ambiguous":"Signatures with multiple matches are skipped, never arbitrarily selected.",
+            "next_step":"Use runtime observations and Ghidra for game-specific functions; verify pseudocode against instructions."
+        },
         "files": {"report": json_path, "ghidra": ghidra, "sym": sym},
     }))
 }

@@ -120,6 +120,155 @@ fn tiny_exe() -> Vec<u8> {
 }
 
 #[test]
+fn guide_is_self_contained_read_only_and_matches_the_cli_for_every_topic() {
+    let root = std::env::temp_dir().join(format!("psx-guide-mcp-{}", std::process::id()));
+    std::fs::create_dir_all(root.join(".psx")).unwrap();
+    // Help must remain available even when context cannot load the project's config.
+    let config = b"deliberately invalid project configuration";
+    std::fs::write(root.join(".psx/project.json"), config).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let catalog = rpc.request("tools/list", json!({}));
+    let tools = catalog["result"]["tools"].as_array().unwrap();
+    let guide = tools.iter().find(|t| t["name"] == "guide").unwrap();
+    assert_eq!(guide["annotations"]["readOnlyHint"], true);
+    let (overview, error, _) = rpc.tool("guide", json!({}));
+    let (cli_overview, ok) = cli(&root, &["guide"]);
+    assert!(!error && ok, "{overview}");
+    assert_eq!(overview, cli_overview);
+    assert_eq!(overview["topic"], "overview");
+    assert_eq!(overview["project_root"], json!(root));
+    assert!(overview["build"]["id"].is_string());
+    let topics = overview["topics"].as_array().unwrap();
+    assert!(topics.len() > 1);
+    for topic in topics {
+        let call = &topic["next_call"];
+        let name = call["arguments"]["topic"].as_str().unwrap();
+        let (result, error, _) = rpc.tool(call["tool"].as_str().unwrap(), call["arguments"].clone());
+        let (cli_result, ok) = cli(&root, &["guide", "--topic", name]);
+        assert!(!error && ok, "{result}");
+        assert_eq!(result, cli_result);
+        assert_eq!(result["topic"], topic["topic"]);
+        assert!(!result["text"].as_str().unwrap().is_empty());
+        assert!(result.to_string().len() < 16 * 1024, "guide responses should stay inline and bounded");
+        for next in result["next_calls"].as_array().unwrap() {
+            assert!(tools.iter().any(|t| t["name"] == next["tool"]), "unknown next tool: {next}");
+        }
+    }
+    let (bad, error, _) = rpc.tool("guide", json!({"topic":"not-a-topic"}));
+    assert!(error && bad["error"]["code"] == "invalid_arguments", "{bad}");
+    assert!(!psx().args(["guide", "--topic", "not-a-topic"]).current_dir(&root).output().unwrap().status.success());
+    assert_eq!(std::fs::read(root.join(".psx/project.json")).unwrap(), config);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1, "guide must not create artifacts");
+    assert_eq!(std::fs::read_dir(root.join(".psx")).unwrap().count(), 1);
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scoped_projects_keep_paths_defaults_continuations_and_screens_isolated() {
+    let root = std::env::temp_dir().join(format!("psx-project-isolation-{}", std::process::id()));
+    for name in ["server", "a", "b"] { std::fs::create_dir_all(root.join(name)).unwrap(); }
+    let bios: Vec<u8> = [0x0bf00000u32, 0].iter().flat_map(|w| w.to_le_bytes()).collect();
+    for (name, marker) in [("a", 1), ("b", 2)] {
+        let mut image = bios.clone(); image.push(marker);
+        std::fs::write(root.join(name).join("bios.bin"), image).unwrap();
+        std::fs::write(root.join(name).join("note.txt"), name).unwrap();
+    }
+    let server = root.join("server");
+    let mut rpc = Rpc::start(&server);
+    let first = rpc.next_id; rpc.next_id += 2;
+    for (i, name) in ["a", "b"].into_iter().enumerate() {
+        rpc.send(json!({"jsonrpc":"2.0","id":first+i as u64,"method":"tools/call","params":{
+            "name":"context","arguments":{"project_root":format!("../{name}"),"bios":"bios.bin","save":true}}}));
+    }
+    let mut replies = Vec::new();
+    while replies.len() < 2 {
+        let reply: Value = serde_json::from_str(&rpc.lines.recv_timeout(Duration::from_secs(30)).unwrap()).unwrap();
+        if reply.get("id").is_some() { replies.push(reply); }
+    }
+    for (i, name) in ["a", "b"].into_iter().enumerate() {
+        let reply = replies.iter().find(|r| r["id"] == first+i as u64).unwrap();
+        assert_ne!(reply["result"]["isError"], true, "{reply}");
+        let result = &reply["result"]["structuredContent"];
+        let project = root.join(name);
+        assert_eq!(result["project_root"], json!(project));
+        assert_eq!(result["next_calls"][0]["arguments"]["project_root"], json!(project));
+        let config: Value = serde_json::from_slice(&std::fs::read(project.join(".psx/project.json")).unwrap()).unwrap();
+        assert_eq!(config["bios"], json!(project.join("bios.bin")));
+        let (read, error, _) = rpc.tool("artifact_read", json!({"project_root":project,"path":"note.txt"}));
+        assert!(!error && read["items"] == json!([name]), "{read}");
+    }
+    assert!(!server.join(".psx/project.json").exists());
+    let (default, error, _) = rpc.tool("context", json!({}));
+    assert!(!error && default["status"] == "needs_setup", "{default}");
+    assert_eq!(default["project_root"], json!(server));
+    let (run, error, blocks) = rpc.tool("run", json!({"project_root":"../a","frames":1,"out":"capture","save_state":true,"brief":true,"return_screen":true}));
+    assert!(!error, "{run}");
+    assert!(root.join("a/capture/state.bin").exists());
+    assert!(!root.join("b/capture").exists() && !server.join("capture").exists());
+    assert!(blocks.iter().any(|b| b["type"] == "image"), "scoped screenshot must be read relative to its project");
+    let next = &run["artifacts"][0]["read"];
+    assert_eq!(next["arguments"]["project_root"], json!(root.join("a")));
+    let mut arguments = next["arguments"].clone(); arguments["limit"] = json!(2);
+    let (_, error, _) = rpc.tool(next["tool"].as_str().unwrap(), arguments);
+    assert!(!error);
+    let (missing, error, _) = rpc.tool("disc", json!({"project_root":"../b","image":"missing.cue"}));
+    assert!(error, "{missing}");
+    assert_eq!(missing["error"]["path"], json!(root.join("b/missing.cue")));
+    assert_eq!(missing["error"]["project_root"], json!(root.join("b")));
+    for project in [json!("../missing"), json!(7), json!("../a/note.txt"), json!("")] {
+        let (_, error, _) = rpc.tool("guide", json!({"project_root":project})); assert!(error);
+    }
+    let (scan, error, _) = rpc.tool("assets_scan", json!({"project_root":"../a","source":"bios.bin"}));
+    assert!(!error && scan["text"].is_string(), "text-mode scoped calls must still use JSON transport: {scan}");
+    drop(rpc); std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn extraction_pages_and_brief_summaries_keep_the_complete_manifest() {
+    let root = std::env::temp_dir().join(format!("psx-extraction-pages-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let tim: Vec<u8> = [16u32, 2, 20, 0, 0x00020002, 0x0000001f, 0].iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut source = Vec::new(); for _ in 0..5 { source.extend_from_slice(&tim); }
+    std::fs::write(root.join("bank.bin"), source).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (page, error, _) = rpc.tool("assets_extract", json!({"source":"bank.bin","out":"converted","limit":2,"report_offset":1}));
+    assert!(!error, "{page}");
+    assert_eq!(page["extracted"], 5);
+    assert_eq!(page["assets_page"]["total"], 5);
+    assert_eq!(page["assets"].as_array().unwrap().len(), 2);
+    assert_eq!(page["summary"]["output_files"], 10);
+    let manifest = PathBuf::from(page["manifest"]["path"].as_str().unwrap());
+    let complete: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    assert_eq!(complete["assets"].as_array().unwrap().len(), 5);
+    assert!(complete["assets"].as_array().unwrap().iter().flat_map(|a| a["outputs"].as_array().unwrap()).all(|o| root.join(o["path"].as_str().unwrap()).exists()));
+    let next = &page["next_call"];
+    let (read, error, _) = rpc.tool(next["tool"].as_str().unwrap(), next["arguments"].clone());
+    let expected: Vec<_> = page["assets"].as_array().unwrap().iter().map(|a| {
+        let mut a = a.clone(); a.as_object_mut().unwrap().remove("outputs_page"); a
+    }).collect();
+    assert!(!error && read["items"] == json!(expected), "{read}");
+    let (brief, error, _) = rpc.tool("assets_extract", json!({"source":"bank.bin","out":"converted","brief":true,"limit":2}));
+    assert!(!error && brief["assets"] == json!([]), "{brief}");
+    assert_eq!(brief["manifest"], page["manifest"], "identical results reuse their content-bound manifest");
+    assert_eq!(brief["summary"], page["summary"]);
+    let (nested, error, _) = rpc.tool("assets_extract", json!({"source":"bank.bin","out":"converted","limit":1}));
+    assert!(!error && nested["assets"][0]["outputs"].as_array().unwrap().len() == 1, "{nested}");
+    assert_eq!(nested["assets"][0]["outputs_page"]["total"], 2);
+    assert_eq!(nested["assets"][0]["outputs_page"]["truncated"], true);
+    let old_manifest = std::fs::read(&manifest).unwrap();
+    let mut changed = std::fs::read(root.join("bank.bin")).unwrap();
+    changed[20] = 1; // Change pixels without changing any header, offset or output path.
+    std::fs::write(root.join("bank.bin"), changed).unwrap();
+    let (changed, error, _) = rpc.tool("assets_extract", json!({"source":"bank.bin","out":"converted","brief":true}));
+    assert!(!error && changed["manifest"]["path"] != page["manifest"]["path"], "changed bytes must produce a distinct manifest: {changed}");
+    assert_eq!(std::fs::read(&manifest).unwrap(), old_manifest);
+    let (_, error, _) = rpc.tool("assets_extract", json!({"source":"bank.bin","out":"invalid","limit":0}));
+    assert!(error && !root.join("invalid").exists());
+    drop(rpc); std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn generated_parsers_chain_and_export_through_cli_and_mcp() {
     let root = std::env::temp_dir().join(format!("psx-parser-mcp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -595,6 +744,7 @@ fn mcp_tools_match_cli() {
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for want in [
+        "guide",
         "disc",
         "ls",
         "extract",
@@ -829,14 +979,17 @@ fn ghidra_probe() -> Vec<u8> {
 #[cfg(target_os = "linux")]
 #[test]
 fn external_parser_mcp_cancellation_stops_descendants() {
-    let root = std::env::temp_dir().join(format!("psx-parser-cancel-{}", std::process::id()));
+    for scoped in [false, true] {
+    let root = std::env::temp_dir().join(format!("psx-parser-cancel-{}-{scoped}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("source.dat"), b"authored data").unwrap();
     std::fs::write(root.join("slow.py"),"import pathlib,subprocess,sys\nsys.stdin.buffer.read()\np=subprocess.Popen(['sleep','30'])\npathlib.Path('child.pid').write_text(str(p.pid))\np.wait()\n").unwrap();
     let mut rpc = Rpc::start(&root);
     let id = rpc.next_id;
     rpc.next_id += 1;
-    rpc.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"assets_extract","arguments":{"source":"source.dat","model_parser":"python3","model_parser_args":["slow.py"],"out":"converted"}}}));
+    let mut args = json!({"source":"source.dat","model_parser":"python3","model_parser_args":["slow.py"],"out":"converted"});
+    if scoped { args["project_root"] = json!(root); }
+    rpc.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"assets_extract","arguments":args}}));
     for _ in 0..300 {
         if root.join("child.pid").exists() {
             break;
@@ -856,13 +1009,15 @@ fn external_parser_mcp_cancellation_stops_descendants() {
     drop(rpc);
     assert!(!root.join("converted").exists());
     std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn ghidra_mcp_cancellation_stops_worker() {
     use std::os::unix::fs::PermissionsExt;
-    let root = std::env::temp_dir().join(format!("psx-ghidra-cancel-{}", std::process::id()));
+    for scoped in [false, true] {
+    let root = std::env::temp_dir().join(format!("psx-ghidra-cancel-{}-{scoped}", std::process::id()));
     let install = root.join("fake-ghidra");
     std::fs::create_dir_all(install.join("support")).unwrap();
     std::fs::create_dir_all(install.join("Ghidra")).unwrap();
@@ -874,7 +1029,9 @@ fn ghidra_mcp_cancellation_stops_worker() {
     let mut rpc = Rpc::start(&root);
     let id = rpc.next_id;
     rpc.next_id += 1;
-    rpc.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"ghidra_decompile","arguments":{"source":"probe.ps-exe","addr":"80010048","ghidra_home":install}}}));
+    let mut args = json!({"source":"probe.ps-exe","addr":"80010048","ghidra_home":install});
+    if scoped { args["project_root"] = json!(root); }
+    rpc.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"ghidra_decompile","arguments":args}}));
     let pid_file = install.join("support/child.pid");
     for _ in 0..300 {
         if pid_file.exists() {
@@ -899,6 +1056,7 @@ fn ghidra_mcp_cancellation_stops_worker() {
         "interrupted analyses must not be cached"
     );
     std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[test]
@@ -1255,6 +1413,8 @@ fn regional_bios_discovery_requires_a_unique_compatible_image() {
     let mut rpc = Rpc::start(&root);
     let (missing, error, _) = rpc.tool("context", json!({"image":"game.exe"}));
     assert!(!error && missing["status"] == "needs_setup", "{missing}");
+    assert_eq!(missing["next_calls"][0]["arguments"]["region"], "pal");
+    assert!(missing["next_calls"][0]["arguments"].get("fields_per_tick").is_none());
     assert_eq!(missing["setup"]["next_action"]["arguments"], json!({"download":true,"region":"pal"}));
     let mut pal = vec![0; 524288];
     let version = b"System ROM Version TEST E\0";
@@ -1386,16 +1546,39 @@ fn inline_inputs_match_replay_and_release_at_the_final_checkpoint_boundary() {
     let (_, last) = psx_core::Machine::load_state(&std::fs::read(root.join("inline/state.bin")).unwrap(), bios.clone()).unwrap();
     assert_eq!(last.bus.sio0.buttons, 0, "exclusive release must be reflected in the final checkpoint");
     assert_eq!(run["pad"]["buttons"],json!([]));
+    assert_eq!(run["input"]["application"]["applied_events"], 2);
+    assert_eq!(run["input"]["application"]["pending_events"], 0);
+    let applied: Vec<Value> = std::fs::read_to_string(root.join("inline/input.jsonl")).unwrap().lines()
+        .map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(applied.iter().map(|e| e["run_frame"].as_u64().unwrap()).collect::<Vec<_>>(), [0,2]);
     assert_eq!(run["watch"]["enabled"],false);assert!(!root.join("inline/writes.jsonl").exists());
     let (file_run, ok) =
         cli(&root, &["run", "--bios", "bios.bin", "--replay", "input.json", "--frames", "2", "--save-state", "--out", "file"]);
     assert!(ok, "{file_run}");
-    assert_eq!(file_run["input"], run["input"]);
+    assert_eq!(file_run["input"]["events"], run["input"]["events"]);
+    assert_eq!(file_run["input"]["application"]["applied_events"], run["input"]["application"]["applied_events"]);
     assert_eq!(file_run["files"]["state.bin"]["sha256"], run["files"]["state.bin"]["sha256"]);
     let (inline, ok) =
         cli(&root, &["run", "--bios", "bios.bin", "--input", &events.to_string(), "--frames", "2", "--save-state", "--out", "cli-inline"]);
     assert!(ok, "{inline}");
     assert_eq!(inline["files"]["state.bin"]["sha256"], run["files"]["state.bin"]["sha256"]);
+    let mut checkpoint = psx_core::Machine::new(bios.clone());
+    checkpoint.bus.frames = 37;
+    std::fs::write(root.join("resume.bin"), checkpoint.save_state(None)).unwrap();
+    let (resumed, error, _) = rpc.tool("run", json!({"bios":"bios.bin","from_state":"resume.bin","frames":2,
+        "input":events,"save_state":true,"save_state_at":[1],"out":"resumed"}));
+    assert!(!error, "{resumed}");
+    let (_, held) = psx_core::Machine::load_state(&std::fs::read(root.join("resumed/state_f000001.bin")).unwrap(), bios.clone()).unwrap();
+    assert_eq!(held.bus.sio0.buttons, psx_core::sio0::button::CROSS);
+    assert_eq!(resumed["pad"]["buttons"], json!([]));
+    let applied: Vec<Value> = std::fs::read_to_string(root.join("resumed/input.jsonl")).unwrap().lines()
+        .map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(applied.iter().map(|e| e["frame"].as_u64().unwrap()).collect::<Vec<_>>(), [37,39]);
+    let (partial, error, _) = rpc.tool("run", json!({"bios":"bios.bin","frames":100,"timeout":0,
+        "input":[{"frame":0,"buttons":["CROSS"],"until":100}],"out":"timed-out"}));
+    assert!(!error && partial["termination"] == "timeout", "{partial}");
+    assert_eq!(partial["input"]["application"]["applied_events"],1);
+    assert_eq!(partial["input"]["application"]["pending_events"],1);
     for input in [
         json!([{"frame":0,"buttons":["JUMP"]}]),
         json!([{"frame":3,"buttons":[]}]),

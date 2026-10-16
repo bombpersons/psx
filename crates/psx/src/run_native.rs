@@ -177,6 +177,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     };
     let deadline = std::time::Duration::from_secs(a.timeout_s);
     let mut next = 0;
+    let mut applied_input = Vec::new();
     let mut termination = "frames_reached";
     let mut steps: u64 = 0;
     let bound_watches = scopes.iter().any(|s| s.bound.is_some()) && !a.watches.is_empty();
@@ -212,6 +213,9 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
         }
         while next < events.len() && events[next].frame <= rel {
             crate::replay::apply(&mut m, &events[next]);
+            applied_input.push(json!({"event_index":next,"scheduled_run_frame":events[next].frame,
+                "run_frame":rel,"frame":m.bus.frames,"buttons":crate::replay::button_names(events[next].buttons),
+                "sticks":events[next].sticks}));
             next += 1;
         }
         // Everything above acts only when the frame counter changes, so without
@@ -266,6 +270,9 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
         let rel = m.bus.frames - start_frame;
         while next < events.len() && events[next].frame <= rel {
             crate::replay::apply(&mut m, &events[next]);
+            applied_input.push(json!({"event_index":next,"scheduled_run_frame":events[next].frame,
+                "run_frame":rel,"frame":m.bus.frames,"buttons":crate::replay::button_names(events[next].buttons),
+                "sticks":events[next].sticks}));
             next += 1;
         }
         if let Some(s) = &mut sampler {
@@ -362,6 +369,14 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
             }).collect::<Vec<_>>(),
         })
     };
+    if !events.is_empty() {
+        let path = dir.join("input.jsonl");
+        let bytes = jsonl(applied_input);
+        if let Err(e) = std::fs::write(&path, bytes.as_bytes()) {
+            return err("io_error", format!("{}: {e}", path.display()));
+        }
+        files.insert("input.jsonl".into(), json!({"path":path,"sha256":sha256(bytes.as_bytes())}));
+    }
     let (w, h, rgba) = m.bus.gpu.display_rgba();
     let screen = dir.join("screen.png");
     if write_png(&screen, w, h, &rgba, png::ColorType::Rgba).is_ok() {
@@ -423,6 +438,9 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
                 "numbering": "run frames (--frames, --replay, --poke, --gpu-frame, --trace-from-frame, samples run_frame) count from the run start; `frame` in writes.jsonl, trace.txt, samples.csv and the other logs is absolute (vblanks since power-on) = run_frame + start"},
             "cpu_cycles": m.bus.now,
             "instructions": steps,
+            "input":{"application":{"observed":true,"scheduled_events":events.len(),"applied_events":next,
+                "pending_events":events.len()-next,"file":(!events.is_empty()).then(||dir.join("input.jsonl")),
+                "note":"Actual scheduler applications, including boundary releases; does not prove the game polled the controller."}},
             "registers": registers,
             "screen": {"width": w, "height": h, "bpp": if m.bus.gpu.display.rgb24() {24} else {16}},
             "video": {"region_at_capture":if m.bus.pal(){"PAL"}else{"NTSC"},"mode":m.bus.gpu.display.mode,

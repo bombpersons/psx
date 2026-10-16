@@ -7,7 +7,7 @@ use psx_media::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -85,6 +85,10 @@ pub struct Candidate {
     pub region: Option<Region>,
     pub known_image: Option<String>,
     pub version: Option<String>,
+}
+pub fn hash_notes() -> Value {
+    json!({"sha256":"SHA-256 of the entire file (bytes).",
+        "native_sha256":"SHA-256 of the 512 KiB image used by the native core: longer files are truncated, shorter files zero-padded. Different lengths can legitimately produce different hashes."})
 }
 pub fn inspect(path: &Path) -> psx_media::Result<Candidate> {
     let size = fs::metadata(path).map_err(|e| MediaError::io(path, e))?.len();
@@ -173,7 +177,7 @@ impl Action {
 pub struct ListArgs {}
 impl Op for ListArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::media(Ok(json!({"bios_dir":store(),"project_bios_dir":ctx.root.join("bios"),
+        Outcome::media(Ok(json!({"bios_dir":store(),"project_bios_dir":ctx.root.join("bios"),"hashes":hash_notes(),
         "installed": match inventory(&ctx.root) {Ok(v)=>v,Err(e)=>return Outcome::media(Err(e))},
         "download_catalog":CATALOG.iter().map(|c|json!({"name":c.file,"region":c.region,"sha256":c.sha256,"bytes":524288,"url":format!("{ARCHIVE}/{}",c.file)})).collect::<Vec<_>>() })))
     }

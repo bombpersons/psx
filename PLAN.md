@@ -135,6 +135,21 @@ and [validation](research/agent-usability-workflow.md). These four follow-ups ar
 complete, as is template input rebinding. Backend pacing/fidelity investigation
 remains a separate correctness workstream.
 
+### External-test feedback follow-up (2026-10-16)
+
+The [Tomb Raider/WipEout review](research/tomb-raider-wipeout-feedback-review.md)
+separates current gaps from older builds and unsupported diagnoses. The first
+addition is the read-only CLI/MCP `guide`: embedded overview and focused setup,
+input, code, assets, Bevy and troubleshooting guidance, usable without a skill
+loader. Replay-file wording and PAL template suggestions are corrected. MCP tools
+now accept isolated per-call project roots; asset extraction returns bounded
+previews or brief summaries backed by complete content-bound manifests. Native
+input application logs and GPU content classifications/draw filters expose what
+was actually applied or captured. See [validation](research/feedback-improvements.md).
+Backend pacing and optional screenshot normalization remain separate correctness
+work. Optional extraction layout/retention controls are not implemented here.
+Skill/plugin packaging is deferred until after the feedback improvements.
+
 ## Original plan (historical)
 
 Response to `MDX_AND_PS1_RESEARCH.md`. Findings come from a source read of the

@@ -154,7 +154,16 @@ impl CardArgs {
     }
 }
 
-/// Instruction tracing (native backend).
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuDrawFilter {
+    #[default]
+    Any,
+    Primitives,
+    Textured,
+}
+
+/// Instruction tracing and GPU capture (native backend).
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct TraceArgs {
     /// Trace instructions: trace.txt (capped by --max-events; its `frame` column is
@@ -190,6 +199,10 @@ pub struct TraceArgs {
     /// Search at most N frames for --gpu-next-draw (default 60, range 1..=600).
     #[arg(long)]
     pub gpu_search_frames: Option<u32>,
+    /// Required drawing content for --gpu-next-draw: any (includes fills), primitives
+    /// (excludes fill-only frames), or textured (textured polygons/rectangles).
+    #[arg(long, value_enum, requires = "gpu_next_draw")]
+    pub gpu_draw_filter: Option<GpuDrawFilter>,
 }
 
 fn err(code: &str, message: impl std::fmt::Display) -> Value {
@@ -227,11 +240,20 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     };
     let input_report=crate::replay::report(&events);
     let (ok,mut value)=run_resolved(root,a,events);
-    if value.get("error").is_none(){value["input"]=input_report;}
+    if value.get("error").is_none(){
+        let application = value["input"]["application"].take();
+        value["input"] = input_report;
+        value["input"]["application"] = if application.is_null() {
+            json!({"observed":false,"note":"This backend reports the requested schedule, not applied-event observations."})
+        } else { application };
+    }
     (ok,value)
 }
 
 fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool, Value) {
+    if a.trace.gpu_draw_filter.is_some() && !a.trace.gpu_next_draw {
+        return (false, err("invalid_arguments", "--gpu-draw-filter requires --gpu-next-draw"));
+    }
     if a.trace.gpu_search_frames.is_some() && !a.trace.gpu_next_draw {
         return (false, err("invalid_arguments", "--gpu-search-frames requires --gpu-next-draw"));
     }
