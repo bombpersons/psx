@@ -23,6 +23,7 @@ pub struct RunArgs {
     pub fast: bool,
     pub trace_cd: bool,
     pub trace_bios: bool,
+    pub trace_spu: bool,
     pub symbols: Vec<PathBuf>,
     pub max_events: u32,
     /// "redux" or "native".
@@ -270,6 +271,9 @@ fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (
     }
     if a.trace.trace || a.trace.gpu_frame.is_some() || a.trace.gpu_next_draw {
         return (false, err("unsupported", "--trace, --gpu-frame and --gpu-next-draw need --backend native"));
+    }
+    if a.trace_spu {
+        return (false, err("unsupported", "--trace-spu needs --backend native"));
     }
     if a.observe.given() {
         return (false, err("unsupported", "--sample, --poke, --snapshot-every, --save-state-at, --watch-reads and --watch-changes-only need --backend native"));

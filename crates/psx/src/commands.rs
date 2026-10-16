@@ -635,6 +635,11 @@ pub struct RunCmdArgs {
     #[arg(long)]
     #[serde(default)]
     pub trace_bios: bool,
+    /// Native: log SPU voice key on/off (settings, sample hash, storing PC), each voice's
+    /// first END block and sound RAM uploads to spu.jsonl; the report groups key ons by sample.
+    #[arg(long)]
+    #[serde(default)]
+    pub trace_spu: bool,
     /// `.symbols.json` (verified against RAM) or `.sym` files used to name PCs; repeatable.
     #[arg(long = "symbols")]
     #[serde(default)]
@@ -681,7 +686,7 @@ fn brief(v: &Value) -> Value {
         "watch": {"enabled":v["watch"]["enabled"],"hits": v["watch"]["hits"], "recorded": v["watch"]["recorded"],
             "complete":v["watch"]["complete"],"file":v["watch"]["file"]},
     });
-    for k in ["build", "resolved", "input", "pad", "artifacts", "samples", "pokes", "screens", "states", "read_watch", "wall_ms"] {
+    for k in ["build", "resolved", "input", "pad", "artifacts", "samples", "pokes", "screens", "states", "read_watch", "spu", "wall_ms"] {
         if !v[k].is_null() {
             b[k] = v[k].clone();
         }
@@ -741,6 +746,7 @@ impl Op for RunCmdArgs {
                 fast: a.fast,
                 trace_cd: a.trace_cd,
                 trace_bios: a.trace_bios,
+                trace_spu: a.trace_spu,
                 symbols: a.symbols,
                 max_events: a.max_events,
                 backend: resolved.backend.name().into(),

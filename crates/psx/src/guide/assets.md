@@ -19,6 +19,14 @@ the model uses relocated pointers, not that its geometry is empty. Gs-style
 preprocessed primitive runs need an explicit model/asset parser; the standard
 scanner does not infer their packet lengths or guarantee discovery.
 
+Sounds: VAB/VAG extraction reports adpcm_sha256 per waveform. run with
+trace_spu logs which voice keyed on which sample when (spu.jsonl), with the
+same hash as sample_sha256, the key-on PC and the sample's main RAM source when
+its upload was traced. Match the two to name the bank and waveform behind a
+gameplay sound; banks often share waveforms, so one hash may match several.
+Key-ons usually come from one sound-driver routine; trace the request (watch
+the driver's queue) to find the gameplay code that asked for a sound.
+
 Custom containers, compression and models need format evidence. Generate a
 working scaffold with template_parser_create: archive parsers index unchanged
 source spans; asset parsers unwrap/decompress standard payloads or raw VRAM

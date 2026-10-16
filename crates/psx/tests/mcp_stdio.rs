@@ -809,6 +809,58 @@ fn archives_scan_and_extract_match_cli_and_preserve_raw_entry_bytes() {
 }
 
 #[test]
+fn spu_trace_links_key_ons_to_sample_hashes_and_uploads_through_cli_and_mcp() {
+    let root = std::env::temp_dir().join(format!("psx-spu-trace-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    // Authored BIOS: upload one END block to sound RAM 0x1000 through the FIFO,
+    // then key on voice 1 at 44.1 kHz and spin.
+    let mut code = vec![
+        0x3c09_1f80, // lui t1, 0x1F80
+        0x3408_0200, 0xa528_1da6, // transfer address 0x1000
+        0x3408_0100, 0xa528_1da8, // block header: END flag
+    ];
+    code.extend([0xa520_1da8u32; 7]); // the rest of the block
+    code.extend([
+        0x3408_1000, 0xa528_1c14, // voice 1 pitch
+        0x3408_0200, 0xa528_1c16, // voice 1 start 0x1000
+        0x3408_0002, 0xa528_1d88, // key on voice 1
+        0x0bf0_0012, 0, // spin
+    ]);
+    assert_eq!(code[18], 0x0bf0_0012, "the jump targets itself");
+    let bios: Vec<u8> = code.iter().flat_map(|w: &u32| w.to_le_bytes()).collect();
+    std::fs::write(root.join("bios.bin"), &bios).unwrap();
+    std::fs::write(root.join("start.bin"), psx_core::Machine::new(bios).save_state(None)).unwrap();
+    let common = ["run", "--bios", "bios.bin", "--backend", "native", "--from-state", "start.bin", "--frames", "2", "--trace-spu", "--brief"];
+    let (cli_report, ok) = cli(&root, &[common.as_slice(), &["--out", "cli"]].concat());
+    assert!(ok, "{cli_report}");
+    let mut rpc = Rpc::start(&root);
+    let (mcp_report, error, _) = rpc.tool("run", json!({"bios":"bios.bin","backend":"native","from_state":"start.bin",
+        "frames":2,"trace_spu":true,"brief":true,"out":"mcp"}));
+    assert!(!error, "{mcp_report}");
+    let strip = |mut v: Value| { v.as_object_mut().unwrap().remove("file"); v };
+    assert_eq!(strip(cli_report["spu"].clone()), strip(mcp_report["spu"].clone()));
+    let spu = &mcp_report["spu"];
+    assert_eq!(spu["events"], json!({"upload": 1, "key_on": 1, "end": 1}), "{spu}");
+    assert_eq!(spu["complete"], true);
+    assert_eq!(spu["voices_keyed"], json!([1]));
+    let mut block = [0u8; 16];
+    block[1] = 1;
+    let sample = &spu["samples"][0];
+    assert_eq!(sample["sample_sha256"], psx_assets::adpcm::sample_sha256(&block, 0));
+    assert_eq!(sample["bytes"], 16);
+    assert_eq!(sample["upload"], json!({"source":"cpu","run_frame":0,"upload_address":0x1000,"offset":0}));
+    let events: Vec<Value> = std::fs::read_to_string(root.join("mcp/spu.jsonl")).unwrap()
+        .lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(events.iter().map(|e| e["event"].as_str().unwrap()).collect::<Vec<_>>(), ["upload", "key_on", "end"]);
+    assert_eq!(events[1]["pc"], 0xbfc0_0000u32 + 4 * 17, "the key-on store");
+    assert_eq!(events[1]["rate_hz"], 44_100.0);
+    let (redux, ok) = cli(&root, &["run", "--bios", "bios.bin", "--backend", "redux", "--frames", "1", "--trace-spu"]);
+    assert!(!ok && redux["error"]["code"] == "unsupported", "{redux}");
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn next_draw_captures_the_same_frame_through_cli_and_mcp() {
     let root = std::env::temp_dir().join(format!("psx-next-draw-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();

@@ -164,6 +164,58 @@ impl Bus {
         }
     }
 
+    /// An SPU register write, recorded first for `--trace-spu`.
+    fn spu_write(&mut self, off: u32, v: u16) -> bool {
+        if self.obs.spu.is_some() {
+            self.observe_spu_write(off, v);
+        }
+        self.spu.write16(off, v)
+    }
+
+    fn observe_spu_write(&mut self, off: u32, v: u16) {
+        use crate::observe::{KeyOn, SpuEvent};
+        let (frame, cycle, pc) = (self.frames, self.cpu_now(), self.cur_pc);
+        let (event, first) = match off {
+            0x188 => ("key_on", 0),
+            0x18A => ("key_on", 16),
+            0x18C => ("key_off", 0),
+            0x18E => ("key_off", 16),
+            0x1A8 => {
+                let address = self.spu.transfer_addr();
+                self.obs.spu.as_mut().unwrap().cpu_upload(frame, cycle, pc, address);
+                return;
+            }
+            _ => return,
+        };
+        for voice in (first..(first + 16).min(24)).filter(|i| v & (1 << (i - first)) != 0) {
+            let key_on = (event == "key_on").then(|| {
+                let (start, pitch, volume_raw, adsr, noise, pitch_modulated) = self.spu.voice_settings(voice as usize);
+                let extent = psx_assets::adpcm::sample_extent(&self.spu.ram, start as usize);
+                let last_flags = if extent.is_empty() { 0 } else { self.spu.ram[extent.end - 15] };
+                // Fixed volumes hold volume/2 in bits 0-14; bit 15 selects a sweep.
+                let fraction = |raw: u16| (raw & 0x8000 == 0).then(|| ((raw << 1) as i16) as f64 / 32768.0);
+                KeyOn {
+                    start,
+                    pitch,
+                    rate_hz: pitch.min(0x4000) as f64 * 44_100.0 / 4096.0,
+                    volume: volume_raw.map(fraction),
+                    volume_raw,
+                    adsr,
+                    noise,
+                    pitch_modulated,
+                    sample_sha256: psx_assets::adpcm::sample_sha256(&self.spu.ram, start as usize),
+                    sample_bytes: extent.len() as u32,
+                    looped: last_flags & psx_assets::adpcm::FLAG_REPEAT != 0,
+                }
+            });
+            let log = self.obs.spu.as_mut().unwrap();
+            if event == "key_on" {
+                log.awaiting_end |= 1 << voice;
+            }
+            log.record(SpuEvent { frame, cycle, event, voice: Some(voice), pc: Some(pc), key_on, upload: None });
+        }
+    }
+
     pub fn pal(&self) -> bool {
         self.gpu.display.pal()
     }
@@ -241,6 +293,15 @@ impl Bus {
         self.raise_irq(irq);
         if self.spu.tick(cycles, &mut self.cdrom.audio) {
             self.raise_irq(1 << 9);
+        }
+        if let Some(log) = &mut self.obs.spu {
+            let ended = self.spu.endx() & log.awaiting_end;
+            for voice in (0..24).filter(|v| ended & (1 << v) != 0) {
+                log.awaiting_end &= !(1 << voice);
+                log.record(crate::observe::SpuEvent {
+                    frame: self.frames, cycle: self.now, event: "end", voice: Some(voice), pc: None, key_on: None, upload: None,
+                });
+            }
         }
         if self.sio0.tick(self.now) {
             self.raise_irq(1 << 7);
@@ -390,6 +451,17 @@ impl Bus {
                 }
                 let mut addr = madr & 0x1F_FFFC;
                 let mut fired = false;
+                if chcr & 1 != 0 {
+                    if let Some(log) = &mut self.obs.spu {
+                        let upload = crate::observe::SpuUpload {
+                            address: self.spu.transfer_addr(), bytes: words * 4, source: "dma", ram: Some(0x8000_0000 | addr),
+                        };
+                        log.record(crate::observe::SpuEvent {
+                            frame: self.frames, cycle: self.now, event: "upload", voice: None, pc: Some(self.cur_pc),
+                            key_on: None, upload: Some(upload),
+                        });
+                    }
+                }
                 for _ in 0..words {
                     if chcr & 1 != 0 {
                         let w = self.ram_word(addr);
@@ -692,9 +764,9 @@ impl Bus {
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => put(&mut self.scratch, (p - 0x1F80_0000) as usize),
             0x1F80_1000..=0x1F80_2FFF => {
                 if (0x1F80_1C00..0x1F80_2000).contains(&p) {
-                    let mut fired = self.spu.write16((p & !1) - 0x1F80_1C00, value as u16);
+                    let mut fired = self.spu_write((p & !1) - 0x1F80_1C00, value as u16);
                     if width == Width::Word {
-                        fired |= self.spu.write16((p & !1) + 2 - 0x1F80_1C00, (value >> 16) as u16);
+                        fired |= self.spu_write((p & !1) + 2 - 0x1F80_1C00, (value >> 16) as u16);
                     }
                     if fired {
                         self.raise_irq(1 << 9);
@@ -772,6 +844,60 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn spu_trace_records_uploads_key_on_off_and_the_first_end_of_keyed_voices() {
+        let mut b = Bus::new(vec![]);
+        b.obs.spu = Some(crate::observe::SpuLog::new(100));
+        // A silent block, a data block and an END block at 0x80100000.
+        let mut sample = [0u8; 48];
+        sample[16] = 0x0C;
+        sample[18..32].fill(0x77);
+        sample[33] = psx_assets::adpcm::FLAG_END;
+        for (i, w) in sample.chunks(4).enumerate() {
+            b.write(0x8010_0000 + 4 * i as u32, Width::Word, u32::from_le_bytes(w.try_into().unwrap())).unwrap();
+        }
+        let spu = |b: &mut Bus, reg: u32, v: u32| b.write(0x1F80_1C00 + reg, Width::Half, v).unwrap();
+        spu(&mut b, 0x1A6, 0x1000 >> 3);
+        b.write(DMA_BASE + 0x40, Width::Word, 0x8010_0000).unwrap();
+        b.write(DMA_BASE + 0x44, Width::Word, (1 << 16) | 12).unwrap();
+        b.write(DMA_BASE + 0x48, Width::Word, 0x0100_0201).unwrap();
+        // Manual FIFO writes merge into one upload while contiguous.
+        spu(&mut b, 0x1A6, 0x2000 >> 3);
+        for v in [1, 2, 3, 4] {
+            spu(&mut b, 0x1A8, v);
+        }
+        let voice = 0x10; // voice 1
+        spu(&mut b, voice, 0x3FFF);
+        spu(&mut b, voice + 2, 0x8000);
+        spu(&mut b, voice + 4, 0x1000);
+        spu(&mut b, voice + 6, 0x1000 >> 3);
+        spu(&mut b, voice + 8, 0x00FF);
+        // Voice 3 plays the same sample but was keyed while not tracing.
+        spu(&mut b, 0x34, 0x1000);
+        spu(&mut b, 0x36, 0x1000 >> 3);
+        let log = b.obs.spu.take();
+        spu(&mut b, 0x188, 1 << 3);
+        b.obs.spu = log;
+        spu(&mut b, 0x188, 1 << 1);
+        b.run_devices(200_000);
+        spu(&mut b, 0x18C, 1 << 1);
+        b.run_devices(200_000);
+
+        let log = b.obs.spu.as_ref().unwrap();
+        let kinds: Vec<_> = log.events.iter().map(|e| (e.event, e.voice)).collect();
+        assert_eq!(kinds, [("upload", None), ("upload", None), ("key_on", Some(1)), ("end", Some(1)), ("key_off", Some(1))]);
+        let dma = log.events[0].upload.as_ref().unwrap();
+        assert_eq!((dma.address, dma.bytes, dma.source, dma.ram), (0x1000, 48, "dma", Some(0x8010_0000)));
+        let cpu = log.events[1].upload.as_ref().unwrap();
+        assert_eq!((cpu.address, cpu.bytes, cpu.source, cpu.ram), (0x2000, 8, "cpu", None));
+        let on = log.events[2].key_on.as_ref().unwrap();
+        assert_eq!((on.start, on.pitch, on.rate_hz, on.sample_bytes, on.looped), (0x1000, 0x1000, 44_100.0, 48, false));
+        assert_eq!(on.volume, [Some(0x3FFF as f64 * 2.0 / 32768.0), None]);
+        assert_eq!(on.sample_sha256, psx_assets::adpcm::sample_sha256(&sample, 0));
+        assert_eq!(log.counts["upload"], 2);
+        assert_eq!(b.spu.endx() & (1 << 3), 1 << 3, "voice 3 reached END without a report");
+    }
 
     #[test]
     fn otc_dma_builds_linked_list() {
