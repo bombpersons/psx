@@ -11,6 +11,129 @@ use serde_json::{json, Value};
 
 const BIN: &str = env!("CARGO_BIN_EXE_psx");
 
+#[test]
+fn host_asset_directories_preserve_order_siblings_and_cli_mcp_parity() {
+    let root = std::env::temp_dir().join(format!("psx-host-assets-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("decoded/nested")).unwrap();
+    std::fs::create_dir_all(root.join("empty")).unwrap();
+    let tim: Vec<u8> = [
+        16u32.to_le_bytes().as_slice(), 2u32.to_le_bytes().as_slice(), 20u32.to_le_bytes().as_slice(),
+        &[0, 0, 0, 0, 2, 0, 2, 0], &[31, 0, 0, 0, 0, 0, 0, 0],
+    ].concat();
+    // Create files out of order; a Croc index must still bind its own sibling.
+    std::fs::write(root.join("decoded/z.tim"), &tim).unwrap();
+    std::fs::write(root.join("decoded/nested/a.tim"), &tim).unwrap();
+    std::fs::write(root.join("decoded/a.1"), &tim).unwrap();
+    let mut directory = 1u32.to_le_bytes().to_vec();
+    let mut name = [0; 12];
+    name[..9].copy_from_slice(b"PLATE.TIM");
+    directory.extend_from_slice(&name);
+    for word in [tim.len() as u32, 0, 0] { directory.extend_from_slice(&word.to_le_bytes()); }
+    std::fs::write(root.join("decoded/a.DIR"), directory).unwrap();
+    // A split sound bank exercises .VH/.VB lookup after directory expansion.
+    let header_size = 32 + 128 * 16 + 16 * 32 + 512;
+    let mut vh = vec![0; header_size];
+    vh[..4].copy_from_slice(b"pBAV");
+    vh[4..8].copy_from_slice(&7u32.to_le_bytes());
+    vh[12..16].copy_from_slice(&((header_size + 16) as u32).to_le_bytes());
+    vh[18..20].copy_from_slice(&1u16.to_le_bytes());
+    vh[22..24].copy_from_slice(&1u16.to_le_bytes());
+    vh[header_size - 510..header_size - 508].copy_from_slice(&2u16.to_le_bytes());
+    let mut vb = vec![0x11; 16];
+    vb[..2].copy_from_slice(&[0, 1]);
+    std::fs::write(root.join("decoded/sound.VH"), vh).unwrap();
+    std::fs::write(root.join("decoded/sound.VB"), vb).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&root, root.join("decoded/loop")).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (scan, ok) = cli(&root, &["assets", "scan", "decoded/", "--json"]);
+    let (mcp, error, _) = rpc.tool("assets_scan", json!({"source":"decoded/", "json":true}));
+    assert!(ok && !error, "{scan} {mcp}");
+    assert_eq!(scan, mcp);
+    assert_eq!(scan["coverage"]["source_files"], 6);
+    assert_eq!(scan["coverage"]["files_inspected"], 6);
+    assert_eq!(scan["coverage"]["complete"], true);
+    assert_eq!(scan["files"].as_array().unwrap().iter().map(|f| f["file"].clone()).collect::<Vec<_>>(),
+        vec![json!("decoded/a.1"), json!("decoded/nested/a.tim"), json!("decoded/sound.VH"), json!("decoded/z.tim")]);
+    assert_eq!(scan["files"][0]["hits"][0]["entry"]["name"], "PLATE.TIM");
+    let (filtered, error, _) = rpc.tool("assets_scan", json!({"source":"decoded/", "filter":"NESTED", "json":true}));
+    assert!(!error, "{filtered}");
+    assert_eq!(filtered["coverage"]["selected_files"], 1);
+    assert_eq!(filtered["totals"]["tim"], 1);
+    let (extracted, ok) = cli(&root, &["assets", "extract", "decoded/", "-o", "converted"]);
+    let (mcp, error, _) = rpc.tool("assets_extract", json!({"source":"decoded/", "out":"converted"}));
+    assert!(ok && !error, "{extracted} {mcp}");
+    assert_eq!(extracted, mcp);
+    assert_eq!(extracted["extracted"], 4);
+    assert_eq!(extracted["summary"]["warnings"], 0);
+    let sound = extracted["assets"].as_array().unwrap().iter().find(|a| a["kind"] == "vab").unwrap();
+    assert!(sound["outputs"].as_array().unwrap().iter().any(|f| f["waveform"] == 1), "{sound}");
+    for asset in extracted["assets"].as_array().unwrap() {
+        let original = asset["outputs"].as_array().unwrap().iter().find(|o| o["role"] == "original").unwrap();
+        let bytes = std::fs::read(root.join(original["path"].as_str().unwrap())).unwrap();
+        if asset["kind"] == "tim" { assert_eq!(bytes, tim); }
+    }
+    let (empty, error, _) = rpc.tool("assets_extract", json!({"source":"empty/", "out":"empty-converted"}));
+    assert!(!error, "{empty}");
+    assert_eq!(empty["extracted"], 0);
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn skipped_tmd_geometry_is_visible_in_full_and_brief_extraction() {
+    let root = std::env::temp_dir().join(format!("psx-skipped-tmd-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    // One supported triangle followed by an unsupported line packet.
+    let words: [u32; 22] = [
+        0x41, 0, 1, 28, 3, 52, 0, 52, 2, 0,
+        0, 0, 100, 0, 100 << 16, 0,
+        u32::from_le_bytes([0, 3, 1, 0x21]), 0x21ff_ffff, 1 << 16, 2,
+        u32::from_le_bytes([0, 1, 0, 0x40]), 0,
+    ];
+    std::fs::write(root.join("partial.tmd"), words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>()).unwrap();
+    let (full, ok) = cli(&root, &["assets", "extract", "partial.tmd", "-o", "converted"]);
+    assert!(ok, "{full}");
+    assert_eq!(full["extracted"], 1);
+    assert_eq!(full["assets"][0]["details"]["polygons"], 1);
+    assert_eq!(full["assets"][0]["details"]["skipped_primitives"], 1);
+    assert!(full["assets"][0]["details"]["warning"].as_str().unwrap().contains("--model-parser"));
+    let mut rpc = Rpc::start(&root);
+    let (brief, error, _) = rpc.tool("assets_extract", json!({"source":"partial.tmd", "out":"converted", "brief":true}));
+    assert!(!error, "{brief}");
+    assert_eq!(brief["summary"], full["summary"]);
+    assert_eq!(brief["summary"]["warnings"], 1);
+    assert_eq!(brief["summary"]["skipped_primitives"], 1);
+    assert_eq!(brief["assets"], json!([]));
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn shared_signature_default_is_discoverable_and_explicit_override_wins() {
+    let root = std::env::temp_dir().join(format!("psx-shared-sigs-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("signatures")).unwrap();
+    std::fs::create_dir_all(root.join("project")).unwrap();
+    std::fs::write(root.join("project/test.exe"), tiny_exe()).unwrap();
+    let run = |args: &[&str]| {
+        let out = psx().current_dir(root.join("project")).env("PSX_SIGS_DIR", root.join("signatures"))
+            .env("PSX_BIOS_DIR", root.join("bios")).args(args).output().unwrap();
+        (serde_json::from_slice::<Value>(&out.stdout).unwrap(), out.status.success())
+    };
+    let (context, ok) = run(&["context"]);
+    assert!(ok, "{context}");
+    assert_eq!(context["signatures"]["path"], json!(root.join("signatures")));
+    assert_eq!(context["signatures"]["selection"], "PSX_SIGS_DIR");
+    assert_eq!(context["signatures"]["available"], true);
+    let (symbols, ok) = run(&["symbols", "test.exe"]);
+    assert!(ok, "{symbols}"); // An empty installed index is valid, with zero matches.
+    assert_eq!(symbols["signatures_loaded"], 0);
+    let (missing, ok) = run(&["symbols", "test.exe", "--sigs", "missing"]);
+    assert!(!ok, "{missing}");
+    assert!(missing["error"]["message"].as_str().unwrap().contains("missing"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// The binary, working in its current directory (a PSX_ROOT in the test's environment would override it).
 fn psx() -> Command {
     let mut c = Command::new(BIN);
@@ -685,6 +808,8 @@ fn next_draw_captures_the_same_frame_through_cli_and_mcp() {
     assert_eq!(capture["complete"], true);
     assert_eq!(capture["draw_commands"], 1);
     assert_eq!(capture["search"]["frames_inspected"], 3);
+    assert_eq!(capture["search"]["effective_max_frames"], 3);
+    assert_eq!(capture["search"]["truncated_by_run_budget"], false);
     assert_eq!(mcp_report["frames"]["reached"], 4);
     for name in ["gpu_frame.json", "gpu_frame_vram.bin", "gpu_frame_before.png", "gpu_frame_after.png", "gpu_frame_screen.png"] {
         assert_eq!(std::fs::read(root.join("cli").join(name)).unwrap(), std::fs::read(root.join("mcp").join(name)).unwrap(), "{name}");
@@ -708,6 +833,22 @@ fn next_draw_captures_the_same_frame_through_cli_and_mcp() {
     assert_eq!(report["gpu_frame"]["reason"], "search_limit");
     assert_eq!(report["gpu_frame"]["search"]["frames_inspected"], 2);
     assert!(!root.join("miss/gpu_frame.json").exists());
+
+    // The default search window cannot extend a one-field run.
+    let mut short = base.clone();
+    short["frames"] = json!(1);
+    short["poke"] = json!([]);
+    short.as_object_mut().unwrap().remove("gpu_search_frames");
+    short["out"] = json!("short");
+    let (report, error, _) = rpc.tool("run", short);
+    assert!(!error, "{report}");
+    assert_eq!(report["gpu_frame"]["status"], "not_found");
+    assert_eq!(report["gpu_frame"]["reason"], "run_end");
+    assert_eq!(report["gpu_frame"]["search"]["max_frames"], 60);
+    assert_eq!(report["gpu_frame"]["search"]["run_budget_frames"], 1);
+    assert_eq!(report["gpu_frame"]["search"]["effective_max_frames"], 1);
+    assert_eq!(report["gpu_frame"]["search"]["truncated_by_run_budget"], true);
+    assert_eq!(report["gpu_frame"]["search"]["frames_inspected"], 1);
 
     // An explicit start is inclusive and the final completed frame is eligible.
     let mut last = base;

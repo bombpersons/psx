@@ -37,6 +37,7 @@ pub(super) struct CapturedFrame {
 pub(super) struct GpuCapture {
     from: u64,
     limit: u32,
+    run_frames: u32,
     next_draw: bool,
     filter: GpuDrawFilter,
     inspected: u32,
@@ -54,10 +55,11 @@ fn draws(command: &[u32]) -> bool {
 }
 
 impl GpuCapture {
-    pub fn new(args: &TraceArgs) -> Option<Self> {
+    pub fn new(args: &TraceArgs, run_frames: u32) -> Option<Self> {
         (args.gpu_frame.is_some() || args.gpu_next_draw).then(|| Self {
             from: args.gpu_frame.unwrap_or(0),
             limit: if args.gpu_next_draw { args.gpu_search_frames.unwrap_or(60) } else { 1 },
+            run_frames,
             next_draw: args.gpu_next_draw,
             filter: args.gpu_draw_filter.unwrap_or_default(),
             inspected: 0,
@@ -71,7 +73,10 @@ impl GpuCapture {
         json!({
             "mode": if self.next_draw { "next_draw" } else { "exact" },
             "draw_filter": self.filter,
-            "search": {"from_run_frame": self.from, "max_frames": self.limit, "frames_inspected": self.inspected},
+            "search": {"from_run_frame": self.from, "max_frames": self.limit, "frames_inspected": self.inspected,
+                "run_budget_frames": self.run_frames,
+                "effective_max_frames": u64::from(self.limit).min(u64::from(self.run_frames).saturating_sub(self.from)),
+                "truncated_by_run_budget": u64::from(self.run_frames).saturating_sub(self.from) < u64::from(self.limit)},
         })
     }
 
@@ -180,13 +185,25 @@ mod tests {
     use super::*;
 
     fn search(from: u64, limit: u32) -> GpuCapture {
-        GpuCapture::new(&TraceArgs { gpu_frame: Some(from), gpu_next_draw: true, gpu_search_frames: Some(limit), ..Default::default() })
+        GpuCapture::new(&TraceArgs { gpu_frame: Some(from), gpu_next_draw: true, gpu_search_frames: Some(limit), ..Default::default() }, (from + u64::from(limit)) as u32)
             .unwrap()
     }
 
     fn advance(c: &mut GpuCapture, m: &mut Machine, start: u64, finish: bool) {
         m.bus.frames += 1;
         c.boundary(m, start, finish);
+    }
+
+    #[test]
+    fn search_metadata_exposes_the_effective_run_budget() {
+        for (from, frames, effective) in [(0, 1, 1), (4, 8, 4), (8, 8, 0), (9, 8, 0), (0, 90, 60)] {
+            let capture = GpuCapture::new(&TraceArgs { gpu_frame:Some(from), gpu_next_draw:true, ..Default::default() }, frames).unwrap();
+            let metadata = capture.missing("frames_reached");
+            assert_eq!(metadata["search"]["max_frames"], 60);
+            assert_eq!(metadata["search"]["run_budget_frames"], frames);
+            assert_eq!(metadata["search"]["effective_max_frames"], effective);
+            assert_eq!(metadata["search"]["truncated_by_run_budget"], effective < 60);
+        }
     }
 
     #[test]
@@ -244,7 +261,7 @@ mod tests {
     fn exact_empty_and_partial_captures_remain_available() {
         for complete in [false, true] {
             let mut m = Machine::new(vec![]);
-            let mut c = GpuCapture::new(&TraceArgs { gpu_frame: Some(0), ..Default::default() }).unwrap();
+            let mut c = GpuCapture::new(&TraceArgs { gpu_frame: Some(0), ..Default::default() }, 1).unwrap();
             c.boundary(&mut m, 0, false);
             m.bus.frames = u64::from(complete);
             c.boundary(&mut m, 0, true);
@@ -261,7 +278,7 @@ mod tests {
         for (filter, expected) in [(GpuDrawFilter::Primitives, 1), (GpuDrawFilter::Textured, 2)] {
             let mut m = Machine::new(vec![]);
             let mut c = GpuCapture::new(&TraceArgs { gpu_next_draw:true, gpu_search_frames:Some(3),
-                gpu_draw_filter:Some(filter), ..Default::default() }).unwrap();
+                gpu_draw_filter:Some(filter), ..Default::default() }, 3).unwrap();
             c.boundary(&mut m, 0, false);
             m.bus.gpu.gp0_all(&[0x020000ff, 0, 0x00010010]);
             advance(&mut c, &mut m, 0, false);

@@ -20,6 +20,11 @@ cargo build --release                   # shipping build; developer MCP is exclu
 own crate is built at `opt-level = 1`), so they run at close to release speed.
 `--release` builds all of Bevy a second time, which takes minutes on a cold
 target: use it for shipping and profiling, not for iteration.
+Switching `dev-mcp` on or off can also rebuild shared dependencies because Cargo
+unifies dependency features for each build. Keep `--features dev-mcp` enabled
+throughout the agent iteration cycle (build, test and Clippy). Prewarm the ordinary
+build separately if you need both; a completed developer build does not guarantee
+a warm shipping or default-feature build.
 
 ## Project layout
 
@@ -29,8 +34,9 @@ tools can reach every module; `src/main.rs` only opens the window.
 | Path | Contents |
 |---|---|
 | `src/lib.rs` | `REGION`, `FIELDS_PER_TICK`, `GamePlugin` (your feature plugins), `prelude` |
-| `src/demo/` | The example game: `player.rs` (rules, no rendering) and `mod.rs` (scene, HUD). Delete it and its line in `GamePlugin` to start your own |
-| `tests/player.rs` | Headless tick tests: the pattern for comparing rules with recorded trajectories |
+| `src/demo/` | The example game: `player.rs` (rules, no rendering) and `mod.rs` (scene, HUD). Replace it and its registration in `lib.rs` / `GamePlugin` to start your own |
+| `tests/player.rs` | Demo-specific headless tick tests; replace with your game's trajectory checks |
+| `tests/dev_mcp.rs` | Opt-in GPU/MCP checks; the player edit/step test must migrate with the demo |
 | `src/psx/` | The PS1 look (materials, screen pass, `.psxscene` loader) |
 | `src/shell.rs` | `TickRate`, `GameClock`, `GameSystems`, controller sampling |
 | `src/controller.rs`, `controller/bindings.rs` | Logical `Button`/`ControllerState`, validated device bindings and settings storage |
@@ -43,6 +49,13 @@ Write one plugin per feature (player, stage, enemies, camera, HUD), and keep eac
 feature's rules (state, physics, decisions) apart from its presentation (meshes,
 sprites, animation) so the rules run headless in tests. AGENTS.md has the
 longer guide, including how to turn reverse-engineering evidence into code.
+
+When removing `src/demo/`, replace or remove `tests/player.rs` and adapt or remove
+`headless_render_edit_step_and_query` plus `Client::state` in `tests/dev_mcp.rs`.
+The latter references demo movement constants and assumes its player name, spawn
+and scene. Ignored tests still compile. Run
+`cargo test --features dev-mcp --all-targets --no-run` after replacing the demo
+to catch stale imports as well as game test errors.
 
 ## The look, without the limits
 
@@ -492,13 +505,16 @@ waits until pipelines have compiled. In headless mode use `target: "screen"`;
 ## Checks
 
 ```sh
-cargo test
 cargo test --features dev-mcp
 cargo test --features dev-mcp --test dev_mcp -- --ignored --nocapture # real offscreen GPU/MCP check
 cargo clippy --features dev-mcp --all-targets
 cargo fmt --check        # rustfmt.toml: 120 columns
-cargo build --release
 ```
+
+When changing feature-gated startup code, also run `cargo test` with default
+features. Before shipping, run `cargo build --release`. These can compile a
+separate dependency feature set/profile, so keep them outside the routine agent
+iteration cycle unless the change requires them.
 
 Give every copy of the template its own target directory (the default
 `target/` in the project). Two copies with the same package name must not share

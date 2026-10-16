@@ -114,8 +114,9 @@ fn d_run_timeout() -> u64 {
 fn d_max_events() -> u32 {
     200_000
 }
-fn d_sigs() -> PathBuf {
-    PathBuf::from("external/psx_psyq_signatures")
+pub(crate) fn d_sigs() -> PathBuf {
+    std::env::var_os("PSX_SIGS_DIR").filter(|p| !p.is_empty()).map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("external/psx_psyq_signatures"))
 }
 fn d_min_concrete() -> usize {
     24
@@ -355,7 +356,8 @@ impl AssetParsersArgs {
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct AssetsScanArgs {
     /// `image.cue::/PATH` (a file; `/DIR/` or `*` for many), a disc image (every
-    /// file) or a host file (`ram.bin` dumps resolve relocated TMDs at 0x80000000).
+    /// file), a host file or a directory (recursive, sorted; no symlink traversal).
+    /// `ram.bin` dumps resolve relocated TMDs at 0x80000000.
     pub source: String,
     /// Case-insensitive source-file name filter; affects scanning coverage.
     #[arg(long)]
@@ -814,7 +816,8 @@ impl Op for LoadsArgs {
 pub struct SymbolsArgs {
     /// PS-X EXE file, or `image.cue::/PATH`.
     pub source: String,
-    /// Local signature directory (`<version>/<LIB>.json` layout).
+    /// Local signature directory (`<version>/<LIB>.json` layout). Defaults to
+    /// PSX_SIGS_DIR when set, otherwise external/psx_psyq_signatures in this project.
     #[arg(long, default_value_os_t = d_sigs())]
     #[serde(default = "d_sigs")]
     pub sigs: PathBuf,

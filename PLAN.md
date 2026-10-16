@@ -97,14 +97,13 @@ The first three items come from the King's Field study's `PSX_FEEDBACK.md`
 (local sibling project `../external_agent_tests/kings_field/`). Keep its game
 implementation separate from these shared changes.
 
-**Session handoff (2026-10-16):** current branch `feat/gpu-next-draw` contains
-completed queue items 1–5. Earlier commits are `b447f04` (headless template),
-`bb23a16` (bounded next-draw capture), `0cf07bb` (archives/external parsers),
-`b214a68` (raw uploads), and `7964b5f` (template depth cue), following the
-Ghidra G1 commit `2f213c5`. G2 implementation and validation are in the working
-tree for this session. The two agent usability slices below and template input
-rebinding with the reusable controls UI (item 5) are implemented. Continue using external parsers
-for niche formats and add built-ins when reuse and validation justify them.
+**Session handoff (2026-10-16):** completed queue items 1–5 and the agent
+usability slices are on `master`, including runtime Ghidra, input rebinding,
+project isolation and embedded guidance (`46a9d43`, `ef3e1db`). The Cyber Egg
+follow-up below adds host directory asset sources, conversion diagnostics,
+shared signature configuration and clearer GPU search budgets. Continue using
+external parsers for niche formats and add built-ins when reuse and validation
+justify them.
 
 A quick post-G2 project review is recorded in
 [research/project-review-2026-10-16.md](research/project-review-2026-10-16.md).
@@ -149,6 +148,34 @@ was actually applied or captured. See [validation](research/feedback-improvement
 Backend pacing and optional screenshot normalization remain separate correctness
 work. Optional extraction layout/retention controls are not implemented here.
 Skill/plugin packaging is deferred until after the feedback improvements.
+
+### Cyber Egg feedback follow-up (2026-10-16)
+
+Reviewed the sibling study's `research/PSX_TOOL_FEEDBACK.md` against current
+source. [Review and validation](research/cyber-egg-feedback-review.md) separates
+implemented fixes from remaining interface work:
+
+- Host-directory asset scan/extract now expands regular files recursively in
+  sorted order, preserving sibling archive/sound-bank lookup and per-file
+  provenance. The same path handling applies to texture sources.
+- Starter instructions explicitly migrate demo-dependent tests when replacing
+  `demo/`, including the ignored GPU/MCP test; ignored tests still compile.
+  Build guidance explains feature switching and recommends consistent `dev-mcp`
+  use during agent iteration.
+- TMD extraction warns about omitted primitives and reports skipped counts in
+  full and brief summaries. Gs-style preprocessed primitive runs remain an
+  explicit external-parser task; no speculative auto-detection was added.
+- `PSX_SIGS_DIR` provides a shared signature default; explicit `sigs` wins.
+  `context.signatures` exposes its resolved path and directory presence. BIOS
+  guidance explains importing checkout-local dumps into the existing shared store.
+- GPU capture search metadata exposes the effective window within `frames` and
+  whether the run budget truncates it.
+
+Still open: thread/session workspace handles with explicit concurrent-client
+semantics; shorter MCP descriptions/shared schema guidance; typed sample
+arguments; an optional run summary mode with fewer artifact descriptors; and
+measuring/aligning starter dependency features to reduce duplicate compilation.
+Keep per-call project isolation and strict standard-format parsing intact.
 
 ## Original plan (historical)
 

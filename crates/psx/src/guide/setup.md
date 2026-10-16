@@ -15,6 +15,13 @@ download:true is an explicit setup action, never an automatic part of inspection
 or running. Native checkpoints require the exact BIOS/media identity they saved.
 sha256 identifies the BIOS file; native_sha256 identifies the 512 KiB ROM image
 used by the native core, so they can differ for padded/truncated inputs.
+BIOS discovery checks the selected project's bios/ and the shared store, not
+sibling toolkit checkouts. Import a known local dump once with bios_install(from),
+set an absolute PSX_BIOS_DIR, or save an explicit context bios path for the project.
+Signature matching uses explicit symbols.sigs, otherwise PSX_SIGS_DIR, otherwise
+external/psx_psyq_signatures in the selected project. Use an absolute PSX_SIGS_DIR
+in the server environment to share a checkout. context.signatures reports its
+default path and directory presence without loading or downloading the index.
 
 disc inspects the disc and boot EXE; ls filters/pages its ISO entries. exe,
 disasm and asset tools accept disc.cue::/PATH where documented. run accepts a
