@@ -2,6 +2,9 @@ Use ls with filter/offset/limit to orient yourself, then assets_scan on a narrow
 source or filename filter. Scan totals cover the selected scope; page and coverage
 describe returned rows and what was actually inspected. No standard TIM/TMD/VAB/VAG
 hits does not prove that a game has no textures, models or audio.
+Host directories are expanded recursively in sorted path order, without following
+symlinks. Each file retains its provenance and sibling .DIR/.VB lookup. Use the
+same source syntax for extraction and additional texture sources.
 
 assets_extract converts validated hits to PNG, glTF or WAV and retains source
 bytes/provenance. Select kinds, an offset or an archive entry when appropriate.
@@ -10,6 +13,11 @@ counts. The complete content-bound manifest and next_call let artifact_read
 continue without repeating conversion. Nested output lists are bounded too;
 inspect the manifest with a JSON pointer for omitted rows. Narrow source/kinds
 to avoid converting unnecessary assets; originals and provenance are retained.
+TMD details and summary.skipped_primitives report omitted geometry, with a warning
+when conversion skips primitive types or packet layouts. Runtime FIXP size:0 means
+the model uses relocated pointers, not that its geometry is empty. Gs-style
+preprocessed primitive runs need an explicit model/asset parser; the standard
+scanner does not infer their packet lengths or guarantee discovery.
 
 Custom containers, compression and models need format evidence. Generate a
 working scaffold with template_parser_create: archive parsers index unchanged
@@ -25,6 +33,9 @@ logo may be found before gameplay. Inspect gpu_frame.content, draw_commands,
 textures and the image. gpu_draw_filter:primitives skips fill-only frames;
 gpu_draw_filter:textured requires textured polygons/rectangles. Both filters
 require gpu_next_draw and remain within its search/run budget.
+search.effective_max_frames shows the window available within frames, and
+search.truncated_by_run_budget identifies a shorter run. A frames:1 run can
+inspect only one completed frame even when gpu_search_frames defaults to 60.
 textures decodes the captured frame's resident VRAM and creates a .psxscene for
 reference. That capture is screen-space drawing evidence, not recovered world
 geometry or a complete level. Raw streamed-file extraction is marked raw_2352;

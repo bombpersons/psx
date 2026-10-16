@@ -19,6 +19,10 @@ agent tried to use it and got stuck somewhere.
   and real hardware tests, and it gets about 19 PAL games to gameplay so far.
 - **Disc and file tools.** Browse a disc, pull out files, and decode movies (STR), XA audio,
   textures (TIM), 3D models (TMD to glTF) and sound banks (VAB/VAG to WAV).
+  Croc and sector-indexed DOT-T archives retain entry provenance. For game-specific
+  archives, models, asset wrappers and video frames, generate an
+  [external parser](docs/external-parsers.md) and keep using the same scan/extract tools.
+  Texture sources can include ordered raw VRAM uploads as well as TIMs.
 - **Memory detective work.** Cheat-finder-style RAM search, per-frame value logging,
   disassembly and cross-references, and "poke this value and see what happens".
 - **Ghidra decompilation.** Give it an executable and a code address to get the
@@ -31,7 +35,19 @@ agent tried to use it and got stuck somewhere.
   reusable [controls menu](templates/psx-bevy/README.md#rebinding-and-the-example-controls-menu).
 - **An MCP server**, so an agent can use all of the above as tools.
   Inline controller events, paginated evidence and a bounded artifact reader keep
-  investigations inside the tool interface. See [agent workflow](docs/agent-workflow.md).
+  investigations inside the tool interface. Per-call project roots let one server
+  work across isolated game projects. See [agent workflow](docs/agent-workflow.md).
+
+The template also has its own developer MCP: step game logic, query entities, edit
+reflected component fields while paused and take screenshots. It supports offscreen
+GPU rendering with a software adapter, so an agent can verify a reconstruction
+without opening a desktop window. [Template guide](templates/psx-bevy/README.md#agent-driving-dev-mcp).
+
+This is an investigation toolkit under active development. Booting a game does not
+establish whole-game accuracy; GPU captures classify drawing content, not gameplay
+readiness. Game-specific formats may need a parser, and emulator timing/fidelity
+work continues. The [current queue](PLAN.md#current-toolkit-queue-agreed-2026-10-15)
+and [validation notes](research/) record what has actually been checked.
 
 ## See it in action
 
@@ -52,7 +68,8 @@ goes in the repo.
 
 ## Getting started
 
-You'll need Rust, your own disc images and a PS1 BIOS. **Disc images and firmware
+You'll need Rust 1.88+ for the toolkit (the Bevy starter requires Rust 1.97.1+),
+your own disc images and a PS1 BIOS. **Disc images and firmware
 are not included and should never be committed.** Local `media/` and `bios/` folders
 are git-ignored:
 
@@ -65,6 +82,7 @@ Then try:
 
 ```bash
 cargo build --release
+target/release/psx guide
 target/release/psx disc "media/Some Game.cue"
 ```
 
@@ -91,6 +109,12 @@ target/release/psx template create ../my-game
 cd ../my-game && cargo run
 ```
 
+Set `--region pal --fields-per-tick 2` when creating a project whose measured logic
+runs at 25 Hz. Choose the tick rate from evidence; display fields and game ticks
+are different. The generated project is standalone and loads extracted TIM/TMD
+assets directly. Captured `.psxscene` frames are comparison references; rebuild
+the game's rules and levels as ordinary Bevy code.
+
 For workflow help, run `psx guide` or `psx guide --topic input`. The MCP `guide`
 tool provides the same built-in guidance without installing an agent skill.
 
@@ -104,6 +128,8 @@ claude mcp add psx -- /path/to/psx/target/release/psx --root /path/to/psx mcp
 
 - [README_FOR_AGENTS.md](README_FOR_AGENTS.md): every command and flag, in detail.
 - [templates/psx-bevy](templates/psx-bevy/README.md): the game template.
+- [docs/agent-workflow.md](docs/agent-workflow.md): bounded evidence, controller input and project isolation.
+- [docs/ghidra-integration.md](docs/ghidra-integration.md): executable/runtime analysis, annotations and verified symbol export.
 - [research/](research/): notes on the emulator, file formats and case studies.
 - [PLAN.md](PLAN.md): where this is headed.
 

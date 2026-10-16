@@ -49,7 +49,12 @@ src/controller/bindings.rs, controls/   rebinding, explicit settings storage and
 ```
 
 - Start a new game by deleting `src/demo/`, removing it from `GamePlugin` and
-  `lib.rs`, and adding your own feature modules. Nothing else depends on it.
+  `lib.rs`, and adding your own feature modules. Migrate the demo tests in the
+  same change: replace or remove `tests/player.rs`; adapt or remove
+  `tests/dev_mcp.rs::headless_render_edit_step_and_query` and `Client::state`.
+  That GPU/MCP test assumes a named demo player, its spawn position, movement
+  constants and rendered scene. `#[ignore]` skips execution, not compilation.
+  Check the replacement with `cargo test --features dev-mcp --all-targets --no-run`.
 - `ControlsPlugin` is independent of the demo. Integrate it into your game's
   options flow (`global_shortcuts: false`, `ControlsMenu::open()`), or use the
   `ControllerBindings`/`BindingStore` API with your own UI. Keep gameplay on
@@ -231,7 +236,9 @@ calls in screen space. It is for *checking* your rebuild, never for shipping:
 
 ### Verify
 
-- `cargo test` with per-tick trajectory comparisons (above).
+- `cargo test --features dev-mcp` with per-tick trajectory comparisons (above).
+  Keep that feature set for routine agent builds/tests/Clippy to reuse dependencies;
+  switching it off can rebuild shared Bevy crates through feature unification.
 - `cargo build` and `cargo build --features dev-mcp` when changing the shell.
 - Visual changes: `game_step` + `game_screenshot`, and look at the image.
   Use `--mcp --headless --software` without a desktop; screenshot `target` must

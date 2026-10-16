@@ -34,6 +34,11 @@ IO errors expose the project root/path-resolution base; filesystem errors also
 include an absolute `error.path` where available. A shared BIOS directory remains
 shared deliberately; use absolute `PSX_BIOS_DIR`, `PSX_REDUX_BIN` or
 `PSX_GHIDRA_HOME` when a shared installation lives outside each study.
+`PSX_SIGS_DIR` similarly shares a PsyQ signature checkout; explicit `symbols.sigs`
+overrides it and `context.signatures` reports the default path and directory presence.
+For BIOS files still held only in the toolkit checkout, import them once with
+`bios_install(from:"/absolute/toolkit/bios/scph7502.bin")` or set an absolute
+`PSX_BIOS_DIR` before starting the server. Discovery does not search sibling projects.
 
 ## Inline controller input
 
@@ -104,8 +109,17 @@ The filter requires next-draw mode and shares the existing bounded search window
 and run budget. A textured draw could still be a BIOS screen or logo; it does not
 establish gameplay readiness. Use snapshots/checkpoints and observed game events
 to locate the state needed for an experiment.
+`gpu_frame.search.effective_max_frames` reports the window available inside
+`frames`, with `truncated_by_run_budget` when it is shorter than `max_frames`.
+For example, `frames:1` permits one completed frame even when the search window is
+60; increase the run length to pass fields with no drawing commands.
 
 ## Bound extraction results
+
+Asset sources can be host files or directories as well as discs and ISO members.
+Host directories expand recursively in sorted order, without following symlinks;
+each file keeps its source path, archive provenance and sibling `.DIR`/`.VB` lookup.
+Texture sources use the same rules.
 
 `assets_extract` / `psx assets extract` writes a complete, content-bound
 `extraction-<sha256>.json` manifest in `out`. Identical conversion results reuse
@@ -123,6 +137,10 @@ cursor to continue. Do not repeat extraction merely to get another response
 page. Nested `outputs`, uploads and texture-page lists are complete in the
 manifest; use JSON pointers to inspect a specific record or list. The summary's
 output-file count excludes the manifest itself.
+TMD conversions expose `details.polygons`, `details.skipped_primitives` and a warning
+if packets were omitted. The summary counts warnings and skipped primitives even
+in brief mode. Preprocessed primitive-run representations require explicit parser
+support and may be missed by standard scanning; see `guide`'s assets topic.
 Manifest output records include file sizes and SHA-256s, including model texture
 pages and raw upload words. Reusing an output directory can replace conversions;
 the retained manifests let a consumer detect when a file no longer matches an

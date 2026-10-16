@@ -171,7 +171,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     // boot spent before an EXE was side-loaded; after --from-state they count
     // from the restored state (Redux counts from SaveStateLoaded).
     let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
-    let mut gpu_capture = GpuCapture::new(&a.trace);
+    let mut gpu_capture = GpuCapture::new(&a.trace, a.frames);
     let Some(target) = start_frame.checked_add(a.frames as u64) else {
         return err("invalid_arguments", "run frame range overflows u64");
     };

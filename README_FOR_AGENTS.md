@@ -43,7 +43,7 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | `psx textures <run_dir> [--page X,Y,DEPTH --clut X,Y] [--vram FILE]` | Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT pair a `--gpu-frame` capture used, full and cropped to the UVs sampled, or one page by hand. A capture is decoded from `gpu_frame_vram.bin`, the VRAM at the end of the captured frame (games that stream sprite frames into VRAM every tick need this), falling back to the run's final `vram.bin` |
 | Frame → Bevy | `psx textures` also writes `textures/scene.psxscene`; the template's `PsxSceneRoot` (and `cargo run -- --scene ...`) spawns it as sprites and meshes. Mirrored quads become flipped sprites with their texture rect moved one texel, as the PS1 samples them |
 | `psx gpu-replay <stream.bin> -o vram.bin` / `psx vram-diff a.bin b.bin` | Replay a GP0 stream into `psx-gpu`; diff two VRAM dumps per pixel (per-cell counts, channel deltas, diff PNG). `tools/probes/gpu/compare.sh` diffs `psx-gpu` against Redux on the GPU probe EXE |
-| `psx assets scan <image.cue>[::/PATH] \| <file> [--json]` | Find standard TIM/TMD/VAB/VAG assets by signature + full validation. A bare disc scans every file; `::/DIR/` selects a directory; `ram.bin` maps relocated TMDs at 0x80000000. DOT-T and Croc `.DIR` archives expose all entries, including empty entries and archives without known assets; hits carry entry indices, names where available and byte provenance. See [archive support](research/archive-support.md) |
+| `psx assets scan <image.cue>[::/PATH] \| <file-or-directory> [--json]` | Find standard TIM/TMD/VAB/VAG assets by signature + full validation. A bare disc scans every file; `::/DIR/` selects an ISO directory. Host directories expand recursively in sorted order without following symlinks, retaining sibling `.DIR`/`.VB` lookup; `ram.bin` maps relocated TMDs at 0x80000000. DOT-T and Croc `.DIR` archives expose all entries, including empty entries and archives without known assets; hits carry entry indices, names where available and byte provenance. See [archive support](research/archive-support.md) |
 | `psx assets extract <source> -o DIR [--kind K] [--offset HEX] [--textures SRC]` | TIM → PNG per CLUT, TMD → glTF (texture pages decoded from the TIMs in the same file or `--textures` sources, through a virtual VRAM), VAB/VAG → WAV per waveform (+ programs/tones JSON); the original bytes are written next to each. See [research/assets.md](research/assets.md) |
 | `psx assets extract <source> --entry N -o DIR` | Extract one zero-based archive entry as raw bytes, including sector padding or an empty entry. Requires one source file; excludes `--kind`, `--offset` and `--textures`. Both asset commands accept `--archive dot-t` for explicit validation or `--archive none` for a flat scan |
 | `psx template parser DIR --kind archive\|model\|asset\|video` | Generate an executable Python parser, authored sample and protocol docs. Use `--archive-parser`, `--model-parser`, `--asset-parser` on asset commands or `--frame-parser` on `str`. Any language can implement the same stdin-bytes/stdout-JSON contract; see [external parsers](docs/external-parsers.md) |
@@ -152,6 +152,14 @@ later frames draw again. Its report, including `--brief`, gives `status: "captur
 For compatibility, GPU capture's legacy `frame` field remains an alias of `run_frame`.
 The same metadata appears in `gpu_frame.json` under `summary`.
 
+`search.run_budget_frames` records the requested run length;
+`search.effective_max_frames` is `min(max_frames, max(0, frames - from_run_frame))`.
+`search.truncated_by_run_budget` marks a window cut short by the run budget.
+A one-frame run can inspect only one completed field, even with a 60-frame search
+window. Increase `--frames` to allow an alternate non-draw field to pass.
+Use `--gpu-draw-filter primitives|textured` with next-draw mode to skip fill-only
+frames or require textured drawing; `gpu_frame.content` reports what was captured.
+
 A miss returns `gpu_frame.status: "not_found"`, an `error` message and `reason` of
 `search_limit`, `run_end` or `timeout`. Only completed frames count as inspected, so a
 partially drawn frame at timeout is never selected by next-draw mode. The overall
@@ -194,6 +202,19 @@ The [protocol reference](docs/external-parsers.md) defines limits and geometry,
 and includes a worked external King's Field RTMD decoder. Core support should
 grow for proven reuse or shared operations, rather than adding every game format.
 
+TMD extraction reports parsed polygon and skipped primitive counts under `details`;
+`summary.skipped_primitives` and `summary.warnings` remain visible with `--brief`.
+Skipped packets mean the conversion omits geometry. Gs-style preprocessed primitive
+runs require an explicit parser; the standard scanner may not discover them.
+For runtime FIXP models, `size: 0` means pointers are relocated and no contiguous
+original-file extent is known, rather than an empty model.
+
+PsyQ signature lookup uses explicit `symbols --sigs DIR` / MCP `sigs`, then
+`PSX_SIGS_DIR`, then the selected project's `external/psx_psyq_signatures`.
+Set `PSX_SIGS_DIR` to an absolute checkout path in the server environment to share
+one index across game projects. `context.signatures` reports the default path,
+selection reason and directory presence; it does not validate or download the index.
+
 Backend findings are in [research/backend-comparison.md](research/backend-comparison.md); a worked
 provenance example (Croc's boot chain) is in [research/load-provenance.md](research/load-provenance.md).
 The first game case study, which traces Croc's player movement from RAM to its writers and then to the native Bevy demo
@@ -201,7 +222,11 @@ The first game case study, which traces Croc's player movement from RAM to its w
 A 2D capture-to-template study with a rebuilt mechanic (Mega Man 8's walk and jump, verified tick-exact
 against RAM) is in [research/case-study-megaman8.md](research/case-study-megaman8.md) and
 [examples/megaman8-movement](examples/megaman8-movement/README.md).
-`psx run` needs `external/pcsx-redux` built at the pinned commit (or `PSX_REDUX_BIN`).
+Only `psx run --backend redux` and Redux comparison tools need
+`external/pcsx-redux` built at the pinned commit (or `PSX_REDUX_BIN`). Native runs
+use the in-tree core and a locally available BIOS; static media/asset tools need
+neither emulator backend nor BIOS. Ghidra operations require a local installation
+as described below.
 
 ## MCP server
 
@@ -393,6 +418,11 @@ games choose where to integrate it. See
 and [validation](research/template-controls.md).
 Extracted original `.tim` files load as Bevy `Image`s and `.tmd` models as
 `PsxModel`s (`PsxModelRoot`); `cargo run -- --model x.tmd --texture x.tim` views one.
+When replacing `demo/`, migrate its tests too: `tests/player.rs` and the player
+edit/step test plus `Client::state` in `tests/dev_mcp.rs` depend on the demo.
+The template [migration notes](templates/psx-bevy/README.md#project-layout) list
+the required changes and compilation check. Keep `dev-mcp` enabled across the
+agent iteration cycle to reduce dependency rebuilds when switching features.
 
 ## Local data (never committed)
 

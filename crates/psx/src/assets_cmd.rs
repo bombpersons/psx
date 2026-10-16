@@ -121,8 +121,59 @@ fn archive_index(bytes: &[u8], directory: Option<&[u8]>, mode: Option<&str>, ram
     }
 }
 
+/// Host directory traversal is recursive and sorted. Do not follow symlinks:
+/// a source tree may contain parent links or links to unrelated media trees.
+fn host_files(path: &Path, files: &mut Vec<PathBuf>) -> R<()> {
+    for entry in std::fs::read_dir(path).map_err(|e| MediaError::io(path, e))? {
+        let entry = entry.map_err(|e| MediaError::io(path, e))?;
+        let kind = entry.file_type().map_err(|e| MediaError::io(entry.path(), e))?;
+        if kind.is_dir() {
+            host_files(&entry.path(), files)?;
+        } else if kind.is_file() {
+            files.push(entry.path());
+        }
+    }
+    Ok(())
+}
+
+fn host_item(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, parsers: &Parsers) -> R<Item> {
+    let bytes = std::fs::read(source).map_err(|e| MediaError::io(source, e))?;
+    let p = Path::new(source);
+    let looks_like_ram = p.file_name().is_some_and(|n| n == "ram.bin") || bytes.len() == 2 << 20;
+    let vb = p
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("vh"))
+        .then(|| std::fs::read(p.with_extension("VB")).or_else(|_| std::fs::read(p.with_extension("vb"))).ok())
+        .flatten();
+    let directory = (!p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dir")))
+        .then(|| std::fs::read(p.with_extension("DIR")).or_else(|_| std::fs::read(p.with_extension("dir"))).ok())
+        .flatten();
+    let archive = archive_index(
+        &bytes,
+        directory.as_deref(),
+        archive_mode,
+        ram_base.is_some() || p.file_name().is_some_and(|n| n == "ram.bin"),
+    )?;
+    let inferred_ram =
+        (looks_like_ram && archive.is_none() && parsers.archive.is_none() && parsers.model.is_none() && parsers.asset.is_none())
+            .then_some(RAM_BASE);
+    finish_item(
+        Item {
+            name: source.to_string(),
+            bytes,
+            ram_base: ram_base.or(inferred_ram),
+            archive,
+            archive_parser: None,
+            parsed: None,
+            uploads: Vec::new(),
+            sibling_vb: vb,
+        },
+        parsers,
+    )
+}
+
 /// Resolve a source: `image.cue::/PATH` (a file, `/DIR/` for a directory,
-/// or `*` for every file), a bare disc image (every file), or a host file.
+/// or `*` for every file), a bare disc image (every file), or a host file/directory.
 pub fn items(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, parsers: &Parsers) -> R<Vec<Item>> {
     Ok(scan_inputs(source, ram_base, archive_mode, parsers, None)?.items)
 }
@@ -138,48 +189,23 @@ fn scan_inputs(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, 
         Some((i, p)) => (PathBuf::from(i), Some(p.to_string())),
         None if is_disc_image(Path::new(source)) && Disc::open(source).is_ok() => (PathBuf::from(source), None),
         None => {
-            std::fs::metadata(source).map_err(|e| MediaError::io(source, e))?;
-            if !matches(source) {
-                return Ok(ScanInputs { items: vec![], source_files: 1, selected_files: 0, skipped: vec![] });
+            let metadata = std::fs::metadata(source).map_err(|e| MediaError::io(source, e))?;
+            let mut files = Vec::new();
+            if metadata.is_dir() {
+                host_files(Path::new(source), &mut files)?;
+                files.sort();
+            } else {
+                files.push(PathBuf::from(source));
             }
-            let bytes = std::fs::read(source).map_err(|e| MediaError::io(source, e))?;
-            let p = Path::new(source);
-            let looks_like_ram = p.file_name().is_some_and(|n| n == "ram.bin") || bytes.len() == 2 << 20;
-            let vb = p
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("vh"))
-                .then(|| std::fs::read(p.with_extension("VB")).or_else(|_| std::fs::read(p.with_extension("vb"))).ok())
-                .flatten();
-            let directory = (!p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dir")))
-                .then(|| std::fs::read(p.with_extension("DIR")).or_else(|_| std::fs::read(p.with_extension("dir"))).ok())
-                .flatten();
-            let archive = archive_index(
-                &bytes,
-                directory.as_deref(),
-                archive_mode,
-                ram_base.is_some() || p.file_name().is_some_and(|n| n == "ram.bin"),
-            )?;
-            let inferred_ram =
-                (looks_like_ram && archive.is_none() && parsers.archive.is_none() && parsers.model.is_none() && parsers.asset.is_none())
-                    .then_some(RAM_BASE);
-            return Ok(ScanInputs {
-                items: vec![finish_item(
-                    Item {
-                        name: source.to_string(),
-                        bytes,
-                        ram_base: ram_base.or(inferred_ram),
-                        archive,
-                        archive_parser: None,
-                        parsed: None,
-                        uploads: Vec::new(),
-                        sibling_vb: vb,
-                    },
-                    parsers,
-                )?],
-                source_files: 1,
-                selected_files: 1,
-                skipped: vec![],
-            });
+            let source_files = files.len();
+            let mut items = Vec::new();
+            for path in files {
+                let name = path.to_str().ok_or_else(|| MediaError::Malformed(format!("non-UTF-8 asset path: {}", path.display())))?;
+                if matches(name) {
+                    items.push(host_item(name, ram_base, archive_mode, parsers)?);
+                }
+            }
+            return Ok(ScanInputs { selected_files: items.len(), items, source_files, skipped: vec![] });
         }
     };
     let disc = Disc::open(&image)?;
@@ -373,6 +399,7 @@ fn extraction_response(mut full: Value, out: &Path, brief: bool, offset: usize, 
     let mut kinds = BTreeMap::<String, usize>::new();
     let mut outputs = 0;
     let mut warnings = 0;
+    let mut skipped_primitives = 0u64;
     for key in ["assets", "entries"] {
         for row in full.get_mut(key).and_then(Value::as_array_mut).into_iter().flatten() {
             let mut additional = Vec::new();
@@ -397,9 +424,11 @@ fn extraction_response(mut full: Value, out: &Path, brief: bool, offset: usize, 
             *kinds.entry(row["kind"].as_str().unwrap_or("archive_entry").into()).or_default() += 1;
             outputs += row["outputs"].as_array().map_or(0, Vec::len);
             warnings += usize::from(row["details"]["warning"].is_string());
+            skipped_primitives += row["details"]["skipped_primitives"].as_u64().unwrap_or(0);
         }
     }
-    full["summary"] = json!({"records":full["extracted"],"output_files":outputs,"by_kind":kinds,"warnings":warnings});
+    full["summary"] = json!({"records":full["extracted"],"output_files":outputs,"by_kind":kinds,"warnings":warnings,
+        "skipped_primitives":skipped_primitives});
     std::fs::create_dir_all(out).map_err(|e| MediaError::io(out, e))?;
     let bytes = serde_json::to_vec_pretty(&full).unwrap();
     let hash = psx_media::disc::sha256_bytes(&bytes);
@@ -782,12 +811,17 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
                     write(&p, serde_json::to_string(&doc).unwrap().as_bytes())?;
                     outputs.push(json!({"path": p, "role": "gltf"}));
                     extra = json!({
+                        "polygons": t.polygon_count(),
+                        "skipped_primitives": t.objects.iter().map(|o| u64::from(o.skipped)).sum::<u64>(),
                         "vram_tims": {"from_textures": texture_tims, "from_this_file": own_tims},
                         "texture_pages": pages.iter().map(|(k, (f, c))| json!({
                             "page": [k.page.x, k.page.y], "bits": k.page.bits, "clut": k.clut.map(|c| [c.0, c.1]),
                             "png": (*c > 0.0).then(|| dir.join(f)), "vram_coverage": (c * 1000.0).round() / 1000.0,
                         })).collect::<Vec<_>>(),
                     });
+                    if extra["skipped_primitives"].as_u64().unwrap_or(0) > 0 {
+                        extra["warning"] = json!("TMD conversion omitted primitives with unsupported types or packet layouts; geometry is incomplete. For preprocessed model data, use --model-parser or normalize it with --asset-parser; see psx guide --topic assets.");
+                    }
                     if texture_uploads + own_uploads > 0 {
                         extra["vram_uploads"] = json!({"from_textures":texture_uploads,"from_this_file":own_uploads});
                     }
