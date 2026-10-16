@@ -147,12 +147,19 @@ struct Rpc {
     lines: mpsc::Receiver<String>,
     next_id: u64,
     response_timeout: Duration,
+    /// Directories answered to the server's roots/list; `None` advertises no roots capability.
+    roots: Option<Vec<PathBuf>>,
 }
 
 impl Rpc {
     fn start(root: &Path) -> Self {
-        let mut child =
-            psx().env("PSX_BIOS_DIR",root.join("shared-bios")).arg("mcp").current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        Self::launch(root, &[], &[], None)
+    }
+
+    /// `global` precedes the `mcp` subcommand (e.g. `--root`); `mcp_args` follow it.
+    fn launch(root: &Path, global: &[&str], mcp_args: &[&str], roots: Option<Vec<PathBuf>>) -> Self {
+        let mut child = psx().env("PSX_BIOS_DIR",root.join("shared-bios")).args(global).arg("mcp").args(mcp_args)
+            .current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
         let input = child.stdin.take();
         let out = child.stdout.take().unwrap();
         let (tx, lines) = mpsc::channel();
@@ -164,10 +171,11 @@ impl Rpc {
                 }
             }
         });
-        let mut rpc = Rpc { child, input, lines, next_id: 1, response_timeout: Duration::from_secs(60) };
+        let capabilities = if roots.is_some() { json!({"roots": {"listChanged": true}}) } else { json!({}) };
+        let mut rpc = Rpc { child, input, lines, next_id: 1, response_timeout: Duration::from_secs(60), roots };
         let init = rpc.request(
             "initialize",
-            json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "psx-test", "version": "1"}}),
+            json!({"protocolVersion": "2025-06-18", "capabilities": capabilities, "clientInfo": {"name": "psx-test", "version": "1"}}),
         );
         assert_eq!(init["result"]["serverInfo"]["name"], "psx", "{init}");
         rpc.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
@@ -188,6 +196,12 @@ impl Rpc {
             let line = self.lines.recv_timeout(self.response_timeout).expect("response before deadline");
             // Everything on stdout must be protocol.
             let v: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("non-JSON stdout {line:?}: {e}"));
+            if v["method"] == "roots/list" {
+                let roots: Vec<Value> = self.roots.iter().flatten()
+                    .map(|p| json!({"uri": format!("file://{}", p.display()), "name": "test"})).collect();
+                self.send(json!({"jsonrpc": "2.0", "id": v["id"], "result": {"roots": roots}}));
+                continue;
+            }
             if v["id"] == id {
                 return v;
             }
@@ -284,6 +298,55 @@ fn guide_is_self_contained_read_only_and_matches_the_cli_for_every_topic() {
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1, "guide must not create artifacts");
     assert_eq!(std::fs::read_dir(root.join(".psx")).unwrap().count(), 1);
     drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn client_roots_select_the_default_project_unless_pinned_ambiguous_or_required() {
+    let root = std::env::temp_dir().join(format!("psx-client-roots-{}", std::process::id()));
+    for name in ["server", "a", "b"] {
+        std::fs::create_dir_all(root.join(name)).unwrap();
+        std::fs::write(root.join(name).join("note.txt"), name).unwrap();
+    }
+    let (server, a, b) = (root.join("server"), root.join("a"), root.join("b"));
+    let note = |rpc: &mut Rpc, args: Value| {
+        let (read, error, _) = rpc.tool("artifact_read", args);
+        assert!(!error, "{read}");
+        read["items"][0].as_str().unwrap().to_owned()
+    };
+    let mut rpc = Rpc::launch(&server, &[], &[], Some(vec![a.clone()]));
+    assert_eq!(note(&mut rpc, json!({"path":"note.txt"})), "a");
+    let (context, error, _) = rpc.tool("context", json!({}));
+    assert!(!error, "{context}");
+    assert_eq!(context["project_root"], json!(a));
+    assert_eq!(context["project_root_source"], "client_roots");
+    // An explicit project_root still wins and resolves against the client root.
+    assert_eq!(note(&mut rpc, json!({"path":"note.txt","project_root":"../b"})), "b");
+    rpc.roots = Some(vec![b.clone()]);
+    rpc.send(json!({"jsonrpc":"2.0","method":"notifications/roots/list_changed"}));
+    // Notifications are handled asynchronously; the next calls must converge on b.
+    let changed = (0..50).any(|_| {
+        let seen = note(&mut rpc, json!({"path":"note.txt"}));
+        seen == "b" || { std::thread::sleep(Duration::from_millis(20)); false }
+    });
+    assert!(changed, "roots change was not applied");
+    drop(rpc);
+
+    let mut ambiguous = Rpc::launch(&server, &[], &[], Some(vec![a.clone(), b.clone()]));
+    assert_eq!(note(&mut ambiguous, json!({"path":"note.txt"})), "server");
+    let (context, _, _) = ambiguous.tool("context", json!({}));
+    assert!(context.get("project_root_source").is_none(), "{context}");
+    drop(ambiguous);
+
+    let mut pinned = Rpc::launch(&server, &["--root", a.to_str().unwrap()], &[], Some(vec![b.clone()]));
+    assert_eq!(note(&mut pinned, json!({"path":"note.txt"})), "a");
+    drop(pinned);
+
+    let mut strict = Rpc::launch(&server, &[], &["--require-project-root"], Some(vec![a.clone()]));
+    let (refused, error, _) = strict.tool("artifact_read", json!({"path":"note.txt"}));
+    assert!(error && refused["error"]["message"].as_str().unwrap().contains("--require-project-root"), "{refused}");
+    assert_eq!(note(&mut strict, json!({"path":"note.txt","project_root":b})), "b");
+    drop(strict);
     std::fs::remove_dir_all(root).unwrap();
 }
 

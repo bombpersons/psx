@@ -171,8 +171,16 @@ implemented fixes from remaining interface work:
 - GPU capture search metadata exposes the effective window within `frames` and
   whether the run budget truncates it.
 
-Still open: thread/session workspace handles with explicit concurrent-client
-semantics; shorter MCP descriptions/shared schema guidance; typed sample
+Workspace selection (2026-10-16): no server-side session handle, since stdio MCP
+has no thread identity and subagents share one connection. The default root is now
+`--root`/`PSX_ROOT`, else the client's single MCP root (refreshed on
+`roots/list_changed`), else the working directory; other roots run in the isolated
+worker. `mcp --require-project-root` refuses unscoped calls, and the documented
+registration no longer pins the toolkit checkout. MCP roots are deprecated by
+SEP-2577, so the working-directory default is the durable path. Named workspace
+aliases remain unbuilt unless feedback asks again.
+
+Still open: shorter MCP descriptions/shared schema guidance; typed sample
 arguments; an optional run summary mode with fewer artifact descriptors; and
 measuring/aligning starter dependency features to reduce duplicate compilation.
 Keep per-call project isolation and strict standard-format parsing intact.

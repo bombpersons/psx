@@ -25,6 +25,63 @@ pub(super) fn resolve(default: &Path, value: Option<&Value>) -> Result<PathBuf, 
     Ok(root)
 }
 
+/// The client's single local MCP root, if it advertises roots and lists exactly
+/// one existing directory. Anything else keeps the server's root.
+// MCP roots are deprecated by SEP-2577 but still sent by current clients; the
+// server's working directory remains the default when they disappear.
+#[allow(deprecated)]
+pub(super) async fn client_root(peer: &rmcp::service::Peer<rmcp::service::RoleServer>) -> Option<PathBuf> {
+    peer.peer_info()?.capabilities.roots.as_ref()?;
+    let roots = match tokio::time::timeout(Duration::from_secs(5), peer.list_roots()).await {
+        Ok(Ok(listed)) => listed.roots,
+        Ok(Err(e)) => {
+            eprintln!("psx mcp: roots/list failed ({e}); using the server root");
+            return None;
+        }
+        Err(_) => {
+            eprintln!("psx mcp: roots/list timed out; using the server root");
+            return None;
+        }
+    };
+    let [root] = roots.as_slice() else {
+        eprintln!("psx mcp: client reported {} roots; using the server root", roots.len());
+        return None;
+    };
+    let dir = file_uri_path(&root.uri).and_then(|p| p.canonicalize().ok()).filter(|p| p.is_dir());
+    if dir.is_none() {
+        eprintln!("psx mcp: client root {:?} is not a local directory; using the server root", root.uri);
+    }
+    dir
+}
+
+/// A local `file://` URI as a path, percent-decoded. Other hosts and schemes are rejected.
+pub(super) fn file_uri_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    let path = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !path.starts_with('/') {
+        return None;
+    }
+    let (bytes, mut out, mut i) = (path.as_bytes(), Vec::with_capacity(path.len()), 0);
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            out.push(u8::from_str_radix(std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    #[cfg(unix)]
+    return Some(PathBuf::from(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(out)));
+    #[cfg(not(unix))]
+    {
+        // file:///C:/dir -> C:/dir
+        let text = String::from_utf8(out).ok()?;
+        let drive = text.as_bytes().get(2) == Some(&b':');
+        Some(PathBuf::from(if drive { &text[1..] } else { &text[..] }))
+    }
+}
+
 struct Worker(Child);
 impl Drop for Worker {
     fn drop(&mut self) {
@@ -158,4 +215,19 @@ pub(crate) fn worker(ctx: &Ctx) -> Outcome {
         pretty: false,
         text: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_uri_path;
+
+    #[cfg(unix)]
+    #[test]
+    fn file_uris_decode_to_local_paths_only() {
+        assert_eq!(file_uri_path("file:///home/a%20b/c%25"), Some("/home/a b/c%".into()));
+        assert_eq!(file_uri_path("file://localhost/srv"), Some("/srv".into()));
+        for uri in ["file://other/srv", "https://x/y", "file:relative", "file:///bad%2", "file:///bad%zz"] {
+            assert_eq!(file_uri_path(uri), None, "{uri}");
+        }
+    }
 }

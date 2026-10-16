@@ -169,7 +169,9 @@ fn project_root(flag: Option<PathBuf>) -> Option<PathBuf> {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Some(root) = project_root(cli.root) {
+    let pinned_root = project_root(cli.root);
+    let pinned = pinned_root.is_some();
+    if let Some(root) = pinned_root {
         if let Err(e) = std::env::set_current_dir(&root) {
             let abs = std::path::absolute(&root).unwrap_or(root);
             println!("{}", serde_json::json!({"error": {"code": "invalid_arguments", "message": format!("project root {} (--root / PSX_ROOT): {e}", abs.display())}}));
@@ -184,7 +186,7 @@ fn main() -> ExitCode {
         Command::ArtifactRead(a) => a.exec(&ctx),
         Command::Bios { action } => action.exec(&ctx),
         Command::Ghidra { action } => action.exec(&ctx),
-        Command::Mcp(a) => return mcp::main(ctx, a),
+        Command::Mcp(a) => return mcp::main(ctx, a, pinned),
         Command::Disc(a) => a.exec(&ctx),
         Command::Ls(a) => a.exec(&ctx),
         Command::Extract(a) => a.exec(&ctx),

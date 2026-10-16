@@ -118,11 +118,17 @@ the game's rules and levels as ordinary Bevy code.
 For workflow help, run `psx guide` or `psx guide --topic input`. The MCP `guide`
 tool provides the same built-in guidance without installing an agent skill.
 
-To hook it up to Claude Code:
+To hook it up to Claude Code once for every project:
 
 ```bash
-claude mcp add psx -- /path/to/psx/target/release/psx --root /path/to/psx mcp
+claude mcp add --scope user -e PSX_SIGS_DIR=/path/to/psx/external/psx_psyq_signatures \
+  psx -- /path/to/psx/target/release/psx mcp
 ```
+
+Open Claude Code in the game study directory: without `--root`, the server's default
+project is the client's workspace root (or its working directory). Add `--root DIR`
+before `mcp` only to pin one project; `mcp --require-project-root` instead makes every
+call name its project. See [agent workflow](docs/agent-workflow.md#isolate-game-studies).
 
 ## Where to go next
 
