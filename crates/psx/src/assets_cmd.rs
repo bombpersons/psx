@@ -347,12 +347,13 @@ pub fn scan_assets(a: &crate::commands::AssetsScanArgs, ctx: &crate::commands::C
 
 /// `assets extract`.
 pub fn extract_assets(a: &crate::commands::AssetsExtractArgs, ctx: &crate::commands::Ctx) -> R<Value> {
+    crate::page::validate(a.limit).map_err(MediaError::Malformed)?;
     let parsers = a.parsers.build(ctx, a.archive.as_deref())?;
     let texture_parser = parser::Spec::new(a.texture_parser.as_ref(), &a.texture_parser_args, a.parsers.parser_timeout)?;
     if texture_parser.is_some() && a.textures.is_empty() {
         return Err(MediaError::Malformed("--texture-parser requires at least one --textures source".into()));
     }
-    extract_cmd(ExtractArgs {
+    let full = extract_cmd(ExtractArgs {
         source: &a.source,
         out: &a.out,
         kinds: &kinds(&a.kinds)?,
@@ -363,7 +364,89 @@ pub fn extract_assets(a: &crate::commands::AssetsExtractArgs, ctx: &crate::comma
         entry: a.entry,
         parsers: &parsers,
         texture_parser: texture_parser.as_ref(),
-    })
+    })?;
+    extraction_response(full, &a.out, a.brief, a.report_offset, a.limit)
+}
+
+/// Persist complete conversion evidence before trimming any response lists.
+fn extraction_response(mut full: Value, out: &Path, brief: bool, offset: usize, limit: usize) -> R<Value> {
+    let mut kinds = BTreeMap::<String, usize>::new();
+    let mut outputs = 0;
+    let mut warnings = 0;
+    for key in ["assets", "entries"] {
+        for row in full.get_mut(key).and_then(Value::as_array_mut).into_iter().flatten() {
+            let mut additional = Vec::new();
+            for page in row["details"]["texture_pages"].as_array().into_iter().flatten() {
+                if let Some(path) = page["png"].as_str() { additional.push(json!({"path":path,"role":"texture_page"})); }
+            }
+            for upload in row["uploads"].as_array().into_iter().flatten() {
+                if let Some(path) = upload["path"].as_str() { additional.push(json!({"path":path,"role":"vram_words"})); }
+            }
+            if let Some(files) = row.get_mut("outputs").and_then(Value::as_array_mut) {
+                for extra in additional {
+                    if !files.iter().any(|f| f["path"] == extra["path"]) { files.push(extra); }
+                }
+                for file in files {
+                    if let Some(path) = file["path"].as_str() {
+                        let path = PathBuf::from(path);
+                        file["sha256"] = json!(psx_media::disc::sha256_file(&path)?);
+                        file["bytes"] = json!(std::fs::metadata(&path).map_err(|e| MediaError::io(&path, e))?.len());
+                    }
+                }
+            }
+            *kinds.entry(row["kind"].as_str().unwrap_or("archive_entry").into()).or_default() += 1;
+            outputs += row["outputs"].as_array().map_or(0, Vec::len);
+            warnings += usize::from(row["details"]["warning"].is_string());
+        }
+    }
+    full["summary"] = json!({"records":full["extracted"],"output_files":outputs,"by_kind":kinds,"warnings":warnings});
+    std::fs::create_dir_all(out).map_err(|e| MediaError::io(out, e))?;
+    let bytes = serde_json::to_vec_pretty(&full).unwrap();
+    let hash = psx_media::disc::sha256_bytes(&bytes);
+    let manifest = std::path::absolute(out).map_err(|e| MediaError::io(out, e))?
+        .join(format!("extraction-{hash}.json"));
+    if manifest.exists() {
+        if std::fs::read(&manifest).map_err(|e| MediaError::io(&manifest, e))? != bytes {
+            return Err(MediaError::Malformed(format!("extraction manifest changed: {}", manifest.display())));
+        }
+    } else {
+        let staged = out.join(format!(".extraction-{}{}.tmp", std::process::id(), crate::instance_suffix()));
+        write(&staged, &bytes)?;
+        if let Err(e) = std::fs::rename(&staged, &manifest) {
+            let _ = std::fs::remove_file(&staged);
+            if std::fs::read(&manifest).ok().as_deref() != Some(bytes.as_slice()) {
+                return Err(MediaError::io(&manifest, e));
+            }
+        }
+    }
+    let mut response = full;
+    for key in ["assets", "entries", "texture_sources"] {
+        if let Some(rows) = response[key].as_array() {
+            let total = rows.len();
+            let mut page: Vec<_> = rows.iter().skip(offset).take(if brief { 0 } else { limit }).cloned().collect();
+            for row in &mut page {
+                for field in ["outputs", "uploads", "hits", "upload_streams"] {
+                    if let Some(values) = row[field].as_array() {
+                        let total = values.len();
+                        row[format!("{field}_page")] = crate::page::metadata(total, 0, total.min(limit), limit);
+                        row[field].as_array_mut().unwrap().truncate(limit);
+                    }
+                }
+                if let Some(pages) = row.get_mut("details").and_then(|d| d.get_mut("texture_pages")).and_then(Value::as_array_mut) {
+                    let total = pages.len();
+                    pages.truncate(limit);
+                    row["details"]["texture_pages_page"] = crate::page::metadata(total, 0, total.min(limit), limit);
+                }
+            }
+            response[format!("{key}_page")] = crate::page::metadata(total, offset, page.len(), limit);
+            response[key] = json!(page);
+        }
+    }
+    response["manifest"] = crate::artifact::descriptor(&manifest).map_err(|e| MediaError::io(&manifest, e))?;
+    let list = if response["entries_page"]["total"].as_u64().unwrap_or(0) > 0 { "entries" } else { "assets" };
+    response["next_call"] = json!({"tool":"artifact_read","arguments":{"path":manifest,"pointer":format!("/{list}"),"offset":offset,"limit":limit}});
+    response["brief"] = json!(brief);
+    Ok(response)
 }
 
 fn hex(s: &Option<String>) -> R<Option<u32>> {

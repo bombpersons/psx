@@ -91,6 +91,9 @@ target/release/psx template create ../my-game
 cd ../my-game && cargo run
 ```
 
+For workflow help, run `psx guide` or `psx guide --topic input`. The MCP `guide`
+tool provides the same built-in guidance without installing an agent skill.
+
 To hook it up to Claude Code:
 
 ```bash

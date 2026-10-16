@@ -37,14 +37,23 @@ pub struct Outcome {
 }
 
 impl Outcome {
+    pub(crate) fn with_path_context(mut self, ctx: &Ctx) -> Self {
+        if self.value["error"]["code"] == "io_error" {
+            self.value["error"]["project_root"] = json!(ctx.root);
+            self.value["error"]["path_resolution"] = json!("Relative paths are resolved against project_root, not the client working directory.");
+        }
+        self
+    }
+
     pub(crate) fn media(r: psx_media::Result<Value>) -> Self {
         match r {
             Ok(value) => Outcome { value, exit: 0, pretty: true, text: false },
-            Err(e) => Outcome {
-                value: json!({"error": {"code": e.code(), "message": e.to_string()}}),
-                exit: if matches!(e, MediaError::Unsupported(_)) { 2 } else { 1 },
-                pretty: false,
-                text: false,
+            Err(e) => {
+                let mut value = json!({"error": {"code": e.code(), "message": e.to_string()}});
+                if let MediaError::Io { path, .. } = &e {
+                    value["error"]["path"] = json!(std::path::absolute(path).unwrap_or_else(|_| path.clone()));
+                }
+                Outcome { value, exit: if matches!(e, MediaError::Unsupported(_)) { 2 } else { 1 }, pretty: false, text: false }
             },
         }
     }
@@ -403,6 +412,19 @@ pub struct AssetsExtractArgs {
     /// Output directory.
     #[arg(short, long)]
     pub out: PathBuf,
+    /// Return summary counts and a manifest read call, without per-asset results.
+    #[arg(long)]
+    #[serde(default)]
+    pub brief: bool,
+    /// Offset in returned conversion records; extraction still processes every selected asset.
+    /// Continue by reading the saved manifest rather than repeating extraction.
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub report_offset: usize,
+    /// Maximum returned records and nested output rows (1..=1000); full results go to the manifest.
+    #[arg(long, default_value_t = crate::page::default_limit())]
+    #[serde(default = "crate::page::default_limit")]
+    pub limit: usize,
     /// Only these kinds (tim, tmd, vab, vag); repeatable.
     #[arg(long = "kind")]
     #[serde(default)]
@@ -571,7 +593,8 @@ pub struct RunCmdArgs {
     #[arg(long, default_value_t = d_frames())]
     #[serde(default = "d_frames")]
     pub frames: u32,
-    /// JSON array of {"frame": n, "buttons": ["CROSS", ...]}; frames count from the run start.
+    /// Path to a JSON file containing complete pad states. Frames are relative to this run's start,
+    /// including after --from-state. Use --input for an inline JSON array instead.
     #[arg(long)]
     pub replay: Option<PathBuf>,
     /// Inline JSON array of complete pad states, e.g. '[{"frame":0,"buttons":["CROSS"],"until":5}]'.
@@ -669,7 +692,7 @@ fn brief(v: &Value) -> Value {
         let g = &v["gpu_frame"];
         let mut summary = serde_json::Map::new();
         for key in
-            ["error", "status", "reason", "mode", "search", "frame", "run_frame", "absolute_frame", "complete", "commands", "draw_commands"]
+            ["error", "status", "reason", "mode", "search", "frame", "run_frame", "absolute_frame", "complete", "commands", "draw_commands", "draw_filter", "content"]
         {
             if let Some(value) = g.get(key) {
                 summary.insert(key.into(), value.clone());

@@ -91,7 +91,8 @@ pub fn capabilities(root: &Path) -> Value {
         "native":{"available":true,"run":true,"checkpoints":true,"write_watches":true,"read_watches":true,"instruction_trace":true,"gpu_capture":true,"samples":true,"pokes":true,"screenshots":true},
         "redux":{"available":psx_redux::Backend::from_project(root).is_ok(),"requires":"PCSX-Redux installation (PSX_REDUX_BIN or external/pcsx-redux)","run":true,"checkpoints":true,"write_watches":true,"read_watches":false,"instruction_trace":false,"gpu_capture":false,"samples":false,"pokes":false,"screenshots":true},
     "ghidra":{"optional":true,"runtime_snapshots":true,"rename_comments":true,"verified_symbol_export":true,"same_analysis_queue":true},
-    "agent_interface":{"artifact_read":true,"inline_input":true,"explicit_release_boundary":true,"query_pagination":true,"coverage_metadata":true},
+    "agent_interface":{"artifact_read":true,"inline_input":true,"explicit_release_boundary":true,"query_pagination":true,"coverage_metadata":true,
+        "per_call_project_root":true,"extraction_manifests":true,"native_input_application_log":true,"gpu_draw_filters":true},
         "setup":{"bios_list":true,"bios_install_local":true,"bios_download_explicit":true,"automatic_downloads":false}
     })
 }
@@ -311,14 +312,21 @@ impl Op for ArgsContext {
             }
         }
         let setup = r.setup_error().map(|v| v["error"].clone());
-        let mut next_calls = vec![json!({"tool":"template_create","arguments":{"dest":"game"}})];
+        let mut template = json!({"tool":"template_create","arguments":{"dest":"game"}});
+        if let Some(region) = r.region {
+            template["arguments"]["region"] = json!(match region {
+                bios::Region::Pal => "pal",
+                bios::Region::NtscU | bios::Region::NtscJ => "ntsc",
+            });
+        }
+        let mut next_calls = vec![template];
         if setup.is_none() {
             next_calls.push(json!({"tool":"run","arguments":{"media":r.media,"bios":r.bios,"backend":r.backend,"frames":60,"save_state":true,"brief":true,"return_screen":true}}));
         }
         Outcome::media(Ok(json!({"status":if setup.is_none(){"ready"}else{"needs_setup"},"build":build(),"project_root":ctx.root,
             "config":profile,"saved":self.save,"output_root":ctx.root.join(".psx"),"bios_dir":bios::store(),
             "resolved":{"media":r.media,"bios":r.bios,"bios_selection":r.bios_reason,"backend":r.backend,"disc_region_hint":r.region.map(|r|r.hint())},
-            "selected_bios":selected_info,"bios_candidates":r.candidates,"state":r.state,"setup":setup,"capabilities":capabilities(&ctx.root),"warnings":r.warnings,
+            "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),"state":r.state,"setup":setup,"capabilities":capabilities(&ctx.root),"warnings":r.warnings,
             "next_calls":next_calls})))
     }
 }

@@ -15,6 +15,12 @@ integer behaviour only where the game's feel depends on it, and cite the evidenc
 
 `psx-media` does static inspection of discs and executables. It is pure Rust and needs no emulator.
 
+Call MCP `guide({})` for a built-in workflow overview, or
+`guide({"topic":"input"})` for focused help. CLI equivalents are `psx guide` and
+`psx guide --topic input`. Topics include setup, input, code, assets, bevy and
+troubleshooting. Guidance ships in the executable and needs no skill loader,
+checkout or network; it does not run an investigation or change project settings.
+
 Start with MCP `context({})` or `psx context --image 'media/Game.cue'` to discover
 the running build, workspace, BIOS candidates and backend capabilities. One-time
 setup uses `bios_list` / `bios_install`, or `psx bios list` / `psx bios install`.
@@ -26,6 +32,7 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 
 | Command | What it gives you |
 |---|---|
+| `psx guide [--topic setup\|input\|code\|assets\|bevy\|troubleshooting]` | Embedded workflow guidance, topic navigation, build identity and the current path-resolution root; MCP `guide` exposes the same documentation |
 | `psx artifact-read PATH [--pointer /rows --offset N --limit N]` | Read artifact directories, JSON, logs, samples, text, raw bytes or PNGs. MCP `artifact_read` attaches PNGs automatically. Stream filters and cursors keep evidence bounded; see [agent workflow](docs/agent-workflow.md) |
 | `psx disc <image.cue> [--hash]` | Tracks, volume, file counts, SYSTEM.CNF and boot EXE header |
 | `psx ls <image> [--filter NAME --offset N --limit N]` | Paginated ISO9660 entries: LBA, size, CD-XA attributes, streamed flag; full totals and index coverage |
@@ -83,6 +90,12 @@ target/release/psx run "media/Mega Man 8.cue" --bios bios/scph7502.bin --backend
 ```
 
 Paths outside the root must then be absolute (`--replay /abs/cross.json`).
+
+Over MCP, every tool also accepts `project_root` for one isolated call. Set it to
+an existing directory (absolute or relative to the server default); keep it on
+subsequent calls. Defaults and outputs stay in that study, and returned next calls
+retain the selection. The server's default and concurrent calls are unaffected.
+See [project isolation](docs/agent-workflow.md#isolate-game-studies).
 
 ### Agent investigation calls
 
@@ -203,7 +216,8 @@ cargo build --release -p psx
 claude mcp add psx -- /path/to/psx/target/release/psx --root /path/to/psx mcp
 ```
 
-Tools: `disc`, `ls`, `extract`, `exe`, `sector`, `addr`, `xa`, `str`, `assets_scan`,
+Tools: `guide`, `context`, `bios_list`, `bios_install`, `artifact_read`,
+`disc`, `ls`, `extract`, `exe`, `sector`, `addr`, `xa`, `str`, `assets_scan`,
 `assets_extract`, `memcard`, `textures`,
 `run`, `native`, `loads`, `symbols`, `disasm`, `xrefs`, `ram_diff`, `ram_search`,
 `ram_view`, `lockstep`, `template_create`, `gpu_replay`, `vram_diff`,
@@ -214,8 +228,10 @@ Tools: `disc`, `ls`, `extract`, `exe`, `sector`, `addr`, `xa`, `str`, `assets_sc
   `memcard1`, `from_state`); positional arguments are named fields (`image`, `source`,
   `run_dir`); repeatable flags are arrays (`watch`, `symbols`, `trace_range`). Unknown
   arguments are rejected.
-- A tool's `structuredContent` is exactly the JSON the CLI prints for the same command
-  (`tests/mcp_stdio.rs` checks this); errors are `{"error": {"code", "message"}}`
+- Without `project_root`, a tool's `structuredContent` is the JSON the CLI prints
+  for the same command (`tests/mcp_stdio.rs` checks this). Scoped calls use the
+  selected directory and additionally identify it in results/continuation calls.
+  Errors include `{"error": {"code", "message"}}`
   with `isError: true`. A partial run or a lockstep divergence is a result, not an error.
   The one exception is `text: true` (`disasm`, `xrefs`, `ram_view`): the CLI prints only
   the listing, while the tool returns text plus metadata. Disassembly/xref text

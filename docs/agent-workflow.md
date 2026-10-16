@@ -1,9 +1,39 @@
 # Agent investigation workflow
 
+The same workflow guidance is available inside the executable: call MCP
+`guide({})` or CLI `psx guide` for an overview and topic navigation. Use
+`guide({"topic":"input"})` / `psx guide --topic input` for a specific workflow;
+other topics are setup, code, assets, bevy and troubleshooting. The guide reads
+no project config and creates no files, so it remains available when setup is
+broken. `context` performs actual installation/default discovery.
+
 Start with `context` to resolve project defaults and capabilities. Then run from
 a checkpoint, inspect bounded evidence through `artifact_read`, and follow writer
 PCs into disassembly or Ghidra. CLI arguments below have equivalent MCP keys;
 repeatable flags become arrays. Paths resolve against the configured project root.
+
+## Isolate game studies
+
+Every MCP tool accepts an optional `project_root`, an existing directory specified
+absolutely or relative to the server's default root:
+
+```json
+{"project_root":"/absolute/studies/tomb-raider","image":"Tomb Raider.cue"}
+```
+
+Use that with `context`, then retain `project_root` on subsequent calls. A scoped
+call runs in a separate process: relative paths, saved `.psx/project.json`
+defaults, and default outputs belong to that project. Concurrent calls cannot
+change one another's CWD or the server default. Returned next calls keep the
+scope, including artifact reads; scoped responses identify `project_root`.
+`context(save:true)` writes only that selected project's defaults. Absolute
+input paths can still refer to shared media or tools. CLI equivalent:
+`psx --root /absolute/studies/tomb-raider context --image 'Tomb Raider.cue'`.
+
+IO errors expose the project root/path-resolution base; filesystem errors also
+include an absolute `error.path` where available. A shared BIOS directory remains
+shared deliberately; use absolute `PSX_BIOS_DIR`, `PSX_REDUX_BIN` or
+`PSX_GHIDRA_HOME` when a shared installation lives outside each study.
 
 ## Inline controller input
 
@@ -51,6 +81,52 @@ The full report's `input.events` records the normalized schedule, including
 generated releases. Brief output previews eight events and reports their page
 metadata. Input, poke, GPU and trace-window frames count from this run's start;
 log `frame` values are absolute, and `run_frame` values are relative.
+
+Native reports also include `input.application`: scheduled, applied and pending
+event counts. When a schedule was supplied, `input.jsonl` records every actual
+application with its schedule index, requested relative frame, actual `run_frame`,
+absolute `frame`, buttons and sticks. Final-boundary releases are included.
+Timed-out runs retain pending counts instead of claiming the whole schedule ran.
+This observes scheduler application, not whether the game polled each button.
+Redux marks application observation unavailable rather than inferring it.
+
+## Choose useful GPU frames
+
+An exact `gpu_frame` can successfully capture an empty frame. Inspect
+`gpu_frame.content`: `empty`, `no_draws`, `fills_only`, `primitives`, or
+`textured_primitives`, with counts for fills, primitives and textured primitives.
+Capture completion and content classification are separate.
+
+`gpu_next_draw` keeps its original default: any draw, including fills. Add
+`gpu_draw_filter:"primitives"` to skip fill-only frames, or `"textured"` to require
+a textured polygon/rectangle. CLI: `--gpu-next-draw --gpu-draw-filter textured`.
+The filter requires next-draw mode and shares the existing bounded search window
+and run budget. A textured draw could still be a BIOS screen or logo; it does not
+establish gameplay readiness. Use snapshots/checkpoints and observed game events
+to locate the state needed for an experiment.
+
+## Bound extraction results
+
+`assets_extract` / `psx assets extract` writes a complete, content-bound
+`extraction-<sha256>.json` manifest in `out`. Identical conversion results reuse
+that manifest; different results have distinct manifests. Original asset bytes
+and provenance remain intact.
+
+Use `brief:true` / `--brief` for counts and a manifest read call. Otherwise,
+`limit` (default 100, range 1..=1000) bounds returned records and nested output
+rows; `report_offset` chooses the first record. The existing hex `offset` still
+selects a source asset. Response paging never limits the actual conversions.
+`assets_page`, `entries_page` and other list-page metadata describe truncation.
+
+Follow `next_call` to read the full manifest through `artifact_read`, then use its
+cursor to continue. Do not repeat extraction merely to get another response
+page. Nested `outputs`, uploads and texture-page lists are complete in the
+manifest; use JSON pointers to inspect a specific record or list. The summary's
+output-file count excludes the manifest itself.
+Manifest output records include file sizes and SHA-256s, including model texture
+pages and raw upload words. Reusing an output directory can replace conversions;
+the retained manifests let a consumer detect when a file no longer matches an
+earlier extraction's bytes.
 
 ## Read artifacts directly
 
