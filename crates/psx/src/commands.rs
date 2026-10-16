@@ -635,8 +635,8 @@ pub struct RunCmdArgs {
     #[arg(long)]
     #[serde(default)]
     pub trace_bios: bool,
-    /// Native: log SPU voice key on/off (settings, sample hash, storing PC), each voice's
-    /// first END block and sound RAM uploads to spu.jsonl; the report groups key ons by sample.
+    /// Native: log sound voice key on/off, sample ends and sound RAM uploads to spu.jsonl.
+    /// Key ons carry settings, the storing PC and a sample hash; the report groups them by sample.
     #[arg(long)]
     #[serde(default)]
     pub trace_spu: bool,
@@ -648,9 +648,9 @@ pub struct RunCmdArgs {
     #[arg(long, default_value_t = d_max_events())]
     #[serde(default = "d_max_events")]
     pub max_events: u32,
-    /// Emulator: `redux` (PCSX-Redux oracle worker; needs external/pcsx-redux) or
-    /// `native` (default, the in-tree psx-core: exact watches, --trace, --gpu-frame, --sample, --poke,
-    /// --snapshot-every, memory cards, native states).
+    /// Emulator: `native` (default) or `redux` (the PCSX-Redux oracle). Redux needs
+    /// external/pcsx-redux and lacks --trace, --gpu-frame, --sample, --poke, --snapshot-every,
+    /// memory cards and native states.
     #[arg(long)]
     #[schemars(with = "Option<crate::context::Backend>")]
     pub backend: Option<String>,
@@ -668,6 +668,11 @@ pub struct RunCmdArgs {
     #[arg(long)]
     #[serde(default)]
     pub brief: bool,
+    /// Print only status, frames, the report/screen paths and counts for the requested
+    /// observations, without artifact descriptors. Overrides --brief.
+    #[arg(long)]
+    #[serde(default)]
+    pub summary: bool,
 }
 
 /// The `--brief` view of a run report.
@@ -729,7 +734,7 @@ impl Op for RunCmdArgs {
             return crate::context::failed(e);
         }
         let bios = resolved.bios.unwrap();
-        let short = a.brief;
+        let (short, summarise) = (a.brief, a.summary);
         let mut out = Outcome::pair(crate::run::run(
             &ctx.root,
             crate::run::RunArgs {
@@ -773,11 +778,59 @@ impl Op for RunCmdArgs {
             out.value["report"] = json!(p);
             let _ = std::fs::write(&p, serde_json::to_vec_pretty(&out.value).unwrap_or_default());
         }
-        if short {
+        if summarise {
+            out.value = summary(&out.value);
+        } else if short {
             out.value = brief(&out.value);
         }
         out
     }
+}
+
+/// `--summary`: paths and counts only. Each observation appears when it was requested.
+fn summary(v: &Value) -> Value {
+    if v.get("error").is_some() {
+        return v.clone();
+    }
+    let pick = |section: &Value, keys: &[&str]| {
+        Value::Object(keys.iter().filter_map(|k| section.get(*k).map(|value| (k.to_string(), value.clone()))).collect())
+    };
+    let mut s = json!({
+        "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "report": v["report"],
+        "frames": pick(&v["frames"], &["requested", "reached", "start"]),
+        "screen": v["files"]["screen.png"]["path"],
+        "next_call": {"tool": "artifact_read", "arguments": {"path": v["run_dir"]}},
+    });
+    if let Some(state) = v["files"]["state.bin"]["path"].as_str() {
+        s["state"] = json!(state);
+    }
+    if v["watch"]["enabled"] == true {
+        s["watch"] = pick(&v["watch"], &["hits", "recorded", "complete", "file"]);
+    }
+    let sections: [(&str, &[&str]); 7] = [
+        ("read_watch", &["hits", "recorded", "complete", "file"]),
+        ("samples", &["file", "rows"]),
+        ("spu", &["file", "events", "recorded", "complete"]),
+        ("trace", &["instructions", "lines", "lines_dropped"]),
+        ("gpu_frame", &["status", "reason", "frame", "run_frame", "draw_commands"]),
+        ("screens", &["dir", "count"]),
+        ("states", &[]),
+    ];
+    for (key, keys) in sections {
+        if !v[key].is_null() {
+            s[key] = if keys.is_empty() { v[key].clone() } else { pick(&v[key], keys) };
+        }
+    }
+    if v["event_logs"].as_object().is_some_and(|m| !m.is_empty()) {
+        s["event_logs"] = v["event_logs"].clone();
+    }
+    if let Some(pokes) = v["pokes"].as_array() {
+        s["pokes"] = json!(pokes.len());
+    }
+    if v["input"]["application"]["scheduled_events"].as_u64().is_some_and(|n| n > 0) {
+        s["input"] = pick(&v["input"]["application"], &["scheduled_events", "applied_events", "pending_events"]);
+    }
+    s
 }
 
 #[derive(clap::Args, Deserialize, JsonSchema)]

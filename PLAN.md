@@ -196,8 +196,17 @@ waveforms). Backlog: SEQ/SEP sequence decoding to MIDI or an event list, and
 template playback of decoded VAB samples with PS1 character (pitch, ADSR,
 reverb), validated against captured `native wav` output.
 
-Still open: shorter MCP descriptions/shared schema guidance; typed sample
-arguments; an optional run summary mode with fewer artifact descriptors; and
+MCP verbosity (2026-10-17): tool definitions cut from about 75 KB to 49 KB
+(roughly 19K to 12K tokens). Tool descriptions are one or two sentences pointing
+at guide topics (new topic `run`); parameter descriptions keep their first
+sentence over MCP; `project_root` is one line; `$schema` and full-range integer
+bounds are gone; server instructions point at the guide. A unit test holds the
+definitions under 50 KB and each description under 400 bytes. `run summary`
+returns status, paths and counts only (1.3 KB against 13 KB for brief on a Mega
+Man 8 run). Parameter text is the remaining bulk; halving further would mean
+dropping argument syntax.
+
+Still open: typed sample arguments; and
 measuring/aligning starter dependency features to reduce duplicate compilation.
 Keep per-call project isolation and strict standard-format parsing intact.
 

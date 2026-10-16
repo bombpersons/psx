@@ -27,6 +27,15 @@ gameplay sound; banks often share waveforms, so one hash may match several.
 Key-ons usually come from one sound-driver routine; trace the request (watch
 the driver's queue) to find the gameplay code that asked for a sound.
 
+Archives: validated DOT-T sector archives and Croc sibling .DIR indexes are
+recognised automatically; archive:dot-t forces validation and archive:none
+disables indexing. files[].archive lists every zero-based entry, including empty
+ones; hits keep the parent-file offset plus entry index and relative offset.
+assets_extract entry:N writes one complete raw entry without interpreting it
+(one source file; not with offset, kinds or textures). ram_base overrides RAM
+address mapping for dumps. TMD textures come from this file or extra textures
+sources; texture_parser adapts those sources first.
+
 Custom containers, compression and models need format evidence. Generate a
 working scaffold with template_parser_create: archive parsers index unchanged
 source spans; asset parsers unwrap/decompress standard payloads or raw VRAM

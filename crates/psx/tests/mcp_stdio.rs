@@ -854,6 +854,15 @@ fn spu_trace_links_key_ons_to_sample_hashes_and_uploads_through_cli_and_mcp() {
     assert_eq!(events.iter().map(|e| e["event"].as_str().unwrap()).collect::<Vec<_>>(), ["upload", "key_on", "end"]);
     assert_eq!(events[1]["pc"], 0xbfc0_0000u32 + 4 * 17, "the key-on store");
     assert_eq!(events[1]["rate_hz"], 44_100.0);
+    // summary keeps paths and counts only, and still attaches the screen.
+    let (summary, error, blocks) = rpc.tool("run", json!({"bios":"bios.bin","backend":"native","from_state":"start.bin",
+        "frames":2,"trace_spu":true,"summary":true,"return_screen":true,"out":"mcp-summary"}));
+    assert!(!error, "{summary}");
+    assert_eq!(summary["spu"]["events"], spu["events"]);
+    assert_eq!(summary["next_call"]["tool"], "artifact_read");
+    assert!(summary.get("artifacts").is_none() && summary.get("watch").is_none(), "{summary}");
+    assert!(summary.to_string().len() < 2048, "{summary}");
+    assert!(blocks.iter().any(|b| b["type"] == "image"), "summary must still attach the requested screen");
     let (redux, ok) = cli(&root, &["run", "--bios", "bios.bin", "--backend", "redux", "--frames", "1", "--trace-spu"]);
     assert!(!ok && redux["error"]["code"] == "unsupported", "{redux}");
     drop(rpc);
