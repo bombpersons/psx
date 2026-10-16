@@ -217,6 +217,9 @@ pub fn run(o: Options) -> (bool, Value) {
         reached,
         json!({
             "status": if reached { "frames_reached" } else if timed_out { "timeout" } else { "step_budget_exhausted" },
+            "video": {"region_at_capture":if m.bus.pal() { "PAL" } else { "NTSC" },"mode":m.bus.gpu.display.mode,
+                "cycles_per_vblank_at_capture":m.bus.frame_cycles(),"width":m.bus.gpu.display.width(),"height":m.bus.gpu.display.height(),
+                "interlaced":m.bus.gpu.display.interlaced_480(),"note":"GPU mode at capture; disc region and earlier boot modes may differ."},
             "frames": {"requested": frames, "reached": m.bus.frames, "region": if m.bus.pal() { "PAL" } else { "NTSC" }},
             "instructions": steps,
             "cycles": m.bus.now,
@@ -230,8 +233,11 @@ pub fn run(o: Options) -> (bool, Value) {
                 "reverb": {"master": m.bus.spu.read16(0x1AA) & 0x80 != 0, "cd": m.bus.spu.read16(0x1AA) & 4 != 0,
                     "eon": m.bus.spu.read16(0x198) as u32 | (m.bus.spu.read16(0x19A) as u32) << 16,
                     "work_area": (m.bus.spu.read16(0x1A2) as u32) << 3, "out": [m.bus.spu.read16(0x184) as i16, m.bus.spu.read16(0x186) as i16]}},
-            "cdrom": {"disc": disc, "sectors_delivered": m.bus.cdrom.sectors_delivered, "xa_sectors": m.bus.cdrom.xa_sectors, "unknown_commands": m.bus.cdrom.unknown_commands,
-                "recent_commands": m.bus.cdrom.recent.iter().rev().take(24).rev().map(|r| format!("frame~{} {:02X} {:02X?} -> INT{:?} x{}", r.time / m.bus.frame_cycles(), r.command, r.params, r.ints, r.repeats)).collect::<Vec<_>>()},
+            "cdrom": {"command_history": m.bus.cdrom.recent.iter().rev().take(24).rev().map(|r| json!({
+                    "frame":r.frame,"cycle":r.time,"last_frame":r.last_frame,"last_cycle":r.last_time,
+                    "command":r.command,"command_hex":format!("0x{:02X}",r.command),"params":r.params,"interrupts":r.ints,"repeats":r.repeats
+                })).collect::<Vec<_>>(), "disc": disc, "sectors_delivered": m.bus.cdrom.sectors_delivered, "xa_sectors": m.bus.cdrom.xa_sectors, "unknown_commands": m.bus.cdrom.unknown_commands,
+                "recent_commands": m.bus.cdrom.recent.iter().rev().take(24).rev().map(|r| format!("frame {} {:02X} {:02X?} -> INT{:?} x{}", r.frame.map_or_else(|| "unknown".into(), |f| f.to_string()), r.command, r.params, r.ints, r.repeats)).collect::<Vec<_>>()},
             "last_frames_profile": {
                 "hot_pcs": hot.iter().take(12).map(|(pc, n)| json!({"pc": format!("0x{pc:08X}"), "count": n, "asm": disasm(m.bus.read(*pc, Width::Word).unwrap_or(0), *pc)})).collect::<Vec<_>>(),
                 "io": hot_io.iter().take(12).map(|((a, w), n)| json!({"addr": format!("0x{a:08X}"), "write": w, "count": n})).collect::<Vec<_>>(),

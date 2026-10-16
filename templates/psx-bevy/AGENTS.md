@@ -45,10 +45,20 @@ src/<feature>/...     rules (components + systems, no rendering) apart from pres
 tests/<feature>.rs    headless tick tests against recorded trajectories
 tools/                scripts that record evidence (trajectories, tables); not game code
 src/psx, shell.rs, controller.rs, viewer.rs, testing.rs, dev_mcp.rs   the template
+src/controller/bindings.rs, controls/   rebinding, explicit settings storage and the reusable example menu
 ```
 
 - Start a new game by deleting `src/demo/`, removing it from `GamePlugin` and
   `lib.rs`, and adding your own feature modules. Nothing else depends on it.
+- `ControlsPlugin` is independent of the demo. Integrate it into your game's
+  options flow (`global_shortcuts: false`, `ControlsMenu::open()`), or use the
+  `ControllerBindings`/`BindingStore` API with your own UI. Keep gameplay on
+  logical `ControllerState`; physical rebinding belongs at this boundary.
+  Insert custom defaults before adding the controls plugin. Modal interfaces
+  capture `InputFocus` before `PhysicalInputSystems::Sample`; clear latched input
+  and wait for physical release before resuming. See README, "Rebinding".
+- Explicitly import `crate::controller::Button` when using Bevy and game preludes
+  together: Bevy UI also exports a `Button` type.
 - Split each feature into a *rules* plugin (state, physics, decisions; no
   meshes, sprites or `AssetServer`) and a *presentation* part (spawning
   visuals, animation, camera). Rules then run headless in tests.

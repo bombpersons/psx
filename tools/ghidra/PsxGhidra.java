@@ -3,6 +3,8 @@
 // @category PSX
 import com.google.gson.*;
 import ghidra.app.util.headless.HeadlessScript;
+import ghidra.app.cmd.disassemble.DisassembleCommand;
+import ghidra.program.disassemble.Disassembler;
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;
@@ -30,6 +32,7 @@ public class PsxGhidra extends HeadlessScript {
         out.addProperty("name", f.getName());
         out.addProperty("name_source", f.getSymbol().getSource().toString());
         out.addProperty("signature", f.getSignature().toString());
+        out.addProperty("comment", f.getComment());
         var body = new JsonArray();
         for (var range : f.getBody()) {
             var r = new JsonObject();
@@ -45,7 +48,20 @@ public class PsxGhidra extends HeadlessScript {
         var block = memory.getBlock(address("base"));
         block.setRead(true);
         block.setWrite(true);
-        block.setExecute(true);
+        block.setExecute(false);
+        var code = new AddressSet();
+        for (var item : request.getAsJsonArray("code_ranges")) {
+            var r = item.getAsJsonArray();
+            var lo = toAddr(r.get(0).getAsLong());
+            var hi = toAddr(r.get(1).getAsLong() - 1);
+            code.add(lo, hi);
+            var part = memory.getBlock(lo);
+            if (!part.getStart().equals(lo)) { memory.split(part, lo); part = memory.getBlock(lo); }
+            if (part.getEnd().compareTo(hi) > 0) memory.split(part, hi.add(1));
+            part.setExecute(true);
+        }
+        currentProgram.getOptions(Program.DISASSEMBLER_PROPERTIES).setBoolean(
+            Disassembler.RESTRICT_DISASSEMBLY_TO_EXECUTE_MEMORY_PROPERTY, true);
         long bssSize = request.get("bss_size").getAsLong();
         if (bssSize != 0) {
             var bss = memory.createUninitializedBlock("bss", address("bss_addr"), bssSize, false);
@@ -56,19 +72,21 @@ public class PsxGhidra extends HeadlessScript {
         long gp = request.get("gp").getAsLong();
         if (gp != 0) {
             currentProgram.getProgramContext().setValue(currentProgram.getRegister("gp"),
-                block.getStart(), block.getEnd(), BigInteger.valueOf(gp));
+                toAddr(request.get("base").getAsLong()), toAddr(request.get("base").getAsLong() + request.get("size").getAsLong() - 1), BigInteger.valueOf(gp));
         }
-        var entry = address("entry");
-        currentProgram.getSymbolTable().addExternalEntryPoint(entry);
-        disassemble(entry);
-        if (getFunctionAt(entry) == null) createFunction(entry, "psx_entry");
+        for (var item : request.getAsJsonArray("entries")) {
+            var entry = toAddr(item.getAsLong());
+            currentProgram.getSymbolTable().addExternalEntryPoint(entry);
+            new DisassembleCommand(entry, code, true).applyTo(currentProgram, monitor);
+            if (getFunctionAt(entry) == null) createFunction(entry, null);
+        }
         for (var item : request.getAsJsonArray("symbols")) {
             monitor.checkCancelled();
             var s = item.getAsJsonObject();
             var at = toAddr(s.get("address").getAsLong());
             try {
                 if (s.get("kind").getAsString().equals("function")) {
-                    disassemble(at);
+                    new DisassembleCommand(at, code, true).applyTo(currentProgram, monitor);
                     var f = getFunctionAt(at);
                     if (f == null) f = createFunction(at, null);
                     if (f == null) throw new IOException("function overlaps existing code");
@@ -121,6 +139,28 @@ public class PsxGhidra extends HeadlessScript {
         index.addProperty("rfe_instructions", rfe);
         write("index", index);
     }
+    private void annotate() throws Exception {
+        int transaction = currentProgram.startTransaction("psx annotations");
+        boolean committed = false;
+        try {
+            // Vacate all names first so swaps and generated-name displacement are deterministic.
+            for (var item : request.getAsJsonArray("patches")) {
+                var p = item.getAsJsonObject();
+                var f = getFunctionAt(toAddr(p.get("address").getAsLong()));
+                if (f == null) throw new IOException("annotation function entry missing");
+                if (p.has("name")) f.setName(null, SourceType.DEFAULT);
+            }
+            for (var item : request.getAsJsonArray("patches")) {
+                var p = item.getAsJsonObject();
+                var f = getFunctionAt(toAddr(p.get("address").getAsLong()));
+                if (p.has("name")) f.setName(p.get("name").getAsString(),
+                    p.has("generated") ? SourceType.ANALYSIS : SourceType.USER_DEFINED);
+                if (p.has("comment")) f.setComment(p.get("comment").getAsString());
+            }
+            committed = true;
+        } finally { currentProgram.endTransaction(transaction, committed); }
+        exportIndex();
+    }
     private void decompile() throws Exception {
         var result = new JsonObject();
         var at = address("addr");
@@ -153,6 +193,7 @@ public class PsxGhidra extends HeadlessScript {
         }
         String mode = request.get("mode").getAsString();
         if (mode.equals("setup")) { setup(); return; }
+        if (mode.equals("annotate")) { annotate(); return; }
         if (mode.equals("export")) exportIndex();
         if (request.has("addr")) decompile();
     }

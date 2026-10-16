@@ -29,7 +29,7 @@ struct Rpc {
 impl Rpc {
     fn start(root: &Path) -> Self {
         let mut child =
-            psx().arg("mcp").current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+            psx().env("PSX_BIOS_DIR",root.join("shared-bios")).arg("mcp").current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
         let input = child.stdin.take();
         let out = child.stdout.take().unwrap();
         let (tx, lines) = mpsc::channel();
@@ -92,7 +92,7 @@ impl Drop for Rpc {
 }
 
 fn cli(root: &Path, args: &[&str]) -> (Value, bool) {
-    let out = psx().args(args).current_dir(root).output().unwrap();
+    let out = psx().env("PSX_BIOS_DIR",root.join("shared-bios")).args(args).current_dir(root).output().unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
     (serde_json::from_str(&text).unwrap_or_else(|e| panic!("CLI {args:?} printed {text:?}: {e}")), out.status.success())
 }
@@ -622,16 +622,27 @@ fn mcp_tools_match_cli() {
         "ghidra_decompile",
         "ghidra_functions",
         "ghidra_xrefs",
+        "ghidra_annotate",
+        "ghidra_export_symbols",
+        "context",
+        "bios_list",
+        "bios_install",
+        "artifact_read",
     ] {
         assert!(names.contains(&want), "missing tool {want}: {names:?}");
     }
     for t in tools {
         assert_eq!(t["inputSchema"]["type"], "object", "{}", t["name"]);
+        assert_eq!(t["inputSchema"]["additionalProperties"], false, "{}", t["name"]);
         assert!(t["description"].as_str().unwrap().len() > 80, "{} needs a real description", t["name"]);
     }
     let run = tools.iter().find(|t| t["name"] == "run").unwrap();
+    assert!(!run["inputSchema"]["required"].as_array().is_some_and(|v|v.iter().any(|f|f=="bios")));
+    let backend_schema=run["inputSchema"]["properties"]["backend"].to_string();
+    assert!(backend_schema.contains("native") && backend_schema.contains("redux"),"{backend_schema}");
     for field in [
         "bios",
+        "input",
         "frames",
         "backend",
         "watch",
@@ -714,7 +725,7 @@ fn mcp_tools_match_cli() {
         (
             "run",
             json!({"bios": "no-such-bios.bin", "backend": "redux", "sample": ["80010000:u32"]}),
-            vec!["run", "--bios", "no-such-bios.bin", "--sample", "80010000:u32"],
+            vec!["run", "--bios", "no-such-bios.bin", "--backend", "redux", "--sample", "80010000:u32"],
         ),
         ("disasm", json!({"source": "tiny.ps-exe", "function": "80010004"}), vec!["disasm", "tiny.ps-exe", "--function", "80010004"]),
         (
@@ -898,9 +909,18 @@ fn ghidra_single_call_and_cached_cli_mcp_parity() {
     std::fs::write(root.join("probe.ps-exe"), ghidra_probe()).unwrap();
     let mut rpc = Rpc::start(&root);
     rpc.response_timeout = Duration::from_secs(310);
-    // Start cold through real MCP, rather than preparing a project in the test.
-    let (first, error, _) = rpc.tool("ghidra_decompile", json!({"source":"probe.ps-exe","addr":"80010048"}));
-    assert!(!error, "{first}");
+    // Two concurrent cold requests for the same analysis must queue and share the import.
+    let id=rpc.next_id;rpc.next_id+=2;
+    for (i,addr) in [(id,"80010048"),(id+1,"80010000")] {
+        rpc.send(json!({"jsonrpc":"2.0","id":i,"method":"tools/call","params":{"name":"ghidra_decompile","arguments":{"source":"probe.ps-exe","addr":addr}}}));
+    }
+    let mut results=std::collections::BTreeMap::new();
+    while results.len()<2 {
+        let line=rpc.lines.recv_timeout(rpc.response_timeout).unwrap();let v:Value=serde_json::from_str(&line).unwrap();
+        if let Some(i)=v["id"].as_u64() {assert_ne!(v["result"]["isError"],true,"{v}");results.insert(i,v["result"]["structuredContent"].clone());}
+    }
+    let first=results.remove(&id).unwrap();let queued=results.remove(&(id+1)).unwrap();
+    assert_eq!(first["analysis"],queued["analysis"]);assert_eq!(queued["status"],"complete","{queued}");
     assert_eq!(first["status"], "complete", "{first}");
     assert_eq!(first["function"]["entry"], "0x80010040", "{first}");
     let c = first["pseudocode"].as_str().unwrap();
@@ -949,6 +969,573 @@ fn ghidra_single_call_and_cached_cli_mcp_parity() {
     let (fresh, error, _) = rpc.tool("ghidra_decompile", json!({"source":"probe.ps-exe","addr":"80010048","reanalyze":true}));
     assert!(!error && fresh["status"] == "complete" && fresh["project"] != first["project"], "{fresh}");
     assert!(project.join("external-edit").exists(), "reanalyze must preserve edited projects");
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[ignore = "requires installed Ghidra/Java; authored runtime RAM and native state only"]
+fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
+    let root = std::env::temp_dir().join(format!("psx ghidra runtime {}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let bios = vec![0; 512 * 1024];
+    std::fs::write(root.join("bios.bin"), &bios).unwrap();
+    let mut machine = psx_core::Machine::new(bios);
+    let exe = ghidra_probe();
+    machine.bus.ram[0x10000..0x10800].copy_from_slice(&exe[0x800..]);
+    let routines: &[(usize, &[u32])] = &[
+        (0x10000, &[0x3c1c8001, 0x379c00c0, 0x0c004010, 0x24040007, 0x08004002, 0]),
+        (0x10040, &[0x8f820000, 0, 0x24420003, 0xaf820000, 0x03e00008, 0x00441021]),
+    ];
+    for (off, words) in routines {
+        for (i, w) in words.iter().enumerate() {
+            machine.bus.ram[off + i * 4..off + i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+        }
+    }
+    machine.cpu.set_pc(0x80010000);
+    machine.cpu.regs[29] = 0x801ffff0;
+    std::fs::write(root.join("start.bin"), machine.save_state(None)).unwrap();
+    std::fs::write(root.join("ram.bin"), &machine.bus.ram).unwrap();
+    let mut rpc = Rpc::start(&root);
+    rpc.response_timeout = Duration::from_secs(310);
+    let args = json!({"ram":"ram.bin","ranges":["80010000-80010098"],"entries":["a0010000"],"gp":"800100c0","addr":"a061004c"});
+    let (first, error, _) = rpc.tool("ghidra_decompile", args.clone());
+    assert!(!error && first["status"] == "complete", "{first}");
+    assert_eq!(first["addr"], "0x8001004C");
+    assert_eq!(first["requested_addr"], "a061004c");
+    assert_eq!(first["function"]["entry"], "0x80010040");
+    let manifest = first["analysis"].as_str().unwrap();
+    let (same, ok) = cli(
+        &root,
+        &[
+            "ghidra",
+            "decompile",
+            "--ram",
+            "ram.bin",
+            "--range",
+            "80010000-80010098",
+            "--entry",
+            "a0010000",
+            "--gp",
+            "800100c0",
+            "--addr",
+            "a061004c",
+        ],
+    );
+    assert!(ok);
+    assert_eq!(first, same);
+    std::fs::write(root.join("renamed.bin"), &machine.bus.ram).unwrap();
+    let mut alias = args.clone();
+    alias["ram"] = json!("renamed.bin");
+    let (same, error, _) = rpc.tool("ghidra_decompile", alias);
+    assert!(!error);
+    assert_eq!(same["analysis"], first["analysis"], "input filenames must not control identity");
+    let collision = json!({"functions":[{"addr":"80010000","name":first["function"]["name"]}]});
+    std::fs::write(root.join("generated-conflict.json"), serde_json::to_vec(&collision).unwrap()).unwrap();
+    let (displaced, error, _) = rpc.tool("ghidra_annotate", json!({"analysis":manifest,"file":"generated-conflict.json"}));
+    assert!(!error && displaced["conflicts"].as_array().unwrap().len() == 1, "{displaced}");
+    let patch = json!({"functions":[{"addr":"a0010040","name":"studied_writer","comment":"Authored GP-relative counter writer."}]});
+    std::fs::write(root.join("patch.json"), serde_json::to_vec(&patch).unwrap()).unwrap();
+    let (annotated, error, _) = rpc.tool("ghidra_annotate", json!({"analysis":manifest,"file":"patch.json"}));
+    assert!(!error && annotated["revision"] == 2, "{annotated}");
+    assert_ne!(annotated["project"], first["project"]);
+    assert!(Path::new(first["project"].as_str().unwrap()).exists());
+    let (named, error, _) = rpc.tool("ghidra_decompile", json!({"analysis":manifest,"addr":"8001004c"}));
+    assert!(!error && named["function"]["name"] == "studied_writer", "{named}");
+    assert!(named["pseudocode"].as_str().unwrap().contains("studied_writer"));
+    assert_eq!(named["function"]["comment"], patch["functions"][0]["comment"]);
+    assert_ne!(first["artifact"], named["artifact"], "annotation revision invalidates cached pseudocode");
+    std::fs::write(root.join("user-conflict.json"), br#"{"functions":[{"addr":"80010000","name":"studied_writer"}]}"#).unwrap();
+    let (conflict, error, _) = rpc.tool("ghidra_annotate", json!({"analysis":manifest,"file":"user-conflict.json"}));
+    assert!(error && conflict["error"]["code"] == "symbol_conflict", "{conflict}");
+    let (export, error, _) = rpc.tool("ghidra_export_symbols", json!({"analysis":manifest}));
+    assert!(!error, "{export}");
+    let symbols = export["symbols"].as_str().unwrap();
+    let (cli_export, ok) = cli(&root, &["ghidra", "export-symbols", manifest]);
+    assert!(ok, "{cli_export}");
+    assert_eq!(export, cli_export);
+    let trace_args = [
+        "run",
+        "--bios",
+        "bios.bin",
+        "--backend",
+        "native",
+        "--from-state",
+        "start.bin",
+        "--frames",
+        "1",
+        "--trace",
+        "--trace-range",
+        "studied_writer",
+        "--symbols",
+        symbols,
+        "--max-events",
+        "100",
+        "--watch",
+        "800100c0:4",
+        "--out",
+        "trace-a",
+    ];
+    let (run, ok) = cli(&root, &trace_args);
+    assert!(ok, "{run}");
+    assert!(std::fs::read_to_string(root.join("trace-a/trace.txt")).unwrap().contains("studied_writer"));
+    let writes = std::fs::read_to_string(root.join("trace-a/writes.jsonl")).unwrap();
+    assert!(writes.contains("studied_writer") && writes.contains("body_match"), "{writes}");
+    let (dis, ok) = cli(&root, &["disasm", "--ram", "ram.bin", "--addr", "80010040", "--count", "6", "--symbols", symbols]);
+    assert!(ok && dis.to_string().contains("studied_writer"), "{dis}");
+    let (refs, ok) = cli(&root, &["xrefs", "800100c0", "--ram", "ram.bin", "--gp", "800100c0", "--symbols", symbols]);
+    assert!(ok && refs.to_string().contains("studied_writer"), "{refs}");
+    // The same address now contains a different function; no name from snapshot A may label it.
+    machine.bus.ram[0x10048..0x1004c].copy_from_slice(&0x24420004u32.to_le_bytes());
+    std::fs::write(root.join("ram.bin"), &machine.bus.ram).unwrap();
+    std::fs::write(root.join("changed.bin"), machine.save_state(None)).unwrap();
+    let (second, error, _) = rpc.tool("ghidra_decompile", args);
+    assert!(!error && second["status"] == "complete", "{second}");
+    assert_ne!(first["analysis"], second["analysis"]);
+    assert_ne!(first["project"], second["project"]);
+    let (dis, ok) = cli(&root, &["disasm", "--ram", "ram.bin", "--addr", "80010040", "--count", "6", "--symbols", symbols]);
+    assert!(ok && !dis.to_string().contains("studied_writer"), "{dis}");
+    let (refs, ok) = cli(&root, &["xrefs", "800100c0", "--ram", "ram.bin", "--gp", "800100c0", "--symbols", symbols]);
+    assert!(ok && !refs.to_string().contains("studied_writer"), "{refs}");
+    let mut changed_args = trace_args;
+    changed_args[6] = "changed.bin";
+    changed_args[changed_args.len() - 1] = "trace-b";
+    let (run, ok) = cli(&root, &changed_args);
+    assert!(ok, "{run}");
+    assert!(!std::fs::read_to_string(root.join("trace-b/trace.txt")).unwrap().contains("studied_writer"));
+    assert!(!std::fs::read_to_string(root.join("trace-b/writes.jsonl")).unwrap().contains("studied_writer"));
+    // Re-importing snapshot A still retains its annotations and cached analysis.
+    let (old, error, _) = rpc.tool("ghidra_decompile", json!({"analysis":manifest,"addr":"8001004c"}));
+    assert!(!error && old["function"]["name"] == "studied_writer", "{old}");
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn first_use_bios_setup_context_and_compact_screens_work_through_mcp() {
+    let root = std::env::temp_dir().join(format!("psx-first-use-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (context, error, _) = rpc.tool("context", json!({}));
+    assert!(!error && context["status"] == "needs_setup", "{context}");
+    assert_eq!(context["resolved"]["backend"], "native");
+    assert!(context["build"]["id"].as_str().unwrap().starts_with("src-"));
+    let (list, error, _) = rpc.tool("bios_list", json!({}));
+    assert!(!error && list["installed"].as_array().unwrap().is_empty(), "{list}");
+    let (same, ok) = cli(&root, &["bios", "list"]);
+    assert!(ok);
+    assert_eq!(list, same);
+    let (missing, error, _) = rpc.tool("run", json!({"frames":0}));
+    assert!(error && missing["error"]["code"] == "bios_required", "{missing}");
+    // Authored firmware is supported as a local explicit preference, without any network.
+    let bios: Vec<u8> = [0x3c081f80u32, 0x35081800, 0x24090001, 0xa1090001, 0x0bf00004, 0].iter().flat_map(|w| w.to_le_bytes()).collect();
+    std::fs::write(root.join("authored.bin"), &bios).unwrap();
+    let (installed, error, _) = rpc.tool("bios_install", json!({"from":"authored.bin","dir":"shared-bios"}));
+    assert!(!error && installed["status"] == "installed", "{installed}");
+    let installed_path = installed["bios"]["path"].as_str().unwrap();
+    assert_eq!(std::fs::read(installed_path).unwrap(), bios);
+    let (again, ok) = cli(&root, &["bios", "install", "--from", "authored.bin", "--dir", "shared-bios"]);
+    assert!(ok);
+    assert_eq!(again, installed, "install is idempotent");
+    let (configured, error, _) = rpc.tool("context", json!({"bios":installed_path,"save":true}));
+    assert!(!error && configured["status"] == "ready" && configured["saved"] == true, "{configured}");
+    for compact in [false, true] {
+        let out = if compact { "compact" } else { "expanded" };
+        let (run, error, content) = rpc.tool("run", json!({"frames":0,"save_state":true,"brief":compact,"return_screen":true,"out":out}));
+        assert!(!error && run["status"] == "complete", "{run}");
+        let block = content.iter().find(|v| v["type"] == "image").expect("screenshot attached in both output modes");
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::STANDARD.decode(block["data"].as_str().unwrap()).unwrap();
+        assert_eq!(decoded, std::fs::read(root.join(out).join("screen.png")).unwrap());
+        let report: Value = serde_json::from_slice(&std::fs::read(root.join(out).join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["identity"]["backend"], "psx-core");
+        if compact {
+            assert!(run["frames"].get("numbering").is_none());
+        }
+    }
+    // A checkpoint is self-identifying: changing project defaults cannot select another BIOS/backend.
+    std::fs::write(root.join("wrong.bin"), [0; 32]).unwrap();
+    let (_, error, _) = rpc.tool("context", json!({"bios":"wrong.bin","backend":"redux","save":true}));
+    assert!(!error);
+    let (resumed, error, _) = rpc.tool("run", json!({"from_state":"compact/state.bin","frames":0,"out":"resumed"}));
+    assert!(!error && resumed["resolved"]["bios_selection"] == "state_sha256", "{resumed}");
+    assert_eq!(resumed["identity"]["backend"], "psx-core");
+    let (wrong, error, _) = rpc.tool("run", json!({"bios":"wrong.bin","backend":"native","from_state":"compact/state.bin","frames":0}));
+    assert!(error && wrong["error"]["code"] == "identity_mismatch", "{wrong}");
+    // An unbound report is never allowed to supply a BIOS or media path.
+    let mut report: Value = serde_json::from_slice(&std::fs::read(root.join("compact/report.json")).unwrap()).unwrap();
+    report["files"]["state.bin"]["sha256"] = json!("wrong");
+    report["identity"]["bios"] = json!("wrong.bin");
+    std::fs::write(root.join("compact/report.json"), serde_json::to_vec(&report).unwrap()).unwrap();
+    let (resumed, error, _) = rpc.tool("run", json!({"from_state":"compact/state.bin","frames":0,"out":"hash-lookup"}));
+    assert!(!error && resumed["identity"]["bios_sha256"] == installed["bios"]["sha256"], "{resumed}");
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn disassembly_exposes_search_and_listing_limits_instead_of_claiming_complete_functions() {
+    let root = std::env::temp_dir().join(format!("psx-disasm-evidence-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut exe = tiny_exe();
+    // A 102-instruction leaf: jump target at entry and return beyond the old 32-word cutoff.
+    for off in (0x800..0x990).step_by(4) {
+        exe[off..off + 4].copy_from_slice(&0x24420001u32.to_le_bytes());
+    }
+    exe[0x990..0x994].copy_from_slice(&0x03e00008u32.to_le_bytes());
+    std::fs::write(root.join("long.exe"), exe).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (whole, error, _) = rpc.tool("disasm", json!({"source":"long.exe","function":"80010000"}));
+    assert!(!error && whole["lines"].as_array().unwrap().len() == 102, "{whole}");
+    assert_eq!(whole["function"]["stop_reason"], "return");
+    assert_eq!(whole["function"]["truncated"], false);
+    let (cli_whole, ok) = cli(&root, &["disasm", "long.exe", "--function", "80010000"]);
+    assert!(ok);
+    assert_eq!(whole, cli_whole);
+    let (limited, error, _) = rpc.tool("disasm", json!({"source":"long.exe","function":"80010000","count":16}));
+    assert!(!error && limited["lines"].as_array().unwrap().len() == 16);
+    assert_eq!(limited["function"]["end"], whole["function"]["end"]);
+    assert_eq!(limited["function"]["listing_truncated"], true);
+    assert_eq!(limited["listing"]["next_addr"], "0x80010040");
+    let (partial, error, _) = rpc.tool("disasm", json!({"source":"long.exe","function":"80010000","function_budget":32}));
+    assert!(!error && partial["function"]["truncated"] == true, "{partial}");
+    assert_eq!(partial["function"]["stop_reason"], "search_limit");
+    assert!(!partial["warnings"].as_array().unwrap().is_empty());
+    let text = psx()
+        .args(["disasm", "long.exe", "--function", "80010000", "--function-budget", "32", "--text"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(text.status.success());
+    assert!(String::from_utf8(text.stdout).unwrap().contains("boundary search is incomplete"));
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn bios_download_rejects_unverified_bytes_and_never_replaces_existing_installs() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("psx-bios-integrity-{}", std::process::id()));
+    let bin = root.join("fake-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    // A fake transport exercises verification without network access or firmware fixtures.
+    let curl = bin.join("curl");
+    std::fs::write(&curl,"#!/bin/sh\nwhile [ $# -gt 0 ]; do\n if [ \"$1\" = --output ]; then shift; target=$1; fi\n shift\ndone\nprintf unverified > \"$target\"\n").unwrap();
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = psx()
+        .env("PATH", &bin)
+        .args(["bios", "install", "--download", "--region", "pal", "--dir", "installed"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(report["error"]["message"].as_str().unwrap().contains("pinned SHA-256"), "{report}");
+    assert!(std::fs::read_dir(root.join("installed")).unwrap().next().is_none(), "failed downloads leave no staged or published bytes");
+    std::fs::write(root.join("source.bin"), [1; 64]).unwrap();
+    let (installed, ok) = cli(&root, &["bios", "install", "--from", "source.bin", "--dir", "installed"]);
+    assert!(ok, "{installed}");
+    let path = installed["bios"]["path"].as_str().unwrap();
+    std::fs::write(path, b"preserve these bytes").unwrap();
+    let (failed, ok) = cli(&root, &["bios", "install", "--from", "source.bin", "--dir", "installed"]);
+    assert!(!ok && failed.get("error").is_some());
+    assert_eq!(std::fs::read(path).unwrap(), b"preserve these bytes");
+    assert_eq!(std::fs::read_dir(root.join("installed")).unwrap().count(), 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn regional_bios_discovery_requires_a_unique_compatible_image() {
+    let root = std::env::temp_dir().join(format!("psx-bios-region-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("bios")).unwrap();
+    let mut exe = tiny_exe();
+    exe[0x4c..0x4c + 6].copy_from_slice(b"Europe");
+    std::fs::write(root.join("game.exe"), exe).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (missing, error, _) = rpc.tool("context", json!({"image":"game.exe"}));
+    assert!(!error && missing["status"] == "needs_setup", "{missing}");
+    assert_eq!(missing["setup"]["next_action"]["arguments"], json!({"download":true,"region":"pal"}));
+    let mut pal = vec![0; 524288];
+    let version = b"System ROM Version TEST E\0";
+    pal[0x7ff32..0x7ff32 + version.len()].copy_from_slice(version);
+    std::fs::write(root.join("bios/pal.bin"), &pal).unwrap();
+    let (ready, error, _) = rpc.tool("context", json!({"image":"game.exe"}));
+    assert!(!error && ready["status"] == "ready", "{ready}");
+    assert_eq!(ready["resolved"]["bios_selection"], "unique_regional_candidate");
+    // Two filenames with identical bytes still represent a single choice.
+    std::fs::write(root.join("bios/duplicate.rom"), &pal).unwrap();
+    let (duplicate, error, _) = rpc.tool("context", json!({"image":"game.exe"}));
+    assert!(!error && duplicate["status"] == "ready", "{duplicate}");
+    pal[0] = 1;
+    std::fs::write(root.join("bios/other-pal.bin"), &pal).unwrap();
+    let (ambiguous, error, _) = rpc.tool("context", json!({"image":"game.exe"}));
+    assert!(!error && ambiguous["status"] == "needs_setup", "{ambiguous}");
+    assert_eq!(ambiguous["setup"]["selection"], "ambiguous_regional_candidates");
+    let (explicit, error, _) = rpc.tool("context", json!({"image":"game.exe","bios":"bios/pal.bin","save":true}));
+    assert!(!error && explicit["status"] == "ready", "{explicit}");
+    let (saved, error, _) = rpc.tool("context", json!({}));
+    assert!(!error && saved["resolved"]["bios_selection"] == "project_config", "{saved}");
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn artifacts_support_bounded_navigation_filters_projection_and_png_delivery() {
+    let root = std::env::temp_dir().join(format!("psx-artifact-workflow-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("report.json"), br#"{"rows":[{"value":1},{"value":2},{"value":3}]}"#).unwrap();
+    std::fs::write(
+        root.join("samples.csv"),
+        "frame,pc,note\r\n0,0x80010000,zero\r\n1,0x80010000,\"comma, and \"\"quote\"\"\"\r\n2,0x80010000,\"two\nlines\"\r\n",
+    )
+    .unwrap();
+    let logs =
+        (0..23).map(|f| json!({"frame":f,"run_frame":f-100i64,"pc":0x80010000u32,"value":f*2}).to_string() + "\n").collect::<String>();
+    std::fs::write(root.join("writes.jsonl"), logs).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (first, error, _) = rpc.tool("artifact_read", json!({"path":"report.json","pointer":"/rows","limit":1}));
+    assert!(!error && first["items"] == json!([{"value":1}]), "{first}");
+    let (same, ok) = cli(&root, &["artifact-read", "report.json", "--pointer", "/rows", "--limit", "1"]);
+    assert!(ok);
+    assert_eq!(same, first);
+    assert_eq!(first["page"]["total"], 3);
+    assert_eq!(first["page"]["truncated"], true);
+    let cursor = first["page"]["next_cursor"].as_str().unwrap();
+    let (second, error, _) = rpc.tool("artifact_read", json!({"path":"report.json","pointer":"/rows","limit":1,"cursor":cursor}));
+    assert!(!error && second["items"] == json!([{"value":2}]));
+    let (changed, error, _) = rpc.tool("artifact_read", json!({"path":"report.json","pointer":"/rows/0","cursor":cursor}));
+    assert!(error && changed["error"]["code"] == "stale_cursor", "{changed}");
+    std::fs::write(root.join("report.json"), br#"{"rows":[0]}"#).unwrap();
+    let (stale, error, _) = rpc.tool("artifact_read", json!({"path":"report.json","pointer":"/rows","cursor":cursor}));
+    assert!(error && stale["error"]["code"] == "stale_cursor", "{stale}");
+    let args = json!({"path":"samples.csv","frame_from":1,"frame_to":2,"pc":"80010000","columns":["frame","note"],"limit":1});
+    let (csv, error, _) = rpc.tool("artifact_read", args.clone());
+    assert!(!error && csv["items"] == json!([{"frame":"1","note":"comma, and \"quote\""}]), "{csv}");
+    let mut follow = args.clone();
+    follow["cursor"] = csv["page"]["next_cursor"].clone();
+    let (csv, error, _) = rpc.tool("artifact_read", follow);
+    assert!(!error && csv["items"] == json!([{"frame":"2","note":"two\nlines"}]), "{csv}");
+    assert_eq!(csv["page"]["truncated"], false);
+    let mut args = json!({"path":"writes.jsonl","frame_from":3,"frame_to":19,"pc":"0x80010000","columns":["frame","value"],"limit":4});
+    let mut frames = Vec::new();
+    loop {
+        let (page, error, _) = rpc.tool("artifact_read", args.clone());
+        assert!(!error, "{page}");
+        frames.extend(page["items"].as_array().unwrap().iter().map(|v| v["frame"].as_i64().unwrap()));
+        if page["page"]["truncated"] != true {
+            break;
+        }
+        assert!(page["page"]["total"].is_null());
+        args["cursor"] = page["page"]["next_cursor"].clone();
+    }
+    assert_eq!(frames, (3..=19).collect::<Vec<_>>(), "continuations must neither omit nor duplicate filtered rows");
+    let f = std::fs::File::create(root.join("screen.png")).unwrap();
+    let mut enc = png::Encoder::new(f, 1, 1);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().unwrap().write_image_data(&[255, 0, 0]).unwrap();
+    let (image, error, blocks) = rpc.tool("artifact_read", json!({"path":"screen.png"}));
+    assert!(!error && image["image"]["width"] == 1, "{image}");
+    use base64::Engine;
+    let data = blocks.iter().find(|b| b["type"] == "image").unwrap()["data"].as_str().unwrap();
+    assert_eq!(base64::engine::general_purpose::STANDARD.decode(data).unwrap(), std::fs::read(root.join("screen.png")).unwrap());
+    let (dir, error, _) = rpc.tool("artifact_read", json!({"path":".","limit":1}));
+    assert!(!error && dir["format"] == "directory" && dir["page"]["truncated"] == true, "{dir}");
+    assert_eq!(dir["items"][0]["read"]["tool"], "artifact_read");
+    std::fs::write(root.join("raw.bin"), [0, 1, 255, 7]).unwrap();
+    let (hex, error, _) = rpc.tool("artifact_read", json!({"path":"raw.bin","offset":1,"limit":2}));
+    assert!(!error && hex["hex"] == "01 FF" && hex["page"]["next_offset"] == 3, "{hex}");
+    std::fs::write(root.join("huge.jsonl"), "x".repeat(65537)).unwrap();
+    let (large, error, _) = rpc.tool("artifact_read", json!({"path":"huge.jsonl"}));
+    assert!(error && large["error"]["code"] == "limit_exceeded", "{large}");
+    let text = "x".repeat(127) + "\n";
+    std::fs::write(root.join("large.txt"), text.repeat(40000) + "needle\n").unwrap();
+    let (bounded, error, _) = rpc.tool("artifact_read", json!({"path":"large.txt","contains":"needle"}));
+    assert!(!error && bounded["items"] == json!([]) && bounded["page"]["truncated"] == true, "{bounded}");
+    assert!(bounded["coverage"]["bytes_inspected"].as_u64().unwrap() <= 4 * 1024 * 1024 + 65536);
+    let (last, error, _) =
+        rpc.tool("artifact_read", json!({"path":"large.txt","contains":"needle","cursor":bounded["page"]["next_cursor"]}));
+    assert!(!error && last["items"] == json!(["needle"]), "{last}");
+    let (skip,error,_)=rpc.tool("artifact_read",json!({"path":"large.txt","offset":39999,"limit":3}));
+    assert!(!error && skip["items"]==json!([]) && skip["page"]["truncated"]==true,"large initial offsets must remain bounded: {skip}");
+    let (after_skip,error,_)=rpc.tool("artifact_read",json!({"path":"large.txt","limit":3,"cursor":skip["page"]["next_cursor"]}));
+    assert!(!error && after_skip["items"]==json!(["x".repeat(127),"needle"]),"continuation must retain an initial skip beyond the scan budget: {after_skip}");
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn inline_inputs_match_replay_and_release_at_the_final_checkpoint_boundary() {
+    let root = std::env::temp_dir().join(format!("psx-inline-input-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let bios: Vec<u8> = [0x0bf00000u32, 0].iter().flat_map(|w| w.to_le_bytes()).collect();
+    std::fs::write(root.join("bios.bin"), &bios).unwrap();
+    let events = json!([{"frame":0,"buttons":["cross"],"until":2}]);
+    std::fs::write(root.join("input.json"), events.to_string()).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (run, error, _) =
+        rpc.tool("run", json!({"bios":"bios.bin","input":events,"frames":2,"save_state":true,"save_state_at":[1],"out":"inline"}));
+    assert!(!error, "{run}");
+    assert_eq!(
+        run["input"]["events"],
+        json!([{"frame":0,"buttons":["CROSS"],"sticks":[128,128,128,128]},{"frame":2,"buttons":[],"sticks":[128,128,128,128]}])
+    );
+    let (_, middle) = psx_core::Machine::load_state(&std::fs::read(root.join("inline/state_f000001.bin")).unwrap(), bios.clone()).unwrap();
+    assert_eq!(middle.bus.sio0.buttons, psx_core::sio0::button::CROSS);
+    let (_, last) = psx_core::Machine::load_state(&std::fs::read(root.join("inline/state.bin")).unwrap(), bios.clone()).unwrap();
+    assert_eq!(last.bus.sio0.buttons, 0, "exclusive release must be reflected in the final checkpoint");
+    assert_eq!(run["pad"]["buttons"],json!([]));
+    assert_eq!(run["watch"]["enabled"],false);assert!(!root.join("inline/writes.jsonl").exists());
+    let (file_run, ok) =
+        cli(&root, &["run", "--bios", "bios.bin", "--replay", "input.json", "--frames", "2", "--save-state", "--out", "file"]);
+    assert!(ok, "{file_run}");
+    assert_eq!(file_run["input"], run["input"]);
+    assert_eq!(file_run["files"]["state.bin"]["sha256"], run["files"]["state.bin"]["sha256"]);
+    let (inline, ok) =
+        cli(&root, &["run", "--bios", "bios.bin", "--input", &events.to_string(), "--frames", "2", "--save-state", "--out", "cli-inline"]);
+    assert!(ok, "{inline}");
+    assert_eq!(inline["files"]["state.bin"]["sha256"], run["files"]["state.bin"]["sha256"]);
+    for input in [
+        json!([{"frame":0,"buttons":["JUMP"]}]),
+        json!([{"frame":3,"buttons":[]}]),
+        json!([{"frame":1,"buttons":[]},{"frame":0,"buttons":[]}]),
+        json!([{"frame":0,"buttons":[]},{"frame":0,"buttons":[]}]),
+        json!([{"frame":0,"buttons":["CROSS","cross"]}]),
+        json!([{"frame":0,"buttons":[],"until":2},{"frame":1,"buttons":[]}]),
+        json!([{"frame":0,"buttons":[],"until":0}]),
+        json!([{"frame":0,"buttons":[],"sticks":[0,128,128,128]}]),
+        json!([{"frame":0,"buttons":[],"typo":1}]),
+    ] {
+        let (bad, error, _) = rpc.tool("run", json!({"bios":"bios.bin","input":input,"frames":2,"out":"invalid"}));
+        assert!(error && bad["error"]["code"] == "invalid_arguments", "{bad}");
+        assert!(!root.join("invalid").exists(), "invalid inputs must fail before output creation");
+    }
+    let (bad, error, _) = rpc.tool("run", json!({"bios":"bios.bin","input":[],"replay":"input.json","frames":2}));
+    assert!(error && bad["error"]["code"] == "invalid_arguments", "{bad}");
+    let (redux, error, _) = rpc.tool("run", json!({"bios":"bios.bin","backend":"redux","input":[{"frame":9,"buttons":[]}],"frames":2}));
+    assert!(error && redux["error"]["code"] == "invalid_arguments", "Redux must validate the same schedule before launching: {redux}");
+    let writer:Vec<u8>=[0x3c088001u32,0x24090001,0xad090000,0x0bf00002,0].iter().flat_map(|w|w.to_le_bytes()).collect();
+    std::fs::write(root.join("writer.bin"),writer).unwrap();
+    let (capped,error,_)=rpc.tool("run",json!({"bios":"writer.bin","frames":1,"watch":["80010000:4"],"max_events":2,"watch_changes_only":true,"out":"capped"}));
+    assert!(!error && capped["watch"]["enabled"]==true && capped["watch"]["recorded"]==2 && capped["watch"]["emitted"]==1,"{capped}");
+    assert_eq!(capped["watch"]["truncated"],true);assert_eq!(capped["watch"]["complete"],false);
+    assert_eq!(std::fs::read_to_string(root.join("capped/writes.jsonl")).unwrap().lines().count(),1);
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn query_pages_preserve_totals_and_explain_scan_coverage() {
+    let root = std::env::temp_dir().join(format!("psx-query-pages-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut iso = vec![0u8; 30 * 2048];
+    let record = |name: &[u8], lba: u32, size: u32, flags: u8| {
+        let mut b = vec![0; (33 + name.len()).next_multiple_of(2)];
+        b[0] = b.len() as u8;
+        b[2..6].copy_from_slice(&lba.to_le_bytes());
+        b[6..10].copy_from_slice(&lba.to_be_bytes());
+        b[10..14].copy_from_slice(&size.to_le_bytes());
+        b[14..18].copy_from_slice(&size.to_be_bytes());
+        b[25] = flags;
+        b[28] = 1;
+        b[31] = 1;
+        b[32] = name.len() as u8;
+        b[33..33 + name.len()].copy_from_slice(name);
+        b
+    };
+    let pvd = &mut iso[16 * 2048..17 * 2048];
+    pvd[0] = 1;
+    pvd[1..6].copy_from_slice(b"CD001");
+    pvd[6] = 1;
+    pvd[80..84].copy_from_slice(&30u32.to_le_bytes());
+    pvd[128..130].copy_from_slice(&2048u16.to_le_bytes());
+    pvd[156..190].copy_from_slice(&record(&[0], 20, 2048, 2));
+    let tim: Vec<u8> = [16u32, 2, 20, 0, 0x00020002, 0x7fff001f, 0x03e07c00].iter().flat_map(|w| w.to_le_bytes()).collect();
+    let payload = tim.repeat(3);
+    let mut at = 20 * 2048;
+    for i in 0..7 {
+        let name = format!("FILE{i}.TIM;1");
+        let r = record(name.as_bytes(), 21 + i, payload.len() as u32, 0);
+        iso[at..at + r.len()].copy_from_slice(&r);
+        at += r.len();
+        let off = (21 + i as usize) * 2048;
+        iso[off..off + payload.len()].copy_from_slice(&payload);
+    }
+    std::fs::write(root.join("files.iso"), iso).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (ls, error, _) = rpc.tool("ls", json!({"image":"files.iso","offset":2,"limit":2}));
+    assert!(!error && ls["entries"].as_array().unwrap().len() == 2, "{ls}");
+    assert_eq!(ls["page"], json!({"total":7,"offset":2,"returned":2,"limit":2,"truncated":true,"complete":false,"next_offset":4}));
+    let (same, ok) = cli(&root, &["ls", "files.iso", "--offset", "2", "--limit", "2"]);
+    assert!(ok);
+    assert_eq!(same, ls);
+    let (scan, error, _) = rpc.tool("assets_scan", json!({"source":"files.iso","filter":"file1","json":true,"limit":1}));
+    assert!(!error && scan["totals"]["tim"] == 3, "{scan}");
+    assert_eq!(scan["coverage"]["files_inspected"], 1);
+    assert_eq!(scan["coverage"]["source_files"], 7);
+    let (empty, error, _) =
+        rpc.tool("assets_scan", json!({"source":"files.iso","filter":"missing-file","model_parser":"nonexistent-parser","json":true}));
+    assert!(
+        !error && empty["files_scanned"] == 0 && empty["coverage"]["selected_files"] == 0,
+        "file filters must run before parser execution: {empty}"
+    );
+    assert_eq!(scan["files"][0]["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(scan["files"][0]["hits_page"]["total"], 3);
+    let (next, error, _) = rpc.tool("assets_scan", json!({"source":"files.iso","filter":"file1","json":true,"limit":1,"item_offset":1}));
+    assert!(!error && next["files"][0]["hits"][0]["offset"] == "0x1C", "{next}");
+    let (text, error, _) = rpc.tool("assets_scan", json!({"source":"files.iso","limit":1}));
+    assert!(!error && text["text"].is_string() && text.get("files").is_none(), "{text}");
+    assert!(text["coverage"]["note"].as_str().unwrap().contains("custom"));
+    let mut broken = std::fs::read(root.join("files.iso")).unwrap();
+    let bad = record(b"BROKEN.BIN;1", 999, 2048, 0);
+    broken[at..at + bad.len()].copy_from_slice(&bad);
+    std::fs::write(root.join("broken.iso"), broken).unwrap();
+    let (partial, error, _) = rpc.tool("assets_scan", json!({"source":"broken.iso","filter":"BROKEN","json":true}));
+    assert!(
+        !error && partial["coverage"]["complete"] == false && partial["coverage"]["skipped_page"]["total"] == 1,
+        "failed reads must be visible: {partial}"
+    );
+    let mut a = vec![0u8; 2 * 1024 * 1024];
+    std::fs::write(root.join("a.bin"), &a).unwrap();
+    for i in 0..5 {
+        a[i * 4..i * 4 + 4].copy_from_slice(&(i as u32 + 1).to_le_bytes());
+    }
+    std::fs::write(root.join("b.bin"), a).unwrap();
+    for (tool, args, key) in [
+        ("ram_diff", json!({"a":"a.bin","b":"b.bin","width":4,"limit":2,"offset":1}), "changes"),
+        (
+            "ram_search",
+            json!({"snapshots":["a.bin","b.bin"],"width":4,"pred":["changed"],"range":"80000000-80000014","limit":2,"offset":1}),
+            "matches",
+        ),
+    ] {
+        let (r, error, _) = rpc.tool(tool, args);
+        assert!(!error, "{r}");
+        assert_eq!(r["page"]["total"], 5);
+        assert_eq!(r["page"]["next_offset"], 3);
+        assert_eq!(r[key][0]["address_hex"], "0x80000004");
+        assert_eq!(r["coverage"]["complete"], true);
+    }
+    let mut exe = tiny_exe();
+    for off in [0x800, 0x804, 0x808] {
+        exe[off..off + 4].copy_from_slice(&0x0c004010u32.to_le_bytes());
+    }
+    exe[0x840..0x844].copy_from_slice(&0x03e00008u32.to_le_bytes());
+    std::fs::write(root.join("refs.exe"), exe).unwrap();
+    let (refs, error, _) = rpc.tool("xrefs", json!({"source":"refs.exe","target":"80010040","limit":1,"offset":1}));
+    assert!(!error && refs["page"]["total"] == 3 && refs["refs"][0]["pc_hex"] == "0x80010004", "{refs}");
+    let (text, error, _) = rpc.tool("xrefs", json!({"source":"refs.exe","target":"80010040","text":true}));
+    assert!(!error && text["text"].is_string() && text.get("refs").is_none());
+    let (text, error, _) = rpc.tool("disasm", json!({"source":"refs.exe","addr":"80010000","text":true}));
+    assert!(!error && text["text"].is_string() && text.get("lines").is_none());
+    let (spill, error, _) = rpc.tool("disasm", json!({"ram":"a.bin","addr":"80000000","count":4096}));
+    assert!(!error && spill["result_file"].is_string() && spill["next_call"]["tool"] == "artifact_read", "{spill}");
+    let (read, error, _) = rpc.tool("artifact_read", json!({"path":spill["result_file"],"pointer":"/lines","limit":3}));
+    assert!(
+        !error && read["items"].as_array().unwrap().len() == 3 && read["page"]["total"] == 4096,
+        "spilled results must be navigable directly: {read}"
+    );
     drop(rpc);
     std::fs::remove_dir_all(root).unwrap();
 }

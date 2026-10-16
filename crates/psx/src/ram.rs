@@ -50,16 +50,14 @@ pub enum Mem {
 }
 
 pub fn locate(addr: u32, width: usize) -> Option<Mem> {
-    let p = addr & 0x1FFF_FFFF;
-    if p < 0x0080_0000 {
-        let o = (p as usize) & (RAM_SIZE - 1);
-        return (o + width <= RAM_SIZE).then_some(Mem::Ram(o));
-    }
-    if (0x1F80_0000..0x1F80_0400).contains(&p) {
-        let o = (p - 0x1F80_0000) as usize;
-        return (o + width <= SCRATCH_SIZE).then_some(Mem::Scratch(o));
-    }
-    None
+    let resolved = psx_media::memmap::resolve(addr);
+    let offset = resolved.offset as usize;
+    let (limit, memory) = match resolved.region {
+        psx_media::memmap::Region::MainRam => (RAM_SIZE, Mem::Ram(offset)),
+        psx_media::memmap::Region::Scratchpad => (SCRATCH_SIZE, Mem::Scratch(offset)),
+        _ => return None,
+    };
+    offset.checked_add(width).filter(|&end| end <= limit).map(|_| memory)
 }
 
 /// Little-endian read of `width` (1..=4) bytes.
@@ -359,13 +357,9 @@ fn parse_range(r: Option<&str>) -> psx_media::Result<(usize, usize)> {
         Some(Mem::Ram(o)) => o,
         _ => return Err(bad(format!("range start 0x{lo:08X} is not main RAM"))),
     };
-    let h = if hi & 0x1FFF_FFFF == 0x0020_0000 {
-        RAM_SIZE
-    } else {
-        match locate(hi, 0) {
-            Some(Mem::Ram(o)) => o,
-            _ => return Err(bad(format!("range end 0x{hi:08X} is not main RAM"))),
-        }
+    let h = match hi.checked_sub(1).and_then(|last| locate(last, 1)) {
+        Some(Mem::Ram(o)) => o + 1,
+        _ => return Err(bad(format!("range end 0x{hi:08X} is not main RAM"))),
     };
     if h <= l {
         return Err(bad(format!("empty range {r:?}")));
@@ -391,10 +385,12 @@ pub struct DiffOpts<'a> {
     pub min_delta: Option<u64>,
     pub signed: bool,
     pub limit: usize,
+    pub offset: usize,
 }
 
 /// Units (bytes/halfwords/words, aligned) whose value differs between two snapshots.
 pub fn diff(a: &Path, b: &Path, o: DiffOpts) -> R {
+    crate::page::validate(o.limit).map_err(MediaError::Malformed)?;
     let w = parse_width(o.width)?;
     let (sa, sb) = (load(a)?, load(b)?);
     let (lo, hi) = parse_range(o.range)?;
@@ -417,7 +413,7 @@ pub fn diff(a: &Path, b: &Path, o: DiffOpts) -> R {
                     }
                     _ => clusters.push((off, off + w, 1)),
                 }
-                if changes.len() < o.limit {
+                if total>o.offset as u64 && changes.len() < o.limit {
                     changes.push(json!({
                         "address": addr_of(off), "address_hex": format!("0x{:08X}", addr_of(off)),
                         "a": value_json(x, w, o.signed), "b": value_json(y, w, o.signed),
@@ -435,6 +431,8 @@ pub fn diff(a: &Path, b: &Path, o: DiffOpts) -> R {
         "a": sa.path, "b": sb.path, "width": w, "signed": o.signed,
         "range": [format!("0x{:08X}", addr_of(lo)), format!("0x{:08X}", addr_of(hi))],
         "differing": total, "shown": changes.len(),
+        "page":crate::page::metadata(total as usize,o.offset,changes.len(),o.limit),
+        "coverage":{"scope":"selected RAM range","complete":true},
         "changes": changes,
         "clusters": {"count": clusters.len(), "largest": big.iter().take(o.limit.min(32)).map(|&(s, e, n)| json!({
             "start_hex": format!("0x{:08X}", addr_of(s)), "end_hex": format!("0x{:08X}", addr_of(e)), "units": n,
@@ -493,11 +491,13 @@ pub struct SearchOpts<'a> {
     pub candidates: Option<&'a Path>,
     pub save: Option<&'a Path>,
     pub limit: usize,
+    pub offset: usize,
 }
 
 /// Cheat-finder search: addresses whose values across the snapshots (in
 /// order) satisfy every predicate.
 pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
+    crate::page::validate(o.limit).map_err(MediaError::Malformed)?;
     let w = parse_width(o.width)?;
     if paths.is_empty() {
         return Err(bad("give at least one snapshot (run directory or ram.bin)"));
@@ -568,6 +568,7 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
     };
     let shown: Vec<Value> = found
         .iter()
+        .skip(o.offset)
         .take(o.limit)
         .map(|&off| {
             let vals: Vec<u32> = snaps.iter().map(|s| read_le(&s.bytes, off, w)).collect();
@@ -589,6 +590,8 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
         "range": [format!("0x{:08X}", addr_of(lo)), format!("0x{:08X}", addr_of(hi))],
         "restricted_to": restrict.as_ref().map(|r| r.len()),
         "candidates": found.len(), "shown": shown.len(),
+        "page":crate::page::metadata(found.len(),o.offset,shown.len(),o.limit),
+        "coverage":{"scope":"selected RAM range/alignment and candidate set","complete":true},
         "matches": shown,
         "saved": saved,
     }))
@@ -633,6 +636,19 @@ pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str) -> psx_media::
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn address_validation_uses_the_shared_memory_map() {
+        assert_eq!(super::locate(0xA0610000, 4), Some(super::Mem::Ram(0x10000)));
+        assert_eq!(super::locate(0x1F800004, 4), Some(super::Mem::Scratch(4)));
+        for addr in [0xC0010000, 0xBF800004, 0xBFC00000, 0x1F801000] {
+            assert_eq!(super::locate(addr, 4), None);
+        }
+        assert_eq!(super::locate(0x801FFFFF, 2), None);
+        assert_eq!(super::locate(0x80010000, usize::MAX), None);
+        assert_eq!(super::parse_range(Some("801ffff0-80200000")).unwrap(), (0x1ffff0, 0x200000));
+        assert!(super::parse_range(Some("80010000-c0200000")).is_err());
+        assert!(super::parse_range(Some("c0010000-c0010004")).is_err());
+    }
     use super::*;
 
     #[test]
@@ -715,14 +731,14 @@ mod tests {
         let a = snap(&dir, "a.bin", &[(0x100, 10), (0x200, 5), (0x300, 7)]);
         let b = snap(&dir, "b.bin", &[(0x100, 20), (0x200, 1), (0x300, 7)]);
         let c = snap(&dir, "c.bin", &[(0x100, 35), (0x200, 9), (0x300, 7)]);
-        let d = diff(&a, &b, DiffOpts { width: 4, range: None, min_delta: None, signed: true, limit: 10 }).unwrap();
+        let d = diff(&a, &b, DiffOpts { width: 4, range: None, min_delta: None, signed: true, limit: 10, offset:0 }).unwrap();
         assert_eq!(d["differing"], 2);
         assert_eq!(d["changes"][0]["address_hex"], "0x80000100");
         assert_eq!(d["changes"][1]["delta"], -4);
-        let d = diff(&a, &b, DiffOpts { width: 4, range: None, min_delta: Some(5), signed: true, limit: 10 }).unwrap();
+        let d = diff(&a, &b, DiffOpts { width: 4, range: None, min_delta: Some(5), signed: true, limit: 10, offset:0 }).unwrap();
         assert_eq!(d["differing"], 1);
         let paths = vec![a.clone(), b.clone(), c.clone()];
-        let base = SearchOpts { width: 4, signed: false, preds: &[], values: None, between: None, range: None, align: None, candidates: None, save: None, limit: 10 };
+        let base = SearchOpts { width: 4, signed: false, preds: &[], values: None, between: None, range: None, align: None, candidates: None, save: None, limit: 10, offset:0 };
         let r = search(&paths, SearchOpts { preds: &["increased".into()], ..base }).unwrap();
         assert_eq!(r["candidates"], 1);
         assert_eq!(r["matches"][0]["values"], json!([10, 20, 35]));

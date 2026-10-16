@@ -23,7 +23,7 @@ fn sha256(bytes: &[u8]) -> String {
     psx_redux::sha256_bytes(bytes)
 }
 
-pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
+pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool, Value) {
     let bios = match std::fs::read(&a.bios) {
         Ok(b) => b,
         Err(e) => return err("io_error", format!("{}: {e}", a.bios.display())),
@@ -101,10 +101,9 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         }
     };
     // Replay events: pad state from each frame (frames counted from the run start).
-    let events = match a.replay.as_deref().map(crate::replay::load).transpose() {
-        Ok(e) => e.unwrap_or_default(),
-        Err(e) => return err("invalid_arguments", e),
-    };
+    if crate::replay::uses_sticks(&events) && m.bus.sio0.pad.kind != psx_core::pad::PadKind::DualShock {
+        return err("invalid_arguments", "input sticks require a dualshock pad (configure it at boot; checkpoint pads are restored)");
+    }
     for w in &a.watches {
         let (addr, width) = w.split_once(':').unwrap_or((w, "4"));
         let Ok(addr) = u32::from_str_radix(addr.trim_start_matches("0x").trim_start_matches("0X"), 16) else {
@@ -117,6 +116,9 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         };
         m.bus.obs.watch(addr, width);
     }
+    // Observer::watch has a diagnostic default; investigation runs honor the
+    // caller's recording budget, including zero, just as read watches do.
+    m.bus.obs.max_hits = a.max_events as usize;
     let obs = &a.observe;
     let mut sampler = match obs.samples.iter().map(|s| crate::ram::parse_sample(s)).collect::<Result<Vec<_>, _>>() {
         Ok(cols) if cols.is_empty() => None,
@@ -177,6 +179,13 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     let mut next = 0;
     let mut termination = "frames_reached";
     let mut steps: u64 = 0;
+    let bound_watches = scopes.iter().any(|s| s.bound.is_some()) && !a.watches.is_empty();
+    let mut hit_names: Vec<Value> = Vec::new();
+    let observed_name = |pc, ram: &[u8]| {
+        crate::name_pc(&scopes, pc, Some(ram))
+            .map(|(name, check, source)| json!({"name":name,"exe":source,"check":check.as_str()}))
+            .unwrap_or(Value::Null)
+    };
     let mut last_rel = u64::MAX;
     let mut screens: Vec<Value> = Vec::new();
     let mut states: Vec<Value> = Vec::new();
@@ -208,8 +217,13 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         // Everything above acts only when the frame counter changes, so without
         // per-instruction observers (tracer, read watches) the machine can run the
         // rest of the frame in one call (stopping at the next timeout check).
-        if tracer.is_some() || !read_ranges.is_empty() {
+        if tracer.is_some() || !read_ranges.is_empty() || bound_watches {
             let info = m.step();
+            if bound_watches {
+                for hit in &m.bus.obs.hits[hit_names.len()..] {
+                    hit_names.push(hit.pc.map(|pc| observed_name(pc, &m.bus.ram)).unwrap_or(Value::Null));
+                }
+            }
             if let Some(t) = &mut tracer {
                 t.after_step(&info, &m.cpu, &m.bus);
             }
@@ -223,6 +237,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
                             reads.push(json!({
                                 "frame": m.bus.frames, "run_frame": m.bus.frames - start_frame, "cycle": m.bus.now,
                                 "pc": info.pc, "pc_hex": format!("0x{:08X}", info.pc),
+                                "function": observed_name(info.pc, &m.bus.ram),
                                 "address": acc.addr, "address_hex": format!("0x{:08X}", acc.addr), "width": acc.width,
                                 "value": acc.value, "value_hex": format!("0x{:0n$X}", acc.value, n = acc.width as usize * 2),
                             }));
@@ -249,6 +264,10 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     if termination == "frames_reached" {
         // The final boundary: the state the run's files capture.
         let rel = m.bus.frames - start_frame;
+        while next < events.len() && events[next].frame <= rel {
+            crate::replay::apply(&mut m, &events[next]);
+            next += 1;
+        }
         if let Some(s) = &mut sampler {
             s.row(rel, m.bus.frames, &m.bus.ram, &m.bus.scratch, true);
         }
@@ -295,10 +314,17 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         .obs
         .hits
         .iter()
-        .filter(|h| !(obs.watch_changes_only && h.old.is_some() && h.old == h.value))
-        .map(|h| with_run_frame(annotate_hit(h)))
+        .enumerate()
+        .filter(|(_, h)| !(obs.watch_changes_only && h.old.is_some() && h.old == h.value))
+        .map(|(i, h)| {
+            let mut v = with_run_frame(annotate_hit(h));
+            if let Some(name) = hit_names.get(i).filter(|v| !v.is_null()) {
+                v["function"] = name.clone();
+            }
+            v
+        })
         .collect();
-    put("writes.jsonl", jsonl(hits.clone()).as_bytes());
+    if !a.watches.is_empty(){put("writes.jsonl", jsonl(hits.clone()).as_bytes());}
     let mut event_logs = serde_json::Map::new();
     if let Some(cd) = &m.bus.obs.cd {
         put("cd_native.jsonl", jsonl(cd.iter().map(|t| with_run_frame(serde_json::to_value(t).unwrap())).collect()).as_bytes());
@@ -326,12 +352,12 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         let mut top: Vec<(u32, u64)> = readers.into_iter().collect();
         top.sort_by_key(|&(pc, n)| (std::cmp::Reverse(n), pc));
         json!({
-            "hits": read_hits, "recorded": read_hits.min(a.max_events as u64), "file": dir.join("reads.jsonl"),
+            "enabled":true,"hits": read_hits, "recorded": read_hits.min(a.max_events as u64), "file": dir.join("reads.jsonl"),
+            "complete":read_hits<=a.max_events as u64,"truncated":read_hits>a.max_events as u64,
+            "readers_page":crate::page::metadata(top.len(),0,top.len().min(16),16),
             "readers": top.iter().take(16).map(|&(pc, n)| {
                 let mut v = json!({"pc_hex": format!("0x{pc:08X}"), "count": n});
-                if let Some((name, check, exe)) = crate::name_pc(&scopes, pc, Some(&m.bus.ram)) {
-                    v["function"] = json!({"name": name, "exe": exe, "check": check.as_str()});
-                }
+                v["function"] = crate::final_name(&scopes, pc, Some(&m.bus.ram));
                 v
             }).collect::<Vec<_>>(),
         })
@@ -369,8 +395,8 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         .map(|v| {
             let mut v = v.clone();
             if let Some(pc) = v["pc"].as_u64() {
-                if let Some((name, check, exe)) = crate::name_pc(&scopes, pc as u32, Some(&m.bus.ram)) {
-                    v["function"] = json!({"name": name, "exe": exe, "check": check.as_str()});
+                if v["function"].is_null() && !bound_watches {
+                    v["function"] = crate::final_name(&scopes, pc as u32, Some(&m.bus.ram));
                 }
             }
             v
@@ -398,8 +424,15 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             "cpu_cycles": m.bus.now,
             "instructions": steps,
             "registers": registers,
-            "screen": {"width": w, "height": h, "bpp": 16},
-            "watch": {"hits": m.bus.obs.hit_count, "recorded": m.bus.obs.hits.len(), "shown": shown.len(), "first": shown},
+            "screen": {"width": w, "height": h, "bpp": if m.bus.gpu.display.rgb24() {24} else {16}},
+            "video": {"region_at_capture":if m.bus.pal(){"PAL"}else{"NTSC"},"mode":m.bus.gpu.display.mode,
+                "cycles_per_vblank_at_capture":m.bus.frame_cycles(),"interlaced":m.bus.gpu.display.interlaced_480(),
+                "display_start":m.bus.gpu.display.start,"horizontal_range":m.bus.gpu.display.h_range,"vertical_range":m.bus.gpu.display.v_range,
+                "note":"GPU mode at capture; raw raster dimensions may change during boot."},
+            "watch": {"enabled":!a.watches.is_empty(),"hits": m.bus.obs.hit_count, "recorded": m.bus.obs.hits.len(), "shown": shown.len(), "first": shown,
+                "emitted":hits.len(),"complete":m.bus.obs.hit_count==m.bus.obs.hits.len() as u64,
+                "truncated":m.bus.obs.hit_count>m.bus.obs.hits.len() as u64,
+                "file":(!a.watches.is_empty()).then(||dir.join("writes.jsonl")),"changes_only":obs.watch_changes_only},
             "event_logs": event_logs,
             "trace": trace_report,
             "gpu_frame": gpu_report,
@@ -409,7 +442,10 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
             "screens": if obs.snapshot_every.is_some() { json!({"dir": dir.join("screens"), "count": screens.len(), "first": screens.first(), "last": screens.last()}) } else { Value::Null },
             "states": if obs.save_state_at.is_empty() { Value::Null } else { json!(states) },
             "memcards": cards,
-            "pad": {"kind": format!("{:?}", m.bus.sio0.pad.kind).to_lowercase(), "analog": m.bus.sio0.pad.analog, "locked": m.bus.sio0.pad.locked, "motors": [m.bus.sio0.pad.motors.0, m.bus.sio0.pad.motors.1]},
+            "pad": {"kind": format!("{:?}", m.bus.sio0.pad.kind).to_lowercase(), "analog": m.bus.sio0.pad.analog, "locked": m.bus.sio0.pad.locked,
+                "buttons":crate::replay::button_names(m.bus.sio0.buttons),
+                "sticks":[m.bus.sio0.pad.sticks[2],m.bus.sio0.pad.sticks[3],m.bus.sio0.pad.sticks[0],m.bus.sio0.pad.sticks[1]],
+                "motors": [m.bus.sio0.pad.motors.0, m.bus.sio0.pad.motors.1]},
             "bios_call_counts": m.bus.obs.bios_counts,
             "files": files,
             "identity": {
@@ -531,11 +567,14 @@ fn trace_outputs(
     files: &mut serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
     t.finish(&m.bus).map_err(|e| e.to_string())?;
-    let name = |pc: u32| crate::name_pc(scopes, pc, Some(&m.bus.ram)).map(|(n, check, exe)| json!({"name": n, "exe": exe, "check": check.as_str()}));
+    let name = |pc: u32| {
+        let v = crate::final_name(scopes, pc, Some(&m.bus.ram));
+        (!v.is_null()).then_some(v)
+    };
     let coverage = t.coverage();
     let mut text = String::from("# start end instructions executions [function at start]\n");
     for &(s, e, n, total) in &coverage {
-        let f = name(s).map(|v| format!(" {}", v["name"].as_str().unwrap_or_default())).unwrap_or_default();
+        let f = name(s).and_then(|v| v["name"].as_str().map(|n| format!(" {n}"))).unwrap_or_default();
         text += &format!("{s:08x} {e:08x} {n} {total}{f}\n");
     }
     let mut calls: Vec<(u32, &psx_core::trace::CallStat)> = t.calls.iter().map(|(k, v)| (*k, v)).collect();

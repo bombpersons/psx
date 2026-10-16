@@ -76,6 +76,10 @@ fn rel_msf(sectors: u32) -> [u8; 3] {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecentCommand {
     pub time: u64,
+    /// Actual vblank at command issue, when supplied by the machine bus.
+    pub frame: Option<u64>,
+    pub last_time: u64,
+    pub last_frame: Option<u64>,
     pub command: u8,
     pub params: Vec<u8>,
     /// INT types queued in reply.
@@ -236,9 +240,18 @@ impl Cdrom {
     }
 
     pub fn write(&mut self, reg: u32, v: u8, now: u64) {
+        self.write_timed(reg, v, now, None);
+    }
+
+    /// Bus writes carry the exact observed vblank; standalone device users may omit it.
+    pub fn write_at_frame(&mut self, reg: u32, v: u8, now: u64, frame: u64) {
+        self.write_timed(reg, v, now, Some(frame));
+    }
+
+    fn write_timed(&mut self, reg: u32, v: u8, now: u64, frame: Option<u64>) {
         match (reg, self.index) {
             (0, _) => self.index = v & 3,
-            (1, 0) => self.command(v, now),
+            (1, 0) => self.command(v, now, frame),
             (2, 0) => {
                 if self.params.len() < 16 {
                     self.params.push_back(v)
@@ -335,7 +348,7 @@ impl Cdrom {
         self.queue.push_back(Response { at, int, bytes });
     }
 
-    fn command(&mut self, cmd: u8, now: u64) {
+    fn command(&mut self, cmd: u8, now: u64, frame: Option<u64>) {
         let queued_before = self.queue.len();
         let params: Vec<u8> = self.params.iter().copied().collect();
         self.command_inner(cmd, now);
@@ -343,13 +356,15 @@ impl Cdrom {
         if let Some(last) = self.recent.back_mut() {
             if last.command == cmd && last.params == params && last.ints == ints {
                 last.repeats += 1;
+                last.last_time = now;
+                last.last_frame = frame;
                 return;
             }
         }
         if self.recent.len() >= 64 {
             self.recent.pop_front();
         }
-        self.recent.push_back(RecentCommand { time: now, command: cmd, params, ints, repeats: 1 });
+        self.recent.push_back(RecentCommand { time: now, frame, last_time: now, last_frame: frame, command: cmd, params, ints, repeats: 1 });
     }
 
     fn command_inner(&mut self, cmd: u8, now: u64) {

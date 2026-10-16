@@ -354,6 +354,12 @@ pub fn annotate(runs: &mut [Run], disc: &Disc, fs: Option<&FileSystem>, ram: Opt
 /// event (which would mean other code was there at the time).
 fn named(symbols: &[crate::ScopedSymbols], runs: &[Run], pc: u32, frame: u32, ram: Option<&[u8]>) -> Value {
     let Some((name, check, exe)) = crate::name_pc(symbols, pc, ram) else { return Value::Null };
+    if check == crate::SymbolCheck::BodyMatch {
+        // A final snapshot cannot establish which overlay occupied a PC when an
+        // earlier load event occurred. Expose a candidate without labelling it.
+        return json!({"candidate_name":name,"symbols":exe,"check":"final_ram_only",
+            "diagnostic":"Function body matches final RAM; historical event residency is unknown."});
+    }
     let pc_phys = pc & 0x1F_FFFF;
     let loaded_later = runs.iter().any(|r| {
         r.file.as_deref().is_some_and(|f| f.trim_start_matches('/').eq_ignore_ascii_case(&exe))

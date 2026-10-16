@@ -1,10 +1,11 @@
 //! DualShock-style input. Game logic reads [`ControllerState`]; edit device
-//! mappings in [`ControllerBindings`].
+//! mappings through [`ControllerBindings`]. [`crate::controls`] supplies an optional menu.
 use bevy::prelude::*;
+mod bindings;
+pub use bindings::{BindingConflict, BindingDevice, BindingStore, ConflictPolicy, ControllerBindings, PhysicalBinding};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
-#[cfg_attr(feature = "dev-mcp", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "dev-mcp", serde(rename_all = "lowercase"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Button {
     Up,
     Down,
@@ -42,6 +43,12 @@ impl Button {
     pub fn mask(self) -> u16 {
         1 << self as u8
     }
+    pub fn label(self) -> &'static str {
+        [
+            "Up", "Down", "Left", "Right", "Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "Start",
+            "Select",
+        ][self as usize]
+    }
     /// The bits of several buttons, as [`ControllerState::update`] takes them.
     pub fn mask_all(buttons: &[Button]) -> u16 {
         buttons.iter().fold(0, |bits, button| bits | button.mask())
@@ -61,6 +68,10 @@ pub struct ControllerState {
 }
 
 impl ControllerState {
+    /// Drop device edges when a modal interface takes input focus.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
     pub fn update(&mut self, held: u16, left_stick: Vec2, right_stick: Vec2) {
         self.previous = self.held;
         self.held = held;
@@ -88,53 +99,6 @@ impl ControllerState {
     }
 }
 
-#[derive(Resource)]
-pub struct ControllerBindings {
-    pub keyboard: [KeyCode; 14],
-    pub gamepad: [GamepadButton; 14],
-    pub stick_deadzone: f32,
-}
-
-impl Default for ControllerBindings {
-    fn default() -> Self {
-        Self {
-            keyboard: [
-                KeyCode::ArrowUp,
-                KeyCode::ArrowDown,
-                KeyCode::ArrowLeft,
-                KeyCode::ArrowRight,
-                KeyCode::KeyX,
-                KeyCode::KeyC,
-                KeyCode::KeyZ,
-                KeyCode::KeyS,
-                KeyCode::KeyQ,
-                KeyCode::KeyE,
-                KeyCode::Digit1,
-                KeyCode::Digit3,
-                KeyCode::Enter,
-                KeyCode::ShiftRight,
-            ],
-            gamepad: [
-                GamepadButton::DPadUp,
-                GamepadButton::DPadDown,
-                GamepadButton::DPadLeft,
-                GamepadButton::DPadRight,
-                GamepadButton::South,
-                GamepadButton::East,
-                GamepadButton::West,
-                GamepadButton::North,
-                GamepadButton::LeftTrigger,
-                GamepadButton::RightTrigger,
-                GamepadButton::LeftTrigger2,
-                GamepadButton::RightTrigger2,
-                GamepadButton::Start,
-                GamepadButton::Select,
-            ],
-            stick_deadzone: 0.2,
-        }
-    }
-}
-
 fn deadzone(v: Vec2, dz: f32) -> Vec2 {
     if v.length() < dz { Vec2::ZERO } else { v.clamp_length_max(1.0) }
 }
@@ -142,13 +106,15 @@ fn deadzone(v: Vec2, dz: f32) -> Vec2 {
 /// Physical buttons and sticks from the keyboard and one gamepad.
 pub fn sample(keys: &ButtonInput<KeyCode>, pad: Option<&Gamepad>, bindings: &ControllerBindings) -> (u16, Vec2, Vec2) {
     let mut bits = 0;
-    for (i, button) in Button::ALL.into_iter().enumerate() {
-        if keys.pressed(bindings.keyboard[i]) || pad.is_some_and(|p| p.pressed(bindings.gamepad[i])) {
+    for button in Button::ALL {
+        if bindings.key(button).is_some_and(|key| keys.pressed(key))
+            || pad.is_some_and(|p| bindings.pad_button(button).is_some_and(|button| p.pressed(button)))
+        {
             bits |= button.mask();
         }
     }
     let (left, right) = pad.map_or((Vec2::ZERO, Vec2::ZERO), |p| {
-        (deadzone(p.left_stick(), bindings.stick_deadzone), deadzone(p.right_stick(), bindings.stick_deadzone))
+        (deadzone(p.left_stick(), bindings.stick_deadzone()), deadzone(p.right_stick(), bindings.stick_deadzone()))
     });
     (bits, left, right)
 }

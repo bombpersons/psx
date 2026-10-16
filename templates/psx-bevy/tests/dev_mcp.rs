@@ -181,6 +181,38 @@ impl Drop for Client {
 
 #[test]
 #[ignore = "requires a working offscreen GPU/software adapter; no display needed"]
+fn controls_menu_renders_and_rejects_gameplay_steps_while_capturing() {
+    let output = std::env::temp_dir().join(format!("psx-controls-gpu-{}", std::process::id()));
+    std::fs::create_dir_all(&output).unwrap();
+    println!("Controls GPU evidence: {}", output.display());
+    let path = output.join("controls.json");
+    let mut command = Command::new(env!(concat!("CARGO_BIN_EXE_", env!("CARGO_PKG_NAME"))));
+    command.arg("--controls").arg("--bindings").arg(&path);
+    let mut client = Client::launch(command, &output.join("game.log"));
+    let menu = client.screenshot(output.join("controls.png"));
+    let light = menu.pixels().filter(|p| p[0] > 150 && p[1] > 150).count();
+    assert!(light > 300, "menu labels should be visible, not a blank blue target");
+    assert!(
+        (0..menu.width()).all(|x| {
+            let p = menu.get_pixel(x, menu.height() - 1);
+            p[0] < 120 && p[1] > 150 && p[2] > 200
+        }),
+        "the bottom border must fit the screen; overflowing menu content used to clip the help text"
+    );
+    let step = client.request("tools/call", json!({"name":"game_step","arguments":{"frames":1,"buttons":["cross"]}}));
+    assert!(step["error"]["message"].as_str().unwrap().contains("Controls menu"), "{step}");
+    let input = client.request("tools/call", json!({"name":"game_set_input","arguments":{"buttons":["cross"]}}));
+    assert!(input["error"]["message"].as_str().unwrap().contains("Controls menu"), "{input}");
+    let status = client.call("game_status", json!({}))["structuredContent"].clone();
+    assert_eq!(status["frame"], 0);
+    assert_eq!(status["controller_buttons"], json!([]));
+    assert!(!path.exists(), "opening a menu must not create or replace settings");
+    let log = std::fs::read_to_string(output.join("game.log")).unwrap();
+    assert!(!log.contains("Shader compilation error") && !log.contains("B0001"), "{log}");
+}
+
+#[test]
+#[ignore = "requires a working offscreen GPU/software adapter; no display needed"]
 fn headless_render_edit_step_and_query() {
     let output = std::env::temp_dir().join(format!("psx-template-headless-{}", std::process::id()));
     std::fs::create_dir_all(&output).unwrap();

@@ -66,6 +66,26 @@ pub enum GameSystems {
     Finish,
 }
 
+/// Modal interfaces capture raw input before the shell samples gameplay devices.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PhysicalInputSystems {
+    Capture,
+    Sample,
+}
+
+/// Shared focus boundary for controls/pause menus. Closing a modal waits for
+/// physical input to become neutral, preventing its confirm key becoming a jump.
+#[derive(Resource, Default, Debug)]
+pub struct InputFocus {
+    pub captured: bool,
+    pub wait_for_release: bool,
+}
+impl InputFocus {
+    pub fn blocked(&self) -> bool {
+        self.captured || self.wait_for_release
+    }
+}
+
 /// Buttons held on by tools rather than devices: the developer MCP and the
 /// [`crate::testing`] helpers write here. OR-ed with physical input.
 #[derive(Resource, Default, Debug, Clone, Copy)]
@@ -105,11 +125,16 @@ impl Plugin for ShellPlugin {
             .init_resource::<ControllerState>()
             .init_resource::<InjectedInput>()
             .init_resource::<DeviceInput>()
+            .init_resource::<InputFocus>()
+            .configure_sets(
+                PreUpdate,
+                (PhysicalInputSystems::Capture, PhysicalInputSystems::Sample).chain().after(bevy::input::InputSystems),
+            )
             .configure_sets(FixedUpdate, (GameSystems::Input, GameSystems::Game, GameSystems::Finish).chain())
             .configure_sets(FixedUpdate, GameSystems::Game.run_if(|clock: Res<GameClock>| clock.ticking))
             .add_systems(
                 PreUpdate,
-                sample_devices.after(bevy::input::InputSystems).run_if(resource_exists::<ButtonInput<KeyCode>>),
+                sample_devices.in_set(PhysicalInputSystems::Sample).run_if(resource_exists::<ButtonInput<KeyCode>>),
             )
             .add_systems(Update, apply_tick_rate.run_if(resource_changed::<TickRate>))
             .add_systems(FixedUpdate, begin_tick.in_set(GameSystems::Input))
@@ -126,8 +151,26 @@ fn sample_devices(
     pads: Query<(Entity, &Gamepad)>,
     bindings: Res<ControllerBindings>,
     mut input: ResMut<DeviceInput>,
+    mut focus: ResMut<InputFocus>,
+    mut state: ResMut<ControllerState>,
+    mut injected: ResMut<InjectedInput>,
 ) {
     let pad = pads.iter().min_by_key(|(entity, _)| entity.to_bits()).map(|(_, pad)| pad);
+    if focus.blocked() {
+        *input = DeviceInput::default();
+        state.reset();
+        injected.buttons = 0;
+        let neutral = keys.get_pressed().next().is_none()
+            && pad.is_none_or(|p| {
+                p.get_pressed().next().is_none()
+                    && p.left_stick().length() < bindings.stick_deadzone().max(0.01)
+                    && p.right_stick().length() < bindings.stick_deadzone().max(0.01)
+            });
+        if !focus.captured && neutral {
+            focus.wait_for_release = false;
+        }
+        return;
+    }
     let (held, left, right) = controller::sample(&keys, pad, &bindings);
     input.held = held;
     input.tapped |= held;
@@ -141,15 +184,20 @@ fn begin_tick(
     #[cfg(feature = "dev-mcp")] mut injected: ResMut<InjectedInput>,
     mut state: ResMut<ControllerState>,
     mut clock: ResMut<GameClock>,
+    focus: Res<InputFocus>,
     #[cfg(feature = "dev-mcp")] control: Option<ResMut<crate::dev_mcp::Control>>,
 ) {
-    clock.ticking = true;
+    clock.ticking = !focus.blocked();
     #[cfg(feature = "dev-mcp")]
     if let Some(mut control) = control {
+        if focus.blocked() {
+            control.interrupt_for_input_focus();
+            injected.buttons = 0;
+        }
         if control.discard_cancelled_step() {
             injected.buttons = 0;
         }
-        clock.ticking = !control.paused || control.has_step();
+        clock.ticking &= !control.paused || control.has_step();
     }
     if clock.ticking {
         let buttons = device.held | device.tapped | injected.buttons;

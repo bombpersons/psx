@@ -22,12 +22,16 @@ agent tried to use it and got stuck somewhere.
 - **Memory detective work.** Cheat-finder-style RAM search, per-frame value logging,
   disassembly and cross-references, and "poke this value and see what happens".
 - **Ghidra decompilation.** Give it an executable and a code address to get the
-  function's pseudocode and callers. Import, analysis and caching happen automatically;
-  needs a local Ghidra installation.
+  function's pseudocode and callers. Runtime snapshots work too; rename a function
+  and export verified names back into native traces. Import, analysis and caching
+  happen automatically; needs a local Ghidra installation.
 - **A Bevy game template** with the PS1 look built in: vertex wobble, affine textures,
   15-bit colour, dithering where the PS1 dithered, and the PS1's blend modes. Your game code stays plain
-  Bevy: entities, components, systems.
+  Bevy: entities, components, systems. Includes keyboard/gamepad rebinding and a
+  reusable [controls menu](templates/psx-bevy/README.md#rebinding-and-the-example-controls-menu).
 - **An MCP server**, so an agent can use all of the above as tools.
+  Inline controller events, paginated evidence and a bounded artifact reader keep
+  investigations inside the tool interface. See [agent workflow](docs/agent-workflow.md).
 
 ## See it in action
 
@@ -48,8 +52,9 @@ goes in the repo.
 
 ## Getting started
 
-You'll need Rust, your own disc images and a PS1 BIOS dump. **None of those are included, and
-none should ever be committed.** Put them here (both folders are git-ignored):
+You'll need Rust, your own disc images and a PS1 BIOS. **Disc images and firmware
+are not included and should never be committed.** Local `media/` and `bios/` folders
+are git-ignored:
 
 ```
 media/   your disc images (.cue/.bin)
@@ -62,6 +67,22 @@ Then try:
 cargo build --release
 target/release/psx disc "media/Some Game.cue"
 ```
+
+Set up a BIOS once, either from your local dump or through an explicit, checksum-verified download:
+
+```bash
+target/release/psx bios install --from /path/to/bios.bin
+# Alternatively, explicitly download the catalog's PAL image:
+target/release/psx bios install --download --region pal
+target/release/psx context --image "media/Some Game.cue" --save
+target/release/psx run --frames 300 --save-state --brief
+```
+
+The shared BIOS directory defaults to `$XDG_DATA_HOME/psx/bios`, or
+`~/.local/share/psx/bios`; `PSX_BIOS_DIR` overrides it. Runs use the native backend
+by default and select a locally installed BIOS for the disc's region. Resuming a
+native checkpoint requires its exact BIOS hash. Discovery and runs never download.
+See [BIOS setup](docs/bios-setup.md) for supported regions, source and selection rules.
 
 To start a new game from the template:
 

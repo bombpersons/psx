@@ -707,7 +707,7 @@ impl Bus {
                     self.sio0.write(p - 0x1F80_1040, value, now);
                 } else if (0x1F80_1800..0x1F80_1804).contains(&p) {
                     let now = self.now;
-                    self.cdrom.write(p - 0x1F80_1800, value as u8, now);
+                    self.cdrom.write_at_frame(p - 0x1F80_1800, value as u8, now, self.frames);
                 } else if (TIMERS..TIMERS + 0x30).contains(&p) {
                     self.timers.write(((p - TIMERS) >> 4) as usize, p & 0xC, value);
                 } else if p == GP0 && width == Width::Word {
@@ -758,6 +758,19 @@ impl Bus {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cd_history_keeps_exact_frames_across_video_mode_changes_and_polling() {
+        let mut m=crate::Machine::new(vec![0;512*1024]);
+        m.bus.frames=42;m.bus.now=10_000_000;m.bus.gpu.display.mode=8;
+        m.bus.write(0x1f801801,crate::Width::Byte,1).unwrap();
+        m.bus.frames=43;m.bus.now=11_000_000;m.bus.gpu.display.mode=0;
+        m.bus.write(0x1f801801,crate::Width::Byte,1).unwrap();
+        let command=m.bus.cdrom.recent.back().unwrap();
+        assert_eq!(command.frame,Some(42));assert_eq!(command.last_frame,Some(43));
+        assert_eq!(command.time,10_000_000);assert_eq!(command.last_time,11_000_000);
+        assert_eq!(command.repeats,2);
+    }
+
     use super::*;
 
     #[test]

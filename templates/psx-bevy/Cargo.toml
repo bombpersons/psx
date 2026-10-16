@@ -23,13 +23,15 @@ dev-mcp = ["dep:rmcp", "dep:tokio", "dep:base64", "dep:image"]
 bevy = { version = "=0.20.0", default-features = false, features = [
   "std", "async_executor", "multi_threaded", "bevy_asset", "bevy_log", "bevy_winit",
   "bevy_core_pipeline", "bevy_pbr", "bevy_sprite_render", "bevy_gltf", "bevy_gilrs",
-  "png", "x11", "wayland",
+  "png", "x11", "wayland", "bevy_ui_render", "default_font",
   # Components and resources deriving `Reflect` register themselves, so the
   # developer MCP's `game_query` can read them without `register_type` calls.
   "reflect_auto_register",
 ] }
 # Bevy 0.20 exposes native GLES on its renderer crate, not the facade features.
 bevy_render = { version = "=0.20.0", default-features = false, features = ["gles"] }
+# Persist physical bindings without enabling serialization on the renderer/world.
+bevy_input = { version = "=0.20.0", features = ["serialize"] }
 rmcp = { version = "=3.5.1", optional = true, features = ["transport-io"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "sync", "time", "io-std"] }
 serde = { version = "1", features = ["derive"] }

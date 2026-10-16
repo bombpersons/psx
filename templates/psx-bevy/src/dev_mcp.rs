@@ -148,6 +148,14 @@ impl Default for Control {
     }
 }
 impl Control {
+    pub(crate) fn interrupt_for_input_focus(&mut self) {
+        if let Some(step) = self.step.take() {
+            self.paused = true;
+            let _ = step.reply.send(Err(
+                "Controls menu captured input; close it and release physical buttons before stepping".into(),
+            ));
+        }
+    }
     pub fn has_step(&self) -> bool {
         self.step.is_some()
     }
@@ -253,6 +261,7 @@ fn process_commands(
     clock: Res<GameClock>,
     tick: Res<TickRate>,
     pad: Res<ControllerState>,
+    focus: Res<crate::shell::InputFocus>,
     mut exit: MessageWriter<AppExit>,
     adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
     windows: Query<(), With<bevy::window::PrimaryWindow>>,
@@ -265,6 +274,12 @@ fn process_commands(
     requests.extend(bridge.receiver.lock().unwrap().try_iter());
     for request in requests {
         if request.reply.is_closed() {
+            continue;
+        }
+        if focus.blocked() && matches!(&request.command, Command::Step(_) | Command::Input(_)) {
+            let _ = request.reply.send(Err(
+                "Controls menu captured input; close it and release physical buttons before stepping".into(),
+            ));
             continue;
         }
         if matches!(&request.command, Command::Screenshot(Target::Window)) && windows.is_empty() {
@@ -654,6 +669,17 @@ impl ServerHandler for GameServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn modal_capture_interrupts_a_pending_step_without_advancing_it() {
+        let (reply, mut receiver) = oneshot::channel();
+        let mut control = Control {
+            paused: false,
+            step: Some(Step { remaining: 12, total: 12, buttons: vec![Button::Cross], reply }),
+        };
+        control.interrupt_for_input_focus();
+        assert!(control.paused && !control.has_step());
+        assert!(matches!(receiver.try_recv().unwrap(),Err(error) if error.contains("Controls menu")));
+    }
 
     #[derive(Component, Reflect)]
     #[reflect(Component)]

@@ -18,7 +18,7 @@
 
 ## Current toolkit queue (agreed 2026-10-15)
 
-Items 1–3 are implemented. Item 4 (Ghidra runtime analysis and symbol roundtrip) is next.
+Items 1–5 and the two agent-usability slices below are implemented.
 This queue takes precedence over the historical
 milestones below. Scope is the shared toolkit and starter template; use the game
 studies as validation inputs.
@@ -66,12 +66,17 @@ studies as validation inputs.
    setting and software-GTE reference values; fixed-point precision limits and
    whole-game comparison scope are explicit in
    [validation](research/template-depth-cue.md).
-4. **Ghidra G2: runtime code and names back into traces.** Accept RAM snapshots
+4. **Ghidra G2: runtime code and names back into traces — done (2026-10-16).** Accept RAM snapshots
    and candidate code ranges, keep same-address overlays distinct, support
    renames/comments and export byte-bound symbols for residency-checked traces.
    Follow the detailed scope and gates in
    [docs/ghidra-integration.md](docs/ghidra-integration.md#g2-runtime-code-overlays-and-names-back-into-traces).
-5. **Template input rebinding and example controls UI.** Add a rebinding API to
+   Implemented content-bound RAM queries, explicit ranges/seeds/GP, canonical RAM
+   alias queries, staged rename/comment revisions and hashed function-body symbol
+   exports. Native traces and watch events verify names live; final-only evidence
+   is marked as a candidate. Same-address replacement and the Mega Man 8 floor
+   writer roundtrip pass. See [validation](research/ghidra-runtime.md).
+5. **Template input rebinding and example controls UI — done (2026-10-16).** Add a rebinding API to
    the template's input controller so players can change keyboard/gamepad
    bindings while game code continues to consume logical controller actions.
    Provide a reusable, PS1-style example UI that displays current bindings and
@@ -79,24 +84,56 @@ studies as validation inputs.
    restore-defaults, clear conflict handling and persistence of chosen bindings.
    Document how to reuse the example; the game implementor decides where to
    integrate it into the finished game's menus after reverse engineering.
+   Implemented keyboard/gamepad mappings, transactional conflict swaps, draft
+   editing, restore/clear/discard and validated atomic profile saves. The reusable
+   PS1-style menu captures input and suspends gameplay until physical release;
+   developer MCP input/steps respect the same boundary. Tests cover keyboard and
+   gamepad flows, malformed profiles, failed saves, focus loss and reconnects;
+   offscreen GPU/MCP verification checks the actual rendered menu. See
+   [validation](research/template-controls.md) and
+   [integration](templates/psx-bevy/README.md#rebinding-and-the-example-controls-menu).
 
 The first three items come from the King's Field study's `PSX_FEEDBACK.md`
 (local sibling project `../external_agent_tests/kings_field/`). Keep its game
 implementation separate from these shared changes.
 
-**Session handoff:** current branch `feat/gpu-next-draw`, based on
-`feat/headless-template`. Completed commits are `b447f04` (headless rendering and
-paused component editing) and `bb23a16` (bounded next-draw capture). Both are
-still on the feature branch, following the Ghidra commit `2f213c5` already merged
-into local `master`. Next-draw verification and artifact locations are recorded
-in [research/gpu-next-draw.md](research/gpu-next-draw.md). Queue item 1, the archive
-survey, external parser hooks/starters and the worked RTMD decoder were committed
-as `0cf07bb` (2026-10-15). Raw upload support completed item 2 in commit `b214a68`.
-Item 3's configurable template depth cue, authored example, docs and GPU/MCP
-verification are complete. Next session: item 4, Ghidra runtime analysis and
-symbol roundtrip, followed by item 5, input rebinding. Items 4–5 have not been started.
-Continue using external examples for niche formats;
-add built-ins when reuse and validation justify them.
+**Session handoff (2026-10-16):** current branch `feat/gpu-next-draw` contains
+completed queue items 1–5. Earlier commits are `b447f04` (headless template),
+`bb23a16` (bounded next-draw capture), `0cf07bb` (archives/external parsers),
+`b214a68` (raw uploads), and `7964b5f` (template depth cue), following the
+Ghidra G1 commit `2f213c5`. G2 implementation and validation are in the working
+tree for this session. The two agent usability slices below and template input
+rebinding with the reusable controls UI (item 5) are implemented. Continue using external parsers
+for niche formats and add built-ins when reuse and validation justify them.
+
+A quick post-G2 project review is recorded in
+[research/project-review-2026-10-16.md](research/project-review-2026-10-16.md).
+
+### Agent usability (2026-10-16)
+
+The [Tomb Raider/interface review](research/agent-usability-review.md) informs this
+work. Its agent notes predate G2; retain the review's corrections about VAB
+validation, video modes, sector data and transfer-size arithmetic.
+
+The first slice implements `context`, local BIOS inventory/import and explicit
+hash-verified regional downloads, shared storage, saved project defaults and native
+as the default backend. Native checkpoints select their exact BIOS identity.
+CLI/MCP initialization and run reports identify the source build. Compact MCP
+responses attach requested screenshots; function disassembly exposes heuristic
+boundary/search/listing limits and emits its discovered extent by default. CD
+command history records command-time frames rather than reconstructing them from
+the final video mode. See [validation](research/agent-usability-first-use.md) and
+[BIOS setup](docs/bios-setup.md).
+
+The second slice implements bounded `artifact_read` inspection with filters,
+projection and continuation cursors; typed inline controller states with validated
+press/release timing shared with replay files; query pagination and explicit scan/
+recording coverage; and cancellable, deadline-bound same-analysis Ghidra queues.
+Foreign/GUI locks and external-edit detection remain protected. Compact text
+responses omit duplicate detailed arrays. See [workflow contracts](docs/agent-workflow.md)
+and [validation](research/agent-usability-workflow.md). These four follow-ups are
+complete, as is template input rebinding. Backend pacing/fidelity investigation
+remains a separate correctness workstream.
 
 ## Original plan (historical)
 
