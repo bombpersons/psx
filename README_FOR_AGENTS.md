@@ -231,15 +231,21 @@ as described below.
 ## MCP server
 
 `psx mcp` serves every command as an [MCP](https://modelcontextprotocol.io) tool over
-stdin/stdout, so an agent can drive the toolkit directly. Start it **in the project
-root** (the directory holding `bios/`, `media/`, `external/`), or point it there with
-`--root`/`PSX_ROOT`: relative paths in tool arguments resolve there and outputs go to
-its `.psx/`. With Claude Code:
+stdin/stdout, so an agent can drive the toolkit directly. Relative paths in tool
+arguments resolve against the default project root and outputs go to its `.psx/`.
+That root is, in order: `--root`/`PSX_ROOT` when given; otherwise the client's MCP
+root when it reports exactly one local directory (refreshed when the client reports
+a change); otherwise the server's working directory. Register it once without
+`--root` so each Claude Code session uses the study it was opened in:
 
 ```bash
 cargo build --release -p psx
-claude mcp add psx -- /path/to/psx/target/release/psx --root /path/to/psx mcp
+claude mcp add --scope user -e PSX_SIGS_DIR=/path/to/psx/external/psx_psyq_signatures \
+  psx -- /path/to/psx/target/release/psx mcp
 ```
+
+`psx mcp --require-project-root` rejects any call without `project_root`, for
+clients that work across several studies and must not fall back to a default.
 
 Tools: `guide`, `context`, `bios_list`, `bios_install`, `artifact_read`,
 `disc`, `ls`, `extract`, `exe`, `sector`, `addr`, `xa`, `str`, `assets_scan`,
@@ -254,8 +260,10 @@ Tools: `guide`, `context`, `bios_list`, `bios_install`, `artifact_read`,
   `run_dir`); repeatable flags are arrays (`watch`, `symbols`, `trace_range`). Unknown
   arguments are rejected.
 - Without `project_root`, a tool's `structuredContent` is the JSON the CLI prints
-  for the same command (`tests/mcp_stdio.rs` checks this). Scoped calls use the
-  selected directory and additionally identify it in results/continuation calls.
+  for the same command (`tests/mcp_stdio.rs` checks this). Scoped calls, and calls
+  whose client-root default differs from the server's working directory, run in an
+  isolated worker and additionally identify `project_root` in results/continuation
+  calls; `context` then also reports `project_root_source: "client_roots"`.
   Errors include `{"error": {"code", "message"}}`
   with `isError: true`. A partial run or a lockstep divergence is a result, not an error.
   The one exception is `text: true` (`disasm`, `xrefs`, `ram_view`): the CLI prints only

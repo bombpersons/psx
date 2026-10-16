@@ -14,6 +14,17 @@ repeatable flags become arrays. Paths resolve against the configured project roo
 
 ## Isolate game studies
 
+Calls without `project_root` use the server's default root: `--root`/`PSX_ROOT`
+when the server was started with one, else the client's single MCP workspace root,
+else the server's working directory. Registering the server without `--root` and
+opening the agent in the study directory therefore needs no per-call root. Call
+`context` to confirm the root in use. Two or more client roots are ambiguous and fall
+back to the working directory. Start the server with `mcp --require-project-root`
+when one client drives several studies: calls that omit `project_root` then fail
+instead of reaching a default. A server-side "current project" is deliberately not
+offered: subagents share one MCP connection, so selecting it would affect their
+concurrent calls.
+
 Every MCP tool accepts an optional `project_root`, an existing directory specified
 absolutely or relative to the server's default root:
 

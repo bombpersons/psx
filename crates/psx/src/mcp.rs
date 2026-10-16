@@ -14,6 +14,10 @@
 //! - Results over 256 KiB are written to `.psx/mcp/` and replaced by a summary
 //!   with the file path.
 //! - Heavy tools (emulation, signature matching) share `--jobs` execution slots.
+//! - The default project root is `--root`/`PSX_ROOT` when given, else the
+//!   client's single MCP root, else the server's working directory. A call whose
+//!   root differs from the working directory runs in an isolated worker.
+//!   `--require-project-root` rejects calls that omit `project_root`.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -25,7 +29,7 @@ use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode, Implementation, ListToolsResult,
     PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
-use rmcp::service::{RequestContext, RoleServer};
+use rmcp::service::{NotificationContext, Peer, RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use serde_json::{json, Map, Value};
 use tokio::sync::Semaphore;
@@ -38,6 +42,9 @@ pub struct McpArgs {
     /// Concurrent heavy jobs (emulation, symbols, loads, Ghidra queries); 1..=8.
     #[arg(long, default_value_t = 2)]
     pub jobs: usize,
+    /// Reject calls without project_root instead of using the default root.
+    #[arg(long)]
+    pub require_project_root: bool,
 }
 
 /// Inline result limit; larger results are spilled to a file.
@@ -312,7 +319,14 @@ fn spill(tool: &str, value: Value, ctx: &Ctx) -> Value {
 
 #[derive(Clone)]
 struct PsxServer {
-    root: std::path::PathBuf,
+    /// The process working directory: in-process calls resolve paths against it.
+    base: std::path::PathBuf,
+    /// `--root`/`PSX_ROOT` fixed the default; client roots are ignored.
+    pinned: bool,
+    require_root: bool,
+    /// The default root from client roots; `None` until first needed and after
+    /// the client reports a roots change.
+    client_root: Arc<tokio::sync::Mutex<Option<std::path::PathBuf>>>,
     tools: Arc<Vec<Tool>>,
     defs: Arc<BTreeMap<&'static str, ToolDef>>,
     slots: Arc<Semaphore>,
@@ -334,7 +348,7 @@ fn respond(value: Value, image: Option<Option<Vec<u8>>>) -> CallToolResponse {
 }
 
 impl PsxServer {
-    fn new(root: std::path::PathBuf, jobs: usize) -> Self {
+    fn new(base: std::path::PathBuf, pinned: bool, require_root: bool, jobs: usize) -> Self {
         let mut tools = Vec::new();
         let mut defs = BTreeMap::new();
         for d in self::tools() {
@@ -344,19 +358,57 @@ impl PsxServer {
             tools.push(tool);
             defs.insert(d.name, d);
         }
-        PsxServer { root, tools: Arc::new(tools), defs: Arc::new(defs), slots: Arc::new(Semaphore::new(jobs)) }
+        PsxServer {
+            base,
+            pinned,
+            require_root,
+            client_root: Arc::default(),
+            tools: Arc::new(tools),
+            defs: Arc::new(defs),
+            slots: Arc::new(Semaphore::new(jobs)),
+        }
     }
 
-    async fn call(&self, name: &str, mut args: Map<String, Value>, cancel: tokio_util::sync::CancellationToken) -> CallToolResponse {
+    /// The default project root for a call without `project_root`. The lock is
+    /// held across the roots query so concurrent first calls ask only once.
+    async fn default_root(&self, peer: &Peer<RoleServer>) -> std::path::PathBuf {
+        if self.pinned {
+            return self.base.clone();
+        }
+        let mut cached = self.client_root.lock().await;
+        cached.get_or_insert(project::client_root(peer).await.unwrap_or_else(|| self.base.clone())).clone()
+    }
+
+    async fn call(
+        &self,
+        name: &str,
+        mut args: Map<String, Value>,
+        peer: &Peer<RoleServer>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> CallToolResponse {
         let tool = &self.defs[name];
         if serde_json::to_vec(&args).map(|v| v.len()).unwrap_or(0) > ARGS_LIMIT {
             return respond(error_value("limit_exceeded", "tool arguments exceed 1 MiB"), None);
         }
         let scoped = args.remove("project_root");
-        let root = match project::resolve(&self.root, scoped.as_ref()) {
+        if scoped.is_none() && self.require_root {
+            return respond(
+                error_value(
+                    "invalid_arguments",
+                    "this server was started with --require-project-root; pass project_root (the game study directory) on every call",
+                ),
+                None,
+            );
+        }
+        let default = self.default_root(peer).await;
+        let root = match project::resolve(&default, scoped.as_ref()) {
             Ok(root) => root,
             Err(error) => return respond(error, None),
         };
+        // Relative paths in-process resolve against the working directory, so
+        // any other root needs a worker running there.
+        let isolated = scoped.is_some() || root != self.base;
+        let from_client = scoped.is_none() && isolated;
         let worker_cancel = cancel.child_token();
         let ctx = Ctx { root, cancel: Some(worker_cancel.clone()) };
         let (args, want_screen) = match prepare(tool, args, &ctx) {
@@ -379,13 +431,13 @@ impl PsxServer {
         };
         let call = tool.call;
         let tool_name = tool.name;
-        let supervised = scoped.is_some() || name.starts_with("ghidra_") || name == "bios_install"
+        let supervised = isolated || name.starts_with("ghidra_") || name == "bios_install"
             || ["archive_parser", "model_parser", "asset_parser", "texture_parser", "frame_parser"]
                 .iter()
                 .any(|key| args.get(*key).is_some_and(Value::is_string));
         let mut worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let out = if scoped.is_some() {
+            let mut out = if isolated {
                 project::call(tool_name, args, &ctx).unwrap_or_else(|e| error_value("worker_failed", e))
             } else {
                 match call(args, &ctx) {
@@ -393,6 +445,9 @@ impl PsxServer {
                     Err(e) => error_value("invalid_arguments", e),
                 }
             };
+            if from_client && tool_name == "context" && out.is_object() {
+                out["project_root_source"] = json!("client_roots");
+            }
             let attach = want_screen || (tool_name == "artifact_read" && out["image"]["path"].is_string());
             let shot = attach.then(|| {
                 screen_path(tool_name, &out).and_then(|p| {
@@ -430,21 +485,39 @@ impl PsxServer {
     }
 }
 
+impl PsxServer {
+    fn default_note(&self) -> String {
+        let required = if self.require_root { "This server requires project_root on every call. " } else { "" };
+        if self.pinned {
+            format!("{required}Default project root: {} (fixed by --root/PSX_ROOT).", self.base.display())
+        } else {
+            format!(
+                "{required}Default project root: the client's workspace root when it reports exactly one, otherwise {}. context reports the root in use.",
+                self.base.display()
+            )
+        }
+    }
+}
+
 impl ServerHandler for PsxServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("psx", crate::context::version()))
             .with_instructions(format!(
                 "PlayStation (PS1) reverse-engineering toolkit. Each tool is one `psx` CLI command and returns exactly the JSON the CLI prints. \
-                 Default project root: {root} (bios/, media/, external/ and .psx/ outputs live here). Relative paths resolve against it; absolute paths also work. Every tool accepts project_root for one isolated call; use it consistently for sibling game studies. It never changes the server default. \
+                 {default} bios/, media/, external/ and .psx/ outputs live in the project root. Relative paths resolve against it; absolute paths also work. Every tool accepts project_root for one isolated call; use it consistently for sibling game studies. It never changes the server default. \
                  Use guide for workflow instructions and topic-specific recipes without a skill loader. Use artifact_read for returned artifact paths; run accepts typed inline input with explicit until releases. Same-analysis Ghidra calls queue within deadlines. Start with context to discover the exact build, configured BIOS/media, workspace and capabilities; bios_list and explicit bios_install handle one-time setup. run defaults to native and resolves installed BIOSes; no automatic downloads. template_create creates the Bevy project. \
                  Typical flow: disc -> ls / exe (`image.cue::/PATH`) -> symbols -> run (backend native; save_state then from_state; trace_cd, watch, trace, gpu_frame) -> loads / textures / disasm. \
                  Gameplay RE: short runs from a state with different inputs -> ram_search / ram_diff to find variables -> run `sample` for per-frame values and `watch` for writers -> disasm (text, function) / xrefs -> run `poke` to test. \
                  For pseudocode: ghidra_decompile with source (EXE or disc.cue::/PATH) and addr (writer PC); import/analysis/cache are automatic. Use its analysis handle for ghidra_functions / ghidra_xrefs or more decompiles. For runtime overlays use ram with ranges and entries. Rename/comment via ghidra_annotate, then ghidra_export_symbols to return byte-bound names to native traces. No separate Ghidra setup call is needed. \
                  Emulation outputs (RAM, VRAM, traces, PNGs) are files in the returned run_dir; read them from disk instead of expecting them inline. \
                  Backend native gives exact observations and native states; redux is the PCSX-Redux oracle. Results over 256 KiB come back as a result_file path.",
-                root = self.root.display()
+                default = self.default_note()
             ))
+    }
+
+    async fn on_roots_list_changed(&self, _: NotificationContext<RoleServer>) {
+        *self.client_root.lock().await = None;
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -466,7 +539,7 @@ impl ServerHandler for PsxServer {
         if !self.defs.contains_key(request.name.as_ref()) {
             return Err(McpError::new(ErrorCode::METHOD_NOT_FOUND, format!("unknown psx tool {:?}", request.name), None));
         }
-        Ok(self.call(request.name.as_ref(), request.arguments.unwrap_or_default(), context.ct.clone()).await)
+        Ok(self.call(request.name.as_ref(), request.arguments.unwrap_or_default(), &context.peer, context.ct.clone()).await)
     }
 }
 
@@ -540,9 +613,9 @@ fn stdin_pipe(shutdown: tokio_util::sync::CancellationToken) -> StdinPipe {
     StdinPipe { receiver, current: Vec::new(), position: 0 }
 }
 
-async fn serve(root: std::path::PathBuf, jobs: usize) -> Result<(), Box<dyn std::error::Error>> {
+async fn serve(root: std::path::PathBuf, pinned: bool, a: McpArgs) -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = tokio_util::sync::CancellationToken::new();
-    let server = PsxServer::new(root, jobs);
+    let server = PsxServer::new(root, pinned, a.require_project_root, a.jobs);
     let input = stdin_pipe(shutdown.clone());
     let running = server.serve_with_ct((input, tokio::io::stdout()), shutdown.clone()).await?;
     let result = running.waiting().await;
@@ -551,7 +624,8 @@ async fn serve(root: std::path::PathBuf, jobs: usize) -> Result<(), Box<dyn std:
     Ok(())
 }
 
-pub fn main(ctx: Ctx, a: McpArgs) -> ExitCode {
+/// `pinned`: the root came from `--root`/`PSX_ROOT`, so client roots are ignored.
+pub fn main(ctx: Ctx, a: McpArgs, pinned: bool) -> ExitCode {
     if !(1..=8).contains(&a.jobs) {
         println!("{}", error_value("invalid_arguments", "--jobs must be 1..=8"));
         return ExitCode::from(1);
@@ -564,7 +638,7 @@ pub fn main(ctx: Ctx, a: McpArgs) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let r = rt.block_on(serve(ctx.root, a.jobs));
+    let r = rt.block_on(serve(ctx.root, pinned, a));
     // Jobs still running in the background are abandoned with the process.
     rt.shutdown_timeout(Duration::from_millis(200));
     match r {
