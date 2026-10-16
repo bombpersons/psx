@@ -1,7 +1,9 @@
 # Ghidra integration plan
 
 Toolkit plan, 2026-10-15. The first EXE integration (G0/G1) is implemented on
-`feat/ghidra-integration`; G2/G3 remain planned. Current commands and limitations
+`feat/ghidra-integration`. G2 is implemented (2026-10-16); G3 remains planned.
+See [runtime validation](../research/ghidra-runtime.md) for the snapshot, annotation
+and byte-bound symbol roundtrip gates. Current commands and limitations
 are documented in [README_FOR_AGENTS.md](../README_FOR_AGENTS.md#ghidra-one-call-from-a-writer-pc-to-pseudocode).
 
 ## Outcome
@@ -61,14 +63,14 @@ Proposed implementation homes:
 
 ## Proposed interface
 
-G0/G1 operations below are implemented; RAM, annotations and symbol export remain
-proposed. All operations retain the existing CLI/MCP JSON contract.
+G0–G2 operations below are implemented. Type editing and GUI annotation refresh
+remain proposed in G3. All operations retain the existing CLI/MCP JSON contract.
 
 | CLI | MCP | Purpose |
 |---|---|---|
 | `psx ghidra doctor` | `ghidra_doctor` | Find Ghidra/Java and report supported configuration |
 | `psx ghidra analyze --source SOURCE` | `ghidra_analyze` | Import an EXE and create or reuse its analysis |
-| `psx ghidra analyze --ram RUN --range LO-HI` | same | Analyse a selected runtime code region, with RAM data context |
+| `psx ghidra analyze --ram RUN --range LO-HI --entry ADDR` | same | Analyse a selected runtime code region, with RAM data context |
 | `psx ghidra functions --source SOURCE` | `ghidra_functions` | Ensure analysis, then return a filtered, paginated function index |
 | `psx ghidra decompile --source SOURCE --addr ADDR` | `ghidra_decompile` | Ensure analysis, then return the enclosing function, pseudocode, callers, body ranges and diagnostics |
 | `psx ghidra xrefs --source SOURCE --addr ADDR` | `ghidra_xrefs` | Ensure analysis, then return analysis-derived references, callers and callees |
@@ -76,9 +78,9 @@ proposed. All operations retain the existing CLI/MCP JSON contract.
 | `psx ghidra export-symbols ANALYSIS` | `ghidra_export_symbols` | Feed source-bound function names back to psx |
 
 `SOURCE` uses existing EXE-file and `disc.cue::/PATH` syntax. Query tools accept
-exactly one input selector: `source`, `analysis`, or (in G2) `ram`. `analysis`
+exactly one input selector: `source`, `analysis`, or `ram`. `analysis`
 is an explicit manifest path returned by an earlier call; `ram` can be a run
-directory, with optional range/GP overrides for incomplete metadata. `analyze`
+directory or 2 MiB dump, with required explicit ranges/entry seeds and optional GP. `analyze`
 is an optional prewarm/advanced operation, never a prerequisite tool call.
 Addresses accept existing hex conventions. Add filters, limits and batch address
 selection so an agent does not need to export every function's C before asking
@@ -139,6 +141,14 @@ setup calls or custom scripts. CLI and MCP agree. Repeating the same request reu
 The saved project opens in the GUI. Ghidra remains optional for other psx commands.
 
 ### G2: Runtime code, overlays and names back into traces
+
+**Completed 2026-10-16.** CLI/MCP snapshot queries, staged rename/comment patches,
+revision-specific indexes/caches, format 2 exports, and live body-verified native
+trace/watch naming pass the authored and real-game gates. Post-run observations
+expose final-RAM candidates without asserting earlier residency. See the
+[command reference](../README_FOR_AGENTS.md#ghidra-one-call-from-a-writer-pc-to-pseudocode)
+and [validation](../research/ghidra-runtime.md). The scope below is retained as
+the acceptance criteria.
 
 - Accept a run directory or RAM image, with explicit candidate code ranges and
   entry seeds; retain the remainder of RAM as data context. Bare RAM also accepts

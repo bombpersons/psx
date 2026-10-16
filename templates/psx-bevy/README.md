@@ -8,6 +8,8 @@ Requires Rust 1.97.1+ and a desktop GPU driver (or Mesa lavapipe with `--softwar
 cargo run
 cargo run -- --software                 # force a software adapter
 cargo run -- --region pal               # override lib.rs REGION (display + tick rate)
+cargo run -- --controls                 # open the example controls menu (F1 also opens it)
+cargo run -- --bindings ./controls.json # explicit settings location, useful for testing
 cargo test                              # headless gameplay tests (tests/)
 cargo run --features dev-mcp -- --mcp   # developer MCP over stdin/stdout
 cargo run --features dev-mcp -- --mcp --headless --software # offscreen GPU, no desktop needed
@@ -31,7 +33,8 @@ tools can reach every module; `src/main.rs` only opens the window.
 | `tests/player.rs` | Headless tick tests: the pattern for comparing rules with recorded trajectories |
 | `src/psx/` | The PS1 look (materials, screen pass, `.psxscene` loader) |
 | `src/shell.rs` | `TickRate`, `GameClock`, `GameSystems`, controller sampling |
-| `src/controller.rs` | `Button`, `ControllerState`, bindings |
+| `src/controller.rs`, `controller/bindings.rs` | Logical `Button`/`ControllerState`, validated device bindings and settings storage |
+| `src/controls/` | Reusable controls menu: draft edits, capture, conflict resolution and PS1-style presentation |
 | `src/testing.rs` | `headless_app`, `TickApp::run_tick(s)` |
 | `src/viewer.rs` | The `--scene` capture viewer |
 | `src/dev_mcp.rs` | Developer MCP (feature `dev-mcp`) |
@@ -346,6 +349,72 @@ The demo moves the crate with the D-pad or stick, turns it with L1/R1 and
 hops on Cross. Triangle toggles the PS1 effects so you can compare. Replace
 `src/demo/`; it shows the wiring (a rules plugin plus presentation), not a
 game architecture to copy wholesale.
+
+### Rebinding and the example controls menu
+
+In the demo, **F1** or **Start+Select** opens the controls menu. Arrow keys/D-pad
+choose a row; left/right selects the keyboard or gamepad column. Enter/South
+starts capture: release existing keys/buttons, then press the new physical input.
+Inputs stay logical (`Button::Cross`, `Button::Left`, etc.) in gameplay code.
+Start directly in the menu with `cargo run -- --controls`; use
+`--bindings PATH` to choose a separate settings file.
+
+- A binding already used by another action offers an explicit swap. Enter/South
+  swaps; Esc/East keeps the previous bindings. There is one binding per action
+  and device, and a physical button cannot silently trigger two actions.
+- Delete/West clears the selected slot. Restore defaults changes the draft.
+- **Save and close** writes the profile and applies it only after the write
+  succeeds. **Discard and close**, Esc/East while browsing, F1, or Start+Select
+  discard the draft. Esc during capture cancels only that binding attempt.
+- East is an assignable gamepad button while listening; use Esc to cancel a
+  capture, or the opening shortcut to discard the whole menu. F1 (when global
+  shortcuts are enabled) and Esc remain reserved in this example UI.
+- Gameplay ticks and input pause while the menu owns focus. Closing waits for
+  physical controls to become neutral, so confirmation keys and newly captured
+  buttons cannot become gameplay presses. Losing window focus discards the draft.
+  Injected test/MCP buttons still address logical actions; the menu does not remap
+  them. MCP input/step calls return an explicit error while focus is captured,
+  and opening a menu interrupts a pending step instead of leaving it waiting.
+
+Profiles use a versioned JSON document, validated for duplicate assignments,
+enum values, slot counts and stick deadzone. Invalid profiles are preserved and
+leave the configured defaults active. Save is an explicit atomic replacement;
+an error keeps the draft open and leaves live bindings unchanged. Settings default
+to `$XDG_CONFIG_HOME/<package-name>/controls.json`, otherwise
+`~/.config/<package-name>/controls.json` (Windows: `%APPDATA%`). `--bindings PATH`
+overrides this in the demo. No profile is created by opening or cancelling a menu.
+
+The menu is a reusable example, independent of `demo/`. Keep it in a finished game
+where it fits the options screen, or use the binding API with your own UI:
+
+```rust
+use game::controller::{Button, ConflictPolicy, ControllerBindings, PhysicalBinding};
+use game::controls::{ControlsMenu, ControlsPlugin};
+
+// Add beside ShellPlugin and PsxPlugin. Your own menu decides when it opens.
+app.add_plugins(ControlsPlugin { global_shortcuts: false, ..default() });
+app.world_mut().resource_mut::<ControlsMenu>().open();
+
+// Core API, also usable without the example presentation:
+let mut bindings = ControllerBindings::default();
+bindings.assign(Button::Cross, PhysicalBinding::Key(KeyCode::Space), ConflictPolicy::Reject)?;
+```
+
+Configure custom defaults by inserting `ControllerBindings` **before** adding
+`ControlsPlugin`; Restore defaults returns to that snapshot, independently of a
+loaded profile. Read slots with `key`, `pad_button` or `binding`; use `assign`,
+`clear`, and `set_stick_deadzone` to edit them. `BindingStore::load/save` handles
+persistence explicitly. `ControlsPlugin { render_ui: false, ... }` runs its real
+input/editor logic in headless tests or with a custom presentation. `InputFocus`
+and `PhysicalInputSystems::Capture` expose the shell's focus/order boundary for
+other modal interfaces. Stick axes retain their original meaning; this menu
+rebinds digital buttons, including triggers, rather than analog axes.
+
+The presentation uses ordinary Bevy UI and its embedded default font, with an
+isolated `PsxView` camera before the screen pass, so it appears in low-resolution
+screenshots and passes through the same framebuffer quantization. If importing
+both Bevy and game preludes, explicitly import `game::controller::Button` to
+disambiguate Bevy's UI button type.
 
 ## From evidence to idiomatic code
 

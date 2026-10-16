@@ -16,6 +16,11 @@ use serde_json::{json, Value};
 use commands::{Ctx, Op};
 
 mod assets_cmd;
+mod bios;
+mod context;
+mod artifact;
+mod page;
+mod bound_symbols;
 mod code;
 mod commands;
 mod ghidra;
@@ -30,13 +35,14 @@ mod replay;
 mod run;
 mod run_native;
 mod str_cmd;
+mod symbols_io;
 mod template;
 mod textures;
 mod vram_diff;
 mod xa_cmd;
 
 #[derive(Parser)]
-#[command(name = "psx", version, about = "PlayStation reverse-engineering toolkit")]
+#[command(name = "psx", version = concat!(env!("CARGO_PKG_VERSION"),"+",env!("PSX_BUILD_ID")), about = "PlayStation reverse-engineering toolkit")]
 struct Cli {
     /// Project root holding bios/, media/, external/ and .psx/ (default: $PSX_ROOT, else the
     /// current directory). psx changes into it first, so relative paths in every argument
@@ -50,6 +56,15 @@ struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)] // parsed once per process
 enum Command {
+    /// Discover build, project defaults, BIOS candidates and backend capabilities.
+    Context(context::ArgsContext),
+    /// Inspect artifacts: directory inventory, paginated JSON/logs/CSV, text, hex or PNG.
+    ArtifactRead(artifact::ReadArgs),
+    /// List local BIOSes or explicitly install/download a verified image.
+    Bios {
+        #[command(subcommand)]
+        action: bios::Action,
+    },
     /// Ghidra analysis and decompilation; queries automatically import their source.
     Ghidra {
         #[command(subcommand)]
@@ -57,7 +72,7 @@ enum Command {
     },
     /// Tracks, volume, SYSTEM.CNF and boot executable of a disc image.
     Disc(commands::DiscArgs),
-    /// List every ISO9660 entry with LBA, size and CD-XA attributes.
+    /// List ISO9660 entries with LBA, size, CD-XA attributes, filtering and pagination.
     Ls(commands::LsArgs),
     /// Extract one file, or every file with --all, into a directory.
     /// Form 2 / interleaved files are written as raw 2352-byte sectors with a `.raw` suffix.
@@ -86,8 +101,8 @@ enum Command {
         action: TemplateAction,
     },
     /// Run a disc, EXE or state for N frames and capture RAM, VRAM, screen and registers:
-    /// in a PCSX-Redux worker (default) or on the native core (`--backend native`: write
-    /// watches, traces, GPU frame capture, per-frame samples, pokes, screens, save states).
+    /// on the native core (default: watches, traces, GPU captures, samples and states)
+    /// or in a PCSX-Redux oracle worker (`--backend redux`). Input can be inline or replayed.
     Run(commands::RunCmdArgs),
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
@@ -158,6 +173,9 @@ fn main() -> ExitCode {
     }
     let ctx = Ctx { root: std::env::current_dir().unwrap_or_default(), cancel: None };
     let out = match cli.command {
+        Command::Context(a) => a.exec(&ctx),
+        Command::ArtifactRead(a) => a.exec(&ctx),
+        Command::Bios { action } => action.exec(&ctx),
         Command::Ghidra { action } => action.exec(&ctx),
         Command::Mcp(a) => return mcp::main(ctx, a),
         Command::Disc(a) => a.exec(&ctx),
@@ -251,6 +269,7 @@ fn disc_summary(image: &Path, hash: bool) -> R {
     let mut out = json!({
         "source": disc.source,
         "files": files,
+        "media_files": files,
         "tracks": disc.tracks,
         "track_summary": {"total": disc.tracks.len(), "data": disc.tracks.len() - audio, "audio": audio},
         "end_lba": disc.end_lba(),
@@ -276,6 +295,7 @@ fn disc_summary(image: &Path, hash: bool) -> R {
         "streamed_files": files_only.clone().filter(|e| e.is_streamed()).count(),
         "bytes": files_only.map(|e| e.size as u64).sum::<u64>(),
     });
+    out["filesystem"]=out["entries"].clone();
     out["fs_warnings"] = json!(fs.warnings);
 
     let cnf = fs.find("/SYSTEM.CNF").map(|e| fs.read_file(&disc, e)).transpose()?.map(|b| SystemCnf::parse(&b));
@@ -335,82 +355,7 @@ fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -> R {
     Ok(json!({"written": written, "failed": failed}))
 }
 
-/// Symbols for one executable, with its code bytes when known so that a name
-/// is only applied where that code is actually resident.
-pub(crate) struct ScopedSymbols {
-    pub name: String,
-    pub table: psx_symbols::SymbolTable,
-    /// `(text_addr, payload)` from a `.symbols.json` report; `None` for bare `.sym` files.
-    pub code: Option<(u32, Vec<u8>)>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SymbolCheck {
-    /// The executable's bytes around the PC match the RAM given.
-    RamMatch,
-    /// Bare `.sym` file: no code to compare against.
-    Unverified,
-}
-
-impl SymbolCheck {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            SymbolCheck::RamMatch => "ram_match",
-            SymbolCheck::Unverified => "unverified",
-        }
-    }
-}
-
-/// Load `.sym` or `.symbols.json` files. Names describe one executable's code;
-/// overlays and loaders can reuse the same addresses, so prefer `.symbols.json`.
-pub(crate) fn load_symbols(paths: &[PathBuf]) -> psx_media::Result<Vec<ScopedSymbols>> {
-    let mut out = Vec::new();
-    for p in paths {
-        let text = std::fs::read_to_string(p).map_err(|e| MediaError::io(p, e))?;
-        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        if name.ends_with(".symbols.json") {
-            let v: Value = serde_json::from_str(&text).map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
-            let source = v["source"].as_str().unwrap_or_default().to_string();
-            let report: psx_symbols::MatchReportIn = serde_json::from_value(v["report"].clone())
-                .map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
-            let bytes = read_source(&source)?;
-            let exe = PsxExe::parse(&bytes)?;
-            out.push(ScopedSymbols {
-                name: source.rsplit(['/', '\\', ':']).next().unwrap_or(&source).trim_end_matches(";1").to_string(),
-                table: psx_symbols::SymbolTable::from_symbols(&report.symbols),
-                code: Some((exe.text_addr, exe.payload(&bytes).to_vec())),
-            });
-        } else {
-            out.push(ScopedSymbols {
-                name: name.trim_end_matches(".sym").to_string(),
-                table: psx_symbols::SymbolTable::from_sym_text(&text),
-                code: None,
-            });
-        }
-    }
-    Ok(out)
-}
-
-/// Name `pc` from the first executable whose code is resident there in `ram`
-/// (2 MiB main RAM image). Without RAM, or for bare `.sym` files, the name is unverified.
-pub(crate) fn name_pc(scopes: &[ScopedSymbols], pc: u32, ram: Option<&[u8]>) -> Option<(String, SymbolCheck, String)> {
-    for s in scopes {
-        let Some(n) = s.table.describe(pc, 0x4000) else { continue };
-        match (&s.code, ram) {
-            (Some((base, code)), Some(ram)) => {
-                let off = pc.wrapping_sub(*base) as usize & !3;
-                let lo = off.saturating_sub(16);
-                let hi = (off + 16).min(code.len());
-                let r = (*base as usize & 0x1F_FFFF) + lo;
-                if lo < hi && ram.get(r..r + (hi - lo)) == Some(&code[lo..hi]) {
-                    return Some((n, SymbolCheck::RamMatch, s.name.clone()));
-                }
-            }
-            (Some(_), None) | (None, _) => return Some((n, SymbolCheck::Unverified, s.name.clone())),
-        }
-    }
-    None
-}
+pub(crate) use symbols_io::{final_name, load_symbols, name_pc, ScopedSymbols, SymbolCheck};
 
 fn read_source(source: &str) -> psx_media::Result<Vec<u8>> {
     Ok(match source.split_once("::") {

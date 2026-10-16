@@ -5,6 +5,7 @@
 //! them by the tick length, so they read the same at any [`crate::TickRate`].
 //! A reimplementation would cite where each value came from; see AGENTS.md,
 //! "From evidence to idiomatic code".
+use crate::controller::Button;
 use crate::prelude::*;
 use bevy::prelude::*;
 

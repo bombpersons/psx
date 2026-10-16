@@ -37,7 +37,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn media(r: psx_media::Result<Value>) -> Self {
+    pub(crate) fn media(r: psx_media::Result<Value>) -> Self {
         match r {
             Ok(value) => Outcome { value, exit: 0, pretty: true, text: false },
             Err(e) => Outcome {
@@ -105,9 +105,6 @@ fn d_run_timeout() -> u64 {
 fn d_max_events() -> u32 {
     200_000
 }
-fn d_backend() -> String {
-    "redux".into()
-}
 fn d_sigs() -> PathBuf {
     PathBuf::from("external/psx_psyq_signatures")
 }
@@ -131,9 +128,6 @@ fn d_tail() -> usize {
 }
 fn d_pad() -> String {
     "digital".into()
-}
-fn d_count() -> u32 {
-    32
 }
 fn d_cell() -> usize {
     128
@@ -162,16 +156,34 @@ impl Op for DiscArgs {
 pub struct LsArgs {
     /// Disc image: .cue, raw .bin or .iso.
     pub image: PathBuf,
+    /// Case-insensitive substring of the ISO path.
+    #[arg(long)]
+    pub filter: Option<String>,
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub offset: usize,
+    #[arg(long, default_value_t=crate::page::default_limit())]
+    #[serde(default = "crate::page::default_limit")]
+    pub limit: usize,
 }
 
 impl Op for LsArgs {
     fn exec(self, _: &Ctx) -> Outcome {
         Outcome::media((|| {
+            crate::page::validate(self.limit).map_err(MediaError::Malformed)?;
             let disc = Disc::open(&self.image)?;
             let fs = FileSystem::read(&disc)?;
-            Ok(
-                json!({"volume": fs.volume, "entries": fs.entries.iter().map(crate::entry_json).collect::<Vec<_>>(), "warnings": fs.warnings}),
-            )
+            let filter = self.filter.unwrap_or_default().to_lowercase();
+            let rows: Vec<_> = fs
+                .entries
+                .iter()
+                .map(crate::entry_json)
+                .filter(|e| e["path"].as_str().unwrap_or("").to_lowercase().contains(&filter))
+                .collect();
+            let entries: Vec<_> = rows.iter().skip(self.offset).take(self.limit).collect();
+            Ok(json!({"volume": fs.volume, "entries": entries, "warnings": fs.warnings,
+                    "page":crate::page::metadata(rows.len(),self.offset,entries.len(),self.limit),
+                    "coverage":{"filesystem_entries":fs.entries.len(),"matching_entries":rows.len(),"scope":"ISO9660 directory index","complete":true}}))
         })())
     }
 }
@@ -336,6 +348,21 @@ pub struct AssetsScanArgs {
     /// `image.cue::/PATH` (a file; `/DIR/` or `*` for many), a disc image (every
     /// file) or a host file (`ram.bin` dumps resolve relocated TMDs at 0x80000000).
     pub source: String,
+    /// Case-insensitive source-file name filter; affects scanning coverage.
+    #[arg(long)]
+    pub filter: Option<String>,
+    /// Offset among files with recognized hits, uploads or archive indexes.
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub offset: usize,
+    /// Maximum files and maximum rows within each file's hit/upload/archive lists (1..=1000).
+    #[arg(long, default_value_t=crate::page::default_limit())]
+    #[serde(default = "crate::page::default_limit")]
+    pub limit: usize,
+    /// Offset within each file's hits, upload streams and archive entries. Use filter to narrow to one file.
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub item_offset: usize,
     /// One JSON document instead of a text table (always JSON over MCP).
     #[arg(long)]
     #[serde(default)]
@@ -359,7 +386,11 @@ impl Op for AssetsScanArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         match crate::assets_cmd::scan_assets(&self, ctx) {
             Ok(Err(table)) => Outcome { value: json!({"text": table}), exit: 0, pretty: true, text: true },
-            Ok(Ok(v)) => Outcome::media(Ok(v)),
+            Ok(Ok(v)) => {
+                let mut out = Outcome::media(Ok(v));
+                out.text = !self.json;
+                out
+            }
             Err(e) => Outcome::media(Err(e)),
         }
     }
@@ -533,9 +564,9 @@ impl Op for ParserTemplateArgs {
 pub struct RunCmdArgs {
     /// Disc image (.cue/.bin/.iso) or PS-X EXE; omit to boot the BIOS or continue a state.
     pub media: Option<PathBuf>,
-    /// BIOS image, e.g. bios/scph7502.bin.
+    /// BIOS override; otherwise exact checkpoint identity, project defaults or regional local discovery.
     #[arg(long)]
-    pub bios: PathBuf,
+    pub bios: Option<PathBuf>,
     /// Frames (vsyncs) to run: from power-on, or from the restored state with --from-state.
     #[arg(long, default_value_t = d_frames())]
     #[serde(default = "d_frames")]
@@ -543,6 +574,10 @@ pub struct RunCmdArgs {
     /// JSON array of {"frame": n, "buttons": ["CROSS", ...]}; frames count from the run start.
     #[arg(long)]
     pub replay: Option<PathBuf>,
+    /// Inline JSON array of complete pad states, e.g. '[{"frame":0,"buttons":["CROSS"],"until":5}]'.
+    /// Run-relative frame boundaries; until releases at its exclusive end; [] releases all buttons.
+    #[arg(long, conflicts_with = "replay")]
+    pub input: Option<crate::replay::Events>,
     /// Write watch `ADDR[:WIDTH]` in hex, repeatable. Native: every CPU/DMA store into
     /// the range goes to writes.jsonl with pc, value, old value (hex and signed views too),
     /// `frame` (absolute, from power-on) and `run_frame` (from the run start).
@@ -583,12 +618,12 @@ pub struct RunCmdArgs {
     #[arg(long, default_value_t = d_max_events())]
     #[serde(default = "d_max_events")]
     pub max_events: u32,
-    /// Emulator: `redux` (PCSX-Redux worker process, default; needs external/pcsx-redux) or
-    /// `native` (the in-tree psx-core: exact watches, --trace, --gpu-frame, --sample, --poke,
+    /// Emulator: `redux` (PCSX-Redux oracle worker; needs external/pcsx-redux) or
+    /// `native` (default, the in-tree psx-core: exact watches, --trace, --gpu-frame, --sample, --poke,
     /// --snapshot-every, memory cards, native states).
-    #[arg(long, default_value_t = d_backend())]
-    #[serde(default = "d_backend")]
-    pub backend: String,
+    #[arg(long)]
+    #[schemars(with = "Option<crate::context::Backend>")]
+    pub backend: Option<String>,
     #[command(flatten)]
     #[serde(flatten)]
     pub trace: crate::run::TraceArgs,
@@ -610,21 +645,32 @@ fn brief(v: &Value) -> Value {
     if v.get("error").is_some() {
         return v.clone();
     }
+    let mut frames = v["frames"].clone();
+    if let Some(f) = frames.as_object_mut() {
+        f.remove("numbering");
+    }
     let mut b = json!({
-        "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "frames": v["frames"],
+        "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "frames": frames,
         "report": v["report"],
         "files": v["files"].as_object().map(|f| f.keys().cloned().collect::<Vec<_>>()),
-        "watch": {"hits": v["watch"]["hits"], "recorded": v["watch"]["recorded"]},
+        "watch": {"enabled":v["watch"]["enabled"],"hits": v["watch"]["hits"], "recorded": v["watch"]["recorded"],
+            "complete":v["watch"]["complete"],"file":v["watch"]["file"]},
     });
-    for k in ["samples", "pokes", "screens", "states", "read_watch", "wall_ms"] {
+    for k in ["build", "resolved", "input", "pad", "artifacts", "samples", "pokes", "screens", "states", "read_watch", "wall_ms"] {
         if !v[k].is_null() {
             b[k] = v[k].clone();
         }
     }
+    if let Some(events) = v["input"]["events"].as_array() {
+        b["input"]["events"] = json!(events.iter().take(8).collect::<Vec<_>>());
+        b["input"]["page"] = crate::page::metadata(events.len(), 0, events.len().min(8), 8);
+    }
     if v["gpu_frame"].is_object() {
         let g = &v["gpu_frame"];
         let mut summary = serde_json::Map::new();
-        for key in ["error", "status", "reason", "mode", "search", "frame", "run_frame", "absolute_frame", "complete", "commands", "draw_commands"] {
+        for key in
+            ["error", "status", "reason", "mode", "search", "frame", "run_frame", "absolute_frame", "complete", "commands", "draw_commands"]
+        {
             if let Some(value) = g.get(key) {
                 summary.insert(key.into(), value.clone());
             }
@@ -641,14 +687,27 @@ fn brief(v: &Value) -> Value {
 impl Op for RunCmdArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         let a = self;
+        let backend = match crate::context::backend_arg(a.backend) {
+            Ok(b) => b,
+            Err(e) => return crate::context::failed(e),
+        };
+        let resolved = match crate::context::resolve(&ctx.root, a.media, a.bios, backend, a.from_state.as_deref(), false) {
+            Ok(r) => r,
+            Err(e) => return crate::context::failed(e),
+        };
+        if let Some(e) = resolved.setup_error() {
+            return crate::context::failed(e);
+        }
+        let bios = resolved.bios.unwrap();
         let short = a.brief;
         let mut out = Outcome::pair(crate::run::run(
             &ctx.root,
             crate::run::RunArgs {
-                media: a.media,
-                bios: a.bios,
+                media: resolved.media,
+                bios,
                 frames: a.frames,
                 replay: a.replay,
+                input: a.input,
                 watches: a.watches,
                 from_state: a.from_state,
                 save_state: a.save_state,
@@ -659,12 +718,24 @@ impl Op for RunCmdArgs {
                 trace_bios: a.trace_bios,
                 symbols: a.symbols,
                 max_events: a.max_events,
-                backend: a.backend,
+                backend: resolved.backend.name().into(),
                 trace: a.trace,
                 cards: a.cards,
                 observe: a.observe,
             },
         ));
+        if out.value.get("error").is_none() {
+            out.value["build"] = crate::context::build();
+            out.value["resolved"] = json!({"backend":resolved.backend,"bios_selection":resolved.bios_reason});
+            out.value["artifacts"] = json!(out.value["files"]
+                .as_object()
+                .map(|files| files
+                    .values()
+                    .filter_map(|f| f["path"].as_str())
+                    .filter_map(|p| crate::artifact::descriptor(std::path::Path::new(p)).ok())
+                    .collect::<Vec<_>>())
+                .unwrap_or_default());
+        }
         // The full report always goes to the run directory.
         if let Some(dir) = out.value["run_dir"].as_str().map(PathBuf::from) {
             let p = dir.join("report.json");
@@ -685,10 +756,13 @@ pub struct LoadsArgs {
     /// The disc image the run used.
     #[arg(long)]
     pub disc: PathBuf,
-    /// Include at most N individual runs (spans are always complete).
+    /// Include at most N individual runs (1..=1000); spans describe the full result.
+    #[arg(long, default_value_t = crate::page::default_limit())]
+    #[serde(default = "crate::page::default_limit")]
+    pub limit: usize,
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
-    pub limit: usize,
+    pub offset: usize,
     /// `.symbols.json` (verified against RAM) or `.sym` files from `psx symbols`; repeatable.
     #[arg(long = "symbols")]
     #[serde(default)]
@@ -698,11 +772,14 @@ pub struct LoadsArgs {
 impl Op for LoadsArgs {
     fn exec(self, _: &Ctx) -> Outcome {
         Outcome::media((|| {
+            crate::page::validate(self.limit).map_err(MediaError::Malformed)?;
             let scopes = crate::load_symbols(&self.symbols)?;
             let mut v = crate::provenance::report(&self.run_dir, &self.disc, &scopes).map_err(MediaError::Malformed)?;
             if let Some(runs) = v["runs"].as_array_mut() {
                 let total = runs.len();
-                runs.truncate(self.limit);
+                let rows: Vec<_> = runs.iter().skip(self.offset).take(self.limit).cloned().collect();
+                *runs = rows;
+                v["page"] = crate::page::metadata(total, self.offset, v["runs"].as_array().unwrap().len(), self.limit);
                 v["runs_total"] = json!(total);
             }
             Ok(v)
@@ -773,7 +850,7 @@ impl Op for LockstepArgs {
 pub struct NativeArgs {
     /// BIOS image, e.g. bios/scph7502.bin.
     #[arg(long)]
-    pub bios: PathBuf,
+    pub bios: Option<PathBuf>,
     /// Disc image to insert (CUE/BIN/ISO); omit for an empty drive.
     #[arg(long)]
     pub disc: Option<PathBuf>,
@@ -822,11 +899,16 @@ pub struct NativeArgs {
 }
 
 impl Op for NativeArgs {
-    fn exec(self, _: &Ctx) -> Outcome {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        let resolved = match crate::context::resolve(&ctx.root,self.disc,self.bios,Some(crate::context::Backend::Native),None,false) {
+            Ok(r)=>r,Err(e)=>return crate::context::failed(e),
+        };
+        if let Some(e) = resolved.setup_error() {return crate::context::failed(e);}
+        let bios = resolved.bios.unwrap();
         let hex = |b: &Option<String>| b.as_deref().and_then(hex_u32);
         Outcome::pair(crate::native::run(crate::native::Options {
-            bios: &self.bios,
-            disc: self.disc.as_deref(),
+            bios: &bios,
+            disc: resolved.media.as_deref(),
             frames: self.frames,
             max_steps: self.max_steps,
             dump: self.dump.as_deref(),
@@ -850,10 +932,13 @@ pub struct DisasmArgs {
     /// Start address (hex); defaults to the entry point.
     #[arg(long)]
     pub addr: Option<String>,
-    /// Instructions to decode (with --function: the maximum function length).
-    #[arg(long, default_value_t = d_count())]
-    #[serde(default = "d_count")]
-    pub count: u32,
+    /// Maximum instructions to list; defaults to 32, or the discovered function with --function.
+    #[arg(long)]
+    pub count: Option<u32>,
+    /// Instruction budget for finding function boundaries, independent of --count (1..=262144).
+    #[arg(long, default_value_t = d_function_budget())]
+    #[serde(default = "d_function_budget")]
+    pub function_budget: u32,
     /// `.sym` or `.symbols.json` files for labels; repeatable.
     #[arg(long = "symbols")]
     #[serde(default)]
@@ -876,15 +961,20 @@ pub struct DisasmArgs {
     pub gp: Option<String>,
 }
 
+fn d_function_budget() -> u32 { 4096 }
+
 fn opt_hex(s: &Option<String>, what: &str) -> psx_media::Result<Option<u32>> {
     s.as_deref().map(|a| hex_u32(a).ok_or_else(|| MediaError::Malformed(format!("bad {what} {a:?} (hex)")))).transpose()
 }
 
 impl Op for DisasmArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        let DisasmArgs { source, addr, count, symbols, text, function, ram, gp } = self;
+        let DisasmArgs { source, addr, count, function_budget, symbols, text, function, ram, gp } = self;
         Outcome::media_text(
             (|| {
+                if !(1..=262144).contains(&function_budget) || count.is_some_and(|n| !(1..=262144).contains(&n)) {
+                    return Err(MediaError::Malformed("count/function_budget must be 1..=262144".into()));
+                }
                 let mut code = crate::code::Code::open(source.as_deref(), ram.as_deref())?;
                 if let Some(g) = opt_hex(&gp, "gp")? {
                     code.gp = Some(g);
@@ -896,15 +986,18 @@ impl Op for DisasmArgs {
                 };
                 let (start, end, func) = if let Some(f) = opt_hex(&function, "function address")? {
                     let jal = code.jal_targets();
-                    let (s, e) = crate::code::function_bounds(&code, f, &jal, count.max(16))
+                    let extent = crate::code::function_extent(&code, f, &jal, function_budget)
                         .ok_or_else(|| MediaError::Malformed(format!("0x{f:08X} is outside the code ({})", code.origin)))?;
+                    let (s,e) = (extent.start,extent.end);
+                    let listed_end = count.map_or(e, |n| s.saturating_add(4*n).min(e));
                     let callers = crate::code::xrefs(&code, s, s + 4, false).iter().filter(|(_, r)| r.kind == "call").count();
                     (
                         s,
-                        e,
-                        Some(
-                            json!({"start": format!("0x{s:08X}"), "end": format!("0x{e:08X}"), "instructions": (e - s) / 4, "jal_callers": callers}),
-                        ),
+                        listed_end,
+                        Some(json!({"start": format!("0x{s:08X}"), "end": format!("0x{e:08X}"), "instructions": (e-s)/4,
+                            "jal_callers":callers,"boundary_source":"heuristic","start_evidence":extent.start_evidence,
+                            "stop_reason":extent.stop_reason,"truncated":extent.truncated(),"search_budget":function_budget,
+                            "listing_truncated":listed_end<e})),
                     )
                 } else {
                     let start = match opt_hex(&addr, "address")? {
@@ -913,10 +1006,16 @@ impl Op for DisasmArgs {
                             MediaError::Malformed("give --addr or --function (there is no EXE entry point with --ram alone)".into())
                         })?,
                     } & !3;
-                    (start, start.wrapping_add(4 * count), None)
+                    (start, start.saturating_add(4 * count.unwrap_or(32)), None)
                 };
                 let (lines, listing) = crate::code::listing(&code, start, end, &crate::code::ListOpts { scopes: &scopes, text });
                 let mut warnings = Vec::new();
+                if func.as_ref().is_some_and(|f| f["truncated"] == true) {
+                    warnings.push("Function boundary search is incomplete; increase --function-budget. Reported bounds are partial.".into());
+                }
+                if func.as_ref().is_some_and(|f| f["listing_truncated"] == true) {
+                    warnings.push("Listing limited by --count; omit it to list the discovered function.".into());
+                }
                 if let Some((checked, differ)) = code.exe_mismatch(start, end) {
                     if differ > 0 {
                         warnings.push(format!("RAM differs from the EXE in {differ} of {checked} words here: code patched or overlaid at run time (the listing shows RAM)"));
@@ -927,7 +1026,9 @@ impl Op for DisasmArgs {
                 if lines.is_empty() {
                     warnings.push(format!("0x{start:08X} is outside the code ({}: 0x{:08X}..0x{:08X})", code.origin, code.base, code.end()));
                 }
-                let mut v = json!({"source": source.clone().unwrap_or_else(|| code.origin.clone()), "lines": lines});
+                let mut v = json!({"source": source.clone().unwrap_or_else(|| code.origin.clone()), "lines": lines,
+                    "listing":{"start":format!("0x{start:08X}"),"end":format!("0x{end:08X}"),
+                        "next_addr":func.as_ref().filter(|f| f["truncated"]==true || f["listing_truncated"]==true).map(|_|format!("0x{end:08X}"))}});
                 if ram.is_some() {
                     v["ram"] = json!(code.origin);
                 }
@@ -953,6 +1054,7 @@ impl Op for DisasmArgs {
                         t += &format!("; warning: {w}\n");
                     }
                     v["text"] = json!(t + &listing);
+                    v.as_object_mut().unwrap().remove("lines");
                 }
                 Ok(v)
             })(),
@@ -986,6 +1088,9 @@ pub struct XrefsArgs {
     #[arg(long, default_value_t = d_xref_limit())]
     #[serde(default = "d_xref_limit")]
     pub limit: usize,
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub offset: usize,
     /// Plain-text listing instead of JSON.
     #[arg(long)]
     #[serde(default)]
@@ -998,9 +1103,10 @@ fn d_xref_limit() -> usize {
 
 impl Op for XrefsArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        let XrefsArgs { target, source, ram, gp, no_data, symbols, limit, text } = self;
+        let XrefsArgs { target, source, ram, gp, no_data, symbols, limit, offset, text } = self;
         Outcome::media_text(
             (|| {
+                crate::page::validate(limit).map_err(MediaError::Malformed)?;
                 let mut code = crate::code::Code::open(source.as_deref(), ram.as_deref())?;
                 if let Some(g) = opt_hex(&gp, "gp")? {
                     code.gp = Some(g);
@@ -1017,9 +1123,11 @@ impl Op for XrefsArgs {
                     return Err(MediaError::Malformed(format!("empty range {target:?}")));
                 }
                 let scopes = crate::load_symbols(&symbols)?;
-                let (mut v, t) = crate::code::xref_report(&code, lo, hi, !no_data, &scopes, limit, text);
+                let (mut v, t) = crate::code::xref_report(&code, lo, hi, !no_data, &scopes, offset, limit, text);
                 if text {
                     v["text"] = json!(t);
+                    v.as_object_mut().unwrap().remove("refs");
+                    v.as_object_mut().unwrap().remove("functions");
                 }
                 Ok(v)
             })(),
@@ -1053,6 +1161,9 @@ pub struct RamDiffArgs {
     #[arg(long, default_value_t = d_ram_limit())]
     #[serde(default = "d_ram_limit")]
     pub limit: usize,
+    #[arg(long, default_value_t=0)]
+    #[serde(default)]
+    pub offset: usize,
 }
 
 fn d_width4() -> u8 {
@@ -1076,6 +1187,7 @@ impl Op for RamDiffArgs {
                 min_delta: self.min_delta,
                 signed: self.signed,
                 limit: self.limit,
+                offset: self.offset,
             },
         ))
     }
@@ -1123,6 +1235,9 @@ pub struct RamSearchArgs {
     #[arg(long, default_value_t = d_ram_limit())]
     #[serde(default = "d_ram_limit")]
     pub limit: usize,
+    #[arg(long, default_value_t=0)]
+    #[serde(default)]
+    pub offset: usize,
 }
 
 impl Op for RamSearchArgs {
@@ -1140,6 +1255,7 @@ impl Op for RamSearchArgs {
                 candidates: self.candidates.as_deref(),
                 save: self.save.as_deref(),
                 limit: self.limit,
+                offset: self.offset,
             },
         ))
     }

@@ -124,10 +124,24 @@ fn archive_index(bytes: &[u8], directory: Option<&[u8]>, mode: Option<&str>, ram
 /// Resolve a source: `image.cue::/PATH` (a file, `/DIR/` for a directory,
 /// or `*` for every file), a bare disc image (every file), or a host file.
 pub fn items(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, parsers: &Parsers) -> R<Vec<Item>> {
+    Ok(scan_inputs(source, ram_base, archive_mode, parsers, None)?.items)
+}
+struct ScanInputs {
+    items: Vec<Item>,
+    source_files: usize,
+    selected_files: usize,
+    skipped: Vec<Value>,
+}
+fn scan_inputs(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, parsers: &Parsers, filter: Option<&str>) -> R<ScanInputs> {
+    let matches = |name: &str| filter.is_none_or(|f| name.to_lowercase().contains(&f.to_lowercase()));
     let (image, pattern) = match source.split_once("::") {
         Some((i, p)) => (PathBuf::from(i), Some(p.to_string())),
         None if is_disc_image(Path::new(source)) && Disc::open(source).is_ok() => (PathBuf::from(source), None),
         None => {
+            std::fs::metadata(source).map_err(|e| MediaError::io(source, e))?;
+            if !matches(source) {
+                return Ok(ScanInputs { items: vec![], source_files: 1, selected_files: 0, skipped: vec![] });
+            }
             let bytes = std::fs::read(source).map_err(|e| MediaError::io(source, e))?;
             let p = Path::new(source);
             let looks_like_ram = p.file_name().is_some_and(|n| n == "ram.bin") || bytes.len() == 2 << 20;
@@ -148,19 +162,24 @@ pub fn items(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, pa
             let inferred_ram =
                 (looks_like_ram && archive.is_none() && parsers.archive.is_none() && parsers.model.is_none() && parsers.asset.is_none())
                     .then_some(RAM_BASE);
-            return Ok(vec![finish_item(
-                Item {
-                    name: source.to_string(),
-                    bytes,
-                    ram_base: ram_base.or(inferred_ram),
-                    archive,
-                    archive_parser: None,
-                    parsed: None,
-                    uploads: Vec::new(),
-                    sibling_vb: vb,
-                },
-                parsers,
-            )?]);
+            return Ok(ScanInputs {
+                items: vec![finish_item(
+                    Item {
+                        name: source.to_string(),
+                        bytes,
+                        ram_base: ram_base.or(inferred_ram),
+                        archive,
+                        archive_parser: None,
+                        parsed: None,
+                        uploads: Vec::new(),
+                        sibling_vb: vb,
+                    },
+                    parsers,
+                )?],
+                source_files: 1,
+                selected_files: 1,
+                skipped: vec![],
+            });
         }
     };
     let disc = Disc::open(&image)?;
@@ -178,9 +197,19 @@ pub fn items(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, pa
     };
     let read = |path: &str| fs.find(path).filter(|e| !e.is_dir).and_then(|e| fs.read_file(&disc, e).ok());
     let mut out = Vec::new();
-    for e in selected {
+    let source_files = selected.len();
+    let mut selected_files = 0;
+    let mut skipped = Vec::new();
+    for e in selected.into_iter().filter(|e| matches(&e.path)) {
+        selected_files += 1;
         // Form 2 (XA/STR) files hold audio/video, not these formats.
-        let Ok(bytes) = fs.read_file(&disc, e) else { continue };
+        let bytes = match fs.read_file(&disc, e) {
+            Ok(b) => b,
+            Err(error) => {
+                skipped.push(json!({"file":e.path,"streamed":e.is_streamed(),"reason":error.to_string()}));
+                continue;
+            }
+        };
         let directory = (!e.path.to_ascii_uppercase().ends_with(".DIR")).then(|| read(&with_ext(&e.path, "DIR"))).flatten();
         let archive = archive_index(&bytes, directory.as_deref(), archive_mode, ram_base.is_some())?;
         let sibling_vb = e.path.to_ascii_uppercase().ends_with(".VH").then(|| read(&with_ext(&e.path, "VB"))).flatten();
@@ -189,7 +218,7 @@ pub fn items(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, pa
             parsers,
         )?);
     }
-    Ok(out)
+    Ok(ScanInputs { items: out, source_files, selected_files, skipped })
 }
 
 fn entry_of(item: &Item, offset: usize) -> Option<&Entry> {
@@ -291,21 +320,6 @@ fn uploads_json(item: &Item, stream: &ParsedUploads) -> Value {
     value
 }
 
-fn describe(h: &Hit) -> String {
-    match &h.info {
-        Info::Tim { bpp, width, height, palettes, image_vram, .. } => {
-            format!("{bpp}bpp {width}x{height} palettes={palettes} vram=({},{})", image_vram[0], image_vram[1])
-        }
-        Info::Tmd { objects, vertices, polygons, textured, skipped, fixp } => {
-            format!("objects={objects} vertices={vertices} polygons={polygons} textured={textured} skipped={skipped}{}", if *fixp { " fixp" } else { "" })
-        }
-        Info::Vab { programs, tones, waveforms, body_included, .. } => {
-            format!("programs={programs} tones={tones} waveforms={waveforms}{}", if *body_included { "" } else { " (VH only)" })
-        }
-        Info::Vag { rate, name, data_size } => format!("{rate} Hz {name:?} {data_size} bytes"),
-    }
-}
-
 #[derive(clap::Subcommand)]
 pub enum AssetsAction {
     /// List TIM/TMD/VAB/VAG data found by signature + validation.
@@ -327,6 +341,7 @@ pub fn scan_assets(a: &crate::commands::AssetsScanArgs, ctx: &crate::commands::C
         ram_base: hex(&a.ram_base)?,
         archive: a.archive.as_deref(),
         parsers: &parsers,
+        filter:a.filter.as_deref(),offset:a.offset,limit:a.limit,item_offset:a.item_offset,
     })
 }
 
@@ -371,36 +386,27 @@ pub struct ScanArgs<'a> {
     pub ram_base: Option<u32>,
     pub archive: Option<&'a str>,
     pub parsers: &'a Parsers,
+    pub filter: Option<&'a str>,
+    pub offset: usize,
+    pub limit: usize,
+    pub item_offset: usize,
 }
 
 /// Returns the JSON report, or a text table when `json` is false.
 pub fn scan_cmd(a: ScanArgs) -> R<Result<Value, String>> {
-    let items = items(a.source, a.ram_base, a.archive, a.parsers)?;
+    crate::page::validate(a.limit).map_err(MediaError::Malformed)?;
+    let ScanInputs{items,source_files,selected_files,skipped}=scan_inputs(a.source,a.ram_base,a.archive,a.parsers,a.filter)?;
     let mut files = Vec::new();
     let mut totals: BTreeMap<Kind, usize> = BTreeMap::new();
     let (mut upload_streams, mut uploads, mut upload_words) = (0, 0, 0);
-    let mut text = String::new();
     for item in &items {
         let hits: Vec<Hit> = item_hits(item).into_iter().filter(|h| a.kinds.is_empty() || a.kinds.contains(&h.kind)).collect();
-        if let Some(archive) = &item.archive {
-            text.push_str(&format!(
-                "{}  archive {:?}: {} entries ({} empty)\n",
-                item.name,
-                archive.format,
-                archive.entries.len(),
-                archive.entries.iter().filter(|e| e.size == 0).count()
-            ));
-        }
         let streams: Vec<_> = item.uploads.iter().filter(|_| a.kinds.is_empty()).collect();
         if hits.is_empty() && streams.is_empty() && item.archive.is_none() {
             continue;
         }
         for h in &hits {
             *totals.entry(h.kind).or_default() += 1;
-            let entry = entry_of(item, h.offset)
-                .map(|e| format!("  [{}+0x{:X}]", e.name.clone().unwrap_or_else(|| format!("entry {}", e.index)), h.offset - e.offset))
-                .unwrap_or_default();
-            text.push_str(&format!("{}  0x{:08X}  {:<3}  {:>8}  {}{entry}\n", item.name, h.offset, h.kind.ext(), h.size, describe(h)));
         }
         let mut file =
             json!({"file": item.name, "bytes": item.bytes.len(), "hits": hits.iter().map(|h| hit_json(item, h)).collect::<Vec<_>>()});
@@ -410,13 +416,6 @@ pub fn scan_cmd(a: ScanArgs) -> R<Result<Value, String>> {
             for stream in &streams {
                 uploads += stream.uploads.len();
                 upload_words += stream.uploads.iter().map(|u| u.words.len()).sum::<usize>();
-                text.push_str(&format!(
-                    "{}  0x{:08X}  {} raw VRAM uploads ({} words)\n",
-                    item.name,
-                    stream.offset,
-                    stream.uploads.len(),
-                    stream.uploads.iter().map(|u| u.words.len()).sum::<usize>()
-                ));
             }
         }
         if let Some(archive) = &item.archive {
@@ -427,13 +426,54 @@ pub fn scan_cmd(a: ScanArgs) -> R<Result<Value, String>> {
         }
         files.push(file);
     }
-    if !a.json {
-        text.push_str(&format!("{} files scanned, totals {:?}\n", items.len(), totals));
-        return Ok(Err(text));
+    let total = files.len();
+    let mut files: Vec<_> = files.into_iter().skip(a.offset).take(a.limit).collect();
+    for file in &mut files {
+        for (field, page_field) in [("hits", "hits_page"), ("upload_streams", "upload_streams_page")] {
+            if let Some(rows) = file[field].as_array() {
+                let page_rows: Vec<_> = rows.iter().skip(a.item_offset).take(a.limit).cloned().collect();
+                file[page_field] = crate::page::metadata(rows.len(), a.item_offset, page_rows.len(), a.limit);
+                file[field] = json!(page_rows);
+            }
+        }
+        if let Some(rows) = file["archive"]["entries"].as_array() {
+            let page_rows: Vec<_> = rows.iter().skip(a.item_offset).take(a.limit).cloned().collect();
+            file["archive"]["entries_page"] = crate::page::metadata(rows.len(), a.item_offset, page_rows.len(), a.limit);
+            file["archive"]["entries"] = json!(page_rows);
+        }
     }
-    let mut result = json!({"source": a.source, "files_scanned": items.len(), "totals": totals.iter().map(|(k, n)| (k.ext().to_string(), json!(n))).collect::<serde_json::Map<_, _>>(), "files": files});
+    let skipped_rows:Vec<_>=skipped.iter().skip(a.offset).take(a.limit).collect();
+    let mut result = json!({"source": a.source, "files_scanned": items.len(), "totals": totals.iter().map(|(k, n)| (k.ext().to_string(), json!(n))).collect::<serde_json::Map<_, _>>(),
+        "page":crate::page::metadata(total,a.offset,files.len(),a.limit),
+        "coverage":{"scope":"validated standard-format signatures plus selected archive/parser extensions","source_files":source_files,"selected_files":selected_files,"files_inspected":items.len(),"complete":skipped.is_empty(),
+            "skipped_files":skipped_rows,"skipped_page":crate::page::metadata(skipped.len(),a.offset,skipped_rows.len(),a.limit),
+            "standard_kinds":if a.kinds.is_empty(){vec!["tim","tmd","vab","vag"]}else{a.kinds.iter().map(|k|k.ext()).collect()},
+            "note":"No recognized hit is not evidence that custom models, textures or other assets are absent."},"files": files});
     if upload_streams != 0 {
         result["upload_totals"] = json!({"streams":upload_streams,"uploads":uploads,"words":upload_words});
+    }
+    if !a.json {
+        let mut text = String::new();
+        for file in result["files"].as_array().unwrap() {
+            text.push_str(&format!(
+                "{}: {} hits, {} uploads\n",
+                file["file"].as_str().unwrap_or(""),
+                file["hits_page"]["total"],
+                file["upload_streams_page"]["total"].as_u64().unwrap_or(0)
+            ));
+            for hit in file["hits"].as_array().unwrap().iter().take(3) {
+                text.push_str(&format!(
+                    "  {} {} ({} bytes)\n",
+                    hit["kind"].as_str().unwrap_or(""),
+                    hit["offset"].as_str().unwrap_or(""),
+                    hit["size"]
+                ));
+            }
+            if file["hits"].as_array().unwrap().len()>3{text.push_str("  More hits: use json=true with item_offset/limit.\n");}
+        }
+        text.push_str(&format!("{} files inspected; page {}\nCoverage: standard signatures and configured parser extensions; custom formats may remain unrecognized.\n",items.len(),result["page"]));
+        result.as_object_mut().unwrap().remove("files");
+        result["text"] = json!(text);
     }
     Ok(Ok(result))
 }

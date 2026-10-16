@@ -73,7 +73,16 @@ fn main() {
     match (scene, model) {
         (Some(path), _) => app.add_plugins(SceneViewerPlugin { path, depth }),
         (None, Some(path)) => app.add_plugins(ModelViewerPlugin { path, textures, cull: flag("--cull") }),
-        (None, None) => app.add_plugins(game::GamePlugin),
+        (None, None) => app.add_plugins((
+            game::GamePlugin,
+            game::controls::ControlsPlugin {
+                path: value("--bindings")
+                    .map(std::path::PathBuf::from)
+                    .or_else(game::controller::BindingStore::default_path),
+                initially_open: flag("--controls"),
+                ..default()
+            },
+        )),
     };
     #[cfg(feature = "dev-mcp")]
     if mcp {

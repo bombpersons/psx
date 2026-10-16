@@ -8,6 +8,7 @@
 //! [`shell`] (logic ticks and input), [`controller`], [`viewer`] (the
 //! `--scene` capture viewer), [`model_viewer`] (`--model`) and, with the `dev-mcp` feature, `dev_mcp`.
 pub mod controller;
+pub mod controls;
 pub mod demo;
 #[cfg(feature = "dev-mcp")]
 pub mod dev_mcp;

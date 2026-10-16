@@ -298,6 +298,7 @@ pub struct SymbolIn {
 #[derive(Clone, Debug, Default)]
 pub struct SymbolTable {
     entries: Vec<(u32, String)>,
+    bodies: HashMap<u32, Vec<(u32, u32)>>,
 }
 
 impl SymbolTable {
@@ -306,14 +307,21 @@ impl SymbolTable {
             symbols.iter().filter(|s| s.is_function()).map(|s| (s.addr(), s.label().to_string())).collect();
         entries.sort();
         entries.dedup_by_key(|e| e.0);
-        SymbolTable { entries }
+        SymbolTable { entries, bodies: HashMap::new() }
+    }
+
+    /// Restrict a function to its actual half-open body ranges.
+    pub fn set_body(&mut self, entry: u32, ranges: Vec<(u32, u32)>) {
+        self.bodies.insert(entry, ranges);
     }
 
     /// `name+0xOFF` for the function containing `addr`, if any precedes it
     /// within `max_distance` bytes.
     pub fn describe(&self, addr: u32, max_distance: u32) -> Option<String> {
-        let i = self.entries.partition_point(|e| e.0 <= addr).checked_sub(1)?;
-        let (a, name) = &self.entries[i];
+        let (a, name) = self.entries[..self.entries.partition_point(|e| e.0 <= addr)]
+            .iter()
+            .rev()
+            .find(|(a, _)| self.bodies.get(a).is_none_or(|ranges| ranges.iter().any(|&(lo, hi)| lo <= addr && addr < hi)))?;
         let off = addr - a;
         (off <= max_distance).then(|| if off == 0 { name.clone() } else { format!("{name}+0x{off:X}") })
     }
@@ -343,7 +351,12 @@ impl SymbolTable {
     pub fn find(&self, name: &str) -> Option<(u32, Option<u32>)> {
         let k = self.entries.iter().position(|(_, n)| n == name)?;
         let start = self.entries[k].0;
-        Some((start, self.entries[k + 1..].iter().map(|e| e.0).find(|&a| a > start)))
+        let end = self
+            .bodies
+            .get(&start)
+            .and_then(|r| r.iter().map(|r| r.1).max())
+            .or_else(|| self.entries[k + 1..].iter().map(|e| e.0).find(|&a| a > start));
+        Some((start, end))
     }
 
     pub fn len(&self) -> usize {

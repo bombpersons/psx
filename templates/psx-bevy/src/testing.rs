@@ -5,6 +5,7 @@
 //! ```
 //! use bevy::prelude::*;
 //! use game::prelude::*;
+//! use game::controller::Button;
 //! use game::testing::{TickApp, headless_app};
 //!
 //! // In a game these come from a feature's rules plugin (`app.add_plugins(...)`).

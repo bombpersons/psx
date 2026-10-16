@@ -61,6 +61,10 @@ impl Code {
         }
     }
 
+    fn name(&self, scopes: &[crate::ScopedSymbols], addr: u32, distance: u32) -> Option<String> {
+        scopes.iter().find_map(|s| s.describe_image(addr, self.base, &self.bytes, distance))
+    }
+
     pub fn end(&self) -> u32 {
         self.base.wrapping_add(self.bytes.len() as u32)
     }
@@ -239,57 +243,69 @@ impl Resolver {
 /// ending after the `jr ra` + delay slot that no earlier branch jumps past, a
 /// tail `j` out of the function, or the next prologue/jal target) until one
 /// contains `addr`. Returns `[start, end)`.
+#[derive(Clone, Debug)]
+pub struct FunctionExtent {
+    pub start: u32,
+    pub end: u32,
+    pub start_evidence: &'static str,
+    pub stop_reason: &'static str,
+}
+impl FunctionExtent {
+    pub fn truncated(&self) -> bool {
+        matches!(self.stop_reason, "search_limit" | "image_end") || self.start_evidence == "backward_search_limit"
+    }
+}
+
 pub fn function_bounds(code: &Code, addr: u32, jal: &BTreeSet<u32>, max: u32) -> Option<(u32, u32)> {
+    function_extent(code, addr, jal, max).map(|f| (f.start, f.end))
+}
+
+pub fn function_extent(code: &Code, addr: u32, jal: &BTreeSet<u32>, max: u32) -> Option<FunctionExtent> {
     let addr = addr & !3;
     code.word(addr)?;
     let mut s = addr;
+    let mut start_evidence = "backward_search_limit";
     for _ in 0..max {
-        if jal.contains(&s) || code.word(s).is_some_and(is_prologue) {
-            break;
-        }
+        if jal.contains(&s) { start_evidence = "jal_target"; break; }
+        if code.word(s).is_some_and(is_prologue) { start_evidence = "stack_prologue"; break; }
         match s.checked_sub(4).filter(|&p| code.word(p).is_some()) {
             Some(p) => s = p,
-            None => break,
+            None => { start_evidence = "image_start"; break; }
         }
     }
     loop {
-        let e = function_end(code, s, jal, max);
-        if addr < e {
-            return Some((s, e));
-        }
+        let (e, stop_reason) = function_end(code, s, jal, max);
+        if addr < e { return Some(FunctionExtent {start:s,end:e,start_evidence,stop_reason}); }
         s = e;
-        while s < addr && code.word(s) == Some(0) {
-            s += 4; // padding between functions
-        }
+        while s < addr && code.word(s) == Some(0) { s += 4; }
+        start_evidence = "sequential_heuristic";
         if e == s && s > addr {
-            return Some((addr, function_end(code, addr, jal, max)));
+            let (end, stop_reason) = function_end(code, addr, jal, max);
+            return Some(FunctionExtent {start:addr,end,start_evidence,stop_reason});
         }
     }
 }
 
-fn function_end(code: &Code, start: u32, jal: &BTreeSet<u32>, max: u32) -> u32 {
+fn function_end(code: &Code, start: u32, jal: &BTreeSet<u32>, max: u32) -> (u32, &'static str) {
     let mut pc = start;
-    let mut reach = start; // furthest forward branch target seen
+    let mut reach = start;
     for _ in 0..max {
-        let Some(i) = code.word(pc) else { break };
-        if pc != start && pc > reach && (jal.contains(&pc) || is_prologue(i)) {
-            return pc;
-        }
+        let Some(i) = code.word(pc) else { return (pc.max(start+4), "image_end") };
+        if pc != start && pc > reach && (jal.contains(&pc) || is_prologue(i)) { return (pc,"next_entry"); }
         if let Some(t) = branch_target(pc, i) {
-            if t > reach && t.wrapping_sub(start) < 0x10_0000 {
-                reach = t;
-            }
+            if t > reach && t.wrapping_sub(start) < 0x10_0000 { reach = t; }
         }
         let tail_jump = i >> 26 == 0x02 && {
             let t = jump_target(pc, i);
             t < start || t > pc + 8
         };
         if (i == JR_RA || tail_jump) && reach <= pc + 4 {
-            return pc + 8;
+            if code.word(pc+4).is_none() { return (pc+4,"image_end"); }
+            return (pc+8,if i == JR_RA {"return"} else {"tail_jump"});
         }
         pc += 4;
     }
-    pc.max(start + 4)
+    (pc.max(start+4),"search_limit")
 }
 
 pub struct ListOpts<'a> {
@@ -300,8 +316,8 @@ pub struct ListOpts<'a> {
 /// Disassemble `[lo, hi)`: JSON lines (addr, word, asm, label, refs) and, for `--text`,
 /// an assembler-style listing with labels for branch targets and resolved addresses.
 pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, String) {
-    let label = |a: u32| o.scopes.iter().find_map(|s| s.table.describe(a, 0).filter(|n| !n.contains('+')));
-    let name = |a: u32| o.scopes.iter().find_map(|s| s.table.describe(a, 0x4000));
+    let label = |a: u32| code.name(o.scopes, a, 0);
+    let name = |a: u32| code.name(o.scopes, a, 0x4000);
     let mut targets = BTreeSet::new();
     let mut a = lo;
     while a < hi {
@@ -400,22 +416,23 @@ pub fn xrefs(code: &Code, lo: u32, hi: u32, data: bool) -> Vec<(u32, Ref)> {
 }
 
 /// Group xrefs by the function containing each referencing PC.
-pub fn xref_report(code: &Code, lo: u32, hi: u32, data: bool, scopes: &[crate::ScopedSymbols], limit: usize, text: bool) -> (Value, String) {
+#[allow(clippy::too_many_arguments)]
+pub fn xref_report(code: &Code, lo: u32, hi: u32, data: bool, scopes: &[crate::ScopedSymbols], offset: usize, limit: usize, text: bool) -> (Value, String) {
     let refs = xrefs(code, lo, hi, data);
     let jal = code.jal_targets();
     let mut by_kind: BTreeMap<&str, u64> = BTreeMap::new();
     let mut funcs: BTreeMap<u32, u64> = BTreeMap::new();
     let mut lines = Vec::new();
     let mut out = String::new();
-    for (pc, r) in &refs {
+    for (index,(pc, r)) in refs.iter().enumerate() {
         *by_kind.entry(r.kind).or_default() += 1;
         let f = if r.kind == "data" { None } else { function_bounds(code, *pc, &jal, 16384).map(|b| b.0) };
         if let Some(f) = f {
             *funcs.entry(f).or_default() += 1;
         }
-        if lines.len() < limit {
+        if index>=offset && lines.len() < limit {
             let word = code.word(*pc).unwrap_or(0);
-            let fname = f.and_then(|f| scopes.iter().find_map(|s| s.table.describe(f, 0)));
+            let fname = f.and_then(|f| code.name(scopes, f, 0));
             lines.push(json!({
                 "pc": pc, "pc_hex": format!("0x{pc:08X}"), "kind": r.kind, "via": r.via,
                 "target_hex": format!("0x{:08X}", r.target), "asm": if r.kind == "data" { format!(".word   0x{word:08X}") } else { disasm(word, *pc) },
@@ -436,7 +453,9 @@ pub fn xref_report(code: &Code, lo: u32, hi: u32, data: bool, scopes: &[crate::S
         "scanned": [format!("0x{:08X}", code.base), format!("0x{:08X}", code.end())],
         "gp": code.gp.map(|g| format!("0x{g:08X}")),
         "total": refs.len(), "by_kind": by_kind, "shown": lines.len(),
-        "functions": funcs.iter().map(|(f, n)| json!({"start_hex": format!("0x{f:08X}"), "refs": n, "name": scopes.iter().find_map(|s| s.table.describe(*f, 0))})).collect::<Vec<_>>(),
+        "page":crate::page::metadata(refs.len(),offset,lines.len(),limit),
+        "coverage":{"complete":true,"scope":"static direct control-flow, resolved address pairs and optional aligned data pointers","indirect_references_complete":false},
+        "functions": funcs.iter().map(|(f, n)| json!({"start_hex": format!("0x{f:08X}"), "refs": n, "name": code.name(scopes, *f, 0)})).collect::<Vec<_>>(),
         "refs": lines,
     });
     let header = format!(

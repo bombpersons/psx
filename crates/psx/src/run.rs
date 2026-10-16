@@ -1,5 +1,5 @@
 //! `psx run`: bounded execution of a disc, EXE or state, in a PCSX-Redux
-//! worker process (`--backend redux`, the default) or on the native core
+//! worker process (`--backend redux`, the oracle) or on the native core
 //! (`--backend native`, see `run_native`).
 
 use std::path::{Path, PathBuf};
@@ -13,6 +13,7 @@ pub struct RunArgs {
     pub bios: PathBuf,
     pub frames: u32,
     pub replay: Option<PathBuf>,
+    pub input: Option<crate::replay::Events>,
     pub watches: Vec<String>,
     pub from_state: Option<PathBuf>,
     pub save_state: bool,
@@ -221,6 +222,16 @@ fn next_run_dir(root: &Path) -> PathBuf {
 }
 
 pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
+    let events=match crate::replay::resolve(a.replay.as_deref(),a.input.as_ref(),a.frames as u64) {
+        Ok(e)=>e,Err(e)=>return (false,err("invalid_arguments",e)),
+    };
+    let input_report=crate::replay::report(&events);
+    let (ok,mut value)=run_resolved(root,a,events);
+    if value.get("error").is_none(){value["input"]=input_report;}
+    (ok,value)
+}
+
+fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool, Value) {
     if a.trace.gpu_search_frames.is_some() && !a.trace.gpu_next_draw {
         return (false, err("invalid_arguments", "--gpu-search-frames requires --gpu-next-draw"));
     }
@@ -231,7 +242,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         return (false, err("invalid_arguments", "GPU search frame range overflows u64"));
     }
     match a.backend.as_str() {
-        "native" => return crate::run_native::run(root, a),
+        "native" => return crate::run_native::run(root, a, events),
         "redux" => {}
         other => return (false, err("invalid_arguments", format!("unknown backend {other:?} (redux | native)"))),
     }
@@ -248,10 +259,8 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         Ok(k) => k == psx_core::pad::PadKind::DualShock,
         Err(e) => return (false, err("invalid_arguments", e)),
     };
-    if let Some(p) = &a.replay {
-        if crate::replay::load(p).is_ok_and(|r| crate::replay::uses_sticks(&r)) {
-            return (false, err("unsupported", "replay sticks need --backend native --pad dualshock"));
-        }
+    if crate::replay::uses_sticks(&events) {
+        return (false, err("unsupported", "input sticks need --backend native with a dualshock pad"));
     }
     if let Some(p) = &a.from_state {
         if std::fs::read(p).is_ok_and(|b| b.starts_with(psx_core::state::MAGIC)) {
@@ -267,13 +276,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         Ok(w) => w,
         Err(e) => return (false, err("invalid_arguments", e)),
     };
-    let replay: Vec<ReplayEvent> = match &a.replay {
-        Some(p) => match std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) {
-            Ok(r) => r,
-            Err(e) => return (false, err("invalid_arguments", format!("replay {}: {e}", p.display()))),
-        },
-        None => Vec::new(),
-    };
+    let replay: Vec<ReplayEvent> = events.iter().map(|e|ReplayEvent{frame:e.frame as u32,buttons:crate::replay::button_names(e.buttons)}).collect();
     let media = match &a.media {
         None => Media::None,
         Some(p) => {
@@ -343,8 +346,8 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
         .take(64)
         .map(|h| {
             let mut v = serde_json::to_value(h).unwrap();
-            if let Some((name, check, exe)) = h.pc.and_then(|pc| crate::name_pc(&scopes, pc, ram.as_deref())) {
-                v["function"] = json!({"name": name, "exe": exe, "check": check.as_str()});
+            if let Some(pc) = h.pc {
+                v["function"] = crate::final_name(&scopes, pc, ram.as_deref());
             }
             v
         })

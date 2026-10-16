@@ -20,6 +20,10 @@ const FILES: &[(&str, &str)] = files![
     "rustfmt.toml",
     "examples/depth_cue.rs",
     "src/controller.rs",
+    "src/controller/bindings.rs",
+    "src/controls/mod.rs",
+    "src/controls/view.rs",
+    "src/controls/tests.rs",
     "src/demo/mod.rs",
     "src/demo/player.rs",
     "src/dev_mcp.rs",
@@ -192,6 +196,8 @@ mod tests {
         let toml = std::fs::read_to_string(dir.join("my-game/Cargo.toml")).unwrap();
         assert!(toml.contains("name = \"my-game\""));
         assert!(dir.join("my-game/src/psx/shaders/psx_material.wesl").exists());
+        assert!(dir.join("my-game/src/controller/bindings.rs").exists());
+        assert!(dir.join("my-game/src/controls/view.rs").exists());
         let lib = std::fs::read_to_string(dir.join("my-game/src/lib.rs")).unwrap();
         assert!(lib.contains(REGION_LINE) && lib.contains(FIELDS_PER_TICK_LINE));
         assert!(create(&dir.join("my-game"), None, TemplateOptions::default()).is_err());

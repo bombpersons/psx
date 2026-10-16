@@ -7,6 +7,7 @@
 //! over 3D.
 pub mod player;
 
+use crate::controller::Button;
 use crate::prelude::*;
 use crate::psx::{PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxScreen, PsxSprite, PsxStp, PsxView};
 use crate::psx::{psx_indices, psx_palette, rgb15};
