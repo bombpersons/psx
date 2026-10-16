@@ -65,6 +65,104 @@ pub struct BiosCall {
     pub path: Option<String>,
 }
 
+/// One `--trace-spu` record: a voice key on/off, a voice's first END block
+/// after key on, or a transfer into sound RAM.
+#[derive(Clone, Debug, Serialize)]
+pub struct SpuEvent {
+    pub frame: u64,
+    pub cycle: u64,
+    /// "key_on", "key_off", "end" or "upload".
+    pub event: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<u32>,
+    /// The storing instruction (key on/off, CPU uploads, the store that started a DMA).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pc: Option<u32>,
+    #[serde(flatten)]
+    pub key_on: Option<KeyOn>,
+    #[serde(flatten)]
+    pub upload: Option<SpuUpload>,
+}
+
+/// Voice settings at key on, and the sample it starts.
+#[derive(Clone, Debug, Serialize)]
+pub struct KeyOn {
+    /// Sample start in sound RAM (bytes).
+    pub start: u32,
+    /// Raw pitch: 0x1000 plays the sample at 44.1 kHz.
+    pub pitch: u16,
+    pub rate_hz: f64,
+    /// Left/right volume as a fraction of full scale; `None` for a sweep.
+    pub volume: [Option<f64>; 2],
+    pub volume_raw: [u16; 2],
+    pub adsr: u32,
+    pub noise: bool,
+    pub pitch_modulated: bool,
+    /// SHA-256 of the ADPCM bytes from `start` through the first END block,
+    /// as VAB/VAG extraction reports per waveform (`adpcm_sha256`).
+    pub sample_sha256: String,
+    pub sample_bytes: u32,
+    /// The END block also repeats (a looping sample).
+    pub looped: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SpuUpload {
+    /// Destination in sound RAM (bytes).
+    pub address: u32,
+    pub bytes: u32,
+    /// "dma" (channel 4) or "cpu" (manual FIFO writes, merged while contiguous).
+    pub source: &'static str,
+    /// Main RAM source of a DMA transfer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ram: Option<u32>,
+}
+
+/// The `--trace-spu` log. Counts include events beyond the recording budget.
+#[derive(Default)]
+pub struct SpuLog {
+    pub events: Vec<SpuEvent>,
+    pub counts: std::collections::BTreeMap<&'static str, u64>,
+    pub max: usize,
+    /// Voices keyed on during the trace whose first END block is not yet
+    /// reported. Silent voices keep walking sound RAM and set ENDX too, so
+    /// voices not keyed on while tracing report no END.
+    pub awaiting_end: u32,
+    /// The last recorded event is a CPU upload ending at this address.
+    cpu_upload_end: Option<u32>,
+}
+
+impl SpuLog {
+    pub fn new(max: usize) -> Self {
+        SpuLog { max, ..Default::default() }
+    }
+
+    pub fn record(&mut self, event: SpuEvent) {
+        self.cpu_upload_end = None;
+        *self.counts.entry(event.event).or_default() += 1;
+        if self.events.len() < self.max {
+            self.events.push(event);
+        }
+    }
+
+    /// One halfword written through the transfer FIFO, merged into the last
+    /// event while the CPU keeps writing consecutive addresses.
+    pub fn cpu_upload(&mut self, frame: u64, cycle: u64, pc: u32, address: u32) {
+        if self.cpu_upload_end == Some(address) {
+            if let Some(upload) = self.events.last_mut().and_then(|e| e.upload.as_mut()) {
+                upload.bytes += 2;
+                self.cpu_upload_end = Some(address + 2);
+                return;
+            }
+        }
+        let upload = SpuUpload { address, bytes: 2, source: "cpu", ram: None };
+        let recorded = self.events.len() < self.max;
+        self.record(SpuEvent { frame, cycle, event: "upload", voice: None, pc: Some(pc), key_on: None, upload: Some(upload) });
+        // Merging needs the event in the log; unrecorded halfwords count individually.
+        self.cpu_upload_end = recorded.then_some(address + 2);
+    }
+}
+
 #[derive(Default)]
 pub struct Observer {
     /// Physical RAM ranges `[start, end)` to watch.
@@ -74,6 +172,7 @@ pub struct Observer {
     pub max_hits: usize,
     pub cd: Option<Vec<CdTransfer>>,
     pub bios: Option<Vec<BiosCall>>,
+    pub spu: Option<SpuLog>,
     /// Every BIOS call counted by "<table>_<function>" (decimal), recorded or not.
     pub bios_counts: std::collections::BTreeMap<String, u64>,
 }

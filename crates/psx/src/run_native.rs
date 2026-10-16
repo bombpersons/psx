@@ -145,6 +145,9 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     if a.trace_bios {
         m.bus.obs.bios = Some(Vec::new());
     }
+    if a.trace_spu {
+        m.bus.obs.spu = Some(psx_core::observe::SpuLog::new(a.max_events as usize));
+    }
 
     let scopes = match crate::load_symbols(&a.symbols) {
         Ok(t) => std::rc::Rc::new(t),
@@ -341,6 +344,27 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
         put("bios.jsonl", jsonl(b.iter().map(|t| with_run_frame(serde_json::to_value(t).unwrap())).collect()).as_bytes());
         event_logs.insert("bios".into(), json!({"events": b.len(), "recorded": b.len()}));
     }
+    let spu_report = match &m.bus.obs.spu {
+        Some(log) => {
+            let events: Vec<Value> = log
+                .events
+                .iter()
+                .map(|e| {
+                    let mut v = with_run_frame(serde_json::to_value(e).unwrap());
+                    if let Some(pc) = e.pc {
+                        let name = crate::final_name(&scopes, pc, Some(&m.bus.ram));
+                        if !name.is_null() {
+                            v["function"] = name;
+                        }
+                    }
+                    v
+                })
+                .collect();
+            put("spu.jsonl", jsonl(events.clone()).as_bytes());
+            spu_summary(log, &events, &dir)
+        }
+        None => Value::Null,
+    };
     let samples_report = match &sampler {
         Some(s) => {
             put("samples.csv", s.out.as_bytes());
@@ -456,6 +480,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
             "gpu_frame": gpu_report,
             "samples": samples_report,
             "read_watch": reads_report,
+            "spu": spu_report,
             "pokes": if pokes.is_empty() { Value::Null } else { json!(pokes.iter().map(|p| p.report()).collect::<Vec<_>>()) },
             "screens": if obs.snapshot_every.is_some() { json!({"dir": dir.join("screens"), "count": screens.len(), "first": screens.first(), "last": screens.last()}) } else { Value::Null },
             "states": if obs.save_state_at.is_empty() { Value::Null } else { json!(states) },
@@ -802,4 +827,65 @@ fn gpu_frame_outputs(
     }
     png("gpu_frame_wire.png", &after, files);
     Ok(summary)
+}
+
+/// The `--trace-spu` report: event counts, and recorded key ons grouped by the
+/// sample they play, each linked to the upload that placed it in sound RAM.
+fn spu_summary(log: &psx_core::observe::SpuLog, events: &[Value], dir: &Path) -> Value {
+    let total: u64 = log.counts.values().sum();
+    let mut uploads: Vec<&Value> = Vec::new();
+    let mut samples: Vec<Value> = Vec::new();
+    let mut voices = std::collections::BTreeSet::new();
+    for e in events {
+        match e["event"].as_str() {
+            Some("upload") => uploads.push(e),
+            Some("key_on") => {
+                voices.insert(e["voice"].as_u64());
+                let start = e["start"].as_u64().unwrap_or(0);
+                let hash = &e["sample_sha256"];
+                let pc = format!("0x{:08X}", e["pc"].as_u64().unwrap_or(0));
+                if let Some(s) = samples.iter_mut().find(|s| s["sample_sha256"] == *hash) {
+                    s["key_ons"] = json!(s["key_ons"].as_u64().unwrap() + 1);
+                    s["last_run_frame"] = e["run_frame"].clone();
+                    for (key, value) in [("voices", e["voice"].clone()), ("pcs", json!(pc)), ("starts", json!(start))] {
+                        let list = s[key].as_array_mut().unwrap();
+                        if !list.contains(&value) && list.len() < 8 {
+                            list.push(value);
+                        }
+                    }
+                    continue;
+                }
+                // The latest recorded upload covering the start address.
+                let upload = uploads.iter().rev().find(|u| {
+                    let (at, len) = (u["address"].as_u64().unwrap_or(0), u["bytes"].as_u64().unwrap_or(0));
+                    (at..at + len).contains(&start)
+                });
+                let source = upload.map(|u| {
+                    let offset = start - u["address"].as_u64().unwrap_or(0);
+                    let mut v = json!({"source": u["source"], "run_frame": u["run_frame"], "upload_address": u["address"], "offset": offset});
+                    if let Some(ram) = u["ram"].as_u64() {
+                        v["ram_hex"] = json!(format!("0x{:08X}", ram + offset));
+                    }
+                    v
+                });
+                samples.push(json!({
+                    "sample_sha256": hash, "bytes": e["sample_bytes"], "looped": e["looped"],
+                    "key_ons": 1, "first_run_frame": e["run_frame"], "last_run_frame": e["run_frame"],
+                    "voices": [e["voice"]], "pcs": [pc], "starts": [start], "rate_hz": e["rate_hz"],
+                    "function": e.get("function"), "upload": source,
+                }));
+            }
+            _ => {}
+        }
+    }
+    let shown = samples.len().min(32);
+    json!({
+        "enabled": true, "file": dir.join("spu.jsonl"), "events": log.counts, "recorded": log.events.len(),
+        "complete": total == log.events.len() as u64, "truncated": total > log.events.len() as u64,
+        "voices_keyed": voices.into_iter().flatten().collect::<Vec<_>>(),
+        "samples_page": crate::page::metadata(samples.len(), 0, shown, 32),
+        "samples": &samples[..shown],
+        "matching": "sample_sha256 equals assets_extract adpcm_sha256 for the VAB/VAG waveform with the same ADPCM bytes; upload.ram_hex is the sample's main RAM source for loads/trace_cd provenance",
+        "timing": "frame/run_frame as in other logs; cycle is the system clock; end events are detected per device step",
+    })
 }

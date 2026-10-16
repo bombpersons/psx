@@ -188,12 +188,13 @@ values and a one/two-tick shift hint; edges inside a multi-field tick are refuse
 Validated on Mega Man 8's held-out `mixed` scenario recorded directly with
 `--sample`: 101 rows, four columns, exact.
 
-**Next feature, on hold (2026-10-17): audio** (original M5). Start with a short
-design pass covering: an SPU voice trace (key-on/off per voice with sample address,
-pitch, volume, ADSR and frame, so sounds tie to gameplay events); SEQ/SEP sequence
-decoding to MIDI or an equivalent event list; and template playback of decoded
-VAB samples with PS1 character (pitch, ADSR, reverb). Validate against captured
-`native wav` output.
+**Audio** (original M5). Done (2026-10-17): `run --trace-spu` records voice key
+on/off with settings, storing PC and a sample hash matching extraction's
+`adpcm_sha256`, first END per keyed voice and sound RAM uploads; see
+[validation](research/spu-trace.md) (all 9 Mega Man 8 samples matched their VAB
+waveforms). Backlog: SEQ/SEP sequence decoding to MIDI or an event list, and
+template playback of decoded VAB samples with PS1 character (pitch, ADSR,
+reverb), validated against captured `native wav` output.
 
 Still open: shorter MCP descriptions/shared schema guidance; typed sample
 arguments; an optional run summary mode with fewer artifact descriptors; and

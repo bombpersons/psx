@@ -10,6 +10,7 @@ description = "PlayStation asset formats (TIM, TMD, VAB/VAG, SPU-ADPCM): parsing
 base64 = "0.22"
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

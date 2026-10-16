@@ -519,6 +519,32 @@ impl Spu {
             .collect()
     }
 
+    /// Voices past their END block since their last key on (ENDX).
+    pub fn endx(&self) -> u32 {
+        self.endx
+    }
+
+    /// The next sound RAM byte address a transfer writes.
+    pub fn transfer_addr(&self) -> u32 {
+        self.xfer_addr
+    }
+
+    /// A voice's registers as a key on would use them: start (bytes), pitch,
+    /// left/right volume registers, ADSR, and whether noise / pitch modulation
+    /// (NON/PMON) apply to it.
+    pub fn voice_settings(&self, i: usize) -> (u32, u16, [u16; 2], u32, bool, bool) {
+        let v = &self.voices[i];
+        let (noise, pmon) = (self.mask(0x194), self.mask(0x190));
+        (
+            (v.start as u32) << 3,
+            v.pitch,
+            [v.vol_l.raw, v.vol_r.raw],
+            (v.adsr_hi as u32) << 16 | v.adsr_lo as u32,
+            noise & (1 << i) != 0,
+            i > 0 && pmon & (1 << i) != 0,
+        )
+    }
+
     pub fn take_samples(&mut self) -> Vec<i16> {
         std::mem::take(&mut self.out)
     }

@@ -16,6 +16,28 @@ pub const FLAG_REPEAT: u8 = 2;
 /// Block flag: this block is the loop start (sets the repeat address).
 pub const FLAG_START: u8 = 4;
 
+/// The bytes a voice keyed on at `start` plays up to its first END block:
+/// whole blocks from `start` through that block, clipped to `data`.
+pub fn sample_extent(data: &[u8], start: usize) -> std::ops::Range<usize> {
+    let mut end = start;
+    while end + 16 <= data.len() {
+        end += 16;
+        if data[end - 15] & FLAG_END != 0 {
+            break;
+        }
+    }
+    start..end
+}
+
+/// A sample's identity: SHA-256 (hex) of its [`sample_extent`] bytes. The SPU
+/// voice trace and VAB/VAG extraction report the same value, so a keyed-on
+/// voice can be matched to the bank waveform it plays.
+pub fn sample_sha256(data: &[u8], start: usize) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(&data[sample_extent(data, start)]);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Decode one 16-byte block (only `block[..16]` is read) into 28 samples.
 /// `hist` is the filter history `[newest, older]`, carried between blocks.
 pub fn decode_block(block: &[u8], hist: &mut [i32; 2], out: &mut [i16; 28]) {
@@ -111,6 +133,17 @@ pub(crate) fn block(header: u8, flags: u8, nibbles: &[u8; 28]) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sample_extent_stops_after_the_first_end_block() {
+        let mut data = vec![0u8; 16 * 5];
+        data[16 * 2 + 1] = FLAG_END | FLAG_REPEAT;
+        assert_eq!(sample_extent(&data, 16), 16..48);
+        assert_eq!(sample_extent(&data, 48), 48..80, "no END block: up to the end of the data");
+        assert_eq!(sample_extent(&data[..40], 16), 16..32, "partial blocks are not read");
+        assert_eq!(sample_sha256(&data, 16), sample_sha256(&data[16..48], 0));
+        assert_ne!(sample_sha256(&data, 16), sample_sha256(&data, 0));
+    }
 
     #[test]
     fn filter_zero_is_shifted_nibbles() {

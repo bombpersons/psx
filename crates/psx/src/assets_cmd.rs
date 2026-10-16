@@ -831,7 +831,10 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
                     let d = v.decode(bytes);
                     let p = dir.join(format!("{stem}.wav"));
                     write(&p, &wav_mono(&d.pcm, v.rate))?;
-                    outputs.push(json!({"path": p, "wav": wav_stats(&d.pcm, v.rate), "loop": d.looped}));
+                    let header = psx_assets::vab::VAG_HEADER;
+                    let data = &bytes[header..(header + v.data_size).min(bytes.len())];
+                    outputs.push(json!({"path": p, "wav": wav_stats(&d.pcm, v.rate), "loop": d.looped,
+                        "adpcm_sha256": adpcm::sample_sha256(data, 0)}));
                 }
                 Kind::Vab => {
                     let v = Vab::parse(bytes).map_err(MediaError::Malformed)?;
@@ -853,7 +856,8 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
                                 // At the tone's centre note the SPU plays a waveform at 44.1 kHz.
                                 let p = dir.join(format!("{stem}_w{:02}.wav", i + 1));
                                 write(&p, &wav_mono(&d.pcm, 44_100))?;
-                                outputs.push(json!({"path": p, "waveform": i + 1, "wav": wav_stats(&d.pcm, 44_100), "loop": d.looped}));
+                                outputs.push(json!({"path": p, "waveform": i + 1, "wav": wav_stats(&d.pcm, 44_100), "loop": d.looped,
+                                    "adpcm_sha256": adpcm::sample_sha256(data, 0)}));
                             }
                         }
                         None => {
