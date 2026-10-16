@@ -21,5 +21,10 @@ rules. A temporary captured backdrop should be labeled as such.
 The generated developer MCP supports exact game_step calls, game_query and
 game_screenshot. Headless GPU runs use --mcp --headless --software and screenshot
 target screen. Compare rebuilt behavior against recorded per-tick trajectories,
-including cases not used to fit the rules, and inspect rendered output. Keep each
+including cases not used to fit the rules, and inspect rendered output: run from
+a checkpoint with a replay file and sample (one NAME per value), keep
+samples.csv and the replay under the game's tests/data/, then use
+game::testing::{Alignment, Replay, Trajectory, compare} in a test. Sample row N
+is the state after N fields; tick k uses the input held at field
+start + k*fields_per_tick. The generated AGENTS.md has the full recipe. Keep each
 generated project's target directory separate to avoid linking another copy's game.

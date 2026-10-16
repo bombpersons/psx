@@ -346,9 +346,12 @@ app.run_ticks(30, &[Button::Right]);
 let x = app.world().get::<Transform>(player).unwrap().translation.x;
 ```
 
-To check rules against the original, record per-tick positions with the psx
-toolkit, keep them as CSV under `tests/data/`, replay the recorded buttons tick
-by tick and compare every tick (see `tests/player.rs`).
+To check rules against the original, record values with `psx run --sample`
+and a `--replay` file, keep both under `tests/data/`, and compare tick by tick
+with `game::testing::{Alignment, Replay, Trajectory, compare}`. A mismatch
+reports the first divergence per column, the values around it and a hint when
+the rebuild is a tick early or late. The [module docs](src/testing/trajectory.rs)
+explain the field/tick alignment; `AGENTS.md` has the full recipe.
 
 | DualShock | Keyboard | Gamepad |
 |---|---|---|

@@ -180,6 +180,21 @@ registration no longer pins the toolkit checkout. MCP roots are deprecated by
 SEP-2577, so the working-directory default is the durable path. Named workspace
 aliases remain unbuilt unless feedback asks again.
 
+Trajectory comparison (2026-10-17): the template's `game::testing::trajectory`
+replays `psx run --replay` files tick by tick (`Alignment`: fields per tick and
+start row), loads `samples.csv`, records the rebuild in the original's units and
+`compare`s per column with tolerances. Failures report first divergence, nearby
+values and a one/two-tick shift hint; edges inside a multi-field tick are refused.
+Validated on Mega Man 8's held-out `mixed` scenario recorded directly with
+`--sample`: 101 rows, four columns, exact.
+
+**Next feature, on hold (2026-10-17): audio** (original M5). Start with a short
+design pass covering: an SPU voice trace (key-on/off per voice with sample address,
+pitch, volume, ADSR and frame, so sounds tie to gameplay events); SEQ/SEP sequence
+decoding to MIDI or an equivalent event list; and template playback of decoded
+VAB samples with PS1 character (pitch, ADSR, reverb). Validate against captured
+`native wav` output.
+
 Still open: shorter MCP descriptions/shared schema guidance; typed sample
 arguments; an optional run summary mode with fewer artifact descriptors; and
 measuring/aligning starter dependency features to reduce duplicate compilation.

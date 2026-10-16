@@ -88,23 +88,33 @@ src/controller/bindings.rs, controls/   rebinding, explicit settings storage and
 ## Testing gameplay
 
 `game::testing` runs rules headless for exact ticks with scripted buttons
-(`tests/player.rs` is the pattern to copy):
+(`tests/player.rs`), and compares them with the original
+(`game::testing::trajectory`):
+
+1. Record the original from a checkpoint with a replay file and one `--sample`
+   per value: `psx run game.cue --from-state S --frames N --replay
+   tests/data/jump.input.json --sample 8015E8AC:fx16.16:y ... --out .psx/jump`.
+   Copy its `samples.csv` to `tests/data/jump.samples.csv`.
+2. In a test, spawn the recorded starting state (row 0), replay the same input
+   and record the same names in the original's units:
 
 ```rust
+let align = Alignment::default(); // FIELDS_PER_TICK, starting at row 0
+let original = Trajectory::load_psx_samples("tests/data/jump.samples.csv", align)?;
+let inputs = Replay::load("tests/data/jump.input.json")?.tick_inputs(align, original.ticks() - 1)?;
 let mut app = headless_app(game::tick_rate(game::REGION));
 app.add_plugins(player::RulesPlugin);
-let player = app.world_mut().spawn(Player).id();
-for (tick, row) in recorded.iter().enumerate() {
-    app.run_tick(&row.buttons);
-    let pos = app.world().get::<StagePos>(player).unwrap();
-    assert!((pos.x - row.x).abs() <= TOLERANCE, "tick {tick}");
-}
+let player = app.world_mut().spawn(Player::at(original.get(0, "y").unwrap())).id();
+let rebuild = Trajectory::record(&mut app, &inputs, &["y"], |world| vec![world.get::<StagePos>(player).unwrap().y as f64]);
+compare(&original, &rebuild, &[("y", 0.0)])?.assert_passed();
 ```
 
-Record trajectories with the psx toolkit (`psx run --from-state ... --watch`),
-store them as CSV under `tests/data/`, keep the recording script in `tools/`.
-Compare every tick, and include at least one scenario that was recorded after
-the rules were written and never used to fit them.
+A failure prints each column's first divergence, the values around it and,
+when the rebuild matches shifted by a tick or two, a latency hint. With more
+than one field per tick, input may only change on tick boundaries
+(`tick_inputs` refuses anything else). Use tolerance 0 where the rule is exact.
+Keep recording commands in `tools/`, and include at least one scenario that was
+recorded after the rules were written and never used to fit them.
 
 ## From evidence to idiomatic code
 

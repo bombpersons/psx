@@ -28,9 +28,15 @@
 //! Only add rules plugins: anything that loads assets or spawns meshes needs
 //! the renderer. Keeping rules and presentation in separate plugins is what
 //! makes them testable.
+//!
+//! To check rules against the original game, replay a psx recording's input
+//! and compare per-tick values with [`compare`] (see [`trajectory`]).
 use crate::controller::Button;
 use crate::shell::{GameClock, InjectedInput, ShellPlugin, TickRate};
 use bevy::{prelude::*, time::TimeUpdateStrategy};
+
+pub mod trajectory;
+pub use trajectory::{Alignment, Comparison, Replay, Trajectory, compare};
 
 /// An app with Bevy's minimal plugins and the template's tick loop. Each
 /// [`TickApp::run_tick`] advances time by exactly one tick.
