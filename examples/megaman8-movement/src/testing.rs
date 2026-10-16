@@ -31,6 +31,9 @@ use crate::controller::Button;
 use crate::shell::{GameClock, InjectedInput, ShellPlugin, TickRate};
 use bevy::{prelude::*, time::TimeUpdateStrategy};
 
+pub mod trajectory;
+pub use trajectory::{Alignment, Comparison, Replay, Trajectory, compare};
+
 /// An app with Bevy's minimal plugins and the template's tick loop. Each
 /// [`TickApp::run_tick`] advances time by exactly one tick.
 pub fn headless_app(tick: TickRate) -> App {

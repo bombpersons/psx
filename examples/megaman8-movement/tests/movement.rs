@@ -7,7 +7,7 @@ use game::controller::Button;
 use game::player::movement::{GRAVITY, Grounded, JUMP_SPEED, MovementPlugin, WalkGrace};
 use game::player::{Facing, Player, PlayerState, Velocity};
 use game::stage::{CameraFollowPlugin, Solid, StageCamera, StagePos};
-use game::testing::{TickApp, headless_app};
+use game::testing::{Alignment, Replay, TickApp, Trajectory, compare, headless_app};
 
 fn spawn(app: &mut App) -> Entity {
     app.world_mut().spawn(Solid(Rect::new(0.0, 466.0, 4096.0, 512.0)));
@@ -129,4 +129,26 @@ fn camera_clamps_at_section_start() {
     app.world_mut().get_mut::<StagePos>(p).unwrap().0.x = 453.5;
     app.run_tick(&[]);
     assert_eq!(app.world().resource::<StageCamera>().pos.x, 293.0);
+}
+
+/// The held-out scenario again, through `game::testing`'s shared helpers: the
+/// original recorded directly with `psx run --sample` (no watch reconstruction)
+/// and its replay file, replayed tick for tick.
+#[test]
+fn matches_psx_samples_through_trajectory_helpers() {
+    let data = |file: &str| format!("{}/tests/data/{file}", env!("CARGO_MANIFEST_DIR"));
+    let align = Alignment::default();
+    let original = Trajectory::load_psx_samples(data("mixed.samples.csv"), align).unwrap();
+    let replay = Replay::load(data("mixed.input.json")).unwrap();
+    let inputs = replay.tick_inputs(align, original.ticks() - 1).unwrap();
+    let mut app = headless_app(game::tick_rate(game::REGION));
+    app.add_plugins((MovementPlugin, CameraFollowPlugin))
+        .insert_resource(StageCamera { pos: Vec2::new(256.0, 256.0), min_x: 256.0 });
+    let player = spawn(&mut app);
+    let rebuild = Trajectory::record(&mut app, &inputs, &["x", "y", "state", "cam_x"], |world| {
+        let pos = world.get::<StagePos>(player).unwrap().0;
+        let state = state_id(*world.get::<PlayerState>(player).unwrap());
+        vec![pos.x as f64, pos.y as f64, state as f64, world.resource::<StageCamera>().pos.x as f64]
+    });
+    compare(&original, &rebuild, &[("x", 0.0), ("y", 0.0), ("state", 0.0), ("cam_x", 0.0)]).unwrap().assert_passed();
 }

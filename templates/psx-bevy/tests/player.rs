@@ -1,8 +1,7 @@
 //! Gameplay tests: run the demo's rules headless for exact ticks with scripted
-//! buttons. Copy this pattern to compare your rules against trajectories
-//! recorded from the original game (e.g. a CSV of per-tick positions from
-//! `psx run --watch`): feed the recorded buttons tick by tick and assert the
-//! position each tick, with a tolerance where the rule is not bit-exact.
+//! buttons. For your game, compare rules against the original with
+//! `game::testing::trajectory`: replay a `psx run --replay` file, record the
+//! values `psx run --sample` recorded, and `compare` every tick.
 use bevy::prelude::*;
 use game::controller::Button;
 use game::demo::player::{GRAVITY, GROUND_Y, HOP_SPEED, Hop, Player, PlayerPlugin, WALK_SPEED};

@@ -45,6 +45,7 @@ const FILES: &[(&str, &str)] = files![
     "src/psx/shaders/psx_sprite.wesl",
     "src/shell.rs",
     "src/testing.rs",
+    "src/testing/trajectory.rs",
     "src/viewer.rs",
     "tests/player.rs",
     "tests/dev_mcp.rs",
