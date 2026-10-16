@@ -25,7 +25,9 @@ external/psx_psyq_signatures in the selected project. Use an absolute PSX_SIGS_D
 in the server environment to share a checkout. context.signatures reports its
 default path and directory presence without loading or downloading the index.
 
-disc inspects the disc and boot EXE; ls filters/pages its ISO entries. exe,
+disc inspects the disc and boot EXE; ls filters/pages its ISO entries.
+LibCrypt-protected discs need the redump .sbi/.lsd beside the .cue (same base
+name); disc reports subchannel.source and the native core honours it. exe,
 disasm and asset tools accept disc.cue::/PATH where documented. run accepts a
 disc or host EXE path; do not assume every tool accepts the disc-member syntax.
 

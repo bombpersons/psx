@@ -1,142 +1,135 @@
 # psx
 
-A toolkit for taking PlayStation games apart and rebuilding them as new Rust games.
+**Point an AI agent at a PlayStation game. Get back how it works, and a Bevy game that plays the same.**
 
-The idea: you point it at a PS1 game you own, dig out how it works (how high the player
-jumps, what the level data looks like, which sounds play when), and then write the game again
-from scratch in [Bevy](https://bevy.org). The result should look and feel like the original,
-wobbly textures and all, but the code should read like something written today. It shouldn't be
-an emulator in disguise. Someone should be able to open it and start changing things.
+psx is a PS1 reverse-engineering toolkit built for agents. It hands them an emulator they can
+interrogate, disc and asset decoders, Ghidra on tap and a game template with the PS1 look, all as
+MCP tools. The agent spends its time on the game, not on fighting the tooling.
 
-It's built to be driven by AI agents as much as by people. Most of what's here exists because an
-agent tried to use it and got stuck somewhere.
+Most of what's here exists because an agent tried to use it and got stuck somewhere.
+
+## What an agent can ask
+
+| Question | How psx answers |
+|---|---|
+| *Which byte is the player's X position?* | Run the same moment holding LEFT, nothing, RIGHT; `ram_search` keeps what moved the right way. |
+| *What code writes it?* | `watch` the address: every store, with the instruction that made it. |
+| *What does that code do?* | `ghidra_decompile` the writer's PC. Import, analysis and caching are automatic. |
+| *How high is the jump, frame by frame?* | `sample` the value into a CSV while replaying the input. |
+| *Is my theory right?* | `poke` a value at a chosen frame and compare against an untouched run. |
+| *Where did this texture, model or sound come from?* | `gpu_frame`, `assets_scan`, `trace_spu` and `loads` connect screen and speaker back to RAM and the disc file. |
+| *Does my rebuild play the same?* | Replay the same input in the Bevy template and `compare` every tick. |
+
+## One loop, start to finish
+
+Mega Man 8, from a save state in the first stage. The case study's steps, in today's tool names:
+
+```
+runs: LEFT / idle / RIGHT     →  ram_search: x lives at 0x8015E8A8 (16.16 fixed point)
+run with watch on the player  →  jump state set at 0x8010F8F0, vy = 5.785 at 0x8010C9C4
+disasm + one trace window     →  walk 1.5 px/tick, gravity 0.25, fall speed capped at 6
+template + trajectory test    →  a held-out scenario matches all 101 ticks exactly
+```
+
+The full story is in the [write-up](research/case-study-megaman8.md).
+
+## Why agents get through it quickly
+
+- **Exact answers.** The emulator reports what really happened: the storing instruction, the CD
+  sector, the GPU command, the sound sample. It's checked against
+  [PCSX-Redux](https://github.com/grumpycoders/pcsx-redux) and hardware tests, and gets about 19
+  PAL games to gameplay so far.
+- **Cheap experiments.** Save a checkpoint once, then branch short runs from it with different
+  buttons, all inline in one call.
+- **Small replies.** Evidence lands in files; calls return paths and counts (`summary`), and
+  `artifact_read` pages through the rest. All the tool definitions fit in about 14K tokens, and the
+  `guide` tool serves recipes when they're needed.
+- **One server, many games.** Each Claude Code session works in the game folder it was opened in.
+- **Same thing on the command line.** Every tool is a `psx` command printing the same JSON.
 
 ## What's in the box
 
-- **A PlayStation emulator for investigation.** It isn't for playing games; it's for asking
-  questions like "what wrote to this address?", "what did this frame draw?" or "how does this value
-  change when I press jump?". It's checked against [PCSX-Redux](https://github.com/grumpycoders/pcsx-redux)
-  and real hardware tests, and it gets about 19 PAL games to gameplay so far.
-- **Disc and file tools.** Browse a disc, pull out files, and decode movies (STR), XA audio,
-  textures (TIM), 3D models (TMD to glTF) and sound banks (VAB/VAG to WAV).
-  Croc and sector-indexed DOT-T archives retain entry provenance. For game-specific
-  archives, models, asset wrappers and video frames, generate an
-  [external parser](docs/external-parsers.md) and keep using the same scan/extract tools.
-  Texture sources can include ordered raw VRAM uploads as well as TIMs.
-- **Memory detective work.** Cheat-finder-style RAM search, per-frame value logging,
-  disassembly and cross-references, and "poke this value and see what happens".
-- **Ghidra decompilation.** Give it an executable and a code address to get the
-  function's pseudocode and callers. Runtime snapshots work too; rename a function
-  and export verified names back into native traces. Import, analysis and caching
-  happen automatically; needs a local Ghidra installation.
-- **A Bevy game template** with the PS1 look built in: vertex wobble, affine textures,
-  15-bit colour, dithering where the PS1 dithered, and the PS1's blend modes. Your game code stays plain
-  Bevy: entities, components, systems. Includes keyboard/gamepad rebinding and a
-  reusable [controls menu](templates/psx-bevy/README.md#rebinding-and-the-example-controls-menu).
-- **An MCP server**, so an agent can use all of the above as tools.
-  Inline controller events, paginated evidence and a bounded artifact reader keep
-  investigations inside the tool interface. Per-call project roots let one server
-  work across isolated game projects. See [agent workflow](docs/agent-workflow.md).
-
-The template also has its own developer MCP: step game logic, query entities, edit
-reflected component fields while paused and take screenshots. It supports offscreen
-GPU rendering with a software adapter, so an agent can verify a reconstruction
-without opening a desktop window. [Template guide](templates/psx-bevy/README.md#agent-driving-dev-mcp).
-
-This is an investigation toolkit under active development. Booting a game does not
-establish whole-game accuracy; GPU captures classify drawing content, not gameplay
-readiness. Game-specific formats may need a parser, and emulator timing/fidelity
-work continues. The [current queue](PLAN.md#current-toolkit-queue-agreed-2026-10-15)
-and [validation notes](research/) record what has actually been checked.
+- **An investigation emulator.** Not for playing; for asking "what wrote this?", "what did this
+  frame draw?" and "which sound played when?". Save states, input replay, write/read watches,
+  per-frame sampling, pokes, instruction traces, GPU frame capture, CD and sound traces.
+- **Disc and asset tools.** Browse discs, extract files, decode STR movies, XA audio, TIM
+  textures, TMD models (to glTF) and VAB/VAG sound banks (to WAV). Game-specific formats plug in
+  through generated [external parsers](docs/external-parsers.md).
+- **Memory detective work.** Cheat-finder search, RAM diffs and views, disassembly and
+  cross-references, PsyQ library naming.
+- **Ghidra.** Pseudocode and callers for any address, from an EXE or a RAM snapshot; rename
+  functions and export verified names back into traces.
+- **A Bevy game template** with the PS1 look: vertex wobble, affine textures, 15-bit colour,
+  dithering and PS1 blend modes, while game code stays plain Bevy. Includes trajectory tests
+  against the original, controller rebinding and its own developer MCP for stepping, querying
+  and screenshotting the game headless.
 
 ## See it in action
 
-This is the template's demo game, out of the box: plain Bevy entities, drawn with the PS1 look.
+The template's demo, out of the box:
 
 <img src="docs/images/template-demo.png" width="640" alt="The template demo: a textured crate mid-hop on a wobbly checkerboard floor, with a sphere, a semi-transparent quad and HUD bars">
 
-There are two worked examples, each with a write-up of how it was done. Both use stand-in
-graphics on purpose: the point is the rebuilt *mechanics*, and none of the original game's art
-goes in the repo.
+Two worked examples rebuild real mechanics. They use stand-in graphics on purpose: the point is the
+*mechanics*, and none of the original art goes in the repo.
 
 <img src="docs/images/croc-movement.png" width="320" alt="The Croc movement demo: a green capsule stand-in for Croc jumping above a grassy plain"> <img src="docs/images/megaman8-movement.png" width="320" alt="The Mega Man 8 movement demo: a blue block stand-in for Mega Man mid-jump over green blocks">
 
-- **Croc:** Croc's movement, traced from RAM back to the code that writes it, then rebuilt as a
-  small Bevy demo. [Write-up](research/case-study-croc.md) · [code](examples/croc-movement/README.md)
-- **Mega Man 8:** Mega Man's walk and jump, rebuilt in 2D and checked tick by tick against
-  the real game. [Write-up](research/case-study-megaman8.md) · [code](examples/megaman8-movement/README.md)
+- **Croc:** movement traced from RAM to the code that writes it, rebuilt in 3D.
+  [Write-up](research/case-study-croc.md) · [code](examples/croc-movement/README.md)
+- **Mega Man 8:** walk and jump rebuilt in 2D, exact tick for tick against the real game.
+  [Write-up](research/case-study-megaman8.md) · [code](examples/megaman8-movement/README.md)
 
-## Getting started
+## Get started
 
-You'll need Rust 1.88+ for the toolkit (the Bevy starter requires Rust 1.97.1+),
-your own disc images and a PS1 BIOS. **Disc images and firmware
-are not included and should never be committed.** Local `media/` and `bios/` folders
-are git-ignored:
-
-```
-media/   your disc images (.cue/.bin)
-bios/    BIOS dumps
-```
-
-Then try:
+You need Rust 1.88+ (1.97.1+ for the Bevy template), your own disc images and a PS1 BIOS.
+**Disc images and firmware are not included and must never be committed**; the local `media/`
+and `bios/` folders are git-ignored.
 
 ```bash
 cargo build --release
-target/release/psx guide
-target/release/psx disc "media/Some Game.cue"
-```
-
-Set up a BIOS once, either from your local dump or through an explicit, checksum-verified download:
-
-```bash
 target/release/psx bios install --from /path/to/bios.bin
-# Alternatively, explicitly download the catalog's PAL image:
-target/release/psx bios install --download --region pal
-target/release/psx context --image "media/Some Game.cue" --save
-target/release/psx run --frames 300 --save-state --brief
 ```
 
-The shared BIOS directory defaults to `$XDG_DATA_HOME/psx/bios`, or
-`~/.local/share/psx/bios`; `PSX_BIOS_DIR` overrides it. Runs use the native backend
-by default and select a locally installed BIOS for the disc's region. Resuming a
-native checkpoint requires its exact BIOS hash. Discovery and runs never download.
-See [BIOS setup](docs/bios-setup.md) for supported regions, source and selection rules.
+(Or `--download --region pal` for an explicit, checksum-verified download. Nothing ever downloads
+on its own. See [BIOS setup](docs/bios-setup.md).)
 
-To start a new game from the template:
-
-```bash
-target/release/psx template create ../my-game
-cd ../my-game && cargo run
-```
-
-Set `--region pal --fields-per-tick 2` when creating a project whose measured logic
-runs at 25 Hz. Choose the tick rate from evidence; display fields and game ticks
-are different. The generated project is standalone and loads extracted TIM/TMD
-assets directly. Captured `.psxscene` frames are comparison references; rebuild
-the game's rules and levels as ordinary Bevy code.
-
-For workflow help, run `psx guide` or `psx guide --topic input`. The MCP `guide`
-tool provides the same built-in guidance without installing an agent skill.
-
-To hook it up to Claude Code once for every project:
+Hook it into Claude Code once, for every project:
 
 ```bash
 claude mcp add --scope user -e PSX_SIGS_DIR=/path/to/psx/external/psx_psyq_signatures \
   psx -- /path/to/psx/target/release/psx mcp
 ```
 
-Open Claude Code in the game study directory: without `--root`, the server's default
-project is the client's workspace root (or its working directory). Add `--root DIR`
-before `mcp` only to pin one project; `mcp --require-project-root` instead makes every
-call name its project. See [agent workflow](docs/agent-workflow.md#isolate-game-studies).
+Then open Claude Code in a folder with your disc image and ask it to figure something out. It
+starts with `context` and `guide`. To drive it by hand instead:
 
-## Where to go next
+```bash
+target/release/psx context --image "media/Some Game.cue" --save
+target/release/psx run --frames 300 --save-state --summary
+target/release/psx guide --topic run
+```
 
-- [README_FOR_AGENTS.md](README_FOR_AGENTS.md): every command and flag, in detail.
+Start a rebuild from the template (pick region and tick rate from the original):
+
+```bash
+target/release/psx template create ../my-game --region pal
+cd ../my-game && cargo run
+```
+
+## Honest limits
+
+Booting a game isn't proof the whole game is accurate, and emulator timing work continues.
+Custom formats need a parser. Every finding is evidence to check, not a guarantee; the
+[validation notes](research/) record what has actually been tested.
+
+## More
+
+- [README_FOR_AGENTS.md](README_FOR_AGENTS.md): every command and flag.
+- [docs/agent-workflow.md](docs/agent-workflow.md): evidence, input and project isolation.
 - [templates/psx-bevy](templates/psx-bevy/README.md): the game template.
-- [docs/agent-workflow.md](docs/agent-workflow.md): bounded evidence, controller input and project isolation.
-- [docs/ghidra-integration.md](docs/ghidra-integration.md): executable/runtime analysis, annotations and verified symbol export.
-- [research/](research/): notes on the emulator, file formats and case studies.
+- [docs/ghidra-integration.md](docs/ghidra-integration.md): Ghidra analysis and symbol export.
+- [research/](research/): emulator, format and case-study notes.
 - [PLAN.md](PLAN.md): where this is headed.
 
 psx has a sibling, [mdx](https://github.com/bombpersons/mdx), which does the same job for the Mega Drive.

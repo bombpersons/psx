@@ -186,10 +186,10 @@ pub struct TraceArgs {
     #[arg(long = "trace-range")]
     #[serde(default, rename = "trace_range")]
     pub trace_ranges: Vec<String>,
-    /// Capture every GPU command of run frame N: gpu_frame.json (decoded primitives,
-    /// texture pages, CLUTs), gpu_frame_vram.bin (VRAM at the end of that frame, which
-    /// `psx textures` decodes), gpu_frame_screen.png (its drawing area) and VRAM
-    /// before/after/wireframe PNGs.
+    /// Capture every GPU command of run frame N. Writes gpu_frame.json (decoded
+    /// primitives, texture pages, CLUTs), gpu_frame_vram.bin (VRAM at the end of that
+    /// frame, which `psx textures` decodes), gpu_frame_screen.png (its drawing area) and
+    /// VRAM before/after/wireframe PNGs.
     #[arg(long)]
     pub gpu_frame: Option<u64>,
     /// Capture the first completed frame with GP0 drawing commands, starting at

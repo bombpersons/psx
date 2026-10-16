@@ -15,7 +15,11 @@ Typical routes:
 - Rebuild: template_create -> decoded assets and idiomatic Bevy rules -> compare
   recorded trajectories and rendered output against the original evidence.
 
-Use guide's input, code, assets and bevy topics for the relevant route, and
-troubleshooting for unexpected results. Inspect returned files with artifact_read;
-use page/cursor metadata to keep evidence bounded. A successful capture proves
+Tool descriptions are brief; guide topics hold the details. Use the run, input,
+code, assets and bevy topics for the relevant route, and troubleshooting for
+unexpected results. Inspect returned files with artifact_read:
+JSON by RFC 6901 pointer, JSONL/CSV/text by rows (frame_from/frame_to with
+frame_field, hex pc, contains, columns), hex for raw bytes and PNG as an image.
+Continue with page.next_cursor, reusing the filters; totals stay null until a
+stream is fully scanned. A successful capture proves
 what was recorded, not that the game reached gameplay or that a hypothesis is true.
