@@ -66,10 +66,15 @@ fn parse_trace_line(line: &str) -> Option<TraceLine> {
     let mut i = 0;
     while let Some(d) = rest[i..].find('$') {
         let start = i + d + 1;
-        let Some(open) = rest[start..].find('(') else { break };
+        let Some(open) = rest[start..].find('(') else {
+            break;
+        };
         let name = &rest[start..start + open];
         let vstart = start + open + 1;
-        if let Some(v) = rest.get(vstart..vstart + 8).and_then(|v| u32::from_str_radix(v, 16).ok()) {
+        if let Some(v) = rest
+            .get(vstart..vstart + 8)
+            .and_then(|v| u32::from_str_radix(v, 16).ok())
+        {
             operands.push((name.to_string(), v));
         }
         i = vstart;
@@ -80,7 +85,13 @@ fn parse_trace_line(line: &str) -> Option<TraceLine> {
         let v = u32::from_str_radix(rest.get(eq..eq + 8)?.trim_end_matches(')'), 16).ok()?;
         Some((a, v))
     });
-    Some(TraceLine { pc, code, operands, mem, text: line.to_string() })
+    Some(TraceLine {
+        pc,
+        code,
+        operands,
+        mem,
+        text: line.to_string(),
+    })
 }
 
 fn reg_index(name: &str) -> Option<usize> {
@@ -89,7 +100,14 @@ fn reg_index(name: &str) -> Option<usize> {
 
 /// Fast mode: stream Redux's instruction trace and check each instruction's
 /// PC, word and source-operand values before the core executes it.
-pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump: Option<&Path>, deadline: Option<Instant>) -> (bool, Value) {
+pub fn run_trace(
+    root: &Path,
+    bios_path: &Path,
+    steps: u64,
+    context: usize,
+    dump: Option<&Path>,
+    deadline: Option<Instant>,
+) -> (bool, Value) {
     use std::io::BufRead;
     let err = |code: &str, m: String| (false, json!({"error": {"code": code, "message": m}}));
     let backend = match Backend::from_project(root) {
@@ -100,13 +118,27 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
         Ok(b) => b,
         Err(e) => return err("io_error", format!("{}: {e}", bios_path.display())),
     };
-    let dir = root.join(".psx/lockstep").join(format!("{}{}", std::process::id(), crate::instance_suffix()));
+    let dir = root.join(".psx/lockstep").join(format!(
+        "{}{}",
+        std::process::id(),
+        crate::instance_suffix()
+    ));
     let _ = std::fs::create_dir_all(dir.join("config"));
-    let _ = std::fs::write(dir.join("config/pcsx.json"), "{\"SPU\":{\"NullSync\":true,\"Speed\":0}}\n");
+    let _ = std::fs::write(
+        dir.join("config/pcsx.json"),
+        "{\"SPU\":{\"NullSync\":true,\"Speed\":0}}\n",
+    );
     let abs = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
     let mut child = match std::process::Command::new(&backend.binary)
         .current_dir(&dir)
-        .args(["-no-ui", "-run", "-interpreter", "-debugger", "-trace", "-portable"])
+        .args([
+            "-no-ui",
+            "-run",
+            "-interpreter",
+            "-debugger",
+            "-trace",
+            "-portable",
+        ])
         .arg(abs(&dir.join("config")))
         .arg("-bios")
         .arg(abs(bios_path))
@@ -132,7 +164,9 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
     let mut io_dest: [Option<(u32, Width)>; 32] = [None; 32];
     for line in reader.lines() {
         let Ok(line) = line else { break };
-        let Some(t) = parse_trace_line(&line) else { continue };
+        let Some(t) = parse_trace_line(&line) else {
+            continue;
+        };
         if done >= steps {
             break;
         }
@@ -164,7 +198,8 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
                         m.bus.poke_io(addr, w, *v);
                         io_injected += 1;
                     } else {
-                        problems.push(json!({"what": name, "core": h(m.cpu.regs[r]), "redux": h(*v)}));
+                        problems
+                            .push(json!({"what": name, "core": h(m.cpu.regs[r]), "redux": h(*v)}));
                     }
                 } else {
                     io_dest[r] = None;
@@ -214,7 +249,14 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
         let screen = std::path::PathBuf::from(format!("{}.screen.png", prefix.display()));
         let vram = std::path::PathBuf::from(format!("{}.vram.png", prefix.display()));
         let ok1 = crate::run::write_png(&screen, w, hgt, &rgba, png::ColorType::Rgba).is_ok();
-        let ok2 = crate::run::write_png(&vram, 1024, 512, &m.bus.gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok();
+        let ok2 = crate::run::write_png(
+            &vram,
+            1024,
+            512,
+            &m.bus.gpu.vram.rgba15(0, 0, 1024, 512),
+            png::ColorType::Rgba,
+        )
+        .is_ok();
         dumped = json!({"screen": ok1.then_some(screen), "vram": ok2.then_some(vram),
             "display": {"start": m.bus.gpu.display.start, "width": w, "height": hgt}});
     }
@@ -244,7 +286,13 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
 }
 
 /// Exact mode: GDB single-step, full register file after every instruction (slow).
-pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize, deadline: Option<Instant>) -> (bool, Value) {
+pub fn run(
+    root: &Path,
+    bios_path: &Path,
+    steps: u64,
+    context: usize,
+    deadline: Option<Instant>,
+) -> (bool, Value) {
     let err = |code: &str, m: String| (false, json!({"error": {"code": code, "message": m}}));
     let backend = match Backend::from_project(root) {
         Ok(b) => b,
@@ -254,7 +302,11 @@ pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize, deadline: 
         Ok(b) => b,
         Err(e) => return err("io_error", format!("{}: {e}", bios_path.display())),
     };
-    let dir = root.join(".psx/lockstep").join(format!("{}{}", std::process::id(), crate::instance_suffix()));
+    let dir = root.join(".psx/lockstep").join(format!(
+        "{}{}",
+        std::process::id(),
+        crate::instance_suffix()
+    ));
     let mut g = match GdbSession::start(&backend, bios_path, &dir) {
         Ok(g) => g,
         Err(e) => return err(e.code(), e.to_string()),
@@ -282,7 +334,9 @@ pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize, deadline: 
             Ok(r) => r,
             Err(e) => return err(e.code(), e.to_string()),
         };
-        history.push_back(json!({"step": n, "pc": h(info.pc), "asm": disasm(info.instruction, info.pc)}));
+        history.push_back(
+            json!({"step": n, "pc": h(info.pc), "asm": disasm(info.instruction, info.pc)}),
+        );
         if history.len() > context {
             history.pop_front();
         }
@@ -311,8 +365,10 @@ pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize, deadline: 
 
         let d = diffs(&m, &r);
         // A difference in the register of an I/O load still in flight resolves next step.
-        let d: Vec<_> =
-            d.into_iter().filter(|(name, ..)| pending_io.is_none_or(|(rt, ..)| name != reg(rt as u32))).collect();
+        let d: Vec<_> = d
+            .into_iter()
+            .filter(|(name, ..)| pending_io.is_none_or(|(rt, ..)| name != reg(rt as u32)))
+            .collect();
         done = n + 1;
         if !d.is_empty() {
             divergence = json!({

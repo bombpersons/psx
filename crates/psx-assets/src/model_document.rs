@@ -3,7 +3,10 @@
 //! required from the parser. Coordinates are signed PS1 units (Y down, Z forward).
 
 use crate::tim::{clut_from_cba, TexPage};
-use crate::tmd::{Tmd, TmdObject, TmdPolygon, FLAG_FCE, FLAG_LGT, MODE_ABE, MODE_IIP, MODE_QUAD, MODE_TGE, MODE_TME};
+use crate::tmd::{
+    Tmd, TmdObject, TmdPolygon, FLAG_FCE, FLAG_LGT, MODE_ABE, MODE_IIP, MODE_QUAD, MODE_TGE,
+    MODE_TME,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -54,27 +57,46 @@ pub struct Texture {
 impl ModelDocument {
     pub fn into_model(self) -> Result<Tmd, String> {
         if self.version != 1 {
-            return Err(format!("unsupported model document version {}", self.version));
+            return Err(format!(
+                "unsupported model document version {}",
+                self.version
+            ));
         }
         if self.objects.is_empty() || self.objects.len() > 4096 {
             return Err("model must contain 1..=4096 objects".into());
         }
         let mut model = Tmd::default();
         for (oi, source) in self.objects.into_iter().enumerate() {
-            if source.vertices.len() > 65536 || source.normals.len() > 65536 || source.polygons.len() > 65536 {
-                return Err(format!("object {oi}: more than 65536 vertices, normals or polygons"));
+            if source.vertices.len() > 65536
+                || source.normals.len() > 65536
+                || source.polygons.len() > 65536
+            {
+                return Err(format!(
+                    "object {oi}: more than 65536 vertices, normals or polygons"
+                ));
             }
-            let mut object = TmdObject { vertices: source.vertices, normals: source.normals, ..Default::default() };
+            let mut object = TmdObject {
+                vertices: source.vertices,
+                normals: source.normals,
+                ..Default::default()
+            };
             for (pi, p) in source.polygons.into_iter().enumerate() {
                 let n = p.vertices.len();
                 let fail = |message: &str| format!("object {oi}, polygon {pi}: {message}");
                 if !matches!(n, 3 | 4) {
                     return Err(fail("expected a triangle or quad"));
                 }
-                if p.vertices.iter().any(|&v| v as usize >= object.vertices.len()) {
+                if p.vertices
+                    .iter()
+                    .any(|&v| v as usize >= object.vertices.len())
+                {
                     return Err(fail("vertex index out of range"));
                 }
-                if ![0, 1, n].contains(&p.normals.len()) || p.normals.iter().any(|&v| v as usize >= object.normals.len()) {
+                if ![0, 1, n].contains(&p.normals.len())
+                    || p.normals
+                        .iter()
+                        .any(|&v| v as usize >= object.normals.len())
+                {
                     return Err(fail("normal count or index out of range"));
                 }
                 if ![0, 1, n].contains(&p.colors.len()) {
@@ -96,8 +118,14 @@ impl ModelDocument {
                     };
                     let cba = match (texture.depth, texture.clut) {
                         (16, None) => 0,
-                        (4 | 8, Some([cx, cy])) if cx <= 1008 && cx.is_multiple_of(16) && cy < 512 => (cy << 6) | (cx / 16),
-                        _ => return Err(fail("indexed textures require an aligned CLUT; direct colour has no CLUT")),
+                        (4 | 8, Some([cx, cy]))
+                            if cx <= 1008 && cx.is_multiple_of(16) && cy < 512 =>
+                        {
+                            (cy << 6) | (cx / 16)
+                        }
+                        _ => return Err(fail(
+                            "indexed textures require an aligned CLUT; direct colour has no CLUT",
+                        )),
                     };
                     (cba, (x / 64) | ((y / 256) << 4) | (depth << 7))
                 } else {
@@ -122,9 +150,23 @@ impl ModelDocument {
                 if p.unmodulated {
                     mode |= MODE_TGE;
                 }
-                let flag = if p.normals.is_empty() { FLAG_LGT } else { 0 } | if p.double_sided { FLAG_FCE } else { 0 };
-                let colors = if p.colors.is_empty() && p.texture.is_none() { vec![[255; 3]] } else { p.colors };
-                object.polygons.push(TmdPolygon { mode, flag, vertices: p.vertices, normals: p.normals, colors, uvs: p.uvs, cba, tsb });
+                let flag = if p.normals.is_empty() { FLAG_LGT } else { 0 }
+                    | if p.double_sided { FLAG_FCE } else { 0 };
+                let colors = if p.colors.is_empty() && p.texture.is_none() {
+                    vec![[255; 3]]
+                } else {
+                    p.colors
+                };
+                object.polygons.push(TmdPolygon {
+                    mode,
+                    flag,
+                    vertices: p.vertices,
+                    normals: p.normals,
+                    colors,
+                    uvs: p.uvs,
+                    cba,
+                    tsb,
+                });
             }
             model.objects.push(object);
         }
@@ -156,7 +198,11 @@ impl From<&Tmd> for ModelDocument {
                             texture: p.textured().then(|| {
                                 let page = TexPage::from_tsb(p.tsb);
                                 let clut = clut_from_cba(p.cba);
-                                Texture { page: [page.x, page.y], depth: page.bits, clut: (page.bits != 16).then_some([clut.0, clut.1]) }
+                                Texture {
+                                    page: [page.x, page.y],
+                                    depth: page.bits,
+                                    clut: (page.bits != 16).then_some([clut.0, clut.1]),
+                                }
                             }),
                             semi_transparent: p.semi_transparent(),
                             double_sided: p.double_sided(),
@@ -180,7 +226,10 @@ mod tests {
 
     #[test]
     fn validates_geometry_before_export_and_defaults_to_white() {
-        let model = serde_json::from_value::<ModelDocument>(triangle()).unwrap().into_model().unwrap();
+        let model = serde_json::from_value::<ModelDocument>(triangle())
+            .unwrap()
+            .into_model()
+            .unwrap();
         assert_eq!(model.polygon_count(), 1);
         assert_eq!(model.objects[0].polygons[0].colors, [[255; 3]]);
         let again = ModelDocument::from(&model).into_model().unwrap();
@@ -188,11 +237,17 @@ mod tests {
         for replacement in [json!([0, 1]), json!([0, 1, 9])] {
             let mut doc = triangle();
             doc["objects"][0]["polygons"][0]["vertices"] = replacement;
-            assert!(serde_json::from_value::<ModelDocument>(doc).unwrap().into_model().is_err());
+            assert!(serde_json::from_value::<ModelDocument>(doc)
+                .unwrap()
+                .into_model()
+                .is_err());
         }
         let mut doc = triangle();
         doc["version"] = json!(2);
-        assert!(serde_json::from_value::<ModelDocument>(doc).unwrap().into_model().is_err());
+        assert!(serde_json::from_value::<ModelDocument>(doc)
+            .unwrap()
+            .into_model()
+            .is_err());
         let mut doc = triangle();
         doc["typo"] = json!(1);
         assert!(serde_json::from_value::<ModelDocument>(doc).is_err());
@@ -209,7 +264,10 @@ mod tests {
         polygon["semi_transparent"] = json!(true);
         polygon["double_sided"] = json!(true);
         polygon["unmodulated"] = json!(true);
-        let model = serde_json::from_value::<ModelDocument>(doc.clone()).unwrap().into_model().unwrap();
+        let model = serde_json::from_value::<ModelDocument>(doc.clone())
+            .unwrap()
+            .into_model()
+            .unwrap();
         let again = ModelDocument::from(&model).into_model().unwrap();
         assert_eq!(model.objects[0].polygons, again.objects[0].polygons);
         for (field, value) in [
@@ -224,7 +282,10 @@ mod tests {
         ] {
             let mut invalid = doc.clone();
             invalid["objects"][0]["polygons"][0][field] = value;
-            assert!(serde_json::from_value::<ModelDocument>(invalid).unwrap().into_model().is_err());
+            assert!(serde_json::from_value::<ModelDocument>(invalid)
+                .unwrap()
+                .into_model()
+                .is_err());
         }
     }
 }

@@ -210,7 +210,11 @@ impl Line {
 #[derive(Clone, Debug)]
 pub enum Env {
     /// GP0(E1h): page, dither, allow drawing to display area.
-    TexPage { page: TexPage, dither: bool, draw_to_display: bool },
+    TexPage {
+        page: TexPage,
+        dither: bool,
+        draw_to_display: bool,
+    },
     /// GP0(E2h) in 8-pixel units.
     TexWindow { mask: (u8, u8), offset: (u8, u8) },
     /// GP0(E3h/E4h): inclusive drawing area.
@@ -220,17 +224,36 @@ pub enum Env {
     /// GP0(E6h)
     Mask { set: bool, check: bool },
     /// GP0(02h): ignores drawing area and mask; x/w round to 16.
-    Fill { x: u16, y: u16, w: u16, h: u16, color: Rgb },
+    Fill {
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        color: Rgb,
+    },
     /// GP0(A0h): upload halfwords (row-major) to a VRAM rectangle.
-    Upload { x: u16, y: u16, w: u16, h: u16, data: Vec<u16> },
+    Upload {
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        data: Vec<u16>,
+    },
 }
 
 impl Env {
     pub fn encode(&self, out: &mut Vec<u32>) {
         match self {
-            Env::TexPage { page, dither, draw_to_display } => {
-                out.push(0xE1 << 24 | page.0 as u32 | (*dither as u32) << 9 | (*draw_to_display as u32) << 10)
-            }
+            Env::TexPage {
+                page,
+                dither,
+                draw_to_display,
+            } => out.push(
+                0xE1 << 24
+                    | page.0 as u32
+                    | (*dither as u32) << 9
+                    | (*draw_to_display as u32) << 10,
+            ),
             Env::TexWindow { mask, offset } => out.push(
                 0xE2 << 24
                     | (mask.0 as u32 & 31)
@@ -252,7 +275,11 @@ impl Env {
                 out.push(*w as u32 | (*h as u32) << 16);
             }
             Env::Upload { x, y, w, h, data } => {
-                assert_eq!(data.len(), *w as usize * *h as usize, "upload size mismatch");
+                assert_eq!(
+                    data.len(),
+                    *w as usize * *h as usize,
+                    "upload size mismatch"
+                );
                 out.push(0xA0 << 24);
                 out.push(*x as u32 | (*y as u32) << 16);
                 out.push(*w as u32 | (*h as u32) << 16);

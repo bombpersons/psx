@@ -247,8 +247,9 @@ calls in screen space. It is for *checking* your rebuild, never for shipping:
 ### Verify
 
 - `cargo test --features dev-mcp` with per-tick trajectory comparisons (above).
-  Keep that feature set for routine agent builds/tests/Clippy to reuse dependencies;
-  switching it off can rebuild shared Bevy crates through feature unification.
+  Keep that feature set for routine agent builds/tests/Clippy. Bevy resolves the
+  same features with and without it (see the alignment block in `Cargo.toml`),
+  so switching only builds the MCP crates; keep it that way when adding dependencies.
 - `cargo build` and `cargo build --features dev-mcp` when changing the shell.
 - Visual changes: `game_step` + `game_screenshot`, and look at the image.
   Use `--mcp --headless --software` without a desktop; screenshot `target` must

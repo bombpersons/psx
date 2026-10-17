@@ -8,7 +8,9 @@ use psx_media::system_cnf::SystemCnf;
 use psx_media::{Disc, PsxExe};
 
 fn media(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../media").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../media")
+        .join(name)
 }
 
 struct Expect {
@@ -25,7 +27,10 @@ fn check(e: Expect) {
     assert_eq!(disc.tracks.len(), e.tracks);
     let fs = FileSystem::read(&disc).unwrap();
     assert!(fs.warnings.is_empty(), "{:?}", fs.warnings);
-    let cnf = SystemCnf::parse(&fs.read_file(&disc, fs.find("/SYSTEM.CNF").unwrap()).unwrap());
+    let cnf = SystemCnf::parse(
+        &fs.read_file(&disc, fs.find("/SYSTEM.CNF").unwrap())
+            .unwrap(),
+    );
     let boot = cnf.boot.unwrap();
     assert_eq!(boot, e.boot);
     let bytes = fs.read_file(&disc, fs.find(&boot).unwrap()).unwrap();
@@ -54,7 +59,10 @@ fn tomb_raider_pal() {
     let disc = Disc::open(media("Tomb Raider.cue")).unwrap();
     // Track 2 has a 2-second INDEX 00 pregap stored in the image.
     assert_eq!(disc.tracks[1].start_lba - disc.tracks[1].first_lba, 150);
-    assert!(disc.read_data(disc.tracks[1].start_lba).is_err(), "audio sector read as data");
+    assert!(
+        disc.read_data(disc.tracks[1].start_lba).is_err(),
+        "audio sector read as data"
+    );
     check(Expect {
         cue: "Tomb Raider.cue",
         tracks: 57,

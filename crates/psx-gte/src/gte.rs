@@ -582,7 +582,8 @@ impl Gte {
         let sy = lim_g(&mut self.flag, sy >> 16, flag::SY2_SAT);
         self.push_sxy(pack(sx, sy));
         if let Some(log) = &mut self.projections {
-            let view = [raw[0] >> 12, raw[1] >> 12, raw[2] >> 12].map(|v| v.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+            let view = [raw[0] >> 12, raw[1] >> 12, raw[2] >> 12]
+                .map(|v| v.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
             log.push(Projection { sx, sy, view });
         }
 

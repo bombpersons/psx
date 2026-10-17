@@ -5,7 +5,13 @@ use psx_gpu::Gpu;
 
 fn gpu() -> Gpu {
     let mut g = Gpu::new();
-    g.gp0_all(&[0xE300_0000, 0xE400_0000 | 1023 | (511 << 10), 0xE500_0000, 0xE600_0000, 0xE100_0000]);
+    g.gp0_all(&[
+        0xE300_0000,
+        0xE400_0000 | 1023 | (511 << 10),
+        0xE500_0000,
+        0xE600_0000,
+        0xE100_0000,
+    ]);
     g
 }
 
@@ -21,9 +27,15 @@ fn lit(g: &Gpu, x: i32, y: i32) -> bool {
 fn x_major_line_uses_centre_biased_bresenham() {
     let mut g = gpu();
     g.gp0_all(&[0x40FF_FFFF, xy(0, 0), xy(10, 3)]);
-    let ys: Vec<i32> = (0..=10).map(|x| (0..4).find(|&y| lit(&g, x, y)).unwrap()).collect();
+    let ys: Vec<i32> = (0..=10)
+        .map(|x| (0..4).find(|&y| lit(&g, x, y)).unwrap())
+        .collect();
     assert_eq!(ys, [0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
-    assert_eq!(g.vram.as_slice().iter().filter(|&&p| p != 0).count(), 11, "one pixel per column");
+    assert_eq!(
+        g.vram.as_slice().iter().filter(|&&p| p != 0).count(),
+        11,
+        "one pixel per column"
+    );
 }
 
 #[test]
@@ -53,7 +65,9 @@ fn mono_lines_are_dithered_when_enabled() {
         for y in 0..4 {
             g.gp0_all(&[0x4042_4242, xy(0, y), xy(3, y)]);
         }
-        (0..16).map(|i| g.vram.get(i % 4, i / 4)).collect::<std::collections::BTreeSet<u16>>()
+        (0..16)
+            .map(|i| g.vram.get(i % 4, i / 4))
+            .collect::<std::collections::BTreeSet<u16>>()
     };
     assert!(tile(0x200).len() > 1);
     assert_eq!(tile(0).len(), 1);
@@ -63,7 +77,15 @@ fn mono_lines_are_dithered_when_enabled() {
 fn rect_x_flip_walks_texels_backwards() {
     let mut g = gpu();
     // 15-bit texels 1..=8 at (640, 0), page tx=10.
-    g.gp0_all(&[0xA000_0000, xy(640, 0), xy(8, 1), 1 | (2 << 16), 3 | (4 << 16), 5 | (6 << 16), 7 | (8 << 16)]);
+    g.gp0_all(&[
+        0xA000_0000,
+        xy(640, 0),
+        xy(8, 1),
+        1 | (2 << 16),
+        3 | (4 << 16),
+        5 | (6 << 16),
+        7 | (8 << 16),
+    ]);
     g.gp0_all(&[0xE100_0000 | 10 | (2 << 7) | 0x1000]);
     g.gp0_all(&[0x6500_0000, xy(0, 10), 7, xy(8, 1)]);
     let row: Vec<u16> = (0..8).map(|x| g.vram.get(x, 10)).collect();
@@ -91,7 +113,15 @@ fn check_mask_protects_pixels_from_lines_and_rects() {
     let mut g = gpu();
     g.gp0_all(&[0xE600_0001, 0x6000_00F8, xy(0, 0), xy(4, 4)]);
     assert_eq!(g.vram.get(1, 1), 0x801F, "set-mask ORs bit 15");
-    g.gp0_all(&[0xE600_0002, 0x6000_F800, xy(0, 0), xy(8, 1), 0x40F8_0000, xy(0, 2), xy(8, 2)]);
+    g.gp0_all(&[
+        0xE600_0002,
+        0x6000_F800,
+        xy(0, 0),
+        xy(8, 1),
+        0x40F8_0000,
+        xy(0, 2),
+        xy(8, 2),
+    ]);
     assert_eq!(g.vram.get(2, 0), 0x801F, "rect skipped masked pixel");
     assert_eq!(g.vram.get(6, 0), 0x03E0, "rect drew unmasked pixel");
     assert_eq!(g.vram.get(2, 2), 0x801F, "line skipped masked pixel");
@@ -101,11 +131,19 @@ fn check_mask_protects_pixels_from_lines_and_rects() {
 #[test]
 fn fill_ignores_mask_and_draw_area_and_wraps() {
     let mut g = gpu();
-    g.gp0_all(&[0xE600_0003, 0xE300_0000 | 100, 0xE400_0000 | 200 | (200 << 10)]);
+    g.gp0_all(&[
+        0xE600_0003,
+        0xE300_0000 | 100,
+        0xE400_0000 | 200 | (200 << 10),
+    ]);
     g.vram.set(1020, 5, 0x8000);
     // x=1008 rounds to 1008, width 32 → columns 1008..1023 and 0..15 (wrapped).
     g.gp0_all(&[0x0200_00F8, xy(1008, 0), xy(32, 8)]);
-    assert_eq!(g.vram.get(1020, 5), 0x001F, "masked pixel overwritten, bit 15 cleared");
+    assert_eq!(
+        g.vram.get(1020, 5),
+        0x001F,
+        "masked pixel overwritten, bit 15 cleared"
+    );
     assert_eq!(g.vram.get(5, 5), 0x001F, "wrapped to the left edge");
     assert_eq!(g.vram.get(16, 5), 0);
 }

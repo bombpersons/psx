@@ -74,7 +74,9 @@ fn parse_sig(s: &str) -> Result<Vec<Option<u8>>> {
             if t == "??" {
                 Ok(None)
             } else {
-                u8::from_str_radix(t, 16).map(Some).map_err(|_| Error(format!("bad signature byte {t:?}")))
+                u8::from_str_radix(t, 16)
+                    .map(Some)
+                    .map_err(|_| Error(format!("bad signature byte {t:?}")))
             }
         })
         .collect()
@@ -86,18 +88,29 @@ pub fn load_dir(root: &Path) -> Result<Vec<ObjectSig>> {
     let mut versions: Vec<_> = std::fs::read_dir(root)
         .map_err(|e| Error(format!("{}: {e}", root.display())))?
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir() && e.file_name().to_string_lossy().chars().all(|c| c.is_ascii_digit()))
+        .filter(|e| {
+            e.path().is_dir()
+                && e.file_name()
+                    .to_string_lossy()
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+        })
         .collect();
     versions.sort_by_key(|e| e.file_name());
     for v in versions {
         let version = v.file_name().to_string_lossy().into_owned();
-        let mut files: Vec<_> =
-            std::fs::read_dir(v.path()).map_err(|e| Error(e.to_string()))?.filter_map(|e| e.ok()).collect();
+        let mut files: Vec<_> = std::fs::read_dir(v.path())
+            .map_err(|e| Error(e.to_string()))?
+            .filter_map(|e| e.ok())
+            .collect();
         files.sort_by_key(|e| e.file_name());
         for f in files {
             let name = f.file_name().to_string_lossy().into_owned();
-            let Some(library) = name.strip_suffix(".json") else { continue };
-            let text = std::fs::read_to_string(f.path()).map_err(|e| Error(format!("{name}: {e}")))?;
+            let Some(library) = name.strip_suffix(".json") else {
+                continue;
+            };
+            let text =
+                std::fs::read_to_string(f.path()).map_err(|e| Error(format!("{name}: {e}")))?;
             let objs: Vec<RawObject> =
                 serde_json::from_str(&text).map_err(|e| Error(format!("{version}/{name}: {e}")))?;
             for o in objs.into_iter().filter(|o| !o.sig.trim().is_empty()) {
@@ -108,7 +121,14 @@ pub fn load_dir(root: &Path) -> Result<Vec<ObjectSig>> {
                     library: library.to_string(),
                     object: o.name,
                     pattern,
-                    labels: o.labels.into_iter().map(|l| Label { name: l.name, offset: l.offset }).collect(),
+                    labels: o
+                        .labels
+                        .into_iter()
+                        .map(|l| Label {
+                            name: l.name,
+                            offset: l.offset,
+                        })
+                        .collect(),
                     concrete,
                 });
             }
@@ -127,7 +147,10 @@ impl<'a> CodeIndex<'a> {
     pub fn new(code: &'a [u8]) -> Self {
         let mut words: HashMap<u32, Vec<u32>> = HashMap::new();
         for (i, w) in code.as_chunks::<4>().0.iter().enumerate() {
-            words.entry(u32::from_le_bytes(*w)).or_default().push(i as u32 * 4);
+            words
+                .entry(u32::from_le_bytes(*w))
+                .or_default()
+                .push(i as u32 * 4);
         }
         CodeIndex { code, words }
     }
@@ -138,19 +161,29 @@ impl<'a> CodeIndex<'a> {
         // Anchor on the rarest fully concrete aligned word.
         let mut best: Option<(usize, &Vec<u32>)> = None;
         for k in (0..p.len().saturating_sub(3)).step_by(4) {
-            let (Some(a), Some(b), Some(c), Some(d)) = (p[k], p[k + 1], p[k + 2], p[k + 3]) else { continue };
+            let (Some(a), Some(b), Some(c), Some(d)) = (p[k], p[k + 1], p[k + 2], p[k + 3]) else {
+                continue;
+            };
             let w = u32::from_le_bytes([a, b, c, d]);
-            let Some(hits) = self.words.get(&w) else { return Vec::new() };
+            let Some(hits) = self.words.get(&w) else {
+                return Vec::new();
+            };
             if best.is_none_or(|(_, h)| hits.len() < h.len()) {
                 best = Some((k, hits));
             }
         }
-        let Some((k, hits)) = best else { return Vec::new() };
+        let Some((k, hits)) = best else {
+            return Vec::new();
+        };
         hits.iter()
             .filter_map(|&pos| {
                 let start = pos.checked_sub(k as u32)? as usize;
                 let window = self.code.get(start..start + p.len())?;
-                window.iter().zip(p).all(|(b, m)| m.is_none_or(|m| m == *b)).then_some(start as u32)
+                window
+                    .iter()
+                    .zip(p)
+                    .all(|(b, m)| m.is_none_or(|m| m == *b))
+                    .then_some(start as u32)
             })
             .collect()
     }
@@ -227,13 +260,20 @@ pub fn match_code(code: &[u8], base: u32, sigs: &[ObjectSig], min_concrete: usiz
             let unique: Vec<_> = ms.iter().filter(|(_, h)| h.len() == 1).collect();
             VersionScore {
                 version: v.to_string(),
-                objects: sigs.iter().filter(|s| s.version == *v && s.concrete >= min_concrete).count(),
+                objects: sigs
+                    .iter()
+                    .filter(|s| s.version == *v && s.concrete >= min_concrete)
+                    .count(),
                 unique_matches: unique.len(),
                 matched_bytes: unique.iter().map(|(i, _)| sigs[*i].pattern.len()).sum(),
             }
         })
         .collect();
-    versions.sort_by(|a, b| b.matched_bytes.cmp(&a.matched_bytes).then(b.version.cmp(&a.version)));
+    versions.sort_by(|a, b| {
+        b.matched_bytes
+            .cmp(&a.matched_bytes)
+            .then(b.version.cmp(&a.version))
+    });
     let chosen = versions.first().map(|v| v.version.clone());
 
     let mut order: Vec<&str> = versions.iter().map(|v| v.version.as_str()).collect();
@@ -243,7 +283,10 @@ pub fn match_code(code: &[u8], base: u32, sigs: &[ObjectSig], min_concrete: usiz
     let mut symbols = Vec::new();
     let mut ambiguous = Vec::new();
     for v in order {
-        let mut ms: Vec<&(usize, Vec<u32>)> = by_version.get(v).map(|m| m.iter().collect()).unwrap_or_default();
+        let mut ms: Vec<&(usize, Vec<u32>)> = by_version
+            .get(v)
+            .map(|m| m.iter().collect())
+            .unwrap_or_default();
         // Longer, more specific objects first.
         ms.sort_by_key(|(i, _)| std::cmp::Reverse(sigs[*i].concrete));
         for (i, hits) in ms {
@@ -278,7 +321,16 @@ pub fn match_code(code: &[u8], base: u32, sigs: &[ObjectSig], min_concrete: usiz
     }
     objects.sort_by_key(|o| o.address);
     symbols.sort_by_key(|s| s.address);
-    MatchReport { base, code_bytes: code.len(), min_concrete, versions, chosen_version: chosen, objects, ambiguous, symbols }
+    MatchReport {
+        base,
+        code_bytes: code.len(),
+        min_concrete,
+        versions,
+        chosen_version: chosen,
+        objects,
+        ambiguous,
+        symbols,
+    }
 }
 
 /// The parts of a serialised [`MatchReport`] needed to rebuild a symbol table.
@@ -303,11 +355,17 @@ pub struct SymbolTable {
 
 impl SymbolTable {
     pub fn from_symbols<S: AsSymbol>(symbols: &[S]) -> Self {
-        let mut entries: Vec<(u32, String)> =
-            symbols.iter().filter(|s| s.is_function()).map(|s| (s.addr(), s.label().to_string())).collect();
+        let mut entries: Vec<(u32, String)> = symbols
+            .iter()
+            .filter(|s| s.is_function())
+            .map(|s| (s.addr(), s.label().to_string()))
+            .collect();
         entries.sort();
         entries.dedup_by_key(|e| e.0);
-        SymbolTable { entries, bodies: HashMap::new() }
+        SymbolTable {
+            entries,
+            bodies: HashMap::new(),
+        }
     }
 
     /// Restrict a function to its actual half-open body ranges.
@@ -321,9 +379,19 @@ impl SymbolTable {
         let (a, name) = self.entries[..self.entries.partition_point(|e| e.0 <= addr)]
             .iter()
             .rev()
-            .find(|(a, _)| self.bodies.get(a).is_none_or(|ranges| ranges.iter().any(|&(lo, hi)| lo <= addr && addr < hi)))?;
+            .find(|(a, _)| {
+                self.bodies
+                    .get(a)
+                    .is_none_or(|ranges| ranges.iter().any(|&(lo, hi)| lo <= addr && addr < hi))
+            })?;
         let off = addr - a;
-        (off <= max_distance).then(|| if off == 0 { name.clone() } else { format!("{name}+0x{off:X}") })
+        (off <= max_distance).then(|| {
+            if off == 0 {
+                name.clone()
+            } else {
+                format!("{name}+0x{off:X}")
+            }
+        })
     }
 
     /// Parse `ADDRESS NAME` lines (the `.sym` format written by [`to_sym`]).
@@ -355,7 +423,12 @@ impl SymbolTable {
             .bodies
             .get(&start)
             .and_then(|r| r.iter().map(|r| r.1).max())
-            .or_else(|| self.entries[k + 1..].iter().map(|e| e.0).find(|&a| a > start));
+            .or_else(|| {
+                self.entries[k + 1..]
+                    .iter()
+                    .map(|e| e.0)
+                    .find(|&a| a > start)
+            });
         Some((start, end))
     }
 
@@ -402,13 +475,24 @@ impl AsSymbol for SymbolIn {
 pub fn to_ghidra(symbols: &[Symbol]) -> String {
     symbols
         .iter()
-        .map(|s| format!("{} {:08X} {}\n", s.name, s.address, if s.kind == Kind::Function { "f" } else { "l" }))
+        .map(|s| {
+            format!(
+                "{} {:08X} {}\n",
+                s.name,
+                s.address,
+                if s.kind == Kind::Function { "f" } else { "l" }
+            )
+        })
         .collect()
 }
 
 /// `ADDRESS NAME` lines (no$psx / generic .sym style), functions only.
 pub fn to_sym(symbols: &[Symbol]) -> String {
-    symbols.iter().filter(|s| s.kind == Kind::Function).map(|s| format!("{:08X} {}\n", s.address, s.name)).collect()
+    symbols
+        .iter()
+        .filter(|s| s.kind == Kind::Function)
+        .map(|s| format!("{:08X} {}\n", s.address, s.name))
+        .collect()
 }
 
 #[cfg(test)]
@@ -423,19 +507,32 @@ mod tests {
             object: object.into(),
             concrete: pattern.iter().filter(|b| b.is_some()).count(),
             pattern,
-            labels: labels.iter().map(|(n, o)| Label { name: n.to_string(), offset: *o }).collect(),
+            labels: labels
+                .iter()
+                .map(|(n, o)| Label {
+                    name: n.to_string(),
+                    offset: *o,
+                })
+                .collect(),
         }
     }
 
     #[test]
     fn finds_unique_aligned_matches_with_wildcards_and_skips_ambiguous() {
         let mut code = vec![0u8; 64];
-        code[16..28].copy_from_slice(&[0xE8, 0xFF, 0xBD, 0x27, 0x34, 0x12, 0x01, 0x3C, 0x10, 0x00, 0xBF, 0xAF]);
+        code[16..28].copy_from_slice(&[
+            0xE8, 0xFF, 0xBD, 0x27, 0x34, 0x12, 0x01, 0x3C, 0x10, 0x00, 0xBF, 0xAF,
+        ]);
         // Same bytes twice for the ambiguous object.
         code[40..44].copy_from_slice(&[1, 2, 3, 4]);
         code[48..52].copy_from_slice(&[1, 2, 3, 4]);
         let sigs = vec![
-            sig("410", "PAD.OBJ", "E8 FF BD 27 ?? ?? 01 3C 10 00 BF AF", &[("PadInit", 0), ("loc_8", 8)]),
+            sig(
+                "410",
+                "PAD.OBJ",
+                "E8 FF BD 27 ?? ?? 01 3C 10 00 BF AF",
+                &[("PadInit", 0), ("loc_8", 8)],
+            ),
             sig("410", "DUP.OBJ", "01 02 03 04", &[("Dup", 0)]),
         ];
         let r = match_code(&code, 0x8001_0000, &sigs, 4);
@@ -445,7 +542,10 @@ mod tests {
         assert_eq!(r.ambiguous.len(), 1);
         let t = SymbolTable::from_symbols(&r.symbols);
         assert_eq!(t.len(), 1, "local labels are not functions");
-        assert_eq!(t.describe(0x8001_0018, 0x100).as_deref(), Some("PadInit+0x8"));
+        assert_eq!(
+            t.describe(0x8001_0018, 0x100).as_deref(),
+            Some("PadInit+0x8")
+        );
         assert!(to_ghidra(&r.symbols).contains("PadInit 80010010 f"));
     }
 }

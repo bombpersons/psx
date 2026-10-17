@@ -10,9 +10,9 @@
 use std::collections::VecDeque;
 
 const ZIGZAG: [usize; 64] = [
-    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21,
-    28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61,
-    54, 47, 55, 62, 63,
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,7 +112,13 @@ impl Mdec {
             self.params.clear();
             self.remaining = match v >> 29 {
                 1 => v & 0xFFFF,
-                2 => if v & 1 != 0 { 32 } else { 16 },
+                2 => {
+                    if v & 1 != 0 {
+                        32
+                    } else {
+                        16
+                    }
+                }
                 3 => 32,
                 _ => 0,
             };
@@ -157,7 +163,12 @@ impl Mdec {
 
     /// RLE-decode one 8×8 block (psx-spx `decode_block`); false at end of input.
     /// The 0xFE00 end code has run 63, which pushes `k` past 63 and ends the block.
-    fn decode_block(&self, halves: &mut std::iter::Peekable<impl Iterator<Item = u16>>, q: &[u8; 64], blk: &mut [i32; 64]) -> bool {
+    fn decode_block(
+        &self,
+        halves: &mut std::iter::Peekable<impl Iterator<Item = u16>>,
+        q: &[u8; 64],
+        blk: &mut [i32; 64],
+    ) -> bool {
         *blk = [0; 64];
         let mut n = loop {
             match halves.next() {
@@ -218,8 +229,15 @@ impl Mdec {
             _ => Depth::Bit15,
         };
         let signed = self.command & (1 << 26) != 0;
-        let bit15 = if self.command & (1 << 25) != 0 { 0x8000u32 } else { 0 };
-        let mut halves = params.iter().flat_map(|w| [*w as u16, (*w >> 16) as u16]).peekable();
+        let bit15 = if self.command & (1 << 25) != 0 {
+            0x8000u32
+        } else {
+            0
+        };
+        let mut halves = params
+            .iter()
+            .flat_map(|w| [*w as u16, (*w >> 16) as u16])
+            .peekable();
         let (lq, cq) = (self.lum_q, self.col_q);
         let mut bytes: Vec<u8> = Vec::new();
         loop {
@@ -234,7 +252,11 @@ impl Mdec {
                         .iter()
                         .map(|&v| {
                             let v = v.clamp(-128, 127);
-                            if signed { v as i8 as u8 } else { (v + 128) as u8 }
+                            if signed {
+                                v as i8 as u8
+                            } else {
+                                (v + 128) as u8
+                            }
                         })
                         .collect();
                     if depth == Depth::Bit8 {
@@ -245,11 +267,16 @@ impl Mdec {
                 }
                 _ => {
                     let (mut cr, mut cb) = ([0i32; 64], [0i32; 64]);
-                    if !self.decode_block(&mut halves, &cq, &mut cr) || !self.decode_block(&mut halves, &cq, &mut cb) {
+                    if !self.decode_block(&mut halves, &cq, &mut cr)
+                        || !self.decode_block(&mut halves, &cq, &mut cb)
+                    {
                         break;
                     }
                     let mut mb = [[0u8; 3]; 256];
-                    for (yb, (xx, yy)) in [(0usize, 0usize), (8, 0), (0, 8), (8, 8)].into_iter().enumerate() {
+                    for (yb, (xx, yy)) in [(0usize, 0usize), (8, 0), (0, 8), (8, 8)]
+                        .into_iter()
+                        .enumerate()
+                    {
                         let mut y = [0i32; 64];
                         if !self.decode_block(&mut halves, &lq, &mut y) {
                             break;
@@ -264,7 +291,11 @@ impl Mdec {
                                 let lum = y[pxx + py * 8] as f64;
                                 let c = |v: f64| {
                                     let v = (lum + v).round().clamp(-128.0, 127.0) as i32;
-                                    if signed { v as i8 as u8 } else { (v + 128) as u8 }
+                                    if signed {
+                                        v as i8 as u8
+                                    } else {
+                                        (v + 128) as u8
+                                    }
                                 };
                                 mb[(pxx + xx) + (py + yy) * 16] = [c(r), c(g), c(b)];
                             }
@@ -275,7 +306,10 @@ impl Mdec {
                         if depth == Depth::Bit24 {
                             bytes.extend_from_slice(&p);
                         } else {
-                            let v = (p[0] as u32 >> 3) | ((p[1] as u32 >> 3) << 5) | ((p[2] as u32 >> 3) << 10) | bit15;
+                            let v = (p[0] as u32 >> 3)
+                                | ((p[1] as u32 >> 3) << 5)
+                                | ((p[2] as u32 >> 3) << 10)
+                                | bit15;
                             bytes.extend_from_slice(&(v as u16).to_le_bytes());
                         }
                     }
@@ -285,7 +319,11 @@ impl Mdec {
         while !bytes.len().is_multiple_of(4) {
             bytes.push(0);
         }
-        self.out.extend(bytes.chunks(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])));
+        self.out.extend(
+            bytes
+                .chunks(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])),
+        );
     }
 }
 

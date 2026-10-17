@@ -26,8 +26,9 @@ use std::time::Duration;
 
 use base64::Engine;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
+    Implementation, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
+    Tool, ToolAnnotations,
 };
 use rmcp::service::{NotificationContext, Peer, RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
@@ -211,7 +212,11 @@ fn brief_descriptions(value: &mut Value) {
 /// (not one inside "e.g." or "i.e.").
 fn first_sentence(text: &str) -> String {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let end = text.match_indices(". ").map(|(i, _)| i).find(|&i| !["e.g", "i.e", "etc", "vs"].iter().any(|a| text[..i].ends_with(a)));
+    let end = text.match_indices(". ").map(|(i, _)| i).find(|&i| {
+        !["e.g", "i.e", "etc", "vs"]
+            .iter()
+            .any(|a| text[..i].ends_with(a))
+    });
     match end {
         Some(i) => text[..=i].to_string(),
         None => text,
@@ -256,7 +261,10 @@ fn error_value(code: &str, message: impl std::fmt::Display) -> Value {
 }
 
 fn stamp() -> String {
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     format!("{ms}-{}{}", std::process::id(), crate::instance_suffix())
 }
 
@@ -267,16 +275,33 @@ fn prepare(tool: &ToolDef, args: Map<String, Value>, ctx: &Ctx) -> Result<(Value
     let screen = match args.remove("return_screen") {
         None => false,
         Some(Value::Bool(b)) if tool.screen => b,
-        Some(_) if tool.screen => return Err(error_value("invalid_arguments", "return_screen must be a boolean")),
-        Some(_) => return Err(error_value("invalid_arguments", format!("{} does not take return_screen", tool.name))),
+        Some(_) if tool.screen => {
+            return Err(error_value(
+                "invalid_arguments",
+                "return_screen must be a boolean",
+            ))
+        }
+        Some(_) => {
+            return Err(error_value(
+                "invalid_arguments",
+                format!("{} does not take return_screen", tool.name),
+            ))
+        }
     };
     let schema = (tool.schema)();
-    let known: Vec<&String> = schema["properties"].as_object().map(|p| p.keys().collect()).unwrap_or_default();
+    let known: Vec<&String> = schema["properties"]
+        .as_object()
+        .map(|p| p.keys().collect())
+        .unwrap_or_default();
     if let Some(k) = args.keys().find(|k| !known.contains(k)) {
         let names: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
         return Err(error_value(
             "invalid_arguments",
-            format!("unknown argument {k:?} for {}; expected one of {}", tool.name, names.join(", ")),
+            format!(
+                "unknown argument {k:?} for {}; expected one of {}",
+                tool.name,
+                names.join(", ")
+            ),
         ));
     }
     if tool.default_timeout && args.get("timeout").is_none_or(Value::is_null) {
@@ -293,13 +318,23 @@ fn prepare(tool: &ToolDef, args: Map<String, Value>, ctx: &Ctx) -> Result<(Value
 fn screen_path(tool: &str, v: &Value) -> Option<String> {
     let p = match tool {
         "run" => {
-            if let Some(path) = v["files"]["screen.png"]["path"].as_str().or(v["screen"].as_str()) { return Some(path.into()); }
+            if let Some(path) = v["files"]["screen.png"]["path"]
+                .as_str()
+                .or(v["screen"].as_str())
+            {
+                return Some(path.into());
+            }
             // Compact reports retain the run directory, but list artifact names.
             // Only attach a screenshot when the report says it was written.
             let listed = v["files"].as_array()?.iter().any(|f| f == "screen.png");
             let dir = v["run_dir"].as_str()?;
-            return listed.then(|| std::path::Path::new(dir).join("screen.png").to_string_lossy().into_owned());
-        },
+            return listed.then(|| {
+                std::path::Path::new(dir)
+                    .join("screen.png")
+                    .to_string_lossy()
+                    .into_owned()
+            });
+        }
         "native" => &v["dump"]["screen"],
         "artifact_read" => &v["image"]["path"],
         _ => return None,
@@ -315,13 +350,22 @@ fn spill(tool: &str, value: Value, ctx: &Ctx) -> Value {
     let dir = ctx.root.join(".psx/mcp");
     let path = dir.join(format!("{tool}-{}.json", stamp()));
     if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &text)) {
-        return error_value("io_error", format!("result of {} bytes could not be written to {}: {e}", text.len(), path.display()));
+        return error_value(
+            "io_error",
+            format!(
+                "result of {} bytes could not be written to {}: {e}",
+                text.len(),
+                path.display()
+            ),
+        );
     }
     // Keep small top-level values inline; describe the rest.
     let mut summary = Map::new();
     if let Value::Object(o) = &value {
         for (k, v) in o {
-            let small = serde_json::to_string(v).map(|s| s.len() <= 512).unwrap_or(false);
+            let small = serde_json::to_string(v)
+                .map(|s| s.len() <= 512)
+                .unwrap_or(false);
             summary.insert(
                 k.clone(),
                 if small {
@@ -365,7 +409,11 @@ struct PsxServer {
 /// there is none (error, display off, PNG too large).
 fn respond(value: Value, image: Option<Option<Vec<u8>>>) -> CallToolResponse {
     let failed = value.get("error").is_some();
-    let mut r = if failed { CallToolResult::structured_error(value) } else { CallToolResult::structured(value) };
+    let mut r = if failed {
+        CallToolResult::structured_error(value)
+    } else {
+        CallToolResult::structured(value)
+    };
     match image {
         Some(Some(png)) => r.content.push(ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(png), "image/png")),
         Some(None) if !failed => r.content.push(ContentBlock::text(
@@ -382,8 +430,18 @@ impl PsxServer {
         let mut defs = BTreeMap::new();
         for d in self::tools() {
             let schema = d.input_schema();
-            let tool = Tool::new(d.name, d.description, Arc::new(schema.as_object().unwrap().clone()))
-                .with_annotations(ToolAnnotations::from_raw(None, Some(d.read_only), Some(false), None, Some(false)));
+            let tool = Tool::new(
+                d.name,
+                d.description,
+                Arc::new(schema.as_object().unwrap().clone()),
+            )
+            .with_annotations(ToolAnnotations::from_raw(
+                None,
+                Some(d.read_only),
+                Some(false),
+                None,
+                Some(false),
+            ));
             tools.push(tool);
             defs.insert(d.name, d);
         }
@@ -405,7 +463,13 @@ impl PsxServer {
             return self.base.clone();
         }
         let mut cached = self.client_root.lock().await;
-        cached.get_or_insert(project::client_root(peer).await.unwrap_or_else(|| self.base.clone())).clone()
+        cached
+            .get_or_insert(
+                project::client_root(peer)
+                    .await
+                    .unwrap_or_else(|| self.base.clone()),
+            )
+            .clone()
     }
 
     async fn call(
@@ -417,7 +481,10 @@ impl PsxServer {
     ) -> CallToolResponse {
         let tool = &self.defs[name];
         if serde_json::to_vec(&args).map(|v| v.len()).unwrap_or(0) > ARGS_LIMIT {
-            return respond(error_value("limit_exceeded", "tool arguments exceed 1 MiB"), None);
+            return respond(
+                error_value("limit_exceeded", "tool arguments exceed 1 MiB"),
+                None,
+            );
         }
         let scoped = args.remove("project_root");
         if scoped.is_none() && self.require_root {
@@ -439,13 +506,20 @@ impl PsxServer {
         let isolated = scoped.is_some() || root != self.base;
         let from_client = scoped.is_none() && isolated;
         let worker_cancel = cancel.child_token();
-        let ctx = Ctx { root, cancel: Some(worker_cancel.clone()) };
+        let ctx = Ctx {
+            root,
+            cancel: Some(worker_cancel.clone()),
+        };
         let (args, want_screen) = match prepare(tool, args, &ctx) {
             Ok(r) => r,
             Err(e) => return respond(e, None),
         };
-        let cap = args.get("timeout").and_then(Value::as_u64).map(|s| Duration::from_secs(s) + GRACE).unwrap_or(DEFAULT_CAP);
-        let queued_at=std::time::Instant::now();
+        let cap = args
+            .get("timeout")
+            .and_then(Value::as_u64)
+            .map(|s| Duration::from_secs(s) + GRACE)
+            .unwrap_or(DEFAULT_CAP);
+        let queued_at = std::time::Instant::now();
         let permit = if tool.heavy {
             tokio::select! {
                 p = tokio::time::timeout(cap,self.slots.clone().acquire_owned()) => match p {
@@ -460,14 +534,23 @@ impl PsxServer {
         };
         let call = tool.call;
         let tool_name = tool.name;
-        let supervised = isolated || name.starts_with("ghidra_") || name == "bios_install"
-            || ["archive_parser", "model_parser", "asset_parser", "texture_parser", "frame_parser"]
-                .iter()
-                .any(|key| args.get(*key).is_some_and(Value::is_string));
+        let supervised = isolated
+            || name.starts_with("ghidra_")
+            || name == "bios_install"
+            || [
+                "archive_parser",
+                "model_parser",
+                "asset_parser",
+                "texture_parser",
+                "frame_parser",
+            ]
+            .iter()
+            .any(|key| args.get(*key).is_some_and(Value::is_string));
         let mut worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let mut out = if isolated {
-                project::call(tool_name, args, &ctx).unwrap_or_else(|e| error_value("worker_failed", e))
+                project::call(tool_name, args, &ctx)
+                    .unwrap_or_else(|e| error_value("worker_failed", e))
             } else {
                 match call(args, &ctx) {
                     Ok(o) => o.value,
@@ -477,7 +560,8 @@ impl PsxServer {
             if from_client && tool_name == "context" && out.is_object() {
                 out["project_root_source"] = json!("client_roots");
             }
-            let attach = want_screen || (tool_name == "artifact_read" && out["image"]["path"].is_string());
+            let attach =
+                want_screen || (tool_name == "artifact_read" && out["image"]["path"].is_string());
             let shot = attach.then(|| {
                 screen_path(tool_name, &out).and_then(|p| {
                     let path = ctx.root.join(p);
@@ -516,9 +600,16 @@ impl PsxServer {
 
 impl PsxServer {
     fn default_note(&self) -> String {
-        let required = if self.require_root { "This server requires project_root on every call. " } else { "" };
+        let required = if self.require_root {
+            "This server requires project_root on every call. "
+        } else {
+            ""
+        };
         if self.pinned {
-            format!("{required}Default project root: {} (fixed by --root/PSX_ROOT).", self.base.display())
+            format!(
+                "{required}Default project root: {} (fixed by --root/PSX_ROOT).",
+                self.base.display()
+            )
         } else {
             format!(
                 "{required}Default project root: the client's workspace root when it reports exactly one, otherwise {}. context reports the root in use.",
@@ -555,16 +646,34 @@ impl ServerHandler for PsxServer {
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         if request.is_some_and(|r| r.cursor.is_some()) {
-            return Err(McpError::invalid_params("tool list is complete and has no pagination cursor", None));
+            return Err(McpError::invalid_params(
+                "tool list is complete and has no pagination cursor",
+                None,
+            ));
         }
         Ok(ListToolsResult::with_all_items(self.tools.as_ref().clone()))
     }
 
-    async fn call_tool(&self, request: CallToolRequestParams, context: RequestContext<RoleServer>) -> Result<CallToolResponse, McpError> {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
         if !self.defs.contains_key(request.name.as_ref()) {
-            return Err(McpError::new(ErrorCode::METHOD_NOT_FOUND, format!("unknown psx tool {:?}", request.name), None));
+            return Err(McpError::new(
+                ErrorCode::METHOD_NOT_FOUND,
+                format!("unknown psx tool {:?}", request.name),
+                None,
+            ));
         }
-        Ok(self.call(request.name.as_ref(), request.arguments.unwrap_or_default(), &context.peer, context.ct.clone()).await)
+        Ok(self
+            .call(
+                request.name.as_ref(),
+                request.arguments.unwrap_or_default(),
+                &context.peer,
+                context.ct.clone(),
+            )
+            .await)
     }
 }
 
@@ -635,14 +744,24 @@ fn stdin_pipe(shutdown: tokio_util::sync::CancellationToken) -> StdinPipe {
         }
         shutdown.cancel();
     });
-    StdinPipe { receiver, current: Vec::new(), position: 0 }
+    StdinPipe {
+        receiver,
+        current: Vec::new(),
+        position: 0,
+    }
 }
 
-async fn serve(root: std::path::PathBuf, pinned: bool, a: McpArgs) -> Result<(), Box<dyn std::error::Error>> {
+async fn serve(
+    root: std::path::PathBuf,
+    pinned: bool,
+    a: McpArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = tokio_util::sync::CancellationToken::new();
     let server = PsxServer::new(root, pinned, a.require_project_root, a.jobs);
     let input = stdin_pipe(shutdown.clone());
-    let running = server.serve_with_ct((input, tokio::io::stdout()), shutdown.clone()).await?;
+    let running = server
+        .serve_with_ct((input, tokio::io::stdout()), shutdown.clone())
+        .await?;
     let result = running.waiting().await;
     shutdown.cancel();
     result?;
@@ -652,11 +771,21 @@ async fn serve(root: std::path::PathBuf, pinned: bool, a: McpArgs) -> Result<(),
 /// `pinned`: the root came from `--root`/`PSX_ROOT`, so client roots are ignored.
 pub fn main(ctx: Ctx, a: McpArgs, pinned: bool) -> ExitCode {
     if !(1..=8).contains(&a.jobs) {
-        println!("{}", error_value("invalid_arguments", "--jobs must be 1..=8"));
+        println!(
+            "{}",
+            error_value("invalid_arguments", "--jobs must be 1..=8")
+        );
         return ExitCode::from(1);
     }
-    eprintln!("psx mcp: serving {} tools on stdio, project root {}", tools().len(), ctx.root.display());
-    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    eprintln!(
+        "psx mcp: serving {} tools on stdio, project root {}",
+        tools().len(),
+        ctx.root.display()
+    );
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("psx mcp: {e}");
@@ -681,7 +810,10 @@ mod tests {
 
     #[test]
     fn descriptions_keep_their_first_sentence() {
-        assert_eq!(first_sentence("Pick one, e.g. `new`. Later detail.\nMore."), "Pick one, e.g. `new`.");
+        assert_eq!(
+            first_sentence("Pick one, e.g. `new`. Later detail.\nMore."),
+            "Pick one, e.g. `new`."
+        );
         assert_eq!(first_sentence("No full stop\n  here"), "No full stop here");
         assert_eq!(first_sentence("Ends here."), "Ends here.");
     }
@@ -692,11 +824,23 @@ mod tests {
         let tools = tools();
         let size: usize = tools
             .iter()
-            .map(|t| t.name.len() + t.description.len() + serde_json::to_string(&t.input_schema()).unwrap().len())
+            .map(|t| {
+                t.name.len()
+                    + t.description.len()
+                    + serde_json::to_string(&t.input_schema()).unwrap().len()
+            })
             .sum();
-        assert!(size <= 50_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        assert!(
+            size <= 50_000,
+            "tool definitions grew to {size} bytes; was 75K before 2026-10-17"
+        );
         for t in &tools {
-            assert!(t.description.len() <= 400, "{} description is {} bytes; move detail into a guide topic", t.name, t.description.len());
+            assert!(
+                t.description.len() <= 400,
+                "{} description is {} bytes; move detail into a guide topic",
+                t.name,
+                t.description.len()
+            );
         }
     }
 }

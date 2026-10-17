@@ -10,9 +10,11 @@ state_fNNNNNN.bin at the start of chosen run frames. Continue with from_state.
 Input: input (inline array) or replay (file); see guide topic input.
 
 Observations (native):
-- sample ADDR:FMT[:NAME] writes samples.csv, one row per vblank. Row N is
-  memory after N run frames, before frame N's input and pokes. sample_every
-  thins rows; the last frame is always sampled.
+- sample writes samples.csv, one row per vblank. Each entry is ADDR:FMT[:NAME]
+  text or {"addr", "format", "name"}; FMT is u8 i8 x8 u16 i16 x16 u32 i32 x32,
+  fxI.F (fx16.16, fx4.12) or a watch-style width 1/2/4 (unsigned), default u32.
+  Row N is memory after N run frames, before frame N's input and pokes.
+  sample_every thins rows; the last frame is always sampled.
 - watch ADDR[:WIDTH] logs every CPU/DMA store into the range to writes.jsonl
   with writer PC, old and new value. watch_changes_only drops same-value stores.
 - watch_reads LO-HI or ADDR[:WIDTH] logs CPU loads to reads.jsonl with PC.

@@ -91,15 +91,30 @@ fn u16_at(b: &[u8], o: usize) -> Option<u16> {
 }
 
 fn u32_at(b: &[u8], o: usize) -> Option<u32> {
-    Some(u32::from_le_bytes([*b.get(o)?, *b.get(o + 1)?, *b.get(o + 2)?, *b.get(o + 3)?]))
+    Some(u32::from_le_bytes([
+        *b.get(o)?,
+        *b.get(o + 1)?,
+        *b.get(o + 2)?,
+        *b.get(o + 3)?,
+    ]))
 }
 
 fn rect_at(b: &[u8], o: usize) -> Option<VramRect> {
-    Some(VramRect { x: u16_at(b, o)?, y: u16_at(b, o + 2)?, w: u16_at(b, o + 4)?, h: u16_at(b, o + 6)? })
+    Some(VramRect {
+        x: u16_at(b, o)?,
+        y: u16_at(b, o + 2)?,
+        w: u16_at(b, o + 4)?,
+        h: u16_at(b, o + 6)?,
+    })
 }
 
 fn halfwords(b: &[u8], o: usize, n: usize) -> Vec<u16> {
-    b[o..o + 2 * n].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect()
+    b[o..o + 2 * n]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
+        .collect()
 }
 
 /// A block (CLUT or image) must fit VRAM and its length must match its size.
@@ -114,10 +129,16 @@ fn check_block(b: &[u8], o: usize, what: &str) -> Result<(VramRect, usize), Stri
     }
     let n = r.w as usize * r.h as usize;
     if len != 12 + 2 * n {
-        return Err(format!("{what} block length {len} != 12 + 2*{}x{}", r.w, r.h));
+        return Err(format!(
+            "{what} block length {len} != 12 + 2*{}x{}",
+            r.w, r.h
+        ));
     }
     if o + len > b.len() {
-        return Err(format!("{what} block truncated ({} of {len} bytes)", b.len().saturating_sub(o)));
+        return Err(format!(
+            "{what} block truncated ({} of {len} bytes)",
+            b.len().saturating_sub(o)
+        ));
     }
     Ok((r, n))
 }
@@ -150,10 +171,20 @@ impl Tim {
         }
         let (image_rect, n) = check_block(bytes, o, "image")?;
         if depth == TimDepth::Bpp24 && !(image_rect.w as usize * 2).is_multiple_of(3) {
-            return Err(format!("24-bit TIM width {} halfwords is not a whole number of pixels", image_rect.w));
+            return Err(format!(
+                "24-bit TIM width {} halfwords is not a whole number of pixels",
+                image_rect.w
+            ));
         }
         let pixels = halfwords(bytes, o + 12, n);
-        Ok(Tim { depth, clut_rect, clut, image_rect, pixels, size: o + 12 + 2 * n })
+        Ok(Tim {
+            depth,
+            clut_rect,
+            clut,
+            image_rect,
+            pixels,
+            size: o + 12 + 2 * n,
+        })
     }
 
     /// Whether a TIM found inside other data is likely real: indexed images
@@ -169,8 +200,14 @@ impl Tim {
         let mut i = 0;
         while i + 8 <= bytes.len() {
             // (No let-chains: this file also builds as edition 2021.)
-            let id = bytes[i] == 0x10 && bytes[i + 1..i + 4] == [0, 0, 0] && bytes[i + 5..i + 8] == [0, 0, 0];
-            if let Some(t) = id.then(|| Tim::parse(&bytes[i..]).ok()).flatten().filter(Tim::plausible) {
+            let id = bytes[i] == 0x10
+                && bytes[i + 1..i + 4] == [0, 0, 0]
+                && bytes[i + 5..i + 8] == [0, 0, 0];
+            if let Some(t) = id
+                .then(|| Tim::parse(&bytes[i..]).ok())
+                .flatten()
+                .filter(Tim::plausible)
+            {
                 i += t.size;
                 out.push((i - t.size, t));
                 continue;
@@ -321,7 +358,10 @@ pub struct Vram {
 
 impl Default for Vram {
     fn default() -> Self {
-        Vram { data: vec![0; VRAM_WIDTH * VRAM_HEIGHT], written: vec![false; VRAM_WIDTH * VRAM_HEIGHT] }
+        Vram {
+            data: vec![0; VRAM_WIDTH * VRAM_HEIGHT],
+            written: vec![false; VRAM_WIDTH * VRAM_HEIGHT],
+        }
     }
 }
 
@@ -329,7 +369,10 @@ impl Vram {
     pub fn upload(&mut self, r: VramRect, words: &[u16]) {
         for row in 0..r.h as usize {
             for col in 0..r.w as usize {
-                let (x, y) = ((r.x as usize + col) % VRAM_WIDTH, (r.y as usize + row) % VRAM_HEIGHT);
+                let (x, y) = (
+                    (r.x as usize + col) % VRAM_WIDTH,
+                    (r.y as usize + row) % VRAM_HEIGHT,
+                );
                 if let Some(&v) = words.get(row * r.w as usize + col) {
                     self.data[y * VRAM_WIDTH + x] = v;
                     self.written[y * VRAM_WIDTH + x] = true;
@@ -363,14 +406,18 @@ impl Vram {
                 let (c, ok) = match page.bits {
                     4 => {
                         let (hw, ok) = self.at(px + u / 4, py + v);
-                        let (c, ok2) =
-                            self.at(clut.0 as usize + ((hw >> ((u % 4) * 4)) & 0xF) as usize, clut.1 as usize);
+                        let (c, ok2) = self.at(
+                            clut.0 as usize + ((hw >> ((u % 4) * 4)) & 0xF) as usize,
+                            clut.1 as usize,
+                        );
                         (c, ok && ok2)
                     }
                     8 => {
                         let (hw, ok) = self.at(px + u / 2, py + v);
-                        let (c, ok2) =
-                            self.at(clut.0 as usize + ((hw >> ((u % 2) * 8)) & 0xFF) as usize, clut.1 as usize);
+                        let (c, ok2) = self.at(
+                            clut.0 as usize + ((hw >> ((u % 2) * 8)) & 0xFF) as usize,
+                            clut.1 as usize,
+                        );
                         (c, ok && ok2)
                     }
                     _ => self.at(px + u, py + v),
@@ -388,7 +435,12 @@ mod tests {
     use super::*;
 
     /// Build a TIM from parts (test helper).
-    pub fn build(flags: u32, clut: Option<(VramRect, &[u16])>, image: VramRect, pixels: &[u16]) -> Vec<u8> {
+    pub fn build(
+        flags: u32,
+        clut: Option<(VramRect, &[u16])>,
+        image: VramRect,
+        pixels: &[u16],
+    ) -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(&TIM_ID.to_le_bytes());
         b.extend_from_slice(&flags.to_le_bytes());
@@ -422,16 +474,36 @@ mod tests {
         let pixels = [0x3210, 0x1111];
         let b = build(
             8,
-            Some((VramRect { x: 0, y: 480, w: 16, h: 2 }, &clut)),
-            VramRect { x: 640, y: 0, w: 2, h: 1 },
+            Some((
+                VramRect {
+                    x: 0,
+                    y: 480,
+                    w: 16,
+                    h: 2,
+                },
+                &clut,
+            )),
+            VramRect {
+                x: 640,
+                y: 0,
+                w: 2,
+                h: 1,
+            },
             &pixels,
         );
         let t = Tim::parse(&b).unwrap();
-        assert_eq!((t.width(), t.height(), t.palette_count(), t.size), (8, 1, 2, b.len()));
+        assert_eq!(
+            (t.width(), t.height(), t.palette_count(), t.size),
+            (8, 1, 2, b.len())
+        );
         let p0 = t.to_rgba(0, TimAlpha::Cutout);
         assert_eq!(&p0[0..4], &[0, 0, 0, 0], "0x0000 is transparent");
         assert_eq!(&p0[4..8], &[255, 0, 0, 255]);
-        assert_eq!(&p0[8..12], &[0, 0, 255, 255], "STP colour opaque in cutout mode");
+        assert_eq!(
+            &p0[8..12],
+            &[0, 0, 255, 255],
+            "STP colour opaque in cutout mode"
+        );
         assert_eq!(&p0[12..16], &[0, 0, 0, 0], "index 3 is 0x0000");
         let semi = t.to_rgba(0, TimAlpha::SemiStp);
         assert_eq!(semi[11], 128);
@@ -445,47 +517,132 @@ mod tests {
         clut[200] = 0x8000; // opaque black
         let b = build(
             9,
-            Some((VramRect { x: 0, y: 500, w: 256, h: 1 }, &clut)),
-            VramRect { x: 0, y: 0, w: 1, h: 1 },
+            Some((
+                VramRect {
+                    x: 0,
+                    y: 500,
+                    w: 256,
+                    h: 1,
+                },
+                &clut,
+            )),
+            VramRect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
             &[0x00C8],
         );
         let t = Tim::parse(&b).unwrap();
         assert_eq!((t.width(), t.palette_count()), (2, 1));
-        assert_eq!(t.to_rgba(0, TimAlpha::Cutout), vec![0, 0, 0, 255, 0, 0, 0, 0]);
+        assert_eq!(
+            t.to_rgba(0, TimAlpha::Cutout),
+            vec![0, 0, 0, 255, 0, 0, 0, 0]
+        );
     }
 
     #[test]
     fn sixteen_and_twenty_four_bit() {
-        let b = build(2, None, VramRect { x: 0, y: 0, w: 2, h: 1 }, &[0x7FFF, 0]);
+        let b = build(
+            2,
+            None,
+            VramRect {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 1,
+            },
+            &[0x7FFF, 0],
+        );
         let t = Tim::parse(&b).unwrap();
-        assert_eq!(t.to_rgba(0, TimAlpha::Cutout), vec![255, 255, 255, 255, 0, 0, 0, 0]);
+        assert_eq!(
+            t.to_rgba(0, TimAlpha::Cutout),
+            vec![255, 255, 255, 255, 0, 0, 0, 0]
+        );
         // 24-bit: 2 pixels = 6 bytes = 3 halfwords. RGB (1,2,3), (4,5,6).
-        let b = build(3, None, VramRect { x: 0, y: 0, w: 3, h: 1 }, &[0x0201, 0x0403, 0x0605]);
+        let b = build(
+            3,
+            None,
+            VramRect {
+                x: 0,
+                y: 0,
+                w: 3,
+                h: 1,
+            },
+            &[0x0201, 0x0403, 0x0605],
+        );
         let t = Tim::parse(&b).unwrap();
         assert_eq!(t.width(), 2);
-        assert_eq!(t.to_rgba(0, TimAlpha::Cutout), vec![1, 2, 3, 255, 4, 5, 6, 255]);
+        assert_eq!(
+            t.to_rgba(0, TimAlpha::Cutout),
+            vec![1, 2, 3, 255, 4, 5, 6, 255]
+        );
     }
 
     #[test]
     fn rejects_bad_lengths_and_flags() {
-        let mut b = build(2, None, VramRect { x: 0, y: 0, w: 2, h: 1 }, &[1, 2]);
+        let mut b = build(
+            2,
+            None,
+            VramRect {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 1,
+            },
+            &[1, 2],
+        );
         assert!(Tim::parse(&b[..b.len() - 1]).is_err());
         b[8] += 2; // block length
         assert!(Tim::parse(&b).is_err());
-        let b = build(0x12, None, VramRect { x: 0, y: 0, w: 2, h: 1 }, &[1, 2]);
+        let b = build(
+            0x12,
+            None,
+            VramRect {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 1,
+            },
+            &[1, 2],
+        );
         assert!(Tim::parse(&b).is_err());
-        let b = build(2, None, VramRect { x: 1020, y: 0, w: 8, h: 1 }, &[0; 8]);
+        let b = build(
+            2,
+            None,
+            VramRect {
+                x: 1020,
+                y: 0,
+                w: 8,
+                h: 1,
+            },
+            &[0; 8],
+        );
         assert!(Tim::parse(&b).is_err());
     }
 
     #[test]
     fn finds_every_tim_in_an_archive() {
-        let a = build(2, None, VramRect { x: 0, y: 0, w: 2, h: 1 }, &[1, 2]);
+        let a = build(
+            2,
+            None,
+            VramRect {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 1,
+            },
+            &[1, 2],
+        );
         let mut archive = vec![0x10, 0, 0, 0, 0x55];
         archive.extend_from_slice(&a);
         archive.push(7);
         archive.extend_from_slice(&a);
-        let found: Vec<usize> = Tim::find_all(&archive).into_iter().map(|(o, _)| o).collect();
+        let found: Vec<usize> = Tim::find_all(&archive)
+            .into_iter()
+            .map(|(o, _)| o)
+            .collect();
         assert_eq!(found, vec![5, 6 + a.len()]);
     }
 
@@ -495,8 +652,21 @@ mod tests {
         clut[5] = RED;
         let b = build(
             8,
-            Some((VramRect { x: 32, y: 500, w: 16, h: 1 }, &clut)),
-            VramRect { x: 128, y: 256, w: 1, h: 1 },
+            Some((
+                VramRect {
+                    x: 32,
+                    y: 500,
+                    w: 16,
+                    h: 1,
+                },
+                &clut,
+            )),
+            VramRect {
+                x: 128,
+                y: 256,
+                w: 1,
+                h: 1,
+            },
             &[0x0055],
         );
         let mut vram = Vram::default();
@@ -508,7 +678,11 @@ mod tests {
         assert_eq!(clut_xy, (32, 500));
         let (img, cover) = vram.decode_page(page, clut_xy, TimAlpha::Cutout);
         assert_eq!(&img[0..4], &[255, 0, 0, 255]);
-        assert_eq!(&img[4 * 4..4 * 4 + 4], &[0, 0, 0, 0], "texel 4 is outside the upload");
+        assert_eq!(
+            &img[4 * 4..4 * 4 + 4],
+            &[0, 0, 0, 0],
+            "texel 4 is outside the upload"
+        );
         assert!(cover > 0.0 && cover < 0.001);
     }
 }

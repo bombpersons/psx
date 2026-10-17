@@ -50,22 +50,40 @@ pub fn resolve(virt: u32) -> Resolved {
         _ => Segment::Kseg2,
     };
     if segment == Segment::Kseg2 {
-        let region = if virt == 0xFFFE_0130 { Region::CacheControl } else { Region::Unmapped };
-        return Resolved { virt, segment, physical: virt, region, offset: virt.wrapping_sub(0xFFFE_0000) };
+        let region = if virt == 0xFFFE_0130 {
+            Region::CacheControl
+        } else {
+            Region::Unmapped
+        };
+        return Resolved {
+            virt,
+            segment,
+            physical: virt,
+            region,
+            offset: virt.wrapping_sub(0xFFFE_0000),
+        };
     }
     let physical = virt & 0x1FFF_FFFF;
     let (region, offset) = match physical {
         0x0000_0000..=0x007F_FFFF => (Region::MainRam, physical % MAIN_RAM_SIZE),
         0x1F00_0000..=0x1F7F_FFFF => (Region::Expansion1, physical - 0x1F00_0000),
         // Scratchpad is not reachable through KSEG1.
-        0x1F80_0000..=0x1F80_03FF if segment != Segment::Kseg1 => (Region::Scratchpad, physical - 0x1F80_0000),
+        0x1F80_0000..=0x1F80_03FF if segment != Segment::Kseg1 => {
+            (Region::Scratchpad, physical - 0x1F80_0000)
+        }
         0x1F80_1000..=0x1F80_1FFF => (Region::Io, physical - 0x1F80_1000),
         0x1F80_2000..=0x1F80_3FFF => (Region::Expansion2, physical - 0x1F80_2000),
         0x1FA0_0000..=0x1FBF_FFFF => (Region::Expansion3, physical - 0x1FA0_0000),
         0x1FC0_0000..=0x1FC7_FFFF => (Region::Bios, physical - 0x1FC0_0000),
         _ => (Region::Unmapped, physical),
     };
-    Resolved { virt, segment, physical, region, offset }
+    Resolved {
+        virt,
+        segment,
+        physical,
+        region,
+        offset,
+    }
 }
 
 #[cfg(test)]

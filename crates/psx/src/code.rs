@@ -46,23 +46,40 @@ impl Code {
                 let run_gp = || {
                     let text = std::fs::read_to_string(r.join("report.json")).ok()?;
                     let v: Value = serde_json::from_str(&text).ok()?;
-                    v["registers"]["gp"].as_u64().map(|g| g as u32).filter(|g| g >> 28 == 8)
+                    v["registers"]["gp"]
+                        .as_u64()
+                        .map(|g| g as u32)
+                        .filter(|g| g >> 28 == 8)
                 };
                 Ok(Code {
                     base: 0x8000_0000,
                     bytes: snap.bytes,
                     origin: snap.path.display().to_string(),
-                    gp: exe.as_ref().map(|e| e.1.gp).filter(|&g| g != 0).or_else(run_gp),
+                    gp: exe
+                        .as_ref()
+                        .map(|e| e.1.gp)
+                        .filter(|&g| g != 0)
+                        .or_else(run_gp),
                     exe: exe.map(|(_, h, p)| (0x8000_0000 | (h.text_addr & 0x1F_FFFF), p)),
                 })
             }
-            (None, Some((s, h, p))) => Ok(Code { base: 0x8000_0000 | (h.text_addr & 0x1F_FFFF), bytes: p, origin: s, gp: (h.gp != 0).then_some(h.gp), exe: None }),
-            (None, None) => Err(bad("give an EXE source and/or ram (a run directory or ram.bin)")),
+            (None, Some((s, h, p))) => Ok(Code {
+                base: 0x8000_0000 | (h.text_addr & 0x1F_FFFF),
+                bytes: p,
+                origin: s,
+                gp: (h.gp != 0).then_some(h.gp),
+                exe: None,
+            }),
+            (None, None) => Err(bad(
+                "give an EXE source and/or ram (a run directory or ram.bin)",
+            )),
         }
     }
 
     fn name(&self, scopes: &[crate::ScopedSymbols], addr: u32, distance: u32) -> Option<String> {
-        scopes.iter().find_map(|s| s.describe_image(addr, self.base, &self.bytes, distance))
+        scopes
+            .iter()
+            .find_map(|s| s.describe_image(addr, self.base, &self.bytes, distance))
     }
 
     pub fn end(&self) -> u32 {
@@ -102,12 +119,21 @@ impl Code {
     }
 
     fn words(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        self.bytes.as_chunks::<4>().0.iter().enumerate().map(|(i, w)| (self.base.wrapping_add(4 * i as u32), u32::from_le_bytes(*w)))
+        self.bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (self.base.wrapping_add(4 * i as u32), u32::from_le_bytes(*w)))
     }
 
     /// Every `jal` target in the code.
     pub fn jal_targets(&self) -> BTreeSet<u32> {
-        self.words().filter(|&(_, i)| i >> 26 == 3).map(|(pc, i)| jump_target(pc, i)).filter(|&t| self.word(t).is_some()).collect()
+        self.words()
+            .filter(|&(_, i)| i >> 26 == 3)
+            .map(|(pc, i)| jump_target(pc, i))
+            .filter(|&t| self.word(t).is_some())
+            .collect()
     }
 }
 
@@ -117,15 +143,20 @@ fn jump_target(pc: u32, i: u32) -> u32 {
 
 fn branch_target(pc: u32, i: u32) -> Option<u32> {
     let op = i >> 26;
-    let is_branch = matches!(op, 0x04..=0x07) || (op == 0x01 && matches!((i >> 16) & 0x1F, 0x00 | 0x01 | 0x10 | 0x11));
-    is_branch.then(|| pc.wrapping_add(4).wrapping_add(((i & 0xFFFF) as i16 as i32 as u32) << 2))
+    let is_branch = matches!(op, 0x04..=0x07)
+        || (op == 0x01 && matches!((i >> 16) & 0x1F, 0x00 | 0x01 | 0x10 | 0x11));
+    is_branch.then(|| {
+        pc.wrapping_add(4)
+            .wrapping_add(((i & 0xFFFF) as i16 as i32 as u32) << 2)
+    })
 }
 
 /// KSEG0/KSEG1 main RAM, scratchpad or I/O: worth reporting as an address.
 fn plausible_address(a: u32) -> bool {
     let seg = a >> 29;
     let p = a & 0x1FFF_FFFF;
-    (seg == 4 || seg == 5) && p < 0x0080_0000 || (0x1F80_0000..0x1F80_3000).contains(&p) && (seg == 0 || seg == 4 || seg == 5)
+    (seg == 4 || seg == 5) && p < 0x0080_0000
+        || (0x1F80_0000..0x1F80_3000).contains(&p) && (seg == 0 || seg == 4 || seg == 5)
 }
 
 /// `addiu sp, sp, -N`.
@@ -188,11 +219,23 @@ impl Resolver {
         let simm = (i & 0xFFFF) as i16 as i32 as u32;
         let mut out = Vec::new();
         match op {
-            0x02 => out.push(Ref { target: jump_target(pc, i), kind: "jump", via: "j" }),
-            0x03 => out.push(Ref { target: jump_target(pc, i), kind: "call", via: "jal" }),
+            0x02 => out.push(Ref {
+                target: jump_target(pc, i),
+                kind: "jump",
+                via: "j",
+            }),
+            0x03 => out.push(Ref {
+                target: jump_target(pc, i),
+                kind: "call",
+                via: "jal",
+            }),
             _ => {
                 if let Some(t) = branch_target(pc, i) {
-                    out.push(Ref { target: t, kind: "branch", via: "branch" });
+                    out.push(Ref {
+                        target: t,
+                        kind: "branch",
+                        via: "branch",
+                    });
                 }
             }
         }
@@ -207,21 +250,43 @@ impl Resolver {
         match op {
             0x09 | 0x0D if rs != 0 => {
                 if let Some((b, via)) = base(rs) {
-                    let t = if op == 0x0D { b | (i & 0xFFFF) } else { b.wrapping_add(simm) };
+                    let t = if op == 0x0D {
+                        b | (i & 0xFFFF)
+                    } else {
+                        b.wrapping_add(simm)
+                    };
                     // Constants built with lui+ori are only addresses when they point into memory.
                     if plausible_address(t) {
-                        out.push(Ref { target: t, kind: "addr", via: if via == "gp+imm" { "gp+imm" } else if op == 0x0D { "lui+ori" } else { "lui+addiu" } });
+                        out.push(Ref {
+                            target: t,
+                            kind: "addr",
+                            via: if via == "gp+imm" {
+                                "gp+imm"
+                            } else if op == 0x0D {
+                                "lui+ori"
+                            } else {
+                                "lui+addiu"
+                            },
+                        });
                     }
                 }
             }
             0x20..=0x26 | 0x32 => {
                 if let Some((b, via)) = base(rs) {
-                    out.push(Ref { target: b.wrapping_add(simm), kind: "load", via });
+                    out.push(Ref {
+                        target: b.wrapping_add(simm),
+                        kind: "load",
+                        via,
+                    });
                 }
             }
             0x28..=0x2B | 0x2E | 0x3A => {
                 if let Some((b, via)) = base(rs) {
-                    out.push(Ref { target: b.wrapping_add(simm), kind: "store", via });
+                    out.push(Ref {
+                        target: b.wrapping_add(simm),
+                        kind: "store",
+                        via,
+                    });
                 }
             }
             _ => {}
@@ -252,36 +317,70 @@ pub struct FunctionExtent {
 }
 impl FunctionExtent {
     pub fn truncated(&self) -> bool {
-        matches!(self.stop_reason, "search_limit" | "image_end") || self.start_evidence == "backward_search_limit"
+        matches!(self.stop_reason, "search_limit" | "image_end")
+            || self.start_evidence == "backward_search_limit"
     }
 }
 
-pub fn function_bounds(code: &Code, addr: u32, jal: &BTreeSet<u32>, max: u32) -> Option<(u32, u32)> {
+pub fn function_bounds(
+    code: &Code,
+    addr: u32,
+    jal: &BTreeSet<u32>,
+    max: u32,
+) -> Option<(u32, u32)> {
     function_extent(code, addr, jal, max).map(|f| (f.start, f.end))
 }
 
-pub fn function_extent(code: &Code, addr: u32, jal: &BTreeSet<u32>, max: u32) -> Option<FunctionExtent> {
+pub fn function_extent(
+    code: &Code,
+    addr: u32,
+    jal: &BTreeSet<u32>,
+    max: u32,
+) -> Option<FunctionExtent> {
     let addr = addr & !3;
     code.word(addr)?;
     let mut s = addr;
     let mut start_evidence = "backward_search_limit";
     for _ in 0..max {
-        if jal.contains(&s) { start_evidence = "jal_target"; break; }
-        if code.word(s).is_some_and(is_prologue) { start_evidence = "stack_prologue"; break; }
+        if jal.contains(&s) {
+            start_evidence = "jal_target";
+            break;
+        }
+        if code.word(s).is_some_and(is_prologue) {
+            start_evidence = "stack_prologue";
+            break;
+        }
         match s.checked_sub(4).filter(|&p| code.word(p).is_some()) {
             Some(p) => s = p,
-            None => { start_evidence = "image_start"; break; }
+            None => {
+                start_evidence = "image_start";
+                break;
+            }
         }
     }
     loop {
         let (e, stop_reason) = function_end(code, s, jal, max);
-        if addr < e { return Some(FunctionExtent {start:s,end:e,start_evidence,stop_reason}); }
+        if addr < e {
+            return Some(FunctionExtent {
+                start: s,
+                end: e,
+                start_evidence,
+                stop_reason,
+            });
+        }
         s = e;
-        while s < addr && code.word(s) == Some(0) { s += 4; }
+        while s < addr && code.word(s) == Some(0) {
+            s += 4;
+        }
         start_evidence = "sequential_heuristic";
         if e == s && s > addr {
             let (end, stop_reason) = function_end(code, addr, jal, max);
-            return Some(FunctionExtent {start:addr,end,start_evidence,stop_reason});
+            return Some(FunctionExtent {
+                start: addr,
+                end,
+                start_evidence,
+                stop_reason,
+            });
         }
     }
 }
@@ -290,22 +389,30 @@ fn function_end(code: &Code, start: u32, jal: &BTreeSet<u32>, max: u32) -> (u32,
     let mut pc = start;
     let mut reach = start;
     for _ in 0..max {
-        let Some(i) = code.word(pc) else { return (pc.max(start+4), "image_end") };
-        if pc != start && pc > reach && (jal.contains(&pc) || is_prologue(i)) { return (pc,"next_entry"); }
+        let Some(i) = code.word(pc) else {
+            return (pc.max(start + 4), "image_end");
+        };
+        if pc != start && pc > reach && (jal.contains(&pc) || is_prologue(i)) {
+            return (pc, "next_entry");
+        }
         if let Some(t) = branch_target(pc, i) {
-            if t > reach && t.wrapping_sub(start) < 0x10_0000 { reach = t; }
+            if t > reach && t.wrapping_sub(start) < 0x10_0000 {
+                reach = t;
+            }
         }
         let tail_jump = i >> 26 == 0x02 && {
             let t = jump_target(pc, i);
             t < start || t > pc + 8
         };
         if (i == JR_RA || tail_jump) && reach <= pc + 4 {
-            if code.word(pc+4).is_none() { return (pc+4,"image_end"); }
-            return (pc+8,if i == JR_RA {"return"} else {"tail_jump"});
+            if code.word(pc + 4).is_none() {
+                return (pc + 4, "image_end");
+            }
+            return (pc + 8, if i == JR_RA { "return" } else { "tail_jump" });
         }
         pc += 4;
     }
-    (pc.max(start+4),"search_limit")
+    (pc.max(start + 4), "search_limit")
 }
 
 pub struct ListOpts<'a> {
@@ -350,7 +457,12 @@ pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, Stri
                     }
                 }
                 "branch" => {}
-                _ => notes.push(format!("{} 0x{:08X}{}", r.kind, r.target, name(r.target).map(|n| format!(" {n}")).unwrap_or_default())),
+                _ => notes.push(format!(
+                    "{} 0x{:08X}{}",
+                    r.kind,
+                    r.target,
+                    name(r.target).map(|n| format!(" {n}")).unwrap_or_default()
+                )),
             }
         }
         let mut v = json!({"addr": format!("0x{a:08X}"), "word": format!("{i:08X}"), "asm": asm, "label": lbl});
@@ -371,10 +483,17 @@ pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, Stri
                 text.push('\n'); // after a return's delay slot
             }
             let asm_l = match refs.iter().find(|r| r.kind == "branch") {
-                Some(r) if targets.contains(&r.target) && label(r.target).is_none() => asm.replace(&format!("0x{:08X}", r.target), &format!("loc_{:08X}", r.target)),
+                Some(r) if targets.contains(&r.target) && label(r.target).is_none() => asm.replace(
+                    &format!("0x{:08X}", r.target),
+                    &format!("loc_{:08X}", r.target),
+                ),
                 _ => asm,
             };
-            let note = if notes.is_empty() { String::new() } else { format!("  ; {}", notes.join(", ")) };
+            let note = if notes.is_empty() {
+                String::new()
+            } else {
+                format!("  ; {}", notes.join(", "))
+            };
             text += &format!("  {a:08X}  {i:08X}  {asm_l:<32}{note}\n");
         }
         lines.push(v);
@@ -385,7 +504,12 @@ pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, Stri
         after_return = i == JR_RA;
         a += 4;
     }
-    (lines, text.lines().map(|l| l.trim_end().to_string() + "\n").collect())
+    (
+        lines,
+        text.lines()
+            .map(|l| l.trim_end().to_string() + "\n")
+            .collect(),
+    )
 }
 
 /// Every reference to `[lo, hi)` in the code: jal/j/branch targets, `lui`
@@ -405,7 +529,14 @@ pub fn xrefs(code: &Code, lo: u32, hi: u32, data: bool) -> Vec<(u32, Ref)> {
             }
         }
         if data && (0x8000_0000..0x8020_0000).contains(&i) && inside(i) {
-            out.push((pc, Ref { target: i, kind: "data", via: "word" }));
+            out.push((
+                pc,
+                Ref {
+                    target: i,
+                    kind: "data",
+                    via: "word",
+                },
+            ));
         }
         if after_return {
             res.reset();
@@ -417,20 +548,33 @@ pub fn xrefs(code: &Code, lo: u32, hi: u32, data: bool) -> Vec<(u32, Ref)> {
 
 /// Group xrefs by the function containing each referencing PC.
 #[allow(clippy::too_many_arguments)]
-pub fn xref_report(code: &Code, lo: u32, hi: u32, data: bool, scopes: &[crate::ScopedSymbols], offset: usize, limit: usize, text: bool) -> (Value, String) {
+pub fn xref_report(
+    code: &Code,
+    lo: u32,
+    hi: u32,
+    data: bool,
+    scopes: &[crate::ScopedSymbols],
+    offset: usize,
+    limit: usize,
+    text: bool,
+) -> (Value, String) {
     let refs = xrefs(code, lo, hi, data);
     let jal = code.jal_targets();
     let mut by_kind: BTreeMap<&str, u64> = BTreeMap::new();
     let mut funcs: BTreeMap<u32, u64> = BTreeMap::new();
     let mut lines = Vec::new();
     let mut out = String::new();
-    for (index,(pc, r)) in refs.iter().enumerate() {
+    for (index, (pc, r)) in refs.iter().enumerate() {
         *by_kind.entry(r.kind).or_default() += 1;
-        let f = if r.kind == "data" { None } else { function_bounds(code, *pc, &jal, 16384).map(|b| b.0) };
+        let f = if r.kind == "data" {
+            None
+        } else {
+            function_bounds(code, *pc, &jal, 16384).map(|b| b.0)
+        };
         if let Some(f) = f {
             *funcs.entry(f).or_default() += 1;
         }
-        if index>=offset && lines.len() < limit {
+        if index >= offset && lines.len() < limit {
             let word = code.word(*pc).unwrap_or(0);
             let fname = f.and_then(|f| code.name(scopes, f, 0));
             lines.push(json!({
@@ -444,7 +588,13 @@ pub fn xref_report(code: &Code, lo: u32, hi: u32, data: bool, scopes: &[crate::S
                     (Some(f), None) => format!("  in fn_{f:08X}"),
                     _ => String::new(),
                 };
-                out += &format!("{pc:08X}  {:<6} {:<10} {:<36} -> {:08X}{fdesc}\n", r.kind, r.via, lines.last().unwrap()["asm"].as_str().unwrap_or(""), r.target);
+                out += &format!(
+                    "{pc:08X}  {:<6} {:<10} {:<36} -> {:08X}{fdesc}\n",
+                    r.kind,
+                    r.via,
+                    lines.last().unwrap()["asm"].as_str().unwrap_or(""),
+                    r.target
+                );
             }
         }
     }
@@ -461,7 +611,9 @@ pub fn xref_report(code: &Code, lo: u32, hi: u32, data: bool, scopes: &[crate::S
     let header = format!(
         "; xrefs to 0x{lo:08X}..0x{hi:08X} in {} (gp {}): {} refs in {} functions\n",
         code.origin,
-        code.gp.map(|g| format!("0x{g:08X}")).unwrap_or_else(|| "unknown".into()),
+        code.gp
+            .map(|g| format!("0x{g:08X}"))
+            .unwrap_or_else(|| "unknown".into()),
         refs.len(),
         funcs.len()
     );
@@ -474,7 +626,13 @@ mod tests {
 
     fn code(words: &[u32]) -> Code {
         let bytes = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        Code { base: 0x8001_0000, bytes, origin: "test".into(), gp: Some(0x8007_0000), exe: None }
+        Code {
+            base: 0x8001_0000,
+            bytes,
+            origin: "test".into(),
+            gp: Some(0x8007_0000),
+            exe: None,
+        }
     }
 
     // Two functions:
@@ -483,9 +641,22 @@ mod tests {
     // 80010030 g: (leaf, no prologue) lui t0,0x8015 / ori t0,t0,0xE89C / jr ra / nop
     fn sample() -> Code {
         code(&[
-            0x27BD_FFE8, 0x1080_0003, 0x0000_0000, JR_RA, 0x0000_0000, //
-            0x3C01_8015, 0x8C22_E89C, 0xAF82_0010, 0x0C00_400C, 0x0000_0000, JR_RA, 0x0000_0000, //
-            0x3C08_8015, 0x3508_E89C, JR_RA, 0x0000_0000, //
+            0x27BD_FFE8,
+            0x1080_0003,
+            0x0000_0000,
+            JR_RA,
+            0x0000_0000, //
+            0x3C01_8015,
+            0x8C22_E89C,
+            0xAF82_0010,
+            0x0C00_400C,
+            0x0000_0000,
+            JR_RA,
+            0x0000_0000, //
+            0x3C08_8015,
+            0x3508_E89C,
+            JR_RA,
+            0x0000_0000, //
             0x8001_0030, // a pointer to g
         ])
     }
@@ -495,24 +666,43 @@ mod tests {
         let c = sample();
         let jal = c.jal_targets();
         assert_eq!(jal.iter().copied().collect::<Vec<_>>(), vec![0x8001_0030]);
-        assert_eq!(function_bounds(&c, 0x8001_0000, &jal, 1000), Some((0x8001_0000, 0x8001_0030)));
-        assert_eq!(function_bounds(&c, 0x8001_0018, &jal, 1000), Some((0x8001_0000, 0x8001_0030)), "enclosing function");
-        assert_eq!(function_bounds(&c, 0x8001_0034, &jal, 1000), Some((0x8001_0030, 0x8001_0040)));
+        assert_eq!(
+            function_bounds(&c, 0x8001_0000, &jal, 1000),
+            Some((0x8001_0000, 0x8001_0030))
+        );
+        assert_eq!(
+            function_bounds(&c, 0x8001_0018, &jal, 1000),
+            Some((0x8001_0000, 0x8001_0030)),
+            "enclosing function"
+        );
+        assert_eq!(
+            function_bounds(&c, 0x8001_0034, &jal, 1000),
+            Some((0x8001_0030, 0x8001_0040))
+        );
     }
 
     #[test]
     fn xrefs_resolve_lui_pairs_gp_calls_and_pointers() {
         let c = sample();
         let r = xrefs(&c, 0x8015_0000, 0x8016_0000, true);
-        let got: Vec<(u32, &str, &str, u32)> = r.iter().map(|(pc, r)| (*pc, r.kind, r.via, r.target)).collect();
+        let got: Vec<(u32, &str, &str, u32)> = r
+            .iter()
+            .map(|(pc, r)| (*pc, r.kind, r.via, r.target))
+            .collect();
         assert_eq!(got, vec![(0x8001_0034, "addr", "lui+ori", 0x8015_E89C)]);
         // lw v0, -0x1764(at) with at = 0x80150000 is 0x8014E89C: outside the range.
         assert!(got.iter().all(|g| g.0 != 0x8001_0018));
         let r = xrefs(&c, 0x8014_E89C, 0x8014_E8A0, true);
         assert_eq!(r.len(), 1);
-        assert_eq!((r[0].0, r[0].1.kind, r[0].1.via), (0x8001_0018, "load", "lui+imm"));
+        assert_eq!(
+            (r[0].0, r[0].1.kind, r[0].1.via),
+            (0x8001_0018, "load", "lui+imm")
+        );
         let r = xrefs(&c, 0x8007_0010, 0x8007_0014, true);
-        assert_eq!((r[0].0, r[0].1.kind, r[0].1.via), (0x8001_001C, "store", "gp+imm"));
+        assert_eq!(
+            (r[0].0, r[0].1.kind, r[0].1.via),
+            (0x8001_001C, "store", "gp+imm")
+        );
         let r = xrefs(&c, 0x8001_0030, 0x8001_0034, true);
         let kinds: Vec<&str> = r.iter().map(|x| x.1.kind).collect();
         assert_eq!(kinds, vec!["call", "data"]);
@@ -521,7 +711,15 @@ mod tests {
     #[test]
     fn text_listing_labels_branch_targets() {
         let c = sample();
-        let (lines, text) = listing(&c, 0x8001_0000, 0x8001_0030, &ListOpts { scopes: &[], text: true });
+        let (lines, text) = listing(
+            &c,
+            0x8001_0000,
+            0x8001_0030,
+            &ListOpts {
+                scopes: &[],
+                text: true,
+            },
+        );
         assert_eq!(lines.len(), 12);
         assert!(text.contains("loc_80010014:\n"), "{text}");
         assert!(text.contains("beq     a0, zero, loc_80010014"), "{text}");

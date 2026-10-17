@@ -33,8 +33,11 @@ fn checksum(data: &str) -> u8 {
 }
 
 fn free_port() -> Result<u16> {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| ReduxError::Setup(format!("no free port: {e}")))?;
-    Ok(l.local_addr().map_err(|e| ReduxError::Setup(e.to_string()))?.port())
+    let l = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| ReduxError::Setup(format!("no free port: {e}")))?;
+    Ok(l.local_addr()
+        .map_err(|e| ReduxError::Setup(e.to_string()))?
+        .port())
 }
 
 impl GdbSession {
@@ -45,7 +48,10 @@ impl GdbSession {
         let bios = io(bios, bios.canonicalize())?;
         let port = free_port()?;
         let cfg = dir.join("config/pcsx.json");
-        io(&cfg, std::fs::write(&cfg, "{\"SPU\":{\"NullSync\":true,\"Speed\":0}}\n"))?;
+        io(
+            &cfg,
+            std::fs::write(&cfg, "{\"SPU\":{\"NullSync\":true,\"Speed\":0}}\n"),
+        )?;
         let log_path = dir.join("redux.log");
         let log = io(&log_path, std::fs::File::create(&log_path))?;
         let log_err = io(&log_path, log.try_clone())?;
@@ -70,20 +76,33 @@ impl GdbSession {
         let stream = loop {
             match TcpStream::connect(("127.0.0.1", port)) {
                 Ok(s) => break s,
-                Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-                Err(e) => return Err(ReduxError::Setup(format!("GDB server did not open port {port}: {e}"))),
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50))
+                }
+                Err(e) => {
+                    return Err(ReduxError::Setup(format!(
+                        "GDB server did not open port {port}: {e}"
+                    )))
+                }
             }
         };
         stream.set_nodelay(true).ok();
         stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
-        let mut s = GdbSession { child, stream: BufReader::new(stream), dir };
+        let mut s = GdbSession {
+            child,
+            stream: BufReader::new(stream),
+            dir,
+        };
         s.command("QStartNoAckMode")?;
         Ok(s)
     }
 
     fn send(&mut self, data: &str) -> Result<()> {
         let pkt = format!("${data}#{:02x}", checksum(data));
-        self.stream.get_mut().write_all(pkt.as_bytes()).map_err(|e| ReduxError::Setup(format!("gdb write: {e}")))
+        self.stream
+            .get_mut()
+            .write_all(pkt.as_bytes())
+            .map_err(|e| ReduxError::Setup(format!("gdb write: {e}")))
     }
 
     fn recv(&mut self) -> Result<String> {
@@ -118,8 +137,11 @@ impl GdbSession {
     pub fn registers(&mut self) -> Result<Regs> {
         let hex = self.command("g")?;
         let word = |i: usize| -> Result<u32> {
-            let s = hex.get(i * 8..i * 8 + 8).ok_or_else(|| ReduxError::Setup(format!("short g reply: {hex}")))?;
-            let v = u32::from_str_radix(s, 16).map_err(|_| ReduxError::Setup(format!("bad g reply: {s}")))?;
+            let s = hex
+                .get(i * 8..i * 8 + 8)
+                .ok_or_else(|| ReduxError::Setup(format!("short g reply: {hex}")))?;
+            let v = u32::from_str_radix(s, 16)
+                .map_err(|_| ReduxError::Setup(format!("bad g reply: {s}")))?;
             Ok(v.swap_bytes())
         };
         let mut r = Regs::default();
@@ -142,7 +164,9 @@ impl GdbSession {
 
     pub fn read_memory(&mut self, addr: u32, len: u32) -> Result<Vec<u8>> {
         let hex = self.command(&format!("m{addr:x},{len:x}"))?;
-        Ok((0..hex.len() / 2).filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()).collect())
+        Ok((0..hex.len() / 2)
+            .filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok())
+            .collect())
     }
 }
 

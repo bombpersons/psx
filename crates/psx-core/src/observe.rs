@@ -134,7 +134,10 @@ pub struct SpuLog {
 
 impl SpuLog {
     pub fn new(max: usize) -> Self {
-        SpuLog { max, ..Default::default() }
+        SpuLog {
+            max,
+            ..Default::default()
+        }
     }
 
     pub fn record(&mut self, event: SpuEvent) {
@@ -155,9 +158,22 @@ impl SpuLog {
                 return;
             }
         }
-        let upload = SpuUpload { address, bytes: 2, source: "cpu", ram: None };
+        let upload = SpuUpload {
+            address,
+            bytes: 2,
+            source: "cpu",
+            ram: None,
+        };
         let recorded = self.events.len() < self.max;
-        self.record(SpuEvent { frame, cycle, event: "upload", voice: None, pc: Some(pc), key_on: None, upload: Some(upload) });
+        self.record(SpuEvent {
+            frame,
+            cycle,
+            event: "upload",
+            voice: None,
+            pc: Some(pc),
+            key_on: None,
+            upload: Some(upload),
+        });
         // Merging needs the event in the log; unrecorded halfwords count individually.
         self.cpu_upload_end = recorded.then_some(address + 2);
     }
@@ -180,7 +196,10 @@ pub struct Observer {
 /// Frequent BIOS calls that are counted but not recorded individually:
 /// B(0Bh) TestEvent, B(17h) ReturnFromException, B(3Dh)/A(3Ch) putchar.
 pub fn bios_call_is_quiet(table: &str, function: u32) -> bool {
-    matches!((table, function), ("B0", 0x0B) | ("B0", 0x17) | ("B0", 0x3D) | ("A0", 0x3C))
+    matches!(
+        (table, function),
+        ("B0", 0x0B) | ("B0", 0x17) | ("B0", 0x3D) | ("A0", 0x3C)
+    )
 }
 
 impl Observer {

@@ -62,7 +62,7 @@ For BIOS files still held only in the toolkit checkout, import them once with
     {"frame": 10, "buttons": ["RIGHT"]},
     {"frame": 30, "buttons": []}
   ],
-  "sample": ["8015E8AC:fx16.16:y"],
+  "sample": [{"addr": "8015E8AC", "format": "fx16.16", "name": "y"}, "8015E89E:u8:state"],
   "save_state": true,
   "brief": true,
   "return_screen": true
@@ -71,7 +71,9 @@ For BIOS files still held only in the toolkit checkout, import them once with
 
 CLI: `psx run --from-state STATE --frames 60 --input '[...]' --save-state --brief`.
 `replay` / `--replay PATH` reads the same JSON array from a file; choose either
-inline input or a replay file.
+inline input or a replay file. Each `sample` entry is either `ADDR:FMT[:NAME]` text
+(the CLI form) or a typed `{"addr", "format", "name"}` object; `format` defaults to
+`u32`, and a watch-style width (`1`, `2`, `4`) reads unsigned.
 
 Each event replaces the **complete pad state** at a run-relative frame boundary.
 Without `until`, that state lasts until the next event. Empty buttons release all

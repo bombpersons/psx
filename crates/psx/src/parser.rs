@@ -28,7 +28,11 @@ impl Spec {
             return Err(bad("parser timeout must be 1..=300 seconds"));
         }
         match program {
-            Some(program) => Ok(Some(Self { program: program.clone(), args: args.to_vec(), timeout })),
+            Some(program) => Ok(Some(Self {
+                program: program.clone(),
+                args: args.to_vec(),
+                timeout,
+            })),
             None if args.is_empty() => Ok(None),
             None => Err(bad("parser arguments require a parser executable")),
         }
@@ -52,9 +56,17 @@ fn bad(message: impl Into<String>) -> MediaError {
     MediaError::Malformed(message.into())
 }
 
-pub fn run(spec: &Spec, bytes: &[u8], kind: &str, context: &[(&str, String)], cancel: Option<&CancellationToken>) -> Result<Output> {
+pub fn run(
+    spec: &Spec,
+    bytes: &[u8],
+    kind: &str,
+    context: &[(&str, String)],
+    cancel: Option<&CancellationToken>,
+) -> Result<Output> {
     if !cfg!(unix) {
-        return Err(MediaError::Unsupported("external parser supervision currently requires Unix".into()));
+        return Err(MediaError::Unsupported(
+            "external parser supervision currently requires Unix".into(),
+        ));
     }
     if bytes.len() > 512 * 1024 * 1024 {
         return Err(bad("parser input exceeds 512 MiB"));
@@ -76,7 +88,12 @@ pub fn run(spec: &Spec, bytes: &[u8], kind: &str, context: &[(&str, String)], ca
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = command.spawn().map_err(|e| bad(format!("cannot launch parser {}: {e}", spec.program.display())))?;
+    let mut child = command.spawn().map_err(|e| {
+        bad(format!(
+            "cannot launch parser {}: {e}",
+            spec.program.display()
+        ))
+    })?;
     let input = child.stdin.take().unwrap();
     let output = child.stdout.take().unwrap();
     let error = child.stderr.take().unwrap();
@@ -106,7 +123,10 @@ pub fn run(spec: &Spec, bytes: &[u8], kind: &str, context: &[(&str, String)], ca
                 break Err(bad("parser cancelled"));
             }
             if Instant::now() >= deadline {
-                break Err(bad(format!("parser timed out after {} seconds", spec.timeout)));
+                break Err(bad(format!(
+                    "parser timed out after {} seconds",
+                    spec.timeout
+                )));
             }
             if status.is_none() {
                 match child.try_wait() {
@@ -132,22 +152,36 @@ pub fn run(spec: &Spec, bytes: &[u8], kind: &str, context: &[(&str, String)], ca
         }
         let _ = child.kill();
         let _ = child.wait();
-        let output = stdout.join().map_err(|_| bad("parser stdout reader failed"))?.map_err(|e| bad(format!("parser stdout: {e}")))?;
-        let diagnostics = stderr.join().map_err(|_| bad("parser stderr reader failed"))?.map_err(|e| bad(format!("parser stderr: {e}")))?;
-        let written = writer.join().map_err(|_| bad("parser stdin writer failed"))?;
+        let output = stdout
+            .join()
+            .map_err(|_| bad("parser stdout reader failed"))?
+            .map_err(|e| bad(format!("parser stdout: {e}")))?;
+        let diagnostics = stderr
+            .join()
+            .map_err(|_| bad("parser stderr reader failed"))?
+            .map_err(|e| bad(format!("parser stderr: {e}")))?;
+        let written = writer
+            .join()
+            .map_err(|_| bad("parser stdin writer failed"))?;
         let status = outcome?;
         if overflow.load(Ordering::Acquire) {
             return Err(bad("parser output limit exceeded"));
         }
         if !status.success() {
-            return Err(bad(format!("parser exited {status}: {}", String::from_utf8_lossy(&diagnostics[..diagnostics.len().min(4096)]))));
+            return Err(bad(format!(
+                "parser exited {status}: {}",
+                String::from_utf8_lossy(&diagnostics[..diagnostics.len().min(4096)])
+            )));
         }
         written.map_err(|e| bad(format!("parser did not accept its input: {e}")))?;
         Ok((output, diagnostics))
     })?;
     let provenance = json!({"protocol_version":1,"executable":spec,"input_sha256":psx_media::disc::sha256_bytes(bytes),
         "output_sha256":psx_media::disc::sha256_bytes(&result.0),"stderr":String::from_utf8_lossy(&result.1)});
-    Ok(Output { bytes: result.0, provenance })
+    Ok(Output {
+        bytes: result.0,
+        provenance,
+    })
 }
 
 pub fn document<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
@@ -177,7 +211,12 @@ impl ArchiveDocument {
             .entries
             .into_iter()
             .enumerate()
-            .map(|(index, e)| psx_assets::archive::Entry { index, name: e.name, offset: e.offset, size: e.size })
+            .map(|(index, e)| psx_assets::archive::Entry {
+                index,
+                name: e.name,
+                offset: e.offset,
+                size: e.size,
+            })
             .collect();
         psx_assets::archive::Archive::external(entries, source_len).map_err(bad)
     }
@@ -198,7 +237,9 @@ impl PayloadDocument {
         if self.version != 1 {
             return Err(bad("unsupported payload parser protocol version"));
         }
-        base64::engine::general_purpose::STANDARD.decode(&self.data_base64).map_err(|e| bad(format!("invalid parser base64: {e}")))
+        base64::engine::general_purpose::STANDARD
+            .decode(&self.data_base64)
+            .map_err(|e| bad(format!("invalid parser base64: {e}")))
     }
 }
 
@@ -207,33 +248,70 @@ mod tests {
     use super::*;
 
     fn spec(code: &str, timeout: u64) -> Spec {
-        Spec { program: "python3".into(), args: vec!["-c".into(), code.into()], timeout }
+        Spec {
+            program: "python3".into(),
+            args: vec!["-c".into(), code.into()],
+            timeout,
+        }
     }
 
     #[test]
     fn direct_arguments_bytes_diagnostics_and_hashes() {
         let mut configured = spec("import sys; data=sys.stdin.buffer.read(); print(sys.argv[1]); print(len(data),file=sys.stderr)", 2);
-        configured.args.push("$(touch /tmp/should-never-execute) ; *".into());
+        configured
+            .args
+            .push("$(touch /tmp/should-never-execute) ; *".into());
         let output = run(&configured, &[0, 255, 0], "model", &[], None).unwrap();
-        assert_eq!(String::from_utf8(output.bytes).unwrap().trim(), configured.args[2]);
+        assert_eq!(
+            String::from_utf8(output.bytes).unwrap().trim(),
+            configured.args[2]
+        );
         assert_eq!(output.provenance["stderr"], "3\n");
-        assert_eq!(output.provenance["input_sha256"], psx_media::disc::sha256_bytes(&[0, 255, 0]));
-        let error = run(&spec("import sys; print('bad format',file=sys.stderr); sys.exit(7)", 2), &[], "asset", &[], None)
-            .err()
-            .unwrap()
-            .to_string();
-        assert!(error.contains("bad format") && error.contains('7'), "{error}");
+        assert_eq!(
+            output.provenance["input_sha256"],
+            psx_media::disc::sha256_bytes(&[0, 255, 0])
+        );
+        let error = run(
+            &spec(
+                "import sys; print('bad format',file=sys.stderr); sys.exit(7)",
+                2,
+            ),
+            &[],
+            "asset",
+            &[],
+            None,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            error.contains("bad format") && error.contains('7'),
+            "{error}"
+        );
     }
 
     #[test]
     fn rejects_bad_documents_and_payloads() {
-        for bytes in [b"not JSON".as_slice(), br#"{"version":1,"data_base64":"","typo":0}"#] {
+        for bytes in [
+            b"not JSON".as_slice(),
+            br#"{"version":1,"data_base64":"","typo":0}"#,
+        ] {
             assert!(document::<PayloadDocument>(bytes).is_err());
         }
         for (version, data_base64) in [(2, ""), (1, "!!!!")] {
-            assert!(PayloadDocument { version, data_base64: data_base64.into() }.decode().is_err());
+            assert!(PayloadDocument {
+                version,
+                data_base64: data_base64.into()
+            }
+            .decode()
+            .is_err());
         }
-        assert!(ArchiveDocument { version: 2, entries: vec![] }.validate(0).is_err());
+        assert!(ArchiveDocument {
+            version: 2,
+            entries: vec![]
+        }
+        .validate(0)
+        .is_err());
     }
 
     #[test]
@@ -241,15 +319,33 @@ mod tests {
         // The descendant inherits pipes and process group; supervision must
         // terminate it as well as the parent, without blocking reader joins.
         let start = Instant::now();
-        let err = run(&spec("import subprocess,time; subprocess.Popen(['sleep','30']); time.sleep(30)", 1), &[], "model", &[], None)
-            .err()
-            .unwrap()
-            .to_string();
+        let err = run(
+            &spec(
+                "import subprocess,time; subprocess.Popen(['sleep','30']); time.sleep(30)",
+                1,
+            ),
+            &[],
+            "model",
+            &[],
+            None,
+        )
+        .err()
+        .unwrap()
+        .to_string();
         assert!(err.contains("timed out"), "{err}");
         assert!(start.elapsed() < Duration::from_secs(5));
-        for code in ["import sys; sys.stdout.buffer.write(b'x'*(17*1024*1024))", "import sys; sys.stderr.buffer.write(b'x'*70000)"] {
-            let error = run(&spec(code, 2), &[], "asset", &[], None).err().unwrap().to_string();
-            assert!(error.contains("limit") || error.contains("exceeds"), "{error}");
+        for code in [
+            "import sys; sys.stdout.buffer.write(b'x'*(17*1024*1024))",
+            "import sys; sys.stderr.buffer.write(b'x'*70000)",
+        ] {
+            let error = run(&spec(code, 2), &[], "asset", &[], None)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(
+                error.contains("limit") || error.contains("exceeds"),
+                "{error}"
+            );
         }
         let cancel = CancellationToken::new();
         let other = cancel.clone();
@@ -257,7 +353,16 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
             other.cancel();
         });
-        let error = run(&spec("import time; time.sleep(30)", 3), &[], "asset", &[], Some(&cancel)).err().unwrap().to_string();
+        let error = run(
+            &spec("import time; time.sleep(30)", 3),
+            &[],
+            "asset",
+            &[],
+            Some(&cancel),
+        )
+        .err()
+        .unwrap()
+        .to_string();
         thread.join().unwrap();
         assert!(error.contains("cancelled"), "{error}");
     }

@@ -98,22 +98,49 @@ pub struct Command {
 /// Decode one frame's commands, starting from the draw state in effect.
 pub fn decode(start: &DrawState, commands: &[Vec<u32>]) -> Vec<Command> {
     let mut st = *start;
-    commands.iter().enumerate().map(|(index, p)| decode_one(&mut st, index, p)).collect()
+    commands
+        .iter()
+        .enumerate()
+        .map(|(index, p)| decode_one(&mut st, index, p))
+        .collect()
 }
 
 fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
     let op = (p[0] >> 24) as u8;
-    let mut c = Command { index, op, words: p.len(), kind: "nop", offset: [st.offset.0, st.offset.1], ..Default::default() };
+    let mut c = Command {
+        index,
+        op,
+        words: p.len(),
+        kind: "nop",
+        offset: [st.offset.0, st.offset.1],
+        ..Default::default()
+    };
     let word = |i: usize| p.get(i).copied().unwrap_or(0);
     let xy = |w: u32, st: &DrawState| (sext11(w) + st.offset.0, sext11(w >> 16) + st.offset.1);
-    let size = |w: u32| ((((w & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1) as i32, ((((w >> 16) & 0xFFFF).wrapping_sub(1) & 0x1FF) + 1) as i32);
+    let size = |w: u32| {
+        (
+            (((w & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1) as i32,
+            ((((w >> 16) & 0xFFFF).wrapping_sub(1) & 0x1FF) + 1) as i32,
+        )
+    };
     let pos = |w: u32| ((w & 0x3FF) as i32, ((w >> 16) & 0x1FF) as i32);
     match op {
         0x02 => {
             c.kind = "fill";
             let (x, y) = ((word(1) & 0x3F0) as i32, ((word(1) >> 16) & 0x1FF) as i32);
-            c.area = Some([x, y, (((word(2) & 0x3FF) + 0xF) & !0xF) as i32, ((word(2) >> 16) & 0x1FF) as i32]);
-            c.vertices = vec![Vertex { x, y, uv: None, color: Some(rgb(p[0])), view: None }];
+            c.area = Some([
+                x,
+                y,
+                (((word(2) & 0x3FF) + 0xF) & !0xF) as i32,
+                ((word(2) >> 16) & 0x1FF) as i32,
+            ]);
+            c.vertices = vec![Vertex {
+                x,
+                y,
+                uv: None,
+                color: Some(rgb(p[0])),
+                view: None,
+            }];
         }
         0x20..=0x3F => {
             c.gouraud = op & 0x10 != 0;
@@ -138,13 +165,22 @@ fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
                     let w = word(i);
                     uv = Some([w as u8, (w >> 8) as u8]);
                     match k {
-                        0 => c.clut = Some([((w >> 16) & 0x3F) as i32 * 16, ((w >> 22) & 0x1FF) as i32]),
+                        0 => {
+                            c.clut =
+                                Some([((w >> 16) & 0x3F) as i32 * 16, ((w >> 22) & 0x1FF) as i32])
+                        }
                         1 => page = Some((w >> 16) as u16),
                         _ => {}
                     }
                     i += 1;
                 }
-                c.vertices.push(Vertex { x, y, uv, color: Some(col), view: None });
+                c.vertices.push(Vertex {
+                    x,
+                    y,
+                    uv,
+                    color: Some(col),
+                    view: None,
+                });
             }
             if let Some(pg) = page {
                 st.texpage = (st.texpage & !0x9FF) | (pg & 0x9FF);
@@ -174,7 +210,13 @@ fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
                 }
                 let Some(&w) = p.get(i) else { break };
                 let (x, y) = xy(w, st);
-                c.vertices.push(Vertex { x, y, uv: None, color: Some(col), view: None });
+                c.vertices.push(Vertex {
+                    x,
+                    y,
+                    uv: None,
+                    color: Some(col),
+                    view: None,
+                });
                 i += 1;
             }
             if c.semi {
@@ -203,7 +245,13 @@ fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
                 _ => (16, 16),
             };
             c.area = Some([x, y, w, h]);
-            c.vertices = vec![Vertex { x, y, uv, color: Some(rgb(p[0])), view: None }];
+            c.vertices = vec![Vertex {
+                x,
+                y,
+                uv,
+                color: Some(rgb(p[0])),
+                view: None,
+            }];
             if c.textured || c.semi {
                 c.texpage = Some(TexturePage::from_bits(st.texpage));
             }
@@ -236,8 +284,18 @@ fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
         0xE2 => {
             c.kind = "texwindow";
             let w = p[0];
-            st.tex_window = ((w & 31) as u8, ((w >> 5) & 31) as u8, ((w >> 10) & 31) as u8, ((w >> 15) & 31) as u8);
-            c.value = Some([(w & 31) as i32, ((w >> 5) & 31) as i32, ((w >> 10) & 31) as i32, ((w >> 15) & 31) as i32]);
+            st.tex_window = (
+                (w & 31) as u8,
+                ((w >> 5) & 31) as u8,
+                ((w >> 10) & 31) as u8,
+                ((w >> 15) & 31) as u8,
+            );
+            c.value = Some([
+                (w & 31) as i32,
+                ((w >> 5) & 31) as i32,
+                ((w >> 10) & 31) as i32,
+                ((w >> 15) & 31) as i32,
+            ]);
         }
         0xE3 => {
             c.kind = "area_tl";
@@ -273,13 +331,25 @@ mod tests {
 
     #[test]
     fn decodes_textured_gouraud_quad_with_offset() {
-        let st = DrawState { offset: (100, 50), texpage: 0, ..Default::default() };
+        let st = DrawState {
+            offset: (100, 50),
+            texpage: 0,
+            ..Default::default()
+        };
         // E5 offset is already in `st`; GT4 (3Ch): colour+xy+uv(clut) per vertex.
         let words = vec![
-            0x3C10_2030, 0x0000_0000, 0x7FC0_0201, // v0: rgb 30/20/10, (0,0), uv 01/02, clut (0, 511)
-            0x0040_5060, 0x0000_0010, 0x0095_0403, // v1: (16,0), page 0x95
-            0x0070_8090, 0x0010_0000, 0x0000_0605, // v2
-            0x00A0_B0C0, 0x0010_0010, 0x0000_0807, // v3
+            0x3C10_2030,
+            0x0000_0000,
+            0x7FC0_0201, // v0: rgb 30/20/10, (0,0), uv 01/02, clut (0, 511)
+            0x0040_5060,
+            0x0000_0010,
+            0x0095_0403, // v1: (16,0), page 0x95
+            0x0070_8090,
+            0x0010_0000,
+            0x0000_0605, // v2
+            0x00A0_B0C0,
+            0x0010_0010,
+            0x0000_0807, // v3
         ];
         let c = &decode(&st, &[words])[0];
         assert_eq!((c.kind, c.textured, c.gouraud), ("poly4", true, true));
@@ -289,13 +359,24 @@ mod tests {
         assert_eq!(c.vertices[1].color, Some([0x60, 0x50, 0x40]));
         assert_eq!(c.clut, Some([0, 511]));
         // Page 95h: x = 5*64, y = 256, depth bits 1 -> 8-bit.
-        assert_eq!(c.texpage, Some(TexturePage { x: 320, y: 256, depth: 8, blend: 0 }));
+        assert_eq!(
+            c.texpage,
+            Some(TexturePage {
+                x: 320,
+                y: 256,
+                depth: 8,
+                blend: 0
+            })
+        );
         assert_eq!(c.dither, Some(false), "E1h dither bit clear");
     }
 
     #[test]
     fn dithers_shaded_polygons_when_enabled() {
-        let st = DrawState { texpage: 0x200, ..Default::default() };
+        let st = DrawState {
+            texpage: 0x200,
+            ..Default::default()
+        };
         let gouraud = vec![0x3010_2030, 0, 0x0040_5060, 0x10, 0x0070_8090, 0x0010_0000];
         let flat = vec![0x2010_2030, 0, 0x10, 0x0010_0000];
         let c = decode(&st, &[gouraud, flat]);
@@ -304,7 +385,10 @@ mod tests {
 
     #[test]
     fn tracks_environment() {
-        let cmds = vec![vec![0xE500_0000 | (20 << 11) | 10], vec![0x6000_00FF, 0x0005_0005, 0x0010_0020]];
+        let cmds = vec![
+            vec![0xE500_0000 | (20 << 11) | 10],
+            vec![0x6000_00FF, 0x0005_0005, 0x0010_0020],
+        ];
         let d = decode(&DrawState::default(), &cmds);
         assert_eq!(d[0].value, Some([10, 20, 0, 0]));
         assert_eq!((d[1].kind, d[1].area), ("rect", Some([15, 25, 32, 16])));

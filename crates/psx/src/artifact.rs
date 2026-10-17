@@ -18,7 +18,9 @@ const RECORD_BYTES: usize = 64 * 1024;
 const RESPONSE_BYTES: usize = 96 * 1024;
 const IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Deserialize, Serialize, JsonSchema, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Deserialize, Serialize, JsonSchema, Default,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Format {
     #[default]
@@ -91,7 +93,13 @@ fn hex(s: &str) -> Option<u64> {
     u64::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).ok()
 }
 fn detected(path: &Path) -> Format {
-    match path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "json" => Format::Json,
         "jsonl" | "ndjson" => Format::Jsonl,
         "csv" => Format::Csv,
@@ -103,8 +111,10 @@ fn detected(path: &Path) -> Format {
 pub fn descriptor(path: &Path) -> std::io::Result<Value> {
     let m = fs::metadata(path)?;
     let format = detected(path);
-    Ok(json!({"path":path,"bytes":m.len(),"directory":m.is_dir(),"format":format,
-        "read":{"tool":"artifact_read","arguments":{"path":path}}}))
+    Ok(
+        json!({"path":path,"bytes":m.len(),"directory":m.is_dir(),"format":format,
+        "read":{"tool":"artifact_read","arguments":{"path":path}}}),
+    )
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,7 +134,9 @@ fn decode(s: &str) -> R<Cursor> {
     if s.len() > 4096 {
         return Err(invalid("cursor exceeds 4096 bytes"));
     }
-    let b = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).map_err(invalid)?;
+    let b = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s)
+        .map_err(invalid)?;
     serde_json::from_slice(&b).map_err(invalid)
 }
 
@@ -132,7 +144,9 @@ impl ReadArgs {
     fn matches(&self, v: &Value, pc: Option<u64>) -> bool {
         let number = |v: &Value| v.as_u64().or_else(|| v.as_str()?.parse().ok());
         if self.frame_from.is_some() || self.frame_to.is_some() {
-            let Some(f) = number(&v[&self.frame_field]) else { return false };
+            let Some(f) = number(&v[&self.frame_field]) else {
+                return false;
+            };
             if self.frame_from.is_some_and(|n| f < n) || self.frame_to.is_some_and(|n| f > n) {
                 return false;
             }
@@ -141,28 +155,46 @@ impl ReadArgs {
             let found = v["pc"]
                 .as_u64()
                 .or_else(|| v["pc_hex"].as_str().and_then(hex))
-                .or_else(|| v["pc"].as_str().and_then(|s| s.parse().ok().or_else(|| hex(s))));
+                .or_else(|| {
+                    v["pc"]
+                        .as_str()
+                        .and_then(|s| s.parse().ok().or_else(|| hex(s)))
+                });
             if found != Some(pc) {
                 return false;
             }
         }
-        self.contains.as_ref().is_none_or(|s| v.as_str().map_or_else(|| v.to_string().contains(s), |v| v.contains(s)))
+        self.contains.as_ref().is_none_or(|s| {
+            v.as_str()
+                .map_or_else(|| v.to_string().contains(s), |v| v.contains(s))
+        })
     }
     fn project(&self, v: Value) -> R<Value> {
         if self.columns.is_empty() {
             return Ok(v);
         }
-        let o = v.as_object().ok_or_else(|| invalid("column projection requires object records"))?;
+        let o = v
+            .as_object()
+            .ok_or_else(|| invalid("column projection requires object records"))?;
         for key in &self.columns {
             if !o.contains_key(key) {
                 return Err(invalid(format!("unknown column {key:?}")));
             }
         }
-        Ok(Value::Object(self.columns.iter().map(|k| (k.clone(), o[k].clone())).collect()))
+        Ok(Value::Object(
+            self.columns
+                .iter()
+                .map(|k| (k.clone(), o[k].clone()))
+                .collect(),
+        ))
     }
     fn execute(&self, ctx: &Ctx) -> R<Value> {
         crate::page::validate(self.limit).map_err(invalid)?;
-        if self.frame_from.zip(self.frame_to).is_some_and(|(a, b)| a > b) {
+        if self
+            .frame_from
+            .zip(self.frame_to)
+            .is_some_and(|(a, b)| a > b)
+        {
             return Err(invalid("frame_from exceeds frame_to"));
         }
         if !matches!(self.frame_field.as_str(), "frame" | "run_frame") {
@@ -171,23 +203,41 @@ impl ReadArgs {
         if self.cursor.is_some() && self.offset != 0 {
             return Err(invalid("cursor cannot combine with offset"));
         }
-        let p = if self.path.is_absolute() { self.path.clone() } else { ctx.root.join(&self.path) };
+        let p = if self.path.is_absolute() {
+            self.path.clone()
+        } else {
+            ctx.root.join(&self.path)
+        };
         let p = p.canonicalize().map_err(io)?;
         let m = fs::metadata(&p).map_err(io)?;
         if !m.is_file() && !m.is_dir() {
             return Err(invalid("artifact must be a regular file or directory"));
         }
-        let format = if self.format == Format::Auto { detected(&p) } else { self.format };
-        let row_filters = self.frame_from.is_some() || self.frame_to.is_some() || self.pc.is_some() || !self.columns.is_empty();
+        let format = if self.format == Format::Auto {
+            detected(&p)
+        } else {
+            self.format
+        };
+        let row_filters = self.frame_from.is_some()
+            || self.frame_to.is_some()
+            || self.pc.is_some()
+            || !self.columns.is_empty();
         if (row_filters && !matches!(format, Format::Jsonl | Format::Csv))
-            || (self.contains.is_some() && !matches!(format, Format::Jsonl | Format::Csv | Format::Text))
+            || (self.contains.is_some()
+                && !matches!(format, Format::Jsonl | Format::Csv | Format::Text))
         {
-            return Err(invalid("record filters/projection require JSONL/CSV; contains also supports text"));
+            return Err(invalid(
+                "record filters/projection require JSONL/CSV; contains also supports text",
+            ));
         }
         if self.pointer.is_some() && format != Format::Json {
             return Err(invalid("pointer requires JSON format"));
         }
-        let pc = self.pc.as_deref().map(|s| hex(s).ok_or_else(|| invalid("pc must be a hex address"))).transpose()?;
+        let pc = self
+            .pc
+            .as_deref()
+            .map(|s| hex(s).ok_or_else(|| invalid("pc must be a hex address")))
+            .transpose()?;
         let source = sha256_bytes(
             &serde_json::to_vec(&json!({"path":p,"bytes":m.len(),
             "modified_ns":m.modified().ok().and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|d|d.as_nanos().to_string())}))
@@ -199,19 +249,33 @@ impl ReadArgs {
             .unwrap(),
         );
         let cursor = self.cursor.as_deref().map(decode).transpose()?;
-        if cursor.as_ref().is_some_and(|c| c.source != source || c.query != query) {
-            return Err(failure("stale_cursor", "Source metadata or query changed; restart without cursor."));
+        if cursor
+            .as_ref()
+            .is_some_and(|c| c.source != source || c.query != query)
+        {
+            return Err(failure(
+                "stale_cursor",
+                "Source metadata or query changed; restart without cursor.",
+            ));
         }
-        let mut out = json!({"artifact":descriptor(&p).map_err(io)?,"source_id":source,"format":format});
+        let mut out =
+            json!({"artifact":descriptor(&p).map_err(io)?,"source_id":source,"format":format});
         if m.is_dir() {
-            if self.format != Format::Auto || self.pointer.is_some() || row_filters || self.contains.is_some() {
+            if self.format != Format::Auto
+                || self.pointer.is_some()
+                || row_filters
+                || self.contains.is_some()
+            {
                 return Err(invalid("directories accept pagination only"));
             }
             let mut paths = Vec::new();
             for e in fs::read_dir(&p).map_err(io)? {
                 paths.push(e.map_err(io)?.path());
                 if paths.len() > 10000 {
-                    return Err(failure("limit_exceeded", "Directory exceeds 10000 entries; inspect a subdirectory."));
+                    return Err(failure(
+                        "limit_exceeded",
+                        "Directory exceeds 10000 entries; inspect a subdirectory.",
+                    ));
                 }
             }
             paths.sort();
@@ -232,12 +296,18 @@ impl ReadArgs {
             out["format"] = json!("directory");
         } else if format == Format::Json {
             if m.len() > JSON_BYTES {
-                return Err(failure("limit_exceeded", "JSON exceeds 16 MiB; use text/hex mode or a smaller artifact."));
+                return Err(failure(
+                    "limit_exceeded",
+                    "JSON exceeds 16 MiB; use text/hex mode or a smaller artifact.",
+                ));
             }
             let b = read_bounded(&p, JSON_BYTES)?;
-            let value: Value = serde_json::from_slice(&b).map_err(|e| failure("invalid_artifact", e))?;
+            let value: Value =
+                serde_json::from_slice(&b).map_err(|e| failure("invalid_artifact", e))?;
             let value = match &self.pointer {
-                Some(ptr) => value.pointer(ptr).ok_or_else(|| invalid("JSON pointer does not exist"))?,
+                Some(ptr) => value
+                    .pointer(ptr)
+                    .ok_or_else(|| invalid("JSON pointer does not exist"))?,
                 None => &value,
             };
             let start = cursor.as_ref().map_or(self.offset as u64, |c| c.position) as usize;
@@ -248,7 +318,10 @@ impl ReadArgs {
                     let len = row.to_string().len();
                     if bytes + len > RESPONSE_BYTES {
                         if selected.is_empty() {
-                            return Err(failure("limit_exceeded", "One JSON row exceeds 96 KiB; select a narrower pointer."));
+                            return Err(failure(
+                                "limit_exceeded",
+                                "One JSON row exceeds 96 KiB; select a narrower pointer.",
+                            ));
                         }
                         break;
                     }
@@ -262,7 +335,10 @@ impl ReadArgs {
                     return Err(invalid("offset requires a JSON array"));
                 }
                 if value.to_string().len() > RESPONSE_BYTES {
-                    return Err(failure("limit_exceeded", "JSON value exceeds 96 KiB; select a narrower pointer."));
+                    return Err(failure(
+                        "limit_exceeded",
+                        "JSON value exceeds 96 KiB; select a narrower pointer.",
+                    ));
                 }
                 out["value"] = value.clone();
                 out["page"] = crate::page::metadata(1, 0, 1, self.limit);
@@ -275,7 +351,11 @@ impl ReadArgs {
             f.seek(SeekFrom::Start(start)).map_err(io)?;
             let mut b = Vec::new();
             f.take(self.limit as u64).read_to_end(&mut b).map_err(io)?;
-            out["hex"] = json!(b.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" "));
+            out["hex"] = json!(b
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<Vec<_>>()
+                .join(" "));
             let end = start.saturating_add(b.len() as u64);
             out["page"] = json!({"total":m.len(),"offset":start,"returned":b.len(),"limit":self.limit,"unit":"bytes",
                 "complete":start==0 && end>=m.len(),"truncated":end<m.len(),"next_offset":(end<m.len()).then_some(end)});
@@ -287,21 +367,43 @@ impl ReadArgs {
             if !b.starts_with(b"\x89PNG\r\n\x1a\n") {
                 return Err(failure("invalid_artifact", "image mode requires a PNG"));
             }
-            let reader = png::Decoder::new(std::io::Cursor::new(&b)).read_info().map_err(|e| failure("invalid_artifact", e))?;
+            let reader = png::Decoder::new(std::io::Cursor::new(&b))
+                .read_info()
+                .map_err(|e| failure("invalid_artifact", e))?;
             let info = reader.info();
-            out["image"] = json!({"path":p,"mime_type":"image/png","width":info.width,"height":info.height});
+            out["image"] =
+                json!({"path":p,"mime_type":"image/png","width":info.width,"height":info.height});
             out["artifact"]["sha256"] = json!(sha256_bytes(&b));
             out["page"] = crate::page::metadata(1, 0, 1, self.limit);
         } else {
-            out = self.stream(&p, m.len(), format, source.clone(), query.clone(), cursor, pc, out, ctx)?;
+            out = self.stream(
+                &p,
+                m.len(),
+                format,
+                source.clone(),
+                query.clone(),
+                cursor,
+                pc,
+                out,
+                ctx,
+            )?;
         }
         if out["page"]["truncated"] == true && out["page"].get("next_cursor").is_none() {
             let pos = out["page"]["next_offset"].as_u64().unwrap();
-            out["page"]["next_cursor"] = json!(encode(Cursor { source, query, position: pos, record: pos, skip_until: 0 }));
+            out["page"]["next_cursor"] = json!(encode(Cursor {
+                source,
+                query,
+                position: pos,
+                record: pos,
+                skip_until: 0
+            }));
         }
         let after = fs::metadata(&p).map_err(io)?;
         if after.len() != m.len() || after.modified().ok() != m.modified().ok() {
-            return Err(failure("source_changed", "Artifact changed during inspection; retry against a stable file."));
+            return Err(failure(
+                "source_changed",
+                "Artifact changed during inspection; retry against a stable file.",
+            ));
         }
         if serde_json::to_string_pretty(&out).unwrap().len() > 192 * 1024 {
             return Err(failure(
@@ -328,17 +430,23 @@ impl ReadArgs {
         let mut f = BufReader::new(File::open(p).map_err(io)?);
         let header = if format == Format::Csv {
             let (n, header) = record(&mut f, format)?;
-            let fields = csv(&header)?.ok_or_else(|| failure("invalid_artifact", "CSV header has an unclosed quote"))?;
+            let fields = csv(&header)?
+                .ok_or_else(|| failure("invalid_artifact", "CSV header has an unclosed quote"))?;
             let unique: std::collections::BTreeSet<_> = fields.iter().collect();
             if n == 0 || fields.iter().any(String::is_empty) || unique.len() != fields.len() {
-                return Err(failure("invalid_artifact", "CSV needs a nonempty header with unique columns"));
+                return Err(failure(
+                    "invalid_artifact",
+                    "CSV needs a nonempty header with unique columns",
+                ));
             }
             Some(fields)
         } else {
             None
         };
         let header_bytes = f.stream_position().map_err(io)?;
-        let initial = cursor.as_ref().map_or(f.stream_position().map_err(io)?, |c| c.position);
+        let initial = cursor
+            .as_ref()
+            .map_or(f.stream_position().map_err(io)?, |c| c.position);
         if initial > size {
             return Err(invalid("cursor is outside the source"));
         }
@@ -365,19 +473,30 @@ impl ReadArgs {
             position += n;
             scanned += 1;
             let row = match format {
-                Format::Jsonl => {
-                    serde_json::from_slice(&line).map_err(|e| failure("invalid_artifact", format!("JSONL record {index}: {e}")))?
-                }
+                Format::Jsonl => serde_json::from_slice(&line).map_err(|e| {
+                    failure("invalid_artifact", format!("JSONL record {index}: {e}"))
+                })?,
                 Format::Csv => {
-                    let fields = csv(&line)?.ok_or_else(|| failure("invalid_artifact", "CSV has an unclosed quote"))?;
+                    let fields = csv(&line)?
+                        .ok_or_else(|| failure("invalid_artifact", "CSV has an unclosed quote"))?;
                     let header = header.as_ref().unwrap();
                     if fields.len() != header.len() {
                         return Err(failure(
                             "invalid_artifact",
-                            format!("CSV record {index}: expected {} columns, found {}", header.len(), fields.len()),
+                            format!(
+                                "CSV record {index}: expected {} columns, found {}",
+                                header.len(),
+                                fields.len()
+                            ),
                         ));
                     }
-                    Value::Object(header.iter().cloned().zip(fields.into_iter().map(Value::String)).collect())
+                    Value::Object(
+                        header
+                            .iter()
+                            .cloned()
+                            .zip(fields.into_iter().map(Value::String))
+                            .collect(),
+                    )
                 }
                 _ => json!(std::str::from_utf8(&line)
                     .map_err(|_| failure("invalid_artifact", "Text is not UTF-8; use hex mode"))?
@@ -388,7 +507,10 @@ impl ReadArgs {
                 let len = row.to_string().len();
                 if returned_bytes + len > RESPONSE_BYTES {
                     if rows.is_empty() {
-                        return Err(failure("limit_exceeded", "Record exceeds response budget; project fewer columns or use hex mode"));
+                        return Err(failure(
+                            "limit_exceeded",
+                            "Record exceeds response budget; project fewer columns or use hex mode",
+                        ));
                     }
                     position = before;
                     break;
@@ -414,9 +536,16 @@ impl ReadArgs {
 
 fn read_bounded(p: &Path, limit: u64) -> R<Vec<u8>> {
     let mut b = Vec::new();
-    File::open(p).map_err(io)?.take(limit + 1).read_to_end(&mut b).map_err(io)?;
+    File::open(p)
+        .map_err(io)?
+        .take(limit + 1)
+        .read_to_end(&mut b)
+        .map_err(io)?;
     if b.len() as u64 > limit {
-        return Err(failure("limit_exceeded", format!("Artifact exceeds the {limit}-byte budget for this format")));
+        return Err(failure(
+            "limit_exceeded",
+            format!("Artifact exceeds the {limit}-byte budget for this format"),
+        ));
     }
     Ok(b)
 }
@@ -425,9 +554,15 @@ fn record(reader: &mut BufReader<File>, format: Format) -> R<(u64, Vec<u8>)> {
     let mut line = Vec::new();
     loop {
         let remaining = RECORD_BYTES + 1 - line.len();
-        let n = reader.take(remaining as u64).read_until(b'\n', &mut line).map_err(io)?;
+        let n = reader
+            .take(remaining as u64)
+            .read_until(b'\n', &mut line)
+            .map_err(io)?;
         if line.len() > RECORD_BYTES {
-            return Err(failure("limit_exceeded", "Record exceeds 64 KiB; use hex mode for byte inspection"));
+            return Err(failure(
+                "limit_exceeded",
+                "Record exceeds 64 KiB; use hex mode for byte inspection",
+            ));
         }
         if format != Format::Csv || csv(&line)?.is_some() || n == 0 {
             break;
@@ -438,7 +573,8 @@ fn record(reader: &mut BufReader<File>, format: Format) -> R<(u64, Vec<u8>)> {
 
 /// RFC 4180 fields, including escaped quotes and quoted newlines. None means incomplete quoted record.
 fn csv(bytes: &[u8]) -> R<Option<Vec<String>>> {
-    let s = std::str::from_utf8(bytes).map_err(|_| failure("invalid_artifact", "CSV is not UTF-8"))?;
+    let s =
+        std::str::from_utf8(bytes).map_err(|_| failure("invalid_artifact", "CSV is not UTF-8"))?;
     let s = s.strip_suffix('\n').unwrap_or(s);
     let s = s.strip_suffix('\r').unwrap_or(s);
     let mut fields = Vec::new();
@@ -479,7 +615,12 @@ fn csv(bytes: &[u8]) -> R<Option<Vec<String>>> {
 impl Op for ReadArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         match self.execute(ctx) {
-            Ok(value) => Outcome { value, exit: 0, pretty: true, text: false },
+            Ok(value) => Outcome {
+                value,
+                exit: 0,
+                pretty: true,
+                text: false,
+            },
             Err(e) => crate::context::failed(e),
         }
     }

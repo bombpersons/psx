@@ -95,7 +95,8 @@ impl Timers {
             if hit_ffff {
                 t.mode |= 1 << 12;
             }
-            let wants = (hit_target && t.mode & (1 << 4) != 0) || (hit_ffff && t.mode & (1 << 5) != 0);
+            let wants =
+                (hit_target && t.mode & (1 << 4) != 0) || (hit_ffff && t.mode & (1 << 5) != 0);
             if wants && (t.mode & (1 << 6) != 0 || !t.fired) {
                 t.fired = true;
                 if t.mode & (1 << 7) != 0 {
@@ -126,7 +127,10 @@ fn step_frac(frac: &mut u64, cycles: u64, rate: u64) -> u64 {
 mod tests {
     use super::*;
 
-    const R: Rates = Rates { dotclock: 1 << 16, hblank: 1 << 16 };
+    const R: Rates = Rates {
+        dotclock: 1 << 16,
+        hblank: 1 << 16,
+    };
 
     #[test]
     fn target_reset_and_irq() {

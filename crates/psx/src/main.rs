@@ -15,19 +15,19 @@ use serde_json::{json, Value};
 
 use commands::{Ctx, Op};
 
+mod artifact;
 mod assets_cmd;
 mod bios;
-mod context;
-mod artifact;
-mod page;
 mod bound_symbols;
 mod code;
 mod commands;
+mod context;
 mod ghidra;
 mod guide;
 mod lockstep;
 mod mcp;
 mod native;
+mod page;
 mod parser;
 mod parser_template;
 mod provenance;
@@ -164,7 +164,11 @@ enum RamAction {
 
 /// `--root`, else `PSX_ROOT`: the directory to work in.
 fn project_root(flag: Option<PathBuf>) -> Option<PathBuf> {
-    flag.or_else(|| std::env::var_os("PSX_ROOT").filter(|v| !v.is_empty()).map(PathBuf::from))
+    flag.or_else(|| {
+        std::env::var_os("PSX_ROOT")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    })
 }
 
 fn main() -> ExitCode {
@@ -174,11 +178,17 @@ fn main() -> ExitCode {
     if let Some(root) = pinned_root {
         if let Err(e) = std::env::set_current_dir(&root) {
             let abs = std::path::absolute(&root).unwrap_or(root);
-            println!("{}", serde_json::json!({"error": {"code": "invalid_arguments", "message": format!("project root {} (--root / PSX_ROOT): {e}", abs.display())}}));
+            println!(
+                "{}",
+                serde_json::json!({"error": {"code": "invalid_arguments", "message": format!("project root {} (--root / PSX_ROOT): {e}", abs.display())}})
+            );
             return ExitCode::from(1);
         }
     }
-    let ctx = Ctx { root: std::env::current_dir().unwrap_or_default(), cancel: None };
+    let ctx = Ctx {
+        root: std::env::current_dir().unwrap_or_default(),
+        cancel: None,
+    };
     let out = match cli.command {
         Command::McpCall => mcp::project::worker(&ctx),
         Command::Guide(a) => a.exec(&ctx),
@@ -192,14 +202,22 @@ fn main() -> ExitCode {
         Command::Extract(a) => a.exec(&ctx),
         Command::Exe(a) => a.exec(&ctx),
         Command::Xa(a) => a.exec(&ctx),
-        Command::Assets { action: assets_cmd::AssetsAction::Scan(a) } => a.exec(&ctx),
-        Command::Assets { action: assets_cmd::AssetsAction::Extract(a) } => a.exec(&ctx),
+        Command::Assets {
+            action: assets_cmd::AssetsAction::Scan(a),
+        } => a.exec(&ctx),
+        Command::Assets {
+            action: assets_cmd::AssetsAction::Extract(a),
+        } => a.exec(&ctx),
         Command::Str(a) => a.exec(&ctx),
         Command::Memcard(a) => a.exec(&ctx),
         Command::Textures(a) => a.exec(&ctx),
         Command::Sector(a) => a.exec(&ctx),
-        Command::Template { action: TemplateAction::Create(a) } => a.exec(&ctx),
-        Command::Template { action: TemplateAction::Parser(a) } => a.exec(&ctx),
+        Command::Template {
+            action: TemplateAction::Create(a),
+        } => a.exec(&ctx),
+        Command::Template {
+            action: TemplateAction::Parser(a),
+        } => a.exec(&ctx),
         Command::Run(a) => a.exec(&ctx),
         Command::Loads(a) => a.exec(&ctx),
         Command::Symbols(a) => a.exec(&ctx),
@@ -207,9 +225,15 @@ fn main() -> ExitCode {
         Command::Native(a) => a.exec(&ctx),
         Command::Disasm(a) => a.exec(&ctx),
         Command::Xrefs(a) => a.exec(&ctx),
-        Command::Ram { action: RamAction::Diff(a) } => a.exec(&ctx),
-        Command::Ram { action: RamAction::Search(a) } => a.exec(&ctx),
-        Command::Ram { action: RamAction::View(a) } => a.exec(&ctx),
+        Command::Ram {
+            action: RamAction::Diff(a),
+        } => a.exec(&ctx),
+        Command::Ram {
+            action: RamAction::Search(a),
+        } => a.exec(&ctx),
+        Command::Ram {
+            action: RamAction::View(a),
+        } => a.exec(&ctx),
         Command::GpuReplay(a) => a.exec(&ctx),
         Command::VramDiff(a) => a.exec(&ctx),
         Command::Addr(a) => a.exec(&ctx),
@@ -305,11 +329,18 @@ fn disc_summary(image: &Path, hash: bool) -> R {
         "streamed_files": files_only.clone().filter(|e| e.is_streamed()).count(),
         "bytes": files_only.map(|e| e.size as u64).sum::<u64>(),
     });
-    out["filesystem"]=out["entries"].clone();
+    out["filesystem"] = out["entries"].clone();
     out["fs_warnings"] = json!(fs.warnings);
 
-    let cnf = fs.find("/SYSTEM.CNF").map(|e| fs.read_file(&disc, e)).transpose()?.map(|b| SystemCnf::parse(&b));
-    let boot = cnf.as_ref().and_then(|c| c.boot.clone()).unwrap_or_else(|| DEFAULT_BOOT.to_string());
+    let cnf = fs
+        .find("/SYSTEM.CNF")
+        .map(|e| fs.read_file(&disc, e))
+        .transpose()?
+        .map(|b| SystemCnf::parse(&b));
+    let boot = cnf
+        .as_ref()
+        .and_then(|c| c.boot.clone())
+        .unwrap_or_else(|| DEFAULT_BOOT.to_string());
     out["system_cnf"] = json!(cnf);
     out["boot_path"] = json!(boot);
     match fs.find(&boot) {
@@ -330,7 +361,9 @@ fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -> R {
     let fs = FileSystem::read(&disc)?;
     let selected: Vec<&Entry> = match (path, all) {
         (_, true) => fs.entries.iter().filter(|e| !e.is_dir).collect(),
-        (Some(p), false) => vec![fs.find(p).ok_or_else(|| MediaError::NotFound(p.to_string()))?],
+        (Some(p), false) => vec![fs
+            .find(p)
+            .ok_or_else(|| MediaError::NotFound(p.to_string()))?],
         (None, false) => return Err(MediaError::Malformed("give a path or --all".into())),
     };
     let mut written = Vec::new();
@@ -351,7 +384,11 @@ fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -> R {
             }
         };
         let rel = e.path.trim_start_matches('/');
-        let dest = out.join(if raw { format!("{rel}.raw") } else { rel.to_string() });
+        let dest = out.join(if raw {
+            format!("{rel}.raw")
+        } else {
+            rel.to_string()
+        });
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|err| MediaError::io(parent, err))?;
         }
@@ -372,7 +409,9 @@ fn read_source(source: &str) -> psx_media::Result<Vec<u8>> {
         Some((image, path)) => {
             let disc = Disc::open(image)?;
             let fs = FileSystem::read(&disc)?;
-            let e = fs.find(path).ok_or_else(|| MediaError::NotFound(path.to_string()))?;
+            let e = fs
+                .find(path)
+                .ok_or_else(|| MediaError::NotFound(path.to_string()))?;
             fs.read_file(&disc, e)?
         }
         None => std::fs::read(source).map_err(|e| MediaError::io(source, e))?,
@@ -386,23 +425,42 @@ fn symbols_cmd(source: &str, sigs_dir: &Path, min_concrete: usize, out: Option<P
         MediaError::NotFound(format!("signatures: {e} (supply a local psx_psyq_signatures checkout with --sigs / MCP sigs, or set PSX_SIGS_DIR to its absolute path for all projects; context reports the default path)"))
     })?;
     let report = psx_symbols::match_code(exe.payload(&bytes), exe.text_addr, &sigs, min_concrete);
-    let stem = source.rsplit(['/', '\\', ':']).next().unwrap_or("exe").trim_end_matches(";1").to_string();
+    let stem = source
+        .rsplit(['/', '\\', ':'])
+        .next()
+        .unwrap_or("exe")
+        .trim_end_matches(";1")
+        .to_string();
     let prefix = out.unwrap_or_else(|| PathBuf::from(".psx/symbols").join(&stem));
     if let Some(parent) = prefix.parent() {
         std::fs::create_dir_all(parent).map_err(|e| MediaError::io(parent, e))?;
     }
     let with_ext = |ext: &str| PathBuf::from(format!("{}.{ext}", prefix.display()));
-    let write = |p: PathBuf, text: String| std::fs::write(&p, text).map_err(|e| MediaError::io(&p, e)).map(|_| p);
+    let write = |p: PathBuf, text: String| {
+        std::fs::write(&p, text)
+            .map_err(|e| MediaError::io(&p, e))
+            .map(|_| p)
+    };
     let doc = json!({
         "source": source,
         "text_addr": exe.text_addr,
         "exe_sha256": psx_media::disc::sha256_bytes(&bytes),
         "report": report,
     });
-    let json_path = write(with_ext("symbols.json"), serde_json::to_string_pretty(&doc).unwrap())?;
-    let ghidra = write(with_ext("ghidra.txt"), psx_symbols::to_ghidra(&report.symbols))?;
+    let json_path = write(
+        with_ext("symbols.json"),
+        serde_json::to_string_pretty(&doc).unwrap(),
+    )?;
+    let ghidra = write(
+        with_ext("ghidra.txt"),
+        psx_symbols::to_ghidra(&report.symbols),
+    )?;
     let sym = write(with_ext("sym"), psx_symbols::to_sym(&report.symbols))?;
-    let functions = report.symbols.iter().filter(|s| s.kind == psx_symbols::Kind::Function).count();
+    let functions = report
+        .symbols
+        .iter()
+        .filter(|s| s.kind == psx_symbols::Kind::Function)
+        .count();
     let mut libs: std::collections::BTreeMap<String, usize> = Default::default();
     for o in &report.objects {
         let lib = o.source.split('/').nth(1).unwrap_or("?").to_string();
@@ -436,7 +494,9 @@ fn exe_cmd(source: &str) -> R {
         Some((image, path)) => {
             let disc = Disc::open(image)?;
             let fs = FileSystem::read(&disc)?;
-            let e = fs.find(path).ok_or_else(|| MediaError::NotFound(path.to_string()))?;
+            let e = fs
+                .find(path)
+                .ok_or_else(|| MediaError::NotFound(path.to_string()))?;
             fs.read_file(&disc, e)?
         }
         None => std::fs::read(source).map_err(|e| MediaError::io(source, e))?,
@@ -451,7 +511,10 @@ fn sectors(image: &Path, lba: u32, count: u32, preview: usize) -> R {
     let mut out = Vec::new();
     for l in lba..lba.saturating_add(count.min(256)) {
         let track = disc.track_for_lba(l).map(|t| t.number);
-        let owner = fs.as_ref().and_then(|fs| fs.owner_of(l)).map(|e| e.path.clone());
+        let owner = fs
+            .as_ref()
+            .and_then(|fs| fs.owner_of(l))
+            .map(|e| e.path.clone());
         let v = match disc.read_data(l) {
             Ok(s) => json!({
                 "lba": l, "track": track, "owner": owner, "form": s.form,

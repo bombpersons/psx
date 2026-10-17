@@ -10,7 +10,14 @@ use psx_gpu::Gpu;
 /// The suites' reset: full draw area, zero offset, no mask, texpage 0 with dither off.
 fn gpu() -> Gpu {
     let mut g = Gpu::new();
-    g.gp0_all(&[0xE300_0000, 0xE400_0000 | 1023 | (511 << 10), 0xE500_0000, 0xE200_0000, 0xE600_0000, 0xE100_0400]);
+    g.gp0_all(&[
+        0xE300_0000,
+        0xE400_0000 | 1023 | (511 << 10),
+        0xE500_0000,
+        0xE200_0000,
+        0xE600_0000,
+        0xE100_0400,
+    ]);
     g
 }
 
@@ -28,7 +35,14 @@ const GREEN: u32 = 0x00F800;
 const BLUE: u32 = 0xF80000;
 
 fn gouraud_tri(g: &mut Gpu, v: [(u32, i32, i32); 3]) {
-    g.gp0_all(&[0x3000_0000 | v[0].0, xy(v[0].1, v[0].2), v[1].0, xy(v[1].1, v[1].2), v[2].0, xy(v[2].1, v[2].2)]);
+    g.gp0_all(&[
+        0x3000_0000 | v[0].0,
+        xy(v[0].1, v[0].2),
+        v[1].0,
+        xy(v[1].1, v[1].2),
+        v[2].0,
+        xy(v[2].1, v[2].2),
+    ]);
 }
 
 fn check(g: &Gpu, name: &str, probes: &[(i32, i32, u16)]) {
@@ -37,14 +51,22 @@ fn check(g: &Gpu, name: &str, probes: &[(i32, i32, u16)]) {
         .filter(|&&(x, y, want)| g.vram.get(x, y) != want)
         .map(|&(x, y, want)| format!("({x},{y}) got {:04x} want {want:04x}", g.vram.get(x, y)))
         .collect();
-    assert!(bad.is_empty(), "{name}: {} of {} probes differ: {bad:?}", bad.len(), probes.len());
+    assert!(
+        bad.is_empty(),
+        "{name}: {} of {} probes differ: {bad:?}",
+        bad.len(),
+        probes.len()
+    );
 }
 
 /// phase-22 SG_AB: slanted gouraud, full 0xFF command colours.
 #[test]
 fn slanted_gouraud_sg_ab() {
     let mut g = gpu();
-    gouraud_tri(&mut g, [(0x0000FF, 20, 20), (0x00FF00, 200, 60), (0xFF0000, 90, 230)]);
+    gouraud_tri(
+        &mut g,
+        [(0x0000FF, 20, 20), (0x00FF00, 200, 60), (0xFF0000, 90, 230)],
+    );
     #[rustfmt::skip]
     check(&g, "SG_AB", &[
         (26, 22, 0x003e), (24, 23, 0x001f), (26, 23, 0x003e), (27, 24, 0x003e), (30, 24, 0x003d),
@@ -60,19 +82,63 @@ fn slanted_gouraud_sg_ab() {
 fn slanted_gouraud_sg1_to_sg3() {
     let mut g = gpu();
     gouraud_tri(&mut g, [(RED, 8, 4), (GREEN, 58, 22), (BLUE, 22, 52)]);
-    check(&g, "SG1", &[(29, 26, 0x294a), (24, 24, 0x28ed), (36, 28, 0x29c6), (20, 20, 0x20b1), (30, 32, 0x3926), (40, 24, 0x1a46)]);
+    check(
+        &g,
+        "SG1",
+        &[
+            (29, 26, 0x294a),
+            (24, 24, 0x28ed),
+            (36, 28, 0x29c6),
+            (20, 20, 0x20b1),
+            (30, 32, 0x3926),
+            (40, 24, 0x1a46),
+        ],
+    );
 
     let mut g = gpu();
     gouraud_tri(&mut g, [(RED, 40, 6), (GREEN, 70, 48), (BLUE, 6, 40)]);
-    check(&g, "SG2", &[(6, 40, 0x7c00), (39, 31, 0x294a), (30, 30, 0x38ca), (48, 32, 0x15ca), (40, 20, 0x14d3), (20, 34, 0x5466)]);
+    check(
+        &g,
+        "SG2",
+        &[
+            (6, 40, 0x7c00),
+            (39, 31, 0x294a),
+            (30, 30, 0x38ca),
+            (48, 32, 0x15ca),
+            (40, 20, 0x14d3),
+            (20, 34, 0x5466),
+        ],
+    );
 
     let mut g = gpu();
     gouraud_tri(&mut g, [(RED, 6, 6), (0, 54, 18), (0, 18, 50)]);
-    check(&g, "SG_R", &[(8, 8, 0x001c), (26, 25, 0x000a), (16, 16, 0x0014), (22, 28, 0x000a), (31, 20, 0x000a), (13, 22, 0x0012)]);
+    check(
+        &g,
+        "SG_R",
+        &[
+            (8, 8, 0x001c),
+            (26, 25, 0x000a),
+            (16, 16, 0x0014),
+            (22, 28, 0x000a),
+            (31, 20, 0x000a),
+            (13, 22, 0x0012),
+        ],
+    );
 
     let mut g = gpu();
     gouraud_tri(&mut g, [(RED, 30, 4), (GREEN, 40, 50), (BLUE, 20, 46)]);
-    check(&g, "SG3", &[(20, 46, 0x7c00), (30, 33, 0x294a), (30, 22, 0x18d2), (31, 40, 0x2dc5), (28, 30, 0x30cc), (33, 38, 0x1e07)]);
+    check(
+        &g,
+        "SG3",
+        &[
+            (20, 46, 0x7c00),
+            (30, 33, 0x294a),
+            (30, 22, 0x18d2),
+            (31, 40, 0x2dc5),
+            (28, 30, 0x30cc),
+            (33, 38, 0x1e07),
+        ],
+    );
 }
 
 /// phase-10 LG: a red→blue gouraud line over 10 pixels loses one LSB of blue
@@ -80,13 +146,22 @@ fn slanted_gouraud_sg1_to_sg3() {
 #[test]
 fn gouraud_line_midpoint() {
     let mut g = gpu();
-    g.gp0_all(&[0x5000_0000 | c5(31, 0, 0), xy(0, 5), c5(0, 0, 31), xy(10, 5)]);
+    g.gp0_all(&[
+        0x5000_0000 | c5(31, 0, 0),
+        xy(0, 5),
+        c5(0, 0, 31),
+        xy(10, 5),
+    ]);
     check(&g, "LG", &[(0, 5, 0x001f), (5, 5, 0x3c0f), (10, 5, 0x7c00)]);
 }
 
 fn covered_row(g: &Gpu, y: i32) -> (usize, i32, i32) {
     let xs: Vec<i32> = (0..1024).filter(|&x| g.vram.get(x, y) != 0).collect();
-    (xs.len(), xs.first().copied().unwrap_or(-1), xs.last().copied().unwrap_or(-1))
+    (
+        xs.len(),
+        xs.first().copied().unwrap_or(-1),
+        xs.last().copied().unwrap_or(-1),
+    )
 }
 
 /// phase-23 Q2/Q3: a quad is dropped when its shared diagonal v1-v2 spans
@@ -108,19 +183,33 @@ fn quad_size_limit_uses_triangle_edges() {
 
     let mut g = gpu();
     g.gp0_all(&quad([(-1, 0), (511, 0), (511, 40), (1023, 40)]));
-    assert_eq!(covered_row(&g, 8), (512, 102, 613), "Q3 v0-v3 over the limit still draws");
+    assert_eq!(
+        covered_row(&g, 8),
+        (512, 102, 613),
+        "Q3 v0-v3 over the limit still draws"
+    );
 }
 
 /// phase-23 O1-O3: the drawing offset is added before the 11-bit wrap.
 #[test]
 fn drawing_offset_wraps_after_addition() {
     let tri = |g: &mut Gpu, off: i32, x0: i32, x1: i32| {
-        g.gp0_all(&[0xE500_0000 | (off as u32 & 0x7FF), 0x2000_0000 | RED, xy(x0, 0), xy(x1, 0), xy(x0, 40)]);
+        g.gp0_all(&[
+            0xE500_0000 | (off as u32 & 0x7FF),
+            0x2000_0000 | RED,
+            xy(x0, 0),
+            xy(x1, 0),
+            xy(x0, 40),
+        ]);
     };
     for (off, x0, x1) in [(0, 500, 600), (-400, 900, 1000), (-1000, 1500, 1600)] {
         let mut g = gpu();
         tri(&mut g, off, x0, x1);
-        assert_eq!(covered_row(&g, 8), (80, 500, 579), "offset {off}, x {x0}..{x1}");
+        assert_eq!(
+            covered_row(&g, 8),
+            (80, 500, 579),
+            "offset {off}, x {x0}..{x1}"
+        );
     }
 }
 
@@ -195,7 +284,11 @@ fn affine_uv_phase17() {
 /// phase-23 R1-R3: variable rectangle width is `w & 3FFh` (1024 draws nothing).
 #[test]
 fn rect_width_is_masked() {
-    for (w, want) in [(16, (16, 200, 215)), (1023, (824, 200, 1023)), (1024, (0, -1, -1))] {
+    for (w, want) in [
+        (16, (16, 200, 215)),
+        (1023, (824, 200, 1023)),
+        (1024, (0, -1, -1)),
+    ] {
         let mut g = gpu();
         g.gp0_all(&[0x6000_0000 | c5(31, 31, 31), xy(200, 0), xy(w, 40)]);
         assert_eq!(covered_row(&g, 8), want, "width {w}");

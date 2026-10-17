@@ -47,18 +47,35 @@ pub(super) struct GpuCapture {
 }
 
 fn projections(m: &mut Machine) -> Vec<Projection> {
-    m.cpu.gte.projections.take().unwrap_or_default().into_iter().map(|p| Projection { sx: p.sx, sy: p.sy, view: p.view }).collect()
+    m.cpu
+        .gte
+        .projections
+        .take()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| Projection {
+            sx: p.sx,
+            sy: p.sy,
+            view: p.view,
+        })
+        .collect()
 }
 
 fn draws(command: &[u32]) -> bool {
-    command.first().is_some_and(|w| matches!(w >> 24, 0x02 | 0x20..=0x7f))
+    command
+        .first()
+        .is_some_and(|w| matches!(w >> 24, 0x02 | 0x20..=0x7f))
 }
 
 impl GpuCapture {
     pub fn new(args: &TraceArgs, run_frames: u32) -> Option<Self> {
         (args.gpu_frame.is_some() || args.gpu_next_draw).then(|| Self {
             from: args.gpu_frame.unwrap_or(0),
-            limit: if args.gpu_next_draw { args.gpu_search_frames.unwrap_or(60) } else { 1 },
+            limit: if args.gpu_next_draw {
+                args.gpu_search_frames.unwrap_or(60)
+            } else {
+                1
+            },
             run_frames,
             next_draw: args.gpu_next_draw,
             filter: args.gpu_draw_filter.unwrap_or_default(),
@@ -83,18 +100,30 @@ impl GpuCapture {
     /// Called once at every observed boundary, including the final run boundary.
     /// A timeout's incomplete frame is eligible only for legacy exact capture.
     pub fn boundary(&mut self, m: &mut Machine, start: u64, finish: bool) {
-        if self.active.as_ref().is_some_and(|c| m.bus.frames > c.absolute_frame || finish) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|c| m.bus.frames > c.absolute_frame || finish)
+        {
             let c = self.active.take().unwrap();
             let complete = m.bus.frames > c.absolute_frame;
             let commands = m.bus.gpu.log.take().unwrap_or_default();
             let current = projections(m);
             self.inspected += u32::from(complete);
             let draw_commands = commands.iter().filter(|c| draws(c)).count();
-            let primitives = commands.iter().filter(|c| c.first().is_some_and(|w| matches!(w >> 24, 0x20..=0x7f))).count();
-            let textured = commands.iter().filter(|c| c.first().is_some_and(|w| {
-                let op = w >> 24;
-                matches!(op, 0x20..=0x3f | 0x60..=0x7f) && op & 4 != 0
-            })).count();
+            let primitives = commands
+                .iter()
+                .filter(|c| c.first().is_some_and(|w| matches!(w >> 24, 0x20..=0x7f)))
+                .count();
+            let textured = commands
+                .iter()
+                .filter(|c| {
+                    c.first().is_some_and(|w| {
+                        let op = w >> 24;
+                        matches!(op, 0x20..=0x3f | 0x60..=0x7f) && op & 4 != 0
+                    })
+                })
+                .count();
             let qualifying = match self.filter {
                 GpuDrawFilter::Any => draw_commands,
                 GpuDrawFilter::Primitives => primitives,
@@ -125,7 +154,11 @@ impl GpuCapture {
                     commands,
                     projections: all_projections,
                     display: m.bus.gpu.display,
-                    ctrl: [m.cpu.gte.read_ctrl(24), m.cpu.gte.read_ctrl(25), m.cpu.gte.read_ctrl(26)],
+                    ctrl: [
+                        m.cpu.gte.read_ctrl(24),
+                        m.cpu.gte.read_ctrl(25),
+                        m.cpu.gte.read_ctrl(26),
+                    ],
                     metadata,
                 });
             } else {
@@ -134,7 +167,11 @@ impl GpuCapture {
         }
         let rel = m.bus.frames - start;
         let in_window = rel >= self.from && rel - self.from < self.limit as u64;
-        if finish || self.selected.is_some() || self.inspected >= self.limit || (rel >= self.from && !in_window) {
+        if finish
+            || self.selected.is_some()
+            || self.inspected >= self.limit
+            || (rel >= self.from && !in_window)
+        {
             m.bus.gpu.log = None;
             m.cpu.gte.projections = None;
             self.previous.clear();
@@ -185,8 +222,16 @@ mod tests {
     use super::*;
 
     fn search(from: u64, limit: u32) -> GpuCapture {
-        GpuCapture::new(&TraceArgs { gpu_frame: Some(from), gpu_next_draw: true, gpu_search_frames: Some(limit), ..Default::default() }, (from + u64::from(limit)) as u32)
-            .unwrap()
+        GpuCapture::new(
+            &TraceArgs {
+                gpu_frame: Some(from),
+                gpu_next_draw: true,
+                gpu_search_frames: Some(limit),
+                ..Default::default()
+            },
+            (from + u64::from(limit)) as u32,
+        )
+        .unwrap()
     }
 
     fn advance(c: &mut GpuCapture, m: &mut Machine, start: u64, finish: bool) {
@@ -197,12 +242,23 @@ mod tests {
     #[test]
     fn search_metadata_exposes_the_effective_run_budget() {
         for (from, frames, effective) in [(0, 1, 1), (4, 8, 4), (8, 8, 0), (9, 8, 0), (0, 90, 60)] {
-            let capture = GpuCapture::new(&TraceArgs { gpu_frame:Some(from), gpu_next_draw:true, ..Default::default() }, frames).unwrap();
+            let capture = GpuCapture::new(
+                &TraceArgs {
+                    gpu_frame: Some(from),
+                    gpu_next_draw: true,
+                    ..Default::default()
+                },
+                frames,
+            )
+            .unwrap();
             let metadata = capture.missing("frames_reached");
             assert_eq!(metadata["search"]["max_frames"], 60);
             assert_eq!(metadata["search"]["run_budget_frames"], frames);
             assert_eq!(metadata["search"]["effective_max_frames"], effective);
-            assert_eq!(metadata["search"]["truncated_by_run_budget"], effective < 60);
+            assert_eq!(
+                metadata["search"]["truncated_by_run_budget"],
+                effective < 60
+            );
         }
     }
 
@@ -212,7 +268,9 @@ mod tests {
         m.bus.frames = 100;
         let mut c = search(0, 3);
         c.boundary(&mut m, 100, false);
-        m.bus.gpu.gp0_all(&[0xe3000000, 0xa0000000, 0, 0x00010002, 0x12341234]);
+        m.bus
+            .gpu
+            .gp0_all(&[0xe3000000, 0xa0000000, 0, 0x00010002, 0x12341234]);
         advance(&mut c, &mut m, 100, false);
         m.bus.gpu.gp0_all(&[0x80000000, 0, 0x00100010, 0x00010002]);
         advance(&mut c, &mut m, 100, false);
@@ -261,7 +319,14 @@ mod tests {
     fn exact_empty_and_partial_captures_remain_available() {
         for complete in [false, true] {
             let mut m = Machine::new(vec![]);
-            let mut c = GpuCapture::new(&TraceArgs { gpu_frame: Some(0), ..Default::default() }, 1).unwrap();
+            let mut c = GpuCapture::new(
+                &TraceArgs {
+                    gpu_frame: Some(0),
+                    ..Default::default()
+                },
+                1,
+            )
+            .unwrap();
             c.boundary(&mut m, 0, false);
             m.bus.frames = u64::from(complete);
             c.boundary(&mut m, 0, true);
@@ -277,12 +342,23 @@ mod tests {
     fn draw_filters_skip_fills_and_optionally_untextured_primitives() {
         for (filter, expected) in [(GpuDrawFilter::Primitives, 1), (GpuDrawFilter::Textured, 2)] {
             let mut m = Machine::new(vec![]);
-            let mut c = GpuCapture::new(&TraceArgs { gpu_next_draw:true, gpu_search_frames:Some(3),
-                gpu_draw_filter:Some(filter), ..Default::default() }, 3).unwrap();
+            let mut c = GpuCapture::new(
+                &TraceArgs {
+                    gpu_next_draw: true,
+                    gpu_search_frames: Some(3),
+                    gpu_draw_filter: Some(filter),
+                    ..Default::default()
+                },
+                3,
+            )
+            .unwrap();
             c.boundary(&mut m, 0, false);
             m.bus.gpu.gp0_all(&[0x020000ff, 0, 0x00010010]);
             advance(&mut c, &mut m, 0, false);
-            assert!(c.selected.is_none(), "fills must not satisfy the stricter filters");
+            assert!(
+                c.selected.is_none(),
+                "fills must not satisfy the stricter filters"
+            );
             m.bus.gpu.gp0_all(&[0x600000ff, 0, 0x00010001]);
             advance(&mut c, &mut m, 0, false);
             if expected == 2 {
@@ -293,7 +369,10 @@ mod tests {
             let frame = c.selected.as_ref().unwrap();
             assert_eq!(frame.metadata["run_frame"], expected);
             assert_eq!(frame.metadata["content"]["primitives"], 1);
-            assert_eq!(frame.metadata["content"]["textured_primitives"], u32::from(expected == 2));
+            assert_eq!(
+                frame.metadata["content"]["textured_primitives"],
+                u32::from(expected == 2)
+            );
         }
     }
 
@@ -348,7 +427,14 @@ mod tests {
         c.boundary(&mut m, 0, false);
         let selected = c.selected.as_ref().unwrap();
         assert_eq!(selected.metadata["run_frame"], 2);
-        assert_eq!(selected.projections.iter().map(|p| p.view[0]).collect::<Vec<_>>(), [20, 30]);
+        assert_eq!(
+            selected
+                .projections
+                .iter()
+                .map(|p| p.view[0])
+                .collect::<Vec<_>>(),
+            [20, 30]
+        );
         assert!(m.cpu.gte.projections.is_none());
         m.cpu.gte.execute(0x00080001);
         advance(&mut c, &mut m, 0, true);
