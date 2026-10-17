@@ -69,6 +69,10 @@ The skeleton is a starting point; reshape it to match `docs/engine-model.md`.
 - Readable files (RON for tables, PNG, WAV, glTF where they fit), so people
   can author them by hand or with ordinary tools, and an editor can open and
   save them.
+- The editor that opens them is a modern desktop application: full window
+  resolution, mouse and keyboard, ordinary UI. It does not use psx-bevy's PS1
+  renderer, bitmap font or pad menus, and should not look like a PlayStation
+  game (see the psx `guide` topic `port`).
 - Exact enough that trajectory tests still match. Where float conversion would
   change behaviour (fixed-point accumulation, rounding), keep the integer
   quantity and document why.

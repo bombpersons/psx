@@ -193,7 +193,8 @@ fields_per_tick = 2
    reflected tuning type).
 4. No editor skeleton. The port guidance (`guide port`, `docs/port-prompt.md`)
    says to grow an editor alongside the port, one settled format at a time,
-   depending on `engine/` only.
+   depending on `engine/` only, as a modern high-resolution mouse-and-keyboard
+   application that does not reuse psx-bevy's PS1 renderer.
 
 ## As built
 
