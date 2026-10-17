@@ -151,7 +151,7 @@ impl ToolDef {
 pub fn tools() -> Vec<ToolDef> {
     use commands::*;
     vec![
-        def::<crate::guide::GuideArgs>("guide", "Built-in workflow guidance. Omit topic for an overview; topics: setup, input, run, code, assets, bevy, troubleshooting. Tool descriptions are brief: argument rules and output details live in these topics.").read_only(),
+        def::<crate::guide::GuideArgs>("guide", "Built-in workflow guidance. Omit topic for an overview. Tool descriptions are brief: argument rules and output details live in its topics.").read_only(),
         def::<crate::context::ArgsContext>("context", "Start here: the running build, project root, saved defaults (media, BIOS, backend), local BIOS candidates and capabilities. image or from_state explains region or checkpoint identity; save=true stores the resolved defaults. Never downloads."),
         def::<crate::artifact::ReadArgs>("artifact_read", "Read a returned artifact or run directory in bounded pages: JSON by pointer, JSONL/CSV/text by rows with frame/pc/contains filters and column projection, hex bytes, PNG as an image. Continue with page.next_cursor.").read_only(),
         def::<crate::bios::ListArgs>("bios_list", "List BIOS images in the project's bios/ and the shared BIOS store, with hashes, regions and the download catalog. Read-only; context shows which one is selected and why.").read_only(),
@@ -186,7 +186,8 @@ pub fn tools() -> Vec<ToolDef> {
         def::<RamViewArgs>("ram_view", "Show a RAM window (addr, len) from one or more snapshots side by side, decoded as u8..x32 or fxI.F, marking units that differ.").read_only(),
         def::<LockstepArgs>("lockstep", "Emulator validation: run the native core and PCSX-Redux side by side and stop at the first disagreement. Needs PCSX-Redux; not needed for game investigation.").heavy().default_timeout(),
         def::<ParserTemplateArgs>("template_parser_create", "Create an executable Python 3 external parser starter (kind archive, model, asset or video) with a sample input and protocol notes in dest, for assets_scan, assets_extract or str."),
-        def::<TemplateCreateArgs>("template_create", "Create a standalone Rust/Bevy game project with the PS1 look in dest. Set region (ntsc/pal) and fields_per_tick from the original (Croc PAL: pal + 2; Mega Man 8 PAL: pal + 1). See guide topic bevy."),
+        def::<TemplateCreateArgs>("template_create", "Create a Bevy port workspace (psx-bevy, engine, game, importers) with the PS1 look in dest, e.g. the game folder. Set region and fields_per_tick from the original. See guide topics port, bevy."),
+        def::<TemplateUpdateArgs>("template_update", "Update the project's psx-bevy/ crate to this build; edited files get a .psx-new copy. See guide topic port."),
         def::<GpuReplayArgs>("gpu_replay", "Replay a recorded GP0 command stream into a fresh software GPU and write the resulting VRAM to out (and optionally a PNG). Pair with vram_diff."),
         def::<VramDiffArgs>("vram_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
     ]
@@ -535,7 +536,7 @@ impl ServerHandler for PsxServer {
             .with_instructions(format!(
                 "PlayStation (PS1) reverse-engineering toolkit. Each tool is one `psx` CLI command and returns the JSON the CLI prints. \
                  {default} bios/, media/, external/ and .psx/ outputs live in the project root; relative paths resolve against it. project_root on any call selects another existing project for that call only. \
-                 Start with context, then guide (overview, or a topic: setup, input, run, code, assets, bevy, troubleshooting): tool descriptions are brief and the guide holds argument rules and recipes. \
+                 Start with context, then guide (overview, or a topic: setup, input, run, code, assets, bevy, port, troubleshooting): tool descriptions are brief and the guide holds argument rules and recipes. \
                  Emulation outputs are files in the returned run_dir; read them with artifact_read. run summary=true returns only paths and counts. Results over 256 KiB come back as a result_file path.",
                 default = self.default_note()
             ))

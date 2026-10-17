@@ -14,9 +14,11 @@ Typical routes:
   custom formats. GPU captures and textures provide visual reference.
 - Rebuild: template_create -> decoded assets and idiomatic Bevy rules -> compare
   recorded trajectories and rendered output against the original evidence.
+- Whole port: engine model from evidence -> template_create (engine + game
+  workspace) -> importers -> feature by feature, with an editor alongside.
 
 Tool descriptions are brief; guide topics hold the details. Use the run, input,
-code, assets and bevy topics for the relevant route, and troubleshooting for
+code, assets, bevy and port topics for the relevant route, and troubleshooting for
 unexpected results. Inspect returned files with artifact_read:
 JSON by RFC 6901 pointer, JSONL/CSV/text by rows (frame_from/frame_to with
 frame_field, hex pc, contains, columns), hex for raw bytes and PNG as an image.

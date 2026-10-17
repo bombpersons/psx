@@ -15,12 +15,22 @@ pub enum Topic {
     Code,
     Assets,
     Bevy,
+    Port,
     Troubleshooting,
 }
 
 impl Topic {
-    const ALL: [Self; 8] =
-        [Self::Overview, Self::Setup, Self::Input, Self::Run, Self::Code, Self::Assets, Self::Bevy, Self::Troubleshooting];
+    const ALL: [Self; 9] = [
+        Self::Overview,
+        Self::Setup,
+        Self::Input,
+        Self::Run,
+        Self::Code,
+        Self::Assets,
+        Self::Bevy,
+        Self::Port,
+        Self::Troubleshooting,
+    ];
 
     fn title(self) -> &'static str {
         match self {
@@ -31,6 +41,7 @@ impl Topic {
             Self::Code => "Follow runtime evidence into code",
             Self::Assets => "Find, decode and validate assets",
             Self::Bevy => "Rebuild the game in Bevy",
+            Self::Port => "Port a whole game as an engine and a game",
             Self::Troubleshooting => "Diagnose incomplete or unexpected results",
         }
     }
@@ -44,6 +55,7 @@ impl Topic {
             Self::Code => include_str!("guide/code.md"),
             Self::Assets => include_str!("guide/assets.md"),
             Self::Bevy => include_str!("guide/bevy.md"),
+            Self::Port => include_str!("guide/port.md"),
             Self::Troubleshooting => include_str!("guide/troubleshooting.md"),
         }
     }

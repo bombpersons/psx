@@ -3,7 +3,7 @@
 Mega Man's walk and jump from Mega Man 8 (PAL, SLES-01064), rebuilt as
 ordinary Bevy systems from measurements of the original. Made with
 `psx template create`; the template's own documentation is in
-[`templates/psx-bevy/README.md`](../../templates/psx-bevy/README.md).
+[`templates/psx-bevy/psx-bevy/README.md`](../../templates/psx-bevy/psx-bevy/README.md).
 The method, RAM map and evidence are in
 [`research/case-study-megaman8.md`](../../research/case-study-megaman8.md).
 

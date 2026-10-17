@@ -145,8 +145,12 @@ enum Command {
 
 #[derive(Subcommand)]
 enum TemplateAction {
-    /// Write the psx-bevy starter into an empty or new directory.
+    /// Write the Bevy game workspace (psx-bevy, engine, game, tools) into a new or game directory.
     Create(commands::TemplateCreateArgs),
+    /// Replace untouched psx-bevy/ files with this build's template; report edits and seeded changes.
+    Update(commands::TemplateUpdateArgs),
+    /// Start tracking an existing project's psx-bevy/ crate (writes .psx-template.toml).
+    Adopt(commands::TemplateAdoptArgs),
     /// Write a working external parser, authored fixture and protocol docs.
     Parser(commands::ParserTemplateArgs),
 }
@@ -199,6 +203,8 @@ fn main() -> ExitCode {
         Command::Textures(a) => a.exec(&ctx),
         Command::Sector(a) => a.exec(&ctx),
         Command::Template { action: TemplateAction::Create(a) } => a.exec(&ctx),
+        Command::Template { action: TemplateAction::Update(a) } => a.exec(&ctx),
+        Command::Template { action: TemplateAction::Adopt(a) } => a.exec(&ctx),
         Command::Template { action: TemplateAction::Parser(a) } => a.exec(&ctx),
         Command::Run(a) => a.exec(&ctx),
         Command::Loads(a) => a.exec(&ctx),

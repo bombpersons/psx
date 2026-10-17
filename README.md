@@ -62,7 +62,8 @@ The full story is in the [write-up](research/case-study-megaman8.md).
 - **A Bevy game template** with the PS1 look: vertex wobble, affine textures, 15-bit colour,
   dithering and PS1 blend modes, while game code stays plain Bevy. Includes trajectory tests
   against the original, controller rebinding and its own developer MCP for stepping, querying
-  and screenshotting the game headless.
+  and screenshotting the game headless. Ports start split into a reusable engine (with a tiny
+  sandbox game that proves it) and the game on top, and take template updates in place.
 
 ## See it in action
 
@@ -110,7 +111,9 @@ target/release/psx run --frames 300 --save-state --summary
 target/release/psx guide --topic run
 ```
 
-Start a rebuild from the template (pick region and tick rate from the original):
+Start a port from the template (pick region and tick rate from the original). It is a workspace
+with the template's own crate, an engine with a sandbox game, the game itself and importers;
+`psx template update` brings in later template fixes:
 
 ```bash
 target/release/psx template create ../my-game --region pal
@@ -127,7 +130,7 @@ Custom formats need a parser. Every finding is evidence to check, not a guarante
 
 - [README_FOR_AGENTS.md](README_FOR_AGENTS.md): every command and flag.
 - [docs/agent-workflow.md](docs/agent-workflow.md): evidence, input and project isolation.
-- [templates/psx-bevy](templates/psx-bevy/README.md): the game template.
+- [templates/psx-bevy](templates/psx-bevy/README.md): the game template (engine + game workspace).
 - [docs/ghidra-integration.md](docs/ghidra-integration.md): Ghidra analysis and symbol export.
 - [research/](research/): emulator, format and case-study notes.
 - [PLAN.md](PLAN.md): where this is headed.

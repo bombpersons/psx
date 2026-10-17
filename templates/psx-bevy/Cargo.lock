@@ -2228,6 +2228,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "psx-bevy",
+ "ron",
+ "serde",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2937,6 +2947,14 @@ dependencies = [
  "moxcms",
  "num-traits",
  "png",
+]
+
+[[package]]
+name = "import"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4096,7 +4114,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
-name = "psx-game"
+name = "psx-bevy"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -4110,6 +4128,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "psx-game"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "engine",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

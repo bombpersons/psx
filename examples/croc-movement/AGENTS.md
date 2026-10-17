@@ -1,7 +1,7 @@
 # Working in this game
 
 This project was made with `psx template create`. The template's AGENTS.md
-(`templates/psx-bevy/AGENTS.md` in the psx repository) applies: idiomatic Bevy,
+(`templates/psx-bevy/game/AGENTS.md` in the psx repository) applies: idiomatic Bevy,
 one plugin per feature, rules separate from presentation, and its guide "From
 evidence to idiomatic code".
 

@@ -543,18 +543,15 @@ impl Op for SectorArgs {
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct TemplateCreateArgs {
-    /// Destination directory: new or empty.
+    /// Destination: new, empty or the game folder; never overwrites files.
     pub dest: PathBuf,
-    /// Cargo package name (defaults to the directory name).
+    /// Game package name (default: the folder's name).
     #[arg(long)]
     pub name: Option<String>,
-    /// The original game's video region (`REGION` in src/lib.rs): display rate
-    /// and, with `fields_per_tick`, the logic tick rate. Default ntsc.
+    /// The original's video region: display and tick rate. Default ntsc.
     #[arg(long, value_enum)]
     pub region: Option<crate::template::TemplateRegion>,
-    /// Video fields per logic tick (`FIELDS_PER_TICK` in src/lib.rs): 1 when
-    /// the original's main loop runs every vblank, 2 when it waits for two
-    /// (Croc PAL: 25 Hz). Default 1.
+    /// Video fields per logic tick: 2 when the original waits two vblanks per frame (Croc PAL). Default 1.
     #[arg(long)]
     pub fields_per_tick: Option<u32>,
 }
@@ -566,6 +563,46 @@ impl Op for TemplateCreateArgs {
             fields_per_tick: self.fields_per_tick.unwrap_or(1),
         };
         Outcome::media(crate::template::create(&self.dest, self.name.as_deref(), options))
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct TemplateUpdateArgs {
+    /// Report changes without writing.
+    #[arg(long)]
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+impl Op for TemplateUpdateArgs {
+    /// Updates the project at the project root (`--root`, or the MCP project).
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::media(crate::template::update(&ctx.root, self.dry_run))
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct TemplateAdoptArgs {
+    /// Existing project directory with a psx-bevy/ crate but no .psx-template.toml.
+    pub dest: PathBuf,
+    /// The game's Cargo package name (defaults to the directory name).
+    #[arg(long)]
+    pub name: Option<String>,
+    /// The project's region, as in game/src/lib.rs. Default ntsc.
+    #[arg(long, value_enum)]
+    pub region: Option<crate::template::TemplateRegion>,
+    /// The project's fields per tick, as in game/src/lib.rs. Default 1.
+    #[arg(long)]
+    pub fields_per_tick: Option<u32>,
+}
+
+impl Op for TemplateAdoptArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        let options = crate::template::TemplateOptions {
+            region: self.region.unwrap_or_default(),
+            fields_per_tick: self.fields_per_tick.unwrap_or(1),
+        };
+        Outcome::media(crate::template::adopt(&self.dest, self.name.as_deref(), options))
     }
 }
 

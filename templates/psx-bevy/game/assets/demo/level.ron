@@ -1,0 +1,14 @@
+// The demo level in the engine's format (engine::level::LevelData): what is
+// placed where, by object type id, and which triggers run which actions.
+// Type 1 is the player, 2 a spinner (params: [speed in mrad/s, colour 0|1]).
+// Action 1 flashes the HUD gem (args: [ticks]).
+(
+    objects: [
+        (type_id: (1), position: (0.0, 0.5, 0.0)),
+        (type_id: (2), position: (-3.0, 1.0, -2.0), params: [1200, 0]),
+        (type_id: (2), position: (3.0, 1.0, -2.0), params: [2400, 1]),
+    ],
+    triggers: [
+        (position: (0.0, 0.5, 4.0), half_extents: (1.0, 1.0, 1.0), call: (action: (1), args: [30])),
+    ],
+)

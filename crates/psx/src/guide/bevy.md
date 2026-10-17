@@ -1,11 +1,17 @@
-template_create creates a standalone Rust/Bevy game starter. Explicitly pass the
-original's display region (ntsc/pal); choose fields_per_tick from measured game
-logic cadence, not the display region alone. Read the generated AGENTS.md and
-README for the actual installed template's architecture and command-line flags.
+template_create creates a standalone Rust/Bevy workspace: psx-bevy/ (the
+template's crate, replaced by template_update; don't edit it), engine/ (object
+type and action registries, update-order sets, level and tuning formats, a
+sandbox example), game/ (a demo to replace) and tools/import/. It can be
+created in the game folder itself. Explicitly pass the original's display
+region (ntsc/pal); choose fields_per_tick from measured game logic cadence, not
+the display region alone. Read the generated AGENTS.md files (root, engine/,
+game/) and READMEs for the architecture and command-line flags. For a whole
+port, read guide topic port first.
 
 Build ordinary Bevy entities, components and feature plugins using decoded game
-assets. Keep gameplay rules in FixedUpdate / GameSystems::Game and consume logical
-ControllerState actions. The shared controls menu can handle physical rebinding;
+assets. Keep gameplay rules in FixedUpdate (an EngineSet inside
+GameSystems::Game) and consume logical ControllerState actions. Register each
+object type's controller with the engine; put placements and tuning in assets. The shared controls menu can handle physical rebinding;
 the finished game decides where that menu belongs in its options flow.
 
 The goal is a fresh game implementation whose rules are backed by evidence.
@@ -23,8 +29,8 @@ game_screenshot. Headless GPU runs use --mcp --headless --software and screensho
 target screen. Compare rebuilt behavior against recorded per-tick trajectories,
 including cases not used to fit the rules, and inspect rendered output: run from
 a checkpoint with a replay file and sample (one NAME per value), keep
-samples.csv and the replay under the game's tests/data/, then use
-game::testing::{Alignment, Replay, Trajectory, compare} in a test. Sample row N
+samples.csv and the replay under game/tests/data/, then use
+engine::testing::{Alignment, Replay, Trajectory, compare} in a test. Sample row N
 is the state after N fields; tick k uses the input held at field
-start + k*fields_per_tick. The generated AGENTS.md has the full recipe. Keep each
+start + k*fields_per_tick. The generated game/AGENTS.md has the full recipe. Keep each
 generated project's target directory separate to avoid linking another copy's game.

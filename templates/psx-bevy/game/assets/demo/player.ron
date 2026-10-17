@@ -1,0 +1,8 @@
+// The demo player's design numbers (PlayerTuning in src/demo/player.rs).
+// In a port, cite the evidence for each value next to it.
+(
+    walk_speed: 4.8,  // m/s
+    turn_speed: 1.8,  // rad/s
+    hop_speed: 5.0,   // m/s
+    gravity: 20.0,    // m/s²
+)
