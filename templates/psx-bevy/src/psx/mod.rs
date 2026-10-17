@@ -17,6 +17,7 @@
 //! - Original `.tim` textures load as `Image`s and `.tmd` models as
 //!   [`PsxModel`]s (spawned with [`PsxModelRoot`]); see `assets.rs`.
 mod assets;
+pub mod font;
 pub mod formats;
 mod material;
 mod material2d;

@@ -113,12 +113,21 @@ impl ControlsMenu {
         self.mode = Mode::Listen { armed: false, pad };
         self.status = "Release buttons, then press a new binding.".into();
     }
+    /// After a binding is set, move to the next action (or Save after the last)
+    /// so a whole layout can be entered with Enter and the new keys alone, even
+    /// when the arrow keys arrive as unexpected codes (remote desktop sessions).
+    fn advance(&mut self) {
+        self.selected = if self.selected + 1 < RESTORE { self.selected + 1 } else { SAVE };
+        let next = Button::ALL.get(self.selected).map_or("Save", |b| b.label());
+        self.status = format!("{} Next: {next}", self.status);
+    }
     fn candidate(&mut self, binding: PhysicalBinding) {
         let action = Button::ALL[self.selected];
         match self.draft.as_mut().unwrap().assign(action, binding, ConflictPolicy::Reject) {
             Ok(()) => {
-                self.status = format!("{}: {} (unsaved)", action.label(), binding.label());
+                self.status = format!("{}: {} (unsaved).", action.label(), binding.label());
                 self.mode = Mode::Browse;
+                self.advance();
             }
             Err(conflict) => {
                 self.status = format!("{}: {} already uses it. Swap?", binding.label(), conflict.other.label());
@@ -129,8 +138,9 @@ impl ControlsMenu {
     fn confirm_conflict(&mut self) {
         if let Mode::Conflict(conflict) = self.mode {
             self.draft.as_mut().unwrap().assign(conflict.action, conflict.binding, ConflictPolicy::Swap).unwrap();
-            self.status = format!("Swapped {} and {} (unsaved)", conflict.action.label(), conflict.other.label());
+            self.status = format!("Swapped {} and {} (unsaved).", conflict.action.label(), conflict.other.label());
             self.mode = Mode::Browse;
+            self.advance();
         }
     }
 }
@@ -286,7 +296,7 @@ fn drive(
                         }
                         Err(error) => {
                             warn!("Could not save controls: {error}");
-                            menu.status = "Could not save controls. Check the settings location.".into();
+                            menu.status = "Could not save. Check the settings location.".into();
                         }
                     },
                     DISCARD => menu.close(&mut focus),

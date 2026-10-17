@@ -41,7 +41,7 @@ tools can reach every module; `src/main.rs` only opens the window.
 | `src/demo/` | The example game: `player.rs` (rules, no rendering) and `mod.rs` (scene, HUD). Replace it and its registration in `lib.rs` / `GamePlugin` to start your own |
 | `tests/player.rs` | Demo-specific headless tick tests; replace with your game's trajectory checks |
 | `tests/dev_mcp.rs` | Opt-in GPU/MCP checks; the player edit/step test must migrate with the demo |
-| `src/psx/` | The PS1 look (materials, screen pass, `.psxscene` loader) |
+| `src/psx/` | The PS1 look (materials, screen pass, `.psxscene` loader, bitmap font) |
 | `src/shell.rs` | `TickRate`, `GameClock`, `GameSystems`, controller sampling |
 | `src/controller.rs`, `controller/bindings.rs` | Logical `Button`/`ControllerState`, validated device bindings and settings storage |
 | `src/controls/` | Reusable controls menu: draft edits, capture, conflict resolution and PS1-style presentation |
@@ -375,6 +375,10 @@ game architecture to copy wholesale.
 In the demo, **F1** or **Start+Select** opens the controls menu. Arrow keys/D-pad
 choose a row; left/right selects the keyboard or gamepad column. Enter/South
 starts capture: release existing keys/buttons, then press the new physical input.
+After each binding (or confirmed swap) the selection moves to the next action, and
+after the last one to **Save and close**, so a full layout can be entered with
+Enter and the new keys alone. That helps when the arrow keys arrive as other
+codes, as they can over remote desktop. Cancelling a capture stays on the row.
 Inputs stay logical (`Button::Cross`, `Button::Left`, etc.) in gameplay code.
 Start directly in the menu with `cargo run -- --controls`; use
 `--bindings PATH` to choose a separate settings file.
@@ -389,6 +393,9 @@ Start directly in the menu with `cargo run -- --controls`; use
 - East is an assignable gamepad button while listening; use Esc to cancel a
   capture, or the opening shortcut to discard the whole menu. F1 (when global
   shortcuts are enabled) and Esc remain reserved in this example UI.
+- Labels are drawn with `psx::font`, a 6×9 bitmap font (X11 misc-fixed, public
+  domain), at one texel per canvas pixel. Bevy's vector text breaks up at this
+  resolution; use `font::text_image` for other small in-canvas text too.
 - Gameplay ticks and input pause while the menu owns focus. Closing waits for
   physical controls to become neutral, so confirmation keys and newly captured
   buttons cannot become gameplay presses. Losing window focus discards the draft.
