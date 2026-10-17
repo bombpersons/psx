@@ -1,0 +1,25 @@
+# Owned by the psx template: `psx template update` replaces this crate.
+# Build on it from engine/ or game/ rather than editing it.
+[package]
+name = "psx-bevy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+dev-mcp = ["dep:rmcp", "dep:tokio", "dep:image"]
+
+[dependencies]
+bevy.workspace = true
+bevy_render.workspace = true
+bevy_input.workspace = true
+rmcp = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+futures-sink.workspace = true
+base64.workspace = true
+image = { workspace = true, optional = true }

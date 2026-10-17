@@ -4,12 +4,15 @@ The full command reference for the psx PlayStation reverse-engineering toolkit.
 The human introduction is [README.md](README.md); direction and status are in [PLAN.md](PLAN.md).
 
 **The goal.** Use the toolkit to gather evidence (rules, constants, data formats, assets) from the
-original game, then write the game again as ordinary modern Rust/Bevy in
-[`templates/psx-bevy`](templates/psx-bevy/README.md). The result must not be an emulator in
+original game, then write the game again as ordinary modern Rust/Bevy in the
+[template workspace](templates/psx-bevy/README.md), as a reusable engine and the game on it.
+The result must not be an emulator in
 disguise: someone should be able to pick it up and change it with normal Rust/Bevy techniques. Keep exact
 integer behaviour only where the game's feel depends on it, and cite the evidence. Captures
 (`.psxscene`) are for reference and verification, never the shipped level. The template's
-[AGENTS.md](templates/psx-bevy/AGENTS.md) has the guide, "From evidence to idiomatic code".
+[game/AGENTS.md](templates/psx-bevy/game/AGENTS.md) has the guide, "From evidence to idiomatic code";
+[engine/AGENTS.md](templates/psx-bevy/engine/AGENTS.md) has the engine/game placement rules, and
+`guide` topic `port` the whole-port workflow.
 
 ## Status
 
@@ -66,7 +69,9 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | `psx symbols <exe\|disc::/PATH>` | Name PsyQ library functions by signature (needs a local `external/psx_psyq_signatures`); Ghidra and `.sym` output. Pass the `.symbols.json` to `run`/`loads --symbols` to name PCs, checked against RAM residency |
 | `psx ghidra decompile --source <exe\|disc::/PATH> --addr HEX` | One-call Ghidra pseudocode for the enclosing function, with body ranges, callers/callees and diagnostics. Automatically extracts, imports, analyses and caches; returns an `analysis` manifest for follow-up queries. Optional `--symbols FILE` seeds names. See below |
 | `psx ghidra functions\|xrefs --analysis MANIFEST [...]` | Filter/paginate the function index (`--filter`, `--offset`, `--limit`) or references to/from `--addr`, without starting Ghidra again. `--source` also works and analyses automatically |
-| `psx template create DIR [--name N] [--region ntsc\|pal] [--fields-per-tick N]` | Native Bevy game starter (see below) |
+| `psx template create DIR [--name N] [--region ntsc\|pal] [--fields-per-tick N]` | Native Bevy port workspace: `psx-bevy`, `engine`, `game`, `tools/import` (see below) |
+| `psx template update [--dry-run]` | Replace the project's untouched `psx-bevy/` files with this build's; `.psx-new` beside edited ones; report changed seeded files |
+| `psx template adopt DIR [--name N] [--region R] [--fields-per-tick N]` | Start tracking an older project whose template modules were moved into `psx-bevy/` |
 | `psx mcp [--jobs N]` | Every command above as an MCP tool over stdio (see below) |
 
 Input images can be `.cue`, a raw `.bin` (single data track) or a cooked `.iso`.
@@ -405,15 +410,28 @@ The Bevy template supports optional `PsxMaterial::depth_cue` with configurable
 reciprocal coefficients and far vertex colour, or `PsxDepthCue::from_distances`.
 It uses camera depth per vertex before texture modulation and overrides camera
 fog for that material; `None` preserves ordinary `DistanceFog`. See the template
-[usage](templates/psx-bevy/README.md#3d) and
+[usage](templates/psx-bevy/psx-bevy/README.md#3d) and
 [validation/example](research/template-depth-cue.md).
 
 ```bash
-psx template create ../my-game   # standalone Bevy 0.20 project
-psx template create ../croc --region pal --fields-per-tick 2   # 25 Hz logic, like Croc PAL
+psx template create ../my-game   # standalone Bevy 0.20 workspace
+psx template create . --region pal --fields-per-tick 2   # into the game folder; 25 Hz logic, like Croc PAL
+psx template update --dry-run    # in a project: what a newer psx would change
 ```
 
-[`templates/psx-bevy`](templates/psx-bevy/README.md) is idiomatic Bevy with a
+The [workspace](templates/psx-bevy/README.md) has four crates. `psx-bevy/` is
+the template's own crate, recorded in `.psx-template.toml` and replaced by
+`template update` (edited files are left alone, with the new version beside
+them as `.psx-new`). `engine/` is the project's reusable engine: object type
+and action registries, update-order sets, level and tuning formats in RON, and
+`examples/sandbox.rs`, a tiny game built only from the engine. `game/` is the
+title (a demo to replace: level data spawned through the registry, a
+controller with a tuning file, a trigger running a registered action) and
+`tools/import/` holds offline importers. `template create` can write into the
+game folder: it never overwrites files and keeps an existing `AGENTS.md`.
+[docs/port-prompt.md](docs/port-prompt.md) is a starting prompt for a whole port.
+
+[`psx-bevy`](templates/psx-bevy/psx-bevy/README.md) is idiomatic Bevy with a
 PS1 look: `PsxMaterial` gives vertex snapping, affine textures, Gouraud
 lighting, 15-bit dither, depth cue and the four blend modes. It also provides a
 low-resolution `PsxView` target, 2D sprites, DualShock input, fixed 50/60 Hz
@@ -426,14 +444,14 @@ Start+Select in the demo (`--controls` opens it at startup; `--bindings PATH`
 selects its settings file). Draft edits apply only after a successful explicit
 save; the menu pauses gameplay and gates input until physical release. Finished
 games choose where to integrate it. See
-[reuse/API](templates/psx-bevy/README.md#rebinding-and-the-example-controls-menu)
+[reuse/API](templates/psx-bevy/psx-bevy/README.md#rebinding-and-the-example-controls-menu)
 and [validation](research/template-controls.md).
 Extracted original `.tim` files load as Bevy `Image`s and `.tmd` models as
 `PsxModel`s (`PsxModelRoot`); `cargo run -- --model x.tmd --texture x.tim` views one.
-When replacing `demo/`, migrate its tests too: `tests/player.rs` and the player
-edit/step test plus `Client::state` in `tests/dev_mcp.rs` depend on the demo.
-The template [migration notes](templates/psx-bevy/README.md#project-layout) list
-the required changes and compilation check. Keep `dev-mcp` enabled across the
+When replacing `game/src/demo/`, migrate its tests too: `game/tests/player.rs`
+and the player edit/step test in `game/tests/dev_mcp.rs` depend on the demo.
+[game/AGENTS.md](templates/psx-bevy/game/AGENTS.md#project-layout) lists the
+required changes and compilation check. Keep `dev-mcp` enabled across the
 agent iteration cycle to reduce dependency rebuilds when switching features.
 
 ## Local data (never committed)

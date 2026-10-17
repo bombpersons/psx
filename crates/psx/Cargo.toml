@@ -22,6 +22,7 @@ rmcp = { version = "=3.5.1", features = ["transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-std"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 base64 = "0.22"
+sha2 = { workspace = true }
 
 [build-dependencies]
 sha2 = { workspace = true }
