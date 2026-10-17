@@ -31,6 +31,7 @@ const FILES: &[(&str, &str)] = files![
     "src/main.rs",
     "src/model_viewer.rs",
     "src/psx/assets.rs",
+    "src/psx/font.rs",
     "src/psx/formats/mod.rs",
     "src/psx/formats/tim.rs",
     "src/psx/formats/tmd.rs",

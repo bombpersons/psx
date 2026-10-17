@@ -140,6 +140,8 @@ fn conflict_cancel_restore_clear_and_discard_leave_live_bindings_alone() {
     let menu = app.world().resource::<ControlsMenu>();
     assert_eq!(menu.draft.as_ref().unwrap().key(Button::Cross), Some(KeyCode::ArrowUp));
     assert_eq!(menu.draft.as_ref().unwrap().key(Button::Up), Some(KeyCode::KeyX));
+    assert_eq!(menu.selected, Button::Down as usize, "a confirmed swap moves on like any binding");
+    app.world_mut().resource_mut::<ControlsMenu>().select(Button::Up, BindingDevice::Keyboard);
     tap(&mut app, KeyCode::Delete);
     assert_eq!(app.world().resource::<ControlsMenu>().draft.as_ref().unwrap().key(Button::Up), None);
     app.world_mut().resource_mut::<ControlsMenu>().selected = RESTORE;
@@ -241,7 +243,7 @@ fn gamepad_navigation_can_edit_save_and_resume_without_a_keyboard() {
     pad_tap(&mut app, pad, GamepadButton::DPadRight);
     pad_tap(&mut app, pad, GamepadButton::South);
     pad_tap(&mut app, pad, GamepadButton::Mode);
-    for _ in 4..SAVE {
+    for _ in 5..SAVE {
         pad_tap(&mut app, pad, GamepadButton::DPadDown);
     }
     pad_tap(&mut app, pad, GamepadButton::South);
@@ -301,7 +303,7 @@ fn ambiguous_presses_and_gamepad_reconnect_require_fresh_neutral_input() {
     frame(&mut app);
     tap(&mut app, KeyCode::KeyV);
     assert_eq!(app.world().resource::<ControlsMenu>().draft.as_ref().unwrap().key(Button::Cross), Some(KeyCode::KeyV));
-    app.world_mut().resource_mut::<ControlsMenu>().device = BindingDevice::Gamepad;
+    app.world_mut().resource_mut::<ControlsMenu>().select(Button::Cross, BindingDevice::Gamepad);
     tap(&mut app, KeyCode::Enter);
     let mut pad = Gamepad::default();
     pad.digital_mut().press(GamepadButton::West);
@@ -356,5 +358,51 @@ fn custom_options_flow_can_disable_shortcuts_and_restore_its_own_defaults() {
     app.world_mut().resource_mut::<ControlsMenu>().selected = RESTORE;
     tap(&mut app, KeyCode::Enter);
     assert_eq!(app.world().resource::<ControlsMenu>().draft(), Some(&custom));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn binding_moves_to_the_next_action_so_enter_alone_walks_the_layout() {
+    let dir = directory("advance");
+    let path = dir.join("controls.json");
+    let mut app = fixture(&path);
+    tap(&mut app, KeyCode::F1);
+    app.world_mut().resource_mut::<ControlsMenu>().select(Button::Up, BindingDevice::Keyboard);
+    // No arrow keys: Enter, then the new key, for every action in order.
+    let keys = [
+        KeyCode::KeyI,
+        KeyCode::KeyK,
+        KeyCode::KeyJ,
+        KeyCode::KeyL,
+        KeyCode::KeyA,
+        KeyCode::KeyB,
+        KeyCode::KeyF,
+        KeyCode::KeyG,
+        KeyCode::KeyH,
+        KeyCode::KeyM,
+        KeyCode::KeyN,
+        KeyCode::KeyO,
+        KeyCode::KeyP,
+        KeyCode::KeyR,
+    ];
+    for (row, &code) in keys.iter().enumerate() {
+        assert_eq!(app.world().resource::<ControlsMenu>().selected, row);
+        tap(&mut app, KeyCode::Enter);
+        tap(&mut app, code);
+    }
+    let menu = app.world().resource::<ControlsMenu>();
+    assert_eq!(menu.selected, SAVE, "after the last action Enter saves");
+    assert!(menu.status().ends_with("Next: Save"), "{}", menu.status());
+    tap(&mut app, KeyCode::Enter);
+    let saved = BindingStore::new(Some(path)).load().unwrap().unwrap();
+    for (button, code) in Button::ALL.into_iter().zip(keys) {
+        assert_eq!(saved.key(button), Some(code), "{button:?}");
+    }
+    // Cancelling a capture stays on the row.
+    tap(&mut app, KeyCode::F1);
+    app.world_mut().resource_mut::<ControlsMenu>().select(Button::Cross, BindingDevice::Keyboard);
+    tap(&mut app, KeyCode::Enter);
+    tap(&mut app, KeyCode::Escape);
+    assert_eq!(app.world().resource::<ControlsMenu>().selected, Button::Cross as usize);
     std::fs::remove_dir_all(dir).unwrap();
 }

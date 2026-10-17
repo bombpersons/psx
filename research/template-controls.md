@@ -53,3 +53,29 @@ their meaning and configurable deadzone. The example reserves Esc and, with
 global shortcuts enabled, F1 and Start+Select. Gamepad tests use Bevy gamepad
 components rather than physical hardware; the rendered check ran on Linux with a
 software adapter. This does not claim physical-device or other-platform testing.
+
+## Follow-up, 2026-10-17: legible labels and auto-advance
+
+User report: the menu text was hard to read, and over a remote desktop session
+the arrow keys arrived as other key codes, so rows could not be selected.
+
+- **Labels.** Bevy's default vector font at 7.5–8.5 px with smoothing off broke
+  up in the 320×240 canvas ("Up" read as "Dp", E like C). Labels now use
+  `psx::font`, a 6×9 bitmap font taken from the public-domain X11 misc-fixed
+  `6x9` glyphs (printable ASCII; anything else draws `?`). Each label is an
+  `ImageNode` sized exactly to its image. An earlier attempt let the row height
+  scale the image (9 px glyphs in 10 px rows, 13 px for the title), which
+  widened glyphs unevenly. The one-line subtitle was dropped to fit the taller
+  font; the rendered menu still ends above the bottom border.
+- **Auto-advance.** A binding or confirmed swap moves the selection to the next
+  action, and after Select to Save and close; the status says what comes next.
+  Cancelling a capture stays on the row. A full layout can therefore be entered
+  with Enter and the new keys only.
+
+Validation: a new rules test binds all 14 actions with Enter plus a key each,
+never touching the arrows, then saves with Enter and reloads the profile. Two
+existing tests now reselect explicitly where they relied on the selection
+staying put. Unit tests cover the font (multi-line size, unknown characters)
+and that action labels and fixed hints fit their columns. The offscreen
+software-GPU test passes, and its 320×240 capture was inspected at 3× nearest
+scaling: every glyph is one canvas pixel wide.
