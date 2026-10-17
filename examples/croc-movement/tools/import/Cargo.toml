@@ -1,0 +1,12 @@
+# Offline importers: files extracted from the disc with `psx` -> engine-native
+# assets under game/assets. The original's raw formats live only here.
+[package]
+name = "import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

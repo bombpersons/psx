@@ -1,7 +1,7 @@
 # Croc movement demo
 
 Croc's player movement from *Croc: Legend of the Gobbos* (PAL, SLES-00593),
-rebuilt as ordinary Bevy systems on the psx-bevy template. Every speed,
+rebuilt as ordinary Bevy systems on the psx template. Every speed,
 acceleration, turn rate and jump rule was measured on the original with the psx
 toolkit; the method, RAM map and evidence are in
 [`research/case-study-croc.md`](../../research/case-study-croc.md). The world
@@ -12,6 +12,12 @@ cargo run                               # arrows walk/turn, X jump, Q/E (L1/R1) 
 cargo test -- --nocapture               # compare with the original's trajectories
 cargo run --features dev-mcp -- --mcp   # agent driving: game_step / game_screenshot
 ```
+
+It is a workspace made by `psx template create`: `psx-bevy/` is the
+template's crate (replaced by `psx template update`), `engine/` the reusable
+engine with its sandbox, `game/` this study and `tools/` the recording
+scripts. The study only uses the player, so the engine is still the
+template's skeleton.
 
 ## Controls (as in the original's default scheme)
 
@@ -25,17 +31,17 @@ cargo run --features dev-mcp -- --mcp   # agent driving: game_step / game_screen
 
 ## Where things are
 
-- `src/croc/movement.rs`: the rules. Components (`Croc`, `Velocity`,
+- `game/src/croc/movement.rs`: the rules. Components (`Croc`, `Velocity`,
   `Facing`, `Gait`, `Vertical`, `Ground`) and five systems chained in the
   original's per-tick order: `fall_and_rise`, `walk`, `turn`,
   `snap_to_ground`, `start_jump`. Constants carry the RAM address or function
   that showed them.
-- `src/croc/scene.rs`: meadow, posts, crystals, capsule Croc, chase camera
+- `game/src/croc/scene.rs`: meadow, posts, crystals, capsule Croc, chase camera
   (not the original camera), button HUD.
-- `tests/trajectories.rs`: replays recorded input sequences through the
-  movement rules headless (`game::testing`, one 25 Hz tick per `run_tick`) and
+- `game/tests/trajectories.rs`: replays recorded input sequences through the
+  movement rules headless (`engine::testing`, one 25 Hz tick per `run_tick`) and
   compares with the original, tick by tick.
-- `tests/fixtures/*.csv`: Croc's position and heading per tick from the
+- `game/tests/fixtures/*.csv`: Croc's position and heading per tick from the
   original (psx native core, level 1-1), with the buttons held.
 - `tools/record_trajectory.py`: records a new fixture (needs the psx toolkit,
   a PAL BIOS, the disc and an in-level save state).
@@ -43,7 +49,7 @@ cargo run --features dev-mcp -- --mcp   # agent driving: game_step / game_screen
   port, kept as evidence; it reproduces every fixture exactly.
 
 The simulation runs at 25 Hz, Croc's logic rate (one tick per two PAL
-vblanks; `FIELDS_PER_TICK = 2` in `src/lib.rs`), so `game_step` frames are
+vblanks; `FIELDS_PER_TICK = 2` in `game/src/lib.rs`), so `game_step` frames are
 game ticks.
 
 ## Verification

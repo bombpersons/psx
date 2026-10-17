@@ -14,6 +14,12 @@ VERBOSE=1 cargo test matches -- --nocapture   # every tick, both side by side
 cargo run --features dev-mcp -- --mcp    # developer MCP (game_step / game_screenshot)
 ```
 
+It is a workspace made by `psx template create`: `psx-bevy/` is the
+template's crate (replaced by `psx template update`), `engine/` the reusable
+engine with its sandbox, `game/` this study and `tools/` the recording
+scripts. The study only uses the player, so the engine is still the
+template's skeleton.
+
 No game data is included. Without it you get a placeholder Mega Man on a
 placeholder floor. With your own capture (below), the demo shows the captured
 intro-stage frame as a temporary backdrop and draws Mega Man's standing pose
@@ -23,13 +29,13 @@ from the decoded texture page.
 
 | Module | What it is |
 |---|---|
-| `src/lib.rs` | The game as a library (`game`): PAL region, 50 Hz logic, `GamePlugin`; `src/main.rs` only opens the window |
-| `src/player/movement.rs` | The rules: states (stand, step, walk, jump, fall, land), constants with their RAM/code evidence, and the per-tick pipeline `control → integrate → after_move → collide_with_floor` in `GameSystems::Game` |
-| `src/player/mod.rs` | The `Player` entity: `StagePos`, `Velocity`, `Facing`, `PlayerState`, `Grounded`, `WalkGrace` |
-| `src/player/sprite.rs` | Placeholder or captured standing pose, mirrored by `Facing` |
-| `src/stage.rs` | Stage space (pixels, y down), the `Solid` floor, the scrolling `StageCamera`, the optional captured backdrop |
-| `tests/movement.rs` | Headless replay of those recordings through the rules (`game::testing`, one 50 Hz tick per `run_tick`), plus the camera clamp |
-| `tests/data/*.csv` | Mega Man's position, velocity, state byte and camera per tick, recorded from the original with `psx run --watch` |
+| `game/src/lib.rs` | The game as a library (`game`): PAL region, 50 Hz logic, `GamePlugin`; `game/src/main.rs` launches it through `engine::launcher` |
+| `game/src/player/movement.rs` | The rules: states (stand, step, walk, jump, fall, land), constants with their RAM/code evidence, and the per-tick pipeline `control → integrate → after_move → collide_with_floor` in `GameSystems::Game` |
+| `game/src/player/mod.rs` | The `Player` entity: `StagePos`, `Velocity`, `Facing`, `PlayerState`, `Grounded`, `WalkGrace` |
+| `game/src/player/sprite.rs` | Placeholder or captured standing pose, mirrored by `Facing` |
+| `game/src/stage.rs` | Stage space (pixels, y down), the `Solid` floor, the scrolling `StageCamera`, the optional captured backdrop |
+| `game/tests/movement.rs` | Headless replay of those recordings through the rules (`engine::testing`, one 50 Hz tick per `run_tick`), plus the camera clamp |
+| `game/tests/data/*.csv` | Mega Man's position, velocity, state byte and camera per tick, recorded from the original with `psx run --watch` |
 | `tools/mm8_trajectories.py` | Re-records those CSVs from your own disc |
 
 Constants are the game's own per-tick values (16.16 fixed point, 50 Hz PAL
@@ -47,8 +53,8 @@ psx run --backend native --bios bios/scph7502.bin "media/Mega Man 8.cue" \
 psx run --backend native --bios bios/scph7502.bin "media/Mega Man 8.cue" \
     --from-state .psx/mm8-study/s3900/state.bin --frames 2 --gpu-frame 1 --out .psx/mm8-study/cap
 psx textures .psx/mm8-study/cap
-cp -r .psx/mm8-study/cap/textures examples/megaman8-movement/assets/captures/mm8
+cp -r .psx/mm8-study/cap/textures examples/megaman8-movement/game/assets/captures/mm8
 ```
 
-`assets/captures/` is git-ignored. The backdrop is one captured screen pinned
+`game/assets/captures/` is git-ignored. The backdrop is one captured screen pinned
 in place: it is reference scaffolding for checking layout, not the level.

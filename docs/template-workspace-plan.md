@@ -178,8 +178,9 @@ fields_per_tick = 2
 
 ## Out of scope (follow-ups)
 
-- Migrating `examples/croc-movement` and `examples/megaman8-movement`. They
-  are separate single-crate forks today and keep working.
+- ~~Migrating `examples/croc-movement` and `examples/megaman8-movement`.~~
+  Done: both are generated workspaces with the study in `game/` (the engine is
+  still the skeleton; they only port the player).
 - Migrating the Tomb Raider project (use `adopt` once it exists).
 - psx help for step 1 of the prompt, e.g. finding per-type control-function
   tables (function-pointer arrays) in RAM or EXE.

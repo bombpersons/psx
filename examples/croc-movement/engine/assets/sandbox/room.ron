@@ -1,0 +1,14 @@
+// The sandbox room, hand-written in the engine's level format.
+(
+    floor_half_size: 6.0,
+    floor_colour: (0.35, 0.4, 0.35),
+    level: (
+        objects: [
+            (type_id: (1), position: (0.0, 0.8, 0.0)),
+            (type_id: (2), position: (-2.5, 1.0, -2.0), params: [300]),
+        ],
+        triggers: [
+            (position: (3.0, 0.5, 0.0), half_extents: (1.0, 1.0, 1.0), call: (action: (1), args: [180, 60, 60])),
+        ],
+    ),
+)

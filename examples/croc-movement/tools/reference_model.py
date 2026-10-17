@@ -3,11 +3,11 @@
 
 This is *evidence*, not the game: a literal port of the integer arithmetic in
 CROC.EXE (PAL) that the case study recovered, used to show the rule set is
-complete for flat ground. It reproduces every fixture in tests/fixtures/
-exactly (0 units, 0 angle steps). The Bevy demo (src/croc/movement.rs)
+complete for flat ground. It reproduces every fixture in game/tests/fixtures/
+exactly (0 units, 0 angle steps). The Bevy demo (game/src/croc/movement.rs)
 expresses the same rules in natural units and floats instead.
 
-    python3 tools/reference_model.py tests/fixtures/*.csv
+    python3 tools/reference_model.py game/tests/fixtures/*.csv
 
 Variables and functions (player object at 0x800D8A1C, gp = 0x80074B38):
   x/y/z            object+0x370/0x374/0x378     heading  object+0x36A (4096/turn)
