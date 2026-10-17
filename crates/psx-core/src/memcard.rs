@@ -25,11 +25,7 @@ impl MemCard {
     /// A card image (`.mcd`/`.mcr` raw 128 KiB); shorter images are padded.
     pub fn from_image(mut data: Vec<u8>) -> Self {
         data.resize(SIZE, 0);
-        MemCard {
-            data,
-            flag: FLAG_NEW,
-            writes: 0,
-        }
+        MemCard { data, flag: FLAG_NEW, writes: 0 }
     }
 
     /// A freshly formatted, empty card.
@@ -57,11 +53,7 @@ impl MemCard {
             });
         }
         frame(63, &header); // write-test frame
-        MemCard {
-            data,
-            flag: FLAG_NEW,
-            writes: 0,
-        }
+        MemCard { data, flag: FLAG_NEW, writes: 0 }
     }
 
     pub fn sector(&self, n: u16) -> &[u8] {
@@ -146,26 +138,14 @@ impl MemCard {
                 next = u16::from_le_bytes([self.sector(b as u16)[8], self.sector(b as u16)[9]]);
             }
             let header = self.sector(slot as u16 * 64);
-            let filename = d[10..30]
-                .iter()
-                .take_while(|&&c| c != 0)
-                .map(|&c| c as char)
-                .collect();
+            let filename = d[10..30].iter().take_while(|&&c| c != 0).map(|&c| c as char).collect();
             out.push(SaveInfo {
                 block: slot,
                 filename,
                 size: u32::from_le_bytes(d[4..8].try_into().unwrap()),
                 blocks,
-                title: if &header[..2] == b"SC" {
-                    sjis_title(&header[4..68])
-                } else {
-                    String::new()
-                },
-                icon_frames: if &header[..2] == b"SC" {
-                    header[2] & 0x0F
-                } else {
-                    0
-                },
+                title: if &header[..2] == b"SC" { sjis_title(&header[4..68]) } else { String::new() },
+                icon_frames: if &header[..2] == b"SC" { header[2] & 0x0F } else { 0 },
             });
         }
         out
@@ -189,14 +169,7 @@ impl CardSession {
     /// whether the card acknowledges.
     pub fn start(card: &MemCard, command: u8) -> (Self, u8, bool) {
         let ok = matches!(command, 0x52 | 0x57 | 0x53);
-        (
-            CardSession {
-                command,
-                ..Default::default()
-            },
-            card.flag,
-            ok,
-        )
+        (CardSession { command, ..Default::default() }, card.flag, ok)
     }
 
     /// One further byte. Returns `(reply, ack)`; no ack ends the command.
@@ -332,12 +305,7 @@ mod tests {
 
     #[test]
     fn titles_and_directory() {
-        assert_eq!(
-            sjis_title(&[
-                0x82, 0x73, 0x82, 0x8F, 0x82, 0x8D, 0x82, 0x82, 0x81, 0x40, 0x82, 0x51, 0
-            ]),
-            "Tomb 2"
-        );
+        assert_eq!(sjis_title(&[0x82, 0x73, 0x82, 0x8F, 0x82, 0x8D, 0x82, 0x82, 0x81, 0x40, 0x82, 0x51, 0]), "Tomb 2");
         let mut c = MemCard::formatted();
         c.data[128] = 0x51;
         c.data[128 + 4..128 + 8].copy_from_slice(&8192u32.to_le_bytes());
@@ -345,15 +313,7 @@ mod tests {
         c.data[64 * SECTOR..64 * SECTOR + 3].copy_from_slice(b"SC\x11");
         c.data[64 * SECTOR + 4..64 * SECTOR + 8].copy_from_slice(b"Test");
         let s = c.saves();
-        assert_eq!(
-            (
-                s.len(),
-                s[0].filename.as_str(),
-                s[0].title.as_str(),
-                s[0].blocks.clone()
-            ),
-            (1, "BESLES", "Test", vec![1])
-        );
+        assert_eq!((s.len(), s[0].filename.as_str(), s[0].title.as_str(), s[0].blocks.clone()), (1, "BESLES", "Test", vec![1]));
     }
 
     #[test]

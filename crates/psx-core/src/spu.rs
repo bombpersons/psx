@@ -203,13 +203,7 @@ impl Voice {
     /// Gaussian interpolation of the four most recent samples at the pitch counter.
     fn interpolate(&self) -> i32 {
         let idx = (self.counter >> 12) as isize;
-        let at = |k: isize| -> i32 {
-            if k >= 0 {
-                self.samples[k as usize] as i32
-            } else {
-                self.old[(3 + k) as usize] as i32
-            }
-        };
+        let at = |k: isize| -> i32 { if k >= 0 { self.samples[k as usize] as i32 } else { self.old[(3 + k) as usize] as i32 } };
         let i = ((self.counter >> 4) & 0xFF) as usize;
         ((GAUSS[0x0FF - i] * at(idx - 3)) >> 15)
             + ((GAUSS[0x1FF - i] * at(idx - 2)) >> 15)
@@ -291,13 +285,7 @@ struct Reverb {
 
 impl Default for Reverb {
     fn default() -> Self {
-        Reverb {
-            addr: 0,
-            right: false,
-            pos: 0,
-            input: vec![0; 2 * RING],
-            output: vec![0; 2 * RING],
-        }
+        Reverb { addr: 0, right: false, pos: 0, input: vec![0; 2 * RING], output: vec![0; 2 * RING] }
     }
 }
 
@@ -349,23 +337,13 @@ impl Reverb {
     /// One side's 22.05 kHz step on input `x` (already resampled): returns the
     /// APF2 output (before the output volume) and whether a RAM access hit `irq`
     /// (byte address). Writes the buffer only when `write` (SPUCNT bit 7).
-    fn side(
-        &self,
-        ram: &mut [u8],
-        regs: &[u16],
-        write: bool,
-        side: usize,
-        x: i32,
-        irq: Option<u32>,
-    ) -> (i32, bool) {
+    fn side(&self, ram: &mut [u8], regs: &[u16], write: bool, side: usize, x: i32, irq: Option<u32>) -> (i32, bool) {
         let reg = |o: usize| regs[o >> 1] as i16 as i32;
         let off = |o: usize| regs[o >> 1] as i64 * 8;
         let base = regs[rv::M_BASE >> 1] as i64 * 8;
         let size = 0x80000 - base;
         let cur = self.addr as i64;
-        let at = |o: i64| -> usize {
-            (base + (cur - base + o).rem_euclid(size.max(2))) as usize & 0x7FFFE
-        };
+        let at = |o: i64| -> usize { (base + (cur - base + o).rem_euclid(size.max(2))) as usize & 0x7FFFE };
         let hit = std::cell::Cell::new(false);
         let touch = |a: usize| {
             if irq == Some(a as u32) {
@@ -391,35 +369,21 @@ impl Reverb {
         // Same-side and cross-side reflections (IIR).
         let m_same = off(rv::M_SAME[side]);
         let prev = rd(ram, m_same - 2);
-        let same = sat(mul15(
-            sat(x + mul15(rd(ram, off(rv::D_SAME[side])), wall) - prev),
-            iir,
-        ) + prev);
+        let same = sat(mul15(sat(x + mul15(rd(ram, off(rv::D_SAME[side])), wall) - prev), iir) + prev);
         wr(ram, m_same, same);
         let m_diff = off(rv::M_DIFF[side]);
         let prev = rd(ram, m_diff - 2);
-        let diff = sat(mul15(
-            sat(x + mul15(rd(ram, off(rv::D_DIFF[other])), wall) - prev),
-            iir,
-        ) + prev);
+        let diff = sat(mul15(sat(x + mul15(rd(ram, off(rv::D_DIFF[other])), wall) - prev), iir) + prev);
         wr(ram, m_diff, diff);
         // Early echo: four comb taps.
-        let combs = [
-            rv::M_COMB12[0][side],
-            rv::M_COMB12[1][side],
-            rv::M_COMB34[0][side],
-            rv::M_COMB34[1][side],
-        ];
+        let combs = [rv::M_COMB12[0][side], rv::M_COMB12[1][side], rv::M_COMB34[0][side], rv::M_COMB34[1][side]];
         let mut o = 0;
         for (k, m) in combs.iter().enumerate() {
             o += mul15(reg(rv::V_COMB[k]), rd(ram, off(*m)));
         }
         let mut o = sat(o);
         // Late reverb: two all-pass filters.
-        for (m_apf, d_apf, v_apf) in [
-            (rv::M_APF1, rv::D_APF1, rv::V_APF1),
-            (rv::M_APF2, rv::D_APF2, rv::V_APF2),
-        ] {
+        for (m_apf, d_apf, v_apf) in [(rv::M_APF1, rv::D_APF1, rv::V_APF1), (rv::M_APF2, rv::D_APF2, rv::V_APF2)] {
             let m = off(m_apf[side]);
             let delayed = rd(ram, m - off(d_apf));
             o = sat(o - mul15(reg(v_apf), delayed));
@@ -437,14 +401,7 @@ impl Reverb {
 
     /// One 44.1 kHz sample: takes the reverb input, returns the output (after
     /// the output volume) and whether an access hit the IRQ address.
-    fn tick(
-        &mut self,
-        ram: &mut [u8],
-        regs: &[u16],
-        write: bool,
-        input: (i32, i32),
-        irq: Option<u32>,
-    ) -> ((i32, i32), bool) {
+    fn tick(&mut self, ram: &mut [u8], regs: &[u16], write: bool, input: (i32, i32), irq: Option<u32>) -> ((i32, i32), bool) {
         self.pos = (self.pos + 1) % RING;
         let pos = self.pos;
         self.input[pos] = sat(input.0) as i16;
@@ -521,13 +478,7 @@ impl Volume {
             return;
         }
         let rate = (self.raw & 0x7F) as u32;
-        let env = Env {
-            rate,
-            exp: self.raw & 0x4000 != 0,
-            dec: self.raw & 0x2000 != 0,
-            neg: self.raw & 0x1000 != 0,
-            frozen: rate == 0x7F,
-        };
+        let env = Env { rate, exp: self.raw & 0x4000 != 0, dec: self.raw & 0x2000 != 0, neg: self.raw & 0x1000 != 0, frozen: rate == 0x7F };
         self.level = env.tick(self.level, &mut self.counter);
     }
 }
@@ -600,8 +551,7 @@ impl Spu {
 
     /// A 32-bit voice mask from a pair of flag registers (e.g. 0x198/0x19A for EON).
     fn mask(&self, lo: u32) -> u32 {
-        (self.regs[(lo >> 1) as usize] as u32 | (self.regs[(lo >> 1) as usize + 1] as u32) << 16)
-            & 0xFF_FFFF
+        (self.regs[(lo >> 1) as usize] as u32 | (self.regs[(lo >> 1) as usize + 1] as u32) << 16) & 0xFF_FFFF
     }
 
     pub fn status(&self) -> u16 {
@@ -643,11 +593,7 @@ impl Spu {
             0x1BA => self.main_r.level as u16,
             0x200..=0x25F => {
                 let v = &self.voices[((off - 0x200) >> 2) as usize];
-                (if off & 2 == 0 {
-                    v.vol_l.level
-                } else {
-                    v.vol_r.level
-                }) as u16
+                (if off & 2 == 0 { v.vol_l.level } else { v.vol_r.level }) as u16
             }
             0x19C => self.endx as u16,
             0x19E => (self.endx >> 16) as u16,
@@ -735,10 +681,7 @@ impl Spu {
     pub fn fifo_read(&mut self) -> (u16, bool) {
         let a = self.xfer_addr as usize & (RAM_SIZE - 1);
         self.xfer_addr = (self.xfer_addr + 2) & (RAM_SIZE as u32 - 1);
-        (
-            u16::from_le_bytes([self.ram[a], self.ram[a + 1]]),
-            self.check_irq(a as u32, 2),
-        )
+        (u16::from_le_bytes([self.ram[a], self.ram[a + 1]]), self.check_irq(a as u32, 2))
     }
 
     fn key_on(&mut self, mask: u32) {
@@ -805,42 +748,18 @@ impl Spu {
             Phase::Off => return,
             Phase::Attack => {
                 let rate = ((v.adsr_lo >> 8) & 0x7F) as u32;
-                Env {
-                    rate,
-                    exp: v.adsr_lo & 0x8000 != 0,
-                    dec: false,
-                    neg: false,
-                    frozen: rate == 0x7F,
-                }
+                Env { rate, exp: v.adsr_lo & 0x8000 != 0, dec: false, neg: false, frozen: rate == 0x7F }
             }
             // Decay: always exponential, step -8, 4-bit shift.
-            Phase::Decay => Env {
-                rate: (((v.adsr_lo >> 4) & 0xF) as u32) << 2,
-                exp: true,
-                dec: true,
-                neg: false,
-                frozen: false,
-            },
+            Phase::Decay => Env { rate: (((v.adsr_lo >> 4) & 0xF) as u32) << 2, exp: true, dec: true, neg: false, frozen: false },
             Phase::Sustain => {
                 let rate = ((v.adsr_hi >> 6) & 0x7F) as u32;
-                Env {
-                    rate,
-                    exp: v.adsr_hi & 0x8000 != 0,
-                    dec: v.adsr_hi & 0x4000 != 0,
-                    neg: false,
-                    frozen: rate == 0x7F,
-                }
+                Env { rate, exp: v.adsr_hi & 0x8000 != 0, dec: v.adsr_hi & 0x4000 != 0, neg: false, frozen: rate == 0x7F }
             }
             // Release: step -8, 5-bit shift (all ones never steps).
             Phase::Release => {
                 let shift = (v.adsr_hi & 0x1F) as u32;
-                Env {
-                    rate: shift << 2,
-                    exp: v.adsr_hi & 0x20 != 0,
-                    dec: true,
-                    neg: false,
-                    frozen: shift == 0x1F,
-                }
+                Env { rate: shift << 2, exp: v.adsr_hi & 0x20 != 0, dec: true, neg: false, frozen: shift == 0x1F }
             }
         };
         v.level = env.tick(v.level, &mut v.env_counter);
@@ -904,11 +823,7 @@ impl Spu {
             if v.phase == Phase::Off {
                 v.out = 0;
             } else {
-                let s = if non & (1 << i) != 0 {
-                    noise
-                } else {
-                    v.interpolate()
-                };
+                let s = if non & (1 << i) != 0 { noise } else { v.interpolate() };
                 Self::envelope(v);
                 let s = (s * v.level) >> 15;
                 v.out = s;
@@ -954,10 +869,7 @@ impl Spu {
         }
         // CD audio input (SPUCNT bit 0) through the CD volume (0x1DB0/0x1DB2).
         if self.cnt & 1 != 0 {
-            let (cl, cr) = (
-                mul15(cd_l, self.regs[0x1B0 >> 1] as i16 as i32),
-                mul15(cd_r, self.regs[0x1B2 >> 1] as i16 as i32),
-            );
+            let (cl, cr) = (mul15(cd_l, self.regs[0x1B0 >> 1] as i16 as i32), mul15(cd_r, self.regs[0x1B2 >> 1] as i16 as i32));
             l += cl;
             r += cr;
             // SPUCNT bit 2: CD audio into the reverb.
@@ -973,9 +885,7 @@ impl Spu {
         // stray interrupts.
         let master = self.cnt & 0x80 != 0;
         let target = self.irq_target().filter(|_| master);
-        let ((ol, or), hit) = self
-            .reverb
-            .tick(&mut self.ram, &self.regs, master, (rl, rr), target);
+        let ((ol, or), hit) = self.reverb.tick(&mut self.ram, &self.regs, master, (rl, rr), target);
         if hit {
             self.irq_flag = true;
             self.irqs += 1;
@@ -1014,7 +924,7 @@ mod tests {
             (rv::V_IN[0], 0x7FFF),
             (rv::V_IIR, 0x7FFF),
             (rv::V_COMB[0], 0x7FFF),
-            (rv::M_SAME[0], 0x10),   // written 64 steps ahead...
+            (rv::M_SAME[0], 0x10), // written 64 steps ahead...
             (rv::M_COMB12[0][0], 0), // ...of where comb 1 reads
             // Keep the other taps clear of that line. With vAPF = 0 each all-pass
             // stage is a pure delay of dAPF (8 bytes = 4 steps).
@@ -1024,10 +934,7 @@ mod tests {
             (rv::D_APF1, 1),
             (rv::D_APF2, 1),
         ]);
-        let mut r = Reverb {
-            addr: 0x70000,
-            ..Default::default()
-        };
+        let mut r = Reverb { addr: 0x70000, ..Default::default() };
         let mut outs = Vec::new();
         for step in 0..200 {
             let input = if step == 0 { 0x4000 } else { 0 };
@@ -1039,10 +946,7 @@ mod tests {
         assert!(outs[72] > 0x3000, "{}", outs[72]);
         // Nothing is written with the master enable off.
         let mut quiet = vec![0u8; RAM_SIZE];
-        let r = Reverb {
-            addr: 0x70000,
-            ..Default::default()
-        };
+        let r = Reverb { addr: 0x70000, ..Default::default() };
         r.side(&mut quiet, &regs, false, 0, 0x4000, None);
         assert!(quiet.iter().all(|&b| b == 0));
     }
@@ -1082,45 +986,23 @@ mod tests {
             (rv::D_APF2, 1),
         ]);
         let mut ram = vec![0u8; RAM_SIZE];
-        let mut r = Reverb {
-            addr: 0x70000,
-            ..Default::default()
-        };
+        let mut r = Reverb { addr: 0x70000, ..Default::default() };
         let mut last = (0, 0);
         for n in 0..2000 {
             assert_eq!(r.right, n % 2 == 1, "left on even samples, right on odd");
             last = r.tick(&mut ram, &regs, true, (0x1000, -0x1000), None).0;
         }
-        assert!(
-            (last.0 - 0x1000).abs() < 8 && (last.1 + 0x1000).abs() < 8,
-            "{last:?}"
-        );
+        assert!((last.0 - 0x1000).abs() < 8 && (last.1 + 0x1000).abs() < 8, "{last:?}");
         // A single impulse spreads over the filter's taps: no single sample
         // carries it, unlike the old pair-average-and-hold.
         let mut ram = vec![0u8; RAM_SIZE];
-        let mut r = Reverb {
-            addr: 0x70000,
-            ..Default::default()
-        };
+        let mut r = Reverb { addr: 0x70000, ..Default::default() };
         let mut outs = Vec::new();
         for n in 0..400 {
-            outs.push(
-                r.tick(
-                    &mut ram,
-                    &regs,
-                    true,
-                    (if n == 0 { 0x7FFF } else { 0 }, 0),
-                    None,
-                )
-                .0
-                 .0,
-            );
+            outs.push(r.tick(&mut ram, &regs, true, (if n == 0 { 0x7FFF } else { 0 }, 0), None).0 .0);
         }
         let nonzero = outs.iter().filter(|&&o| o != 0).count();
-        assert!(
-            nonzero > 20,
-            "impulse response spans the FIR ({nonzero} samples)"
-        );
+        assert!(nonzero > 20, "impulse response spans the FIR ({nonzero} samples)");
         assert!(outs.iter().any(|&o| o < 0), "with the FIR's negative lobes");
     }
 
@@ -1140,18 +1022,9 @@ mod tests {
 
     #[test]
     fn gauss_table_matches_psx_spx() {
-        assert_eq!(
-            (GAUSS[0x000], GAUSS[0x017], GAUSS[0x07F]),
-            (-0x001, 0x0001, 0x019C)
-        );
-        assert_eq!(
-            (GAUSS[0x080], GAUSS[0x0FF], GAUSS[0x100]),
-            (0x01A8, 0x12C7, 0x1307)
-        );
-        assert_eq!(
-            (GAUSS[0x17F], GAUSS[0x180], GAUSS[0x1FF]),
-            (0x3DEF, 0x3E4C, 0x59B3)
-        );
+        assert_eq!((GAUSS[0x000], GAUSS[0x017], GAUSS[0x07F]), (-0x001, 0x0001, 0x019C));
+        assert_eq!((GAUSS[0x080], GAUSS[0x0FF], GAUSS[0x100]), (0x01A8, 0x12C7, 0x1307));
+        assert_eq!((GAUSS[0x17F], GAUSS[0x180], GAUSS[0x1FF]), (0x3DEF, 0x3E4C, 0x59B3));
         // "each four values ... sum up to 7F7Fh..7F81h".
         for i in 0..256 {
             let sum = GAUSS[i] + GAUSS[0xFF - i] + GAUSS[0x100 + i] + GAUSS[0x1FF - i];
@@ -1163,11 +1036,7 @@ mod tests {
 
     #[test]
     fn gaussian_interpolation_weights_the_four_latest_samples() {
-        let mut v = Voice {
-            samples: [0x4000; 28],
-            old: [0x4000; 3],
-            ..Default::default()
-        };
+        let mut v = Voice { samples: [0x4000; 28], old: [0x4000; 3], ..Default::default() };
         for c in [0, 0x10, 0x7F0, 0x800, 0xFF0, 5 << 12] {
             v.counter = c;
             let out = v.interpolate();
@@ -1180,21 +1049,14 @@ mod tests {
         v.counter = 5 << 12;
         assert_eq!(v.interpolate(), (GAUSS[0x1FF] * 0x1000) >> 15);
         // History from the previous block feeds the first samples of the next.
-        let v = Voice {
-            old: [0, 0x1000, 0],
-            counter: 0,
-            ..Default::default()
-        };
+        let v = Voice { old: [0, 0x1000, 0], counter: 0, ..Default::default() };
         assert_eq!(v.interpolate(), (GAUSS[0x1FF] * 0x1000) >> 15);
     }
 
     #[test]
     fn noise_generator_follows_the_lfsr() {
         // Shift 0Fh, step 3 (7): the timer reloads by 4 and steps every sample.
-        let mut s = Spu {
-            cnt: 0xF << 10 | 3 << 8,
-            ..Default::default()
-        };
+        let mut s = Spu { cnt: 0xF << 10 | 3 << 8, ..Default::default() };
         let mut model: u16 = 0;
         for _ in 0..1000 {
             s.noise_tick();
@@ -1203,10 +1065,7 @@ mod tests {
             assert_eq!(s.noise_level, model);
         }
         // The first bits shifted in from zero are all ones.
-        let mut s = Spu {
-            cnt: 0xF << 10 | 3 << 8,
-            ..Default::default()
-        };
+        let mut s = Spu { cnt: 0xF << 10 | 3 << 8, ..Default::default() };
         for _ in 0..10 {
             s.noise_tick();
         }
@@ -1221,10 +1080,7 @@ mod tests {
         }
         assert_eq!(changes, 4);
         // Shift 10, step 2 (6): reload 80h, 6 per sample -> a step every 128/6 samples.
-        let mut s = Spu {
-            cnt: 10 << 10 | 2 << 8,
-            ..Default::default()
-        };
+        let mut s = Spu { cnt: 10 << 10 | 2 << 8, ..Default::default() };
         let mut steps = 0;
         for _ in 0..6400 {
             let before = s.noise_level;
@@ -1236,10 +1092,7 @@ mod tests {
 
     /// A one-block looping square wave at 1000h, voice `n` keyed with full volumes.
     fn spu_with_square(voices: &[usize]) -> Spu {
-        let mut s = Spu {
-            capture: true,
-            ..Default::default()
-        };
+        let mut s = Spu { capture: true, ..Default::default() };
         s.write16(0x1A6, 0x1000 >> 3);
         let mut block = [0x77u8; 16];
         block[0] = 0x00;
@@ -1274,38 +1127,22 @@ mod tests {
         s.tick(CYCLES_PER_SAMPLE * 2000, &mut Default::default());
         let out = s.take_samples();
         let distinct: std::collections::HashSet<i16> = out.iter().copied().collect();
-        assert!(
-            distinct.len() > 100,
-            "noise, not the square wave ({} values)",
-            distinct.len()
-        );
-        assert_eq!(
-            s.voices[2].out,
-            (s.noise_level as i16 as i32 * s.voices[2].level) >> 15
-        );
+        assert!(distinct.len() > 100, "noise, not the square wave ({} values)", distinct.len());
+        assert_eq!(s.voices[2].out, (s.noise_level as i16 as i32 * s.voices[2].level) >> 15);
     }
 
     #[test]
     fn pitch_modulation_scales_by_the_previous_voice() {
-        let v = Voice {
-            pitch: 0x1000,
-            ..Default::default()
-        };
+        let v = Voice { pitch: 0x1000, ..Default::default() };
         assert_eq!(v.pitch_step(None), 0x1000);
         assert_eq!(v.pitch_step(Some(0)), 0x1000);
         assert_eq!(v.pitch_step(Some(0x7FFF)), 0x1FFF);
         assert_eq!(v.pitch_step(Some(-0x8000)), 0);
         assert_eq!(v.pitch_step(Some(-0x4000)), 0x800);
         // Clipped after modulation to 4000h; pitches from 8000h are taken as negative.
-        let v = Voice {
-            pitch: 0x3000,
-            ..Default::default()
-        };
+        let v = Voice { pitch: 0x3000, ..Default::default() };
         assert_eq!(v.pitch_step(Some(0x7FFF)), 0x4000);
-        let v = Voice {
-            pitch: 0x8000,
-            ..Default::default()
-        };
+        let v = Voice { pitch: 0x8000, ..Default::default() };
         assert_eq!(v.pitch_step(Some(0)), 0x4000);
         // In the mixer: voice 1 modulated by a silent voice 0 runs at its own pitch;
         // voice 0 can't be modulated (PMON bit 0 is ignored).
@@ -1387,13 +1224,7 @@ mod tests {
 
     #[test]
     fn envelope_rates_follow_psx_spx() {
-        let lin_inc = |rate: u32| Env {
-            rate,
-            exp: false,
-            dec: false,
-            neg: false,
-            frozen: rate == 0x7F,
-        };
+        let lin_inc = |rate: u32| Env { rate, exp: false, dec: false, neg: false, frozen: rate == 0x7F };
         // Shift <= 11: a step every sample of (7-step) << (11-shift).
         let mut c = 0;
         assert_eq!(lin_inc(0).tick(0, &mut c), 7 << 11);
@@ -1407,19 +1238,10 @@ mod tests {
         }
         assert_eq!(levels, [0, 0, 0, 7, 7, 7, 7, 14]);
         // Exponential increase above 6000h: shift < 10 quarters the step...
-        let exp_inc = |rate: u32| Env {
-            rate,
-            exp: true,
-            dec: false,
-            neg: false,
-            frozen: false,
-        };
+        let exp_inc = |rate: u32| Env { rate, exp: true, dec: false, neg: false, frozen: false };
         let mut c = 0;
         assert_eq!(exp_inc(8 << 2).tick(0x6000, &mut c), 0x6000 + (7 << 3));
-        assert_eq!(
-            exp_inc(8 << 2).tick(0x6001, &mut c),
-            0x6001 + ((7 << 3) >> 2)
-        );
+        assert_eq!(exp_inc(8 << 2).tick(0x6001, &mut c), 0x6001 + ((7 << 3) >> 2));
         // ...shift 10 halves step and rate, shift >= 11 quarters the rate.
         let count = |rate: u32, level: i32| {
             let (mut c, mut n) = (0, 0);
@@ -1429,20 +1251,11 @@ mod tests {
             n + 1
         };
         assert_eq!(count(10 << 2, 0x7000), 2);
-        assert_eq!(
-            exp_inc(10 << 2).tick(0x7000, &mut 0x4000),
-            0x7000 + ((7 << 1) >> 1)
-        );
+        assert_eq!(exp_inc(10 << 2).tick(0x7000, &mut 0x4000), 0x7000 + ((7 << 1) >> 1));
         assert_eq!(count(12 << 2, 0x5000), 2);
         assert_eq!(count(12 << 2, 0x7000), 8);
         // Exponential decrease scales the step by the level (rounding down).
-        let exp_dec = Env {
-            rate: 0,
-            exp: true,
-            dec: true,
-            neg: true,
-            frozen: false,
-        };
+        let exp_dec = Env { rate: 0, exp: true, dec: true, neg: true, frozen: false };
         assert_eq!(exp_dec.tick(0x4000, &mut 0), 0x4000 - ((8 << 11) >> 1));
         // The slowest unfrozen rates still step (increment clamped to 1).
         assert_eq!(count(0x7E, 0), 0x8000);
@@ -1456,23 +1269,13 @@ mod tests {
     #[test]
     fn exponential_release_reaches_silence() {
         // Release: exponential, rate 13 (Croc's boot voices hold at 4095 without the fix).
-        let mut v = Voice {
-            phase: Phase::Release,
-            level: 0x7FFF,
-            adsr_hi: 0x20 | 13,
-            ..Default::default()
-        };
+        let mut v = Voice { phase: Phase::Release, level: 0x7FFF, adsr_hi: 0x20 | 13, ..Default::default() };
         for _ in 0..44_100 * 4 {
             Spu::envelope(&mut v);
         }
         assert_eq!((v.phase, v.level), (Phase::Off, 0));
         // Release shift 1Fh never steps.
-        let mut v = Voice {
-            phase: Phase::Release,
-            level: 0x4000,
-            adsr_hi: 0x1F,
-            ..Default::default()
-        };
+        let mut v = Voice { phase: Phase::Release, level: 0x4000, adsr_hi: 0x1F, ..Default::default() };
         for _ in 0..0x10000 {
             Spu::envelope(&mut v);
         }
@@ -1482,12 +1285,7 @@ mod tests {
     #[test]
     fn adsr_phases_and_mid_envelope_writes() {
         // Fast linear attack, decay to sustain level 8 (4800h), sustain flat.
-        let mut v = Voice {
-            phase: Phase::Attack,
-            adsr_lo: 0x0048,
-            adsr_hi: 0x1FC0,
-            ..Default::default()
-        };
+        let mut v = Voice { phase: Phase::Attack, adsr_lo: 0x0048, adsr_hi: 0x1FC0, ..Default::default() };
         for _ in 0..3 {
             Spu::envelope(&mut v);
         }
@@ -1523,10 +1321,7 @@ mod tests {
         s.tick(CYCLES_PER_SAMPLE * 200, &mut Default::default());
         let out = s.take_samples();
         assert_eq!(out.len(), 400);
-        assert!(
-            out.iter().any(|&x| x > 1000) && out.iter().any(|&x| x < -1000),
-            "audible square wave"
-        );
+        assert!(out.iter().any(|&x| x > 1000) && out.iter().any(|&x| x < -1000), "audible square wave");
         assert_eq!(s.read16(0x19C) & 1, 1, "ENDX set after loop end");
         // Key on clears ENDX.
         s.write16(0x188, 1);
@@ -1610,11 +1405,7 @@ mod tests {
         s.write16(0x1AA, 0x8040);
         s.write16(0x1A6, (0x2000 - 8) >> 3);
         let fired: Vec<bool> = (0..6).map(|_| s.fifo_read().1).collect();
-        assert_eq!(
-            fired,
-            [false, false, false, false, true, false],
-            "once, at 2000h"
-        );
+        assert_eq!(fired, [false, false, false, false, true, false], "once, at 2000h");
         // Disabled without SPUCNT bit 15.
         let mut s = Spu::default();
         s.write16(0x1A4, 0x2000 >> 3);
@@ -1626,8 +1417,7 @@ mod tests {
         s.write16(0x1AC, 0x0004);
         s.write16(0x1A4, (0x400 + 0x10) >> 3); // CD right, sample 8
         s.write16(0x1AA, 0x8040);
-        let mut cd: std::collections::VecDeque<(i16, i16)> =
-            (0..20).map(|n| (n as i16, -(n as i16))).collect();
+        let mut cd: std::collections::VecDeque<(i16, i16)> = (0..20).map(|n| (n as i16, -(n as i16))).collect();
         let mut at = None;
         for n in 0..20 {
             if s.tick(CYCLES_PER_SAMPLE, &mut cd) {

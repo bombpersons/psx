@@ -59,14 +59,7 @@ pub(crate) fn write_wav(path: &Path, samples: &[i16]) -> std::io::Result<()> {
 }
 
 /// Run until `target` frames, applying replay events and periodic snapshots.
-fn run_with_input(
-    m: &mut Machine,
-    target: u64,
-    max_steps: u64,
-    events: &[crate::replay::Input],
-    snap: Option<(u64, &Path)>,
-    deadline: Option<Instant>,
-) -> u64 {
+fn run_with_input(m: &mut Machine, target: u64, max_steps: u64, events: &[crate::replay::Input], snap: Option<(u64, &Path)>, deadline: Option<Instant>) -> u64 {
     let mut steps = 0;
     let mut next = 0;
     let mut last_frame = u64::MAX;
@@ -93,66 +86,30 @@ fn run_with_input(
 }
 
 pub fn run(o: Options) -> (bool, Value) {
-    let Options {
-        bios: bios_path,
-        disc,
-        frames,
-        max_steps,
-        dump,
-        brk,
-        tail,
-        watch,
-        watch_after,
-        replay,
-        snapshot_every,
-        wav,
-        pad,
-        deadline,
-    } = o;
+    let Options { bios: bios_path, disc, frames, max_steps, dump, brk, tail, watch, watch_after, replay, snapshot_every, wav, pad, deadline } = o;
     let events = match replay.map(crate::replay::load).transpose() {
         Ok(e) => e.unwrap_or_default(),
-        Err(e) => {
-            return (
-                false,
-                json!({"error": {"code": "invalid_arguments", "message": e}}),
-            )
-        }
+        Err(e) => return (false, json!({"error": {"code": "invalid_arguments", "message": e}})),
     };
     let bios = match std::fs::read(bios_path) {
         Ok(b) => b,
-        Err(e) => {
-            return (
-                false,
-                json!({"error": {"code": "io_error", "message": format!("{}: {e}", bios_path.display())}}),
-            )
-        }
+        Err(e) => return (false, json!({"error": {"code": "io_error", "message": format!("{}: {e}", bios_path.display())}})),
     };
     let mut m = Machine::new(bios);
     match psx_core::pad::PadKind::from_name(pad) {
         Some(k) => m.bus.sio0.pad.kind = k,
-        None => {
-            return (
-                false,
-                json!({"error": {"code": "invalid_arguments", "message": format!("unknown pad {pad:?} (digital | dualshock)")}}),
-            )
-        }
+        None => return (false, json!({"error": {"code": "invalid_arguments", "message": format!("unknown pad {pad:?} (digital | dualshock)")}})),
     }
     if let Some(d) = disc {
         match psx_media::Disc::open(d) {
             Ok(d) => m.insert_disc(Some(d)),
-            Err(e) => {
-                return (
-                    false,
-                    json!({"error": {"code": e.code(), "message": e.to_string()}}),
-                )
-            }
+            Err(e) => return (false, json!({"error": {"code": e.code(), "message": e.to_string()}})),
         }
     }
     m.bus.spu.capture = wav.is_some();
     let started = Instant::now();
     // Optional breakpoint with an instruction tail.
-    let mut ring: std::collections::VecDeque<(u32, u32, Option<u8>)> =
-        std::collections::VecDeque::with_capacity(tail + 1);
+    let mut ring: std::collections::VecDeque<(u32, u32, Option<u8>)> = std::collections::VecDeque::with_capacity(tail + 1);
     let mut steps = 0u64;
     let mut broke = Value::Null;
     if let Some(w) = watch {
@@ -165,25 +122,12 @@ pub fn run(o: Options) -> (bool, Value) {
         let mut last = m.bus.read(w, Width::Word).unwrap_or(0);
         let mut dma_seen = m.bus.recent_dma.len();
         let target = m.bus.frames + frames;
-        while m.bus.frames < target
-            && steps < max_steps
-            && changes.len() < 32
-            && !late(deadline, steps)
-        {
+        while m.bus.frames < target && steps < max_steps && changes.len() < 32 && !late(deadline, steps) {
             let info = m.step();
             steps += 1;
             let now = m.bus.read(w, Width::Word).unwrap_or(0);
             if now != last {
-                let dma = (m.bus.recent_dma.len() != dma_seen)
-                    .then(|| {
-                        m.bus.recent_dma.back().map(|d| {
-                            format!(
-                                "ch{} madr={:08X} bcr={:08X} chcr={:08X}",
-                                d.channel, d.madr, d.bcr, d.chcr
-                            )
-                        })
-                    })
-                    .flatten();
+                let dma = (m.bus.recent_dma.len() != dma_seen).then(|| m.bus.recent_dma.back().map(|d| format!("ch{} madr={:08X} bcr={:08X} chcr={:08X}", d.channel, d.madr, d.bcr, d.chcr))).flatten();
                 changes.push(json!({"frame": m.bus.frames, "step": steps, "pc": format!("0x{:08X}", info.pc), "asm": disasm(info.instruction, info.pc),
                     "old": format!("0x{last:08X}"), "new": format!("0x{now:08X}"), "dma_this_step": dma}));
                 last = now;
@@ -224,14 +168,7 @@ pub fn run(o: Options) -> (bool, Value) {
         }
     }
     let snap = snapshot_every.zip(dump);
-    steps += run_with_input(
-        &mut m,
-        frames.saturating_sub(2),
-        max_steps,
-        &events,
-        snap,
-        deadline,
-    );
+    steps += run_with_input(&mut m, frames.saturating_sub(2), max_steps, &events, snap, deadline);
     // Profile the last two frames: where the CPU spends time and what it polls.
     m.bus.log_io = true;
     let mut pcs: std::collections::HashMap<u32, u64> = Default::default();
@@ -250,12 +187,7 @@ pub fn run(o: Options) -> (bool, Value) {
     let mut hot_io: Vec<_> = io.into_iter().collect();
     hot_io.sort_by_key(|e| std::cmp::Reverse(e.1));
     let secs = started.elapsed().as_secs_f64();
-    let mut unhandled: Vec<(u32, u64)> = m
-        .bus
-        .unhandled_reads
-        .iter()
-        .map(|(a, n)| (*a, *n))
-        .collect();
+    let mut unhandled: Vec<(u32, u64)> = m.bus.unhandled_reads.iter().map(|(a, n)| (*a, *n)).collect();
     unhandled.sort_by_key(|e| std::cmp::Reverse(e.1));
     let mut dumped = Value::Null;
     if let Some(prefix) = dump {
@@ -266,14 +198,7 @@ pub fn run(o: Options) -> (bool, Value) {
         let screen = std::path::PathBuf::from(format!("{}.screen.png", prefix.display()));
         let vram = std::path::PathBuf::from(format!("{}.vram.png", prefix.display()));
         let ok1 = crate::run::write_png(&screen, w, h, &rgba, png::ColorType::Rgba).is_ok();
-        let ok2 = crate::run::write_png(
-            &vram,
-            1024,
-            512,
-            &m.bus.gpu.vram.rgba15(0, 0, 1024, 512),
-            png::ColorType::Rgba,
-        )
-        .is_ok();
+        let ok2 = crate::run::write_png(&vram, 1024, 512, &m.bus.gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok();
         dumped = json!({"screen": ok1.then_some(screen), "vram": ok2.then_some(vram)});
     }
     let audio = match wav {

@@ -8,18 +8,10 @@ use psx_media::iso9660::FileSystem;
 use psx_media::{Disc, MediaError};
 use serde_json::{json, Value};
 
-pub fn run(
-    image: &Path,
-    path: &str,
-    file: Option<u8>,
-    channel: Option<u8>,
-    out: Option<&Path>,
-) -> psx_media::Result<Value> {
+pub fn run(image: &Path, path: &str, file: Option<u8>, channel: Option<u8>, out: Option<&Path>) -> psx_media::Result<Value> {
     let disc = Disc::open(image)?;
     let fs = FileSystem::read(&disc)?;
-    let entry = fs
-        .find(path)
-        .ok_or_else(|| MediaError::NotFound(path.to_string()))?;
+    let entry = fs.find(path).ok_or_else(|| MediaError::NotFound(path.to_string()))?;
     // (file, channel) -> (coding byte, sectors, first lba)
     let mut channels: BTreeMap<(u8, u8), (u8, u32, u32)> = BTreeMap::new();
     let mut sectors = Vec::new();
@@ -50,13 +42,9 @@ pub fn run(
         .collect();
     let mut result = json!({"path": entry.path, "lba": entry.lba, "sectors": entry.sectors(), "channels": listed});
     if let Some(ch) = channel {
-        let Some(out) = out else {
-            return Err(MediaError::Malformed("--channel needs -o OUT.wav".into()));
-        };
+        let Some(out) = out else { return Err(MediaError::Malformed("--channel needs -o OUT.wav".into())) };
         if sectors.is_empty() {
-            return Err(MediaError::NotFound(format!(
-                "no XA audio sectors on channel {ch}"
-            )));
+            return Err(MediaError::NotFound(format!("no XA audio sectors on channel {ch}")));
         }
         let mut dec = XaDecoder::default();
         let mut pcm = VecDeque::new();

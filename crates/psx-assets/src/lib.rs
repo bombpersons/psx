@@ -28,11 +28,7 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         for f in ["tim.rs", "tmd.rs"] {
             let ours = std::fs::read_to_string(root.join("src").join(f)).unwrap();
-            let theirs = std::fs::read_to_string(
-                root.join("../../templates/psx-bevy/src/psx/formats")
-                    .join(f),
-            )
-            .unwrap();
+            let theirs = std::fs::read_to_string(root.join("../../templates/psx-bevy/src/psx/formats").join(f)).unwrap();
             assert!(ours == theirs, "templates/psx-bevy/src/psx/formats/{f} differs from crates/psx-assets/src/{f}; copy it over");
         }
     }

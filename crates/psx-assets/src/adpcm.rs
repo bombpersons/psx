@@ -92,10 +92,7 @@ pub fn decode_stream(data: &[u8]) -> Decoded {
         out.blocks += 1;
         if flags & FLAG_END != 0 {
             if flags & FLAG_REPEAT != 0 {
-                out.looped = Some(Loop {
-                    start: loop_start,
-                    end: out.pcm.len(),
-                });
+                out.looped = Some(Loop { start: loop_start, end: out.pcm.len() });
             }
             break;
         }
@@ -114,9 +111,11 @@ pub fn plausible_sample(data: &[u8]) -> bool {
     }
     let blocks = data.as_chunks::<16>().0;
     let last = blocks.len() - 1;
-    blocks.iter().enumerate().all(|(i, b)| {
-        b[0] >> 4 <= 4 && b[0] & 0xF <= 12 && b[1] <= 7 && (b[1] & FLAG_END == 0 || i + 1 >= last)
-    }) && blocks[last][1] & FLAG_END != 0
+    blocks
+        .iter()
+        .enumerate()
+        .all(|(i, b)| b[0] >> 4 <= 4 && b[0] & 0xF <= 12 && b[1] <= 7 && (b[1] & FLAG_END == 0 || i + 1 >= last))
+        && blocks[last][1] & FLAG_END != 0
 }
 
 /// Test helper: one block with the given header, flags and nibbles.
@@ -140,16 +139,8 @@ mod tests {
         let mut data = vec![0u8; 16 * 5];
         data[16 * 2 + 1] = FLAG_END | FLAG_REPEAT;
         assert_eq!(sample_extent(&data, 16), 16..48);
-        assert_eq!(
-            sample_extent(&data, 48),
-            48..80,
-            "no END block: up to the end of the data"
-        );
-        assert_eq!(
-            sample_extent(&data[..40], 16),
-            16..32,
-            "partial blocks are not read"
-        );
+        assert_eq!(sample_extent(&data, 48), 48..80, "no END block: up to the end of the data");
+        assert_eq!(sample_extent(&data[..40], 16), 16..32, "partial blocks are not read");
         assert_eq!(sample_sha256(&data, 16), sample_sha256(&data[16..48], 0));
         assert_ne!(sample_sha256(&data, 16), sample_sha256(&data, 0));
     }

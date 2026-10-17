@@ -15,9 +15,7 @@ pub struct OrderingTable {
 
 impl OrderingTable {
     pub fn new(len: usize) -> Self {
-        OrderingTable {
-            buckets: vec![Vec::new(); len.max(1)],
-        }
+        OrderingTable { buckets: vec![Vec::new(); len.max(1)] }
     }
 
     pub fn len(&self) -> usize {

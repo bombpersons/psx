@@ -70,19 +70,11 @@ impl TmdPolygon {
     }
     /// Corner triples to draw: (0,1,2) and, for quads, (1,3,2) as the GPU splits them.
     pub fn triangles(&self) -> &'static [[usize; 3]] {
-        if self.vertices.len() == 4 {
-            &[[0, 1, 2], [1, 3, 2]]
-        } else {
-            &[[0, 1, 2]]
-        }
+        if self.vertices.len() == 4 { &[[0, 1, 2], [1, 3, 2]] } else { &[[0, 1, 2]] }
     }
     /// Colour of corner `i` (white when the packet has none).
     pub fn color(&self, i: usize) -> [u8; 3] {
-        self.colors
-            .get(i)
-            .or(self.colors.first())
-            .copied()
-            .unwrap_or([128, 128, 128])
+        self.colors.get(i).or(self.colors.first()).copied().unwrap_or([128, 128, 128])
     }
     /// Normal index of corner `i`, if the packet has normals.
     pub fn normal(&self, i: usize) -> Option<u16> {
@@ -110,30 +102,16 @@ pub struct Tmd {
 }
 
 fn u32_at(b: &[u8], o: usize) -> Option<u32> {
-    Some(u32::from_le_bytes([
-        *b.get(o)?,
-        *b.get(o + 1)?,
-        *b.get(o + 2)?,
-        *b.get(o + 3)?,
-    ]))
+    Some(u32::from_le_bytes([*b.get(o)?, *b.get(o + 1)?, *b.get(o + 2)?, *b.get(o + 3)?]))
 }
 
 fn svectors(b: &[u8], at: usize, n: usize, what: &str) -> Result<Vec<[i16; 3]>, String> {
-    let end = at
-        .checked_add(n * 8)
-        .filter(|&e| e <= b.len())
-        .ok_or_else(|| format!("{what} table out of range"))?;
+    let end = at.checked_add(n * 8).filter(|&e| e <= b.len()).ok_or_else(|| format!("{what} table out of range"))?;
     Ok(b[at..end]
         .as_chunks::<8>()
         .0
         .iter()
-        .map(|c| {
-            [
-                i16::from_le_bytes([c[0], c[1]]),
-                i16::from_le_bytes([c[2], c[3]]),
-                i16::from_le_bytes([c[4], c[5]]),
-            ]
-        })
+        .map(|c| [i16::from_le_bytes([c[0], c[1]]), i16::from_le_bytes([c[2], c[3]]), i16::from_le_bytes([c[4], c[5]])])
         .collect())
 }
 
@@ -178,11 +156,7 @@ fn polygon(mode: u8, flag: u8, words: &[u32]) -> Option<TmdPolygon> {
     let gouraud = mode & MODE_IIP != 0;
     let n_uv = if textured { n } else { 0 };
     let n_colors = references.start / 4 - n_uv;
-    let mut p = TmdPolygon {
-        mode,
-        flag,
-        ..Default::default()
-    };
+    let mut p = TmdPolygon { mode, flag, ..Default::default() };
     for (i, &w) in words[..n_uv].iter().enumerate() {
         p.uvs.push([w as u8, (w >> 8) as u8]);
         match i {
@@ -194,10 +168,7 @@ fn polygon(mode: u8, flag: u8, words: &[u32]) -> Option<TmdPolygon> {
     for &w in &words[n_uv..n_uv + n_colors] {
         p.colors.push([w as u8, (w >> 8) as u8, (w >> 16) as u8]);
     }
-    let idx: Vec<u16> = words[n_uv + n_colors..]
-        .iter()
-        .flat_map(|&w| [w as u16, (w >> 16) as u16])
-        .collect();
+    let idx: Vec<u16> = words[n_uv + n_colors..].iter().flat_map(|&w| [w as u16, (w >> 16) as u16]).collect();
     match (lit, gouraud) {
         (true, true) => {
             for c in idx[..2 * n].as_chunks::<2>().0 {
@@ -251,26 +222,14 @@ impl Tmd {
                 .map(|o| o as usize)
                 .ok_or_else(|| format!("pointer 0x{p:08X} below the RAM base"))
         };
-        let mut tmd = Tmd {
-            fixp,
-            objects: Vec::with_capacity(nobj),
-            size: table - offset + nobj * 28,
-        };
+        let mut tmd = Tmd { fixp, objects: Vec::with_capacity(nobj), size: table - offset + nobj * 28 };
         for k in 0..nobj {
             let o = table + k * 28;
             let f = |i: usize| u32_at(buf, o + 4 * i).unwrap_or(0);
-            let (vert_top, n_vert, normal_top, n_normal, prim_top, n_prim) = (
-                f(0),
-                f(1) as usize,
-                f(2),
-                f(3) as usize,
-                f(4),
-                f(5) as usize,
-            );
+            let (vert_top, n_vert, normal_top, n_normal, prim_top, n_prim) =
+                (f(0), f(1) as usize, f(2), f(3) as usize, f(4), f(5) as usize);
             if n_vert > 0x10000 || n_normal > 0x10000 || n_prim > 0x10000 {
-                return Err(format!(
-                    "object {k}: implausible counts {n_vert}/{n_normal}/{n_prim}"
-                ));
+                return Err(format!("object {k}: implausible counts {n_vert}/{n_normal}/{n_prim}"));
             }
             if !fixp && (vert_top % 4 != 0 || normal_top % 4 != 0 || prim_top % 4 != 0) {
                 return Err(format!("object {k}: unaligned table pointer"));
@@ -284,13 +243,8 @@ impl Tmd {
             };
             let mut at = pa;
             for i in 0..n_prim {
-                let head = u32_at(buf, at)
-                    .ok_or_else(|| format!("object {k}: primitive {i} out of range"))?;
-                let (ilen, flag, mode) = (
-                    ((head >> 8) & 0xFF) as usize,
-                    (head >> 16) as u8,
-                    (head >> 24) as u8,
-                );
+                let head = u32_at(buf, at).ok_or_else(|| format!("object {k}: primitive {i} out of range"))?;
+                let (ilen, flag, mode) = (((head >> 8) & 0xFF) as usize, (head >> 16) as u8, (head >> 24) as u8);
                 let words: Vec<u32> = (0..ilen)
                     .map(|w| u32_at(buf, at + 4 + 4 * w))
                     .collect::<Option<_>>()
@@ -303,14 +257,10 @@ impl Tmd {
                 match polygon(mode, flag, &words) {
                     Some(p) => {
                         if p.vertices.iter().any(|&v| v as usize >= n_vert) {
-                            return Err(format!(
-                                "object {k}: primitive {i} vertex index out of range"
-                            ));
+                            return Err(format!("object {k}: primitive {i} vertex index out of range"));
                         }
                         if p.normals.iter().any(|&v| v as usize >= n_normal) {
-                            return Err(format!(
-                                "object {k}: primitive {i} normal index out of range"
-                            ));
+                            return Err(format!("object {k}: primitive {i} normal index out of range"));
                         }
                         obj.polygons.push(p);
                     }
@@ -318,11 +268,7 @@ impl Tmd {
                 }
             }
             if !fixp {
-                tmd.size = tmd
-                    .size
-                    .max(va + n_vert * 8 - offset)
-                    .max(na + n_normal * 8 - offset)
-                    .max(at - offset);
+                tmd.size = tmd.size.max(va + n_vert * 8 - offset).max(na + n_normal * 8 - offset).max(at - offset);
             }
             tmd.objects.push(obj);
         }
@@ -398,24 +344,12 @@ mod tests {
             // 0x20 lit flat tri: colour, norm0 vert0, vert1 vert2
             prim(0, 0x20, &[rgb(10, 20, 30, 0x20), word(0, 0), word(1, 2)]),
             // 0x30 lit gouraud tri: colour, (norm, vert) x3
-            prim(
-                0,
-                0x30,
-                &[rgb(1, 2, 3, 0x30), word(0, 0), word(0, 1), word(0, 2)],
-            ),
+            prim(0, 0x30, &[rgb(1, 2, 3, 0x30), word(0, 0), word(0, 1), word(0, 2)]),
             // 0x2C lit flat textured quad: 4 uv, norm0 vert0, vert1 vert2, vert3 pad
             prim(
                 0,
                 0x2C,
-                &[
-                    uv(0, 0, 0x7FC0),
-                    uv(64, 0, 0x0085),
-                    uv(0, 64, 0),
-                    uv(64, 64, 0),
-                    word(0, 0),
-                    word(1, 2),
-                    word(3, 0),
-                ],
+                &[uv(0, 0, 0x7FC0), uv(64, 0, 0x0085), uv(0, 64, 0), uv(64, 64, 0), word(0, 0), word(1, 2), word(3, 0)],
             ),
             // 0x35 unlit gouraud textured tri: 3 uv, 3 colours, v0 v1, v2 pad
             prim(
@@ -475,10 +409,7 @@ mod tests {
         assert_eq!(q.triangles(), &[[0, 1, 2], [1, 3, 2]]);
         let t = &o.polygons[3];
         assert!(!t.lit() && t.normals.is_empty());
-        assert_eq!(
-            (t.color(1), t.vertices.as_slice(), t.uvs[2]),
-            ([0, 255, 0], &[0u16, 1, 2][..], [5, 6])
-        );
+        assert_eq!((t.color(1), t.vertices.as_slice(), t.uvs[2]), ([0, 255, 0], &[0u16, 1, 2][..], [5, 6]));
         assert_eq!(o.polygons[4].vertices, vec![0, 1, 2, 3]);
         assert_eq!(o.polygons[5].colors.len(), 4);
     }

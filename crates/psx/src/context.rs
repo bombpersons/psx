@@ -44,8 +44,7 @@ fn config(root: &Path) -> Result<Config, Value> {
             if b.len() > 64 * 1024 {
                 return Err(error("invalid_config", "Project config exceeds 64 KiB"));
             }
-            let c: Config = serde_json::from_slice(&b)
-                .map_err(|e| error("invalid_config", format!("{}: {e}", p.display())))?;
+            let c: Config = serde_json::from_slice(&b).map_err(|e| error("invalid_config", format!("{}: {e}", p.display())))?;
             if c.format != 1 {
                 return Err(error("invalid_config", "Project config requires format: 1"));
             }
@@ -60,22 +59,14 @@ pub fn backend_arg(value: Option<String>) -> Result<Option<Backend>, Value> {
         None => Ok(None),
         Some("native") => Ok(Some(Backend::Native)),
         Some("redux") => Ok(Some(Backend::Redux)),
-        Some(other) => Err(error(
-            "invalid_arguments",
-            format!("unknown backend {other:?} (redux | native)"),
-        )),
+        Some(other) => Err(error("invalid_arguments", format!("unknown backend {other:?} (redux | native)"))),
     }
 }
 pub fn error(code: &str, message: impl ToString) -> Value {
     json!({"error":{"code":code,"message":message.to_string()}})
 }
 pub fn failed(value: Value) -> Outcome {
-    Outcome {
-        value,
-        exit: 1,
-        pretty: true,
-        text: false,
-    }
+    Outcome { value, exit: 1, pretty: true, text: false }
 }
 fn media_error(e: MediaError) -> Value {
     error(e.code(), e)
@@ -106,8 +97,7 @@ pub fn capabilities(root: &Path) -> Value {
     })
 }
 fn native_header(path: &Path) -> Result<Option<psx_core::state::Header>, Value> {
-    let mut f =
-        fs::File::open(path).map_err(|e| error("io_error", format!("{}: {e}", path.display())))?;
+    let mut f = fs::File::open(path).map_err(|e| error("io_error", format!("{}: {e}", path.display())))?;
     let mut prefix = [0; 12];
     match f.read_exact(&mut prefix) {
         Ok(()) => {}
@@ -123,11 +113,8 @@ fn native_header(path: &Path) -> Result<Option<psx_core::state::Header>, Value> 
     }
     let mut b = prefix.to_vec();
     b.resize(12 + len, 0);
-    f.read_exact(&mut b[12..])
-        .map_err(|e| error("invalid_state", format!("Truncated state header: {e}")))?;
-    psx_core::state::read_header(&b)
-        .map(|h| Some(h.0))
-        .map_err(|e| error("invalid_state", e))
+    f.read_exact(&mut b[12..]).map_err(|e| error("invalid_state", format!("Truncated state header: {e}")))?;
+    psx_core::state::read_header(&b).map(|h| Some(h.0)).map_err(|e| error("invalid_state", e))
 }
 /// A report can supply paths only when it cryptographically identifies this state.
 fn state_report(path: &Path) -> Option<Value> {
@@ -137,12 +124,8 @@ fn state_report(path: &Path) -> Option<Value> {
     }
     let v: Value = serde_json::from_slice(&fs::read(p).ok()?).ok()?;
     let hash = sha256_file(path).ok()?;
-    let bound = v["files"]
-        .as_object()
-        .is_some_and(|files| files.values().any(|f| f["sha256"] == hash))
-        || v["states"]
-            .as_array()
-            .is_some_and(|states| states.iter().any(|s| s["sha256"] == hash));
+    let bound = v["files"].as_object().is_some_and(|files| files.values().any(|f| f["sha256"] == hash))
+        || v["states"].as_array().is_some_and(|states| states.iter().any(|s| s["sha256"] == hash));
     bound.then_some(v)
 }
 fn report_path(root: &Path, report: &Value, key: &str) -> Option<PathBuf> {
@@ -151,24 +134,13 @@ fn report_path(root: &Path, report: &Value, key: &str) -> Option<PathBuf> {
 }
 fn region(media: Option<&Path>) -> Result<Option<bios::Region>, Value> {
     let Some(p) = media else { return Ok(None) };
-    let exe = matches!(
-        p.extension()
-            .and_then(|s| s.to_str())
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("exe" | "ps-exe" | "psx")
-    );
+    let exe = matches!(p.extension().and_then(|s| s.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("exe" | "ps-exe" | "psx"));
     let hint = if exe {
         let b = crate::read_source(&p.to_string_lossy()).map_err(media_error)?;
-        PsxExe::parse(&b)
-            .map_err(media_error)?
-            .region_hint()
-            .map(str::to_owned)
+        PsxExe::parse(&b).map_err(media_error)?.region_hint().map(str::to_owned)
     } else {
         let disc = crate::disc_summary(p, false).map_err(media_error)?;
-        disc["boot_exe"]["header"]["region_hint"]
-            .as_str()
-            .map(str::to_owned)
+        disc["boot_exe"]["header"]["region_hint"].as_str().map(str::to_owned)
     };
     Ok(hint.and_then(|h| bios::Region::from_hint(&h)))
 }
@@ -224,31 +196,17 @@ pub fn resolve(
     let cfg = config(root)?;
     let state = from_state.map(native_header).transpose()?.flatten();
     let report = from_state.and_then(state_report);
-    let backend = backend
-        .or(state.as_ref().map(|_| Backend::Native))
-        .or(cfg.backend)
-        .unwrap_or(Backend::Native);
+    let backend = backend.or(state.as_ref().map(|_| Backend::Native)).or(cfg.backend).unwrap_or(Backend::Native);
     let media = media.or_else(|| {
         if state.as_ref().is_some_and(|s| s.media.is_none()) {
             None
         } else {
-            report
-                .as_ref()
-                .and_then(|r| report_path(root, r, "media"))
-                .or(cfg.media.map(|p| absolute(root, &p)))
+            report.as_ref().and_then(|r| report_path(root, r, "media")).or(cfg.media.map(|p| absolute(root, &p)))
         }
     });
     // An explicit BIOS requires no inventory or media inspection before native/Redux validation.
-    let region = if discover || bios_path.is_none() {
-        region(media.as_deref())?
-    } else {
-        None
-    };
-    let mut candidates = if discover || bios_path.is_none() {
-        bios::inventory(root).map_err(media_error)?
-    } else {
-        vec![]
-    };
+    let region = if discover || bios_path.is_none() { region(media.as_deref())? } else { None };
+    let mut candidates = if discover || bios_path.is_none() { bios::inventory(root).map_err(media_error)? } else { vec![] };
     if bios_path.is_none() {
         if let Some(p) = &cfg.bios {
             let p = absolute(root, p);
@@ -277,61 +235,28 @@ pub fn resolve(
     } else if let Some(p) = cfg.bios {
         (Some(absolute(root, &p)), "project_config")
     } else if let Some(r) = region {
-        let preferred = bios::CATALOG
-            .iter()
-            .filter(|c| c.region == r)
-            .find_map(|known| {
-                candidates
-                    .iter()
-                    .filter(|c| c.sha256 == known.sha256)
-                    .min_by_key(|c| {
-                        (
-                            !c.path
-                                .file_name()
-                                .is_some_and(|n| n.eq_ignore_ascii_case(known.file)),
-                            c.path.clone(),
-                        )
-                    })
-            });
+        let preferred = bios::CATALOG.iter().filter(|c| c.region == r).find_map(|known| {
+            candidates
+                .iter()
+                .filter(|c| c.sha256 == known.sha256)
+                .min_by_key(|c| (!c.path.file_name().is_some_and(|n| n.eq_ignore_ascii_case(known.file)), c.path.clone()))
+        });
         if let Some(c) = preferred {
             (Some(c.path.clone()), "regional_catalog_preference")
         } else {
-            let mut compatible: Vec<_> = candidates
-                .iter()
-                .filter(|c| c.bytes == 524288 && c.region == Some(r))
-                .collect();
+            let mut compatible: Vec<_> = candidates.iter().filter(|c| c.bytes == 524288 && c.region == Some(r)).collect();
             compatible.sort_by(|a, b| a.sha256.cmp(&b.sha256));
             compatible.dedup_by_key(|c| &c.sha256);
             if compatible.len() == 1 {
-                (
-                    Some(compatible[0].path.clone()),
-                    "unique_regional_candidate",
-                )
+                (Some(compatible[0].path.clone()), "unique_regional_candidate")
             } else {
-                (
-                    None,
-                    if compatible.is_empty() {
-                        "no_compatible_bios"
-                    } else {
-                        "ambiguous_regional_candidates"
-                    },
-                )
+                (None, if compatible.is_empty() { "no_compatible_bios" } else { "ambiguous_regional_candidates" })
             }
         }
     } else {
         (None, "no_region_or_preference")
     };
-    Ok(Resolved {
-        media,
-        bios: selected,
-        backend,
-        region,
-        bios_reason: reason,
-        candidates,
-        state,
-        media_required,
-        warnings,
-    })
+    Ok(Resolved { media, bios: selected, backend, region, bios_reason: reason, candidates, state, media_required, warnings })
 }
 
 #[derive(Args, Deserialize, JsonSchema)]
@@ -354,23 +279,11 @@ pub struct ArgsContext {
 }
 impl Op for ArgsContext {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        let r = match resolve(
-            &ctx.root,
-            self.image,
-            self.bios,
-            self.backend,
-            self.from_state.as_deref(),
-            true,
-        ) {
+        let r = match resolve(&ctx.root, self.image, self.bios, self.backend, self.from_state.as_deref(), true) {
             Ok(r) => r,
             Err(e) => return failed(e),
         };
-        let selected_info = match r
-            .bios
-            .as_ref()
-            .map(|p| bios::inspect(&absolute(&ctx.root, p)))
-            .transpose()
-        {
+        let selected_info = match r.bios.as_ref().map(|p| bios::inspect(&absolute(&ctx.root, p))).transpose() {
             Ok(v) => v,
             Err(e) => return Outcome::media(Err(e)),
         };
@@ -390,11 +303,7 @@ impl Op for ArgsContext {
                 bios: Some(absolute(&ctx.root, bios)),
                 backend: Some(r.backend),
             };
-            let temp = profile.with_extension(format!(
-                "tmp-{}-{}",
-                std::process::id(),
-                crate::instance_suffix()
-            ));
+            let temp = profile.with_extension(format!("tmp-{}-{}", std::process::id(), crate::instance_suffix()));
             let write = fs::create_dir_all(profile.parent().unwrap())
                 .and_then(|_| fs::write(&temp, serde_json::to_vec_pretty(&cfg).unwrap()))
                 .and_then(|_| fs::rename(&temp, &profile));
@@ -415,15 +324,13 @@ impl Op for ArgsContext {
         if setup.is_none() {
             next_calls.push(json!({"tool":"run","arguments":{"media":r.media,"bios":r.bios,"backend":r.backend,"frames":60,"save_state":true,"brief":true,"return_screen":true}}));
         }
-        Outcome::media(Ok(
-            json!({"status":if setup.is_none(){"ready"}else{"needs_setup"},"build":build(),"project_root":ctx.root,
+        Outcome::media(Ok(json!({"status":if setup.is_none(){"ready"}else{"needs_setup"},"build":build(),"project_root":ctx.root,
             "config":profile,"saved":self.save,"output_root":ctx.root.join(".psx"),"bios_dir":bios::store(),
             "signatures":{"path":signatures,"available":signatures.is_dir(),
                 "selection":if std::env::var_os("PSX_SIGS_DIR").is_some_and(|p| !p.is_empty()) {"PSX_SIGS_DIR"} else {"project_default"},
                 "layout":"<version>/<LIB>.json","override":"symbols.sigs / --sigs; shared default: PSX_SIGS_DIR (use an absolute path)"},
             "resolved":{"media":r.media,"bios":r.bios,"bios_selection":r.bios_reason,"backend":r.backend,"disc_region_hint":r.region.map(|r|r.hint())},
             "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),"state":r.state,"setup":setup,"capabilities":capabilities(&ctx.root),"warnings":r.warnings,
-            "next_calls":next_calls}),
-        ))
+            "next_calls":next_calls})))
     }
 }

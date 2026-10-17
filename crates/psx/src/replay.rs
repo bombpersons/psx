@@ -30,8 +30,7 @@ pub enum Button {
 impl<'de> Deserialize<'de> for Button {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        let bit = psx_core::sio0::button_from_name(&s)
-            .ok_or_else(|| serde::de::Error::custom(format!("unknown button {s:?}")))?;
+        let bit = psx_core::sio0::button_from_name(&s).ok_or_else(|| serde::de::Error::custom(format!("unknown button {s:?}")))?;
         Ok(BUTTONS[bit.trailing_zeros() as usize])
     }
 }
@@ -89,27 +88,17 @@ pub fn load(path: &std::path::Path) -> Result<Vec<Input>, String> {
     resolve(Some(path), None, u64::MAX)
 }
 
-pub fn resolve(
-    path: Option<&std::path::Path>,
-    inline: Option<&Events>,
-    frames: u64,
-) -> Result<Vec<Input>, String> {
+pub fn resolve(path: Option<&std::path::Path>, inline: Option<&Events>, frames: u64) -> Result<Vec<Input>, String> {
     if path.is_some() && inline.is_some() {
         return Err("input and replay are mutually exclusive".into());
     }
     let owned;
     let events = if let Some(path) = path {
-        if std::fs::metadata(path)
-            .map_err(|e| format!("replay {}: {e}", path.display()))?
-            .len()
-            > 1024 * 1024
-        {
+        if std::fs::metadata(path).map_err(|e| format!("replay {}: {e}", path.display()))?.len() > 1024 * 1024 {
             return Err("replay exceeds 1 MiB".into());
         }
-        let text =
-            std::fs::read_to_string(path).map_err(|e| format!("replay {}: {e}", path.display()))?;
-        owned = serde_json::from_str::<Events>(&text)
-            .map_err(|e| format!("replay {}: {e}", path.display()))?;
+        let text = std::fs::read_to_string(path).map_err(|e| format!("replay {}: {e}", path.display()))?;
+        owned = serde_json::from_str::<Events>(&text).map_err(|e| format!("replay {}: {e}", path.display()))?;
         &owned.0
     } else if let Some(events) = inline {
         &events.0
@@ -138,29 +127,15 @@ pub fn resolve(
         }
         let mut bits = 0u16;
         for b in &e.buttons {
-            let bit = 1u16
-                << BUTTONS
-                    .iter()
-                    .position(|candidate| {
-                        std::mem::discriminant(candidate) == std::mem::discriminant(b)
-                    })
-                    .unwrap();
+            let bit = 1u16 << BUTTONS.iter().position(|candidate| std::mem::discriminant(candidate) == std::mem::discriminant(b)).unwrap();
             if bits & bit != 0 {
                 return Err("duplicate button in input state".into());
             }
             bits |= bit;
         }
-        out.push(Input {
-            frame: e.frame,
-            buttons: bits,
-            sticks: e.sticks.unwrap_or([0x80; 4]),
-        });
+        out.push(Input { frame: e.frame, buttons: bits, sticks: e.sticks.unwrap_or([0x80; 4]) });
         if let Some(end) = e.until {
-            out.push(Input {
-                frame: end,
-                buttons: 0,
-                sticks: [0x80; 4],
-            });
+            out.push(Input { frame: end, buttons: 0, sticks: [0x80; 4] });
             held_until = end;
         }
         previous = Some(e.frame);
@@ -173,13 +148,7 @@ pub fn button_names(bits: u16) -> Vec<String> {
         .iter()
         .enumerate()
         .filter(|(i, _)| bits & (1 << i) != 0)
-        .map(|(_, b)| {
-            serde_json::to_value(b)
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_owned()
-        })
+        .map(|(_, b)| serde_json::to_value(b).unwrap().as_str().unwrap().to_owned())
         .collect()
 }
 pub fn report(events: &[Input]) -> serde_json::Value {

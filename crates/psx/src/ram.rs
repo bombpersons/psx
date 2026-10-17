@@ -57,18 +57,12 @@ pub fn locate(addr: u32, width: usize) -> Option<Mem> {
         psx_media::memmap::Region::Scratchpad => (SCRATCH_SIZE, Mem::Scratch(offset)),
         _ => return None,
     };
-    offset
-        .checked_add(width)
-        .filter(|&end| end <= limit)
-        .map(|_| memory)
+    offset.checked_add(width).filter(|&end| end <= limit).map(|_| memory)
 }
 
 /// Little-endian read of `width` (1..=4) bytes.
 pub fn read_le(bytes: &[u8], off: usize, width: usize) -> u32 {
-    bytes[off..off + width]
-        .iter()
-        .rev()
-        .fold(0u32, |acc, &b| (acc << 8) | b as u32)
+    bytes[off..off + width].iter().rev().fold(0u32, |acc, &b| (acc << 8) | b as u32)
 }
 
 pub fn write_le(bytes: &mut [u8], off: usize, width: usize, value: u32) {
@@ -155,11 +149,7 @@ impl Fmt {
                 let (int, frac) = (a >> f, a & ((1u128 << f) - 1));
                 let digits = format!("{:0n$}", frac * 5u128.pow(f as u32), n = f as usize);
                 let digits = digits.trim_end_matches('0');
-                format!(
-                    "{}{int}.{}",
-                    if v < 0 { "-" } else { "" },
-                    if digits.is_empty() { "0" } else { digits }
-                )
+                format!("{}{int}.{}", if v < 0 { "-" } else { "" }, if digits.is_empty() { "0" } else { digits })
             }
         }
     }
@@ -176,11 +166,7 @@ impl Fmt {
     /// Encode a value written in this format (`1.5` for fx16.16, `-2`, `0x80`).
     pub fn encode(self, s: &str) -> Option<u32> {
         let w = self.width();
-        let mask = if w == 4 {
-            u32::MAX
-        } else {
-            (1u32 << (8 * w)) - 1
-        };
+        let mask = if w == 4 { u32::MAX } else { (1u32 << (8 * w)) - 1 };
         let v = match self {
             Fmt::Fixed(_, f) if number(s).is_none() => {
                 let x: f64 = s.trim().parse().ok()?;
@@ -204,11 +190,7 @@ pub struct Sample {
 
 pub fn parse_sample(s: &str) -> Result<Sample, String> {
     let mut it = s.splitn(3, ':');
-    let (a, f, n) = (
-        it.next().unwrap_or(""),
-        it.next().unwrap_or("u32"),
-        it.next(),
-    );
+    let (a, f, n) = (it.next().unwrap_or(""), it.next().unwrap_or("u32"), it.next());
     sample(a, f, n, &format!("--sample {s:?}"))
 }
 
@@ -222,21 +204,12 @@ fn sample(a: &str, f: &str, name: Option<&str>, label: &str) -> Result<Sample, S
         "4" => Fmt::Unsigned(4),
         f => Fmt::parse(f).ok_or_else(|| format!("{label}: unknown format {f:?} (u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F, e.g. fx16.16 or fx4.12, or a width 1/2/4)"))?,
     };
-    let mem = locate(addr, fmt.width())
-        .ok_or_else(|| format!("{label}: 0x{addr:08X} is not main RAM or scratchpad"))?;
-    let name = name
-        .filter(|n| !n.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("0x{addr:08X}:{}", fmt.name()));
+    let mem = locate(addr, fmt.width()).ok_or_else(|| format!("{label}: 0x{addr:08X} is not main RAM or scratchpad"))?;
+    let name = name.filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| format!("0x{addr:08X}:{}", fmt.name()));
     if name.contains([',', '"', '\n']) {
         return Err(format!("{label}: names cannot contain commas or quotes"));
     }
-    Ok(Sample {
-        addr,
-        fmt,
-        name,
-        mem,
-    })
+    Ok(Sample { addr, fmt, name, mem })
 }
 
 /// A `sample` column as given: `ADDR:FMT[:NAME]` text, or over MCP/JSON a
@@ -268,9 +241,7 @@ fn format_or_width<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Stri
         Value::Null => Ok(None),
         Value::String(s) => Ok(Some(s)),
         Value::Number(n) => Ok(Some(n.to_string())),
-        v => Err(serde::de::Error::custom(format!(
-            "format {v}: expected a string such as \"i16\" or a width 1/2/4"
-        ))),
+        v => Err(serde::de::Error::custom(format!("format {v}: expected a string such as \"i16\" or a width 1/2/4"))),
     }
 }
 
@@ -279,12 +250,8 @@ impl<'de> serde::Deserialize<'de> for SampleSpec {
         // By hand rather than untagged, so a bad object names its field.
         match <Value as serde::Deserialize>::deserialize(d)? {
             Value::String(s) => Ok(SampleSpec::Text(s)),
-            v @ Value::Object(_) => serde_json::from_value(v)
-                .map(SampleSpec::Typed)
-                .map_err(|e| serde::de::Error::custom(format!("sample: {e}"))),
-            v => Err(serde::de::Error::custom(format!(
-                "sample {v}: expected \"ADDR:FMT[:NAME]\" or {{\"addr\", \"format\", \"name\"}}"
-            ))),
+            v @ Value::Object(_) => serde_json::from_value(v).map(SampleSpec::Typed).map_err(|e| serde::de::Error::custom(format!("sample: {e}"))),
+            v => Err(serde::de::Error::custom(format!("sample {v}: expected \"ADDR:FMT[:NAME]\" or {{\"addr\", \"format\", \"name\"}}"))),
         }
     }
 }
@@ -300,12 +267,7 @@ impl SampleSpec {
     pub fn parse(&self) -> Result<Sample, String> {
         match self {
             SampleSpec::Text(s) => parse_sample(s),
-            SampleSpec::Typed(t) => sample(
-                &t.addr,
-                t.format.as_deref().unwrap_or("u32"),
-                t.name.as_deref(),
-                &format!("sample {:?}", t.addr),
-            ),
+            SampleSpec::Typed(t) => sample(&t.addr, t.format.as_deref().unwrap_or("u32"), t.name.as_deref(), &format!("sample {:?}", t.addr)),
         }
     }
 }
@@ -334,13 +296,7 @@ impl Sampler {
             out.push_str(&c.name);
         }
         out.push('\n');
-        Sampler {
-            columns,
-            every: every.max(1),
-            out,
-            rows: 0,
-            last: None,
-        }
+        Sampler { columns, every: every.max(1), out, rows: 0, last: None }
     }
 
     /// Record a row for `run_frame` if it is due (every Nth frame, or `force`).
@@ -405,9 +361,7 @@ pub fn parse_poke(s: &str) -> Result<Poke, String> {
         Some((b, w)) => (b, Some(w)),
         None => (s, None),
     };
-    let (a, rest) = body
-        .split_once('=')
-        .ok_or_else(|| format!("--poke {s:?}: expected ADDR=VALUE[:WIDTH][@FRAME]"))?;
+    let (a, rest) = body.split_once('=').ok_or_else(|| format!("--poke {s:?}: expected ADDR=VALUE[:WIDTH][@FRAME]"))?;
     let addr = hex(a).ok_or_else(|| format!("--poke {s:?}: bad hex address {a:?}"))?;
     let (val, ty) = match rest.split_once(':') {
         Some((v, t)) => (v, t),
@@ -417,19 +371,12 @@ pub fn parse_poke(s: &str) -> Result<Poke, String> {
         "1" => Fmt::Unsigned(1),
         "2" => Fmt::Unsigned(2),
         "4" => Fmt::Unsigned(4),
-        t => Fmt::parse(t).ok_or_else(|| {
-            format!("--poke {s:?}: width {t:?} is not 1, 2, 4 or a format like i16/fx16.16")
-        })?,
+        t => Fmt::parse(t).ok_or_else(|| format!("--poke {s:?}: width {t:?} is not 1, 2, 4 or a format like i16/fx16.16"))?,
     };
     let width = fmt.width();
     let value = fmt.encode(val).ok_or_else(|| format!("--poke {s:?}: bad value {val:?} (decimal, -decimal, 0xHEX, or a decimal fraction for fx formats)"))?;
-    let mem = locate(addr, width)
-        .ok_or_else(|| format!("--poke {s:?}: 0x{addr:08X} is not main RAM or scratchpad"))?;
-    let frame = |t: &str| {
-        t.trim()
-            .parse::<u64>()
-            .map_err(|_| format!("--poke {s:?}: bad frame {t:?}"))
-    };
+    let mem = locate(addr, width).ok_or_else(|| format!("--poke {s:?}: 0x{addr:08X} is not main RAM or scratchpad"))?;
+    let frame = |t: &str| t.trim().parse::<u64>().map_err(|_| format!("--poke {s:?}: bad frame {t:?}"));
     let (from, to) = match when {
         None => (0, Some(0)),
         Some(w) => match w.split_once("..") {
@@ -444,16 +391,7 @@ pub fn parse_poke(s: &str) -> Result<Poke, String> {
     if to.is_some_and(|t| t < from) {
         return Err(format!("--poke {s:?}: empty frame range"));
     }
-    Ok(Poke {
-        spec: s.to_string(),
-        addr,
-        mem,
-        width,
-        value,
-        from,
-        to,
-        applied: Vec::new(),
-    })
+    Ok(Poke { spec: s.to_string(), addr, mem, width, value, from, to, applied: Vec::new() })
 }
 
 // ---------------------------------------------------------------- snapshots
@@ -465,18 +403,10 @@ pub struct Snapshot {
 }
 
 pub fn load(p: &Path) -> psx_media::Result<Snapshot> {
-    let path = if p.is_dir() {
-        p.join("ram.bin")
-    } else {
-        p.to_path_buf()
-    };
+    let path = if p.is_dir() { p.join("ram.bin") } else { p.to_path_buf() };
     let bytes = std::fs::read(&path).map_err(|e| MediaError::io(&path, e))?;
     if bytes.len() != RAM_SIZE {
-        return Err(bad(format!(
-            "{}: {} bytes; a main RAM dump (ram.bin) is 2097152",
-            path.display(),
-            bytes.len()
-        )));
+        return Err(bad(format!("{}: {} bytes; a main RAM dump (ram.bin) is 2097152", path.display(), bytes.len())));
     }
     Ok(Snapshot { path, bytes })
 }
@@ -491,13 +421,8 @@ fn parse_width(w: u8) -> psx_media::Result<usize> {
 /// `LO-HI` (hex, HI exclusive) → RAM byte offsets.
 fn parse_range(r: Option<&str>) -> psx_media::Result<(usize, usize)> {
     let Some(r) = r else { return Ok((0, RAM_SIZE)) };
-    let (lo, hi) = r
-        .split_once('-')
-        .ok_or_else(|| bad(format!("range {r:?}: expected LO-HI in hex")))?;
-    let (lo, hi) = (
-        hex(lo).ok_or_else(|| bad(format!("bad range start {lo:?}")))?,
-        hex(hi).ok_or_else(|| bad(format!("bad range end {hi:?}")))?,
-    );
+    let (lo, hi) = r.split_once('-').ok_or_else(|| bad(format!("range {r:?}: expected LO-HI in hex")))?;
+    let (lo, hi) = (hex(lo).ok_or_else(|| bad(format!("bad range start {lo:?}")))?, hex(hi).ok_or_else(|| bad(format!("bad range end {hi:?}")))?);
     let l = match locate(lo, 0) {
         Some(Mem::Ram(o)) => o,
         _ => return Err(bad(format!("range start 0x{lo:08X} is not main RAM"))),
@@ -558,7 +483,7 @@ pub fn diff(a: &Path, b: &Path, o: DiffOpts) -> R {
                     }
                     _ => clusters.push((off, off + w, 1)),
                 }
-                if total > o.offset as u64 && changes.len() < o.limit {
+                if total>o.offset as u64 && changes.len() < o.limit {
                     changes.push(json!({
                         "address": addr_of(off), "address_hex": format!("0x{:08X}", addr_of(off)),
                         "a": value_json(x, w, o.signed), "b": value_json(y, w, o.signed),
@@ -604,28 +529,16 @@ fn parse_pred(s: &str) -> psx_media::Result<Pred> {
         "unchanged" | "eq" | "same" | "equal" | "==" => Pred::Unchanged,
         "increased" | "inc" | "gt" | ">" => Pred::Increased,
         "decreased" | "dec" | "lt" | "<" => Pred::Decreased,
-        _ => {
-            match s
-                .strip_prefix("delta=")
-                .or_else(|| s.strip_prefix("delta:"))
-                .and_then(number)
-            {
-                Some(d) => Pred::Delta(d),
-                None => return Err(bad(format!(
-                    "predicate {s:?}: use changed, unchanged, increased, decreased, delta=N or any"
-                ))),
-            }
-        }
+        _ => match s.strip_prefix("delta=").or_else(|| s.strip_prefix("delta:")).and_then(number) {
+            Some(d) => Pred::Delta(d),
+            None => return Err(bad(format!("predicate {s:?}: use changed, unchanged, increased, decreased, delta=N or any"))),
+        },
     })
 }
 
 impl Pred {
     fn holds(self, a: u32, b: u32, w: usize, signed_view: bool) -> bool {
-        let (x, y) = if signed_view {
-            (signed(a, w), signed(b, w))
-        } else {
-            (a as i64, b as i64)
-        };
+        let (x, y) = if signed_view { (signed(a, w), signed(b, w)) } else { (a as i64, b as i64) };
         match self {
             Pred::Any => true,
             Pred::Changed => a != b,
@@ -659,47 +572,21 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
     if paths.is_empty() {
         return Err(bad("give at least one snapshot (run directory or ram.bin)"));
     }
-    let snaps = paths
-        .iter()
-        .map(|p| load(p))
-        .collect::<psx_media::Result<Vec<_>>>()?;
+    let snaps = paths.iter().map(|p| load(p)).collect::<psx_media::Result<Vec<_>>>()?;
     let n = snaps.len();
-    let preds: Vec<Pred> = o
-        .preds
-        .iter()
-        .flat_map(|p| p.split(','))
-        .filter(|p| !p.trim().is_empty())
-        .map(parse_pred)
-        .collect::<psx_media::Result<_>>()?;
+    let preds: Vec<Pred> = o.preds.iter().flat_map(|p| p.split(',')).filter(|p| !p.trim().is_empty()).map(parse_pred).collect::<psx_media::Result<_>>()?;
     let pair_preds: Vec<Pred> = match preds.len() {
         0 => vec![Pred::Any; n.saturating_sub(1)],
         1 => vec![preds[0]; n.saturating_sub(1)],
         k if k == n - 1 => preds,
-        k => return Err(bad(format!(
-            "{k} predicates for {n} snapshots: give one (applied to every consecutive pair) or {}",
-            n - 1
-        ))),
+        k => return Err(bad(format!("{k} predicates for {n} snapshots: give one (applied to every consecutive pair) or {}", n - 1))),
     };
     let values: Option<Vec<Option<i64>>> = o
         .values
         .map(|v| {
-            let list: Vec<Option<i64>> = v
-                .split(',')
-                .map(|x| {
-                    if x.trim() == "*" {
-                        Ok(None)
-                    } else {
-                        number(x)
-                            .map(Some)
-                            .ok_or_else(|| bad(format!("bad value {x:?}")))
-                    }
-                })
-                .collect::<psx_media::Result<_>>()?;
+            let list: Vec<Option<i64>> = v.split(',').map(|x| if x.trim() == "*" { Ok(None) } else { number(x).map(Some).ok_or_else(|| bad(format!("bad value {x:?}"))) }).collect::<psx_media::Result<_>>()?;
             if list.len() != n {
-                return Err(bad(format!(
-                    "--values has {} entries for {n} snapshots (use * to skip one)",
-                    list.len()
-                )));
+                return Err(bad(format!("--values has {} entries for {n} snapshots (use * to skip one)", list.len())));
             }
             Ok(list)
         })
@@ -707,13 +594,8 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
     let between = o
         .between
         .map(|b| {
-            let (l, h) = b
-                .split_once("..")
-                .ok_or_else(|| bad(format!("--between {b:?}: expected LO..HI")))?;
-            Ok::<_, MediaError>((
-                number(l).ok_or_else(|| bad(format!("bad bound {l:?}")))?,
-                number(h).ok_or_else(|| bad(format!("bad bound {h:?}")))?,
-            ))
+            let (l, h) = b.split_once("..").ok_or_else(|| bad(format!("--between {b:?}: expected LO..HI")))?;
+            Ok::<_, MediaError>((number(l).ok_or_else(|| bad(format!("bad bound {l:?}")))?, number(h).ok_or_else(|| bad(format!("bad bound {h:?}")))?))
         })
         .transpose()?;
     let view = |v: u32| if o.signed { signed(v, w) } else { v as i64 };
@@ -724,17 +606,8 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
     let restrict: Option<BTreeSet<u32>> = match o.candidates {
         Some(p) => {
             let text = std::fs::read_to_string(p).map_err(|e| MediaError::io(p, e))?;
-            let v: Value =
-                serde_json::from_str(&text).map_err(|e| bad(format!("{}: {e}", p.display())))?;
-            Some(
-                v["addresses"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|a| a.as_str().and_then(hex).or(a.as_u64().map(|x| x as u32)))
-                    .map(|a| a & 0x1F_FFFF)
-                    .collect(),
-            )
+            let v: Value = serde_json::from_str(&text).map_err(|e| bad(format!("{}: {e}", p.display())))?;
+            Some(v["addresses"].as_array().into_iter().flatten().filter_map(|a| a.as_str().and_then(hex).or(a.as_u64().map(|x| x as u32))).map(|a| a & 0x1F_FFFF).collect())
         }
         None => None,
     };
@@ -743,15 +616,8 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
     while off + w <= hi {
         if restrict.as_ref().is_none_or(|r| r.contains(&(off as u32))) {
             let vals: Vec<u32> = snaps.iter().map(|s| read_le(&s.bytes, off, w)).collect();
-            let ok = pair_preds
-                .iter()
-                .enumerate()
-                .all(|(i, p)| p.holds(vals[i], vals[i + 1], w, o.signed))
-                && values.as_ref().is_none_or(|vs| {
-                    vs.iter()
-                        .zip(&vals)
-                        .all(|(want, &v)| want.is_none_or(|x| eq(v, x)))
-                })
+            let ok = pair_preds.iter().enumerate().all(|(i, p)| p.holds(vals[i], vals[i + 1], w, o.signed))
+                && values.as_ref().is_none_or(|vs| vs.iter().zip(&vals).all(|(want, &v)| want.is_none_or(|x| eq(v, x))))
                 && between.is_none_or(|(l, h)| vals.iter().all(|&v| (l..=h).contains(&view(v))));
             if ok {
                 found.push(off);
@@ -765,8 +631,7 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
                 std::fs::create_dir_all(parent).map_err(|e| MediaError::io(parent, e))?;
             }
             let doc = json!({"width": w, "addresses": found.iter().map(|&o| format!("0x{:08X}", addr_of(o))).collect::<Vec<_>>()});
-            std::fs::write(p, serde_json::to_vec_pretty(&doc).unwrap())
-                .map_err(|e| MediaError::io(p, e))?;
+            std::fs::write(p, serde_json::to_vec_pretty(&doc).unwrap()).map_err(|e| MediaError::io(p, e))?;
             Some(p.to_path_buf())
         }
         None => None,
@@ -783,10 +648,7 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
                 "hex": vals.iter().map(|&x| format!("0x{x:0n$X}", n = w * 2)).collect::<Vec<_>>(),
             });
             if w == 4 {
-                v["fx16_16"] = json!(vals
-                    .iter()
-                    .map(|&x| x as i32 as f64 / 65536.0)
-                    .collect::<Vec<_>>());
+                v["fx16_16"] = json!(vals.iter().map(|&x| x as i32 as f64 / 65536.0).collect::<Vec<_>>());
             }
             v
         })
@@ -806,25 +668,15 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
 }
 
 /// A memory window from one or more snapshots side by side, marking units that differ.
-pub fn view(
-    paths: &[PathBuf],
-    addr: &str,
-    len: usize,
-    fmt: &str,
-) -> psx_media::Result<(Value, String)> {
+pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str) -> psx_media::Result<(Value, String)> {
     let fmt = Fmt::parse(fmt).ok_or_else(|| bad(format!("unknown format {fmt:?}")))?;
     let w = fmt.width();
-    let snaps = paths
-        .iter()
-        .map(|p| load(p))
-        .collect::<psx_media::Result<Vec<_>>>()?;
+    let snaps = paths.iter().map(|p| load(p)).collect::<psx_media::Result<Vec<_>>>()?;
     if snaps.is_empty() {
         return Err(bad("give at least one snapshot"));
     }
     let a = hex(addr).ok_or_else(|| bad(format!("bad hex address {addr:?}")))?;
-    let Some(Mem::Ram(start)) = locate(a, 0) else {
-        return Err(bad(format!("0x{a:08X} is not main RAM")));
-    };
+    let Some(Mem::Ram(start)) = locate(a, 0) else { return Err(bad(format!("0x{a:08X} is not main RAM"))) };
     let end = (start + len.min(64 * 1024)).min(RAM_SIZE);
     let mut rows = Vec::new();
     let mut text = format!("{:<12}{:<8}", "address", "offset");
@@ -840,27 +692,16 @@ pub fn view(
             "address_hex": format!("0x{:08X}", addr_of(off)), "offset": format!("+0x{:X}", off - start),
             "values": vals.iter().map(|&v| fmt.json(v)).collect::<Vec<_>>(), "differs": differs,
         }));
-        text += &format!(
-            "{:<12}{:<8}",
-            format!("{:08X}", addr_of(off)),
-            format!("+{:X}", off - start)
-        );
+        text += &format!("{:<12}{:<8}", format!("{:08X}", addr_of(off)), format!("+{:X}", off - start));
         for &v in &vals {
             text += &format!("{:>16}", fmt.render(v));
         }
         text += if differs { "  *\n" } else { "\n" };
         off += w;
     }
-    let legend: Vec<String> = snaps
-        .iter()
-        .enumerate()
-        .map(|(i, s)| format!("[{i}] {}", s.path.display()))
-        .collect();
+    let legend: Vec<String> = snaps.iter().enumerate().map(|(i, s)| format!("[{i}] {}", s.path.display())).collect();
     let text = format!("; {} as {}\n{text}", legend.join("  "), fmt.name());
-    Ok((
-        json!({"snapshots": snaps.iter().map(|s| &s.path).collect::<Vec<_>>(), "format": fmt.name(), "rows": rows}),
-        text,
-    ))
+    Ok((json!({"snapshots": snaps.iter().map(|s| &s.path).collect::<Vec<_>>(), "format": fmt.name(), "rows": rows}), text))
 }
 
 #[cfg(test)]
@@ -874,10 +715,7 @@ mod tests {
         }
         assert_eq!(super::locate(0x801FFFFF, 2), None);
         assert_eq!(super::locate(0x80010000, usize::MAX), None);
-        assert_eq!(
-            super::parse_range(Some("801ffff0-80200000")).unwrap(),
-            (0x1ffff0, 0x200000)
-        );
+        assert_eq!(super::parse_range(Some("801ffff0-80200000")).unwrap(), (0x1ffff0, 0x200000));
         assert!(super::parse_range(Some("80010000-c0200000")).is_err());
         assert!(super::parse_range(Some("c0010000-c0010004")).is_err());
     }
@@ -893,11 +731,7 @@ mod tests {
         assert_eq!(Fmt::Fixed(4, 16).render(0x01B9_0000), "441.0");
         assert_eq!(Fmt::Fixed(4, 16).render(0x0005_C900), "5.78515625");
         assert_eq!(Fmt::Fixed(4, 16).render(0xFFFA_0000), "-6.0");
-        assert_eq!(
-            Fmt::Fixed(4, 16).render(1),
-            "0.0000152587890625",
-            "exact, not rounded"
-        );
+        assert_eq!(Fmt::Fixed(4, 16).render(1), "0.0000152587890625", "exact, not rounded");
         assert_eq!(Fmt::Fixed(4, 16).render(0xFFFF_FFFF), "-0.0000152587890625");
         assert_eq!(Fmt::Fixed(2, 12).render(0x1800), "1.5");
         assert_eq!(Fmt::Signed(2).render(0xFFFE), "-2");
@@ -909,17 +743,10 @@ mod tests {
     #[test]
     fn samples_and_pokes_parse() {
         let s = parse_sample("8015E8A8:fx16.16:x").unwrap();
-        assert_eq!(
-            (s.addr, s.mem, s.name.as_str()),
-            (0x8015_E8A8, Mem::Ram(0x15E8A8), "x")
-        );
+        assert_eq!((s.addr, s.mem, s.name.as_str()), (0x8015_E8A8, Mem::Ram(0x15E8A8), "x"));
         assert_eq!(parse_sample("1F800010:u8").unwrap().mem, Mem::Scratch(0x10));
         assert!(parse_sample("8015E8A8:f32").is_err());
-        assert_eq!(
-            parse_sample("8015E8A8:4").unwrap().fmt,
-            Fmt::Unsigned(4),
-            "watch widths read unsigned"
-        );
+        assert_eq!(parse_sample("8015E8A8:4").unwrap().fmt, Fmt::Unsigned(4), "watch widths read unsigned");
         assert_eq!(parse_sample("8015E8A8:2").unwrap().name, "0x8015E8A8:u16");
         let p = parse_poke("0x8015E926=1:1@10").unwrap();
         assert_eq!((p.width, p.value, p.from, p.to), (1, 1, 10, Some(10)));
@@ -934,56 +761,25 @@ mod tests {
     #[test]
     fn typed_samples_match_text() {
         let spec = |v: Value| serde_json::from_value::<SampleSpec>(v).map(|s| s.parse());
-        let t = spec(json!({"addr": "8015E8A8", "format": "fx16.16", "name": "x"}))
-            .unwrap()
-            .unwrap();
+        let t = spec(json!({"addr": "8015E8A8", "format": "fx16.16", "name": "x"})).unwrap().unwrap();
         let s = spec(json!("8015E8A8:fx16.16:x")).unwrap().unwrap();
-        assert_eq!(
-            (t.addr, t.fmt, t.mem, t.name),
-            (s.addr, s.fmt, s.mem, s.name)
-        );
+        assert_eq!((t.addr, t.fmt, t.mem, t.name), (s.addr, s.fmt, s.mem, s.name));
         let d = spec(json!({"addr": "0x1F800010"})).unwrap().unwrap();
-        assert_eq!(
-            (d.fmt, d.mem, d.name.as_str()),
-            (Fmt::Unsigned(4), Mem::Scratch(0x10), "0x1F800010:u32")
-        );
-        assert_eq!(
-            spec(json!({"addr": "80010000", "format": 2}))
-                .unwrap()
-                .unwrap()
-                .fmt,
-            Fmt::Unsigned(2)
-        );
-        assert!(spec(json!({"addr": "80010000", "format": 3}))
-            .unwrap()
-            .unwrap_err()
-            .contains("unknown format"));
-        assert!(spec(json!({"addr": "80010000", "format": true}))
-            .unwrap_err()
-            .to_string()
-            .contains("format true"));
-        assert!(spec(json!({"addr": "80010000", "fmt": "u8"}))
-            .unwrap_err()
-            .to_string()
-            .contains("unknown field `fmt`"));
+        assert_eq!((d.fmt, d.mem, d.name.as_str()), (Fmt::Unsigned(4), Mem::Scratch(0x10), "0x1F800010:u32"));
+        assert_eq!(spec(json!({"addr": "80010000", "format": 2})).unwrap().unwrap().fmt, Fmt::Unsigned(2));
+        assert!(spec(json!({"addr": "80010000", "format": 3})).unwrap().unwrap_err().contains("unknown format"));
+        assert!(spec(json!({"addr": "80010000", "format": true})).unwrap_err().to_string().contains("format true"));
+        assert!(spec(json!({"addr": "80010000", "fmt": "u8"})).unwrap_err().to_string().contains("unknown field `fmt`"));
         assert!(spec(json!(5)).is_err());
-        assert!(spec(json!({"addr": "80010000", "format": "f32"}))
-            .unwrap()
-            .unwrap_err()
-            .contains("unknown format"));
-        assert!(spec(json!({"addr": "80010000", "name": "a,b"}))
-            .unwrap()
-            .is_err());
+        assert!(spec(json!({"addr": "80010000", "format": "f32"})).unwrap().unwrap_err().contains("unknown format"));
+        assert!(spec(json!({"addr": "80010000", "name": "a,b"})).unwrap().is_err());
     }
 
     #[test]
     fn read_watch_ranges_fold_mirrors() {
         use crate::run::{fold, parse_range_spec};
         assert_eq!(parse_range_spec("800751CC:4"), Ok((0x751CC, 0x751D0)));
-        assert_eq!(
-            parse_range_spec("0x80100000-80100400"),
-            Ok((0x10_0000, 0x10_0400))
-        );
+        assert_eq!(parse_range_spec("0x80100000-80100400"), Ok((0x10_0000, 0x10_0400)));
         assert_eq!(parse_range_spec("A0100000"), Ok((0x10_0000, 0x10_0004)));
         assert_eq!(fold(0x0020_0010), 0x10, "2 MiB mirrors fold");
         assert_eq!(fold(0x1F80_0004), 0x1F80_0004);
@@ -994,24 +790,15 @@ mod tests {
     fn sampler_reads_bytes_little_endian() {
         let mut ram = vec![0u8; RAM_SIZE];
         let scratch = [0u8; SCRATCH_SIZE];
-        let mut s = Sampler::new(
-            vec![
-                parse_sample("80000010:fx16.16:y").unwrap(),
-                parse_sample("80000012:i16").unwrap(),
-            ],
-            2,
-        );
+        let mut s = Sampler::new(vec![parse_sample("80000010:fx16.16:y").unwrap(), parse_sample("80000012:i16").unwrap()], 2);
         write_le(&mut ram, 0x10, 4, 0x01B9_8000);
         s.row(0, 100, &ram, &scratch, false);
         s.row(1, 101, &ram, &scratch, false); // not due
-                                              // A halfword store into the high half is seen by the word view.
+        // A halfword store into the high half is seen by the word view.
         write_le(&mut ram, 0x12, 2, 0x01BF);
         s.row(2, 102, &ram, &scratch, false);
         s.row(3, 103, &ram, &scratch, true);
-        assert_eq!(
-            s.out,
-            "run_frame,frame,y,0x80000012:i16\n0,100,441.5,441\n2,102,447.5,447\n3,103,447.5,447\n"
-        );
+        assert_eq!(s.out, "run_frame,frame,y,0x80000012:i16\n0,100,441.5,441\n2,102,447.5,447\n3,103,447.5,447\n");
         assert_eq!(s.rows, 3);
     }
 
@@ -1033,110 +820,27 @@ mod tests {
         let a = snap(&dir, "a.bin", &[(0x100, 10), (0x200, 5), (0x300, 7)]);
         let b = snap(&dir, "b.bin", &[(0x100, 20), (0x200, 1), (0x300, 7)]);
         let c = snap(&dir, "c.bin", &[(0x100, 35), (0x200, 9), (0x300, 7)]);
-        let d = diff(
-            &a,
-            &b,
-            DiffOpts {
-                width: 4,
-                range: None,
-                min_delta: None,
-                signed: true,
-                limit: 10,
-                offset: 0,
-            },
-        )
-        .unwrap();
+        let d = diff(&a, &b, DiffOpts { width: 4, range: None, min_delta: None, signed: true, limit: 10, offset:0 }).unwrap();
         assert_eq!(d["differing"], 2);
         assert_eq!(d["changes"][0]["address_hex"], "0x80000100");
         assert_eq!(d["changes"][1]["delta"], -4);
-        let d = diff(
-            &a,
-            &b,
-            DiffOpts {
-                width: 4,
-                range: None,
-                min_delta: Some(5),
-                signed: true,
-                limit: 10,
-                offset: 0,
-            },
-        )
-        .unwrap();
+        let d = diff(&a, &b, DiffOpts { width: 4, range: None, min_delta: Some(5), signed: true, limit: 10, offset:0 }).unwrap();
         assert_eq!(d["differing"], 1);
         let paths = vec![a.clone(), b.clone(), c.clone()];
-        let base = SearchOpts {
-            width: 4,
-            signed: false,
-            preds: &[],
-            values: None,
-            between: None,
-            range: None,
-            align: None,
-            candidates: None,
-            save: None,
-            limit: 10,
-            offset: 0,
-        };
-        let r = search(
-            &paths,
-            SearchOpts {
-                preds: &["increased".into()],
-                ..base
-            },
-        )
-        .unwrap();
+        let base = SearchOpts { width: 4, signed: false, preds: &[], values: None, between: None, range: None, align: None, candidates: None, save: None, limit: 10, offset:0 };
+        let r = search(&paths, SearchOpts { preds: &["increased".into()], ..base }).unwrap();
         assert_eq!(r["candidates"], 1);
         assert_eq!(r["matches"][0]["values"], json!([10, 20, 35]));
-        let r = search(
-            &paths,
-            SearchOpts {
-                preds: &["dec,inc".into()],
-                ..base
-            },
-        )
-        .unwrap();
+        let r = search(&paths, SearchOpts { preds: &["dec,inc".into()], ..base }).unwrap();
         assert_eq!(r["matches"][0]["address_hex"], "0x80000200");
         let saved = dir.join("cands.json");
-        let r = search(
-            &paths,
-            SearchOpts {
-                preds: &["unchanged".into()],
-                values: Some("7,*,7"),
-                save: Some(&saved),
-                ..base
-            },
-        )
-        .unwrap();
+        let r = search(&paths, SearchOpts { preds: &["unchanged".into()], values: Some("7,*,7"), save: Some(&saved), ..base }).unwrap();
         assert_eq!(r["candidates"], 1);
-        let r = search(
-            &paths[..1],
-            SearchOpts {
-                candidates: Some(&saved),
-                ..base
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            (r["candidates"].as_u64(), r["restricted_to"].as_u64()),
-            (Some(1), Some(1))
-        );
-        let r = search(
-            &paths,
-            SearchOpts {
-                preds: &["delta=10".into(), "delta=15".into()],
-                ..base
-            },
-        )
-        .unwrap();
+        let r = search(&paths[..1], SearchOpts { candidates: Some(&saved), ..base }).unwrap();
+        assert_eq!((r["candidates"].as_u64(), r["restricted_to"].as_u64()), (Some(1), Some(1)));
+        let r = search(&paths, SearchOpts { preds: &["delta=10".into(), "delta=15".into()], ..base }).unwrap();
         assert_eq!(r["candidates"], 1);
-        assert!(search(
-            &paths,
-            SearchOpts {
-                preds: &["inc".into(), "inc".into(), "inc".into()],
-                ..base
-            }
-        )
-        .is_err());
+        assert!(search(&paths, SearchOpts { preds: &["inc".into(), "inc".into(), "inc".into()], ..base }).is_err());
         let (v, text) = view(&paths, "800000FC", 12, "u32").unwrap();
         assert_eq!(v["rows"][1]["values"], json!([10, 20, 35]));
         assert!(text.contains("80000100") && text.contains('*'));

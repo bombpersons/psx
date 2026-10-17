@@ -81,9 +81,7 @@ fn adler32(bytes: &[u8]) -> u32 {
 }
 
 fn hex_bytes(s: &str) -> Vec<u8> {
-    (0..s.len() / 2)
-        .filter_map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok())
-        .collect()
+    (0..s.len() / 2).filter_map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()).collect()
 }
 
 const WINDOW: i64 = 32;
@@ -107,18 +105,12 @@ fn resolve(
     // Search outward from the counted position; the nearest distance with a match wins.
     let mut found: Vec<(i64, u32, u32)> = Vec::new();
     for d in 0..=WINDOW {
-        let lbas: &[i64] = if d == 0 {
-            &[centre as i64]
-        } else {
-            &[centre as i64 + d, centre as i64 - d]
-        };
+        let lbas: &[i64] = if d == 0 { &[centre as i64] } else { &[centre as i64 + d, centre as i64 - d] };
         for &lba in lbas {
             if lba < 0 {
                 continue;
             }
-            let Some(fifo) = sectors.fifo(lba as u32, size) else {
-                continue;
-            };
+            let Some(fifo) = sectors.fifo(lba as u32, size) else { continue };
             for &off in &offsets {
                 let end = off as usize + bytes as usize;
                 if end <= fifo.len() {
@@ -133,17 +125,9 @@ fn resolve(
             break;
         }
     }
-    let Some(best) = found.iter().min_by_key(|f| f.0) else {
-        return (None, "inferred");
-    };
-    let ties = found
-        .iter()
-        .filter(|f| f.0 == best.0 && (f.1, f.2) != (best.1, best.2))
-        .count();
-    (
-        Some((best.1, best.2)),
-        if ties == 0 { "content" } else { "ambiguous" },
-    )
+    let Some(best) = found.iter().min_by_key(|f| f.0) else { return (None, "inferred") };
+    let ties = found.iter().filter(|f| f.0 == best.0 && (f.1, f.2) != (best.1, best.2)).count();
+    (Some((best.1, best.2)), if ties == 0 { "content" } else { "ambiguous" })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -170,10 +154,7 @@ fn bcd(v: u32) -> u32 {
 
 pub fn decode(events_path: &Path, disc: &Disc) -> std::io::Result<(Vec<Load>, Vec<String>)> {
     let text = std::fs::read_to_string(events_path)?;
-    let mut sectors = Sectors {
-        disc,
-        cache: Default::default(),
-    };
+    let mut sectors = Sectors { disc, cache: Default::default() };
     let mut loads: Vec<Load> = Vec::new();
     let mut notes = Vec::new();
     let mut params: Vec<u32> = Vec::new();
@@ -183,18 +164,12 @@ pub fn decode(events_path: &Path, disc: &Disc) -> std::io::Result<(Vec<Load>, Ve
     let mut current: Option<(u32, u32)> = None; // (lba, bytes already transferred from it)
     let (mut madr, mut bcr) = (0u32, 0u32);
     for line in text.lines() {
-        let Ok(e) = serde_json::from_str::<CdEvent>(line) else {
-            continue;
-        };
+        let Ok(e) = serde_json::from_str::<CdEvent>(line) else { continue };
         let v = e.value.unwrap_or(0);
         match (e.reg.as_str(), e.reg.as_u64(), e.index) {
             (Some("dma3_data"), ..) => {
                 // Snapshot of the transfer just recorded: resolve its sector by content.
-                let (Some(l), Some(head), Some(sum)) =
-                    (loads.last_mut(), e.head.as_deref(), e.adler32)
-                else {
-                    continue;
-                };
+                let (Some(l), Some(head), Some(sum)) = (loads.last_mut(), e.head.as_deref(), e.adler32) else { continue };
                 if Some(l.ram) != e.madr {
                     continue;
                 }
@@ -205,15 +180,7 @@ pub fn decode(events_path: &Path, disc: &Disc) -> std::io::Result<(Vec<Load>, Ve
                     l.bytes = b;
                 }
                 let head = hex_bytes(head);
-                let (hit, evidence) = resolve(
-                    &mut sectors,
-                    l.lba,
-                    Some((l.lba, l.sector_offset)),
-                    l.sector_size,
-                    l.bytes,
-                    &head,
-                    sum,
-                );
+                let (hit, evidence) = resolve(&mut sectors, l.lba, Some((l.lba, l.sector_offset)), l.sector_size, l.bytes, &head, sum);
                 l.lba_evidence = evidence;
                 if let Some((lba, off)) = hit {
                     l.lba = lba;
@@ -245,10 +212,7 @@ pub fn decode(events_path: &Path, disc: &Disc) -> std::io::Result<(Vec<Load>, Ve
                         });
                         *used += bytes;
                     }
-                    None => notes.push(format!(
-                        "frame {}: DMA3 of {bytes} bytes with no requested sector",
-                        e.frame
-                    )),
+                    None => notes.push(format!("frame {}: DMA3 of {bytes} bytes with no requested sector", e.frame)),
                 }
             }
             (_, Some(2), Some(0)) => params.push(v),
@@ -265,9 +229,7 @@ pub fn decode(events_path: &Path, disc: &Disc) -> std::io::Result<(Vec<Load>, Ve
                             notes.push(format!("frame {}: read without a known position", e.frame));
                         }
                     }
-                    0x0E if !params.is_empty() => {
-                        sector_size = if params[0] & 0x20 != 0 { 2340 } else { 2048 }
-                    }
+                    0x0E if !params.is_empty() => sector_size = if params[0] & 0x20 != 0 { 2340 } else { 2048 },
                     0x15 | 0x16 => {
                         if let Some(l) = setloc {
                             next_sector = Some(l);
@@ -323,9 +285,7 @@ pub fn runs(loads: &[Load]) -> Vec<Run> {
                 "ambiguous" => 1,
                 _ => 0,
             };
-            let next_sector = l.lba == r.lba + r.sectors
-                && l.sector_offset == r.first_offset
-                && l.ram == next_ram;
+            let next_sector = l.lba == r.lba + r.sectors && l.sector_offset == r.first_offset && l.ram == next_ram;
             if l.sector_size == r.sector_size && (same_sector || next_sector) {
                 if next_sector {
                     r.sectors += 1;
@@ -366,11 +326,7 @@ fn expected(disc: &Disc, run: &Run) -> Option<Vec<u8>> {
     let mut data = Vec::new();
     for i in 0..run.sectors {
         let (raw, _) = disc.read_raw(run.lba + i).ok()?;
-        let fifo = if run.sector_size == 2340 {
-            raw.get(12..12 + 2340)?.to_vec()
-        } else {
-            disc.read_data(run.lba + i).ok()?.data[..2048].to_vec()
-        };
+        let fifo = if run.sector_size == 2340 { raw.get(12..12 + 2340)?.to_vec() } else { disc.read_data(run.lba + i).ok()?.data[..2048].to_vec() };
         data.extend_from_slice(fifo.get(run.first_offset as usize..)?);
     }
     Some(data)
@@ -381,20 +337,12 @@ pub fn annotate(runs: &mut [Run], disc: &Disc, fs: Option<&FileSystem>, ram: Opt
         if let Some(e) = fs.and_then(|fs| fs.owner_of(r.lba)) {
             r.file = Some(e.path.clone());
             // In 2340-byte mode user data starts 12 bytes into the FIFO payload.
-            let data_off = if r.sector_size == 2340 {
-                r.first_offset.saturating_sub(12)
-            } else {
-                r.first_offset
-            };
+            let data_off = if r.sector_size == 2340 { r.first_offset.saturating_sub(12) } else { r.first_offset };
             r.file_offset = Some((r.lba - e.lba) as u64 * 2048 + data_off as u64);
         }
-        let (Some(ram), Some(want)) = (ram, expected(disc, r)) else {
-            continue;
-        };
+        let (Some(ram), Some(want)) = (ram, expected(disc, r)) else { continue };
         let start = (r.ram & 0x1F_FFFF) as usize;
-        let n = (r.bytes as usize)
-            .min(want.len())
-            .min(ram.len().saturating_sub(start));
+        let n = (r.bytes as usize).min(want.len()).min(ram.len().saturating_sub(start));
         let matching = (0..n).filter(|&i| ram[start + i] == want[i]).count() as u32;
         r.matching_bytes = Some(matching);
         r.verified = Some(matching == r.bytes && n == r.bytes as usize);
@@ -404,16 +352,8 @@ pub fn annotate(runs: &mut [Run], disc: &Disc, fs: Option<&FileSystem>, ram: Opt
 /// Name a PC only where its executable's code is resident: the bytes match the
 /// final RAM, and this run did not load that executable over the PC *after* the
 /// event (which would mean other code was there at the time).
-fn named(
-    symbols: &[crate::ScopedSymbols],
-    runs: &[Run],
-    pc: u32,
-    frame: u32,
-    ram: Option<&[u8]>,
-) -> Value {
-    let Some((name, check, exe)) = crate::name_pc(symbols, pc, ram) else {
-        return Value::Null;
-    };
+fn named(symbols: &[crate::ScopedSymbols], runs: &[Run], pc: u32, frame: u32, ram: Option<&[u8]>) -> Value {
+    let Some((name, check, exe)) = crate::name_pc(symbols, pc, ram) else { return Value::Null };
     if check == crate::SymbolCheck::BodyMatch {
         // A final snapshot cannot establish which overlay occupied a PC when an
         // earlier load event occurred. Expose a candidate without labelling it.
@@ -422,9 +362,7 @@ fn named(
     }
     let pc_phys = pc & 0x1F_FFFF;
     let loaded_later = runs.iter().any(|r| {
-        r.file
-            .as_deref()
-            .is_some_and(|f| f.trim_start_matches('/').eq_ignore_ascii_case(&exe))
+        r.file.as_deref().is_some_and(|f| f.trim_start_matches('/').eq_ignore_ascii_case(&exe))
             && r.first_frame > frame
             && (r.ram & 0x1F_FFFF) <= pc_phys
             && pc_phys < (r.ram & 0x1F_FFFF) + r.bytes
@@ -549,19 +487,14 @@ fn native_loads(path: &Path) -> std::io::Result<Vec<Load>> {
         .collect())
 }
 
-pub fn report(
-    run_dir: &Path,
-    disc_path: &Path,
-    symbols: &[crate::ScopedSymbols],
-) -> Result<Value, String> {
+pub fn report(run_dir: &Path, disc_path: &Path, symbols: &[crate::ScopedSymbols]) -> Result<Value, String> {
     let disc = Disc::open(disc_path).map_err(|e| e.to_string())?;
     let native = run_dir.join("cd_native.jsonl");
     let (loads, notes, method) = if native.exists() {
         let loads = native_loads(&native).map_err(|e| format!("cd_native.jsonl: {e}"))?;
         (loads, Vec::new(), "native core: the drive model recorded each DMA's sector and FIFO offset; runs also compared with final RAM")
     } else {
-        let (l, n) =
-            decode(&run_dir.join("cd.jsonl"), &disc).map_err(|e| format!("cd.jsonl: {e}"))?;
+        let (l, n) = decode(&run_dir.join("cd.jsonl"), &disc).map_err(|e| format!("cd.jsonl: {e}"))?;
         (l, n, "CD register protocol; each DMA3 payload matched to disc sectors by content; runs also compared with final RAM")
     };
     let fs = FileSystem::read(&disc).ok();
@@ -570,9 +503,7 @@ pub fn report(
     annotate(&mut runs, &disc, fs.as_ref(), ram.as_deref());
     let mut by_file: std::collections::BTreeMap<String, (u64, u32)> = Default::default();
     for r in &runs {
-        let e = by_file
-            .entry(r.file.clone().unwrap_or_else(|| "(no file)".into()))
-            .or_default();
+        let e = by_file.entry(r.file.clone().unwrap_or_else(|| "(no file)".into())).or_default();
         e.0 += r.bytes as u64;
         e.1 += 1;
     }

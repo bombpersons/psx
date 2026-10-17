@@ -10,9 +10,7 @@ pub struct Vram {
 
 impl Default for Vram {
     fn default() -> Self {
-        Vram {
-            data: vec![0; WIDTH * HEIGHT],
-        }
+        Vram { data: vec![0; WIDTH * HEIGHT] }
     }
 }
 
@@ -78,11 +76,7 @@ impl Vram {
                 for (i, c) in rgb.iter_mut().enumerate() {
                     let b = byte + i as i32;
                     let half = self.get(x + b / 2, y + row);
-                    *c = if b % 2 == 0 {
-                        half as u8
-                    } else {
-                        (half >> 8) as u8
-                    };
+                    *c = if b % 2 == 0 { half as u8 } else { (half >> 8) as u8 };
                 }
                 out.extend_from_slice(&rgb);
             }
