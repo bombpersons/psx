@@ -50,6 +50,14 @@ lists the game's types). Grow it a format at a time, after the format has
 settled and the matching trajectory tests pass. Saving an unedited level
 reproduces the file exactly. An editor that needs game/ is a boundary bug.
 
+The editor is a modern desktop application, not part of the game's look. It
+runs at the window's full resolution, is driven by mouse and keyboard, and
+uses ordinary UI (panels, menus, text fields, drag and drop; egui or Bevy UI
+at native scale). Don't build it on psx-bevy's renderer, presentation or
+controls menu: no low-resolution framebuffer, dithering, PS1 bitmap font or
+pad-driven menus. Its viewports may render levels and models, but the tool
+itself should look like a current level editor, not a PlayStation game.
+
 Fidelity is the contract: every restructuring keeps every trajectory test
 passing exactly. If a refactor changes a number, find out from evidence
 whether the refactor is wrong or the test relied on an accident. Compare

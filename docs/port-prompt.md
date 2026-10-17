@@ -26,4 +26,7 @@ the engine's formats that grows alongside the port.
   `docs/evidence.md`.
 - Keep the editor in step: when a format lands in the engine, the editor
   learns to open, show and save it, depending on `engine/` only.
+- The editor is a modern, high-resolution desktop application for mouse and
+  keyboard. Don't reuse psx-bevy's PS1 renderer or menus for it; it should
+  look like a current editor, not a PlayStation game.
 ```
