@@ -1,9 +1,8 @@
 //! MIPS I (R3000A + COP0/GTE) disassembly in conventional assembler syntax.
 
 const REG: [&str; 32] = [
-    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
-    "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
-    "ra",
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "s0", "s1",
+    "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra",
 ];
 
 pub fn reg(r: u32) -> &'static str {
@@ -47,10 +46,8 @@ pub fn disasm(i: u32, pc: u32) -> String {
                 0x1A => format!("div     {r_s}, {r_t}"),
                 0x1B => format!("divu    {r_s}, {r_t}"),
                 0x20..=0x27 | 0x2A | 0x2B => {
-                    let n = [
-                        "add", "addu", "sub", "subu", "and", "or", "xor", "nor", "", "", "slt",
-                        "sltu",
-                    ][(f - 0x20) as usize];
+                    let n = ["add", "addu", "sub", "subu", "and", "or", "xor", "nor", "", "", "slt", "sltu"]
+                        [(f - 0x20) as usize];
                     format!("{n:<7} {r_d}, {r_s}, {r_t}")
                 }
                 _ => format!(".word   0x{i:08X}"),
@@ -123,10 +120,7 @@ mod tests {
         assert_eq!(disasm(0, 0), "nop");
         assert_eq!(disasm(0xAC62_4808, 0), "sw      v0, 18440(v1)");
         assert_eq!(disasm(0x3C08_0013, 0), "lui     t0, 0x13");
-        assert_eq!(
-            disasm(0x1509_FFFD, 0x8001_004C),
-            "bne     t0, t1, 0x80010044"
-        );
+        assert_eq!(disasm(0x1509_FFFD, 0x8001_004C), "bne     t0, t1, 0x80010044");
         assert_eq!(disasm(0x0C00_4000, 0x8001_0000), "jal     0x80010000");
         assert_eq!(disasm(0x4200_0010, 0), "rfe");
     }

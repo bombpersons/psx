@@ -158,15 +158,8 @@ impl Bus {
         if self.obs.active() && self.obs.overlaps(start, bytes) {
             let (frame, cycle) = (self.frames, self.now);
             self.obs.record(crate::observe::WriteHit {
-                frame,
-                cycle,
-                writer: crate::observe::Writer::Dma,
-                address: 0x8000_0000 | (start & 0x1F_FFFF),
-                width: bytes,
-                pc: None,
-                value: None,
-                old: None,
-                dma_channel: Some(ch),
+                frame, cycle, writer: crate::observe::Writer::Dma, address: 0x8000_0000 | (start & 0x1F_FFFF),
+                width: bytes, pc: None, value: None, old: None, dma_channel: Some(ch),
             });
         }
     }
@@ -189,28 +182,18 @@ impl Bus {
             0x18E => ("key_off", 16),
             0x1A8 => {
                 let address = self.spu.transfer_addr();
-                self.obs
-                    .spu
-                    .as_mut()
-                    .unwrap()
-                    .cpu_upload(frame, cycle, pc, address);
+                self.obs.spu.as_mut().unwrap().cpu_upload(frame, cycle, pc, address);
                 return;
             }
             _ => return,
         };
         for voice in (first..(first + 16).min(24)).filter(|i| v & (1 << (i - first)) != 0) {
             let key_on = (event == "key_on").then(|| {
-                let (start, pitch, volume_raw, adsr, noise, pitch_modulated) =
-                    self.spu.voice_settings(voice as usize);
+                let (start, pitch, volume_raw, adsr, noise, pitch_modulated) = self.spu.voice_settings(voice as usize);
                 let extent = psx_assets::adpcm::sample_extent(&self.spu.ram, start as usize);
-                let last_flags = if extent.is_empty() {
-                    0
-                } else {
-                    self.spu.ram[extent.end - 15]
-                };
+                let last_flags = if extent.is_empty() { 0 } else { self.spu.ram[extent.end - 15] };
                 // Fixed volumes hold volume/2 in bits 0-14; bit 15 selects a sweep.
-                let fraction =
-                    |raw: u16| (raw & 0x8000 == 0).then(|| ((raw << 1) as i16) as f64 / 32768.0);
+                let fraction = |raw: u16| (raw & 0x8000 == 0).then(|| ((raw << 1) as i16) as f64 / 32768.0);
                 KeyOn {
                     start,
                     pitch,
@@ -229,15 +212,7 @@ impl Bus {
             if event == "key_on" {
                 log.awaiting_end |= 1 << voice;
             }
-            log.record(SpuEvent {
-                frame,
-                cycle,
-                event,
-                voice: Some(voice),
-                pc: Some(pc),
-                key_on,
-                upload: None,
-            });
+            log.record(SpuEvent { frame, cycle, event, voice: Some(voice), pc: Some(pc), key_on, upload: None });
         }
     }
 
@@ -247,11 +222,7 @@ impl Bus {
 
     /// System clocks per video frame (PAL 50 Hz, NTSC 60 Hz; field timing approximated).
     pub fn frame_cycles(&self) -> u64 {
-        if self.pal() {
-            SYSCLK / 50
-        } else {
-            SYSCLK * 1001 / 60000
-        }
+        if self.pal() { SYSCLK / 50 } else { SYSCLK * 1001 / 60000 }
     }
 
     fn raise_irq(&mut self, bits: u32) {
@@ -318,9 +289,7 @@ impl Bus {
             512 => const { dot_rate(5) },
             _ => const { dot_rate(4) },
         };
-        let irq = self
-            .timers
-            .tick(cycles, crate::timers::Rates { dotclock, hblank });
+        let irq = self.timers.tick(cycles, crate::timers::Rates { dotclock, hblank });
         self.raise_irq(irq);
         if self.spu.tick(cycles, &mut self.cdrom.audio) {
             self.raise_irq(1 << 9);
@@ -330,13 +299,7 @@ impl Bus {
             for voice in (0..24).filter(|v| ended & (1 << v) != 0) {
                 log.awaiting_end &= !(1 << voice);
                 log.record(crate::observe::SpuEvent {
-                    frame: self.frames,
-                    cycle: self.now,
-                    event: "end",
-                    voice: Some(voice),
-                    pc: None,
-                    key_on: None,
-                    upload: None,
+                    frame: self.frames, cycle: self.now, event: "end", voice: Some(voice), pc: None, key_on: None, upload: None,
                 });
             }
         }
@@ -357,22 +320,13 @@ impl Bus {
 
     fn ram_word(&self, addr: u32) -> u32 {
         let o = (addr & 0x1F_FFFC) as usize;
-        u32::from_le_bytes([
-            self.ram[o],
-            self.ram[o + 1],
-            self.ram[o + 2],
-            self.ram[o + 3],
-        ])
+        u32::from_le_bytes([self.ram[o], self.ram[o + 1], self.ram[o + 2], self.ram[o + 3]])
     }
 
     /// DMA channel 2: block transfers either way, or a linked list of GP0 packets.
     fn dma_gpu(&mut self, madr: u32, bcr: u32, chcr: u32) {
         let to_device = chcr & 1 != 0;
-        let step: u32 = if chcr & 2 != 0 {
-            4u32.wrapping_neg()
-        } else {
-            4
-        };
+        let step: u32 = if chcr & 2 != 0 { 4u32.wrapping_neg() } else { 4 };
         match (chcr >> 9) & 3 {
             2 => {
                 let mut addr = madr & 0x1F_FFFC;
@@ -390,11 +344,7 @@ impl Bus {
             }
             0 | 1 => {
                 let words = if (chcr >> 9) & 3 == 0 {
-                    if bcr & 0xFFFF == 0 {
-                        0x10000
-                    } else {
-                        bcr & 0xFFFF
-                    }
+                    if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF }
                 } else {
                     (bcr & 0xFFFF) * (bcr >> 16).max(1)
                 };
@@ -420,9 +370,7 @@ impl Bus {
     fn gpustat(&self) -> u32 {
         let d = &self.gpu.display;
         let st = &self.gpu.state;
-        let mut v = (st.texpage as u32 & 0x7FF)
-            | ((st.set_mask as u32) << 11)
-            | ((st.check_mask as u32) << 12);
+        let mut v = (st.texpage as u32 & 0x7FF) | ((st.set_mask as u32) << 11) | ((st.check_mask as u32) << 12);
         v |= (d.mode & 0x3F) << 17 | ((d.mode >> 6) & 1) << 16 | ((d.mode >> 7) & 1) << 14;
         v |= ((!d.enabled) as u32) << 23;
         v |= 0b111 << 26;
@@ -430,11 +378,7 @@ impl Bus {
         // Bit 31: odd/even line. Toggles per field when interlaced, per scanline
         // otherwise, and reads 0 during vblank.
         let (line, in_vblank) = self.scanline();
-        let odd = if d.mode & 0x20 != 0 {
-            self.frames & 1 == 1
-        } else {
-            line & 1 == 1
-        };
+        let odd = if d.mode & 0x20 != 0 { self.frames & 1 == 1 } else { line & 1 == 1 };
         if odd && !in_vblank {
             v |= 1 << 31;
         }
@@ -458,11 +402,7 @@ impl Bus {
     /// Completion interrupts are not raised yet.
     fn dma_start(&mut self, ch: u32) {
         let base = DMA_BASE + 0x10 * ch;
-        let (madr, bcr, chcr) = (
-            self.io_word(base),
-            self.io_word(base + 4),
-            self.io_word(base + 8),
-        );
+        let (madr, bcr, chcr) = (self.io_word(base), self.io_word(base + 4), self.io_word(base + 8));
         let sync = (chcr >> 9) & 3;
         // Mode 0 needs the trigger bit (28); other modes start on bit 24 alone.
         let started = chcr & (1 << 24) != 0 && (sync != 0 || chcr & (1 << 28) != 0);
@@ -472,28 +412,15 @@ impl Bus {
         if self.recent_dma.len() >= 32 {
             self.recent_dma.pop_front();
         }
-        self.recent_dma.push_back(UnmodelledDma {
-            channel: ch,
-            madr,
-            bcr,
-            chcr,
-        });
+        self.recent_dma.push_back(UnmodelledDma { channel: ch, madr, bcr, chcr });
         match ch {
             6 => {
                 // Ordering-table clear: a backwards linked list ending in 0xFFFFFF.
                 let mut addr = madr & 0x1F_FFFC;
-                let words = if bcr & 0xFFFF == 0 {
-                    0x10000
-                } else {
-                    bcr & 0xFFFF
-                };
+                let words = if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF };
                 self.observe_dma(6, addr.wrapping_sub(4 * (words - 1)) & 0x1F_FFFC, words * 4);
                 for i in 0..words {
-                    let v = if i == words - 1 {
-                        0x00FF_FFFF
-                    } else {
-                        addr.wrapping_sub(4) & 0x1F_FFFF
-                    };
+                    let v = if i == words - 1 { 0x00FF_FFFF } else { addr.wrapping_sub(4) & 0x1F_FFFF };
                     let o = addr as usize % RAM_SIZE;
                     self.ram[o..o + 4].copy_from_slice(&v.to_le_bytes());
                     addr = addr.wrapping_sub(4) & 0x1F_FFFC;
@@ -502,11 +429,7 @@ impl Bus {
             2 => self.dma_gpu(madr, bcr, chcr),
             0 => {
                 let words = Self::dma_words(bcr, chcr);
-                let step: u32 = if chcr & 2 != 0 {
-                    4u32.wrapping_neg()
-                } else {
-                    4
-                };
+                let step: u32 = if chcr & 2 != 0 { 4u32.wrapping_neg() } else { 4 };
                 let mut addr = madr & 0x1F_FFFC;
                 for _ in 0..words {
                     let w = self.ram_word(addr);
@@ -531,19 +454,11 @@ impl Bus {
                 if chcr & 1 != 0 {
                     if let Some(log) = &mut self.obs.spu {
                         let upload = crate::observe::SpuUpload {
-                            address: self.spu.transfer_addr(),
-                            bytes: words * 4,
-                            source: "dma",
-                            ram: Some(0x8000_0000 | addr),
+                            address: self.spu.transfer_addr(), bytes: words * 4, source: "dma", ram: Some(0x8000_0000 | addr),
                         };
                         log.record(crate::observe::SpuEvent {
-                            frame: self.frames,
-                            cycle: self.now,
-                            event: "upload",
-                            voice: None,
-                            pc: Some(self.cur_pc),
-                            key_on: None,
-                            upload: Some(upload),
+                            frame: self.frames, cycle: self.now, event: "upload", voice: None, pc: Some(self.cur_pc),
+                            key_on: None, upload: Some(upload),
                         });
                     }
                 }
@@ -567,11 +482,7 @@ impl Bus {
             }
             3 => {
                 let words = if (chcr >> 9) & 3 == 0 {
-                    if bcr & 0xFFFF == 0 {
-                        0x10000
-                    } else {
-                        bcr & 0xFFFF
-                    }
+                    if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF }
                 } else {
                     (bcr & 0xFFFF) * (bcr >> 16).max(1)
                 };
@@ -581,14 +492,8 @@ impl Bus {
                 let (frame, cycle, pc) = (self.frames, self.now, self.cur_pc);
                 if let Some(log) = &mut self.obs.cd {
                     log.push(crate::observe::CdTransfer {
-                        frame,
-                        cycle,
-                        lba,
-                        fifo_offset: off,
-                        bytes: (words * 4).min(remaining),
-                        sector_size: size,
-                        ram: 0x8000_0000 | (madr & 0x1F_FFFC),
-                        pc,
+                        frame, cycle, lba, fifo_offset: off, bytes: (words * 4).min(remaining), sector_size: size,
+                        ram: 0x8000_0000 | (madr & 0x1F_FFFC), pc,
                     });
                 }
                 self.observe_dma(3, madr & 0x1F_FFFC, words * 4);
@@ -600,23 +505,14 @@ impl Bus {
                     addr = (addr + 4) & 0x1F_FFFC;
                 }
             }
-            _ => self.unmodelled_dma.push(UnmodelledDma {
-                channel: ch,
-                madr,
-                bcr,
-                chcr,
-            }),
+            _ => self.unmodelled_dma.push(UnmodelledDma { channel: ch, madr, bcr, chcr }),
         }
         self.finish_dma(ch, chcr);
     }
 
     fn dma_words(bcr: u32, chcr: u32) -> u32 {
         if (chcr >> 9) & 3 == 0 {
-            if bcr & 0xFFFF == 0 {
-                0x10000
-            } else {
-                bcr & 0xFFFF
-            }
+            if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF }
         } else {
             (bcr & 0xFFFF) * (bcr >> 16).max(1)
         }
@@ -624,19 +520,13 @@ impl Bus {
 
     /// Finish a pending MDEC-out DMA if enough decoded words are available.
     fn try_mdec_out(&mut self) {
-        let Some((madr, _bcr, chcr, words)) = self.pending_mdec_out else {
-            return;
-        };
+        let Some((madr, _bcr, chcr, words)) = self.pending_mdec_out else { return };
         if self.mdec.out_available() < words as usize {
             return;
         }
         self.pending_mdec_out = None;
         self.observe_dma(1, madr & 0x1F_FFFC, words * 4);
-        let step: u32 = if chcr & 2 != 0 {
-            4u32.wrapping_neg()
-        } else {
-            4
-        };
+        let step: u32 = if chcr & 2 != 0 { 4u32.wrapping_neg() } else { 4 };
         let mut addr = madr & 0x1F_FFFC;
         for _ in 0..words {
             let w = self.mdec.dma_out_word();
@@ -759,81 +649,43 @@ impl Bus {
             self.flush();
         }
         let n = width as usize;
-        let le = |b: &[u8], o: usize| -> u32 {
-            b[o..o + n]
-                .iter()
-                .rev()
-                .fold(0u32, |acc, &x| (acc << 8) | x as u32)
-        };
+        let le = |b: &[u8], o: usize| -> u32 { b[o..o + n].iter().rev().fold(0u32, |acc, &x| (acc << 8) | x as u32) };
         Ok(match p {
             0x0000_0000..=0x007F_FFFF => le(&self.ram, p as usize % RAM_SIZE),
             0x1F00_0000..=0x1F7F_FFFF => u32::MAX >> (32 - 8 * n),
-            0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => {
-                le(&self.scratch, (p - 0x1F80_0000) as usize)
-            }
+            0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => le(&self.scratch, (p - 0x1F80_0000) as usize),
             GP0 if width == Width::Word => {
                 let v = self.gpu.gpuread().unwrap_or(0);
-                self.log_access(IoAccess {
-                    addr: p,
-                    width,
-                    write: false,
-                    value: v,
-                });
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
             0x1F80_1100..=0x1F80_112F => {
                 let v = self.timers.read(((p - TIMERS) >> 4) as usize, p & 0xC) >> (8 * (p & 3));
-                self.log_access(IoAccess {
-                    addr: p,
-                    width,
-                    write: false,
-                    value: v,
-                });
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
             GP1 if width == Width::Word => {
                 let v = self.gpustat();
-                self.log_access(IoAccess {
-                    addr: p,
-                    width,
-                    write: false,
-                    value: v,
-                });
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
             0x1F80_1820 | 0x1F80_1824 if width == Width::Word => {
                 let v = self.mdec.read(p - 0x1F80_1820);
-                self.log_access(IoAccess {
-                    addr: p,
-                    width,
-                    write: false,
-                    value: v,
-                });
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
             0x1F80_1040..=0x1F80_104F => {
                 let v = self.sio0.read(p - 0x1F80_1040);
-                self.log_access(IoAccess {
-                    addr: p,
-                    width,
-                    write: false,
-                    value: v,
-                });
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
             0x1F80_1800..=0x1F80_1803 => {
                 let now = self.now;
                 let mut v = 0u32;
                 for i in 0..n as u32 {
-                    v |= (self.cdrom.read((p + i).min(0x1F80_1803) - 0x1F80_1800, now) as u32)
-                        << (8 * i);
+                    v |= (self.cdrom.read((p + i).min(0x1F80_1803) - 0x1F80_1800, now) as u32) << (8 * i);
                 }
-                self.log_access(IoAccess {
-                    addr: p,
-                    width,
-                    write: false,
-                    value: v,
-                });
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
             0x1F80_1C00..=0x1F80_1FFF => {
@@ -844,35 +696,19 @@ impl Bus {
                     o += 2;
                 }
                 let v = if p & 1 != 0 { v >> 8 } else { v };
-                self.log_access(IoAccess {
-                    addr: p,
-                    width,
-                    write: false,
-                    value: v,
-                });
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
             0x1F80_1000..=0x1F80_2FFF => {
                 let v = le(&self.io, (p - 0x1F80_1000) as usize);
                 // Memory control (1F801000-23h, RAM_SIZE 1F801060h) and SIO1's mode/control/baud
                 // (1F801058-5Fh) are plain read/write latches, so the stored value is the answer.
-                let latch = (0x1F80_1000..0x1F80_1024).contains(&p)
-                    || (0x1F80_1060..0x1F80_1064).contains(&p)
-                    || (0x1F80_1058..0x1F80_1060).contains(&p);
-                let handled = latch
-                    || (0x1F80_1C00..0x1F80_1E00).contains(&p)
-                    || (0x1F80_1800..0x1F80_1804).contains(&p)
-                    || (0x1F80_1070..0x1F80_1078).contains(&p)
-                    || (0x1F80_1080..0x1F80_1100).contains(&p);
+                let latch = (0x1F80_1000..0x1F80_1024).contains(&p) || (0x1F80_1060..0x1F80_1064).contains(&p) || (0x1F80_1058..0x1F80_1060).contains(&p);
+                let handled = latch || (0x1F80_1C00..0x1F80_1E00).contains(&p) || (0x1F80_1800..0x1F80_1804).contains(&p) || (0x1F80_1070..0x1F80_1078).contains(&p) || (0x1F80_1080..0x1F80_1100).contains(&p);
                 if !handled {
                     *self.unhandled_reads.entry(p).or_default() += 1;
                 }
-                self.log_access(IoAccess {
-                    addr: p,
-                    width,
-                    write: false,
-                    value: v,
-                });
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
             0x1FC0_0000..=0x1FC7_FFFF => le(&self.bios, (p - 0x1FC0_0000) as usize),
@@ -915,29 +751,17 @@ impl Bus {
             0x0000_0000..=0x007F_FFFF => {
                 let o = p as usize % RAM_SIZE;
                 if self.obs.active() && self.obs.overlaps(o as u32, n as u32) {
-                    let old = self.ram[o..o + n]
-                        .iter()
-                        .rev()
-                        .fold(0u32, |acc, &x| (acc << 8) | x as u32);
+                    let old = self.ram[o..o + n].iter().rev().fold(0u32, |acc, &x| (acc << 8) | x as u32);
                     let (frame, cycle, pc) = (self.frames, self.cpu_now(), self.cur_pc);
                     self.obs.record(crate::observe::WriteHit {
-                        frame,
-                        cycle,
-                        writer: crate::observe::Writer::Cpu,
-                        address: addr,
-                        width: n as u32,
-                        pc: Some(pc),
-                        value: Some(value & (u32::MAX >> (32 - 8 * n))),
-                        old: Some(old),
-                        dma_channel: None,
+                        frame, cycle, writer: crate::observe::Writer::Cpu, address: addr, width: n as u32,
+                        pc: Some(pc), value: Some(value & (u32::MAX >> (32 - 8 * n))), old: Some(old), dma_channel: None,
                     });
                 }
                 put(&mut self.ram, o)
             }
             0x1F00_0000..=0x1F7F_FFFF => {}
-            0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => {
-                put(&mut self.scratch, (p - 0x1F80_0000) as usize)
-            }
+            0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => put(&mut self.scratch, (p - 0x1F80_0000) as usize),
             0x1F80_1000..=0x1F80_2FFF => {
                 if (0x1F80_1C00..0x1F80_2000).contains(&p) {
                     let mut fired = self.spu_write((p & !1) - 0x1F80_1C00, value as u16);
@@ -955,11 +779,9 @@ impl Bus {
                     self.sio0.write(p - 0x1F80_1040, value, now);
                 } else if (0x1F80_1800..0x1F80_1804).contains(&p) {
                     let now = self.now;
-                    self.cdrom
-                        .write_at_frame(p - 0x1F80_1800, value as u8, now, self.frames);
+                    self.cdrom.write_at_frame(p - 0x1F80_1800, value as u8, now, self.frames);
                 } else if (TIMERS..TIMERS + 0x30).contains(&p) {
-                    self.timers
-                        .write(((p - TIMERS) >> 4) as usize, p & 0xC, value);
+                    self.timers.write(((p - TIMERS) >> 4) as usize, p & 0xC, value);
                 } else if p == GP0 && width == Width::Word {
                     self.gpu.gp0(value);
                 } else if p == GP1 && width == Width::Word {
@@ -973,29 +795,19 @@ impl Bus {
                 } else if p & !3 == DICR {
                     // Bits 24-30 are write-1-to-clear flags; bit 31 is computed.
                     let cur = self.io_word(DICR);
-                    let v = if width == Width::Word {
-                        value
-                    } else {
-                        (cur & !(0xFFFF << (8 * (p & 2)))) | (value << (8 * (p & 2)))
-                    };
+                    let v = if width == Width::Word { value } else { (cur & !(0xFFFF << (8 * (p & 2)))) | (value << (8 * (p & 2))) };
                     let flags = (cur & 0x7F00_0000) & !(v & 0x7F00_0000);
                     self.set_dicr((v & 0x00FF_803F) | flags);
                 } else if p & !3 == I_STAT {
                     // Interrupt acknowledge: writing 0 clears a bit, 1 leaves it.
                     let cur = self.io_word(I_STAT);
-                    let v = cur
-                        & (value << (8 * (p & 3)) | !(u32::MAX >> (32 - 8 * n) << (8 * (p & 3))));
+                    let v = cur & (value << (8 * (p & 3)) | !(u32::MAX >> (32 - 8 * n) << (8 * (p & 3))));
                     self.poke_io(I_STAT, Width::Word, v);
                     self.irq_acknowledged = true;
                 } else {
                     put(&mut self.io, (p - 0x1F80_1000) as usize);
                 }
-                self.log_access(IoAccess {
-                    addr: p,
-                    width,
-                    write: true,
-                    value,
-                });
+                self.log_access(IoAccess { addr: p, width, write: true, value });
             }
             0x1FC0_0000..=0x1FC7_FFFF => {}
             0xFFFE_0130 => self.cache_control = value,
@@ -1020,21 +832,15 @@ impl Bus {
 mod tests {
     #[test]
     fn cd_history_keeps_exact_frames_across_video_mode_changes_and_polling() {
-        let mut m = crate::Machine::new(vec![0; 512 * 1024]);
-        m.bus.frames = 42;
-        m.bus.now = 10_000_000;
-        m.bus.gpu.display.mode = 8;
-        m.bus.write(0x1f801801, crate::Width::Byte, 1).unwrap();
-        m.bus.frames = 43;
-        m.bus.now = 11_000_000;
-        m.bus.gpu.display.mode = 0;
-        m.bus.write(0x1f801801, crate::Width::Byte, 1).unwrap();
-        let command = m.bus.cdrom.recent.back().unwrap();
-        assert_eq!(command.frame, Some(42));
-        assert_eq!(command.last_frame, Some(43));
-        assert_eq!(command.time, 10_000_000);
-        assert_eq!(command.last_time, 11_000_000);
-        assert_eq!(command.repeats, 2);
+        let mut m=crate::Machine::new(vec![0;512*1024]);
+        m.bus.frames=42;m.bus.now=10_000_000;m.bus.gpu.display.mode=8;
+        m.bus.write(0x1f801801,crate::Width::Byte,1).unwrap();
+        m.bus.frames=43;m.bus.now=11_000_000;m.bus.gpu.display.mode=0;
+        m.bus.write(0x1f801801,crate::Width::Byte,1).unwrap();
+        let command=m.bus.cdrom.recent.back().unwrap();
+        assert_eq!(command.frame,Some(42));assert_eq!(command.last_frame,Some(43));
+        assert_eq!(command.time,10_000_000);assert_eq!(command.last_time,11_000_000);
+        assert_eq!(command.repeats,2);
     }
 
     use super::*;
@@ -1049,19 +855,12 @@ mod tests {
         sample[18..32].fill(0x77);
         sample[33] = psx_assets::adpcm::FLAG_END;
         for (i, w) in sample.chunks(4).enumerate() {
-            b.write(
-                0x8010_0000 + 4 * i as u32,
-                Width::Word,
-                u32::from_le_bytes(w.try_into().unwrap()),
-            )
-            .unwrap();
+            b.write(0x8010_0000 + 4 * i as u32, Width::Word, u32::from_le_bytes(w.try_into().unwrap())).unwrap();
         }
-        let spu =
-            |b: &mut Bus, reg: u32, v: u32| b.write(0x1F80_1C00 + reg, Width::Half, v).unwrap();
+        let spu = |b: &mut Bus, reg: u32, v: u32| b.write(0x1F80_1C00 + reg, Width::Half, v).unwrap();
         spu(&mut b, 0x1A6, 0x1000 >> 3);
         b.write(DMA_BASE + 0x40, Width::Word, 0x8010_0000).unwrap();
-        b.write(DMA_BASE + 0x44, Width::Word, (1 << 16) | 12)
-            .unwrap();
+        b.write(DMA_BASE + 0x44, Width::Word, (1 << 16) | 12).unwrap();
         b.write(DMA_BASE + 0x48, Width::Word, 0x0100_0201).unwrap();
         // Manual FIFO writes merge into one upload while contiguous.
         spu(&mut b, 0x1A6, 0x2000 >> 3);
@@ -1087,42 +886,17 @@ mod tests {
 
         let log = b.obs.spu.as_ref().unwrap();
         let kinds: Vec<_> = log.events.iter().map(|e| (e.event, e.voice)).collect();
-        assert_eq!(
-            kinds,
-            [
-                ("upload", None),
-                ("upload", None),
-                ("key_on", Some(1)),
-                ("end", Some(1)),
-                ("key_off", Some(1))
-            ]
-        );
+        assert_eq!(kinds, [("upload", None), ("upload", None), ("key_on", Some(1)), ("end", Some(1)), ("key_off", Some(1))]);
         let dma = log.events[0].upload.as_ref().unwrap();
-        assert_eq!(
-            (dma.address, dma.bytes, dma.source, dma.ram),
-            (0x1000, 48, "dma", Some(0x8010_0000))
-        );
+        assert_eq!((dma.address, dma.bytes, dma.source, dma.ram), (0x1000, 48, "dma", Some(0x8010_0000)));
         let cpu = log.events[1].upload.as_ref().unwrap();
-        assert_eq!(
-            (cpu.address, cpu.bytes, cpu.source, cpu.ram),
-            (0x2000, 8, "cpu", None)
-        );
+        assert_eq!((cpu.address, cpu.bytes, cpu.source, cpu.ram), (0x2000, 8, "cpu", None));
         let on = log.events[2].key_on.as_ref().unwrap();
-        assert_eq!(
-            (on.start, on.pitch, on.rate_hz, on.sample_bytes, on.looped),
-            (0x1000, 0x1000, 44_100.0, 48, false)
-        );
+        assert_eq!((on.start, on.pitch, on.rate_hz, on.sample_bytes, on.looped), (0x1000, 0x1000, 44_100.0, 48, false));
         assert_eq!(on.volume, [Some(0x3FFF as f64 * 2.0 / 32768.0), None]);
-        assert_eq!(
-            on.sample_sha256,
-            psx_assets::adpcm::sample_sha256(&sample, 0)
-        );
+        assert_eq!(on.sample_sha256, psx_assets::adpcm::sample_sha256(&sample, 0));
         assert_eq!(log.counts["upload"], 2);
-        assert_eq!(
-            b.spu.endx() & (1 << 3),
-            1 << 3,
-            "voice 3 reached END without a report"
-        );
+        assert_eq!(b.spu.endx() & (1 << 3), 1 << 3, "voice 3 reached END without a report");
     }
 
     #[test]
@@ -1149,13 +923,8 @@ mod tests {
         assert_ne!(dicr & (1 << 30), 0, "ch6 flag");
         assert_ne!(dicr & (1 << 31), 0, "master flag");
         assert!(b.irq_pending());
-        b.write(DICR, Width::Word, (1 << 23) | (1 << 22) | (1 << 30))
-            .unwrap();
-        assert_eq!(
-            b.read(DICR, Width::Word).unwrap() >> 30,
-            0,
-            "flag and master cleared"
-        );
+        b.write(DICR, Width::Word, (1 << 23) | (1 << 22) | (1 << 30)).unwrap();
+        assert_eq!(b.read(DICR, Width::Word).unwrap() >> 30, 0, "flag and master cleared");
     }
 
     #[test]
@@ -1175,19 +944,12 @@ mod tests {
         bios[0..4].copy_from_slice(&0x3C08_0013u32.to_le_bytes());
         let mut b = Bus::new(bios);
         b.write(0x8000_0010, Width::Word, 0xDEAD_BEEF).unwrap();
-        assert_eq!(
-            b.read(0xA020_0010, Width::Word).unwrap(),
-            0xDEAD_BEEF,
-            "2 MiB mirror via KSEG1"
-        );
+        assert_eq!(b.read(0xA020_0010, Width::Word).unwrap(), 0xDEAD_BEEF, "2 MiB mirror via KSEG1");
         assert_eq!(b.read(0x0000_0012, Width::Half).unwrap(), 0xDEAD);
         assert_eq!(b.read(0xBFC0_0000, Width::Word).unwrap(), 0x3C08_0013);
         b.write(0x1F80_0004, Width::Byte, 0x5A).unwrap();
         assert_eq!(b.read(0x9F80_0004, Width::Byte).unwrap(), 0x5A);
-        assert!(
-            b.read(0xBF80_0004, Width::Byte).is_err(),
-            "no scratchpad through KSEG1"
-        );
+        assert!(b.read(0xBF80_0004, Width::Byte).is_err(), "no scratchpad through KSEG1");
         b.log_io = true;
         b.write(0x1F80_1074, Width::Word, 7).unwrap();
         assert_eq!(b.take_io_log().len(), 1);

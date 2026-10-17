@@ -16,13 +16,7 @@ pub(crate) struct ScopedSymbols {
 
 impl ScopedSymbols {
     /// Resolve names against the exact code image used by the caller.
-    pub fn describe_image(
-        &self,
-        pc: u32,
-        image_base: u32,
-        image: &[u8],
-        distance: u32,
-    ) -> Option<String> {
+    pub fn describe_image(&self, pc: u32, image_base: u32, image: &[u8], distance: u32) -> Option<String> {
         if let Some(bound) = &self.bound {
             if distance == 0 {
                 self.table.describe(bound_symbols::canonical(pc)?, 0)?;
@@ -30,10 +24,7 @@ impl ScopedSymbols {
             return bound.describe(pc, image_base, image);
         }
         let canonical = bound_symbols::canonical(pc).unwrap_or(pc);
-        let name = self
-            .table
-            .describe(canonical, distance)
-            .or_else(|| self.table.describe(pc, distance))?;
+        let name = self.table.describe(canonical, distance).or_else(|| self.table.describe(pc, distance))?;
         if let Some((base, code)) = &self.code {
             let pc = bound_symbols::canonical(pc)?;
             let base = bound_symbols::canonical(*base)?;
@@ -78,46 +69,25 @@ pub(crate) fn load_symbols(paths: &[PathBuf]) -> psx_media::Result<Vec<ScopedSym
     let mut out = Vec::new();
     for p in paths {
         let text = std::fs::read_to_string(p).map_err(|e| MediaError::io(p, e))?;
-        let name = p
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         if name.ends_with(".symbols.json") {
-            let v: Value = serde_json::from_str(&text)
-                .map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
+            let v: Value = serde_json::from_str(&text).map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
             if v["format"] == 2 {
-                let doc = serde_json::from_value(v)
-                    .map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
-                let bound = bound_symbols::Loaded::load(doc, p.parent().unwrap_or(Path::new(".")))
-                    .map_err(MediaError::Malformed)?;
-                out.push(ScopedSymbols {
-                    name,
-                    table: bound.table(),
-                    code: None,
-                    bound: Some(bound),
-                });
+                let doc = serde_json::from_value(v).map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
+                let bound = bound_symbols::Loaded::load(doc, p.parent().unwrap_or(Path::new("."))).map_err(MediaError::Malformed)?;
+                out.push(ScopedSymbols { name, table: bound.table(), code: None, bound: Some(bound) });
                 continue;
             }
             let source = v["source"].as_str().unwrap_or_default().to_string();
-            let report: psx_symbols::MatchReportIn = serde_json::from_value(v["report"].clone())
-                .map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
+            let report: psx_symbols::MatchReportIn =
+                serde_json::from_value(v["report"].clone()).map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
             let bytes = read_source(&source)?;
-            if v["exe_sha256"]
-                .as_str()
-                .is_some_and(|hash| hash != psx_media::disc::sha256_bytes(&bytes))
-            {
-                return Err(MediaError::Malformed(format!(
-                    "{name}: symbol source hash mismatch"
-                )));
+            if v["exe_sha256"].as_str().is_some_and(|hash| hash != psx_media::disc::sha256_bytes(&bytes)) {
+                return Err(MediaError::Malformed(format!("{name}: symbol source hash mismatch")));
             }
             let exe = PsxExe::parse(&bytes)?;
             out.push(ScopedSymbols {
-                name: source
-                    .rsplit(['/', '\\', ':'])
-                    .next()
-                    .unwrap_or(&source)
-                    .trim_end_matches(";1")
-                    .to_string(),
+                name: source.rsplit(['/', '\\', ':']).next().unwrap_or(&source).trim_end_matches(";1").to_string(),
                 table: psx_symbols::SymbolTable::from_symbols(&report.symbols),
                 code: Some((exe.text_addr, exe.payload(&bytes).to_vec())),
                 bound: None,
@@ -136,11 +106,7 @@ pub(crate) fn load_symbols(paths: &[PathBuf]) -> psx_media::Result<Vec<ScopedSym
 
 /// Name `pc` from the first executable whose code is resident there in `ram`
 /// (2 MiB main RAM image). Without RAM, or for bare `.sym` files, the name is unverified.
-pub(crate) fn name_pc(
-    scopes: &[ScopedSymbols],
-    pc: u32,
-    ram: Option<&[u8]>,
-) -> Option<(String, SymbolCheck, String)> {
+pub(crate) fn name_pc(scopes: &[ScopedSymbols], pc: u32, ram: Option<&[u8]>) -> Option<(String, SymbolCheck, String)> {
     for s in scopes {
         if let Some(ram) = ram {
             if let Some(n) = s.describe_image(pc, 0x8000_0000, ram, 0x4000) {
@@ -155,11 +121,7 @@ pub(crate) fn name_pc(
             }
         } else if s.bound.is_none() {
             let canonical = bound_symbols::canonical(pc).unwrap_or(pc);
-            if let Some(n) = s
-                .table
-                .describe(canonical, 0x4000)
-                .or_else(|| s.table.describe(pc, 0x4000))
-            {
+            if let Some(n) = s.table.describe(canonical, 0x4000).or_else(|| s.table.describe(pc, 0x4000)) {
                 return Some((n, SymbolCheck::Unverified, s.name.clone()));
             }
         }
@@ -170,10 +132,8 @@ pub(crate) fn name_pc(
 /// Names computed after a run must not claim historical snapshot residency.
 pub(crate) fn final_name(scopes: &[ScopedSymbols], pc: u32, ram: Option<&[u8]>) -> Value {
     match name_pc(scopes, pc, ram) {
-        Some((name, SymbolCheck::BodyMatch, source)) => {
-            json!({"candidate_name":name,"symbols":source,"check":"final_ram_only",
-            "diagnostic":"Function body matches final RAM; historical event residency is unknown."})
-        }
+        Some((name, SymbolCheck::BodyMatch, source)) => json!({"candidate_name":name,"symbols":source,"check":"final_ram_only",
+            "diagnostic":"Function body matches final RAM; historical event residency is unknown."}),
         Some((name, check, source)) => json!({"name":name,"exe":source,"check":check.as_str()}),
         None => Value::Null,
     }
@@ -191,31 +151,17 @@ mod tests {
             bound: None,
         };
         let mut image = vec![7; 128];
-        assert_eq!(
-            scoped
-                .describe_image(0xa0010004, 0x80010000, &image, 0x4000)
-                .as_deref(),
-            Some("library_function+0x4")
-        );
+        assert_eq!(scoped.describe_image(0xa0010004, 0x80010000, &image, 0x4000).as_deref(), Some("library_function+0x4"));
         image[4] = 8;
-        assert!(scoped
-            .describe_image(0x80010004, 0x80010000, &image, 0x4000)
-            .is_none());
-        assert!(scoped
-            .describe_image(0x1f800004, 0x80010000, &image, 0x4000)
-            .is_none());
-        assert!(scoped
-            .describe_image(0x80010080, 0x80010000, &image, 0x4000)
-            .is_none());
+        assert!(scoped.describe_image(0x80010004, 0x80010000, &image, 0x4000).is_none());
+        assert!(scoped.describe_image(0x1f800004, 0x80010000, &image, 0x4000).is_none());
+        assert!(scoped.describe_image(0x80010080, 0x80010000, &image, 0x4000).is_none());
         let plain = ScopedSymbols {
             name: "plain".into(),
             table: psx_symbols::SymbolTable::from_sym_text("A0010000 user_alias\n"),
             code: None,
             bound: None,
         };
-        assert_eq!(
-            name_pc(&[plain], 0xa0010004, None).unwrap().0,
-            "user_alias+0x4"
-        );
+        assert_eq!(name_pc(&[plain], 0xa0010004, None).unwrap().0, "user_alias+0x4");
     }
 }

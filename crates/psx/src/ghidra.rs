@@ -26,10 +26,7 @@ struct Failure {
     message: String,
 }
 fn fail(code: &'static str, message: impl ToString) -> Failure {
-    Failure {
-        code,
-        message: message.to_string(),
-    }
+    Failure { code, message: message.to_string() }
 }
 fn io(e: impl ToString) -> Failure {
     fail("io", e)
@@ -39,18 +36,8 @@ fn invalid(e: impl ToString) -> Failure {
 }
 fn outcome(result: Result<Value>) -> Outcome {
     match result {
-        Ok(value) => Outcome {
-            exit: u8::from(value["status"] == "partial"),
-            value,
-            pretty: true,
-            text: false,
-        },
-        Err(e) => Outcome {
-            value: json!({"error":{"code":e.code,"message":e.message}}),
-            exit: 1,
-            pretty: true,
-            text: false,
-        },
+        Ok(value) => Outcome { exit: u8::from(value["status"] == "partial"), value, pretty: true, text: false },
+        Err(e) => Outcome { value: json!({"error":{"code":e.code,"message":e.message}}), exit: 1, pretty: true, text: false },
     }
 }
 fn timeout() -> u64 {
@@ -208,7 +195,7 @@ pub struct ExportArgs {
     pub out: Option<PathBuf>,
     /// Total deadline including time queued for this analysis (1..=3600 seconds).
     #[arg(long, default_value_t=timeout())]
-    #[serde(default = "timeout")]
+    #[serde(default="timeout")]
     pub timeout: u64,
 }
 
@@ -234,34 +221,15 @@ struct Installation {
 }
 fn installation(explicit: Option<&Path>) -> Result<Installation> {
     fn inspect(p: &Path) -> Result<Installation> {
-        let home = p
-            .canonicalize()
-            .map_err(|e| fail("ghidra_unavailable", format!("{}: {e}", p.display())))?;
+        let home = p.canonicalize().map_err(|e| fail("ghidra_unavailable", format!("{}: {e}", p.display())))?;
         let launcher = home.join("support/analyzeHeadless");
-        let props =
-            fs::read_to_string(home.join("Ghidra/application.properties")).map_err(|e| {
-                fail(
-                    "ghidra_unavailable",
-                    format!("{} is not a Ghidra installation: {e}", home.display()),
-                )
-            })?;
-        let version = props
-            .lines()
-            .find_map(|s| s.strip_prefix("application.version="))
-            .unwrap_or("unknown")
-            .to_string();
+        let props = fs::read_to_string(home.join("Ghidra/application.properties"))
+            .map_err(|e| fail("ghidra_unavailable", format!("{} is not a Ghidra installation: {e}", home.display())))?;
+        let version = props.lines().find_map(|s| s.strip_prefix("application.version=")).unwrap_or("unknown").to_string();
         if !launcher.is_file() {
-            return Err(fail(
-                "ghidra_unavailable",
-                format!("missing {}", launcher.display()),
-            ));
+            return Err(fail("ghidra_unavailable", format!("missing {}", launcher.display())));
         }
-        Ok(Installation {
-            home,
-            launcher,
-            version,
-            build_sha256: sha256_bytes(props.as_bytes()),
-        })
+        Ok(Installation { home, launcher, version, build_sha256: sha256_bytes(props.as_bytes()) })
     }
     if let Some(p) = explicit {
         return inspect(p);
@@ -288,12 +256,7 @@ fn installation(explicit: Option<&Path>) -> Result<Installation> {
     for root in roots {
         if let Ok(entries) = fs::read_dir(root) {
             for entry in entries.flatten() {
-                if entry
-                    .file_name()
-                    .to_string_lossy()
-                    .to_lowercase()
-                    .starts_with("ghidra")
-                {
+                if entry.file_name().to_string_lossy().to_lowercase().starts_with("ghidra") {
                     if let Ok(i) = inspect(&entry.path()) {
                         candidates.push(i);
                     }
@@ -312,13 +275,9 @@ fn installation(explicit: Option<&Path>) -> Result<Installation> {
 
 fn read_json(path: &Path) -> Result<Value> {
     if fs::metadata(path).map_err(io)?.len() > FILE_LIMIT {
-        return Err(fail(
-            "limit_exceeded",
-            format!("{} exceeds 64 MiB", path.display()),
-        ));
+        return Err(fail("limit_exceeded", format!("{} exceeds 64 MiB", path.display())));
     }
-    serde_json::from_slice(&fs::read(path).map_err(io)?)
-        .map_err(|e| fail("invalid_artifact", format!("{}: {e}", path.display())))
+    serde_json::from_slice(&fs::read(path).map_err(io)?).map_err(|e| fail("invalid_artifact", format!("{}: {e}", path.display())))
 }
 fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let tmp = path.with_extension(format!("tmp-{}", crate::instance_suffix()));
@@ -328,20 +287,14 @@ fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
 fn stamp() -> String {
     format!(
         "{}-{}{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
         std::process::id(),
         crate::instance_suffix()
     )
 }
 fn hex(s: &str) -> Result<u32> {
-    u32::from_str_radix(
-        s.trim().trim_start_matches("0x").trim_start_matches("0X"),
-        16,
-    )
-    .map_err(|_| invalid(format!("invalid hex address {s:?}")))
+    u32::from_str_radix(s.trim().trim_start_matches("0x").trim_start_matches("0X"), 16)
+        .map_err(|_| invalid(format!("invalid hex address {s:?}")))
 }
 fn ram_address(addr: u32) -> Result<u32> {
     let region = psx_media::memmap::resolve(addr);
@@ -354,27 +307,14 @@ fn budget(input: &Input) -> Result<Instant> {
     if !(1..=3600).contains(&input.timeout) {
         return Err(invalid("timeout must be 1..=3600 seconds"));
     }
-    if [
-        input.source.is_some(),
-        input.analysis.is_some(),
-        input.ram.is_some(),
-    ]
-    .into_iter()
-    .filter(|v| *v)
-    .count()
-        != 1
-    {
+    if [input.source.is_some(), input.analysis.is_some(), input.ram.is_some()].into_iter().filter(|v| *v).count() != 1 {
         return Err(invalid("give exactly one of source, analysis or ram"));
     }
-    if input.ram.is_none()
-        && (!input.ranges.is_empty() || !input.entries.is_empty() || input.gp.is_some())
-    {
+    if input.ram.is_none() && (!input.ranges.is_empty() || !input.entries.is_empty() || input.gp.is_some()) {
         return Err(invalid("range, entry and gp require ram"));
     }
     if input.analysis.is_some() && (!input.symbols.is_empty() || input.reanalyze) {
-        return Err(invalid(
-            "symbols/reanalyze require source or ram, not an analysis handle",
-        ));
+        return Err(invalid("symbols/reanalyze require source or ram, not an analysis handle"));
     }
     Ok(Instant::now() + Duration::from_secs(input.timeout))
 }
@@ -388,11 +328,7 @@ impl Lock {
         // Publish a fully written ownership marker atomically: a concurrent reader
         // must never mistake an empty, newly created lock for a foreign lock.
         let temp = dir.join(format!("lock-{}.tmp", stamp()));
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .map_err(io)?;
+        let mut f = OpenOptions::new().write(true).create_new(true).open(&temp).map_err(io)?;
         let staged = Self(temp);
         writeln!(f, "psx-query-lock-v1\npid={}", std::process::id()).map_err(io)?;
         match fs::hard_link(&staged.0, &path) {
@@ -407,10 +343,7 @@ impl Lock {
     fn queued(dir: &Path, deadline: Instant, ctx: &Ctx) -> Result<Self> {
         loop {
             if ctx.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
-                return Err(fail(
-                    "cancelled",
-                    "Cancelled while queued for this analysis",
-                ));
+                return Err(fail("cancelled", "Cancelled while queued for this analysis"));
             }
             if Instant::now() >= deadline {
                 return Err(fail("timeout", "Deadline reached while queued for this analysis; an interrupted owner may need inspection"));
@@ -449,22 +382,13 @@ impl Drop for Lock {
 /// its native decompiler, not just the shell launcher. No shell interpolation.
 fn run_worker(command: &mut Command, log: &Path, deadline: Instant, ctx: &Ctx) -> Result<()> {
     if cfg!(not(unix)) {
-        return Err(fail(
-            "unsupported_platform",
-            "Ghidra worker supervision currently requires Unix.",
-        ));
+        return Err(fail("unsupported_platform", "Ghidra worker supervision currently requires Unix."));
     }
     if ctx.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
-        return Err(fail(
-            "cancelled",
-            "Ghidra query cancelled before worker launch",
-        ));
+        return Err(fail("cancelled", "Ghidra query cancelled before worker launch"));
     }
     if Instant::now() >= deadline {
-        return Err(fail(
-            "timeout",
-            "Ghidra query deadline expired before worker launch",
-        ));
+        return Err(fail("timeout", "Ghidra query deadline expired before worker launch"));
     }
     #[cfg(unix)]
     {
@@ -472,40 +396,25 @@ fn run_worker(command: &mut Command, log: &Path, deadline: Instant, ctx: &Ctx) -
         command.process_group(0);
     }
     let output = File::create(log).map_err(io)?;
-    command
-        .stdout(output.try_clone().map_err(io)?)
-        .stderr(output)
-        .stdin(Stdio::null());
-    let mut child = command
-        .spawn()
-        .map_err(|e| fail("worker_unavailable", format!("{e}; log: {}", log.display())))?;
+    command.stdout(output.try_clone().map_err(io)?).stderr(output).stdin(Stdio::null());
+    let mut child = command.spawn().map_err(|e| fail("worker_unavailable", format!("{e}; log: {}", log.display())))?;
     loop {
         let cancelled = ctx.cancel.as_ref().is_some_and(|c| c.is_cancelled());
         if cancelled || Instant::now() >= deadline {
             #[cfg(unix)]
             {
-                let _ = Command::new("kill")
-                    .args(["-KILL", "--", &format!("-{}", child.id())])
-                    .status();
+                let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]).status();
             }
             let _ = child.kill();
             let _ = child.wait();
             return Err(fail(
                 if cancelled { "cancelled" } else { "timeout" },
-                format!(
-                    "Ghidra worker stopped; interrupted analysis is not reused. Log: {}",
-                    log.display()
-                ),
+                format!("Ghidra worker stopped; interrupted analysis is not reused. Log: {}", log.display()),
             ));
         }
         match child.try_wait().map_err(io)? {
             Some(status) if status.success() => return Ok(()),
-            Some(status) => {
-                return Err(fail(
-                    "ghidra_failed",
-                    format!("Ghidra exited {status}; inspect {}", log.display()),
-                ))
-            }
+            Some(status) => return Err(fail("ghidra_failed", format!("Ghidra exited {status}; inspect {}", log.display()))),
             None => std::thread::sleep(Duration::from_millis(50)),
         }
     }
@@ -559,16 +468,10 @@ fn import(input: &Input) -> Result<Import> {
         let snap = crate::ram::load(path).map_err(|e| fail(e.code(), e))?;
         let mut ranges = Vec::new();
         for spec in &input.ranges {
-            let (lo, hi) = spec
-                .split_once('-')
-                .ok_or_else(|| invalid("range must be LO-HI (end exclusive)"))?;
+            let (lo, hi) = spec.split_once('-').ok_or_else(|| invalid("range must be LO-HI (end exclusive)"))?;
             let lo = ram_address(hex(lo)?)?;
             let raw_hi = hex(hi)?;
-            let hi = ram_address(
-                raw_hi
-                    .checked_sub(1)
-                    .ok_or_else(|| invalid("invalid range end"))?,
-            )? + 1;
+            let hi = ram_address(raw_hi.checked_sub(1).ok_or_else(|| invalid("invalid range end"))?)? + 1;
             if lo >= hi || lo & 3 != 0 || hi & 3 != 0 {
                 return Err(invalid("empty, wrapping or unaligned code range"));
             }
@@ -576,25 +479,13 @@ fn import(input: &Input) -> Result<Import> {
         }
         ranges.sort_unstable();
         if ranges.is_empty() || ranges.windows(2).any(|r| r[0].1 > r[1].0) {
-            return Err(invalid(
-                "RAM requires non-overlapping candidate code ranges",
-            ));
+            return Err(invalid("RAM requires non-overlapping candidate code ranges"));
         }
-        let mut entries = input
-            .entries
-            .iter()
-            .map(|s| ram_address(hex(s)?))
-            .collect::<Result<Vec<_>>>()?;
+        let mut entries = input.entries.iter().map(|s| ram_address(hex(s)?)).collect::<Result<Vec<_>>>()?;
         entries.sort_unstable();
         entries.dedup();
-        if entries.is_empty()
-            || entries
-                .iter()
-                .any(|e| e & 3 != 0 || !ranges.iter().any(|&(lo, hi)| lo <= *e && *e < hi))
-        {
-            return Err(invalid(
-                "RAM requires aligned entry seeds within candidate ranges",
-            ));
+        if entries.is_empty() || entries.iter().any(|e| e & 3 != 0 || !ranges.iter().any(|&(lo, hi)| lo <= *e && *e < hi)) {
+            return Err(invalid("RAM requires aligned entry seeds within candidate ranges"));
         }
         let report_path = path.join("report.json");
         let mut provenance = json!({"kind":"ram","ram_path":snap.path.canonicalize().map_err(io)?});
@@ -607,8 +498,7 @@ fn import(input: &Input) -> Result<Import> {
             let hash = sha256_bytes(&snap.bytes);
             if report["files"]["ram.bin"]["sha256"] == hash {
                 provenance["report"] = json!(report_path.canonicalize().map_err(io)?);
-                provenance["report_sha256"] =
-                    json!(sha256_bytes(&fs::read(&report_path).map_err(io)?));
+                provenance["report_sha256"] = json!(sha256_bytes(&fs::read(&report_path).map_err(io)?));
                 provenance["frames"] = report["frames"].clone();
                 provenance["identity"] = report["identity"].clone();
                 provenance["registers"] = report["registers"].clone();
@@ -618,10 +508,7 @@ fn import(input: &Input) -> Result<Import> {
                         provenance[file] = json!({"path":p.canonicalize().map_err(io)?,"sha256":sha256_bytes(&fs::read(p).map_err(io)?)});
                     }
                 }
-                gp = report["registers"]["gp"]
-                    .as_u64()
-                    .and_then(|v| u32::try_from(v).ok())
-                    .unwrap_or(0);
+                gp = report["registers"]["gp"].as_u64().and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
             } else {
                 warnings.push("Run report does not bind these RAM bytes; frame/register/media metadata was not associated.".into());
             }
@@ -649,17 +536,11 @@ fn import(input: &Input) -> Result<Import> {
             warnings,
         });
     }
-    let source = input
-        .source
-        .as_ref()
-        .ok_or_else(|| invalid("missing source"))?;
+    let source = input.source.as_ref().ok_or_else(|| invalid("missing source"))?;
     let bytes = crate::read_source(source).map_err(|e| fail(e.code(), e))?;
     let exe = PsxExe::parse(&bytes).map_err(|e| fail(e.code(), e))?;
     let base = ram_address(exe.text_addr)?;
-    let end = base
-        .checked_add(exe.text_size)
-        .filter(|&end| end <= 0x8020_0000)
-        .ok_or_else(|| invalid("EXE payload exceeds main RAM"))?;
+    let end = base.checked_add(exe.text_size).filter(|&end| end <= 0x8020_0000).ok_or_else(|| invalid("EXE payload exceeds main RAM"))?;
     let entry = ram_address(exe.pc)?;
     if exe.text_size == 0
         || exe.payload(&bytes).len() != exe.text_size as usize
@@ -667,16 +548,11 @@ fn import(input: &Input) -> Result<Import> {
         || entry & 3 != 0
         || base & 3 != 0
     {
-        return Err(invalid(
-            "EXE has a truncated/empty payload or an invalid entry address",
-        ));
+        return Err(invalid("EXE has a truncated/empty payload or an invalid entry address"));
     }
     let bss = if exe.bss_size > 0 {
         let start = ram_address(exe.bss_addr)?;
-        let stop = start
-            .checked_add(exe.bss_size)
-            .filter(|&n| n <= 0x8020_0000)
-            .ok_or_else(|| invalid("BSS exceeds main RAM"))?;
+        let stop = start.checked_add(exe.bss_size).filter(|&n| n <= 0x8020_0000).ok_or_else(|| invalid("BSS exceeds main RAM"))?;
         if start < end && stop > base {
             return Err(invalid("BSS overlaps the loaded payload"));
         }
@@ -696,14 +572,7 @@ fn import(input: &Input) -> Result<Import> {
         code_ranges: vec![(base, end)],
         entries: vec![entry],
     };
-    Ok(Import {
-        source: source.clone(),
-        warnings: exe.warnings.clone(),
-        bytes,
-        exe: Some(exe),
-        mapping,
-        provenance: json!({"kind":"exe"}),
-    })
+    Ok(Import { source: source.clone(), warnings: exe.warnings.clone(), bytes, exe: Some(exe), mapping, provenance: json!({"kind":"exe"}) })
 }
 struct Analysis {
     path: PathBuf,
@@ -715,10 +584,7 @@ struct Analysis {
 
 fn fingerprint(dir: &Path) -> Result<String> {
     fn walk(dir: &Path, out: &mut Vec<String>) -> Result<()> {
-        let mut entries = fs::read_dir(dir)
-            .map_err(io)?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(io)?;
+        let mut entries = fs::read_dir(dir).map_err(io)?.collect::<std::result::Result<Vec<_>, _>>().map_err(io)?;
         entries.sort_by_key(|e| e.file_name());
         for e in entries {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -730,11 +596,7 @@ fn fingerprint(dir: &Path) -> Result<String> {
                 out.push(format!(
                     "{name}:{}:{}",
                     m.len(),
-                    m.modified()
-                        .map_err(io)?
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos()
+                    m.modified().map_err(io)?.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()
                 ));
             }
         }
@@ -745,9 +607,7 @@ fn fingerprint(dir: &Path) -> Result<String> {
     Ok(sha256_bytes(rows.join("\n").as_bytes()))
 }
 fn gui_lock(dir: &Path) -> bool {
-    ["project.lock", "project.lock~"]
-        .iter()
-        .any(|name| dir.join(name).exists())
+    ["project.lock", "project.lock~"].iter().any(|name| dir.join(name).exists())
 }
 fn command(install: &Installation, attempt: &Path) -> Result<Command> {
     let mut cmd = Command::new(&install.launcher);
@@ -761,13 +621,7 @@ fn command(install: &Installation, attempt: &Path) -> Result<Command> {
     cmd.env("GHIDRA_HEADLESS_MAXMEM", "2G");
     // PID namespaces can share /tmp/hsperfdata_* while reusing JVM PIDs. A
     // perf-data warning on stdout corrupts Ghidra LaunchSupport's Java-home probe.
-    cmd.env(
-        "JAVA_TOOL_OPTIONS",
-        format!(
-            "{} -XX:-UsePerfData",
-            std::env::var("JAVA_TOOL_OPTIONS").unwrap_or_default()
-        ),
-    );
+    cmd.env("JAVA_TOOL_OPTIONS", format!("{} -XX:-UsePerfData", std::env::var("JAVA_TOOL_OPTIONS").unwrap_or_default()));
     Ok(cmd)
 }
 fn script_dir(dir: &Path) -> Result<PathBuf> {
@@ -782,20 +636,14 @@ fn script_dir(dir: &Path) -> Result<PathBuf> {
 fn cached(path: PathBuf, lock: Lock) -> Result<Analysis> {
     let value = read_json(&path)?;
     if value["format"] != FORMAT {
-        return Err(fail(
-            "stale_analysis",
-            "Analysis format changed; query source or ram again to create a compatible analysis.",
-        ));
+        return Err(fail("stale_analysis", "Analysis format changed; query source or ram again to create a compatible analysis."));
     }
     let manifest: Manifest = serde_json::from_value(value).map_err(io)?;
     if manifest.format != FORMAT || manifest.script_sha256 != sha256_bytes(SCRIPT.as_bytes()) {
         return Err(fail("stale_analysis", "Analysis format/scripts changed; query the source again to create a compatible analysis."));
     }
     if gui_lock(&manifest.project_dir) {
-        return Err(fail(
-            "analysis_busy",
-            "Close this analysis in the Ghidra GUI before querying it.",
-        ));
+        return Err(fail("analysis_busy", "Close this analysis in the Ghidra GUI before querying it."));
     }
     if fingerprint(&manifest.project_dir)? != manifest.project_fingerprint {
         return Err(fail("stale_analysis", "Ghidra project changed outside psx; cached results are no longer valid. Query source with reanalyze=true for a fresh import; the edited project is preserved."));
@@ -805,40 +653,16 @@ fn cached(path: PathBuf, lock: Lock) -> Result<Analysis> {
         return Err(fail("invalid_artifact", "Analysis input copy has changed."));
     }
     let index = read_json(&manifest.index)?;
-    Ok(Analysis {
-        path,
-        manifest,
-        index,
-        fresh_query: None,
-        _lock: lock,
-    })
+    Ok(Analysis { path, manifest, index, fresh_query: None, _lock: lock })
 }
 
-fn prepare(
-    input: &Input,
-    addr: Option<u32>,
-    decompile_timeout: u32,
-    deadline: Instant,
-    ctx: &Ctx,
-) -> Result<Analysis> {
+fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: Instant, ctx: &Ctx) -> Result<Analysis> {
     if let Some(path) = &input.analysis {
         let path = path.canonicalize().map_err(io)?;
-        let lock = Lock::queued(
-            path.parent()
-                .ok_or_else(|| invalid("invalid manifest path"))?,
-            deadline,
-            ctx,
-        )?;
+        let lock = Lock::queued(path.parent().ok_or_else(|| invalid("invalid manifest path"))?,deadline,ctx)?;
         return cached(path, lock);
     }
-    let Import {
-        source,
-        bytes,
-        exe,
-        mapping,
-        provenance,
-        mut warnings,
-    } = import(input)?;
+    let Import { source, bytes, exe, mapping, provenance, mut warnings } = import(input)?;
     let base = mapping.base;
     let end = base + mapping.size;
     if addr.is_some_and(|a| !(base..end).contains(&a)) {
@@ -852,13 +676,8 @@ fn prepare(
             let value: Value = serde_json::from_str(&text).map_err(io)?;
             if value["format"] == 2 {
                 let doc = serde_json::from_value(value).map_err(io)?;
-                let bound = crate::bound_symbols::Loaded::load(
-                    doc,
-                    path.parent().unwrap_or(Path::new(".")),
-                )
-                .map_err(invalid)?;
-                let image =
-                    &bytes[mapping.file_offset..mapping.file_offset + mapping.size as usize];
+                let bound = crate::bound_symbols::Loaded::load(doc, path.parent().unwrap_or(Path::new("."))).map_err(invalid)?;
+                let image = &bytes[mapping.file_offset..mapping.file_offset + mapping.size as usize];
                 for f in &bound.document.functions {
                     if bound.describe(f.address, base, image).is_none() {
                         return Err(invalid("bound symbol function differs from analysis input"));
@@ -867,61 +686,33 @@ fn prepare(
                 }
                 continue;
             }
-            let original = crate::read_source(
-                value["source"]
-                    .as_str()
-                    .ok_or_else(|| invalid("symbols report lacks source"))?,
-            )
-            .map_err(|e| fail(e.code(), e))?;
+            let original = crate::read_source(value["source"].as_str().ok_or_else(|| invalid("symbols report lacks source"))?)
+                .map_err(|e| fail(e.code(), e))?;
             let original_exe = PsxExe::parse(&original).map_err(|e| fail(e.code(), e))?;
             let original_base = ram_address(original_exe.text_addr)?;
             let payload = original_exe.payload(&original);
-            let offset = original_base
-                .checked_sub(base)
-                .ok_or_else(|| invalid("symbol EXE is outside mapping"))?
-                as usize;
+            let offset = original_base.checked_sub(base).ok_or_else(|| invalid("symbol EXE is outside mapping"))? as usize;
             let mapped = &bytes[mapping.file_offset..mapping.file_offset + mapping.size as usize];
-            if payload.len() != original_exe.text_size as usize
-                || mapped.get(offset..offset + payload.len()) != Some(payload)
-            {
-                return Err(invalid(format!(
-                    "{} describes code that differs from analysis input",
-                    path.display()
-                )));
+            if payload.len() != original_exe.text_size as usize || mapped.get(offset..offset + payload.len()) != Some(payload) {
+                return Err(invalid(format!("{} describes code that differs from analysis input", path.display())));
             }
-            if value["exe_sha256"]
-                .as_str()
-                .is_some_and(|s| s != sha256_bytes(&original))
-            {
-                return Err(invalid(format!(
-                    "{} is stale: its source bytes have changed",
-                    path.display()
-                )));
+            if value["exe_sha256"].as_str().is_some_and(|s| s != sha256_bytes(&original)) {
+                return Err(invalid(format!("{} is stale: its source bytes have changed", path.display())));
             }
-            let list = value["report"]["symbols"]
-                .as_array()
-                .ok_or_else(|| invalid("symbols report lacks report.symbols"))?;
+            let list = value["report"]["symbols"].as_array().ok_or_else(|| invalid("symbols report lacks report.symbols"))?;
             for s in list {
-                let a = s["address"]
-                    .as_u64()
-                    .and_then(|a| u32::try_from(a).ok())
-                    .ok_or_else(|| invalid("invalid symbol address"))?;
+                let a = s["address"].as_u64().and_then(|a| u32::try_from(a).ok()).ok_or_else(|| invalid("invalid symbol address"))?;
                 symbols.push(json!({"address":ram_address(a)?,"name":s["name"],"kind":s["kind"]}));
             }
         } else {
-            warnings.push(format!(
-                "{}: plain .sym names are unverified",
-                path.display()
-            ));
+            warnings.push(format!("{}: plain .sym names are unverified", path.display()));
             for line in text.lines() {
                 if line.trim_start().starts_with(['#', ';']) {
                     continue;
                 }
                 let mut words = line.split_whitespace();
                 if let (Some(a), Some(name)) = (words.next(), words.next()) {
-                    symbols.push(
-                        json!({"address":ram_address(hex(a)?)?,"name":name,"kind":"function"}),
-                    );
+                    symbols.push(json!({"address":ram_address(hex(a)?)?,"name":name,"kind":"function"}));
                 }
             }
         }
@@ -930,20 +721,12 @@ fn prepare(
         let a = s["address"].as_u64().unwrap_or(0) as u32;
         if !(base..end).contains(&a)
             || a & 3 != 0
-            || (s["kind"] == "function"
-                && !mapping
-                    .code_ranges
-                    .iter()
-                    .any(|&(lo, hi)| lo <= a && a < hi))
+            || (s["kind"] == "function" && !mapping.code_ranges.iter().any(|&(lo, hi)| lo <= a && a < hi))
         {
             return Err(invalid("symbol address outside payload or unaligned"));
         }
-        if s["name"].as_str().is_none_or(str::is_empty)
-            || !matches!(s["kind"].as_str(), Some("function" | "label" | "local"))
-        {
-            return Err(invalid(
-                "symbols need a nonempty name and kind function, label or local",
-            ));
+        if s["name"].as_str().is_none_or(str::is_empty) || !matches!(s["kind"].as_str(), Some("function" | "label" | "local")) {
+            return Err(invalid("symbols need a nonempty name and kind function, label or local"));
         }
     }
     let source_hash = sha256_bytes(&bytes);
@@ -952,7 +735,7 @@ fn prepare(
     let dir = ctx.root.join(".psx/ghidra").join(&key);
     fs::create_dir_all(&dir).map_err(io)?;
     let dir = dir.canonicalize().map_err(io)?;
-    let lock = Lock::queued(&dir, deadline, ctx)?;
+    let lock = Lock::queued(&dir,deadline,ctx)?;
     let path = dir.join("analysis.json");
     if path.is_file() && !input.reanalyze {
         return cached(path, lock);
@@ -961,24 +744,13 @@ fn prepare(
     fs::create_dir(&attempt).map_err(io)?;
     // Ghidra 12 rejects project paths with any hidden path component, so its
     // database cannot live beneath .psx. Inputs/indexes remain there.
-    let project_dir = ctx
-        .root
-        .join("ghidra-projects")
-        .join(format!("{}-{}", &key[..16], stamp()));
+    let project_dir = ctx.root.join("ghidra-projects").join(format!("{}-{}", &key[..16], stamp()));
     fs::create_dir_all(&project_dir).map_err(io)?;
     let scripts = script_dir(&attempt)?;
-    let copy = attempt.join(if exe.is_some() {
-        "source.ps-exe"
-    } else {
-        "ram.bin"
-    });
+    let copy = attempt.join(if exe.is_some() { "source.ps-exe" } else { "ram.bin" });
     fs::write(&copy, &bytes).map_err(io)?;
     let payload = attempt.join("payload.bin");
-    fs::write(
-        &payload,
-        &bytes[mapping.file_offset..mapping.file_offset + mapping.size as usize],
-    )
-    .map_err(io)?;
+    fs::write(&payload, &bytes[mapping.file_offset..mapping.file_offset + mapping.size as usize]).map_err(io)?;
     let index_path = attempt.join("index.json");
     let setup_result = attempt.join("setup-result.json");
     let mut request = json!({"mode":"setup","base":base,"size":mapping.size,"entry":mapping.entry,"gp":mapping.gp,"sp":mapping.sp,"bss_addr":mapping.bss_addr,"bss_size":mapping.bss_size,"code_ranges":mapping.code_ranges,"entries":mapping.entries,"symbols":symbols,"setup_result":setup_result});
@@ -1008,13 +780,7 @@ fn prepare(
             "2",
         ])
         .arg("-analysisTimeoutPerFile")
-        .arg(
-            deadline
-                .saturating_duration_since(Instant::now())
-                .as_secs()
-                .max(1)
-                .to_string(),
-        )
+        .arg(deadline.saturating_duration_since(Instant::now()).as_secs().max(1).to_string())
         .arg("-scriptPath")
         .arg(scripts)
         .arg("-preScript")
@@ -1024,29 +790,13 @@ fn prepare(
         .arg("PsxGhidra.java")
         .arg(export);
     run_worker(&mut cmd, &attempt.join("worker.log"), deadline, ctx)?;
-    let setup_out = read_json(&setup_result).map_err(|e| {
-        fail(
-            "ghidra_failed",
-            format!(
-                "{}; inspect {}",
-                e.message,
-                attempt.join("worker.log").display()
-            ),
-        )
-    })?;
+    let setup_out = read_json(&setup_result)
+        .map_err(|e| fail("ghidra_failed", format!("{}; inspect {}", e.message, attempt.join("worker.log").display())))?;
     if let Some(w) = setup_out["warnings"].as_array() {
         warnings.extend(w.iter().filter_map(Value::as_str).map(str::to_owned));
     }
-    let index = read_json(&index_path).map_err(|e| {
-        fail(
-            "ghidra_failed",
-            format!(
-                "{}; inspect {}",
-                e.message,
-                attempt.join("worker.log").display()
-            ),
-        )
-    })?;
+    let index = read_json(&index_path)
+        .map_err(|e| fail("ghidra_failed", format!("{}; inspect {}", e.message, attempt.join("worker.log").display())))?;
     if index["analysis_timed_out"] == true {
         return Err(fail(
             "analysis_timeout",
@@ -1061,9 +811,7 @@ fn prepare(
         source: source.clone(),
         source_sha256: source_hash,
         input: copy,
-        payload_sha256: sha256_bytes(
-            &bytes[mapping.file_offset..mapping.file_offset + mapping.size as usize],
-        ),
+        payload_sha256: sha256_bytes(&bytes[mapping.file_offset..mapping.file_offset + mapping.size as usize]),
         exe,
         mapping,
         provenance,
@@ -1088,13 +836,7 @@ fn prepare(
     } else {
         None
     };
-    Ok(Analysis {
-        path,
-        manifest,
-        index,
-        fresh_query,
-        _lock: lock,
-    })
+    Ok(Analysis { path, manifest, index, fresh_query, _lock: lock })
 }
 
 fn summary(a: &Analysis) -> Value {
@@ -1106,16 +848,12 @@ fn references(a: &Analysis) -> &[Value] {
     a.index["references"].as_array().map_or(&[], Vec::as_slice)
 }
 fn same_address(value: &Value, target: u32) -> bool {
-    value
-        .as_str()
-        .and_then(|s| hex(s).ok())
-        .is_some_and(|addr| ram_address(addr).unwrap_or(addr) == target)
+    value.as_str().and_then(|s| hex(s).ok()).is_some_and(|addr| ram_address(addr).unwrap_or(addr) == target)
 }
 fn page(rows: &[Value], offset: usize, count: usize) -> Value {
-    let items = rows.iter().skip(offset).take(count).collect::<Vec<_>>();
-    let mut result = crate::page::metadata(rows.len(), offset, items.len(), count);
-    result["items"] = json!(items);
-    result
+    let items=rows.iter().skip(offset).take(count).collect::<Vec<_>>();
+    let mut result=crate::page::metadata(rows.len(),offset,items.len(),count);
+    result["items"]=json!(items);result
 }
 fn valid_limit(n: usize) -> Result<()> {
     if (1..=1000).contains(&n) {
@@ -1132,12 +870,7 @@ impl Op for DoctorArgs {
             let dir = ctx.root.join(".psx/ghidra/doctor");
             fs::create_dir_all(&dir).map_err(io)?;
             let log = dir.join(format!("{}.log", stamp()));
-            run_worker(
-                Command::new("java").arg("-version"),
-                &log,
-                Instant::now() + Duration::from_secs(15),
-                ctx,
-            )?;
+            run_worker(Command::new("java").arg("-version"), &log, Instant::now() + Duration::from_secs(15), ctx)?;
             Ok(
                 json!({"status":"available","ghidra":install,"java":fs::read_to_string(log).map_err(io)?,"validated_version":"12.1.4","language":LANGUAGE}),
             )
@@ -1164,13 +897,7 @@ impl Op for FunctionsArgs {
                 .as_array()
                 .ok_or_else(|| fail("invalid_artifact", "missing functions index"))?
                 .iter()
-                .filter(|f| {
-                    f["name"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&filter)
-                })
+                .filter(|f| f["name"].as_str().unwrap_or("").to_lowercase().contains(&filter))
                 .cloned()
                 .collect();
             let mut out = summary(&a);
@@ -1188,16 +915,9 @@ impl Op for XrefsArgs {
             let canonical = ram_address(addr).unwrap_or(addr);
             let a = prepare(&self.input, None, function_timeout(), deadline, ctx)?;
             let target = format!("0x{canonical:08X}");
-            let to: Vec<Value> = references(&a)
-                .iter()
-                .filter(|r| same_address(&r["to"], canonical) && r["to_space"] == "ram")
-                .cloned()
-                .collect();
-            let from: Vec<Value> = references(&a)
-                .iter()
-                .filter(|r| same_address(&r["from"], canonical))
-                .cloned()
-                .collect();
+            let to: Vec<Value> =
+                references(&a).iter().filter(|r| same_address(&r["to"], canonical) && r["to_space"] == "ram").cloned().collect();
+            let from: Vec<Value> = references(&a).iter().filter(|r| same_address(&r["from"], canonical)).cloned().collect();
             let mut out = summary(&a);
             out["requested_addr"] = json!(self.addr);
             out["addr"] = json!(target);
@@ -1216,13 +936,7 @@ impl Op for DecompileArgs {
             }
             let deadline = budget(&self.input)?;
             let addr = ram_address(hex(&self.addr)?)?;
-            let mut a = prepare(
-                &self.input,
-                Some(addr),
-                self.decompile_timeout,
-                deadline,
-                ctx,
-            )?;
+            let mut a = prepare(&self.input, Some(addr), self.decompile_timeout, deadline, ctx)?;
             let dir = a.manifest.index.parent().unwrap();
             let result_path = dir.join(format!("decompile-{addr:08X}.json"));
             let mut result = if let Some(result) = a.fresh_query.take() {
@@ -1230,52 +944,26 @@ impl Op for DecompileArgs {
             } else if result_path.is_file() {
                 read_json(&result_path)?
             } else {
-                let install = installation(
-                    self.input
-                        .ghidra_home
-                        .as_deref()
-                        .or(Some(&a.manifest.installation.home)),
-                )?;
+                let install = installation(self.input.ghidra_home.as_deref().or(Some(&a.manifest.installation.home)))?;
                 if install.build_sha256 != a.manifest.installation.build_sha256 {
-                    return Err(fail(
-                        "stale_analysis",
-                        "Ghidra version changed; query source to reanalyse",
-                    ));
+                    return Err(fail("stale_analysis", "Ghidra version changed; query source to reanalyse"));
                 }
                 let attempt = a.manifest.index.parent().unwrap();
                 let request = attempt.join(format!("query-{}.json", stamp()));
                 let output = request.with_extension("result.json");
-                save_json(
-                    &request,
-                    &json!({"mode":"query","addr":addr,"decompile_timeout":self.decompile_timeout,"query_result":output}),
-                )?;
+                save_json(&request, &json!({"mode":"query","addr":addr,"decompile_timeout":self.decompile_timeout,"query_result":output}))?;
                 let mut cmd = command(&install, attempt)?;
                 cmd.arg(&a.manifest.project_dir)
                     .arg("project")
-                    .args([
-                        "-process",
-                        "payload.bin",
-                        "-noanalysis",
-                        "-readOnly",
-                        "-max-cpu",
-                        "2",
-                    ])
+                    .args(["-process", "payload.bin", "-noanalysis", "-readOnly", "-max-cpu", "2"])
                     .arg("-scriptPath")
                     .arg(script_dir(attempt)?)
                     .arg("-postScript")
                     .arg("PsxGhidra.java")
                     .arg(&request);
                 run_worker(&mut cmd, &request.with_extension("log"), deadline, ctx)?;
-                let result = read_json(&output).map_err(|e| {
-                    fail(
-                        "ghidra_failed",
-                        format!(
-                            "{}; inspect {}",
-                            e.message,
-                            request.with_extension("log").display()
-                        ),
-                    )
-                })?;
+                let result = read_json(&output)
+                    .map_err(|e| fail("ghidra_failed", format!("{}; inspect {}", e.message, request.with_extension("log").display())))?;
                 // Ghidra may touch project metadata even in read-only mode.
                 a.manifest.project_fingerprint = fingerprint(&a.manifest.project_dir)?;
                 save_json(&a.path, &a.manifest)?;
@@ -1288,50 +976,29 @@ impl Op for DecompileArgs {
             let entry_addr = hex(entry).ok();
             let callers: Vec<Value> = references(&a)
                 .iter()
-                .filter(|r| {
-                    r["call"] == true
-                        && r["to_space"] == "ram"
-                        && entry_addr.is_some_and(|entry| same_address(&r["to"], entry))
-                })
+                .filter(|r| r["call"] == true && r["to_space"] == "ram" && entry_addr.is_some_and(|entry| same_address(&r["to"], entry)))
                 .cloned()
                 .collect();
-            let callees: Vec<Value> = references(&a)
-                .iter()
-                .filter(|r| r["call"] == true && r["function"] == entry)
-                .cloned()
-                .collect();
+            let callees: Vec<Value> = references(&a).iter().filter(|r| r["call"] == true && r["function"] == entry).cloned().collect();
             let mut out = summary(&a);
             out["requested_addr"] = json!(self.addr);
             out["addr"] = json!(format!("0x{addr:08X}"));
-            out["status"] = json!(if result["status"] == "complete" {
-                "complete"
-            } else {
-                "partial"
-            });
+            out["status"] = json!(if result["status"] == "complete" { "complete" } else { "partial" });
             out["decompile_status"] = result["status"].take();
             out["function"] = result["function"].take();
             out["pseudocode"] = result["pseudocode"].take();
             out["diagnostic"] = result["diagnostic"].take();
             out["callers"] = page(&callers, 0, 100);
             out["callees"] = page(&callees, 0, 100);
-            out["artifact"] = if result_path.exists() {
-                json!(result_path)
-            } else {
-                Value::Null
-            };
+            out["artifact"] = if result_path.exists() { json!(result_path) } else { Value::Null };
             Ok(out)
         })())
     }
 }
 
-fn open_analysis(path: &Path, deadline: Instant, ctx: &Ctx) -> Result<Analysis> {
+fn open_analysis(path: &Path,deadline:Instant,ctx:&Ctx) -> Result<Analysis> {
     let path = path.canonicalize().map_err(io)?;
-    let lock = Lock::queued(
-        path.parent()
-            .ok_or_else(|| invalid("invalid analysis path"))?,
-        deadline,
-        ctx,
-    )?;
+    let lock = Lock::queued(path.parent().ok_or_else(|| invalid("invalid analysis path"))?,deadline,ctx)?;
     cached(path, lock)
 }
 
@@ -1339,9 +1006,7 @@ fn patches(index: &Value, patch: Patch) -> Result<(Vec<Value>, Vec<Value>)> {
     if patch.functions.is_empty() || patch.functions.len() > 1000 {
         return Err(invalid("patch requires 1..=1000 functions"));
     }
-    let functions = index["functions"]
-        .as_array()
-        .ok_or_else(|| fail("invalid_artifact", "missing functions"))?;
+    let functions = index["functions"].as_array().ok_or_else(|| fail("invalid_artifact", "missing functions"))?;
     let mut rows = std::collections::BTreeMap::new();
     for p in patch.functions {
         let addr = ram_address(hex(&p.addr)?)?;
@@ -1355,13 +1020,9 @@ fn patches(index: &Value, patch: Patch) -> Result<(Vec<Value>, Vec<Value>)> {
         if let Some(name) = p.name {
             if name.is_empty()
                 || name.len() > 128
-                || !name.bytes().enumerate().all(|(i, b)| {
-                    b.is_ascii_alphabetic() || b == b'_' || (i > 0 && b.is_ascii_digit())
-                })
+                || !name.bytes().enumerate().all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || (i > 0 && b.is_ascii_digit()))
             {
-                return Err(invalid(
-                    "names must be ASCII identifiers, at most 128 characters",
-                ));
+                return Err(invalid("names must be ASCII identifiers, at most 128 characters"));
             }
             row["name"] = json!(name);
         }
@@ -1377,46 +1038,26 @@ fn patches(index: &Value, patch: Patch) -> Result<(Vec<Value>, Vec<Value>)> {
     }
     let mut names = std::collections::BTreeMap::new();
     for f in functions {
-        let addr = hex(f["entry"]
-            .as_str()
-            .ok_or_else(|| invalid("invalid indexed entry"))?)?;
-        let name = rows
-            .get(&addr)
-            .and_then(|r| r["name"].as_str())
-            .unwrap_or_else(|| f["name"].as_str().unwrap_or(""));
-        names
-            .entry(name.to_string())
-            .or_insert_with(Vec::new)
-            .push(addr);
+        let addr = hex(f["entry"].as_str().ok_or_else(|| invalid("invalid indexed entry"))?)?;
+        let name = rows.get(&addr).and_then(|r| r["name"].as_str()).unwrap_or_else(|| f["name"].as_str().unwrap_or(""));
+        names.entry(name.to_string()).or_insert_with(Vec::new).push(addr);
     }
     let mut conflicts = Vec::new();
     for (name, addrs) in &names {
         if addrs.len() < 2 {
             continue;
         }
-        let claimed: Vec<_> = addrs
-            .iter()
-            .filter(|a| rows.get(a).is_some_and(|p| p["name"].is_string()))
-            .collect();
+        let claimed: Vec<_> = addrs.iter().filter(|a| rows.get(a).is_some_and(|p| p["name"].is_string())).collect();
         if claimed.is_empty() {
             continue;
         }
         if claimed.len() != 1 {
-            return Err(fail(
-                "symbol_conflict",
-                format!("name {name:?} is ambiguous"),
-            ));
+            return Err(fail("symbol_conflict", format!("name {name:?} is ambiguous")));
         }
         for addr in addrs.iter().filter(|a| *a != claimed[0]) {
-            let f = functions
-                .iter()
-                .find(|f| same_address(&f["entry"], *addr))
-                .unwrap();
+            let f = functions.iter().find(|f| same_address(&f["entry"], *addr)).unwrap();
             if matches!(f["name_source"].as_str(), Some("USER_DEFINED" | "IMPORTED")) {
-                return Err(fail(
-                    "symbol_conflict",
-                    format!("name {name:?} belongs to user/imported function 0x{addr:08X}"),
-                ));
+                return Err(fail("symbol_conflict", format!("name {name:?} belongs to user/imported function 0x{addr:08X}")));
             }
             let mut replacement = format!("psx_generated_{addr:08X}");
             while names.contains_key(&replacement) {
@@ -1459,14 +1100,10 @@ impl Op for AnnotateArgs {
                 return Err(invalid("timeout must be 1..=3600"));
             }
             let deadline = Instant::now() + Duration::from_secs(self.timeout);
-            let mut a = open_analysis(&self.analysis, deadline, ctx)?;
+            let mut a = open_analysis(&self.analysis,deadline,ctx)?;
             let patch: Patch = serde_json::from_value(read_json(&self.file)?).map_err(invalid)?;
             let (patches, conflicts) = patches(&a.index, patch)?;
-            let install = installation(
-                self.ghidra_home
-                    .as_deref()
-                    .or(Some(&a.manifest.installation.home)),
-            )?;
+            let install = installation(self.ghidra_home.as_deref().or(Some(&a.manifest.installation.home)))?;
             if install.build_sha256 != a.manifest.installation.build_sha256 {
                 return Err(fail("stale_analysis", "Ghidra version changed"));
             }
@@ -1474,18 +1111,11 @@ impl Op for AnnotateArgs {
             // published manifest pointing at a partially annotated database.
             let attempt = a.path.parent().unwrap().join(stamp());
             fs::create_dir(&attempt).map_err(io)?;
-            let project = a.manifest.project_dir.with_file_name(format!(
-                "{}-{}",
-                &a.manifest.key[..16],
-                stamp()
-            ));
+            let project = a.manifest.project_dir.with_file_name(format!("{}-{}", &a.manifest.key[..16], stamp()));
             copy_project(&a.manifest.project_dir, &project)?;
             let index = attempt.join("index.json");
             let request = attempt.join("annotations.json");
-            save_json(
-                &request,
-                &json!({"mode":"annotate","patches":patches,"index":index}),
-            )?;
+            save_json(&request, &json!({"mode":"annotate","patches":patches,"index":index}))?;
             let mut cmd = command(&install, &attempt)?;
             cmd.arg(&project)
                 .arg("project")
@@ -1501,9 +1131,7 @@ impl Op for AnnotateArgs {
                 return Err(fail("ghidra_failed", "annotation index missing"));
             }
             a.manifest.revision += 1;
-            a.manifest.annotations.push(
-                json!({"revision":a.manifest.revision,"patch":request,"conflicts":conflicts}),
-            );
+            a.manifest.annotations.push(json!({"revision":a.manifest.revision,"patch":request,"conflicts":conflicts}));
             a.manifest.index = index;
             a.manifest.project_dir = project;
             a.manifest.project_fingerprint = fingerprint(&a.manifest.project_dir)?;
@@ -1520,14 +1148,8 @@ impl Op for ExportArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         outcome((|| {
             use crate::bound_symbols::{Document, Function, Range};
-            if !(1..=3600).contains(&self.timeout) {
-                return Err(invalid("timeout must be 1..=3600"));
-            }
-            let a = open_analysis(
-                &self.analysis,
-                Instant::now() + Duration::from_secs(self.timeout),
-                ctx,
-            )?;
+            if !(1..=3600).contains(&self.timeout){return Err(invalid("timeout must be 1..=3600"));}
+            let a = open_analysis(&self.analysis,Instant::now()+Duration::from_secs(self.timeout),ctx)?;
             let m = &a.manifest;
             let bytes = fs::read(&m.input).map_err(io)?;
             let mapping = &m.mapping;
@@ -1536,58 +1158,27 @@ impl Op for ExportArgs {
                 .ok_or_else(|| fail("invalid_artifact", "invalid input mapping"))?;
             let mut functions = Vec::new();
             let mut names = std::collections::HashSet::new();
-            for f in a.index["functions"]
-                .as_array()
-                .ok_or_else(|| fail("invalid_artifact", "missing functions"))?
-            {
-                let address = hex(f["entry"]
-                    .as_str()
-                    .ok_or_else(|| invalid("invalid indexed entry"))?)?;
+            for f in a.index["functions"].as_array().ok_or_else(|| fail("invalid_artifact", "missing functions"))? {
+                let address = hex(f["entry"].as_str().ok_or_else(|| invalid("invalid indexed entry"))?)?;
                 let mut body = Vec::new();
-                for r in f["body"]
-                    .as_array()
-                    .ok_or_else(|| invalid("missing function body"))?
-                {
-                    let start = hex(r["start"]
-                        .as_str()
-                        .ok_or_else(|| invalid("invalid body start"))?)?;
-                    let end = hex(r["end_inclusive"]
-                        .as_str()
-                        .ok_or_else(|| invalid("invalid body end"))?)?
-                    .checked_add(1)
-                    .ok_or_else(|| invalid("body end overflow"))?;
-                    let lo = start
-                        .checked_sub(mapping.base)
-                        .ok_or_else(|| invalid("body outside mapped input"))?
-                        as usize;
-                    let hi = end
-                        .checked_sub(mapping.base)
-                        .ok_or_else(|| invalid("body outside mapped input"))?
-                        as usize;
-                    let data = image
-                        .get(lo..hi)
-                        .filter(|_| start < end)
-                        .ok_or_else(|| invalid("body outside mapped input"))?;
-                    body.push(Range {
-                        start,
-                        end,
-                        sha256: sha256_bytes(data),
-                    });
+                for r in f["body"].as_array().ok_or_else(|| invalid("missing function body"))? {
+                    let start = hex(r["start"].as_str().ok_or_else(|| invalid("invalid body start"))?)?;
+                    let end = hex(r["end_inclusive"].as_str().ok_or_else(|| invalid("invalid body end"))?)?
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("body end overflow"))?;
+                    let lo = start.checked_sub(mapping.base).ok_or_else(|| invalid("body outside mapped input"))? as usize;
+                    let hi = end.checked_sub(mapping.base).ok_or_else(|| invalid("body outside mapped input"))? as usize;
+                    let data = image.get(lo..hi).filter(|_| start < end).ok_or_else(|| invalid("body outside mapped input"))?;
+                    body.push(Range { start, end, sha256: sha256_bytes(data) });
                 }
-                let name = f["name"]
-                    .as_str()
-                    .ok_or_else(|| invalid("missing function name"))?;
+                let name = f["name"].as_str().ok_or_else(|| invalid("missing function name"))?;
                 if name.chars().any(char::is_whitespace) || !names.insert(name.to_owned()) {
                     return Err(fail(
                         "symbol_conflict",
                         "Export requires unique names without whitespace; rename conflicting functions first.",
                     ));
                 }
-                functions.push(Function {
-                    address,
-                    name: name.into(),
-                    body,
-                });
+                functions.push(Function { address, name: name.into(), body });
             }
             let document = Document {
                 format: 2,
@@ -1600,21 +1191,15 @@ impl Op for ExportArgs {
                 size: mapping.size as usize,
                 functions,
             };
-            crate::bound_symbols::Loaded::load(document.clone(), Path::new("."))
-                .map_err(invalid)?;
-            let path = self
-                .out
-                .unwrap_or_else(|| m.index.parent().unwrap().join("export.symbols.json"));
+            crate::bound_symbols::Loaded::load(document.clone(), Path::new(".")).map_err(invalid)?;
+            let path = self.out.unwrap_or_else(|| m.index.parent().unwrap().join("export.symbols.json"));
             if !path.to_string_lossy().ends_with(".symbols.json") {
                 return Err(invalid("output must end in .symbols.json"));
             }
             // Preserve the copied input, manifest, project and indexes even with an explicit output path.
             if path.exists() {
                 if read_json(&path)? != serde_json::to_value(&document).map_err(io)? {
-                    return Err(fail(
-                        "output_exists",
-                        "symbol output exists with different content; choose a new path",
-                    ));
+                    return Err(fail("output_exists", "symbol output exists with different content; choose a new path"));
                 }
             } else {
                 save_json(&path, &document)?;
@@ -1664,17 +1249,10 @@ mod tests {
             exe[off..off + 4].copy_from_slice(&value.to_le_bytes());
         }
         fs::write(ctx.root.join("truncated.exe"), &exe).unwrap();
-        let truncated =
-            input(Some(ctx.root.join("truncated.exe").display().to_string())).exec(&ctx);
+        let truncated = input(Some(ctx.root.join("truncated.exe").display().to_string())).exec(&ctx);
         assert_eq!(truncated.value["error"]["code"], "invalid_arguments");
-        assert!(truncated.value["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("truncated"));
-        assert!(
-            !ctx.root.join(".psx").exists(),
-            "invalid EXEs must not create projects"
-        );
+        assert!(truncated.value["error"]["message"].as_str().unwrap().contains("truncated"));
+        assert!(!ctx.root.join(".psx").exists(), "invalid EXEs must not create projects");
         fs::remove_dir_all(ctx.root).unwrap();
     }
 
@@ -1705,11 +1283,7 @@ mod tests {
         a.ranges = vec!["80010000-80010100".into()];
         a.entries = vec!["80010004".into()];
         a.ram = Some(ctx.root.clone());
-        fs::write(
-            ctx.root.join("report.json"),
-            br#"{"registers":{"gp":2147549184},"frames":{"end":123}}"#,
-        )
-        .unwrap();
+        fs::write(ctx.root.join("report.json"), br#"{"registers":{"gp":2147549184},"frames":{"end":123}}"#).unwrap();
         a.gp = None;
         let imported = import(&a).unwrap();
         assert_eq!(imported.mapping.gp, 0);
@@ -1736,18 +1310,9 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(conflicts.len(), 1);
         assert_eq!(rows[0]["generated"], true);
-        let err = patches(
-            &index,
-            patch(json!({"functions":[{"addr":"80010000","name":"named_writer"}]})),
-        )
-        .err()
-        .unwrap();
+        let err = patches(&index, patch(json!({"functions":[{"addr":"80010000","name":"named_writer"}]}))).err().unwrap();
         assert_eq!(err.code, "symbol_conflict");
-        assert!(patches(
-            &index,
-            patch(json!({"functions":[{"addr":"80010004","name":"interior"}]}))
-        )
-        .is_err());
+        assert!(patches(&index, patch(json!({"functions":[{"addr":"80010004","name":"interior"}]}))).is_err());
         assert!(patches(&index, patch(json!({"functions":[{"addr":"80010000","name":"same"},{"addr":"80010080","name":"same"}]}))).is_err());
         let (rows, _) = patches(
             &index,
@@ -1813,25 +1378,12 @@ mod tests {
         save_json(&path, &manifest).unwrap();
         let before = fs::read(&path).unwrap();
         let patch = ctx.root.join("patch.json");
-        save_json(
-            &patch,
-            &json!({"functions":[{"addr":"80010000","name":"renamed"}]}),
-        )
-        .unwrap();
-        let out = AnnotateArgs {
-            analysis: path.clone(),
-            file: patch,
-            ghidra_home: Some(home),
-            timeout: 1,
-        }
-        .exec(&ctx);
+        save_json(&patch, &json!({"functions":[{"addr":"80010000","name":"renamed"}]})).unwrap();
+        let out = AnnotateArgs { analysis: path.clone(), file: patch, ghidra_home: Some(home), timeout: 1 }.exec(&ctx);
         assert_eq!(out.value["error"]["code"], "timeout", "{}", out.value);
         assert_eq!(fs::read(&path).unwrap(), before);
-        assert_eq!(
-            fs::read_to_string(project.join("project.gpr")).unwrap(),
-            "original database"
-        );
-        let original = open_analysis(&path, Instant::now() + Duration::from_secs(5), &ctx).unwrap();
+        assert_eq!(fs::read_to_string(project.join("project.gpr")).unwrap(), "original database");
+        let original = open_analysis(&path,Instant::now()+Duration::from_secs(5),&ctx).unwrap();
         assert_eq!(original.index["functions"][0]["name"], "original");
         drop(original);
         fs::remove_dir_all(ctx.root).unwrap();
@@ -1845,10 +1397,7 @@ mod tests {
         assert!(same_address(&json!("0xA0012340"), 0x8001_2340));
         assert!(!same_address(&json!("0x1F801810"), 0x8000_1810));
         let rows = vec![json!(1), json!(2), json!(3)];
-        assert_eq!(
-            page(&rows, 1, 1),
-            json!({"total":3,"offset":1,"returned":1,"limit":1,"truncated":true,"complete":false,"items":[2],"next_offset":2})
-        );
+        assert_eq!(page(&rows, 1, 1), json!({"total":3,"offset":1,"returned":1,"limit":1,"truncated":true,"complete":false,"items":[2],"next_offset":2}));
         assert_eq!(page(&rows, usize::MAX, 1)["items"], json!([]));
     }
 
@@ -1856,10 +1405,7 @@ mod tests {
     fn project_locks_are_exclusive_and_edits_are_detected() {
         let ctx = context();
         let first = Lock::acquire(&ctx.root).unwrap();
-        assert_eq!(
-            Lock::acquire(&ctx.root).err().unwrap().code,
-            "analysis_busy"
-        );
+        assert_eq!(Lock::acquire(&ctx.root).err().unwrap().code, "analysis_busy");
         drop(first);
         let _next = Lock::acquire(&ctx.root).unwrap();
         let before = fingerprint(&ctx.root).unwrap();
@@ -1872,62 +1418,30 @@ mod tests {
 
     #[test]
     fn queued_project_owners_wait_cancel_and_respect_deadlines() {
-        let ctx = context();
-        let first = Lock::acquire(&ctx.root).unwrap();
-        let root = ctx.root.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            let ctx = Ctx { root, cancel: None };
-            let next =
-                Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(3), &ctx).unwrap();
-            tx.send(()).unwrap();
-            drop(next);
+        let ctx=context();
+        let first=Lock::acquire(&ctx.root).unwrap();
+        let root=ctx.root.clone();
+        let (tx,rx)=std::sync::mpsc::channel();
+        let waiter=std::thread::spawn(move|| {
+            let ctx=Ctx{root,cancel:None};
+            let next=Lock::queued(&ctx.root,Instant::now()+Duration::from_secs(3),&ctx).unwrap();
+            tx.send(()).unwrap();drop(next);
         });
-        assert!(
-            rx.recv_timeout(Duration::from_millis(100)).is_err(),
-            "waiter must not enter while owned"
-        );
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err(),"waiter must not enter while owned");
         // Another analysis remains independently usable.
-        let other = ctx.root.join("other");
-        fs::create_dir(&other).unwrap();
-        drop(Lock::queued(&other, Instant::now() + Duration::from_secs(1), &ctx).unwrap());
-        drop(first);
-        rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        waiter.join().unwrap();
-        let held = Lock::acquire(&ctx.root).unwrap();
-        let error = Lock::queued(&ctx.root, Instant::now() + Duration::from_millis(75), &ctx)
-            .err()
-            .unwrap();
-        assert_eq!(error.code, "timeout");
-        assert!(held.0.exists(), "a timeout must preserve the owner");
-        let token = tokio_util::sync::CancellationToken::new();
-        let cancel = token.clone();
-        let thread = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            cancel.cancel();
-        });
-        let waiting = Ctx {
-            root: ctx.root.clone(),
-            cancel: Some(token),
-        };
-        assert_eq!(
-            Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(2), &waiting)
-                .err()
-                .unwrap()
-                .code,
-            "cancelled"
-        );
-        thread.join().unwrap();
-        assert!(held.0.exists());
-        drop(held);
-        fs::write(ctx.root.join("psx.lock"), "foreign owner").unwrap();
-        assert_eq!(
-            Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(2), &ctx)
-                .err()
-                .unwrap()
-                .code,
-            "analysis_busy"
-        );
+        let other=ctx.root.join("other");fs::create_dir(&other).unwrap();
+        drop(Lock::queued(&other,Instant::now()+Duration::from_secs(1),&ctx).unwrap());
+        drop(first);rx.recv_timeout(Duration::from_secs(2)).unwrap();waiter.join().unwrap();
+        let held=Lock::acquire(&ctx.root).unwrap();
+        let error=Lock::queued(&ctx.root,Instant::now()+Duration::from_millis(75),&ctx).err().unwrap();
+        assert_eq!(error.code,"timeout");assert!(held.0.exists(),"a timeout must preserve the owner");
+        let token=tokio_util::sync::CancellationToken::new();let cancel=token.clone();
+        let thread=std::thread::spawn(move||{std::thread::sleep(Duration::from_millis(50));cancel.cancel();});
+        let waiting=Ctx{root:ctx.root.clone(),cancel:Some(token)};
+        assert_eq!(Lock::queued(&ctx.root,Instant::now()+Duration::from_secs(2),&waiting).err().unwrap().code,"cancelled");
+        thread.join().unwrap();assert!(held.0.exists());drop(held);
+        fs::write(ctx.root.join("psx.lock"),"foreign owner").unwrap();
+        assert_eq!(Lock::queued(&ctx.root,Instant::now()+Duration::from_secs(2),&ctx).err().unwrap().code,"analysis_busy");
         fs::remove_dir_all(ctx.root).unwrap();
     }
 
@@ -1952,39 +1466,22 @@ mod tests {
                 }
             });
             let mut cmd = Command::new("sh");
-            cmd.args(["-c", "sleep 60 & echo $! > \"$1\"; wait", "psx-worker-test"])
-                .arg(&pid_file);
-            let failure = run_worker(
-                &mut cmd,
-                &ctx.root.join("worker.log"),
-                Instant::now() + Duration::from_millis(500),
-                &ctx,
-            )
-            .unwrap_err();
+            cmd.args(["-c", "sleep 60 & echo $! > \"$1\"; wait", "psx-worker-test"]).arg(&pid_file);
+            let failure =
+                run_worker(&mut cmd, &ctx.root.join("worker.log"), Instant::now() + Duration::from_millis(500), &ctx).unwrap_err();
             cancel.join().unwrap();
-            assert_eq!(
-                failure.code,
-                if cancelled { "cancelled" } else { "timeout" }
-            );
+            assert_eq!(failure.code, if cancelled { "cancelled" } else { "timeout" });
             let pid = fs::read_to_string(pid_file).unwrap();
             let mut state = fs::read_to_string(format!("/proc/{}/stat", pid.trim()));
             // SIGKILL delivery to a grandchild can lag reaping the launcher.
             for _ in 0..100 {
-                if state
-                    .as_ref()
-                    .map_or(true, |s| s.split_whitespace().nth(2) == Some("Z"))
-                {
+                if state.as_ref().map_or(true, |s| s.split_whitespace().nth(2) == Some("Z")) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(10));
                 state = fs::read_to_string(format!("/proc/{}/stat", pid.trim()));
             }
-            assert!(
-                state
-                    .as_ref()
-                    .map_or(true, |s| s.split_whitespace().nth(2) == Some("Z")),
-                "descendant still running: {state:?}"
-            );
+            assert!(state.as_ref().map_or(true, |s| s.split_whitespace().nth(2) == Some("Z")), "descendant still running: {state:?}");
             fs::remove_dir_all(ctx.root).unwrap();
         }
     }

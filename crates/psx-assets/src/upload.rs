@@ -33,10 +33,7 @@ pub struct Upload {
 impl UploadDocument {
     pub fn decode(self, source_len: usize) -> Result<Vec<Upload>, String> {
         if self.version != 1 {
-            return Err(format!(
-                "unsupported upload document version {}",
-                self.version
-            ));
+            return Err(format!("unsupported upload document version {}", self.version));
         }
         if self.uploads.is_empty() || self.uploads.len() > 65536 {
             return Err("upload document must contain 1..=65536 uploads".into());
@@ -46,41 +43,23 @@ impl UploadDocument {
             .enumerate()
             .map(|(index, record)| {
                 let [x, y, w, h] = record.rect;
-                if w == 0
-                    || h == 0
-                    || usize::from(x) + usize::from(w) > VRAM_WIDTH
-                    || usize::from(y) + usize::from(h) > VRAM_HEIGHT
-                {
+                if w == 0 || h == 0 || usize::from(x) + usize::from(w) > VRAM_WIDTH || usize::from(y) + usize::from(h) > VRAM_HEIGHT {
                     return Err(format!("upload {index}: rectangle outside VRAM or empty"));
                 }
-                if record.source_size == 0
-                    || record
-                        .source_offset
-                        .checked_add(record.source_size)
-                        .is_none_or(|end| end > source_len)
-                {
-                    return Err(format!(
-                        "upload {index}: source span out of bounds or empty"
-                    ));
+                if record.source_size == 0 || record.source_offset.checked_add(record.source_size).is_none_or(|end| end > source_len) {
+                    return Err(format!("upload {index}: source span out of bounds or empty"));
                 }
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(&record.data_base64)
                     .map_err(|e| format!("upload {index}: invalid base64: {e}"))?;
                 if bytes.len() != usize::from(w) * usize::from(h) * 2 {
-                    return Err(format!(
-                        "upload {index}: data size does not match rectangle"
-                    ));
+                    return Err(format!("upload {index}: data size does not match rectangle"));
                 }
                 Ok(Upload {
                     source_offset: record.source_offset,
                     source_size: record.source_size,
                     rect: VramRect { x, y, w, h },
-                    words: bytes
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|b| u16::from_le_bytes(*b))
-                        .collect(),
+                    words: bytes.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect(),
                 })
             })
             .collect()
@@ -92,10 +71,7 @@ impl Upload {
         vram.upload(self.rect, &self.words);
     }
     pub fn bytes(&self) -> Vec<u8> {
-        self.words
-            .iter()
-            .flat_map(|word| word.to_le_bytes())
-            .collect()
+        self.words.iter().flat_map(|word| word.to_le_bytes()).collect()
     }
 }
 
@@ -108,10 +84,7 @@ mod tests {
     #[test]
     fn validates_spans_rectangles_bytes_and_version_before_uploading() {
         let good = json!({"version":1,"uploads":[{"source_offset":0,"source_size":2,"rect":[1023,511,1,1],"data_base64":"H4A="}]});
-        let decoded = serde_json::from_value::<UploadDocument>(good.clone())
-            .unwrap()
-            .decode(2)
-            .unwrap();
+        let decoded = serde_json::from_value::<UploadDocument>(good.clone()).unwrap().decode(2).unwrap();
         let mut vram = Vram::default();
         decoded[0].apply(&mut vram);
         assert_eq!(vram.data[512 * 1024 - 1], 0x801f);
@@ -127,17 +100,11 @@ mod tests {
         ] {
             let mut invalid = good.clone();
             invalid["uploads"][0][field] = value;
-            assert!(serde_json::from_value::<UploadDocument>(invalid)
-                .unwrap()
-                .decode(2)
-                .is_err());
+            assert!(serde_json::from_value::<UploadDocument>(invalid).unwrap().decode(2).is_err());
         }
         let mut invalid = good.clone();
         invalid["version"] = json!(2);
-        assert!(serde_json::from_value::<UploadDocument>(invalid)
-            .unwrap()
-            .decode(2)
-            .is_err());
+        assert!(serde_json::from_value::<UploadDocument>(invalid).unwrap().decode(2).is_err());
         let mut invalid = good;
         invalid["uploads"][0]["bpp"] = json!(4);
         assert!(serde_json::from_value::<UploadDocument>(invalid).is_err());
@@ -149,52 +116,13 @@ mod tests {
         let mut palette = vec![0; 16];
         palette[1] = 0x1f;
         for upload in [
-            Upload {
-                source_offset: 0,
-                source_size: 1,
-                rect: VramRect {
-                    x: 0,
-                    y: 500,
-                    w: 16,
-                    h: 1,
-                },
-                words: palette,
-            },
-            Upload {
-                source_offset: 0,
-                source_size: 1,
-                rect: VramRect {
-                    x: 640,
-                    y: 256,
-                    w: 1,
-                    h: 1,
-                },
-                words: vec![0x1111],
-            },
-            Upload {
-                source_offset: 0,
-                source_size: 1,
-                rect: VramRect {
-                    x: 1,
-                    y: 500,
-                    w: 1,
-                    h: 1,
-                },
-                words: vec![0x83e0],
-            },
+            Upload { source_offset: 0, source_size: 1, rect: VramRect { x: 0, y: 500, w: 16, h: 1 }, words: palette },
+            Upload { source_offset: 0, source_size: 1, rect: VramRect { x: 640, y: 256, w: 1, h: 1 }, words: vec![0x1111] },
+            Upload { source_offset: 0, source_size: 1, rect: VramRect { x: 1, y: 500, w: 1, h: 1 }, words: vec![0x83e0] },
         ] {
             upload.apply(&mut vram);
         }
-        let (rgba, covered) = vram.decode_page(
-            TexPage {
-                x: 640,
-                y: 256,
-                bits: 4,
-                abr: 0,
-            },
-            (0, 500),
-            TimAlpha::SemiStp,
-        );
+        let (rgba, covered) = vram.decode_page(TexPage { x: 640, y: 256, bits: 4, abr: 0 }, (0, 500), TimAlpha::SemiStp);
         assert_eq!(&rgba[..16], &[0, 255, 0, 128].repeat(4));
         assert_eq!(covered, 4.0 / (256.0 * 256.0));
         assert_eq!(vram.data[256 * 1024 + 640], 0x1111);

@@ -94,31 +94,14 @@ pub fn fold(addr: u32) -> u32 {
 
 /// `LO-HI` or `ADDR[:WIDTH]` (hex) as a folded `[lo, hi)` range.
 pub fn parse_range_spec(s: &str) -> Result<(u32, u32), String> {
-    let h = |x: &str| {
-        u32::from_str_radix(
-            x.trim().trim_start_matches("0x").trim_start_matches("0X"),
-            16,
-        )
-        .map_err(|_| format!("bad hex address {x:?} in {s:?}"))
-    };
+    let h = |x: &str| u32::from_str_radix(x.trim().trim_start_matches("0x").trim_start_matches("0X"), 16).map_err(|_| format!("bad hex address {x:?} in {s:?}"));
     let (lo, len) = match s.split_once('-') {
         Some((a, b)) => {
             let (a, b) = (h(a)?, h(b)?);
-            (
-                a,
-                b.checked_sub(a)
-                    .filter(|&n| n > 0)
-                    .ok_or_else(|| format!("empty range {s:?}"))?,
-            )
+            (a, b.checked_sub(a).filter(|&n| n > 0).ok_or_else(|| format!("empty range {s:?}"))?)
         }
         None => match s.split_once(':') {
-            Some((a, w)) => (
-                h(a)?,
-                w.parse::<u32>()
-                    .ok()
-                    .filter(|&n| n > 0)
-                    .ok_or_else(|| format!("bad width in {s:?}"))?,
-            ),
+            Some((a, w)) => (h(a)?, w.parse::<u32>().ok().filter(|&n| n > 0).ok_or_else(|| format!("bad width in {s:?}"))?),
             None => (h(s)?, 4),
         },
     };
@@ -150,8 +133,7 @@ impl CardArgs {
     pub fn pad_kind(&self) -> Result<psx_core::pad::PadKind, String> {
         match &self.pad {
             None => Ok(psx_core::pad::PadKind::Digital),
-            Some(p) => psx_core::pad::PadKind::from_name(p)
-                .ok_or_else(|| format!("unknown pad {p:?} (digital | dualshock)")),
+            Some(p) => psx_core::pad::PadKind::from_name(p).ok_or_else(|| format!("unknown pad {p:?} (digital | dualshock)")),
         }
     }
 
@@ -164,10 +146,7 @@ impl CardArgs {
                 Some(p) => {
                     let bytes = std::fs::read(p).map_err(|e| format!("{p}: {e}"))?;
                     if bytes.len() != psx_core::memcard::SIZE {
-                        return Err(format!(
-                            "{p}: {} bytes; a raw memory card image is 131072",
-                            bytes.len()
-                        ));
+                        return Err(format!("{p}: {} bytes; a raw memory card image is 131072", bytes.len()));
                     }
                     Some(psx_core::memcard::MemCard::from_image(bytes))
                 }
@@ -177,16 +156,7 @@ impl CardArgs {
     }
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    clap::ValueEnum,
-    serde::Deserialize,
-    serde::Serialize,
-    schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GpuDrawFilter {
     #[default]
@@ -245,166 +215,83 @@ fn parse_watch(s: &str) -> Result<Watch, String> {
     let (addr, width) = s.split_once(':').unwrap_or((s, "4"));
     let addr = u32::from_str_radix(addr.trim_start_matches("0x").trim_start_matches("0X"), 16)
         .map_err(|_| format!("bad watch address {addr:?}"))?;
-    let width: u32 = width
-        .parse()
-        .map_err(|_| format!("bad watch width {width:?}"))?;
+    let width: u32 = width.parse().map_err(|_| format!("bad watch width {width:?}"))?;
     if ![1, 2, 4].contains(&width) {
         return Err("watch width must be 1, 2 or 4".into());
     }
     Ok(Watch { addr, width })
 }
 
-pub(crate) fn write_png(
-    path: &Path,
-    w: u32,
-    h: u32,
-    rgb: &[u8],
-    color: png::ColorType,
-) -> std::io::Result<()> {
+pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgb: &[u8], color: png::ColorType) -> std::io::Result<()> {
     let file = std::fs::File::create(path)?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
     enc.set_color(color);
     enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()?
-        .write_image_data(rgb)
-        .map_err(std::io::Error::other)
+    enc.write_header()?.write_image_data(rgb).map_err(std::io::Error::other)
 }
 
 fn next_run_dir(root: &Path) -> PathBuf {
     let runs = root.join(".psx/runs");
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    runs.join(format!(
-        "{stamp}-{}{}",
-        std::process::id(),
-        crate::instance_suffix()
-    ))
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    runs.join(format!("{stamp}-{}{}", std::process::id(), crate::instance_suffix()))
 }
 
 pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
-    let events =
-        match crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64) {
-            Ok(e) => e,
-            Err(e) => return (false, err("invalid_arguments", e)),
-        };
-    let input_report = crate::replay::report(&events);
-    let (ok, mut value) = run_resolved(root, a, events);
-    if value.get("error").is_none() {
+    let events=match crate::replay::resolve(a.replay.as_deref(),a.input.as_ref(),a.frames as u64) {
+        Ok(e)=>e,Err(e)=>return (false,err("invalid_arguments",e)),
+    };
+    let input_report=crate::replay::report(&events);
+    let (ok,mut value)=run_resolved(root,a,events);
+    if value.get("error").is_none(){
         let application = value["input"]["application"].take();
         value["input"] = input_report;
         value["input"]["application"] = if application.is_null() {
             json!({"observed":false,"note":"This backend reports the requested schedule, not applied-event observations."})
-        } else {
-            application
-        };
+        } else { application };
     }
-    (ok, value)
+    (ok,value)
 }
 
 fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool, Value) {
     if a.trace.gpu_draw_filter.is_some() && !a.trace.gpu_next_draw {
-        return (
-            false,
-            err(
-                "invalid_arguments",
-                "--gpu-draw-filter requires --gpu-next-draw",
-            ),
-        );
+        return (false, err("invalid_arguments", "--gpu-draw-filter requires --gpu-next-draw"));
     }
     if a.trace.gpu_search_frames.is_some() && !a.trace.gpu_next_draw {
-        return (
-            false,
-            err(
-                "invalid_arguments",
-                "--gpu-search-frames requires --gpu-next-draw",
-            ),
-        );
+        return (false, err("invalid_arguments", "--gpu-search-frames requires --gpu-next-draw"));
     }
-    if a.trace
-        .gpu_search_frames
-        .is_some_and(|n| !(1..=600).contains(&n))
-    {
-        return (
-            false,
-            err(
-                "invalid_arguments",
-                "--gpu-search-frames must be in 1..=600",
-            ),
-        );
+    if a.trace.gpu_search_frames.is_some_and(|n| !(1..=600).contains(&n)) {
+        return (false, err("invalid_arguments", "--gpu-search-frames must be in 1..=600"));
     }
-    if a.trace.gpu_next_draw
-        && a.trace
-            .gpu_frame
-            .unwrap_or(0)
-            .checked_add(a.trace.gpu_search_frames.unwrap_or(60) as u64)
-            .is_none()
-    {
-        return (
-            false,
-            err("invalid_arguments", "GPU search frame range overflows u64"),
-        );
+    if a.trace.gpu_next_draw && a.trace.gpu_frame.unwrap_or(0).checked_add(a.trace.gpu_search_frames.unwrap_or(60) as u64).is_none() {
+        return (false, err("invalid_arguments", "GPU search frame range overflows u64"));
     }
     match a.backend.as_str() {
         "native" => return crate::run_native::run(root, a, events),
         "redux" => {}
-        other => {
-            return (
-                false,
-                err(
-                    "invalid_arguments",
-                    format!("unknown backend {other:?} (redux | native)"),
-                ),
-            )
-        }
+        other => return (false, err("invalid_arguments", format!("unknown backend {other:?} (redux | native)"))),
     }
     if a.trace.trace || a.trace.gpu_frame.is_some() || a.trace.gpu_next_draw {
-        return (
-            false,
-            err(
-                "unsupported",
-                "--trace, --gpu-frame and --gpu-next-draw need --backend native",
-            ),
-        );
+        return (false, err("unsupported", "--trace, --gpu-frame and --gpu-next-draw need --backend native"));
     }
     if a.trace_spu {
-        return (
-            false,
-            err("unsupported", "--trace-spu needs --backend native"),
-        );
+        return (false, err("unsupported", "--trace-spu needs --backend native"));
     }
     if a.observe.given() {
         return (false, err("unsupported", "--sample, --poke, --snapshot-every, --save-state-at, --watch-reads and --watch-changes-only need --backend native"));
     }
     if a.cards.memcard1.is_some() || a.cards.memcard2.is_some() {
-        return (
-            false,
-            err("unsupported", "--memcard1/--memcard2 need --backend native"),
-        );
+        return (false, err("unsupported", "--memcard1/--memcard2 need --backend native"));
     }
     let analog_pad = match a.cards.pad_kind() {
         Ok(k) => k == psx_core::pad::PadKind::DualShock,
         Err(e) => return (false, err("invalid_arguments", e)),
     };
     if crate::replay::uses_sticks(&events) {
-        return (
-            false,
-            err(
-                "unsupported",
-                "input sticks need --backend native with a dualshock pad",
-            ),
-        );
+        return (false, err("unsupported", "input sticks need --backend native with a dualshock pad"));
     }
     if let Some(p) = &a.from_state {
         if std::fs::read(p).is_ok_and(|b| b.starts_with(psx_core::state::MAGIC)) {
-            return (
-                false,
-                err(
-                    "invalid_state",
-                    format!("{} is a psx-core state: use --backend native", p.display()),
-                ),
-            );
+            return (false, err("invalid_state", format!("{} is a psx-core state: use --backend native", p.display())));
         }
     }
     let mut backend = match Backend::from_project(root) {
@@ -412,30 +299,15 @@ fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (
         Err(e) => return (false, err(e.code(), e)),
     };
     backend.interpreter = !a.fast;
-    let watches = match a
-        .watches
-        .iter()
-        .map(|w| parse_watch(w))
-        .collect::<Result<Vec<_>, _>>()
-    {
+    let watches = match a.watches.iter().map(|w| parse_watch(w)).collect::<Result<Vec<_>, _>>() {
         Ok(w) => w,
         Err(e) => return (false, err("invalid_arguments", e)),
     };
-    let replay: Vec<ReplayEvent> = events
-        .iter()
-        .map(|e| ReplayEvent {
-            frame: e.frame as u32,
-            buttons: crate::replay::button_names(e.buttons),
-        })
-        .collect();
+    let replay: Vec<ReplayEvent> = events.iter().map(|e|ReplayEvent{frame:e.frame as u32,buttons:crate::replay::button_names(e.buttons)}).collect();
     let media = match &a.media {
         None => Media::None,
         Some(p) => {
-            let ext = p
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
             if ["exe", "ps-exe", "psx"].contains(&ext.as_str()) {
                 Media::Exe(p.clone())
             } else {
@@ -472,16 +344,7 @@ fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (
             files.insert(name.into(), json!({"path": p, "sha256": h}));
         }
     };
-    for name in [
-        "ram.bin",
-        "scratch.bin",
-        "vram.bin",
-        "screen.bin",
-        "state.bin",
-        "writes.jsonl",
-        "cd.jsonl",
-        "bios.jsonl",
-    ] {
+    for name in ["ram.bin", "scratch.bin", "vram.bin", "screen.bin", "state.bin", "writes.jsonl", "cd.jsonl", "bios.jsonl"] {
         hash(name);
     }
     if let Ok((w, h, rgb)) = out.screen_rgb() {
@@ -494,20 +357,11 @@ fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (
         let mut vram = psx_gpu::Vram::default();
         vram.load_bytes(&bytes);
         let p = out.file("vram.png");
-        if write_png(
-            &p,
-            1024,
-            512,
-            &vram.rgba15(0, 0, 1024, 512),
-            png::ColorType::Rgba,
-        )
-        .is_ok()
-        {
+        if write_png(&p, 1024, 512, &vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok() {
             files.insert("vram.png".into(), json!({"path": p}));
         }
     }
-    let complete =
-        out.report.termination == "frames_reached" && out.report.reached_frames >= a.frames;
+    let complete = out.report.termination == "frames_reached" && out.report.reached_frames >= a.frames;
     let scopes = match crate::load_symbols(&a.symbols) {
         Ok(t) => t,
         Err(e) => return (false, err(e.code(), e)),

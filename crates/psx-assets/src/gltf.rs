@@ -31,19 +31,13 @@ impl TextureKey {
         let page = TexPage::from_tsb(p.tsb);
         let clut = (page.bits != 16).then(|| clut_from_cba(p.cba));
         // abr only matters for blending; keep one image per page/CLUT.
-        Some(TextureKey {
-            page: TexPage { abr: 0, ..page },
-            clut,
-        })
+        Some(TextureKey { page: TexPage { abr: 0, ..page }, clut })
     }
 
     /// A file-name-friendly label.
     pub fn label(&self) -> String {
         match self.clut {
-            Some((cx, cy)) => format!(
-                "page{}_{}_{}b_clut{}_{}",
-                self.page.x, self.page.y, self.page.bits, cx, cy
-            ),
+            Some((cx, cy)) => format!("page{}_{}_{}b_clut{}_{}", self.page.x, self.page.y, self.page.bits, cx, cy),
             None => format!("page{}_{}_{}b", self.page.x, self.page.y, self.page.bits),
         }
     }
@@ -51,12 +45,7 @@ impl TextureKey {
 
 /// Every texture a TMD samples.
 pub fn texture_keys(tmd: &Tmd) -> Vec<TextureKey> {
-    let mut keys: Vec<TextureKey> = tmd
-        .objects
-        .iter()
-        .flat_map(|o| &o.polygons)
-        .filter_map(TextureKey::of)
-        .collect();
+    let mut keys: Vec<TextureKey> = tmd.objects.iter().flat_map(|o| &o.polygons).filter_map(TextureKey::of).collect();
     keys.sort();
     keys.dedup();
     keys
@@ -75,9 +64,7 @@ const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 fn base64(data: &[u8]) -> String {
     let mut s = String::with_capacity(data.len().div_ceil(3) * 4);
     for c in data.chunks(3) {
-        let n = (c[0] as u32) << 16
-            | (*c.get(1).unwrap_or(&0) as u32) << 8
-            | *c.get(2).unwrap_or(&0) as u32;
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
         for k in 0..4 {
             if k <= c.len() {
                 s.push(B64[(n >> (18 - 6 * k)) as usize & 63] as char);
@@ -98,11 +85,7 @@ struct Group {
 }
 
 /// Vertex data per corner, shared with the Bevy loader's conventions.
-fn corner(
-    obj: &crate::tmd::TmdObject,
-    p: &TmdPolygon,
-    i: usize,
-) -> ([f32; 3], [f32; 3], [f32; 2], [f32; 4]) {
+fn corner(obj: &crate::tmd::TmdObject, p: &TmdPolygon, i: usize) -> ([f32; 3], [f32; 3], [f32; 2], [f32; 4]) {
     let v = obj.vertices[p.vertices[i] as usize];
     let pos = [v[0] as f32, -(v[1] as f32), -(v[2] as f32)];
     let nrm = match p.normal(i).and_then(|n| obj.normals.get(n as usize)) {
@@ -113,11 +96,7 @@ fn corner(
         }
         None => [0.0, 0.0, 0.0],
     };
-    let uv = p
-        .uvs
-        .get(i)
-        .map(|t| [t[0] as f32 / 256.0, t[1] as f32 / 256.0])
-        .unwrap_or([0.0, 0.0]);
+    let uv = p.uvs.get(i).map(|t| [t[0] as f32 / 256.0, t[1] as f32 / 256.0]).unwrap_or([0.0, 0.0]);
     let c = p.color(i);
     let col = if p.textured() {
         if p.colors.is_empty() || p.mode & MODE_TGE != 0 {
@@ -129,26 +108,12 @@ fn corner(
         c.map(|x| x as f32 / 255.0)
     };
     let a = if p.semi_transparent() { 0.5 } else { 1.0 };
-    (
-        pos,
-        nrm,
-        uv,
-        [
-            srgb_to_linear(col[0]),
-            srgb_to_linear(col[1]),
-            srgb_to_linear(col[2]),
-            a,
-        ],
-    )
+    (pos, nrm, uv, [srgb_to_linear(col[0]), srgb_to_linear(col[1]), srgb_to_linear(col[2]), a])
 }
 
 /// Build the glTF document. `image_uri` names the PNG for a texture key, or
 /// `None` to leave those polygons untextured.
-pub fn tmd_to_gltf(
-    tmd: &Tmd,
-    name: &str,
-    image_uri: &dyn Fn(&TextureKey) -> Option<String>,
-) -> Value {
+pub fn tmd_to_gltf(tmd: &Tmd, name: &str, image_uri: &dyn Fn(&TextureKey) -> Option<String>) -> Value {
     let mut buffer: Vec<u8> = Vec::new();
     let mut views = Vec::new();
     let mut accessors = Vec::new();
@@ -160,12 +125,7 @@ pub fn tmd_to_gltf(
     let mut textures = Vec::new();
     let mut texture_of: BTreeMap<TextureKey, Option<usize>> = BTreeMap::new();
 
-    let mut push = |data: Vec<f32>,
-                    comps: usize,
-                    kind: &str,
-                    minmax: bool,
-                    accessors: &mut Vec<Value>|
-     -> usize {
+    let mut push = |data: Vec<f32>, comps: usize, kind: &str, minmax: bool, accessors: &mut Vec<Value>| -> usize {
         while !buffer.len().is_multiple_of(4) {
             buffer.push(0);
         }
@@ -239,11 +199,7 @@ pub fn tmd_to_gltf(
             let mut attrs = json!({"POSITION": pos});
             if has_normals {
                 // Unlit polygons have no normals; give them +y so the accessor stays valid.
-                let n: Vec<f32> = g
-                    .nrm
-                    .iter()
-                    .flat_map(|n| if n == &[0.0; 3] { [0.0, 1.0, 0.0] } else { *n })
-                    .collect();
+                let n: Vec<f32> = g.nrm.iter().flat_map(|n| if n == &[0.0; 3] { [0.0, 1.0, 0.0] } else { *n }).collect();
                 attrs["NORMAL"] = json!(push(n, 3, "VEC3", false, &mut accessors));
             }
             if tex.is_some() {
@@ -271,8 +227,7 @@ pub fn tmd_to_gltf(
         doc["images"] = json!(images);
         doc["textures"] = json!(textures);
         // Nearest filtering, clamped: PS1 texels.
-        doc["samplers"] =
-            json!([{"magFilter": 9728, "minFilter": 9728, "wrapS": 33071, "wrapT": 33071}]);
+        doc["samplers"] = json!([{"magFilter": 9728, "minFilter": 9728, "wrapS": 33071, "wrapT": 33071}]);
     }
     doc
 }
@@ -295,44 +250,18 @@ mod tests {
         let obj = TmdObject {
             vertices: vec![[0, 0, 0], [10, 0, 0], [0, -10, 5], [10, -10, 0]],
             polygons: vec![
-                TmdPolygon {
-                    mode: 0x2D,
-                    flag: 1,
-                    vertices: vec![0, 1, 2, 3],
-                    colors: vec![[128, 128, 128]],
-                    uvs: vec![[0, 0], [64, 0], [0, 64], [64, 64]],
-                    cba: 1,
-                    tsb: 5,
-                    ..Default::default()
-                },
-                TmdPolygon {
-                    mode: 0x21,
-                    flag: 1,
-                    vertices: vec![0, 1, 2],
-                    colors: vec![[255, 0, 0]],
-                    ..Default::default()
-                },
+                TmdPolygon { mode: 0x2D, flag: 1, vertices: vec![0, 1, 2, 3], colors: vec![[128, 128, 128]], uvs: vec![[0, 0], [64, 0], [0, 64], [64, 64]], cba: 1, tsb: 5, ..Default::default() },
+                TmdPolygon { mode: 0x21, flag: 1, vertices: vec![0, 1, 2], colors: vec![[255, 0, 0]], ..Default::default() },
             ],
             ..Default::default()
         };
-        let tmd = Tmd {
-            fixp: false,
-            objects: vec![obj],
-            size: 0,
-        };
+        let tmd = Tmd { fixp: false, objects: vec![obj], size: 0 };
         assert_eq!(texture_keys(&tmd).len(), 1);
         let doc = tmd_to_gltf(&tmd, "m", &|k| Some(format!("{}.png", k.label())));
         assert_eq!(doc["meshes"][0]["primitives"].as_array().unwrap().len(), 2);
         assert_eq!(doc["images"][0]["uri"], "page320_0_4b_clut16_0.png");
         // Quad = 2 triangles = 6 corners; position max y = +10 after the flip.
-        let quad_pos = doc["meshes"][0]["primitives"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["attributes"].get("TEXCOORD_0").is_some())
-            .unwrap()["attributes"]["POSITION"]
-            .as_u64()
-            .unwrap();
+        let quad_pos = doc["meshes"][0]["primitives"].as_array().unwrap().iter().find(|p| p["attributes"].get("TEXCOORD_0").is_some()).unwrap()["attributes"]["POSITION"].as_u64().unwrap();
         assert_eq!(doc["accessors"][quad_pos as usize]["count"], 6);
         assert_eq!(doc["accessors"][quad_pos as usize]["max"][1], 10.0);
         assert_eq!(doc["accessors"][quad_pos as usize]["min"][2], -5.0);

@@ -14,13 +14,7 @@ pub struct NormalizedTmd {
 
 fn word(bytes: &[u8], at: usize) -> Result<u32, String> {
     let end = at.checked_add(4).ok_or("RTMD word offset overflow")?;
-    Ok(u32::from_le_bytes(
-        bytes
-            .get(at..end)
-            .ok_or("RTMD header/table truncated")?
-            .try_into()
-            .unwrap(),
-    ))
+    Ok(u32::from_le_bytes(bytes.get(at..end).ok_or("RTMD header/table truncated")?.try_into().unwrap()))
 }
 
 /// Normalize King's Field's {0, 0x10/0x12, object_count} header and byte-offset
@@ -37,9 +31,7 @@ pub fn normalize_kings_field(bytes: &[u8]) -> Result<NormalizedTmd, String> {
         return Err(format!("RTMD implausible object count {objects}"));
     }
     let table_end = 12 + objects * 28;
-    bytes
-        .get(..table_end)
-        .ok_or("RTMD object table truncated")?;
+    bytes.get(..table_end).ok_or("RTMD object table truncated")?;
     let mut normalized = bytes.to_vec();
     normalized[..4].copy_from_slice(&TMD_ID.to_le_bytes());
     normalized[4..8].fill(0);
@@ -47,18 +39,12 @@ pub fn normalize_kings_field(bytes: &[u8]) -> Result<NormalizedTmd, String> {
         let at = 12 + object * 28;
         let count = word(bytes, at + 20)? as usize;
         if count > 0x10000 {
-            return Err(format!(
-                "RTMD object {object}: implausible primitive count {count}"
-            ));
+            return Err(format!("RTMD object {object}: implausible primitive count {count}"));
         }
         let pointer = word(bytes, at + 16)? as usize;
-        let mut packet = 12usize
-            .checked_add(pointer)
-            .ok_or("RTMD primitive pointer overflow")?;
+        let mut packet = 12usize.checked_add(pointer).ok_or("RTMD primitive pointer overflow")?;
         if count != 0 && (packet < table_end || !pointer.is_multiple_of(4)) {
-            return Err(format!(
-                "RTMD object {object}: primitive table overlaps header or is unaligned"
-            ));
+            return Err(format!("RTMD object {object}: primitive table overlaps header or is unaligned"));
         }
         for primitive in 0..count {
             let header = word(bytes, packet)?;
@@ -66,22 +52,16 @@ pub fn normalize_kings_field(bytes: &[u8]) -> Result<NormalizedTmd, String> {
             let flag = (header >> 16) as u8;
             let mode = (header >> 24) as u8;
             if flag & !7 != 0 {
-                return Err(format!(
-                    "RTMD object {object}, primitive {primitive}: reserved polygon flags"
-                ));
+                return Err(format!("RTMD object {object}, primitive {primitive}: reserved polygon flags"));
             }
-            let refs = polygon_reference_range(mode, flag, ilen).ok_or_else(|| {
-                format!("RTMD object {object}, primitive {primitive}: unsupported polygon layout")
-            })?;
+            let refs = polygon_reference_range(mode, flag, ilen)
+                .ok_or_else(|| format!("RTMD object {object}, primitive {primitive}: unsupported polygon layout"))?;
             let payload = packet.checked_add(4).ok_or("RTMD packet offset overflow")?;
-            let end = payload
-                .checked_add(ilen * 4)
-                .ok_or("RTMD packet size overflow")?;
+            let end = payload.checked_add(ilen * 4).ok_or("RTMD packet size overflow")?;
             bytes.get(payload..end).ok_or("RTMD primitive truncated")?;
             for field in (refs.start..refs.end).step_by(2) {
                 let location = payload + field;
-                let reference =
-                    u16::from_le_bytes(bytes[location..location + 2].try_into().unwrap());
+                let reference = u16::from_le_bytes(bytes[location..location + 2].try_into().unwrap());
                 if !reference.is_multiple_of(8) {
                     return Err(format!("RTMD object {object}, primitive {primitive}: reference {reference} is not an eight-byte offset"));
                 }
@@ -94,10 +74,7 @@ pub fn normalize_kings_field(bytes: &[u8]) -> Result<NormalizedTmd, String> {
     if model.polygon_count() == 0 || model.objects.iter().any(|o| o.skipped != 0) {
         return Err("RTMD contains no polygons or unsupported primitives".into());
     }
-    Ok(NormalizedTmd {
-        model,
-        bytes: normalized,
-    })
+    Ok(NormalizedTmd { model, bytes: normalized })
 }
 
 #[cfg(test)]
@@ -172,10 +149,7 @@ mod tests {
         assert_eq!(object.polygons[0].cba, 0x7fc0);
         assert_eq!(object.polygons[0].tsb, 0x85);
         assert_eq!(object.polygons[1].vertices, [0, 2, 3]);
-        assert_eq!(
-            object.polygons[1].colors,
-            [[1, 3, 5], [7, 9, 11], [13, 15, 17]]
-        );
+        assert_eq!(object.polygons[1].colors, [[1, 3, 5], [7, 9, 11], [13, 15, 17]]);
         assert_eq!(object.polygons[2].normals, [0, 2, 3]);
         assert_eq!(normalized.model.polygon_count(), 3);
         let mut alternate = source;
@@ -186,21 +160,10 @@ mod tests {
     #[test]
     fn rejects_bad_headers_counts_packet_layouts_and_nonintegral_references() {
         let (source, _, locations) = fixture();
-        for (at, value) in [
-            (0, 0x41u32),
-            (4, 0x13),
-            (8, 0),
-            (8, 4097),
-            (32, 0x10001),
-            (28, u32::MAX),
-            (28, 93),
-        ] {
+        for (at, value) in [(0, 0x41u32), (4, 0x13), (8, 0), (8, 4097), (32, 0x10001), (28, u32::MAX), (28, 93)] {
             let mut bad = source.clone();
             bad[at..at + 4].copy_from_slice(&value.to_le_bytes());
-            assert!(
-                normalize_kings_field(&bad).is_err(),
-                "field {at}, value {value}"
-            );
+            assert!(normalize_kings_field(&bad).is_err(), "field {at}, value {value}");
         }
         for (at, value) in [(104 + 1, 6u8), (104 + 2, 0x80), (104 + 3, 0x40)] {
             let mut bad = source.clone();
@@ -209,10 +172,7 @@ mod tests {
         }
         let mut bad = source.clone();
         bad[locations[1]..locations[1] + 2].copy_from_slice(&1u16.to_le_bytes());
-        assert!(normalize_kings_field(&bad)
-            .err()
-            .unwrap()
-            .contains("eight-byte offset"));
+        assert!(normalize_kings_field(&bad).err().unwrap().contains("eight-byte offset"));
         for end in [0, 8, 39, 106, source.len() - 24] {
             assert!(normalize_kings_field(&source[..end]).is_err());
         }
@@ -224,10 +184,7 @@ mod tests {
         for at in [locations[0], locations[1]] {
             let mut bad = source.clone();
             bad[at..at + 2].copy_from_slice(&32u16.to_le_bytes()); // index 4, only 4 vectors
-            assert!(normalize_kings_field(&bad)
-                .err()
-                .unwrap()
-                .contains("index out of range"));
+            assert!(normalize_kings_field(&bad).err().unwrap().contains("index out of range"));
         }
     }
 }

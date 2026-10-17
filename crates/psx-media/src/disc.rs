@@ -14,9 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::cue::{CueSheet, TrackMode};
 use crate::error::{malformed, MediaError, Result};
 
-pub const SYNC: [u8; 12] = [
-    0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0,
-];
+pub const SYNC: [u8; 12] = [0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0];
 pub const LEAD_IN_SECTORS: u32 = 150;
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -93,9 +91,7 @@ impl std::fmt::Debug for Disc {
 }
 
 fn file_len(path: &Path) -> Result<u64> {
-    std::fs::metadata(path)
-        .map(|m| m.len())
-        .map_err(|e| MediaError::io(path, e))
+    std::fs::metadata(path).map(|m| m.len()).map_err(|e| MediaError::io(path, e))
 }
 
 impl Disc {
@@ -111,34 +107,23 @@ impl Disc {
     }
 
     fn open_image(path: &Path) -> Result<Self> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         match ext.as_str() {
             "cue" => Self::open_cue(path),
             "iso" => Self::open_single(path, TrackMode::Mode1Cooked),
             "bin" | "img" => {
                 let mut head = [0u8; 16];
                 let mut f = File::open(path).map_err(|e| MediaError::io(path, e))?;
-                f.read_exact(&mut head)
-                    .map_err(|e| MediaError::io(path, e))?;
+                f.read_exact(&mut head).map_err(|e| MediaError::io(path, e))?;
                 if head[..12] != SYNC {
                     return Err(MediaError::Unsupported(
                         "bare .bin without CD sync pattern; supply its .cue".into(),
                     ));
                 }
-                let mode = if head[15] == 1 {
-                    TrackMode::Mode1Raw
-                } else {
-                    TrackMode::Mode2Raw
-                };
+                let mode = if head[15] == 1 { TrackMode::Mode1Raw } else { TrackMode::Mode2Raw };
                 Self::open_single(path, mode)
             }
-            other => Err(MediaError::Unsupported(format!(
-                "disc image extension .{other}"
-            ))),
+            other => Err(MediaError::Unsupported(format!("disc image extension .{other}"))),
         }
     }
 
@@ -146,19 +131,12 @@ impl Disc {
         let bytes = file_len(path)?;
         let ss = mode.sector_size();
         if bytes % ss != 0 {
-            return malformed(format!(
-                "{} is not a whole number of {ss}-byte sectors",
-                path.display()
-            ));
+            return malformed(format!("{} is not a whole number of {ss}-byte sectors", path.display()));
         }
         let handle = File::open(path).map_err(|e| MediaError::io(path, e))?;
         Ok(Disc {
             source: path.to_path_buf(),
-            files: vec![ImageFile {
-                name: file_name(path),
-                path: path.to_path_buf(),
-                bytes,
-            }],
+            files: vec![ImageFile { name: file_name(path), path: path.to_path_buf(), bytes }],
             tracks: vec![Track {
                 number: 1,
                 mode,
@@ -192,26 +170,17 @@ impl Disc {
                 None => continue,
             };
             if cf.tracks.iter().any(|t| t.mode.sector_size() != ss) {
-                return Err(MediaError::Unsupported(format!(
-                    "mixed sector sizes in {}",
-                    cf.name
-                )));
+                return Err(MediaError::Unsupported(format!("mixed sector sizes in {}", cf.name)));
             }
             if bytes % ss != 0 {
-                return malformed(format!(
-                    "{} is not a whole number of {ss}-byte sectors",
-                    cf.name
-                ));
+                return malformed(format!("{} is not a whole number of {ss}-byte sectors", cf.name));
             }
             let file_sectors = (bytes / ss) as u32;
             let mut shift = 0;
             for (i, t) in cf.tracks.iter().enumerate() {
                 shift += t.pregap;
                 let first = t.first_stored();
-                let end = cf
-                    .tracks
-                    .get(i + 1)
-                    .map_or(file_sectors, |n| n.first_stored());
+                let end = cf.tracks.get(i + 1).map_or(file_sectors, |n| n.first_stored());
                 if end < first || end > file_sectors {
                     return malformed(format!("track {} lies outside {}", t.number, cf.name));
                 }
@@ -228,20 +197,9 @@ impl Disc {
             }
             lba += shift + file_sectors;
             handles.push(File::open(&fpath).map_err(|e| MediaError::io(&fpath, e))?);
-            files.push(ImageFile {
-                name: cf.name.clone(),
-                path: fpath,
-                bytes,
-            });
+            files.push(ImageFile { name: cf.name.clone(), path: fpath, bytes });
         }
-        Ok(Disc {
-            source: path.to_path_buf(),
-            files,
-            tracks,
-            handles: Mutex::new(handles),
-            subq: Default::default(),
-            subq_source: None,
-        })
+        Ok(Disc { source: path.to_path_buf(), files, tracks, handles: Mutex::new(handles), subq: Default::default(), subq_source: None })
     }
 
     pub fn track_for_lba(&self, lba: u32) -> Option<&Track> {
@@ -250,28 +208,22 @@ impl Disc {
 
     /// Total addressable sectors (end of the last stored sector).
     pub fn end_lba(&self) -> u32 {
-        self.tracks
-            .iter()
-            .map(|t| t.first_lba + t.sectors)
-            .max()
-            .unwrap_or(0)
+        self.tracks.iter().map(|t| t.first_lba + t.sectors).max().unwrap_or(0)
     }
 
     /// Read the stored bytes of one sector exactly as they appear in the image.
     pub fn read_raw(&self, lba: u32) -> Result<(Vec<u8>, TrackMode)> {
-        let t = self.track_for_lba(lba).ok_or_else(|| {
-            MediaError::NotFound(format!("LBA {lba} is not stored in this image"))
-        })?;
+        let t = self
+            .track_for_lba(lba)
+            .ok_or_else(|| MediaError::NotFound(format!("LBA {lba} is not stored in this image")))?;
         let ss = t.mode.sector_size();
         let offset = (t.file_sector as u64 + (lba - t.first_lba) as u64) * ss;
         let mut buf = vec![0u8; ss as usize];
         let mut handles = self.handles.lock().unwrap_or_else(|p| p.into_inner());
         let h = &mut handles[t.file];
         let path = &self.files[t.file].path;
-        h.seek(SeekFrom::Start(offset))
-            .map_err(|e| MediaError::io(path, e))?;
-        h.read_exact(&mut buf)
-            .map_err(|e| MediaError::io(path, e))?;
+        h.seek(SeekFrom::Start(offset)).map_err(|e| MediaError::io(path, e))?;
+        h.read_exact(&mut buf).map_err(|e| MediaError::io(path, e))?;
         Ok((buf, t.mode))
     }
 
@@ -279,15 +231,10 @@ impl Disc {
     pub fn read_data(&self, lba: u32) -> Result<DataSector> {
         let (raw, mode) = self.read_raw(lba)?;
         match mode {
-            TrackMode::Audio => Err(MediaError::NotFound(format!(
-                "LBA {lba} is in an audio track"
-            ))),
-            TrackMode::Mode1Cooked => Ok(DataSector {
-                lba,
-                form: SectorForm::Mode1,
-                subheader: None,
-                data: raw,
-            }),
+            TrackMode::Audio => Err(MediaError::NotFound(format!("LBA {lba} is in an audio track"))),
+            TrackMode::Mode1Cooked => {
+                Ok(DataSector { lba, form: SectorForm::Mode1, subheader: None, data: raw })
+            }
             TrackMode::Mode1Raw | TrackMode::Mode2Raw => {
                 if raw[..12] != SYNC {
                     return malformed(format!("LBA {lba} has no sync pattern"));
@@ -301,17 +248,9 @@ impl Disc {
                     }),
                     2 => {
                         let sub = [raw[16], raw[17], raw[18], raw[19]];
-                        let (form, len) = if sub[2] & 0x20 != 0 {
-                            (SectorForm::Form2, 2324)
-                        } else {
-                            (SectorForm::Form1, 2048)
-                        };
-                        Ok(DataSector {
-                            lba,
-                            form,
-                            subheader: Some(sub),
-                            data: raw[24..24 + len].to_vec(),
-                        })
+                        let (form, len) =
+                            if sub[2] & 0x20 != 0 { (SectorForm::Form2, 2324) } else { (SectorForm::Form1, 2048) };
+                        Ok(DataSector { lba, form, subheader: Some(sub), data: raw[24..24 + len].to_vec() })
                     }
                     m => malformed(format!("LBA {lba} has sector mode {m}")),
                 }
@@ -331,9 +270,7 @@ impl Disc {
 }
 
 fn file_name(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// Streaming SHA-256 of a whole file, hex encoded.

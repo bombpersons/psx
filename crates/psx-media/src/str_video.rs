@@ -96,9 +96,7 @@ struct Partial {
 
 impl Partial {
     fn finish(self) -> Frame {
-        let missing = (0..self.header.chunks)
-            .filter(|&i| self.payloads[i as usize].is_none())
-            .collect();
+        let missing = (0..self.header.chunks).filter(|&i| self.payloads[i as usize].is_none()).collect();
         let mut data = Vec::new();
         for p in self.payloads.into_iter().flatten() {
             data.extend_from_slice(&p);
@@ -198,12 +196,7 @@ impl BsHeader {
 /// Offset of the BS header inside a frame: 0, or 28h for Final Fantasy VII's
 /// movies, which put 28h bytes of extra (camera) data before it.
 pub fn bs_offset(frame: &[u8]) -> usize {
-    let bs_at = |o: usize| {
-        frame
-            .get(o..)
-            .and_then(BsHeader::parse)
-            .is_some_and(|h| h.id == 0x3800)
-    };
+    let bs_at = |o: usize| frame.get(o..).and_then(BsHeader::parse).is_some_and(|h| h.id == 0x3800);
     if !bs_at(0) && bs_at(0x28) {
         0x28
     } else {
@@ -217,20 +210,11 @@ pub enum BsError {
     /// Not a supported BS header; carries [`BsHeader::variant`].
     Unsupported(String),
     /// The bitstream ran out in this macroblock.
-    Truncated {
-        macroblock: usize,
-    },
+    Truncated { macroblock: usize },
     /// An invalid Huffman code.
-    BadCode {
-        macroblock: usize,
-        block: usize,
-        bit: usize,
-    },
+    BadCode { macroblock: usize, block: usize, bit: usize },
     /// More than 63 AC coefficients in a block.
-    BlockOverflow {
-        macroblock: usize,
-        block: usize,
-    },
+    BlockOverflow { macroblock: usize, block: usize },
 }
 
 impl fmt::Display for BsError {
@@ -238,24 +222,12 @@ impl fmt::Display for BsError {
         match self {
             BsError::TooShort => write!(f, "frame shorter than a BS header"),
             BsError::Unsupported(v) => write!(f, "unsupported BS variant {v}"),
-            BsError::Truncated { macroblock } => {
-                write!(f, "bitstream ends inside macroblock {macroblock}")
-            }
-            BsError::BadCode {
-                macroblock,
-                block,
-                bit,
-            } => {
-                write!(
-                    f,
-                    "invalid Huffman code in macroblock {macroblock} block {block} at bit {bit}"
-                )
+            BsError::Truncated { macroblock } => write!(f, "bitstream ends inside macroblock {macroblock}"),
+            BsError::BadCode { macroblock, block, bit } => {
+                write!(f, "invalid Huffman code in macroblock {macroblock} block {block} at bit {bit}")
             }
             BsError::BlockOverflow { macroblock, block } => {
-                write!(
-                    f,
-                    "more than 63 AC values in macroblock {macroblock} block {block}"
-                )
+                write!(f, "more than 63 AC values in macroblock {macroblock} block {block}")
             }
         }
     }
@@ -278,11 +250,7 @@ pub struct Rle {
 impl Rle {
     /// Halfwords of macroblock `i`.
     pub fn macroblock(&self, i: usize) -> &[u16] {
-        let end = self
-            .macroblocks
-            .get(i + 1)
-            .copied()
-            .unwrap_or(self.halfwords.len());
+        let end = self.macroblocks.get(i + 1).copied().unwrap_or(self.halfwords.len());
         &self.halfwords[self.macroblocks[i]..end]
     }
 }
@@ -295,16 +263,13 @@ struct Bits<'a> {
 
 impl Bits<'_> {
     fn halfword(&self, i: usize) -> u64 {
-        self.data
-            .get(i * 2..i * 2 + 2)
-            .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as u64)
+        self.data.get(i * 2..i * 2 + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as u64)
     }
 
     /// Next `n` (≤ 32) bits, MSB first.
     fn peek(&self, n: usize) -> u32 {
         let hw = self.pos / 16;
-        let window =
-            (self.halfword(hw) << 32) | (self.halfword(hw + 1) << 16) | self.halfword(hw + 2);
+        let window = (self.halfword(hw) << 32) | (self.halfword(hw + 1) << 16) | self.halfword(hw + 2);
         let shift = 48 - self.pos % 16 - n;
         ((window >> shift) & ((1u64 << n) - 1)) as u32
     }
@@ -329,31 +294,27 @@ impl Bits<'_> {
 /// sub-tables and are handled separately.
 const AC_Z3: [u16; 4] = [0x1C01, 0x1801, 0x0402, 0x1401];
 const AC_Z4: [u16; 4] = [0x0802, 0x2401, 0x0004, 0x2001];
-const AC_Z2_100: [u16; 8] = [
-    0x3401, 0x0006, 0x3001, 0x2C01, 0x0C02, 0x0403, 0x0005, 0x2801,
-];
-const AC_Z6: [u16; 8] = [
-    0x4001, 0x1402, 0x0007, 0x0803, 0x0404, 0x3C01, 0x3801, 0x1002,
-];
+const AC_Z2_100: [u16; 8] = [0x3401, 0x0006, 0x3001, 0x2C01, 0x0C02, 0x0403, 0x0005, 0x2801];
+const AC_Z6: [u16; 8] = [0x4001, 0x1402, 0x0007, 0x0803, 0x0404, 0x3C01, 0x3801, 0x1002];
 const AC_Z7: [u16; 16] = [
-    0x000B, 0x2002, 0x1003, 0x000A, 0x0804, 0x1C02, 0x5401, 0x5001, 0x0009, 0x4C01, 0x4801, 0x0405,
-    0x0C03, 0x0008, 0x1802, 0x4401,
+    0x000B, 0x2002, 0x1003, 0x000A, 0x0804, 0x1C02, 0x5401, 0x5001, 0x0009, 0x4C01, 0x4801, 0x0405, 0x0C03, 0x0008,
+    0x1802, 0x4401,
 ];
 const AC_Z8: [u16; 16] = [
-    0x2802, 0x2402, 0x1403, 0x0C04, 0x0805, 0x0407, 0x0406, 0x000F, 0x000E, 0x000D, 0x000C, 0x6801,
-    0x6401, 0x6001, 0x5C01, 0x5801,
+    0x2802, 0x2402, 0x1403, 0x0C04, 0x0805, 0x0407, 0x0406, 0x000F, 0x000E, 0x000D, 0x000C, 0x6801, 0x6401, 0x6001,
+    0x5C01, 0x5801,
 ];
 const AC_Z9: [u16; 16] = [
-    0x001F, 0x001E, 0x001D, 0x001C, 0x001B, 0x001A, 0x0019, 0x0018, 0x0017, 0x0016, 0x0015, 0x0014,
-    0x0013, 0x0012, 0x0011, 0x0010,
+    0x001F, 0x001E, 0x001D, 0x001C, 0x001B, 0x001A, 0x0019, 0x0018, 0x0017, 0x0016, 0x0015, 0x0014, 0x0013, 0x0012,
+    0x0011, 0x0010,
 ];
 const AC_Z10: [u16; 16] = [
-    0x0028, 0x0027, 0x0026, 0x0025, 0x0024, 0x0023, 0x0022, 0x0021, 0x0020, 0x040E, 0x040D, 0x040C,
-    0x040B, 0x040A, 0x0409, 0x0408,
+    0x0028, 0x0027, 0x0026, 0x0025, 0x0024, 0x0023, 0x0022, 0x0021, 0x0020, 0x040E, 0x040D, 0x040C, 0x040B, 0x040A,
+    0x0409, 0x0408,
 ];
 const AC_Z11: [u16; 16] = [
-    0x0412, 0x0411, 0x0410, 0x040F, 0x1803, 0x4002, 0x3C02, 0x3802, 0x3402, 0x3002, 0x2C02, 0x7C01,
-    0x7801, 0x7401, 0x7001, 0x6C01,
+    0x0412, 0x0411, 0x0410, 0x040F, 0x1803, 0x4002, 0x3C02, 0x3802, 0x3402, 0x3002, 0x2C02, 0x7C01, 0x7801, 0x7401,
+    0x7001, 0x6C01,
 ];
 
 /// One AC Huffman code, as decoded.
@@ -467,11 +428,7 @@ fn read_dc_v3(b: &mut Bits, chroma: bool) -> Option<i32> {
         return Some(0);
     }
     let v = b.read(size) as i32;
-    let diff = if v >> (size - 1) == 0 {
-        v - ((1 << size) - 1)
-    } else {
-        v
-    };
+    let diff = if v >> (size - 1) == 0 { v - ((1 << size) - 1) } else { v };
     Some(diff * 4)
 }
 
@@ -486,10 +443,7 @@ pub fn decode_bs(frame: &[u8], width: u16, height: u16) -> Result<(BsHeader, Rle
     let v3 = header.version == 3;
     let quant = header.quant & 0x3F;
     let total = width.div_ceil(16) as usize * height.div_ceil(16) as usize;
-    let mut b = Bits {
-        data: &frame[8..],
-        pos: 0,
-    };
+    let mut b = Bits { data: &frame[8..], pos: 0 };
     let mut rle = Rle::default();
     rle.halfwords.reserve(total * 6 * 8);
     // v3 DC predictors: Cr, Cb, Y.
@@ -502,11 +456,7 @@ pub fn decode_bs(frame: &[u8], width: u16, height: u16) -> Result<(BsHeader, Rle
                     return Err(BsError::Truncated { macroblock: mb });
                 }
                 let p = block.min(2);
-                let diff = read_dc_v3(&mut b, block < 2).ok_or(BsError::BadCode {
-                    macroblock: mb,
-                    block,
-                    bit: b.pos,
-                })?;
+                let diff = read_dc_v3(&mut b, block < 2).ok_or(BsError::BadCode { macroblock: mb, block, bit: b.pos })?;
                 prev[p] += diff;
                 (prev[p] & 0x3FF) as u16
             } else {
@@ -523,11 +473,7 @@ pub fn decode_bs(frame: &[u8], width: u16, height: u16) -> Result<(BsHeader, Rle
                     return Err(BsError::Truncated { macroblock: mb });
                 }
                 let at = b.pos;
-                match read_ac(&mut b).ok_or(BsError::BadCode {
-                    macroblock: mb,
-                    block,
-                    bit: at,
-                })? {
+                match read_ac(&mut b).ok_or(BsError::BadCode { macroblock: mb, block, bit: at })? {
                     Ac::Eob => break,
                     Ac::Value(v) | Ac::Escape(v) => {
                         if v & 0x3FF == 0 {
@@ -535,10 +481,7 @@ pub fn decode_bs(frame: &[u8], width: u16, height: u16) -> Result<(BsHeader, Rle
                         }
                         k += (v >> 10) as usize + 1;
                         if k > 63 {
-                            return Err(BsError::BlockOverflow {
-                                macroblock: mb,
-                                block,
-                            });
+                            return Err(BsError::BlockOverflow { macroblock: mb, block });
                         }
                         rle.halfwords.push(v);
                     }
@@ -548,15 +491,9 @@ pub fn decode_bs(frame: &[u8], width: u16, height: u16) -> Result<(BsHeader, Rle
         }
     }
     if b.exhausted() {
-        return Err(BsError::Truncated {
-            macroblock: total.saturating_sub(1),
-        });
+        return Err(BsError::Truncated { macroblock: total.saturating_sub(1) });
     }
-    rle.end_code = if v3 {
-        b.peek(10) == 0x3FF
-    } else {
-        b.peek(10) == END_OF_FRAME
-    };
+    rle.end_code = if v3 { b.peek(10) == 0x3FF } else { b.peek(10) == END_OF_FRAME };
     Ok((header, rle))
 }
 
@@ -572,8 +509,7 @@ mod tests {
 
     impl Writer {
         fn put(&mut self, s: &str) {
-            self.bits
-                .extend(s.chars().filter(|c| *c != ' ').map(|c| c == '1'));
+            self.bits.extend(s.chars().filter(|c| *c != ' ').map(|c| c == '1'));
         }
         fn num(&mut self, v: u32, n: usize) {
             for i in (0..n).rev() {
@@ -596,11 +532,7 @@ mod tests {
 
     /// Every AC code from the psx-spx table, as `(code bits without sign, value)`.
     fn all_codes() -> Vec<(String, u16)> {
-        let mut v = vec![
-            ("11".to_string(), 0x0001),
-            ("011".into(), 0x0401),
-            ("00101".into(), 0x0003),
-        ];
+        let mut v = vec![("11".to_string(), 0x0001), ("011".into(), 0x0401), ("00101".into(), 0x0003)];
         let groups: [(&str, usize, &[u16]); 11] = [
             ("010", 1, &[0x0002, 0x0801]),
             ("0011", 1, &[0x1001, 0x0C01]),
@@ -639,10 +571,7 @@ mod tests {
                 let mut w = Writer::default();
                 w.put(&code);
                 w.put(if neg { "1" } else { "0" });
-                let mut b = Bits {
-                    data: &w.bytes(),
-                    pos: 0,
-                };
+                let mut b = Bits { data: &w.bytes(), pos: 0 };
                 let got = read_ac(&mut b).unwrap();
                 assert_eq!(got, Ac::Value(signed(val, neg)), "code {code}");
                 assert_eq!(b.pos, code.len() + 1, "length of {code}");
@@ -655,30 +584,18 @@ mod tests {
         // 00100 010 1: index 2 = 3001h (run 12, level 1), negated -> level 3FFh.
         let mut w = Writer::default();
         w.put("00100 010 1");
-        let mut b = Bits {
-            data: &w.bytes(),
-            pos: 0,
-        };
+        let mut b = Bits { data: &w.bytes(), pos: 0 };
         assert_eq!(read_ac(&mut b), Some(Ac::Value(0x33FF)));
         // Escape 000001 + raw 16 bits.
         let mut w = Writer::default();
         w.put("000001");
         w.num(0x0C3F, 16);
-        let mut b = Bits {
-            data: &w.bytes(),
-            pos: 0,
-        };
+        let mut b = Bits { data: &w.bytes(), pos: 0 };
         assert_eq!(read_ac(&mut b), Some(Ac::Escape(0x0C3F)));
         // 12 zeros is invalid.
         let mut w = Writer::default();
         w.put("000000000000 1");
-        assert_eq!(
-            read_ac(&mut Bits {
-                data: &w.bytes(),
-                pos: 0
-            }),
-            None
-        );
+        assert_eq!(read_ac(&mut Bits { data: &w.bytes(), pos: 0 }), None);
     }
 
     #[test]
@@ -698,22 +615,7 @@ mod tests {
         let q = 7 << 10;
         assert_eq!(
             rle.halfwords,
-            vec![
-                q | 5,
-                0x0001,
-                0x07FF,
-                EOB,
-                q | 0x3FF,
-                EOB,
-                q | 1,
-                EOB,
-                q | 2,
-                EOB,
-                q | 3,
-                EOB,
-                q | 4,
-                EOB
-            ]
+            vec![q | 5, 0x0001, 0x07FF, EOB, q | 0x3FF, EOB, q | 1, EOB, q | 2, EOB, q | 3, EOB, q | 4, EOB]
         );
         assert!(rle.end_code);
     }
@@ -730,13 +632,7 @@ mod tests {
         w.put("1111111111");
         let f = frame(3, 1, &w);
         let (_, rle) = decode_bs(&f, 16, 16).unwrap();
-        let dcs: Vec<u16> = rle
-            .halfwords
-            .iter()
-            .copied()
-            .filter(|&v| v != EOB)
-            .map(|v| v & 0x3FF)
-            .collect();
+        let dcs: Vec<u16> = rle.halfwords.iter().copied().filter(|&v| v != EOB).map(|v| v & 0x3FF).collect();
         // Y predictor runs -12, -4, -4, 0.
         let wrap = |v: i32| (v & 0x3FF) as u16;
         assert_eq!(dcs, vec![4, 0, wrap(-12), wrap(-4), wrap(-4), 0]);
@@ -746,16 +642,10 @@ mod tests {
     #[test]
     fn unsupported_variants_are_named() {
         let w = Writer::default();
-        assert_eq!(
-            decode_bs(&frame(0x00F0, 0x140, &w), 320, 240).unwrap_err(),
-            BsError::Unsupported("iki_or_encrypted".into())
-        );
+        assert_eq!(decode_bs(&frame(0x00F0, 0x140, &w), 320, 240).unwrap_err(), BsError::Unsupported("iki_or_encrypted".into()));
         let mut f = frame(2, 1, &w);
         f[2] = 0x12;
-        assert_eq!(
-            decode_bs(&f, 16, 16).unwrap_err(),
-            BsError::Unsupported("not_bs".into())
-        );
+        assert_eq!(decode_bs(&f, 16, 16).unwrap_err(), BsError::Unsupported("not_bs".into()));
     }
 
     fn sector(frame_no: u32, chunk: u16, chunks: u16, fill: u8) -> Vec<u8> {
@@ -787,19 +677,10 @@ mod tests {
             frames.extend(a.push(20 + chunk as u32, &StrHeader::parse(&s).unwrap(), &s));
         }
         assert!(a.finish().is_none());
-        assert_eq!(
-            frames.iter().map(|f| f.number).collect::<Vec<_>>(),
-            vec![1, 2, 3]
-        );
+        assert_eq!(frames.iter().map(|f| f.number).collect::<Vec<_>>(), vec![1, 2, 3]);
         let f1 = &frames[0];
-        assert_eq!(
-            (f1.first_lba, f1.last_lba, f1.data.len()),
-            (10, 13, 3 * 2016)
-        );
-        assert!(
-            f1.data[..2016].iter().all(|&b| b == 0x10)
-                && f1.data[4032..].iter().all(|&b| b == 0x12)
-        );
+        assert_eq!((f1.first_lba, f1.last_lba, f1.data.len()), (10, 13, 3 * 2016));
+        assert!(f1.data[..2016].iter().all(|&b| b == 0x10) && f1.data[4032..].iter().all(|&b| b == 0x12));
         assert_eq!(frames[1].missing, vec![1]);
         assert!(frames[2].missing.is_empty());
     }

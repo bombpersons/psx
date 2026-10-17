@@ -65,10 +65,7 @@ impl Kind {
                 let bits = "000000000010".repeat(6) + "0111111111";
                 let mut data = b"VBS1\x06\x00\x00\x38\x01\x00\x02\x00".to_vec();
                 for chunk in bits.as_bytes().chunks(16) {
-                    let word = chunk
-                        .iter()
-                        .enumerate()
-                        .fold(0u16, |w, (i, b)| w | (u16::from(*b == b'1') << (15 - i)));
+                    let word = chunk.iter().enumerate().fold(0u16, |w, (i, b)| w | (u16::from(*b == b'1') << (15 - i)));
                     data.extend_from_slice(&word.to_le_bytes());
                 }
                 data.extend_from_slice(&[0; 8]);
@@ -79,17 +76,8 @@ impl Kind {
 }
 
 pub fn create(dest: &Path, kind: Kind) -> Result<Value> {
-    if dest.exists()
-        && (!dest.is_dir()
-            || std::fs::read_dir(dest)
-                .map_err(|e| MediaError::io(dest, e))?
-                .next()
-                .is_some())
-    {
-        return Err(MediaError::Malformed(format!(
-            "{} must be a new or empty directory",
-            dest.display()
-        )));
+    if dest.exists() && (!dest.is_dir() || std::fs::read_dir(dest).map_err(|e| MediaError::io(dest, e))?.next().is_some()) {
+        return Err(MediaError::Malformed(format!("{} must be a new or empty directory", dest.display())));
     }
     std::fs::create_dir_all(dest).map_err(|e| MediaError::io(dest, e))?;
     let demo = match kind {
@@ -103,10 +91,7 @@ pub fn create(dest: &Path, kind: Kind) -> Result<Value> {
         ("parser.py", kind.script().as_bytes().to_vec()),
         ("sample.bin", kind.sample()),
         ("README.md", readme.into_bytes()),
-        (
-            "PROTOCOL.md",
-            include_bytes!("../../../docs/external-parsers.md").to_vec(),
-        ),
+        ("PROTOCOL.md", include_bytes!("../../../docs/external-parsers.md").to_vec()),
     ] {
         let path = dest.join(name);
         std::fs::write(&path, bytes).map_err(|e| MediaError::io(&path, e))?;
@@ -115,8 +100,7 @@ pub fn create(dest: &Path, kind: Kind) -> Result<Value> {
     {
         use std::os::unix::fs::PermissionsExt;
         let path = dest.join("parser.py");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| MediaError::io(&path, e))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).map_err(|e| MediaError::io(&path, e))?;
     }
     Ok(
         json!({"dest":dest,"kind":kind.name(),"parser":dest.join("parser.py"),"sample":dest.join("sample.bin"),"files":["parser.py","sample.bin","README.md","PROTOCOL.md"]}),
@@ -136,48 +120,27 @@ mod tests {
             let dir = root.join(kind.name());
             create(&dir, kind).unwrap();
             assert!(create(&dir, kind).is_err());
-            let spec = Spec {
-                program: dir.join("parser.py"),
-                args: vec![],
-                timeout: 3,
-            };
+            let spec = Spec { program: dir.join("parser.py"), args: vec![], timeout: 3 };
             let output = parser::run(&spec, &kind.sample(), kind.name(), &[], None).unwrap();
             match kind {
                 Kind::Model => {
-                    let model = parser::document::<psx_assets::model_document::ModelDocument>(
-                        &output.bytes,
-                    )
-                    .unwrap()
-                    .into_model()
-                    .unwrap();
+                    let model = parser::document::<psx_assets::model_document::ModelDocument>(&output.bytes).unwrap().into_model().unwrap();
                     assert_eq!(model.polygon_count(), 1);
                 }
                 Kind::Archive => {
-                    let index = parser::document::<parser::ArchiveDocument>(&output.bytes)
-                        .unwrap()
-                        .validate(kind.sample().len())
-                        .unwrap();
+                    let index = parser::document::<parser::ArchiveDocument>(&output.bytes).unwrap().validate(kind.sample().len()).unwrap();
                     assert_eq!(index.entries.len(), 2);
                     assert_eq!(index.entries[0].size, 0);
-                    assert_eq!(
-                        index.entries[1].bytes(&kind.sample()).unwrap(),
-                        Kind::Model.sample()
-                    );
+                    assert_eq!(index.entries[1].bytes(&kind.sample()).unwrap(), Kind::Model.sample());
                 }
                 Kind::Asset => {
-                    let payload = parser::document::<parser::PayloadDocument>(&output.bytes)
-                        .unwrap()
-                        .decode()
-                        .unwrap();
+                    let payload = parser::document::<parser::PayloadDocument>(&output.bytes).unwrap().decode().unwrap();
                     let hits = psx_assets::scan::scan(&payload, Default::default());
                     assert_eq!(hits.len(), 1);
                     assert_eq!(hits[0].kind, psx_assets::scan::Kind::Tim);
                 }
                 Kind::Video => {
-                    let payload = parser::document::<parser::PayloadDocument>(&output.bytes)
-                        .unwrap()
-                        .decode()
-                        .unwrap();
+                    let payload = parser::document::<parser::PayloadDocument>(&output.bytes).unwrap().decode().unwrap();
                     let (_, frame) = psx_media::str_video::decode_bs(&payload, 16, 16).unwrap();
                     assert!(frame.end_code);
                     assert_eq!(frame.macroblocks.len(), 1);

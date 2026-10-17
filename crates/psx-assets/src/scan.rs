@@ -110,17 +110,9 @@ fn tim_info(t: &Tim) -> Info {
 /// Shared model summary for the standard scanner and explicit format adapters.
 pub fn tmd_info(t: &Tmd) -> Info {
     Info::Tmd {
-        objects: t.objects.len(),
-        vertices: t.vertex_count(),
-        polygons: t.polygon_count(),
-        textured: t
-            .objects
-            .iter()
-            .flat_map(|o| &o.polygons)
-            .filter(|p| p.textured())
-            .count(),
-        skipped: t.objects.iter().map(|o| o.skipped).sum(),
-        fixp: t.fixp,
+        objects: t.objects.len(), vertices: t.vertex_count(), polygons: t.polygon_count(),
+        textured: t.objects.iter().flat_map(|o| &o.polygons).filter(|p| p.textured()).count(),
+        skipped: t.objects.iter().map(|o| o.skipped).sum(), fixp: t.fixp,
     }
 }
 
@@ -130,14 +122,7 @@ pub fn probe(bytes: &[u8], offset: usize, opts: Options) -> Option<Hit> {
     if b.len() < 8 {
         return None;
     }
-    let hit = |kind, size, info| {
-        Some(Hit {
-            offset,
-            kind,
-            size,
-            info,
-        })
-    };
+    let hit = |kind, size, info| Some(Hit { offset, kind, size, info });
     match &b[..4] {
         [0x10, 0, 0, 0] if b[5..8] == [0, 0, 0] => {
             let t = Tim::parse(b).ok().filter(Tim::plausible)?;
@@ -173,15 +158,7 @@ pub fn probe(bytes: &[u8], offset: usize, opts: Options) -> Option<Hit> {
         }
         b"VAGp" => {
             let v = Vag::parse(b).ok()?;
-            hit(
-                Kind::Vag,
-                v.size,
-                Info::Vag {
-                    rate: v.rate,
-                    name: v.name.clone(),
-                    data_size: v.data_size,
-                },
-            )
+            hit(Kind::Vag, v.size, Info::Vag { rate: v.rate, name: v.name.clone(), data_size: v.data_size })
         }
         _ => None,
     }
@@ -228,22 +205,9 @@ mod tests {
     fn tmd() -> Vec<u8> {
         let mut b = Vec::new();
         let words: [u32; 3 + 7 + 6 + 4] = [
-            0x41,
-            0,
-            1, // header
-            28,
-            3,
-            52,
-            0,
-            52,
-            1,
-            0, // object: 3 vertices at 28, 0 normals, 1 primitive at 52
-            0,
-            0,
-            100,
-            0,
-            100 << 16,
-            0,                                   // vertices (x,y),(z,pad)
+            0x41, 0, 1, // header
+            28, 3, 52, 0, 52, 1, 0, // object: 3 vertices at 28, 0 normals, 1 primitive at 52
+            0, 0, 100, 0, 100 << 16, 0, // vertices (x,y),(z,pad)
             u32::from_le_bytes([0, 3, 1, 0x21]), // unlit flat tri
             0x21FF_FFFF,
             1 << 16,
@@ -271,31 +235,10 @@ mod tests {
         data.extend_from_slice(&[0x10, 0, 0, 0, 2, 0, 0, 0, 0xFF]); // truncated TIM
         let hits = scan(&data, Options::default());
         let got: Vec<(usize, Kind)> = hits.iter().map(|h| (h.offset, h.kind)).collect();
-        assert_eq!(
-            got,
-            vec![
-                (tim_at, Kind::Tim),
-                (tmd_at, Kind::Tmd),
-                (vag_at, Kind::Vag),
-                (vab_at, Kind::Vab)
-            ]
-        );
-        assert!(matches!(
-            hits[0].info,
-            Info::Tim {
-                width: 4,
-                height: 2,
-                ..
-            }
-        ));
+        assert_eq!(got, vec![(tim_at, Kind::Tim), (tmd_at, Kind::Tmd), (vag_at, Kind::Vag), (vab_at, Kind::Vab)]);
+        assert!(matches!(hits[0].info, Info::Tim { width: 4, height: 2, .. }));
         assert!(matches!(hits[1].info, Info::Tmd { polygons: 1, .. }));
-        assert!(matches!(
-            hits[3].info,
-            Info::Vab {
-                body_included: true,
-                ..
-            }
-        ));
+        assert!(matches!(hits[3].info, Info::Vab { body_included: true, .. }));
         assert_eq!(hits[0].size, tim16(4, 2).len());
     }
 
@@ -304,12 +247,6 @@ mod tests {
         let b = vab_bytes();
         let v = Vab::parse(&b).unwrap();
         let hits = scan(&b[..v.header_size], Options::default());
-        assert!(matches!(
-            hits[0].info,
-            Info::Vab {
-                body_included: false,
-                ..
-            }
-        ));
+        assert!(matches!(hits[0].info, Info::Vab { body_included: false, .. }));
     }
 }

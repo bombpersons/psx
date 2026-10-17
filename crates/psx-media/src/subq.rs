@@ -55,11 +55,7 @@ pub fn crc(q: &[u8; 10]) -> u16 {
     for &b in q {
         c ^= (b as u16) << 8;
         for _ in 0..8 {
-            c = if c & 0x8000 != 0 {
-                (c << 1) ^ 0x1021
-            } else {
-                c << 1
-            };
+            c = if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 };
         }
     }
     !c
@@ -84,10 +80,7 @@ pub fn parse(bytes: &[u8], lsd: bool) -> Result<BTreeMap<u32, SubQ>> {
         for r in bytes.as_chunks::<15>().0 {
             let lba = lba_of(&r[..3]).ok_or_else(|| bad("MSF before 00:02:00"))?;
             let q: [u8; 10] = r[3..13].try_into().unwrap();
-            out.insert(
-                lba,
-                SubQ::Full(q, crc(&q) == u16::from_be_bytes([r[13], r[14]])),
-            );
+            out.insert(lba, SubQ::Full(q, crc(&q) == u16::from_be_bytes([r[13], r[14]])));
         }
         return Ok(out);
     }
@@ -99,24 +92,9 @@ pub fn parse(bytes: &[u8], lsd: bool) -> Result<BTreeMap<u32, SubQ>> {
         let rec = bytes.get(i..i + 4).ok_or_else(|| bad("truncated record"))?;
         let lba = lba_of(&rec[..3]).ok_or_else(|| bad("MSF before 00:02:00"))?;
         let (q, len) = match rec[3] {
-            1 => (
-                bytes
-                    .get(i + 4..i + 14)
-                    .map(|d| SubQ::Full(d.try_into().unwrap(), false)),
-                10,
-            ),
-            2 => (
-                bytes
-                    .get(i + 4..i + 7)
-                    .map(|d| SubQ::Relative(d.try_into().unwrap())),
-                3,
-            ),
-            3 => (
-                bytes
-                    .get(i + 4..i + 7)
-                    .map(|d| SubQ::Absolute(d.try_into().unwrap())),
-                3,
-            ),
+            1 => (bytes.get(i + 4..i + 14).map(|d| SubQ::Full(d.try_into().unwrap(), false)), 10),
+            2 => (bytes.get(i + 4..i + 7).map(|d| SubQ::Relative(d.try_into().unwrap())), 3),
+            3 => (bytes.get(i + 4..i + 7).map(|d| SubQ::Absolute(d.try_into().unwrap())), 3),
             t => return Err(bad(&format!("unknown record type {t}"))),
         };
         out.insert(lba, q.ok_or_else(|| bad("truncated record"))?);
@@ -145,9 +123,7 @@ mod tests {
     fn parses_sbi_records() {
         // 03:08:05 type 1 (full Q), then 03:08:06 type 3 (absolute MSF).
         let mut b = b"SBI\0".to_vec();
-        b.extend([
-            0x03, 0x08, 0x05, 1, 0x41, 0x01, 0x01, 0x03, 0x06, 0x05, 0x00, 0x03, 0x08, 0x05,
-        ]);
+        b.extend([0x03, 0x08, 0x05, 1, 0x41, 0x01, 0x01, 0x03, 0x06, 0x05, 0x00, 0x03, 0x08, 0x05]);
         b.extend([0x03, 0x08, 0x06, 3, 0x03, 0x0A, 0x06]);
         let m = parse(&b, false).unwrap();
         let lba = 3 * 4500 + 8 * 75 + 5 - 150;
@@ -161,21 +137,14 @@ mod tests {
     #[test]
     fn parses_lsd_records() {
         let mut b = vec![0x03, 0x08, 0x05];
-        b.extend([
-            0x41, 0x01, 0x01, 0x03, 0x06, 0x05, 0x00, 0x03, 0x08, 0x05, 0xAA, 0xBB,
-        ]);
+        b.extend([0x41, 0x01, 0x01, 0x03, 0x06, 0x05, 0x00, 0x03, 0x08, 0x05, 0xAA, 0xBB]);
         let m = parse(&b, true).unwrap();
         assert_eq!(m.len(), 1);
         assert!(!m.values().next().unwrap().crc_valid());
         // A record with its correct CRC is accepted.
         let q: [u8; 10] = b[3..13].try_into().unwrap();
         b[13..15].copy_from_slice(&crc(&q).to_be_bytes());
-        assert!(parse(&b, true)
-            .unwrap()
-            .values()
-            .next()
-            .unwrap()
-            .crc_valid());
+        assert!(parse(&b, true).unwrap().values().next().unwrap().crc_valid());
         assert!(parse(&b[..14], true).is_err());
     }
 }

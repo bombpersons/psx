@@ -71,13 +71,7 @@ pub trait StepSink {
 impl StepSink for StepInfo {
     #[inline(always)]
     fn begin(&mut self, pc: u32, instruction: u32) {
-        *self = StepInfo {
-            pc,
-            instruction,
-            exception: None,
-            io_load: None,
-            mem: None,
-        };
+        *self = StepInfo { pc, instruction, exception: None, io_load: None, mem: None };
     }
     #[inline(always)]
     fn exception(&mut self, e: Exception) {
@@ -224,11 +218,7 @@ impl Cpu {
         self.cop0[cop0::SR] = (sr & !0x3F) | ((sr << 2) & 0x3F);
         let mut c = self.cause_ip() & !0x8000_007C;
         c |= (cause as u32) << 2;
-        let handler = if sr & (1 << 22) != 0 {
-            0xBFC0_0180
-        } else {
-            0x8000_0080
-        };
+        let handler = if sr & (1 << 22) != 0 { 0xBFC0_0180 } else { 0x8000_0080 };
         if self.delay_slot {
             self.cop0[cop0::EPC] = epc_pc.wrapping_sub(4);
             c |= 1 << 31;
@@ -254,11 +244,7 @@ impl Cpu {
         // instruction, 20 more while executing from BIOS ROM.
         let pc = self.pc;
         bus.cur_pc = pc;
-        self.cycles += if pc & 0x1FC0_0000 == 0x1FC0_0000 {
-            22
-        } else {
-            2
-        };
+        self.cycles += if pc & 0x1FC0_0000 == 0x1FC0_0000 { 22 } else { 2 };
         self.delay_slot = self.branch;
         self.branch = false;
 
@@ -318,15 +304,7 @@ impl Cpu {
         self.branch_to(target);
     }
 
-    fn load_mem(
-        &mut self,
-        bus: &mut Bus,
-        addr: u32,
-        w: Width,
-        pc: u32,
-        info: &mut impl StepSink,
-        rt: usize,
-    ) -> Result<u32, Exception> {
+    fn load_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, pc: u32, info: &mut impl StepSink, rt: usize) -> Result<u32, Exception> {
         // Widths are 1, 2 or 4: a mask test (is_multiple_of compiles to a divide here).
         if addr & (w as u32 - 1) != 0 {
             self.cop0[cop0::BADVADDR] = addr;
@@ -340,36 +318,18 @@ impl Cpu {
             self.exception(Exception::DataBusError, pc);
             Exception::DataBusError
         })?;
-        info.mem(MemAccess {
-            addr,
-            value: v,
-            width: w as u8,
-            store: false,
-        });
+        info.mem(MemAccess { addr, value: v, width: w as u8, store: false });
         Ok(v)
     }
 
-    fn store_mem(
-        &mut self,
-        bus: &mut Bus,
-        addr: u32,
-        w: Width,
-        value: u32,
-        pc: u32,
-        info: &mut impl StepSink,
-    ) -> Result<(), Exception> {
+    fn store_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, value: u32, pc: u32, info: &mut impl StepSink) -> Result<(), Exception> {
         // Widths are 1, 2 or 4: a mask test (is_multiple_of compiles to a divide here).
         if addr & (w as u32 - 1) != 0 {
             self.cop0[cop0::BADVADDR] = addr;
             self.exception(Exception::StoreAddressError, pc);
             return Err(Exception::StoreAddressError);
         }
-        info.mem(MemAccess {
-            addr,
-            value,
-            width: w as u8,
-            store: true,
-        });
+        info.mem(MemAccess { addr, value, width: w as u8, store: true });
         if self.cop0[cop0::SR] & (1 << 16) != 0 {
             return Ok(()); // cache isolated: the store hits the (unmodelled) cache only
         }
@@ -384,13 +344,7 @@ impl Cpu {
         Err(e)
     }
 
-    fn execute(
-        &mut self,
-        bus: &mut Bus,
-        i: u32,
-        pc: u32,
-        info: &mut impl StepSink,
-    ) -> Result<(), Exception> {
+    fn execute(&mut self, bus: &mut Bus, i: u32, pc: u32, info: &mut impl StepSink) -> Result<(), Exception> {
         let op = i >> 26;
         let rs = ((i >> 21) & 31) as usize;
         let rt = ((i >> 16) & 31) as usize;
@@ -540,11 +494,7 @@ impl Cpu {
                 let addr = s.wrapping_add(simm);
                 let aligned = self.load_mem(bus, addr & !3, Width::Word, pc, info, rt)?;
                 // In-flight load to rt merges (LWL/LWR bypass the load delay).
-                let cur = if self.load_in.0 == rt {
-                    self.load_in.1
-                } else {
-                    self.regs[rt]
-                };
+                let cur = if self.load_in.0 == rt { self.load_in.1 } else { self.regs[rt] };
                 let sh = (addr & 3) * 8;
                 let v = if op == 0x22 {
                     let keep = 0x00FF_FFFFu32.checked_shr(sh).unwrap_or(0);
@@ -586,9 +536,7 @@ impl Cpu {
                 let v = self.gte.read_data(rt);
                 self.store_mem(bus, addr, Width::Word, v, pc, info)?;
             }
-            0x30 | 0x31 | 0x33 | 0x38 | 0x39 | 0x3B => {
-                return self.fail(Exception::CoprocessorUnusable, pc)
-            }
+            0x30 | 0x31 | 0x33 | 0x38 | 0x39 | 0x3B => return self.fail(Exception::CoprocessorUnusable, pc),
             _ => return self.fail(Exception::ReservedInstruction, pc),
         }
         Ok(())
@@ -599,11 +547,7 @@ impl Cpu {
         let rd = ((i >> 11) & 31) as usize;
         match (i >> 21) & 31 {
             0x00 => {
-                let v = if rd == cop0::CAUSE {
-                    self.cause_ip()
-                } else {
-                    self.cop0[rd]
-                };
+                let v = if rd == cop0::CAUSE { self.cause_ip() } else { self.cop0[rd] };
                 self.load = (rt, v);
             }
             0x04 => {
