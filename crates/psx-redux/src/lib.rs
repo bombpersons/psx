@@ -31,8 +31,12 @@ impl std::fmt::Display for ReduxError {
         match self {
             ReduxError::Setup(m) => write!(f, "setup: {m}"),
             ReduxError::Io(p, e) => write!(f, "{}: {e}", p.display()),
-            ReduxError::Timeout { seconds, log_tail } => write!(f, "timed out after {seconds}s\n{log_tail}"),
-            ReduxError::Failed { status, log_tail } => write!(f, "redux exited ({status}) without a result\n{log_tail}"),
+            ReduxError::Timeout { seconds, log_tail } => {
+                write!(f, "timed out after {seconds}s\n{log_tail}")
+            }
+            ReduxError::Failed { status, log_tail } => {
+                write!(f, "redux exited ({status}) without a result\n{log_tail}")
+            }
         }
     }
 }
@@ -74,10 +78,17 @@ impl Backend {
         let job_script = root.join("tools/redux/psx_job.lua");
         for p in [&binary, &job_script] {
             if !p.exists() {
-                return Err(ReduxError::Setup(format!("{} not found (build PCSX-Redux or set PSX_REDUX_BIN)", p.display())));
+                return Err(ReduxError::Setup(format!(
+                    "{} not found (build PCSX-Redux or set PSX_REDUX_BIN)",
+                    p.display()
+                )));
             }
         }
-        Ok(Backend { binary, job_script, interpreter: true })
+        Ok(Backend {
+            binary,
+            job_script,
+            interpreter: true,
+        })
     }
 
     pub fn identity(&self) -> Result<String> {
@@ -133,8 +144,10 @@ pub struct Job {
     pub analog_pad: bool,
 }
 
-pub const BUTTONS: [&str; 14] =
-    ["CROSS", "CIRCLE", "SQUARE", "TRIANGLE", "L1", "R1", "L2", "R2", "START", "SELECT", "UP", "DOWN", "LEFT", "RIGHT"];
+pub const BUTTONS: [&str; 14] = [
+    "CROSS", "CIRCLE", "SQUARE", "TRIANGLE", "L1", "R1", "L2", "R2", "START", "SELECT", "UP",
+    "DOWN", "LEFT", "RIGHT",
+];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Registers {
@@ -270,11 +283,18 @@ fn params_lua(job: &Job, load_state: Option<&Path>) -> Result<String> {
     for e in &job.replay {
         for b in &e.buttons {
             if !BUTTONS.contains(&b.as_str()) {
-                return Err(ReduxError::Setup(format!("unknown button {b:?}; use one of {BUTTONS:?}")));
+                return Err(ReduxError::Setup(format!(
+                    "unknown button {b:?}; use one of {BUTTONS:?}"
+                )));
             }
         }
         let names: Vec<String> = e.buttons.iter().map(|b| lua_string(b)).collect();
-        let _ = writeln!(s, "    {{ frame = {}, buttons = {{ {} }} }},", e.frame, names.join(", "));
+        let _ = writeln!(
+            s,
+            "    {{ frame = {}, buttons = {{ {} }} }},",
+            e.frame,
+            names.join(", ")
+        );
     }
     s.push_str("  },\n  watches = {\n");
     for w in &job.watches {
@@ -322,7 +342,10 @@ pub fn run(backend: &Backend, job: &Job, dir: &Path) -> Result<JobOutput> {
         ),
     )?;
     let params = dir.join("params.lua");
-    io(&params, std::fs::write(&params, params_lua(job, state_copy.as_deref())?))?;
+    io(
+        &params,
+        std::fs::write(&params, params_lua(job, state_copy.as_deref())?),
+    )?;
 
     let mut cmd = Command::new(&backend.binary);
     cmd.current_dir(&dir)
@@ -337,7 +360,9 @@ pub fn run(backend: &Backend, job: &Job, dir: &Path) -> Result<JobOutput> {
         cmd.arg("-interpreter").arg("-debugger");
     } else {
         if !job.watches.is_empty() || job.trace_cd || job.trace_bios {
-            return Err(ReduxError::Setup("watches and traces need the interpreter (drop --fast)".into()));
+            return Err(ReduxError::Setup(
+                "watches and traces need the interpreter (drop --fast)".into(),
+            ));
         }
         cmd.arg("-dynarec").arg("-no-debugger");
     }
@@ -351,9 +376,18 @@ pub fn run(backend: &Backend, job: &Job, dir: &Path) -> Result<JobOutput> {
         Media::None => {}
     }
     // Redux runs -dofile before -exec, so bind JOB_DIR inside the script itself.
-    let script = io(&backend.job_script, std::fs::read_to_string(&backend.job_script))?;
+    let script = io(
+        &backend.job_script,
+        std::fs::read_to_string(&backend.job_script),
+    )?;
     let job_lua = dir.join("job.lua");
-    io(&job_lua, std::fs::write(&job_lua, format!("JOB_DIR = {}\n{script}", lua_string(&dir.to_string_lossy()))))?;
+    io(
+        &job_lua,
+        std::fs::write(
+            &job_lua,
+            format!("JOB_DIR = {}\n{script}", lua_string(&dir.to_string_lossy())),
+        ),
+    )?;
     cmd.arg("-dofile").arg(&job_lua);
     let log_path = dir.join("redux.log");
     let log = io(&log_path, std::fs::File::create(&log_path))?;
@@ -369,23 +403,36 @@ pub fn run(backend: &Backend, job: &Job, dir: &Path) -> Result<JobOutput> {
         if start.elapsed() > job.timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(ReduxError::Timeout { seconds: job.timeout.as_secs(), log_tail: tail(&log_path, 20) });
+            return Err(ReduxError::Timeout {
+                seconds: job.timeout.as_secs(),
+                log_tail: tail(&log_path, 20),
+            });
         }
         std::thread::sleep(Duration::from_millis(20));
     };
     let result_path = dir.join("result.json");
     let Ok(text) = std::fs::read_to_string(&result_path) else {
-        return Err(ReduxError::Failed { status: status.to_string(), log_tail: tail(&log_path, 30) });
+        return Err(ReduxError::Failed {
+            status: status.to_string(),
+            log_tail: tail(&log_path, 30),
+        });
     };
-    let report: JobReport = serde_json::from_str(&text)
-        .map_err(|e| ReduxError::Failed { status: format!("bad result.json: {e}"), log_tail: tail(&log_path, 30) })?;
+    let report: JobReport = serde_json::from_str(&text).map_err(|e| ReduxError::Failed {
+        status: format!("bad result.json: {e}"),
+        log_tail: tail(&log_path, 30),
+    })?;
     let hits_path = dir.join("writes.jsonl");
     let hits = std::fs::read_to_string(&hits_path)
         .unwrap_or_default()
         .lines()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
-    Ok(JobOutput { dir, report, hits, wall_ms: start.elapsed().as_millis() })
+    Ok(JobOutput {
+        dir,
+        report,
+        hits,
+        wall_ms: start.elapsed().as_millis(),
+    })
 }
 
 pub fn sha256_file(path: &Path) -> Result<String> {
@@ -394,7 +441,10 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 }
 
 pub fn sha256_bytes(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -407,8 +457,14 @@ mod tests {
             bios: "bios".into(),
             media: Media::None,
             frames: 60,
-            replay: vec![ReplayEvent { frame: 10, buttons: vec!["CROSS".into(), "LEFT".into()] }],
-            watches: vec![Watch { addr: 0x8001_4808, width: 4 }],
+            replay: vec![ReplayEvent {
+                frame: 10,
+                buttons: vec!["CROSS".into(), "LEFT".into()],
+            }],
+            watches: vec![Watch {
+                addr: 0x8001_4808,
+                width: 4,
+            }],
             max_watch_hits: 100,
             load_state: None,
             save_state: true,

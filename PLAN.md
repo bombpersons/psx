@@ -206,8 +206,14 @@ returns status, paths and counts only (1.3 KB against 13 KB for brief on a Mega
 Man 8 run). Parameter text is the remaining bulk; halving further would mean
 dropping argument syntax.
 
-Still open: typed sample arguments; and
-measuring/aligning starter dependency features to reduce duplicate compilation.
+Typed samples and starter features (2026-10-17): `run` `sample` entries accept
+typed `{"addr", "format", "name"}` objects as well as text, and watch-style widths
+(`ADDR:4`) read unsigned; MCP and CLI samples are byte-identical on Mega Man 8.
+The starter enables the features rmcp/tokio would otherwise switch on in shared
+crates (serde `rc`, futures, base64 0.23), so the first `dev-mcp` build compiles
+24 crates instead of 135 and no Bevy crates. See
+[validation](research/typed-samples-and-starter-features.md). This closes the
+feedback queue; next are more usability tests with other games and agents.
 Keep per-call project isolation and strict standard-format parsing intact.
 
 ## Original plan (historical)

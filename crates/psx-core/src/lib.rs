@@ -10,9 +10,9 @@ pub mod cdrom;
 pub mod cpu;
 pub mod disasm;
 pub mod mdec;
-pub mod pad;
 pub mod memcard;
 pub mod observe;
+pub mod pad;
 pub mod sio0;
 pub mod spu;
 pub mod state;
@@ -35,7 +35,11 @@ pub struct Machine {
 impl Machine {
     /// Power-on state: CPU at the BIOS reset vector.
     pub fn new(bios: Vec<u8>) -> Self {
-        Machine { cpu: Cpu::new(), bus: Bus::new(bios), forced_irq: false }
+        Machine {
+            cpu: Cpu::new(),
+            bus: Bus::new(bios),
+            forced_irq: false,
+        }
     }
 
     pub fn step(&mut self) -> StepInfo {
@@ -68,11 +72,19 @@ impl Machine {
         };
         let r = &self.cpu.regs;
         let function = r[9] & 0xFF;
-        *self.bus.obs.bios_counts.entry(format!("{table}_{function}")).or_default() += 1;
+        *self
+            .bus
+            .obs
+            .bios_counts
+            .entry(format!("{table}_{function}"))
+            .or_default() += 1;
         if observe::bios_call_is_quiet(table, function) {
             return;
         }
-        let path_call = matches!((table, function), ("A0", 0x00) | ("A0", 0x42) | ("A0", 0x51) | ("B0", 0x32) | ("B0", 0x42));
+        let path_call = matches!(
+            (table, function),
+            ("A0", 0x00) | ("A0", 0x42) | ("A0", 0x51) | ("B0", 0x32) | ("B0", 0x42)
+        );
         let path = path_call.then(|| {
             let mut s = String::new();
             for i in 0..128 {

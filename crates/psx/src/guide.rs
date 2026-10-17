@@ -19,8 +19,16 @@ pub enum Topic {
 }
 
 impl Topic {
-    const ALL: [Self; 8] =
-        [Self::Overview, Self::Setup, Self::Input, Self::Run, Self::Code, Self::Assets, Self::Bevy, Self::Troubleshooting];
+    const ALL: [Self; 8] = [
+        Self::Overview,
+        Self::Setup,
+        Self::Input,
+        Self::Run,
+        Self::Code,
+        Self::Assets,
+        Self::Bevy,
+        Self::Troubleshooting,
+    ];
 
     fn title(self) -> &'static str {
         match self {

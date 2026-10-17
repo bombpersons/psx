@@ -124,7 +124,10 @@ impl CueSheet {
                     if !kind.eq_ignore_ascii_case("BINARY") {
                         return Err(MediaError::Unsupported(at(&format!("FILE type {kind}"))));
                     }
-                    files.push(CueFile { name: name.clone(), tracks: Vec::new() });
+                    files.push(CueFile {
+                        name: name.clone(),
+                        tracks: Vec::new(),
+                    });
                 }
                 "TRACK" => {
                     let Some(file) = files.last_mut() else {
@@ -145,7 +148,11 @@ impl CueSheet {
                     let Some(track) = files.last_mut().and_then(|f| f.tracks.last_mut()) else {
                         return malformed(at(&format!("{cmd} before TRACK")));
                     };
-                    let time_word = if cmd.eq_ignore_ascii_case("INDEX") { 2 } else { 1 };
+                    let time_word = if cmd.eq_ignore_ascii_case("INDEX") {
+                        2
+                    } else {
+                        1
+                    };
                     let Some(sectors) = w.get(time_word).and_then(|t| parse_msf(t)) else {
                         return malformed(at("bad mm:ss:ff time"));
                     };
@@ -199,7 +206,10 @@ mod tests {
 
     #[test]
     fn rejects_bad_input() {
-        assert!(matches!(CueSheet::parse("TRACK 01 AUDIO"), Err(MediaError::Malformed(_))));
+        assert!(matches!(
+            CueSheet::parse("TRACK 01 AUDIO"),
+            Err(MediaError::Malformed(_))
+        ));
         assert!(matches!(
             CueSheet::parse("FILE \"a\" WAVE\nTRACK 01 AUDIO\nINDEX 01 00:00:00"),
             Err(MediaError::Unsupported(_))

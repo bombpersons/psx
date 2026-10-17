@@ -20,11 +20,15 @@ cargo build --release                   # shipping build; developer MCP is exclu
 own crate is built at `opt-level = 1`), so they run at close to release speed.
 `--release` builds all of Bevy a second time, which takes minutes on a cold
 target: use it for shipping and profiling, not for iteration.
-Switching `dev-mcp` on or off can also rebuild shared dependencies because Cargo
-unifies dependency features for each build. Keep `--features dev-mcp` enabled
-throughout the agent iteration cycle (build, test and Clippy). Prewarm the ordinary
-build separately if you need both; a completed developer build does not guarantee
-a warm shipping or default-feature build.
+Turning `dev-mcp` on for the first time compiles only the MCP crates (rmcp,
+tokio, schemars) and your game, about 25 crates: `Cargo.toml` enables the
+features those crates would otherwise switch on in shared dependencies such as
+serde, so Bevy resolves identically in both builds. Afterwards Cargo keeps both
+builds, and switching back and forth is free. If you add a dependency, check
+that it doesn't reintroduce a difference (`cargo tree -e features` with and
+without the feature). Keeping `--features dev-mcp` on throughout agent iteration
+is still simplest; release builds are a separate profile and compile everything
+once more.
 
 ## Project layout
 

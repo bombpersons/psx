@@ -53,11 +53,20 @@ pub enum StateError {
 impl std::fmt::Display for StateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StateError::NotAState => write!(f, "not a psx-core save state (PCSX-Redux states need --backend redux)"),
-            StateError::Format(v) => write!(f, "save state format {v} is not supported (this core writes format {FORMAT})"),
+            StateError::NotAState => write!(
+                f,
+                "not a psx-core save state (PCSX-Redux states need --backend redux)"
+            ),
+            StateError::Format(v) => write!(
+                f,
+                "save state format {v} is not supported (this core writes format {FORMAT})"
+            ),
             StateError::Corrupt(e) => write!(f, "corrupt save state: {e}"),
             StateError::BiosMismatch { expected, actual } => {
-                write!(f, "state was saved with BIOS sha256 {expected}, but this BIOS is {actual}")
+                write!(
+                    f,
+                    "state was saved with BIOS sha256 {expected}, but this BIOS is {actual}"
+                )
             }
         }
     }
@@ -66,7 +75,10 @@ impl std::fmt::Display for StateError {
 impl std::error::Error for StateError {}
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Identity of a disc image without hashing hundreds of megabytes: the track
@@ -82,7 +94,11 @@ pub fn disc_fingerprint(disc: &psx_media::Disc) -> String {
             h.update(lba.to_le_bytes());
             h.update(&raw);
         }
-        lba = if lba < 24 { lba + 1 } else { (lba / 4096 + 1) * 4096 };
+        lba = if lba < 24 {
+            lba + 1
+        } else {
+            (lba / 4096 + 1) * 4096
+        };
     }
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -90,8 +106,17 @@ pub fn disc_fingerprint(disc: &psx_media::Disc) -> String {
 fn disc_layout(disc: &psx_media::Disc) -> String {
     disc.tracks
         .iter()
-        .map(|t| format!("{} {:?} {} {} {} {};", t.number, t.mode, t.first_lba, t.start_lba, t.sectors, t.unstored_pregap))
-        .chain(disc.subq.iter().map(|(lba, q)| format!("subq {lba} {q:?};")))
+        .map(|t| {
+            format!(
+                "{} {:?} {} {} {} {};",
+                t.number, t.mode, t.first_lba, t.start_lba, t.sectors, t.unstored_pregap
+            )
+        })
+        .chain(
+            disc.subq
+                .iter()
+                .map(|(lba, q)| format!("subq {lba} {q:?};")),
+        )
         .collect()
 }
 
@@ -101,8 +126,11 @@ pub fn read_header(bytes: &[u8]) -> Result<(Header, usize), StateError> {
         return Err(StateError::NotAState);
     }
     let len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
-    let json = bytes.get(12..12 + len).ok_or_else(|| StateError::Corrupt("truncated header".into()))?;
-    let header: Header = serde_json::from_slice(json).map_err(|e| StateError::Corrupt(e.to_string()))?;
+    let json = bytes
+        .get(12..12 + len)
+        .ok_or_else(|| StateError::Corrupt("truncated header".into()))?;
+    let header: Header =
+        serde_json::from_slice(json).map_err(|e| StateError::Corrupt(e.to_string()))?;
     if header.format != FORMAT {
         return Err(StateError::Format(header.format));
     }
@@ -141,11 +169,17 @@ impl Machine {
         let mut m = Machine::new(bios);
         let actual = sha256_hex(&m.bus.bios);
         if actual != header.bios_sha256 {
-            return Err(StateError::BiosMismatch { expected: header.bios_sha256, actual });
+            return Err(StateError::BiosMismatch {
+                expected: header.bios_sha256,
+                actual,
+            });
         }
         let mut body = Vec::new();
-        flate2::read::GzDecoder::new(&bytes[at..]).read_to_end(&mut body).map_err(|e| StateError::Corrupt(e.to_string()))?;
-        let mut restored: Machine = postcard::from_bytes(&body).map_err(|e| StateError::Corrupt(e.to_string()))?;
+        flate2::read::GzDecoder::new(&bytes[at..])
+            .read_to_end(&mut body)
+            .map_err(|e| StateError::Corrupt(e.to_string()))?;
+        let mut restored: Machine =
+            postcard::from_bytes(&body).map_err(|e| StateError::Corrupt(e.to_string()))?;
         restored.bus.bios = std::mem::take(&mut m.bus.bios);
         restored.bus.after_restore();
         Ok((header, restored))
@@ -157,14 +191,20 @@ pub(crate) mod big_array {
     use serde::de::Error;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub fn serialize<S: Serializer, T: Serialize, const N: usize>(a: &[T; N], s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer, T: Serialize, const N: usize>(
+        a: &[T; N],
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
         a.as_slice().serialize(s)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(d: D) -> Result<[T; N], D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(
+        d: D,
+    ) -> Result<[T; N], D::Error> {
         let v = Vec::<T>::deserialize(d)?;
         let n = v.len();
-        v.try_into().map_err(|_| D::Error::invalid_length(n, &"a fixed-size array"))
+        v.try_into()
+            .map_err(|_| D::Error::invalid_length(n, &"a fixed-size array"))
     }
 }
 
@@ -224,10 +264,19 @@ mod tests {
     #[test]
     fn rejects_other_bios_and_garbage() {
         let saved = Machine::new(counting_bios()).save_state(None);
-        assert!(matches!(Machine::load_state(&saved, vec![0; 16]), Err(StateError::BiosMismatch { .. })));
-        assert!(matches!(Machine::load_state(b"\x0a\x1b garbage", counting_bios()), Err(StateError::NotAState)));
+        assert!(matches!(
+            Machine::load_state(&saved, vec![0; 16]),
+            Err(StateError::BiosMismatch { .. })
+        ));
+        assert!(matches!(
+            Machine::load_state(b"\x0a\x1b garbage", counting_bios()),
+            Err(StateError::NotAState)
+        ));
         let mut truncated = saved.clone();
         truncated.truncate(saved.len() - 100);
-        assert!(matches!(Machine::load_state(&truncated, counting_bios()), Err(StateError::Corrupt(_))));
+        assert!(matches!(
+            Machine::load_state(&truncated, counting_bios()),
+            Err(StateError::Corrupt(_))
+        ));
     }
 }

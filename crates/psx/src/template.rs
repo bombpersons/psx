@@ -57,7 +57,17 @@ const REGION_LINE: &str = "pub const REGION: Region = Region::Ntsc;";
 const FIELDS_PER_TICK_LINE: &str = "pub const FIELDS_PER_TICK: u32 = 1;";
 
 /// The original game's video region, written as `REGION` in the generated `src/lib.rs`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum TemplateRegion {
     /// 60 Hz display.
@@ -100,7 +110,10 @@ pub struct TemplateOptions {
 
 impl Default for TemplateOptions {
     fn default() -> Self {
-        Self { region: TemplateRegion::Ntsc, fields_per_tick: 1 }
+        Self {
+            region: TemplateRegion::Ntsc,
+            fields_per_tick: 1,
+        }
     }
 }
 
@@ -112,10 +125,17 @@ fn configure_lib(contents: &str, options: TemplateOptions) -> psx_media::Result<
         ));
     }
     Ok(contents
-        .replacen(REGION_LINE, &format!("pub const REGION: Region = {};", options.region.rust()), 1)
+        .replacen(
+            REGION_LINE,
+            &format!("pub const REGION: Region = {};", options.region.rust()),
+            1,
+        )
         .replacen(
             FIELDS_PER_TICK_LINE,
-            &format!("pub const FIELDS_PER_TICK: u32 = {};", options.fields_per_tick),
+            &format!(
+                "pub const FIELDS_PER_TICK: u32 = {};",
+                options.fields_per_tick
+            ),
             1,
         ))
 }
@@ -123,10 +143,16 @@ fn configure_lib(contents: &str, options: TemplateOptions) -> psx_media::Result<
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
-pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> psx_media::Result<Value> {
+pub fn create(
+    dest: &Path,
+    name: Option<&str>,
+    options: TemplateOptions,
+) -> psx_media::Result<Value> {
     let name = match name {
         Some(n) => n.to_string(),
         None => dest
@@ -145,8 +171,16 @@ pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> psx_
             options.fields_per_tick
         )));
     }
-    if dest.exists() && std::fs::read_dir(dest).map_err(|e| MediaError::io(dest, e))?.next().is_some() {
-        return Err(MediaError::Malformed(format!("{} exists and is not empty", dest.display())));
+    if dest.exists()
+        && std::fs::read_dir(dest)
+            .map_err(|e| MediaError::io(dest, e))?
+            .next()
+            .is_some()
+    {
+        return Err(MediaError::Malformed(format!(
+            "{} exists and is not empty",
+            dest.display()
+        )));
     }
     let mut written = Vec::new();
     for (rel, contents) in FILES {
@@ -196,7 +230,9 @@ mod tests {
         assert_eq!(out["region"], "ntsc");
         let toml = std::fs::read_to_string(dir.join("my-game/Cargo.toml")).unwrap();
         assert!(toml.contains("name = \"my-game\""));
-        assert!(dir.join("my-game/src/psx/shaders/psx_material.wesl").exists());
+        assert!(dir
+            .join("my-game/src/psx/shaders/psx_material.wesl")
+            .exists());
         assert!(dir.join("my-game/src/controller/bindings.rs").exists());
         assert!(dir.join("my-game/src/controls/view.rs").exists());
         let lib = std::fs::read_to_string(dir.join("my-game/src/lib.rs")).unwrap();
@@ -208,9 +244,13 @@ mod tests {
 
     #[test]
     fn writes_region_and_fields_per_tick() {
-        let dir = std::env::temp_dir().join(format!("psx-template-region-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("psx-template-region-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let options = TemplateOptions { region: TemplateRegion::Pal, fields_per_tick: 2 };
+        let options = TemplateOptions {
+            region: TemplateRegion::Pal,
+            fields_per_tick: 2,
+        };
         let out = create(&dir.join("croc"), None, options).unwrap();
         assert_eq!(out["region"], "pal");
         assert_eq!(out["tick_hz"], 25.0);
@@ -218,7 +258,10 @@ mod tests {
         assert!(lib.contains("pub const REGION: Region = Region::Pal;"));
         assert!(lib.contains("pub const FIELDS_PER_TICK: u32 = 2;"));
         assert!(!lib.contains(REGION_LINE) && !lib.contains(FIELDS_PER_TICK_LINE));
-        let bad = TemplateOptions { fields_per_tick: 0, ..options };
+        let bad = TemplateOptions {
+            fields_per_tick: 0,
+            ..options
+        };
         assert!(create(&dir.join("zero"), None, bad).is_err());
         assert!(!dir.join("zero").exists());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -228,13 +271,18 @@ mod tests {
     /// assets) must be embedded, or `template create` silently drops it.
     #[test]
     fn embeds_every_template_file() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates/psx-bevy");
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates/psx-bevy");
         let mut found = Vec::new();
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
                 let path = entry.unwrap().path();
-                let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+                let rel = path
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 if rel == "target" || rel == "assets" {
                     continue;
                 }
@@ -246,7 +294,13 @@ mod tests {
             }
         }
         let embedded: Vec<&str> = FILES.iter().map(|(p, _)| *p).collect();
-        let missing: Vec<&String> = found.iter().filter(|f| !embedded.contains(&f.as_str())).collect();
-        assert!(missing.is_empty(), "template files not in FILES: {missing:?}");
+        let missing: Vec<&String> = found
+            .iter()
+            .filter(|f| !embedded.contains(&f.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "template files not in FILES: {missing:?}"
+        );
     }
 }

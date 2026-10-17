@@ -69,7 +69,11 @@ fn msf(lba: u32) -> [u8; 3] {
 
 /// A sector count as BCD MSF without the lead-in (track-relative times).
 fn rel_msf(sectors: u32) -> [u8; 3] {
-    [bcd(sectors / 4500), bcd((sectors / 75) % 60), bcd(sectors % 75)]
+    [
+        bcd(sectors / 4500),
+        bcd((sectors / 75) % 60),
+        bcd(sectors % 75),
+    ]
 }
 
 /// One entry of [`Cdrom::recent`].
@@ -169,7 +173,11 @@ impl Default for Cdrom {
 impl Cdrom {
     pub fn new(disc: Option<Disc>) -> Self {
         let region = disc.as_ref().map(region_of).unwrap_or(*b"SCEE");
-        let status = if disc.is_some() { stat::MOTOR } else { stat::SHELL_OPEN };
+        let status = if disc.is_some() {
+            stat::MOTOR
+        } else {
+            stat::SHELL_OPEN
+        };
         Cdrom {
             index: 0,
             params: VecDeque::new(),
@@ -311,13 +319,21 @@ impl Cdrom {
     /// Record one DMA3 transfer of `bytes` starting at the current FIFO position.
     pub fn note_dma(&mut self, bytes: u32) {
         if self.log_dma {
-            self.dma_log.push((self.fifo_lba, self.data_pos as u32, bytes.min(self.data.len().saturating_sub(self.data_pos) as u32)));
+            self.dma_log.push((
+                self.fifo_lba,
+                self.data_pos as u32,
+                bytes.min(self.data.len().saturating_sub(self.data_pos) as u32),
+            ));
         }
     }
 
     /// (LBA in the FIFO, current FIFO offset, sector payload size).
     pub fn fifo_state(&self) -> (u32, u32, u32) {
-        (self.fifo_lba, self.data_pos as u32, if self.mode & 0x20 != 0 { 2340 } else { 2048 })
+        (
+            self.fifo_lba,
+            self.data_pos as u32,
+            if self.mode & 0x20 != 0 { 2340 } else { 2048 },
+        )
     }
 
     /// Bytes left in the data FIFO.
@@ -327,7 +343,12 @@ impl Cdrom {
 
     /// DMA channel 3: next word from the data FIFO.
     pub fn dma_word(&mut self) -> u32 {
-        let b = [self.read_data_byte(), self.read_data_byte(), self.read_data_byte(), self.read_data_byte()];
+        let b = [
+            self.read_data_byte(),
+            self.read_data_byte(),
+            self.read_data_byte(),
+            self.read_data_byte(),
+        ];
         u32::from_le_bytes(b)
     }
 
@@ -352,7 +373,12 @@ impl Cdrom {
         let queued_before = self.queue.len();
         let params: Vec<u8> = self.params.iter().copied().collect();
         self.command_inner(cmd, now);
-        let ints: Vec<u8> = self.queue.iter().skip(queued_before).map(|r| r.int).collect();
+        let ints: Vec<u8> = self
+            .queue
+            .iter()
+            .skip(queued_before)
+            .map(|r| r.int)
+            .collect();
         if let Some(last) = self.recent.back_mut() {
             if last.command == cmd && last.params == params && last.ints == ints {
                 last.repeats += 1;
@@ -364,7 +390,16 @@ impl Cdrom {
         if self.recent.len() >= 64 {
             self.recent.pop_front();
         }
-        self.recent.push_back(RecentCommand { time: now, frame, last_time: now, last_frame: frame, command: cmd, params, ints, repeats: 1 });
+        self.recent.push_back(RecentCommand {
+            time: now,
+            frame,
+            last_time: now,
+            last_frame: frame,
+            command: cmd,
+            params,
+            ints,
+            repeats: 1,
+        });
     }
 
     fn command_inner(&mut self, cmd: u8, now: u64) {
@@ -393,7 +428,12 @@ impl Cdrom {
                 self.reading = false;
                 if let Some(&t) = p.first().filter(|&&t| t != 0) {
                     let track = unbcd(t);
-                    if let Some(st) = self.disc.as_ref().and_then(|d| d.tracks.iter().find(|x| x.number as u32 == track)).map(|x| x.start_lba) {
+                    if let Some(st) = self
+                        .disc
+                        .as_ref()
+                        .and_then(|d| d.tracks.iter().find(|x| x.number as u32 == track))
+                        .map(|x| x.start_lba)
+                    {
                         self.pos = st;
                     }
                 } else if let Some(l) = self.setloc.take() {
@@ -446,7 +486,8 @@ impl Cdrom {
                 self.reading = false;
                 self.playing = false;
                 self.mode = 0;
-                self.status = (self.status & stat::SHELL_OPEN) | if has_disc { stat::MOTOR } else { 0 };
+                self.status =
+                    (self.status & stat::SHELL_OPEN) | if has_disc { stat::MOTOR } else { 0 };
                 self.respond(ack, 3, vec![self.status]);
                 self.respond(ack + SLOW_COMPLETE_DELAY, 2, vec![self.status]);
             }
@@ -465,10 +506,18 @@ impl Cdrom {
                 self.mode = p[0];
                 self.respond(ack, 3, vec![self.status]);
             }
-            0x0F => self.respond(ack, 3, vec![self.status, self.mode, 0, self.filter.0, self.filter.1]),
+            0x0F => self.respond(
+                ack,
+                3,
+                vec![self.status, self.mode, 0, self.filter.0, self.filter.1],
+            ),
             0x10 => {
                 let s = &self.sector;
-                let v = if s.len() >= 20 { s[12..20].to_vec() } else { vec![0; 8] };
+                let v = if s.len() >= 20 {
+                    s[12..20].to_vec()
+                } else {
+                    vec![0; 8]
+                };
                 self.respond(ack, 3, v);
             }
             0x11 => {
@@ -480,7 +529,9 @@ impl Cdrom {
                     lba -= 1;
                 }
                 let (track, index, rel, abs) = self.position(lba);
-                let mut q = [0x41, track, index, rel[0], rel[1], rel[2], 0, abs[0], abs[1], abs[2]];
+                let mut q = [
+                    0x41, track, index, rel[0], rel[1], rel[2], 0, abs[0], abs[1], abs[2],
+                ];
                 if let Some(o) = subq(lba) {
                     o.apply(&mut q); // a valid-CRC override (.lsd)
                 }
@@ -494,7 +545,11 @@ impl Cdrom {
                 let t = p.first().map_or(0, |&v| unbcd(v));
                 let lba = match &self.disc {
                     Some(d) if t == 0 => d.end_lba(),
-                    Some(d) => d.tracks.iter().find(|x| x.number as u32 == t).map_or(0, |x| x.start_lba),
+                    Some(d) => d
+                        .tracks
+                        .iter()
+                        .find(|x| x.number as u32 == t)
+                        .map_or(0, |x| x.start_lba),
                     None => 0,
                 };
                 let m = msf(lba);
@@ -523,7 +578,11 @@ impl Cdrom {
                     v.extend_from_slice(&self.region);
                     self.respond(ack + SLOW_COMPLETE_DELAY, 2, v);
                 } else {
-                    self.respond(ack + SLOW_COMPLETE_DELAY, 5, vec![stat::ID_ERROR, 0x40, 0, 0, 0, 0, 0, 0]);
+                    self.respond(
+                        ack + SLOW_COMPLETE_DELAY,
+                        5,
+                        vec![stat::ID_ERROR, 0x40, 0, 0, 0, 0, 0, 0],
+                    );
                 }
             }
             0x1E => {
@@ -568,7 +627,11 @@ impl Cdrom {
     /// In a pregap (index 0) the relative time counts down to INDEX 01.
     fn position(&self, lba: u32) -> (u8, u8, [u8; 3], [u8; 3]) {
         let (track, start) = self.track_of(lba);
-        let (index, rel) = if lba < start { (0, rel_msf(start - lba)) } else { (1, rel_msf(lba - start)) };
+        let (index, rel) = if lba < start {
+            (0, rel_msf(start - lba))
+        } else {
+            (1, rel_msf(lba - start))
+        };
         (bcd(track), index, rel, msf(lba))
     }
 
@@ -587,7 +650,11 @@ impl Cdrom {
                 if now >= r.at {
                     let r = self.queue.pop_front().unwrap();
                     if self.log_dma {
-                        self.irq_log.push((now, "deliver", (r.int as u32) << 8 | r.bytes.first().copied().unwrap_or(0) as u32));
+                        self.irq_log.push((
+                            now,
+                            "deliver",
+                            (r.int as u32) << 8 | r.bytes.first().copied().unwrap_or(0) as u32,
+                        ));
                     }
                     self.iflag = r.int;
                     self.response = r.bytes.into();
@@ -616,7 +683,8 @@ impl Cdrom {
                 self.play_xa(&raw);
             }
             if self.log_dma {
-                self.irq_log.push((now, if wanted { "xa" } else { "xa-filtered" }, lba));
+                self.irq_log
+                    .push((now, if wanted { "xa" } else { "xa-filtered" }, lba));
             }
             return;
         }
@@ -638,7 +706,11 @@ impl Cdrom {
     fn play_sector(&mut self, now: u64) {
         let lba = self.pos;
         let (track, _) = self.track_of(lba);
-        let end = self.disc.as_ref().and_then(|d| d.tracks.iter().find(|t| t.number as u32 == track)).map(|t| t.first_lba + t.sectors);
+        let end = self
+            .disc
+            .as_ref()
+            .and_then(|d| d.tracks.iter().find(|t| t.number as u32 == track))
+            .map(|t| t.first_lba + t.sectors);
         if track as u8 != self.play_track || end.is_some_and(|e| lba >= e) {
             // End of the track: with autopause (mode bit 1) stop and raise INT4.
             if self.mode & 0x02 != 0 {
@@ -652,8 +724,17 @@ impl Cdrom {
         if let Some(Ok((raw, mode))) = self.disc.as_ref().map(|d| d.read_raw(lba)) {
             if mode == TrackMode::Audio && raw.len() == 2352 {
                 // Keep at most ~0.5 s buffered so a stalled consumer cannot grow it without bound.
-                let frames: Vec<(i16, i16)> =
-                    raw.as_chunks::<4>().0.iter().map(|f| (i16::from_le_bytes([f[0], f[1]]), i16::from_le_bytes([f[2], f[3]]))).collect();
+                let frames: Vec<(i16, i16)> = raw
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|f| {
+                        (
+                            i16::from_le_bytes([f[0], f[1]]),
+                            i16::from_le_bytes([f[2], f[3]]),
+                        )
+                    })
+                    .collect();
                 self.push_audio(&frames, false);
             }
         }
@@ -698,7 +779,10 @@ impl Cdrom {
             let out = if silent {
                 (0, 0)
             } else {
-                (((l * ll + r * rl) >> 7).clamp(-0x8000, 0x7FFF) as i16, ((r * rr + l * lr) >> 7).clamp(-0x8000, 0x7FFF) as i16)
+                (
+                    ((l * ll + r * rl) >> 7).clamp(-0x8000, 0x7FFF) as i16,
+                    ((r * rr + l * lr) >> 7).clamp(-0x8000, 0x7FFF) as i16,
+                )
             };
             self.audio.push_back(out);
         }
@@ -746,7 +830,11 @@ mod tests {
         c.write(0, 1, now);
         c.write(3, 0x07, now); // acknowledge before reading, as Resident Evil's handler does
         assert!(!c.irq());
-        assert_ne!(c.read(0, now) & 0x20, 0, "RSLRRDY still set after the acknowledge");
+        assert_ne!(
+            c.read(0, now) & 0x20,
+            0,
+            "RSLRRDY still set after the acknowledge"
+        );
         assert_eq!(c.read(1, now), c.status);
         assert_eq!(c.read(0, now) & 0x20, 0, "FIFO empty once read");
     }

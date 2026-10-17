@@ -66,7 +66,12 @@ pub struct XaDecoder {
 impl Default for XaDecoder {
     fn default() -> Self {
         // The six-step counter powers up "uninitialized random"; start a full step.
-        XaDecoder { hist: [(0, 0); 2], ring: [[0; 32]; 2], pos: 0, sixstep: 6 }
+        XaDecoder {
+            hist: [(0, 0); 2],
+            ring: [[0; 32]; 2],
+            pos: 0,
+            sixstep: 6,
+        }
     }
 }
 
@@ -92,7 +97,8 @@ fn decode_unit(group: &[u8], unit: usize, bits: u32, hist: &mut (i32, i32), out:
             (group[16 + unit + j * 4] as i8 as i32) << 8 // byte in bits 8..15
         };
         let t = t >> range;
-        let s = (t + (hist.0 * POS[filter] + hist.1 * NEG[filter] + 32) / 64).clamp(-0x8000, 0x7FFF);
+        let s =
+            (t + (hist.0 * POS[filter] + hist.1 * NEG[filter] + 32) / 64).clamp(-0x8000, 0x7FFF);
         *hist = (s, hist.0);
         out.push(s as i16);
     }
@@ -133,7 +139,10 @@ impl XaDecoder {
                 if self.sixstep == 0 {
                     self.sixstep = 6;
                     for t in &ZIGZAG {
-                        out.push_back((zigzag(&self.ring[0], self.pos, t), zigzag(&self.ring[1], self.pos, t)));
+                        out.push_back((
+                            zigzag(&self.ring[0], self.pos, t),
+                            zigzag(&self.ring[1], self.pos, t),
+                        ));
                     }
                 }
             }
@@ -151,8 +160,22 @@ mod tests {
 
     #[test]
     fn coding_fields() {
-        assert_eq!(Coding::from_byte(0x01), Coding { stereo: true, rate: 37_800, bits: 4 });
-        assert_eq!(Coding::from_byte(0x14), Coding { stereo: false, rate: 18_900, bits: 8 });
+        assert_eq!(
+            Coding::from_byte(0x01),
+            Coding {
+                stereo: true,
+                rate: 37_800,
+                bits: 4
+            }
+        );
+        assert_eq!(
+            Coding::from_byte(0x14),
+            Coding {
+                stereo: false,
+                rate: 18_900,
+                bits: 8
+            }
+        );
     }
 
     #[test]
@@ -177,8 +200,14 @@ mod tests {
     #[test]
     fn zigzag_tables_match_psx_spx() {
         // Spot checks against psx-spx's table listing (index 1..29 down each column).
-        assert_eq!((ZIGZAG[0][0], ZIGZAG[0][13], ZIGZAG[0][16]), (0, 0x0400, 0x6794));
-        assert_eq!((ZIGZAG[2][14], ZIGZAG[6][11], ZIGZAG[6][0]), (0x7939, 0x53E0, -0x0005));
+        assert_eq!(
+            (ZIGZAG[0][0], ZIGZAG[0][13], ZIGZAG[0][16]),
+            (0, 0x0400, 0x6794)
+        );
+        assert_eq!(
+            (ZIGZAG[2][14], ZIGZAG[6][11], ZIGZAG[6][0]),
+            (0x7939, 0x53E0, -0x0005)
+        );
         // Table 3 is symmetric about its centre tap; tables 1/5, 2/4 and 6/7 mirror each other.
         for i in 0..29 {
             assert_eq!(ZIGZAG[2][i], ZIGZAG[2][28 - i]);
@@ -198,7 +227,12 @@ mod tests {
         // with the small per-phase ripple psx-spx calls "22050Hz noise".
         d.resample(&vec![(1000, -1000); 600], 37_800, &mut out);
         let tail: Vec<_> = out.iter().skip(60).collect();
-        assert!(tail.iter().all(|&&(l, r)| (885..=925).contains(&l) && (-925..=-885).contains(&r)), "{:?}", &tail[..7]);
+        assert!(
+            tail.iter()
+                .all(|&&(l, r)| (885..=925).contains(&l) && (-925..=-885).contains(&r)),
+            "{:?}",
+            &tail[..7]
+        );
         // The passband is flat to about 15 kHz (linear interpolation loses ~2 dB by 10 kHz).
         // Amplitude of the tone in the 44.1 kHz output, by projection onto it.
         let tone = |f: f64| -> f64 {
@@ -206,14 +240,18 @@ mod tests {
             let mut out = VecDeque::new();
             let input: Vec<(i16, i16)> = (0..18_900)
                 .map(|n| {
-                    let s = (10_000.0 * (2.0 * std::f64::consts::PI * f * n as f64 / 37_800.0).sin()) as i16;
+                    let s = (10_000.0
+                        * (2.0 * std::f64::consts::PI * f * n as f64 / 37_800.0).sin())
+                        as i16;
                     (s, s)
                 })
                 .collect();
             d.resample(&input, 37_800, &mut out);
             let y: Vec<f64> = out.iter().skip(500).map(|&(l, _)| l as f64).collect();
             let w = 2.0 * std::f64::consts::PI * f / 44_100.0;
-            let (re, im) = y.iter().enumerate().fold((0.0, 0.0), |(re, im), (m, &v)| (re + v * (w * m as f64).cos(), im + v * (w * m as f64).sin()));
+            let (re, im) = y.iter().enumerate().fold((0.0, 0.0), |(re, im), (m, &v)| {
+                (re + v * (w * m as f64).cos(), im + v * (w * m as f64).sin())
+            });
             2.0 * (re * re + im * im).sqrt() / y.len() as f64
         };
         let (low, mid) = (tone(1000.0), tone(10_000.0));

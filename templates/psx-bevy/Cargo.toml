@@ -17,7 +17,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-dev-mcp = ["dep:rmcp", "dep:tokio", "dep:base64", "dep:image"]
+dev-mcp = ["dep:rmcp", "dep:tokio", "dep:image"]
 
 [dependencies]
 bevy = { version = "=0.20.0", default-features = false, features = [
@@ -34,9 +34,16 @@ bevy_render = { version = "=0.20.0", default-features = false, features = ["gles
 bevy_input = { version = "=0.20.0", features = ["serialize"] }
 rmcp = { version = "=3.5.1", optional = true, features = ["transport-io"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "sync", "time", "io-std"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-base64 = { version = "0.22", optional = true }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["alloc"] }
+# Feature alignment: rmcp and tokio-util enable `serde/rc`, `serde_json/alloc`,
+# `futures/std`, default futures-sink and default base64 0.23, all of which
+# Bevy shares. Enabling them in every build keeps the shared crates' resolved
+# features identical with and without `dev-mcp`, so switching rebuilds only the
+# MCP crates and the game instead of most of Bevy.
+futures = { version = "0.3", default-features = false, features = ["std"] }
+futures-sink = "0.3"
+base64 = "0.23"
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 
 # Iteration builds: your code at opt-level 1 (fast to rebuild), dependencies

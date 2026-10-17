@@ -18,7 +18,11 @@ pub struct SystemCnf {
 pub const DEFAULT_BOOT: &str = "cdrom:PSX.EXE;1";
 
 fn hex(v: &str) -> Option<u32> {
-    u32::from_str_radix(v.trim().trim_start_matches("0x").trim_start_matches("0X"), 16).ok()
+    u32::from_str_radix(
+        v.trim().trim_start_matches("0x").trim_start_matches("0X"),
+        16,
+    )
+    .ok()
 }
 
 impl SystemCnf {
@@ -30,7 +34,11 @@ impl SystemCnf {
                 fields.insert(k.trim().to_ascii_uppercase(), v.trim().to_string());
             }
         }
-        let mut boot_words = fields.get("BOOT").map(|b| b.split_whitespace()).into_iter().flatten();
+        let mut boot_words = fields
+            .get("BOOT")
+            .map(|b| b.split_whitespace())
+            .into_iter()
+            .flatten();
         let boot = boot_words.next().map(str::to_string);
         let boot_args = boot_words.map(str::to_string).collect();
         SystemCnf {
@@ -50,7 +58,9 @@ mod tests {
 
     #[test]
     fn parses_typical_file() {
-        let c = SystemCnf::parse(b"BOOT = cdrom:\\SLUS_002.38;1\r\nTCB = 4\r\nEVENT = 10\r\nSTACK = 801FFFF0\r\n");
+        let c = SystemCnf::parse(
+            b"BOOT = cdrom:\\SLUS_002.38;1\r\nTCB = 4\r\nEVENT = 10\r\nSTACK = 801FFFF0\r\n",
+        );
         assert_eq!(c.boot.as_deref(), Some("cdrom:\\SLUS_002.38;1"));
         assert_eq!(c.tcb, Some(4));
         assert_eq!(c.event, Some(0x10));

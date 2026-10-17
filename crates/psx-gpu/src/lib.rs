@@ -115,7 +115,9 @@ impl<const DEPTH: u8> TexelSource<Vram> for PageTexture<DEPTH> {
         let y = self.base_y + ((v & self.v_and) | self.v_or);
         match DEPTH {
             0 => self.clut[((vram.get(self.base_x + (u >> 2), y) >> ((u & 3) * 4)) & 0xF) as usize],
-            1 => self.clut[((vram.get(self.base_x + (u >> 1), y) >> ((u & 1) * 8)) & 0xFF) as usize],
+            1 => {
+                self.clut[((vram.get(self.base_x + (u >> 1), y) >> ((u & 1) * 8)) & 0xFF) as usize]
+            }
             _ => vram.get(self.base_x + u, y),
         }
     }
@@ -186,7 +188,11 @@ impl DrawState {
         self.texpage & 0x200 != 0
     }
     pub fn raster(&self) -> Raster {
-        Raster { clip: self.area, check_mask: self.check_mask, set_mask: self.set_mask }
+        Raster {
+            clip: self.area,
+            check_mask: self.check_mask,
+            set_mask: self.set_mask,
+        }
     }
 
     fn texture(&self, clut: u32) -> VramTexture {
@@ -220,7 +226,13 @@ pub struct Display {
 
 impl Default for Display {
     fn default() -> Self {
-        Display { enabled: false, start: (0, 0), h_range: (0x200, 0xC00), v_range: (0x10, 0x100), mode: 0 }
+        Display {
+            enabled: false,
+            start: (0, 0),
+            h_range: (0x200, 0xC00),
+            v_range: (0x10, 0x100),
+            mode: 0,
+        }
     }
 }
 
@@ -243,8 +255,21 @@ impl Display {
     /// Visible lines: the vertical display range, doubled for 480-line interlace.
     pub fn height(&self) -> u32 {
         let lines = self.v_range.1.saturating_sub(self.v_range.0) as u32;
-        let lines = if lines == 0 { if self.pal() { 256 } else { 240 } } else { lines };
-        (if self.interlaced_480() { lines * 2 } else { lines }).min(512)
+        let lines = if lines == 0 {
+            if self.pal() {
+                256
+            } else {
+                240
+            }
+        } else {
+            lines
+        };
+        (if self.interlaced_480() {
+            lines * 2
+        } else {
+            lines
+        })
+        .min(512)
     }
 }
 
@@ -253,7 +278,13 @@ enum Transfer {
     #[default]
     None,
     /// CPU→VRAM: remaining halfwords go to `(x0 + i % w, y0 + i / w)`.
-    ToVram { x: i32, y: i32, w: i32, h: i32, index: i32 },
+    ToVram {
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        index: i32,
+    },
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -275,7 +306,11 @@ fn sext11(v: u32) -> i32 {
 }
 
 fn color(w: u32) -> (i32, i32, i32) {
-    ((w & 0xFF) as i32, ((w >> 8) & 0xFF) as i32, ((w >> 16) & 0xFF) as i32)
+    (
+        (w & 0xFF) as i32,
+        ((w >> 8) & 0xFF) as i32,
+        ((w >> 16) & 0xFF) as i32,
+    )
 }
 
 /// Number of words for a fixed-length GP0 command, `None` for polylines.
@@ -355,7 +390,9 @@ impl Gpu {
     }
 
     fn upload_halfword(&mut self, value: u16) {
-        let Transfer::ToVram { x, y, w, h, index } = &mut self.transfer else { return };
+        let Transfer::ToVram { x, y, w, h, index } = &mut self.transfer else {
+            return;
+        };
         if *index >= *w * *h {
             return;
         }
@@ -395,13 +432,21 @@ impl Gpu {
                 let (x, y) = ((p[1] & 0x3FF) as i32, ((p[1] >> 16) & 0x1FF) as i32);
                 let w = (((p[2] & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1) as i32;
                 let h = ((((p[2] >> 16) & 0xFFFF).wrapping_sub(1) & 0x1FF) + 1) as i32;
-                self.transfer = Transfer::ToVram { x, y, w, h, index: 0 };
+                self.transfer = Transfer::ToVram {
+                    x,
+                    y,
+                    w,
+                    h,
+                    index: 0,
+                };
             }
             0xC0..=0xDF => {
                 let (x, y) = ((p[1] & 0x3FF) as i32, ((p[1] >> 16) & 0x1FF) as i32);
                 let w = (((p[2] & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1) as i32;
                 let h = ((((p[2] >> 16) & 0xFFFF).wrapping_sub(1) & 0x1FF) + 1) as i32;
-                let halves: Vec<u16> = (0..w * h).map(|i| self.vram.get(x + i % w, y + i / w)).collect();
+                let halves: Vec<u16> = (0..w * h)
+                    .map(|i| self.vram.get(x + i % w, y + i / w))
+                    .collect();
                 for pair in halves.chunks(2) {
                     let hi = pair.get(1).copied().unwrap_or(0) as u32;
                     self.read_queue.push_back(pair[0] as u32 | (hi << 16));
@@ -413,8 +458,12 @@ impl Gpu {
             }
             0xE2 => {
                 let w = p[0];
-                self.state.tex_window =
-                    ((w & 31) as u8, ((w >> 5) & 31) as u8, ((w >> 10) & 31) as u8, ((w >> 15) & 31) as u8);
+                self.state.tex_window = (
+                    (w & 31) as u8,
+                    ((w >> 5) & 31) as u8,
+                    ((w >> 10) & 31) as u8,
+                    ((w >> 15) & 31) as u8,
+                );
             }
             0xE3 => {
                 self.state.area.0 = (p[0] & 0x3FF) as i32;
@@ -452,7 +501,15 @@ impl Gpu {
             };
             let (x, y) = self.vertex(p[i]);
             i += 1;
-            *v = Vtx { x, y, r: c.0, g: c.1, b: c.2, u: 0, v: 0 };
+            *v = Vtx {
+                x,
+                y,
+                r: c.0,
+                g: c.1,
+                b: c.2,
+                u: 0,
+                v: 0,
+            };
             if textured {
                 v.u = (p[i] & 0xFF) as i32;
                 v.v = ((p[i] >> 8) & 0xFF) as i32;
@@ -502,9 +559,13 @@ impl Gpu {
             }
         };
         if !textured {
-            draw(vram, &|vram, v| raster::triangle(vram, &raster::NoTexture, &r, &sh, v));
+            draw(vram, &|vram, v| {
+                raster::triangle(vram, &raster::NoTexture, &r, &sh, v)
+            });
         } else {
-            with_page_texture!(tex, vram, r.clip, |t| draw(vram, &|vram, v| raster::triangle(vram, t, &r, &sh, v)));
+            with_page_texture!(tex, vram, r.clip, |t| draw(vram, &|vram, v| {
+                raster::triangle(vram, t, &r, &sh, v)
+            }));
         }
     }
 
@@ -532,7 +593,15 @@ impl Gpu {
             }
             let Some(&vw) = p.get(i) else { break };
             let (x, y) = self.vertex(vw);
-            pts.push(Vtx { x, y, r: c.0, g: c.1, b: c.2, u: 0, v: 0 });
+            pts.push(Vtx {
+                x,
+                y,
+                r: c.0,
+                g: c.1,
+                b: c.2,
+                u: 0,
+                v: 0,
+            });
             i += 1;
         }
         let r = self.state.raster();
@@ -574,7 +643,15 @@ impl Gpu {
             ..Shade::default()
         };
         let (ras, tex) = (self.state.raster(), self.state.texture(clut));
-        let origin = Vtx { x, y, r, g, b, u, v };
+        let origin = Vtx {
+            x,
+            y,
+            r,
+            g,
+            b,
+            u,
+            v,
+        };
         let flip = self.state.rect_flip;
         #[cfg(test)]
         if tests::REFERENCE.get() {
@@ -585,7 +662,9 @@ impl Gpu {
         if !textured {
             raster::rect(vram, &raster::NoTexture, &ras, &sh, origin, w, h, flip);
         } else {
-            with_page_texture!(tex, vram, ras.clip, |t| raster::rect(vram, t, &ras, &sh, origin, w, h, flip));
+            with_page_texture!(tex, vram, ras.clip, |t| raster::rect(
+                vram, t, &ras, &sh, origin, w, h, flip
+            ));
         }
     }
 
@@ -653,7 +732,11 @@ impl Gpu {
         let (w, h) = (self.display.width(), self.display.height());
         let (x, y) = (self.display.start.0 as i32, self.display.start.1 as i32);
         let rgba = if self.display.rgb24() {
-            self.vram.rgb24(x, y, w, h).chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect()
+            self.vram
+                .rgb24(x, y, w, h)
+                .chunks(3)
+                .flat_map(|c| [c[0], c[1], c[2], 255])
+                .collect()
         } else {
             let mut px = self.vram.rgba15(x, y, w, h);
             px.chunks_mut(4).for_each(|c| c[3] = 255);
@@ -692,7 +775,10 @@ mod tests {
     fn vertex(rng: &mut Rng, area: (i32, i32)) -> u32 {
         let (x, y) = match rng.below(8) {
             0 => (rng.next() as i32 % 1100, rng.next() as i32 % 600),
-            _ => (area.0 - 40 + rng.below(220) as i32, area.1 - 40 + rng.below(200) as i32),
+            _ => (
+                area.0 - 40 + rng.below(220) as i32,
+                area.1 - 40 + rng.below(200) as i32,
+            ),
         };
         (x as u32 & 0x7FF) | ((y as u32 & 0x7FF) << 16)
     }
@@ -717,13 +803,30 @@ mod tests {
                 // New drawing state every few commands.
                 if cmd % 8 == 0 {
                     let (x1, y1) = (rng.below(1024), rng.below(512));
-                    let (x2, y2) = ((x1 + rng.below(300)).min(1023), (y1 + rng.below(260)).min(511));
-                    let (x2, y2) = if rng.below(16) == 0 { (rng.below(1024), rng.below(512)) } else { (x2, y2) };
+                    let (x2, y2) = (
+                        (x1 + rng.below(300)).min(1023),
+                        (y1 + rng.below(260)).min(511),
+                    );
+                    let (x2, y2) = if rng.below(16) == 0 {
+                        (rng.below(1024), rng.below(512))
+                    } else {
+                        (x2, y2)
+                    };
                     words.push(0xE100_0000 | (rng.next() & 0x3FFF));
-                    words.push(0xE200_0000 | if rng.below(3) == 0 { rng.next() & 0xF_FFFF } else { 0 });
+                    words.push(
+                        0xE200_0000
+                            | if rng.below(3) == 0 {
+                                rng.next() & 0xF_FFFF
+                            } else {
+                                0
+                            },
+                    );
                     words.push(0xE300_0000 | x1 | (y1 << 10));
                     words.push(0xE400_0000 | x2 | (y2 << 10));
-                    let (ox, oy) = (rng.below(64) as i32 - 32 + x1 as i32, rng.below(64) as i32 - 32 + y1 as i32);
+                    let (ox, oy) = (
+                        rng.below(64) as i32 - 32 + x1 as i32,
+                        rng.below(64) as i32 - 32 + y1 as i32,
+                    );
                     words.push(0xE500_0000 | (ox as u32 & 0x7FF) | ((oy as u32 & 0x7FF) << 11));
                     words.push(0xE600_0000 | (rng.next() & 3));
                     fast.gp0_all(&words);
@@ -731,8 +834,15 @@ mod tests {
                     words.clear();
                 }
                 // Vertices are relative to the drawing offset.
-                let near = (fast.state.area.0 - fast.state.offset.0, fast.state.area.1 - fast.state.offset.1);
-                let op = if rng.below(4) == 0 { 0x60 + rng.below(32) } else { 0x20 + rng.below(32) } as u8;
+                let near = (
+                    fast.state.area.0 - fast.state.offset.0,
+                    fast.state.area.1 - fast.state.offset.1,
+                );
+                let op = if rng.below(4) == 0 {
+                    0x60 + rng.below(32)
+                } else {
+                    0x20 + rng.below(32)
+                } as u8;
                 words.push(((op as u32) << 24) | (rng.next() & 0xFF_FFFF));
                 if op < 0x40 {
                     let n = if op & 0x08 != 0 { 4 } else { 3 };
@@ -753,7 +863,9 @@ mod tests {
                 } else {
                     words.push(vertex(&mut rng, near));
                     if op & 0x04 != 0 {
-                        words.push((rng.next() & 0xFFFF) | ((rng.below(64) | (rng.below(512) << 6)) << 16));
+                        words.push(
+                            (rng.next() & 0xFFFF) | ((rng.below(64) | (rng.below(512) << 6)) << 16),
+                        );
                     }
                     if op & 0x18 == 0 {
                         words.push(rng.below(300) | (rng.below(260) << 16));
@@ -764,7 +876,13 @@ mod tests {
                 reference.gp0_all(&words);
                 REFERENCE.set(false);
                 if fast.vram.as_slice() != reference.vram.as_slice() {
-                    let i = fast.vram.as_slice().iter().zip(reference.vram.as_slice()).position(|(a, b)| a != b).unwrap();
+                    let i = fast
+                        .vram
+                        .as_slice()
+                        .iter()
+                        .zip(reference.vram.as_slice())
+                        .position(|(a, b)| a != b)
+                        .unwrap();
                     panic!(
                         "sequence {seq} command {cmd} {words:08X?} state {:?}: first difference at ({}, {}): {:04X} vs reference {:04X}",
                         fast.state,

@@ -118,7 +118,9 @@ impl Pad {
             1 => {
                 let ok = match self.kind {
                     PadKind::Digital => tx == 0x42,
-                    PadKind::DualShock => tx == 0x42 || tx == 0x43 || (self.config && (0x40..=0x4F).contains(&tx)),
+                    PadKind::DualShock => {
+                        tx == 0x42 || tx == 0x43 || (self.config && (0x40..=0x4F).contains(&tx))
+                    }
                 };
                 if !ok {
                     return (0xFF, false);
@@ -177,22 +179,38 @@ mod tests {
 
     #[test]
     fn digital_poll() {
-        let mut p = Pad { buttons: crate::sio0::button::CROSS, ..Default::default() };
-        assert_eq!(xfer(&mut p, &[0x42, 0, 0, 0]), vec![0xFF, 0x41, 0x5A, 0xFF, !0x40u8]);
+        let mut p = Pad {
+            buttons: crate::sio0::button::CROSS,
+            ..Default::default()
+        };
+        assert_eq!(
+            xfer(&mut p, &[0x42, 0, 0, 0]),
+            vec![0xFF, 0x41, 0x5A, 0xFF, !0x40u8]
+        );
     }
 
     #[test]
     fn dualshock_switches_to_analog_and_locks() {
-        let mut p = Pad { kind: PadKind::DualShock, sticks: [0x10, 0x20, 0x30, 0x40], ..Default::default() };
+        let mut p = Pad {
+            kind: PadKind::DualShock,
+            sticks: [0x10, 0x20, 0x30, 0x40],
+            ..Default::default()
+        };
         assert_eq!(xfer(&mut p, &[0x42, 0, 0, 0])[1], 0x41, "starts digital");
         xfer(&mut p, &[0x43, 0, 1, 0]); // enter config (digital-length reply)
         assert!(p.config);
-        assert_eq!(xfer(&mut p, &[0x45, 0, 0, 0, 0, 0, 0, 0]), vec![0xFF, 0xF3, 0x5A, 1, 2, 0, 2, 1, 0]);
+        assert_eq!(
+            xfer(&mut p, &[0x45, 0, 0, 0, 0, 0, 0, 0]),
+            vec![0xFF, 0xF3, 0x5A, 1, 2, 0, 2, 1, 0]
+        );
         xfer(&mut p, &[0x44, 0, 1, 3, 0, 0, 0, 0]); // analog, locked
-        // Exit config: zeros in config mode, not button data.
+                                                    // Exit config: zeros in config mode, not button data.
         assert_eq!(xfer(&mut p, &[0x43, 0, 0, 0, 0, 0, 0, 0])[3..], [0; 6]);
         assert!(p.analog && p.locked && !p.config);
-        assert_eq!(xfer(&mut p, &[0x42, 0, 0, 0, 0, 0, 0, 0]), vec![0xFF, 0x73, 0x5A, 0xFF, 0xFF, 0x10, 0x20, 0x30, 0x40]);
+        assert_eq!(
+            xfer(&mut p, &[0x42, 0, 0, 0, 0, 0, 0, 0]),
+            vec![0xFF, 0x73, 0x5A, 0xFF, 0xFF, 0x10, 0x20, 0x30, 0x40]
+        );
     }
 
     #[test]

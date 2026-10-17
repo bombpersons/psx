@@ -58,7 +58,8 @@ impl Entry {
 
     /// True when the directory declares Form 2 or interleaved (XA/STR) content.
     pub fn is_streamed(&self) -> bool {
-        self.xa_attributes.is_some_and(|a| a & (xa::MODE2_FORM2 | xa::INTERLEAVED) != 0)
+        self.xa_attributes
+            .is_some_and(|a| a & (xa::MODE2_FORM2 | xa::INTERLEAVED) != 0)
     }
 }
 
@@ -77,7 +78,9 @@ fn u32le(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
 fn text(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).trim_end_matches([' ', '\0']).to_string()
+    String::from_utf8_lossy(b)
+        .trim_end_matches([' ', '\0'])
+        .to_string()
 }
 
 struct RawRecord {
@@ -100,8 +103,8 @@ fn parse_record(r: &[u8]) -> Result<RawRecord> {
     let name = r[33..33 + name_len].to_vec();
     let su_start = 33 + name_len + (name_len + 1) % 2;
     let su = r.get(su_start..).unwrap_or(&[]);
-    let xa = (su.len() >= 14 && &su[6..8] == b"XA")
-        .then(|| (u16::from_be_bytes([su[4], su[5]]), su[8]));
+    let xa =
+        (su.len() >= 14 && &su[6..8] == b"XA").then(|| (u16::from_be_bytes([su[4], su[5]]), su[8]));
     let d = &r[18..25];
     let recorded = format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
@@ -112,17 +115,29 @@ fn parse_record(r: &[u8]) -> Result<RawRecord> {
         d[4],
         d[5]
     );
-    Ok(RawRecord { name, lba: u32le(r, 2), size: u32le(r, 10), flags: r[25], recorded, xa })
+    Ok(RawRecord {
+        name,
+        lba: u32le(r, 2),
+        size: u32le(r, 10),
+        flags: r[25],
+        recorded,
+        xa,
+    })
 }
 
 impl FileSystem {
     pub fn read(disc: &Disc) -> Result<Self> {
         let pvd = disc.read_form1(16, 1)?;
         if pvd[0] != 1 || &pvd[1..6] != b"CD001" {
-            return Err(MediaError::Unsupported("no ISO9660 primary volume descriptor at LBA 16".into()));
+            return Err(MediaError::Unsupported(
+                "no ISO9660 primary volume descriptor at LBA 16".into(),
+            ));
         }
         if u16le(&pvd, 128) != SECTOR as u16 {
-            return Err(MediaError::Unsupported(format!("logical block size {}", u16le(&pvd, 128))));
+            return Err(MediaError::Unsupported(format!(
+                "logical block size {}",
+                u16le(&pvd, 128)
+            )));
         }
         let volume = Volume {
             system_id: text(&pvd[8..40]),
@@ -133,7 +148,11 @@ impl FileSystem {
             created: text(&pvd[813..829]),
         };
         let root = parse_record(&pvd[156..190])?;
-        let mut fs = FileSystem { volume, entries: Vec::new(), warnings: Vec::new() };
+        let mut fs = FileSystem {
+            volume,
+            entries: Vec::new(),
+            warnings: Vec::new(),
+        };
         let mut seen = HashSet::new();
         fs.walk(disc, "", root.lba, root.size, 0, &mut seen)?;
         fs.entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -150,14 +169,16 @@ impl FileSystem {
         seen: &mut HashSet<u32>,
     ) -> Result<()> {
         if depth > 32 || !seen.insert(lba) {
-            self.warnings.push(format!("skipped directory at LBA {lba} (loop or too deep)"));
+            self.warnings
+                .push(format!("skipped directory at LBA {lba} (loop or too deep)"));
             return Ok(());
         }
         let sectors = size.div_ceil(SECTOR);
         let bytes = match disc.read_form1(lba, sectors) {
             Ok(b) => b,
             Err(e) => {
-                self.warnings.push(format!("directory {prefix}/ at LBA {lba}: {e}"));
+                self.warnings
+                    .push(format!("directory {prefix}/ at LBA {lba}: {e}"));
                 return Ok(());
             }
         };
@@ -208,12 +229,17 @@ impl FileSystem {
     /// Case-insensitive lookup; accepts `cdrom:\X;1`, `\X`, `/X` or `X`.
     pub fn find(&self, path: &str) -> Option<&Entry> {
         let want = normalize(path);
-        self.entries.iter().find(|e| e.path.eq_ignore_ascii_case(&want))
+        self.entries
+            .iter()
+            .find(|e| e.path.eq_ignore_ascii_case(&want))
     }
 
     /// The named file whose extent covers `lba`, if any.
     pub fn owner_of(&self, lba: u32) -> Option<&Entry> {
-        self.entries.iter().filter(|e| !e.is_dir).find(|e| e.contains_lba(lba))
+        self.entries
+            .iter()
+            .filter(|e| !e.is_dir)
+            .find(|e| e.contains_lba(lba))
     }
 
     /// File contents as 2048-byte Form 1 payloads, trimmed to the recorded size.
@@ -246,7 +272,10 @@ impl FileSystem {
 
 pub fn normalize(path: &str) -> String {
     let p = path.trim();
-    let p = p.strip_prefix("cdrom:").or_else(|| p.strip_prefix("CDROM:")).unwrap_or(p);
+    let p = p
+        .strip_prefix("cdrom:")
+        .or_else(|| p.strip_prefix("CDROM:"))
+        .unwrap_or(p);
     let p = p.split(';').next().unwrap_or("");
     let p = p.replace('\\', "/");
     let p = p.trim_start_matches('/');

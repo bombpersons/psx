@@ -47,19 +47,39 @@ impl Outcome {
 
     pub(crate) fn media(r: psx_media::Result<Value>) -> Self {
         match r {
-            Ok(value) => Outcome { value, exit: 0, pretty: true, text: false },
+            Ok(value) => Outcome {
+                value,
+                exit: 0,
+                pretty: true,
+                text: false,
+            },
             Err(e) => {
                 let mut value = json!({"error": {"code": e.code(), "message": e.to_string()}});
                 if let MediaError::Io { path, .. } = &e {
-                    value["error"]["path"] = json!(std::path::absolute(path).unwrap_or_else(|_| path.clone()));
+                    value["error"]["path"] =
+                        json!(std::path::absolute(path).unwrap_or_else(|_| path.clone()));
                 }
-                Outcome { value, exit: if matches!(e, MediaError::Unsupported(_)) { 2 } else { 1 }, pretty: false, text: false }
-            },
+                Outcome {
+                    value,
+                    exit: if matches!(e, MediaError::Unsupported(_)) {
+                        2
+                    } else {
+                        1
+                    },
+                    pretty: false,
+                    text: false,
+                }
+            }
         }
     }
 
     fn pair((ok, value): (bool, Value)) -> Self {
-        Outcome { value, exit: if ok { 0 } else { 1 }, pretty: true, text: false }
+        Outcome {
+            value,
+            exit: if ok { 0 } else { 1 },
+            pretty: true,
+            text: false,
+        }
     }
 
     /// A media result printed as plain text (its `text` field) when `text` is set.
@@ -72,7 +92,11 @@ impl Outcome {
     /// The CLI's stdout text (without the trailing newline).
     pub fn render(&self) -> String {
         if self.text {
-            return self.value["text"].as_str().unwrap_or_default().trim_end().to_string();
+            return self.value["text"]
+                .as_str()
+                .unwrap_or_default()
+                .trim_end()
+                .to_string();
         }
         if self.pretty {
             serde_json::to_string_pretty(&self.value).unwrap()
@@ -115,7 +139,9 @@ fn d_max_events() -> u32 {
     200_000
 }
 pub(crate) fn d_sigs() -> PathBuf {
-    std::env::var_os("PSX_SIGS_DIR").filter(|p| !p.is_empty()).map(PathBuf::from)
+    std::env::var_os("PSX_SIGS_DIR")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("external/psx_psyq_signatures"))
 }
 fn d_min_concrete() -> usize {
@@ -188,12 +214,20 @@ impl Op for LsArgs {
                 .entries
                 .iter()
                 .map(crate::entry_json)
-                .filter(|e| e["path"].as_str().unwrap_or("").to_lowercase().contains(&filter))
+                .filter(|e| {
+                    e["path"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&filter)
+                })
                 .collect();
             let entries: Vec<_> = rows.iter().skip(self.offset).take(self.limit).collect();
-            Ok(json!({"volume": fs.volume, "entries": entries, "warnings": fs.warnings,
+            Ok(
+                json!({"volume": fs.volume, "entries": entries, "warnings": fs.warnings,
                     "page":crate::page::metadata(rows.len(),self.offset,entries.len(),self.limit),
-                    "coverage":{"filesystem_entries":fs.entries.len(),"matching_entries":rows.len(),"scope":"ISO9660 directory index","complete":true}}))
+                    "coverage":{"filesystem_entries":fs.entries.len(),"matching_entries":rows.len(),"scope":"ISO9660 directory index","complete":true}}),
+            )
         })())
     }
 }
@@ -216,7 +250,12 @@ pub struct ExtractArgs {
 
 impl Op for ExtractArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::extract(&self.image, self.path.as_deref(), self.all, &self.out))
+        Outcome::media(crate::extract(
+            &self.image,
+            self.path.as_deref(),
+            self.all,
+            &self.out,
+        ))
     }
 }
 
@@ -251,7 +290,13 @@ pub struct XaArgs {
 
 impl Op for XaArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::xa_cmd::run(&self.image, &self.path, self.file, self.channel, self.out.as_deref()))
+        Outcome::media(crate::xa_cmd::run(
+            &self.image,
+            &self.path,
+            self.file,
+            self.channel,
+            self.out.as_deref(),
+        ))
     }
 }
 
@@ -276,7 +321,11 @@ pub struct StrArgs {
     /// Executable normalizing each selected frame to a standard BS payload.
     #[arg(long)]
     pub frame_parser: Option<PathBuf>,
-    #[arg(long = "frame-parser-arg", allow_hyphen_values = true, requires = "frame_parser")]
+    #[arg(
+        long = "frame-parser-arg",
+        allow_hyphen_values = true,
+        requires = "frame_parser"
+    )]
     #[serde(default)]
     pub frame_parser_args: Vec<String>,
     #[arg(long, default_value_t = default_parser_timeout(), value_parser = clap::value_parser!(u64).range(1..=300))]
@@ -289,20 +338,28 @@ pub struct StrArgs {
 
 impl Op for StrArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::media(crate::str_cmd::split_source(&self.source, self.path.as_deref()).and_then(|(image, path)| {
-            let frame_parser = crate::parser::Spec::new(self.frame_parser.as_ref(), &self.frame_parser_args, self.parser_timeout)?;
-            crate::str_cmd::run(crate::str_cmd::Args {
-                image: &image,
-                path: &path,
-                out: &self.out,
-                frames: self.frames.as_deref(),
-                channel: self.channel,
-                no_audio: self.no_audio,
-                y4m: self.y4m,
-                frame_parser: frame_parser.as_ref(),
-                cancel: ctx.cancel.as_ref(),
-            })
-        }))
+        Outcome::media(
+            crate::str_cmd::split_source(&self.source, self.path.as_deref()).and_then(
+                |(image, path)| {
+                    let frame_parser = crate::parser::Spec::new(
+                        self.frame_parser.as_ref(),
+                        &self.frame_parser_args,
+                        self.parser_timeout,
+                    )?;
+                    crate::str_cmd::run(crate::str_cmd::Args {
+                        image: &image,
+                        path: &path,
+                        out: &self.out,
+                        frames: self.frames.as_deref(),
+                        channel: self.channel,
+                        no_audio: self.no_audio,
+                        y4m: self.y4m,
+                        frame_parser: frame_parser.as_ref(),
+                        cancel: ctx.cancel.as_ref(),
+                    })
+                },
+            ),
+        )
     }
 }
 
@@ -311,19 +368,31 @@ pub struct AssetParsersArgs {
     /// Executable returning a version-1 JSON model per file/archive entry.
     #[arg(long, conflicts_with = "asset_parser")]
     pub model_parser: Option<PathBuf>,
-    #[arg(long = "model-parser-arg", allow_hyphen_values = true, requires = "model_parser")]
+    #[arg(
+        long = "model-parser-arg",
+        allow_hyphen_values = true,
+        requires = "model_parser"
+    )]
     #[serde(default)]
     pub model_parser_args: Vec<String>,
     /// Executable returning a version-1 JSON archive index; replaces built-in detection.
     #[arg(long, conflicts_with = "archive")]
     pub archive_parser: Option<PathBuf>,
-    #[arg(long = "archive-parser-arg", allow_hyphen_values = true, requires = "archive_parser")]
+    #[arg(
+        long = "archive-parser-arg",
+        allow_hyphen_values = true,
+        requires = "archive_parser"
+    )]
     #[serde(default)]
     pub archive_parser_args: Vec<String>,
     /// Executable normalizing each source entry to a standard TIM/TMD/VAB/VAG payload.
     #[arg(long, conflicts_with = "model_parser")]
     pub asset_parser: Option<PathBuf>,
-    #[arg(long = "asset-parser-arg", allow_hyphen_values = true, requires = "asset_parser")]
+    #[arg(
+        long = "asset-parser-arg",
+        allow_hyphen_values = true,
+        requires = "asset_parser"
+    )]
     #[serde(default)]
     pub asset_parser_args: Vec<String>,
     /// Wall-clock seconds per external invocation, 1..=300.
@@ -337,17 +406,37 @@ fn default_parser_timeout() -> u64 {
 }
 
 impl AssetParsersArgs {
-    pub fn build(&self, ctx: &Ctx, archive: Option<&str>) -> psx_media::Result<crate::parser::Parsers> {
+    pub fn build(
+        &self,
+        ctx: &Ctx,
+        archive: Option<&str>,
+    ) -> psx_media::Result<crate::parser::Parsers> {
         if self.archive_parser.is_some() && archive.is_some() {
-            return Err(MediaError::Malformed("--archive-parser cannot combine with --archive".into()));
+            return Err(MediaError::Malformed(
+                "--archive-parser cannot combine with --archive".into(),
+            ));
         }
         if self.model_parser.is_some() && self.asset_parser.is_some() {
-            return Err(MediaError::Malformed("choose --model-parser or --asset-parser".into()));
+            return Err(MediaError::Malformed(
+                "choose --model-parser or --asset-parser".into(),
+            ));
         }
         Ok(crate::parser::Parsers {
-            archive: crate::parser::Spec::new(self.archive_parser.as_ref(), &self.archive_parser_args, self.parser_timeout)?,
-            model: crate::parser::Spec::new(self.model_parser.as_ref(), &self.model_parser_args, self.parser_timeout)?,
-            asset: crate::parser::Spec::new(self.asset_parser.as_ref(), &self.asset_parser_args, self.parser_timeout)?,
+            archive: crate::parser::Spec::new(
+                self.archive_parser.as_ref(),
+                &self.archive_parser_args,
+                self.parser_timeout,
+            )?,
+            model: crate::parser::Spec::new(
+                self.model_parser.as_ref(),
+                &self.model_parser_args,
+                self.parser_timeout,
+            )?,
+            asset: crate::parser::Spec::new(
+                self.asset_parser.as_ref(),
+                &self.asset_parser_args,
+                self.parser_timeout,
+            )?,
             cancel: ctx.cancel.clone(),
         })
     }
@@ -396,7 +485,12 @@ pub struct AssetsScanArgs {
 impl Op for AssetsScanArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         match crate::assets_cmd::scan_assets(&self, ctx) {
-            Ok(Err(table)) => Outcome { value: json!({"text": table}), exit: 0, pretty: true, text: true },
+            Ok(Err(table)) => Outcome {
+                value: json!({"text": table}),
+                exit: 0,
+                pretty: true,
+                text: true,
+            },
             Ok(Ok(v)) => {
                 let mut out = Outcome::media(Ok(v));
                 out.text = !self.json;
@@ -442,7 +536,11 @@ pub struct AssetsExtractArgs {
     /// Executable decoding --textures inputs as standard payloads or raw VRAM upload documents.
     #[arg(long, requires = "textures")]
     pub texture_parser: Option<PathBuf>,
-    #[arg(long = "texture-parser-arg", allow_hyphen_values = true, requires = "texture_parser")]
+    #[arg(
+        long = "texture-parser-arg",
+        allow_hyphen_values = true,
+        requires = "texture_parser"
+    )]
     #[serde(default)]
     pub texture_parser_args: Vec<String>,
     /// Address of the file's first byte when it is a RAM dump (hex).
@@ -477,13 +575,18 @@ impl Op for MemcardArgs {
         Outcome::media((|| {
             let bytes = std::fs::read(&image).map_err(|e| MediaError::io(&image, e))?;
             if bytes.len() != psx_core::memcard::SIZE {
-                return Err(MediaError::Malformed(format!("{} bytes; a raw memory card image is 131072", bytes.len())));
+                return Err(MediaError::Malformed(format!(
+                    "{} bytes; a raw memory card image is 131072",
+                    bytes.len()
+                )));
             }
             let card = psx_core::memcard::MemCard::from_image(bytes);
             let saves = card.saves();
             let used: usize = saves.iter().map(|s| s.blocks.len()).sum();
             let formatted = &card.sector(0)[..2] == b"MC";
-            Ok(json!({"image": image, "formatted": formatted, "blocks_used": used, "blocks_free": 15 - used.min(15), "saves": saves}))
+            Ok(
+                json!({"image": image, "formatted": formatted, "blocks_used": used, "blocks_free": 15 - used.min(15), "saves": saves}),
+            )
         })())
     }
 }
@@ -537,7 +640,12 @@ pub struct SectorArgs {
 
 impl Op for SectorArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::sectors(&self.image, self.lba, self.count, self.preview))
+        Outcome::media(crate::sectors(
+            &self.image,
+            self.lba,
+            self.count,
+            self.preview,
+        ))
     }
 }
 
@@ -565,7 +673,11 @@ impl Op for TemplateCreateArgs {
             region: self.region.unwrap_or_default(),
             fields_per_tick: self.fields_per_tick.unwrap_or(1),
         };
-        Outcome::media(crate::template::create(&self.dest, self.name.as_deref(), options))
+        Outcome::media(crate::template::create(
+            &self.dest,
+            self.name.as_deref(),
+            options,
+        ))
     }
 }
 
@@ -691,7 +803,20 @@ fn brief(v: &Value) -> Value {
         "watch": {"enabled":v["watch"]["enabled"],"hits": v["watch"]["hits"], "recorded": v["watch"]["recorded"],
             "complete":v["watch"]["complete"],"file":v["watch"]["file"]},
     });
-    for k in ["build", "resolved", "input", "pad", "artifacts", "samples", "pokes", "screens", "states", "read_watch", "spu", "wall_ms"] {
+    for k in [
+        "build",
+        "resolved",
+        "input",
+        "pad",
+        "artifacts",
+        "samples",
+        "pokes",
+        "screens",
+        "states",
+        "read_watch",
+        "spu",
+        "wall_ms",
+    ] {
         if !v[k].is_null() {
             b[k] = v[k].clone();
         }
@@ -703,9 +828,21 @@ fn brief(v: &Value) -> Value {
     if v["gpu_frame"].is_object() {
         let g = &v["gpu_frame"];
         let mut summary = serde_json::Map::new();
-        for key in
-            ["error", "status", "reason", "mode", "search", "frame", "run_frame", "absolute_frame", "complete", "commands", "draw_commands", "draw_filter", "content"]
-        {
+        for key in [
+            "error",
+            "status",
+            "reason",
+            "mode",
+            "search",
+            "frame",
+            "run_frame",
+            "absolute_frame",
+            "complete",
+            "commands",
+            "draw_commands",
+            "draw_filter",
+            "content",
+        ] {
             if let Some(value) = g.get(key) {
                 summary.insert(key.into(), value.clone());
             }
@@ -726,7 +863,14 @@ impl Op for RunCmdArgs {
             Ok(b) => b,
             Err(e) => return crate::context::failed(e),
         };
-        let resolved = match crate::context::resolve(&ctx.root, a.media, a.bios, backend, a.from_state.as_deref(), false) {
+        let resolved = match crate::context::resolve(
+            &ctx.root,
+            a.media,
+            a.bios,
+            backend,
+            a.from_state.as_deref(),
+            false,
+        ) {
             Ok(r) => r,
             Err(e) => return crate::context::failed(e),
         };
@@ -762,7 +906,8 @@ impl Op for RunCmdArgs {
         ));
         if out.value.get("error").is_none() {
             out.value["build"] = crate::context::build();
-            out.value["resolved"] = json!({"backend":resolved.backend,"bios_selection":resolved.bios_reason});
+            out.value["resolved"] =
+                json!({"backend":resolved.backend,"bios_selection":resolved.bios_reason});
             out.value["artifacts"] = json!(out.value["files"]
                 .as_object()
                 .map(|files| files
@@ -776,7 +921,10 @@ impl Op for RunCmdArgs {
         if let Some(dir) = out.value["run_dir"].as_str().map(PathBuf::from) {
             let p = dir.join("report.json");
             out.value["report"] = json!(p);
-            let _ = std::fs::write(&p, serde_json::to_vec_pretty(&out.value).unwrap_or_default());
+            let _ = std::fs::write(
+                &p,
+                serde_json::to_vec_pretty(&out.value).unwrap_or_default(),
+            );
         }
         if summarise {
             out.value = summary(&out.value);
@@ -793,7 +941,11 @@ fn summary(v: &Value) -> Value {
         return v.clone();
     }
     let pick = |section: &Value, keys: &[&str]| {
-        Value::Object(keys.iter().filter_map(|k| section.get(*k).map(|value| (k.to_string(), value.clone()))).collect())
+        Value::Object(
+            keys.iter()
+                .filter_map(|k| section.get(*k).map(|value| (k.to_string(), value.clone())))
+                .collect(),
+        )
     };
     let mut s = json!({
         "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "report": v["report"],
@@ -812,13 +964,20 @@ fn summary(v: &Value) -> Value {
         ("samples", &["file", "rows"]),
         ("spu", &["file", "events", "recorded", "complete"]),
         ("trace", &["instructions", "lines", "lines_dropped"]),
-        ("gpu_frame", &["status", "reason", "frame", "run_frame", "draw_commands"]),
+        (
+            "gpu_frame",
+            &["status", "reason", "frame", "run_frame", "draw_commands"],
+        ),
         ("screens", &["dir", "count"]),
         ("states", &[]),
     ];
     for (key, keys) in sections {
         if !v[key].is_null() {
-            s[key] = if keys.is_empty() { v[key].clone() } else { pick(&v[key], keys) };
+            s[key] = if keys.is_empty() {
+                v[key].clone()
+            } else {
+                pick(&v[key], keys)
+            };
         }
     }
     if v["event_logs"].as_object().is_some_and(|m| !m.is_empty()) {
@@ -827,8 +986,14 @@ fn summary(v: &Value) -> Value {
     if let Some(pokes) = v["pokes"].as_array() {
         s["pokes"] = json!(pokes.len());
     }
-    if v["input"]["application"]["scheduled_events"].as_u64().is_some_and(|n| n > 0) {
-        s["input"] = pick(&v["input"]["application"], &["scheduled_events", "applied_events", "pending_events"]);
+    if v["input"]["application"]["scheduled_events"]
+        .as_u64()
+        .is_some_and(|n| n > 0)
+    {
+        s["input"] = pick(
+            &v["input"]["application"],
+            &["scheduled_events", "applied_events", "pending_events"],
+        );
     }
     s
 }
@@ -858,12 +1023,23 @@ impl Op for LoadsArgs {
         Outcome::media((|| {
             crate::page::validate(self.limit).map_err(MediaError::Malformed)?;
             let scopes = crate::load_symbols(&self.symbols)?;
-            let mut v = crate::provenance::report(&self.run_dir, &self.disc, &scopes).map_err(MediaError::Malformed)?;
+            let mut v = crate::provenance::report(&self.run_dir, &self.disc, &scopes)
+                .map_err(MediaError::Malformed)?;
             if let Some(runs) = v["runs"].as_array_mut() {
                 let total = runs.len();
-                let rows: Vec<_> = runs.iter().skip(self.offset).take(self.limit).cloned().collect();
+                let rows: Vec<_> = runs
+                    .iter()
+                    .skip(self.offset)
+                    .take(self.limit)
+                    .cloned()
+                    .collect();
                 *runs = rows;
-                v["page"] = crate::page::metadata(total, self.offset, v["runs"].as_array().unwrap().len(), self.limit);
+                v["page"] = crate::page::metadata(
+                    total,
+                    self.offset,
+                    v["runs"].as_array().unwrap().len(),
+                    self.limit,
+                );
                 v["runs_total"] = json!(total);
             }
             Ok(v)
@@ -891,7 +1067,12 @@ pub struct SymbolsArgs {
 
 impl Op for SymbolsArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::symbols_cmd(&self.source, &self.sigs, self.min_concrete, self.out))
+        Outcome::media(crate::symbols_cmd(
+            &self.source,
+            &self.sigs,
+            self.min_concrete,
+            self.out,
+        ))
     }
 }
 
@@ -926,7 +1107,14 @@ impl Op for LockstepArgs {
         Outcome::pair(if self.exact {
             crate::lockstep::run(&ctx.root, &self.bios, self.steps, self.context, d)
         } else {
-            crate::lockstep::run_trace(&ctx.root, &self.bios, self.steps, self.context, self.dump.as_deref(), d)
+            crate::lockstep::run_trace(
+                &ctx.root,
+                &self.bios,
+                self.steps,
+                self.context,
+                self.dump.as_deref(),
+                d,
+            )
         })
     }
 }
@@ -985,10 +1173,20 @@ pub struct NativeArgs {
 
 impl Op for NativeArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        let resolved = match crate::context::resolve(&ctx.root,self.disc,self.bios,Some(crate::context::Backend::Native),None,false) {
-            Ok(r)=>r,Err(e)=>return crate::context::failed(e),
+        let resolved = match crate::context::resolve(
+            &ctx.root,
+            self.disc,
+            self.bios,
+            Some(crate::context::Backend::Native),
+            None,
+            false,
+        ) {
+            Ok(r) => r,
+            Err(e) => return crate::context::failed(e),
         };
-        if let Some(e) = resolved.setup_error() {return crate::context::failed(e);}
+        if let Some(e) = resolved.setup_error() {
+            return crate::context::failed(e);
+        }
         let bios = resolved.bios.unwrap();
         let hex = |b: &Option<String>| b.as_deref().and_then(hex_u32);
         Outcome::pair(crate::native::run(crate::native::Options {
@@ -1046,19 +1244,37 @@ pub struct DisasmArgs {
     pub gp: Option<String>,
 }
 
-fn d_function_budget() -> u32 { 4096 }
+fn d_function_budget() -> u32 {
+    4096
+}
 
 fn opt_hex(s: &Option<String>, what: &str) -> psx_media::Result<Option<u32>> {
-    s.as_deref().map(|a| hex_u32(a).ok_or_else(|| MediaError::Malformed(format!("bad {what} {a:?} (hex)")))).transpose()
+    s.as_deref()
+        .map(|a| hex_u32(a).ok_or_else(|| MediaError::Malformed(format!("bad {what} {a:?} (hex)"))))
+        .transpose()
 }
 
 impl Op for DisasmArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        let DisasmArgs { source, addr, count, function_budget, symbols, text, function, ram, gp } = self;
+        let DisasmArgs {
+            source,
+            addr,
+            count,
+            function_budget,
+            symbols,
+            text,
+            function,
+            ram,
+            gp,
+        } = self;
         Outcome::media_text(
             (|| {
-                if !(1..=262144).contains(&function_budget) || count.is_some_and(|n| !(1..=262144).contains(&n)) {
-                    return Err(MediaError::Malformed("count/function_budget must be 1..=262144".into()));
+                if !(1..=262144).contains(&function_budget)
+                    || count.is_some_and(|n| !(1..=262144).contains(&n))
+                {
+                    return Err(MediaError::Malformed(
+                        "count/function_budget must be 1..=262144".into(),
+                    ));
                 }
                 let mut code = crate::code::Code::open(source.as_deref(), ram.as_deref())?;
                 if let Some(g) = opt_hex(&gp, "gp")? {
@@ -1072,17 +1288,27 @@ impl Op for DisasmArgs {
                 let (start, end, func) = if let Some(f) = opt_hex(&function, "function address")? {
                     let jal = code.jal_targets();
                     let extent = crate::code::function_extent(&code, f, &jal, function_budget)
-                        .ok_or_else(|| MediaError::Malformed(format!("0x{f:08X} is outside the code ({})", code.origin)))?;
-                    let (s,e) = (extent.start,extent.end);
-                    let listed_end = count.map_or(e, |n| s.saturating_add(4*n).min(e));
-                    let callers = crate::code::xrefs(&code, s, s + 4, false).iter().filter(|(_, r)| r.kind == "call").count();
+                        .ok_or_else(|| {
+                            MediaError::Malformed(format!(
+                                "0x{f:08X} is outside the code ({})",
+                                code.origin
+                            ))
+                        })?;
+                    let (s, e) = (extent.start, extent.end);
+                    let listed_end = count.map_or(e, |n| s.saturating_add(4 * n).min(e));
+                    let callers = crate::code::xrefs(&code, s, s + 4, false)
+                        .iter()
+                        .filter(|(_, r)| r.kind == "call")
+                        .count();
                     (
                         s,
                         listed_end,
-                        Some(json!({"start": format!("0x{s:08X}"), "end": format!("0x{e:08X}"), "instructions": (e-s)/4,
+                        Some(
+                            json!({"start": format!("0x{s:08X}"), "end": format!("0x{e:08X}"), "instructions": (e-s)/4,
                             "jal_callers":callers,"boundary_source":"heuristic","start_evidence":extent.start_evidence,
                             "stop_reason":extent.stop_reason,"truncated":extent.truncated(),"search_budget":function_budget,
-                            "listing_truncated":listed_end<e})),
+                            "listing_truncated":listed_end<e}),
+                        ),
                     )
                 } else {
                     let start = match opt_hex(&addr, "address")? {
@@ -1093,23 +1319,44 @@ impl Op for DisasmArgs {
                     } & !3;
                     (start, start.saturating_add(4 * count.unwrap_or(32)), None)
                 };
-                let (lines, listing) = crate::code::listing(&code, start, end, &crate::code::ListOpts { scopes: &scopes, text });
+                let (lines, listing) = crate::code::listing(
+                    &code,
+                    start,
+                    end,
+                    &crate::code::ListOpts {
+                        scopes: &scopes,
+                        text,
+                    },
+                );
                 let mut warnings = Vec::new();
                 if func.as_ref().is_some_and(|f| f["truncated"] == true) {
                     warnings.push("Function boundary search is incomplete; increase --function-budget. Reported bounds are partial.".into());
                 }
-                if func.as_ref().is_some_and(|f| f["listing_truncated"] == true) {
-                    warnings.push("Listing limited by --count; omit it to list the discovered function.".into());
+                if func
+                    .as_ref()
+                    .is_some_and(|f| f["listing_truncated"] == true)
+                {
+                    warnings.push(
+                        "Listing limited by --count; omit it to list the discovered function."
+                            .into(),
+                    );
                 }
                 if let Some((checked, differ)) = code.exe_mismatch(start, end) {
                     if differ > 0 {
                         warnings.push(format!("RAM differs from the EXE in {differ} of {checked} words here: code patched or overlaid at run time (the listing shows RAM)"));
                     } else if checked == 0 {
-                        warnings.push("this range is outside the EXE's load range: RAM only".to_string());
+                        warnings.push(
+                            "this range is outside the EXE's load range: RAM only".to_string(),
+                        );
                     }
                 }
                 if lines.is_empty() {
-                    warnings.push(format!("0x{start:08X} is outside the code ({}: 0x{:08X}..0x{:08X})", code.origin, code.base, code.end()));
+                    warnings.push(format!(
+                        "0x{start:08X} is outside the code ({}: 0x{:08X}..0x{:08X})",
+                        code.origin,
+                        code.base,
+                        code.end()
+                    ));
                 }
                 let mut v = json!({"source": source.clone().unwrap_or_else(|| code.origin.clone()), "lines": lines,
                     "listing":{"start":format!("0x{start:08X}"),"end":format!("0x{end:08X}"),
@@ -1188,7 +1435,17 @@ fn d_xref_limit() -> usize {
 
 impl Op for XrefsArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        let XrefsArgs { target, source, ram, gp, no_data, symbols, limit, offset, text } = self;
+        let XrefsArgs {
+            target,
+            source,
+            ram,
+            gp,
+            no_data,
+            symbols,
+            limit,
+            offset,
+            text,
+        } = self;
         Outcome::media_text(
             (|| {
                 crate::page::validate(limit).map_err(MediaError::Malformed)?;
@@ -1196,7 +1453,10 @@ impl Op for XrefsArgs {
                 if let Some(g) = opt_hex(&gp, "gp")? {
                     code.gp = Some(g);
                 }
-                let addr = |s: &str| hex_u32(s).ok_or_else(|| MediaError::Malformed(format!("bad hex address {s:?}")));
+                let addr = |s: &str| {
+                    hex_u32(s)
+                        .ok_or_else(|| MediaError::Malformed(format!("bad hex address {s:?}")))
+                };
                 let (lo, hi) = match target.split_once('-') {
                     Some((l, h)) => (addr(l)?, addr(h)?),
                     None => {
@@ -1208,7 +1468,8 @@ impl Op for XrefsArgs {
                     return Err(MediaError::Malformed(format!("empty range {target:?}")));
                 }
                 let scopes = crate::load_symbols(&symbols)?;
-                let (mut v, t) = crate::code::xref_report(&code, lo, hi, !no_data, &scopes, offset, limit, text);
+                let (mut v, t) =
+                    crate::code::xref_report(&code, lo, hi, !no_data, &scopes, offset, limit, text);
                 if text {
                     v["text"] = json!(t);
                     v.as_object_mut().unwrap().remove("refs");
@@ -1246,7 +1507,7 @@ pub struct RamDiffArgs {
     #[arg(long, default_value_t = d_ram_limit())]
     #[serde(default = "d_ram_limit")]
     pub limit: usize,
-    #[arg(long, default_value_t=0)]
+    #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub offset: usize,
 }
@@ -1320,7 +1581,7 @@ pub struct RamSearchArgs {
     #[arg(long, default_value_t = d_ram_limit())]
     #[serde(default = "d_ram_limit")]
     pub limit: usize,
-    #[arg(long, default_value_t=0)]
+    #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub offset: usize,
 }
@@ -1405,7 +1666,11 @@ pub struct GpuReplayArgs {
 
 impl Op for GpuReplayArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::vram_diff::replay(&self.stream, &self.out, self.png.as_deref()))
+        Outcome::media(crate::vram_diff::replay(
+            &self.stream,
+            &self.out,
+            self.png.as_deref(),
+        ))
     }
 }
 
@@ -1433,19 +1698,36 @@ pub struct VramDiffArgs {
 
 impl Op for VramDiffArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        let VramDiffArgs { a, b, cell, region, png, samples } = self;
+        let VramDiffArgs {
+            a,
+            b,
+            cell,
+            region,
+            png,
+            samples,
+        } = self;
         Outcome::media((|| {
             let region = match region {
                 Some(r) => {
-                    let v: Vec<usize> = r.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                    let v: Vec<usize> =
+                        r.split(',').filter_map(|s| s.trim().parse().ok()).collect();
                     if v.len() != 4 {
-                        return Err(MediaError::Malformed(format!("bad region {r}, expected X,Y,W,H")));
+                        return Err(MediaError::Malformed(format!(
+                            "bad region {r}, expected X,Y,W,H"
+                        )));
                     }
                     Some((v[0], v[1], v[2], v[3]))
                 }
                 None => None,
             };
-            crate::vram_diff::diff(crate::vram_diff::DiffArgs { a: &a, b: &b, cell, region, png: png.as_deref(), samples })
+            crate::vram_diff::diff(crate::vram_diff::DiffArgs {
+                a: &a,
+                b: &b,
+                cell,
+                region,
+                png: png.as_deref(),
+                samples,
+            })
         })())
     }
 }

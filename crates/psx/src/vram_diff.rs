@@ -17,15 +17,30 @@ const H: usize = 512;
 fn read_vram(path: &Path) -> Result<Vec<u16>> {
     let bytes = std::fs::read(path).map_err(|e| MediaError::io(path, e))?;
     if bytes.len() < W * H * 2 {
-        return Err(MediaError::Malformed(format!("{}: {} bytes, expected {}", path.display(), bytes.len(), W * H * 2)));
+        return Err(MediaError::Malformed(format!(
+            "{}: {} bytes, expected {}",
+            path.display(),
+            bytes.len(),
+            W * H * 2
+        )));
     }
-    Ok(bytes[..W * H * 2].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect())
+    Ok(bytes[..W * H * 2]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
+        .collect())
 }
 
 /// Parse a stream file into commands.
 pub fn read_stream(path: &Path) -> Result<Vec<Vec<u32>>> {
     let bytes = std::fs::read(path).map_err(|e| MediaError::io(path, e))?;
-    let words: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
+    let words: Vec<u32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
+        .collect();
     let mut cmds = Vec::new();
     let mut i = 0;
     while i < words.len() {
@@ -35,7 +50,10 @@ pub fn read_stream(path: &Path) -> Result<Vec<Vec<u32>>> {
         }
         let end = i + 1 + n;
         if end > words.len() {
-            return Err(MediaError::Malformed(format!("{}: record at word {i} runs past the end", path.display())));
+            return Err(MediaError::Malformed(format!(
+                "{}: record at word {i} runs past the end",
+                path.display()
+            )));
         }
         cmds.push(words[i + 1..end].to_vec());
         i = end;
@@ -51,8 +69,14 @@ pub fn replay(stream: &Path, out: &Path, png: Option<&Path>) -> Result<Value> {
     }
     std::fs::write(out, gpu.vram.to_bytes()).map_err(|e| MediaError::io(out, e))?;
     if let Some(p) = png {
-        crate::run::write_png(p, 1024, 512, &gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba)
-            .map_err(|e| MediaError::io(p, e))?;
+        crate::run::write_png(
+            p,
+            1024,
+            512,
+            &gpu.vram.rgba15(0, 0, 1024, 512),
+            png::ColorType::Rgba,
+        )
+        .map_err(|e| MediaError::io(p, e))?;
     }
     Ok(json!({"commands": cmds.len(), "vram": out, "png": png}))
 }
@@ -88,7 +112,11 @@ pub fn diff(args: DiffArgs) -> Result<Value> {
             if let Some(img) = img.as_mut() {
                 let [r, g, bl] = psx_gpu::vram::rgb15_to_rgb8(pa);
                 let o = (y * W + x) * 4;
-                img[o..o + 4].copy_from_slice(&if pa == pb { [r / 3, g / 3, bl / 3, 255] } else { [255, 32, 32, 255] });
+                img[o..o + 4].copy_from_slice(&if pa == pb {
+                    [r / 3, g / 3, bl / 3, 255]
+                } else {
+                    [255, 32, 32, 255]
+                });
             }
             if pa == pb {
                 continue;
@@ -107,14 +135,21 @@ pub fn diff(args: DiffArgs) -> Result<Value> {
                 }
             }
             if samples.len() < args.samples {
-                samples.push(json!({"x": x, "y": y, "a": format!("{pa:04x}"), "b": format!("{pb:04x}")}));
+                samples.push(
+                    json!({"x": x, "y": y, "a": format!("{pa:04x}"), "b": format!("{pb:04x}")}),
+                );
             }
         }
     }
     if let (Some(p), Some(img)) = (args.png, img) {
-        crate::run::write_png(p, W as u32, H as u32, &img, png::ColorType::Rgba).map_err(|e| MediaError::io(p, e))?;
+        crate::run::write_png(p, W as u32, H as u32, &img, png::ColorType::Rgba)
+            .map_err(|e| MediaError::io(p, e))?;
     }
-    let hist = |m: &BTreeMap<i32, usize>| m.iter().map(|(k, v)| (format!("{k:+}"), json!(v))).collect::<serde_json::Map<_, _>>();
+    let hist = |m: &BTreeMap<i32, usize>| {
+        m.iter()
+            .map(|(k, v)| (format!("{k:+}"), json!(v)))
+            .collect::<serde_json::Map<_, _>>()
+    };
     Ok(json!({
         "a": args.a,
         "b": args.b,

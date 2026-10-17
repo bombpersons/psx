@@ -72,10 +72,14 @@ made; the reported 9m 34s remains the study's observation.
   repeated context cost. The current tool descriptions and run schemas are unchanged.
 - Typed sample descriptors remain a useful extension. Until then samples require
   `ADDR:i32`, `ADDR:u32`, `ADDR:fx16.16`, etc.; `ADDR:4` is a watch width.
+  *Done 2026-10-17: typed `{"addr", "format", "name"}` entries and watch-style
+  widths; see [typed samples](typed-samples-and-starter-features.md).*
 - A separate run summary mode could omit most artifact descriptors while keeping
   report/run paths and an image. Existing `brief` output remains compatible.
 - Feature alignment should follow measurements of both template build modes;
   documentation alone does not remove duplicate dependency compilation.
+  *Done 2026-10-17: the first `dev-mcp` switch went from 135 crates to 24, none
+  of them Bevy; see [starter features](typed-samples-and-starter-features.md).*
 
 The positive findings support retaining explicit roots, checkpoint identity,
 bounded capture coverage and clean game rules/presentation separation. None of

@@ -45,10 +45,22 @@ fn stp_alpha(t: u16) -> u8 {
 }
 
 /// A 256×256 page as RGBA (alpha from [`stp_alpha`]), cropped to `(u0, v0, u1, v1)`.
-fn decode_page(vram: &Vram, x: i32, y: i32, depth: u8, clut: Option<(i32, i32)>, crop: [i32; 4]) -> psx_media::Result<(u32, u32, Vec<u8>)> {
+fn decode_page(
+    vram: &Vram,
+    x: i32,
+    y: i32,
+    depth: u8,
+    clut: Option<(i32, i32)>,
+    crop: [i32; 4],
+) -> psx_media::Result<(u32, u32, Vec<u8>)> {
     let texpage = ((x / 64) & 0xF) as u16 | (((y / 256) & 1) as u16) << 4 | depth_bits(depth)? << 7;
     let (cx, cy) = clut.unwrap_or((0, 0));
-    let tex = VramTexture { texpage, clut_x: cx, clut_y: cy, window: (0, 0, 0, 0) };
+    let tex = VramTexture {
+        texpage,
+        clut_x: cx,
+        clut_y: cy,
+        window: (0, 0, 0, 0),
+    };
     let [u0, v0, u1, v1] = crop;
     let (w, h) = ((u1 - u0 + 1) as u32, (v1 - v0 + 1) as u32);
     let mut out = Vec::with_capacity((w * h * 4) as usize);
@@ -91,7 +103,11 @@ fn clut_rgba(vram: &Vram, x: i32, y: i32, entries: i32) -> Vec<u8> {
 fn load_vram(path: &Path) -> psx_media::Result<Vram> {
     let bytes = std::fs::read(path).map_err(|e| MediaError::io(path, e))?;
     if bytes.len() != 1024 * 512 * 2 {
-        return Err(bad(format!("{}: {} bytes, VRAM is 1048576", path.display(), bytes.len())));
+        return Err(bad(format!(
+            "{}: {} bytes, VRAM is 1048576",
+            path.display(),
+            bytes.len()
+        )));
     }
     let mut v = Vram::default();
     v.load_bytes(&bytes);
@@ -99,7 +115,11 @@ fn load_vram(path: &Path) -> psx_media::Result<Vram> {
 }
 
 fn parse_list(s: &str, n: usize) -> psx_media::Result<Vec<i32>> {
-    let v: Vec<i32> = s.split(',').map(|x| x.trim().parse::<i32>()).collect::<Result<_, _>>().map_err(|_| bad(format!("bad list {s:?}")))?;
+    let v: Vec<i32> = s
+        .split(',')
+        .map(|x| x.trim().parse::<i32>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| bad(format!("bad list {s:?}")))?;
     if v.len() != n {
         return Err(bad(format!("{s:?}: expected {n} comma-separated numbers")));
     }
@@ -121,45 +141,81 @@ fn pick_vram(run_dir: &Path, explicit: Option<&Path>, frame_mode: bool) -> std::
     }
 }
 
-pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&Path>, vram_path: Option<&Path>) -> R {
+pub fn run(
+    run_dir: &Path,
+    page: Option<&str>,
+    clut: Option<&str>,
+    out: Option<&Path>,
+    vram_path: Option<&Path>,
+) -> R {
     let vram_file = pick_vram(run_dir, vram_path, page.is_none());
     let vram = load_vram(&vram_file)?;
-    let out_dir = out.map(Path::to_path_buf).unwrap_or_else(|| run_dir.join("textures"));
+    let out_dir = out
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| run_dir.join("textures"));
     std::fs::create_dir_all(&out_dir).map_err(|e| MediaError::io(&out_dir, e))?;
     let save = |name: String, (w, h, rgba): (u32, u32, Vec<u8>)| -> psx_media::Result<Value> {
         let p = out_dir.join(&name);
-        crate::run::write_png(&p, w, h, &rgba, png::ColorType::Rgba).map_err(|e| MediaError::io(&p, e))?;
+        crate::run::write_png(&p, w, h, &rgba, png::ColorType::Rgba)
+            .map_err(|e| MediaError::io(&p, e))?;
         Ok(json!({"path": p, "width": w, "height": h}))
     };
     if let Some(page) = page {
         let p = parse_list(page, 3)?;
-        let c = clut.map(|c| parse_list(c, 2)).transpose()?.map(|c| (c[0], c[1]));
+        let c = clut
+            .map(|c| parse_list(c, 2))
+            .transpose()?
+            .map(|c| (c[0], c[1]));
         if p[2] != 15 && c.is_none() {
             return Err(bad("4/8-bit pages need --clut X,Y"));
         }
-        let name = format!("page_{}_{}_{}bpp{}.png", p[0], p[1], p[2], c.map(|(x, y)| format!("_clut_{x}_{y}")).unwrap_or_default());
-        let file = save(name, decode_page(&vram, p[0], p[1], p[2] as u8, c, [0, 0, 255, 255])?)?;
+        let name = format!(
+            "page_{}_{}_{}bpp{}.png",
+            p[0],
+            p[1],
+            p[2],
+            c.map(|(x, y)| format!("_clut_{x}_{y}")).unwrap_or_default()
+        );
+        let file = save(
+            name,
+            decode_page(&vram, p[0], p[1], p[2] as u8, c, [0, 0, 255, 255])?,
+        )?;
         return Ok(json!({"vram": vram_file, "textures": [file]}));
     }
     // Every page/CLUT pair the captured frame sampled, with the UV bounds used.
     let frame_path = run_dir.join("gpu_frame.json");
     let text = std::fs::read_to_string(&frame_path).map_err(|e| MediaError::io(&frame_path, e))?;
-    let frame: Value = serde_json::from_str(&text).map_err(|e| bad(format!("{}: {e}", frame_path.display())))?;
+    let frame: Value =
+        serde_json::from_str(&text).map_err(|e| bad(format!("{}: {e}", frame_path.display())))?;
     let mut pairs = Pairs::new();
     for c in frame["commands"].as_array().into_iter().flatten() {
         if c["textured"] != json!(true) {
             continue;
         }
         let t = &c["texpage"];
-        let (px, py, d) = (t["x"].as_i64().unwrap_or(0), t["y"].as_i64().unwrap_or(0), t["depth"].as_i64().unwrap_or(15));
-        let (cx, cy) = (c["clut"][0].as_i64().unwrap_or(-1), c["clut"][1].as_i64().unwrap_or(-1));
-        let e = pairs.entry((px, py, d, cx, cy)).or_insert(([255, 255, 0, 0], 0));
+        let (px, py, d) = (
+            t["x"].as_i64().unwrap_or(0),
+            t["y"].as_i64().unwrap_or(0),
+            t["depth"].as_i64().unwrap_or(15),
+        );
+        let (cx, cy) = (
+            c["clut"][0].as_i64().unwrap_or(-1),
+            c["clut"][1].as_i64().unwrap_or(-1),
+        );
+        let e = pairs
+            .entry((px, py, d, cx, cy))
+            .or_insert(([255, 255, 0, 0], 0));
         e.1 += 1;
         let verts = c["vertices"].as_array().cloned().unwrap_or_default();
         // Rects sample uv..uv+size; polygons the hull of their vertex UVs.
-        let mut uvs: Vec<(i64, i64)> = verts.iter().filter_map(|v| Some((v["uv"][0].as_i64()?, v["uv"][1].as_i64()?))).collect();
+        let mut uvs: Vec<(i64, i64)> = verts
+            .iter()
+            .filter_map(|v| Some((v["uv"][0].as_i64()?, v["uv"][1].as_i64()?)))
+            .collect();
         if c["kind"] == "rect" {
-            if let (Some(&(u, v)), Some(w), Some(h)) = (uvs.first(), c["area"][2].as_i64(), c["area"][3].as_i64()) {
+            if let (Some(&(u, v)), Some(w), Some(h)) =
+                (uvs.first(), c["area"][2].as_i64(), c["area"][3].as_i64())
+            {
                 uvs.push(((u + w - 1).min(255), (v + h - 1).min(255)));
             }
         }
@@ -172,20 +228,39 @@ pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&
     let mut image_of: BTreeMap<(i64, i64, i64, i64, i64), usize> = BTreeMap::new();
     for ((px, py, d, cx, cy), (uv, uses)) in pairs {
         let clut = (cx >= 0).then_some((cx as i32, cy as i32));
-        let base = format!("page_{px}_{py}_{d}bpp{}", clut.map(|(x, y)| format!("_clut_{x}_{y}")).unwrap_or_default());
-        let full = save(format!("{base}.png"), decode_page(&vram, px as i32, py as i32, d as u8, clut, [0, 0, 255, 255])?)?;
+        let base = format!(
+            "page_{px}_{py}_{d}bpp{}",
+            clut.map(|(x, y)| format!("_clut_{x}_{y}"))
+                .unwrap_or_default()
+        );
+        let full = save(
+            format!("{base}.png"),
+            decode_page(&vram, px as i32, py as i32, d as u8, clut, [0, 0, 255, 255])?,
+        )?;
         image_of.insert((px, py, d, cx, cy), images.len());
         images.push(format!("{base}.png"));
-        let crop = [uv[0] as i32, uv[1] as i32, uv[2].max(uv[0]) as i32, uv[3].max(uv[1]) as i32];
-        let used = save(format!("{base}_used.png"), decode_page(&vram, px as i32, py as i32, d as u8, clut, crop)?)?;
+        let crop = [
+            uv[0] as i32,
+            uv[1] as i32,
+            uv[2].max(uv[0]) as i32,
+            uv[3].max(uv[1]) as i32,
+        ];
+        let used = save(
+            format!("{base}_used.png"),
+            decode_page(&vram, px as i32, py as i32, d as u8, clut, crop)?,
+        )?;
         let mut entry = json!({"page": {"x": px, "y": py, "depth": d}, "clut": clut, "uses": uses, "uv_bounds": crop, "full": full, "used": used});
         if let (Some((cx, cy)), 4 | 8) = (clut, d) {
             // The same page as indices + palette, for palette-swap materials.
             let p = out_dir.join(format!("page_{px}_{py}_{d}bpp_index.png"));
             let indices = page_indices(&vram, px as i32, py as i32, d as u8);
-            crate::run::write_png(&p, 256, 256, &indices, png::ColorType::Grayscale).map_err(|e| MediaError::io(&p, e))?;
+            crate::run::write_png(&p, 256, 256, &indices, png::ColorType::Grayscale)
+                .map_err(|e| MediaError::io(&p, e))?;
             let n = if d == 4 { 16 } else { 256 };
-            let palette = save(format!("clut_{cx}_{cy}_{n}.png"), (n as u32, 1, clut_rgba(&vram, cx, cy, n)))?;
+            let palette = save(
+                format!("clut_{cx}_{cy}_{n}.png"),
+                (n as u32, 1, clut_rgba(&vram, cx, cy, n)),
+            )?;
             entry["index"] = json!(p);
             entry["palette"] = palette["path"].clone();
         }
@@ -218,7 +293,11 @@ pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&
 /// Format 2: image alpha 128 marks STP texels, so a `semi` element blends
 /// only those (format 1 blended every texel); `dither` says whether the GPU
 /// dithers the polygon (shaded or texture-modulated).
-fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i64, i64), usize>) -> Value {
+fn scene(
+    frame: &Value,
+    images: &[String],
+    image_of: &BTreeMap<(i64, i64, i64, i64, i64), usize>,
+) -> Value {
     let mut elements = Vec::new();
     let mut skipped: BTreeMap<String, u64> = BTreeMap::new();
     let num = |v: &Value| v.as_i64().unwrap_or(0);
@@ -228,7 +307,13 @@ fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i
         let textured = c["textured"] == json!(true);
         let t = &c["texpage"];
         let image = if textured {
-            let key = (num(&t["x"]), num(&t["y"]), t["depth"].as_i64().unwrap_or(15), c["clut"][0].as_i64().unwrap_or(-1), c["clut"][1].as_i64().unwrap_or(-1));
+            let key = (
+                num(&t["x"]),
+                num(&t["y"]),
+                t["depth"].as_i64().unwrap_or(15),
+                c["clut"][0].as_i64().unwrap_or(-1),
+                c["clut"][1].as_i64().unwrap_or(-1),
+            );
             match image_of.get(&key) {
                 Some(&i) => Some(i),
                 None => continue,
@@ -237,16 +322,30 @@ fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i
             None
         };
         let semi = c["semi"] == json!(true);
-        let blend = if semi { t["blend"].clone() } else { Value::Null };
+        let blend = if semi {
+            t["blend"].clone()
+        } else {
+            Value::Null
+        };
         // Texture modulation is colour/128 (128 = unchanged); raw textures ignore colour.
         let raw = c["raw"] == json!(true);
         // Captures record whether the GPU dithered the polygon (E1h bit 9 and
         // shading/modulation); older ones did not: assume E1h enabled it.
-        let dither = c["dither"].as_bool().unwrap_or(c["gouraud"] == json!(true) || (textured && !raw));
+        let dither = c["dither"]
+            .as_bool()
+            .unwrap_or(c["gouraud"] == json!(true) || (textured && !raw));
         let colour = |v: &Value| -> [f64; 3] {
             [0, 1, 2].map(|k| {
                 let x = v["color"][k].as_f64().unwrap_or(128.0);
-                if textured { if raw { 1.0 } else { x / 128.0 } } else { x / 255.0 }
+                if textured {
+                    if raw {
+                        1.0
+                    } else {
+                        x / 128.0
+                    }
+                } else {
+                    x / 255.0
+                }
             })
         };
         let verts: Vec<&Value> = c["vertices"].as_array().into_iter().flatten().collect();
@@ -268,7 +367,11 @@ fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i
             }
             "poly3" | "poly4" if verts.iter().all(|v| v["view"].is_array()) => {
                 // Lifted to 3D by the capture (GTE view-space positions).
-                let tris: &[[usize; 3]] = if verts.len() == 4 { &[[0, 1, 2], [1, 2, 3]] } else { &[[0, 1, 2]] };
+                let tris: &[[usize; 3]] = if verts.len() == 4 {
+                    &[[0, 1, 2], [1, 2, 3]]
+                } else {
+                    &[[0, 1, 2]]
+                };
                 let vertices: Vec<Value> = verts.iter().map(|v| {
                     let (u, t) = uv(v);
                     json!({"x": v["view"][0], "y": v["view"][1], "z": v["view"][2], "u": u, "v": t, "color": colour(v)})
@@ -278,13 +381,30 @@ fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i
             "poly3" | "poly4" => {
                 let p: Vec<(i64, i64)> = verts.iter().map(|v| pos(v)).collect();
                 let q: Vec<(i64, i64)> = verts.iter().map(|v| uv(v)).collect();
-                let aligned = textured && p.len() == 4
-                    && p[0].1 == p[1].1 && p[2].1 == p[3].1 && p[0].0 == p[2].0 && p[1].0 == p[3].0
-                    && q[0].1 == q[1].1 && q[2].1 == q[3].1 && q[0].0 == q[2].0 && q[1].0 == q[3].0
+                let aligned = textured
+                    && p.len() == 4
+                    && p[0].1 == p[1].1
+                    && p[2].1 == p[3].1
+                    && p[0].0 == p[2].0
+                    && p[1].0 == p[3].0
+                    && q[0].1 == q[1].1
+                    && q[2].1 == q[3].1
+                    && q[0].0 == q[2].0
+                    && q[1].0 == q[3].0
                     && c["gouraud"] != json!(true);
                 if aligned {
-                    let (x0, x1, y0, y1) = (p[0].0.min(p[1].0), p[0].0.max(p[1].0), p[0].1.min(p[2].1), p[0].1.max(p[2].1));
-                    let (u0, u1, v0, v1) = (q[0].0.min(q[1].0), q[0].0.max(q[1].0), q[0].1.min(q[2].1), q[0].1.max(q[2].1));
+                    let (x0, x1, y0, y1) = (
+                        p[0].0.min(p[1].0),
+                        p[0].0.max(p[1].0),
+                        p[0].1.min(p[2].1),
+                        p[0].1.max(p[2].1),
+                    );
+                    let (u0, u1, v0, v1) = (
+                        q[0].0.min(q[1].0),
+                        q[0].0.max(q[1].0),
+                        q[0].1.min(q[2].1),
+                        q[0].1.max(q[2].1),
+                    );
                     // A flip is the UV running against the screen direction.
                     let flip_x = (p[1].0 - p[0].0).signum() * (q[1].0 - q[0].0).signum() < 0;
                     let flip_y = (p[2].1 - p[0].1).signum() * (q[2].1 - q[0].1).signum() < 0;
@@ -298,12 +418,19 @@ fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i
                         continue;
                     }
                 }
-                let tris: &[[usize; 3]] = if p.len() == 4 { &[[0, 1, 2], [1, 2, 3]] } else { &[[0, 1, 2]] };
-                let vertices: Vec<Value> = verts.iter().map(|v| {
-                    let (x, y) = pos(v);
-                    let (u, t) = uv(v);
-                    json!({"x": x, "y": y, "u": u, "v": t, "color": colour(v)})
-                }).collect();
+                let tris: &[[usize; 3]] = if p.len() == 4 {
+                    &[[0, 1, 2], [1, 2, 3]]
+                } else {
+                    &[[0, 1, 2]]
+                };
+                let vertices: Vec<Value> = verts
+                    .iter()
+                    .map(|v| {
+                        let (x, y) = pos(v);
+                        let (u, t) = uv(v);
+                        json!({"x": x, "y": y, "u": u, "v": t, "color": colour(v)})
+                    })
+                    .collect();
                 elements.push(json!({"kind": "mesh", "image": image, "vertices": vertices, "triangles": tris, "semi": semi, "blend": blend, "dither": dither, "command": c["index"]}));
             }
             "line" | "polyline" => *skipped.entry(kind.to_string()).or_default() += 1,
@@ -330,7 +457,11 @@ mod tests {
     #[test]
     fn alpha_encodes_transparency_class() {
         assert_eq!(stp_alpha(0x0000), 0);
-        assert_eq!(stp_alpha(0x8000), 128, "black with STP is drawn, and blends");
+        assert_eq!(
+            stp_alpha(0x8000),
+            128,
+            "black with STP is drawn, and blends"
+        );
         assert_eq!(stp_alpha(0x801F), 128);
         assert_eq!(stp_alpha(0x001F), 255);
     }
@@ -344,7 +475,10 @@ mod tests {
         vram.set(1, 480, 0x7FFF);
         assert_eq!(&page_indices(&vram, 64, 0, 4)[..4], &[1, 2, 3, 4]);
         assert_eq!(&page_indices(&vram, 128, 0, 8)[..2], &[0xAA, 0xBB]);
-        assert_eq!(clut_rgba(&vram, 0, 480, 3), vec![0, 0, 0, 128, 255, 255, 255, 255, 0, 0, 0, 0]);
+        assert_eq!(
+            clut_rgba(&vram, 0, 480, 3),
+            vec![0, 0, 0, 128, 255, 255, 255, 255, 0, 0, 0, 0]
+        );
     }
 
     /// Mirrored quads: the exported sprite, sampled the way a GPU samples a
@@ -356,7 +490,8 @@ mod tests {
         // A 15-bit texture page at (0, 0): every texel distinct.
         for v in 0..32 {
             for u in 0..32 {
-                gpu.vram.set(u, v, (1 + u as u16) | (v as u16) << 5 | 0x4000);
+                gpu.vram
+                    .set(u, v, (1 + u as u16) | (v as u16) << 5 | 0x4000);
             }
         }
         gpu.gp0_all(&[0xE300_0000]);
@@ -365,11 +500,19 @@ mod tests {
         let texpage = 2u32 << 7; // 15 bpp, page (0, 0)
         let (u0, u1, v0, v1) = (0, 15, 3, 19); // 15 texels wide, 16 tall, like Mega Man's pieces
         let mut commands = Vec::new();
-        for (k, (fx, fy)) in [(false, false), (true, false), (false, true), (true, true)].into_iter().enumerate() {
+        for (k, (fx, fy)) in [(false, false), (true, false), (false, true), (true, true)]
+            .into_iter()
+            .enumerate()
+        {
             let (x0, y0) = (100 + 40 * k as i64, 300);
             let (xa, xb) = if fx { (x0 + 15, x0) } else { (x0, x0 + 15) };
             let (ya, yb) = if fy { (y0 + 16, y0) } else { (y0, y0 + 16) };
-            let verts = [(xa, ya, u0, v0), (xb, ya, u1, v0), (xa, yb, u0, v1), (xb, yb, u1, v1)];
+            let verts = [
+                (xa, ya, u0, v0),
+                (xb, ya, u1, v0),
+                (xa, yb, u0, v1),
+                (xb, yb, u1, v1),
+            ];
             let xy = |x: i64, y: i64| (y as u32) << 16 | (x as u32 & 0xFFFF);
             let uv = |u: i64, v: i64| (v as u32) << 8 | u as u32;
             gpu.gp0_all(&[
@@ -396,8 +539,18 @@ mod tests {
         for e in elements {
             assert_eq!(e["kind"], "sprite", "{e}");
             let n = |v: &Value, i: usize| v[i].as_i64().unwrap();
-            let (rx, ry, rw, rh) = (n(&e["rect"], 0), n(&e["rect"], 1), n(&e["rect"], 2), n(&e["rect"], 3));
-            let (tu, tv, tw, th) = (n(&e["uv"], 0), n(&e["uv"], 1), n(&e["uv"], 2), n(&e["uv"], 3));
+            let (rx, ry, rw, rh) = (
+                n(&e["rect"], 0),
+                n(&e["rect"], 1),
+                n(&e["rect"], 2),
+                n(&e["rect"], 3),
+            );
+            let (tu, tv, tw, th) = (
+                n(&e["uv"], 0),
+                n(&e["uv"], 1),
+                n(&e["uv"], 2),
+                n(&e["uv"], 3),
+            );
             let (fx, fy) = (e["flip_x"] == json!(true), e["flip_y"] == json!(true));
             for py in 0..rh {
                 for px in 0..rw {
@@ -410,7 +563,10 @@ mod tests {
                     if fy {
                         t = 1.0 - t;
                     }
-                    let (u, v) = ((tu as f64 + s * tw as f64).floor() as i32, (tv as f64 + t * th as f64).floor() as i32);
+                    let (u, v) = (
+                        (tu as f64 + s * tw as f64).floor() as i32,
+                        (tv as f64 + t * th as f64).floor() as i32,
+                    );
                     assert_eq!(
                         gpu.vram.get((rx + px) as i32, (ry + py) as i32),
                         gpu.vram.get(u, v),
@@ -433,6 +589,9 @@ mod tests {
         assert_eq!(s["format"], 2);
         assert_eq!(s["elements"][0]["dither"], true);
         assert_eq!(s["elements"][0]["blend"], 2);
-        assert_eq!(s["elements"][1]["dither"], false, "flat untextured polygons are not dithered");
+        assert_eq!(
+            s["elements"][1]["dither"], false,
+            "flat untextured polygons are not dithered"
+        );
     }
 }

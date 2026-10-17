@@ -12,7 +12,12 @@
 //! `tests/hardware.rs`) and match Redux's software GPU on gouraud and textured
 //! output; research/native-core.md "GPU accuracy" lists the known differences.
 
-pub const DITHER: [[i32; 4]; 4] = [[-4, 0, -3, 1], [2, -2, 3, -1], [-3, 1, -4, 0], [3, -1, 2, -2]];
+pub const DITHER: [[i32; 4]; 4] = [
+    [-4, 0, -3, 1],
+    [2, -2, 3, -1],
+    [-3, 1, -4, 0],
+    [3, -1, 2, -2],
+];
 
 /// A 1555 BGR pixel store (VRAM or a native framebuffer).
 pub trait Surface {
@@ -57,7 +62,11 @@ pub struct Raster {
 
 impl Raster {
     pub fn full(width: u32, height: u32) -> Self {
-        Raster { clip: (0, 0, width as i32 - 1, height as i32 - 1), check_mask: false, set_mask: false }
+        Raster {
+            clip: (0, 0, width as i32 - 1, height as i32 - 1),
+            check_mask: false,
+            set_mask: false,
+        }
     }
 }
 
@@ -94,7 +103,11 @@ pub fn plot<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     if r.check_mask && dst & 0x8000 != 0 {
         return;
     }
-    let d = if sh.dither { DITHER[(y & 3) as usize][(x & 3) as usize] } else { 0 };
+    let d = if sh.dither {
+        DITHER[(y & 3) as usize][(x & 3) as usize]
+    } else {
+        0
+    };
     let mut mask_bit = 0u16;
     let mut semi = sh.semi;
     let (cr, cg, cb);
@@ -105,7 +118,11 @@ pub fn plot<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
         }
         mask_bit = t & 0x8000;
         semi &= mask_bit != 0;
-        let tc = [(t & 31) as i32, ((t >> 5) & 31) as i32, ((t >> 10) & 31) as i32];
+        let tc = [
+            (t & 31) as i32,
+            ((t >> 5) & 31) as i32,
+            ((t >> 10) & 31) as i32,
+        ];
         if sh.raw {
             (cr, cg, cb) = (tc[0], tc[1], tc[2]);
         } else {
@@ -118,7 +135,11 @@ pub fn plot<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
         (cr, cg, cb) = (q(rgb[0]), q(rgb[1]), q(rgb[2]));
     }
     let (cr, cg, cb) = if semi {
-        let bc = [(dst & 31) as i32, ((dst >> 5) & 31) as i32, ((dst >> 10) & 31) as i32];
+        let bc = [
+            (dst & 31) as i32,
+            ((dst >> 5) & 31) as i32,
+            ((dst >> 10) & 31) as i32,
+        ];
         let f = |bk: i32, fg: i32| {
             match sh.blend {
                 0 => (bk + fg) >> 1,
@@ -133,7 +154,11 @@ pub fn plot<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
         (cr, cg, cb)
     };
     let set = if r.set_mask { 0x8000 } else { 0 };
-    surface.set(x, y, (cr as u16) | ((cg as u16) << 5) | ((cb as u16) << 10) | mask_bit | set);
+    surface.set(
+        x,
+        y,
+        (cr as u16) | ((cg as u16) << 5) | ((cb as u16) << 10) | mask_bit | set,
+    );
 }
 
 /// Per-primitive constants of the pixel loop.
@@ -198,7 +223,11 @@ fn span<
                 break 'px;
             }
             let d = if DITHERED { drow[(x & 3) as usize] } else { 0 };
-            let rgb = if GOURAUD { [s[0] >> 16, s[1] >> 16, s[2] >> 16] } else { p.flat };
+            let rgb = if GOURAUD {
+                [s[0] >> 16, s[1] >> 16, s[2] >> 16]
+            } else {
+                p.flat
+            };
             let mut mask_bit = 0u16;
             let mut semi = SEMI;
             let (cr, cg, cb);
@@ -209,7 +238,11 @@ fn span<
                 }
                 mask_bit = t & 0x8000;
                 semi &= mask_bit != 0;
-                let tc = [(t & 31) as i32, ((t >> 5) & 31) as i32, ((t >> 10) & 31) as i32];
+                let tc = [
+                    (t & 31) as i32,
+                    ((t >> 5) & 31) as i32,
+                    ((t >> 10) & 31) as i32,
+                ];
                 if RAW {
                     (cr, cg, cb) = (tc[0], tc[1], tc[2]);
                 } else {
@@ -221,7 +254,11 @@ fn span<
                 (cr, cg, cb) = (q(rgb[0]), q(rgb[1]), q(rgb[2]));
             }
             let (cr, cg, cb) = if semi {
-                let bc = [(dst & 31) as i32, ((dst >> 5) & 31) as i32, ((dst >> 10) & 31) as i32];
+                let bc = [
+                    (dst & 31) as i32,
+                    ((dst >> 5) & 31) as i32,
+                    ((dst >> 10) & 31) as i32,
+                ];
                 let f = |bk: i32, fg: i32| {
                     match p.blend {
                         0 => (bk + fg) >> 1,
@@ -235,7 +272,11 @@ fn span<
             } else {
                 (cr, cg, cb)
             };
-            surface.set(x, y, (cr as u16) | ((cg as u16) << 5) | ((cb as u16) << 10) | mask_bit | p.set);
+            surface.set(
+                x,
+                y,
+                (cr as u16) | ((cg as u16) << 5) | ((cb as u16) << 10) | mask_bit | p.set,
+            );
         }
         if GOURAUD {
             for (c, g) in s.iter_mut().zip(p.grad).take(3) {
@@ -294,8 +335,20 @@ impl Steps {
     fn new(base: i64, d: i64, h: i64, row: i64) -> Self {
         // Truncation is symmetric about zero: d * row / h = sign(d) * (|d| * row / h).
         let n = d.abs();
-        let (q, r) = if row == 0 { (0, 0) } else { (n * row / h, n * row % h) };
-        Steps { base, q, r, dq: n / h, dr: n % h, h, neg: d < 0 }
+        let (q, r) = if row == 0 {
+            (0, 0)
+        } else {
+            (n * row / h, n * row % h)
+        };
+        Steps {
+            base,
+            q,
+            r,
+            dq: n / h,
+            dr: n % h,
+            h,
+            neg: d < 0,
+        }
     }
 
     #[inline(always)]
@@ -333,7 +386,12 @@ impl Walk {
     /// Start `e` at row `y`, with colours when `colour` and UVs when `uv`.
     fn new(e: &Edge, y: i32, colour: bool, uv: bool) -> Self {
         let (h, row) = (e.height as i64, (y - e.top) as i64);
-        let mut w = Walk { x: Steps::new(e.x, e.dx, h, row), colour: [Steps::default(); 3], uv: [0; 2], duv: [0; 2] };
+        let mut w = Walk {
+            x: Steps::new(e.x, e.dx, h, row),
+            colour: [Steps::default(); 3],
+            uv: [0; 2],
+            duv: [0; 2],
+        };
         if colour {
             w.colour = std::array::from_fn(|k| Steps::new(e.a[k], e.da[k], h, row));
         }
@@ -426,19 +484,41 @@ pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     if width == 0 {
         return;
     }
-    let n_attrs = if sh.textured { 5 } else if sh.gouraud { 3 } else { 0 };
+    let n_attrs = if sh.textured {
+        5
+    } else if sh.gouraud {
+        3
+    } else {
+        0
+    };
     if n_attrs > 0 {
-        width = if width < 0 { width.min(-0x1000) } else { width.max(0x1000) };
+        width = if width < 0 {
+            width.min(-0x1000)
+        } else {
+            width.max(0x1000)
+        };
     }
     let attr = |v: &Vtx, k: usize| [v.r, v.g, v.b, v.u, v.v][k] as i64;
     let mut grad = [0i64; 5];
     for (k, g) in grad.iter_mut().enumerate().take(n_attrs) {
         // Attribute span width through b (scaled by 2^22), over the X span width (2^16), as 16.16.
-        let span = (t * ((attr(&c, k) - attr(&a, k)) << 6) + ((attr(&a, k) - attr(&b, k)) << 22)) as i32 as i64;
+        let span = (t * ((attr(&c, k) - attr(&a, k)) << 6) + ((attr(&a, k) - attr(&b, k)) << 22))
+            as i32 as i64;
         *g = ((span << 10) / width) as i32 as i64;
     }
-    let setup = Setup { a, b, c, b_right: width < 0, grad };
-    let p = Pipe { grad: grad.map(|g| g as i32), flat: [v[0].r, v[0].g, v[0].b], blend: sh.blend, set: if ras.set_mask { 0x8000 } else { 0 } };
+    let setup = Setup {
+        a,
+        b,
+        c,
+        b_right: width < 0,
+        grad,
+    };
+    let p = Pipe {
+        grad: grad.map(|g| g as i32),
+        flat: [v[0].r, v[0].g, v[0].b],
+        blend: sh.blend,
+        set: if ras.set_mask { 0x8000 } else { 0 },
+    };
     let mask = ras.check_mask;
     if !sh.textured {
         consts!(rows [S, NoTexture] [false, false,] [sh.semi, mask, sh.gouraud, sh.dither] [] (surface, &NoTexture, ras, &p, &setup));
@@ -478,7 +558,11 @@ fn rows<
     let long_attrs = (st.b_right && colour, st.b_right && uv);
     let mut long = Walk::new(&Edge::new(a, c), y_start, long_attrs.0, long_attrs.1);
     let mut row = |y: i32, long: &Walk, short: &Walk| {
-        let (left, right) = if st.b_right { (long, short) } else { (short, long) };
+        let (left, right) = if st.b_right {
+            (long, short)
+        } else {
+            (short, long)
+        };
         let lx = left.x.value();
         let xmin = ((lx + 0xFFFF) >> 16) as i32;
         let xmax = (((right.x.value() - 1) >> 16) as i32).min(ras.clip.2);
@@ -491,7 +575,8 @@ fn rows<
         for (k, (sk, &g)) in s.iter_mut().zip(&st.grad).enumerate() {
             if (k < 3 && colour) || (k >= 3 && uv) {
                 let sub = ((((xmin as i64) << 16) - lx) * g) >> 16;
-                *sk = ((left.attr(k) + sub) as i32 + 0x8000).wrapping_add((x0 - xmin).wrapping_mul(g as i32));
+                *sk = ((left.attr(k) + sub) as i32 + 0x8000)
+                    .wrapping_add((x0 - xmin).wrapping_mul(g as i32));
             }
         }
         span::<S, T, TEX, RAW, SEMI, MASK, GOURAUD, DITHERED>(surface, tex, p, y, x0, xmax, s);
@@ -537,7 +622,10 @@ pub fn quad<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
 /// `c0 + (c1 - c0) * i / steps` in 16.16, truncated, with each colour kept on
 /// its own vertex when the endpoints are swapped.
 pub fn line<S: Surface + ?Sized>(surface: &mut S, r: &Raster, sh: &Shade, a: Vtx, b: Vtx) {
-    let sh = Shade { textured: false, ..*sh };
+    let sh = Shade {
+        textured: false,
+        ..*sh
+    };
     let (a, b) = if b.x < a.x { (b, a) } else { (a, b) };
     let (dx, dy) = (b.x - a.x, (b.y - a.y).abs());
     let sy = if b.y < a.y { -1 } else { 1 };
@@ -546,13 +634,19 @@ pub fn line<S: Surface + ?Sized>(surface: &mut S, r: &Raster, sh: &Shade, a: Vtx
         if !sh.gouraud || steps == 0 {
             return [a.r, a.g, a.b];
         }
-        let at = |p: i32, q: i32| ((((p as i64) << 16) + (((q - p) as i64) << 16) * i as i64 / steps as i64) >> 16) as i32;
+        let at = |p: i32, q: i32| {
+            ((((p as i64) << 16) + (((q - p) as i64) << 16) * i as i64 / steps as i64) >> 16) as i32
+        };
         [at(a.r, b.r), at(a.g, b.g), at(a.b, b.b)]
     };
     let (mut x, mut y) = (a.x, a.y);
     // Error term and its increments for a straight and a diagonal step.
     let x_major = dx >= dy;
-    let (mut err, straight, diag) = if x_major { (3 * dy - dx, 2 * dy, 2 * (dy - dx)) } else { (2 * dx - dy, 2 * dx, 2 * (dx - dy)) };
+    let (mut err, straight, diag) = if x_major {
+        (3 * dy - dx, 2 * dy, 2 * (dy - dx))
+    } else {
+        (2 * dx - dy, 2 * dx, 2 * (dx - dy))
+    };
     for i in 0..=steps {
         plot(surface, &NoTexture, r, &sh, x, y, colour(i), None);
         if err <= 0 {
@@ -595,7 +689,12 @@ pub fn rect<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     }
     // U as 16.16 so the triangle pixel loop can walk it; V is fixed per row.
     let du = if flip.0 { -1 } else { 1 };
-    let p = Pipe { grad: [0, 0, 0, du << 16, 0], flat: [origin.r, origin.g, origin.b], blend: sh.blend, set: if r.set_mask { 0x8000 } else { 0 } };
+    let p = Pipe {
+        grad: [0, 0, 0, du << 16, 0],
+        flat: [origin.r, origin.g, origin.b],
+        blend: sh.blend,
+        set: if r.set_mask { 0x8000 } else { 0 },
+    };
     let area = (x0, y0, x1, y1);
     let mask = r.check_mask;
     if !sh.textured {
@@ -606,7 +705,14 @@ pub fn rect<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
 }
 
 /// The rows of [`rect`] for one sprite kind (flat colour, no dither).
-fn rect_rows<S: Surface + ?Sized, T: TexelSource<S> + ?Sized, const TEX: bool, const RAW: bool, const SEMI: bool, const MASK: bool>(
+fn rect_rows<
+    S: Surface + ?Sized,
+    T: TexelSource<S> + ?Sized,
+    const TEX: bool,
+    const RAW: bool,
+    const SEMI: bool,
+    const MASK: bool,
+>(
     surface: &mut S,
     tex: &T,
     p: &Pipe,
@@ -615,11 +721,27 @@ fn rect_rows<S: Surface + ?Sized, T: TexelSource<S> + ?Sized, const TEX: bool, c
     flip: (bool, bool),
 ) {
     let col = x0 - origin.x;
-    let u = if flip.0 { origin.u - col } else { origin.u + col };
+    let u = if flip.0 {
+        origin.u - col
+    } else {
+        origin.u + col
+    };
     for y in y0..=y1 {
         let row = y - origin.y;
-        let v = if flip.1 { origin.v - row } else { origin.v + row };
-        span::<S, T, TEX, RAW, SEMI, MASK, false, false>(surface, tex, p, y, x0, x1, [0, 0, 0, u << 16, v << 16]);
+        let v = if flip.1 {
+            origin.v - row
+        } else {
+            origin.v + row
+        };
+        span::<S, T, TEX, RAW, SEMI, MASK, false, false>(
+            surface,
+            tex,
+            p,
+            y,
+            x0,
+            x1,
+            [0, 0, 0, u << 16, v << 16],
+        );
     }
 }
 
@@ -698,15 +820,26 @@ pub(crate) mod reference {
         if width == 0 {
             return;
         }
-        let n_attrs = if sh.textured { 5 } else if sh.gouraud { 3 } else { 0 };
+        let n_attrs = if sh.textured {
+            5
+        } else if sh.gouraud {
+            3
+        } else {
+            0
+        };
         if n_attrs > 0 {
-            width = if width < 0 { width.min(-0x1000) } else { width.max(0x1000) };
+            width = if width < 0 {
+                width.min(-0x1000)
+            } else {
+                width.max(0x1000)
+            };
         }
         let attr = |v: &Vtx, k: usize| [v.r, v.g, v.b, v.u, v.v][k] as i64;
         let mut grad = [0i64; 5];
         for (k, g) in grad.iter_mut().enumerate().take(n_attrs) {
             // Attribute span width through b (scaled by 2^22), over the X span width (2^16), as 16.16.
-            let span = (t * ((attr(&c, k) - attr(&a, k)) << 6) + ((attr(&a, k) - attr(&b, k)) << 22)) as i32 as i64;
+            let span = (t * ((attr(&c, k) - attr(&a, k)) << 6)
+                + ((attr(&a, k) - attr(&b, k)) << 22)) as i32 as i64;
             *g = ((span << 10) / width) as i32 as i64;
         }
         let long = Edge::new(&a, &c);
@@ -716,7 +849,11 @@ pub(crate) mod reference {
         let y_end = (c.y - 1).min(ras.clip.3);
         for y in a.y.max(ras.clip.1)..=y_end {
             let short = if y < b.y { &upper } else { &lower };
-            let (left, right) = if b_right { (&long, short) } else { (short, &long) };
+            let (left, right) = if b_right {
+                (&long, short)
+            } else {
+                (short, &long)
+            };
             let lx = left.x_at(y);
             let xmin = ((lx + 0xFFFF) >> 16) as i32;
             let xmax = (((right.x_at(y) - 1) >> 16) as i32).min(ras.clip.2);
@@ -734,7 +871,11 @@ pub(crate) mod reference {
                 s[k] = s[k].wrapping_add((x0 - xmin).wrapping_mul(grad[k] as i32));
             }
             for x in x0..=xmax {
-                let rgb = if sh.gouraud { [s[0] >> 16, s[1] >> 16, s[2] >> 16] } else { [v[0].r, v[0].g, v[0].b] };
+                let rgb = if sh.gouraud {
+                    [s[0] >> 16, s[1] >> 16, s[2] >> 16]
+                } else {
+                    [v[0].r, v[0].g, v[0].b]
+                };
                 let uv = sh.textured.then(|| (s[3] >> 16, s[4] >> 16));
                 plot(surface, tex, ras, sh, x, y, rgb, uv);
                 for k in 0..n_attrs {
@@ -755,7 +896,11 @@ pub(crate) mod reference {
         h: i32,
         flip: (bool, bool),
     ) {
-        let sh = Shade { dither: false, gouraud: false, ..*sh };
+        let sh = Shade {
+            dither: false,
+            gouraud: false,
+            ..*sh
+        };
         let x0 = origin.x.max(r.clip.0);
         let x1 = (origin.x + w - 1).min(r.clip.2);
         let y0 = origin.y.max(r.clip.1);
@@ -765,11 +910,28 @@ pub(crate) mod reference {
                 let (col, row) = (x - origin.x, y - origin.y);
                 let uv = sh.textured.then(|| {
                     (
-                        if flip.0 { origin.u - col } else { origin.u + col },
-                        if flip.1 { origin.v - row } else { origin.v + row },
+                        if flip.0 {
+                            origin.u - col
+                        } else {
+                            origin.u + col
+                        },
+                        if flip.1 {
+                            origin.v - row
+                        } else {
+                            origin.v + row
+                        },
                     )
                 });
-                plot(surface, tex, r, &sh, x, y, [origin.r, origin.g, origin.b], uv);
+                plot(
+                    surface,
+                    tex,
+                    r,
+                    &sh,
+                    x,
+                    y,
+                    [origin.r, origin.g, origin.b],
+                    uv,
+                );
             }
         }
     }

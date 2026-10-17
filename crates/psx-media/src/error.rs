@@ -5,7 +5,10 @@ pub type Result<T> = std::result::Result<T, MediaError>;
 
 #[derive(Debug)]
 pub enum MediaError {
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// Well-formed input using a feature this crate does not implement.
     Unsupported(String),
     /// Input that violates its format.
@@ -16,7 +19,10 @@ pub enum MediaError {
 
 impl MediaError {
     pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
-        MediaError::Io { path: path.into(), source }
+        MediaError::Io {
+            path: path.into(),
+            source,
+        }
     }
 
     pub fn code(&self) -> &'static str {

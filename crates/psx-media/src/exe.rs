@@ -40,7 +40,10 @@ impl PsxExe {
             return malformed("not a PS-X EXE (missing \"PS-X EXE\" header)");
         }
         let marker_bytes = &bytes[0x4C..HEADER_SIZE];
-        let end = marker_bytes.iter().position(|&b| b == 0).unwrap_or(marker_bytes.len());
+        let end = marker_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(marker_bytes.len());
         let exe = PsxExe {
             pc: u32le(bytes, 0x10),
             gp: u32le(bytes, 0x14),
@@ -69,13 +72,22 @@ impl PsxExe {
             ));
         }
         if !self.text_size.is_multiple_of(0x800) {
-            w.push(format!("text_size 0x{:X} is not a multiple of 0x800", self.text_size));
+            w.push(format!(
+                "text_size 0x{:X} is not a multiple of 0x800",
+                self.text_size
+            ));
         }
         if memmap::resolve(self.text_addr).region != Region::MainRam {
-            w.push(format!("text_addr 0x{:08X} is not in main RAM", self.text_addr));
+            w.push(format!(
+                "text_addr 0x{:08X} is not in main RAM",
+                self.text_addr
+            ));
         }
         if !self.text_range().contains(&self.pc) {
-            w.push(format!("entry pc 0x{:08X} lies outside the loaded text", self.pc));
+            w.push(format!(
+                "entry pc 0x{:08X} lies outside the loaded text",
+                self.pc
+            ));
         }
         self.warnings = w;
         self
@@ -105,7 +117,10 @@ impl PsxExe {
     pub fn addr_to_file_offset(&self, addr: u32) -> Option<usize> {
         let want = memmap::resolve(addr);
         let base = memmap::resolve(self.text_addr);
-        if want.region != Region::MainRam || base.region != Region::MainRam || want.offset < base.offset {
+        if want.region != Region::MainRam
+            || base.region != Region::MainRam
+            || want.offset < base.offset
+        {
             return None;
         }
         let delta = want.offset - base.offset;
@@ -161,6 +176,9 @@ mod tests {
         let mut bytes = sample();
         bytes.truncate(HEADER_SIZE + 0x800);
         let exe = PsxExe::parse(&bytes).unwrap();
-        assert!(exe.warnings.iter().any(|w| w.contains("exceeds file payload")));
+        assert!(exe
+            .warnings
+            .iter()
+            .any(|w| w.contains("exceeds file payload")));
     }
 }

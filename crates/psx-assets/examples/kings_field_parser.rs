@@ -17,7 +17,9 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut bytes = Vec::new();
-    std::io::stdin().take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    std::io::stdin()
+        .take(64 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
     if bytes.len() > 64 * 1024 * 1024 {
         return Err("source exceeds 64 MiB".into());
     }
@@ -31,7 +33,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         std::fs::write(&args[1], &normalized.bytes)?;
     }
-    serde_json::to_writer(std::io::stdout().lock(), &ModelDocument::from(&normalized.model))?;
+    serde_json::to_writer(
+        std::io::stdout().lock(),
+        &ModelDocument::from(&normalized.model),
+    )?;
     std::io::stdout().flush()?;
     Ok(())
 }
