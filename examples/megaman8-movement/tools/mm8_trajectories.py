@@ -6,7 +6,7 @@ SCPH-7502 BIOS. Run from the psx checkout root (where media/ and bios/ live):
 
     python3 examples/megaman8-movement/tools/mm8_trajectories.py \
         --state .psx/mm8-study/s3900/state.bin \
-        --out examples/megaman8-movement/tests/data [scenario ...]
+        --out examples/megaman8-movement/game/tests/data [scenario ...]
 
 The state is an in-stage save state (see the case study for the boot replay).
 Each scenario runs `psx run --backend native --from-state ... --watch` on the

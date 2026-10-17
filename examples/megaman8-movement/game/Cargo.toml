@@ -1,0 +1,25 @@
+[package]
+name = "megaman8-movement"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The game is a library (`game`, whatever the package is called) so that
+# integration tests in `tests/` and tools can drive it; `src/main.rs` is the
+# thin executable.
+[lib]
+name = "game"
+path = "src/lib.rs"
+
+[features]
+default = []
+dev-mcp = ["engine/dev-mcp"]
+
+[dependencies]
+engine.workspace = true
+bevy.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

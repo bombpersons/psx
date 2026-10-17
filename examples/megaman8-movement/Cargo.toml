@@ -1,41 +1,54 @@
-[package]
-name = "megaman8-movement"
+# One workspace, one target directory, one lockfile:
+#
+#   psx-bevy/      the psx template's own crate. `psx template update` replaces
+#                  it; extend it from engine/ or game/ instead of editing it
+#   engine/        this game's engine family: no names, numbers or assets from
+#                  this game
+#   game/          this title: controllers, rules, HUD, menus, baked assets
+#   tools/import/  offline importers: extracted disc data -> engine formats
+#
+# Standalone: copying the template does not require the psx workspace.
+[workspace]
+resolver = "3"
+members = ["psx-bevy", "engine", "game", "tools/import"]
+default-members = ["game"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.1"
 publish = false
 
-# Standalone: copying the template does not require the psx workspace.
-[workspace]
-
-# The game is a library (`game`, whatever the package is called) so that
-# integration tests in `tests/` and tools can drive it; `src/main.rs` is the
-# thin executable.
-[lib]
-name = "game"
-path = "src/lib.rs"
-
-[features]
-default = []
-dev-mcp = ["dep:rmcp", "dep:tokio", "dep:base64", "dep:image"]
-
-[dependencies]
+[workspace.dependencies]
+psx-bevy = { path = "psx-bevy" }
+engine = { path = "engine" }
 bevy = { version = "=0.20.0", default-features = false, features = [
   "std", "async_executor", "multi_threaded", "bevy_asset", "bevy_log", "bevy_winit",
   "bevy_core_pipeline", "bevy_pbr", "bevy_sprite_render", "bevy_gltf", "bevy_gilrs",
-  "png", "x11", "wayland",
+  "png", "x11", "wayland", "bevy_ui_render", "default_font",
   # Components and resources deriving `Reflect` register themselves, so the
   # developer MCP's `game_query` can read them without `register_type` calls.
   "reflect_auto_register",
 ] }
 # Bevy 0.20 exposes native GLES on its renderer crate, not the facade features.
 bevy_render = { version = "=0.20.0", default-features = false, features = ["gles"] }
-rmcp = { version = "=3.5.1", optional = true, features = ["transport-io"] }
-tokio = { version = "1", optional = true, features = ["rt-multi-thread", "sync", "time", "io-std"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-base64 = { version = "0.22", optional = true }
-image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+# Persist physical bindings without enabling serialization on the renderer/world.
+bevy_input = { version = "=0.20.0", features = ["serialize"] }
+rmcp = { version = "=3.5.1", features = ["transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-std"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["alloc"] }
+# Hand-editable tables and tuning (the version Bevy already uses).
+ron = "0.12"
+# Feature alignment: rmcp and tokio-util enable `serde/rc`, `serde_json/alloc`,
+# `futures/std`, default futures-sink and default base64 0.23, all of which
+# Bevy shares. Enabling them in every build keeps the shared crates' resolved
+# features identical with and without `dev-mcp`, so switching rebuilds only the
+# MCP crates and the game instead of most of Bevy.
+futures = { version = "0.3", default-features = false, features = ["std"] }
+futures-sink = "0.3"
+base64 = "0.23"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Iteration builds: your code at opt-level 1 (fast to rebuild), dependencies
 # (Bevy) at 3, so `cargo run` plays at close to release speed. Line tables
@@ -49,3 +62,4 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 3
 debug = false
+
