@@ -17,9 +17,6 @@ pub struct SystemCnf {
 
 pub const DEFAULT_BOOT: &str = "cdrom:PSX.EXE;1";
 
-fn hex(v: &str) -> Option<u32> {
-    u32::from_str_radix(v.trim().trim_start_matches("0x").trim_start_matches("0X"), 16).ok()
-}
 
 impl SystemCnf {
     pub fn parse(bytes: &[u8]) -> Self {
@@ -34,9 +31,9 @@ impl SystemCnf {
         let boot = boot_words.next().map(str::to_string);
         let boot_args = boot_words.map(str::to_string).collect();
         SystemCnf {
-            tcb: fields.get("TCB").and_then(|v| hex(v)),
-            event: fields.get("EVENT").and_then(|v| hex(v)),
-            stack: fields.get("STACK").and_then(|v| hex(v)),
+            tcb: fields.get("TCB").and_then(|v| crate::memmap::parse_hex(v)),
+            event: fields.get("EVENT").and_then(|v| crate::memmap::parse_hex(v)),
+            stack: fields.get("STACK").and_then(|v| crate::memmap::parse_hex(v)),
             boot,
             boot_args,
             fields,

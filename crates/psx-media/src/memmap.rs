@@ -40,6 +40,12 @@ pub struct Resolved {
     pub offset: u32,
 }
 
+/// Parse a hex address or value, with or without `0x`/`0X`; surrounding spaces are ignored.
+pub fn parse_hex(s: &str) -> Option<u32> {
+    let s = s.trim();
+    u32::from_str_radix(s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s), 16).ok()
+}
+
 pub const MAIN_RAM_SIZE: u32 = 2 * 1024 * 1024;
 
 pub fn resolve(virt: u32) -> Resolved {

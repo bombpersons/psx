@@ -87,10 +87,6 @@ pub trait Op: serde::de::DeserializeOwned + JsonSchema {
     fn exec(self, ctx: &Ctx) -> Outcome;
 }
 
-fn hex_u32(s: &str) -> Option<u32> {
-    u32::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).ok()
-}
-
 fn deadline(timeout_s: Option<u64>) -> Option<Instant> {
     timeout_s.map(|s| Instant::now() + Duration::from_secs(s))
 }
@@ -1027,7 +1023,7 @@ impl Op for NativeArgs {
         };
         if let Some(e) = resolved.setup_error() {return crate::context::failed(e);}
         let bios = resolved.bios.unwrap();
-        let hex = |b: &Option<String>| b.as_deref().and_then(hex_u32);
+        let hex = |b: &Option<String>| b.as_deref().and_then(psx_media::memmap::parse_hex);
         Outcome::pair(crate::native::run(crate::native::Options {
             bios: &bios,
             disc: resolved.media.as_deref(),
@@ -1086,7 +1082,7 @@ pub struct DisasmArgs {
 fn d_function_budget() -> u32 { 4096 }
 
 fn opt_hex(s: &Option<String>, what: &str) -> psx_media::Result<Option<u32>> {
-    s.as_deref().map(|a| hex_u32(a).ok_or_else(|| MediaError::Malformed(format!("bad {what} {a:?} (hex)")))).transpose()
+    s.as_deref().map(|a| psx_media::memmap::parse_hex(a).ok_or_else(|| MediaError::Malformed(format!("bad {what} {a:?} (hex)")))).transpose()
 }
 
 impl Op for DisasmArgs {
@@ -1233,7 +1229,7 @@ impl Op for XrefsArgs {
                 if let Some(g) = opt_hex(&gp, "gp")? {
                     code.gp = Some(g);
                 }
-                let addr = |s: &str| hex_u32(s).ok_or_else(|| MediaError::Malformed(format!("bad hex address {s:?}")));
+                let addr = |s: &str| psx_media::memmap::parse_hex(s).ok_or_else(|| MediaError::Malformed(format!("bad hex address {s:?}")));
                 let (lo, hi) = match target.split_once('-') {
                     Some((l, h)) => (addr(l)?, addr(h)?),
                     None => {
@@ -1497,7 +1493,7 @@ impl Op for AddrArgs {
     fn exec(self, _: &Ctx) -> Outcome {
         let address = self.address;
         Outcome::media(
-            hex_u32(&address)
+            psx_media::memmap::parse_hex(&address)
                 .ok_or_else(|| MediaError::Malformed(format!("bad hex address {address}")))
                 .map(|a| serde_json::to_value(memmap::resolve(a)).unwrap()),
         )

@@ -477,8 +477,8 @@ fn extraction_response(mut full: Value, out: &Path, brief: bool, offset: usize, 
 fn hex(s: &Option<String>) -> R<Option<u32>> {
     s.as_deref()
         .map(|v| {
-            u32::from_str_radix(v.trim_start_matches("0x").trim_start_matches("0X"), 16)
-                .map_err(|_| MediaError::Malformed(format!("bad hex value {v}")))
+            psx_media::memmap::parse_hex(v)
+                .ok_or_else(|| MediaError::Malformed(format!("bad hex value {v}")))
         })
         .transpose()
 }

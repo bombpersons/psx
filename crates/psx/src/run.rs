@@ -94,7 +94,7 @@ pub fn fold(addr: u32) -> u32 {
 
 /// `LO-HI` or `ADDR[:WIDTH]` (hex) as a folded `[lo, hi)` range.
 pub fn parse_range_spec(s: &str) -> Result<(u32, u32), String> {
-    let h = |x: &str| u32::from_str_radix(x.trim().trim_start_matches("0x").trim_start_matches("0X"), 16).map_err(|_| format!("bad hex address {x:?} in {s:?}"));
+    let h = |x: &str| psx_media::memmap::parse_hex(x).ok_or_else(|| format!("bad hex address {x:?} in {s:?}"));
     let (lo, len) = match s.split_once('-') {
         Some((a, b)) => {
             let (a, b) = (h(a)?, h(b)?);
@@ -213,8 +213,8 @@ fn err(code: &str, message: impl std::fmt::Display) -> Value {
 
 fn parse_watch(s: &str) -> Result<Watch, String> {
     let (addr, width) = s.split_once(':').unwrap_or((s, "4"));
-    let addr = u32::from_str_radix(addr.trim_start_matches("0x").trim_start_matches("0X"), 16)
-        .map_err(|_| format!("bad watch address {addr:?}"))?;
+    let addr = psx_media::memmap::parse_hex(addr)
+        .ok_or_else(|| format!("bad watch address {addr:?}"))?;
     let width: u32 = width.parse().map_err(|_| format!("bad watch width {width:?}"))?;
     if ![1, 2, 4].contains(&width) {
         return Err("watch width must be 1, 2 or 4".into());

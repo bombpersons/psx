@@ -293,8 +293,7 @@ fn stamp() -> String {
     )
 }
 fn hex(s: &str) -> Result<u32> {
-    u32::from_str_radix(s.trim().trim_start_matches("0x").trim_start_matches("0X"), 16)
-        .map_err(|_| invalid(format!("invalid hex address {s:?}")))
+    psx_media::memmap::parse_hex(s).ok_or_else(|| invalid(format!("invalid hex address {s:?}")))
 }
 fn ram_address(addr: u32) -> Result<u32> {
     let region = psx_media::memmap::resolve(addr);

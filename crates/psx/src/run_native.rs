@@ -105,7 +105,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     }
     for w in &a.watches {
         let (addr, width) = w.split_once(':').unwrap_or((w, "4"));
-        let Ok(addr) = u32::from_str_radix(addr.trim_start_matches("0x").trim_start_matches("0X"), 16) else {
+        let Some(addr) = psx_media::memmap::parse_hex(addr) else {
             return err("invalid_arguments", format!("bad watch address {addr}"));
         };
         // Any byte length: the native watch covers [ADDR, ADDR+WIDTH).
@@ -553,8 +553,7 @@ fn frame_outputs(
 /// Hex address (optionally 0x-prefixed) or a function name from --symbols:
 /// `(start, end of the function if known)`.
 fn resolve(spec: &str, scopes: &[crate::ScopedSymbols]) -> Result<(u32, Option<u32>), String> {
-    let hex = spec.trim_start_matches("0x").trim_start_matches("0X");
-    if let Ok(v) = u32::from_str_radix(hex, 16) {
+    if let Some(v) = psx_media::memmap::parse_hex(spec) {
         return Ok((v, None));
     }
     scopes
