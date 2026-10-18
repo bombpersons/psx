@@ -90,6 +90,14 @@ impl std::fmt::Debug for Disc {
     }
 }
 
+/// Disc image extensions [`Disc::open`] accepts, lowercase.
+pub const IMAGE_EXTENSIONS: &[&str] = &["cue", "bin", "img", "iso"];
+
+/// Whether `path` has a disc image extension (case-insensitive).
+pub fn is_image_path(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
 fn file_len(path: &Path) -> Result<u64> {
     std::fs::metadata(path).map(|m| m.len()).map_err(|e| MediaError::io(path, e))
 }

@@ -5,6 +5,14 @@
 //! That is the documented convention; a game may load further code (overlays)
 //! its own way, which only runtime evidence can show.
 
+/// Executable extensions treated as PS-X EXEs rather than disc images, lowercase.
+pub const EXE_EXTENSIONS: &[&str] = &["exe", "ps-exe", "psx"];
+
+/// Whether `path` has a PS-X EXE extension (case-insensitive).
+pub fn is_exe_path(path: &std::path::Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| EXE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
 use crate::error::{malformed, Result};
 use crate::memmap::{self, Region};
 

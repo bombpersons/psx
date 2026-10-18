@@ -307,8 +307,7 @@ fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (
     let media = match &a.media {
         None => Media::None,
         Some(p) => {
-            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-            if ["exe", "ps-exe", "psx"].contains(&ext.as_str()) {
+            if psx_media::exe::is_exe_path(p) {
                 Media::Exe(p.clone())
             } else {
                 Media::Disc(p.clone())

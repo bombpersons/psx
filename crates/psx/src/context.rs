@@ -134,7 +134,7 @@ fn report_path(root: &Path, report: &Value, key: &str) -> Option<PathBuf> {
 }
 fn region(media: Option<&Path>) -> Result<Option<bios::Region>, Value> {
     let Some(p) = media else { return Ok(None) };
-    let exe = matches!(p.extension().and_then(|s| s.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("exe" | "ps-exe" | "psx"));
+    let exe = psx_media::exe::is_exe_path(p);
     let hint = if exe {
         let b = crate::read_source(&p.to_string_lossy()).map_err(media_error)?;
         PsxExe::parse(&b).map_err(media_error)?.region_hint().map(str::to_owned)

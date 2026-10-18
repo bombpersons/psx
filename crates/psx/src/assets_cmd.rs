@@ -100,10 +100,6 @@ fn finish_item(mut item: Item, parsers: &Parsers) -> R<Item> {
     Ok(item)
 }
 
-fn is_disc_image(p: &Path) -> bool {
-    p.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "cue" | "bin" | "iso"))
-}
-
 fn with_ext(path: &str, ext: &str) -> String {
     match path.rsplit_once('.') {
         Some((stem, _)) if !stem.ends_with('/') => format!("{stem}.{ext}"),
@@ -187,7 +183,7 @@ fn scan_inputs(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, 
     let matches = |name: &str| filter.is_none_or(|f| name.to_lowercase().contains(&f.to_lowercase()));
     let (image, pattern) = match source.split_once("::") {
         Some((i, p)) => (PathBuf::from(i), Some(p.to_string())),
-        None if is_disc_image(Path::new(source)) && Disc::open(source).is_ok() => (PathBuf::from(source), None),
+        None if psx_media::disc::is_image_path(Path::new(source)) && Disc::open(source).is_ok() => (PathBuf::from(source), None),
         None => {
             let metadata = std::fs::metadata(source).map_err(|e| MediaError::io(source, e))?;
             let mut files = Vec::new();

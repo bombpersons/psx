@@ -34,8 +34,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     let mut disc: Option<psx_media::Disc> = None;
     let mut media_id: Option<MediaId> = None;
     if let Some(p) = &a.media {
-        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-        if ["exe", "ps-exe", "psx"].contains(&ext.as_str()) {
+        if psx_media::exe::is_exe_path(p) {
             let bytes = match std::fs::read(p) {
                 Ok(b) => b,
                 Err(e) => return err("io_error", format!("{}: {e}", p.display())),
