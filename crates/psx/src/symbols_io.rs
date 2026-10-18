@@ -139,6 +139,59 @@ pub(crate) fn final_name(scopes: &[ScopedSymbols], pc: u32, ram: Option<&[u8]>) 
     }
 }
 
+/// `psx symbols`: name PsyQ library functions in an EXE by signature matching.
+pub(crate) fn symbols_cmd(source: &str, sigs_dir: &Path, min_concrete: usize, out: Option<PathBuf>) -> psx_media::Result<Value> {
+    let bytes = psx_media::source::read(source)?;
+    let exe = PsxExe::parse(&bytes)?;
+    let sigs = psx_symbols::load_dir(sigs_dir).map_err(|e| {
+        MediaError::NotFound(format!("signatures: {e} (supply a local psx_psyq_signatures checkout with --sigs / MCP sigs, or set PSX_SIGS_DIR to its absolute path for all projects; context reports the default path)"))
+    })?;
+    let report = psx_symbols::match_code(exe.payload(&bytes), exe.text_addr, &sigs, min_concrete);
+    let stem = source.rsplit(['/', '\\', ':']).next().unwrap_or("exe").trim_end_matches(";1").to_string();
+    let prefix = out.unwrap_or_else(|| PathBuf::from(".psx/symbols").join(&stem));
+    if let Some(parent) = prefix.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| MediaError::io(parent, e))?;
+    }
+    let with_ext = |ext: &str| PathBuf::from(format!("{}.{ext}", prefix.display()));
+    let write = |p: PathBuf, text: String| std::fs::write(&p, text).map_err(|e| MediaError::io(&p, e)).map(|_| p);
+    let doc = json!({
+        "source": source,
+        "text_addr": exe.text_addr,
+        "exe_sha256": psx_media::disc::sha256_bytes(&bytes),
+        "report": report,
+    });
+    let json_path = write(with_ext("symbols.json"), serde_json::to_string_pretty(&doc).unwrap())?;
+    let ghidra = write(with_ext("ghidra.txt"), psx_symbols::to_ghidra(&report.symbols))?;
+    let sym = write(with_ext("sym"), psx_symbols::to_sym(&report.symbols))?;
+    let functions = report.symbols.iter().filter(|s| s.kind == psx_symbols::Kind::Function).count();
+    let mut libs: std::collections::BTreeMap<String, usize> = Default::default();
+    for o in &report.objects {
+        let lib = o.source.split('/').nth(1).unwrap_or("?").to_string();
+        *libs.entry(lib).or_default() += 1;
+    }
+    let matched: u64 = report.objects.iter().map(|o| o.size as u64).sum();
+    Ok(json!({
+        "exe": source,
+        "text": {"addr": format!("0x{:08X}", exe.text_addr), "bytes": exe.text_size},
+        "signatures_loaded": sigs.len(),
+        "versions": report.versions.iter().take(5).collect::<Vec<_>>(),
+        "chosen_version": report.chosen_version,
+        "objects_matched": report.objects.len(),
+        "objects_by_library": libs,
+        "functions_named": functions,
+        "code_covered_bytes": matched,
+        "code_covered_pct": (matched as f64 * 1000.0 / exe.text_size.max(1) as f64).round() / 10.0,
+        "ambiguous": report.ambiguous.len(),
+        "interpretation": {
+            "scope":"PsyQ library signatures, not a catalogue of game-specific functions; low coverage alone is not a failure.",
+            "chosen_version":"Best-scoring installed signature set, not proof of a game's exact SDK version.",
+            "ambiguous":"Signatures with multiple matches are skipped, never arbitrarily selected.",
+            "next_step":"Use runtime observations and Ghidra for game-specific functions; verify pseudocode against instructions."
+        },
+        "files": {"report": json_path, "ghidra": ghidra, "sym": sym},
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

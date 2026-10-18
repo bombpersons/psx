@@ -148,7 +148,7 @@ pub struct DiscArgs {
 
 impl Op for DiscArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::disc_summary(&self.image, self.hash))
+        Outcome::media(crate::media_cmd::disc_summary(&self.image, self.hash))
     }
 }
 
@@ -177,7 +177,7 @@ impl Op for LsArgs {
             let rows: Vec<_> = fs
                 .entries
                 .iter()
-                .map(crate::entry_json)
+                .map(crate::media_cmd::entry_json)
                 .filter(|e| e["path"].as_str().unwrap_or("").to_lowercase().contains(&filter))
                 .collect();
             let entries: Vec<_> = rows.iter().skip(self.offset).take(self.limit).collect();
@@ -206,7 +206,7 @@ pub struct ExtractArgs {
 
 impl Op for ExtractArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::extract(&self.image, self.path.as_deref(), self.all, &self.out))
+        Outcome::media(crate::media_cmd::extract(&self.image, self.path.as_deref(), self.all, &self.out))
     }
 }
 
@@ -218,7 +218,7 @@ pub struct ExeArgs {
 
 impl Op for ExeArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::exe_cmd(&self.source))
+        Outcome::media(crate::media_cmd::exe_cmd(&self.source))
     }
 }
 
@@ -527,7 +527,7 @@ pub struct SectorArgs {
 
 impl Op for SectorArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::sectors(&self.image, self.lba, self.count, self.preview))
+        Outcome::media(crate::media_cmd::sectors(&self.image, self.lba, self.count, self.preview))
     }
 }
 
@@ -902,7 +902,7 @@ pub struct SymbolsArgs {
 
 impl Op for SymbolsArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::symbols_cmd(&self.source, &self.sigs, self.min_concrete, self.out))
+        Outcome::media(crate::symbols_io::symbols_cmd(&self.source, &self.sigs, self.min_concrete, self.out))
     }
 }
 
