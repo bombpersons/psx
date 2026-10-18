@@ -100,10 +100,6 @@ fn finish_item(mut item: Item, parsers: &Parsers) -> R<Item> {
     Ok(item)
 }
 
-fn is_disc_image(p: &Path) -> bool {
-    p.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "cue" | "bin" | "iso"))
-}
-
 fn with_ext(path: &str, ext: &str) -> String {
     match path.rsplit_once('.') {
         Some((stem, _)) if !stem.ends_with('/') => format!("{stem}.{ext}"),
@@ -187,7 +183,7 @@ fn scan_inputs(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, 
     let matches = |name: &str| filter.is_none_or(|f| name.to_lowercase().contains(&f.to_lowercase()));
     let (image, pattern) = match source.split_once("::") {
         Some((i, p)) => (PathBuf::from(i), Some(p.to_string())),
-        None if is_disc_image(Path::new(source)) && Disc::open(source).is_ok() => (PathBuf::from(source), None),
+        None if psx_media::disc::is_image_path(Path::new(source)) && Disc::open(source).is_ok() => (PathBuf::from(source), None),
         None => {
             let metadata = std::fs::metadata(source).map_err(|e| MediaError::io(source, e))?;
             let mut files = Vec::new();
@@ -219,7 +215,7 @@ fn scan_inputs(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, 
         let dir = if dir.ends_with('/') { dir } else { format!("{dir}/") };
         files.into_iter().filter(|e| e.path.to_ascii_uppercase().starts_with(&dir.to_ascii_uppercase())).collect()
     } else {
-        vec![fs.find(&pattern).ok_or_else(|| MediaError::NotFound(pattern.clone()))?]
+        vec![fs.entry(&pattern)?]
     };
     let read = |path: &str| fs.find(path).filter(|e| !e.is_dir).and_then(|e| fs.read_file(&disc, e).ok());
     let mut out = Vec::new();
@@ -481,8 +477,8 @@ fn extraction_response(mut full: Value, out: &Path, brief: bool, offset: usize, 
 fn hex(s: &Option<String>) -> R<Option<u32>> {
     s.as_deref()
         .map(|v| {
-            u32::from_str_radix(v.trim_start_matches("0x").trim_start_matches("0X"), 16)
-                .map_err(|_| MediaError::Malformed(format!("bad hex value {v}")))
+            psx_media::memmap::parse_hex(v)
+                .ok_or_else(|| MediaError::Malformed(format!("bad hex value {v}")))
         })
         .transpose()
 }
@@ -658,6 +654,92 @@ fn load_item_textures(vram: &mut Vram, item: &Item) -> (usize, usize) {
     (tims, uploads)
 }
 
+/// `--entry N`: one archive entry's raw bytes, without interpreting them.
+fn extract_entry(a: &ExtractArgs, items: &[Item], index: usize) -> R<Value> {
+    if items.len() != 1 {
+        return Err(MediaError::Malformed("--entry requires a single source file".into()));
+    }
+    let item = &items[0];
+    let archive = item.archive.as_ref().ok_or_else(|| {
+        MediaError::Malformed("source is not a recognized archive (use --archive dot-t for explicit validation)".into())
+    })?;
+    let entry = archive
+        .entries
+        .get(index)
+        .ok_or_else(|| MediaError::Malformed(format!("archive entry {index} out of range ({} entries)", archive.entries.len())))?;
+    let dir = a.out.join(safe_name(&item.name));
+    std::fs::create_dir_all(&dir).map_err(|e| MediaError::io(&dir, e))?;
+    let name = entry.name.as_deref().map(safe_name).unwrap_or_else(|| "data.bin".into());
+    let path = dir.join(format!("entry_{index:04}_{name}"));
+    write(&path, entry.bytes(&item.bytes).unwrap())?;
+    Ok(json!({"source": a.source, "out": a.out, "extracted": 1, "assets": [],
+        "entries": [{"file": item.name, "format": archive.format, "entry": entry, "parser":item.archive_parser,
+                     "outputs": [{"path": path, "role": "archive_entry"}]}]}))
+}
+
+/// The `--textures` sources loaded into one VRAM shared by every item:
+/// `(vram, TIMs loaded, uploads applied, per-source listings when a texture parser ran)`.
+fn texture_sources(a: &ExtractArgs) -> R<(Vram, usize, usize, Vec<Value>)> {
+    let mut vram = Vram::default();
+    let (mut tims, mut uploads, mut sources) = (0, 0, Vec::new());
+    let texture_parsers = Parsers { asset: a.texture_parser.cloned(), cancel: a.parsers.cancel.clone(), ..Default::default() };
+    for t in a.textures {
+        for it in self::items(t, None, None, &texture_parsers)? {
+            let (n, u) = load_item_textures(&mut vram, &it);
+            tims += n;
+            uploads += u;
+            if a.texture_parser.is_some() {
+                sources.push(json!({"file":it.name,
+                    "hits":item_hits(&it).iter().map(|h|hit_json(&it,h)).collect::<Vec<_>>(),
+                    "upload_streams":it.uploads.iter().map(|s|uploads_json(&it,s)).collect::<Vec<_>>()
+                }));
+            }
+        }
+    }
+    Ok((vram, tims, uploads, sources))
+}
+
+/// A parsed upload stream: its source bytes, parser document, each upload's words and a manifest.
+fn write_upload_stream(dir: &Path, item: &Item, stream: &ParsedUploads) -> R<Value> {
+    let stem = format!("{:08X}", stream.offset);
+    let source = dir.join(format!("{stem}.source.bin"));
+    let document = dir.join(format!("{stem}.parser.json"));
+    write(&source, &item.bytes[stream.offset..stream.offset + stream.size])?;
+    write(&document, &stream.document)?;
+    let mut record = uploads_json(item, stream);
+    record["file"] = json!(item.name);
+    let uploads = record["uploads"].as_array_mut().unwrap();
+    for (index, upload) in stream.uploads.iter().enumerate() {
+        let path = dir.join(format!("{stem}_upload_{index:04}.words.bin"));
+        write(&path, &upload.bytes())?;
+        uploads[index]["path"] = json!(path);
+    }
+    let manifest = dir.join(format!("{stem}.uploads.json"));
+    record["outputs"] = json!([{"path":source,"role":"original"},{"path":document,"role":"parser_document"},{"path":manifest,"role":"upload_manifest"}]);
+    write(&manifest, serde_json::to_string_pretty(&record).unwrap().as_bytes())?;
+    Ok(record)
+}
+
+/// Output file stem for a hit: its archive entry name (and offset inside the entry), else its offset.
+fn hit_stem(item: &Item, h: &Hit) -> String {
+    match entry_of(item, h.offset) {
+        Some(entry) => {
+            let name = match (&entry.name, item.archive.as_ref().unwrap().format) {
+                (Some(name), psx_assets::archive::Format::External) => format!("entry_{:04}_{}", entry.index, safe_name(name)),
+                (Some(name), _) => safe_name(name),
+                (None, _) => format!("entry_{:04}", entry.index),
+            };
+            let off = h.offset - entry.offset;
+            if off == 0 {
+                name
+            } else {
+                format!("{name}_{off:X}")
+            }
+        }
+        None => format!("{:08X}", h.offset),
+    }
+}
+
 pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
     if a.entry.is_some()
         && (a.offset.is_some()
@@ -671,44 +753,9 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
     }
     let items = items(a.source, a.ram_base, a.archive, a.parsers)?;
     if let Some(index) = a.entry {
-        if items.len() != 1 {
-            return Err(MediaError::Malformed("--entry requires a single source file".into()));
-        }
-        let item = &items[0];
-        let archive = item.archive.as_ref().ok_or_else(|| {
-            MediaError::Malformed("source is not a recognized archive (use --archive dot-t for explicit validation)".into())
-        })?;
-        let entry = archive
-            .entries
-            .get(index)
-            .ok_or_else(|| MediaError::Malformed(format!("archive entry {index} out of range ({} entries)", archive.entries.len())))?;
-        let dir = a.out.join(safe_name(&item.name));
-        std::fs::create_dir_all(&dir).map_err(|e| MediaError::io(&dir, e))?;
-        let name = entry.name.as_deref().map(safe_name).unwrap_or_else(|| "data.bin".into());
-        let path = dir.join(format!("entry_{index:04}_{name}"));
-        write(&path, entry.bytes(&item.bytes).unwrap())?;
-        return Ok(json!({"source": a.source, "out": a.out, "extracted": 1, "assets": [],
-            "entries": [{"file": item.name, "format": archive.format, "entry": entry, "parser":item.archive_parser,
-                         "outputs": [{"path": path, "role": "archive_entry"}]}]}));
+        return extract_entry(&a, &items, index);
     }
-    let mut base_vram = Vram::default();
-    let mut texture_tims = 0;
-    let mut texture_uploads = 0;
-    let mut texture_sources = Vec::new();
-    let texture_parsers = Parsers { asset: a.texture_parser.cloned(), cancel: a.parsers.cancel.clone(), ..Default::default() };
-    for t in a.textures {
-        for it in self::items(t, None, None, &texture_parsers)? {
-            let (tims, uploads) = load_item_textures(&mut base_vram, &it);
-            texture_tims += tims;
-            texture_uploads += uploads;
-            if a.texture_parser.is_some() {
-                texture_sources.push(json!({"file":it.name,
-                    "hits":item_hits(&it).iter().map(|h|hit_json(&it,h)).collect::<Vec<_>>(),
-                    "upload_streams":it.uploads.iter().map(|s|uploads_json(&it,s)).collect::<Vec<_>>()
-                }));
-            }
-        }
-    }
+    let (base_vram, texture_tims, texture_uploads, texture_sources) = texture_sources(&a)?;
     let mut report = Vec::new();
     let want = |k: Kind| a.kinds.is_empty() || a.kinds.contains(&k);
     for item in &items {
@@ -720,44 +767,13 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
         let dir = a.out.join(safe_name(&item.name));
         std::fs::create_dir_all(&dir).map_err(|e| MediaError::io(&dir, e))?;
         for stream in streams {
-            let stem = format!("{:08X}", stream.offset);
-            let source = dir.join(format!("{stem}.source.bin"));
-            let document = dir.join(format!("{stem}.parser.json"));
-            write(&source, &item.bytes[stream.offset..stream.offset + stream.size])?;
-            write(&document, &stream.document)?;
-            let mut record = uploads_json(item, stream);
-            record["file"] = json!(item.name);
-            let uploads = record["uploads"].as_array_mut().unwrap();
-            for (index, upload) in stream.uploads.iter().enumerate() {
-                let path = dir.join(format!("{stem}_upload_{index:04}.words.bin"));
-                write(&path, &upload.bytes())?;
-                uploads[index]["path"] = json!(path);
-            }
-            let manifest = dir.join(format!("{stem}.uploads.json"));
-            record["outputs"] = json!([{"path":source,"role":"original"},{"path":document,"role":"parser_document"},{"path":manifest,"role":"upload_manifest"}]);
-            write(&manifest, serde_json::to_string_pretty(&record).unwrap().as_bytes())?;
-            report.push(record);
+            report.push(write_upload_stream(&dir, item, stream)?);
         }
         // VRAM for this item's models: the --textures TIMs, then this item's own.
         let mut vram = base_vram.clone();
         let (own_tims, own_uploads) = if hits.iter().any(|h| h.kind == Kind::Tmd) { load_item_textures(&mut vram, item) } else { (0, 0) };
         for h in &hits {
-            let stem = match entry_of(item, h.offset) {
-                Some(entry) => {
-                    let name = match (&entry.name, item.archive.as_ref().unwrap().format) {
-                        (Some(name), psx_assets::archive::Format::External) => format!("entry_{:04}_{}", entry.index, safe_name(name)),
-                        (Some(name), _) => safe_name(name),
-                        (None, _) => format!("entry_{:04}", entry.index),
-                    };
-                    let off = h.offset - entry.offset;
-                    if off == 0 {
-                        name
-                    } else {
-                        format!("{name}_{off:X}")
-                    }
-                }
-                None => format!("{:08X}", h.offset),
-            };
+            let stem = hit_stem(item, h);
             let (source_parent, source_offset, _) = asset_context(item, h.offset);
             let (parent, local_offset, ram_base) = decode_context(item, h.offset);
             let bytes = &parent[local_offset..];

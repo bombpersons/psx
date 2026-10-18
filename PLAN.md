@@ -286,7 +286,7 @@ From the mdx survey:
 psx (CLI)  ─┐
 psx mcp    ─┴─> opkit (envelope, artifacts, context, registry, MCP)
                   │
-                  ├── psx-media   pure Rust: CUE/BIN, ISO9660, SYSTEM.CNF, PS-X EXE,
+                  ├── psx-media   pure Rust: CUE/BIN, CHD, ISO9660, SYSTEM.CNF, PS-X EXE,
                   │               MIPS R3000 disassembler, streaming hashes
                   └── psx-redux   worker supervisor: spawn, handshake, budgets,
                                   timeout/kill, temp dirs for cards/states

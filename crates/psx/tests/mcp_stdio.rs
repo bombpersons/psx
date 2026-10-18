@@ -830,11 +830,11 @@ fn spu_trace_links_key_ons_to_sample_hashes_and_uploads_through_cli_and_mcp() {
     let bios: Vec<u8> = code.iter().flat_map(|w: &u32| w.to_le_bytes()).collect();
     std::fs::write(root.join("bios.bin"), &bios).unwrap();
     std::fs::write(root.join("start.bin"), psx_core::Machine::new(bios).save_state(None)).unwrap();
-    let common = ["run", "--bios", "bios.bin", "--backend", "native", "--from-state", "start.bin", "--frames", "2", "--trace-spu", "--brief"];
+    let common = ["run", "--bios", "bios.bin", "--from-state", "start.bin", "--frames", "2", "--trace-spu", "--brief"];
     let (cli_report, ok) = cli(&root, &[common.as_slice(), &["--out", "cli"]].concat());
     assert!(ok, "{cli_report}");
     let mut rpc = Rpc::start(&root);
-    let (mcp_report, error, _) = rpc.tool("run", json!({"bios":"bios.bin","backend":"native","from_state":"start.bin",
+    let (mcp_report, error, _) = rpc.tool("run", json!({"bios":"bios.bin","from_state":"start.bin",
         "frames":2,"trace_spu":true,"brief":true,"out":"mcp"}));
     assert!(!error, "{mcp_report}");
     let strip = |mut v: Value| { v.as_object_mut().unwrap().remove("file"); v };
@@ -855,7 +855,7 @@ fn spu_trace_links_key_ons_to_sample_hashes_and_uploads_through_cli_and_mcp() {
     assert_eq!(events[1]["pc"], 0xbfc0_0000u32 + 4 * 17, "the key-on store");
     assert_eq!(events[1]["rate_hz"], 44_100.0);
     // summary keeps paths and counts only, and still attaches the screen.
-    let (summary, error, blocks) = rpc.tool("run", json!({"bios":"bios.bin","backend":"native","from_state":"start.bin",
+    let (summary, error, blocks) = rpc.tool("run", json!({"bios":"bios.bin","from_state":"start.bin",
         "frames":2,"trace_spu":true,"summary":true,"return_screen":true,"out":"mcp-summary"}));
     assert!(!error, "{summary}");
     assert_eq!(summary["spu"]["events"], spu["events"]);
@@ -863,8 +863,6 @@ fn spu_trace_links_key_ons_to_sample_hashes_and_uploads_through_cli_and_mcp() {
     assert!(summary.get("artifacts").is_none() && summary.get("watch").is_none(), "{summary}");
     assert!(summary.to_string().len() < 2048, "{summary}");
     assert!(blocks.iter().any(|b| b["type"] == "image"), "summary must still attach the requested screen");
-    let (redux, ok) = cli(&root, &["run", "--bios", "bios.bin", "--backend", "redux", "--frames", "1", "--trace-spu"]);
-    assert!(!ok && redux["error"]["code"] == "unsupported", "{redux}");
     drop(rpc);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -903,8 +901,6 @@ fn next_draw_captures_the_same_frame_through_cli_and_mcp() {
         "run",
         "--bios",
         "bios.bin",
-        "--backend",
-        "native",
         "--from-state",
         "start.bin",
         "--frames",
@@ -920,7 +916,7 @@ fn next_draw_captures_the_same_frame_through_cli_and_mcp() {
     args.extend(["--gpu-next-draw", "--gpu-search-frames", "3", "--watch-reads", "0:4", "--max-events", "0", "--out", "cli"]);
     let (cli_report, ok) = cli(&root, &args);
     assert!(ok, "{cli_report}");
-    let base = json!({"bios":"bios.bin", "backend":"native", "from_state":"start.bin", "frames":4,
+    let base = json!({"bios":"bios.bin", "from_state":"start.bin", "frames":4,
         "poke":["0=255:4@2", "0=65280:4@3"], "brief":true, "gpu_next_draw":true, "gpu_search_frames":3, "out":"mcp"});
     let (mcp_report, error, _) = rpc.tool("run", base.clone());
     assert!(!error, "{mcp_report}");
@@ -1023,7 +1019,6 @@ fn mcp_tools_match_cli() {
         "loads",
         "symbols",
         "disasm",
-        "lockstep",
         "native",
         "template_create",
         "gpu_replay",
@@ -1053,13 +1048,10 @@ fn mcp_tools_match_cli() {
     }
     let run = tools.iter().find(|t| t["name"] == "run").unwrap();
     assert!(!run["inputSchema"]["required"].as_array().is_some_and(|v|v.iter().any(|f|f=="bios")));
-    let backend_schema=run["inputSchema"]["properties"]["backend"].to_string();
-    assert!(backend_schema.contains("native") && backend_schema.contains("redux"),"{backend_schema}");
     for field in [
         "bios",
         "input",
         "frames",
-        "backend",
         "watch",
         "trace",
         "gpu_frame",
@@ -1112,35 +1104,29 @@ fn mcp_tools_match_cli() {
         ("native", json!({"bios": "no-such-bios.bin", "frames": 1}), vec!["native", "--bios", "no-such-bios.bin", "--frames", "1"]),
         (
             "run",
-            json!({"bios": "no-such-bios.bin", "backend": "native", "frames": 1}),
-            vec!["run", "--bios", "no-such-bios.bin", "--backend", "native", "--frames", "1"],
+            json!({"bios": "no-such-bios.bin", "frames": 1}),
+            vec!["run", "--bios", "no-such-bios.bin", "--frames", "1"],
         ),
-        ("run", json!({"bios": "b.bin", "backend": "bogus"}), vec!["run", "--bios", "b.bin", "--backend", "bogus"]),
         ("run", json!({"bios":"b.bin", "gpu_next_draw":true}), vec!["run", "--bios", "b.bin", "--gpu-next-draw"]),
         (
             "run",
-            json!({"bios":"b.bin", "backend":"native", "gpu_search_frames":2}),
-            vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-search-frames", "2"],
+            json!({"bios":"b.bin", "gpu_search_frames":2}),
+            vec!["run", "--bios", "b.bin", "--gpu-search-frames", "2"],
         ),
         (
             "run",
-            json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_search_frames":0}),
-            vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-next-draw", "--gpu-search-frames", "0"],
+            json!({"bios":"b.bin", "gpu_next_draw":true, "gpu_search_frames":0}),
+            vec!["run", "--bios", "b.bin", "--gpu-next-draw", "--gpu-search-frames", "0"],
         ),
         (
             "run",
-            json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_search_frames":601}),
-            vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-next-draw", "--gpu-search-frames", "601"],
+            json!({"bios":"b.bin", "gpu_next_draw":true, "gpu_search_frames":601}),
+            vec!["run", "--bios", "b.bin", "--gpu-next-draw", "--gpu-search-frames", "601"],
         ),
         (
             "run",
-            json!({"bios":"b.bin", "backend":"native", "gpu_next_draw":true, "gpu_frame":u64::MAX}),
-            vec!["run", "--bios", "b.bin", "--backend", "native", "--gpu-next-draw", "--gpu-frame", "18446744073709551615"],
-        ),
-        (
-            "run",
-            json!({"bios": "no-such-bios.bin", "backend": "redux", "sample": ["80010000:u32"]}),
-            vec!["run", "--bios", "no-such-bios.bin", "--backend", "redux", "--sample", "80010000:u32"],
+            json!({"bios":"b.bin", "gpu_next_draw":true, "gpu_frame":u64::MAX}),
+            vec!["run", "--bios", "b.bin", "--gpu-next-draw", "--gpu-frame", "18446744073709551615"],
         ),
         ("disasm", json!({"source": "tiny.ps-exe", "function": "80010004"}), vec!["disasm", "tiny.ps-exe", "--function", "80010004"]),
         (
@@ -1481,8 +1467,6 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
         "run",
         "--bios",
         "bios.bin",
-        "--backend",
-        "native",
         "--from-state",
         "start.bin",
         "--frames",
@@ -1521,7 +1505,8 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
     let (refs, ok) = cli(&root, &["xrefs", "800100c0", "--ram", "ram.bin", "--gp", "800100c0", "--symbols", symbols]);
     assert!(ok && !refs.to_string().contains("studied_writer"), "{refs}");
     let mut changed_args = trace_args;
-    changed_args[6] = "changed.bin";
+    let state = changed_args.iter().position(|a| *a == "start.bin").unwrap();
+    changed_args[state] = "changed.bin";
     changed_args[changed_args.len() - 1] = "trace-b";
     let (run, ok) = cli(&root, &changed_args);
     assert!(ok, "{run}");
@@ -1541,7 +1526,6 @@ fn first_use_bios_setup_context_and_compact_screens_work_through_mcp() {
     let mut rpc = Rpc::start(&root);
     let (context, error, _) = rpc.tool("context", json!({}));
     assert!(!error && context["status"] == "needs_setup", "{context}");
-    assert_eq!(context["resolved"]["backend"], "native");
     assert!(context["build"]["id"].as_str().unwrap().starts_with("src-"));
     let (list, error, _) = rpc.tool("bios_list", json!({}));
     assert!(!error && list["installed"].as_array().unwrap().is_empty(), "{list}");
@@ -1576,14 +1560,14 @@ fn first_use_bios_setup_context_and_compact_screens_work_through_mcp() {
             assert!(run["frames"].get("numbering").is_none());
         }
     }
-    // A checkpoint is self-identifying: changing project defaults cannot select another BIOS/backend.
+    // A checkpoint is self-identifying: changing project defaults cannot select another BIOS.
     std::fs::write(root.join("wrong.bin"), [0; 32]).unwrap();
-    let (_, error, _) = rpc.tool("context", json!({"bios":"wrong.bin","backend":"redux","save":true}));
+    let (_, error, _) = rpc.tool("context", json!({"bios":"wrong.bin","save":true}));
     assert!(!error);
     let (resumed, error, _) = rpc.tool("run", json!({"from_state":"compact/state.bin","frames":0,"out":"resumed"}));
     assert!(!error && resumed["resolved"]["bios_selection"] == "state_sha256", "{resumed}");
     assert_eq!(resumed["identity"]["backend"], "psx-core");
-    let (wrong, error, _) = rpc.tool("run", json!({"bios":"wrong.bin","backend":"native","from_state":"compact/state.bin","frames":0}));
+    let (wrong, error, _) = rpc.tool("run", json!({"bios":"wrong.bin","from_state":"compact/state.bin","frames":0}));
     assert!(error && wrong["error"]["code"] == "identity_mismatch", "{wrong}");
     // An unbound report is never allowed to supply a BIOS or media path.
     let mut report: Value = serde_json::from_slice(&std::fs::read(root.join("compact/report.json")).unwrap()).unwrap();
@@ -1861,8 +1845,6 @@ fn inline_inputs_match_replay_and_release_at_the_final_checkpoint_boundary() {
     }
     let (bad, error, _) = rpc.tool("run", json!({"bios":"bios.bin","input":[],"replay":"input.json","frames":2}));
     assert!(error && bad["error"]["code"] == "invalid_arguments", "{bad}");
-    let (redux, error, _) = rpc.tool("run", json!({"bios":"bios.bin","backend":"redux","input":[{"frame":9,"buttons":[]}],"frames":2}));
-    assert!(error && redux["error"]["code"] == "invalid_arguments", "Redux must validate the same schedule before launching: {redux}");
     let writer:Vec<u8>=[0x3c088001u32,0x24090001,0xad090000,0x0bf00002,0].iter().flat_map(|w|w.to_le_bytes()).collect();
     std::fs::write(root.join("writer.bin"),writer).unwrap();
     let (capped,error,_)=rpc.tool("run",json!({"bios":"writer.bin","frames":1,"watch":["80010000:4"],"max_events":2,"watch_changes_only":true,"out":"capped"}));

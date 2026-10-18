@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 pub fn run(image: &Path, path: &str, file: Option<u8>, channel: Option<u8>, out: Option<&Path>) -> psx_media::Result<Value> {
     let disc = Disc::open(image)?;
     let fs = FileSystem::read(&disc)?;
-    let entry = fs.find(path).ok_or_else(|| MediaError::NotFound(path.to_string()))?;
+    let entry = fs.entry(path)?;
     // (file, channel) -> (coding byte, sectors, first lba)
     let mut channels: BTreeMap<(u8, u8), (u8, u32, u32)> = BTreeMap::new();
     let mut sectors = Vec::new();

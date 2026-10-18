@@ -1,5 +1,5 @@
 Call context with an image path, or from_state for a checkpoint. Read build,
-project_root, resolved, capabilities and warnings before choosing a backend.
+project_root, resolved, capabilities and warnings.
 guide itself only returns documentation; it does not validate the installation.
 
 All relative input and output paths resolve against the server's project root:
@@ -25,13 +25,14 @@ external/psx_psyq_signatures in the selected project. Use an absolute PSX_SIGS_D
 in the server environment to share a checkout. context.signatures reports its
 default path and directory presence without loading or downloading the index.
 
+Disc images can be .cue (with its .bin files), a bare raw .bin, a cooked .iso
+or a CD .chd; a .chd and the .cue it was made from give the same sectors,
+track_sha256 (disc --hash) and save-state identity.
 disc inspects the disc and boot EXE; ls filters/pages its ISO entries.
-LibCrypt-protected discs need the redump .sbi/.lsd beside the .cue (same base
+LibCrypt-protected discs need the redump .sbi/.lsd beside the image (same base
 name); disc reports subchannel.source and the native core honours it. exe,
 disasm and asset tools accept disc.cue::/PATH where documented. run accepts a
 disc or host EXE path; do not assume every tool accepts the disc-member syntax.
 
-Native is the default investigation backend. Redux is a separately installed
-oracle with fewer observation options and incompatible checkpoint files. Boot
-and menu duration vary by game; use snapshot_every and save_state to locate a
+Boot and menu duration vary by game; use snapshot_every and save_state to locate a
 useful starting point instead of assuming a universal gameplay frame number.

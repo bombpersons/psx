@@ -87,7 +87,7 @@ impl Backend {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Media {
-    /// A disc image (`.cue`, `.bin`, `.iso`).
+    /// A disc image (`.cue`, `.bin`, `.iso`; Redux cannot read CHD).
     Disc(PathBuf),
     /// A PS-X EXE side-loaded after the BIOS shell.
     Exe(PathBuf),

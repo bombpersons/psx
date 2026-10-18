@@ -1,4 +1,4 @@
-//! Disc geometry and sector access over CUE/BIN, bare raw BIN and cooked ISO.
+//! Disc geometry and sector access over CUE/BIN, bare raw BIN, cooked ISO and CHD.
 //!
 //! LBA here is the logical block address used by ISO9660 and the CD-ROM
 //! controller's `Setloc` after subtracting the 150-sector lead-in: LBA 0 is
@@ -31,7 +31,8 @@ pub struct Track {
     pub mode: TrackMode,
     /// Index into [`Disc::files`].
     pub file: usize,
-    /// Sector offset inside the file of the first stored sector (INDEX 00 if present).
+    /// Sector offset inside the file of the first stored sector (INDEX 00 if
+    /// present); for a CHD, the frame number inside the CHD.
     pub file_sector: u32,
     /// LBA of the first stored sector.
     pub first_lba: u32,
@@ -74,10 +75,17 @@ pub struct Disc {
     pub source: PathBuf,
     pub files: Vec<ImageFile>,
     pub tracks: Vec<Track>,
-    handles: Mutex<Vec<File>>,
+    store: Store,
     /// Subchannel Q overrides (LibCrypt) by LBA, from an `.sbi`/`.lsd` beside the image.
     pub subq: std::collections::BTreeMap<u32, crate::subq::SubQ>,
     pub subq_source: Option<PathBuf>,
+}
+
+/// Where sector bytes come from.
+enum Store {
+    /// One open handle per [`Disc::files`] entry.
+    Files(Mutex<Vec<File>>),
+    Chd(Box<crate::chd::ChdImage>),
 }
 
 impl std::fmt::Debug for Disc {
@@ -90,12 +98,20 @@ impl std::fmt::Debug for Disc {
     }
 }
 
+/// Disc image extensions [`Disc::open`] accepts, lowercase.
+pub const IMAGE_EXTENSIONS: &[&str] = &["cue", "bin", "img", "iso", "chd"];
+
+/// Whether `path` has a disc image extension (case-insensitive).
+pub fn is_image_path(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
 fn file_len(path: &Path) -> Result<u64> {
     std::fs::metadata(path).map(|m| m.len()).map_err(|e| MediaError::io(path, e))
 }
 
 impl Disc {
-    /// Open a `.cue`, a bare raw `.bin` (single data track) or a cooked `.iso`.
+    /// Open a `.cue`, a bare raw `.bin` (single data track), a cooked `.iso` or a CD `.chd`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let mut disc = Self::open_image(path)?;
@@ -111,6 +127,7 @@ impl Disc {
         match ext.as_str() {
             "cue" => Self::open_cue(path),
             "iso" => Self::open_single(path, TrackMode::Mode1Cooked),
+            "chd" => Self::open_chd(path),
             "bin" | "img" => {
                 let mut head = [0u8; 16];
                 let mut f = File::open(path).map_err(|e| MediaError::io(path, e))?;
@@ -147,7 +164,7 @@ impl Disc {
                 sectors: (bytes / ss) as u32,
                 unstored_pregap: 0,
             }],
-            handles: Mutex::new(vec![handle]),
+            store: Store::Files(Mutex::new(vec![handle])),
             subq: Default::default(),
             subq_source: None,
         })
@@ -199,7 +216,35 @@ impl Disc {
             handles.push(File::open(&fpath).map_err(|e| MediaError::io(&fpath, e))?);
             files.push(ImageFile { name: cf.name.clone(), path: fpath, bytes });
         }
-        Ok(Disc { source: path.to_path_buf(), files, tracks, handles: Mutex::new(handles), subq: Default::default(), subq_source: None })
+        Ok(Disc { source: path.to_path_buf(), files, tracks, store: Store::Files(Mutex::new(handles)), subq: Default::default(), subq_source: None })
+    }
+
+    fn open_chd(path: &Path) -> Result<Self> {
+        let (image, chd_tracks) = crate::chd::ChdImage::open(path)?;
+        let mut tracks = Vec::new();
+        let mut lba = 0;
+        for t in &chd_tracks {
+            // Track 1's pregap is the 2-second lead-in, which LBA 0 already
+            // follows: it takes no LBAs, and stored frames of it are skipped.
+            let lead_in = t.number == 1;
+            let skip = if lead_in && t.pregap_stored { t.pregap } else { 0 };
+            let unstored = if t.pregap_stored || lead_in { 0 } else { t.pregap };
+            let stored_pregap = if t.pregap_stored { t.pregap - skip } else { 0 };
+            lba += unstored;
+            tracks.push(Track {
+                number: t.number,
+                mode: t.mode,
+                file: 0,
+                file_sector: t.chd_frame + skip,
+                first_lba: lba,
+                start_lba: lba + stored_pregap,
+                sectors: t.frames - skip,
+                unstored_pregap: unstored,
+            });
+            lba += t.frames - skip;
+        }
+        let files = vec![ImageFile { name: file_name(path), path: path.to_path_buf(), bytes: file_len(path)? }];
+        Ok(Disc { source: path.to_path_buf(), files, tracks, store: Store::Chd(Box::new(image)), subq: Default::default(), subq_source: None })
     }
 
     pub fn track_for_lba(&self, lba: u32) -> Option<&Track> {
@@ -216,15 +261,20 @@ impl Disc {
         let t = self
             .track_for_lba(lba)
             .ok_or_else(|| MediaError::NotFound(format!("LBA {lba} is not stored in this image")))?;
-        let ss = t.mode.sector_size();
-        let offset = (t.file_sector as u64 + (lba - t.first_lba) as u64) * ss;
-        let mut buf = vec![0u8; ss as usize];
-        let mut handles = self.handles.lock().unwrap_or_else(|p| p.into_inner());
-        let h = &mut handles[t.file];
+        let sector = t.file_sector + (lba - t.first_lba);
         let path = &self.files[t.file].path;
-        h.seek(SeekFrom::Start(offset)).map_err(|e| MediaError::io(path, e))?;
-        h.read_exact(&mut buf).map_err(|e| MediaError::io(path, e))?;
-        Ok((buf, t.mode))
+        match &self.store {
+            Store::Files(handles) => {
+                let ss = t.mode.sector_size();
+                let mut buf = vec![0u8; ss as usize];
+                let mut handles = handles.lock().unwrap_or_else(|p| p.into_inner());
+                let h = &mut handles[t.file];
+                h.seek(SeekFrom::Start(sector as u64 * ss)).map_err(|e| MediaError::io(path, e))?;
+                h.read_exact(&mut buf).map_err(|e| MediaError::io(path, e))?;
+                Ok((buf, t.mode))
+            }
+            Store::Chd(chd) => Ok((chd.read_frame(path, sector, t.mode)?, t.mode)),
+        }
     }
 
     /// Read a data sector's user data, honouring Mode 2 Form 1/Form 2.
@@ -256,6 +306,50 @@ impl Disc {
                 }
             }
         }
+    }
+
+    /// SHA-256 of a track's stored sectors as they read back (for a CHD, after
+    /// decompression), so a track hashes the same in every image format.
+    pub fn track_sha256(&self, t: &Track) -> Result<String> {
+        let mut hasher = Sha256::new();
+        for lba in t.first_lba..t.first_lba + t.sectors {
+            hasher.update(self.read_raw(lba)?.0);
+        }
+        Ok(hex(&hasher.finalize()))
+    }
+
+    /// Write the disc into `dir` as `STEM (Track NN).bin` files and `STEM.cue`
+    /// (plus `STEM.sbi` when LibCrypt data was loaded), for tools that only read
+    /// CUE/BIN. Reopening the `.cue` gives the same tracks and sectors.
+    pub fn write_bin_cue(&self, dir: &Path, stem: &str) -> Result<PathBuf> {
+        use std::fmt::Write as _;
+        use std::io::Write as _;
+        let msf = |n: u32| format!("{:02}:{:02}:{:02}", n / 4500, n / 75 % 60, n % 75);
+        let mut cue = String::new();
+        for t in &self.tracks {
+            let name = format!("{stem} (Track {:02}).bin", t.number);
+            let path = dir.join(&name);
+            let mut out = std::io::BufWriter::new(File::create(&path).map_err(|e| MediaError::io(&path, e))?);
+            for lba in t.first_lba..t.first_lba + t.sectors {
+                out.write_all(&self.read_raw(lba)?.0).map_err(|e| MediaError::io(&path, e))?;
+            }
+            out.flush().map_err(|e| MediaError::io(&path, e))?;
+            let _ = writeln!(cue, "FILE \"{name}\" BINARY\n  TRACK {:02} {}", t.number, t.mode.cue_name());
+            if t.unstored_pregap > 0 {
+                let _ = writeln!(cue, "    PREGAP {}", msf(t.unstored_pregap));
+            }
+            if t.start_lba > t.first_lba {
+                let _ = writeln!(cue, "    INDEX 00 00:00:00");
+            }
+            let _ = writeln!(cue, "    INDEX 01 {}", msf(t.start_lba - t.first_lba));
+        }
+        if let Some(src) = &self.subq_source {
+            let sbi = dir.join(format!("{stem}.{}", src.extension().and_then(|e| e.to_str()).unwrap_or("sbi")));
+            std::fs::copy(src, &sbi).map_err(|e| MediaError::io(&sbi, e))?;
+        }
+        let cue_path = dir.join(format!("{stem}.cue"));
+        std::fs::write(&cue_path, cue).map_err(|e| MediaError::io(&cue_path, e))?;
+        Ok(cue_path)
     }
 
     /// Read `count` consecutive 2048-byte Form 1 payloads (file system view).
@@ -294,4 +388,40 @@ pub fn sha256_bytes(bytes: &[u8]) -> String {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sector(lba: u32, mode: u8) -> Vec<u8> {
+        let mut s = vec![(lba % 251) as u8; 2352];
+        s[..12].copy_from_slice(&SYNC);
+        s[15] = mode;
+        s
+    }
+
+    #[test]
+    fn bin_cue_round_trip() {
+        let dir = std::env::temp_dir().join(format!("psx-media-bincue-{}", std::process::id()));
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        // Data track, then an audio track with a stored INDEX 00 and one with a PREGAP.
+        let bin: Vec<u8> = (0..30).flat_map(|i| if i < 10 { sector(i, 2) } else { vec![i as u8; 2352] }).collect();
+        std::fs::write(dir.join("g.bin"), bin).unwrap();
+        std::fs::write(
+            dir.join("g.cue"),
+            "FILE \"g.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 00 00:00:10\n    INDEX 01 00:00:12\n  TRACK 03 AUDIO\n    PREGAP 00:00:05\n    INDEX 01 00:00:20\n",
+        )
+        .unwrap();
+        let disc = Disc::open(dir.join("g.cue")).unwrap();
+        let copy = Disc::open(disc.write_bin_cue(&out, "g").unwrap()).unwrap();
+        let geometry = |d: &Disc| d.tracks.iter().map(|t| (t.number, t.mode, t.first_lba, t.start_lba, t.sectors, t.unstored_pregap)).collect::<Vec<_>>();
+        assert_eq!(geometry(&copy), geometry(&disc));
+        assert_eq!(copy.files.len(), 3);
+        for (a, b) in disc.tracks.iter().zip(&copy.tracks) {
+            assert_eq!(disc.track_sha256(a).unwrap(), copy.track_sha256(b).unwrap());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

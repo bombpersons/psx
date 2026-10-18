@@ -1,9 +1,7 @@
 run executes a disc, EXE, BIOS boot or checkpoint for a bounded number of
-frames (vsyncs). backend native (default) gives exact observations and native
-states; redux is the separately installed PCSX-Redux oracle with watches,
-trace_cd and trace_bios only, and fast uses its dynarec without observation.
+frames (vsyncs) on the native core, with exact observations and native states.
 context explains how BIOS and media defaults resolve; from_state requires the
-same BIOS, media and backend identity it was saved with. run never downloads.
+same BIOS and media identity it was saved with. run never downloads.
 
 Checkpoints: save_state writes state.bin at the end; save_state_at saves
 state_fNNNNNN.bin at the start of chosen run frames. Continue with from_state.
@@ -45,5 +43,4 @@ disabled, empty and capped logs (complete / truncated). input.jsonl records
 when the scheduler applied each event, not that the game read it.
 
 native is an emulator diagnostic (boot from power-on, report PC, CD history,
-SPU state, unhandled I/O and hot PCs); lockstep compares the native core with
-PCSX-Redux instruction by instruction. Neither is needed for game investigation.
+SPU state, unhandled I/O and hot PCs). It is not needed for game investigation.

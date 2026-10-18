@@ -152,7 +152,7 @@ impl Machine {
         n
     }
 
-    /// Insert a disc (CUE/BIN/ISO via `psx-media`); `None` means an empty drive.
+    /// Insert a disc (CUE/BIN/ISO/CHD via `psx-media`); `None` means an empty drive.
     pub fn insert_disc(&mut self, disc: Option<psx_media::Disc>) {
         self.bus.cdrom = cdrom::Cdrom::new(disc);
     }

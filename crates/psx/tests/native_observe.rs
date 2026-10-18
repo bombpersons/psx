@@ -21,7 +21,7 @@ fn run(root: &Path, out: &Path, extra: &[&str]) -> Value {
     let replay = out.with_extension("json");
     std::fs::write(&replay, r#"[{"frame": 0, "buttons": ["CROSS"]}]"#).unwrap();
     let mut args = vec![
-        "run", "media/Mega Man 8.cue", "--bios", "bios/scph7502.bin", "--backend", "native", "--from-state", ".psx/mm8-study/s3900/state.bin",
+        "run", "media/Mega Man 8.cue", "--bios", "bios/scph7502.bin", "--from-state", ".psx/mm8-study/s3900/state.bin",
         "--replay", replay.to_str().unwrap(), "--out", out.to_str().unwrap(), "--brief",
     ];
     args.extend_from_slice(extra);

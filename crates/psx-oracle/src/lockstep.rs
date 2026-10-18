@@ -100,7 +100,7 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
         Ok(b) => b,
         Err(e) => return err("io_error", format!("{}: {e}", bios_path.display())),
     };
-    let dir = root.join(".psx/lockstep").join(format!("{}{}", std::process::id(), crate::instance_suffix()));
+    let dir = root.join(".psx/lockstep").join(std::process::id().to_string());
     let _ = std::fs::create_dir_all(dir.join("config"));
     let _ = std::fs::write(dir.join("config/pcsx.json"), "{\"SPU\":{\"NullSync\":true,\"Speed\":0}}\n");
     let abs = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
@@ -213,8 +213,8 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
         let (w, hgt, rgba) = m.bus.gpu.display_rgba();
         let screen = std::path::PathBuf::from(format!("{}.screen.png", prefix.display()));
         let vram = std::path::PathBuf::from(format!("{}.vram.png", prefix.display()));
-        let ok1 = crate::run::write_png(&screen, w, hgt, &rgba, png::ColorType::Rgba).is_ok();
-        let ok2 = crate::run::write_png(&vram, 1024, 512, &m.bus.gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok();
+        let ok1 = crate::write_png(&screen, w, hgt, &rgba, png::ColorType::Rgba).is_ok();
+        let ok2 = crate::write_png(&vram, 1024, 512, &m.bus.gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok();
         dumped = json!({"screen": ok1.then_some(screen), "vram": ok2.then_some(vram),
             "display": {"start": m.bus.gpu.display.start, "width": w, "height": hgt}});
     }
@@ -254,7 +254,7 @@ pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize, deadline: 
         Ok(b) => b,
         Err(e) => return err("io_error", format!("{}: {e}", bios_path.display())),
     };
-    let dir = root.join(".psx/lockstep").join(format!("{}{}", std::process::id(), crate::instance_suffix()));
+    let dir = root.join(".psx/lockstep").join(std::process::id().to_string());
     let mut g = match GdbSession::start(&backend, bios_path, &dir) {
         Ok(g) => g,
         Err(e) => return err(e.code(), e.to_string()),

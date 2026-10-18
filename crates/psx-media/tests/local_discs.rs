@@ -64,3 +64,36 @@ fn tomb_raider_pal() {
         text_addr: 0x8001_0000,
     });
 }
+
+/// Every `.psx/chd/NAME.chd` (made with `chdman createcd -i media/NAME.cue`)
+/// must match `media/NAME.cue` track for track and sector for sector.
+#[test]
+#[ignore = "needs CHDs in .psx/chd made by chdman from media/*.cue"]
+fn chd_matches_cue() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.psx/chd");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("read .psx/chd") {
+        let chd_path = entry.unwrap().path();
+        if chd_path.extension().is_none_or(|e| e != "chd") {
+            continue;
+        }
+        let cue = Disc::open(media(&format!("{}.cue", chd_path.file_stem().unwrap().to_string_lossy()))).unwrap();
+        let chd = Disc::open(&chd_path).unwrap();
+        let geometry = |d: &Disc| d.tracks.iter().map(|t| (t.number, t.mode, t.first_lba, t.start_lba, t.sectors, t.unstored_pregap)).collect::<Vec<_>>();
+        assert_eq!(geometry(&chd), geometry(&cue), "{}", chd_path.display());
+        for lba in 0..cue.end_lba() {
+            assert!(chd.read_raw(lba).unwrap() == cue.read_raw(lba).unwrap(), "{} LBA {lba}", chd_path.display());
+        }
+        // What `run --backend redux` hands PCSX-Redux for a CHD.
+        let out = dir.join("round-trip");
+        std::fs::create_dir_all(&out).unwrap();
+        let copy = Disc::open(chd.write_bin_cue(&out, "copy").unwrap()).unwrap();
+        assert_eq!(geometry(&copy), geometry(&cue));
+        for (a, b) in cue.tracks.iter().zip(&copy.tracks) {
+            assert_eq!(cue.track_sha256(a).unwrap(), copy.track_sha256(b).unwrap(), "track {}", a.number);
+        }
+        std::fs::remove_dir_all(&out).unwrap();
+        checked += 1;
+    }
+    assert!(checked > 0, "no CHDs in {}", dir.display());
+}

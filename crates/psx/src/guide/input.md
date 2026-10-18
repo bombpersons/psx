@@ -1,5 +1,5 @@
 Save a useful native checkpoint, then compare short runs from that same state
-with different inputs. Keep BIOS, media and backend identities fixed. context
+with different inputs. Keep BIOS and media identities fixed. context
 with from_state explains the checkpoint's required identity.
 
 run's input field is an inline JSON array of complete held controller states:

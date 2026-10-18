@@ -1,5 +1,5 @@
 Start from an observation: a sampled value, writer PC, read access or CD load.
-run supports sample, watch, watch_reads, trace and trace_cd on the native backend.
+run supports sample, watch, watch_reads, trace and trace_cd.
 loads maps recorded CD DMA transfers to disc files and checks final RAM residency;
 it does not follow every later CPU copy or decompression into its final destination.
 

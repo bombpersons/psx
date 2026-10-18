@@ -1,5 +1,4 @@
-//! `psx run --backend native`: the same bounded run as the Redux backend, on
-//! psx-core, with observations taken from the emulated hardware itself.
+//! `psx run`: a bounded run on psx-core, with observations taken from the emulated hardware itself.
 
 use std::path::Path;
 use std::time::Instant;
@@ -20,7 +19,7 @@ mod gpu_capture;
 use gpu_capture::{CapturedFrame, GpuCapture};
 
 fn sha256(bytes: &[u8]) -> String {
-    psx_redux::sha256_bytes(bytes)
+    psx_media::disc::sha256_bytes(bytes)
 }
 
 pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool, Value) {
@@ -30,95 +29,21 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     };
     let bios_sha = sha256(&bios);
     // Open the medium first: a restored state needs it to check identity.
-    let mut exe: Option<Vec<u8>> = None;
-    let mut disc: Option<psx_media::Disc> = None;
-    let mut media_id: Option<MediaId> = None;
-    if let Some(p) = &a.media {
-        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-        if ["exe", "ps-exe", "psx"].contains(&ext.as_str()) {
-            let bytes = match std::fs::read(p) {
-                Ok(b) => b,
-                Err(e) => return err("io_error", format!("{}: {e}", p.display())),
-            };
-            media_id = Some(MediaId { kind: "exe".into(), sha256: sha256(&bytes) });
-            exe = Some(bytes);
-        } else {
-            match psx_media::Disc::open(p) {
-                Ok(d) => {
-                    media_id = Some(MediaId { kind: "disc".into(), sha256: disc_fingerprint(&d) });
-                    disc = Some(d);
-                }
-                Err(e) => return err(e.code(), e),
-            }
-        }
-    }
-    let mut m = match &a.from_state {
-        Some(p) => {
-            let bytes = match std::fs::read(p) {
-                Ok(b) => b,
-                Err(e) => return err("io_error", format!("{}: {e}", p.display())),
-            };
-            let (header, mut m) = match Machine::load_state(&bytes, bios) {
-                Ok(r) => r,
-                Err(e @ StateError::BiosMismatch { .. }) => return err("identity_mismatch", e),
-                Err(e) => return err("invalid_state", e),
-            };
-            if header.media != media_id {
-                return err(
-                    "identity_mismatch",
-                    format!(
-                        "state was saved with media {}, but --media is {}",
-                        serde_json::to_string(&header.media).unwrap_or_default(),
-                        serde_json::to_string(&media_id).unwrap_or_default()
-                    ),
-                );
-            }
-            // Reinsert without resetting the drive: its state came from the file.
-            m.bus.cdrom.disc = disc;
-            if a.cards.given() {
-                return err("invalid_arguments", "memory cards and the pad are part of the save state; drop --memcard1/--memcard2/--pad with --from-state");
-            }
-            m
-        }
-        None => {
-            let mut m = Machine::new(bios);
-            match a.cards.load() {
-                Ok(cards) => m.bus.sio0.cards = cards,
-                Err(e) => return err("invalid_arguments", e),
-            }
-            match a.cards.pad_kind() {
-                Ok(k) => m.bus.sio0.pad.kind = k,
-                Err(e) => return err("invalid_arguments", e),
-            }
-            if let Some(bytes) = &exe {
-                if let Err(e) = m.sideload_exe(bytes, 500_000_000) {
-                    return err("backend_failed", e);
-                }
-            } else if disc.is_some() {
-                m.insert_disc(disc);
-            }
-            m
-        }
+    let Medium { exe, disc, id: media_id } = match open_media(a.media.as_deref()) {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    let mut m = match boot(&a, bios, exe.as_deref(), disc, &media_id) {
+        Ok(m) => m,
+        Err(e) => return e,
     };
     // Replay events: pad state from each frame (frames counted from the run start).
     if crate::replay::uses_sticks(&events) && m.bus.sio0.pad.kind != psx_core::pad::PadKind::DualShock {
         return err("invalid_arguments", "input sticks require a dualshock pad (configure it at boot; checkpoint pads are restored)");
     }
-    for w in &a.watches {
-        let (addr, width) = w.split_once(':').unwrap_or((w, "4"));
-        let Ok(addr) = u32::from_str_radix(addr.trim_start_matches("0x").trim_start_matches("0X"), 16) else {
-            return err("invalid_arguments", format!("bad watch address {addr}"));
-        };
-        // Any byte length: the native watch covers [ADDR, ADDR+WIDTH).
-        let width: u32 = match width.parse() {
-            Ok(w) if w >= 1 => w,
-            _ => return err("invalid_arguments", format!("bad watch width {width:?} (bytes, e.g. 4)")),
-        };
-        m.bus.obs.watch(addr, width);
+    if let Err(e) = attach_observers(&mut m, &a) {
+        return e;
     }
-    // Observer::watch has a diagnostic default; investigation runs honor the
-    // caller's recording budget, including zero, just as read watches do.
-    m.bus.obs.max_hits = a.max_events as usize;
     let obs = &a.observe;
     let mut sampler = match obs.samples.iter().map(crate::ram::SampleSpec::parse).collect::<Result<Vec<_>, _>>() {
         Ok(cols) if cols.is_empty() => None,
@@ -139,16 +64,6 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     if obs.snapshot_every == Some(0) || obs.sample_every == Some(0) {
         return err("invalid_arguments", "--snapshot-every and --sample-every take N >= 1");
     }
-    if a.trace_cd {
-        m.bus.obs.cd = Some(Vec::new());
-    }
-    if a.trace_bios {
-        m.bus.obs.bios = Some(Vec::new());
-    }
-    if a.trace_spu {
-        m.bus.obs.spu = Some(psx_core::observe::SpuLog::new(a.max_events as usize));
-    }
-
     let scopes = match crate::load_symbols(&a.symbols) {
         Ok(t) => std::rc::Rc::new(t),
         Err(e) => return err(e.code(), e),
@@ -170,9 +85,8 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     };
 
     let started = Instant::now();
-    // Frames count from power-on (like the Redux backend), including any BIOS
-    // boot spent before an EXE was side-loaded; after --from-state they count
-    // from the restored state (Redux counts from SaveStateLoaded).
+    // Frames count from power-on, including any BIOS boot spent before an EXE
+    // was side-loaded; after --from-state they count from the restored state.
     let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
     let mut gpu_capture = GpuCapture::new(&a.trace, a.frames);
     let Some(target) = start_frame.checked_add(a.frames as u64) else {
@@ -214,13 +128,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
                 p.apply(rel, &mut bus.ram, &mut bus.scratch);
             }
         }
-        while next < events.len() && events[next].frame <= rel {
-            crate::replay::apply(&mut m, &events[next]);
-            applied_input.push(json!({"event_index":next,"scheduled_run_frame":events[next].frame,
-                "run_frame":rel,"frame":m.bus.frames,"buttons":crate::replay::button_names(events[next].buttons),
-                "sticks":events[next].sticks}));
-            next += 1;
-        }
+        apply_due(&mut m, &events, &mut next, rel, &mut applied_input);
         // Everything above acts only when the frame counter changes, so without
         // per-instruction observers (tracer, read watches) the machine can run the
         // rest of the frame in one call (stopping at the next timeout check).
@@ -271,13 +179,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     if termination == "frames_reached" {
         // The final boundary: the state the run's files capture.
         let rel = m.bus.frames - start_frame;
-        while next < events.len() && events[next].frame <= rel {
-            crate::replay::apply(&mut m, &events[next]);
-            applied_input.push(json!({"event_index":next,"scheduled_run_frame":events[next].frame,
-                "run_frame":rel,"frame":m.bus.frames,"buttons":crate::replay::button_names(events[next].buttons),
-                "sticks":events[next].sticks}));
-            next += 1;
-        }
+        apply_due(&mut m, &events, &mut next, rel, &mut applied_input);
         if let Some(s) = &mut sampler {
             s.row(rel, m.bus.frames, &m.bus.ram, &m.bus.scratch, true);
         }
@@ -504,6 +406,99 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
 
 /// A write hit as JSON with hex strings next to the numbers and signed views
 /// of the stored value (by store width) for CPU writes.
+/// The run's medium: EXE bytes or an opened disc, with the identity states record.
+#[derive(Default)]
+struct Medium {
+    exe: Option<Vec<u8>>,
+    disc: Option<psx_media::Disc>,
+    id: Option<MediaId>,
+}
+
+fn open_media(media: Option<&Path>) -> Result<Medium, (bool, Value)> {
+    let Some(p) = media else { return Ok(Medium::default()) };
+    if psx_media::exe::is_exe_path(p) {
+        let bytes = std::fs::read(p).map_err(|e| err("io_error", format!("{}: {e}", p.display())))?;
+        let id = MediaId { kind: "exe".into(), sha256: sha256(&bytes) };
+        Ok(Medium { exe: Some(bytes), disc: None, id: Some(id) })
+    } else {
+        let d = psx_media::Disc::open(p).map_err(|e| err(e.code(), e))?;
+        let id = MediaId { kind: "disc".into(), sha256: disc_fingerprint(&d) };
+        Ok(Medium { exe: None, disc: Some(d), id: Some(id) })
+    }
+}
+
+/// A machine restored from `--from-state` (checked against the medium) or booted fresh.
+fn boot(a: &RunArgs, bios: Vec<u8>, exe: Option<&[u8]>, disc: Option<psx_media::Disc>, media_id: &Option<MediaId>) -> Result<Machine, (bool, Value)> {
+    let invalid = |e: String| err("invalid_arguments", e);
+    if let Some(p) = &a.from_state {
+        let bytes = std::fs::read(p).map_err(|e| err("io_error", format!("{}: {e}", p.display())))?;
+        let (header, mut m) = Machine::load_state(&bytes, bios).map_err(|e| match e {
+            StateError::BiosMismatch { .. } => err("identity_mismatch", e),
+            e => err("invalid_state", e),
+        })?;
+        if header.media != *media_id {
+            let show = |m: &Option<MediaId>| serde_json::to_string(m).unwrap_or_default();
+            return Err(err("identity_mismatch", format!("state was saved with media {}, but --media is {}", show(&header.media), show(media_id))));
+        }
+        // Reinsert without resetting the drive: its state came from the file.
+        m.bus.cdrom.disc = disc;
+        if a.cards.given() {
+            return Err(invalid("memory cards and the pad are part of the save state; drop --memcard1/--memcard2/--pad with --from-state".into()));
+        }
+        return Ok(m);
+    }
+    let mut m = Machine::new(bios);
+    m.bus.sio0.cards = a.cards.load().map_err(invalid)?;
+    m.bus.sio0.pad.kind = a.cards.pad_kind().map_err(invalid)?;
+    if let Some(bytes) = exe {
+        m.sideload_exe(bytes, 500_000_000).map_err(|e| err("backend_failed", e))?;
+    } else if disc.is_some() {
+        m.insert_disc(disc);
+    }
+    Ok(m)
+}
+
+/// Apply the replay events due by run frame `rel`, logging each one.
+fn apply_due(m: &mut Machine, events: &[crate::replay::Input], next: &mut usize, rel: u64, applied: &mut Vec<Value>) {
+    while *next < events.len() && events[*next].frame <= rel {
+        let e = &events[*next];
+        crate::replay::apply(m, e);
+        applied.push(json!({"event_index":*next,"scheduled_run_frame":e.frame,
+            "run_frame":rel,"frame":m.bus.frames,"buttons":crate::replay::button_names(e.buttons),
+            "sticks":e.sticks}));
+        *next += 1;
+    }
+}
+
+/// Write watches and the CD/BIOS/SPU event logs the run asked for.
+fn attach_observers(m: &mut Machine, a: &RunArgs) -> Result<(), (bool, Value)> {
+    for w in &a.watches {
+        let (addr, width) = w.split_once(':').unwrap_or((w, "4"));
+        let Some(addr) = psx_media::memmap::parse_hex(addr) else {
+            return Err(err("invalid_arguments", format!("bad watch address {addr}")));
+        };
+        // Any byte length: the native watch covers [ADDR, ADDR+WIDTH).
+        let width: u32 = match width.parse() {
+            Ok(w) if w >= 1 => w,
+            _ => return Err(err("invalid_arguments", format!("bad watch width {width:?} (bytes, e.g. 4)"))),
+        };
+        m.bus.obs.watch(addr, width);
+    }
+    // Observer::watch has a diagnostic default; investigation runs honor the
+    // caller's recording budget, including zero, just as read watches do.
+    m.bus.obs.max_hits = a.max_events as usize;
+    if a.trace_cd {
+        m.bus.obs.cd = Some(Vec::new());
+    }
+    if a.trace_bios {
+        m.bus.obs.bios = Some(Vec::new());
+    }
+    if a.trace_spu {
+        m.bus.obs.spu = Some(psx_core::observe::SpuLog::new(a.max_events as usize));
+    }
+    Ok(())
+}
+
 fn annotate_hit(h: &psx_core::observe::WriteHit) -> Value {
     let mut v = serde_json::to_value(h).unwrap();
     v["address_hex"] = json!(format!("0x{:08X}", h.address));
@@ -554,8 +549,7 @@ fn frame_outputs(
 /// Hex address (optionally 0x-prefixed) or a function name from --symbols:
 /// `(start, end of the function if known)`.
 fn resolve(spec: &str, scopes: &[crate::ScopedSymbols]) -> Result<(u32, Option<u32>), String> {
-    let hex = spec.trim_start_matches("0x").trim_start_matches("0X");
-    if let Ok(v) = u32::from_str_radix(hex, 16) {
+    if let Some(v) = psx_media::memmap::parse_hex(spec) {
         return Ok((v, None));
     }
     scopes

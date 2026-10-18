@@ -3,7 +3,7 @@ rules and assets as ordinary game code. Choose the tools needed for the current
 question; a full port is not a prerequisite for a useful investigation.
 
 Start with context({}) to identify the running build, project root, configured
-media/BIOS and backend capabilities. Relative paths resolve against that root,
+media/BIOS and capabilities. Relative paths resolve against that root,
 which may differ from the client harness's working directory.
 
 Typical routes:

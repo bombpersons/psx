@@ -3,15 +3,10 @@
 //! Every command prints one JSON document on stdout. Failures print
 //! `{"error": {"code", "message"}}` and exit non-zero.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use psx_media::disc::{sha256_bytes, sha256_file};
-use psx_media::iso9660::{Entry, FileSystem};
-use psx_media::system_cnf::{SystemCnf, DEFAULT_BOOT};
-use psx_media::{Disc, MediaError, PsxExe};
-use serde_json::{json, Value};
 
 use commands::{Ctx, Op};
 
@@ -25,8 +20,8 @@ mod code;
 mod commands;
 mod ghidra;
 mod guide;
-mod lockstep;
 mod mcp;
+mod media_cmd;
 mod native;
 mod parser;
 mod parser_template;
@@ -61,7 +56,7 @@ enum Command {
     McpCall,
     /// Read built-in investigation workflows and tool-usage guidance.
     Guide(guide::GuideArgs),
-    /// Discover build, project defaults, BIOS candidates and backend capabilities.
+    /// Discover build, project defaults, BIOS candidates and capabilities.
     Context(context::ArgsContext),
     /// Inspect artifacts: directory inventory, paginated JSON/logs/CSV, text, hex or PNG.
     ArtifactRead(artifact::ReadArgs),
@@ -105,9 +100,9 @@ enum Command {
         #[command(subcommand)]
         action: TemplateAction,
     },
-    /// Run a disc, EXE or state for N frames and capture RAM, VRAM, screen and registers:
-    /// on the native core (default: watches, traces, GPU captures, samples and states)
-    /// or in a PCSX-Redux oracle worker (`--backend redux`). Input can be inline or replayed.
+    /// Run a disc, EXE or state for N frames on the native core and capture RAM, VRAM,
+    /// screen and registers, with watches, traces, GPU captures, samples and states.
+    /// Input can be inline or replayed.
     Run(commands::RunCmdArgs),
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
@@ -115,11 +110,8 @@ enum Command {
     /// Name library functions in a PS-X EXE by PsyQ signature matching.
     /// Writes <out>.symbols.json, <out>.ghidra.txt (ImportSymbolsScript.py) and <out>.sym.
     Symbols(commands::SymbolsArgs),
-    /// Run the native core and PCSX-Redux in lockstep from BIOS reset,
-    /// comparing PC and registers after every instruction.
-    Lockstep(commands::LockstepArgs),
     /// Emulator diagnostics: run the native core from power-on for N frames and report
-    /// how far it got and which hardware it is missing. For game RE use `run --backend native`.
+    /// how far it got and which hardware it is missing. For game RE use `run`.
     Native(commands::NativeArgs),
     /// Disassemble MIPS code from a PS-X EXE (file or `image.cue::/PATH`) or a run's RAM:
     /// an address range, or a whole function; JSON lines or `--text`.
@@ -209,7 +201,6 @@ fn main() -> ExitCode {
         Command::Run(a) => a.exec(&ctx),
         Command::Loads(a) => a.exec(&ctx),
         Command::Symbols(a) => a.exec(&ctx),
-        Command::Lockstep(a) => a.exec(&ctx),
         Command::Native(a) => a.exec(&ctx),
         Command::Disasm(a) => a.exec(&ctx),
         Command::Xrefs(a) => a.exec(&ctx),
@@ -235,238 +226,4 @@ pub(crate) fn instance_suffix() -> String {
     }
 }
 
-type R = psx_media::Result<Value>;
-
-fn entry_json(e: &Entry) -> Value {
-    json!({
-        "path": e.path,
-        "lba": e.lba,
-        "size": e.size,
-        "sectors": e.sectors(),
-        "dir": e.is_dir,
-        "streamed": e.is_streamed(),
-        "xa_attributes": e.xa_attributes.map(|a| format!("0x{a:04X}")),
-        "recorded": e.recorded,
-    })
-}
-
-fn exe_json(exe: &PsxExe, bytes: &[u8]) -> Value {
-    let h = |v: u32| format!("0x{v:08X}");
-    json!({
-        "pc": h(exe.pc),
-        "gp": h(exe.gp),
-        "text": {"addr": h(exe.text_addr), "size": h(exe.text_size), "end": h(exe.text_range().end), "file_offset": "0x800"},
-        "data": {"addr": h(exe.data_addr), "size": h(exe.data_size)},
-        "bss": {"addr": h(exe.bss_addr), "size": h(exe.bss_size)},
-        "initial_sp": exe.initial_sp().map(h),
-        "marker": exe.marker,
-        "region_hint": exe.region_hint(),
-        "file_size": exe.file_size,
-        "sha256": sha256_bytes(bytes),
-        "payload_sha256": sha256_bytes(exe.payload(bytes)),
-        "warnings": exe.warnings,
-    })
-}
-
-fn disc_summary(image: &Path, hash: bool) -> R {
-    let disc = Disc::open(image)?;
-    let files: Vec<Value> = disc
-        .files
-        .iter()
-        .map(|f| {
-            let mut v = json!({"name": f.name, "bytes": f.bytes});
-            if hash {
-                v["sha256"] = json!(sha256_file(&f.path).unwrap_or_else(|e| format!("error: {e}")));
-            }
-            v
-        })
-        .collect();
-    let audio = disc.tracks.iter().filter(|t| !t.mode.is_data()).count();
-    let mut out = json!({
-        "source": disc.source,
-        "files": files,
-        "media_files": files,
-        "tracks": disc.tracks,
-        "track_summary": {"total": disc.tracks.len(), "data": disc.tracks.len() - audio, "audio": audio},
-        "end_lba": disc.end_lba(),
-        // LibCrypt subchannel data: rips lack it; supply the redump .sbi/.lsd beside the image.
-        "subchannel": {
-            "source": disc.subq_source,
-            "overridden_sectors": disc.subq.len(),
-            "first_lbas": disc.subq.keys().take(4).collect::<Vec<_>>(),
-        },
-    });
-    let fs = match FileSystem::read(&disc) {
-        Ok(fs) => fs,
-        Err(e) => {
-            out["filesystem_error"] = json!(e.to_string());
-            return Ok(out);
-        }
-    };
-    let files_only = fs.entries.iter().filter(|e| !e.is_dir);
-    out["volume"] = json!(fs.volume);
-    out["entries"] = json!({
-        "files": files_only.clone().count(),
-        "dirs": fs.entries.iter().filter(|e| e.is_dir).count(),
-        "streamed_files": files_only.clone().filter(|e| e.is_streamed()).count(),
-        "bytes": files_only.map(|e| e.size as u64).sum::<u64>(),
-    });
-    out["filesystem"]=out["entries"].clone();
-    out["fs_warnings"] = json!(fs.warnings);
-
-    let cnf = fs.find("/SYSTEM.CNF").map(|e| fs.read_file(&disc, e)).transpose()?.map(|b| SystemCnf::parse(&b));
-    let boot = cnf.as_ref().and_then(|c| c.boot.clone()).unwrap_or_else(|| DEFAULT_BOOT.to_string());
-    out["system_cnf"] = json!(cnf);
-    out["boot_path"] = json!(boot);
-    match fs.find(&boot) {
-        Some(e) => {
-            let bytes = fs.read_file(&disc, e)?;
-            out["boot_exe"] = match PsxExe::parse(&bytes) {
-                Ok(exe) => json!({"entry": entry_json(e), "header": exe_json(&exe, &bytes)}),
-                Err(err) => json!({"entry": entry_json(e), "error": err.to_string()}),
-            };
-        }
-        None => out["boot_exe"] = json!({"error": format!("{boot} not found in file system")}),
-    }
-    Ok(out)
-}
-
-fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -> R {
-    let disc = Disc::open(image)?;
-    let fs = FileSystem::read(&disc)?;
-    let selected: Vec<&Entry> = match (path, all) {
-        (_, true) => fs.entries.iter().filter(|e| !e.is_dir).collect(),
-        (Some(p), false) => vec![fs.find(p).ok_or_else(|| MediaError::NotFound(p.to_string()))?],
-        (None, false) => return Err(MediaError::Malformed("give a path or --all".into())),
-    };
-    let mut written = Vec::new();
-    let mut failed = Vec::new();
-    for e in selected {
-        let (bytes, raw) = match fs.read_file(&disc, e) {
-            Ok(b) => (b, false),
-            Err(MediaError::Unsupported(_)) => match fs.read_file_raw(&disc, e) {
-                Ok(b) => (b, true),
-                Err(err) => {
-                    failed.push(json!({"path": e.path, "error": err.to_string()}));
-                    continue;
-                }
-            },
-            Err(err) => {
-                failed.push(json!({"path": e.path, "error": err.to_string()}));
-                continue;
-            }
-        };
-        let rel = e.path.trim_start_matches('/');
-        let dest = out.join(if raw { format!("{rel}.raw") } else { rel.to_string() });
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| MediaError::io(parent, err))?;
-        }
-        std::fs::write(&dest, &bytes).map_err(|err| MediaError::io(&dest, err))?;
-        written.push(json!({
-            "path": e.path, "lba": e.lba, "dest": dest, "bytes": bytes.len(),
-            "format": if raw { "raw_2352" } else { "form1_user_data" },
-            "sha256": sha256_bytes(&bytes),
-        }));
-    }
-    Ok(json!({"written": written, "failed": failed}))
-}
-
 pub(crate) use symbols_io::{final_name, load_symbols, name_pc, ScopedSymbols, SymbolCheck};
-
-fn read_source(source: &str) -> psx_media::Result<Vec<u8>> {
-    Ok(match source.split_once("::") {
-        Some((image, path)) => {
-            let disc = Disc::open(image)?;
-            let fs = FileSystem::read(&disc)?;
-            let e = fs.find(path).ok_or_else(|| MediaError::NotFound(path.to_string()))?;
-            fs.read_file(&disc, e)?
-        }
-        None => std::fs::read(source).map_err(|e| MediaError::io(source, e))?,
-    })
-}
-
-fn symbols_cmd(source: &str, sigs_dir: &Path, min_concrete: usize, out: Option<PathBuf>) -> R {
-    let bytes = read_source(source)?;
-    let exe = PsxExe::parse(&bytes)?;
-    let sigs = psx_symbols::load_dir(sigs_dir).map_err(|e| {
-        MediaError::NotFound(format!("signatures: {e} (supply a local psx_psyq_signatures checkout with --sigs / MCP sigs, or set PSX_SIGS_DIR to its absolute path for all projects; context reports the default path)"))
-    })?;
-    let report = psx_symbols::match_code(exe.payload(&bytes), exe.text_addr, &sigs, min_concrete);
-    let stem = source.rsplit(['/', '\\', ':']).next().unwrap_or("exe").trim_end_matches(";1").to_string();
-    let prefix = out.unwrap_or_else(|| PathBuf::from(".psx/symbols").join(&stem));
-    if let Some(parent) = prefix.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| MediaError::io(parent, e))?;
-    }
-    let with_ext = |ext: &str| PathBuf::from(format!("{}.{ext}", prefix.display()));
-    let write = |p: PathBuf, text: String| std::fs::write(&p, text).map_err(|e| MediaError::io(&p, e)).map(|_| p);
-    let doc = json!({
-        "source": source,
-        "text_addr": exe.text_addr,
-        "exe_sha256": psx_media::disc::sha256_bytes(&bytes),
-        "report": report,
-    });
-    let json_path = write(with_ext("symbols.json"), serde_json::to_string_pretty(&doc).unwrap())?;
-    let ghidra = write(with_ext("ghidra.txt"), psx_symbols::to_ghidra(&report.symbols))?;
-    let sym = write(with_ext("sym"), psx_symbols::to_sym(&report.symbols))?;
-    let functions = report.symbols.iter().filter(|s| s.kind == psx_symbols::Kind::Function).count();
-    let mut libs: std::collections::BTreeMap<String, usize> = Default::default();
-    for o in &report.objects {
-        let lib = o.source.split('/').nth(1).unwrap_or("?").to_string();
-        *libs.entry(lib).or_default() += 1;
-    }
-    let matched: u64 = report.objects.iter().map(|o| o.size as u64).sum();
-    Ok(json!({
-        "exe": source,
-        "text": {"addr": format!("0x{:08X}", exe.text_addr), "bytes": exe.text_size},
-        "signatures_loaded": sigs.len(),
-        "versions": report.versions.iter().take(5).collect::<Vec<_>>(),
-        "chosen_version": report.chosen_version,
-        "objects_matched": report.objects.len(),
-        "objects_by_library": libs,
-        "functions_named": functions,
-        "code_covered_bytes": matched,
-        "code_covered_pct": (matched as f64 * 1000.0 / exe.text_size.max(1) as f64).round() / 10.0,
-        "ambiguous": report.ambiguous.len(),
-        "interpretation": {
-            "scope":"PsyQ library signatures, not a catalogue of game-specific functions; low coverage alone is not a failure.",
-            "chosen_version":"Best-scoring installed signature set, not proof of a game's exact SDK version.",
-            "ambiguous":"Signatures with multiple matches are skipped, never arbitrarily selected.",
-            "next_step":"Use runtime observations and Ghidra for game-specific functions; verify pseudocode against instructions."
-        },
-        "files": {"report": json_path, "ghidra": ghidra, "sym": sym},
-    }))
-}
-
-fn exe_cmd(source: &str) -> R {
-    let bytes = match source.split_once("::") {
-        Some((image, path)) => {
-            let disc = Disc::open(image)?;
-            let fs = FileSystem::read(&disc)?;
-            let e = fs.find(path).ok_or_else(|| MediaError::NotFound(path.to_string()))?;
-            fs.read_file(&disc, e)?
-        }
-        None => std::fs::read(source).map_err(|e| MediaError::io(source, e))?,
-    };
-    let exe = PsxExe::parse(&bytes)?;
-    Ok(exe_json(&exe, &bytes))
-}
-
-fn sectors(image: &Path, lba: u32, count: u32, preview: usize) -> R {
-    let disc = Disc::open(image)?;
-    let fs = FileSystem::read(&disc).ok();
-    let mut out = Vec::new();
-    for l in lba..lba.saturating_add(count.min(256)) {
-        let track = disc.track_for_lba(l).map(|t| t.number);
-        let owner = fs.as_ref().and_then(|fs| fs.owner_of(l)).map(|e| e.path.clone());
-        let v = match disc.read_data(l) {
-            Ok(s) => json!({
-                "lba": l, "track": track, "owner": owner, "form": s.form,
-                "subheader": s.subheader.map(|h| json!({"file": h[0], "channel": h[1], "submode": format!("0x{:02X}", h[2]), "coding": format!("0x{:02X}", h[3])})),
-                "preview": s.data.iter().take(preview).map(|b| format!("{b:02x}")).collect::<String>(),
-            }),
-            Err(e) => json!({"lba": l, "track": track, "owner": owner, "error": e.to_string()}),
-        };
-        out.push(v);
-    }
-    Ok(json!({"sectors": out}))
-}
