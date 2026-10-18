@@ -60,6 +60,9 @@ Proposed implementation homes:
 - `.psx/ghidra/`: ignored input copies, manifests, logs and query artifacts.
 - `ghidra-projects/`: ignored Ghidra databases. Ghidra 12 rejects hidden directory
   components in project locations, so databases cannot live inside `.psx/`.
+  An annotation removes the project copy it supersedes (unless it is open in the
+  GUI or was edited outside psx) and a failed import removes its own; a
+  timed-out import keeps its partial project, and `reanalyze` keeps the old one.
 
 ## Proposed interface
 

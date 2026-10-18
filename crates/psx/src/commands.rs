@@ -215,11 +215,30 @@ pub struct ExtractArgs {
     #[arg(short, long, default_value_os_t = d_extracted())]
     #[serde(default = "d_extracted")]
     pub out: PathBuf,
+    /// Read only a window of the file starting at this byte offset (hex), and
+    /// report where it sits in the image. Needs `path`.
+    #[arg(long, conflicts_with = "all")]
+    pub offset: Option<String>,
+    /// Window length in bytes (hex, default 0x100); windows up to 0x100 bytes
+    /// are also returned inline as hex.
+    #[arg(long, requires = "offset")]
+    pub length: Option<String>,
 }
 
 impl Op for ExtractArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::media(crate::media_cmd::extract(&self.image, self.path.as_deref(), self.all, &self.out))
+        Outcome::media((|| {
+            let offset = opt_hex(&self.offset, "offset")?;
+            let length = opt_hex(&self.length, "length")?;
+            match (offset, self.path.as_deref()) {
+                (Some(off), Some(path)) if !self.all => {
+                    crate::media_cmd::extract_window(&self.image, path, off, length.unwrap_or(0x100), &self.out)
+                }
+                (Some(_), _) => Err(MediaError::Malformed("offset needs a single path, not --all".into())),
+                (None, _) if length.is_some() => Err(MediaError::Malformed("length needs offset".into())),
+                (None, path) => crate::media_cmd::extract(&self.image, path, self.all, &self.out),
+            }
+        })())
     }
 }
 

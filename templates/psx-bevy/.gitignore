@@ -1,1 +1,6 @@
 target/
+
+# psx toolkit outputs (runs, caches) and Ghidra's analysis databases, which
+# cannot live under .psx/ because Ghidra rejects hidden path components.
+.psx/
+ghidra-projects/
