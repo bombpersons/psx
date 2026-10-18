@@ -29,7 +29,7 @@ pub use assets::{
     TmdLoader, TmdSettings, rgba_image,
 };
 
-pub use material::{PsxBlend, PsxDepthCue, PsxMaterial, PsxStp};
+pub use material::{PsxBlend, PsxDepthBias, PsxDepthCue, PsxMaterial, PsxStp};
 pub use material2d::{PsxMaterial2d, PsxSprite, load_indices, psx_indices, psx_palette, rgb15};
 pub use scene::{
     PsxScene, PsxSceneCamera, PsxSceneDepth, PsxSceneElement, PsxSceneRoot, SCENE_BACKGROUND_LAYER, SceneElement,

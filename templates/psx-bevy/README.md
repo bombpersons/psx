@@ -21,11 +21,11 @@ cargo build --release                    # shipping build; developer MCP is excl
 
 | Path | Owner | Contents |
 |---|---|---|
-| `psx-bevy/` | psx template | PS1 look, ticks and input, controls menu, testing, viewers, developer MCP, launcher. Replaced by `psx template update`; don't edit ([README](psx-bevy/README.md)) |
+| `psx-bevy/` | psx template | PS1 look, ticks and input, controls menu, testing, viewers, developer MCP, launcher. Updated by `psx template update`; edit sparingly and list edits in `docs/template.md` ([AGENTS.md](psx-bevy/AGENTS.md), [README](psx-bevy/README.md)) |
 | `engine/` | this project | This game's engine family: object type and action registries, update-order sets, level and tuning formats, `examples/sandbox.rs`. No names, numbers or assets from this game ([AGENTS.md](engine/AGENTS.md)) |
 | `game/` | this project | This title: per-type controllers, action handlers, HUD, menus, baked assets in `game/assets/`, trajectory tests ([AGENTS.md](game/AGENTS.md)) |
 | `tools/import/` | this project | Offline importers: files extracted with `psx` → engine formats, with provenance |
-| `docs/` | this project | `engine-model.md` (what the original treats as data vs code), `evidence.md` |
+| `docs/` | this project | `engine-model.md` (what the original treats as data vs code), `evidence.md`, `template.md` (edits to `psx-bevy/`) |
 | `.psx-template.toml` | psx template | Which template version this is and which files it owns |
 
 The demo in `game/src/demo/` shows the intended shape: level content is data
@@ -41,6 +41,7 @@ psx template update             # replace unmodified template files
 ```
 
 Files under `psx-bevy/` that you edited are left alone and the new version is
-written beside them as `<file>.psx-new`. Files the template only seeded
+written beside them as `<file>.psx-new`; reapply your change from
+`docs/template.md` to it. Files the template only seeded
 (everything outside `psx-bevy/`) are never touched; when their template
 version changed, the update reports a diff to apply by hand.

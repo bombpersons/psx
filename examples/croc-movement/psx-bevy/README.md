@@ -7,9 +7,11 @@ The psx template's own crate inside a generated project: the PS1 look
 every game's `main.rs` calls. Bevy 0.20.0; Rust 1.97.1+; a desktop GPU driver
 (or Mesa lavapipe with `--software`).
 
-**Owned by the template.** `psx template update` replaces this directory with
-newer versions (it never touches `engine/` or `game/`), so build on it instead
-of editing it. Game code reaches it through `engine::` (the engine re-exports
+**Owned by the template.** `psx template update` replaces this directory's
+untouched files with newer versions (it never touches `engine/` or `game/`),
+so build on it where you can. Small, general edits are allowed when a hook or
+option is missing; `AGENTS.md` here has the rules, and each edit is listed in
+the project's `docs/template.md`. Game code reaches it through `engine::` (the engine re-exports
 these modules). See the project's root README for the workspace and commands.
 
 | Module | Contents |
@@ -24,7 +26,8 @@ these modules). See the project's root README for the workspace and commands.
 | `viewer.rs`, `model_viewer.rs` | `--scene` capture viewer, `--model` TMD viewer |
 | `dev_mcp.rs` | Developer MCP (feature `dev-mcp`) |
 
-`examples/depth_cue.rs` and `tests/dev_mcp.rs` are the crate's own GPU checks.
+`examples/depth_cue.rs`, `examples/depth_bias.rs` and `tests/dev_mcp.rs` are
+the crate's own GPU checks.
 
 `cargo build`/`cargo run` already compile Bevy at full optimisation (only the
 workspace's crates are built at `opt-level = 1`), so they run at close to
@@ -46,7 +49,7 @@ glTF scenes, `DirectionalLight`, `GlobalAmbientLight`, `DistanceFog`. The
 
 | PS1 trait | How it is reproduced | Switch |
 |---|---|---|
-| Low resolution | Every `PsxView` camera renders to a 320×240 target (`PsxScreen`), shown letterboxed and nearest-sampled | `PsxScreen` size |
+| Low resolution | Every `PsxView` camera renders to a low-resolution target (`PsxScreen`, 320×240 unless the game says otherwise), shown letterboxed and nearest-sampled | `launcher::Game::screen` |
 | Vertex wobble | Vertices snap to whole target pixels in the vertex shader | `PsxLook::vertex_snap` |
 | Affine texture warp | UVs and colours interpolate linearly in screen space (sent as A·w, divided by w per fragment) | always on |
 | Gouraud lighting | Lighting is per vertex, on gamma-encoded colour where white = neutral and textures can be brightened up to 2× | `PsxMaterial::lit` |
@@ -144,6 +147,21 @@ cargo test -p psx-bevy --features dev-mcp --test dev_mcp reciprocal_depth_cue_re
 
 Edit the named `DepthCueControls` entity's `DepthCueControls` component using
 `game_set_component` (e.g. `fields: {"far_color":[0.2,0.3,0.5]}`).
+
+**Depth bias:** `PsxMaterial::depth_bias` pushes a depth-tested surface away
+from the camera so it loses to coplanar ones: decals, or the unsplit copy a
+game draws behind the pieces of a polygon it subdivided, to hide T-junction
+cracks. `PsxDepthBias::BEHIND` is enough at any viewing angle; the fields are
+GPU depth-bias units (`constant` steps of depth precision plus `slope_scale`
+times the polygon's depth slope), positive meaning farther. It has no effect
+with `draw_order`. `examples/depth_bias.rs` checks it on the GPU
+(`depth_bias_loses_to_coplanar_copy_on_a_custom_screen` in `tests/dev_mcp.rs`).
+
+**Per-frame geometry:** what the original's CPU and GTE did to polygons
+before the GPU drew them (subdividing near polygons, LOD, clipping) belongs to
+the game's meshes, not to this crate. `PsxMaterial` snaps and affine-maps
+whatever vertices it gets, so a mesh rebuilt each frame from the camera
+reproduces it, and mesh assets stay writable.
 
 ### 2D
 
@@ -462,7 +480,7 @@ change the game's configured logic tick rate. Status reports `headless: true`.
 | `game_step` | `{"frames":30,"buttons":["cross","right"]}` | Holds the buttons for exactly N ticks, then releases them and freezes |
 | `game_set_input` | `{"buttons":["start"]}` | Replaces the injected held buttons; `[]` releases them |
 | `game_pause` | `{"paused":false}` | Resumes continuous simulation or manual play |
-| `game_screenshot` | `{"target":"screen"}` or `"window"` | A real GPU-rendered PNG of the 320×240 target or of the window |
+| `game_screenshot` | `{"target":"screen"}` or `"window"` | A real GPU-rendered PNG of the screen target (`Game::screen`, usually 320×240) or of the window |
 | `game_query` | `{"name":"Player","components":["Transform","Hop"],"resources":["GameClock"]}` | Reflected components (as JSON) of entities whose `Name` contains `name` and/or that have every component in `with`, plus resources |
 | `game_set_component` | `{"name":"Player","component":"Transform","fields":{"translation":[2,0.5,0]}}` | While paused, replace selected named fields of one component; return the frame and before/after values |
 

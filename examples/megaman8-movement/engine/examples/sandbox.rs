@@ -58,6 +58,7 @@ fn main() {
         title: "Engine sandbox",
         region: Region::Ntsc,
         fields_per_tick: 1,
+        screen: UVec2::new(320, 240),
         add: |app| {
             app.add_plugins((EnginePlugin, TuningPlugin::<WalkerTuning>::new("sandbox/walker.ron")))
                 .register_object_type(

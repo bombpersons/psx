@@ -20,10 +20,11 @@ Work order:
    type, which fields are tabled); how levels script events (trigger tables,
    bytecode, hardcoded); how a frame runs (update order, fields per tick).
 3. template_create into the game folder (it keeps the disc and an existing
-   AGENTS.md). The workspace is psx-bevy/ (template-owned, don't edit),
-   engine/ (registries, update-order sets, level and tuning formats, a
-   sandbox example), game/ (demo to replace) and tools/import/. Reshape the
-   engine skeleton to match engine-model.md; keep the sandbox building.
+   AGENTS.md). The workspace is psx-bevy/ (template-owned; small general
+   edits allowed, listed in docs/template.md), engine/ (registries,
+   update-order sets, level and tuning formats, a sandbox example), game/
+   (demo to replace) and tools/import/. Reshape the engine skeleton to match
+   engine-model.md; keep the sandbox building.
 4. Importers in tools/import convert extracted files into engine formats
    (normal units, RON/PNG/WAV/glTF) under game/assets, recording provenance.
    Validate structurally: every source byte accounted for, every reference in
@@ -64,7 +65,8 @@ whether the refactor is wrong or the test relied on an accident. Compare
 rendered frames against the original and look at them.
 
 Template updates: template_update replaces untouched psx-bevy/ files, writes
-<file>.psx-new beside edited ones and copies changed seeded files under
+<file>.psx-new beside edited ones (reapply the edit listed in
+docs/template.md) and copies changed seeded files under
 .psx/template-update/ for you to merge. Projects from before the workspace
 layout: move the template modules into psx-bevy/, then `psx template adopt`.
 

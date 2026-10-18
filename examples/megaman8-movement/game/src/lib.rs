@@ -21,6 +21,10 @@ pub const REGION: Region = Region::Pal;
 /// in `player::movement` are per field.
 pub const FIELDS_PER_TICK: u32 = 1;
 
+/// The PS1 screen size (and the window, at 3x). The template's default; not
+/// yet checked against the original's display mode.
+pub const SCREEN: UVec2 = UVec2::new(320, 240);
+
 /// The logic tick rate for a region.
 pub fn tick_rate(region: Region) -> TickRate {
     TickRate::every_nth_field(region, FIELDS_PER_TICK)

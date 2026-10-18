@@ -422,7 +422,8 @@ psx template update --dry-run    # in a project: what a newer psx would change
 The [workspace](templates/psx-bevy/README.md) has four crates. `psx-bevy/` is
 the template's own crate, recorded in `.psx-template.toml` and replaced by
 `template update` (edited files are left alone, with the new version beside
-them as `.psx-new`). `engine/` is the project's reusable engine: object type
+them as `.psx-new`). Projects build on it, and edit it only for small, general
+PS1 machinery, listing each edit in `docs/template.md`. `engine/` is the project's reusable engine: object type
 and action registries, update-order sets, level and tuning formats in RON, and
 `examples/sandbox.rs`, a tiny game built only from the engine. `game/` is the
 title (a demo to replace: level data spawned through the registry, a

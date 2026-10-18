@@ -3,6 +3,7 @@
 //! describes itself with [`Game`] and calls [`run`]:
 //!
 //! ```no_run
+//! use bevy::math::UVec2;
 //! use psx_bevy::{launcher::{self, Game}, psx::Region};
 //!
 //! fn main() {
@@ -11,6 +12,7 @@
 //!         title: "My game",
 //!         region: Region::Pal,
 //!         fields_per_tick: 2,
+//!         screen: UVec2::new(320, 240),
 //!         add: |app| { /* app.add_plugins(game::GamePlugin); */ },
 //!     });
 //! }
@@ -39,6 +41,10 @@ pub struct Game<F: FnOnce(&mut App)> {
     pub region: Region,
     /// Video fields per logic tick (2 when the original waits two vblanks).
     pub fields_per_tick: u32,
+    /// The original's display size in pixels, which sizes [`PsxScreen`] and
+    /// the window (at 3x). 320x240 for most games; read the real one from
+    /// the original's display setup (the GPU's display range and mode).
+    pub screen: UVec2,
     /// Adds the game's plugins. Not called for `--scene` or `--model`.
     pub add: F,
 }
@@ -96,7 +102,7 @@ pub fn app<F: FnOnce(&mut App)>(game: Game<F>, args: &Args) -> App {
     // --model PATH.tmd [--texture PATH.tim]... [--cull] (under assets/): view an extracted original model.
     let model = args.value("--model");
     let textures = args.values("--texture");
-    let screen = PsxScreen { width: 320, height: 240, region, ..default() };
+    let screen = PsxScreen { width: game.screen.x, height: game.screen.y, region, ..default() };
 
     let mut app = App::new();
     let mut plugins = DefaultPlugins

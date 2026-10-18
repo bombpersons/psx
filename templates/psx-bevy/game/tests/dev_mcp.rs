@@ -30,6 +30,7 @@ fn headless_render_edit_step_and_query() {
     let window = client.request("tools/call", json!({"name":"game_screenshot","arguments":{"target":"window"}}));
     assert!(window["error"]["message"].as_str().unwrap().contains("No primary window"), "{window}");
     let before = client.screenshot(output.join("before.png"));
+    assert_eq!(before.dimensions(), (game::SCREEN.x, game::SCREEN.y));
     let colors: std::collections::HashSet<_> = before.pixels().map(|p| p.0).collect();
     assert!(colors.len() > 32, "offscreen frame should render the scene, not an empty target");
     let state = player(&mut client);

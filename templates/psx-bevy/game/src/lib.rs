@@ -22,6 +22,10 @@ pub const REGION: Region = Region::Ntsc;
 /// vblank, 2 when it waits for two (Croc PAL: 25 Hz logic on a 50 Hz display).
 pub const FIELDS_PER_TICK: u32 = 1;
 
+/// The original's display size in pixels: the PS1 screen target and, at 3x,
+/// the window. Most games show 320x240; check the original's display mode.
+pub const SCREEN: UVec2 = UVec2::new(320, 240);
+
 /// The logic tick rate for a region.
 pub fn tick_rate(region: Region) -> TickRate {
     TickRate::every_nth_field(region, FIELDS_PER_TICK)

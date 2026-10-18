@@ -3,7 +3,9 @@
 This project was made with `psx template create`. The template's guides apply:
 `game/AGENTS.md` (idiomatic Bevy, one plugin per feature, rules separate from
 presentation, "From evidence to idiomatic code") and `engine/AGENTS.md` (what
-belongs in the engine). Don't edit `psx-bevy/`; `psx template update` replaces it.
+belongs in the engine). Build on `psx-bevy/` rather than editing it (`psx
+template update` replaces it); `psx-bevy/AGENTS.md` says when an edit is
+fine, and `docs/template.md` lists any.
 
 - The game is the library in `game/src/lib.rs` (crate `game`): `REGION` is PAL and
   `FIELDS_PER_TICK` is 2, so logic runs at Croc's 25 Hz and button edges match
