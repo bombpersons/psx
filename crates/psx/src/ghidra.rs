@@ -145,7 +145,8 @@ pub struct FunctionsArgs {
     #[command(flatten)]
     #[serde(flatten)]
     pub input: Input,
-    /// Case-insensitive substring of function name.
+    /// Case-insensitive substring of function name. Unnamed functions are
+    /// called `FUN_<address>`, so a hex fragment also matches their addresses.
     #[arg(long)]
     pub filter: Option<String>,
     #[arg(long, default_value_t = 0)]
@@ -608,6 +609,29 @@ fn fingerprint(dir: &Path) -> Result<String> {
 fn gui_lock(dir: &Path) -> bool {
     ["project.lock", "project.lock~"].iter().any(|name| dir.join(name).exists())
 }
+/// Removes a project psx created and has superseded. Projects open in the
+/// GUI or edited outside psx (fingerprint mismatch) are left alone.
+fn discard_project(dir: &Path, expected_fingerprint: Option<&str>) {
+    if gui_lock(dir) || expected_fingerprint.is_some_and(|f| fingerprint(dir).ok().as_deref() != Some(f)) {
+        return;
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+/// Deletes a fresh project directory unless the import publishes it (or a
+/// timeout deliberately retains it), so failed attempts do not accumulate.
+struct PendingProject(Option<PathBuf>);
+impl PendingProject {
+    fn keep(&mut self) {
+        self.0 = None;
+    }
+}
+impl Drop for PendingProject {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take() {
+            discard_project(&dir, None);
+        }
+    }
+}
 fn command(install: &Installation, attempt: &Path) -> Result<Command> {
     let mut cmd = Command::new(&install.launcher);
     // Keep Ghidra's generated configuration and compiled scripts in the project,
@@ -753,6 +777,7 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
     // database cannot live beneath .psx. Inputs/indexes remain there.
     let project_dir = ctx.root.join("ghidra-projects").join(format!("{}-{}", &key[..16], stamp()));
     fs::create_dir_all(&project_dir).map_err(io)?;
+    let mut pending = PendingProject(Some(project_dir.clone()));
     let scripts = script_dir(&attempt)?;
     let copy = attempt.join(if exe.is_some() { "source.ps-exe" } else { "ram.bin" });
     fs::write(&copy, &bytes).map_err(io)?;
@@ -805,6 +830,7 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
     let index = read_json(&index_path)
         .map_err(|e| fail("ghidra_failed", format!("{}; inspect {}", e.message, attempt.join("worker.log").display())))?;
     if index["analysis_timed_out"] == true {
+        pending.keep();
         return Err(fail(
             "analysis_timeout",
             format!("Partial project retained at {}; retry with a larger timeout. It is not cached as complete.", project_dir.display()),
@@ -834,6 +860,7 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
         warnings,
     };
     save_json(&path, &manifest)?;
+    pending.keep();
     let fresh_query = if let Some(a) = addr {
         let value = read_json(&attempt.join("query.json"))?;
         if value["status"] == "complete" {
@@ -1119,6 +1146,7 @@ impl Op for AnnotateArgs {
             let attempt = a.path.parent().unwrap().join(stamp());
             fs::create_dir(&attempt).map_err(io)?;
             let project = a.manifest.project_dir.with_file_name(format!("{}-{}", &a.manifest.key[..16], stamp()));
+            let mut pending = PendingProject(Some(project.clone()));
             copy_project(&a.manifest.project_dir, &project)?;
             let index = attempt.join("index.json");
             let request = attempt.join("annotations.json");
@@ -1140,9 +1168,11 @@ impl Op for AnnotateArgs {
             a.manifest.revision += 1;
             a.manifest.annotations.push(json!({"revision":a.manifest.revision,"patch":request,"conflicts":conflicts}));
             a.manifest.index = index;
-            a.manifest.project_dir = project;
-            a.manifest.project_fingerprint = fingerprint(&a.manifest.project_dir)?;
+            let old = std::mem::replace(&mut a.manifest.project_dir, project);
+            let old_fingerprint = std::mem::replace(&mut a.manifest.project_fingerprint, fingerprint(&a.manifest.project_dir)?);
             save_json(&a.path, &a.manifest)?;
+            pending.keep();
+            discard_project(&old, Some(&old_fingerprint));
             let mut out = summary(&a);
             out["status"] = json!("complete");
             out["conflicts"] = json!(conflicts);

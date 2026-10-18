@@ -256,6 +256,16 @@ impl Disc {
         self.tracks.iter().map(|t| t.first_lba + t.sectors).max().unwrap_or(0)
     }
 
+    /// Where a sector's stored bytes start: (index into [`Disc::files`], byte
+    /// offset in that file). `None` for a CHD, whose sectors are compressed.
+    pub fn image_offset(&self, lba: u32) -> Option<(usize, u64)> {
+        let t = self.track_for_lba(lba)?;
+        match self.store {
+            Store::Files(_) => Some((t.file, (t.file_sector + (lba - t.first_lba)) as u64 * t.mode.sector_size())),
+            Store::Chd(_) => None,
+        }
+    }
+
     /// Read the stored bytes of one sector exactly as they appear in the image.
     pub fn read_raw(&self, lba: u32) -> Result<(Vec<u8>, TrackMode)> {
         let t = self

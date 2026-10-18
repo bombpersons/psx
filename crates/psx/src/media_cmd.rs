@@ -64,7 +64,6 @@ pub(crate) fn disc_summary(image: &Path, hash: bool) -> R {
     let audio = disc.tracks.iter().filter(|t| !t.mode.is_data()).count();
     let mut out = json!({
         "source": disc.source,
-        "files": files,
         "media_files": files,
         "tracks": disc.tracks,
         "track_summary": {"total": disc.tracks.len(), "data": disc.tracks.len() - audio, "audio": audio},
@@ -86,13 +85,12 @@ pub(crate) fn disc_summary(image: &Path, hash: bool) -> R {
     };
     let files_only = fs.entries.iter().filter(|e| !e.is_dir);
     out["volume"] = json!(fs.volume);
-    out["entries"] = json!({
+    out["filesystem"] = json!({
         "files": files_only.clone().count(),
         "dirs": fs.entries.iter().filter(|e| e.is_dir).count(),
         "streamed_files": files_only.clone().filter(|e| e.is_streamed()).count(),
         "bytes": files_only.map(|e| e.size as u64).sum::<u64>(),
     });
-    out["filesystem"]=out["entries"].clone();
     out["fs_warnings"] = json!(fs.warnings);
 
     let cnf = fs.find("/SYSTEM.CNF").map(|e| fs.read_file(&disc, e)).transpose()?.map(|b| SystemCnf::parse(&b));
@@ -150,6 +148,68 @@ pub(crate) fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -
         }));
     }
     Ok(json!({"written": written, "failed": failed}))
+}
+
+/// A byte window of one file, read sector by sector rather than extracting the
+/// whole file, with the image location of its first byte: file offset `O` is
+/// user data byte `O % 2048` of the file's `O / 2048`th sector, which in a raw
+/// image follows a 16 (Mode 1) or 24 (Mode 2) byte sector header.
+pub(crate) fn extract_window(image: &Path, path: &str, offset: u32, length: u32, out: &Path) -> R {
+    let disc = Disc::open(image)?;
+    let fs = FileSystem::read(&disc)?;
+    let e = fs.entry(path)?;
+    if e.is_dir {
+        return Err(MediaError::Malformed(format!("{} is a directory", e.path)));
+    }
+    if offset >= e.size {
+        return Err(MediaError::Malformed(format!("offset 0x{offset:X} is past the end of {} (0x{:X} bytes)", e.path, e.size)));
+    }
+    let length = length.min(e.size - offset);
+    let first = offset / 2048;
+    let last = (offset + length.max(1) - 1) / 2048;
+    let mut bytes = Vec::with_capacity(((last - first + 1) * 2048) as usize);
+    let mut header = 0;
+    for i in first..=last {
+        let s = disc.read_data(e.lba + i)?;
+        if s.form == psx_media::disc::SectorForm::Form2 {
+            return Err(MediaError::Unsupported(format!(
+                "{} has a Form 2 sector at LBA {}; file offsets only address Form 1 data, extract without offset for raw sectors",
+                e.path, s.lba
+            )));
+        }
+        if i == first {
+            header = match s.form {
+                psx_media::disc::SectorForm::Mode1 => {
+                    if disc.read_raw(s.lba)?.0.len() > 2048 { 16 } else { 0 }
+                }
+                _ => 24,
+            };
+        }
+        bytes.extend_from_slice(&s.data[..2048]);
+    }
+    let start = (offset % 2048) as usize;
+    let bytes = &bytes[start..start + length as usize];
+    let lba = e.lba + first;
+    let location = disc.image_offset(lba).map(|(file, sector)| {
+        json!({"file": disc.files[file].name, "sector_offset": format!("0x{sector:X}"),
+               "offset": format!("0x{:X}", sector + header + start as u64)})
+    });
+    let rel = e.path.trim_start_matches('/');
+    let dest = out.join(format!("{rel}@0x{offset:X}+0x{length:X}"));
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| MediaError::io(parent, err))?;
+    }
+    std::fs::write(&dest, bytes).map_err(|err| MediaError::io(&dest, err))?;
+    let mut v = json!({
+        "path": e.path, "file_bytes": e.size, "offset": format!("0x{offset:X}"), "bytes": bytes.len(), "dest": dest,
+        "sha256": sha256_bytes(bytes),
+        "start": {"lba": lba, "track": disc.track_for_lba(lba).map(|t| t.number), "byte_in_sector": start,
+                  "sector_header": header, "image": location},
+    });
+    if bytes.len() <= 0x100 {
+        v["hex"] = json!(bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    }
+    Ok(v)
 }
 
 pub(crate) fn exe_cmd(source: &str) -> R {

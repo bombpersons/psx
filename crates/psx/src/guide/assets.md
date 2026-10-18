@@ -57,3 +57,10 @@ textures decodes the captured frame's resident VRAM and creates a .psxscene for
 reference. That capture is screen-space drawing evidence, not recovered world
 geometry or a complete level. Raw streamed-file extraction is marked raw_2352;
 do not interpret sector framing as ordinary file payload.
+
+Bytes at a known file offset: extract path offset:0x597aa length:0x40 reads only
+the sectors that window covers (no need to extract a large volume file) and
+returns the bytes inline as hex up to 0x100. start.image.offset is where the
+first byte sits in the raw .bin: file offset O is user-data byte O%2048 of the
+file's O/2048th sector, after a 16 (Mode 1) or 24 (Mode 2) byte header, so it is
+not lba*2352+O%2048 without the header. CHD images report no image offset.

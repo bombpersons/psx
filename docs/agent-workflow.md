@@ -247,8 +247,8 @@ recording. `writes.jsonl` is produced only when a write watch was requested.
 `watch.recorded` counts stored raw events, `emitted` counts events after
 `watch_changes_only`, and `complete`/`truncated` describe the recording cap.
 Read watches report the same cap distinction plus a bounded reader-PC summary.
-`disc.media_files` names backing images and `disc.filesystem` names filesystem
-statistics; the previous `files` and `entries` aliases remain available.
+`disc.media_files` lists the image files backing the disc (the `.bin`, `.chd`);
+`disc.filesystem` counts the ISO9660 files and directories on it.
 
 Large ordinary tool results can still exceed MCP's 256 KiB inline limit. Their
 spill wrapper includes an artifact descriptor and an `artifact_read` next call;
