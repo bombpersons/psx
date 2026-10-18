@@ -30,7 +30,7 @@ jobs:
   check:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
       - name: Tag matches the workspace version
@@ -67,7 +67,7 @@ jobs:
       # The template, guide and parser files are embedded with include_str!;
       # keep their LF endings on Windows so every build writes the same files.
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
