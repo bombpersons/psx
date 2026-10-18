@@ -468,6 +468,96 @@ pub fn xref_report(code: &Code, lo: u32, hi: u32, data: bool, scopes: &[crate::S
     (v, header + &out)
 }
 
+/// `psx disasm`: a listing from an address, an EXE entry point or a discovered function.
+pub(crate) fn disasm_cmd(a: crate::commands::DisasmArgs) -> psx_media::Result<Value> {
+    let crate::commands::DisasmArgs { source, addr, count, function_budget, symbols, text, function, ram, gp } = a;
+    if !(1..=262144).contains(&function_budget) || count.is_some_and(|n| !(1..=262144).contains(&n)) {
+        return Err(MediaError::Malformed("count/function_budget must be 1..=262144".into()));
+    }
+    let mut code = Code::open(source.as_deref(), ram.as_deref())?;
+    if let Some(g) = crate::commands::opt_hex(&gp, "gp")? {
+        code.gp = Some(g);
+    }
+    let scopes = crate::load_symbols(&symbols)?;
+    let entry = match &source {
+        Some(s) => Some(PsxExe::parse(&psx_media::source::read(s)?)?.pc),
+        None => None,
+    };
+    let (start, end, func) = if let Some(f) = crate::commands::opt_hex(&function, "function address")? {
+        let jal = code.jal_targets();
+        let extent = function_extent(&code, f, &jal, function_budget)
+            .ok_or_else(|| MediaError::Malformed(format!("0x{f:08X} is outside the code ({})", code.origin)))?;
+        let (s,e) = (extent.start,extent.end);
+        let listed_end = count.map_or(e, |n| s.saturating_add(4*n).min(e));
+        let callers = xrefs(&code, s, s + 4, false).iter().filter(|(_, r)| r.kind == "call").count();
+        (
+            s,
+            listed_end,
+            Some(json!({"start": format!("0x{s:08X}"), "end": format!("0x{e:08X}"), "instructions": (e-s)/4,
+                "jal_callers":callers,"boundary_source":"heuristic","start_evidence":extent.start_evidence,
+                "stop_reason":extent.stop_reason,"truncated":extent.truncated(),"search_budget":function_budget,
+                "listing_truncated":listed_end<e})),
+        )
+    } else {
+        let start = match crate::commands::opt_hex(&addr, "address")? {
+            Some(a) => a,
+            None => entry.ok_or_else(|| {
+                MediaError::Malformed("give --addr or --function (there is no EXE entry point with --ram alone)".into())
+            })?,
+        } & !3;
+        (start, start.saturating_add(4 * count.unwrap_or(32)), None)
+    };
+    let (lines, listing) = listing(&code, start, end, &ListOpts { scopes: &scopes, text });
+    let mut warnings = Vec::new();
+    if func.as_ref().is_some_and(|f| f["truncated"] == true) {
+        warnings.push("Function boundary search is incomplete; increase --function-budget. Reported bounds are partial.".into());
+    }
+    if func.as_ref().is_some_and(|f| f["listing_truncated"] == true) {
+        warnings.push("Listing limited by --count; omit it to list the discovered function.".into());
+    }
+    if let Some((checked, differ)) = code.exe_mismatch(start, end) {
+        if differ > 0 {
+            warnings.push(format!("RAM differs from the EXE in {differ} of {checked} words here: code patched or overlaid at run time (the listing shows RAM)"));
+        } else if checked == 0 {
+            warnings.push("this range is outside the EXE's load range: RAM only".to_string());
+        }
+    }
+    if lines.is_empty() {
+        warnings.push(format!("0x{start:08X} is outside the code ({}: 0x{:08X}..0x{:08X})", code.origin, code.base, code.end()));
+    }
+    let mut v = json!({"source": source.clone().unwrap_or_else(|| code.origin.clone()), "lines": lines,
+        "listing":{"start":format!("0x{start:08X}"),"end":format!("0x{end:08X}"),
+            "next_addr":func.as_ref().filter(|f| f["truncated"]==true || f["listing_truncated"]==true).map(|_|format!("0x{end:08X}"))}});
+    if ram.is_some() {
+        v["ram"] = json!(code.origin);
+    }
+    if let Some(f) = func {
+        v["function"] = f;
+    }
+    if !warnings.is_empty() {
+        v["warnings"] = json!(warnings);
+    }
+    if text {
+        let mut t = String::new();
+        if let Some(f) = v.get("function") {
+            t += &format!(
+                "; function {}..{} ({} instructions, {} jal callers) in {}\n",
+                f["start"].as_str().unwrap_or(""),
+                f["end"].as_str().unwrap_or(""),
+                f["instructions"],
+                f["jal_callers"],
+                code.origin
+            );
+        }
+        for w in &warnings {
+            t += &format!("; warning: {w}\n");
+        }
+        v["text"] = json!(t + &listing);
+        v.as_object_mut().unwrap().remove("lines");
+    }
+    Ok(v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

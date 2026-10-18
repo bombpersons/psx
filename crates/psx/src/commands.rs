@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use psx_media::iso9660::FileSystem;
-use psx_media::{memmap, Disc, MediaError, PsxExe};
+use psx_media::{memmap, Disc, MediaError};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -692,50 +692,6 @@ pub struct RunCmdArgs {
     pub summary: bool,
 }
 
-/// The `--brief` view of a run report.
-fn brief(v: &Value) -> Value {
-    if v.get("error").is_some() {
-        return v.clone();
-    }
-    let mut frames = v["frames"].clone();
-    if let Some(f) = frames.as_object_mut() {
-        f.remove("numbering");
-    }
-    let mut b = json!({
-        "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "frames": frames,
-        "report": v["report"],
-        "files": v["files"].as_object().map(|f| f.keys().cloned().collect::<Vec<_>>()),
-        "watch": {"enabled":v["watch"]["enabled"],"hits": v["watch"]["hits"], "recorded": v["watch"]["recorded"],
-            "complete":v["watch"]["complete"],"file":v["watch"]["file"]},
-    });
-    for k in ["build", "resolved", "input", "pad", "artifacts", "samples", "pokes", "screens", "states", "read_watch", "spu", "wall_ms"] {
-        if !v[k].is_null() {
-            b[k] = v[k].clone();
-        }
-    }
-    if let Some(events) = v["input"]["events"].as_array() {
-        b["input"]["events"] = json!(events.iter().take(8).collect::<Vec<_>>());
-        b["input"]["page"] = crate::page::metadata(events.len(), 0, events.len().min(8), 8);
-    }
-    if v["gpu_frame"].is_object() {
-        let g = &v["gpu_frame"];
-        let mut summary = serde_json::Map::new();
-        for key in
-            ["error", "status", "reason", "mode", "search", "frame", "run_frame", "absolute_frame", "complete", "commands", "draw_commands", "draw_filter", "content"]
-        {
-            if let Some(value) = g.get(key) {
-                summary.insert(key.into(), value.clone());
-            }
-        }
-        b["gpu_frame"] = Value::Object(summary);
-    }
-    if v["trace"].is_object() {
-        let t = &v["trace"];
-        b["trace"] = json!({"instructions": t["instructions"], "lines": t["lines"], "lines_dropped": t["lines_dropped"]});
-    }
-    b
-}
-
 impl Op for RunCmdArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         let a = self;
@@ -790,58 +746,12 @@ impl Op for RunCmdArgs {
             let _ = std::fs::write(&p, serde_json::to_vec_pretty(&out.value).unwrap_or_default());
         }
         if summarise {
-            out.value = summary(&out.value);
+            out.value = crate::run::summary(&out.value);
         } else if short {
-            out.value = brief(&out.value);
+            out.value = crate::run::brief(&out.value);
         }
         out
     }
-}
-
-/// `--summary`: paths and counts only. Each observation appears when it was requested.
-fn summary(v: &Value) -> Value {
-    if v.get("error").is_some() {
-        return v.clone();
-    }
-    let pick = |section: &Value, keys: &[&str]| {
-        Value::Object(keys.iter().filter_map(|k| section.get(*k).map(|value| (k.to_string(), value.clone()))).collect())
-    };
-    let mut s = json!({
-        "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "report": v["report"],
-        "frames": pick(&v["frames"], &["requested", "reached", "start"]),
-        "screen": v["files"]["screen.png"]["path"],
-        "next_call": {"tool": "artifact_read", "arguments": {"path": v["run_dir"]}},
-    });
-    if let Some(state) = v["files"]["state.bin"]["path"].as_str() {
-        s["state"] = json!(state);
-    }
-    if v["watch"]["enabled"] == true {
-        s["watch"] = pick(&v["watch"], &["hits", "recorded", "complete", "file"]);
-    }
-    let sections: [(&str, &[&str]); 7] = [
-        ("read_watch", &["hits", "recorded", "complete", "file"]),
-        ("samples", &["file", "rows"]),
-        ("spu", &["file", "events", "recorded", "complete"]),
-        ("trace", &["instructions", "lines", "lines_dropped"]),
-        ("gpu_frame", &["status", "reason", "frame", "run_frame", "draw_commands"]),
-        ("screens", &["dir", "count"]),
-        ("states", &[]),
-    ];
-    for (key, keys) in sections {
-        if !v[key].is_null() {
-            s[key] = if keys.is_empty() { v[key].clone() } else { pick(&v[key], keys) };
-        }
-    }
-    if v["event_logs"].as_object().is_some_and(|m| !m.is_empty()) {
-        s["event_logs"] = v["event_logs"].clone();
-    }
-    if let Some(pokes) = v["pokes"].as_array() {
-        s["pokes"] = json!(pokes.len());
-    }
-    if v["input"]["application"]["scheduled_events"].as_u64().is_some_and(|n| n > 0) {
-        s["input"] = pick(&v["input"]["application"], &["scheduled_events", "applied_events", "pending_events"]);
-    }
-    s
 }
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
@@ -1023,103 +933,14 @@ pub struct DisasmArgs {
 
 fn d_function_budget() -> u32 { 4096 }
 
-fn opt_hex(s: &Option<String>, what: &str) -> psx_media::Result<Option<u32>> {
+pub(crate) fn opt_hex(s: &Option<String>, what: &str) -> psx_media::Result<Option<u32>> {
     s.as_deref().map(|a| psx_media::memmap::parse_hex(a).ok_or_else(|| MediaError::Malformed(format!("bad {what} {a:?} (hex)")))).transpose()
 }
 
 impl Op for DisasmArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        let DisasmArgs { source, addr, count, function_budget, symbols, text, function, ram, gp } = self;
-        Outcome::media_text(
-            (|| {
-                if !(1..=262144).contains(&function_budget) || count.is_some_and(|n| !(1..=262144).contains(&n)) {
-                    return Err(MediaError::Malformed("count/function_budget must be 1..=262144".into()));
-                }
-                let mut code = crate::code::Code::open(source.as_deref(), ram.as_deref())?;
-                if let Some(g) = opt_hex(&gp, "gp")? {
-                    code.gp = Some(g);
-                }
-                let scopes = crate::load_symbols(&symbols)?;
-                let entry = match &source {
-                    Some(s) => Some(PsxExe::parse(&psx_media::source::read(s)?)?.pc),
-                    None => None,
-                };
-                let (start, end, func) = if let Some(f) = opt_hex(&function, "function address")? {
-                    let jal = code.jal_targets();
-                    let extent = crate::code::function_extent(&code, f, &jal, function_budget)
-                        .ok_or_else(|| MediaError::Malformed(format!("0x{f:08X} is outside the code ({})", code.origin)))?;
-                    let (s,e) = (extent.start,extent.end);
-                    let listed_end = count.map_or(e, |n| s.saturating_add(4*n).min(e));
-                    let callers = crate::code::xrefs(&code, s, s + 4, false).iter().filter(|(_, r)| r.kind == "call").count();
-                    (
-                        s,
-                        listed_end,
-                        Some(json!({"start": format!("0x{s:08X}"), "end": format!("0x{e:08X}"), "instructions": (e-s)/4,
-                            "jal_callers":callers,"boundary_source":"heuristic","start_evidence":extent.start_evidence,
-                            "stop_reason":extent.stop_reason,"truncated":extent.truncated(),"search_budget":function_budget,
-                            "listing_truncated":listed_end<e})),
-                    )
-                } else {
-                    let start = match opt_hex(&addr, "address")? {
-                        Some(a) => a,
-                        None => entry.ok_or_else(|| {
-                            MediaError::Malformed("give --addr or --function (there is no EXE entry point with --ram alone)".into())
-                        })?,
-                    } & !3;
-                    (start, start.saturating_add(4 * count.unwrap_or(32)), None)
-                };
-                let (lines, listing) = crate::code::listing(&code, start, end, &crate::code::ListOpts { scopes: &scopes, text });
-                let mut warnings = Vec::new();
-                if func.as_ref().is_some_and(|f| f["truncated"] == true) {
-                    warnings.push("Function boundary search is incomplete; increase --function-budget. Reported bounds are partial.".into());
-                }
-                if func.as_ref().is_some_and(|f| f["listing_truncated"] == true) {
-                    warnings.push("Listing limited by --count; omit it to list the discovered function.".into());
-                }
-                if let Some((checked, differ)) = code.exe_mismatch(start, end) {
-                    if differ > 0 {
-                        warnings.push(format!("RAM differs from the EXE in {differ} of {checked} words here: code patched or overlaid at run time (the listing shows RAM)"));
-                    } else if checked == 0 {
-                        warnings.push("this range is outside the EXE's load range: RAM only".to_string());
-                    }
-                }
-                if lines.is_empty() {
-                    warnings.push(format!("0x{start:08X} is outside the code ({}: 0x{:08X}..0x{:08X})", code.origin, code.base, code.end()));
-                }
-                let mut v = json!({"source": source.clone().unwrap_or_else(|| code.origin.clone()), "lines": lines,
-                    "listing":{"start":format!("0x{start:08X}"),"end":format!("0x{end:08X}"),
-                        "next_addr":func.as_ref().filter(|f| f["truncated"]==true || f["listing_truncated"]==true).map(|_|format!("0x{end:08X}"))}});
-                if ram.is_some() {
-                    v["ram"] = json!(code.origin);
-                }
-                if let Some(f) = func {
-                    v["function"] = f;
-                }
-                if !warnings.is_empty() {
-                    v["warnings"] = json!(warnings);
-                }
-                if text {
-                    let mut t = String::new();
-                    if let Some(f) = v.get("function") {
-                        t += &format!(
-                            "; function {}..{} ({} instructions, {} jal callers) in {}\n",
-                            f["start"].as_str().unwrap_or(""),
-                            f["end"].as_str().unwrap_or(""),
-                            f["instructions"],
-                            f["jal_callers"],
-                            code.origin
-                        );
-                    }
-                    for w in &warnings {
-                        t += &format!("; warning: {w}\n");
-                    }
-                    v["text"] = json!(t + &listing);
-                    v.as_object_mut().unwrap().remove("lines");
-                }
-                Ok(v)
-            })(),
-            text,
-        )
+        let text = self.text;
+        Outcome::media_text(crate::code::disasm_cmd(self), text)
     }
 }
 

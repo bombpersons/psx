@@ -230,3 +230,93 @@ fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (
     }
     crate::run_native::run(root, a, events)
 }
+
+/// The `--brief` view of a run report.
+pub(crate) fn brief(v: &Value) -> Value {
+    if v.get("error").is_some() {
+        return v.clone();
+    }
+    let mut frames = v["frames"].clone();
+    if let Some(f) = frames.as_object_mut() {
+        f.remove("numbering");
+    }
+    let mut b = json!({
+        "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "frames": frames,
+        "report": v["report"],
+        "files": v["files"].as_object().map(|f| f.keys().cloned().collect::<Vec<_>>()),
+        "watch": {"enabled":v["watch"]["enabled"],"hits": v["watch"]["hits"], "recorded": v["watch"]["recorded"],
+            "complete":v["watch"]["complete"],"file":v["watch"]["file"]},
+    });
+    for k in ["build", "resolved", "input", "pad", "artifacts", "samples", "pokes", "screens", "states", "read_watch", "spu", "wall_ms"] {
+        if !v[k].is_null() {
+            b[k] = v[k].clone();
+        }
+    }
+    if let Some(events) = v["input"]["events"].as_array() {
+        b["input"]["events"] = json!(events.iter().take(8).collect::<Vec<_>>());
+        b["input"]["page"] = crate::page::metadata(events.len(), 0, events.len().min(8), 8);
+    }
+    if v["gpu_frame"].is_object() {
+        let g = &v["gpu_frame"];
+        let mut summary = serde_json::Map::new();
+        for key in
+            ["error", "status", "reason", "mode", "search", "frame", "run_frame", "absolute_frame", "complete", "commands", "draw_commands", "draw_filter", "content"]
+        {
+            if let Some(value) = g.get(key) {
+                summary.insert(key.into(), value.clone());
+            }
+        }
+        b["gpu_frame"] = Value::Object(summary);
+    }
+    if v["trace"].is_object() {
+        let t = &v["trace"];
+        b["trace"] = json!({"instructions": t["instructions"], "lines": t["lines"], "lines_dropped": t["lines_dropped"]});
+    }
+    b
+}
+
+/// `--summary`: paths and counts only. Each observation appears when it was requested.
+pub(crate) fn summary(v: &Value) -> Value {
+    if v.get("error").is_some() {
+        return v.clone();
+    }
+    let pick = |section: &Value, keys: &[&str]| {
+        Value::Object(keys.iter().filter_map(|k| section.get(*k).map(|value| (k.to_string(), value.clone()))).collect())
+    };
+    let mut s = json!({
+        "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "report": v["report"],
+        "frames": pick(&v["frames"], &["requested", "reached", "start"]),
+        "screen": v["files"]["screen.png"]["path"],
+        "next_call": {"tool": "artifact_read", "arguments": {"path": v["run_dir"]}},
+    });
+    if let Some(state) = v["files"]["state.bin"]["path"].as_str() {
+        s["state"] = json!(state);
+    }
+    if v["watch"]["enabled"] == true {
+        s["watch"] = pick(&v["watch"], &["hits", "recorded", "complete", "file"]);
+    }
+    let sections: [(&str, &[&str]); 7] = [
+        ("read_watch", &["hits", "recorded", "complete", "file"]),
+        ("samples", &["file", "rows"]),
+        ("spu", &["file", "events", "recorded", "complete"]),
+        ("trace", &["instructions", "lines", "lines_dropped"]),
+        ("gpu_frame", &["status", "reason", "frame", "run_frame", "draw_commands"]),
+        ("screens", &["dir", "count"]),
+        ("states", &[]),
+    ];
+    for (key, keys) in sections {
+        if !v[key].is_null() {
+            s[key] = if keys.is_empty() { v[key].clone() } else { pick(&v[key], keys) };
+        }
+    }
+    if v["event_logs"].as_object().is_some_and(|m| !m.is_empty()) {
+        s["event_logs"] = v["event_logs"].clone();
+    }
+    if let Some(pokes) = v["pokes"].as_array() {
+        s["pokes"] = json!(pokes.len());
+    }
+    if v["input"]["application"]["scheduled_events"].as_u64().is_some_and(|n| n > 0) {
+        s["input"] = pick(&v["input"]["application"], &["scheduled_events", "applied_events", "pending_events"]);
+    }
+    s
+}
