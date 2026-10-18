@@ -215,7 +215,7 @@ fn scan_inputs(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, 
         let dir = if dir.ends_with('/') { dir } else { format!("{dir}/") };
         files.into_iter().filter(|e| e.path.to_ascii_uppercase().starts_with(&dir.to_ascii_uppercase())).collect()
     } else {
-        vec![fs.find(&pattern).ok_or_else(|| MediaError::NotFound(pattern.clone()))?]
+        vec![fs.entry(&pattern)?]
     };
     let read = |path: &str| fs.find(path).filter(|e| !e.is_dir).and_then(|e| fs.read_file(&disc, e).ok());
     let mut out = Vec::new();

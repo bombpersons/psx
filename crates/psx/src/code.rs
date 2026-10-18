@@ -33,7 +33,7 @@ impl Code {
     pub fn open(source: Option<&str>, ram: Option<&Path>) -> psx_media::Result<Code> {
         let exe = match source {
             Some(s) => {
-                let bytes = crate::read_source(s)?;
+                let bytes = psx_media::source::read(s)?;
                 let exe = PsxExe::parse(&bytes)?;
                 Some((s.to_string(), exe.clone(), exe.payload(&bytes).to_vec()))
             }

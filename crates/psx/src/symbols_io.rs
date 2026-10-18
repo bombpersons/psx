@@ -1,5 +1,5 @@
 //! Symbol loading and residency checks shared by runtime and static tools.
-use crate::{bound_symbols, read_source};
+use crate::bound_symbols;
 use psx_media::{MediaError, PsxExe};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -81,7 +81,7 @@ pub(crate) fn load_symbols(paths: &[PathBuf]) -> psx_media::Result<Vec<ScopedSym
             let source = v["source"].as_str().unwrap_or_default().to_string();
             let report: psx_symbols::MatchReportIn =
                 serde_json::from_value(v["report"].clone()).map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
-            let bytes = read_source(&source)?;
+            let bytes = psx_media::source::read(&source)?;
             if v["exe_sha256"].as_str().is_some_and(|hash| hash != psx_media::disc::sha256_bytes(&bytes)) {
                 return Err(MediaError::Malformed(format!("{name}: symbol source hash mismatch")));
             }

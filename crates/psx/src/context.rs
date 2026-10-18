@@ -136,7 +136,7 @@ fn region(media: Option<&Path>) -> Result<Option<bios::Region>, Value> {
     let Some(p) = media else { return Ok(None) };
     let exe = psx_media::exe::is_exe_path(p);
     let hint = if exe {
-        let b = crate::read_source(&p.to_string_lossy()).map_err(media_error)?;
+        let b = psx_media::source::read(&p.to_string_lossy()).map_err(media_error)?;
         PsxExe::parse(&b).map_err(media_error)?.region_hint().map(str::to_owned)
     } else {
         let disc = crate::disc_summary(p, false).map_err(media_error)?;

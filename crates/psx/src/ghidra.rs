@@ -537,7 +537,7 @@ fn import(input: &Input) -> Result<Import> {
         });
     }
     let source = input.source.as_ref().ok_or_else(|| invalid("missing source"))?;
-    let bytes = crate::read_source(source).map_err(|e| fail(e.code(), e))?;
+    let bytes = psx_media::source::read(source).map_err(|e| fail(e.code(), e))?;
     let exe = PsxExe::parse(&bytes).map_err(|e| fail(e.code(), e))?;
     let base = ram_address(exe.text_addr)?;
     let end = base.checked_add(exe.text_size).filter(|&end| end <= 0x8020_0000).ok_or_else(|| invalid("EXE payload exceeds main RAM"))?;
@@ -686,7 +686,7 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
                 }
                 continue;
             }
-            let original = crate::read_source(value["source"].as_str().ok_or_else(|| invalid("symbols report lacks source"))?)
+            let original = psx_media::source::read(value["source"].as_str().ok_or_else(|| invalid("symbols report lacks source"))?)
                 .map_err(|e| fail(e.code(), e))?;
             let original_exe = PsxExe::parse(&original).map_err(|e| fail(e.code(), e))?;
             let original_base = ram_address(original_exe.text_addr)?;

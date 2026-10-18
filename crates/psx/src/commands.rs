@@ -289,7 +289,7 @@ pub struct StrArgs {
 
 impl Op for StrArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::media(crate::str_cmd::split_source(&self.source, self.path.as_deref()).and_then(|(image, path)| {
+        Outcome::media(psx_media::source::split(&self.source, self.path.as_deref()).and_then(|(image, path)| {
             let frame_parser = crate::parser::Spec::new(self.frame_parser.as_ref(), &self.frame_parser_args, self.parser_timeout)?;
             crate::str_cmd::run(crate::str_cmd::Args {
                 image: &image,
@@ -1103,7 +1103,7 @@ impl Op for DisasmArgs {
                 }
                 let scopes = crate::load_symbols(&symbols)?;
                 let entry = match &source {
-                    Some(s) => Some(PsxExe::parse(&crate::read_source(s)?)?.pc),
+                    Some(s) => Some(PsxExe::parse(&psx_media::source::read(s)?)?.pc),
                     None => None,
                 };
                 let (start, end, func) = if let Some(f) = opt_hex(&function, "function address")? {

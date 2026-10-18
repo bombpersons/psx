@@ -336,7 +336,7 @@ fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -> R {
     let fs = FileSystem::read(&disc)?;
     let selected: Vec<&Entry> = match (path, all) {
         (_, true) => fs.entries.iter().filter(|e| !e.is_dir).collect(),
-        (Some(p), false) => vec![fs.find(p).ok_or_else(|| MediaError::NotFound(p.to_string()))?],
+        (Some(p), false) => vec![fs.entry(p)?],
         (None, false) => return Err(MediaError::Malformed("give a path or --all".into())),
     };
     let mut written = Vec::new();
@@ -373,20 +373,8 @@ fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -> R {
 
 pub(crate) use symbols_io::{final_name, load_symbols, name_pc, ScopedSymbols, SymbolCheck};
 
-fn read_source(source: &str) -> psx_media::Result<Vec<u8>> {
-    Ok(match source.split_once("::") {
-        Some((image, path)) => {
-            let disc = Disc::open(image)?;
-            let fs = FileSystem::read(&disc)?;
-            let e = fs.find(path).ok_or_else(|| MediaError::NotFound(path.to_string()))?;
-            fs.read_file(&disc, e)?
-        }
-        None => std::fs::read(source).map_err(|e| MediaError::io(source, e))?,
-    })
-}
-
 fn symbols_cmd(source: &str, sigs_dir: &Path, min_concrete: usize, out: Option<PathBuf>) -> R {
-    let bytes = read_source(source)?;
+    let bytes = psx_media::source::read(source)?;
     let exe = PsxExe::parse(&bytes)?;
     let sigs = psx_symbols::load_dir(sigs_dir).map_err(|e| {
         MediaError::NotFound(format!("signatures: {e} (supply a local psx_psyq_signatures checkout with --sigs / MCP sigs, or set PSX_SIGS_DIR to its absolute path for all projects; context reports the default path)"))
@@ -438,15 +426,7 @@ fn symbols_cmd(source: &str, sigs_dir: &Path, min_concrete: usize, out: Option<P
 }
 
 fn exe_cmd(source: &str) -> R {
-    let bytes = match source.split_once("::") {
-        Some((image, path)) => {
-            let disc = Disc::open(image)?;
-            let fs = FileSystem::read(&disc)?;
-            let e = fs.find(path).ok_or_else(|| MediaError::NotFound(path.to_string()))?;
-            fs.read_file(&disc, e)?
-        }
-        None => std::fs::read(source).map_err(|e| MediaError::io(source, e))?,
-    };
+    let bytes = psx_media::source::read(source)?;
     let exe = PsxExe::parse(&bytes)?;
     Ok(exe_json(&exe, &bytes))
 }
