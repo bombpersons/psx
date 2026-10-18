@@ -1,0 +1,5 @@
+# Keep LF everywhere: templates, guides and scripts are embedded with include_str!
+# and must be byte-identical on every platform.
+* text=auto eol=lf
+# CSV data keeps the line endings it was written with.
+*.csv -text

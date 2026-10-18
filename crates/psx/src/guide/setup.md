@@ -21,7 +21,8 @@ BIOS discovery checks the selected project's bios/ and the shared store, not
 sibling toolkit checkouts. Import a known local dump once with bios_install(from),
 set an absolute PSX_BIOS_DIR, or save an explicit context bios path for the project.
 Signature matching uses explicit symbols.sigs, otherwise PSX_SIGS_DIR, otherwise
-external/psx_psyq_signatures in the selected project. Use an absolute PSX_SIGS_DIR
+external/psx_psyq_signatures in the selected project, otherwise the installer's
+shared copy (context reports signatures.path and selection). Use an absolute PSX_SIGS_DIR
 in the server environment to share a checkout. context.signatures reports its
 default path and directory presence without loading or downloading the index.
 

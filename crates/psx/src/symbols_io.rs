@@ -144,7 +144,7 @@ pub(crate) fn symbols_cmd(source: &str, sigs_dir: &Path, min_concrete: usize, ou
     let bytes = psx_media::source::read(source)?;
     let exe = PsxExe::parse(&bytes)?;
     let sigs = psx_symbols::load_dir(sigs_dir).map_err(|e| {
-        MediaError::NotFound(format!("signatures: {e} (supply a local psx_psyq_signatures checkout with --sigs / MCP sigs, or set PSX_SIGS_DIR to its absolute path for all projects; context reports the default path)"))
+        MediaError::NotFound(format!("signatures: {e} (run the installer with signatures, supply a local psx_psyq_signatures checkout with --sigs / MCP sigs, or set PSX_SIGS_DIR to its absolute path for all projects; context reports the default path)"))
     })?;
     let report = psx_symbols::match_code(exe.payload(&bytes), exe.text_addr, &sigs, min_concrete);
     let stem = source.rsplit(['/', '\\', ':']).next().unwrap_or("exe").trim_end_matches(";1").to_string();

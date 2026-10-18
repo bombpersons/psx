@@ -26,7 +26,8 @@ fn main() {
     files.sort();
     let mut h = Sha256::new();
     for p in files {
-        let name = p.strip_prefix(root).unwrap().to_string_lossy();
+        // Same name on every platform, so a source tree hashes alike on Windows.
+        let name = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
         let bytes = std::fs::read(&p).unwrap();
         h.update((name.len() as u64).to_le_bytes());
         h.update(name.as_bytes());

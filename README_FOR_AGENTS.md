@@ -218,7 +218,9 @@ For runtime FIXP models, `size: 0` means pointers are relocated and no contiguou
 original-file extent is known, rather than an empty model.
 
 PsyQ signature lookup uses explicit `symbols --sigs DIR` / MCP `sigs`, then
-`PSX_SIGS_DIR`, then the selected project's `external/psx_psyq_signatures`.
+`PSX_SIGS_DIR`, then the selected project's `external/psx_psyq_signatures`, then the
+installer's shared copy in the user data directory (`~/.local/share/psx/psyq_signatures`,
+or `%LOCALAPPDATA%\psx\psyq_signatures` on Windows).
 Set `PSX_SIGS_DIR` to an absolute checkout path in the server environment to share
 one index across game projects. `context.signatures` reports the default path,
 selection reason and directory presence; it does not validate or download the index.
@@ -246,10 +248,12 @@ a change); otherwise the server's working directory. Register it once without
 `--root` so each Claude Code session uses the study it was opened in:
 
 ```bash
-cargo build --release -p psx
-claude mcp add --scope user -e PSX_SIGS_DIR=/path/to/psx/external/psx_psyq_signatures \
-  psx -- /path/to/psx/target/release/psx mcp
+claude mcp add --scope user psx -- ~/.local/bin/psx mcp
 ```
+
+(`psx` from the [installer](README.md#get-started); for a source checkout use
+`target/release/psx` after `cargo build --release -p psx`, with `-e PSX_SIGS_DIR=...` if the
+signatures are not in either default location.)
 
 `psx mcp --require-project-root` rejects any call without `project_root`, for
 clients that work across several studies and must not fall back to a default.
@@ -483,3 +487,13 @@ project root:
 - `cargo run --release -p psx-oracle -- lockstep --bios B [--steps N] [--exact]` compares the CPU with
   Redux instruction by instruction from BIOS reset and stops at the first divergence.
 - `tools/probes/gpu/compare.sh PSX PSX_ORACLE OUT_DIR` diffs `psx-gpu` against Redux on the GPU probe.
+
+### Releases
+
+Pushing a version tag builds and publishes a GitHub Release
+([.github/workflows/release.yml](.github/workflows/release.yml)): set `[workspace.package] version`
+in `Cargo.toml`, commit, then `git tag v0.2.0 && git push origin v0.2.0`. The workflow checks the
+tag matches the version, runs Clippy and the tests, builds `psx` (profile `dist`) for Linux
+x64/arm64, macOS arm64/x64 and Windows x64, and attaches `psx-<target>.tar.gz`/`.zip` with
+`.sha256` files and `SHA256SUMS`. `install.sh` and `install.ps1` download from the latest
+release; rerun the workflow by hand (workflow_dispatch with the tag) to rebuild a release.
