@@ -25,8 +25,12 @@ external/psx_psyq_signatures in the selected project. Use an absolute PSX_SIGS_D
 in the server environment to share a checkout. context.signatures reports its
 default path and directory presence without loading or downloading the index.
 
+Disc images can be .cue (with its .bin files), a bare raw .bin, a cooked .iso
+or a CD .chd; a .chd and the .cue it was made from give the same sectors,
+track_sha256 (disc --hash) and save-state identity. Redux runs of a .chd use a
+CUE/BIN copy written once under .psx/cache/discs/.
 disc inspects the disc and boot EXE; ls filters/pages its ISO entries.
-LibCrypt-protected discs need the redump .sbi/.lsd beside the .cue (same base
+LibCrypt-protected discs need the redump .sbi/.lsd beside the image (same base
 name); disc reports subchannel.source and the native core honours it. exe,
 disasm and asset tools accept disc.cue::/PATH where documented. run accepts a
 disc or host EXE path; do not assume every tool accepts the disc-member syntax.

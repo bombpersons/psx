@@ -144,7 +144,7 @@ fn d_samples() -> usize {
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct DiscArgs {
-    /// Disc image: .cue, raw .bin (single data track) or cooked .iso.
+    /// Disc image: .cue, raw .bin (single data track), cooked .iso or CD .chd.
     pub image: PathBuf,
     /// Also stream SHA-256 over every image file (slow for full discs).
     #[arg(long)]
@@ -160,7 +160,7 @@ impl Op for DiscArgs {
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct LsArgs {
-    /// Disc image: .cue, raw .bin or .iso.
+    /// Disc image: .cue, raw .bin, .iso or .chd.
     pub image: PathBuf,
     /// Case-insensitive substring of the ISO path.
     #[arg(long)]
@@ -196,7 +196,7 @@ impl Op for LsArgs {
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct ExtractArgs {
-    /// Disc image: .cue, raw .bin or .iso.
+    /// Disc image: .cue, raw .bin, .iso or .chd.
     pub image: PathBuf,
     /// ISO path, e.g. `/DATA/LEVEL1.BIN` or `cdrom:\SLUS_000.79;1`.
     pub path: Option<String>,
@@ -230,7 +230,7 @@ impl Op for ExeArgs {
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct XaArgs {
-    /// Disc image: .cue, raw .bin or .iso.
+    /// Disc image: .cue, raw .bin, .iso or .chd.
     pub image: PathBuf,
     /// ISO path of the stream, e.g. `/MUSIC.XA`.
     pub path: String,
@@ -517,7 +517,7 @@ impl Op for TexturesArgs {
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct SectorArgs {
-    /// Disc image: .cue, raw .bin or .iso.
+    /// Disc image: .cue, raw .bin, .iso or .chd.
     pub image: PathBuf,
     /// First logical block address (sector 16 is the ISO9660 volume descriptor).
     pub lba: u32,
@@ -619,7 +619,7 @@ impl Op for ParserTemplateArgs {
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct RunCmdArgs {
-    /// Disc image (.cue/.bin/.iso) or PS-X EXE; omit to boot the BIOS or continue a state.
+    /// Disc image (.cue/.bin/.iso/.chd) or PS-X EXE; omit to boot the BIOS or continue a state.
     pub media: Option<PathBuf>,
     /// BIOS override; otherwise exact checkpoint identity, project defaults or regional local discovery.
     #[arg(long)]
@@ -969,7 +969,7 @@ pub struct NativeArgs {
     /// BIOS image, e.g. bios/scph7502.bin.
     #[arg(long)]
     pub bios: Option<PathBuf>,
-    /// Disc image to insert (CUE/BIN/ISO); omit for an empty drive.
+    /// Disc image to insert (CUE/BIN/ISO/CHD); omit for an empty drive.
     #[arg(long)]
     pub disc: Option<PathBuf>,
     /// Frames to run from power-on.

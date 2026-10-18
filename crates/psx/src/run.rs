@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use psx_media::MediaError;
 use psx_redux::{Backend, Job, Media, ReplayEvent, Watch};
 use serde_json::{json, Value};
 
@@ -236,6 +237,29 @@ fn next_run_dir(root: &Path) -> PathBuf {
     runs.join(format!("{stamp}-{}{}", std::process::id(), crate::instance_suffix()))
 }
 
+/// A disc path PCSX-Redux can open: CUE/BIN/ISO as given; a CHD (which Redux
+/// cannot read) is written once as CUE/BIN under `.psx/cache/discs/<content fingerprint>/`.
+fn redux_disc(root: &Path, p: &Path) -> psx_media::Result<PathBuf> {
+    if !p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("chd")) {
+        return Ok(p.to_path_buf());
+    }
+    let disc = psx_media::Disc::open(p)?;
+    let dir = root.join(".psx/cache/discs").join(psx_core::state::disc_fingerprint(&disc));
+    let cue = dir.join("disc.cue");
+    if !cue.is_file() {
+        let tmp = dir.with_extension(format!("tmp-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).map_err(|e| MediaError::io(&tmp, e))?;
+        disc.write_bin_cue(&tmp, "disc")?;
+        if let Err(e) = std::fs::rename(&tmp, &dir) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            if !cue.is_file() {
+                return Err(MediaError::io(&dir, e));
+            }
+        }
+    }
+    Ok(cue)
+}
+
 pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     let events=match crate::replay::resolve(a.replay.as_deref(),a.input.as_ref(),a.frames as u64) {
         Ok(e)=>e,Err(e)=>return (false,err("invalid_arguments",e)),
@@ -310,7 +334,10 @@ fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (
             if psx_media::exe::is_exe_path(p) {
                 Media::Exe(p.clone())
             } else {
-                Media::Disc(p.clone())
+                match redux_disc(root, p) {
+                    Ok(p) => Media::Disc(p),
+                    Err(e) => return (false, err(e.code(), e)),
+                }
             }
         }
     };

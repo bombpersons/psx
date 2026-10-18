@@ -281,6 +281,13 @@ fn disc_summary(image: &Path, hash: bool) -> R {
             v
         })
         .collect();
+    // Hashes of the sectors as read, so a CHD and the CUE/BIN it came from match.
+    let track_sha256 = if hash {
+        let rows = disc.tracks.iter().map(|t| Ok(json!({"track": t.number, "sha256": disc.track_sha256(t)?})));
+        Some(rows.collect::<psx_media::Result<Vec<_>>>()?)
+    } else {
+        None
+    };
     let audio = disc.tracks.iter().filter(|t| !t.mode.is_data()).count();
     let mut out = json!({
         "source": disc.source,
@@ -289,6 +296,7 @@ fn disc_summary(image: &Path, hash: bool) -> R {
         "tracks": disc.tracks,
         "track_summary": {"total": disc.tracks.len(), "data": disc.tracks.len() - audio, "audio": audio},
         "end_lba": disc.end_lba(),
+        "track_sha256": track_sha256,
         // LibCrypt subchannel data: rips lack it; supply the redump .sbi/.lsd beside the image.
         "subchannel": {
             "source": disc.subq_source,

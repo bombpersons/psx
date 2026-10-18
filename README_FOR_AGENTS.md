@@ -37,7 +37,7 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 |---|---|
 | `psx guide [--topic setup\|input\|code\|assets\|bevy\|troubleshooting]` | Embedded workflow guidance, topic navigation, build identity and the current path-resolution root; MCP `guide` exposes the same documentation |
 | `psx artifact-read PATH [--pointer /rows --offset N --limit N]` | Read artifact directories, JSON, logs, samples, text, raw bytes or PNGs. MCP `artifact_read` attaches PNGs automatically. Stream filters and cursors keep evidence bounded; see [agent workflow](docs/agent-workflow.md) |
-| `psx disc <image.cue> [--hash]` | Tracks, volume, file counts, SYSTEM.CNF and boot EXE header |
+| `psx disc <image.cue> [--hash]` | Tracks, volume, file counts, SYSTEM.CNF and boot EXE header; `--hash` adds file hashes and `track_sha256`, per-track hashes of the sectors as read, which match across image formats |
 | `psx ls <image> [--filter NAME --offset N --limit N]` | Paginated ISO9660 entries: LBA, size, CD-XA attributes, streamed flag; full totals and index coverage |
 | `psx extract <image> <path>\|--all -o DIR` | Files as Form 1 data. Form 2/interleaved files are written as raw `.raw` 2352-byte sectors |
 | `psx exe <file>\|<image.cue>::/PATH` | PS-X EXE header, load range, region marker and hashes |
@@ -51,7 +51,7 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | `psx assets extract <source> --entry N -o DIR` | Extract one zero-based archive entry as raw bytes, including sector padding or an empty entry. Requires one source file; excludes `--kind`, `--offset` and `--textures`. Both asset commands accept `--archive dot-t` for explicit validation or `--archive none` for a flat scan |
 | `psx template parser DIR --kind archive\|model\|asset\|video` | Generate an executable Python parser, authored sample and protocol docs. Use `--archive-parser`, `--model-parser`, `--asset-parser` on asset commands or `--frame-parser` on `str`. Any language can implement the same stdin-bytes/stdout-JSON contract; see [external parsers](docs/external-parsers.md) |
 | `psx memcard <image.mcd>` | List the saves on a memory card image: product code, blocks, title, icon frames |
-| LibCrypt discs | Put the redump `.sbi`/`.lsd` beside the `.cue`; `psx disc` reports it and the native core's GetlocP honours it |
+| LibCrypt discs | Put the redump `.sbi`/`.lsd` beside the `.cue` or `.chd`; `psx disc` reports it and the native core's GetlocP honours it |
 | `psx sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |
 | `psx addr 0x80010000` | Segment, memory region and folded offset |
 | `psx run [disc\|exe] [--bios B] --frames N [...]` | Bounded run on the native core (default), or an isolated PCSX-Redux oracle process with `--backend redux`. The native core gives exact observations, native save states, `--trace` for windowed instruction traces with coverage and call summaries, `--memcard1/2 PATH|new` for memory cards (written cards are saved to the run directory, never to your file), `--gpu-frame N` to decode one frame's GPU commands (primitives, texture pages, CLUTs, VRAM at the end of that frame, its drawing area, before/after/wireframe PNGs), and `--pad dualshock` for analog games (replay events take `"sticks": [lx, ly, rx, ry]`; Redux gets its analog pad). Captures RAM, VRAM, screen, registers and an optional state. `--watch ADDR[:W]` reports CPU/DMA writers with PC and value; `--trace-cd` and `--trace-bios` log CD and BIOS activity; `--trace-spu` logs sound voice key on/off with pitch, volume, ADSR, storing PC and a sample hash that matches `assets extract`'s per-waveform `adpcm_sha256`, plus sound RAM uploads (`spu.jsonl`; the report groups key ons by sample); `--replay`, `--from-state`/`--save-state`; `--fast` uses the Redux dynarec (no observation). The full report is always written to `<run_dir>/report.json`; `--brief` prints a summary with artifact descriptors, `--summary` only status, paths and counts for the requested observations |
@@ -74,7 +74,11 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | `psx template adopt DIR [--name N] [--region R] [--fields-per-tick N]` | Start tracking an older project whose template modules were moved into `psx-bevy/` |
 | `psx mcp [--jobs N]` | Every command above as an MCP tool over stdio (see below) |
 
-Input images can be `.cue`, a raw `.bin` (single data track) or a cooked `.iso`.
+Input images can be `.cue`, a raw `.bin` (single data track), a cooked `.iso` or a CD `.chd`
+(MAME compressed hunks, as made by `chdman createcd`). A `.chd` reads back the same sectors as the
+`.cue`/`.bin` it was made from, so `disc --hash` track hashes and native save states carry over between
+them. PCSX-Redux cannot read CHD: `--backend redux` writes a CUE/BIN copy once under
+`.psx/cache/discs/<fingerprint>/` and runs that.
 
 `psx native` is an emulator diagnostic (how far the core boots, missing hardware, a profile of the
 last frames). For game work use `psx run --backend native`, which has everything `native` does for
