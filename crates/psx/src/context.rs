@@ -261,7 +261,8 @@ impl Op for ArgsContext {
             Err(e) => return Outcome::media(Err(e)),
         };
         let profile = ctx.root.join(".psx/project.json");
-        let signatures = absolute(&ctx.root, &crate::commands::d_sigs());
+        let (signatures, sigs_selection) = crate::commands::sigs_default();
+        let signatures = absolute(&ctx.root, &signatures);
         if self.save {
             if let Some(e) = r.setup_error() {
                 return failed(e);
@@ -300,7 +301,7 @@ impl Op for ArgsContext {
         Outcome::media(Ok(json!({"status":if setup.is_none(){"ready"}else{"needs_setup"},"build":build(),"project_root":ctx.root,
             "config":profile,"saved":self.save,"output_root":ctx.root.join(".psx"),"bios_dir":bios::store(),
             "signatures":{"path":signatures,"available":signatures.is_dir(),
-                "selection":if std::env::var_os("PSX_SIGS_DIR").is_some_and(|p| !p.is_empty()) {"PSX_SIGS_DIR"} else {"project_default"},
+                "selection":sigs_selection,
                 "layout":"<version>/<LIB>.json","override":"symbols.sigs / --sigs; shared default: PSX_SIGS_DIR (use an absolute path)"},
             "resolved":{"media":r.media,"bios":r.bios,"bios_selection":r.bios_reason,"disc_region_hint":r.region.map(|r|r.hint())},
             "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),"state":r.state,"setup":setup,"capabilities":capabilities(),"warnings":r.warnings,

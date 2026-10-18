@@ -111,8 +111,21 @@ fn d_max_events() -> u32 {
     200_000
 }
 pub(crate) fn d_sigs() -> PathBuf {
-    std::env::var_os("PSX_SIGS_DIR").filter(|p| !p.is_empty()).map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("external/psx_psyq_signatures"))
+    sigs_default().0
+}
+
+/// The PsyQ signature directory and why it was chosen: `PSX_SIGS_DIR`, else this
+/// project's `external/psx_psyq_signatures` when present, else the shared copy in
+/// the user data directory when present, else the project path (reported missing).
+pub(crate) fn sigs_default() -> (PathBuf, &'static str) {
+    if let Some(p) = std::env::var_os("PSX_SIGS_DIR").filter(|p| !p.is_empty()) {
+        return (p.into(), "PSX_SIGS_DIR");
+    }
+    let project = PathBuf::from("external/psx_psyq_signatures");
+    match crate::bios::data_dir().map(|d| d.join("psyq_signatures")) {
+        Some(shared) if !project.is_dir() && shared.is_dir() => (shared, "user_data"),
+        _ => (project, "project_default"),
+    }
 }
 fn d_min_concrete() -> usize {
     24
@@ -797,7 +810,8 @@ pub struct SymbolsArgs {
     /// PS-X EXE file, or `image.cue::/PATH`.
     pub source: String,
     /// Local signature directory (`<version>/<LIB>.json` layout). Defaults to
-    /// PSX_SIGS_DIR when set, otherwise external/psx_psyq_signatures in this project.
+    /// PSX_SIGS_DIR when set, otherwise external/psx_psyq_signatures in this project, otherwise
+    /// the copy the installer put in the user data directory (psx/psyq_signatures).
     #[arg(long, default_value_os_t = d_sigs())]
     #[serde(default = "d_sigs")]
     pub sigs: PathBuf,
