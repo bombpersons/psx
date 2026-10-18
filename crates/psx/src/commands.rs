@@ -117,12 +117,6 @@ pub(crate) fn d_sigs() -> PathBuf {
 fn d_min_concrete() -> usize {
     24
 }
-fn d_lockstep_steps() -> u64 {
-    100_000
-}
-fn d_context() -> usize {
-    12
-}
 fn d_native_frames() -> u64 {
     300
 }
@@ -656,10 +650,6 @@ pub struct RunCmdArgs {
     #[arg(long, default_value_t = d_run_timeout())]
     #[serde(default = "d_run_timeout")]
     pub timeout: u64,
-    /// Use the dynarec without the debugger: faster, but no --watch or traces.
-    #[arg(long)]
-    #[serde(default)]
-    pub fast: bool,
     /// Log CD-ROM controller and CD DMA register writes (cd.jsonl).
     #[arg(long)]
     #[serde(default)]
@@ -681,12 +671,6 @@ pub struct RunCmdArgs {
     #[arg(long, default_value_t = d_max_events())]
     #[serde(default = "d_max_events")]
     pub max_events: u32,
-    /// Emulator: `native` (default) or `redux` (the PCSX-Redux oracle). Redux needs
-    /// external/pcsx-redux and lacks --trace, --gpu-frame, --sample, --poke, --snapshot-every,
-    /// memory cards and native states.
-    #[arg(long)]
-    #[schemars(with = "Option<crate::context::Backend>")]
-    pub backend: Option<String>,
     #[command(flatten)]
     #[serde(flatten)]
     pub trace: crate::run::TraceArgs,
@@ -755,11 +739,7 @@ fn brief(v: &Value) -> Value {
 impl Op for RunCmdArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         let a = self;
-        let backend = match crate::context::backend_arg(a.backend) {
-            Ok(b) => b,
-            Err(e) => return crate::context::failed(e),
-        };
-        let resolved = match crate::context::resolve(&ctx.root, a.media, a.bios, backend, a.from_state.as_deref(), false) {
+        let resolved = match crate::context::resolve(&ctx.root, a.media, a.bios, a.from_state.as_deref(), false) {
             Ok(r) => r,
             Err(e) => return crate::context::failed(e),
         };
@@ -781,13 +761,11 @@ impl Op for RunCmdArgs {
                 save_state: a.save_state,
                 out: a.out,
                 timeout_s: a.timeout,
-                fast: a.fast,
                 trace_cd: a.trace_cd,
                 trace_bios: a.trace_bios,
                 trace_spu: a.trace_spu,
                 symbols: a.symbols,
                 max_events: a.max_events,
-                backend: resolved.backend.name().into(),
                 trace: a.trace,
                 cards: a.cards,
                 observe: a.observe,
@@ -795,7 +773,7 @@ impl Op for RunCmdArgs {
         ));
         if out.value.get("error").is_none() {
             out.value["build"] = crate::context::build();
-            out.value["resolved"] = json!({"backend":resolved.backend,"bios_selection":resolved.bios_reason});
+            out.value["resolved"] = json!({"bios_selection":resolved.bios_reason});
             out.value["artifacts"] = json!(out.value["files"]
                 .as_object()
                 .map(|files| files
@@ -929,42 +907,6 @@ impl Op for SymbolsArgs {
 }
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
-pub struct LockstepArgs {
-    /// BIOS image, e.g. bios/scph7502.bin.
-    #[arg(long)]
-    pub bios: PathBuf,
-    /// Instructions to compare from reset.
-    #[arg(long, default_value_t = d_lockstep_steps())]
-    #[serde(default = "d_lockstep_steps")]
-    pub steps: u64,
-    /// Instructions of history shown at a divergence.
-    #[arg(long, default_value_t = d_context())]
-    #[serde(default = "d_context")]
-    pub context: usize,
-    /// GDB single-step with full register comparison (about 20 steps/s).
-    #[arg(long)]
-    #[serde(default)]
-    pub exact: bool,
-    /// Write the core's screen and VRAM as <PREFIX>.screen.png / .vram.png at the end.
-    #[arg(long)]
-    pub dump: Option<PathBuf>,
-    /// Wall-clock limit in seconds; stops with status "timeout" (default: none).
-    #[arg(long)]
-    pub timeout: Option<u64>,
-}
-
-impl Op for LockstepArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        let d = deadline(self.timeout);
-        Outcome::pair(if self.exact {
-            crate::lockstep::run(&ctx.root, &self.bios, self.steps, self.context, d)
-        } else {
-            crate::lockstep::run_trace(&ctx.root, &self.bios, self.steps, self.context, self.dump.as_deref(), d)
-        })
-    }
-}
-
-#[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct NativeArgs {
     /// BIOS image, e.g. bios/scph7502.bin.
     #[arg(long)]
@@ -1018,7 +960,7 @@ pub struct NativeArgs {
 
 impl Op for NativeArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        let resolved = match crate::context::resolve(&ctx.root,self.disc,self.bios,Some(crate::context::Backend::Native),None,false) {
+        let resolved = match crate::context::resolve(&ctx.root,self.disc,self.bios,None,false) {
             Ok(r)=>r,Err(e)=>return crate::context::failed(e),
         };
         if let Some(e) = resolved.setup_error() {return crate::context::failed(e);}

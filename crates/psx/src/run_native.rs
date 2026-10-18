@@ -1,5 +1,4 @@
-//! `psx run --backend native`: the same bounded run as the Redux backend, on
-//! psx-core, with observations taken from the emulated hardware itself.
+//! `psx run`: a bounded run on psx-core, with observations taken from the emulated hardware itself.
 
 use std::path::Path;
 use std::time::Instant;
@@ -20,7 +19,7 @@ mod gpu_capture;
 use gpu_capture::{CapturedFrame, GpuCapture};
 
 fn sha256(bytes: &[u8]) -> String {
-    psx_redux::sha256_bytes(bytes)
+    psx_media::disc::sha256_bytes(bytes)
 }
 
 pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool, Value) {

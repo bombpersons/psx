@@ -758,7 +758,6 @@ dependencies = [
  "psx-core",
  "psx-gpu",
  "psx-media",
- "psx-redux",
  "psx-symbols",
  "rmcp",
  "schemars",
@@ -815,6 +814,19 @@ dependencies = [
  "chd",
  "serde",
  "sha2",
+]
+
+[[package]]
+name = "psx-oracle"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "png",
+ "psx-core",
+ "psx-gpu",
+ "psx-media",
+ "psx-redux",
+ "serde_json",
 ]
 
 [[package]]

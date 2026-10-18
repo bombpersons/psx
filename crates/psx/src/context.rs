@@ -3,7 +3,7 @@ use crate::{
     bios,
     commands::{Ctx, Op, Outcome},
 };
-use clap::{Args, ValueEnum};
+use clap::Args;
 use psx_media::{disc::sha256_file, MediaError, PsxExe};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -12,20 +12,6 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum Backend {
-    Native,
-    Redux,
-}
-impl Backend {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::Redux => "redux",
-        }
-    }
-}
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
@@ -34,8 +20,9 @@ struct Config {
     media: Option<PathBuf>,
     #[serde(default)]
     bios: Option<PathBuf>,
-    #[serde(default)]
-    backend: Option<Backend>,
+    /// Older configs saved a backend; native is now the only one.
+    #[serde(default, rename = "backend", skip_serializing)]
+    _backend: Option<serde::de::IgnoredAny>,
 }
 fn config(root: &Path) -> Result<Config, Value> {
     let p = root.join(".psx/project.json");
@@ -52,14 +39,6 @@ fn config(root: &Path) -> Result<Config, Value> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
         Err(e) => Err(error("io_error", format!("{}: {e}", p.display()))),
-    }
-}
-pub fn backend_arg(value: Option<String>) -> Result<Option<Backend>, Value> {
-    match value.as_deref() {
-        None => Ok(None),
-        Some("native") => Ok(Some(Backend::Native)),
-        Some("redux") => Ok(Some(Backend::Redux)),
-        Some(other) => Err(error("invalid_arguments", format!("unknown backend {other:?} (redux | native)"))),
     }
 }
 pub fn error(code: &str, message: impl ToString) -> Value {
@@ -86,10 +65,9 @@ pub fn build() -> Value {
 pub fn version() -> String {
     format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("PSX_BUILD_ID"))
 }
-pub fn capabilities(root: &Path) -> Value {
+pub fn capabilities() -> Value {
     json!({
-        "native":{"available":true,"run":true,"checkpoints":true,"write_watches":true,"read_watches":true,"instruction_trace":true,"gpu_capture":true,"samples":true,"pokes":true,"screenshots":true},
-        "redux":{"available":psx_redux::Backend::from_project(root).is_ok(),"requires":"PCSX-Redux installation (PSX_REDUX_BIN or external/pcsx-redux)","run":true,"checkpoints":true,"write_watches":true,"read_watches":false,"instruction_trace":false,"gpu_capture":false,"samples":false,"pokes":false,"screenshots":true},
+        "emulator":{"available":true,"run":true,"checkpoints":true,"write_watches":true,"read_watches":true,"instruction_trace":true,"gpu_capture":true,"samples":true,"pokes":true,"screenshots":true},
     "ghidra":{"optional":true,"runtime_snapshots":true,"rename_comments":true,"verified_symbol_export":true,"same_analysis_queue":true},
     "agent_interface":{"artifact_read":true,"inline_input":true,"explicit_release_boundary":true,"query_pagination":true,"coverage_metadata":true,
         "per_call_project_root":true,"extraction_manifests":true,"native_input_application_log":true,"gpu_draw_filters":true},
@@ -148,7 +126,6 @@ fn region(media: Option<&Path>) -> Result<Option<bios::Region>, Value> {
 pub struct Resolved {
     pub media: Option<PathBuf>,
     pub bios: Option<PathBuf>,
-    pub backend: Backend,
     pub region: Option<bios::Region>,
     pub bios_reason: &'static str,
     pub candidates: Vec<bios::Candidate>,
@@ -189,14 +166,12 @@ pub fn resolve(
     root: &Path,
     media: Option<PathBuf>,
     bios_path: Option<PathBuf>,
-    backend: Option<Backend>,
     from_state: Option<&Path>,
     discover: bool,
 ) -> Result<Resolved, Value> {
     let cfg = config(root)?;
     let state = from_state.map(native_header).transpose()?.flatten();
     let report = from_state.and_then(state_report);
-    let backend = backend.or(state.as_ref().map(|_| Backend::Native)).or(cfg.backend).unwrap_or(Backend::Native);
     let media = media.or_else(|| {
         if state.as_ref().is_some_and(|s| s.media.is_none()) {
             None
@@ -204,7 +179,7 @@ pub fn resolve(
             report.as_ref().and_then(|r| report_path(root, r, "media")).or(cfg.media.map(|p| absolute(root, &p)))
         }
     });
-    // An explicit BIOS requires no inventory or media inspection before native/Redux validation.
+    // An explicit BIOS requires no inventory or media inspection before validation.
     let region = if discover || bios_path.is_none() { region(media.as_deref())? } else { None };
     let mut candidates = if discover || bios_path.is_none() { bios::inventory(root).map_err(media_error)? } else { vec![] };
     if bios_path.is_none() {
@@ -256,7 +231,7 @@ pub fn resolve(
     } else {
         (None, "no_region_or_preference")
     };
-    Ok(Resolved { media, bios: selected, backend, region, bios_reason: reason, candidates, state, media_required, warnings })
+    Ok(Resolved { media, bios: selected, region, bios_reason: reason, candidates, state, media_required, warnings })
 }
 
 #[derive(Args, Deserialize, JsonSchema)]
@@ -267,19 +242,17 @@ pub struct ArgsContext {
     /// Explicit BIOS preference; context --save stores it for later calls.
     #[arg(long)]
     pub bios: Option<PathBuf>,
-    #[arg(long, value_enum)]
-    pub backend: Option<Backend>,
-    /// Inspect a checkpoint's exact BIOS/backend requirements.
+    /// Inspect a checkpoint's exact BIOS requirements.
     #[arg(long)]
     pub from_state: Option<PathBuf>,
-    /// Save the resolved media/BIOS/backend as this project's defaults (.psx/project.json).
+    /// Save the resolved media/BIOS as this project's defaults (.psx/project.json).
     #[arg(long)]
     #[serde(default)]
     pub save: bool,
 }
 impl Op for ArgsContext {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        let r = match resolve(&ctx.root, self.image, self.bios, self.backend, self.from_state.as_deref(), true) {
+        let r = match resolve(&ctx.root, self.image, self.bios, self.from_state.as_deref(), true) {
             Ok(r) => r,
             Err(e) => return failed(e),
         };
@@ -301,7 +274,7 @@ impl Op for ArgsContext {
                 format: 1,
                 media: r.media.as_ref().map(|p| absolute(&ctx.root, p)),
                 bios: Some(absolute(&ctx.root, bios)),
-                backend: Some(r.backend),
+                _backend: None,
             };
             let temp = profile.with_extension(format!("tmp-{}-{}", std::process::id(), crate::instance_suffix()));
             let write = fs::create_dir_all(profile.parent().unwrap())
@@ -322,15 +295,15 @@ impl Op for ArgsContext {
         }
         let mut next_calls = vec![template];
         if setup.is_none() {
-            next_calls.push(json!({"tool":"run","arguments":{"media":r.media,"bios":r.bios,"backend":r.backend,"frames":60,"save_state":true,"brief":true,"return_screen":true}}));
+            next_calls.push(json!({"tool":"run","arguments":{"media":r.media,"bios":r.bios,"frames":60,"save_state":true,"brief":true,"return_screen":true}}));
         }
         Outcome::media(Ok(json!({"status":if setup.is_none(){"ready"}else{"needs_setup"},"build":build(),"project_root":ctx.root,
             "config":profile,"saved":self.save,"output_root":ctx.root.join(".psx"),"bios_dir":bios::store(),
             "signatures":{"path":signatures,"available":signatures.is_dir(),
                 "selection":if std::env::var_os("PSX_SIGS_DIR").is_some_and(|p| !p.is_empty()) {"PSX_SIGS_DIR"} else {"project_default"},
                 "layout":"<version>/<LIB>.json","override":"symbols.sigs / --sigs; shared default: PSX_SIGS_DIR (use an absolute path)"},
-            "resolved":{"media":r.media,"bios":r.bios,"bios_selection":r.bios_reason,"backend":r.backend,"disc_region_hint":r.region.map(|r|r.hint())},
-            "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),"state":r.state,"setup":setup,"capabilities":capabilities(&ctx.root),"warnings":r.warnings,
+            "resolved":{"media":r.media,"bios":r.bios,"bios_selection":r.bios_reason,"disc_region_hint":r.region.map(|r|r.hint())},
+            "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),"state":r.state,"setup":setup,"capabilities":capabilities(),"warnings":r.warnings,
             "next_calls":next_calls})))
     }
 }

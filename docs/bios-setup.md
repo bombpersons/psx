@@ -52,9 +52,7 @@ Ambiguous or unknown selection returns `bios_required` with candidates and a
 suggested setup action. A BIOS-only boot has no disc region, so supply a BIOS or
 save a project preference. Arbitrary filenames never establish BIOS identity.
 
-The native backend is the default; `--backend redux` selects the separately
-installed PCSX-Redux oracle. Native states imply the native backend unless an
-explicit override is supplied. For resumed runs, a sibling `report.json` may
+For resumed runs, a sibling `report.json` may
 supply BIOS/media paths only when it contains the matching state file hash.
 The core still verifies BIOS and media identity when loading the checkpoint.
 

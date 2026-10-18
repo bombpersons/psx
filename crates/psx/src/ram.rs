@@ -1,5 +1,5 @@
 //! RAM analysis for gameplay reverse engineering: value formats, per-frame
-//! samples and pokes for `psx run --backend native`, and `psx ram
+//! samples and pokes for `psx run`, and `psx ram
 //! diff/search/view` over `ram.bin` snapshots from several runs.
 //!
 //! Addresses are hex (`8015E8A8`, `0x8015E8A8`, any KUSEG/KSEG0/KSEG1

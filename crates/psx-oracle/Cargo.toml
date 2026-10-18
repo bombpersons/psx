@@ -1,0 +1,20 @@
+[package]
+name = "psx-oracle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Developer tool: check the native core against a PCSX-Redux oracle"
+publish = false
+
+[dependencies]
+psx-core = { workspace = true }
+psx-gpu = { workspace = true }
+psx-media = { workspace = true }
+psx-redux = { workspace = true }
+png = "0.18"
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+[lints.rust]
+unsafe_code = "forbid"

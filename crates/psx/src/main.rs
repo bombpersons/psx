@@ -25,7 +25,6 @@ mod code;
 mod commands;
 mod ghidra;
 mod guide;
-mod lockstep;
 mod mcp;
 mod native;
 mod parser;
@@ -61,7 +60,7 @@ enum Command {
     McpCall,
     /// Read built-in investigation workflows and tool-usage guidance.
     Guide(guide::GuideArgs),
-    /// Discover build, project defaults, BIOS candidates and backend capabilities.
+    /// Discover build, project defaults, BIOS candidates and capabilities.
     Context(context::ArgsContext),
     /// Inspect artifacts: directory inventory, paginated JSON/logs/CSV, text, hex or PNG.
     ArtifactRead(artifact::ReadArgs),
@@ -105,9 +104,9 @@ enum Command {
         #[command(subcommand)]
         action: TemplateAction,
     },
-    /// Run a disc, EXE or state for N frames and capture RAM, VRAM, screen and registers:
-    /// on the native core (default: watches, traces, GPU captures, samples and states)
-    /// or in a PCSX-Redux oracle worker (`--backend redux`). Input can be inline or replayed.
+    /// Run a disc, EXE or state for N frames on the native core and capture RAM, VRAM,
+    /// screen and registers, with watches, traces, GPU captures, samples and states.
+    /// Input can be inline or replayed.
     Run(commands::RunCmdArgs),
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
@@ -115,11 +114,8 @@ enum Command {
     /// Name library functions in a PS-X EXE by PsyQ signature matching.
     /// Writes <out>.symbols.json, <out>.ghidra.txt (ImportSymbolsScript.py) and <out>.sym.
     Symbols(commands::SymbolsArgs),
-    /// Run the native core and PCSX-Redux in lockstep from BIOS reset,
-    /// comparing PC and registers after every instruction.
-    Lockstep(commands::LockstepArgs),
     /// Emulator diagnostics: run the native core from power-on for N frames and report
-    /// how far it got and which hardware it is missing. For game RE use `run --backend native`.
+    /// how far it got and which hardware it is missing. For game RE use `run`.
     Native(commands::NativeArgs),
     /// Disassemble MIPS code from a PS-X EXE (file or `image.cue::/PATH`) or a run's RAM:
     /// an address range, or a whole function; JSON lines or `--text`.
@@ -209,7 +205,6 @@ fn main() -> ExitCode {
         Command::Run(a) => a.exec(&ctx),
         Command::Loads(a) => a.exec(&ctx),
         Command::Symbols(a) => a.exec(&ctx),
-        Command::Lockstep(a) => a.exec(&ctx),
         Command::Native(a) => a.exec(&ctx),
         Command::Disasm(a) => a.exec(&ctx),
         Command::Xrefs(a) => a.exec(&ctx),
