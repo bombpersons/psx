@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Diff psx-gpu against PCSX-Redux on the GPU probe.
-#   tools/probes/gpu/compare.sh PSX_BIN OUT_DIR [TAG]
+#   tools/probes/gpu/compare.sh PSX_BIN PSX_ORACLE_BIN OUT_DIR [TAG]
+# (PSX_ORACLE_BIN is target/release/psx-oracle from `cargo build -p psx-oracle`.)
 # Run from the main checkout (needs bios/ and external/pcsx-redux). Runs the
 # probe EXE on Redux once (cached in OUT_DIR/redux), replays gp0_stream.bin into
 # psx-gpu and prints per-cell differing pixel counts (cell = test group, see
@@ -8,12 +9,13 @@
 # Build gpu.ps-exe first: `make` in this directory (see Makefile).
 set -euo pipefail
 psx=${1:?psx binary}
-out=${2:?output dir}
-tag=${3:-replay}
+oracle=${2:?psx-oracle binary}
+out=${3:?output dir}
+tag=${4:-replay}
 here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$out"
 if [ ! -f "$out/redux/vram.bin" ]; then
-    "$psx" run "$here/gpu.ps-exe" --bios bios/scph7502.bin --frames 200 --out "$out/redux" > "$out/redux.json"
+    "$oracle" run "$here/gpu.ps-exe" --bios bios/scph7502.bin --frames 200 --out "$out/redux" > "$out/redux.json"
 fi
 "$psx" gpu-replay "$here/gp0_stream.bin" -o "$out/$tag.bin" --png "$out/$tag.png" > /dev/null
 "$psx" vram-diff "$out/redux/vram.bin" "$out/$tag.bin" --region 0,0,768,512 --png "$out/$tag.diff.png" --samples 0 \

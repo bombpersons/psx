@@ -43,7 +43,7 @@ input paths can still refer to shared media or tools. CLI equivalent:
 
 IO errors expose the project root/path-resolution base; filesystem errors also
 include an absolute `error.path` where available. A shared BIOS directory remains
-shared deliberately; use absolute `PSX_BIOS_DIR`, `PSX_REDUX_BIN` or
+shared deliberately; use absolute `PSX_BIOS_DIR` or
 `PSX_GHIDRA_HOME` when a shared installation lives outside each study.
 `PSX_SIGS_DIR` similarly shares a PsyQ signature checkout; explicit `symbols.sigs`
 overrides it and `context.signatures` reports the default path and directory presence.
@@ -106,7 +106,6 @@ application with its schedule index, requested relative frame, actual `run_frame
 absolute `frame`, buttons and sticks. Final-boundary releases are included.
 Timed-out runs retain pending counts instead of claiming the whole schedule ran.
 This observes scheduler application, not whether the game polled each button.
-Redux marks application observation unavailable rather than inferring it.
 
 ## Choose useful GPU frames
 

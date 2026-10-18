@@ -7,7 +7,7 @@
 //! Differences from the CLI, all MCP-only:
 //! - `return_screen: true` on `run`/`native` attaches the final screen as an
 //!   image content block (`native` then picks a `dump` prefix if none was given).
-//! - `native` and `lockstep` get a default `timeout` (seconds) when none is given.
+//! - `native` gets a default `timeout` (seconds) when none is given.
 //! - Every call has a hard wall-clock cap (its `timeout` + 60 s, or 15 minutes).
 //!   A job that overruns it is reported as `timeout` and left to finish in the
 //!   background, except supervised Ghidra workers, which are stopped.
@@ -152,7 +152,7 @@ pub fn tools() -> Vec<ToolDef> {
     use commands::*;
     vec![
         def::<crate::guide::GuideArgs>("guide", "Built-in workflow guidance. Omit topic for an overview. Tool descriptions are brief: argument rules and output details live in its topics.").read_only(),
-        def::<crate::context::ArgsContext>("context", "Start here: the running build, project root, saved defaults (media, BIOS, backend), local BIOS candidates and capabilities. image or from_state explains region or checkpoint identity; save=true stores the resolved defaults. Never downloads."),
+        def::<crate::context::ArgsContext>("context", "Start here: the running build, project root, saved defaults (media, BIOS), local BIOS candidates and capabilities. image or from_state explains region or checkpoint identity; save=true stores the resolved defaults. Never downloads."),
         def::<crate::artifact::ReadArgs>("artifact_read", "Read a returned artifact or run directory in bounded pages: JSON by pointer, JSONL/CSV/text by rows with frame/pc/contains filters and column projection, hex bytes, PNG as an image. Continue with page.next_cursor.").read_only(),
         def::<crate::bios::ListArgs>("bios_list", "List BIOS images in the project's bios/ and the shared BIOS store, with hashes, regions and the download catalog. Read-only; context shows which one is selected and why.").read_only(),
         def::<crate::bios::InstallArgs>("bios_install", "One-time BIOS setup: import a local file (from), or download=true with region pal|ntsc-u|ntsc-j for a pinned, hash-checked image. Installs into the shared store (PSX_BIOS_DIR); never replaces existing images.").heavy(),
@@ -175,7 +175,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<AssetsExtractArgs>("assets_extract", "Convert scanned assets into out: TIM to PNG, TMD to glTF, VAB/VAG to WAV with adpcm_sha256 per waveform, keeping original bytes and provenance. entry extracts one raw archive entry; brief=true returns counts. See guide topic assets.").heavy(),
         def::<MemcardArgs>("memcard", "List the saves on a raw 128 KiB memory card image (.mcd/.mcr): product code, blocks used, title, icon frames and free blocks.").read_only(),
         def::<TexturesArgs>("textures", "Decode VRAM texture pages to PNGs: every page/CLUT a gpu_frame run used (plus textures/scene.psxscene for the Bevy template), or one page and clut by hand from any vram.bin."),
-        def::<RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames; native backend by default. Drive it with input/replay; observe with sample, watch, watch_reads, poke, trace, trace_cd, trace_spu or gpu_frame; save_state makes checkpoints. Returns run_dir and the report; brief or summary shorten it. See guide topics run and input.").heavy().screen(),
+        def::<RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames on the native core. Drive it with input/replay; observe with sample, watch, watch_reads, poke, trace, trace_cd, trace_spu or gpu_frame; save_state makes checkpoints. Returns run_dir and the report; brief or summary shorten it. See guide topics run and input.").heavy().screen(),
         def::<NativeArgs>("native", "Emulator diagnostic: boot the native core from power-on and report where it got (PC, CD history, SPU state, unhandled I/O, hot PCs, speed). For game investigation use run.").heavy().default_timeout().screen(),
         def::<LoadsArgs>("loads", "Turn a run recorded with trace_cd into disc-to-RAM provenance: which file and offset each CD transfer copied where, verified against the run's final RAM. Paged; symbols names the reading code.").heavy(),
         def::<SymbolsArgs>("symbols", "Name PsyQ library functions in an EXE by signature matching (signatures from sigs or PSX_SIGS_DIR). Writes .symbols.json for run, loads, disasm and xrefs, plus Ghidra and .sym files. Library code only.").heavy(),
@@ -184,7 +184,6 @@ pub fn tools() -> Vec<ToolDef> {
         def::<RamDiffArgs>("ram_diff", "Compare two RAM snapshots (run directories or ram.bin) by 1/2/4-byte unit within a range: differing units, deltas and clusters of nearby changes.").read_only(),
         def::<RamSearchArgs>("ram_search", "Cheat-finder over ordered RAM snapshots: keep addresses matching pred (changed, increased, delta=N...), exact values or a between range; save and candidates narrow the search over rounds.").read_only(),
         def::<RamViewArgs>("ram_view", "Show a RAM window (addr, len) from one or more snapshots side by side, decoded as u8..x32 or fxI.F, marking units that differ.").read_only(),
-        def::<LockstepArgs>("lockstep", "Emulator validation: run the native core and PCSX-Redux side by side and stop at the first disagreement. Needs PCSX-Redux; not needed for game investigation.").heavy().default_timeout(),
         def::<ParserTemplateArgs>("template_parser_create", "Create an executable Python 3 external parser starter (kind archive, model, asset or video) with a sample input and protocol notes in dest, for assets_scan, assets_extract or str."),
         def::<TemplateCreateArgs>("template_create", "Create a Bevy port workspace (psx-bevy, engine, game, importers) with the PS1 look in dest, e.g. the game folder. Set region and fields_per_tick from the original. See guide topics port, bevy."),
         def::<TemplateUpdateArgs>("template_update", "Update the project's psx-bevy/ crate to this build; edited files get a .psx-new copy. See guide topic port."),

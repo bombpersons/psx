@@ -28,6 +28,16 @@ impl TrackMode {
         }
     }
 
+    /// The CUE sheet spelling of this mode.
+    pub fn cue_name(self) -> &'static str {
+        match self {
+            TrackMode::Mode1Raw => "MODE1/2352",
+            TrackMode::Mode1Cooked => "MODE1/2048",
+            TrackMode::Mode2Raw => "MODE2/2352",
+            TrackMode::Audio => "AUDIO",
+        }
+    }
+
     pub fn sector_size(self) -> u64 {
         match self {
             TrackMode::Mode1Cooked => 2048,

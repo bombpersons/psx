@@ -1,11 +1,8 @@
-//! `psx run`: bounded execution of a disc, EXE or state, in a PCSX-Redux
-//! worker process (`--backend redux`, the oracle) or on the native core
-//! (`--backend native`, see `run_native`).
+//! `psx run`: bounded execution of a disc, EXE or state on the native core.
+//! Arguments and shared helpers live here; the run itself is `run_native`.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use psx_redux::{Backend, Job, Media, ReplayEvent, Watch};
 use serde_json::{json, Value};
 
 pub struct RunArgs {
@@ -19,21 +16,17 @@ pub struct RunArgs {
     pub save_state: bool,
     pub out: Option<PathBuf>,
     pub timeout_s: u64,
-    /// Dynarec without debugger: faster, no watches.
-    pub fast: bool,
     pub trace_cd: bool,
     pub trace_bios: bool,
     pub trace_spu: bool,
     pub symbols: Vec<PathBuf>,
     pub max_events: u32,
-    /// "redux" or "native".
-    pub backend: String,
     pub trace: TraceArgs,
     pub cards: CardArgs,
     pub observe: ObserveArgs,
 }
 
-/// Per-frame observation and intervention (native backend).
+/// Per-frame observation and intervention.
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ObserveArgs {
     /// Sample a RAM/scratchpad value at every frame boundary (vblank) into samples.csv:
@@ -71,17 +64,6 @@ pub struct ObserveArgs {
     pub watch_reads: Vec<String>,
 }
 
-impl ObserveArgs {
-    pub fn given(&self) -> bool {
-        !self.samples.is_empty()
-            || !self.pokes.is_empty()
-            || self.snapshot_every.is_some()
-            || !self.save_state_at.is_empty()
-            || self.watch_changes_only
-            || !self.watch_reads.is_empty()
-    }
-}
-
 /// Physical address with main RAM mirrors folded (what read watches compare).
 pub fn fold(addr: u32) -> u32 {
     let p = addr & 0x1FFF_FFFF;
@@ -94,7 +76,7 @@ pub fn fold(addr: u32) -> u32 {
 
 /// `LO-HI` or `ADDR[:WIDTH]` (hex) as a folded `[lo, hi)` range.
 pub fn parse_range_spec(s: &str) -> Result<(u32, u32), String> {
-    let h = |x: &str| u32::from_str_radix(x.trim().trim_start_matches("0x").trim_start_matches("0X"), 16).map_err(|_| format!("bad hex address {x:?} in {s:?}"));
+    let h = |x: &str| psx_media::memmap::parse_hex(x).ok_or_else(|| format!("bad hex address {x:?} in {s:?}"));
     let (lo, len) = match s.split_once('-') {
         Some((a, b)) => {
             let (a, b) = (h(a)?, h(b)?);
@@ -109,7 +91,7 @@ pub fn parse_range_spec(s: &str) -> Result<(u32, u32), String> {
     Ok((lo, lo + len))
 }
 
-/// Memory cards (native backend).
+/// Memory cards.
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct CardArgs {
     /// Memory card in slot 1: a raw 128 KiB image (.mcd/.mcr) or `new` for a formatted empty card.
@@ -165,7 +147,7 @@ pub enum GpuDrawFilter {
     Textured,
 }
 
-/// Instruction tracing and GPU capture (native backend).
+/// Instruction tracing and GPU capture.
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct TraceArgs {
     /// Trace instructions: trace.txt (capped by --max-events; its `frame` column is
@@ -194,7 +176,7 @@ pub struct TraceArgs {
     #[arg(long)]
     pub gpu_frame: Option<u64>,
     /// Capture the first completed frame with GP0 drawing commands, starting at
-    /// --gpu-frame (default 0). Never extends --frames. Native backend only.
+    /// --gpu-frame (default 0). Never extends --frames.
     #[arg(long)]
     #[serde(default)]
     pub gpu_next_draw: bool,
@@ -211,29 +193,12 @@ fn err(code: &str, message: impl std::fmt::Display) -> Value {
     json!({"error": {"code": code, "message": message.to_string()}})
 }
 
-fn parse_watch(s: &str) -> Result<Watch, String> {
-    let (addr, width) = s.split_once(':').unwrap_or((s, "4"));
-    let addr = u32::from_str_radix(addr.trim_start_matches("0x").trim_start_matches("0X"), 16)
-        .map_err(|_| format!("bad watch address {addr:?}"))?;
-    let width: u32 = width.parse().map_err(|_| format!("bad watch width {width:?}"))?;
-    if ![1, 2, 4].contains(&width) {
-        return Err("watch width must be 1, 2 or 4".into());
-    }
-    Ok(Watch { addr, width })
-}
-
 pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgb: &[u8], color: png::ColorType) -> std::io::Result<()> {
     let file = std::fs::File::create(path)?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
     enc.set_color(color);
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header()?.write_image_data(rgb).map_err(std::io::Error::other)
-}
-
-fn next_run_dir(root: &Path) -> PathBuf {
-    let runs = root.join(".psx/runs");
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    runs.join(format!("{stamp}-{}{}", std::process::id(), crate::instance_suffix()))
 }
 
 pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
@@ -245,9 +210,7 @@ pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
     if value.get("error").is_none(){
         let application = value["input"]["application"].take();
         value["input"] = input_report;
-        value["input"]["application"] = if application.is_null() {
-            json!({"observed":false,"note":"This backend reports the requested schedule, not applied-event observations."})
-        } else { application };
+        value["input"]["application"] = application;
     }
     (ok,value)
 }
@@ -265,141 +228,95 @@ fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (
     if a.trace.gpu_next_draw && a.trace.gpu_frame.unwrap_or(0).checked_add(a.trace.gpu_search_frames.unwrap_or(60) as u64).is_none() {
         return (false, err("invalid_arguments", "GPU search frame range overflows u64"));
     }
-    match a.backend.as_str() {
-        "native" => return crate::run_native::run(root, a, events),
-        "redux" => {}
-        other => return (false, err("invalid_arguments", format!("unknown backend {other:?} (redux | native)"))),
-    }
-    if a.trace.trace || a.trace.gpu_frame.is_some() || a.trace.gpu_next_draw {
-        return (false, err("unsupported", "--trace, --gpu-frame and --gpu-next-draw need --backend native"));
-    }
-    if a.trace_spu {
-        return (false, err("unsupported", "--trace-spu needs --backend native"));
-    }
-    if a.observe.given() {
-        return (false, err("unsupported", "--sample, --poke, --snapshot-every, --save-state-at, --watch-reads and --watch-changes-only need --backend native"));
-    }
-    if a.cards.memcard1.is_some() || a.cards.memcard2.is_some() {
-        return (false, err("unsupported", "--memcard1/--memcard2 need --backend native"));
-    }
-    let analog_pad = match a.cards.pad_kind() {
-        Ok(k) => k == psx_core::pad::PadKind::DualShock,
-        Err(e) => return (false, err("invalid_arguments", e)),
-    };
-    if crate::replay::uses_sticks(&events) {
-        return (false, err("unsupported", "input sticks need --backend native with a dualshock pad"));
-    }
-    if let Some(p) = &a.from_state {
-        if std::fs::read(p).is_ok_and(|b| b.starts_with(psx_core::state::MAGIC)) {
-            return (false, err("invalid_state", format!("{} is a psx-core state: use --backend native", p.display())));
-        }
-    }
-    let mut backend = match Backend::from_project(root) {
-        Ok(b) => b,
-        Err(e) => return (false, err(e.code(), e)),
-    };
-    backend.interpreter = !a.fast;
-    let watches = match a.watches.iter().map(|w| parse_watch(w)).collect::<Result<Vec<_>, _>>() {
-        Ok(w) => w,
-        Err(e) => return (false, err("invalid_arguments", e)),
-    };
-    let replay: Vec<ReplayEvent> = events.iter().map(|e|ReplayEvent{frame:e.frame as u32,buttons:crate::replay::button_names(e.buttons)}).collect();
-    let media = match &a.media {
-        None => Media::None,
-        Some(p) => {
-            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-            if ["exe", "ps-exe", "psx"].contains(&ext.as_str()) {
-                Media::Exe(p.clone())
-            } else {
-                Media::Disc(p.clone())
-            }
-        }
-    };
-    let job = Job {
-        bios: a.bios.clone(),
-        media,
-        frames: a.frames,
-        replay,
-        watches,
-        max_watch_hits: 10_000,
-        load_state: a.from_state.clone(),
-        save_state: a.save_state,
-        timeout: Duration::from_secs(a.timeout_s),
-        realtime: false,
-        trace_cd: a.trace_cd,
-        trace_bios: a.trace_bios,
-        max_events: a.max_events,
-        analog_pad,
-    };
-    let dir = a.out.clone().unwrap_or_else(|| next_run_dir(root));
-    let out = match psx_redux::run(&backend, &job, &dir) {
-        Ok(o) => o,
-        Err(e) => return (false, err(e.code(), e)),
-    };
+    crate::run_native::run(root, a, events)
+}
 
-    let mut files = serde_json::Map::new();
-    let mut hash = |name: &str| {
-        let p = out.file(name);
-        if let Ok(h) = psx_redux::sha256_file(&p) {
-            files.insert(name.into(), json!({"path": p, "sha256": h}));
-        }
-    };
-    for name in ["ram.bin", "scratch.bin", "vram.bin", "screen.bin", "state.bin", "writes.jsonl", "cd.jsonl", "bios.jsonl"] {
-        hash(name);
+/// The `--brief` view of a run report.
+pub(crate) fn brief(v: &Value) -> Value {
+    if v.get("error").is_some() {
+        return v.clone();
     }
-    if let Ok((w, h, rgb)) = out.screen_rgb() {
-        let p = out.file("screen.png");
-        if write_png(&p, w, h, &rgb, png::ColorType::Rgb).is_ok() {
-            files.insert("screen.png".into(), json!({"path": p}));
-        }
+    let mut frames = v["frames"].clone();
+    if let Some(f) = frames.as_object_mut() {
+        f.remove("numbering");
     }
-    if let Ok(bytes) = std::fs::read(out.file("vram.bin")) {
-        let mut vram = psx_gpu::Vram::default();
-        vram.load_bytes(&bytes);
-        let p = out.file("vram.png");
-        if write_png(&p, 1024, 512, &vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok() {
-            files.insert("vram.png".into(), json!({"path": p}));
+    let mut b = json!({
+        "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "frames": frames,
+        "report": v["report"],
+        "files": v["files"].as_object().map(|f| f.keys().cloned().collect::<Vec<_>>()),
+        "watch": {"enabled":v["watch"]["enabled"],"hits": v["watch"]["hits"], "recorded": v["watch"]["recorded"],
+            "complete":v["watch"]["complete"],"file":v["watch"]["file"]},
+    });
+    for k in ["build", "resolved", "input", "pad", "artifacts", "samples", "pokes", "screens", "states", "read_watch", "spu", "wall_ms"] {
+        if !v[k].is_null() {
+            b[k] = v[k].clone();
         }
     }
-    let complete = out.report.termination == "frames_reached" && out.report.reached_frames >= a.frames;
-    let scopes = match crate::load_symbols(&a.symbols) {
-        Ok(t) => t,
-        Err(e) => return (false, err(e.code(), e)),
-    };
-    let ram = out.ram().ok();
-    let shown_hits: Vec<Value> = out
-        .hits
-        .iter()
-        .take(64)
-        .map(|h| {
-            let mut v = serde_json::to_value(h).unwrap();
-            if let Some(pc) = h.pc {
-                v["function"] = crate::final_name(&scopes, pc, ram.as_deref());
+    if let Some(events) = v["input"]["events"].as_array() {
+        b["input"]["events"] = json!(events.iter().take(8).collect::<Vec<_>>());
+        b["input"]["page"] = crate::page::metadata(events.len(), 0, events.len().min(8), 8);
+    }
+    if v["gpu_frame"].is_object() {
+        let g = &v["gpu_frame"];
+        let mut summary = serde_json::Map::new();
+        for key in
+            ["error", "status", "reason", "mode", "search", "frame", "run_frame", "absolute_frame", "complete", "commands", "draw_commands", "draw_filter", "content"]
+        {
+            if let Some(value) = g.get(key) {
+                summary.insert(key.into(), value.clone());
             }
-            v
-        })
-        .collect();
-    (
-        complete,
-        json!({
-            "status": if complete { "complete" } else { "partial" },
-            "run_dir": out.dir,
-            "termination": out.report.termination,
-            "frames": {"requested": out.report.requested_frames, "reached": out.report.reached_frames, "unit": "vsync"},
-            "cpu_cycles": out.report.cpu_cycles,
-            "registers": out.report.registers,
-            "screen": out.report.screen,
-            "watch": {"hits": out.report.watch_hits, "recorded": out.report.watch_hits_recorded, "shown": shown_hits.len(), "first": shown_hits},
-            "event_logs": out.report.event_logs,
-            "bios_call_counts": out.report.bios_call_counts,
-            "files": files,
-            "identity": {
-                "backend": backend.binary, "backend_sha256": backend.identity().ok(),
-                "bios": a.bios, "bios_sha256": psx_redux::sha256_file(&a.bios).ok(),
-                "media": a.media, "from_state": a.from_state,
-                "interpreter": backend.interpreter,
-            },
-            "wall_ms": out.wall_ms,
-        }),
-    )
+        }
+        b["gpu_frame"] = Value::Object(summary);
+    }
+    if v["trace"].is_object() {
+        let t = &v["trace"];
+        b["trace"] = json!({"instructions": t["instructions"], "lines": t["lines"], "lines_dropped": t["lines_dropped"]});
+    }
+    b
+}
+
+/// `--summary`: paths and counts only. Each observation appears when it was requested.
+pub(crate) fn summary(v: &Value) -> Value {
+    if v.get("error").is_some() {
+        return v.clone();
+    }
+    let pick = |section: &Value, keys: &[&str]| {
+        Value::Object(keys.iter().filter_map(|k| section.get(*k).map(|value| (k.to_string(), value.clone()))).collect())
+    };
+    let mut s = json!({
+        "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "report": v["report"],
+        "frames": pick(&v["frames"], &["requested", "reached", "start"]),
+        "screen": v["files"]["screen.png"]["path"],
+        "next_call": {"tool": "artifact_read", "arguments": {"path": v["run_dir"]}},
+    });
+    if let Some(state) = v["files"]["state.bin"]["path"].as_str() {
+        s["state"] = json!(state);
+    }
+    if v["watch"]["enabled"] == true {
+        s["watch"] = pick(&v["watch"], &["hits", "recorded", "complete", "file"]);
+    }
+    let sections: [(&str, &[&str]); 7] = [
+        ("read_watch", &["hits", "recorded", "complete", "file"]),
+        ("samples", &["file", "rows"]),
+        ("spu", &["file", "events", "recorded", "complete"]),
+        ("trace", &["instructions", "lines", "lines_dropped"]),
+        ("gpu_frame", &["status", "reason", "frame", "run_frame", "draw_commands"]),
+        ("screens", &["dir", "count"]),
+        ("states", &[]),
+    ];
+    for (key, keys) in sections {
+        if !v[key].is_null() {
+            s[key] = if keys.is_empty() { v[key].clone() } else { pick(&v[key], keys) };
+        }
+    }
+    if v["event_logs"].as_object().is_some_and(|m| !m.is_empty()) {
+        s["event_logs"] = v["event_logs"].clone();
+    }
+    if let Some(pokes) = v["pokes"].as_array() {
+        s["pokes"] = json!(pokes.len());
+    }
+    if v["input"]["application"]["scheduled_events"].as_u64().is_some_and(|n| n > 0) {
+        s["input"] = pick(&v["input"]["application"], &["scheduled_events", "applied_events", "pending_events"]);
+    }
+    s
 }

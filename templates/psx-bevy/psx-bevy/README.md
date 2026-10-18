@@ -222,7 +222,7 @@ The psx toolkit can turn one frame of the original game into plain data for
 this template:
 
 ```sh
-psx run --backend native --bios BIOS GAME.cue --frames N+1 --gpu-frame N --out run/
+psx run --bios BIOS GAME.cue --frames N+1 --gpu-frame N --out run/
 psx textures run/            # texture pages as PNGs + run/textures/scene.psxscene
 ```
 

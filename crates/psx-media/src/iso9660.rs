@@ -211,6 +211,11 @@ impl FileSystem {
         self.entries.iter().find(|e| e.path.eq_ignore_ascii_case(&want))
     }
 
+    /// [`find`](Self::find), failing with `NotFound` when the path is absent.
+    pub fn entry(&self, path: &str) -> Result<&Entry> {
+        self.find(path).ok_or_else(|| MediaError::NotFound(path.to_string()))
+    }
+
     /// The named file whose extent covers `lba`, if any.
     pub fn owner_of(&self, lba: u32) -> Option<&Entry> {
         self.entries.iter().filter(|e| !e.is_dir).find(|e| e.contains_lba(lba))

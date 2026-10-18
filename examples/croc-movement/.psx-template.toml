@@ -1,7 +1,7 @@
 # Written by `psx template create|update|adopt`. `update` compares these hashes
 # with the files to tell untouched template files from edited ones.
 template = "psx-bevy"
-psx = "0.1.0+src-41f296d388d06491-release"
+psx = "0.1.0+src-28f3dd946343c1d4-release"
 package = "croc-movement"
 region = "pal"
 fields_per_tick = 2
@@ -9,7 +9,7 @@ fields_per_tick = 2
 [owned]
 "psx-bevy/AGENTS.md" = "sha256:0bd7aaff039a43b65c42a46723a12111a5bf69e31212956b1af7bc63b769bcbd"
 "psx-bevy/Cargo.toml" = "sha256:32b65c52fe982a85ba9c0d39a635238bb5134a6cf3323e05c6c883449ed557d1"
-"psx-bevy/README.md" = "sha256:f6692b0d0a9303cc46933ac8b3d91ecd979f33d6c8ce2bffbc138090774112fc"
+"psx-bevy/README.md" = "sha256:6326d2b71c6d6d7ffca20891ae88352d0f35353e72fc65fd279a90d07dde5f1b"
 "psx-bevy/examples/depth_bias.rs" = "sha256:4bc1f5cfe8f995acc44e2a252182c1814fc41a7e7f40d8d29cf5a06f27a798dd"
 "psx-bevy/examples/depth_cue.rs" = "sha256:b06cea1f02c31a2158d0dc41fb3082890dd89c40328cbe9989fc1b07f2aca42d"
 "psx-bevy/src/controller.rs" = "sha256:4f64a660e6e3102674c86aa695d710f1453c92c2dec206eafdabe743f96e0061"

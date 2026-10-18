@@ -129,16 +129,6 @@ pub struct Args<'a> {
     pub cancel: Option<&'a tokio_util::sync::CancellationToken>,
 }
 
-/// Split `image.cue::/PATH` (or take a separate path argument).
-pub fn split_source(source: &str, path: Option<&str>) -> Result<(PathBuf, String), MediaError> {
-    match (source.split_once("::"), path) {
-        (Some((img, p)), None) => Ok((PathBuf::from(img), p.to_string())),
-        (None, Some(p)) => Ok((PathBuf::from(source), p.to_string())),
-        (Some(_), Some(_)) => Err(MediaError::Malformed("give the path either as IMAGE::/PATH or as a second argument".into())),
-        (None, None) => Err(MediaError::Malformed("missing ISO path: use IMAGE::/PATH or IMAGE /PATH".into())),
-    }
-}
-
 #[derive(Default)]
 struct Scan {
     video: u32,
@@ -178,7 +168,7 @@ fn scan(disc: &Disc, lba: u32, sectors: u32) -> psx_media::Result<Scan> {
 pub fn run(a: Args) -> psx_media::Result<Value> {
     let disc = Disc::open(a.image)?;
     let fs = FileSystem::read(&disc)?;
-    let entry = fs.find(a.path).ok_or_else(|| MediaError::NotFound(a.path.to_string()))?.clone();
+    let entry = fs.entry(a.path)?.clone();
     let scan = scan(&disc, entry.lba, entry.sectors())?;
     let mut result = json!({
         "path": entry.path, "lba": entry.lba, "sectors": entry.sectors(),
@@ -560,12 +550,5 @@ mod tests {
         assert_eq!(parse_range("..4").unwrap(), (1, 4));
         assert_eq!(parse_range("10..").unwrap(), (10, usize::MAX));
         assert!(parse_range("0..2").is_err() && parse_range("5..2").is_err());
-    }
-
-    #[test]
-    fn sources() {
-        assert_eq!(split_source("a.cue::/X.STR", None).unwrap(), (PathBuf::from("a.cue"), "/X.STR".into()));
-        assert_eq!(split_source("a.cue", Some("/X.STR")).unwrap(), (PathBuf::from("a.cue"), "/X.STR".into()));
-        assert!(split_source("a.cue", None).is_err());
     }
 }

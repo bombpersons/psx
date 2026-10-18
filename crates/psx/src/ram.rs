@@ -1,5 +1,5 @@
 //! RAM analysis for gameplay reverse engineering: value formats, per-frame
-//! samples and pokes for `psx run --backend native`, and `psx ram
+//! samples and pokes for `psx run`, and `psx ram
 //! diff/search/view` over `ram.bin` snapshots from several runs.
 //!
 //! Addresses are hex (`8015E8A8`, `0x8015E8A8`, any KUSEG/KSEG0/KSEG1
@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use psx_media::memmap::parse_hex;
 use psx_media::MediaError;
 use serde_json::{json, Value};
 
@@ -20,12 +21,6 @@ type R = psx_media::Result<Value>;
 
 fn bad(m: impl std::fmt::Display) -> MediaError {
     MediaError::Malformed(m.to_string())
-}
-
-/// Parse a hex address (optional 0x).
-pub fn hex(s: &str) -> Option<u32> {
-    let s = s.trim();
-    u32::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).ok()
 }
 
 /// Parse a number: decimal (optionally negative) or 0x-prefixed hex.
@@ -197,7 +192,7 @@ pub fn parse_sample(s: &str) -> Result<Sample, String> {
 /// Shared by the `ADDR:FMT[:NAME]` text and typed forms. A bare byte width
 /// (1, 2, 4, as in watches) reads unsigned.
 fn sample(a: &str, f: &str, name: Option<&str>, label: &str) -> Result<Sample, String> {
-    let addr = hex(a).ok_or_else(|| format!("{label}: bad hex address {a:?}"))?;
+    let addr = parse_hex(a).ok_or_else(|| format!("{label}: bad hex address {a:?}"))?;
     let fmt = match f.trim() {
         "1" => Fmt::Unsigned(1),
         "2" => Fmt::Unsigned(2),
@@ -362,7 +357,7 @@ pub fn parse_poke(s: &str) -> Result<Poke, String> {
         None => (s, None),
     };
     let (a, rest) = body.split_once('=').ok_or_else(|| format!("--poke {s:?}: expected ADDR=VALUE[:WIDTH][@FRAME]"))?;
-    let addr = hex(a).ok_or_else(|| format!("--poke {s:?}: bad hex address {a:?}"))?;
+    let addr = parse_hex(a).ok_or_else(|| format!("--poke {s:?}: bad hex address {a:?}"))?;
     let (val, ty) = match rest.split_once(':') {
         Some((v, t)) => (v, t),
         None => (rest, "4"),
@@ -422,7 +417,7 @@ fn parse_width(w: u8) -> psx_media::Result<usize> {
 fn parse_range(r: Option<&str>) -> psx_media::Result<(usize, usize)> {
     let Some(r) = r else { return Ok((0, RAM_SIZE)) };
     let (lo, hi) = r.split_once('-').ok_or_else(|| bad(format!("range {r:?}: expected LO-HI in hex")))?;
-    let (lo, hi) = (hex(lo).ok_or_else(|| bad(format!("bad range start {lo:?}")))?, hex(hi).ok_or_else(|| bad(format!("bad range end {hi:?}")))?);
+    let (lo, hi) = (parse_hex(lo).ok_or_else(|| bad(format!("bad range start {lo:?}")))?, parse_hex(hi).ok_or_else(|| bad(format!("bad range end {hi:?}")))?);
     let l = match locate(lo, 0) {
         Some(Mem::Ram(o)) => o,
         _ => return Err(bad(format!("range start 0x{lo:08X} is not main RAM"))),
@@ -607,7 +602,7 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
         Some(p) => {
             let text = std::fs::read_to_string(p).map_err(|e| MediaError::io(p, e))?;
             let v: Value = serde_json::from_str(&text).map_err(|e| bad(format!("{}: {e}", p.display())))?;
-            Some(v["addresses"].as_array().into_iter().flatten().filter_map(|a| a.as_str().and_then(hex).or(a.as_u64().map(|x| x as u32))).map(|a| a & 0x1F_FFFF).collect())
+            Some(v["addresses"].as_array().into_iter().flatten().filter_map(|a| a.as_str().and_then(parse_hex).or(a.as_u64().map(|x| x as u32))).map(|a| a & 0x1F_FFFF).collect())
         }
         None => None,
     };
@@ -675,7 +670,7 @@ pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str) -> psx_media::
     if snaps.is_empty() {
         return Err(bad("give at least one snapshot"));
     }
-    let a = hex(addr).ok_or_else(|| bad(format!("bad hex address {addr:?}")))?;
+    let a = parse_hex(addr).ok_or_else(|| bad(format!("bad hex address {addr:?}")))?;
     let Some(Mem::Ram(start)) = locate(a, 0) else { return Err(bad(format!("0x{a:08X} is not main RAM"))) };
     let end = (start + len.min(64 * 1024)).min(RAM_SIZE);
     let mut rows = Vec::new();

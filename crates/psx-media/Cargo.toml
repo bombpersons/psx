@@ -7,6 +7,7 @@ license.workspace = true
 description = "PlayStation disc image, ISO9660 and PS-X EXE inspection"
 
 [dependencies]
+chd = "0.4"
 serde = { workspace = true }
 sha2 = { workspace = true }
 

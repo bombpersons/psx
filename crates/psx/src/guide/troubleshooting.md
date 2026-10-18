@@ -18,8 +18,7 @@ find relevant events; increasing the search window alone cannot navigate menus.
 
 Raw screen dimensions can change during boot. Inspect video mode/interlace/range
 metadata before comparing images. Do not force every mode to 320x240 or treat a
-resolution change alone as an emulator defect. Native and Redux can differ in
-progress; compare observed checkpoints and retain backend identity.
+resolution change alone as an emulator defect.
 
 If input appears ineffective, check input.events, pad state, frame origins and
 whether the game is polling that button. A checkpoint preserves controller/card

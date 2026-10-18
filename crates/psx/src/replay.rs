@@ -1,4 +1,4 @@
-//! Replay files for the native backend: a JSON array of
+//! Replay files for `psx run`: a JSON array of
 //! `{"frame": n, "buttons": ["CROSS", ...], "sticks": [lx, ly, rx, ry]}`.
 //! Each event is the complete pad state from that frame on; `sticks` is
 //! optional (0-255, 128 = centred) and only read by a DualShock.
@@ -156,7 +156,7 @@ pub fn report(events: &[Input]) -> serde_json::Value {
         "events":events.iter().map(|e|serde_json::json!({"frame":e.frame,"buttons":button_names(e.buttons),"sticks":e.sticks})).collect::<Vec<_>>()})
 }
 
-/// True when any event moves a stick (needs a DualShock, and the native backend).
+/// True when any event moves a stick (needs a DualShock).
 pub fn uses_sticks(inputs: &[Input]) -> bool {
     inputs.iter().any(|i| i.sticks != [0x80; 4])
 }
