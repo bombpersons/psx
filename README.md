@@ -104,14 +104,16 @@ uses. Run it again to update. Building from source needs Rust 1.88+:
 `cargo install --locked --git https://github.com/bombpersons/psx psx`. Porting with the Bevy
 template needs Rust 1.97.1+ either way.
 
-Then add your BIOS:
+Then add a BIOS, either your own dump or a checksum-verified download of a known image (pick the
+region of your games):
 
 ```bash
 psx bios install --from /path/to/bios.bin
+psx bios install --download --region pal    # or ntsc-u, ntsc-j
 ```
 
-(Or `--download --region pal` for an explicit, checksum-verified download. Nothing ever downloads
-on its own. See [BIOS setup](docs/bios-setup.md).)
+Nothing ever downloads on its own; `psx bios list` shows what is installed and the download
+catalog. See [BIOS setup](docs/bios-setup.md).
 
 Hook it into Claude Code once, for every project:
 

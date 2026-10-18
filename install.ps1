@@ -64,6 +64,8 @@ if ($env:PSX_NO_SIGNATURES) {
 }
 
 Write-Host ''
-Write-Host 'Next:'
-Write-Host '  psx bios install --from C:\path\to\bios.bin     # your own PS1 BIOS dump'
-Write-Host "  claude mcp add --scope user psx -- `"$exe`" mcp  # use it from Claude Code"
+Write-Host 'Next, add a PS1 BIOS (your own dump, or a checksum-verified download):'
+Write-Host '  psx bios install --from C:\path\to\bios.bin'
+Write-Host '  psx bios install --download --region pal       # or ntsc-u, ntsc-j'
+Write-Host 'Then use it from Claude Code:'
+Write-Host "  claude mcp add --scope user psx -- `"$exe`" mcp"

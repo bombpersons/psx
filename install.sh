@@ -77,6 +77,8 @@ case ":$PATH:" in
     *":$dir:"*) psx=psx ;;
     *) psx=$dir/psx; say "" "$dir is not on your PATH; add it, or use the full path below." ;;
 esac
-say "" "Next:" \
-    "  $psx bios install --from /path/to/bios.bin      # your own PS1 BIOS dump" \
-    "  claude mcp add --scope user psx -- $dir/psx mcp  # use it from Claude Code"
+say "" "Next, add a PS1 BIOS (your own dump, or a checksum-verified download):" \
+    "  $psx bios install --from /path/to/bios.bin" \
+    "  $psx bios install --download --region pal       # or ntsc-u, ntsc-j" \
+    "Then use it from Claude Code:" \
+    "  claude mcp add --scope user psx -- $dir/psx mcp"
