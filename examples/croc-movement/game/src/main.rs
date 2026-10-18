@@ -9,6 +9,7 @@ fn main() {
         title: game::TITLE,
         region: game::REGION,
         fields_per_tick: game::FIELDS_PER_TICK,
+        screen: game::SCREEN,
         add: |app| {
             app.add_plugins(game::GamePlugin);
         },

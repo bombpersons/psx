@@ -63,6 +63,7 @@ fn main() {
         title: "Reciprocal depth cue",
         region: Region::Ntsc,
         fields_per_tick: 1,
+        screen: UVec2::new(320, 240),
         add: |app| {
             app.insert_resource(PsxLook { vertex_snap: false, dither: false, quantize: false })
                 .add_systems(Startup, setup)

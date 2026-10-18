@@ -29,6 +29,7 @@ const FILES: &[(&str, &str)] = files![
     "rustfmt.toml",
     "docs/engine-model.md",
     "docs/evidence.md",
+    "docs/template.md",
     "engine/AGENTS.md",
     "engine/Cargo.toml",
     "engine/assets/sandbox/room.ron",
@@ -53,6 +54,7 @@ const FILES: &[(&str, &str)] = files![
     "psx-bevy/AGENTS.md",
     "psx-bevy/Cargo.toml",
     "psx-bevy/README.md",
+    "psx-bevy/examples/depth_bias.rs",
     "psx-bevy/examples/depth_cue.rs",
     "psx-bevy/src/controller.rs",
     "psx-bevy/src/controller/bindings.rs",
@@ -531,7 +533,7 @@ pub fn update(dest: &Path, dry_run: bool) -> psx_media::Result<Value> {
             json!(["cargo test --workspace --all-features"])
         } else {
             json!([
-                "merge each conflict's new_version into its path (or move your change to engine/), then delete the .psx-new file",
+                "merge each conflict's new_version into its path (reapply the change listed in docs/template.md, or move it to engine/), then delete the .psx-new file",
                 "compare each seeded change's template_version with your file and apply what applies",
                 "cargo test --workspace --all-features",
             ])

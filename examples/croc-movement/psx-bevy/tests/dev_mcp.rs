@@ -1,19 +1,49 @@
 //! Real offscreen GPU and stdio MCP verification, requiring a software adapter.
-//! Both tests drive the `depth_cue` example, which uses the same launcher as
-//! a game: build it first with
-//! `cargo build -p psx-bevy --features dev-mcp --example depth_cue`.
+//! The tests drive the `depth_cue` and `depth_bias` examples, which use the
+//! same launcher as a game: build them first with
+//! `cargo build -p psx-bevy --features dev-mcp --examples`.
 #![cfg(feature = "dev-mcp")]
 
 use psx_bevy::testing::mcp::Client;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Command};
 
-/// The example beside this test's target/debug/deps directory, so a
+/// An example beside this test's target/debug/deps directory, so a
 /// generated project or custom CARGO_TARGET_DIR uses its own build artifacts.
-fn depth_cue_example() -> PathBuf {
-    let binary = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("examples/depth_cue");
-    assert!(binary.exists(), "build the depth_cue example with --features dev-mcp first");
+fn example(name: &str) -> PathBuf {
+    let binary = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("examples").join(name);
+    assert!(binary.exists(), "build the {name} example with --features dev-mcp first");
     binary
+}
+
+fn depth_cue_example() -> PathBuf {
+    example("depth_cue")
+}
+
+#[test]
+#[ignore = "requires offscreen GPU and cargo build --features dev-mcp --example depth_bias"]
+fn depth_bias_loses_to_coplanar_copy_on_a_custom_screen() {
+    let output = std::env::temp_dir().join(format!("psx-depth-bias-{}", std::process::id()));
+    std::fs::create_dir_all(&output).unwrap();
+    println!("Depth bias GPU evidence: {}", output.display());
+    let mut client = Client::launch(Command::new(example("depth_bias")), &output.join("game.log"));
+    // Every pixel along the slanted wall, near (left) to far (right), shows
+    // the unbiased copy, whichever copy has the bias.
+    let winner = |image: &image::RgbaImage| -> Vec<[u8; 3]> {
+        (24..344).step_by(8).map(|x| [0, 1, 2].map(|c| image.get_pixel(x, 120)[c])).collect()
+    };
+    client.call("game_step", json!({"frames":1}));
+    let red_behind = client.screenshot(output.join("red-behind.png"));
+    assert_eq!(red_behind.dimensions(), (368, 240), "Game::screen sizes the screen target");
+    assert!(winner(&red_behind).iter().all(|p| *p == [0, 255, 0]), "{:?}", winner(&red_behind));
+    client.call(
+        "game_set_component",
+        json!({"name":"DepthBiasControls","component":"DepthBiasControls","fields":{"red_behind":false}}),
+    );
+    let green_behind = client.screenshot(output.join("green-behind.png"));
+    assert!(winner(&green_behind).iter().all(|p| *p == [255, 0, 0]), "{:?}", winner(&green_behind));
+    let log = std::fs::read_to_string(output.join("game.log")).unwrap();
+    assert!(!log.contains("Shader compilation error") && !log.contains("B0001"), "{log}");
 }
 
 #[test]
@@ -43,6 +73,7 @@ fn reciprocal_depth_cue_rendering() {
     };
     client.call("game_step", json!({"frames":1}));
     let baseline = client.screenshot(output.join("reciprocal.png"));
+    assert_eq!(baseline.dimensions(), (320, 240));
     for (x, expected) in [(61, 255), (160, 99), (259, 0)] {
         close(sample(&baseline, x, 60), [expected; 3]);
     }

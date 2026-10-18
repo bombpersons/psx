@@ -84,9 +84,7 @@ impl Client {
             .unwrap();
         let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
         std::fs::write(path, &bytes).unwrap();
-        let image = image::load_from_memory(&bytes).unwrap().to_rgba8();
-        assert_eq!(image.dimensions(), (320, 240));
-        image
+        image::load_from_memory(&bytes).unwrap().to_rgba8()
     }
 }
 

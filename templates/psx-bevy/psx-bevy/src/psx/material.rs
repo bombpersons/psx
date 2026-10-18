@@ -8,7 +8,8 @@ use bevy::{
         render_asset::RenderAssets,
         render_resource::{
             AsBindGroup, AsBindGroupShaderType, BlendComponent, BlendFactor, BlendOperation, BlendState,
-            CompareFunction, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, TextureFormat,
+            CompareFunction, DepthBiasState, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+            TextureFormat,
         },
         texture::GpuImage,
     },
@@ -178,6 +179,28 @@ impl PsxDepthCue {
     }
 }
 
+/// [`PsxMaterial::depth_bias`]: GPU depth bias in the direction away from the
+/// camera, whatever the depth convention (Bevy's depth is reversed). The
+/// offset is `constant` steps of depth precision plus `slope_scale` times the
+/// polygon's depth slope; slope keeps surfaces seen at a grazing angle apart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Reflect)]
+pub struct PsxDepthBias {
+    pub constant: i32,
+    pub slope_scale: f32,
+}
+
+impl PsxDepthBias {
+    pub const NONE: Self = Self { constant: 0, slope_scale: 0.0 };
+    /// Enough to sit just behind a coplanar surface at any angle.
+    pub const BEHIND: Self = Self { constant: 4, slope_scale: 1.0 };
+
+    /// The pipeline state for Bevy's reversed depth (near = 1, test
+    /// `GreaterEqual`): away from the camera is negative.
+    fn state(self) -> DepthBiasState {
+        DepthBiasState { constant: -self.constant, slope_scale: -self.slope_scale, clamp: 0.0 }
+    }
+}
+
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug)]
 #[uniform(0, PsxUniform)]
 #[bind_group_data(PsxMaterialKey)]
@@ -210,6 +233,11 @@ pub struct PsxMaterial {
     /// one (all ordered surfaces go through Bevy's sorted transparent pass).
     /// Equal orders fall back to back-to-front. `None` (default) depth-tests.
     pub draw_order: Option<u32>,
+    /// Pushes this surface's depth away from the camera for the depth test,
+    /// so it loses to coplanar surfaces (decals, or a game's crack-filler
+    /// copy of a polygon it also draws subdivided). Zero (default) is none.
+    /// Ignored with `draw_order`, which does not test depth.
+    pub depth_bias: PsxDepthBias,
     /// Copied from the [`PsxLook`] resource; edit the resource instead.
     pub look: PsxLook,
     /// Copied from scene lights each frame they change; not set by hand.
@@ -231,6 +259,7 @@ impl Default for PsxMaterial {
             double_sided: false,
             cutout: true,
             draw_order: None,
+            depth_bias: PsxDepthBias::NONE,
             look: PsxLook::default(),
             lighting: PsxLighting::default(),
         }
@@ -292,11 +321,21 @@ pub struct PsxMaterialKey {
     blend: PsxBlend,
     double_sided: bool,
     painter: bool,
+    /// `depth_bias` as (constant, slope_scale bits): f32 isn't `Hash`.
+    depth_bias: (i32, u32),
 }
 
 impl From<&PsxMaterial> for PsxMaterialKey {
     fn from(m: &PsxMaterial) -> Self {
-        Self { blend: drawn_blend(m.blend, m.stp), double_sided: m.double_sided, painter: m.draw_order.is_some() }
+        let painter = m.draw_order.is_some();
+        let bias = if painter { PsxDepthBias::NONE } else { m.depth_bias };
+        Self {
+            blend: drawn_blend(m.blend, m.stp),
+            double_sided: m.double_sided,
+            painter,
+            // +0.0 so that -0.0 shares a pipeline with it.
+            depth_bias: (bias.constant, (bias.slope_scale + 0.0).to_bits()),
+        }
     }
 }
 
@@ -348,11 +387,14 @@ impl Material for PsxMaterial {
     ) -> Result<(), SpecializedMeshPipelineError> {
         let k = key.bind_group_data;
         descriptor.primitive.cull_mode = if k.double_sided { None } else { Some(Face::Back) };
-        if k.painter
-            && let Some(depth) = descriptor.depth_stencil.as_mut()
-        {
-            depth.depth_compare = Some(CompareFunction::Always);
-            depth.depth_write_enabled = Some(false);
+        if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            if k.painter {
+                depth.depth_compare = Some(CompareFunction::Always);
+                depth.depth_write_enabled = Some(false);
+            } else if k.depth_bias != (0, 0) {
+                let (constant, slope) = k.depth_bias;
+                depth.bias = PsxDepthBias { constant, slope_scale: f32::from_bits(slope) }.state();
+            }
         }
         // Opaque replaces what is below (painter's-order surfaces are in
         // the transparent pass, which would otherwise alpha-blend them).
@@ -485,6 +527,18 @@ mod tests {
             }
         };
         (value.clamp(0.0, 1.0) * 255.0).round() as u32 / 8
+    }
+
+    #[test]
+    fn depth_bias_keys_pipelines_and_is_dropped_by_painters_order() {
+        let key = |depth_bias, draw_order| PsxMaterialKey::from(&PsxMaterial { depth_bias, draw_order, ..default() });
+        let flat = key(PsxDepthBias::NONE, None);
+        assert_ne!(key(PsxDepthBias::BEHIND, None), flat);
+        assert_eq!(key(PsxDepthBias { constant: 0, slope_scale: -0.0 }, None), flat, "-0.0 is no bias");
+        assert_eq!(key(PsxDepthBias::BEHIND, Some(3)), key(PsxDepthBias::NONE, Some(3)), "painter's order ignores it");
+        // Bevy's depth is reversed, so "behind" is a negative GPU bias.
+        let state = PsxDepthBias::BEHIND.state();
+        assert!(state.constant < 0 && state.slope_scale < 0.0);
     }
 
     /// Blending gamma-encoded values (what `PsxView` targets store) gives

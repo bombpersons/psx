@@ -1,5 +1,6 @@
 template_create creates a standalone Rust/Bevy workspace: psx-bevy/ (the
-template's crate, replaced by template_update; don't edit it), engine/ (object
+template's crate, updated by template_update; edit it only for general
+PS1 machinery and list edits in docs/template.md), engine/ (object
 type and action registries, update-order sets, level and tuning formats, a
 sandbox example), game/ (a demo to replace) and tools/import/. It can be
 created in the game folder itself. Explicitly pass the original's display
