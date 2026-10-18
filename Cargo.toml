@@ -43,3 +43,9 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Release downloads (`cargo build --profile dist`): no debug info, symbols stripped.
+[profile.dist]
+inherits = "release"
+debug = 0
+strip = true

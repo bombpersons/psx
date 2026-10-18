@@ -83,13 +83,31 @@ Two worked examples rebuild real mechanics. They use stand-in graphics on purpos
 
 ## Get started
 
-You need Rust 1.88+ (1.97.1+ for the Bevy template), your own disc images and a PS1 BIOS.
-**Disc images and firmware are not included and must never be committed**; the local `media/`
-and `bios/` folders are git-ignored.
+You need your own disc images and a PS1 BIOS. **Disc images and firmware are not included and
+must never be committed**; the local `media/` and `bios/` folders are git-ignored.
+
+Install the latest release (Linux x64/arm64, macOS):
 
 ```bash
-cargo build --release
-target/release/psx bios install --from /path/to/bios.bin
+curl -fsSL https://raw.githubusercontent.com/bombpersons/psx/master/install.sh | sh
+```
+
+On Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/bombpersons/psx/master/install.ps1 | iex"
+```
+
+The installer checks the download's SHA-256, puts `psx` in `~/.local/bin` (Windows:
+`%LOCALAPPDATA%\psx\bin`, added to your PATH) and fetches the PsyQ signatures `psx symbols`
+uses. Run it again to update. Building from source needs Rust 1.88+:
+`cargo install --locked --git https://github.com/bombpersons/psx psx`. Porting with the Bevy
+template needs Rust 1.97.1+ either way.
+
+Then add your BIOS:
+
+```bash
+psx bios install --from /path/to/bios.bin
 ```
 
 (Or `--download --region pal` for an explicit, checksum-verified download. Nothing ever downloads
@@ -98,17 +116,16 @@ on its own. See [BIOS setup](docs/bios-setup.md).)
 Hook it into Claude Code once, for every project:
 
 ```bash
-claude mcp add --scope user -e PSX_SIGS_DIR=/path/to/psx/external/psx_psyq_signatures \
-  psx -- /path/to/psx/target/release/psx mcp
+claude mcp add --scope user psx -- ~/.local/bin/psx mcp
 ```
 
 Then open Claude Code in a folder with your disc image and ask it to figure something out. It
 starts with `context` and `guide`. To drive it by hand instead:
 
 ```bash
-target/release/psx context --image "media/Some Game.cue" --save
-target/release/psx run --frames 300 --save-state --summary
-target/release/psx guide --topic run
+psx context --image "media/Some Game.cue" --save
+psx run --frames 300 --save-state --summary
+psx guide --topic run
 ```
 
 Start a port from the template (pick region and tick rate from the original). It is a workspace
@@ -116,7 +133,7 @@ with the template's own crate, an engine with a sandbox game, the game itself an
 `psx template update` brings in later template fixes:
 
 ```bash
-target/release/psx template create ../my-game --region pal
+psx template create ../my-game --region pal
 cd ../my-game && cargo run
 ```
 

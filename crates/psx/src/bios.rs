@@ -66,14 +66,21 @@ pub fn store() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("PSX_BIOS_DIR").filter(|v| !v.is_empty()) {
         return Some(p.into());
     }
+    data_dir().map(|d| d.join("bios"))
+}
+
+/// Per-user data shared by every project: `%LOCALAPPDATA%\psx` on Windows,
+/// else `$XDG_DATA_HOME/psx` or `~/.local/share/psx` (where the installers put
+/// the PsyQ signatures).
+pub fn data_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     if let Some(p) = std::env::var_os("LOCALAPPDATA") {
-        return Some(PathBuf::from(p).join("psx/bios"));
+        return Some(PathBuf::from(p).join("psx"));
     }
     if let Some(p) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(p).join("psx/bios"));
+        return Some(PathBuf::from(p).join("psx"));
     }
-    std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share/psx/bios"))
+    std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share/psx"))
 }
 #[derive(Clone, Serialize)]
 pub struct Candidate {
