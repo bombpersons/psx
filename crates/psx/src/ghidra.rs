@@ -655,19 +655,10 @@ fn cached(path: PathBuf, lock: Lock) -> Result<Analysis> {
     Ok(Analysis { path, manifest, index, fresh_query: None, _lock: lock })
 }
 
-fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: Instant, ctx: &Ctx) -> Result<Analysis> {
-    if let Some(path) = &input.analysis {
-        let path = path.canonicalize().map_err(io)?;
-        let lock = Lock::queued(path.parent().ok_or_else(|| invalid("invalid manifest path"))?,deadline,ctx)?;
-        return cached(path, lock);
-    }
-    let Import { source, bytes, exe, mapping, provenance, mut warnings } = import(input)?;
-    let base = mapping.base;
-    let end = base + mapping.size;
-    if addr.is_some_and(|a| !(base..end).contains(&a)) {
-        return Err(invalid("requested address is outside the mapped input"));
-    }
-    let install = installation(input.ghidra_home.as_deref())?;
+/// Names to apply before analysis, from `.symbols.json` reports (checked
+/// against the input's bytes) or plain `.sym` files (unverified, with a warning).
+fn analysis_symbols(input: &Input, bytes: &[u8], mapping: &Mapping, warnings: &mut Vec<String>) -> Result<Vec<Value>> {
+    let (base, end) = (mapping.base, mapping.base + mapping.size);
     let mut symbols = Vec::new();
     for path in &input.symbols {
         let text = fs::read_to_string(path).map_err(io)?;
@@ -728,6 +719,23 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
             return Err(invalid("symbols need a nonempty name and kind function, label or local"));
         }
     }
+    Ok(symbols)
+}
+
+fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: Instant, ctx: &Ctx) -> Result<Analysis> {
+    if let Some(path) = &input.analysis {
+        let path = path.canonicalize().map_err(io)?;
+        let lock = Lock::queued(path.parent().ok_or_else(|| invalid("invalid manifest path"))?,deadline,ctx)?;
+        return cached(path, lock);
+    }
+    let Import { source, bytes, exe, mapping, provenance, mut warnings } = import(input)?;
+    let base = mapping.base;
+    let end = base + mapping.size;
+    if addr.is_some_and(|a| !(base..end).contains(&a)) {
+        return Err(invalid("requested address is outside the mapped input"));
+    }
+    let install = installation(input.ghidra_home.as_deref())?;
+    let symbols = analysis_symbols(input, &bytes, &mapping, &mut warnings)?;
     let source_hash = sha256_bytes(&bytes);
     let identity = json!({"format":FORMAT,"source":source_hash,"ghidra":install.build_sha256,"language":LANGUAGE,"compiler":"default","script":sha256_bytes(SCRIPT.as_bytes()),"symbols":symbols,"mapping":mapping,"capture":{"frames":provenance["frames"],"identity":provenance["identity"],"registers":provenance["registers"]}});
     let key = sha256_bytes(&serde_json::to_vec(&identity).map_err(io)?);

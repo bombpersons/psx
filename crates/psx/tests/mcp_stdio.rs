@@ -1505,7 +1505,8 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
     let (refs, ok) = cli(&root, &["xrefs", "800100c0", "--ram", "ram.bin", "--gp", "800100c0", "--symbols", symbols]);
     assert!(ok && !refs.to_string().contains("studied_writer"), "{refs}");
     let mut changed_args = trace_args;
-    changed_args[6] = "changed.bin";
+    let state = changed_args.iter().position(|a| *a == "start.bin").unwrap();
+    changed_args[state] = "changed.bin";
     changed_args[changed_args.len() - 1] = "trace-b";
     let (run, ok) = cli(&root, &changed_args);
     assert!(ok, "{run}");
