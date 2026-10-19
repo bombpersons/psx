@@ -1,8 +1,9 @@
 # psx-bevy: the template's crate
 
 The psx template's own crate inside a generated project: the PS1 look
-(`psx`), logic ticks and input (`shell`, `controller`), the controls menu
-(`controls`), headless and trajectory testing (`testing`), the `--scene` and
+(`psx`), logic ticks and input (`shell`, `controller`), the controls and
+display menus (`controls`, `display`), headless and trajectory testing
+(`testing`), the `--scene` and
 `--model` viewers, the developer MCP (feature `dev-mcp`) and the `launcher`
 every game's `main.rs` calls. Bevy 0.20.0; Rust 1.97.1+; a desktop GPU driver
 (or Mesa lavapipe with `--software`).
@@ -20,14 +21,17 @@ these modules). See the project's root README for the workspace and commands.
 | `shell.rs` | `TickRate`, `GameClock`, `GameSystems`, controller sampling |
 | `controller.rs`, `controller/bindings.rs` | Logical `Button`/`ControllerState`, validated device bindings and settings storage |
 | `controls/` | Reusable controls menu: draft edits, capture, conflict resolution and PS1-style presentation |
+| `display/` | Example display menu: resolution, borderless fullscreen and `PsxLook` switches, saved to `display.json` |
+| `settings.rs` | Player settings files: config folder, size-limited reads, atomic writes |
+| `pointer.rs` | The mouse on the PS1 screen: `Pointer`, window-to-screen mapping, menu `Hitboxes` |
 | `launcher.rs` | Window, renderer, headless mode and the shared command-line flags |
 | `testing.rs`, `testing/trajectory.rs` | `headless_app`, `TickApp::run_tick(s)`, replay and per-tick comparison with the original |
 | `testing/mcp.rs` | Stdio developer-MCP client for GPU tests (`dev-mcp`) |
 | `viewer.rs`, `model_viewer.rs` | `--scene` capture viewer, `--model` TMD viewer |
 | `dev_mcp.rs` | Developer MCP (feature `dev-mcp`) |
 
-`examples/depth_cue.rs`, `examples/depth_bias.rs` and `tests/dev_mcp.rs` are
-the crate's own GPU checks.
+`examples/depth_cue.rs`, `examples/depth_bias.rs`, `examples/screen_size.rs`
+and `tests/dev_mcp.rs` are the crate's own GPU checks.
 
 `cargo build`/`cargo run` already compile Bevy at full optimisation (only the
 workspace's crates are built at `opt-level = 1`), so they run at close to
@@ -49,7 +53,7 @@ glTF scenes, `DirectionalLight`, `GlobalAmbientLight`, `DistanceFog`. The
 
 | PS1 trait | How it is reproduced | Switch |
 |---|---|---|
-| Low resolution | Every `PsxView` camera renders to a low-resolution target (`PsxScreen`, 320×240 unless the game says otherwise), shown letterboxed and nearest-sampled | `launcher::Game::screen` |
+| Low resolution | Every `PsxView` camera renders to a low-resolution target (`PsxScreen`, 320×240 unless the game says otherwise), shown letterboxed and nearest-sampled | `launcher::Game::screen`; `PsxScreen::set_size` at runtime |
 | Vertex wobble | Vertices snap to whole target pixels in the vertex shader | `PsxLook::vertex_snap` |
 | Affine texture warp | UVs and colours interpolate linearly in screen space (sent as A·w, divided by w per fragment) | always on |
 | Gouraud lighting | Lighting is per vertex, on gamma-encoded colour where white = neutral and textures can be brightened up to 2× | `PsxMaterial::lit` |
@@ -330,6 +334,25 @@ commands.spawn((PsxModelRoot(car), Transform::default()));
   tick, so a tap shorter than one tick still counts as held for one tick.
   Do not skip ticks by counting `GameClock.frame`: presses on skipped ticks
   would be lost. Set the tick rate instead.
+- The mouse is sampled the same way, beside the pad (it is not mapped onto
+  buttons): `ControllerState::mouse` has `held`/`pressed`/`released(MouseButton)`
+  per tick, `position` on the PS1 screen in screen pixels (origin top-left,
+  y down, through the letterbox; `None` off the screen), `world_2d(size)` for
+  a default `Camera2d`'s coordinates, `motion` (raw device motion summed over
+  the tick, for mouse look) and `wheel` (lines). Menus and other per-frame UI
+  read `pointer::Pointer` instead, updated every rendered frame in
+  `PhysicalInputSystems::Pointer`. Mouse buttons can also be bound to pad
+  actions in the controls menu's MOUSE column (unbound by default).
+- Tests and tools inject the mouse through `InjectedInput::mouse`
+  (`InjectedMouse`): its buttons add to the real ones and press the actions
+  they are bound to, `position` replaces the cursor, and `motion` and `wheel`
+  are added on every tick. A replay event may carry
+  `"mouse": {"buttons": ["left"], "position": [x, y], "motion": [dx, dy], "wheel": n}`
+  (every field optional); read such replays with `Replay::ticks`, which gives
+  `TickInput`s for `Trajectory::record` or `TickApp::run_input`
+  (`tick_inputs` refuses them rather than drop the mouse). The original had
+  no mouse, so `psx run --replay` rejects these files: they are for the
+  rebuild's own tests.
 
 ### Tests
 
@@ -369,7 +392,12 @@ wholesale.
 ### Rebinding and the example controls menu
 
 In the demo, **F1** or **Start+Select** opens the controls menu. Arrow keys/D-pad
-choose a row; left/right selects the keyboard or gamepad column. Enter/South
+choose a row; left/right selects the keyboard or gamepad column. The mouse works
+too: hovering selects, clicking a keyboard or gamepad cell starts capture for it
+(clicking an action's name only selects it), right click is Esc and the wheel
+moves the selection, so a layout can be set without working arrow keys. During
+capture, a click on another cell moves the capture there and a click anywhere
+else cancels it. Enter/South
 starts capture: release existing keys/buttons, then press the new physical input.
 After each binding (or confirmed swap) the selection moves to the next action, and
 after the last one to **Save and close**, so a full layout can be entered with
@@ -431,13 +459,58 @@ persistence explicitly. `ControlsPlugin { render_ui: false, ... }` runs its real
 input/editor logic in headless tests or with a custom presentation. `InputFocus`
 and `PhysicalInputSystems::Capture` expose the shell's focus/order boundary for
 other modal interfaces. Stick axes retain their original meaning; this menu
-rebinds digital buttons, including triggers, rather than analog axes.
+rebinds digital buttons, including triggers, rather than analog axes. A mouse
+slot captures any mouse button, right click included, so only Esc cancels
+that capture. Profiles saved before the MOUSE column existed load unchanged.
 
 The presentation uses ordinary Bevy UI and its embedded default font, with an
 isolated `PsxView` camera before the screen pass, so it appears in low-resolution
 screenshots and passes through the same framebuffer quantization. If importing
 both Bevy and game preludes, explicitly import `engine::controller::Button` to
 disambiguate Bevy's UI button type.
+
+### Screen size, fullscreen and the example display menu
+
+`PsxScreen::set_size` changes the framebuffer at any time. Before that frame
+renders, both screen images, the screen pass and every `PsxView` camera follow:
+3D keeps its vertical field of view and shows more at the sides (Hor+), and 2D
+stays one unit per pixel with the origin at the centre. Anything laid out from
+the old size is the game's to move; `PsxAnchor { at, offset }` keeps a 2D entity
+at a screen point (`at` is -1..=1 per axis, `(0, -1)` the bottom centre) plus a
+pixel offset, which is what the demo's HUD uses. A resize replaces the screen
+images with new ones (renderer caches are keyed by image, so resizing in place
+could leave the window showing a stale frame), so game code that keeps a clone
+of `PsxScreen::image` or `canvas` must read it again; cameras with `PsxView`
+are retargeted automatically. `examples/screen_size.rs` and its GPU test check
+all of this.
+
+`--fullscreen` starts in borderless fullscreen and **F11** toggles it
+(`display::set_fullscreen`).
+
+The `PsxAspect` resource decides how the screen meets the window. `Fixed`
+(the default) keeps the screen's size and letterboxes it. `Window` keeps its
+height and sets its width to the window's aspect ratio (an even number of
+pixels, at most 4096), so any window shape, or a fullscreen monitor, is
+filled; resizing the window resizes the screen. Choose it with
+`--aspect fixed|window`, the display menu, or by setting the resource.
+
+In the demo, **F2** opens the display menu (`DisplayPlugin`, added by the
+launcher beside `ControlsPlugin`): Resolution (the game's size, the same height
+at 16:9, and 2×; `launcher::screen_choices`), Aspect (Fixed or Match window;
+with Match window, Resolution chooses only the height), Fullscreen, and the
+three `PsxLook` switches. Up/Down chooses a row; Left/Right or Enter/South changes it.
+With the mouse, hover selects; click a setting's `<` or `>` to step it either
+way (the rest of the row steps forwards); right click discards.
+Unlike the controls menu, edits apply at once so they can be seen; **Save and
+close** writes `display.json` beside `controls.json`, and **Discard and close**,
+Esc/East or F2 put back what showed when the menu opened. **Restore defaults**
+returns to what the game set up before the file was applied. Start directly in
+the menu with `cargo run -- --display`; `--display-settings PATH` chooses the
+file. `--aspect`, `--fullscreen`, `--no-dither` and `--no-quantize` win over the file for
+that session (`DisplayOverrides`) and are only saved if the player saves. A
+missing file keeps the game's defaults; an invalid one is reported, left
+untouched and ignored. Pass your own `screens` to offer other sizes, or set
+`global_shortcuts: false` and call `DisplayMenu::open()` from your options screen.
 
 ## From evidence to idiomatic code
 
@@ -476,9 +549,9 @@ change the game's configured logic tick rate. Status reports `headless: true`.
 
 | Tool | Arguments | Behaviour |
 |---|---|---|
-| `game_status` | `{}` | Frame, pause state, tick rate, screen size/region, held buttons, renderer adapter |
-| `game_step` | `{"frames":30,"buttons":["cross","right"]}` | Holds the buttons for exactly N ticks, then releases them and freezes |
-| `game_set_input` | `{"buttons":["start"]}` | Replaces the injected held buttons; `[]` releases them |
+| `game_status` | `{}` | Frame, pause state, tick rate, screen size/region, held buttons, the last tick's mouse, renderer adapter |
+| `game_step` | `{"frames":30,"buttons":["cross","right"],"mouse":{"buttons":["left"],"position":[160,120]}}` | Holds the buttons (and optional mouse, as in replays) for exactly N ticks, then releases them and freezes |
+| `game_set_input` | `{"buttons":["start"],"mouse":{"motion":[4,0]}}` | Replaces the injected held buttons and mouse; `[]` releases the buttons, omitting `mouse` releases it |
 | `game_pause` | `{"paused":false}` | Resumes continuous simulation or manual play |
 | `game_screenshot` | `{"target":"screen"}` or `"window"` | A real GPU-rendered PNG of the screen target (`Game::screen`, usually 320×240) or of the window |
 | `game_query` | `{"name":"Player","components":["Transform","Hop"],"resources":["GameClock"]}` | Reflected components (as JSON) of entities whose `Name` contains `name` and/or that have every component in `with`, plus resources |

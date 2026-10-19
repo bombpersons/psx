@@ -1,8 +1,9 @@
 //! Ordinary Bevy UI rendered into the PS1 canvas, before its screen pass.
 //! Labels use the bitmap font in `psx::font`: vector text at this size breaks up.
-use super::{BindingDevice, Button, ControlsMenu, DISCARD, Mode, RESTORE, SAVE};
+use super::{BindingDevice, Button, ControlsMenu, DISCARD, Item, Mode, RESTORE, SAVE};
 use crate::{
     controller::ControllerBindings,
+    pointer::{Hitboxes, node_rect},
     psx::{
         PsxView, SCREEN_PASS_ORDER,
         font::{GLYPH_W, LINE_H, text_image},
@@ -21,6 +22,9 @@ struct Cell {
     row: usize,
     device: Option<BindingDevice>,
 }
+/// A binding column of one row: clicking it edits that device's slot.
+#[derive(Component)]
+struct Slot(Item);
 #[derive(Component)]
 struct Hint;
 /// The text an `ImageNode` currently shows, so it is only re-rendered on change.
@@ -37,12 +41,12 @@ const SELECTED: Color = Color::linear_rgb(0.06, 0.18, 0.48);
 /// Inner width (320 minus border and padding) and column widths, in pixels.
 const INNER: u32 = 304;
 const ACTION_W: u32 = 70;
-const BINDING_W: u32 = (INNER - ACTION_W) / 2;
+const BINDING_W: u32 = (INNER - ACTION_W) / 3;
 /// Characters of a binding that fit its column after the `> ` marker.
 const BINDING_CHARS: usize = (BINDING_W / GLYPH_W) as usize - 2;
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Startup, spawn).add_systems(Update, refresh);
+    app.add_systems(Startup, spawn).add_systems(Update, (refresh, collect_hitboxes));
 }
 fn label(text: &str, color: Color, images: &mut Assets<Image>) -> impl Bundle {
     let image = text_image(text);
@@ -91,7 +95,9 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 &mut images,
             ));
             root.spawn(Node { height: px(LINE_H), flex_shrink: 0.0, ..default() }).with_children(|header| {
-                for (text, width) in [("ACTION", ACTION_W), ("KEYBOARD", BINDING_W), ("GAMEPAD", BINDING_W)] {
+                for (text, width) in
+                    [("ACTION", ACTION_W), ("KEYBOARD", BINDING_W), ("GAMEPAD", BINDING_W), ("MOUSE", BINDING_W)]
+                {
                     header.spawn(column(width)).with_child(label(text, CYAN, &mut images));
                 }
             });
@@ -104,8 +110,8 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 .with_children(|line| {
                     line.spawn(column(ACTION_W))
                         .with_child((Cell { row, device: None }, label(button.label(), WHITE, &mut images)));
-                    for device in [BindingDevice::Keyboard, BindingDevice::Gamepad] {
-                        line.spawn(column(BINDING_W))
+                    for device in BindingDevice::ALL {
+                        line.spawn((column(BINDING_W), Slot(Item { row, device: Some(device) })))
                             .with_child((Cell { row, device: Some(device) }, label("", WHITE, &mut images)));
                     }
                 });
@@ -125,12 +131,33 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         });
 }
 
-fn hint(mode: &Mode) -> &'static str {
+fn hint(mode: &Mode, device: BindingDevice) -> &'static str {
     match mode {
-        Mode::Browse => "Arrows/D-pad: select  Enter/South: edit\nDel/West: clear  Esc/East: discard",
-        Mode::Listen { .. } => "Press one key or button; the next row follows.\nEsc: cancel this binding",
-        Mode::Conflict(_) => "Enter/South: swap assignments  Esc/East: keep\nNothing changes until Save and close.",
+        Mode::Listen { .. } if device == BindingDevice::Mouse => {
+            "Click any mouse button; the next row follows.\nEsc: cancel this binding"
+        }
+        Mode::Browse => "Arrows/D-pad/mouse: select  Enter/click: edit\nDel/West: clear  Esc/East/right click: discard",
+        Mode::Listen { .. } => {
+            "Press one key or button; the next row follows.\nEsc or right click: cancel this binding"
+        }
+        Mode::Conflict(_) => "Enter/click: swap  Esc/East/right click: keep\nNothing changes until Save and close.",
     }
+}
+
+/// Rows, then the binding columns inside them, as screen rectangles.
+fn collect_hitboxes(
+    menu: Res<ControlsMenu>,
+    rows: Query<(&Row, &ComputedNode, &UiGlobalTransform)>,
+    slots: Query<(&Slot, &ComputedNode, &UiGlobalTransform)>,
+    mut hitboxes: ResMut<Hitboxes<Item>>,
+) {
+    hitboxes.0.clear();
+    if !menu.open {
+        return;
+    }
+    let rows = rows.iter().map(|(row, node, at)| (node_rect(node, at), Item { row: row.0, device: None }));
+    let slots = slots.iter().map(|(slot, node, at)| (node_rect(node, at), slot.0));
+    hitboxes.0.extend(rows.chain(slots));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -179,7 +206,7 @@ fn refresh(
         }
     }
     for (mut label, mut node, mut layout) in &mut hints {
-        set(&mut label, &mut node, &mut layout, format!("{}\n{}", menu.status, hint(&menu.mode)));
+        set(&mut label, &mut node, &mut layout, format!("{}\n{}", menu.status, hint(&menu.mode, menu.device)));
     }
 }
 
@@ -200,7 +227,9 @@ mod tests {
                 binding: crate::controller::PhysicalBinding::Key(KeyCode::KeyX),
             }),
         ] {
-            assert!(text_width(hint(&mode)) <= INNER, "{}", hint(&mode));
+            for device in BindingDevice::ALL {
+                assert!(text_width(hint(&mode, device)) <= INNER, "{}", hint(&mode, device));
+            }
         }
     }
 }

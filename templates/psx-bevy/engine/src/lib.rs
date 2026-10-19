@@ -5,8 +5,8 @@
 //! proves it). See `AGENTS.md` for what belongs here.
 //!
 //! It builds on the template's crate, [`psx_bevy`] (PS1 look, ticks, input,
-//! controls menu, testing, developer MCP), re-exported here so games depend
-//! on `engine` only.
+//! controls and display menus, testing, developer MCP), re-exported here so
+//! games depend on `engine` only.
 //!
 //! The skeleton is deliberately small. Rename and reshape [`schedule`],
 //! [`objects`], [`triggers`] and [`level`] to match `docs/engine-model.md`:
@@ -20,7 +20,9 @@ pub mod triggers;
 pub use psx_bevy;
 #[cfg(feature = "dev-mcp")]
 pub use psx_bevy::dev_mcp;
-pub use psx_bevy::{controller, controls, launcher, model_viewer, psx, shell, testing, viewer};
+pub use psx_bevy::{
+    controller, controls, display, launcher, model_viewer, pointer, psx, settings, shell, testing, viewer,
+};
 
 use bevy::prelude::*;
 

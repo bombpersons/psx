@@ -76,8 +76,9 @@ impl Region {
 
 /// Global look switches, applied to every [`PsxMaterial`] and [`PsxMaterial2d`]
 /// and to the final screen pass.
-#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Reflect, serde::Serialize, serde::Deserialize)]
 #[reflect(Resource)]
+#[serde(deny_unknown_fields)]
 pub struct PsxLook {
     /// Snap vertices to whole screen pixels (polygon "wobble").
     pub vertex_snap: bool,
@@ -112,7 +113,10 @@ pub struct PsxLighting {
     pub count: u32,
 }
 
-/// The game's framebuffer. Change size/region before `PsxPlugin` is added.
+/// The game's framebuffer. The region is fixed when `PsxPlugin` is added;
+/// the size may change at any time ([`PsxScreen::set_size`]): the screen
+/// images, the screen pass, every `PsxView` camera (3D aspect, 2D pixel
+/// scale) and the window display follow before that frame renders.
 #[derive(Resource, Clone, Debug)]
 pub struct PsxScreen {
     pub width: u32,
@@ -128,6 +132,60 @@ pub struct PsxScreen {
 impl Default for PsxScreen {
     fn default() -> Self {
         Self { width: 320, height: 240, region: Region::Ntsc, image: default(), canvas: default() }
+    }
+}
+
+impl PsxScreen {
+    pub fn size(&self) -> UVec2 {
+        UVec2::new(self.width, self.height)
+    }
+    /// Resize the framebuffer (at least 1×1). Content laid out from the old
+    /// size (HUD positions in screen pixels) is the game's to move.
+    pub fn set_size(&mut self, size: UVec2) {
+        let size = size.max(UVec2::ONE);
+        (self.width, self.height) = (size.x, size.y);
+    }
+}
+
+/// How the screen's shape relates to the window.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq, Reflect, serde::Serialize, serde::Deserialize)]
+#[reflect(Resource)]
+#[serde(rename_all = "lowercase")]
+pub enum PsxAspect {
+    /// The screen keeps its size and is letterboxed in the window.
+    #[default]
+    Fixed,
+    /// The screen keeps its height and its width follows the window's aspect
+    /// ratio (rounded to an even number of pixels), so any window shape is
+    /// filled. Widening shows more of the scene at the sides.
+    Window,
+}
+
+/// The width that gives a screen `height` pixels high the shape of `window`.
+pub fn width_for_aspect(height: u32, window: Vec2) -> u32 {
+    let width = (height as f32 * window.x / window.y.max(1.0) / 2.0).round() as u32 * 2;
+    width.clamp(2, 4096)
+}
+
+/// Keeps a 2D entity at a point of the screen as its size changes, for HUDs:
+/// `at` is -1..=1 per axis (`(0, -1)` bottom centre, `(1, 1)` top right),
+/// scaled by half the screen size, plus `offset` in pixels. Sets the
+/// `Transform`'s x and y; z, rotation and scale stay the game's.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Reflect)]
+#[reflect(Component)]
+#[require(Transform)]
+pub struct PsxAnchor {
+    pub at: Vec2,
+    pub offset: Vec2,
+}
+
+impl PsxAnchor {
+    pub fn new(at: Vec2, offset: Vec2) -> Self {
+        Self { at, offset }
+    }
+    /// The position for a screen of `size` pixels, origin at its centre.
+    pub fn position(&self, size: UVec2) -> Vec2 {
+        self.at * size.as_vec2() / 2.0 + self.offset
     }
 }
 
@@ -147,6 +205,9 @@ pub const SCREEN_PASS_ORDER: isize = 999;
 #[derive(Component)]
 struct DisplayQuad;
 
+#[derive(Component)]
+struct ScreenPassQuad;
+
 #[derive(Default)]
 pub struct PsxPlugin {
     pub screen: PsxScreen,
@@ -156,13 +217,8 @@ impl Plugin for PsxPlugin {
     fn build(&self, app: &mut App) {
         let mut screen = self.screen.clone();
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-        let target = || Image::new_target_texture(screen.width, screen.height, TextureFormat::Rgba8UnormSrgb, None);
-        let mut image = target();
-        image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
-        let mut canvas = target();
-        canvas.texture_descriptor.usage |= TextureUsages::COPY_SRC;
-        let (image, canvas) = (images.add(image), images.add(canvas));
-        (screen.image, screen.canvas) = (image, canvas);
+        let size = screen.size().max(UVec2::ONE);
+        (screen.image, screen.canvas) = (images.add(screen_target(size)), images.add(screen_target(size)));
 
         scene::plugin(app);
         assets::plugin(app);
@@ -177,10 +233,13 @@ impl Plugin for PsxPlugin {
         .register_type::<PsxLook>()
         .init_resource::<PsxLook>()
         .init_resource::<PsxLighting>()
+        .init_resource::<PsxAspect>()
         .insert_resource(screen)
         .add_observer(attach_view)
         .add_systems(Startup, (spawn_display, spawn_screen_pass))
-        .add_systems(Update, fit_display)
+        .add_systems(Update, (match_window_aspect, fit_display).chain())
+        .add_systems(PostUpdate, resize_screen.before(bevy::camera::CameraUpdateSystems))
+        .add_systems(PostUpdate, place_anchored.before(TransformSystems::Propagate))
         .add_systems(PostUpdate, (gather_lighting, apply_look).chain().after(TransformSystems::Propagate));
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(
@@ -295,7 +354,65 @@ fn spawn_screen_pass(
         Mesh2d(meshes.add(Rectangle::new(screen.width as f32, screen.height as f32))),
         MeshMaterial2d(materials.add(ScreenPassMaterial { canvas: screen.canvas.clone(), quantize: look.quantize })),
         RenderLayers::layer(SCREEN_PASS_LAYER),
+        ScreenPassQuad,
     ));
+}
+
+/// A screen-sized render target: the screen image or the canvas.
+fn screen_target(size: UVec2) -> Image {
+    let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None);
+    image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+    image
+}
+
+/// Follows [`PsxScreen::set_size`] with new screen images and points
+/// everything that drew into or from the old ones at them: `PsxView` cameras,
+/// the screen pass and the window display. Runs before cameras read their
+/// target sizes, so projections (3D aspect, 2D one unit per pixel) match the
+/// new size on the same frame.
+///
+/// New images rather than resized ones: renderer caches (material and
+/// sprite bind groups) are keyed by image id, and a resized image could
+/// leave one drawing from the old texture, which froze the window display.
+/// Game code that keeps a clone of `PsxScreen::image` must read it again.
+#[allow(clippy::too_many_arguments)]
+fn resize_screen(
+    mut screen: ResMut<PsxScreen>,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut screen_pass: ResMut<Assets<ScreenPassMaterial>>,
+    quads: Query<(&Mesh2d, &MeshMaterial2d<ScreenPassMaterial>), With<ScreenPassQuad>>,
+    mut targets: Query<&mut RenderTarget>,
+    mut display: Query<&mut Sprite, With<DisplayQuad>>,
+) {
+    let size = screen.size().max(UVec2::ONE);
+    if !screen.is_changed() || images.get(&screen.image).is_none_or(|image| image.size() == size) {
+        return;
+    }
+    debug!("PsxScreen resized to {}x{}", size.x, size.y);
+    let (old_image, old_canvas) = (screen.image.clone(), screen.canvas.clone());
+    let (image, canvas) = (images.add(screen_target(size)), images.add(screen_target(size)));
+    for mut target in &mut targets {
+        if let RenderTarget::Image(target) = &mut *target {
+            if target.handle == old_canvas {
+                target.handle = canvas.clone();
+            } else if target.handle == old_image {
+                target.handle = image.clone();
+            }
+        }
+    }
+    for (quad, material) in &quads {
+        if let Some(mut mesh) = meshes.get_mut(&quad.0) {
+            *mesh = Rectangle::new(size.x as f32, size.y as f32).into();
+        }
+        if let Some(mut material) = screen_pass.get_mut(&material.0) {
+            material.canvas = canvas.clone();
+        }
+    }
+    for mut sprite in &mut display {
+        sprite.image = image.clone();
+    }
+    (screen.image, screen.canvas) = (image, canvas);
 }
 
 fn spawn_display(
@@ -318,6 +435,30 @@ fn spawn_display(
         DisplayQuad,
         RenderLayers::layer(DISPLAY_LAYER),
     ));
+}
+
+fn place_anchored(screen: Res<PsxScreen>, mut anchored: Query<(Ref<PsxAnchor>, &mut Transform)>) {
+    for (anchor, mut transform) in &mut anchored {
+        if screen.is_changed() || anchor.is_changed() {
+            let at = anchor.position(screen.size());
+            (transform.translation.x, transform.translation.y) = (at.x, at.y);
+        }
+    }
+}
+
+/// [`PsxAspect::Window`]: follow the window's shape. A minimised window
+/// (zero size) leaves the screen as it is.
+fn match_window_aspect(aspect: Res<PsxAspect>, windows: Query<&Window>, mut screen: ResMut<PsxScreen>) {
+    let Ok(window) = windows.single() else { return };
+    if *aspect != PsxAspect::Window || window.width() < 1.0 || window.height() < 1.0 {
+        return;
+    }
+    let height = screen.height;
+    let width = width_for_aspect(height, window.size());
+    if width != screen.width {
+        debug!("Window {}x{}: screen width {} -> {width}", window.width(), window.height(), screen.width);
+        screen.set_size(UVec2::new(width, height));
+    }
 }
 
 /// Largest scale that fits the window without stretching or cropping.
@@ -384,6 +525,76 @@ fn apply_look(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_aspect_keeps_height_and_fills_the_window() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(PsxScreen::default())
+            .insert_resource(PsxAspect::Window)
+            .add_systems(Update, match_window_aspect);
+        let window = app.world_mut().spawn(Window { resolution: (1600, 900).into(), ..default() }).id();
+        app.update();
+        assert_eq!(app.world().resource::<PsxScreen>().size(), UVec2::new(426, 240));
+        app.world_mut().get_mut::<Window>(window).unwrap().resolution.set(1000.0, 1000.0);
+        app.update();
+        assert_eq!(app.world().resource::<PsxScreen>().size(), UVec2::new(240, 240));
+        *app.world_mut().resource_mut::<PsxAspect>() = PsxAspect::Fixed;
+        app.world_mut().get_mut::<Window>(window).unwrap().resolution.set(1600.0, 900.0);
+        app.update();
+        assert_eq!(app.world().resource::<PsxScreen>().size(), UVec2::new(240, 240), "Fixed leaves the size alone");
+        assert_eq!(width_for_aspect(240, Vec2::new(4000.0, 10.0)), 4096);
+    }
+
+    #[test]
+    fn anchors_follow_the_screen_edges() {
+        let bottom_left = PsxAnchor::new(Vec2::new(-1.0, -1.0), Vec2::new(8.0, 8.0));
+        assert_eq!(bottom_left.position(UVec2::new(320, 240)), Vec2::new(-152.0, -112.0));
+        assert_eq!(bottom_left.position(UVec2::new(426, 240)), Vec2::new(-205.0, -112.0));
+        assert_eq!(PsxAnchor::default().position(UVec2::new(640, 480)), Vec2::ZERO);
+    }
+
+    #[test]
+    fn screen_targets_follow_set_size() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .init_asset::<Mesh>()
+            .init_asset::<ScreenPassMaterial>()
+            .add_systems(Update, resize_screen);
+        let new = || Image::new_target_texture(320, 240, TextureFormat::Rgba8UnormSrgb, None);
+        let (image, canvas) = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            (images.add(new()), images.add(new()))
+        };
+        let quad = app.world_mut().resource_mut::<Assets<Mesh>>().add(Rectangle::new(320.0, 240.0));
+        let pass = ScreenPassMaterial { canvas: canvas.clone(), quantize: false };
+        let pass = app.world_mut().resource_mut::<Assets<ScreenPassMaterial>>().add(pass);
+        app.world_mut().spawn((Mesh2d(quad.clone()), MeshMaterial2d(pass), ScreenPassQuad));
+        app.insert_resource(PsxScreen { image: image.clone(), canvas: canvas.clone(), ..default() });
+        app.update();
+        app.world_mut().resource_mut::<PsxScreen>().set_size(UVec2::new(426, 240));
+        let target = app.world_mut().spawn(RenderTarget::Image(canvas.clone().into())).id();
+        let display = app.world_mut().spawn((Sprite::from_image(image.clone()), DisplayQuad)).id();
+        app.update();
+        let screen = app.world().resource::<PsxScreen>().clone();
+        assert!(screen.image != image && screen.canvas != canvas, "new images, so no renderer cache keeps the old");
+        let images = app.world().resource::<Assets<Image>>();
+        for handle in [&screen.image, &screen.canvas] {
+            assert_eq!(images.get(handle).unwrap().size(), UVec2::new(426, 240));
+        }
+        let RenderTarget::Image(retargeted) = app.world().get::<RenderTarget>(target).unwrap() else { panic!() };
+        assert_eq!(retargeted.handle, screen.canvas, "PsxView cameras follow the canvas");
+        let pass = app.world().resource::<Assets<ScreenPassMaterial>>().iter().next().unwrap().1.canvas.clone();
+        assert_eq!(pass, screen.canvas);
+        let shown = &app.world().get::<Sprite>(display).unwrap().image;
+        assert_eq!(*shown, screen.image, "the window shows the new screen image");
+        let mesh = app.world().resource::<Assets<Mesh>>().get(&quad).unwrap();
+        let x = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap().iter().map(|p| p[0]);
+        assert_eq!(x.fold(0.0f32, f32::max), 213.0);
+        app.world_mut().resource_mut::<PsxScreen>().set_size(UVec2::ZERO);
+        assert_eq!(app.world().resource::<PsxScreen>().size(), UVec2::ONE);
+    }
 
     #[test]
     fn display_fits_without_stretching() {
