@@ -10,7 +10,12 @@ filters and columns. Continue next_cursor with the same query and omit offset.
 An empty page can still have a cursor when its scan budget was reached.
 
 status:complete and termination:frames_reached mean the run met its frame budget,
-not that boot completed or gameplay began. For GPU captures, inspect complete,
+not that boot completed or gameplay began. Read warnings: no_gpu_draws means
+nothing was drawn for the last frames_without_draws frames. With cd_retry_loop
+(LBA, owning file, Setloc count and period) the game is stuck re-reading the CD,
+a load that never finishes: report it as an emulator bug with that LBA rather than
+waiting longer. With screen_blank and no loop, look at final_pc and hot PCs. A
+still title or loading screen also draws nothing and is not a fault. For GPU captures, inspect complete,
 draw_commands and search reason. gpu_next_draw skips empty candidates but accepts
 fills; use gpu_draw_filter to require primitives or textured draws. A successful
 exact capture may contain no draws. Use snapshot_every to

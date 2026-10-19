@@ -252,6 +252,9 @@ pub(crate) fn brief(v: &Value) -> Value {
             b[k] = v[k].clone();
         }
     }
+    if v["warnings"].as_array().is_some_and(|w| !w.is_empty()) {
+        b["warnings"] = v["warnings"].clone();
+    }
     if let Some(events) = v["input"]["events"].as_array() {
         b["input"]["events"] = json!(events.iter().take(8).collect::<Vec<_>>());
         b["input"]["page"] = crate::page::metadata(events.len(), 0, events.len().min(8), 8);
@@ -291,6 +294,9 @@ pub(crate) fn summary(v: &Value) -> Value {
     });
     if let Some(state) = v["files"]["state.bin"]["path"].as_str() {
         s["state"] = json!(state);
+    }
+    if v["warnings"].as_array().is_some_and(|w| !w.is_empty()) {
+        s["warnings"] = v["warnings"].clone();
     }
     if v["watch"]["enabled"] == true {
         s["watch"] = pick(&v["watch"], &["hits", "recorded", "complete", "file"]);

@@ -268,6 +268,10 @@ pub struct Gpu {
     /// When `Some`, every completed GP0 command is appended (A0h includes its image data).
     #[serde(skip)]
     pub log: Option<Vec<Vec<u32>>>,
+    /// GP0 commands that touch VRAM (fills, primitives, copies, CPU uploads)
+    /// since power-on or a state restore. Analysis only, not saved.
+    #[serde(skip)]
+    pub draws: u64,
 }
 
 fn sext11(v: u32) -> i32 {
@@ -385,6 +389,9 @@ impl Gpu {
 
     fn execute(&mut self, p: &[u32]) {
         let op = (p[0] >> 24) as u8;
+        if matches!(op, 0x02 | 0x20..=0xBF) {
+            self.draws += 1;
+        }
         match op {
             0x02 => self.fill(p),
             0x20..=0x3F => self.polygon(p),

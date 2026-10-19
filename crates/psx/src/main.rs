@@ -30,6 +30,7 @@ mod ram;
 mod replay;
 mod run;
 mod run_native;
+mod stall;
 mod str_cmd;
 mod symbols_io;
 mod template;

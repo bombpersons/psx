@@ -72,6 +72,12 @@ pub struct Bus {
     #[serde(skip)]
     pub recent_dma: std::collections::VecDeque<UnmodelledDma>,
     pub gpu: psx_gpu::Gpu,
+    /// The last vblank by which the GPU had drawn something new (see
+    /// [`psx_gpu::Gpu::draws`]), and the draw count then. Analysis only.
+    #[serde(skip)]
+    pub last_draw_frame: u64,
+    #[serde(skip)]
+    draws_seen: u64,
     /// GP1(00h)/(01h) etc. are not tracked in GPUSTAT yet; this mirrors the
     /// display/DMA bits software set so status reads are plausible.
     gpustat_dma_dir: u32,
@@ -133,6 +139,8 @@ impl Bus {
             recent_dma: Default::default(),
             pending_mdec_out: None,
             gpu: psx_gpu::Gpu::new(),
+            last_draw_frame: 0,
+            draws_seen: 0,
             gpustat_dma_dir: 0,
             timers: Default::default(),
             now: 0,
@@ -314,6 +322,10 @@ impl Bus {
         if self.now >= self.next_vblank {
             self.next_vblank += self.frame_cycles();
             self.frames += 1;
+            if self.gpu.draws != self.draws_seen {
+                self.draws_seen = self.gpu.draws;
+                self.last_draw_frame = self.frames;
+            }
             self.raise_irq(1);
         }
     }
@@ -589,6 +601,9 @@ impl Bus {
     /// Recompute derived caches after a save state was decoded.
     pub(crate) fn after_restore(&mut self) {
         self.irq_dirty = true;
+        // Draw tracking is not saved: count idle frames from the restore.
+        self.last_draw_frame = self.frames;
+        self.draws_seen = self.gpu.draws;
     }
 
     #[inline]

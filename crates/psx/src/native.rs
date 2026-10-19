@@ -217,6 +217,7 @@ pub fn run(o: Options) -> (bool, Value) {
         reached,
         json!({
             "status": if reached { "frames_reached" } else if timed_out { "timeout" } else { "step_budget_exhausted" },
+            "warnings": crate::stall::warnings(&m),
             "video": {"region_at_capture":if m.bus.pal() { "PAL" } else { "NTSC" },"mode":m.bus.gpu.display.mode,
                 "cycles_per_vblank_at_capture":m.bus.frame_cycles(),"width":m.bus.gpu.display.width(),"height":m.bus.gpu.display.height(),
                 "interlaced":m.bus.gpu.display.interlaced_480(),"note":"GPU mode at capture; disc region and earlier boot modes may differ."},
