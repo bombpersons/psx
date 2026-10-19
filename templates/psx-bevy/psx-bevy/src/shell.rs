@@ -5,7 +5,9 @@
 //! many PS1 games run their logic every second field (25 or 30 Hz) while the
 //! screen refreshes at 50 or 60 Hz.
 use crate::controller::{self, Button, ControllerBindings, ControllerState};
+use crate::pointer::{self, Pointer};
 use crate::psx::Region;
+use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use std::time::Duration;
 
@@ -69,6 +71,8 @@ pub enum GameSystems {
 /// Modal interfaces capture raw input before the shell samples gameplay devices.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PhysicalInputSystems {
+    /// Updates [`Pointer`], so menus in `Capture` see this frame's mouse.
+    Pointer,
     Capture,
     Sample,
 }
@@ -108,6 +112,11 @@ struct DeviceInput {
     tapped: u16,
     left_stick: Vec2,
     right_stick: Vec2,
+    /// Mouse buttons, latched like `tapped`; motion and wheel summed.
+    mouse_tapped: u8,
+    mouse_position: Option<Vec2>,
+    mouse_motion: Vec2,
+    wheel: f32,
 }
 
 /// Fixed-rate logic, controller input and the tick clock.
@@ -126,10 +135,14 @@ impl Plugin for ShellPlugin {
             .init_resource::<InjectedInput>()
             .init_resource::<DeviceInput>()
             .init_resource::<InputFocus>()
+            .init_resource::<Pointer>()
             .configure_sets(
                 PreUpdate,
-                (PhysicalInputSystems::Capture, PhysicalInputSystems::Sample).chain().after(bevy::input::InputSystems),
+                (PhysicalInputSystems::Pointer, PhysicalInputSystems::Capture, PhysicalInputSystems::Sample)
+                    .chain()
+                    .after(bevy::input::InputSystems),
             )
+            .add_systems(PreUpdate, pointer::track_pointer.in_set(PhysicalInputSystems::Pointer))
             .configure_sets(FixedUpdate, (GameSystems::Input, GameSystems::Game, GameSystems::Finish).chain())
             .configure_sets(FixedUpdate, GameSystems::Game.run_if(|clock: Res<GameClock>| clock.ticking))
             .add_systems(
@@ -146,10 +159,13 @@ fn apply_tick_rate(rate: Res<TickRate>, mut time: ResMut<Time<Fixed>>) {
     time.set_timestep_hz(rate.hz);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sample_devices(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<(Entity, &Gamepad)>,
     bindings: Res<ControllerBindings>,
+    pointer: Res<Pointer>,
+    motion: Option<Res<AccumulatedMouseMotion>>,
     mut input: ResMut<DeviceInput>,
     mut focus: ResMut<InputFocus>,
     mut state: ResMut<ControllerState>,
@@ -160,7 +176,9 @@ fn sample_devices(
         *input = DeviceInput::default();
         state.reset();
         injected.buttons = 0;
+        // A click that closed a menu must not reach the game either.
         let neutral = keys.get_pressed().next().is_none()
+            && !pointer.any_held()
             && pad.is_none_or(|p| {
                 p.get_pressed().next().is_none()
                     && p.left_stick().length() < bindings.stick_deadzone().max(0.01)
@@ -176,6 +194,10 @@ fn sample_devices(
     input.tapped |= held;
     input.left_stick = left;
     input.right_stick = right;
+    input.mouse_tapped |= pointer.held_bits();
+    input.mouse_position = pointer.position;
+    input.mouse_motion += motion.map_or(Vec2::ZERO, |m| m.delta);
+    input.wheel += pointer.wheel;
 }
 
 fn begin_tick(
@@ -202,8 +224,12 @@ fn begin_tick(
     if clock.ticking {
         let buttons = device.held | device.tapped | injected.buttons;
         state.update(buttons, device.left_stick, device.right_stick);
+        state.mouse.update(device.mouse_tapped, device.mouse_position, device.mouse_motion, device.wheel);
     }
     device.tapped = 0;
+    device.mouse_tapped = 0;
+    device.mouse_motion = Vec2::ZERO;
+    device.wheel = 0.0;
 }
 
 fn finish_tick(
@@ -254,5 +280,45 @@ mod tests {
             app.update();
         }
         assert!(app.world().resource::<ControllerState>().released(Button::Cross));
+    }
+
+    /// The mouse follows the pad's rules: a click between ticks reaches the
+    /// next tick, and motion adds up over the tick's frames.
+    #[test]
+    fn mouse_clicks_and_motion_reach_the_next_tick() {
+        let tick = TickRate::every_nth_field(Region::Pal, 2);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, ShellPlugin { tick }))
+            .insert_resource(TimeUpdateStrategy::ManualDuration(tick.period() / 4))
+            .insert_resource(crate::psx::PsxScreen::default())
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseMotion>();
+        let mut window = Window { resolution: (960, 720).into(), ..default() };
+        window.set_cursor_position(Some(Vec2::new(480.0, 30.0)));
+        app.world_mut().spawn((window, bevy::window::PrimaryWindow));
+        let frame = |app: &App| app.world().resource::<GameClock>().frame;
+        while frame(&app) == 0 {
+            app.update();
+        }
+        let start = frame(&app);
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+        app.world_mut().resource_mut::<AccumulatedMouseMotion>().delta = Vec2::new(2.0, 1.0);
+        app.update();
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
+        app.update();
+        app.world_mut().resource_mut::<AccumulatedMouseMotion>().delta = Vec2::ZERO;
+        while frame(&app) == start {
+            app.update();
+        }
+        let mouse = app.world().resource::<ControllerState>().mouse;
+        assert!(mouse.pressed(MouseButton::Left), "{mouse:?}");
+        assert_eq!(mouse.position, Some(Vec2::new(160.0, 10.0)), "window pixels / 3");
+        assert!(mouse.motion.x >= 4.0 && mouse.motion.y >= 2.0, "summed over frames: {mouse:?}");
+        while frame(&app) == start + 1 {
+            app.update();
+        }
+        let mouse = app.world().resource::<ControllerState>().mouse;
+        assert!(mouse.released(MouseButton::Left) && mouse.motion == Vec2::ZERO, "{mouse:?}");
     }
 }

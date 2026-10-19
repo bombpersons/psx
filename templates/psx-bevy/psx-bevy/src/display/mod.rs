@@ -11,6 +11,7 @@ mod tests;
 mod view;
 
 use crate::{
+    pointer::{Hitboxes, Pointer},
     psx::{PsxAspect, PsxLook, PsxScreen, width_for_aspect},
     settings,
     shell::{InputFocus, PhysicalInputSystems},
@@ -53,6 +54,8 @@ impl Plugin for DisplayPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DisplayMenu>()
             .init_resource::<InputFocus>()
+            .init_resource::<Pointer>()
+            .init_resource::<Hitboxes<Row>>()
             .insert_resource(DisplayStore::new(self.path.clone()))
             .insert_resource(Options { screens: self.screens.clone(), overrides: self.overrides, defaults: None })
             .insert_resource(Shortcuts(self.global_shortcuts))
@@ -377,6 +380,8 @@ fn drive(
     options: Res<Options>,
     store: Res<DisplayStore>,
     shortcuts: Res<Shortcuts>,
+    pointer: Res<Pointer>,
+    hitboxes: Res<Hitboxes<Row>>,
     mut live: LiveDisplay,
 ) {
     let pad = pads.iter().min_by_key(|(e, _)| e.to_bits()).map(|(_, p)| p);
@@ -410,7 +415,7 @@ fn drive(
         return;
     }
     menu.selected = menu.selected.min(Row::ALL.len() - 1);
-    if keys.just_pressed(KeyCode::Escape) || pressed(GamepadButton::East) {
+    if keys.just_pressed(KeyCode::Escape) || pressed(GamepadButton::East) || pointer.just_pressed(MouseButton::Right) {
         revert(&menu, &mut live);
         menu.close(&mut focus);
         return;
@@ -422,9 +427,20 @@ fn drive(
     if keys.just_pressed(KeyCode::ArrowDown) || pressed(GamepadButton::DPadDown) {
         menu.selected = (menu.selected + 1) % n;
     }
+    // The mouse: hover selects, the wheel moves, left click acts as Enter.
+    let hovered = pointer.position.and_then(|p| hitboxes.at(p));
+    let clicked = hovered.filter(|_| pointer.just_pressed(MouseButton::Left));
+    if let Some(row) = hovered.filter(|_| pointer.moved).or(clicked) {
+        menu.select(row);
+    }
+    if pointer.wheel > 0.0 {
+        menu.selected = (menu.selected + n - 1) % n;
+    } else if pointer.wheel < 0.0 {
+        menu.selected = (menu.selected + 1) % n;
+    }
     let left = keys.just_pressed(KeyCode::ArrowLeft) || pressed(GamepadButton::DPadLeft);
     let right = keys.just_pressed(KeyCode::ArrowRight) || pressed(GamepadButton::DPadRight);
-    let confirm = keys.just_pressed(KeyCode::Enter) || pressed(GamepadButton::South);
+    let confirm = keys.just_pressed(KeyCode::Enter) || pressed(GamepadButton::South) || clicked.is_some();
     let row = menu.row();
     let next = if row.is_setting() && (left || right || confirm) {
         if matches!(row, Row::Aspect | Row::Fullscreen) && !live.windowed() {

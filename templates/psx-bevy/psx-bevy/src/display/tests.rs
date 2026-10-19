@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     controller::{Button, ControllerState},
+    pointer::Hitboxes,
     shell::{ShellPlugin, TickRate},
 };
 use bevy::time::TimeUpdateStrategy;
@@ -24,7 +25,8 @@ fn fixture(path: &Path, overrides: DisplayOverrides) -> App {
             },
         ))
         .insert_resource(TimeUpdateStrategy::ManualDuration(tick.period()))
-        .init_resource::<ButtonInput<KeyCode>>();
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<ButtonInput<MouseButton>>();
     app.world_mut().spawn((Window::default(), PrimaryWindow));
     frame(&mut app);
     frame(&mut app);
@@ -168,4 +170,66 @@ fn match_window_aspect_follows_the_window_and_back() {
     // Saved files from before the option exist without the field.
     std::fs::write(&path, br#"{"version":1,"display":{"screen":[320,240],"fullscreen":false,"look":{"vertex_snap":true,"dither":true,"quantize":true}}}"#).unwrap();
     assert_eq!(DisplayStore::new(Some(path)).load().unwrap().unwrap().aspect, PsxAspect::Fixed);
+}
+
+/// Rows stacked 10 pixels apart from the top of the screen, standing in for
+/// the view's layout.
+fn rows_at_top(app: &mut App) {
+    let rows = Row::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, row)| (Rect::new(0.0, i as f32 * 10.0, 320.0, i as f32 * 10.0 + 10.0), *row));
+    app.world_mut().resource_mut::<Hitboxes<Row>>().0 = rows.collect();
+}
+/// Moves the cursor to screen pixel `at`: the default 1280x720 window shows
+/// the 320x240 screen at 3x with 160-pixel bars at the sides.
+fn point(app: &mut App, at: Vec2) {
+    let world = app.world_mut();
+    let mut window = world.query_filtered::<&mut Window, With<PrimaryWindow>>().single_mut(world).unwrap();
+    window.set_cursor_position(Some(Vec2::new(160.0, 0.0) + at * 3.0));
+    frame(app);
+}
+fn click(app: &mut App, button: MouseButton) {
+    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(button);
+    frame(app);
+    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(button);
+    frame(app);
+}
+
+#[test]
+fn the_mouse_selects_changes_and_discards() {
+    let dir = directory("mouse");
+    let mut app = fixture(&dir.join("display.json"), default());
+    tap(&mut app, KeyCode::F2);
+    rows_at_top(&mut app);
+    point(&mut app, Vec2::new(40.0, Row::Dither as usize as f32 * 10.0 + 5.0));
+    assert_eq!(app.world().resource::<DisplayMenu>().row(), Row::Dither, "hover selects");
+    click(&mut app, MouseButton::Left);
+    assert!(!live(&mut app).look.dither, "click changes the hovered row");
+    click(&mut app, MouseButton::Right);
+    assert!(!app.world().resource::<DisplayMenu>().is_open());
+    assert!(live(&mut app).look.dither, "right click discards");
+}
+
+#[test]
+fn clicking_save_does_not_click_in_the_game() {
+    let dir = directory("mouse-save");
+    let path = dir.join("display.json");
+    let mut app = fixture(&path, default());
+    tap(&mut app, KeyCode::F2);
+    rows_at_top(&mut app);
+    point(&mut app, Vec2::new(40.0, Row::Save as usize as f32 * 10.0 + 5.0));
+    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+    frame(&mut app);
+    assert!(path.exists() && !app.world().resource::<DisplayMenu>().is_open());
+    for _ in 0..3 {
+        frame(&mut app);
+    }
+    assert!(!app.world().resource::<ControllerState>().mouse.held(MouseButton::Left), "held through the close");
+    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
+    frame(&mut app);
+    frame(&mut app);
+    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+    frame(&mut app);
+    assert!(app.world().resource::<ControllerState>().mouse.pressed(MouseButton::Left), "a new click is the game's");
 }

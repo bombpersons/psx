@@ -23,6 +23,7 @@ these modules). See the project's root README for the workspace and commands.
 | `controls/` | Reusable controls menu: draft edits, capture, conflict resolution and PS1-style presentation |
 | `display/` | Example display menu: resolution, borderless fullscreen and `PsxLook` switches, saved to `display.json` |
 | `settings.rs` | Player settings files: config folder, size-limited reads, atomic writes |
+| `pointer.rs` | The mouse on the PS1 screen: `Pointer`, window-to-screen mapping, menu `Hitboxes` |
 | `launcher.rs` | Window, renderer, headless mode and the shared command-line flags |
 | `testing.rs`, `testing/trajectory.rs` | `headless_app`, `TickApp::run_tick(s)`, replay and per-tick comparison with the original |
 | `testing/mcp.rs` | Stdio developer-MCP client for GPU tests (`dev-mcp`) |
@@ -333,6 +334,15 @@ commands.spawn((PsxModelRoot(car), Transform::default()));
   tick, so a tap shorter than one tick still counts as held for one tick.
   Do not skip ticks by counting `GameClock.frame`: presses on skipped ticks
   would be lost. Set the tick rate instead.
+- The mouse is sampled the same way, beside the pad (it is not mapped onto
+  buttons): `ControllerState::mouse` has `held`/`pressed`/`released(MouseButton)`
+  per tick, `position` on the PS1 screen in screen pixels (origin top-left,
+  y down, through the letterbox; `None` off the screen), `world_2d(size)` for
+  a default `Camera2d`'s coordinates, `motion` (raw device motion summed over
+  the tick, for mouse look) and `wheel` (lines). Menus and other per-frame UI
+  read `pointer::Pointer` instead, updated every rendered frame in
+  `PhysicalInputSystems::Pointer`. Replays and the developer MCP do not inject
+  mouse input yet.
 
 ### Tests
 
@@ -372,7 +382,10 @@ wholesale.
 ### Rebinding and the example controls menu
 
 In the demo, **F1** or **Start+Select** opens the controls menu. Arrow keys/D-pad
-choose a row; left/right selects the keyboard or gamepad column. Enter/South
+choose a row; left/right selects the keyboard or gamepad column. The mouse works
+too: hovering selects, clicking a keyboard or gamepad cell starts capture for it,
+right click is Esc and the wheel moves the selection, so a layout can be set
+without working arrow keys. Enter/South
 starts capture: release existing keys/buttons, then press the new physical input.
 After each binding (or confirmed swap) the selection moves to the next action, and
 after the last one to **Save and close**, so a full layout can be entered with
@@ -470,6 +483,7 @@ launcher beside `ControlsPlugin`): Resolution (the game's size, the same height
 at 16:9, and 2×; `launcher::screen_choices`), Aspect (Fixed or Match window;
 with Match window, Resolution chooses only the height), Fullscreen, and the
 three `PsxLook` switches. Up/Down chooses a row; Left/Right or Enter/South changes it.
+With the mouse, hover selects, left click changes, right click discards.
 Unlike the controls menu, edits apply at once so they can be seen; **Save and
 close** writes `display.json` beside `controls.json`, and **Discard and close**,
 Esc/East or F2 put back what showed when the menu opened. **Restore defaults**

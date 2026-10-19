@@ -9,6 +9,7 @@ use crate::{
     controller::{
         BindingConflict, BindingDevice, BindingStore, Button, ConflictPolicy, ControllerBindings, PhysicalBinding,
     },
+    pointer::{Hitboxes, Pointer},
     shell::{InputFocus, PhysicalInputSystems},
 };
 use bevy::prelude::*;
@@ -37,6 +38,8 @@ impl Plugin for ControlsPlugin {
             .init_resource::<Defaults>()
             .init_resource::<ControlsMenu>()
             .init_resource::<InputFocus>()
+            .init_resource::<Pointer>()
+            .init_resource::<Hitboxes<Item>>()
             .insert_resource(BindingStore::new(self.path.clone()))
             .insert_resource(Shortcuts(self.global_shortcuts))
             .add_systems(Startup, load)
@@ -51,6 +54,14 @@ impl Plugin for ControlsPlugin {
             view::plugin(app);
         }
     }
+}
+
+/// What a click or hover at a screen point means: a row, and for binding
+/// rows the device column under it. The view fills [`Hitboxes<Item>`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Item {
+    pub row: usize,
+    pub device: Option<BindingDevice>,
 }
 
 #[derive(Resource)]
@@ -173,6 +184,8 @@ fn drive(
     defaults: Res<Defaults>,
     mut store: ResMut<BindingStore>,
     shortcuts: Res<Shortcuts>,
+    pointer: Res<Pointer>,
+    hitboxes: Res<Hitboxes<Item>>,
 ) {
     let selected_pad = pads.iter().min_by_key(|(e, _)| e.to_bits());
     let pad = selected_pad.map(|(_, p)| p);
@@ -213,7 +226,11 @@ fn drive(
         return;
     }
     menu.selected = menu.selected.min(ROWS - 1);
-    if keys.just_pressed(KeyCode::Escape) {
+    // The mouse: hover selects, left click acts as Enter on what it is over,
+    // right click as Esc, the wheel moves the selection.
+    let hovered = pointer.position.and_then(|p| hitboxes.at(p));
+    let clicked = hovered.filter(|_| pointer.just_pressed(MouseButton::Left));
+    if keys.just_pressed(KeyCode::Escape) || pointer.just_pressed(MouseButton::Right) {
         if matches!(menu.mode, Mode::Browse) {
             menu.close(&mut focus);
         } else {
@@ -254,7 +271,7 @@ fn drive(
             }
         }
         Mode::Conflict(_) => {
-            if keys.just_pressed(KeyCode::Enter) || pressed(GamepadButton::South) {
+            if keys.just_pressed(KeyCode::Enter) || pressed(GamepadButton::South) || clicked.is_some() {
                 menu.confirm_conflict();
             } else if pressed(GamepadButton::East) {
                 menu.mode = Mode::Browse;
@@ -265,6 +282,17 @@ fn drive(
             if pressed(GamepadButton::East) {
                 menu.close(&mut focus);
                 return;
+            }
+            if let Some(item) = hovered.filter(|_| pointer.moved).or(clicked) {
+                menu.selected = item.row;
+                if let Some(device) = item.device {
+                    menu.device = device;
+                }
+            }
+            if pointer.wheel > 0.0 {
+                menu.selected = (menu.selected + ROWS - 1) % ROWS;
+            } else if pointer.wheel < 0.0 {
+                menu.selected = (menu.selected + 1) % ROWS;
             }
             if keys.just_pressed(KeyCode::ArrowUp) || pressed(GamepadButton::DPadUp) {
                 menu.selected = (menu.selected + ROWS - 1) % ROWS;
@@ -284,7 +312,7 @@ fn drive(
                 menu.draft.as_mut().unwrap().clear(action, device);
                 menu.status = format!("{} cleared (unsaved)", action.label());
             }
-            if keys.just_pressed(KeyCode::Enter) || pressed(GamepadButton::South) {
+            if keys.just_pressed(KeyCode::Enter) || pressed(GamepadButton::South) || clicked.is_some() {
                 match menu.selected {
                     RESTORE => {
                         menu.draft = Some(defaults.0.clone());

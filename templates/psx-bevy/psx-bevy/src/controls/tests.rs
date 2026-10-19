@@ -1,4 +1,5 @@
 use super::*;
+use crate::pointer::Hitboxes;
 use crate::{
     controller::ControllerState,
     shell::{GameClock, ShellPlugin, TickRate},
@@ -405,4 +406,52 @@ fn binding_moves_to_the_next_action_so_enter_alone_walks_the_layout() {
     tap(&mut app, KeyCode::Escape);
     assert_eq!(app.world().resource::<ControlsMenu>().selected, Button::Cross as usize);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Without arrow keys (a remote desktop sending other codes), the mouse
+/// reaches every slot: click a keyboard cell, press the new key.
+#[test]
+fn the_mouse_rebinds_without_arrow_keys() {
+    let dir = directory("mouse");
+    let path = dir.join("controls.json");
+    let mut app = fixture(&path);
+    app.insert_resource(crate::psx::PsxScreen::default()).init_resource::<ButtonInput<MouseButton>>();
+    app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow));
+    let row = |i: usize| Rect::new(6.0, 20.0 + i as f32 * 10.0, 314.0, 30.0 + i as f32 * 10.0);
+    let slot =
+        |i: usize, column: f32| Rect::new(76.0 + column * 117.0, row(i).min.y, 193.0 + column * 117.0, row(i).max.y);
+    let mut boxes: Vec<_> = (0..ROWS).map(|i| (row(i), Item { row: i, device: None })).collect();
+    for i in 0..RESTORE {
+        boxes.push((slot(i, 0.0), Item { row: i, device: Some(BindingDevice::Keyboard) }));
+        boxes.push((slot(i, 1.0), Item { row: i, device: Some(BindingDevice::Gamepad) }));
+    }
+    app.world_mut().resource_mut::<Hitboxes<Item>>().0 = boxes;
+    let click_at = |app: &mut App, at: Vec2, button: MouseButton| {
+        let world = app.world_mut();
+        let mut window =
+            world.query_filtered::<&mut Window, With<bevy::window::PrimaryWindow>>().single_mut(world).unwrap();
+        // The default 1280x720 window: 3x with 160-pixel bars.
+        window.set_cursor_position(Some(Vec2::new(160.0, 0.0) + at * 3.0));
+        frame(app);
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(button);
+        frame(app);
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(button);
+        frame(app);
+    };
+    tap(&mut app, KeyCode::F1);
+    assert!(app.world().resource::<ControlsMenu>().is_open());
+    // The keyboard cell of Up.
+    click_at(&mut app, slot(Button::Up as usize, 0.0).center(), MouseButton::Left);
+    assert_eq!(app.world().resource::<ControlsMenu>().device, BindingDevice::Keyboard);
+    tap(&mut app, KeyCode::KeyW);
+    let draft = app.world().resource::<ControlsMenu>().draft().unwrap().clone();
+    assert_eq!(draft.key(Button::Up), Some(KeyCode::KeyW));
+    click_at(&mut app, row(SAVE).center(), MouseButton::Left);
+    assert!(!app.world().resource::<ControlsMenu>().is_open());
+    assert_eq!(app.world().resource::<ControllerBindings>().key(Button::Up), Some(KeyCode::KeyW));
+    assert!(path.exists());
+    // Right click discards an open menu.
+    tap(&mut app, KeyCode::F1);
+    click_at(&mut app, row(RESTORE).center(), MouseButton::Right);
+    assert!(!app.world().resource::<ControlsMenu>().is_open());
 }

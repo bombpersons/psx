@@ -1,9 +1,12 @@
 //! Ordinary Bevy UI rendered into the PS1 canvas, like the controls menu.
 //! The menu follows the screen size, so resolution changes preview with it.
 use super::{DisplayMenu, DisplaySettings, Row};
-use crate::psx::{
-    PsxAspect, PsxLook, PsxScreen, PsxView, SCREEN_PASS_ORDER,
-    font::{LINE_H, text_image},
+use crate::{
+    pointer::{Hitboxes, node_rect},
+    psx::{
+        PsxAspect, PsxLook, PsxScreen, PsxView, SCREEN_PASS_ORDER,
+        font::{LINE_H, text_image},
+    },
 };
 use bevy::{camera::visibility::RenderLayers, prelude::*, window::PrimaryWindow};
 
@@ -29,10 +32,10 @@ const NAVY: Color = Color::linear_rgb(0.02, 0.04, 0.22);
 const SELECTED: Color = Color::linear_rgb(0.06, 0.18, 0.48);
 
 const LABEL_W: u32 = 102;
-const HINT: &str = "Up/Down: select  Left/Right: change\nEnter/South: choose  Esc/East: discard";
+const HINT: &str = "Up/Down or mouse: select\nLeft/Right, Enter or click: change\nEsc/East or right click: discard";
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Startup, spawn).add_systems(Update, refresh);
+    app.add_systems(Startup, spawn).add_systems(Update, (refresh, collect_hitboxes));
 }
 fn label(text: &str, color: Color, images: &mut Assets<Image>) -> impl Bundle {
     let image = text_image(text);
@@ -94,6 +97,17 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             root.spawn(Node { margin: UiRect::top(px(4)), flex_shrink: 0.0, overflow: Overflow::clip(), ..default() })
                 .with_child((Hint, label("", CYAN, &mut images)));
         });
+}
+
+fn collect_hitboxes(
+    menu: Res<DisplayMenu>,
+    lines: Query<(&Line, &ComputedNode, &UiGlobalTransform)>,
+    mut hitboxes: ResMut<Hitboxes<Row>>,
+) {
+    hitboxes.0.clear();
+    if menu.open {
+        hitboxes.0.extend(lines.iter().map(|(line, node, at)| (node_rect(node, at), Row::ALL[line.0])));
+    }
 }
 
 /// Common aspect ratios by name; others show only the size.

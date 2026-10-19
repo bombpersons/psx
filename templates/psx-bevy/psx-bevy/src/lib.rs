@@ -14,6 +14,7 @@ pub mod dev_mcp;
 pub mod display;
 pub mod launcher;
 pub mod model_viewer;
+pub mod pointer;
 pub mod psx;
 pub mod settings;
 pub mod shell;

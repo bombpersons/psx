@@ -1,5 +1,7 @@
 //! DualShock-style input. Game logic reads [`ControllerState`]; edit device
 //! mappings through [`ControllerBindings`]. [`crate::controls`] supplies an optional menu.
+//! The mouse comes alongside, in [`ControllerState::mouse`], for games that
+//! add mouse controls; it is not mapped onto the pad.
 use bevy::prelude::*;
 mod bindings;
 pub use bindings::{BindingConflict, BindingDevice, BindingStore, ConflictPolicy, ControllerBindings, PhysicalBinding};
@@ -55,6 +57,43 @@ impl Button {
     }
 }
 
+/// The mouse for one logic tick. Buttons follow the pad's rules (edges
+/// compare ticks, a click shorter than a tick is held for one tick); motion
+/// and wheel add up everything since the previous tick.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Reflect)]
+pub struct MouseState {
+    held: u8,
+    previous: u8,
+    /// The cursor on the PS1 screen at the tick, in screen pixels (origin
+    /// top-left, y down); `None` outside it. See [`crate::pointer`].
+    pub position: Option<Vec2>,
+    /// Raw device motion (y down), not limited by the window: mouse look.
+    pub motion: Vec2,
+    /// Wheel lines, positive away from the player.
+    pub wheel: f32,
+}
+
+impl MouseState {
+    /// `held` is [`crate::pointer::mouse_bits`] of the buttons down this tick.
+    pub fn update(&mut self, held: u8, position: Option<Vec2>, motion: Vec2, wheel: f32) {
+        *self = Self { held, previous: self.held, position, motion, wheel };
+    }
+    pub fn held(&self, button: MouseButton) -> bool {
+        self.held & crate::pointer::mouse_bit(button) != 0
+    }
+    pub fn pressed(&self, button: MouseButton) -> bool {
+        (self.held & !self.previous) & crate::pointer::mouse_bit(button) != 0
+    }
+    pub fn released(&self, button: MouseButton) -> bool {
+        (!self.held & self.previous) & crate::pointer::mouse_bit(button) != 0
+    }
+    /// The cursor in a default `Camera2d`'s world units on a screen of
+    /// `size`: origin at the centre, y up, one unit per pixel.
+    pub fn world_2d(&self, size: UVec2) -> Option<Vec2> {
+        self.position.map(|p| Vec2::new(p.x - size.x as f32 / 2.0, size.y as f32 / 2.0 - p.y))
+    }
+}
+
 /// Input sampled once per logic tick. Edges compare consecutive ticks, and a
 /// tap shorter than a tick still counts as held for one tick.
 #[derive(Resource, Default, Debug, Clone, Reflect)]
@@ -65,6 +104,8 @@ pub struct ControllerState {
     /// Analog sticks in -1..=1, y up. Zero inside the deadzone.
     pub left_stick: Vec2,
     pub right_stick: Vec2,
+    /// The mouse, sampled on the same tick.
+    pub mouse: MouseState,
 }
 
 impl ControllerState {
@@ -141,6 +182,20 @@ mod tests {
         keys.press(KeyCode::ArrowRight);
         let (bits, ..) = sample(&keys, None, &ControllerBindings::default());
         assert_eq!(bits, Button::Cross.mask() | Button::Right.mask());
+    }
+
+    #[test]
+    fn mouse_edges_are_ticks_and_world_2d_is_centred() {
+        let left = crate::pointer::mouse_bit(MouseButton::Left);
+        let mut mouse = MouseState::default();
+        mouse.update(left, Some(Vec2::new(0.0, 0.0)), Vec2::new(3.0, 0.0), 0.0);
+        assert!(mouse.pressed(MouseButton::Left) && mouse.held(MouseButton::Left));
+        mouse.update(left, Some(Vec2::new(160.0, 120.0)), Vec2::ZERO, 0.0);
+        assert!(!mouse.pressed(MouseButton::Left));
+        assert_eq!(mouse.world_2d(UVec2::new(320, 240)), Some(Vec2::ZERO));
+        mouse.update(0, Some(Vec2::new(0.0, 0.0)), Vec2::ZERO, 0.0);
+        assert!(mouse.released(MouseButton::Left));
+        assert_eq!(mouse.world_2d(UVec2::new(320, 240)), Some(Vec2::new(-160.0, 120.0)));
     }
 
     #[test]

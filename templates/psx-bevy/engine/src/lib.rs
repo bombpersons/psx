@@ -20,7 +20,9 @@ pub mod triggers;
 pub use psx_bevy;
 #[cfg(feature = "dev-mcp")]
 pub use psx_bevy::dev_mcp;
-pub use psx_bevy::{controller, controls, display, launcher, model_viewer, psx, settings, shell, testing, viewer};
+pub use psx_bevy::{
+    controller, controls, display, launcher, model_viewer, pointer, psx, settings, shell, testing, viewer,
+};
 
 use bevy::prelude::*;
 

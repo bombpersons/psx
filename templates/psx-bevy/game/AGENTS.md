@@ -71,6 +71,8 @@ Evidence-recording scripts and importers live in the workspace's `tools/`.
   options flow (`ControlsMenu::open()`), or use the
   `ControllerBindings`/`BindingStore` API with your own UI. Keep gameplay on
   logical `ControllerState`; physical rebinding belongs at this boundary.
+  Mouse controls read `ControllerState::mouse` (per tick, screen pixels);
+  per-frame UI reads `pointer::Pointer`.
   Modal interfaces capture `InputFocus` before `PhysicalInputSystems::Sample`;
   clear latched input and wait for physical release before resuming. See
   `psx-bevy/README.md`, "Rebinding".

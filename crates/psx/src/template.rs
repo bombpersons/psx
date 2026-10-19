@@ -69,6 +69,7 @@ const FILES: &[(&str, &str)] = files![
     "psx-bevy/src/launcher.rs",
     "psx-bevy/src/lib.rs",
     "psx-bevy/src/model_viewer.rs",
+    "psx-bevy/src/pointer.rs",
     "psx-bevy/src/psx/assets.rs",
     "psx-bevy/src/psx/font.rs",
     "psx-bevy/src/psx/formats/mod.rs",
