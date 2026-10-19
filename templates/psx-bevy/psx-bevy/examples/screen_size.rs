@@ -6,6 +6,8 @@
 //! For screenshot tests: cargo build --features dev-mcp --example screen_size
 //! then run with --mcp --headless --software. Edit the reflected
 //! `ScreenControls` component through game_set_component while paused.
+//! The 3D camera's projection is touched on every resize, as a game fitting
+//! its view to the screen would, which must not desync the shared depth.
 use bevy::prelude::*;
 use psx_bevy::{
     launcher::{self, Game},
@@ -30,7 +32,7 @@ fn main() {
         add: |app| {
             app.insert_resource(PsxLook { vertex_snap: false, dither: false, quantize: false })
                 .add_systems(Startup, setup)
-                .add_systems(Update, sync_controls);
+                .add_systems(Update, (sync_controls, fit_view).chain());
         },
     });
 }
@@ -57,5 +59,14 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
 fn sync_controls(controls: Query<&ScreenControls, Changed<ScreenControls>>, mut screen: ResMut<PsxScreen>) {
     for control in &controls {
         screen.set_size(UVec2::new(control.width, control.height));
+    }
+}
+
+/// Same field of view, but a projection change on the resize frame.
+fn fit_view(screen: Res<PsxScreen>, mut projections: Query<&mut Projection, With<Camera3d>>) {
+    if screen.is_changed() {
+        for mut projection in &mut projections {
+            projection.set_changed();
+        }
     }
 }

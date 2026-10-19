@@ -382,7 +382,7 @@ fn resize_screen(
     mut meshes: ResMut<Assets<Mesh>>,
     mut screen_pass: ResMut<Assets<ScreenPassMaterial>>,
     quads: Query<(&Mesh2d, &MeshMaterial2d<ScreenPassMaterial>), With<ScreenPassQuad>>,
-    mut targets: Query<&mut RenderTarget>,
+    mut targets: Query<(&mut RenderTarget, Option<&mut Projection>)>,
     mut display: Query<&mut Sprite, With<DisplayQuad>>,
 ) {
     let size = screen.size().max(UVec2::ONE);
@@ -392,13 +392,22 @@ fn resize_screen(
     debug!("PsxScreen resized to {}x{}", size.x, size.y);
     let (old_image, old_canvas) = (screen.image.clone(), screen.canvas.clone());
     let (image, canvas) = (images.add(screen_target(size)), images.add(screen_target(size)));
-    for mut target in &mut targets {
-        if let RenderTarget::Image(target) = &mut *target {
-            if target.handle == old_canvas {
-                target.handle = canvas.clone();
-            } else if target.handle == old_image {
-                target.handle = image.clone();
-            }
+    for (mut target, projection) in &mut targets {
+        let RenderTarget::Image(target) = &mut *target else { continue };
+        if target.handle == old_canvas {
+            target.handle = canvas.clone();
+        } else if target.handle == old_image {
+            target.handle = image.clone();
+        } else {
+            continue;
+        }
+        // Bevy recomputes a camera's target size when its projection changes
+        // or an image event arrives, not when `RenderTarget` changes. Without
+        // this, a camera whose projection changes this frame for another
+        // reason picks up the new size a frame before the others drawing to
+        // the same image, and their shared depth texture no longer matches.
+        if let Some(mut projection) = projection {
+            projection.set_changed();
         }
     }
     for (quad, material) in &quads {
@@ -574,7 +583,9 @@ mod tests {
         app.insert_resource(PsxScreen { image: image.clone(), canvas: canvas.clone(), ..default() });
         app.update();
         app.world_mut().resource_mut::<PsxScreen>().set_size(UVec2::new(426, 240));
-        let target = app.world_mut().spawn(RenderTarget::Image(canvas.clone().into())).id();
+        let target = app.world_mut().spawn((RenderTarget::Image(canvas.clone().into()), Projection::default())).id();
+        let other =
+            app.world_mut().spawn((RenderTarget::Image(Handle::<Image>::default().into()), Projection::default())).id();
         let display = app.world_mut().spawn((Sprite::from_image(image.clone()), DisplayQuad)).id();
         app.update();
         let screen = app.world().resource::<PsxScreen>().clone();
@@ -585,6 +596,8 @@ mod tests {
         }
         let RenderTarget::Image(retargeted) = app.world().get::<RenderTarget>(target).unwrap() else { panic!() };
         assert_eq!(retargeted.handle, screen.canvas, "PsxView cameras follow the canvas");
+        let changed = |e: Entity| app.world().entity(e).get_ref::<Projection>().unwrap().last_changed().get();
+        assert!(changed(target) > changed(other), "retargeted cameras recompute their size together");
         let pass = app.world().resource::<Assets<ScreenPassMaterial>>().iter().next().unwrap().1.canvas.clone();
         assert_eq!(pass, screen.canvas);
         let shown = &app.world().get::<Sprite>(display).unwrap().image;
