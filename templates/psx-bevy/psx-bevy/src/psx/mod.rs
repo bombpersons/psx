@@ -217,13 +217,8 @@ impl Plugin for PsxPlugin {
     fn build(&self, app: &mut App) {
         let mut screen = self.screen.clone();
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-        let target = || Image::new_target_texture(screen.width, screen.height, TextureFormat::Rgba8UnormSrgb, None);
-        let mut image = target();
-        image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
-        let mut canvas = target();
-        canvas.texture_descriptor.usage |= TextureUsages::COPY_SRC;
-        let (image, canvas) = (images.add(image), images.add(canvas));
-        (screen.image, screen.canvas) = (image, canvas);
+        let size = screen.size().max(UVec2::ONE);
+        (screen.image, screen.canvas) = (images.add(screen_target(size)), images.add(screen_target(size)));
 
         scene::plugin(app);
         assets::plugin(app);
@@ -363,38 +358,61 @@ fn spawn_screen_pass(
     ));
 }
 
-/// Follows [`PsxScreen::set_size`]: resizes both targets and the screen pass
-/// quad. Runs before cameras read their target sizes, so projections (3D
-/// aspect, 2D one unit per pixel) match the new size on the same frame.
+/// A screen-sized render target: the screen image or the canvas.
+fn screen_target(size: UVec2) -> Image {
+    let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None);
+    image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+    image
+}
+
+/// Follows [`PsxScreen::set_size`] with new screen images and points
+/// everything that drew into or from the old ones at them: `PsxView` cameras,
+/// the screen pass and the window display. Runs before cameras read their
+/// target sizes, so projections (3D aspect, 2D one unit per pixel) match the
+/// new size on the same frame.
 ///
-/// A resized image is a new GPU texture, but a material's bind group keeps
-/// the texture it was prepared with, so the screen pass material is touched
-/// to rebind the new canvas. Game materials sampling `PsxScreen::image` need
-/// the same.
+/// New images rather than resized ones: renderer caches (material and
+/// sprite bind groups) are keyed by image id, and a resized image could
+/// leave one drawing from the old texture, which froze the window display.
+/// Game code that keeps a clone of `PsxScreen::image` must read it again.
+#[allow(clippy::too_many_arguments)]
 fn resize_screen(
-    screen: Res<PsxScreen>,
+    mut screen: ResMut<PsxScreen>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut screen_pass: ResMut<Assets<ScreenPassMaterial>>,
     quads: Query<(&Mesh2d, &MeshMaterial2d<ScreenPassMaterial>), With<ScreenPassQuad>>,
+    mut targets: Query<&mut RenderTarget>,
+    mut display: Query<&mut Sprite, With<DisplayQuad>>,
 ) {
     let size = screen.size().max(UVec2::ONE);
     if !screen.is_changed() || images.get(&screen.image).is_none_or(|image| image.size() == size) {
         return;
     }
-    let extent = bevy::render::render_resource::Extent3d { width: size.x, height: size.y, depth_or_array_layers: 1 };
-    for handle in [&screen.image, &screen.canvas] {
-        if let Some(mut image) = images.get_mut(handle) {
-            image.resize(extent);
+    debug!("PsxScreen resized to {}x{}", size.x, size.y);
+    let (old_image, old_canvas) = (screen.image.clone(), screen.canvas.clone());
+    let (image, canvas) = (images.add(screen_target(size)), images.add(screen_target(size)));
+    for mut target in &mut targets {
+        if let RenderTarget::Image(target) = &mut *target {
+            if target.handle == old_canvas {
+                target.handle = canvas.clone();
+            } else if target.handle == old_image {
+                target.handle = image.clone();
+            }
         }
     }
     for (quad, material) in &quads {
         if let Some(mut mesh) = meshes.get_mut(&quad.0) {
             *mesh = Rectangle::new(size.x as f32, size.y as f32).into();
         }
-        // Marks it modified without changing it.
-        screen_pass.get_mut(&material.0).map(|m| m.into_inner());
+        if let Some(mut material) = screen_pass.get_mut(&material.0) {
+            material.canvas = canvas.clone();
+        }
     }
+    for mut sprite in &mut display {
+        sprite.image = image.clone();
+    }
+    (screen.image, screen.canvas) = (image, canvas);
 }
 
 fn spawn_display(
@@ -438,6 +456,7 @@ fn match_window_aspect(aspect: Res<PsxAspect>, windows: Query<&Window>, mut scre
     let height = screen.height;
     let width = width_for_aspect(height, window.size());
     if width != screen.width {
+        debug!("Window {}x{}: screen width {} -> {width}", window.width(), window.height(), screen.width);
         screen.set_size(UVec2::new(width, height));
     }
 }
@@ -555,13 +574,21 @@ mod tests {
         app.insert_resource(PsxScreen { image: image.clone(), canvas: canvas.clone(), ..default() });
         app.update();
         app.world_mut().resource_mut::<PsxScreen>().set_size(UVec2::new(426, 240));
+        let target = app.world_mut().spawn(RenderTarget::Image(canvas.clone().into())).id();
+        let display = app.world_mut().spawn((Sprite::from_image(image.clone()), DisplayQuad)).id();
         app.update();
+        let screen = app.world().resource::<PsxScreen>().clone();
+        assert!(screen.image != image && screen.canvas != canvas, "new images, so no renderer cache keeps the old");
         let images = app.world().resource::<Assets<Image>>();
-        for handle in [&image, &canvas] {
-            let resized = images.get(handle).unwrap();
-            assert_eq!(resized.size(), UVec2::new(426, 240));
-            assert_eq!(resized.data.as_ref().unwrap().len(), 426 * 240 * 4);
+        for handle in [&screen.image, &screen.canvas] {
+            assert_eq!(images.get(handle).unwrap().size(), UVec2::new(426, 240));
         }
+        let RenderTarget::Image(retargeted) = app.world().get::<RenderTarget>(target).unwrap() else { panic!() };
+        assert_eq!(retargeted.handle, screen.canvas, "PsxView cameras follow the canvas");
+        let pass = app.world().resource::<Assets<ScreenPassMaterial>>().iter().next().unwrap().1.canvas.clone();
+        assert_eq!(pass, screen.canvas);
+        let shown = &app.world().get::<Sprite>(display).unwrap().image;
+        assert_eq!(*shown, screen.image, "the window shows the new screen image");
         let mesh = app.world().resource::<Assets<Mesh>>().get(&quad).unwrap();
         let x = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap().iter().map(|p| p[0]);
         assert_eq!(x.fold(0.0f32, f32::max), 213.0);

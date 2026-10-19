@@ -465,10 +465,12 @@ renders, both screen images, the screen pass and every `PsxView` camera follow:
 stays one unit per pixel with the origin at the centre. Anything laid out from
 the old size is the game's to move; `PsxAnchor { at, offset }` keeps a 2D entity
 at a screen point (`at` is -1..=1 per axis, `(0, -1)` the bottom centre) plus a
-pixel offset, which is what the demo's HUD uses. A resized image is a new GPU
-texture and a material's bind group keeps the old one, so a game material that
-samples `PsxScreen::image` must be marked changed after a resize, as the screen
-pass is. `examples/screen_size.rs` and its GPU test check all of this.
+pixel offset, which is what the demo's HUD uses. A resize replaces the screen
+images with new ones (renderer caches are keyed by image, so resizing in place
+could leave the window showing a stale frame), so game code that keeps a clone
+of `PsxScreen::image` or `canvas` must read it again; cameras with `PsxView`
+are retargeted automatically. `examples/screen_size.rs` and its GPU test check
+all of this.
 
 `--fullscreen` starts in borderless fullscreen and **F11** toggles it
 (`display::set_fullscreen`).
