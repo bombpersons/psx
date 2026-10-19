@@ -383,9 +383,11 @@ wholesale.
 
 In the demo, **F1** or **Start+Select** opens the controls menu. Arrow keys/D-pad
 choose a row; left/right selects the keyboard or gamepad column. The mouse works
-too: hovering selects, clicking a keyboard or gamepad cell starts capture for it,
-right click is Esc and the wheel moves the selection, so a layout can be set
-without working arrow keys. Enter/South
+too: hovering selects, clicking a keyboard or gamepad cell starts capture for it
+(clicking an action's name only selects it), right click is Esc and the wheel
+moves the selection, so a layout can be set without working arrow keys. During
+capture, a click on another cell moves the capture there and a click anywhere
+else cancels it. Enter/South
 starts capture: release existing keys/buttons, then press the new physical input.
 After each binding (or confirmed swap) the selection moves to the next action, and
 after the last one to **Save and close**, so a full layout can be entered with
@@ -483,7 +485,8 @@ launcher beside `ControlsPlugin`): Resolution (the game's size, the same height
 at 16:9, and 2×; `launcher::screen_choices`), Aspect (Fixed or Match window;
 with Match window, Resolution chooses only the height), Fullscreen, and the
 three `PsxLook` switches. Up/Down chooses a row; Left/Right or Enter/South changes it.
-With the mouse, hover selects, left click changes, right click discards.
+With the mouse, hover selects; click a setting's `<` or `>` to step it either
+way (the rest of the row steps forwards); right click discards.
 Unlike the controls menu, edits apply at once so they can be seen; **Save and
 close** writes `display.json` beside `controls.json`, and **Discard and close**,
 Esc/East or F2 put back what showed when the menu opened. **Restore defaults**

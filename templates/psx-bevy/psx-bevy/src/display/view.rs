@@ -1,11 +1,11 @@
 //! Ordinary Bevy UI rendered into the PS1 canvas, like the controls menu.
 //! The menu follows the screen size, so resolution changes preview with it.
-use super::{DisplayMenu, DisplaySettings, Row};
+use super::{DisplayMenu, DisplaySettings, Row, Target};
 use crate::{
     pointer::{Hitboxes, node_rect},
     psx::{
         PsxAspect, PsxLook, PsxScreen, PsxView, SCREEN_PASS_ORDER,
-        font::{LINE_H, text_image},
+        font::{GLYPH_W, LINE_H, text_image},
     },
 };
 use bevy::{camera::visibility::RenderLayers, prelude::*, window::PrimaryWindow};
@@ -18,6 +18,14 @@ struct DisplayCamera;
 struct Line(usize);
 #[derive(Component)]
 struct Value(usize);
+/// A setting's `<` (backwards) or `>` (forwards), clickable.
+#[derive(Component)]
+struct Arrow(usize, bool);
+/// The glyph inside an [`Arrow`], tinted with its row's selection.
+#[derive(Component)]
+struct ArrowGlyph(usize);
+type ArrowGlyphs<'w, 's> =
+    Query<'w, 's, (&'static ArrowGlyph, &'static mut ImageNode), (Without<Value>, Without<Hint>)>;
 #[derive(Component)]
 struct Hint;
 /// The text an `ImageNode` currently shows, so it is only re-rendered on change.
@@ -31,8 +39,11 @@ const CYAN: Color = Color::linear_rgb(0.25, 0.85, 1.0);
 const NAVY: Color = Color::linear_rgb(0.02, 0.04, 0.22);
 const SELECTED: Color = Color::linear_rgb(0.06, 0.18, 0.48);
 
+/// Fixed columns, so the arrows stay put as values change.
 const LABEL_W: u32 = 102;
-const HINT: &str = "Up/Down or mouse: select\nLeft/Right, Enter or click: change\nEsc/East or right click: discard";
+const ARROW_W: u32 = 12;
+const VALUE_W: u32 = 14 * GLYPH_W;
+const HINT: &str = "Up/Down or mouse: select\nLeft/Right or click < >: change\nEsc/East or right click: discard";
 
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(Startup, spawn).add_systems(Update, (refresh, collect_hitboxes));
@@ -89,8 +100,19 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                     line.spawn(Node { width: px(LABEL_W), height: px(LINE_H), flex_shrink: 0.0, ..default() })
                         .with_child(label(row.label(), WHITE, &mut images));
                     if row.is_setting() {
-                        line.spawn(Node { height: px(LINE_H), ..default() })
+                        let cell = |width| Node {
+                            width: px(width),
+                            height: px(LINE_H),
+                            flex_shrink: 0.0,
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        };
+                        line.spawn((cell(ARROW_W), Arrow(i, false)))
+                            .with_child((ArrowGlyph(i), label("<", CYAN, &mut images)));
+                        line.spawn(Node { justify_content: JustifyContent::Start, ..cell(VALUE_W) })
                             .with_child((Value(i), label("", WHITE, &mut images)));
+                        line.spawn((cell(ARROW_W), Arrow(i, true)))
+                            .with_child((ArrowGlyph(i), label(">", CYAN, &mut images)));
                     }
                 });
             }
@@ -99,14 +121,19 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         });
 }
 
+/// Rows, then the arrows inside them.
 fn collect_hitboxes(
     menu: Res<DisplayMenu>,
     lines: Query<(&Line, &ComputedNode, &UiGlobalTransform)>,
-    mut hitboxes: ResMut<Hitboxes<Row>>,
+    arrows: Query<(&Arrow, &ComputedNode, &UiGlobalTransform)>,
+    mut hitboxes: ResMut<Hitboxes<Target>>,
 ) {
     hitboxes.0.clear();
     if menu.open {
-        hitboxes.0.extend(lines.iter().map(|(line, node, at)| (node_rect(node, at), Row::ALL[line.0])));
+        let lines = lines.iter().map(|(line, node, at)| (node_rect(node, at), Target::Row(Row::ALL[line.0])));
+        let arrows =
+            arrows.iter().map(|(arrow, node, at)| (node_rect(node, at), Target::Step(Row::ALL[arrow.0], arrow.1)));
+        hitboxes.0.extend(lines.chain(arrows));
     }
 }
 
@@ -149,6 +176,7 @@ fn refresh(
     mut cameras: Query<&mut Camera, With<DisplayCamera>>,
     mut lines: Query<(&Line, &mut BackgroundColor)>,
     mut values: Query<(&Value, &mut Label, &mut ImageNode, &mut Node), Without<Hint>>,
+    mut arrows: ArrowGlyphs,
     mut hints: Query<(&mut Label, &mut ImageNode, &mut Node), With<Hint>>,
 ) {
     if !menu.is_changed() && !menu.open {
@@ -179,8 +207,10 @@ fn refresh(
         let selected = value.0 == menu.selected;
         node.color = if selected { GOLD } else { WHITE };
         let text = self::value(Row::ALL[value.0], &settings, !windows.is_empty());
-        let text = if selected { format!("< {text} >") } else { text };
         set(&mut label, &mut node, &mut layout, text);
+    }
+    for (glyph, mut node) in &mut arrows {
+        node.color = if glyph.0 == menu.selected { GOLD } else { CYAN };
     }
     for (mut label, mut node, mut layout) in &mut hints {
         set(&mut label, &mut node, &mut layout, format!("{}\n{HINT}", menu.status));
@@ -198,9 +228,14 @@ mod tests {
         let inner = 256 - 2 * 2 - 2 * 6;
         assert!(text_width(HINT) <= inner, "{HINT}");
         assert!(Row::ALL.iter().all(|r| text_width(r.label()) <= LABEL_W));
-        let widest = DisplaySettings { screen: [4096, 4096], aspect: default(), fullscreen: false, look: default() };
-        for row in [Row::Resolution, Row::Aspect] {
-            assert!(LABEL_W + text_width(&format!("< {} >", value(row, &widest, true))) <= inner);
+        assert!(LABEL_W + 2 * ARROW_W + VALUE_W <= inner);
+        let window =
+            DisplaySettings { screen: [4096, 4096], aspect: PsxAspect::Window, fullscreen: false, look: default() };
+        for settings in [window, DisplaySettings { screen: [1280, 800], ..window }] {
+            for row in Row::ALL.into_iter().filter(|r| r.is_setting()) {
+                let text = value(row, &settings, true);
+                assert!(text_width(&text) <= VALUE_W, "{text}");
+            }
         }
     }
 

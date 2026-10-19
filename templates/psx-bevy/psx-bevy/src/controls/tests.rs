@@ -408,50 +408,89 @@ fn binding_moves_to_the_next_action_so_enter_alone_walks_the_layout() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Row and slot rectangles laid out like the view's, at 320x240.
+fn row_rect(i: usize) -> Rect {
+    Rect::new(6.0, 20.0 + i as f32 * 10.0, 314.0, 30.0 + i as f32 * 10.0)
+}
+fn slot_rect(i: usize, device: BindingDevice) -> Rect {
+    let column = if device == BindingDevice::Keyboard { 0.0 } else { 1.0 };
+    Rect::new(76.0 + column * 117.0, row_rect(i).min.y, 193.0 + column * 117.0, row_rect(i).max.y)
+}
+/// The fixture with a window, a screen and the view's hitboxes.
+fn mouse_fixture(path: &Path) -> App {
+    let mut app = fixture(path);
+    app.insert_resource(crate::psx::PsxScreen::default()).init_resource::<ButtonInput<MouseButton>>();
+    app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow));
+    let mut boxes: Vec<_> = (0..ROWS).map(|i| (row_rect(i), Item { row: i, device: None })).collect();
+    for i in 0..RESTORE {
+        for device in [BindingDevice::Keyboard, BindingDevice::Gamepad] {
+            boxes.push((slot_rect(i, device), Item { row: i, device: Some(device) }));
+        }
+    }
+    app.world_mut().resource_mut::<Hitboxes<Item>>().0 = boxes;
+    app
+}
+/// Moves to screen pixel `at` (the default 1280x720 window shows the screen
+/// at 3x with 160-pixel bars), then clicks `button` there.
+fn click_at(app: &mut App, at: Vec2, button: MouseButton) {
+    let world = app.world_mut();
+    let mut window =
+        world.query_filtered::<&mut Window, With<bevy::window::PrimaryWindow>>().single_mut(world).unwrap();
+    window.set_cursor_position(Some(Vec2::new(160.0, 0.0) + at * 3.0));
+    frame(app);
+    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(button);
+    frame(app);
+    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(button);
+    frame(app);
+}
+fn listening(app: &App) -> bool {
+    matches!(app.world().resource::<ControlsMenu>().mode, Mode::Listen { .. })
+}
+
 /// Without arrow keys (a remote desktop sending other codes), the mouse
 /// reaches every slot: click a keyboard cell, press the new key.
 #[test]
 fn the_mouse_rebinds_without_arrow_keys() {
     let dir = directory("mouse");
     let path = dir.join("controls.json");
-    let mut app = fixture(&path);
-    app.insert_resource(crate::psx::PsxScreen::default()).init_resource::<ButtonInput<MouseButton>>();
-    app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow));
-    let row = |i: usize| Rect::new(6.0, 20.0 + i as f32 * 10.0, 314.0, 30.0 + i as f32 * 10.0);
-    let slot =
-        |i: usize, column: f32| Rect::new(76.0 + column * 117.0, row(i).min.y, 193.0 + column * 117.0, row(i).max.y);
-    let mut boxes: Vec<_> = (0..ROWS).map(|i| (row(i), Item { row: i, device: None })).collect();
-    for i in 0..RESTORE {
-        boxes.push((slot(i, 0.0), Item { row: i, device: Some(BindingDevice::Keyboard) }));
-        boxes.push((slot(i, 1.0), Item { row: i, device: Some(BindingDevice::Gamepad) }));
-    }
-    app.world_mut().resource_mut::<Hitboxes<Item>>().0 = boxes;
-    let click_at = |app: &mut App, at: Vec2, button: MouseButton| {
-        let world = app.world_mut();
-        let mut window =
-            world.query_filtered::<&mut Window, With<bevy::window::PrimaryWindow>>().single_mut(world).unwrap();
-        // The default 1280x720 window: 3x with 160-pixel bars.
-        window.set_cursor_position(Some(Vec2::new(160.0, 0.0) + at * 3.0));
-        frame(app);
-        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(button);
-        frame(app);
-        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(button);
-        frame(app);
-    };
+    let mut app = mouse_fixture(&path);
     tap(&mut app, KeyCode::F1);
     assert!(app.world().resource::<ControlsMenu>().is_open());
-    // The keyboard cell of Up.
-    click_at(&mut app, slot(Button::Up as usize, 0.0).center(), MouseButton::Left);
+    click_at(&mut app, slot_rect(Button::Up as usize, BindingDevice::Keyboard).center(), MouseButton::Left);
     assert_eq!(app.world().resource::<ControlsMenu>().device, BindingDevice::Keyboard);
     tap(&mut app, KeyCode::KeyW);
     let draft = app.world().resource::<ControlsMenu>().draft().unwrap().clone();
     assert_eq!(draft.key(Button::Up), Some(KeyCode::KeyW));
-    click_at(&mut app, row(SAVE).center(), MouseButton::Left);
+    click_at(&mut app, row_rect(SAVE).center(), MouseButton::Left);
     assert!(!app.world().resource::<ControlsMenu>().is_open());
     assert_eq!(app.world().resource::<ControllerBindings>().key(Button::Up), Some(KeyCode::KeyW));
     assert!(path.exists());
     // Right click discards an open menu.
     tap(&mut app, KeyCode::F1);
-    click_at(&mut app, row(RESTORE).center(), MouseButton::Right);
+    click_at(&mut app, row_rect(RESTORE).center(), MouseButton::Right);
     assert!(!app.world().resource::<ControlsMenu>().is_open());
+}
+
+/// Clicking around must never leave the menu waiting unseen for a key: an
+/// action name only selects, and a click elsewhere during capture moves the
+/// capture (or cancels it) instead of being ignored.
+#[test]
+fn clicking_around_never_strands_the_menu_in_capture() {
+    let dir = directory("mouse-around");
+    let mut app = mouse_fixture(&dir.join("controls.json"));
+    tap(&mut app, KeyCode::F1);
+    click_at(&mut app, row_rect(Button::Up as usize).center() - Vec2::new(120.0, 0.0), MouseButton::Left);
+    assert!(!listening(&app), "the action name selects without capturing");
+    assert_eq!(app.world().resource::<ControlsMenu>().selected, Button::Up as usize);
+    click_at(&mut app, slot_rect(Button::Up as usize, BindingDevice::Gamepad).center(), MouseButton::Left);
+    assert!(listening(&app));
+    click_at(&mut app, slot_rect(Button::Down as usize, BindingDevice::Keyboard).center(), MouseButton::Left);
+    let menu = app.world().resource::<ControlsMenu>();
+    assert!(listening(&app), "a click on another slot moves the capture there");
+    assert_eq!((menu.selected, menu.device), (Button::Down as usize, BindingDevice::Keyboard));
+    click_at(&mut app, row_rect(SAVE).center(), MouseButton::Left);
+    assert!(!listening(&app), "a click on a non-binding row cancels the capture");
+    assert!(app.world().resource::<ControlsMenu>().is_open(), "and only cancels: Save needs its own click");
+    tap(&mut app, KeyCode::KeyW);
+    assert_eq!(app.world().resource::<ControlsMenu>().draft().unwrap().key(Button::Down), Some(KeyCode::ArrowDown));
 }

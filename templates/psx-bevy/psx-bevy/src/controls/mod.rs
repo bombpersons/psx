@@ -226,10 +226,12 @@ fn drive(
         return;
     }
     menu.selected = menu.selected.min(ROWS - 1);
-    // The mouse: hover selects, left click acts as Enter on what it is over,
-    // right click as Esc, the wheel moves the selection.
+    // The mouse: hover selects, left click acts as Enter on a binding slot or
+    // a command row (an action's name only selects it), right click as Esc,
+    // the wheel moves the selection.
     let hovered = pointer.position.and_then(|p| hitboxes.at(p));
     let clicked = hovered.filter(|_| pointer.just_pressed(MouseButton::Left));
+    let slot = |item: Item| item.device.filter(|_| item.row < RESTORE);
     if keys.just_pressed(KeyCode::Escape) || pointer.just_pressed(MouseButton::Right) {
         if matches!(menu.mode, Mode::Browse) {
             menu.close(&mut focus);
@@ -241,6 +243,23 @@ fn drive(
     }
     match menu.mode.clone() {
         Mode::Listen { mut armed, pad: previous_pad } => {
+            // A click elsewhere moves the capture to another slot, or cancels
+            // it, rather than leaving the menu waiting unseen for a key.
+            if let Some(item) = clicked {
+                match slot(item) {
+                    Some(device) if (item.row, device) == (menu.selected, menu.device) => {}
+                    Some(device) => {
+                        (menu.selected, menu.device) = (item.row, device);
+                        menu.begin_capture(pad_entity);
+                        return;
+                    }
+                    None => {
+                        menu.mode = Mode::Browse;
+                        menu.status = "Binding cancelled.".into();
+                        return;
+                    }
+                }
+            }
             if previous_pad != pad_entity {
                 armed = false;
             }
@@ -251,7 +270,7 @@ fn drive(
                 menu.status = if menu.device == BindingDevice::Gamepad && pad.is_none() {
                     "Connect a gamepad to assign its buttons.".into()
                 } else if armed {
-                    "Press a new binding. Esc cancels.".into()
+                    "Press a new binding. Esc or right click cancels.".into()
                 } else {
                     "Release all keys and buttons first.".into()
                 };
@@ -312,7 +331,8 @@ fn drive(
                 menu.draft.as_mut().unwrap().clear(action, device);
                 menu.status = format!("{} cleared (unsaved)", action.label());
             }
-            if keys.just_pressed(KeyCode::Enter) || pressed(GamepadButton::South) || clicked.is_some() {
+            let click = clicked.is_some_and(|item| slot(item).is_some() || item.row >= RESTORE);
+            if keys.just_pressed(KeyCode::Enter) || pressed(GamepadButton::South) || click {
                 match menu.selected {
                     RESTORE => {
                         menu.draft = Some(defaults.0.clone());

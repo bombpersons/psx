@@ -55,7 +55,7 @@ impl Plugin for DisplayPlugin {
         app.init_resource::<DisplayMenu>()
             .init_resource::<InputFocus>()
             .init_resource::<Pointer>()
-            .init_resource::<Hitboxes<Row>>()
+            .init_resource::<Hitboxes<Target>>()
             .insert_resource(DisplayStore::new(self.path.clone()))
             .insert_resource(Options { screens: self.screens.clone(), overrides: self.overrides, defaults: None })
             .insert_resource(Shortcuts(self.global_shortcuts))
@@ -264,6 +264,21 @@ impl Row {
     }
 }
 
+/// What the mouse is over: a row, or one of a setting's `<` `>` arrows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Row(Row),
+    /// Step the row's value forwards (`>`) or backwards (`<`).
+    Step(Row, bool),
+}
+impl Target {
+    pub fn row(self) -> Row {
+        match self {
+            Self::Row(row) | Self::Step(row, _) => row,
+        }
+    }
+}
+
 /// Selection survives closing. While open, the live resources are the draft.
 #[derive(Resource, Default)]
 pub struct DisplayMenu {
@@ -381,7 +396,7 @@ fn drive(
     store: Res<DisplayStore>,
     shortcuts: Res<Shortcuts>,
     pointer: Res<Pointer>,
-    hitboxes: Res<Hitboxes<Row>>,
+    hitboxes: Res<Hitboxes<Target>>,
     mut live: LiveDisplay,
 ) {
     let pad = pads.iter().min_by_key(|(e, _)| e.to_bits()).map(|(_, p)| p);
@@ -427,20 +442,26 @@ fn drive(
     if keys.just_pressed(KeyCode::ArrowDown) || pressed(GamepadButton::DPadDown) {
         menu.selected = (menu.selected + 1) % n;
     }
-    // The mouse: hover selects, the wheel moves, left click acts as Enter.
+    // The mouse: hover selects, the wheel moves, left click on `<` or `>`
+    // steps that way and on the rest of a row acts as Enter.
     let hovered = pointer.position.and_then(|p| hitboxes.at(p));
     let clicked = hovered.filter(|_| pointer.just_pressed(MouseButton::Left));
-    if let Some(row) = hovered.filter(|_| pointer.moved).or(clicked) {
-        menu.select(row);
+    if let Some(target) = hovered.filter(|_| pointer.moved).or(clicked) {
+        menu.select(target.row());
     }
     if pointer.wheel > 0.0 {
         menu.selected = (menu.selected + n - 1) % n;
     } else if pointer.wheel < 0.0 {
         menu.selected = (menu.selected + 1) % n;
     }
-    let left = keys.just_pressed(KeyCode::ArrowLeft) || pressed(GamepadButton::DPadLeft);
-    let right = keys.just_pressed(KeyCode::ArrowRight) || pressed(GamepadButton::DPadRight);
-    let confirm = keys.just_pressed(KeyCode::Enter) || pressed(GamepadButton::South) || clicked.is_some();
+    let left = keys.just_pressed(KeyCode::ArrowLeft)
+        || pressed(GamepadButton::DPadLeft)
+        || matches!(clicked, Some(Target::Step(_, false)));
+    let right = keys.just_pressed(KeyCode::ArrowRight)
+        || pressed(GamepadButton::DPadRight)
+        || matches!(clicked, Some(Target::Step(_, true)));
+    let confirm =
+        keys.just_pressed(KeyCode::Enter) || pressed(GamepadButton::South) || matches!(clicked, Some(Target::Row(_)));
     let row = menu.row();
     let next = if row.is_setting() && (left || right || confirm) {
         if matches!(row, Row::Aspect | Row::Fullscreen) && !live.windowed() {

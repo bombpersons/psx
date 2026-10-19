@@ -175,18 +175,26 @@ fn match_window_aspect_follows_the_window_and_back() {
 /// Rows stacked 10 pixels apart from the top of the screen, standing in for
 /// the view's layout.
 fn rows_at_top(app: &mut App) {
-    let rows = Row::ALL
-        .iter()
-        .enumerate()
-        .map(|(i, row)| (Rect::new(0.0, i as f32 * 10.0, 320.0, i as f32 * 10.0 + 10.0), *row));
-    app.world_mut().resource_mut::<Hitboxes<Row>>().0 = rows.collect();
+    let row = |i: usize| Rect::new(0.0, i as f32 * 10.0, 320.0, i as f32 * 10.0 + 10.0);
+    let rows = Row::ALL.iter().enumerate().map(|(i, r)| (row(i), Target::Row(*r)));
+    // `<` at x 102..114, `>` at 198..210, as the view lays them out.
+    let arrows = Row::ALL.iter().enumerate().filter(|(_, r)| r.is_setting()).flat_map(|(i, r)| {
+        [
+            (Rect::new(102.0, row(i).min.y, 114.0, row(i).max.y), Target::Step(*r, false)),
+            (Rect::new(198.0, row(i).min.y, 210.0, row(i).max.y), Target::Step(*r, true)),
+        ]
+    });
+    app.world_mut().resource_mut::<Hitboxes<Target>>().0 = rows.chain(arrows).collect();
 }
-/// Moves the cursor to screen pixel `at`: the default 1280x720 window shows
-/// the 320x240 screen at 3x with 160-pixel bars at the sides.
+/// Moves the cursor to screen pixel `at` of the current screen size,
+/// through the window's letterbox (the inverse of `cursor_to_screen`).
 fn point(app: &mut App, at: Vec2) {
+    let screen = app.world().resource::<PsxScreen>().size().as_vec2();
     let world = app.world_mut();
     let mut window = world.query_filtered::<&mut Window, With<PrimaryWindow>>().single_mut(world).unwrap();
-    window.set_cursor_position(Some(Vec2::new(160.0, 0.0) + at * 3.0));
+    let size = window.size();
+    let scale = crate::psx::fit_scale(size, screen);
+    window.set_cursor_position(Some((at - screen / 2.0) * scale + size / 2.0));
     frame(app);
 }
 fn click(app: &mut App, button: MouseButton) {
@@ -232,4 +240,25 @@ fn clicking_save_does_not_click_in_the_game() {
     app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
     frame(&mut app);
     assert!(app.world().resource::<ControllerState>().mouse.pressed(MouseButton::Left), "a new click is the game's");
+}
+
+#[test]
+fn arrows_step_a_setting_both_ways() {
+    let dir = directory("arrows");
+    let mut app = fixture(&dir.join("display.json"), default());
+    tap(&mut app, KeyCode::F2);
+    rows_at_top(&mut app);
+    let y = Row::Resolution as usize as f32 * 10.0 + 5.0;
+    point(&mut app, Vec2::new(204.0, y));
+    click(&mut app, MouseButton::Left);
+    assert_eq!(live(&mut app).screen, [426, 240], "> steps forwards");
+    // A new screen size moves the letterbox under a resting cursor, so aim again.
+    for _ in 0..2 {
+        point(&mut app, Vec2::new(108.0, y));
+        click(&mut app, MouseButton::Left);
+    }
+    assert_eq!(live(&mut app).screen, [640, 480], "< steps backwards and wraps");
+    point(&mut app, Vec2::new(150.0, y));
+    click(&mut app, MouseButton::Left);
+    assert_eq!(live(&mut app).screen, [320, 240], "the rest of the row steps forwards");
 }
