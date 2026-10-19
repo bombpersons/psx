@@ -122,6 +122,10 @@ pub struct Cdrom {
     /// Last delivered sector, raw 2352 bytes, and its LBA.
     sector: Vec<u8>,
     sector_lba: u32,
+    /// Header and subheader of the last data sector read, XA audio included,
+    /// for GetlocL. None after Pause, Stop, a seek or ReadTOC until the next
+    /// sector is read (Redux `m_invalidLocL`).
+    locl: Option<[u8; 8]>,
     /// LBA of the sector currently in the data FIFO.
     fifo_lba: u32,
     /// Every DMA3 transfer: (lba of FIFO data, FIFO offset, bytes). Enabled by `log_dma`.
@@ -195,6 +199,7 @@ impl Cdrom {
             next_sector_at: 0,
             sector: Vec::new(),
             sector_lba: 0,
+            locl: None,
             fifo_lba: 0,
             dma_log: Vec::new(),
             cmd_log: Vec::new(),
@@ -416,7 +421,11 @@ impl Cdrom {
                     self.pos = l;
                 }
                 self.playing = false;
-                self.status = (self.status & !stat::PLAY) | stat::MOTOR | stat::READ;
+                // Seek phase until the first sector: status bit 6, not bit 5, and
+                // GetlocL fails with 80h (psx-spx). Gran Turismo retries GetlocL
+                // while the status says seeking and restarts the read otherwise.
+                self.locl = None;
+                self.status = (self.status & !(stat::PLAY | stat::READ)) | stat::MOTOR | stat::SEEK;
                 self.respond(ack, 3, vec![self.status]);
                 self.reading = true;
                 let seek = self.seek_cycles(SEEK_BASE_READ);
@@ -428,6 +437,7 @@ impl Cdrom {
                 self.respond(ack + COMPLETE_DELAY, 2, vec![self.status]);
             }
             0x08 => {
+                self.locl = None;
                 self.reading = false;
                 self.playing = false;
                 self.status &= !(stat::READ | stat::PLAY | stat::SEEK);
@@ -436,6 +446,7 @@ impl Cdrom {
                 self.respond(ack + COMPLETE_DELAY, 2, vec![self.status]);
             }
             0x09 => {
+                self.locl = None;
                 self.respond(ack, 3, vec![self.status]);
                 self.reading = false;
                 self.playing = false;
@@ -467,9 +478,15 @@ impl Cdrom {
             }
             0x0F => self.respond(ack, 3, vec![self.status, self.mode, 0, self.filter.0, self.filter.1]),
             0x10 => {
-                let s = &self.sector;
-                let v = if s.len() >= 20 { s[12..20].to_vec() } else { vec![0; 8] };
-                self.respond(ack, 3, v);
+                // With no sector read since the head last moved or stopped, the drive
+                // has no header to report and errors. Gran Turismo 2 sends Pause,
+                // Setloc, ReadN, GetlocL and takes a stale header from the previous
+                // file as a mis-seek, retrying forever.
+                if let Some(h) = self.locl {
+                    self.respond(ack, 3, h.to_vec());
+                } else {
+                    self.respond(ack, 5, vec![self.status | stat::ERROR, 0x80]);
+                }
             }
             0x11 => {
                 // LibCrypt (.sbi/.lsd): the drive ignores a sector whose Q CRC is
@@ -501,6 +518,7 @@ impl Cdrom {
                 self.respond(ack, 3, vec![self.status, m[0], m[1]]);
             }
             0x15 | 0x16 => {
+                self.locl = None;
                 self.reading = false;
                 self.playing = false;
                 if let Some(l) = self.setloc.take() {
@@ -527,6 +545,7 @@ impl Cdrom {
                 }
             }
             0x1E => {
+                self.locl = None;
                 self.respond(ack, 3, vec![self.status]);
                 self.respond(ack + SLOW_COMPLETE_DELAY, 2, vec![self.status]);
             }
@@ -607,6 +626,8 @@ impl Cdrom {
             Ok((raw, mode)) if mode != TrackMode::Audio && raw.len() == 2352 => raw,
             _ => return,
         };
+        self.locl = raw[12..20].try_into().ok();
+        self.status = (self.status & !stat::SEEK) | stat::READ;
         // XA-ADPCM enabled: real-time audio sectors go to the SPU, not the data FIFO.
         let submode = raw[18];
         if self.mode & 0x40 != 0 && submode & 0x04 != 0 && raw[15] == 2 {
@@ -749,5 +770,38 @@ mod tests {
         assert_ne!(c.read(0, now) & 0x20, 0, "RSLRRDY still set after the acknowledge");
         assert_eq!(c.read(1, now), c.status);
         assert_eq!(c.read(0, now) & 0x20, 0, "FIFO empty once read");
+    }
+    /// Issue `cmd`, wait for its first interrupt, acknowledge it; returns (INT, response bytes).
+    fn exchange(c: &mut Cdrom, cmd: u8) -> (u8, Vec<u8>) {
+        let (int, now) = first_response(c, cmd);
+        let mut bytes = Vec::new();
+        while c.read(0, now) & 0x20 != 0 {
+            bytes.push(c.read(1, now));
+        }
+        c.write(0, 1, now);
+        c.write(3, 0x1F, now);
+        // Drain the rest of the command's responses (Pause's INT2) before the next one.
+        let mut t = now;
+        while !c.queue.is_empty() || c.irq() {
+            t += 1000;
+            if c.tick(t) {
+                c.write(0, 1, t);
+                c.write(3, 0x1F, t);
+            }
+        }
+        (int, bytes)
+    }
+
+    #[test]
+    fn getlocl_errors_until_a_sector_is_read_after_pause() {
+        let mut c = Cdrom::new(None);
+        assert_eq!(exchange(&mut c, 0x10), (5, vec![c.status | stat::ERROR, 0x80]), "nothing read yet");
+        let header = [0x28, 0x51, 0x51, 0x02, 0x00, 0x00, 0x08, 0x00];
+        c.locl = Some(header); // as `deliver_sector` records it
+        assert_eq!(exchange(&mut c, 0x10), (3, header.to_vec()));
+        // Pause drops it: Gran Turismo 2's Pause, Setloc, ReadN, GetlocL must not
+        // see the previous file's header while the head is still seeking.
+        exchange(&mut c, 0x09);
+        assert_eq!(exchange(&mut c, 0x10).0, 5);
     }
 }
