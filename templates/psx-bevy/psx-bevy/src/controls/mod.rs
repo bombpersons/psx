@@ -233,7 +233,10 @@ fn drive(
     let hovered = pointer.position.and_then(|p| hitboxes.at(p));
     let clicked = hovered.filter(|_| pointer.just_pressed(MouseButton::Left));
     let slot = |item: Item| item.device.filter(|_| item.row < RESTORE);
-    if keys.just_pressed(KeyCode::Escape) || pointer.just_pressed(MouseButton::Right) {
+    // Capturing a mouse slot, every mouse button is a candidate: only Esc cancels.
+    let mouse_capture = matches!(menu.mode, Mode::Listen { .. }) && menu.device == BindingDevice::Mouse;
+    let right_click = pointer.just_pressed(MouseButton::Right) && !mouse_capture;
+    if keys.just_pressed(KeyCode::Escape) || right_click {
         if matches!(menu.mode, Mode::Browse) {
             menu.close(&mut focus);
         } else {
@@ -246,7 +249,7 @@ fn drive(
         Mode::Listen { mut armed, pad: previous_pad } => {
             // A click elsewhere moves the capture to another slot, or cancels
             // it, rather than leaving the menu waiting unseen for a key.
-            if let Some(item) = clicked {
+            if let Some(item) = clicked.filter(|_| !mouse_capture) {
                 match slot(item) {
                     Some(device) if (item.row, device) == (menu.selected, menu.device) => {}
                     Some(device) => {
@@ -264,12 +267,16 @@ fn drive(
             if previous_pad != pad_entity {
                 armed = false;
             }
-            let neutral = keys.get_pressed().next().is_none() && pad.is_none_or(|p| p.get_pressed().next().is_none());
+            let neutral = keys.get_pressed().next().is_none()
+                && !pointer.any_held()
+                && pad.is_none_or(|p| p.get_pressed().next().is_none());
             if !armed {
                 armed = neutral;
                 menu.mode = Mode::Listen { armed, pad: pad_entity };
                 menu.status = if menu.device == BindingDevice::Gamepad && pad.is_none() {
                     "Connect a gamepad to assign its buttons.".into()
+                } else if armed && menu.device == BindingDevice::Mouse {
+                    "Click the mouse button to bind. Esc cancels.".into()
                 } else if armed {
                     "Press a new binding. Esc or right click cancels.".into()
                 } else {
@@ -282,6 +289,17 @@ fn drive(
                 BindingDevice::Gamepad => {
                     pad.map_or_else(Vec::new, |p| p.get_just_pressed().copied().map(PhysicalBinding::Pad).collect())
                 }
+                BindingDevice::Mouse => [
+                    MouseButton::Left,
+                    MouseButton::Right,
+                    MouseButton::Middle,
+                    MouseButton::Back,
+                    MouseButton::Forward,
+                ]
+                .into_iter()
+                .filter(|b| pointer.just_pressed(*b))
+                .map(PhysicalBinding::Mouse)
+                .collect(),
             };
             if candidates.len() == 1 {
                 menu.candidate(candidates[0]);
@@ -320,11 +338,13 @@ fn drive(
             if keys.just_pressed(KeyCode::ArrowDown) || pressed(GamepadButton::DPadDown) {
                 menu.selected = (menu.selected + 1) % ROWS;
             }
+            // Left/right move between the device columns.
+            let column = BindingDevice::ALL.iter().position(|d| *d == menu.device).unwrap_or(0);
             if keys.just_pressed(KeyCode::ArrowLeft) || pressed(GamepadButton::DPadLeft) {
-                menu.device = BindingDevice::Keyboard;
+                menu.device = BindingDevice::ALL[column.saturating_sub(1)];
             }
             if keys.just_pressed(KeyCode::ArrowRight) || pressed(GamepadButton::DPadRight) {
-                menu.device = BindingDevice::Gamepad;
+                menu.device = BindingDevice::ALL[(column + 1).min(BindingDevice::ALL.len() - 1)];
             }
             if menu.selected < RESTORE && (keys.just_pressed(KeyCode::Delete) || pressed(GamepadButton::West)) {
                 let action = Button::ALL[menu.selected];

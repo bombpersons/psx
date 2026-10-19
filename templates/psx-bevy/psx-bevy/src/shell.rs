@@ -189,7 +189,7 @@ fn sample_devices(
         }
         return;
     }
-    let (held, left, right) = controller::sample(&keys, pad, &bindings);
+    let (held, left, right) = controller::sample(&keys, pad, pointer.held_bits(), &bindings);
     input.held = held;
     input.tapped |= held;
     input.left_stick = left;

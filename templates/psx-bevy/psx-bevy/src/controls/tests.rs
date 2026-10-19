@@ -413,8 +413,8 @@ fn row_rect(i: usize) -> Rect {
     Rect::new(6.0, 20.0 + i as f32 * 10.0, 314.0, 30.0 + i as f32 * 10.0)
 }
 fn slot_rect(i: usize, device: BindingDevice) -> Rect {
-    let column = if device == BindingDevice::Keyboard { 0.0 } else { 1.0 };
-    Rect::new(76.0 + column * 117.0, row_rect(i).min.y, 193.0 + column * 117.0, row_rect(i).max.y)
+    let column = BindingDevice::ALL.iter().position(|d| *d == device).unwrap() as f32;
+    Rect::new(76.0 + column * 78.0, row_rect(i).min.y, 154.0 + column * 78.0, row_rect(i).max.y)
 }
 /// The fixture with a window, a screen and the view's hitboxes.
 fn mouse_fixture(path: &Path) -> App {
@@ -423,7 +423,7 @@ fn mouse_fixture(path: &Path) -> App {
     app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow));
     let mut boxes: Vec<_> = (0..ROWS).map(|i| (row_rect(i), Item { row: i, device: None })).collect();
     for i in 0..RESTORE {
-        for device in [BindingDevice::Keyboard, BindingDevice::Gamepad] {
+        for device in BindingDevice::ALL {
             boxes.push((slot_rect(i, device), Item { row: i, device: Some(device) }));
         }
     }
@@ -507,4 +507,44 @@ fn shortcut_waits_for_another_menu_to_close() {
     app.world_mut().resource_mut::<InputFocus>().captured = false;
     tap(&mut app, KeyCode::F1);
     assert!(app.world().resource::<ControlsMenu>().is_open());
+}
+
+/// A mouse slot captures any mouse button, right click included (so only
+/// Esc cancels), once the click that opened the capture is released.
+#[test]
+fn mouse_slots_capture_mouse_buttons() {
+    let dir = directory("mouse-slot");
+    let path = dir.join("controls.json");
+    let mut app = mouse_fixture(&path);
+    tap(&mut app, KeyCode::F1);
+    click_at(&mut app, slot_rect(Button::Cross as usize, BindingDevice::Mouse).center(), MouseButton::Left);
+    assert!(listening(&app));
+    assert_eq!(app.world().resource::<ControlsMenu>().device, BindingDevice::Mouse);
+    click_at(&mut app, slot_rect(Button::Cross as usize, BindingDevice::Mouse).center(), MouseButton::Right);
+    let draft = app.world().resource::<ControlsMenu>().draft().unwrap().clone();
+    assert_eq!(draft.mouse_button(Button::Cross), Some(MouseButton::Right));
+    assert!(app.world().resource::<ControlsMenu>().is_open(), "right click bound rather than closing");
+    // Saved and reloaded with the profile.
+    app.world_mut().resource_mut::<ControlsMenu>().select(Button::Up, BindingDevice::Keyboard);
+    app.world_mut().resource_mut::<ControlsMenu>().selected = SAVE;
+    tap(&mut app, KeyCode::Enter);
+    assert_eq!(
+        BindingStore::new(Some(path)).load().unwrap().unwrap().mouse_button(Button::Cross),
+        Some(MouseButton::Right)
+    );
+}
+
+/// Profiles saved before mouse bindings existed still load, with the mouse unbound.
+#[test]
+fn profiles_without_mouse_slots_load() {
+    let dir = directory("old-profile");
+    let path = dir.join("controls.json");
+    let store = BindingStore::new(Some(path.clone()));
+    store.save(&ControllerBindings::default()).unwrap();
+    let mut json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    json["bindings"].as_object_mut().unwrap().remove("mouse");
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    let loaded = store.load().unwrap().unwrap();
+    assert!(Button::ALL.iter().all(|b| loaded.mouse_button(*b).is_none()));
+    assert_eq!(loaded, ControllerBindings::default());
 }

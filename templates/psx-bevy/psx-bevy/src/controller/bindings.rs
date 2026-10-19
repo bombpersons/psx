@@ -10,18 +10,24 @@ pub enum BindingDevice {
     #[default]
     Keyboard,
     Gamepad,
+    Mouse,
+}
+impl BindingDevice {
+    pub const ALL: [Self; 3] = [Self::Keyboard, Self::Gamepad, Self::Mouse];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhysicalBinding {
     Key(KeyCode),
     Pad(GamepadButton),
+    Mouse(MouseButton),
 }
 impl PhysicalBinding {
     pub fn device(self) -> BindingDevice {
         match self {
             Self::Key(_) => BindingDevice::Keyboard,
             Self::Pad(_) => BindingDevice::Gamepad,
+            Self::Mouse(_) => BindingDevice::Mouse,
         }
     }
     pub fn label(self) -> String {
@@ -43,6 +49,14 @@ impl PhysicalBinding {
                 GamepadButton::LeftTrigger2 => "L TRIGGER".into(),
                 GamepadButton::RightTrigger2 => "R TRIGGER".into(),
                 other => format!("{other:?}").to_uppercase(),
+            },
+            Self::Mouse(button) => match button {
+                MouseButton::Left => "L CLICK".into(),
+                MouseButton::Right => "R CLICK".into(),
+                MouseButton::Middle => "M CLICK".into(),
+                MouseButton::Back => "MOUSE 4".into(),
+                MouseButton::Forward => "MOUSE 5".into(),
+                MouseButton::Other(n) => format!("MOUSE {n}"),
             },
         }
     }
@@ -74,6 +88,9 @@ impl std::error::Error for BindingConflict {}
 pub struct ControllerBindings {
     keyboard: [Option<KeyCode>; 14],
     gamepad: [Option<GamepadButton>; 14],
+    /// Unbound by default; missing from profiles saved before mouse bindings.
+    #[serde(default)]
+    mouse: [Option<MouseButton>; 14],
     stick_deadzone: f32,
 }
 impl Default for ControllerBindings {
@@ -113,6 +130,7 @@ impl Default for ControllerBindings {
                 GamepadButton::Select,
             ]
             .map(Some),
+            mouse: [None; 14],
             stick_deadzone: 0.2,
         }
     }
@@ -124,10 +142,14 @@ impl ControllerBindings {
     pub fn pad_button(&self, action: Button) -> Option<GamepadButton> {
         self.gamepad[action as usize]
     }
+    pub fn mouse_button(&self, action: Button) -> Option<MouseButton> {
+        self.mouse[action as usize]
+    }
     pub fn binding(&self, action: Button, device: BindingDevice) -> Option<PhysicalBinding> {
         match device {
             BindingDevice::Keyboard => self.key(action).map(PhysicalBinding::Key),
             BindingDevice::Gamepad => self.pad_button(action).map(PhysicalBinding::Pad),
+            BindingDevice::Mouse => self.mouse_button(action).map(PhysicalBinding::Mouse),
         }
     }
     pub fn stick_deadzone(&self) -> f32 {
@@ -161,11 +183,13 @@ impl ControllerBindings {
             match binding {
                 PhysicalBinding::Key(_) => self.keyboard.swap(action as usize, conflict.other as usize),
                 PhysicalBinding::Pad(_) => self.gamepad.swap(action as usize, conflict.other as usize),
+                PhysicalBinding::Mouse(_) => self.mouse.swap(action as usize, conflict.other as usize),
             }
         } else {
             match binding {
                 PhysicalBinding::Key(key) => self.keyboard[action as usize] = Some(key),
                 PhysicalBinding::Pad(button) => self.gamepad[action as usize] = Some(button),
+                PhysicalBinding::Mouse(button) => self.mouse[action as usize] = Some(button),
             }
         }
         Ok(())
@@ -174,13 +198,14 @@ impl ControllerBindings {
         match device {
             BindingDevice::Keyboard => self.keyboard[action as usize] = None,
             BindingDevice::Gamepad => self.gamepad[action as usize] = None,
+            BindingDevice::Mouse => self.mouse[action as usize] = None,
         }
     }
     pub fn validate(&self) -> Result<(), String> {
         if !(0.0..1.0).contains(&self.stick_deadzone) {
             return Err("Invalid stick deadzone".into());
         }
-        for device in [BindingDevice::Keyboard, BindingDevice::Gamepad] {
+        for device in BindingDevice::ALL {
             for action in Button::ALL {
                 if let Some(binding) = self.binding(action, device)
                     && let Some(conflict) = self.conflict(action, binding)

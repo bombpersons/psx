@@ -144,12 +144,19 @@ fn deadzone(v: Vec2, dz: f32) -> Vec2 {
     if v.length() < dz { Vec2::ZERO } else { v.clamp_length_max(1.0) }
 }
 
-/// Physical buttons and sticks from the keyboard and one gamepad.
-pub fn sample(keys: &ButtonInput<KeyCode>, pad: Option<&Gamepad>, bindings: &ControllerBindings) -> (u16, Vec2, Vec2) {
+/// Physical buttons and sticks from the keyboard, one gamepad and the mouse
+/// buttons bound to actions (`mouse` is [`crate::pointer::mouse_bits`]).
+pub fn sample(
+    keys: &ButtonInput<KeyCode>,
+    pad: Option<&Gamepad>,
+    mouse: u8,
+    bindings: &ControllerBindings,
+) -> (u16, Vec2, Vec2) {
     let mut bits = 0;
     for button in Button::ALL {
         if bindings.key(button).is_some_and(|key| keys.pressed(key))
             || pad.is_some_and(|p| bindings.pad_button(button).is_some_and(|button| p.pressed(button)))
+            || bindings.mouse_button(button).is_some_and(|b| mouse & crate::pointer::mouse_bit(b) != 0)
         {
             bits |= button.mask();
         }
@@ -180,7 +187,7 @@ mod tests {
         let mut keys = ButtonInput::default();
         keys.press(KeyCode::KeyX);
         keys.press(KeyCode::ArrowRight);
-        let (bits, ..) = sample(&keys, None, &ControllerBindings::default());
+        let (bits, ..) = sample(&keys, None, 0, &ControllerBindings::default());
         assert_eq!(bits, Button::Cross.mask() | Button::Right.mask());
     }
 
@@ -196,6 +203,18 @@ mod tests {
         mouse.update(0, Some(Vec2::new(0.0, 0.0)), Vec2::ZERO, 0.0);
         assert!(mouse.released(MouseButton::Left));
         assert_eq!(mouse.world_2d(UVec2::new(320, 240)), Some(Vec2::new(-160.0, 120.0)));
+    }
+
+    #[test]
+    fn bound_mouse_buttons_press_actions() {
+        let mut bindings = ControllerBindings::default();
+        let (bits, ..) = sample(&ButtonInput::default(), None, crate::pointer::mouse_bit(MouseButton::Left), &bindings);
+        assert_eq!(bits, 0, "the mouse is unbound by default");
+        bindings.assign(Button::Cross, PhysicalBinding::Mouse(MouseButton::Left), ConflictPolicy::Reject).unwrap();
+        let (bits, ..) = sample(&ButtonInput::default(), None, crate::pointer::mouse_bit(MouseButton::Left), &bindings);
+        assert_eq!(bits, Button::Cross.mask());
+        let clash = bindings.assign(Button::Circle, PhysicalBinding::Mouse(MouseButton::Left), ConflictPolicy::Reject);
+        assert_eq!(clash.unwrap_err().other, Button::Cross, "one mouse button, one action");
     }
 
     #[test]
