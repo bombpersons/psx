@@ -406,7 +406,8 @@ fn drive(
             revert(&menu, &mut live);
             menu.close(&mut focus);
             return;
-        } else if !focus.blocked() {
+        } else if !focus.captured {
+            // Not on top of another menu that owns input.
             menu.open();
         }
     }

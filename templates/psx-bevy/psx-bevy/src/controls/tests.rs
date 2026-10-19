@@ -494,3 +494,17 @@ fn clicking_around_never_strands_the_menu_in_capture() {
     tap(&mut app, KeyCode::KeyW);
     assert_eq!(app.world().resource::<ControlsMenu>().draft().unwrap().key(Button::Down), Some(KeyCode::ArrowDown));
 }
+
+/// Another modal (the display menu) owns input focus: the controls shortcut
+/// must not open a second menu on top of it.
+#[test]
+fn shortcut_waits_for_another_menu_to_close() {
+    let dir = directory("modal");
+    let mut app = fixture(&dir.join("controls.json"));
+    app.world_mut().resource_mut::<InputFocus>().captured = true;
+    tap(&mut app, KeyCode::F1);
+    assert!(!app.world().resource::<ControlsMenu>().is_open());
+    app.world_mut().resource_mut::<InputFocus>().captured = false;
+    tap(&mut app, KeyCode::F1);
+    assert!(app.world().resource::<ControlsMenu>().is_open());
+}

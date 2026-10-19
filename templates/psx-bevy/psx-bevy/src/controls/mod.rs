@@ -199,7 +199,8 @@ fn drive(
         if menu.open {
             menu.close(&mut focus);
             return;
-        } else {
+        } else if !focus.captured {
+            // Not on top of another menu that owns input.
             menu.open();
         }
     }
