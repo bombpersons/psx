@@ -22,6 +22,25 @@ pub fn mouse_bit(button: MouseButton) -> u8 {
     }
 }
 
+/// The mouse buttons tools and replays name, with their names.
+pub const MOUSE_BUTTONS: [(MouseButton, &str); 5] = [
+    (MouseButton::Left, "left"),
+    (MouseButton::Right, "right"),
+    (MouseButton::Middle, "middle"),
+    (MouseButton::Back, "back"),
+    (MouseButton::Forward, "forward"),
+];
+
+/// A mouse button by its [`MOUSE_BUTTONS`] name, ignoring case.
+pub fn mouse_button_named(name: &str) -> Option<MouseButton> {
+    MOUSE_BUTTONS.iter().find(|(_, n)| n.eq_ignore_ascii_case(name)).map(|(b, _)| *b)
+}
+
+/// The names of the buttons set in `bits`.
+pub fn mouse_button_names(bits: u8) -> Vec<&'static str> {
+    MOUSE_BUTTONS.iter().filter(|(b, _)| bits & mouse_bit(*b) != 0).map(|(_, n)| *n).collect()
+}
+
 /// The held mouse buttons as bits.
 pub fn mouse_bits(buttons: &ButtonInput<MouseButton>) -> u8 {
     buttons.get_pressed().fold(0, |bits, b| bits | mouse_bit(*b))

@@ -3,7 +3,7 @@
 use crate::{
     controller::{Button, ControllerState},
     psx::PsxScreen,
-    shell::{GameClock, InjectedInput, TickRate},
+    shell::{GameClock, InjectedInput, InjectedMouse, TickRate},
 };
 use base64::Engine;
 use bevy::render::{
@@ -53,9 +53,9 @@ struct Request {
 }
 enum Command {
     Status,
-    Input(Vec<Button>),
+    Input(Vec<Button>, InjectedMouse),
     Pause(bool),
-    Step(StepArgs),
+    Step(StepArgs, InjectedMouse),
     Screenshot(Target),
     Query(QueryArgs),
     SetComponent(SetComponentArgs),
@@ -105,11 +105,24 @@ struct StepArgs {
     frames: u32,
     #[serde(default)]
     buttons: Vec<Button>,
+    /// [`InjectedMouse::from_json`]'s form.
+    #[serde(default)]
+    mouse: Option<Value>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InputArgs {
     buttons: Vec<Button>,
+    #[serde(default)]
+    mouse: Option<Value>,
+}
+fn mouse_arg(mouse: &Option<Value>) -> Result<InjectedMouse, ErrorData> {
+    mouse
+        .as_ref()
+        .map(InjectedMouse::from_json)
+        .transpose()
+        .map(Option::unwrap_or_default)
+        .map_err(|e| ErrorData::invalid_params(e, None))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -134,6 +147,7 @@ struct Step {
     remaining: u32,
     total: u32,
     buttons: Vec<Button>,
+    mouse: InjectedMouse,
     reply: Reply,
 }
 /// Pause and stepping state. Injected buttons live in [`InjectedInput`].
@@ -181,7 +195,7 @@ impl Control {
         let step = self.step.take().unwrap();
         self.paused = true;
         let _ = step.reply.send(Ok(Response::Json(
-            json!({"frame":frame,"advanced_frames":step.total,"buttons":step.buttons,"paused":true}),
+            json!({"frame":frame,"advanced_frames":step.total,"buttons":step.buttons,"mouse":step.mouse.to_json(),"paused":true}),
         )));
         true
     }
@@ -276,7 +290,7 @@ fn process_commands(
         if request.reply.is_closed() {
             continue;
         }
-        if focus.blocked() && matches!(&request.command, Command::Step(_) | Command::Input(_)) {
+        if focus.blocked() && matches!(&request.command, Command::Step(..) | Command::Input(..)) {
             let _ = request.reply.send(Err(
                 "Controls menu captured input; close it and release physical buttons before stepping".into(),
             ));
@@ -295,23 +309,28 @@ fn process_commands(
         match request.command {
             Command::Status => {
                 let renderer=adapter.as_ref().map(|info|json!({"name":info.name,"device_type":format!("{:?}",info.device_type),"backend":format!("{:?}",info.backend)}));
-                let _=request.reply.send(Ok(Response::Json(json!({"frame":clock.frame,"paused":control.paused,"headless":windows.is_empty(),"tick_hz":tick.hz,"screen":{"width":screen.width,"height":screen.height,"region":format!("{:?}",screen.region)},"controller_buttons":pad.buttons(),"renderer":renderer}))));
+                let _=request.reply.send(Ok(Response::Json(json!({"frame":clock.frame,"paused":control.paused,"headless":windows.is_empty(),"tick_hz":tick.hz,"screen":{"width":screen.width,"height":screen.height,"region":format!("{:?}",screen.region)},"controller_buttons":pad.buttons(),"mouse":{"buttons":pad.mouse.button_names(),"position":pad.mouse.position.map(|p|[p.x,p.y]),"motion":[pad.mouse.motion.x,pad.mouse.motion.y],"wheel":pad.mouse.wheel},"renderer":renderer}))));
             }
-            Command::Input(buttons) => {
+            Command::Input(buttons, mouse) => {
                 injected.set(&buttons);
-                let _ = request.reply.send(Ok(Response::Json(json!({"frame":clock.frame,"injected_buttons":buttons}))));
+                injected.mouse = mouse;
+                let _ = request.reply.send(Ok(Response::Json(
+                    json!({"frame":clock.frame,"injected_buttons":buttons,"injected_mouse":mouse.to_json()}),
+                )));
             }
             Command::Pause(paused) => {
                 control.paused = paused;
                 let _ = request.reply.send(Ok(Response::Json(json!({"frame":clock.frame,"paused":paused}))));
             }
-            Command::Step(args) => {
+            Command::Step(args, mouse) => {
                 control.paused = true;
                 injected.set(&args.buttons);
+                injected.mouse = mouse;
                 control.step = Some(Step {
                     remaining: args.frames,
                     total: args.frames,
                     buttons: args.buttons,
+                    mouse,
                     reply: request.reply,
                 });
             }
@@ -569,11 +588,13 @@ struct GameServer {
 }
 fn tools() -> Vec<Tool> {
     let buttons = json!({"type":"array","maxItems":14,"uniqueItems":true,"items":{"type":"string","enum":["up","down","left","right","cross","circle","square","triangle","l1","r1","l2","r2","start","select"]}});
+    let pair = json!({"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2});
+    let mouse = json!({"type":"object","description":"Injected mouse: buttons held (adding to the real mouse and pressing the pad actions they are bound to), position in screen pixels (origin top-left, y down; replaces the cursor), motion [dx,dy] and wheel lines added every tick","properties":{"buttons":{"type":"array","uniqueItems":true,"items":{"type":"string","enum":["left","right","middle","back","forward"]}},"position":pair,"motion":pair,"wheel":{"type":"number"}},"additionalProperties":false});
     [
-        ("game_status","Read simulation frame, pause state, screen dimensions and controller state.",json!({"type":"object","properties":{},"additionalProperties":false})),
+        ("game_status","Read simulation frame, pause state, screen dimensions, controller state and the mouse.",json!({"type":"object","properties":{},"additionalProperties":false})),
         ("game_screenshot","Capture actual GPU-rendered PNG pixels. Screen is the native-resolution game; window includes scaled output and letterboxing. Pause for a stable frame.",json!({"type":"object","properties":{"target":{"type":"string","enum":["screen","window"],"default":"screen"}},"additionalProperties":false})),
-        ("game_step","Hold the selected buttons for exactly N simulation ticks, then release injected input and freeze. Game systems must use GameSystems::Game in FixedUpdate.",json!({"type":"object","properties":{"frames":{"type":"integer","minimum":1,"maximum":3600},"buttons":buttons.clone()},"required":["frames"],"additionalProperties":false})),
-        ("game_set_input","Replace the held injected controller state. An empty array releases all injected buttons. Physical inputs are merged.",json!({"type":"object","properties":{"buttons":buttons},"required":["buttons"],"additionalProperties":false})),
+        ("game_step","Hold the selected buttons (and optional mouse) for exactly N simulation ticks, then release injected input and freeze. Game systems must use GameSystems::Game in FixedUpdate.",json!({"type":"object","properties":{"frames":{"type":"integer","minimum":1,"maximum":3600},"buttons":buttons.clone(),"mouse":mouse.clone()},"required":["frames"],"additionalProperties":false})),
+        ("game_set_input","Replace the held injected controller state and mouse. An empty array releases all injected buttons; omitting mouse releases the injected mouse. Physical inputs are merged.",json!({"type":"object","properties":{"buttons":buttons,"mouse":mouse},"required":["buttons"],"additionalProperties":false})),
         ("game_query","Read game state as JSON: reflected components of entities whose Name contains `name` and/or that have every component in `with`, plus the listed `resources`. Components and resources must derive Reflect with #[reflect(Component)] / #[reflect(Resource)]. Type names may be short (Transform) or full paths.",json!({"type":"object","properties":{"name":{"type":"string"},"with":{"type":"array","items":{"type":"string"}},"components":{"type":"array","items":{"type":"string"},"description":"Components to return; all reflected ones when omitted"},"resources":{"type":"array","items":{"type":"string"}},"limit":{"type":"integer","minimum":1,"maximum":256,"default":16}},"additionalProperties":false})),
         ("game_set_component","While paused, edit selected named fields of one existing reflected component. Select entity by its id from game_query, or by a unique exact name. fields maps top-level field names to typed JSON values in game_query's format (e.g. Transform translation is [x,y,z]). Validates all fields before applying; returns before/after values without advancing ticks. Unsupported, missing, immutable and ambiguous targets fail without applying the patch. Available only in dev-mcp builds.",json!({"type":"object","properties":{"entity":{"type":"string"},"name":{"type":"string"},"component":{"type":"string"},"fields":{"type":"object","minProperties":1,"maxProperties":64}},"required":["component","fields"],"oneOf":[{"required":["entity"]},{"required":["name"]}],"additionalProperties":false})),
         ("game_pause","Pause or resume continuous simulation. Developer MCP starts paused; rendering and window events continue.",json!({"type":"object","properties":{"paused":{"type":"boolean"}},"required":["paused"],"additionalProperties":false})),
@@ -616,7 +637,11 @@ impl ServerHandler for GameServer {
                 Command::Status
             }
             "game_screenshot" => Command::Screenshot(parse::<ScreenshotArgs>(value)?.target),
-            "game_set_input" => Command::Input(parse::<InputArgs>(value)?.buttons),
+            "game_set_input" => {
+                let args = parse::<InputArgs>(value)?;
+                let mouse = mouse_arg(&args.mouse)?;
+                Command::Input(args.buttons, mouse)
+            }
             "game_pause" => Command::Pause(parse::<PauseArgs>(value)?.paused),
             "game_query" => {
                 let args = parse::<QueryArgs>(value)?;
@@ -635,7 +660,8 @@ impl ServerHandler for GameServer {
                 if !(1..=3600).contains(&args.frames) || args.buttons.len() > 14 {
                     return Err(ErrorData::invalid_params("frames must be 1..3600 and buttons at most 14", None));
                 }
-                Command::Step(args)
+                let mouse = mouse_arg(&args.mouse)?;
+                Command::Step(args, mouse)
             }
             _ => return Err(ErrorData::invalid_params("unknown game tool", None)),
         };
@@ -674,7 +700,7 @@ mod tests {
         let (reply, mut receiver) = oneshot::channel();
         let mut control = Control {
             paused: false,
-            step: Some(Step { remaining: 12, total: 12, buttons: vec![Button::Cross], reply }),
+            step: Some(Step { remaining: 12, total: 12, buttons: vec![Button::Cross], mouse: default(), reply }),
         };
         control.interrupt_for_input_focus();
         assert!(control.paused && !control.has_step());
@@ -764,7 +790,8 @@ mod tests {
         assert!(edit(&mut app, patch(json!({"amount":7}))).unwrap_err().contains("pause"));
         app.world_mut().resource_mut::<Control>().paused = true;
         let (reply, _receiver) = oneshot::channel();
-        app.world_mut().resource_mut::<Control>().step = Some(Step { remaining: 1, total: 1, buttons: vec![], reply });
+        app.world_mut().resource_mut::<Control>().step =
+            Some(Step { remaining: 1, total: 1, buttons: vec![], mouse: default(), reply });
         assert!(edit(&mut app, patch(json!({"amount":7}))).unwrap_err().contains("pause"));
         app.world_mut().resource_mut::<Control>().step = None;
         app.world_mut().spawn(Name::new("Player"));

@@ -87,6 +87,10 @@ impl MouseState {
     pub fn released(&self, button: MouseButton) -> bool {
         (!self.held & self.previous) & crate::pointer::mouse_bit(button) != 0
     }
+    /// The held buttons, by [`crate::pointer::MOUSE_BUTTONS`] name.
+    pub fn button_names(&self) -> Vec<&'static str> {
+        crate::pointer::mouse_button_names(self.held)
+    }
     /// The cursor in a default `Camera2d`'s world units on a screen of
     /// `size`: origin at the centre, y up, one unit per pixel.
     pub fn world_2d(&self, size: UVec2) -> Option<Vec2> {
@@ -144,6 +148,14 @@ fn deadzone(v: Vec2, dz: f32) -> Vec2 {
     if v.length() < dz { Vec2::ZERO } else { v.clamp_length_max(1.0) }
 }
 
+/// The actions pressed by the held mouse buttons `mouse` through their bindings.
+pub fn mouse_actions(mouse: u8, bindings: &ControllerBindings) -> u16 {
+    Button::ALL
+        .into_iter()
+        .filter(|b| bindings.mouse_button(*b).is_some_and(|m| mouse & crate::pointer::mouse_bit(m) != 0))
+        .fold(0, |bits, b| bits | b.mask())
+}
+
 /// Physical buttons and sticks from the keyboard, one gamepad and the mouse
 /// buttons bound to actions (`mouse` is [`crate::pointer::mouse_bits`]).
 pub fn sample(
@@ -152,11 +164,10 @@ pub fn sample(
     mouse: u8,
     bindings: &ControllerBindings,
 ) -> (u16, Vec2, Vec2) {
-    let mut bits = 0;
+    let mut bits = mouse_actions(mouse, bindings);
     for button in Button::ALL {
         if bindings.key(button).is_some_and(|key| keys.pressed(key))
             || pad.is_some_and(|p| bindings.pad_button(button).is_some_and(|button| p.pressed(button)))
-            || bindings.mouse_button(button).is_some_and(|b| mouse & crate::pointer::mouse_bit(b) != 0)
         {
             bits |= button.mask();
         }

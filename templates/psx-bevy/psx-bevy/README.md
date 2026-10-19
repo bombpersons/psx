@@ -341,8 +341,18 @@ commands.spawn((PsxModelRoot(car), Transform::default()));
   a default `Camera2d`'s coordinates, `motion` (raw device motion summed over
   the tick, for mouse look) and `wheel` (lines). Menus and other per-frame UI
   read `pointer::Pointer` instead, updated every rendered frame in
-  `PhysicalInputSystems::Pointer`. Replays and the developer MCP do not inject
-  mouse input yet.
+  `PhysicalInputSystems::Pointer`. Mouse buttons can also be bound to pad
+  actions in the controls menu's MOUSE column (unbound by default).
+- Tests and tools inject the mouse through `InjectedInput::mouse`
+  (`InjectedMouse`): its buttons add to the real ones and press the actions
+  they are bound to, `position` replaces the cursor, and `motion` and `wheel`
+  are added on every tick. A replay event may carry
+  `"mouse": {"buttons": ["left"], "position": [x, y], "motion": [dx, dy], "wheel": n}`
+  (every field optional); read such replays with `Replay::ticks`, which gives
+  `TickInput`s for `Trajectory::record` or `TickApp::run_input`
+  (`tick_inputs` refuses them rather than drop the mouse). The original had
+  no mouse, so `psx run --replay` rejects these files: they are for the
+  rebuild's own tests.
 
 ### Tests
 
@@ -449,7 +459,9 @@ persistence explicitly. `ControlsPlugin { render_ui: false, ... }` runs its real
 input/editor logic in headless tests or with a custom presentation. `InputFocus`
 and `PhysicalInputSystems::Capture` expose the shell's focus/order boundary for
 other modal interfaces. Stick axes retain their original meaning; this menu
-rebinds digital buttons, including triggers, rather than analog axes.
+rebinds digital buttons, including triggers, rather than analog axes. A mouse
+slot captures any mouse button, right click included, so only Esc cancels
+that capture. Profiles saved before the MOUSE column existed load unchanged.
 
 The presentation uses ordinary Bevy UI and its embedded default font, with an
 isolated `PsxView` camera before the screen pass, so it appears in low-resolution
@@ -537,9 +549,9 @@ change the game's configured logic tick rate. Status reports `headless: true`.
 
 | Tool | Arguments | Behaviour |
 |---|---|---|
-| `game_status` | `{}` | Frame, pause state, tick rate, screen size/region, held buttons, renderer adapter |
-| `game_step` | `{"frames":30,"buttons":["cross","right"]}` | Holds the buttons for exactly N ticks, then releases them and freezes |
-| `game_set_input` | `{"buttons":["start"]}` | Replaces the injected held buttons; `[]` releases them |
+| `game_status` | `{}` | Frame, pause state, tick rate, screen size/region, held buttons, the last tick's mouse, renderer adapter |
+| `game_step` | `{"frames":30,"buttons":["cross","right"],"mouse":{"buttons":["left"],"position":[160,120]}}` | Holds the buttons (and optional mouse, as in replays) for exactly N ticks, then releases them and freezes |
+| `game_set_input` | `{"buttons":["start"],"mouse":{"motion":[4,0]}}` | Replaces the injected held buttons and mouse; `[]` releases the buttons, omitting `mouse` releases it |
 | `game_pause` | `{"paused":false}` | Resumes continuous simulation or manual play |
 | `game_screenshot` | `{"target":"screen"}` or `"window"` | A real GPU-rendered PNG of the screen target (`Game::screen`, usually 320×240) or of the window |
 | `game_query` | `{"name":"Player","components":["Transform","Hop"],"resources":["GameClock"]}` | Reflected components (as JSON) of entities whose `Name` contains `name` and/or that have every component in `with`, plus resources |

@@ -95,11 +95,76 @@ impl InputFocus {
 #[derive(Resource, Default, Debug, Clone, Copy)]
 pub struct InjectedInput {
     pub buttons: u16,
+    pub mouse: InjectedMouse,
 }
 
 impl InjectedInput {
     pub fn set(&mut self, buttons: &[Button]) {
         self.buttons = Button::mask_all(buttons);
+    }
+    /// Releases every injected button and the mouse.
+    pub fn release(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Mouse input held on by tools, merged into [`ControllerState::mouse`] each
+/// tick: `buttons` add to the physical ones (and press the actions they are
+/// bound to), `position` replaces the cursor when set, and `motion` and
+/// `wheel` are added on every tick they are held.
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+pub struct InjectedMouse {
+    /// [`pointer::mouse_bits`] of the held buttons.
+    pub buttons: u8,
+    /// Screen pixels, origin top-left, y down.
+    pub position: Option<Vec2>,
+    pub motion: Vec2,
+    pub wheel: f32,
+}
+
+impl InjectedMouse {
+    /// The JSON form replays and the developer MCP share:
+    /// `{"buttons": ["left"], "position": [x, y], "motion": [dx, dy], "wheel": n}`,
+    /// every field optional.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        let object = value.as_object().ok_or("mouse is an object")?;
+        if let Some(key) = object.keys().find(|k| !["buttons", "position", "motion", "wheel"].contains(&k.as_str())) {
+            return Err(format!("mouse: unknown field {key:?}"));
+        }
+        let pair = |name: &str| -> Result<Option<Vec2>, String> {
+            let Some(value) = object.get(name) else { return Ok(None) };
+            let xy = value.as_array().filter(|a| a.len() == 2).ok_or(format!("mouse {name} is [x, y]"))?;
+            let [x, y] = [0, 1].map(|i| xy[i].as_f64().filter(|v| v.is_finite()));
+            match (x, y) {
+                (Some(x), Some(y)) => Ok(Some(Vec2::new(x as f32, y as f32))),
+                _ => Err(format!("mouse {name} needs two finite numbers")),
+            }
+        };
+        let mut buttons = 0;
+        for name in object
+            .get("buttons")
+            .map(|v| v.as_array().ok_or("mouse buttons is an array"))
+            .transpose()?
+            .into_iter()
+            .flatten()
+        {
+            let name = name.as_str().ok_or("mouse button names are strings")?;
+            let button = pointer::mouse_button_named(name).ok_or(format!("no mouse button {name:?}"))?;
+            buttons |= pointer::mouse_bit(button);
+        }
+        let wheel = match object.get("wheel") {
+            None => 0.0,
+            Some(v) => v.as_f64().filter(|w| w.is_finite()).ok_or("mouse wheel is a finite number")? as f32,
+        };
+        Ok(Self { buttons, position: pair("position")?, motion: pair("motion")?.unwrap_or_default(), wheel })
+    }
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "buttons": pointer::mouse_button_names(self.buttons),
+            "position": self.position.map(|p| [p.x, p.y]),
+            "motion": [self.motion.x, self.motion.y],
+            "wheel": self.wheel,
+        })
     }
 }
 
@@ -175,7 +240,7 @@ fn sample_devices(
     if focus.blocked() {
         *input = DeviceInput::default();
         state.reset();
-        injected.buttons = 0;
+        injected.release();
         // A click that closed a menu must not reach the game either.
         let neutral = keys.get_pressed().next().is_none()
             && !pointer.any_held()
@@ -207,6 +272,7 @@ fn begin_tick(
     mut state: ResMut<ControllerState>,
     mut clock: ResMut<GameClock>,
     focus: Res<InputFocus>,
+    bindings: Res<ControllerBindings>,
     #[cfg(feature = "dev-mcp")] control: Option<ResMut<crate::dev_mcp::Control>>,
 ) {
     clock.ticking = !focus.blocked();
@@ -214,17 +280,24 @@ fn begin_tick(
     if let Some(mut control) = control {
         if focus.blocked() {
             control.interrupt_for_input_focus();
-            injected.buttons = 0;
+            injected.release();
         }
         if control.discard_cancelled_step() {
-            injected.buttons = 0;
+            injected.release();
         }
         clock.ticking &= !control.paused || control.has_step();
     }
     if clock.ticking {
-        let buttons = device.held | device.tapped | injected.buttons;
+        let mouse = injected.mouse;
+        let buttons =
+            device.held | device.tapped | injected.buttons | controller::mouse_actions(mouse.buttons, &bindings);
         state.update(buttons, device.left_stick, device.right_stick);
-        state.mouse.update(device.mouse_tapped, device.mouse_position, device.mouse_motion, device.wheel);
+        state.mouse.update(
+            device.mouse_tapped | mouse.buttons,
+            mouse.position.or(device.mouse_position),
+            device.mouse_motion + mouse.motion,
+            device.wheel + mouse.wheel,
+        );
     }
     device.tapped = 0;
     device.mouse_tapped = 0;
@@ -245,7 +318,7 @@ fn finish_tick(
     if let Some(mut control) = control
         && control.finish_tick(clock.frame)
     {
-        injected.buttons = 0;
+        injected.release();
     }
 }
 

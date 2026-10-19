@@ -26,10 +26,7 @@ fn screen_resizes_at_runtime_with_hor_plus_3d_and_pixel_exact_2d() {
     let output = std::env::temp_dir().join(format!("psx-screen-size-{}", std::process::id()));
     std::fs::create_dir_all(&output).unwrap();
     println!("Screen size GPU evidence: {}", output.display());
-    // A settings file of its own, so a player's saved display.json cannot change the screen.
-    let mut command = Command::new(example("screen_size"));
-    command.arg("--display-settings").arg(output.join("display.json"));
-    let mut client = Client::launch(command, &output.join("game.log"));
+    let mut client = Client::launch(Command::new(example("screen_size")), &output.join("game.log"));
     // Pixels of `color` along row `y` and column `x` through the centre.
     let count = |image: &image::RgbaImage, color: [u8; 3]| {
         let (w, h) = image.dimensions();
@@ -56,6 +53,29 @@ fn screen_resizes_at_runtime_with_hor_plus_3d_and_pixel_exact_2d() {
     assert!(text.contains("\"width\":320"), "{text}");
     let log = std::fs::read_to_string(output.join("game.log")).unwrap();
     assert!(!log.contains("Shader compilation error") && !log.contains("B0001"), "{log}");
+}
+
+#[test]
+#[ignore = "requires offscreen GPU and cargo build --features dev-mcp --example screen_size"]
+fn steps_inject_the_mouse() {
+    let output = std::env::temp_dir().join(format!("psx-mouse-{}", std::process::id()));
+    std::fs::create_dir_all(&output).unwrap();
+    let mut client = Client::launch(Command::new(example("screen_size")), &output.join("game.log"));
+    let mouse = json!({"buttons":["left"],"position":[5,6],"motion":[2,0],"wheel":1});
+    let step = client.call("game_step", json!({"frames":2,"mouse":mouse}));
+    assert_eq!(step["structuredContent"]["mouse"]["buttons"], json!(["left"]), "{step}");
+    let status = client.call("game_status", json!({}));
+    let seen = &status["structuredContent"]["mouse"];
+    assert_eq!(seen["buttons"], json!(["left"]), "{status}");
+    assert_eq!(seen["position"], json!([5.0, 6.0]), "{status}");
+    assert_eq!(seen["motion"], json!([2.0, 0.0]), "motion is per tick: {status}");
+    // The step released it: the next tick sees no injected mouse.
+    client.call("game_step", json!({"frames":1}));
+    let status = client.call("game_status", json!({}));
+    assert_eq!(status["structuredContent"]["mouse"]["buttons"], json!([]), "{status}");
+    let bad = client
+        .request("tools/call", json!({"name":"game_step","arguments":{"frames":1,"mouse":{"buttons":["thumb"]}}}));
+    assert!(bad.get("error").is_some() || bad["result"]["isError"] == true, "{bad}");
 }
 
 #[test]
