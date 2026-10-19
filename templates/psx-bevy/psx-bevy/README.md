@@ -1,8 +1,9 @@
 # psx-bevy: the template's crate
 
 The psx template's own crate inside a generated project: the PS1 look
-(`psx`), logic ticks and input (`shell`, `controller`), the controls menu
-(`controls`), headless and trajectory testing (`testing`), the `--scene` and
+(`psx`), logic ticks and input (`shell`, `controller`), the controls and
+display menus (`controls`, `display`), headless and trajectory testing
+(`testing`), the `--scene` and
 `--model` viewers, the developer MCP (feature `dev-mcp`) and the `launcher`
 every game's `main.rs` calls. Bevy 0.20.0; Rust 1.97.1+; a desktop GPU driver
 (or Mesa lavapipe with `--software`).
@@ -20,14 +21,16 @@ these modules). See the project's root README for the workspace and commands.
 | `shell.rs` | `TickRate`, `GameClock`, `GameSystems`, controller sampling |
 | `controller.rs`, `controller/bindings.rs` | Logical `Button`/`ControllerState`, validated device bindings and settings storage |
 | `controls/` | Reusable controls menu: draft edits, capture, conflict resolution and PS1-style presentation |
+| `display/` | Example display menu: resolution, borderless fullscreen and `PsxLook` switches, saved to `display.json` |
+| `settings.rs` | Player settings files: config folder, size-limited reads, atomic writes |
 | `launcher.rs` | Window, renderer, headless mode and the shared command-line flags |
 | `testing.rs`, `testing/trajectory.rs` | `headless_app`, `TickApp::run_tick(s)`, replay and per-tick comparison with the original |
 | `testing/mcp.rs` | Stdio developer-MCP client for GPU tests (`dev-mcp`) |
 | `viewer.rs`, `model_viewer.rs` | `--scene` capture viewer, `--model` TMD viewer |
 | `dev_mcp.rs` | Developer MCP (feature `dev-mcp`) |
 
-`examples/depth_cue.rs`, `examples/depth_bias.rs` and `tests/dev_mcp.rs` are
-the crate's own GPU checks.
+`examples/depth_cue.rs`, `examples/depth_bias.rs`, `examples/screen_size.rs`
+and `tests/dev_mcp.rs` are the crate's own GPU checks.
 
 `cargo build`/`cargo run` already compile Bevy at full optimisation (only the
 workspace's crates are built at `opt-level = 1`), so they run at close to
@@ -49,7 +52,7 @@ glTF scenes, `DirectionalLight`, `GlobalAmbientLight`, `DistanceFog`. The
 
 | PS1 trait | How it is reproduced | Switch |
 |---|---|---|
-| Low resolution | Every `PsxView` camera renders to a low-resolution target (`PsxScreen`, 320×240 unless the game says otherwise), shown letterboxed and nearest-sampled | `launcher::Game::screen` |
+| Low resolution | Every `PsxView` camera renders to a low-resolution target (`PsxScreen`, 320×240 unless the game says otherwise), shown letterboxed and nearest-sampled | `launcher::Game::screen`; `PsxScreen::set_size` at runtime |
 | Vertex wobble | Vertices snap to whole target pixels in the vertex shader | `PsxLook::vertex_snap` |
 | Affine texture warp | UVs and colours interpolate linearly in screen space (sent as A·w, divided by w per fragment) | always on |
 | Gouraud lighting | Lighting is per vertex, on gamma-encoded colour where white = neutral and textures can be brightened up to 2× | `PsxMaterial::lit` |
@@ -438,6 +441,45 @@ isolated `PsxView` camera before the screen pass, so it appears in low-resolutio
 screenshots and passes through the same framebuffer quantization. If importing
 both Bevy and game preludes, explicitly import `engine::controller::Button` to
 disambiguate Bevy's UI button type.
+
+### Screen size, fullscreen and the example display menu
+
+`PsxScreen::set_size` changes the framebuffer at any time. Before that frame
+renders, both screen images, the screen pass and every `PsxView` camera follow:
+3D keeps its vertical field of view and shows more at the sides (Hor+), and 2D
+stays one unit per pixel with the origin at the centre. Anything laid out from
+the old size is the game's to move; `PsxAnchor { at, offset }` keeps a 2D entity
+at a screen point (`at` is -1..=1 per axis, `(0, -1)` the bottom centre) plus a
+pixel offset, which is what the demo's HUD uses. A resized image is a new GPU
+texture and a material's bind group keeps the old one, so a game material that
+samples `PsxScreen::image` must be marked changed after a resize, as the screen
+pass is. `examples/screen_size.rs` and its GPU test check all of this.
+
+`--fullscreen` starts in borderless fullscreen and **F11** toggles it
+(`display::set_fullscreen`).
+
+The `PsxAspect` resource decides how the screen meets the window. `Fixed`
+(the default) keeps the screen's size and letterboxes it. `Window` keeps its
+height and sets its width to the window's aspect ratio (an even number of
+pixels, at most 4096), so any window shape, or a fullscreen monitor, is
+filled; resizing the window resizes the screen. Choose it with
+`--aspect fixed|window`, the display menu, or by setting the resource.
+
+In the demo, **F2** opens the display menu (`DisplayPlugin`, added by the
+launcher beside `ControlsPlugin`): Resolution (the game's size, the same height
+at 16:9, and 2×; `launcher::screen_choices`), Aspect (Fixed or Match window;
+with Match window, Resolution chooses only the height), Fullscreen, and the
+three `PsxLook` switches. Up/Down chooses a row; Left/Right or Enter/South changes it.
+Unlike the controls menu, edits apply at once so they can be seen; **Save and
+close** writes `display.json` beside `controls.json`, and **Discard and close**,
+Esc/East or F2 put back what showed when the menu opened. **Restore defaults**
+returns to what the game set up before the file was applied. Start directly in
+the menu with `cargo run -- --display`; `--display-settings PATH` chooses the
+file. `--aspect`, `--fullscreen`, `--no-dither` and `--no-quantize` win over the file for
+that session (`DisplayOverrides`) and are only saved if the player saves. A
+missing file keeps the game's defaults; an invalid one is reported, left
+untouched and ignored. Pass your own `screens` to offer other sizes, or set
+`global_shortcuts: false` and call `DisplayMenu::open()` from your options screen.
 
 ## From evidence to idiomatic code
 

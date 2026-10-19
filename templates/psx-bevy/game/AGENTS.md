@@ -74,6 +74,11 @@ Evidence-recording scripts and importers live in the workspace's `tools/`.
   Modal interfaces capture `InputFocus` before `PhysicalInputSystems::Sample`;
   clear latched input and wait for physical release before resuming. See
   `psx-bevy/README.md`, "Rebinding".
+- `DisplayPlugin` (F2: resolution, aspect, fullscreen, `PsxLook`) is added by the
+  launcher too; open it from your options flow with `DisplayMenu::open()`.
+  The screen can change size at runtime, so anchor 2D HUD elements with
+  `PsxAnchor` rather than positions computed from `PsxScreen` at startup.
+  See `psx-bevy/README.md`, "Screen size".
 - Explicitly import `engine::controller::Button` when using Bevy and engine
   preludes together: Bevy UI also exports a `Button` type.
 - Split each feature into a *rules* plugin (state, physics, decisions; no

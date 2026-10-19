@@ -23,7 +23,7 @@ use bevy::{
 use engine::config::load_ron;
 use engine::controller::Button;
 use engine::prelude::*;
-use engine::psx::{PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxScreen, PsxSprite, PsxStp, PsxView};
+use engine::psx::{PsxAnchor, PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxSprite, PsxStp, PsxView};
 use engine::psx::{psx_indices, psx_palette, rgb15};
 use player::Player;
 
@@ -112,7 +112,6 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PsxMaterial>>,
     mut images: ResMut<Assets<Image>>,
-    screen: Res<PsxScreen>,
 ) {
     // 3D camera: renders first and clears. DistanceFog drives PS1 depth cueing.
     commands.spawn((
@@ -158,12 +157,13 @@ fn setup(
         Spin(0.6),
     ));
 
-    // HUD: 2D sprites in screen pixels (origin at the centre, y up).
-    let bottom = -(screen.height as f32) / 2.0 + 8.0;
+    // HUD: 2D sprites in screen pixels (origin at the centre, y up), anchored
+    // to the bottom edge so they stay there at any screen size.
+    let bottom = Vec2::new(0.0, -1.0);
     for (i, button) in Button::ALL.into_iter().enumerate() {
         commands.spawn((
             Sprite::from_color(Color::srgb(0.3, 0.35, 0.4), Vec2::splat(8.0)),
-            Transform::from_xyz(-6.5 * 11.0 + i as f32 * 11.0, bottom, 0.0),
+            PsxAnchor::new(bottom, Vec2::new(-6.5 * 11.0 + i as f32 * 11.0, 8.0)),
             Indicator(button),
         ));
     }
@@ -182,9 +182,9 @@ fn setup_2d(
     mut meshes: ResMut<Assets<Mesh>>,
     mut sprites: ResMut<Assets<PsxSprite>>,
     mut materials2d: ResMut<Assets<PsxMaterial2d>>,
-    screen: Res<PsxScreen>,
 ) {
-    let top = screen.height as f32 / 2.0 - 16.0;
+    // A row along the top edge, kept there by `PsxAnchor`.
+    let top = |x: f32| PsxAnchor::new(Vec2::new(0.0, 1.0), Vec2::new(x, -16.0));
     // 16×16 gem as 8-bit indices: 0 transparent, 1-4 body bands, 5 outline, 6 highlight.
     let indices = (0..16 * 16)
         .map(|i| {
@@ -210,7 +210,8 @@ fn setup_2d(
             stp: PsxStp::Texel,
             ..PsxSprite::indexed(palette, 0)
         })),
-        Transform::from_xyz(-120.0, top, 0.0).with_scale(Vec3::splat(2.0)),
+        top(-120.0),
+        Transform::from_scale(Vec3::splat(2.0)),
     ));
 
     // Gouraud quad: vertex colours interpolate; `PsxLook::dither` dithers them.
@@ -225,11 +226,7 @@ fn setup_2d(
             vec![[0.02, 0.0, 0.1, 1.0], [0.6, 0.1, 0.0, 1.0], [0.0, 0.05, 0.2, 1.0], [0.9, 0.5, 0.0, 1.0]],
         )
         .with_inserted_indices(Indices::U32(vec![0, 1, 2, 1, 3, 2]));
-    commands.spawn((
-        Mesh2d(meshes.add(quad)),
-        MeshMaterial2d(materials2d.add(PsxMaterial2d::default())),
-        Transform::from_xyz(-40.0, top, 0.0),
-    ));
+    commands.spawn((Mesh2d(meshes.add(quad)), MeshMaterial2d(materials2d.add(PsxMaterial2d::default())), top(-40.0)));
 
     // A plain sprite with a smooth 24-bit gradient: banding shows the 15-bit screen.
     let gradient: Vec<u8> =
@@ -243,7 +240,7 @@ fn setup_2d(
     );
     commands.spawn((
         Sprite { custom_size: Some(Vec2::new(80.0, 16.0)), ..Sprite::from_image(images.add(gradient)) },
-        Transform::from_xyz(60.0, top, 0.0),
+        top(60.0),
     ));
 }
 

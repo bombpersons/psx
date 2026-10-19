@@ -1,6 +1,6 @@
 //! Real offscreen GPU and stdio MCP verification, requiring a software adapter.
-//! The tests drive the `depth_cue` and `depth_bias` examples, which use the
-//! same launcher as a game: build them first with
+//! The tests drive the `depth_cue`, `depth_bias` and `screen_size` examples,
+//! which use the same launcher as a game: build them first with
 //! `cargo build -p psx-bevy --features dev-mcp --examples`.
 #![cfg(feature = "dev-mcp")]
 
@@ -18,6 +18,44 @@ fn example(name: &str) -> PathBuf {
 
 fn depth_cue_example() -> PathBuf {
     example("depth_cue")
+}
+
+#[test]
+#[ignore = "requires offscreen GPU and cargo build --features dev-mcp --example screen_size"]
+fn screen_resizes_at_runtime_with_hor_plus_3d_and_pixel_exact_2d() {
+    let output = std::env::temp_dir().join(format!("psx-screen-size-{}", std::process::id()));
+    std::fs::create_dir_all(&output).unwrap();
+    println!("Screen size GPU evidence: {}", output.display());
+    // A settings file of its own, so a player's saved display.json cannot change the screen.
+    let mut command = Command::new(example("screen_size"));
+    command.arg("--display-settings").arg(output.join("display.json"));
+    let mut client = Client::launch(command, &output.join("game.log"));
+    // Pixels of `color` along row `y` and column `x` through the centre.
+    let count = |image: &image::RgbaImage, color: [u8; 3]| {
+        let (w, h) = image.dimensions();
+        let is = |x, y| [0, 1, 2].map(|c| image.get_pixel(x, y)[c]) == color;
+        ((0..w).filter(|&x| is(x, h / 2)).count(), (0..h).filter(|&y| is(w / 2 - 15, y)).count())
+    };
+    for (width, height) in [(320u32, 240u32), (426, 240), (640, 480), (320, 240)] {
+        client.call(
+            "game_set_component",
+            json!({"name":"ScreenControls","component":"ScreenControls","fields":{"width":width,"height":height}}),
+        );
+        client.call("game_step", json!({"frames":1}));
+        let shot = client.screenshot(output.join(format!("{width}x{height}.png")));
+        assert_eq!(shot.dimensions(), (width, height));
+        let (red_across, _) = count(&shot, [255, 0, 0]);
+        assert_eq!(red_across, 20, "2D stays one unit per pixel at {width}x{height}");
+        // The quad spans half the view's height; Hor+ keeps its width equal to its height.
+        let (green_across, green_down) = count(&shot, [0, 255, 0]);
+        assert_eq!(green_down, height as usize / 2, "vertical fov kept at {width}x{height}");
+        assert_eq!(green_across + red_across, height as usize / 2, "square stays square at {width}x{height}");
+    }
+    let status = client.call("game_status", json!({}));
+    let text = status["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("\"width\":320"), "{text}");
+    let log = std::fs::read_to_string(output.join("game.log")).unwrap();
+    assert!(!log.contains("Shader compilation error") && !log.contains("B0001"), "{log}");
 }
 
 #[test]

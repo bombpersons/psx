@@ -1,13 +1,9 @@
 //! Physical mappings and explicit, validated settings-file persistence.
 use super::Button;
+use crate::settings;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    io::{Read, Write},
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::path::PathBuf;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Reflect)]
 pub enum BindingDevice {
@@ -218,28 +214,11 @@ impl BindingStore {
     /// `<config dir>/<app>/controls.json`; `app` is usually the game's package
     /// name, so each game keeps its own bindings.
     pub fn default_path(app: &str) -> Option<PathBuf> {
-        #[cfg(target_os = "windows")]
-        if let Some(p) = std::env::var_os("APPDATA") {
-            return Some(PathBuf::from(p).join(app).join("controls.json"));
-        }
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))?;
-        Some(base.join(app).join("controls.json"))
+        settings::config_path(app, "controls.json")
     }
     pub fn load(&self) -> Result<Option<ControllerBindings>, String> {
         let Some(path) = &self.path else { return Ok(None) };
-        let file = match fs::File::open(path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.to_string()),
-        };
-        let mut bytes = Vec::new();
-        file.take(65537).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-        if bytes.len() > 65536 {
-            return Err("Controls settings exceed 64 KiB".into());
-        }
+        let Some(bytes) = settings::read(path)? else { return Ok(None) };
         let document: Document = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         if document.version != 1 {
             return Err("Unsupported controls settings version".into());
@@ -250,24 +229,8 @@ impl BindingStore {
     pub fn save(&self, bindings: &ControllerBindings) -> Result<(), String> {
         bindings.validate()?;
         let path = self.path.as_ref().ok_or("No controls settings path configured")?;
-        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let temp =
-            parent.join(format!(".controls-{}-{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|e| e.to_string())?;
-        struct Staged(PathBuf);
-        impl Drop for Staged {
-            fn drop(&mut self) {
-                let _ = fs::remove_file(&self.0);
-            }
-        }
-        let _staged = Staged(temp.clone());
         let bytes = serde_json::to_vec_pretty(&Document { version: 1, bindings: bindings.clone() })
             .map_err(|e| e.to_string())?;
-        let written = file.write_all(&bytes).and_then(|_| file.sync_all());
-        drop(file);
-        written.map_err(|e| e.to_string())?;
-        fs::rename(&temp, path).map_err(|e| e.to_string())
+        settings::write(path, &bytes)
     }
 }
