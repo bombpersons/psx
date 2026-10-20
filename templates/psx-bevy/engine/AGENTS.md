@@ -14,15 +14,22 @@ Most PS1 games already separate:
   object placement, trigger and script tables, setup values.
 - **Code written per object type**: the player's state handlers, each enemy's
   AI, special traps and bosses.
+- **Code shared between types**: routines the original runs for a whole family
+  (every creature's AI info, mood, path search, turning and movement; one
+  firing path for every gun; one pickup routine). This is a cut too: it
+  becomes one module with per-type parameters, in `game/` when it is this
+  game's rules, here when another game would need it.
 
 If the engine's formats express what the original's tables express, and
 per-object code stays as code, generalising costs no accuracy. Accuracy breaks
-when you invent abstractions the original doesn't have (a generic "enemy
-behaviour" schema, a scripting language for traps, a physics component that
-replaces hand-written movement rules): they lose update order, timing within
-a tick, integer rounding and special cases. `docs/engine-model.md` records,
-from evidence, what the original treats as data and what as code; this crate
-follows it.
+when ported code is replaced by abstractions the original doesn't have (a
+generic "enemy behaviour" schema, a scripting language for traps, a physics
+component that replaces hand-written movement rules): they lose update order,
+timing within a tick, integer rounding and special cases. Configurable layers
+like these can come after parity, built on top of the ported code, and must
+reproduce its numbers exactly when given the original's parameters.
+`docs/engine-model.md` records, from evidence, what the original treats as
+data, as shared code and as per-type code; this crate follows it.
 
 ## Placing code
 
@@ -33,10 +40,13 @@ Decide where something goes before writing it:
    this game's characters or items.
 2. **Did the original read it from a table?** Then it's data in an asset that
    engine code interprets. Don't hardcode it.
-3. **Did the original hardcode it per object type?** Then it's a controller in
+3. **Did the original run one routine for several types?** Then port it once,
+   as a shared module whose per-type parameters and hooks are the ones the
+   original has. Don't copy it into each controller.
+4. **Did the original hardcode it per object type?** Then it's a controller in
    `game/`, registered with the type registry and ported faithfully, quirks
    included. Don't generalise it into a schema.
-4. **Is it a design number inside a controller** (speed, damage, timer)? Put it
+5. **Is it a design number inside a controller** (speed, damage, timer)? Put it
    in a per-type tuning file the controller reads (`config::TuningPlugin`).
    Leave structural details (update order, rounding) in code.
 
@@ -62,6 +72,12 @@ The skeleton is a starting point; reshape it to match `docs/engine-model.md`.
   Grow it with what the original's levels actually contain.
 - `config.rs`: RON loading for tuning and tables.
 
+Every kind of content the original dispatches on (object types, pickups,
+weapons, trigger actions, cutscenes, cameras, sounds; follow how the original
+dispatches each) is added the same way: an entry in a registry or table plus
+per-type data or code. A new enemy or weapon of an existing kind should need
+no edit to the shared code it runs on.
+
 ## Formats
 
 - Normal units: `f32` metres or a documented world unit, radians, seconds or
@@ -73,7 +89,11 @@ The skeleton is a starting point; reshape it to match `docs/engine-model.md`.
 - The editor that opens them is a modern desktop application: full window
   resolution, mouse and keyboard, ordinary UI. It does not use psx-bevy's PS1
   renderer, bitmap font or pad menus, and should not look like a PlayStation
-  game (see the psx `guide` topic `port`).
+  game (see the psx `guide` topic `port`). Its end state creates content from
+  nothing, up to a total conversion, so every format must be creatable, not
+  only loadable. Fields not yet understood stay named, with a documented
+  default a new file can use, rather than opaque blobs copied from the
+  original.
 - Exact enough that trajectory tests still match. Where float conversion would
   change behaviour (fixed-point accumulation, rounding), keep the integer
   quantity and document why.

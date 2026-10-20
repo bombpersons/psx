@@ -1,12 +1,34 @@
+A port has three goals, in order: it behaves exactly like the original; it is
+organised so that new levels, enemies, items and weapons, and changes to the
+player's controller, are easy to make; and it has an editor that can author new
+content, up to a total conversion. Each goal rests on the one before: an
+extension point that changes a ported number is a bug, and the editor can only
+author what the engine expresses as data.
+
 A port is built as two things from the start: an engine (the reusable machinery
 the game runs on, usable for a different game without the original's content
 or rules) and this game on top of it. Matching the original and reusing the
 engine don't conflict when the engine is cut where the original cuts: data the
 original interprets from tables becomes engine formats; code the original runs
-per object type stays code, ported faithfully. Invented abstractions (a generic
-enemy schema, a trap scripting language, a physics component replacing
-hand-written movement) lose update order, rounding and special cases.
-Restructuring a finished port is much harder, so set the structure up first.
+per object type stays code, ported faithfully. Don't replace ported code with
+a generic layer while porting (an enemy schema, a trap scripting language, a
+physics component replacing hand-written movement): such layers lose update
+order, rounding and special cases. Restructuring a finished port is much
+harder, so set the structure up first.
+
+Organise for extension as you port. Port shared routines once: when the
+original runs one routine for many types (creature AI and movement, pickups,
+guns, cutscene playback), port it as one shared module with the per-type
+parameters and hooks the original has, and keep only each type's quirks in its
+own controller. Copying it into every controller makes every later enemy or
+gun a copy-paste job. Each kind of content gets one extension path, a registry
+or table entry plus per-type data or code, never an edit to a central match.
+Design numbers live in tuning files. Document, per controller, the contract an
+asset must meet to use it (joints, animation clips, states, state-change
+frame ranges, animation commands, sound ids), so a replacement player model
+or a new enemy model can reuse the ported code. Keep each feature plugin
+usable on its own: the player must not need the inventory or HUD to run, and
+dependencies between features are explicit or optional.
 
 Evidence: the disc and psx are the only sources. Back every ported behaviour
 with runtime observations or binary evidence and say which in docs/evidence.md.
@@ -17,8 +39,9 @@ Work order:
    world is made of (rooms, tiles, BSP, heightmap, polygon soup) and how
    collision and visibility derive from it; whether movement is animation- or
    code-driven; how objects are defined (type table, control function per
-   type, which fields are tabled); how levels script events (trigger tables,
-   bytecode, hardcoded); how a frame runs (update order, fields per tick).
+   type, routines shared between types, which fields are tabled); how levels
+   script events (trigger tables, bytecode, hardcoded); how a frame runs
+   (update order, fields per tick).
 3. template_create into the game folder (it keeps the disc and an existing
    AGENTS.md). The workspace is psx-bevy/ (template-owned; small general
    edits allowed, listed in docs/template.md), engine/ (registries,
@@ -36,10 +59,11 @@ Work order:
 
 Placement, in short: needed by another game on this engine -> engine/, named
 generically; read from a table in the original -> data the engine interprets;
-hardcoded per type -> a registered controller in game/; a design number inside
-a controller -> its tuning file. Never in engine/: this game's names, asset
-paths, table magic ids or checks for which game is running. Unknown type ids
-and actions are reported, never mapped to something else.
+shared by several types in the original -> one module with per-type
+parameters; hardcoded per type -> a registered controller in game/; a design
+number inside a controller -> its tuning file. Never in engine/: this game's
+names, asset paths, table magic ids or checks for which game is running.
+Unknown type ids and actions are reported, never mapped to something else.
 
 The sandbox (cargo run -p engine --example sandbox) is a tiny second game made
 only from engine/ and hand-written assets. If a feature can't be used there
@@ -59,10 +83,46 @@ controls menu: no low-resolution framebuffer, dithering, PS1 bitmap font or
 pad-driven menus. Its viewports may render levels and models, but the tool
 itself should look like a current level editor, not a PlayStation game.
 
+The editor's end state is the tool new content is made with. It creates levels
+from nothing (File > New, geometry and collision tools, objects placed from a
+library of registered types, triggers, tuning), imports models, textures and
+sounds from common formats (glTF, PNG, WAV) through the importers, and
+authors animations with the metadata controllers rely on (state changes,
+commands, clip numbers), checking a model and its animations against the
+contract of the controller it is given to. Animation-driven movement only
+works with that metadata, so a new character is a model plus animations that
+meet the contract.
+
+Everything a total conversion changes without new behaviour is data the game
+loads (level list and order, levels, models, textures, sounds, text, object
+setup, tuning), so the editor can author all of it. Give the game a launch
+option to run from another asset folder, so such content runs without a new
+crate. New behaviour stays code, in a mod crate, and the editor lists its
+types from registry metadata.
+
+Mods are crates, built by recompiling, not loaded at runtime. A mod depends on
+game/ (already a library), adds its plugins and builds its own binary with the
+same launcher call. It can add types, actions, levels and tuning, or replace
+one of the game's features, without editing game/. So game/ keeps its feature
+plugins, shared modules and components public; groups its feature plugins so a
+mod can disable or swap one; lets a mod replace a registration deliberately (an
+accidental duplicate still panics); and loads its assets so that a crate
+depending on it still finds them. A mod may load the original's assets (players
+supply their own disc) or ship its own. The example mod
+(game/examples/example_mod.rs) proves it, the way the sandbox proves the
+engine: a small game made only of hand-made assets, the ported player
+controller driving a new character in a new level, with an enemy added through
+the shared module and every other game feature disabled.
+
 Fidelity is the contract: every restructuring keeps every trajectory test
 passing exactly. If a refactor changes a number, find out from evidence
 whether the refactor is wrong or the test relied on an accident. Compare
 rendered frames against the original and look at them.
+
+After parity, configurable layers can go on top of the ported code, never in
+place of it: data-defined variants of ported behaviour (an enemy that reuses
+the shared creature module with new parameters, a new pickup kind). Given the
+original's parameters, each must reproduce the ported trajectories exactly.
 
 Template updates: template_update replaces untouched psx-bevy/ files, writes
 <file>.psx-new beside edited ones (reapply the edit listed in
@@ -70,7 +130,10 @@ docs/template.md) and copies changed seeded files under
 .psx/template-update/ for you to merge. Projects from before the workspace
 layout: move the template modules into psx-bevy/, then `psx template adopt`.
 
-Done means: the port matches recorded behaviour and looks like the original;
-a new game could add a crate like game/ and author engine-format assets
-without editing engine/; levels, object setup and tuning change by editing
-assets, in files or in the editor.
+Done means: the port matches recorded behaviour and looks like the original; a
+new enemy, item or weapon of an existing kind is a new entry plus data, without
+editing the shared code it runs on; a mod crate can add to or change the game
+without editing game/, and the example mod runs from hand-made assets alone; a
+new game could add a crate like game/ and author engine-format assets without
+editing engine/; levels, object setup and tuning change by editing assets, in
+files or in the editor; and the editor can build a new level from nothing.

@@ -94,6 +94,65 @@ Evidence-recording scripts and importers live in the workspace's `tools/`.
   developer build, `game_set_component` can edit selected named fields using a
   unique exact entity name or the id returned by `game_query`.
 
+## Keep it extensible
+
+The port should make new content easy: new levels, enemies, items and weapons,
+a changed player controller. Structure it for that while porting: untangling
+near-duplicates later, with every trajectory test still exact, costs far more
+than porting shared code once.
+
+- Port shared routines once. When the original runs one routine for many types
+  (creature AI, mood, path search and movement; one gun table and firing path;
+  pickups; cutscene playback), port it as one module with the per-type
+  parameters and hooks the original has (e.g. `src/creature/`), and keep only
+  each type's quirks in that type's controller.
+- Adding a thing of an existing kind is a registration plus data: a new enemy
+  registers a type, supplies its parameters and tuning file, and reuses the
+  shared module. If it needs an edit to the shared code or a central `match`,
+  the extension path is missing.
+- Keep design numbers named and grouped in tuning files, so a variant is a new
+  file, not a code change.
+- Write down each controller's asset contract in `docs/` (joints, animation
+  clip and state numbers, state-change frame ranges, animation commands,
+  sound ids it relies on). A replacement player model or a new enemy model,
+  with animations that meet it, can then reuse the ported controller, and the
+  editor can check imported assets against it.
+- Keep each feature plugin usable on its own. The player must run without the
+  inventory, HUD or menus; where one feature needs another, make the
+  dependency explicit (a shared component or event) or optional, never a
+  resource that panics when the other plugin is missing.
+- Don't replace ported code with a schema or script while porting. Data-defined
+  variants come after parity, on top of the ported code, and must reproduce
+  the ported trajectories exactly when given the original's parameters.
+
+### Mods are crates
+
+A mod is a crate that depends on `game`, adds its own plugins and builds its
+own binary: a copy of `src/main.rs` whose `add` also adds the mod's plugins.
+It is recompiled, never loaded at runtime. Keep this convenient:
+
+- Keep feature modules, shared modules, components and tuning types `pub`, so
+  a mod can reuse the shared creature module or query the player.
+- Make `GamePlugin` a `PluginGroup` (`GamePlugins`) of the feature plugins, so
+  a mod can `.disable::<HudPlugin>()` and add its own in its place.
+- Registration ids panic on duplicates to catch mistakes. Give the registries
+  an explicit replace (e.g. `replace_object_type`) for a mod that swaps an
+  existing type's controller, and keep `register_*` strict.
+- A mod's systems join the same `EngineSet`s, so they run in the original's
+  update order.
+- Assets: Bevy looks for `assets/` beside the running crate, so a mod's binary
+  would not find `game/assets`. Load the game's assets through a named asset
+  source (or an asset root the launcher sets) that a dependent crate still
+  resolves, and let a mod add its own folder. A mod may use the original's
+  assets (players supply their own disc) or ship only its own.
+- Keep `examples/example_mod.rs` building and running: a small game made only of
+  hand-made assets under `assets/example_mod/`, like the sandbox. The ported
+  player controller drives a new character (a simple model with animations
+  that meet the controller's contract) in a new level, an enemy is added
+  through the shared module, and every other game feature is disabled. It
+  uses only `game`'s public API; if it needs an edit to `game/` or anything
+  from the disc, a boundary is in the wrong place.
+
 ## Tick rate and region
 
 - `lib.rs` sets `REGION` (display: 50 Hz PAL / 60 Hz NTSC) and

@@ -12,7 +12,10 @@ port, read guide topic port first.
 Build ordinary Bevy entities, components and feature plugins using decoded game
 assets. Keep gameplay rules in FixedUpdate (an EngineSet inside
 GameSystems::Game) and consume logical ControllerState actions. Register each
-object type's controller with the engine; put placements and tuning in assets. The shared controls menu can handle physical rebinding;
+object type's controller with the engine; put placements and tuning in assets.
+Routines the original shares between types become shared systems and
+components, with each type's registration supplying its parameters. The shared
+controls menu can handle physical rebinding;
 the finished game decides where that menu belongs in its options flow.
 
 The goal is a fresh game implementation whose rules are backed by evidence.
