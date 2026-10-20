@@ -44,6 +44,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # Gamepads in the handoff window (gilrs) link libudev on Linux.
+      - run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 

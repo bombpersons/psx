@@ -554,7 +554,7 @@ mod tests {
         let mut s = start(&a).unwrap();
         let cross = psx_core::sio0::button::CROSS;
         let start_btn = psx_core::sio0::button::START;
-        let mut press = |s: &mut Session, frames: u64, buttons: u16| (0..frames).for_each(|_| s.frame(buttons, [0x80; 4]));
+        let press = |s: &mut Session, frames: u64, buttons: u16| (0..frames).for_each(|_| s.frame(buttons, [0x80; 4]));
         press(&mut s, 300, 0);
         press(&mut s, 5, start_btn);
         press(&mut s, 100, 0);
