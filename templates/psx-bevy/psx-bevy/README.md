@@ -315,6 +315,23 @@ commands.spawn((PsxModelRoot(car), Transform::default()));
 - Viewer: `cargo run -- --model car.tmd [--texture car.tim]... [--cull]`
   frames the model and turns it (`game_step` turns it under the dev MCP).
 
+### Layered asset folders (mods)
+
+`assets/` is found the way Bevy finds it (`BEVY_ASSET_ROOT`, else the running
+crate, else the executable's folder). A crate built on another one, such as
+a mod built on `game`, adds that crate's folder below its own before the app
+is built:
+
+```rust
+psx_bevy::assets::add_root("../../game/assets"); // relative to the base above
+launcher::run(Game { /* ... */ });
+```
+
+The launcher then reads every load from the first folder that has the path,
+so the mod finds the game's files and replaces any of them by shipping one at
+the same path. Synchronous loads use `assets::find` (`engine::config::load_ron`
+does). Without added roots, Bevy's own reader is used unchanged.
+
 ## Simulation and input
 
 - Gameplay runs in `FixedUpdate`, in `GameSystems::Game`, once per logic tick.

@@ -1,4 +1,5 @@
-//! Hand-editable data: RON files under the running crate's `assets/`.
+//! Hand-editable data: RON files under the running crate's `assets/` (or a
+//! layered asset folder, see [`crate::assets`]).
 //!
 //! Design numbers inside a controller (speeds, damage, timers) live in a
 //! per-type tuning file, so they can be modded without code changes; the
@@ -8,17 +9,17 @@
 //! Files load synchronously when the app is built, so headless tests see the
 //! same values as the game. Move to Bevy asset loaders when content needs
 //! streaming or hot reload.
-use bevy::asset::io::file::FileAssetReader;
 use bevy::prelude::*;
 use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
-/// `assets/<relative>` under the same root Bevy's asset server uses:
-/// `BEVY_ASSET_ROOT`, else the crate being run (`CARGO_MANIFEST_DIR`), else
-/// the executable's folder.
+/// `assets/<relative>` from the same folders Bevy's asset server reads: the
+/// running crate's `assets/` (under `BEVY_ASSET_ROOT`, else the crate being
+/// run, else the executable's folder), then any folders added with
+/// [`crate::assets::add_root`] (a mod's base game).
 pub fn asset_path(relative: &str) -> PathBuf {
-    FileAssetReader::get_base_path().join("assets").join(relative)
+    crate::assets::find(relative)
 }
 
 /// Reads and parses `assets/<relative>` as RON.

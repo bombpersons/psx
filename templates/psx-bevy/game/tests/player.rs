@@ -77,7 +77,7 @@ fn the_demo_level_spawns_through_the_registry() {
     app.run_tick(&[]);
     let players = app.world_mut().query_filtered::<&Transform, With<Player>>().iter(app.world()).count();
     assert_eq!(players, 1);
-    // The spinners' type is registered by DemoPlugin, which needs the renderer;
+    // The spinners' type is registered by SpinnerPlugin, not added here;
     // without it they are reported, not dropped silently.
     assert_eq!(app.world().resource::<UnknownObjectTypes>().0.get(&2), Some(&2));
 }

@@ -46,7 +46,7 @@ Work order:
    AGENTS.md). The workspace is psx-bevy/ (template-owned; small general
    edits allowed, listed in docs/template.md), engine/ (registries,
    update-order sets, level and tuning formats, a sandbox example), game/
-   (demo to replace) and tools/import/. Reshape the engine skeleton to match
+   (demo to replace), mods/example/ (a mod built on game/) and tools/import/. Reshape the engine skeleton to match
    engine-model.md; keep the sandbox building.
 4. Importers in tools/import convert extracted files into engine formats
    (normal units, RON/PNG/WAV/glTF) under game/assets, recording provenance.
@@ -101,18 +101,20 @@ crate. New behaviour stays code, in a mod crate, and the editor lists its
 types from registry metadata.
 
 Mods are crates, built by recompiling, not loaded at runtime. A mod depends on
-game/ (already a library), adds its plugins and builds its own binary with the
-same launcher call. It can add types, actions, levels and tuning, or replace
-one of the game's features, without editing game/. So game/ keeps its feature
-plugins, shared modules and components public; groups its feature plugins so a
-mod can disable or swap one; lets a mod replace a registration deliberately (an
-accidental duplicate still panics); and loads its assets so that a crate
-depending on it still finds them. A mod may load the original's assets (players
-supply their own disc) or ship its own. The example mod
-(game/examples/example_mod.rs) proves it, the way the sandbox proves the
-engine: a small game made only of hand-made assets, the ported player
-controller driving a new character in a new level, with an enemy added through
-the shared module and every other game feature disabled.
+game/ (a library), adds its plugins and builds its own binary with the same
+launcher call. It can add types, actions, levels and tuning, or replace one of
+the game's features, without editing game/. The template provides the pieces:
+game::GamePlugins is a plugin group a mod can disable a feature in;
+replace_object_type and replace_action change a registration deliberately (an
+accidental duplicate still panics); asset folders are layered, so a mod adds
+the game's assets/ under its own and can replace any file. game/ keeps its
+feature plugins, shared modules and components public and each feature plugin
+usable on its own. A mod may load the original's assets (players supply their
+own disc) or ship its own. mods/example proves it, the way the sandbox proves
+the engine: a small game made only of hand-made assets, the ported player
+controller driving a new character in a new level. Port it along with the demo,
+and grow it with the port (a character whose animations meet the player's
+contract, an enemy added through the shared module).
 
 Fidelity is the contract: every restructuring keeps every trajectory test
 passing exactly. If a refactor changes a number, find out from evidence

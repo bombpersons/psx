@@ -74,6 +74,10 @@ pub struct UnknownObjectTypes(pub BTreeMap<u32, u32>);
 pub trait ObjectTypeAppExt {
     /// Registers a type. Panics if `id` is already registered.
     fn register_object_type(&mut self, id: ObjectTypeId, info: ObjectTypeInfo) -> &mut Self;
+    /// Replaces a registered type's entry, for a mod that swaps an existing
+    /// type's controller. Panics if `id` is not registered yet (add the base
+    /// game's plugins first).
+    fn replace_object_type(&mut self, id: ObjectTypeId, info: ObjectTypeInfo) -> &mut Self;
 }
 
 impl ObjectTypeAppExt for App {
@@ -81,6 +85,15 @@ impl ObjectTypeAppExt for App {
         let mut types = self.world_mut().get_resource_or_init::<ObjectTypes>();
         if let Some(old) = types.0.insert(id, info) {
             panic!("object type {} registered twice (first as {:?})", id.0, old.name);
+        }
+        self
+    }
+
+    fn replace_object_type(&mut self, id: ObjectTypeId, info: ObjectTypeInfo) -> &mut Self {
+        let mut types = self.world_mut().get_resource_or_init::<ObjectTypes>();
+        match types.0.get_mut(&id) {
+            Some(entry) => *entry = info,
+            None => panic!("object type {} replaced before it was registered (as {:?})", id.0, info.name),
         }
         self
     }
@@ -143,5 +156,28 @@ mod tests {
     fn duplicate_ids_panic() {
         let info = ObjectTypeInfo::new("a", |_, _| {});
         App::new().register_object_type(ObjectTypeId(1), info.clone()).register_object_type(ObjectTypeId(1), info);
+    }
+
+    #[test]
+    fn replacing_swaps_a_types_spawn_hook() {
+        let mut app = App::new();
+        app.add_plugins(ObjectsPlugin)
+            .register_object_type(ObjectTypeId(7), ObjectTypeInfo::new("crate", |_, _| {}))
+            .replace_object_type(
+                ObjectTypeId(7),
+                ObjectTypeInfo::new("modded crate", |e, _| {
+                    e.insert(Crate);
+                }),
+            );
+        let placement = Placement { type_id: ObjectTypeId(7), position: Vec3::ZERO, yaw: 0.0, params: vec![] };
+        let spawned = spawn_placement(app.world_mut(), &placement).unwrap();
+        assert!(app.world().get::<Crate>(spawned).is_some());
+        assert_eq!(app.world().get::<Name>(spawned).unwrap().as_str(), "modded crate");
+    }
+
+    #[test]
+    #[should_panic(expected = "before it was registered")]
+    fn replacing_an_unregistered_type_panics() {
+        App::new().replace_object_type(ObjectTypeId(1), ObjectTypeInfo::new("a", |_, _| {}));
     }
 }

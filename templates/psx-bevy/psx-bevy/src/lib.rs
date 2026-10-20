@@ -1,12 +1,13 @@
 //! The psx template's own crate: the PS1 look ([`psx`]), logic ticks and
 //! input ([`shell`], [`controller`]), the controls and display menus
 //! ([`controls`], [`display`]), headless testing ([`testing`]), capture and
-//! model viewers, the developer MCP (feature `dev-mcp`) and the [`launcher`]
-//! that wires them into an app.
+//! model viewers, the developer MCP (feature `dev-mcp`), layered asset
+//! folders ([`assets`]) and the [`launcher`] that wires them into an app.
 //!
 //! `psx template update` replaces this crate with newer versions, so a
 //! project builds on it from `engine/` and `game/` rather than editing it.
 //! Nothing here knows about a particular game.
+pub mod assets;
 pub mod controller;
 pub mod controls;
 #[cfg(feature = "dev-mcp")]

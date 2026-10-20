@@ -64,13 +64,15 @@ The skeleton is a starting point; reshape it to match `docs/engine-model.md`.
 - `objects.rs`, **object type registry**: type id → spawn hook, plus metadata
   (name, tuning resource). Adding a type means registering it, never editing a
   central `match`. Unknown ids are counted in `UnknownObjectTypes`.
+  `replace_object_type` swaps a registered entry (for mods).
 - `triggers.rs`, **action registry**: action id → one-shot handler system.
   Unknown actions are logged and counted in `UnknownActions`, never ignored or
-  mapped to something else. `TriggerVolume` is a placeholder detector: replace
+  mapped to something else. `replace_action` swaps a registered handler. `TriggerVolume` is a placeholder detector: replace
   it with the original's trigger model and keep the registry.
 - `level.rs`, **`LevelData`**: what a level holds, in the engine's format.
   Grow it with what the original's levels actually contain.
-- `config.rs`: RON loading for tuning and tables.
+- `config.rs`: RON loading for tuning and tables, through the layered asset
+  folders (`engine::assets`), so a mod's files replace the game's.
 
 Every kind of content the original dispatches on (object types, pickups,
 weapons, trigger actions, cutscenes, cameras, sounds; follow how the original

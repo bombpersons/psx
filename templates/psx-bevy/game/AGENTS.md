@@ -44,7 +44,7 @@ The game is a library (crate `game`, `src/lib.rs`); `src/main.rs` only calls
 the engine's launcher. So tests in `tests/` can use every game module.
 
 ```
-src/lib.rs            REGION, FIELDS_PER_TICK, SCREEN, TITLE, GamePlugin (EnginePlugin + your feature plugins)
+src/lib.rs            REGION, FIELDS_PER_TICK, SCREEN, TITLE, GamePlugins (EnginePlugin + your feature plugins)
 src/main.rs           engine::launcher::run(...): window, renderer, --flags
 src/<feature>/mod.rs  one plugin per feature: player, stage, enemies, camera, hud...
 src/<feature>/...     rules (components + systems, no rendering) apart from presentation
@@ -56,7 +56,8 @@ tests/dev_mcp.rs      opt-in GPU/MCP checks of the real binary
 Evidence-recording scripts and importers live in the workspace's `tools/`.
 
 - Start a new game by deleting `src/demo/` and `assets/demo/`, removing the
-  demo from `GamePlugin` and `lib.rs`, and adding your own feature modules.
+  demo from `GamePlugins` and `lib.rs`, and adding your own feature modules.
+  Port `mods/example` to your game in the same change (see "Mods are crates").
   Migrate the demo tests in the same change: replace or remove
   `tests/player.rs`, and adapt or remove `headless_render_edit_step_and_query`
   in `tests/dev_mcp.rs` (it assumes the demo's named player, spawn position,
@@ -127,31 +128,41 @@ than porting shared code once.
 
 ### Mods are crates
 
-A mod is a crate that depends on `game`, adds its own plugins and builds its
-own binary: a copy of `src/main.rs` whose `add` also adds the mod's plugins.
-It is recompiled, never loaded at runtime. Keep this convenient:
+A mod is a crate that depends on `game` (the workspace's `game` dependency),
+adds its own plugins and builds its own binary: a copy of `src/main.rs` whose
+`add` adds `game::GamePlugins` (minus what it drops) and the mod's plugins.
+It is recompiled, never loaded at runtime. `mods/example` is one; keep the
+game convenient to build on:
 
-- Keep feature modules, shared modules, components and tuning types `pub`, so
-  a mod can reuse the shared creature module or query the player.
-- Make `GamePlugin` a `PluginGroup` (`GamePlugins`) of the feature plugins, so
-  a mod can `.disable::<HudPlugin>()` and add its own in its place.
-- Registration ids panic on duplicates to catch mistakes. Give the registries
-  an explicit replace (e.g. `replace_object_type`) for a mod that swaps an
-  existing type's controller, and keep `register_*` strict.
+- Keep feature modules, shared modules, components, tuning types and spawn
+  hooks `pub`, so a mod can reuse the shared creature module, call a type's
+  own spawn hook or query the player.
+- `GamePlugins` is a `PluginGroup` of the feature plugins, so a mod can
+  `GamePlugins.build().disable::<HudPlugin>()` and add its own in its place.
+  List every feature plugin there, each usable on its own.
+- `register_object_type` and `register_action` panic on duplicates to catch
+  mistakes. A mod that changes an existing type or action calls
+  `replace_object_type` / `replace_action` after adding `GamePlugins`.
 - A mod's systems join the same `EngineSet`s, so they run in the original's
   update order.
-- Assets: Bevy looks for `assets/` beside the running crate, so a mod's binary
-  would not find `game/assets`. Load the game's assets through a named asset
-  source (or an asset root the launcher sets) that a dependent crate still
-  resolves, and let a mod add its own folder. A mod may use the original's
-  assets (players supply their own disc) or ship only its own.
-- Keep `examples/example_mod.rs` building and running: a small game made only of
-  hand-made assets under `assets/example_mod/`, like the sandbox. The ported
-  player controller drives a new character (a simple model with animations
-  that meet the controller's contract) in a new level, an enemy is added
-  through the shared module, and every other game feature is disabled. It
-  uses only `game`'s public API; if it needs an edit to `game/` or anything
-  from the disc, a boundary is in the wrong place.
+- Assets are layered (`engine::assets`): the running crate's `assets/` first,
+  then folders added with `engine::assets::add_root` before the app is built.
+  A mod adds the game's `assets/` and can replace any game file by shipping
+  one at the same path. Load files by relative path (`load_ron`,
+  `AssetServer`) so the layers apply. A mod may use the original's assets
+  (players supply their own disc) or ship only its own.
+- Mod type and action ids must not collide with the game's; pick a range
+  clear of the original's tables (the example uses 100 and up).
+- Keep `mods/example` building, running and passing its tests
+  (`cargo test -p example-mod`; its `tests/dev_mcp.rs` renders it). It is a
+  small game made only of hand-made assets in `mods/example/assets/`, like
+  the sandbox: the ported player controller drives a new character in a new
+  level, it adds a type and replaces one, overrides the player's tuning file,
+  and every other game feature is disabled. As the port grows, make it use
+  the port's real pieces: a new character whose animations meet the player
+  controller's contract, an enemy added through the shared creature module.
+  It uses only `game`'s public API; if it needs an edit to `game/` or
+  anything from the disc, a boundary is in the wrong place.
 
 ## Tick rate and region
 
@@ -333,7 +344,8 @@ calls in screen space. It is for *checking* your rebuild, never for shipping:
   builds/tests/Clippy. Bevy resolves the same features with and without
   `dev-mcp` (see the alignment block in the root `Cargo.toml`), so switching
   only builds the MCP crates; keep it that way when adding dependencies.
-- `cargo run -p engine --example sandbox` still builds and runs.
+- `cargo run -p engine --example sandbox` and `cargo run -p example-mod`
+  still build and run.
 - Visual changes: `game_step` + `game_screenshot`, and look at the image.
   Use `--mcp --headless --software` without a desktop; screenshot `target` must
   be `screen` in headless mode. `tests/dev_mcp.rs` is the opt-in GPU/MCP check

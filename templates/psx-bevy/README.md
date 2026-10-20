@@ -14,7 +14,8 @@ cargo run -- --display                   # open the display menu (F2 also opens 
 cargo run -- --fullscreen                # borderless fullscreen (F11 toggles)
 cargo run -- --aspect window             # screen width follows the window's shape
 cargo run -p engine --example sandbox    # the engine's own tiny game
-cargo test --workspace                   # headless tests: engine, game, importers
+cargo run -p example-mod                 # a mod: a tiny game built on game/
+cargo test --workspace                   # headless tests: engine, game, mod, importers
 cargo run --features dev-mcp -- --mcp --headless --software  # developer MCP, offscreen
 cargo test --workspace --all-features    # routine agent check (dev-mcp everywhere)
 cargo build --release                    # shipping build; developer MCP is excluded
@@ -27,6 +28,7 @@ cargo build --release                    # shipping build; developer MCP is excl
 | `psx-bevy/` | psx template | PS1 look, ticks and input, controls and display menus, testing, viewers, developer MCP, launcher. Updated by `psx template update`; edit sparingly and list edits in `docs/template.md` ([AGENTS.md](psx-bevy/AGENTS.md), [README](psx-bevy/README.md)) |
 | `engine/` | this project | This game's engine family: object type and action registries, update-order sets, level and tuning formats, `examples/sandbox.rs`. No names, numbers or assets from this game ([AGENTS.md](engine/AGENTS.md)) |
 | `game/` | this project | This title: per-type controllers, action handlers, HUD, menus, baked assets in `game/assets/`, trajectory tests ([AGENTS.md](game/AGENTS.md)) |
+| `mods/example/` | this project | An example mod: a small game built on `game` from hand-made assets, proving the game can be extended without editing it ([game/AGENTS.md](game/AGENTS.md), "Mods are crates") |
 | `tools/import/` | this project | Offline importers: files extracted with `psx` → engine formats, with provenance |
 | `docs/` | this project | `engine-model.md` (what the original treats as data vs code), `evidence.md`, `template.md` (edits to `psx-bevy/`) |
 | `.psx-template.toml` | psx template | Which template version this is and which files it owns |

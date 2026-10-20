@@ -6,11 +6,12 @@
 #                  this game
 #   game/          this title: controllers, rules, HUD, menus, baked assets
 #   tools/import/  offline importers: extracted disc data -> engine formats
+#   mods/example/  a mod: a small game built on game/ from hand-made assets
 #
 # Standalone: copying the template does not require the psx workspace.
 [workspace]
 resolver = "3"
-members = ["psx-bevy", "engine", "game", "tools/import"]
+members = ["psx-bevy", "engine", "game", "tools/import", "mods/example"]
 default-members = ["game"]
 
 [workspace.package]
@@ -22,6 +23,9 @@ publish = false
 [workspace.dependencies]
 psx-bevy = { path = "psx-bevy" }
 engine = { path = "engine" }
+# The game as a library, for mods (crates built on it). `package` is the
+# game's package name; the code calls it `game`.
+game = { path = "game", package = "psx-game" }
 bevy = { version = "=0.20.0", default-features = false, features = [
   "std", "async_executor", "multi_threaded", "bevy_asset", "bevy_log", "bevy_winit",
   "bevy_core_pipeline", "bevy_pbr", "bevy_sprite_render", "bevy_gltf", "bevy_gilrs",

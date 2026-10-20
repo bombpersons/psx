@@ -1,0 +1,8 @@
+// The mod's player tuning. Same path as the game's assets/demo/player.ron,
+// so it replaces that file: this crate's assets/ is searched first.
+(
+    walk_speed: 3.0,  // m/s
+    turn_speed: 2.4,  // rad/s
+    hop_speed: 7.0,   // m/s
+    gravity: 20.0,    // m/s²
+)

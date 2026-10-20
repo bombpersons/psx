@@ -11,7 +11,7 @@ fn main() {
         fields_per_tick: game::FIELDS_PER_TICK,
         screen: game::SCREEN,
         add: |app| {
-            app.add_plugins(game::GamePlugin);
+            app.add_plugins(game::GamePlugins);
         },
     });
 }

@@ -51,12 +51,20 @@ const FILES: &[(&str, &str)] = files![
     "game/src/main.rs",
     "game/tests/dev_mcp.rs",
     "game/tests/player.rs",
+    "mods/example/Cargo.toml",
+    "mods/example/assets/demo/player.ron",
+    "mods/example/assets/example_mod/level.ron",
+    "mods/example/src/lib.rs",
+    "mods/example/src/main.rs",
+    "mods/example/tests/dev_mcp.rs",
+    "mods/example/tests/rules.rs",
     "psx-bevy/AGENTS.md",
     "psx-bevy/Cargo.toml",
     "psx-bevy/README.md",
     "psx-bevy/examples/depth_bias.rs",
     "psx-bevy/examples/depth_cue.rs",
     "psx-bevy/examples/screen_size.rs",
+    "psx-bevy/src/assets.rs",
     "psx-bevy/src/controller.rs",
     "psx-bevy/src/controller/bindings.rs",
     "psx-bevy/src/controls/mod.rs",
@@ -302,9 +310,14 @@ fn render(name: &str, options: TemplateOptions) -> psx_media::Result<Vec<(&'stat
                     &format!("name = \"{name}\""),
                     1,
                 ),
-                "Cargo.lock" => {
-                    contents.replace(&format!("name = \"{TEMPLATE_PACKAGE}\""), &format!("name = \"{name}\""))
-                }
+                // The package's own entry and every dependency on it (mods).
+                "Cargo.lock" => contents.replace(&format!("\"{TEMPLATE_PACKAGE}\""), &format!("\"{name}\"")),
+                // The workspace's `game` dependency names the package.
+                "Cargo.toml" => contents.replacen(
+                    &format!("package = \"{TEMPLATE_PACKAGE}\""),
+                    &format!("package = \"{name}\""),
+                    1,
+                ),
                 "game/src/lib.rs" => configure_lib(contents, options)?,
                 _ => contents.to_string(),
             };
@@ -317,14 +330,14 @@ fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
         && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-        && !matches!(name, "engine" | "psx-bevy" | "import")
+        && !matches!(name, "engine" | "psx-bevy" | "import" | "example-mod")
 }
 
 fn check_options(name: &str, options: TemplateOptions) -> psx_media::Result<()> {
     if !valid_name(name) {
         return Err(MediaError::Malformed(format!(
             "package name {name:?} must start with a-z, contain only a-z, 0-9, '-' or '_', and not be engine, \
-             psx-bevy or import; pass --name"
+             psx-bevy, import or example-mod; pass --name"
         )));
     }
     if !(1..=60).contains(&options.fields_per_tick) {
@@ -613,7 +626,10 @@ mod tests {
         let game = dir.join("my-game");
         let toml = std::fs::read_to_string(game.join("game/Cargo.toml")).unwrap();
         assert!(toml.contains("name = \"my-game\""));
-        assert!(std::fs::read_to_string(game.join("Cargo.lock")).unwrap().contains("name = \"my-game\""));
+        let lock = std::fs::read_to_string(game.join("Cargo.lock")).unwrap();
+        assert!(lock.contains("name = \"my-game\"") && !lock.contains(TEMPLATE_PACKAGE));
+        let workspace = std::fs::read_to_string(game.join("Cargo.toml")).unwrap();
+        assert!(workspace.contains("package = \"my-game\""));
         assert!(game.join("psx-bevy/src/psx/shaders/psx_material.wesl").exists());
         assert!(game.join("engine/examples/sandbox.rs").exists());
         let lib = std::fs::read_to_string(game.join("game/src/lib.rs")).unwrap();

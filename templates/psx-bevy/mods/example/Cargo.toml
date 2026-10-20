@@ -1,0 +1,26 @@
+# An example mod: a small game built on `game` by recompiling, using only its
+# public API and the hand-made files in assets/. Nothing from the disc.
+#
+#   cargo run -p example-mod
+#
+# If keeping this building needs an edit to game/, a boundary in the game is
+# in the wrong place. See game/AGENTS.md, "Mods are crates".
+[package]
+name = "example-mod"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+dev-mcp = ["game/dev-mcp"]
+
+[dependencies]
+engine.workspace = true
+game.workspace = true
+bevy.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,7 +1,11 @@
 //! Example game: replace this module with your game's own plugins (and
-//! `crate::GamePlugin`'s list of them).
+//! `crate::GamePlugins`' list of them).
 //!
 //! Shows the intended shape:
+//! - one plugin per feature, each usable on its own: [`player::PlayerPlugin`]
+//!   and [`SpinnerPlugin`] are rules (they run headless), [`DemoPlugin`] is
+//!   the scene, HUD and presentation. A mod can drop `DemoPlugin` and keep
+//!   the rest (see `mods/example`);
 //! - level content is data (`assets/demo/level.ron`, the engine's format),
 //!   spawned through the engine's object type registry;
 //! - each object type is code registered by id: the player's controller
@@ -27,22 +31,32 @@ use engine::psx::{PsxAnchor, PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxS
 use engine::psx::{psx_indices, psx_palette, rgb15};
 use player::Player;
 
+/// The spinner object type and anything with [`Spin`]: rules only.
+pub struct SpinnerPlugin;
+
+impl Plugin for SpinnerPlugin {
+    fn build(&self, app: &mut App) {
+        app.register_object_type(SPINNER_TYPE, ObjectTypeInfo::new("Spinner", spawn_spinner))
+            .add_systems(FixedUpdate, spin.in_set(EngineSet::Objects));
+    }
+}
+
+/// The spinner's spawn hook: `params: [speed in mrad/s, colour 0|1]`.
+pub fn spawn_spinner(entity: &mut EntityWorldMut, placement: &Placement) {
+    let param = |i: usize| placement.params.get(i).copied().unwrap_or(0);
+    entity.insert((Spin(param(0) as f32 / 1000.0), Spinner { colour: param(1) }));
+}
+
+/// The demo's scene: cameras, floor, the level, the HUD and the look of the
+/// player and spinners. Needs the renderer. The glow panel turns only with
+/// [`SpinnerPlugin`], which runs everything with [`Spin`].
 pub struct DemoPlugin;
 
 impl Plugin for DemoPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(player::PlayerPlugin)
-            .register_object_type(
-                SPINNER_TYPE,
-                ObjectTypeInfo::new("Spinner", |entity, placement| {
-                    let param = |i: usize| placement.params.get(i).copied().unwrap_or(0);
-                    entity.insert((Spin(param(0) as f32 / 1000.0), Spinner { colour: param(1) }));
-                }),
-            )
-            .register_action(FLASH_ACTION, "flash", flash)
+        app.register_action(FLASH_ACTION, "flash", flash)
             .init_resource::<Flash>()
             .add_systems(Startup, (setup, setup_2d))
-            .add_systems(FixedUpdate, spin.in_set(EngineSet::Objects))
             .add_systems(FixedUpdate, (toggle_look, cycle_palette, flash_gem).in_set(GameSystems::Game))
             .add_systems(FixedUpdate, update_hud.in_set(GameSystems::Finish))
             .add_systems(Update, (dress_player, dress_spinners, follow_camera));

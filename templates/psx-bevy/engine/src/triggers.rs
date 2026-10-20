@@ -59,6 +59,15 @@ pub trait ActionAppExt {
         name: &'static str,
         handler: impl IntoSystem<In<ActionCall>, (), M> + 'static,
     ) -> &mut Self;
+    /// Replaces a registered action's handler, for a mod that changes what
+    /// an existing action does. Panics if `id` is not registered yet (add the
+    /// base game's plugins first).
+    fn replace_action<M>(
+        &mut self,
+        id: ActionId,
+        name: &'static str,
+        handler: impl IntoSystem<In<ActionCall>, (), M> + 'static,
+    ) -> &mut Self;
 }
 
 impl ActionAppExt for App {
@@ -72,6 +81,23 @@ impl ActionAppExt for App {
         let mut actions = self.world_mut().get_resource_or_init::<Actions>();
         if let Some(old) = actions.0.insert(id, ActionInfo { name, handler }) {
             panic!("action {} registered twice (first as {:?})", id.0, old.name);
+        }
+        self
+    }
+
+    fn replace_action<M>(
+        &mut self,
+        id: ActionId,
+        name: &'static str,
+        handler: impl IntoSystem<In<ActionCall>, (), M> + 'static,
+    ) -> &mut Self {
+        if !self.world().get_resource::<Actions>().is_some_and(|a| a.0.contains_key(&id)) {
+            panic!("action {} replaced before it was registered (as {name:?})", id.0);
+        }
+        let handler = self.world_mut().register_system(handler);
+        let old = self.world_mut().resource_mut::<Actions>().0.insert(id, ActionInfo { name, handler });
+        if let Some(old) = old {
+            let _ = self.world_mut().unregister_system(old.handler);
         }
         self
     }
@@ -194,5 +220,31 @@ mod tests {
         app.world_mut().get_mut::<Transform>(player).unwrap().translation.x = 0.0;
         app.run_ticks(1, &[]);
         assert_eq!(app.world().resource::<Log>().0, vec![vec![3], vec![3]]);
+    }
+
+    #[test]
+    fn replacing_an_action_runs_the_new_handler() {
+        let mut app = headless_app(TickRate::every_field(Region::Ntsc));
+        app.add_plugins(crate::EnginePlugin)
+            .init_resource::<Log>()
+            .register_action(ActionId(3), "log", |In(call): In<ActionCall>, mut log: ResMut<Log>| log.0.push(call.args))
+            .replace_action(ActionId(3), "log twice", |In(call): In<ActionCall>, mut log: ResMut<Log>| {
+                log.0.push(call.args.clone());
+                log.0.push(call.args);
+            });
+        app.world_mut().spawn((
+            Transform::default(),
+            TriggerVolume {
+                half_extents: Vec3::ONE,
+                call: ActionCall { action: ActionId(3), args: vec![1], source: None },
+                once: true,
+                inside: false,
+                fired: false,
+            },
+        ));
+        app.world_mut().spawn((Transform::default(), TriggerActivator));
+        app.run_ticks(2, &[] as &[Button]);
+        assert_eq!(app.world().resource::<Log>().0, vec![vec![1], vec![1]]);
+        assert_eq!(app.world().resource::<Actions>().0[&ActionId(3)].name, "log twice");
     }
 }

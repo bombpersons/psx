@@ -2,11 +2,15 @@
 //! drive the same plugins headless (`engine::testing`).
 //!
 //! Layout: one plugin per game feature (player, stage, enemies, HUD...),
-//! listed in [`GamePlugin`]. Per-type controllers register with the engine's
+//! listed in [`GamePlugins`]. Per-type controllers register with the engine's
 //! object type registry; rules plugins stay free of rendering so they run in
 //! tests. Reusable machinery belongs in `engine/` (see its AGENTS.md).
+//!
+//! Mods are crates built on this library (see `mods/example`): keep what a
+//! mod would reuse `pub`, and each feature plugin usable on its own.
 pub mod demo;
 
+use bevy::app::PluginGroupBuilder;
 use bevy::prelude::*;
 use engine::prelude::*;
 
@@ -31,11 +35,17 @@ pub fn tick_rate(region: Region) -> TickRate {
     TickRate::every_nth_field(region, FIELDS_PER_TICK)
 }
 
-/// The whole game: the engine, then each feature's plugin.
-pub struct GamePlugin;
+/// The whole game: the engine, then each feature's plugin. A group, so a
+/// crate built on the game can drop or swap one feature:
+/// `GamePlugins.build().disable::<demo::DemoPlugin>()`.
+pub struct GamePlugins;
 
-impl Plugin for GamePlugin {
-    fn build(&self, app: &mut App) {
-        app.add_plugins((EnginePlugin, demo::DemoPlugin));
+impl PluginGroup for GamePlugins {
+    fn build(self) -> PluginGroupBuilder {
+        PluginGroupBuilder::start::<Self>()
+            .add(EnginePlugin)
+            .add(demo::player::PlayerPlugin)
+            .add(demo::SpinnerPlugin)
+            .add(demo::DemoPlugin)
     }
 }

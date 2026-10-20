@@ -13,7 +13,7 @@
 //!         region: Region::Pal,
 //!         fields_per_tick: 2,
 //!         screen: UVec2::new(320, 240),
-//!         add: |app| { /* app.add_plugins(game::GamePlugin); */ },
+//!         add: |app| { /* app.add_plugins(game::GamePlugins); */ },
 //!     });
 //! }
 //! ```
@@ -134,6 +134,8 @@ pub fn app<F: FnOnce(&mut App)>(game: Game<F>, args: &Args) -> App {
     };
 
     let mut app = App::new();
+    // Asset folders added with assets::add_root (a mod's base game) layer under assets/.
+    crate::assets::register(&mut app);
     let mut plugins = DefaultPlugins
         .set(WindowPlugin {
             primary_window: (!headless).then(|| Window {
