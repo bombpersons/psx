@@ -84,6 +84,13 @@ pub struct Input {
     pub sticks: [u8; 4],
 }
 
+/// Events allowed inline (`--input`, MCP `input`).
+pub const INLINE_EVENT_LIMIT: usize = 10_000;
+/// Events allowed in a replay file: a handoff records every pad change of a
+/// long play session (an analog stick changes nearly every frame).
+pub const FILE_EVENT_LIMIT: usize = 1_000_000;
+const FILE_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
+
 pub fn load(path: &std::path::Path) -> Result<Vec<Input>, String> {
     resolve(Some(path), None, u64::MAX)
 }
@@ -94,8 +101,8 @@ pub fn resolve(path: Option<&std::path::Path>, inline: Option<&Events>, frames: 
     }
     let owned;
     let events = if let Some(path) = path {
-        if std::fs::metadata(path).map_err(|e| format!("replay {}: {e}", path.display()))?.len() > 1024 * 1024 {
-            return Err("replay exceeds 1 MiB".into());
+        if std::fs::metadata(path).map_err(|e| format!("replay {}: {e}", path.display()))?.len() > FILE_BYTE_LIMIT {
+            return Err("replay exceeds 64 MiB".into());
         }
         let text = std::fs::read_to_string(path).map_err(|e| format!("replay {}: {e}", path.display()))?;
         owned = serde_json::from_str::<Events>(&text).map_err(|e| format!("replay {}: {e}", path.display()))?;
@@ -105,8 +112,9 @@ pub fn resolve(path: Option<&std::path::Path>, inline: Option<&Events>, frames: 
     } else {
         return Ok(Vec::new());
     };
-    if events.len() > 10000 {
-        return Err("at most 10000 input events are allowed".into());
+    let limit = if path.is_some() { FILE_EVENT_LIMIT } else { INLINE_EVENT_LIMIT };
+    if events.len() > limit {
+        return Err(format!("at most {limit} input events are allowed{}", if path.is_some() { "" } else { " inline (use a replay file)" }));
     }
     let mut out = Vec::with_capacity(events.len());
     let mut previous = None;

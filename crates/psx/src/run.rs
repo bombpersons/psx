@@ -92,7 +92,7 @@ pub fn parse_range_spec(s: &str) -> Result<(u32, u32), String> {
 }
 
 /// Memory cards.
-#[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct CardArgs {
     /// Memory card in slot 1: a raw 128 KiB image (.mcd/.mcr) or `new` for a formatted empty card.
     /// The image file is never modified; a written card is saved as memcard1.mcd in the run directory.

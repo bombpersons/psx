@@ -33,7 +33,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
         Ok(m) => m,
         Err(e) => return e,
     };
-    let mut m = match boot(&a, bios, exe.as_deref(), disc, &media_id) {
+    let mut m = match boot(a.from_state.as_deref(), &a.cards, bios, exe.as_deref(), disc, &media_id) {
         Ok(m) => m,
         Err(e) => return e,
     };
@@ -409,13 +409,13 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
 /// of the stored value (by store width) for CPU writes.
 /// The run's medium: EXE bytes or an opened disc, with the identity states record.
 #[derive(Default)]
-struct Medium {
-    exe: Option<Vec<u8>>,
-    disc: Option<psx_media::Disc>,
-    id: Option<MediaId>,
+pub(crate) struct Medium {
+    pub exe: Option<Vec<u8>>,
+    pub disc: Option<psx_media::Disc>,
+    pub id: Option<MediaId>,
 }
 
-fn open_media(media: Option<&Path>) -> Result<Medium, (bool, Value)> {
+pub(crate) fn open_media(media: Option<&Path>) -> Result<Medium, (bool, Value)> {
     let Some(p) = media else { return Ok(Medium::default()) };
     if psx_media::exe::is_exe_path(p) {
         let bytes = std::fs::read(p).map_err(|e| err("io_error", format!("{}: {e}", p.display())))?;
@@ -429,9 +429,16 @@ fn open_media(media: Option<&Path>) -> Result<Medium, (bool, Value)> {
 }
 
 /// A machine restored from `--from-state` (checked against the medium) or booted fresh.
-fn boot(a: &RunArgs, bios: Vec<u8>, exe: Option<&[u8]>, disc: Option<psx_media::Disc>, media_id: &Option<MediaId>) -> Result<Machine, (bool, Value)> {
+pub(crate) fn boot(
+    from_state: Option<&Path>,
+    cards: &crate::run::CardArgs,
+    bios: Vec<u8>,
+    exe: Option<&[u8]>,
+    disc: Option<psx_media::Disc>,
+    media_id: &Option<MediaId>,
+) -> Result<Machine, (bool, Value)> {
     let invalid = |e: String| err("invalid_arguments", e);
-    if let Some(p) = &a.from_state {
+    if let Some(p) = from_state {
         let bytes = std::fs::read(p).map_err(|e| err("io_error", format!("{}: {e}", p.display())))?;
         let (header, mut m) = Machine::load_state(&bytes, bios).map_err(|e| match e {
             StateError::BiosMismatch { .. } => err("identity_mismatch", e),
@@ -443,14 +450,14 @@ fn boot(a: &RunArgs, bios: Vec<u8>, exe: Option<&[u8]>, disc: Option<psx_media::
         }
         // Reinsert without resetting the drive: its state came from the file.
         m.bus.cdrom.disc = disc;
-        if a.cards.given() {
+        if cards.given() {
             return Err(invalid("memory cards and the pad are part of the save state; drop --memcard1/--memcard2/--pad with --from-state".into()));
         }
         return Ok(m);
     }
     let mut m = Machine::new(bios);
-    m.bus.sio0.cards = a.cards.load().map_err(invalid)?;
-    m.bus.sio0.pad.kind = a.cards.pad_kind().map_err(invalid)?;
+    m.bus.sio0.cards = cards.load().map_err(invalid)?;
+    m.bus.sio0.pad.kind = cards.pad_kind().map_err(invalid)?;
     if let Some(bytes) = exe {
         m.sideload_exe(bytes, 500_000_000).map_err(|e| err("backend_failed", e))?;
     } else if disc.is_some() {

@@ -71,7 +71,8 @@ pub fn capabilities() -> Value {
     "ghidra":{"optional":true,"runtime_snapshots":true,"rename_comments":true,"verified_symbol_export":true,"same_analysis_queue":true},
     "agent_interface":{"artifact_read":true,"inline_input":true,"explicit_release_boundary":true,"query_pagination":true,"coverage_metadata":true,
         "per_call_project_root":true,"extraction_manifests":true,"native_input_application_log":true,"gpu_draw_filters":true},
-        "setup":{"bios_list":true,"bios_install_local":true,"bios_download_explicit":true,"automatic_downloads":false}
+        "setup":{"bios_list":true,"bios_install_local":true,"bios_download_explicit":true,"automatic_downloads":false},
+        "handoff":crate::handoff::capability(),
     })
 }
 fn native_header(path: &Path) -> Result<Option<psx_core::state::Header>, Value> {

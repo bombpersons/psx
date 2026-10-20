@@ -20,6 +20,7 @@ mod code;
 mod commands;
 mod ghidra;
 mod guide;
+mod handoff;
 mod mcp;
 mod media_cmd;
 mod native;
@@ -55,6 +56,8 @@ struct Cli {
 enum Command {
     #[command(name = "__mcp-call", hide = true)]
     McpCall,
+    #[command(name = "__handoff-child", hide = true)]
+    HandoffChild { run_dir: PathBuf },
     /// Read built-in investigation workflows and tool-usage guidance.
     Guide(guide::GuideArgs),
     /// Discover build, project defaults, BIOS candidates and capabilities.
@@ -105,6 +108,12 @@ enum Command {
     /// screen and registers, with watches, traces, GPU captures, samples and states.
     /// Input can be inline or replayed.
     Run(commands::RunCmdArgs),
+    /// Ask a person to play: open a window showing the game and REQUEST, let them play with a
+    /// keyboard or gamepad, and on F12 write state.bin, their input as a replay, a screenshot
+    /// and their note. --detach returns at once; poll with handoff-status.
+    Handoff(handoff::HandoffArgs),
+    /// Progress or result of a handoff: waiting, done, declined, closed or abandoned.
+    HandoffStatus(handoff::HandoffStatusArgs),
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
     Loads(commands::LoadsArgs),
@@ -178,6 +187,9 @@ fn main() -> ExitCode {
     let ctx = Ctx { root: std::env::current_dir().unwrap_or_default(), cancel: None };
     let out = match cli.command {
         Command::McpCall => mcp::project::worker(&ctx),
+        Command::HandoffChild { run_dir } => handoff::child(&run_dir),
+        Command::Handoff(a) => a.exec(&ctx),
+        Command::HandoffStatus(a) => a.exec(&ctx),
         Command::Guide(a) => a.exec(&ctx),
         Command::Context(a) => a.exec(&ctx),
         Command::ArtifactRead(a) => a.exec(&ctx),

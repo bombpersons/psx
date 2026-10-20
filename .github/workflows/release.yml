@@ -76,6 +76,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      # Gamepads in the handoff window (gilrs) link libudev on Linux.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
       - run: cargo build --profile dist --locked -p psx --target ${{ matrix.target }}
       - name: Package
         run: |

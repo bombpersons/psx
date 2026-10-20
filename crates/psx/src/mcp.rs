@@ -80,6 +80,22 @@ fn call_op<A: Op>(args: Value, ctx: &Ctx) -> Result<Outcome, String> {
     Ok(a.exec(ctx).with_path_context(ctx))
 }
 
+/// A handoff over MCP always detaches: the person may take longer than any call.
+fn call_handoff(args: Value, ctx: &Ctx) -> Result<Outcome, String> {
+    let mut a: crate::handoff::HandoffArgs = serde_json::from_value(args).map_err(|e| e.to_string())?;
+    a.detach = true;
+    Ok(a.exec(ctx).with_path_context(ctx))
+}
+
+/// `detach` is forced over MCP, so it is not offered.
+fn handoff_schema() -> Value {
+    let mut s = schema_of::<crate::handoff::HandoffArgs>();
+    if let Some(p) = s["properties"].as_object_mut() {
+        p.remove("detach");
+    }
+    s
+}
+
 fn schema_of<A: Op>() -> Value {
     let mut s = serde_json::to_value(schemars::schema_for!(A)).unwrap();
     if let Some(o) = s.as_object_mut() {
@@ -176,6 +192,8 @@ pub fn tools() -> Vec<ToolDef> {
         def::<MemcardArgs>("memcard", "List the saves on a raw 128 KiB memory card image (.mcd/.mcr): product code, blocks used, title, icon frames and free blocks.").read_only(),
         def::<TexturesArgs>("textures", "Decode VRAM texture pages to PNGs: every page/CLUT a gpu_frame run used (plus textures/scene.psxscene for the Bevy template), or one page and clut by hand from any vram.bin."),
         def::<RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames on the native core. Drive it with input/replay; observe with sample, watch, watch_reads, poke, trace, trace_cd, trace_spu or gpu_frame; save_state makes checkpoints. Returns run_dir and the report; brief or summary shorten it. See guide topics run and input.").heavy().screen(),
+        ToolDef { call: call_handoff, schema: handoff_schema, ..def::<crate::handoff::HandoffArgs>("handoff", "Ask the person to play to a point you cannot easily reach: opens a window on this machine with the game and your request, and returns a ticket at once. Poll handoff_status; the result has state.bin to continue from, input.json (their input as a replay) and their note.") },
+        def::<crate::handoff::HandoffStatusArgs>("handoff_status", "A handoff's progress or result: waiting, done, declined (read the note), closed or abandoned.").read_only().screen(),
         def::<NativeArgs>("native", "Emulator diagnostic: boot the native core from power-on and report where it got (PC, CD history, SPU state, unhandled I/O, hot PCs, speed). For game investigation use run.").heavy().default_timeout().screen(),
         def::<LoadsArgs>("loads", "Turn a run recorded with trace_cd into disc-to-RAM provenance: which file and offset each CD transfer copied where, verified against the run's final RAM. Paged; symbols names the reading code.").heavy(),
         def::<SymbolsArgs>("symbols", "Name PsyQ library functions in an EXE by signature matching (signatures from sigs or PSX_SIGS_DIR). Writes .symbols.json for run, loads, disasm and xrefs, plus Ghidra and .sym files. Library code only.").heavy(),
@@ -300,6 +318,7 @@ fn screen_path(tool: &str, v: &Value) -> Option<String> {
             let dir = v["run_dir"].as_str()?;
             return listed.then(|| std::path::Path::new(dir).join("screen.png").to_string_lossy().into_owned());
         },
+        "handoff_status" => &v["files"]["screen.png"]["path"],
         "native" => &v["dump"]["screen"],
         "artifact_read" => &v["image"]["path"],
         _ => return None,
@@ -694,7 +713,8 @@ mod tests {
             .iter()
             .map(|t| t.name.len() + t.description.len() + serde_json::to_string(&t.input_schema()).unwrap().len())
             .sum();
-        assert!(size <= 50_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // 50K on 2026-10-17; 52K from 2026-10-20 for handoff and handoff_status.
+        assert!(size <= 52_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(t.description.len() <= 400, "{} description is {} bytes; move detail into a guide topic", t.name, t.description.len());
         }

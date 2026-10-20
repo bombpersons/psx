@@ -58,7 +58,7 @@ impl Outcome {
         }
     }
 
-    fn pair((ok, value): (bool, Value)) -> Self {
+    pub(crate) fn pair((ok, value): (bool, Value)) -> Self {
         Outcome { value, exit: if ok { 0 } else { 1 }, pretty: true, text: false }
     }
 
