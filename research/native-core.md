@@ -147,6 +147,32 @@ order of overlapping quad halves, overlapping copies wider than 128 pixels (Medn
 gouraud line colour direction, and the drawing-area-equals-one-column case. "Draw to displayed field" in
 480i (E1 bit 10) is not modelled.
 
+### Fix: primitives wrap as a whole (Crash Bandicoot)
+
+**Symptom.** On N. Sanity Beach, every frame drawn into the right-hand buffer tore the level into flat
+horizontal stripes. That buffer uses drawing area x 512..1023 and offset 768. A handoff on 2026-10-20
+recorded it; `.psx/handoffs/1792521137941-607601/input.json` replays it, and run frames 4500..4511 show it.
+
+**Cause.** Phase-23 O3 shows that vertex plus offset wraps to 11 bits: raw x 1500 with offset -1000 draws at
+500. `psx-gpu` applied that wrap to each vertex separately. The beach has about 27 triangles that run past
+x=1023 after the offset, reaching up to 1186. For those, the vertices past 1023 wrapped to about -900 while
+the others stayed near 1000. The size check had already passed on the pre-offset coordinates, so the
+triangle was drawn as a sliver across the whole area.
+
+**Redux.** The pinned PCSX-Redux has the same tearing. Replaying the same input with `psx-oracle run --fast
+--dualshock` to frame 4504 gives identical stripes with Crash in the identical pose, because its software GPU
+follows the same per-vertex reading of O3.
+
+**Fix.** `Gpu::offset` wraps the primitive as a whole, as on a 2048-wide ring:
+- the leftmost vertex's x (and the topmost vertex's y) wraps;
+- every other vertex keeps its pre-offset distance from it.
+
+The size check bounds those distances below 1024 (512), so the primitive's ring span is unambiguous, and
+anything at x 1024 or beyond (≡ negative) falls outside the drawing area. This agrees with O1-O3 and gives
+Crash's beach clean frames. A straddling primitive has no silicon value yet; the test is
+`triangle_crossing_the_wrap_stays_whole`. Before the fix, 662 of the 1,233 beach frames showed the clear
+colour; after it, only real content does. The final RAM is byte-identical, since only pixels changed.
+
 ## Standalone boot (`psx native`)
 
 `psx native --bios <bios> --frames N --dump PREFIX` runs the core on its own, with no oracle. It reports:

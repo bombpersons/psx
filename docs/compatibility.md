@@ -17,7 +17,7 @@ All discs are PAL unless noted, on the SCPH-7502 BIOS unless noted. Media and
 
 | Game | Serial | Status | Furthest point | Open issues |
 |---|---|---|---|---|
-| Crash Bandicoot | SCES-00344 | Playable | N. Sanity Beach, played by hand to the first crate | [Level mesh glitches](#crash-bandicoot-level-mesh-glitches) |
+| Crash Bandicoot | SCES-00344 | Playable | N. Sanity Beach, played by hand to the first crate | |
 | Croc: Legend of the Gobbos | SLES-00593 | Gameplay | Level 1-1, walking to the gate | |
 | Tomb Raider (DE) | | Gameplay | Lara in the Caves | [Native/Redux progress divergence](#tomb-raider-nativeredux-progress-divergence) |
 | Castlevania: Symphony of the Night | SLES-00524 | Gameplay | Prologue, Richter on the castle stairs | |
@@ -39,19 +39,6 @@ All discs are PAL unless noted, on the SCPH-7502 BIOS unless noted. Media and
 
 ## Open issues
 
-### Crash Bandicoot: level mesh glitches
-
-- **Seen:** 2026-10-20, by the person playing a handoff to the first crate on N. Sanity Beach.
-- **Symptom:** the level geometry occasionally glitches. The exact look and frames are not yet recorded.
-- **Evidence:** `.psx/handoffs/1792521137941-607601/` in the main checkout:
-  - `state.bin` is on the beach;
-  - `input.json` replays the whole session from power-on (`verify` matched, 5,533 frames).
-- **Suspects:** GTE precision or flags (RTPT, NCLIP, AVSZ), ordering-table depth, polygon clipping, or rasteriser edge cases.
-- **Next step:**
-  - Replay with `--snapshot-every 1` to find the bad frames.
-  - On a bad frame, compare a `--gpu-frame` capture with a good neighbour.
-  - If replaying doesn't show the glitch, start a handoff from the state that asks the person to press F12 as soon as it happens.
-
 ### Tomb Raider: native/Redux progress divergence
 
 - **Reported** by an agent (TR B4 in [the feedback review](../research/tomb-raider-wipeout-feedback-review.md)): the same input progresses differently on the native core and in Redux. It has not been rerun since.
@@ -66,3 +53,4 @@ All discs are PAL unless noted, on the SCPH-7502 BIOS unless noted. Media and
 | Gran Turismo 2 | Races did not load | CD GetlocL and seek phase (psx 0.3.2) |
 | Tomb Raider | Stuck before "Spiel Starten" | CD-DA playback and pregap positions ([details](../research/native-core.md#tomb-raider-pal-german-on-the-native-core)) |
 | Croc | Hung on the FOX logo | MDEC |
+| Crash Bandicoot | Level mesh tore into flat horizontal stripes on every other drawn frame (seen in a handoff, 2026-10-20) | Primitives crossing x=1023 after the drawing offset wrap as a whole ([details](../research/native-core.md#fix-primitives-wrap-as-a-whole-crash-bandicoot)) |

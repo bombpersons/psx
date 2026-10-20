@@ -379,12 +379,22 @@ impl Gpu {
         (sext11(w), sext11(w >> 16))
     }
 
-    /// Add the drawing offset to a polygon or line vertex. The sum wraps to
-    /// 11 bits signed (PCSX-Redux gpu-raster-phase23 O3: vertex 1500 with offset
-    /// -1000 draws at 500, on SCPH-1000/5501/7001).
-    fn offset(&self, v: &mut Vtx) {
-        v.x = sext11((v.x + self.state.offset.0) as u32);
-        v.y = sext11((v.y + self.state.offset.1) as u32);
+    /// Add the drawing offset to a polygon's or line's vertices. Positions wrap
+    /// to 11 bits signed after the add (PCSX-Redux gpu-raster-phase23 O3: vertex
+    /// 1500 with offset -1000 draws at 500, on SCPH-1000/5501/7001), but the
+    /// primitive wraps as a whole, as on a 2048-wide ring: its leftmost (topmost)
+    /// vertex wraps and the others keep their distance from it. The size check
+    /// has already bounded those distances below 1024 (512), so a primitive that
+    /// crosses x=1023 just runs off the drawing area instead of splitting into a
+    /// screen-wide sliver (Crash Bandicoot's beach, drawn at offset 768).
+    fn offset(&self, vs: &mut [Vtx]) {
+        let wrap = |p: i32, off: i32| sext11((p + off) as u32) - p;
+        let (min_x, min_y) = (vs.iter().map(|v| v.x).min().unwrap_or(0), vs.iter().map(|v| v.y).min().unwrap_or(0));
+        let (dx, dy) = (wrap(min_x, self.state.offset.0), wrap(min_y, self.state.offset.1));
+        for v in vs {
+            v.x += dx;
+            v.y += dy;
+        }
     }
 
     fn execute(&mut self, p: &[u32]) {
@@ -487,9 +497,7 @@ impl Gpu {
         if too_large(&vs[..n]) {
             return;
         }
-        for v in vs.iter_mut().take(n) {
-            self.offset(v);
-        }
+        self.offset(&mut vs[..n]);
         let (r, tex) = (self.state.raster(), self.state.texture(clut));
         #[cfg(test)]
         if tests::REFERENCE.get() {
@@ -545,10 +553,9 @@ impl Gpu {
         let r = self.state.raster();
         for pair in pts.windows(2) {
             if !too_large(pair) {
-                let (mut a, mut b) = (pair[0], pair[1]);
-                self.offset(&mut a);
-                self.offset(&mut b);
-                raster::line(&mut self.vram, &r, &sh, a, b);
+                let mut ab = [pair[0], pair[1]];
+                self.offset(&mut ab);
+                raster::line(&mut self.vram, &r, &sh, ab[0], ab[1]);
             }
         }
     }
@@ -702,6 +709,22 @@ mod tests {
             _ => (area.0 - 40 + rng.below(220) as i32, area.1 - 40 + rng.below(200) as i32),
         };
         (x as u32 & 0x7FF) | ((y as u32 & 0x7FF) << 16)
+    }
+
+    /// A triangle that crosses x=1023 after the drawing offset is cut off at the
+    /// drawing area, not wrapped apart into a full-width sliver (Crash
+    /// Bandicoot draws its right-hand buffer at offset 768 with geometry past it).
+    #[test]
+    fn triangle_crossing_the_wrap_stays_whole() {
+        let mut g = Gpu::new();
+        let xy = |x: i32, y: i32| (x as u32 & 0x7FF) | ((y as u32 & 0x7FF) << 16);
+        g.gp0_all(&[0xE300_0000 | 512, 0xE400_0000 | 1023 | (255 << 10), 0xE500_0000 | 768 | (128 << 11)]);
+        // x 200..300 relative, so 968..1068 in VRAM: only 968..1023 is in the area.
+        g.gp0_all(&[0x2000_00FF, xy(200, -100), xy(300, -100), xy(200, -60)]);
+        let row = |y: usize| &g.vram.as_slice()[y * 1024..(y + 1) * 1024];
+        let drawn: Vec<usize> = row(30).iter().enumerate().filter(|(_, &p)| p != 0).map(|(x, _)| x).collect();
+        assert_eq!((drawn.first(), drawn.last()), (Some(&968), Some(&1023)));
+        assert!(row(30)[512..968].iter().all(|&p| p == 0));
     }
 
     /// The specialised triangle and sprite loops write exactly the VRAM that the
