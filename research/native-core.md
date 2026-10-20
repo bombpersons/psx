@@ -1,5 +1,7 @@
 # Native core (`psx-core`): stage 1, the CPU
 
+Per-game status and open emulation issues are summarised in [docs/compatibility.md](../docs/compatibility.md).
+
 ## What exists
 
 - **R3000A interpreter.** It implements:

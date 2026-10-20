@@ -151,6 +151,7 @@ Custom formats need a parser. Every finding is evidence to check, not a guarante
 - [docs/agent-workflow.md](docs/agent-workflow.md): evidence, input and project isolation.
 - [templates/psx-bevy](templates/psx-bevy/README.md): the game template (engine + game workspace).
 - [docs/ghidra-integration.md](docs/ghidra-integration.md): Ghidra analysis and symbol export.
+- [docs/compatibility.md](docs/compatibility.md): how far each game gets on the native core, and known emulation issues.
 - [research/](research/): emulator, format and case-study notes.
 - [PLAN.md](PLAN.md): where this is headed.
 
