@@ -6,7 +6,7 @@
 //! - `state.bin`: the machine at the end (continue with `run --from-state`);
 //! - `input.json`: everything the person pressed, as a `run --replay` file
 //!   that starts where the handoff started, so the route can be replayed;
-//! - `screen.png`, the person's note, and `report.json` (the result).
+//! - `screen.png`, `note.txt` (the person's note), and `report.json` (the result).
 //!
 //! The window runs in the calling process, or with `--detach` (always over MCP)
 //! in a child process: the call returns a ticket at once and `handoff_status`
@@ -350,7 +350,12 @@ fn start(a: &HandoffArgs) -> Result<Session, Value> {
 fn run(a: HandoffArgs, dir: &Path) -> (bool, Value) {
     let (ok, mut v) = match start(&a) {
         Ok(mut s) => match play(&mut s, &a, dir) {
-            Ok((end, note)) => finish(&a, s, end, note, dir),
+            Ok((end, note)) => {
+                // The person is done; keep handoff_status from calling this abandoned while
+                // the files are written (and verify replays, which can take minutes).
+                s.write_live(dir, "finishing");
+                finish(&a, s, end, note, dir)
+            }
             Err(e) => (false, error("window_failed", e)),
         },
         Err(e) => (false, e),
@@ -399,7 +404,8 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> (b
         Ok(())
     };
     let replay = replay_json(&s.events);
-    let written = put("state.bin", &state).and_then(|_| put("input.json", replay.as_bytes())).and_then(|_| {
+    let written = put("note.txt", note.as_bytes())
+        .and_then(|_| put("state.bin", &state)).and_then(|_| put("input.json", replay.as_bytes())).and_then(|_| {
         for (slot, card) in s.m.bus.sio0.cards.iter().enumerate() {
             if let Some(c) = card.as_ref().filter(|c| c.writes > 0) {
                 put(&format!("memcard{}.mcd", slot + 1), &c.data)?;
@@ -433,7 +439,7 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> (b
             }
         }
     }
-    let verify = if a.verify && end != End::Closed { verify(a, &s.events, frames, &state) } else { Value::Null };
+    let verify = if a.verify && end != End::Closed { verify(a, &s.events, frames, &state, dir) } else { Value::Null };
     if verify["matches"] == false {
         warnings.push("replaying input.json did not reproduce state.bin; continue from state.bin, and treat the replay as approximate".into());
     }
@@ -478,14 +484,20 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> (b
 }
 
 /// Replay the recording headless from the same start and compare the end state.
-fn verify(a: &HandoffArgs, events: &[Input], frames: u64, expected: &[u8]) -> Value {
+/// Keeps `live.json` in `dir` fresh ("verifying") so handoff_status keeps waiting.
+fn verify(a: &HandoffArgs, events: &[Input], frames: u64, expected: &[u8], dir: &Path) -> Value {
     let started = std::time::Instant::now();
     let mut s = match start(a) {
         Ok(s) => s,
         Err(e) => return json!({"error": e["error"]}),
     };
     let mut next = 0;
+    let mut live_at = started;
     while s.rel() < frames {
+        if live_at.elapsed() >= Duration::from_secs(1) {
+            live_at = std::time::Instant::now();
+            s.write_live(dir, "verifying");
+        }
         while next < events.len() && events[next].frame <= s.rel() {
             crate::replay::apply(&mut s.m, &events[next]);
             next += 1;
