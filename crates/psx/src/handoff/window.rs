@@ -30,6 +30,13 @@ const YELLOW: u32 = 0xFFD84A;
 const GREY: u32 = 0xA0A0A0;
 const SELECTED: u32 = 0x2F4F8F;
 
+/// Panel text rows are this far apart (8 px glyphs).
+const ROW: usize = 11;
+/// Space for a gap between blocks.
+const GAP: usize = 6;
+/// Lines the request scrolls per frame of mouse-wheel movement.
+const WHEEL_LINES: usize = 3;
+
 /// How long a second F8 press still confirms starting over.
 const RESTART_CONFIRM: Duration = Duration::from_secs(3);
 
@@ -77,6 +84,10 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
     let mut paused = false;
     let mut restart_asked: Option<Instant> = None;
     let mut note = String::new();
+    let request_lines = wrap(request, COLS);
+    // First request line shown, when it is longer than the panel.
+    let mut scroll = 0usize;
+    let mut request_rows = 1usize;
     let mut buf = vec![0u32; W * H];
     let mut next = Instant::now();
     let mut live_at = Instant::now() - Duration::from_secs(5);
@@ -108,6 +119,21 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                 } else {
                     if has("F3") {
                         paused = !paused;
+                    }
+                    // Scrolling keys the game is not bound to.
+                    let free = |k: &str| has(k) && !b.keyboard.iter().flatten().any(|bound| bound == k);
+                    let page = request_rows.saturating_sub(1).max(1);
+                    if free("PageDown") {
+                        scroll += page;
+                    }
+                    if free("PageUp") {
+                        scroll = scroll.saturating_sub(page);
+                    }
+                    // Units differ between platforms: only the direction counts (up > 0).
+                    match win.get_scroll_wheel() {
+                        Some((_, dy)) if dy < 0.0 => scroll += WHEEL_LINES,
+                        Some((_, dy)) if dy > 0.0 => scroll = scroll.saturating_sub(WHEEL_LINES),
+                        _ => {}
                     }
                     if has("F5") {
                         s.quick_save();
@@ -175,11 +201,24 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
         let mut p = Panel { buf: &mut buf, y: 8 };
         match screen {
             Screen::Play => {
-                p.wrapped("THE AGENT ASKS:", YELLOW);
-                for l in wrap(request, COLS).iter().take(14) {
+                // The keys and status sit at the bottom; the request takes
+                // the rest of the panel, scrolling when it is longer.
+                let message = msg.current().map(|text| wrap(text, COLS));
+                let bottom = 7 + 2 + message.as_ref().map_or(0, Vec::len);
+                let bottom_y = (H - 8).saturating_sub(bottom * ROW + if message.is_some() { GAP } else { 0 });
+                p.line("THE AGENT ASKS:", YELLOW);
+                let rows = (bottom_y.saturating_sub(GAP + p.y) / ROW).max(2);
+                let shown = if request_lines.len() > rows { rows - 1 } else { rows };
+                request_rows = shown;
+                scroll = scroll.min(request_lines.len().saturating_sub(shown));
+                for l in request_lines.iter().skip(scroll).take(shown) {
                     p.line(l, WHITE);
                 }
-                p.gap();
+                if request_lines.len() > rows {
+                    let last = (scroll + shown).min(request_lines.len());
+                    p.line(&format!("lines {}-{last} of {}: PgUp/PgDn, wheel", scroll + 1, request_lines.len()), YELLOW);
+                }
+                p.y = bottom_y;
                 for (keys, what) in [
                     ("F12", "Done: hand back, with a note"),
                     ("F10", "Can't do it: tell the agent why"),
@@ -200,9 +239,11 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                 let n = pads.names().len();
                 p.line(&format!("{}frame {}", if paused { "PAUSED  " } else { "" }, s.rel()), if paused { YELLOW } else { GREY });
                 p.line(&format!("{mode}; {n} gamepad{}", if n == 1 { "" } else { "s" }), GREY);
-                if let Some(text) = msg.current() {
+                if let Some(lines) = message {
                     p.gap();
-                    p.wrapped(text, YELLOW);
+                    for l in &lines {
+                        p.line(l, YELLOW);
+                    }
                 }
             }
             Screen::Menu => {
@@ -224,7 +265,12 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                 p.line("Enter: hand back now", GREY);
                 p.line("Esc: keep playing", GREY);
                 p.gap();
-                p.wrapped(&format!("{note}_"), WHITE);
+                // A long note shows its end, where the typing is.
+                let lines = wrap(&format!("{note}_"), COLS);
+                let rows = (H - 8).saturating_sub(p.y) / ROW + 1;
+                for l in &lines[lines.len().saturating_sub(rows)..] {
+                    p.line(l, WHITE);
+                }
             }
         }
         win.update_with_buffer(&buf, W, H).map_err(|e| e.to_string())?;
@@ -264,7 +310,7 @@ impl Panel<'_> {
         if self.y + 8 <= H {
             text(self.buf, PX + 8, self.y, s, c);
         }
-        self.y += 11;
+        self.y += ROW;
     }
 
     fn wrapped(&mut self, s: &str, c: u32) {
@@ -274,7 +320,7 @@ impl Panel<'_> {
     }
 
     fn gap(&mut self) {
-        self.y += 6;
+        self.y += GAP;
     }
 }
 
