@@ -1,5 +1,5 @@
 //! Real offscreen GPU and stdio MCP verification, requiring a software adapter.
-//! The tests drive the `depth_cue`, `depth_bias` and `screen_size` examples,
+//! The tests drive the `depth_cue`, `depth_bias`, `corridor` and `screen_size` examples,
 //! which use the same launcher as a game: build them first with
 //! `cargo build -p psx-bevy --features dev-mcp --examples`.
 #![cfg(feature = "dev-mcp")]
@@ -102,6 +102,27 @@ fn depth_bias_loses_to_coplanar_copy_on_a_custom_screen() {
     assert!(winner(&green_behind).iter().all(|p| *p == [255, 0, 0]), "{:?}", winner(&green_behind));
     let log = std::fs::read_to_string(output.join("game.log")).unwrap();
     assert!(!log.contains("Shader compilation error") && !log.contains("B0001"), "{log}");
+}
+
+#[test]
+#[ignore = "requires offscreen GPU and cargo build --features dev-mcp --example corridor"]
+fn fog_stays_off_floor_triangles_that_cross_the_near_plane() {
+    let output = std::env::temp_dir().join(format!("psx-corridor-{}", std::process::id()));
+    std::fs::create_dir_all(&output).unwrap();
+    println!("Corridor GPU evidence: {}", output.display());
+    let mut client = Client::launch(Command::new(example("corridor")), &output.join("game.log"));
+    client.call("game_step", json!({"frames":1}));
+    let image = client.screenshot(output.join("corridor.png"));
+    // The floor below the camera is about a metre away, well inside the fog
+    // start: no magenta at all along the bottom rows.
+    let fogged: Vec<_> = (200..240)
+        .flat_map(|y| (0..320).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let p = image.get_pixel(x, y);
+            p[0] > p[1] + 40
+        })
+        .collect();
+    assert!(fogged.is_empty(), "{} fogged pixels beside the camera, e.g. {:?}", fogged.len(), &fogged[..fogged.len().min(8)]);
 }
 
 #[test]

@@ -61,6 +61,7 @@ const FILES: &[(&str, &str)] = files![
     "psx-bevy/AGENTS.md",
     "psx-bevy/Cargo.toml",
     "psx-bevy/README.md",
+    "psx-bevy/examples/corridor.rs",
     "psx-bevy/examples/depth_bias.rs",
     "psx-bevy/examples/depth_cue.rs",
     "psx-bevy/examples/screen_size.rs",

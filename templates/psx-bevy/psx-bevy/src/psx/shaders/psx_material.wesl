@@ -58,14 +58,24 @@ const ALPHA_STP: f32 = 0.75;
 // screen-linear A. This avoids `@interpolate(linear)`, whose values some
 // drivers (e.g. Mesa llvmpipe) extrapolate wrongly on triangles that cross the
 // viewport edge.
+// A vertex behind the camera has w <= 0, and on the visible part of its
+// triangle A·w over w is no longer an average of the vertices' values: near
+// the camera it runs away (full fog, wild colours and UVs). So the weight is kept
+// positive (`affine_weight`); it equals w for every vertex in front of the
+// near plane, so unclipped triangles are unchanged.
 struct PsxVarying {
     @builtin(position) position: vec4<f32>,
     @location(0) uv_w: vec2<f32>,
     @location(1) color_w: vec3<f32>,
-    // Vertex distances interpolated for the ordinary DistanceFog path.
-    @location(2) distance_w: f32,
+    // World position, perspective-correct: DistanceFog per pixel.
+    @location(2) world: vec3<f32>,
     @location(3) w: f32,
 };
+
+const MIN_AFFINE_WEIGHT: f32 = 1e-4;
+fn affine_weight(clip_w: f32) -> f32 {
+    return max(clip_w, MIN_AFFINE_WEIGHT);
+}
 
 fn has(flag: u32) -> bool {
     return (material.flags & flag) != 0u;
@@ -114,11 +124,12 @@ fn vertex(vertex_in: Vertex) -> PsxVarying {
 
     var out: PsxVarying;
     out.position = clip;
-    out.w = clip.w;
+    let w = affine_weight(clip.w);
+    out.w = w;
     var uv = vec2(0.0);
     @if(VERTEX_UVS_A)
     uv = v.uv;
-    out.uv_w = uv * clip.w;
+    out.uv_w = uv * w;
 
     var color = material.color.rgb;
     @if(VERTEX_COLORS)
@@ -143,16 +154,14 @@ fn vertex(vertex_in: Vertex) -> PsxVarying {
         let cue = saturate(material.depth_cue.x + material.depth_cue.y / depth);
         shaded = mix(shaded, material.far_color.rgb, cue);
     }
-    out.color_w = shaded * clip.w;
-
-    out.distance_w = length(world.xyz - view.world_position) * clip.w;
+    out.color_w = shaded * w;
+    out.world = world.xyz;
     return out;
 }
 
 @fragment
 fn fragment(in: PsxVarying) -> @location(0) vec4<f32> {
     let uv = in.uv_w / in.w;
-    let distance = in.distance_w / in.w;
     var rgb = in.color_w / in.w;
     // Untextured surfaces count as all-STP: a semi-transparent one blends whole.
     var stp = true;
@@ -181,6 +190,7 @@ fn fragment(in: PsxVarying) -> @location(0) vec4<f32> {
     }
     @if(DISTANCE_FOG)
     if has(FLAG_FOG) {
+        let distance = length(in.world - view.world_position);
         var f = 0.0;
         if fog.mode == 1u {
             f = saturate((distance - fog.be.x) / max(fog.be.y - fog.be.x, 0.0001));

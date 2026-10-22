@@ -215,7 +215,7 @@ pub struct PsxMaterial {
     pub stp: PsxStp,
     /// Gouraud lighting from Bevy `DirectionalLight`s and `AmbientLight`.
     pub lit: bool,
-    /// Apply the camera's `DistanceFog` after interpolating vertex distances.
+    /// Apply the camera's `DistanceFog`, from each pixel's distance to the camera.
     /// Used only when `depth_cue` is None (or contains invalid values).
     pub fog: bool,
     /// Optional GTE-style reciprocal cue; overrides camera `DistanceFog` for
