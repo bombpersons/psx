@@ -28,7 +28,8 @@ use engine::config::load_ron;
 use engine::controller::Button;
 use engine::prelude::*;
 use engine::psx::{PsxAnchor, PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxSprite, PsxStp, PsxView};
-use engine::psx::{psx_indices, psx_palette, rgb15};
+use engine::psx::{font, psx_indices, psx_palette, rgb15};
+use crate::disc::GameData;
 use player::Player;
 
 /// The spinner object type and anything with [`Spin`]: rules only.
@@ -56,7 +57,8 @@ impl Plugin for DemoPlugin {
     fn build(&self, app: &mut App) {
         app.register_action(FLASH_ACTION, "flash", flash)
             .init_resource::<Flash>()
-            .add_systems(Startup, (setup, setup_2d))
+            // World setup waits for the game's data (imported from the disc).
+            .add_systems(OnEnter(GameData::Ready), (setup, setup_2d, show_disc))
             .add_systems(FixedUpdate, (toggle_look, cycle_palette, flash_gem).in_set(GameSystems::Game))
             .add_systems(FixedUpdate, update_hud.in_set(GameSystems::Finish))
             .add_systems(Update, (dress_player, dress_spinners, follow_camera));
@@ -181,6 +183,17 @@ fn setup(
             Indicator(button),
         ));
     }
+}
+
+/// Shows which disc the data was imported from, when there is an import:
+/// the template's importer writes `imported/disc.ron` (`tools/import`).
+fn show_disc(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    let Ok(info) = load_ron::<import::DiscInfo>(import::DiscInfo::PATH) else { return };
+    let text = format!("DISC {} ({}, {} files)", info.volume_id, info.serial, info.files);
+    commands.spawn((
+        Sprite::from_image(images.add(font::text_image(&text))),
+        PsxAnchor::new(Vec2::new(0.0, -1.0), Vec2::new(0.0, 24.0)),
+    ));
 }
 
 /// The gem's palette: row 0 normal (entries 1-4 cycle), row 1 a white flash.

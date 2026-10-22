@@ -7,12 +7,18 @@
 #   game/          this title: controllers, rules, HUD, menus, baked assets
 #   tools/import/  offline importers: extracted disc data -> engine formats
 #   mods/example/  a mod: a small game built on game/ from hand-made assets
+#   vendor/        psx-media and psx-assets, vendored by the template
+#   editor/        the editor for the engine's formats (egui, depends on
+#                  engine/ only)
 #
 # Standalone: copying the template does not require the psx workspace.
 [workspace]
 resolver = "3"
-members = ["psx-bevy", "engine", "game", "tools/import", "mods/example"]
+members = ["psx-bevy", "engine", "game", "tools/import", "mods/example", "editor"]
 default-members = ["game"]
+# Template-owned copies of psx crates: dependencies, not members (their tests
+# run in the psx repository).
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -26,10 +32,14 @@ engine = { path = "engine" }
 # The game as a library, for mods (crates built on it). `package` is the
 # game's package name; the code calls it `game`.
 game = { path = "game", package = "psx-game" }
+# The importers (tools/import), a library the game runs on first start.
+import = { path = "tools/import" }
 bevy = { version = "=0.20.0", default-features = false, features = [
   "std", "async_executor", "multi_threaded", "bevy_asset", "bevy_log", "bevy_winit",
   "bevy_core_pipeline", "bevy_pbr", "bevy_sprite_render", "bevy_gltf", "bevy_gilrs",
   "png", "x11", "wayland", "bevy_ui_render", "default_font",
+  # States: the game waits in GameData until its disc import is ready.
+  "bevy_state",
   # Components and resources deriving `Reflect` register themselves, so the
   # developer MCP's `game_query` can read them without `register_type` calls.
   "reflect_auto_register",
@@ -38,6 +48,17 @@ bevy = { version = "=0.20.0", default-features = false, features = [
 bevy_render = { version = "=0.20.0", default-features = false, features = ["gles"] }
 # Persist physical bindings without enabling serialization on the renderer/world.
 bevy_input = { version = "=0.20.0", features = ["serialize"] }
+# The editor's UI. engine/ depends on it too, so the game's build turns on
+# the same Bevy and font-crate features as the editor's: switching between
+# `cargo run` and `cargo run -p editor` reuses one Bevy build instead of
+# recompiling it (see editor/AGENTS.md, "One Bevy build").
+bevy_egui = { version = "=0.43.1", default-features = false, features = ["render", "default_fonts"] }
+# Disc images (CUE/BIN, ISO, CHD), ISO9660 and PS1 asset formats: the psx
+# toolkit's crates, vendored by the template (vendor/README.md). The game
+# imports from the player's disc itself (game/src/disc.rs, tools/import), so
+# players need neither the toolkit nor a separate export step.
+psx-media = { path = "vendor/psx-media" }
+psx-assets = { path = "vendor/psx-assets" }
 rmcp = { version = "=3.5.1", features = ["transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-std"] }
 serde = { version = "1", features = ["derive", "rc"] }

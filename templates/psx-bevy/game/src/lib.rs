@@ -9,6 +9,7 @@
 //! Mods are crates built on this library (see `mods/example`): keep what a
 //! mod would reuse `pub`, and each feature plugin usable on its own.
 pub mod demo;
+pub mod disc;
 
 use bevy::app::PluginGroupBuilder;
 use bevy::prelude::*;
@@ -44,6 +45,7 @@ impl PluginGroup for GamePlugins {
     fn build(self) -> PluginGroupBuilder {
         PluginGroupBuilder::start::<Self>()
             .add(EnginePlugin)
+            .add(disc::GameDataPlugin::default())
             .add(demo::player::PlayerPlugin)
             .add(demo::SpinnerPlugin)
             .add(demo::DemoPlugin)

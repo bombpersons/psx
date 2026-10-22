@@ -1,7 +1,7 @@
 //! `psx template create|update|adopt`: the Bevy game workspace.
 //!
-//! The template is a workspace: `psx-bevy/` is owned by the template and
-//! replaced by `update`; everything else (`engine/`, `game/`, `tools/`,
+//! The template is a workspace: `psx-bevy/` and `vendor/` are owned by the
+//! template and replaced by `update`; everything else (`engine/`, `game/`, `tools/`,
 //! docs, root manifests) is seeded once and belongs to the project.
 //! `.psx-template.toml` records the version and a hash of every file as the
 //! template wrote it, so `update` can tell untouched files from edited ones.
@@ -30,6 +30,14 @@ const FILES: &[(&str, &str)] = files![
     "docs/engine-model.md",
     "docs/evidence.md",
     "docs/template.md",
+    "editor/AGENTS.md",
+    "editor/Cargo.toml",
+    "editor/src/document.rs",
+    "editor/src/files.rs",
+    "editor/src/lib.rs",
+    "editor/src/main.rs",
+    "editor/src/panels.rs",
+    "editor/tests/document.rs",
     "engine/AGENTS.md",
     "engine/Cargo.toml",
     "engine/assets/sandbox/room.ron",
@@ -47,9 +55,11 @@ const FILES: &[(&str, &str)] = files![
     "game/assets/demo/player.ron",
     "game/src/demo/mod.rs",
     "game/src/demo/player.rs",
+    "game/src/disc.rs",
     "game/src/lib.rs",
     "game/src/main.rs",
     "game/tests/dev_mcp.rs",
+    "game/tests/disc.rs",
     "game/tests/player.rs",
     "mods/example/Cargo.toml",
     "mods/example/assets/demo/player.ron",
@@ -101,11 +111,43 @@ const FILES: &[(&str, &str)] = files![
     "psx-bevy/src/viewer.rs",
     "psx-bevy/tests/dev_mcp.rs",
     "tools/import/Cargo.toml",
+    "tools/import/src/lib.rs",
     "tools/import/src/main.rs",
+    "vendor/LICENSE-APACHE",
+    "vendor/LICENSE-MIT",
+    "vendor/README.md",
+    "vendor/psx-assets/Cargo.toml",
+    "vendor/psx-assets/src/adpcm.rs",
+    "vendor/psx-assets/src/archive.rs",
+    "vendor/psx-assets/src/gltf.rs",
+    "vendor/psx-assets/src/lib.rs",
+    "vendor/psx-assets/src/model_document.rs",
+    "vendor/psx-assets/src/scan.rs",
+    "vendor/psx-assets/src/tim.rs",
+    "vendor/psx-assets/src/tmd.rs",
+    "vendor/psx-assets/src/upload.rs",
+    "vendor/psx-assets/src/vab.rs",
+    "vendor/psx-media/Cargo.toml",
+    "vendor/psx-media/src/chd.rs",
+    "vendor/psx-media/src/cue.rs",
+    "vendor/psx-media/src/disc.rs",
+    "vendor/psx-media/src/error.rs",
+    "vendor/psx-media/src/exe.rs",
+    "vendor/psx-media/src/iso9660.rs",
+    "vendor/psx-media/src/lib.rs",
+    "vendor/psx-media/src/memmap.rs",
+    "vendor/psx-media/src/source.rs",
+    "vendor/psx-media/src/str_video.rs",
+    "vendor/psx-media/src/subq.rs",
+    "vendor/psx-media/src/system_cnf.rs",
 ];
 
-/// Files under this prefix belong to the template; `update` replaces them.
+/// The template's own crate.
 const OWNED_PREFIX: &str = "psx-bevy/";
+/// Files under these prefixes belong to the template; `update` replaces them.
+/// `vendor/` holds copies of the toolkit's psx-media and psx-assets.
+const OWNED_PREFIXES: &[&str] = &[OWNED_PREFIX, VENDOR_PREFIX];
+const VENDOR_PREFIX: &str = "vendor/";
 /// Seeded files `create` skips (and reports) when the destination already has them.
 const KEEP_EXISTING: &[&str] = &["AGENTS.md", "README.md", ".gitignore"];
 const MANIFEST: &str = ".psx-template.toml";
@@ -279,7 +321,7 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn is_owned(rel: &str) -> bool {
-    rel.starts_with(OWNED_PREFIX)
+    OWNED_PREFIXES.iter().any(|prefix| rel.starts_with(prefix))
 }
 
 /// The template's `game/src/lib.rs` with `REGION` and `FIELDS_PER_TICK` set.
@@ -637,7 +679,7 @@ mod tests {
         assert!(lib.contains(REGION_LINE) && lib.contains(FIELDS_PER_TICK_LINE));
         let manifest = Manifest::read(&game).unwrap();
         assert_eq!(manifest.package, "my-game");
-        assert!(manifest.owned.keys().all(|k| k.starts_with(OWNED_PREFIX)));
+        assert!(manifest.owned.keys().all(|k| is_owned(k)));
         assert!(manifest.seeded.contains_key("engine/src/objects.rs"));
         assert_eq!(manifest.owned.len() + manifest.seeded.len(), FILES.len());
         assert!(create(&game, None, TemplateOptions::default()).is_err());
@@ -786,14 +828,45 @@ mod tests {
         assert!(missing.is_empty(), "template files not in FILES: {missing:?}");
     }
 
-    /// The engine and the template's crate must never depend on the game.
+    /// The template's vendored psx-media and psx-assets must be exact copies
+    /// of crates/, at this psx version.
+    #[test]
+    fn vendored_crates_match_crates() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for krate in ["psx-media", "psx-assets"] {
+            let src = repo.join("crates").join(krate).join("src");
+            let mut names: Vec<String> = std::fs::read_dir(&src)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            let prefix = format!("{VENDOR_PREFIX}{krate}/src/");
+            let mut vendored: Vec<String> =
+                FILES.iter().filter_map(|(p, _)| p.strip_prefix(prefix.as_str())).map(str::to_string).collect();
+            vendored.sort();
+            assert_eq!(vendored, names, "templates/psx-bevy/{prefix} must hold exactly crates/{krate}/src's files");
+            for name in names {
+                let ours = std::fs::read_to_string(src.join(&name)).unwrap();
+                let theirs = FILES.iter().find(|(p, _)| *p == format!("{prefix}{name}")).unwrap().1;
+                assert!(ours == theirs, "templates/psx-bevy/{prefix}{name} differs from crates/{krate}/src/{name}; copy it over");
+            }
+            let manifest = FILES.iter().find(|(p, _)| *p == format!("{VENDOR_PREFIX}{krate}/Cargo.toml")).unwrap().1;
+            assert!(
+                manifest.contains(&format!("version = \"{}\"", env!("CARGO_PKG_VERSION"))),
+                "templates/psx-bevy/{VENDOR_PREFIX}{krate}/Cargo.toml: set version to {}",
+                env!("CARGO_PKG_VERSION")
+            );
+        }
+    }
+
+    /// The engine, the editor and the template's crate must never depend on the game.
     #[test]
     fn engine_and_template_crate_do_not_depend_on_the_game() {
         for (rel, contents) in FILES {
-            if matches!(*rel, "engine/Cargo.toml" | "psx-bevy/Cargo.toml") {
+            if matches!(*rel, "engine/Cargo.toml" | "psx-bevy/Cargo.toml" | "editor/Cargo.toml") {
                 assert!(!contents.contains("psx-game") && !contents.contains("game."), "{rel} depends on the game");
             }
-            if rel.starts_with("engine/") && rel.ends_with(".rs") {
+            if (rel.starts_with("engine/") || rel.starts_with("editor/")) && rel.ends_with(".rs") {
                 assert!(!contents.contains("game::"), "{rel} uses the game crate");
             }
         }

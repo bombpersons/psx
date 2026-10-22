@@ -191,10 +191,13 @@ fields_per_tick = 2
 2. Crates `psx-bevy`, `engine`, and `<name>` for the game (lib `game`).
 3. The registries ship, small, with editor-readable metadata (type names,
    reflected tuning type).
-4. No editor skeleton. The port guidance (`guide port`, `docs/port-prompt.md`)
-   says to grow an editor alongside the port, one settled format at a time,
-   depending on `engine/` only, as a modern high-resolution mouse-and-keyboard
-   application that does not reuse psx-bevy's PS1 renderer.
+4. An editor skeleton (`editor/`, egui via bevy_egui) with menus, outline,
+   view, inspector and status bar over the engine's level format. Ports grow
+   it one settled format at a time, depending on `engine/` only, as a modern
+   high-resolution mouse-and-keyboard application that does not reuse
+   psx-bevy's PS1 renderer. engine/ depends on bevy_egui too, so the game and
+   editor resolve the same Bevy features and share one build. (Replaces the
+   earlier decision to ship no editor skeleton.)
 
 ## As built
 

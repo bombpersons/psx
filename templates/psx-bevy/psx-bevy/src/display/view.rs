@@ -1,6 +1,6 @@
 //! Ordinary Bevy UI rendered into the PS1 canvas, like the controls menu.
 //! The menu follows the screen size, so resolution changes preview with it.
-use super::{DisplayMenu, DisplaySettings, Row, Target};
+use super::{DisplayMenu, DisplaySettings, DisplayUi, HINT, Row, Target};
 use crate::{
     pointer::{Hitboxes, node_rect},
     psx::{
@@ -43,10 +43,10 @@ const SELECTED: Color = Color::linear_rgb(0.06, 0.18, 0.48);
 const LABEL_W: u32 = 102;
 const ARROW_W: u32 = 12;
 const VALUE_W: u32 = 14 * GLYPH_W;
-const HINT: &str = "Up/Down or mouse: select\nLeft/Right or click < >: change\nEsc/East or right click: discard";
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Startup, spawn).add_systems(Update, (refresh, collect_hitboxes));
+    let shown = |ui: Res<DisplayUi>| ui.view;
+    app.add_systems(Startup, spawn.run_if(shown)).add_systems(Update, (refresh, collect_hitboxes).run_if(shown));
 }
 fn label(text: &str, color: Color, images: &mut Assets<Image>) -> impl Bundle {
     let image = text_image(text);
@@ -129,38 +129,11 @@ fn collect_hitboxes(
     mut hitboxes: ResMut<Hitboxes<Target>>,
 ) {
     hitboxes.0.clear();
-    if menu.open {
+    if menu.is_open() {
         let lines = lines.iter().map(|(line, node, at)| (node_rect(node, at), Target::Row(Row::ALL[line.0])));
         let arrows =
             arrows.iter().map(|(arrow, node, at)| (node_rect(node, at), Target::Step(Row::ALL[arrow.0], arrow.1)));
         hitboxes.0.extend(lines.chain(arrows));
-    }
-}
-
-/// Common aspect ratios by name; others show only the size.
-fn aspect(size: [u32; 2]) -> &'static str {
-    let ratio = size[0] as f32 / size[1].max(1) as f32;
-    [(4.0 / 3.0, "4:3"), (16.0 / 9.0, "16:9"), (16.0 / 10.0, "16:10"), (3.0 / 2.0, "3:2"), (21.0 / 9.0, "21:9")]
-        .into_iter()
-        .find(|(r, _)| (ratio / r - 1.0).abs() < 0.01)
-        .map_or("", |(_, name)| name)
-}
-
-pub(super) fn value(row: Row, settings: &DisplaySettings, windowed: bool) -> String {
-    let on = |b: bool| if b { "ON" } else { "OFF" }.to_string();
-    match row {
-        Row::Resolution => format!("{}x{} {}", settings.screen[0], settings.screen[1], aspect(settings.screen)),
-        Row::Aspect if !windowed => "N/A".into(),
-        Row::Aspect => match settings.aspect {
-            PsxAspect::Fixed => "FIXED".into(),
-            PsxAspect::Window => "MATCH WINDOW".into(),
-        },
-        Row::Fullscreen if !windowed => "N/A".into(),
-        Row::Fullscreen => on(settings.fullscreen),
-        Row::VertexSnap => on(settings.look.vertex_snap),
-        Row::Dither => on(settings.look.dither),
-        Row::Quantize => on(settings.look.quantize),
-        _ => String::new(),
     }
 }
 
@@ -179,16 +152,16 @@ fn refresh(
     mut arrows: ArrowGlyphs,
     mut hints: Query<(&mut Label, &mut ImageNode, &mut Node), With<Hint>>,
 ) {
-    if !menu.is_changed() && !menu.open {
+    if !menu.is_changed() && !menu.is_open() {
         return;
     }
     for mut root in &mut roots {
-        root.display = if menu.open { Display::Flex } else { Display::None };
+        root.display = if menu.is_open() { Display::Flex } else { Display::None };
     }
     for mut camera in &mut cameras {
-        camera.is_active = menu.open;
+        camera.is_active = menu.is_open();
     }
-    if !menu.open {
+    if !menu.is_open() {
         return;
     }
     let mut set = |label: &mut Label, node: &mut ImageNode, layout: &mut Node, text: String| {
@@ -206,20 +179,21 @@ fn refresh(
     for (value, mut label, mut node, mut layout) in &mut values {
         let selected = value.0 == menu.selected;
         node.color = if selected { GOLD } else { WHITE };
-        let text = self::value(Row::ALL[value.0], &settings, !windows.is_empty());
+        let text = super::value(Row::ALL[value.0], &settings, !windows.is_empty());
         set(&mut label, &mut node, &mut layout, text);
     }
     for (glyph, mut node) in &mut arrows {
         node.color = if glyph.0 == menu.selected { GOLD } else { CYAN };
     }
     for (mut label, mut node, mut layout) in &mut hints {
-        set(&mut label, &mut node, &mut layout, format!("{}\n{HINT}", menu.status));
+        set(&mut label, &mut node, &mut layout, format!("{}\n{HINT}", menu.status()));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::display::{aspect, value};
     use crate::psx::font::text_width;
 
     #[test]

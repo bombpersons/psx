@@ -548,3 +548,56 @@ fn profiles_without_mouse_slots_load() {
     assert!(Button::ALL.iter().all(|b| loaded.mouse_button(*b).is_none()));
     assert_eq!(loaded, ControllerBindings::default());
 }
+
+/// What a game's own controls screen sees through the public API.
+#[derive(Resource, Default)]
+struct CustomView(Vec<String>);
+
+fn custom_view(menu: Res<ControlsMenu>, bindings: Res<ControllerBindings>, mut view: ResMut<CustomView>) {
+    view.0.clear();
+    if !menu.is_open() {
+        return;
+    }
+    let shown = menu.shown(&bindings);
+    for row in 0..ROWS {
+        let mark = if row == menu.selected { ">" } else { " " };
+        let key = Button::ALL.get(row).and_then(|b| shown.key(*b)).map_or(String::new(), |k| format!("{k:?}"));
+        view.0.push(format!("{mark}{} {key}", row_label(row)));
+    }
+    view.0.push(format!("{}|{}", menu.status(), menu.hint()));
+}
+
+/// As the launcher sets it up (built-in view on), then the game's `add`
+/// closure swaps in its own view: no built-in UI is spawned (it would need
+/// the renderer, which this app lacks), F1 is left to the game, and the
+/// public API is enough to draw and drive the menu.
+#[test]
+fn a_game_can_replace_the_built_in_view_with_its_own() {
+    let dir = directory("custom-view");
+    let mut app = App::new();
+    let tick = TickRate::default();
+    app.add_plugins((MinimalPlugins, ShellPlugin { tick }))
+        .add_plugins(ControlsPlugin { path: Some(dir.join("controls.json")), ..default() })
+        .insert_resource(ControlsUi { view: false, shortcuts: false })
+        .init_resource::<CustomView>()
+        .add_systems(Update, custom_view)
+        .insert_resource(TimeUpdateStrategy::ManualDuration(tick.period()))
+        .init_resource::<ButtonInput<KeyCode>>();
+    frame(&mut app);
+    tap(&mut app, KeyCode::F1);
+    assert!(!app.world().resource::<ControlsMenu>().is_open(), "shortcuts are the game's");
+    assert_eq!(app.world_mut().query::<&Node>().iter(app.world()).count(), 0, "no built-in view");
+
+    app.world_mut().resource_mut::<ControlsMenu>().open();
+    frame(&mut app);
+    tap(&mut app, KeyCode::ArrowDown);
+    let view = &app.world().resource::<CustomView>().0;
+    assert_eq!(view.len(), ROWS + 1);
+    assert!(view[1].starts_with(&format!(">{}", Button::ALL[1].label())), "{view:?}");
+    assert_eq!(view[SAVE].trim(), "Save and close");
+    assert!(view[ROWS].contains("Enter/click: edit"));
+
+    capture_key(&mut app, Button::ALL[1], KeyCode::KeyP);
+    assert!(app.world().resource::<CustomView>().0[1].ends_with("KeyP"), "the draft is shown");
+    std::fs::remove_dir_all(dir).unwrap();
+}

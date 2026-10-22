@@ -46,10 +46,14 @@ Work order:
    AGENTS.md). The workspace is psx-bevy/ (template-owned; small general
    edits allowed, listed in docs/template.md), engine/ (registries,
    update-order sets, level and tuning formats, a sandbox example), game/
-   (demo to replace), mods/example/ (a mod built on game/) and tools/import/. Reshape the engine skeleton to match
+   (demo to replace), mods/example/ (a mod built on game/), editor/, tools/import/
+   and vendor/ (template-owned psx-media and psx-assets for the importers). Reshape the engine skeleton to match
    engine-model.md; keep the sandbox building.
-4. Importers in tools/import convert extracted files into engine formats
-   (normal units, RON/PNG/WAV/glTF) under game/assets, recording provenance.
+4. Importers in tools/import convert the disc's files into engine formats
+   (normal units, RON/PNG/WAV/glTF) under game/assets/imported, recording
+   provenance. The game runs them itself on first start from the player's
+   disc (game/src/disc.rs; set import::SERIALS, bump import::VERSION when the
+   output changes), so players need only the game and their disc.
    Validate structurally: every source byte accounted for, every reference in
    range. Raw formats live only in importers.
 5. Port feature by feature: record the original (replay + sample), place the
@@ -69,7 +73,8 @@ The sandbox (cargo run -p engine --example sandbox) is a tiny second game made
 only from engine/ and hand-written assets. If a feature can't be used there
 without reaching into game/, move the boundary, not the sandbox.
 
-Keep an editor growing with the port: once a format exists in the engine, the
+Keep the editor (editor/, an egui shell that starts with level files; see
+editor/AGENTS.md) growing with the port: once a format exists in the engine, the
 editor can open, show and save it, through engine/ alone (registry metadata
 lists the game's types). Grow it a format at a time, after the format has
 settled and the matching trajectory tests pass. Saving an unedited level
@@ -131,6 +136,13 @@ Template updates: template_update replaces untouched psx-bevy/ files, writes
 docs/template.md) and copies changed seeded files under
 .psx/template-update/ for you to merge. Projects from before the workspace
 layout: move the template modules into psx-bevy/, then `psx template adopt`.
+
+Settings menus: psx-bevy's controls and display menus are logic plus a
+built-in view. Once the game's own front end exists, turn the built-in views
+off (ControlsUi, DisplayUi), copy view.rs into game/ and restyle it or merge it
+into the game's options screen, so they look like part of the game. Don't
+restyle them inside psx-bevy/ (psx-bevy/README.md, "Making the menus the
+game's own").
 
 Done means: the port matches recorded behaviour and looks like the original; a
 new enemy, item or weapon of an existing kind is a new entry plus data, without

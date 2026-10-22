@@ -45,15 +45,36 @@ the engine's launcher. So tests in `tests/` can use every game module.
 
 ```
 src/lib.rs            REGION, FIELDS_PER_TICK, SCREEN, TITLE, GamePlugins (EnginePlugin + your feature plugins)
-src/main.rs           engine::launcher::run(...): window, renderer, --flags
+src/main.rs           engine::launcher::run(...): window, renderer, --flags; turns on the disc import
+src/disc.rs           GameData state: import from the player's disc on first start, disc/progress screens
 src/<feature>/mod.rs  one plugin per feature: player, stage, enemies, camera, hud...
 src/<feature>/...     rules (components + systems, no rendering) apart from presentation
-assets/               baked content in the engine's formats (levels, tuning, textures)
+assets/               hand-made content in the engine's formats (tuning, hand-authored data)
+assets/imported/      content imported from the player's disc on first start (git-ignored)
 tests/<feature>.rs    headless tick tests against recorded trajectories
 tests/dev_mcp.rs      opt-in GPU/MCP checks of the real binary
 ```
 
 Evidence-recording scripts and importers live in the workspace's `tools/`.
+
+### Data from the disc
+
+The game imports the original's data itself, on first start, from the
+player's disc image placed next to it (`src/disc.rs`, running
+`import::import` from `tools/import`). Keep it that way as the port grows:
+
+- Importers convert disc files into engine formats under `assets/imported/`
+  and are the only code that reads the original's raw formats. Run them on
+  the disc through `import::DiscReader`, report progress, and bump
+  `import::VERSION` whenever their output changes so players re-import.
+- Set `import::SERIALS` to every disc revision the importers support (the
+  boot executable in `SYSTEM.CNF`) and `import::GAME` to the original's name.
+- World setup that needs imported files runs on `OnEnter(GameData::Ready)`,
+  not `Startup`. `GameSystems::Game` already waits for it.
+- Tests use a disc made with `import::test_disc::iso` (see `tests/disc.rs`);
+  tests that need the real data are opt-in, since the disc is not in the
+  repository.
+- Restyle the disc and progress screens in `src/disc.rs` to fit the game.
 
 - Start a new game by deleting `src/demo/` and `assets/demo/`, removing the
   demo from `GamePlugins` and `lib.rs`, and adding your own feature modules.
@@ -80,6 +101,12 @@ Evidence-recording scripts and importers live in the workspace's `tools/`.
   `psx-bevy/README.md`, "Rebinding".
 - `DisplayPlugin` (F2: resolution, aspect, fullscreen, `PsxLook`) is added by the
   launcher too; open it from your options flow with `DisplayMenu::open()`.
+- Both menus come with a plain built-in view. Once the port has its own
+  front end, give them the game's look: turn the built-in views off
+  (`ControlsUi`, `DisplayUi` in `src/main.rs`'s `add`), copy the views into
+  `game/` and restyle or merge them into the options screen. Never restyle
+  them inside `psx-bevy/`. See `psx-bevy/README.md`, "Making the menus the
+  game's own".
   The screen can change size at runtime, so anchor 2D HUD elements with
   `PsxAnchor` rather than positions computed from `PsxScreen` at startup.
   See `psx-bevy/README.md`, "Screen size".
@@ -330,7 +357,8 @@ calls in screen space. It is for *checking* your rebuild, never for shipping:
   grids (sprite chunks or a tilemap crate), collision as data, entity spawn
   lists as components. Find that data with the toolkit (trace the code that
   builds the draw packets back to its source arrays, then `psx loads` to the
-  disc file) and decode it into plain files under `assets/`.
+  disc file) and decode it in an importer (`tools/import`) into
+  `assets/imported/`.
 - Use the capture to verify: place your camera where the game's was, render,
   and compare against the capture (`--scene ... --painter` for the original's
   draw order). `PsxSceneElement::command` maps elements to GPU commands.

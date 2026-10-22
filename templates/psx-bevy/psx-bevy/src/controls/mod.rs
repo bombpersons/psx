@@ -1,6 +1,14 @@
-//! Reusable example controls menu. Gameplay still consumes logical ControllerState.
-//! Add ControlsPlugin beside ShellPlugin/PsxPlugin; call ControlsMenu::open from
-//! your game's options screen. Persistence is explicit on Save and close.
+//! The controls menu: rebinding, key capture, conflicts, defaults and saving
+//! (this module), and a built-in PS1-style view of it (`view.rs`). Gameplay
+//! still consumes logical ControllerState. Persistence is explicit on Save
+//! and close.
+//!
+//! A game can keep the built-in view, or draw its own and merge it into its
+//! options screen: set [`ControlsUi`] (`view: false`, and `shortcuts: false`
+//! if the game opens the menu itself) and draw [`ControlsMenu`] each frame.
+//! The logic here does all input; a custom view only draws and, for mouse
+//! support, fills [`Hitboxes<Item>`] with its rows' screen rectangles. The
+//! built-in `view.rs` is the reference implementation to copy and restyle.
 #[cfg(test)]
 mod tests;
 mod view;
@@ -22,9 +30,9 @@ pub struct ControlsPlugin {
     /// `BindingStore::default_path(<game package name>)`.
     pub path: Option<PathBuf>,
     pub initially_open: bool,
-    /// Disable presentation for rules tests or a custom frontend.
+    /// The built-in view; the initial [`ControlsUi::view`].
     pub render_ui: bool,
-    /// F1 and Start+Select shortcuts. Disable when your options screen owns opening.
+    /// F1 and Start+Select; the initial [`ControlsUi::shortcuts`].
     pub global_shortcuts: bool,
 }
 impl Default for ControlsPlugin {
@@ -41,7 +49,7 @@ impl Plugin for ControlsPlugin {
             .init_resource::<Pointer>()
             .init_resource::<Hitboxes<Item>>()
             .insert_resource(BindingStore::new(self.path.clone()))
-            .insert_resource(Shortcuts(self.global_shortcuts))
+            .insert_resource(ControlsUi { view: self.render_ui, shortcuts: self.global_shortcuts })
             .add_systems(Startup, load)
             .add_systems(
                 PreUpdate,
@@ -50,9 +58,7 @@ impl Plugin for ControlsPlugin {
         if self.initially_open {
             app.world_mut().resource_mut::<ControlsMenu>().open();
         }
-        if self.render_ui {
-            view::plugin(app);
-        }
+        view::plugin(app);
     }
 }
 
@@ -66,22 +72,40 @@ pub struct Item {
 
 #[derive(Resource)]
 struct Defaults(ControllerBindings);
-#[derive(Resource)]
-struct Shortcuts(bool);
+/// How the controls menu is presented. Insert or change it before the app
+/// starts, e.g. in the launcher's `add` closure:
+/// `app.insert_resource(ControlsUi { view: false, shortcuts: false })`.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlsUi {
+    /// Draw the built-in PS1-style view. Off when the game draws its own.
+    pub view: bool,
+    /// F1 and Start+Select open and close the menu. Off when the game's own
+    /// options screen opens it with [`ControlsMenu::open`].
+    pub shortcuts: bool,
+}
+
+impl Default for ControlsUi {
+    fn default() -> Self {
+        Self { view: true, shortcuts: true }
+    }
+}
+
 impl FromWorld for Defaults {
     fn from_world(world: &mut World) -> Self {
         Self(world.resource::<ControllerBindings>().clone())
     }
 }
 
+/// What the menu is doing.
 #[derive(Debug, Clone, Default)]
-enum Mode {
+pub enum Mode {
+    /// Moving between rows and columns.
     #[default]
     Browse,
-    Listen {
-        armed: bool,
-        pad: Option<Entity>,
-    },
+    /// Waiting for the new binding for the selected action and device.
+    /// `armed` once every key and button was released.
+    Listen { armed: bool, pad: Option<Entity> },
+    /// The new binding is in use; Enter swaps, Esc keeps.
     Conflict(BindingConflict),
 }
 
@@ -110,6 +134,26 @@ impl ControlsMenu {
     }
     pub fn status(&self) -> &str {
         &self.status
+    }
+    pub fn mode(&self) -> &Mode {
+        &self.mode
+    }
+    /// The bindings to show: the draft while open, else `saved`.
+    pub fn shown<'a>(&'a self, saved: &'a ControllerBindings) -> &'a ControllerBindings {
+        self.draft.as_ref().unwrap_or(saved)
+    }
+    /// The keys for the current mode, two lines.
+    pub fn hint(&self) -> &'static str {
+        match self.mode {
+            Mode::Listen { .. } if self.device == BindingDevice::Mouse => {
+                "Click any mouse button; the next row follows.\nEsc: cancel this binding"
+            }
+            Mode::Browse => {
+                "Arrows/D-pad/mouse: select  Enter/click: edit\nDel/West: clear  Esc/East/right click: discard"
+            }
+            Mode::Listen { .. } => "Press one key or button; the next row follows.\nEsc or right click: cancel this binding",
+            Mode::Conflict(_) => "Enter/click: swap  Esc/East/right click: keep\nNothing changes until Save and close.",
+        }
     }
     pub fn select(&mut self, action: Button, device: BindingDevice) {
         self.selected = action as usize;
@@ -168,10 +212,22 @@ fn load(mut store: ResMut<BindingStore>, mut bindings: ResMut<ControllerBindings
     }
 }
 
-const RESTORE: usize = 14;
-const SAVE: usize = 15;
-const DISCARD: usize = 16;
-const ROWS: usize = 17;
+/// Rows, top to bottom: one per [`Button::ALL`] action (`selected` is its
+/// index), then these commands.
+pub const RESTORE: usize = Button::ALL.len();
+pub const SAVE: usize = RESTORE + 1;
+pub const DISCARD: usize = RESTORE + 2;
+pub const ROWS: usize = RESTORE + 3;
+
+/// A row's label: the action's name, or the command.
+pub fn row_label(row: usize) -> &'static str {
+    match row {
+        RESTORE => "Restore defaults",
+        SAVE => "Save and close",
+        DISCARD => "Discard and close",
+        action => Button::ALL.get(action).map_or("", |b| b.label()),
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn drive(
@@ -183,7 +239,7 @@ fn drive(
     mut bindings: ResMut<ControllerBindings>,
     defaults: Res<Defaults>,
     mut store: ResMut<BindingStore>,
-    shortcuts: Res<Shortcuts>,
+    ui: Res<ControlsUi>,
     pointer: Res<Pointer>,
     hitboxes: Res<Hitboxes<Item>>,
 ) {
@@ -195,7 +251,7 @@ fn drive(
         (p.just_pressed(GamepadButton::Start) && p.pressed(GamepadButton::Select))
             || (p.just_pressed(GamepadButton::Select) && p.pressed(GamepadButton::Start))
     });
-    if shortcuts.0 && (keys.just_pressed(KeyCode::F1) || chord) {
+    if ui.shortcuts && (keys.just_pressed(KeyCode::F1) || chord) {
         if menu.open {
             menu.close(&mut focus);
             return;

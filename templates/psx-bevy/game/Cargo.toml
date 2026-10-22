@@ -20,6 +20,6 @@ dev-mcp = ["engine/dev-mcp"]
 engine.workspace = true
 bevy.workspace = true
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
+# The importers and disc reader (tools/import), run in the game on first start.
+import.workspace = true

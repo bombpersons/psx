@@ -1,8 +1,13 @@
-//! Example display settings menu, built like [`crate::controls`]: screen
+//! The display settings menu, built like [`crate::controls`]: screen
 //! resolution, [`PsxAspect`], borderless fullscreen and the [`PsxLook`] switches. Edits
 //! preview live; Save writes `display.json`, Discard (or Esc) restores what
 //! was showing when the menu opened. F2 opens it; F11 toggles fullscreen at
 //! any time ([`fullscreen_shortcut`], added by the launcher).
+//!
+//! This module is the logic and does all input; `view.rs` is a built-in
+//! PS1-style view. A game that draws its own (to merge it into its options
+//! screen) sets [`DisplayUi`] and draws [`DisplayMenu`], [`Row::ALL`],
+//! [`value`] and [`HINT`], filling [`Hitboxes<Target>`] for the mouse.
 //!
 //! Command-line flags (`--aspect`, `--fullscreen`, `--no-dither`, `--no-quantize`) win
 //! over the saved file for that session, through [`DisplayOverrides`].
@@ -33,9 +38,9 @@ pub struct DisplayPlugin {
     pub screens: Vec<UVec2>,
     pub overrides: DisplayOverrides,
     pub initially_open: bool,
-    /// Disable presentation for rules tests or a custom frontend.
+    /// The built-in view; the initial [`DisplayUi::view`].
     pub render_ui: bool,
-    /// The F2 shortcut. Disable when your options screen owns opening.
+    /// The F2 shortcut; the initial [`DisplayUi::shortcuts`].
     pub global_shortcuts: bool,
 }
 impl Default for DisplayPlugin {
@@ -58,7 +63,7 @@ impl Plugin for DisplayPlugin {
             .init_resource::<Hitboxes<Target>>()
             .insert_resource(DisplayStore::new(self.path.clone()))
             .insert_resource(Options { screens: self.screens.clone(), overrides: self.overrides, defaults: None })
-            .insert_resource(Shortcuts(self.global_shortcuts))
+            .insert_resource(DisplayUi { view: self.render_ui, shortcuts: self.global_shortcuts })
             .add_systems(Startup, load)
             .add_systems(
                 PreUpdate,
@@ -67,9 +72,7 @@ impl Plugin for DisplayPlugin {
         if self.initially_open {
             app.world_mut().resource_mut::<DisplayMenu>().open();
         }
-        if self.render_ui {
-            view::plugin(app);
-        }
+        view::plugin(app);
     }
 }
 
@@ -217,8 +220,57 @@ struct Options {
     /// What the game set up before the file was applied: Restore defaults.
     defaults: Option<DisplaySettings>,
 }
-#[derive(Resource)]
-struct Shortcuts(bool);
+/// How the display menu is presented. Insert or change it before the app
+/// starts, e.g. in the launcher's `add` closure:
+/// `app.insert_resource(DisplayUi { view: false, shortcuts: false })`.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayUi {
+    /// Draw the built-in PS1-style view. Off when the game draws its own.
+    pub view: bool,
+    /// F2 and its pad chord open and close the menu. Off when the game's own
+    /// options screen opens it with [`DisplayMenu::open`].
+    pub shortcuts: bool,
+}
+
+impl Default for DisplayUi {
+    fn default() -> Self {
+        Self { view: true, shortcuts: true }
+    }
+}
+
+/// The menu's key help, three lines.
+pub const HINT: &str = "Up/Down or mouse: select\nLeft/Right or click < >: change\nEsc/East or right click: discard";
+
+/// Common aspect ratios by name; others show only the size.
+pub fn aspect(size: [u32; 2]) -> &'static str {
+    let ratio = size[0] as f32 / size[1].max(1) as f32;
+    [(4.0 / 3.0, "4:3"), (16.0 / 9.0, "16:9"), (16.0 / 10.0, "16:10"), (3.0 / 2.0, "3:2"), (21.0 / 9.0, "21:9")]
+        .into_iter()
+        .find(|(r, _)| (ratio / r - 1.0).abs() < 0.01)
+        .map_or("", |(_, name)| name)
+}
+
+/// A setting row's value as the menu shows it (`""` for command rows).
+/// `windowed` is false when headless, where window settings don't apply.
+pub fn value(row: Row, settings: &DisplaySettings, windowed: bool) -> String {
+    let on = |b: bool| if b { "ON" } else { "OFF" }.to_string();
+    match row {
+        Row::Resolution => format!("{}x{} {}", settings.screen[0], settings.screen[1], aspect(settings.screen)),
+        Row::Aspect if !windowed => "N/A".into(),
+        Row::Aspect => match settings.aspect {
+            PsxAspect::Fixed => "FIXED".into(),
+            PsxAspect::Window => "MATCH WINDOW".into(),
+        },
+        Row::Fullscreen if !windowed => "N/A".into(),
+        Row::Fullscreen => on(settings.fullscreen),
+        Row::VertexSnap => on(settings.look.vertex_snap),
+        Row::Dither => on(settings.look.dither),
+        Row::Quantize => on(settings.look.quantize),
+        _ => String::new(),
+    }
+}
+
+
 
 /// The rows, top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,14 +446,14 @@ fn drive(
     mut focus: ResMut<InputFocus>,
     options: Res<Options>,
     store: Res<DisplayStore>,
-    shortcuts: Res<Shortcuts>,
+    ui: Res<DisplayUi>,
     pointer: Res<Pointer>,
     hitboxes: Res<Hitboxes<Target>>,
     mut live: LiveDisplay,
 ) {
     let pad = pads.iter().min_by_key(|(e, _)| e.to_bits()).map(|(_, p)| p);
     let pressed = |b| pad.is_some_and(|p| p.just_pressed(b));
-    if shortcuts.0 && keys.just_pressed(KeyCode::F2) {
+    if ui.shortcuts && keys.just_pressed(KeyCode::F2) {
         if menu.open {
             revert(&menu, &mut live);
             menu.close(&mut focus);

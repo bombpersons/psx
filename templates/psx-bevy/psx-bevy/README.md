@@ -20,8 +20,8 @@ these modules). See the project's root README for the workspace and commands.
 | `psx/` | The PS1 look (materials, screen pass, `.psxscene` loader, TIM/TMD loaders, bitmap font) |
 | `shell.rs` | `TickRate`, `GameClock`, `GameSystems`, controller sampling |
 | `controller.rs`, `controller/bindings.rs` | Logical `Button`/`ControllerState`, validated device bindings and settings storage |
-| `controls/` | Reusable controls menu: draft edits, capture, conflict resolution and PS1-style presentation |
-| `display/` | Example display menu: resolution, borderless fullscreen and `PsxLook` switches, saved to `display.json` |
+| `controls/` | Controls menu: draft edits, capture, conflict resolution, saving (`mod.rs`), and a built-in PS1-style view a game can replace (`view.rs`) |
+| `display/` | Display menu: resolution, aspect, borderless fullscreen and `PsxLook` switches, saved to `display.json` (`mod.rs`), and a replaceable built-in view (`view.rs`) |
 | `settings.rs` | Player settings files: config folder, size-limited reads, atomic writes |
 | `pointer.rs` | The mouse on the PS1 screen: `Pointer`, window-to-screen mapping, menu `Hitboxes` |
 | `launcher.rs` | Window, renderer, headless mode and the shared command-line flags |
@@ -485,6 +485,40 @@ isolated `PsxView` camera before the screen pass, so it appears in low-resolutio
 screenshots and passes through the same framebuffer quantization. If importing
 both Bevy and game preludes, explicitly import `engine::controller::Button` to
 disambiguate Bevy's UI button type.
+
+### Making the menus the game's own
+
+Both menus are split into logic and a view. The logic (`controls/mod.rs`,
+`display/mod.rs`) does all input: navigation, mouse, capture, conflicts,
+live preview, Save, Discard. The built-in views (`view.rs`) only draw it, in
+a plain PS1 style, so the template's menus work from the first `cargo run`.
+A finished port draws its own, in the game's style or inside its options
+screen, without editing this crate:
+
+1. Turn the built-in view (and, if the game opens the menus itself, the F1/F2
+   shortcuts) off from the launcher's `add` closure:
+
+   ```rust
+   use engine::{controls::ControlsUi, display::DisplayUi};
+   app.insert_resource(ControlsUi { view: false, shortcuts: false })
+       .insert_resource(DisplayUi { view: false, shortcuts: false });
+   ```
+
+2. Copy `controls/view.rs` and `display/view.rs` into the game as a starting
+   point and restyle them. They use only the public API: `ControlsMenu`
+   (`is_open`, `selected`, `device`, `shown`, `mode`, `status`, `hint`),
+   `controls::{row_label, ROWS, RESTORE, SAVE, DISCARD}`, `DisplayMenu`
+   (`is_open`, `row`, `status`), `display::{Row, value, HINT}`.
+3. For the mouse, fill `Hitboxes<controls::Item>` / `Hitboxes<display::Target>`
+   each frame with the screen rectangles (PS1 screen pixels, as `Pointer`) of
+   the rows and slots.
+4. Open the menus from the game's options with `ControlsMenu::open()` and
+   `DisplayMenu::open()`; `is_open()` turns false when the player saves or
+   discards.
+
+`a_game_can_replace_the_built_in_view_with_its_own` in each menu's tests is a
+minimal example. Because the logic stays here, later `psx template update`
+fixes still reach a port that restyled its menus.
 
 ### Screen size, fullscreen and the example display menu
 

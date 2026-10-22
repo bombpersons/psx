@@ -262,3 +262,47 @@ fn arrows_step_a_setting_both_ways() {
     click(&mut app, MouseButton::Left);
     assert_eq!(live(&mut app).screen, [320, 240], "the rest of the row steps forwards");
 }
+
+/// The launcher's default set-up, then the game's own view: the built-in UI
+/// is never spawned and F2 is left to the game, while the menu still works
+/// through its public API.
+#[test]
+fn a_game_can_replace_the_built_in_view_with_its_own() {
+    let dir = std::env::temp_dir().join(format!("psx-display-custom-view-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let tick = TickRate::default();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(PsxScreen::default())
+        .insert_resource(PsxLook::default())
+        .init_resource::<PsxAspect>()
+        .add_plugins((
+            ShellPlugin { tick },
+            DisplayPlugin {
+                path: Some(dir.join("display.json")),
+                screens: crate::launcher::screen_choices(UVec2::new(320, 240)),
+                ..default()
+            },
+        ))
+        .insert_resource(DisplayUi { view: false, shortcuts: false })
+        .insert_resource(TimeUpdateStrategy::ManualDuration(tick.period()))
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<ButtonInput<MouseButton>>();
+    app.world_mut().spawn((Window::default(), PrimaryWindow));
+    frame(&mut app);
+    tap(&mut app, KeyCode::F2);
+    assert!(!app.world().resource::<DisplayMenu>().is_open());
+    assert_eq!(app.world_mut().query::<&Node>().iter(app.world()).count(), 0);
+
+    app.world_mut().resource_mut::<DisplayMenu>().open();
+    frame(&mut app);
+    tap(&mut app, KeyCode::ArrowDown);
+    tap(&mut app, KeyCode::ArrowDown);
+    tap(&mut app, KeyCode::ArrowDown);
+    assert_eq!(app.world().resource::<DisplayMenu>().row(), Row::VertexSnap);
+    tap(&mut app, KeyCode::ArrowRight);
+    let look = *app.world().resource::<PsxLook>();
+    let settings = DisplaySettings::current(&PsxScreen::default(), PsxAspect::default(), &look, None);
+    assert_eq!(value(Row::VertexSnap, &settings, true), "OFF", "edits preview live");
+    let _ = std::fs::remove_dir_all(dir);
+}

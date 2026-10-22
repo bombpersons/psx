@@ -88,7 +88,7 @@ no edit to the shared code it runs on.
 - Readable files (RON for tables, PNG, WAV, glTF where they fit), so people
   can author them by hand or with ordinary tools, and an editor can open and
   save them.
-- The editor that opens them is a modern desktop application: full window
+- The editor that opens them (`editor/`, see its AGENTS.md) is a modern desktop application: full window
   resolution, mouse and keyboard, ordinary UI. It does not use psx-bevy's PS1
   renderer, bitmap font or pad menus, and should not look like a PlayStation
   game (see the psx `guide` topic `port`). Its end state creates content from

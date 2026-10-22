@@ -20,6 +20,8 @@ fn headless_render_edit_step_and_query() {
     println!("GPU evidence: {}", output.display());
     let mut command = Command::new(env!(concat!("CARGO_BIN_EXE_", env!("CARGO_PKG_NAME"))));
     command.env("BEVY_ASSET_ROOT", env!("CARGO_MANIFEST_DIR"));
+    // The demo world without a disc import (no disc on test machines).
+    command.arg("--skip-import");
     let mut client = Client::launch(command, &output.join("game.log"));
     let tools = client.request("tools/list", json!({}));
     assert!(tools["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "game_set_component"));

@@ -1,0 +1,19 @@
+# Owned by the psx template (`psx template update` replaces it): a copy of the
+# psx toolkit's crates/psx-media, so the game reads the player's disc with no
+# dependency on the toolkit. Fix bugs upstream, not here. See ../README.md.
+[package]
+name = "psx-media"
+version = "0.3.7"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "PlayStation disc image, ISO9660 and PS-X EXE inspection"
+publish = false
+
+[dependencies]
+chd = "0.4"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+
+[lints.rust]
+unsafe_code = "forbid"

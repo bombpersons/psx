@@ -4,3 +4,8 @@ target/
 # cannot live under .psx/ because Ghidra rejects hidden path components.
 .psx/
 ghidra-projects/
+
+# Game data imported from the player's disc on first start (game/src/disc.rs).
+# It is copyrighted: never commit it.
+assets/imported/
+assets/imported.partial/

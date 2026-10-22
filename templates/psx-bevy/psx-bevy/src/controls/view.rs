@@ -1,6 +1,6 @@
 //! Ordinary Bevy UI rendered into the PS1 canvas, before its screen pass.
 //! Labels use the bitmap font in `psx::font`: vector text at this size breaks up.
-use super::{BindingDevice, Button, ControlsMenu, DISCARD, Item, Mode, RESTORE, SAVE};
+use super::{BindingDevice, Button, ControlsMenu, ControlsUi, DISCARD, Item, RESTORE, SAVE, row_label};
 use crate::{
     controller::ControllerBindings,
     pointer::{Hitboxes, node_rect},
@@ -46,7 +46,8 @@ const BINDING_W: u32 = (INNER - ACTION_W) / 3;
 const BINDING_CHARS: usize = (BINDING_W / GLYPH_W) as usize - 2;
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Startup, spawn).add_systems(Update, (refresh, collect_hitboxes));
+    let shown = |ui: Res<ControlsUi>| ui.view;
+    app.add_systems(Startup, spawn.run_if(shown)).add_systems(Update, (refresh, collect_hitboxes).run_if(shown));
 }
 fn label(text: &str, color: Color, images: &mut Assets<Image>) -> impl Bundle {
     let image = text_image(text);
@@ -116,8 +117,7 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                     }
                 });
             }
-            for (row, text) in [(RESTORE, "Restore defaults"), (SAVE, "Save and close"), (DISCARD, "Discard and close")]
-            {
+            for (row, text) in [RESTORE, SAVE, DISCARD].map(|row| (row, row_label(row))) {
                 root.spawn((
                     Row(row),
                     Node { height: px(LINE_H), flex_shrink: 0.0, ..default() },
@@ -131,18 +131,6 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         });
 }
 
-fn hint(mode: &Mode, device: BindingDevice) -> &'static str {
-    match mode {
-        Mode::Listen { .. } if device == BindingDevice::Mouse => {
-            "Click any mouse button; the next row follows.\nEsc: cancel this binding"
-        }
-        Mode::Browse => "Arrows/D-pad/mouse: select  Enter/click: edit\nDel/West: clear  Esc/East/right click: discard",
-        Mode::Listen { .. } => {
-            "Press one key or button; the next row follows.\nEsc or right click: cancel this binding"
-        }
-        Mode::Conflict(_) => "Enter/click: swap  Esc/East/right click: keep\nNothing changes until Save and close.",
-    }
-}
 
 /// Rows, then the binding columns inside them, as screen rectangles.
 fn collect_hitboxes(
@@ -152,7 +140,7 @@ fn collect_hitboxes(
     mut hitboxes: ResMut<Hitboxes<Item>>,
 ) {
     hitboxes.0.clear();
-    if !menu.open {
+    if !menu.is_open() {
         return;
     }
     let rows = rows.iter().map(|(row, node, at)| (node_rect(node, at), Item { row: row.0, device: None }));
@@ -175,12 +163,12 @@ fn refresh(
         return;
     }
     for mut root in &mut roots {
-        root.display = if menu.open { Display::Flex } else { Display::None };
+        root.display = if menu.is_open() { Display::Flex } else { Display::None };
     }
     for mut camera in &mut cameras {
-        camera.is_active = menu.open;
+        camera.is_active = menu.is_open();
     }
-    if !menu.open {
+    if !menu.is_open() {
         return;
     }
     let mut set = |label: &mut Label, node: &mut ImageNode, layout: &mut Node, text: String| {
@@ -191,7 +179,7 @@ fn refresh(
             label.0 = text;
         }
     };
-    let draft = menu.draft.as_ref().unwrap_or(&bindings);
+    let draft = menu.shown(&bindings);
     for (row, mut color) in &mut rows {
         color.0 = if row.0 == menu.selected { SELECTED } else { Color::NONE };
     }
@@ -206,13 +194,14 @@ fn refresh(
         }
     }
     for (mut label, mut node, mut layout) in &mut hints {
-        set(&mut label, &mut node, &mut layout, format!("{}\n{}", menu.status, hint(&menu.mode, menu.device)));
+        set(&mut label, &mut node, &mut layout, format!("{}\n{}", menu.status(), menu.hint()));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controls::Mode;
     use crate::psx::font::text_width;
 
     #[test]
@@ -228,7 +217,8 @@ mod tests {
             }),
         ] {
             for device in BindingDevice::ALL {
-                assert!(text_width(hint(&mode, device)) <= INNER, "{}", hint(&mode, device));
+                let menu = ControlsMenu { mode: mode.clone(), device, ..default() };
+                assert!(text_width(menu.hint()) <= INNER, "{}", menu.hint());
             }
         }
     }

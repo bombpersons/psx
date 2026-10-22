@@ -16,6 +16,10 @@ psx-bevy.workspace = true
 bevy.workspace = true
 serde.workspace = true
 ron.workspace = true
+# The editor's UI crate. Unused by the engine itself: it is here so every
+# build (game, editor, mods) resolves the same Bevy features and shares one
+# compiled Bevy. See editor/AGENTS.md, "One Bevy build".
+bevy_egui.workspace = true
 
 [[example]]
 name = "sandbox"
