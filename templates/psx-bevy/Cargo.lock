@@ -4456,7 +4456,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "psx-assets"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -4495,7 +4495,7 @@ dependencies = [
 
 [[package]]
 name = "psx-media"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "chd",
  "serde",
