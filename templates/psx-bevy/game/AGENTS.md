@@ -3,8 +3,9 @@
 `game/` is this title on top of `engine/`: per-type controllers, action
 handlers, HUD, menus, save format, level order, and the baked content in
 `assets/`. Reusable machinery belongs in `engine/` (read `engine/AGENTS.md`
-for the placement rules). The template's crate `psx-bevy/` is built on, and
-edited only as `psx-bevy/AGENTS.md` allows.
+for the placement rules). Both are built on the psx-bevy library
+(<https://github.com/bombpersons/psx-bevy>), changed only as its `AGENTS.md`
+allows.
 
 The goal is a Rust/Bevy version of a game that reads like a modern, first-time
 implementation of it: something a person could pick up later and change with
@@ -23,10 +24,10 @@ comes from `engine::psx`; everything else is normal Bevy code.
 - 2D: `Sprite` (with texture atlases) seen by a `Camera2d` + `PsxView`. Add
   `SpriteMaterial<PsxSprite>` for PS1 blend modes, per-texel STP or CLUT
   palettes (swap `palette_row` or edit the palette image); other polygons are
-  `Mesh2d` + `PsxMaterial2d`. Alpha ≈0.5 means "STP bit" (`psx-bevy/README.md`, 2D).
+  `Mesh2d` + `PsxMaterial2d`. Alpha ≈0.5 means "STP bit" (psx-bevy's README, 2D).
   Keep index images raw (`load_indices` / `psx_indices`), never plain `load`.
   `PsxView` cameras need orders below `SCREEN_PASS_ORDER` (999).
-- Blending is in gamma-encoded colour, like the GPU's (`psx-bevy/README.md`, "Blending in
+- Blending is in gamma-encoded colour, like the GPU's (psx-bevy's README, "Blending in
   encoded colour"): every `PsxView` camera, 2D and 3D, draws into an encoded
   target. So under a `PsxView` use `PsxMaterial`, never `StandardMaterial`
   (it writes linear light and would look too dark).
@@ -35,8 +36,8 @@ comes from `engine::psx`; everything else is normal Bevy code.
 - Keep game assets in `game/assets/`. Do not commit original disc or BIOS data.
   Original `.tim` textures and `.tmd` models (from `psx assets extract`) load
   directly: `asset_server.load("x.tim")` is an `Image`, a `.tmd` is a
-  `PsxModel` spawned with `PsxModelRoot` (`psx-bevy/README.md`, "Original assets").
-- Read `psx-bevy/README.md` for MCP startup, screenshot targets and input lifetime.
+  `PsxModel` spawned with `PsxModelRoot` (psx-bevy's README, "Original assets").
+- Read psx-bevy's README for MCP startup, screenshot targets and input lifetime.
 
 ## Project layout
 
@@ -98,18 +99,18 @@ player's disc image placed next to it (`src/disc.rs`, running
   events carrying `"mouse"` (`Replay::ticks`) or `game_step`'s `mouse`.
   Modal interfaces capture `InputFocus` before `PhysicalInputSystems::Sample`;
   clear latched input and wait for physical release before resuming. See
-  `psx-bevy/README.md`, "Rebinding".
+  psx-bevy's README, "Rebinding".
 - `DisplayPlugin` (F2: resolution, aspect, fullscreen, `PsxLook`) is added by the
   launcher too; open it from your options flow with `DisplayMenu::open()`.
 - Both menus come with a plain built-in view. Once the port has its own
   front end, give them the game's look: turn the built-in views off
   (`ControlsUi`, `DisplayUi` in `src/main.rs`'s `add`), copy the views into
   `game/` and restyle or merge them into the options screen. Never restyle
-  them inside `psx-bevy/`. See `psx-bevy/README.md`, "Making the menus the
+  them inside psx-bevy. See psx-bevy's README, "Making the menus the
   game's own".
   The screen can change size at runtime, so anchor 2D HUD elements with
   `PsxAnchor` rather than positions computed from `PsxScreen` at startup.
-  See `psx-bevy/README.md`, "Screen size".
+  See psx-bevy's README, "Screen size".
 - Explicitly import `engine::controller::Button` when using Bevy and engine
   preludes together: Bevy UI also exports a `Button` type.
 - Split each feature into a *rules* plugin (state, physics, decisions; no
@@ -378,7 +379,7 @@ calls in screen space. It is for *checking* your rebuild, never for shipping:
   Use `--mcp --headless --software` without a desktop; screenshot `target` must
   be `screen` in headless mode. `tests/dev_mcp.rs` is the opt-in GPU/MCP check
   (`cargo test --workspace --all-features -- --ignored`).
-- Numbers through MCP: `game_query` (`psx-bevy/README.md`) reads positions and state.
+- Numbers through MCP: `game_query` (psx-bevy's README) reads positions and state.
 - `cargo fmt --all` (config in `rustfmt.toml`) and
   `cargo clippy --workspace --all-targets --all-features`.
 - Each project needs its own target directory. Two projects with the same game

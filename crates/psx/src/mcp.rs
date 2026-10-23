@@ -203,8 +203,8 @@ pub fn tools() -> Vec<ToolDef> {
         def::<RamSearchArgs>("ram_search", "Cheat-finder over ordered RAM snapshots: keep addresses matching pred (changed, increased, delta=N...), exact values or a between range; save and candidates narrow the search over rounds.").read_only(),
         def::<RamViewArgs>("ram_view", "Show a RAM window (addr, len) from one or more snapshots side by side, decoded as u8..x32 or fxI.F, marking units that differ.").read_only(),
         def::<ParserTemplateArgs>("template_parser_create", "Create an executable Python 3 external parser starter (kind archive, model, asset or video) with a sample input and protocol notes in dest, for assets_scan, assets_extract or str."),
-        def::<TemplateCreateArgs>("template_create", "Create a Bevy port workspace (psx-bevy, engine, game, importers) with the PS1 look in dest, e.g. the game folder. Set region and fields_per_tick from the original. See guide topics port, bevy."),
-        def::<TemplateUpdateArgs>("template_update", "Update the project's psx-bevy/ crate to this build; edited files get a .psx-new copy. See guide topic port."),
+        def::<TemplateCreateArgs>("template_create", "Create a Bevy port workspace (engine, game, importers on the psx-bevy library) with the PS1 look in dest, e.g. the game folder. Set region and fields_per_tick from the original. See guide topics port, bevy."),
+        def::<TemplateUpdateArgs>("template_update", "Update the project to this build: psx-bevy's git tag and vendor/; edited files get a .psx-new copy. See guide topic port."),
         def::<GpuReplayArgs>("gpu_replay", "Replay a recorded GP0 command stream into a fresh software GPU and write the resulting VRAM to out (and optionally a PNG). Pair with vram_diff."),
         def::<VramDiffArgs>("vram_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
     ]

@@ -605,7 +605,7 @@ impl Op for TemplateUpdateArgs {
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct TemplateAdoptArgs {
-    /// Existing project directory with a psx-bevy/ crate but no .psx-template.toml.
+    /// Existing template workspace (root Cargo.toml) with no .psx-template.toml.
     pub dest: PathBuf,
     /// The game's Cargo package name (defaults to the directory name).
     #[arg(long)]

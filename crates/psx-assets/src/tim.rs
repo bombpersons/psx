@@ -12,8 +12,8 @@
 //! treats 0x0000 as fully transparent; any other colour is drawn, and STP
 //! marks the texel semi-transparent when the polygon enables blending.
 //!
-//! This file is dependency-free and shared verbatim with the Bevy template
-//! (`templates/psx-bevy/src/psx/formats/tim.rs`); a test keeps the copies equal.
+//! This file is dependency-free and shared verbatim with the psx-bevy library
+//! (`src/psx/formats/tim.rs`); a test keeps the copies equal.
 
 /// First word of every TIM.
 pub const TIM_ID: u32 = 0x10;

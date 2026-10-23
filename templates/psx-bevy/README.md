@@ -29,16 +29,23 @@ cargo build --release                    # shipping build; developer MCP is excl
 
 ## Layout
 
+Everything is built on [psx-bevy](https://github.com/bombpersons/psx-bevy),
+a git dependency in the root `Cargo.toml`: the PS1 look, ticks and input,
+controls and display menus, testing, viewers, developer MCP and launcher.
+`psx template update` moves its tag. Its
+[AGENTS.md](https://github.com/bombpersons/psx-bevy/blob/main/AGENTS.md) says
+how to change it from a game (a checkout used through `[patch]`); list such
+changes in `docs/template.md`.
+
 | Path | Owner | Contents |
 |---|---|---|
-| `psx-bevy/` | psx template | PS1 look, ticks and input, controls and display menus, testing, viewers, developer MCP, launcher. Updated by `psx template update`; edit sparingly and list edits in `docs/template.md` ([AGENTS.md](psx-bevy/AGENTS.md), [README](psx-bevy/README.md)) |
 | `engine/` | this project | This game's engine family: object type and action registries, update-order sets, level and tuning formats, `examples/sandbox.rs`. No names, numbers or assets from this game ([AGENTS.md](engine/AGENTS.md)) |
 | `game/` | this project | This title: per-type controllers, action handlers, HUD, menus, baked assets in `game/assets/`, trajectory tests ([AGENTS.md](game/AGENTS.md)) |
 | `mods/example/` | this project | An example mod: a small game built on `game` from hand-made assets, proving the game can be extended without editing it ([game/AGENTS.md](game/AGENTS.md), "Mods are crates") |
 | `editor/` | this project | The editor for the engine's formats: an egui desktop tool with File/Edit/View menus, outline, view, inspector and status bar, starting with level files. Depends on `engine` only; shares the game's Bevy build (`engine` depends on bevy_egui for that) ([AGENTS.md](editor/AGENTS.md)) |
 | `tools/import/` | this project | Importers: the player's disc → engine formats, with provenance. A library the game runs on first start (no Bevy), plus `cargo run -p import -- DISC` |
 | `vendor/` | psx template | `psx-media` (CUE/BIN, ISO, CHD, ISO9660) and `psx-assets` (TIM, TMD, VAB/VAG): copies of the toolkit's crates for the importers. Replaced by `psx template update` ([README](vendor/README.md)) |
-| `docs/` | this project | `engine-model.md` (what the original treats as data vs code), `evidence.md`, `template.md` (edits to `psx-bevy/`) |
+| `docs/` | this project | `engine-model.md` (what the original treats as data vs code), `evidence.md`, `template.md` (changes to psx-bevy) |
 | `.psx-template.toml` | psx template | Which template version this is and which files it owns |
 
 The demo in `game/src/demo/` shows the intended shape: level content is data
@@ -68,11 +75,15 @@ ready. `assets/imported/` is git-ignored.
 
 ```sh
 psx template update --dry-run   # what would change
-psx template update             # replace unmodified template files
+psx template update             # move psx-bevy's tag, replace unmodified vendor/ files
 ```
 
-Files under `psx-bevy/` or `vendor/` that you edited are left alone and the new version is
-written beside them as `<file>.psx-new`; reapply your change from
-`docs/template.md` to it. Files the template only seeded
-(everything outside `psx-bevy/`) are never touched; when their template
-version changed, the update reports a diff to apply by hand.
+The update sets the psx-bevy line in `Cargo.toml` to this psx build's tag
+(unless it points at a fork, a branch or a local path, which it leaves alone);
+the next build updates `Cargo.lock`. Files under `vendor/` that you edited are
+left alone and the new version is written beside them as `<file>.psx-new`.
+Files the template only seeded (everything outside `vendor/`) are never
+touched; when their template version changed, the update reports a diff to
+apply by hand. Projects that still have a `psx-bevy/` folder from older
+templates are switched to the git dependency, and the folder's untouched
+files are removed.

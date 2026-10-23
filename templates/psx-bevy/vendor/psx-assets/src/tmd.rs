@@ -19,8 +19,8 @@
 //! the mode (IIP, QUAD, TME) and flag (LGT, GRD) bits; it is checked against
 //! `ilen`, and packets that do not match are counted as skipped.
 //!
-//! This file is dependency-free and shared verbatim with the Bevy template
-//! (`templates/psx-bevy/src/psx/formats/tmd.rs`); a test keeps the copies equal.
+//! This file is dependency-free and shared verbatim with the psx-bevy library
+//! (`src/psx/formats/tmd.rs`); a test keeps the copies equal.
 
 /// First word of every TMD.
 pub const TMD_ID: u32 = 0x41;

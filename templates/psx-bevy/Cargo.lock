@@ -4467,6 +4467,7 @@ dependencies = [
 [[package]]
 name = "psx-bevy"
 version = "0.1.0"
+source = "git+https://github.com/bombpersons/psx-bevy?tag=v0.1.0#9b4b5102d31797b60ef6a456f94fa67c868423fd"
 dependencies = [
  "base64 0.23.1",
  "bevy",

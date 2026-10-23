@@ -1,7 +1,5 @@
 # One workspace, one target directory, one lockfile:
 #
-#   psx-bevy/      the psx template's own crate. `psx template update` replaces
-#                  it; extend it from engine/ or game/ instead of editing it
 #   engine/        this game's engine family: no names, numbers or assets from
 #                  this game
 #   game/          this title: controllers, rules, HUD, menus, baked assets
@@ -11,10 +9,12 @@
 #   editor/        the editor for the engine's formats (egui, depends on
 #                  engine/ only)
 #
-# Standalone: copying the template does not require the psx workspace.
+# psx-bevy (the PS1 look, ticks, input, menus, testing, launcher) is a git
+# dependency below; `psx template update` moves its tag. Standalone: copying
+# the template does not require the psx workspace.
 [workspace]
 resolver = "3"
-members = ["psx-bevy", "engine", "game", "tools/import", "mods/example", "editor"]
+members = ["engine", "game", "tools/import", "mods/example", "editor"]
 default-members = ["game"]
 # Template-owned copies of psx crates: dependencies, not members (their tests
 # run in the psx repository).
@@ -27,7 +27,11 @@ rust-version = "1.97.1"
 publish = false
 
 [workspace.dependencies]
-psx-bevy = { path = "psx-bevy" }
+# To work on psx-bevy itself, clone it beside the project and add
+#   [patch."https://github.com/bombpersons/psx-bevy"]
+#   psx-bevy = { path = "../psx-bevy" }
+# (psx-bevy's AGENTS.md has the rules).
+psx-bevy = { git = "https://github.com/bombpersons/psx-bevy", tag = "v0.1.0" }
 engine = { path = "engine" }
 # The game as a library, for mods (crates built on it). `package` is the
 # game's package name; the code calls it `game`.
@@ -44,10 +48,6 @@ bevy = { version = "=0.20.0", default-features = false, features = [
   # developer MCP's `game_query` can read them without `register_type` calls.
   "reflect_auto_register",
 ] }
-# Bevy 0.20 exposes native GLES on its renderer crate, not the facade features.
-bevy_render = { version = "=0.20.0", default-features = false, features = ["gles"] }
-# Persist physical bindings without enabling serialization on the renderer/world.
-bevy_input = { version = "=0.20.0", features = ["serialize"] }
 # The editor's UI. engine/ depends on it too, so the game's build turns on
 # the same Bevy and font-crate features as the editor's: switching between
 # `cargo run` and `cargo run -p editor` reuses one Bevy build instead of
@@ -59,21 +59,12 @@ bevy_egui = { version = "=0.43.1", default-features = false, features = ["render
 # players need neither the toolkit nor a separate export step.
 psx-media = { path = "vendor/psx-media" }
 psx-assets = { path = "vendor/psx-assets" }
-rmcp = { version = "=3.5.1", features = ["transport-io"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-std"] }
+# `rc` and `alloc` match what psx-bevy's `dev-mcp` turns on, so the feature
+# doesn't change how serde builds (psx-bevy's Cargo.toml, "Feature alignment").
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["alloc"] }
 # Hand-editable tables and tuning (the version Bevy already uses).
 ron = "0.12"
-# Feature alignment: rmcp and tokio-util enable `serde/rc`, `serde_json/alloc`,
-# `futures/std`, default futures-sink and default base64 0.23, all of which
-# Bevy shares. Enabling them in every build keeps the shared crates' resolved
-# features identical with and without `dev-mcp`, so switching rebuilds only the
-# MCP crates and the game instead of most of Bevy.
-futures = { version = "0.3", default-features = false, features = ["std"] }
-futures-sink = "0.3"
-base64 = "0.23"
-image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Iteration builds: your code at opt-level 1 (fast to rebuild), dependencies
 # (Bevy) at 3, so `cargo run` plays at close to release speed. Line tables
