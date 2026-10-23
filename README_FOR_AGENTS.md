@@ -454,8 +454,8 @@ save; the menu pauses gameplay and gates input until physical release. Finished
 games choose where to integrate it. See
 [reuse/API](https://github.com/bombpersons/psx-bevy/blob/main/README.md#rebinding-and-the-example-controls-menu)
 and [validation](research/template-controls.md).
-Extracted original `.tim` files load as Bevy `Image`s and `.tmd` models as
-`PsxModel`s (`PsxModelRoot`); `cargo run -- --model x.tmd --texture x.tim` views one.
+The original's files are converted by the project's importers (`tools/import`) into
+ordinary formats such as PNG and glTF, which load like any Bevy asset.
 When replacing `game/src/demo/`, migrate its tests too: `game/tests/player.rs`
 and the player edit/step test in `game/tests/dev_mcp.rs` depend on the demo.
 [game/AGENTS.md](templates/psx-bevy/game/AGENTS.md#project-layout) lists the

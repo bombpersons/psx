@@ -333,7 +333,7 @@ commands:
 > - `psx-gte` supports exact GTE comparisons.
 >
 > **Next steps:**
-> - ~~TIM/TMD loaders that produce Bevy `Image`/`Mesh`.~~ Done: `psx-assets`, `psx assets scan/extract`, template `TimLoader`/`TmdLoader` ([research/assets.md](research/assets.md)).
+> - ~~TIM/TMD loaders that produce Bevy `Image`/`Mesh`.~~ Done: `psx-assets`, `psx assets scan/extract`, template `TimLoader`/`TmdLoader` ([research/assets.md](research/assets.md)); the loaders were removed in psx-bevy 0.2.0 (ports convert in their importers).
 > - Done 2026-10-15: 15-bit screen pass (`PsxLook::quantize`), CLUT palettes and
 >   blend modes for 2D (`PsxSprite`, `PsxMaterial2d`), per-texel STP in captured scenes.
 > - Gamma-space blending when a 3D camera shares the screen (Bevy's 3D path composites linearly).

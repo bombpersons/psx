@@ -31,7 +31,7 @@ publish = false
 #   [patch."https://github.com/bombpersons/psx-bevy"]
 #   psx-bevy = { path = "../psx-bevy" }
 # (psx-bevy's AGENTS.md has the rules).
-psx-bevy = { git = "https://github.com/bombpersons/psx-bevy", tag = "v0.1.0" }
+psx-bevy = { git = "https://github.com/bombpersons/psx-bevy", tag = "v0.2.0" }
 engine = { path = "engine" }
 # The game as a library, for mods (crates built on it). `package` is the
 # game's package name; the code calls it `game`.
