@@ -55,7 +55,7 @@ Both repos ship source only. Each player bakes the assets from their own disc.
                Ghidra, disc & asset decoders        ├─ game/          the title, tick-exact tests
                RAM search, watches, traces          ├─ mods/example/  a new game built on game/
                                                     ├─ editor/        opens & saves engine formats
-                                                    └─ psx-bevy/      renderer, menus, test harness
+                                                    └─ on psx-bevy    renderer, menus, test harness
 ```
 
 The workspace layout is the trick. The agent has to keep a game-agnostic **engine**, an **editor**

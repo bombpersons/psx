@@ -724,12 +724,6 @@ impl Gte {
         self.ofy = ofy << 16;
     }
 
-    /// Raw OFX/OFY in `1.15.16` (sub-pixel offsets).
-    pub fn set_screen_offset_raw(&mut self, ofx: i32, ofy: i32) {
-        self.ofx = ofx;
-        self.ofy = ofy;
-    }
-
     /// Projection plane distance H (like libgte `SetGeomScreen`).
     pub fn set_projection_distance(&mut self, h: u16) {
         self.h = h;

@@ -11,7 +11,7 @@ description = "PlayStation asset formats (TIM, TMD, VAB/VAG, SPU-ADPCM): parsing
 publish = false
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

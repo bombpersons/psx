@@ -44,17 +44,6 @@ impl OrderingTable {
         i
     }
 
-    /// Words in submission order, without drawing.
-    pub fn linearize(&self) -> Vec<u32> {
-        let mut out = Vec::new();
-        for bucket in self.buckets.iter().rev() {
-            for words in bucket.iter().rev() {
-                out.extend_from_slice(words);
-            }
-        }
-        out
-    }
-
     pub fn draw(&self, gpu: &mut Gpu) {
         for bucket in self.buckets.iter().rev() {
             for words in bucket.iter().rev() {

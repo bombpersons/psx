@@ -15,5 +15,4 @@ publish.workspace = true
 engine.workspace = true
 bevy.workspace = true
 bevy_egui.workspace = true
-serde.workspace = true
 ron.workspace = true

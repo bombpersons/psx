@@ -7,7 +7,7 @@ license.workspace = true
 description = "PlayStation asset formats (TIM, TMD, VAB/VAG, SPU-ADPCM): parsing, decoding and signature scanning"
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

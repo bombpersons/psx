@@ -2,8 +2,9 @@
 
 `crates/psx-assets` parses and converts the PsyQ standard asset formats;
 `psx assets scan|extract` finds them on discs, inside archives and in RAM
-dumps; the template's `TimLoader`/`TmdLoader` load the extracted originals into
-Bevy. Format layouts are documented at the top of each source file.
+dumps. (The template's `TimLoader`/`TmdLoader`, which loaded the extracted
+originals into Bevy, were removed in psx-bevy 0.2.0: ports convert in their
+importers.) Format layouts are documented at the top of each source file.
 
 **Archive update (2026-10-15):** validated DOT-T sector tables and Croc sibling
 `.DIR` indexes now share an entry API. Scan results list entries even without

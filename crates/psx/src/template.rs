@@ -105,9 +105,8 @@ const FILES: &[(&str, &str)] = files![
     "vendor/psx-media/src/system_cnf.rs",
 ];
 
-/// Files under these prefixes belong to the template; `update` replaces them.
+/// Files under this prefix belong to the template; `update` replaces them.
 /// `vendor/` holds copies of the toolkit's psx-media and psx-assets.
-const OWNED_PREFIXES: &[&str] = &[VENDOR_PREFIX];
 const VENDOR_PREFIX: &str = "vendor/";
 /// Where projects from before psx-bevy became a git dependency keep its copy.
 const LEGACY_CRATE: &str = "psx-bevy/";
@@ -286,7 +285,7 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn is_owned(rel: &str) -> bool {
-    OWNED_PREFIXES.iter().any(|prefix| rel.starts_with(prefix))
+    rel.starts_with(VENDOR_PREFIX)
 }
 
 /// The template's psx-bevy dependency line (root `Cargo.toml`), tag included.

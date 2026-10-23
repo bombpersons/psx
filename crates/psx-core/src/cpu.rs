@@ -169,21 +169,6 @@ impl Cpu {
         self.delay_slot = false;
     }
 
-    /// The pending delayed load, if any.
-    pub fn pending_load(&self) -> Option<(usize, u32)> {
-        (self.load.0 != 0).then_some(self.load)
-    }
-
-    /// Override the value of an in-flight load (lockstep I/O injection).
-    pub fn patch_pending_load(&mut self, reg: usize, value: u32) -> bool {
-        if self.load.0 == reg && reg != 0 {
-            self.load.1 = value;
-            true
-        } else {
-            false
-        }
-    }
-
     #[inline]
     fn set_reg(&mut self, r: usize, v: u32) {
         self.wreg = (r, v);
