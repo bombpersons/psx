@@ -88,11 +88,16 @@ pub struct Bus {
     pending: u64,
     irq_cache: bool,
     irq_dirty: bool,
-    next_vblank: u64,
+    /// Scanlines, fields and vblank (Mednafen's GPU timing).
+    pub video: crate::video::Video,
     /// Completed video frames (vblanks).
     pub frames: u64,
     /// When false, devices do not raise interrupts (lockstep supplies them).
     pub irq_sources: bool,
+    /// When true, the video timing doesn't set the GPU's readout field
+    /// (lockstep supplies it).
+    #[serde(skip)]
+    pub external_field: bool,
     pub cdrom: crate::cdrom::Cdrom,
     cdrom_irq: bool,
     pub sio0: crate::sio0::Sio0,
@@ -122,6 +127,7 @@ impl Bus {
     pub fn new(bios: Vec<u8>) -> Self {
         let mut b = bios;
         b.resize(BIOS_SIZE, 0);
+        let video = crate::video::Video::new(crate::video::bios_is_pal(&b));
         Bus {
             ram: vec![0; RAM_SIZE],
             scratch: [0; SCRATCH_SIZE],
@@ -143,9 +149,10 @@ impl Bus {
             pending: 0,
             irq_cache: false,
             irq_dirty: true,
-            next_vblank: 0,
+            video,
             frames: 0,
             irq_sources: true,
+            external_field: false,
             cdrom: Default::default(),
             cdrom_irq: false,
             sio0: Default::default(),
@@ -231,9 +238,9 @@ impl Bus {
         self.gpu.display.pal()
     }
 
-    /// System clocks per video frame (PAL 50 Hz, NTSC 60 Hz; field timing approximated).
+    /// System clocks per video field in the current display mode, on average.
     pub fn frame_cycles(&self) -> u64 {
-        if self.pal() { SYSCLK / 50 } else { SYSCLK * 1001 / 60000 }
+        self.video.field_cycles(self.gpu.display.mode)
     }
 
     fn raise_irq(&mut self, bits: u32) {
@@ -276,31 +283,11 @@ impl Bus {
 
     fn run_devices(&mut self, cycles: u64) {
         self.now += cycles;
-        if self.next_vblank == 0 {
-            self.next_vblank = self.frame_cycles();
+        let video = self.video.tick(cycles, &self.gpu.display);
+        if !self.external_field {
+            self.gpu.readout_field = self.video.readout_field;
         }
-        // Both rates are 16.16 fixed point per system clock. Every case is a
-        // compile-time constant (this runs every device batch; no divides).
-        const fn hblank_rate(lines: u64, frame_cycles: u64) -> u64 {
-            ((1u64 << 16) * lines) / frame_cycles
-        }
-        let hblank = if self.pal() {
-            const { hblank_rate(314, SYSCLK / 50) }
-        } else {
-            const { hblank_rate(263, SYSCLK * 1001 / 60000) }
-        };
-        // Dot clock: 53.693175 MHz / divider (10, 8, 5, 4 for widths 256, 320, 512, 640; 7 for 368).
-        const fn dot_rate(div: u64) -> u64 {
-            ((53_693_175u64 << 16) / div) / SYSCLK
-        }
-        let dotclock = match self.gpu.display.width() {
-            256 => const { dot_rate(10) },
-            320 => const { dot_rate(8) },
-            368 => const { dot_rate(7) },
-            512 => const { dot_rate(5) },
-            _ => const { dot_rate(4) },
-        };
-        let irq = self.timers.tick(cycles, crate::timers::Rates { dotclock, hblank });
+        let irq = self.timers.tick(cycles, video.dot_clocks, video.hretraces);
         self.raise_irq(irq);
         if self.spu.tick(cycles, &mut self.cdrom.audio) {
             self.raise_irq(1 << 9);
@@ -328,9 +315,8 @@ impl Bus {
             self.raise_irq(1 << 2);
         }
         self.cdrom_irq = cd;
-        if self.now >= self.next_vblank {
-            self.next_vblank += self.frame_cycles();
-            self.frames += 1;
+        if video.vblanks > 0 {
+            self.frames += video.vblanks;
             if self.gpu.draws != self.draws_seen {
                 self.draws_seen = self.gpu.draws;
                 self.last_draw_frame = self.frames;
@@ -385,8 +371,8 @@ impl Bus {
         }
     }
 
-    /// Plausible GPUSTAT: always ready (bits 26-28), DMA direction, display
-    /// state. Timing-dependent bits (interlace field, busy) are not modelled.
+    /// GPUSTAT: always ready (bits 26-28; busy is not modelled), DMA direction,
+    /// display state, and the field and line parity from the video timing.
     fn gpustat(&self) -> u32 {
         let d = &self.gpu.display;
         let st = &self.gpu.state;
@@ -395,27 +381,16 @@ impl Bus {
         v |= ((!d.enabled) as u32) << 23;
         v |= 0b111 << 26;
         v |= self.gpustat_dma_dir << 29;
-        // Bit 31: odd/even line. Toggles per field when interlaced, per scanline
-        // otherwise, and reads 0 during vblank.
-        let (line, in_vblank) = self.scanline();
-        let odd = if d.mode & 0x20 != 0 { self.frames & 1 == 1 } else { line & 1 == 1 };
-        if odd && !in_vblank {
-            v |= 1 << 31;
-        }
-        if d.mode & 0x20 != 0 && self.frames & 1 == 1 {
-            v |= 1 << 13;
-        }
+        // Mednafen: bit 31 is the parity of the VRAM line being read out, and
+        // bit 13 the inverse of the interlaced field.
+        v |= (self.video.cur_line_readout & 1) << 31;
+        v |= (!self.video.field as u32) << 13;
         v
     }
 
-    /// Current scanline within the frame and whether it is in vblank.
+    /// Current scanline within the field and whether it is in vblank.
     pub fn scanline(&self) -> (u64, bool) {
-        let fc = self.frame_cycles();
-        let lines = if self.pal() { 314 } else { 263 };
-        let into = (self.now + fc).saturating_sub(self.next_vblank.max(fc)) % fc;
-        let line = into * lines / fc;
-        let visible = if self.pal() { 288 } else { 240 };
-        (line, line >= visible)
+        (self.video.scanline as u64, self.video.in_vblank)
     }
 
     /// CHCR was written: run the transfer immediately if it is started.

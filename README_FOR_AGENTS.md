@@ -501,10 +501,11 @@ else links it. Run it from the project root:
   vblank and reported without stopping; `--dump` writes both sides' memory at the end.
 - `tools/probes/gpu/compare.sh PSX PSX_ORACLE OUT_DIR` diffs `psx-gpu` against Mednafen on the GPU probe.
 
-The native core's timing is not Mednafen's yet: it charges flat CPU costs (2 cycles an instruction, 22
-from BIOS ROM) and its frames are exactly 50 or 59.94 Hz, where Mednafen's follow the GPU clock
-(49.76 Hz on a PAL console). After the same number of frames a game may have reached a slightly
-different moment in each.
+The native core's video timing is Mednafen's: its scanlines, fields and vblank follow the GPU clock
+(49.76 Hz frames on a PAL console, 59.83 Hz on NTSC). Its CPU timing is not Mednafen's yet: it
+charges flat costs (2 cycles an instruction, 22 from BIOS ROM), and CD-ROM delays differ. So the same
+frame can find a game at a slightly different moment in each; on Crash, Mednafen's BIOS reaches the
+logo at frame 109 and native's at 178.
 
 ### Formatting
 

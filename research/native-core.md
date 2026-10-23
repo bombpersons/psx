@@ -102,13 +102,28 @@ gouraud gradients, for example 1,813 pixels of the SCPH-1001 shell background.
 
 **Mednafen lockstep.** `psx-oracle lockstep` compares the CPU registers (with COP0 and the GTE) before every
 instruction, and RAM, the scratchpad, VRAM and SPU RAM at every vblank. On SCPH-1001 over 300M instructions (1,174
-frames), only two kinds of difference remain, and both come from timing:
-- **VRAM, 480-line interlace.** Mednafen doesn't draw the lines of the field being displayed unless draw-to-display
-  is set (`LineSkipTest`). The native GPU has no field state yet. The fix comes with the GPU timing.
-- **SPU RAM, the voice 1 and 3 capture buffers.** They follow the sample clock.
+frames), RAM, the scratchpad and VRAM match at every vblank. Only the SPU's voice 1 and 3 capture buffers differ;
+they follow the sample clock. Ported along the way:
+- the reset SR (BEV|TS);
+- LZCR, a register that is 0 at power-on;
+- the triangle rules above;
+- the 480-line interlace line skip. Unless draw-to-display is set, the GPU leaves the displayed field's lines
+  alone (`LineSkipTest`), in polygons, sprites, lines and fills.
 
-Three things were ported along the way: the reset SR (BEV|TS), LZCR (a register that is 0 at power-on), and the
-triangle rules above.
+**Mednafen video timing (`psx-core/src/video.rs`).** This is a port of `GPU_Update`:
+- The GPU clock is 103896/65536 (NTSC console) or 102948/65536 (PAL console) of the system clock. The
+  console's standard comes from the BIOS's region letter.
+- A line is 200 clocks of horizontal retrace and then the rest: 3405 clocks in all in PAL mode, 3412 or
+  3413 alternately in NTSC.
+- Fields are 314 lines (PAL) or 263 (NTSC); interlaced, 313/312 and 263/262 alternately.
+- Vblank runs from GP1(07h)'s end line to its start line.
+- Timer 0 gets whole dot clocks and timer 1 each retrace.
+- GPUSTAT bit 31 is the parity of the VRAM line being read out, and bit 13 the inverse of the field.
+
+A PAL frame is 680,626 system clocks (49.76 Hz) and an NTSC one 566,121 (59.83 Hz), where native had 677,376 and
+565,045. After 4504 frames of the Crash replay native reaches 3,043.9M cycles against Mednafen's 3,051.8M, which
+was 3,030.7M before. What remains is the moment display modes change: Mednafen's BIOS switches to the interlaced
+logo at frame 109, native's at 178, because of CPU and CD-ROM timing.
 
 **Probe EXE.** `tools/probes/gpu` (PSYQo) sends a fixed GP0 stream: 468 commands from `gen_stream.py`, the same
 words in `gp0_stream.bin`. It draws 24 test cells of 128×128 (`gen_stream.py --list`), covering gouraud and
@@ -199,7 +214,8 @@ The profile shows what the software is waiting for.
 New devices for this:
 
 - **Timers** (`timers.rs`): sysclock, dotclock, hblank and sysclock/8 sources; target/0xFFFF reset; IRQ modes; reached flags. Sync modes are not modelled yet.
-- **VBlank:** PAL 50 Hz / NTSC 59.94 Hz frames on I_STAT bit 0.
+- **VBlank:** PAL 50 Hz / NTSC 59.94 Hz frames on I_STAT bit 0. (Since 2026-10-24 the video timing is
+  Mednafen's; see "Mednafen video timing".)
 - **Timing:** flat per-instruction costs like Redux (2 cycles, +20 in BIOS ROM). Not cycle-accurate.
 - **GPUSTAT bit 31:** odd/even line from the current scanline (per field when interlaced), 0 in vblank.
 - **SPUSTAT:** mirrors SPUCNT bits 0–5. There is no SPU model yet.

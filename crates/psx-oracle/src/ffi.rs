@@ -54,6 +54,7 @@ unsafe extern "C" {
     fn mdh_regs(out: *mut Regs);
     fn mdh_gte(out: *mut u32);
     fn mdh_gpu_busy() -> c_int;
+    fn mdh_gpu_readout_field() -> c_int;
     fn mdh_step_hook(cb: Option<HookFn>, user: *mut c_void);
     fn mdh_write_watch(address: u32, length: u32, cb: HookFn, user: *mut c_void);
     fn mdh_save_state(path: *const c_char) -> c_int;
@@ -252,6 +253,12 @@ pub fn gte() -> [u32; 64] {
 pub fn gpu_busy() -> bool {
     // SAFETY: plain reads of the GPU's state.
     unsafe { mdh_gpu_busy() != 0 }
+}
+
+/// The interlaced field the GPU reads out for display, latched at vblank.
+pub fn gpu_readout_field() -> bool {
+    // SAFETY: a plain read of the GPU's state.
+    unsafe { mdh_gpu_readout_field() != 0 }
 }
 
 /// A side-effect-free read of the CPU's logical address space.

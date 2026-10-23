@@ -11,7 +11,8 @@
 //!   into the core's I/O register file);
 //! - interrupts: the core's interrupt line (Cause.IP2) follows Mednafen's,
 //!   and when Mednafen enters an exception vector and the core did not, the
-//!   core takes an external interrupt at the same point.
+//!   core takes an external interrupt at the same point;
+//! - the interlaced field being displayed, whose lines the GPU doesn't draw.
 //!
 //! Adoption counts are reported; anything else that differs stops the run.
 //!
@@ -68,6 +69,9 @@ impl State {
         // The interrupt line (Cause.IP2) follows Mednafen's, so the core sees
         // the same pending interrupt and takes it when Mednafen does.
         m.forced_irq = r.cause & 0x400 != 0;
+        // So is the field the GPU skips in 480-line interlace, which follows
+        // the video timing.
+        m.bus.gpu.readout_field = ffi::gpu_readout_field();
         if pc != m.cpu.pc && VECTORS.contains(&pc) && !VECTORS.contains(&m.cpu.pc) {
             m.force_interrupt();
             self.irq_injected += 1;
@@ -282,8 +286,10 @@ pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize, dump: Opti
         Err(e) => return err("backend_unavailable", e),
     };
     let mut m = Machine::new(bios);
-    // Interrupts come from Mednafen; device timing is compared separately.
+    // Interrupts and the displayed field come from Mednafen; device timing
+    // is compared separately.
     m.bus.irq_sources = false;
+    m.bus.external_field = true;
     let state = Rc::new(RefCell::new(State {
         m,
         steps,

@@ -11,17 +11,10 @@ pub struct Timer {
     pub counter: u32,
     pub mode: u32,
     pub target: u32,
-    /// Fractional accumulator for sources slower than the system clock (16.16).
+    /// Fractional accumulator for system clock / 8 (16.16).
     frac: u64,
     /// One-shot IRQ already fired since the last mode write.
     fired: bool,
-}
-
-/// Clock rates relative to the 33.8688 MHz system clock, as 16.16 fractions.
-#[derive(Clone, Copy, Debug)]
-pub struct Rates {
-    pub dotclock: u64,
-    pub hblank: u64,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -59,14 +52,16 @@ impl Timers {
         }
     }
 
-    /// Advance by `cycles` system clocks. Returns I_STAT bits to raise (4,5,6).
-    pub fn tick(&mut self, cycles: u64, rates: Rates) -> u32 {
+    /// Advance by `cycles` system clocks, in which the GPU produced
+    /// `dot_clocks` dots and `hblanks` horizontal retraces. Returns I_STAT
+    /// bits to raise (4, 5, 6).
+    pub fn tick(&mut self, cycles: u64, dot_clocks: u64, hblanks: u64) -> u32 {
         let mut irq = 0;
         for (n, t) in self.t.iter_mut().enumerate() {
             let src = (t.mode >> 8) & 3;
             let ticks = match (n, src) {
-                (0, 1 | 3) => step_frac(&mut t.frac, cycles, rates.dotclock),
-                (1, 1 | 3) => step_frac(&mut t.frac, cycles, rates.hblank),
+                (0, 1 | 3) => dot_clocks,
+                (1, 1 | 3) => hblanks,
                 (2, 2 | 3) => step_frac(&mut t.frac, cycles, 1 << 13), // 1/8
                 _ => cycles,
             };
@@ -126,28 +121,27 @@ fn step_frac(frac: &mut u64, cycles: u64, rate: u64) -> u64 {
 mod tests {
     use super::*;
 
-    const R: Rates = Rates { dotclock: 1 << 16, hblank: 1 << 16 };
 
     #[test]
     fn target_reset_and_irq() {
         let mut t = Timers::default();
         t.write(2, 8, 100);
         t.write(2, 4, (1 << 3) | (1 << 4) | (1 << 6)); // reset at target, IRQ at target, repeat
-        assert_eq!(t.tick(99, R), 0);
-        assert_eq!(t.tick(1, R), 1 << 6);
+        assert_eq!(t.tick(99, 0, 0), 0);
+        assert_eq!(t.tick(1, 0, 0), 1 << 6);
         assert_eq!(t.read(2, 0), 0);
         assert_ne!(t.read(2, 4) & (1 << 11), 0, "reached target");
         assert_eq!(t.read(2, 4) & (1 << 11), 0, "cleared on read");
-        assert_eq!(t.tick(101, R), 1 << 6, "repeat mode fires again");
+        assert_eq!(t.tick(101, 0, 0), 1 << 6, "repeat mode fires again");
     }
 
     #[test]
     fn sysclock_div8_and_overflow() {
         let mut t = Timers::default();
         t.write(2, 4, (2 << 8) | (1 << 5));
-        assert_eq!(t.tick(8 * 0xFFFF, R), 0);
+        assert_eq!(t.tick(8 * 0xFFFF, 0, 0), 0);
         assert_eq!(t.read(2, 0), 0xFFFF);
-        assert_eq!(t.tick(8, R), 1 << 6);
+        assert_eq!(t.tick(8, 0, 0), 1 << 6);
         assert_eq!(t.read(2, 0), 0);
     }
 }

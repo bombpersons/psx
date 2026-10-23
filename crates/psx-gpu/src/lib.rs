@@ -186,7 +186,12 @@ impl DrawState {
         self.texpage & 0x200 != 0
     }
     pub fn raster(&self) -> Raster {
-        Raster { clip: self.area, check_mask: self.check_mask, set_mask: self.set_mask }
+        Raster { clip: self.area, check_mask: self.check_mask, set_mask: self.set_mask, skip_parity: None }
+    }
+
+    /// Drawing to the displayed area is allowed (E1 bit 10).
+    pub fn draw_to_display(&self) -> bool {
+        self.texpage & 0x400 != 0
     }
 
     fn texture(&self, clut: u32) -> VramTexture {
@@ -268,6 +273,10 @@ pub struct Gpu {
     /// since power-on or a state restore. Analysis only, not saved.
     #[serde(skip)]
     pub draws: u64,
+    /// The field being read out for display, latched at vblank by the video
+    /// timing (`psx-core`): see [`Gpu::skip_parity`].
+    #[serde(default)]
+    pub readout_field: bool,
 }
 
 fn sext11(v: u32) -> i32 {
@@ -491,7 +500,7 @@ impl Gpu {
             v.x += self.state.offset.0;
             v.y += self.state.offset.1;
         }
-        let (r, tex) = (self.state.raster(), self.state.texture(clut));
+        let (r, tex) = (self.raster(), self.state.texture(clut));
         #[cfg(test)]
         if tests::REFERENCE.get() {
             raster::reference::triangle(&mut self.vram, &tex, &r, &sh, [vs[0], vs[1], vs[2]]);
@@ -543,7 +552,7 @@ impl Gpu {
             pts.push(Vtx { x, y, r: c.0, g: c.1, b: c.2, u: 0, v: 0 });
             i += 1;
         }
-        let r = self.state.raster();
+        let r = self.raster();
         for pair in pts.windows(2) {
             if !too_large(pair) {
                 let mut ab = [pair[0], pair[1]];
@@ -580,7 +589,7 @@ impl Gpu {
             blend: ((self.state.texpage >> 5) & 3) as u8,
             ..Shade::default()
         };
-        let (ras, tex) = (self.state.raster(), self.state.texture(clut));
+        let (ras, tex) = (self.raster(), self.state.texture(clut));
         let origin = Vtx { x, y, r, g, b, u, v };
         let flip = self.state.rect_flip;
         #[cfg(test)]
@@ -596,6 +605,18 @@ impl Gpu {
         }
     }
 
+    /// The drawing state's raster, with the rows the GPU skips: in 480-line
+    /// interlace, unless drawing to the display is allowed, the lines of the
+    /// field being displayed (Mednafen's `LineSkipTest`).
+    pub fn raster(&self) -> Raster {
+        Raster { skip_parity: self.skip_parity(), ..self.state.raster() }
+    }
+
+    pub fn skip_parity(&self) -> Option<i32> {
+        (self.display.interlaced_480() && !self.state.draw_to_display())
+            .then(|| ((self.display.start.1 as i32) + self.readout_field as i32) & 1)
+    }
+
     fn fill(&mut self, p: &[u32]) {
         let (r, g, b) = color(p[0]);
         let value = vram::rgb8_to_rgb15(r as u8, g as u8, b as u8);
@@ -603,7 +624,8 @@ impl Gpu {
         let y = ((p[1] >> 16) & 0x1FF) as i32;
         let w = (((p[2] & 0x3FF) + 0xF) & !0xF) as i32;
         let h = ((p[2] >> 16) & 0x1FF) as i32;
-        for row in 0..h {
+        let skip = self.skip_parity();
+        for row in (0..h).filter(|row| skip != Some((y + row) & 1)) {
             for col in 0..w {
                 self.vram.set(x + col, y + row, value);
             }

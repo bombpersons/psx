@@ -256,6 +256,9 @@ int mdh_gpu_busy(void)
  return GPU.BlitterFIFO.CanRead() > 0 || GPU.DrawTimeAvail < 0 || (GPU.InCmd & PS_GPU::INCMD_QUAD) != 0;
 }
 
+// The interlaced field being read out for display (the GPU skips its lines).
+int mdh_gpu_readout_field(void) { return MDFN_IEN_PSX::GPU.field_ram_readout; }
+
 static void step_hook(const MDFN_IEN_PSX::pscpu_timestamp_t, uint32 pc)
 {
  // While DMA holds the CPU, the hook runs every cycle without the instruction executing.

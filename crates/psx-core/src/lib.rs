@@ -18,6 +18,7 @@ pub mod spu;
 pub mod state;
 pub mod timers;
 pub mod trace;
+pub mod video;
 pub mod xa;
 
 pub use bus::{Bus, Width};

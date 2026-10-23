@@ -298,8 +298,8 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
             s.write_live(dir, state);
         }
 
-        // NTSC fields come at 59.94 Hz, PAL at 50.
-        let period = Duration::from_secs_f64(if s.m.bus.pal() { 1.0 / 50.0 } else { 1001.0 / 60000.0 });
+        // One field of the video timing (49.76 Hz PAL, 59.83 Hz NTSC).
+        let period = Duration::from_secs_f64(s.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64);
         next += period;
         let now = Instant::now();
         if next > now {

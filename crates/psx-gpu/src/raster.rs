@@ -48,17 +48,21 @@ pub struct Vtx {
     pub v: i32,
 }
 
-/// Target-wide state: clip rectangle (inclusive) and mask bit handling.
+/// Target-wide state: clip rectangle (inclusive), mask bit handling, and
+/// rows left alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Raster {
     pub clip: (i32, i32, i32, i32),
     pub check_mask: bool,
     pub set_mask: bool,
+    /// Rows whose `y & 1` is this aren't drawn: in 480-line interlace the GPU
+    /// skips the field being displayed (Mednafen's `LineSkipTest`).
+    pub skip_parity: Option<i32>,
 }
 
 impl Raster {
     pub fn full(width: u32, height: u32) -> Self {
-        Raster { clip: (0, 0, width as i32 - 1, height as i32 - 1), check_mask: false, set_mask: false }
+        Raster { clip: (0, 0, width as i32 - 1, height as i32 - 1), check_mask: false, set_mask: false, skip_parity: None }
     }
 }
 
@@ -88,7 +92,7 @@ pub fn plot<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     rgb: [i32; 3],
     uv: Option<(i32, i32)>,
 ) {
-    if x < r.clip.0 || x > r.clip.2 || y < r.clip.1 || y > r.clip.3 {
+    if x < r.clip.0 || x > r.clip.2 || y < r.clip.1 || y > r.clip.3 || r.skip_parity == Some(y & 1) {
         return;
     }
     let dst = surface.get(x, y);
@@ -387,6 +391,9 @@ impl Tri {
     pub(crate) fn rows(&self, ras: &Raster, mut f: impl FnMut(i32, i32, i32, [u32; 5])) {
         let (cx0, cy0, cx1, cy1) = ras.clip;
         let mut span = |yi: i32, l: i64, r: i64| {
+            if ras.skip_parity == Some(yi & 1) {
+                return;
+            }
             let (x_start, x_bound) = ((l >> 32) as i32, (r >> 32) as i32);
             let (mut adjust, mut w, mut x) = (x_start, x_bound - x_start, sext11(x_start));
             if x < cx0 {
@@ -586,9 +593,9 @@ pub fn rect<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     let area = (x0, y0, x1, y1);
     let mask = r.check_mask;
     if !sh.textured {
-        consts!(rect_rows [S, NoTexture] [false, false,] [sh.semi, mask] [] (surface, &NoTexture, &p, origin, area, flip));
+        consts!(rect_rows [S, NoTexture] [false, false,] [sh.semi, mask] [] (surface, &NoTexture, &p, origin, area, flip, r.skip_parity));
     } else {
-        consts!(rect_rows [S, T] [true,] [sh.raw, sh.semi, mask] [] (surface, tex, &p, origin, area, flip));
+        consts!(rect_rows [S, T] [true,] [sh.raw, sh.semi, mask] [] (surface, tex, &p, origin, area, flip, r.skip_parity));
     }
 }
 
@@ -607,10 +614,11 @@ fn rect_rows<
     origin: Vtx,
     (x0, y0, x1, y1): (i32, i32, i32, i32),
     flip: (bool, bool),
+    skip_parity: Option<i32>,
 ) {
     let col = x0 - origin.x;
     let u = if flip.0 { origin.u - col } else { origin.u + col };
-    for y in y0..=y1 {
+    for y in (y0..=y1).filter(|&y| skip_parity != Some(y & 1)) {
         let row = y - origin.y;
         let v = if flip.1 { origin.v - row } else { origin.v + row };
         span::<S, T, TEX, RAW, SEMI, MASK, false, false>(surface, tex, p, y, x0, x1, [0, 0, 0, (u as u32) << 24, (v as u32) << 24]);
