@@ -148,9 +148,9 @@ enum Command {
 
 #[derive(Subcommand)]
 enum TemplateAction {
-    /// Write the Bevy game workspace (engine, game, tools, on the psx-bevy library) into a new or game directory.
+    /// Write the Bevy game workspace (psx-bevy, engine, game, tools) into a new or game directory.
     Create(template::TemplateCreateArgs),
-    /// Move psx-bevy to this build's tag and replace untouched vendor/ files; report edits and seeded changes.
+    /// Replace untouched psx-bevy/ and vendor/ files with this build's; report edits and seeded changes.
     Update(template::TemplateUpdateArgs),
     /// Start tracking an existing template workspace (writes .psx-template.toml).
     Adopt(template::TemplateAdoptArgs),

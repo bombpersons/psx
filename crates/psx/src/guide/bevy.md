@@ -1,7 +1,7 @@
-template_create creates a standalone Rust/Bevy workspace on the psx-bevy
-library (a git dependency whose tag template_update moves; change it only
-for general PS1 machinery, through a [patch] checkout listed in
-docs/template.md): engine/ (object
+template_create creates a standalone Rust/Bevy workspace: psx-bevy/ (the
+PS1 look, ticks, input, menus and launcher; the project's copy, changed to
+suit the game and listed in docs/template.md; template_update refreshes its
+untouched files), engine/ (object
 type and action registries, update-order sets, level and tuning formats, a
 sandbox example), game/ (a demo to replace), mods/example/ (a mod built on
 game/) and tools/import/. It can be

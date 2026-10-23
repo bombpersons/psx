@@ -1,28 +1,23 @@
 # psx-bevy changes
 
-The engine is built on [psx-bevy](https://github.com/bombpersons/psx-bevy), a
-git dependency pinned to a tag in the root `Cargo.toml`. `psx template update`
-moves the tag to the psx build's (`.psx-template.toml` records the version).
+`psx-bevy/` came from the psx template (`.psx-template.toml` records the
+version) and is this project's to change: a port that needs the original's
+rendering tricks or a different input or tick model makes them there
+(`psx-bevy/AGENTS.md`). This file lists the changes, so template updates stay
+easy to merge.
 
 ```sh
 psx template update --dry-run
 psx template update
 ```
 
-When psx-bevy lacks a hook or option, change it in a checkout used through
-`[patch]` as psx-bevy's `AGENTS.md` describes, and list the change here.
-Once a psx-bevy tag has it, drop the `[patch]` and the row.
+The update replaces the `psx-bevy/` files you haven't changed. Each file you
+changed that the template also changed comes back as `<file>.psx-new`: bring
+the template's changes into your file (or take the new version and reapply
+the change listed below), then delete the `.psx-new`.
 
 ## Changes
 
-| Change | Why | Where (branch, PR) | Released in |
-|---|---|---|---|
-| _example: adds a `foo` field to `PsxMaterial`_ | _the original's X needs it (`docs/evidence.md`)_ | _`my-port-foo` branch_ | _not yet_ |
-
-## Workarounds
-
-psx-bevy limits handled from `engine/` or `game/` without changing it, and
-whether they should be raised upstream.
-
-| Limit | Workaround | Raised upstream |
+| File | Change | Why |
 |---|---|---|
+| _example: `psx-bevy/src/psx/material.rs`_ | _adds a `foo` field to `PsxMaterial`_ | _the original's X needs it (`docs/evidence.md`)_ |

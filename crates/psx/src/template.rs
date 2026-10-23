@@ -1,15 +1,14 @@
 //! `psx template create|update|adopt`: the Bevy game workspace.
 //!
-//! The template is a workspace on the psx-bevy library, a git dependency
-//! (<https://github.com/bombpersons/psx-bevy>). `vendor/` is owned by the
-//! template and replaced by `update`; everything else (`engine/`, `game/`, `tools/`,
-//! docs, root manifests) is seeded once and belongs to the project, except the
-//! root manifest's psx-bevy line, which `update` moves to this build's tag.
-//! `.psx-template.toml` records the version and a hash of every file as the
-//! template wrote it, so `update` can tell untouched files from edited ones.
-//!
-//! Projects from before the split have psx-bevy as a `psx-bevy/` member;
-//! `update` removes its untouched files and switches the manifest to git.
+//! The template is a workspace whose engine is built on `psx-bevy/`, a copy
+//! of the PS1 look, ticks, input, menus and launcher that the project is
+//! expected to change. `psx-bevy/` and `vendor/` are tracked: `update`
+//! replaces the files the project hasn't changed and writes `<file>.psx-new`
+//! beside the ones it has. Everything else (`engine/`, `game/`, `tools/`,
+//! docs, root manifests) is seeded once and belongs to the project.
+//! `.psx-template.toml` records the version and, per file, the template
+//! version the project's copy is based on, so `update` can tell untouched
+//! files from edited ones.
 
 use crate::Error;
 use std::collections::BTreeMap;
@@ -141,6 +140,45 @@ const FILES: &[(&str, &str)] = files![
     "mods/example/src/main.rs",
     "mods/example/tests/dev_mcp.rs",
     "mods/example/tests/rules.rs",
+    "psx-bevy/AGENTS.md",
+    "psx-bevy/Cargo.toml",
+    "psx-bevy/LICENSE-APACHE",
+    "psx-bevy/LICENSE-MIT",
+    "psx-bevy/README.md",
+    "psx-bevy/examples/corridor.rs",
+    "psx-bevy/examples/depth_bias.rs",
+    "psx-bevy/examples/depth_cue.rs",
+    "psx-bevy/examples/screen_size.rs",
+    "psx-bevy/src/assets.rs",
+    "psx-bevy/src/controller.rs",
+    "psx-bevy/src/controller/bindings.rs",
+    "psx-bevy/src/controls/mod.rs",
+    "psx-bevy/src/controls/tests.rs",
+    "psx-bevy/src/controls/view.rs",
+    "psx-bevy/src/dev_mcp.rs",
+    "psx-bevy/src/display/mod.rs",
+    "psx-bevy/src/display/tests.rs",
+    "psx-bevy/src/display/view.rs",
+    "psx-bevy/src/launcher.rs",
+    "psx-bevy/src/lib.rs",
+    "psx-bevy/src/pointer.rs",
+    "psx-bevy/src/psx/font.rs",
+    "psx-bevy/src/psx/material.rs",
+    "psx-bevy/src/psx/material2d.rs",
+    "psx-bevy/src/psx/mod.rs",
+    "psx-bevy/src/psx/scene.rs",
+    "psx-bevy/src/psx/shaders.rs",
+    "psx-bevy/src/psx/shaders/psx_material.wesl",
+    "psx-bevy/src/psx/shaders/psx_material2d.wesl",
+    "psx-bevy/src/psx/shaders/psx_screen.wesl",
+    "psx-bevy/src/psx/shaders/psx_sprite.wesl",
+    "psx-bevy/src/settings.rs",
+    "psx-bevy/src/shell.rs",
+    "psx-bevy/src/testing.rs",
+    "psx-bevy/src/testing/mcp.rs",
+    "psx-bevy/src/testing/trajectory.rs",
+    "psx-bevy/src/viewer.rs",
+    "psx-bevy/tests/dev_mcp.rs",
     "tools/import/Cargo.toml",
     "tools/import/src/lib.rs",
     "tools/import/src/main.rs",
@@ -175,15 +213,11 @@ const FILES: &[(&str, &str)] = files![
     "vendor/psx-media/src/system_cnf.rs",
 ];
 
-/// Files under this prefix belong to the template; `update` replaces them.
-/// `vendor/` holds copies of the toolkit's psx-media and psx-assets.
+/// Files under these prefixes are tracked; `update` replaces the untouched ones.
+/// `vendor/` holds copies of the toolkit's psx-media and psx-assets (not to
+/// be edited); `psx-bevy/` is the base the engine builds on (edited freely).
 const VENDOR_PREFIX: &str = "vendor/";
-/// Where projects from before psx-bevy became a git dependency keep its copy.
-const LEGACY_CRATE: &str = "psx-bevy/";
-/// The psx-bevy dependency line in the workspace manifest starts with this.
-const PSX_BEVY_DEP: &str = "psx-bevy = ";
-/// psx-bevy's repository; `update` moves only dependency lines that use it.
-const PSX_BEVY_GIT: &str = "https://github.com/bombpersons/psx-bevy";
+const PSX_BEVY_PREFIX: &str = "psx-bevy/";
 /// Seeded files `create` skips (and reports) when the destination already has them.
 const KEEP_EXISTING: &[&str] = &["AGENTS.md", "README.md", ".gitignore"];
 const MANIFEST: &str = ".psx-template.toml";
@@ -355,75 +389,21 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn is_owned(rel: &str) -> bool {
-    rel.starts_with(VENDOR_PREFIX)
+    rel.starts_with(VENDOR_PREFIX) || rel.starts_with(PSX_BEVY_PREFIX)
 }
 
-/// The template's psx-bevy dependency line (root `Cargo.toml`), tag included.
-fn psx_bevy_dep() -> &'static str {
-    let manifest = FILES.iter().find(|(rel, _)| *rel == "Cargo.toml").expect("template has a Cargo.toml").1;
-    manifest.lines().find(|line| line.starts_with(PSX_BEVY_DEP)).expect("template Cargo.toml has a psx-bevy line")
-}
-
-/// The project's root manifest with psx-bevy at `dep`: a git line on a tag
-/// moved, or a pre-split `psx-bevy/` member and path dependency replaced.
-/// `None` when the project names psx-bevy another way (a fork, a branch, a
-/// local checkout), which `update` leaves alone.
-fn move_psx_bevy(manifest: &str, dep: &str) -> Option<String> {
-    let mut found = false;
-    let mut out = String::with_capacity(manifest.len());
-    for line in manifest.split_inclusive('\n') {
-        let body = line.trim_end_matches(['\n', '\r']);
-        let ending = &line[body.len()..];
-        if body.starts_with(PSX_BEVY_DEP) {
-            let tagged = body.contains(&format!("git = \"{PSX_BEVY_GIT}\"")) && body.contains("tag = ");
-            if !tagged && body != r#"psx-bevy = { path = "psx-bevy" }"# {
-                return None;
-            }
-            found = true;
-            out.push_str(dep);
-            out.push_str(ending);
-        } else if body.trim_start().starts_with("members = [") {
-            out.push_str(&body.replace("\"psx-bevy\", ", "").replace(", \"psx-bevy\"", ""));
-            out.push_str(ending);
-        } else {
-            out.push_str(line);
+/// Removes `rel` under `dest`, then the folders it leaves empty.
+fn remove_tracked(dest: &Path, rel: &str) -> crate::Result<()> {
+    let path = dest.join(rel);
+    std::fs::remove_file(&path).map_err(|e| Error::io(&path, e))?;
+    let mut dir = path.parent();
+    while let Some(d) = dir.filter(|d| *d != dest) {
+        if std::fs::remove_dir(d).is_err() {
+            break;
         }
+        dir = d.parent();
     }
-    found.then_some(out)
-}
-
-/// Every file under `dest/dir` (build output excluded), relative to `dest`.
-fn files_under(dest: &Path, dir: &str) -> Vec<String> {
-    let mut found = Vec::new();
-    let mut stack = vec![dest.join(dir)];
-    while let Some(path) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&path) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.file_name().is_some_and(|n| n == "target") {
-                continue;
-            }
-            if path.is_dir() {
-                stack.push(path);
-            } else if let Ok(rel) = path.strip_prefix(dest) {
-                found.push(rel.to_string_lossy().replace('\\', "/"));
-            }
-        }
-    }
-    found.sort();
-    found
-}
-
-/// Removes the empty folders under `dir`, then `dir` itself if it is empty.
-fn remove_empty_dirs(dir: &Path) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                remove_empty_dirs(&entry.path());
-            }
-        }
-    }
-    let _ = std::fs::remove_dir(dir);
+    Ok(())
 }
 
 /// The template's `game/src/lib.rs` with `REGION` and `FIELDS_PER_TICK` set.
@@ -588,8 +568,10 @@ pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crat
     }))
 }
 
-/// Replaces untouched template-owned files with this psx build's versions,
-/// and reports seeded files whose template version changed.
+/// Brings tracked files (`psx-bevy/`, `vendor/`) to this psx build: untouched
+/// ones are replaced, edited ones get the new version beside them as
+/// `<file>.psx-new`. Seeded files whose template version changed are copied
+/// under `.psx/template-update/` and reported.
 pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
     let mut manifest = Manifest::read(dest)?;
     let files = render(&manifest.package, manifest.options())?;
@@ -597,44 +579,56 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
         files.iter().filter(|(rel, _)| is_owned(rel)).map(|(rel, c)| (*rel, c)).collect();
     let current = |rel: &str| std::fs::read(dest.join(rel)).ok().map(|b| sha256(&b));
 
-    let (mut updated, mut added, mut removed, mut conflicts, mut unchanged) = (vec![], vec![], vec![], vec![], 0);
+    let (mut updated, mut added, mut removed, mut edited, mut conflicts, mut unchanged) =
+        (vec![], vec![], vec![], vec![], vec![], 0);
     for (rel, contents) in &new_owned {
         let new_hash = sha256(contents.as_bytes());
-        match (manifest.owned.get(*rel), current(rel)) {
-            // Untouched since the template wrote it (or deleted): take the new version.
-            (Some(base), Some(now)) if *base == now => {
-                if now == new_hash {
-                    unchanged += 1;
-                } else {
-                    if !dry_run {
-                        write_file(dest, rel, contents.as_bytes())?;
-                        manifest.owned.insert(rel.to_string(), new_hash);
-                    }
-                    updated.push(rel.to_string());
-                }
-            }
-            (_, None) => {
+        let beside = format!("{rel}.psx-new");
+        // The template version the project's file is based on: the one the
+        // template wrote, or the last `.psx-new` it was given to merge.
+        let base = manifest.owned.get(*rel);
+        match current(rel) {
+            None => {
                 if !dry_run {
                     write_file(dest, rel, contents.as_bytes())?;
                     manifest.owned.insert(rel.to_string(), new_hash);
                 }
                 added.push(rel.to_string());
             }
-            // Edited locally, or a new template file whose path is taken.
-            (_, Some(now)) => {
-                if now == new_hash {
-                    // The edit matches the new version exactly: adopt it.
-                    if !dry_run {
-                        manifest.owned.insert(rel.to_string(), new_hash);
-                    }
-                    unchanged += 1;
-                } else {
-                    let beside = format!("{rel}.psx-new");
-                    if !dry_run {
-                        write_file(dest, &beside, contents.as_bytes())?;
-                    }
-                    conflicts.push(json!({"path": rel, "new_version": beside}));
+            // The file already matches this build (untouched, or an edit the
+            // template now makes too).
+            Some(now) if now == new_hash => {
+                if !dry_run {
+                    manifest.owned.insert(rel.to_string(), new_hash);
                 }
+                unchanged += 1;
+            }
+            // Untouched since the template wrote it: take the new version.
+            Some(now) if base == Some(&now) => {
+                if !dry_run {
+                    write_file(dest, rel, contents.as_bytes())?;
+                    manifest.owned.insert(rel.to_string(), new_hash);
+                }
+                updated.push(rel.to_string());
+            }
+            // Edited, on top of this build's version: nothing to merge, unless
+            // an earlier update's `.psx-new` is still waiting.
+            Some(_) if base == Some(&new_hash) => {
+                if dest.join(&beside).exists() {
+                    conflicts.push(json!({"path": rel, "new_version": beside}));
+                } else {
+                    edited.push(rel.to_string());
+                }
+            }
+            // Edited, and the template changed too (or a new template file
+            // whose path is taken): the project merges. Deleting the
+            // `.psx-new` marks it merged, so it is based on the new version.
+            Some(_) => {
+                if !dry_run {
+                    write_file(dest, &beside, contents.as_bytes())?;
+                    manifest.owned.insert(rel.to_string(), new_hash);
+                }
+                conflicts.push(json!({"path": rel, "new_version": beside}));
             }
         }
     }
@@ -645,23 +639,16 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
         match current(&rel) {
             Some(now) if Some(&now) == base.as_ref() => {
                 if !dry_run {
-                    let path = dest.join(&rel);
-                    std::fs::remove_file(&path).map_err(|e| Error::io(&path, e))?;
-                    manifest.owned.remove(&rel);
+                    remove_tracked(dest, &rel)?;
                 }
-                removed.push(rel);
+                removed.push(rel.clone());
             }
-            // An edited file of the old in-project psx-bevy: the change now
-            // belongs in a psx-bevy checkout (`[patch]`) or upstream.
-            Some(_) if rel.starts_with(LEGACY_CRATE) => {
-                conflicts.push(json!({"path": rel, "removed_upstream": true, "moved_to": PSX_BEVY_GIT}))
-            }
+            // An edited file the template no longer has: it is the project's now.
             Some(_) => conflicts.push(json!({"path": rel, "removed_upstream": true})),
-            None => {
-                if !dry_run {
-                    manifest.owned.remove(&rel);
-                }
-            }
+            None => {}
+        }
+        if !dry_run {
+            manifest.owned.remove(&rel);
         }
     }
 
@@ -679,38 +666,6 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
         }
     }
 
-    if !dry_run {
-        remove_empty_dirs(&dest.join(LEGACY_CRATE));
-    }
-
-    // The root manifest is the project's, but its psx-bevy line follows this build.
-    let dep = psx_bevy_dep();
-    let root_manifest = dest.join("Cargo.toml");
-    let text = std::fs::read_to_string(&root_manifest).map_err(|e| Error::io(&root_manifest, e))?;
-    let mut psx_bevy = match move_psx_bevy(&text, dep) {
-        Some(new) if new == text => json!({"status": "unchanged", "dependency": dep}),
-        Some(new) => {
-            if !dry_run {
-                write_file(dest, "Cargo.toml", new.as_bytes())?;
-            }
-            json!({"status": "moved", "dependency": dep})
-        }
-        None => json!({
-            "status": "custom",
-            "dependency": dep,
-            "note": "Cargo.toml names psx-bevy another way (a fork, branch or local path) and was left as is",
-        }),
-    };
-    // Tracked files of the old copy are already removed or listed as conflicts.
-    let leftover: Vec<String> =
-        files_under(dest, LEGACY_CRATE).into_iter().filter(|rel| !manifest.owned.contains_key(rel)).collect();
-    if !leftover.is_empty() && psx_bevy["status"] != "custom" {
-        psx_bevy["leftover"] = json!({
-            "files": leftover,
-            "note": "psx-bevy/ is no longer built: move any edits to engine/ or a psx-bevy checkout used through [patch], then delete the folder",
-        });
-    }
-
     let from = std::mem::replace(&mut manifest.psx, psx_version());
     if !dry_run {
         manifest.write(dest)?;
@@ -722,16 +677,16 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
         "updated": updated,
         "added": added,
         "removed": removed,
+        "edited": edited,
         "unchanged": unchanged,
         "conflicts": conflicts,
         "seeded_changes": seeded_changes,
-        "psx_bevy": psx_bevy,
         "next": if conflicts.is_empty() && seeded_changes.is_empty() {
             json!(["cargo test --workspace --all-features"])
         } else {
             json!([
-                "merge each conflict's new_version into its path (reapply the change listed in docs/template.md, or move it to engine/), then delete the .psx-new file",
-                "a conflict with moved_to is an edit to the old psx-bevy/ copy: move it to engine/, or to a psx-bevy checkout used through [patch] (psx-bevy's AGENTS.md), then delete the file",
+                "merge each conflict's new_version into its path, keeping the project's changes (docs/template.md lists them), then delete the .psx-new file",
+                "a removed_upstream conflict is a file the template dropped: keep it as the project's or delete it",
                 "compare each seeded change's template_version with your file and apply what applies",
                 "cargo test --workspace --all-features",
             ])
@@ -741,8 +696,9 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
 
 /// Starts tracking an existing workspace: records this build's seeded files
 /// as already merged and its `vendor/` files as the template's, so the next
-/// `update` replaces them. A pre-split `psx-bevy/` copy is not tracked (its
-/// edits are unknown): `update` switches the manifest to git and reports it.
+/// `update` replaces them. `psx-bevy/` files count as untouched only when
+/// they match this build; any other is treated as edited, so `update` puts
+/// the new version beside it instead of replacing it.
 pub fn adopt(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crate::Result<Value> {
     if dest.join(MANIFEST).exists() {
         return Err(Error::invalid(format!("{} already has {MANIFEST}; use template update", dest.display())));
@@ -767,13 +723,15 @@ pub fn adopt(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crate
     };
     let mut missing = Vec::new();
     for (rel, contents) in &files {
+        let template = sha256(contents.as_bytes());
         if is_owned(rel) {
-            match std::fs::read(dest.join(rel)) {
-                Ok(bytes) => drop(manifest.owned.insert(rel.to_string(), sha256(&bytes))),
+            match std::fs::read(dest.join(rel)).map(|b| sha256(&b)) {
+                Ok(now) if rel.starts_with(PSX_BEVY_PREFIX) && now != template => {}
+                Ok(now) => drop(manifest.owned.insert(rel.to_string(), now)),
                 Err(_) => missing.push(*rel),
             }
         } else {
-            manifest.seeded.insert(rel.to_string(), sha256(contents.as_bytes()));
+            manifest.seeded.insert(rel.to_string(), template);
         }
     }
     manifest.write(dest)?;
@@ -809,8 +767,8 @@ mod tests {
         assert!(lock.contains("name = \"my-game\"") && !lock.contains(TEMPLATE_PACKAGE));
         let workspace = std::fs::read_to_string(game.join("Cargo.toml")).unwrap();
         assert!(workspace.contains("package = \"my-game\""));
-        assert!(workspace.contains(psx_bevy_dep()) && psx_bevy_dep().contains(PSX_BEVY_GIT));
-        assert!(!game.join("psx-bevy").exists());
+        assert!(workspace.contains(r#"psx-bevy = { path = "psx-bevy" }"#));
+        assert!(game.join("psx-bevy/src/lib.rs").exists());
         assert!(game.join("engine/examples/sandbox.rs").exists());
         let lib = std::fs::read_to_string(game.join("game/src/lib.rs")).unwrap();
         assert!(lib.contains(REGION_LINE) && lib.contains(FIELDS_PER_TICK_LINE));
@@ -864,7 +822,6 @@ mod tests {
         assert_eq!(fresh["updated"], json!([]));
         assert_eq!(fresh["conflicts"], json!([]));
         assert_eq!(fresh["seeded_changes"], json!([]));
-        assert_eq!(fresh["psx_bevy"]["status"], "unchanged");
 
         // Pretend the project came from an older template: the recorded
         // versions of two owned files and one seeded file differ from now.
@@ -913,86 +870,50 @@ mod tests {
     }
 
     #[test]
-    fn update_moves_the_psx_bevy_tag_and_leaves_custom_sources() {
-        let dir = scratch("tag");
+    fn edited_psx_bevy_files_are_merged_once() {
+        let dir = scratch("edits");
         create(&dir, Some("port"), TemplateOptions::default()).unwrap();
-        let path = dir.join("Cargo.toml");
-        let current = std::fs::read_to_string(&path).unwrap();
-        let older = format!("{PSX_BEVY_DEP}{{ git = \"{PSX_BEVY_GIT}\", tag = \"v0.0.1\" }}");
-        std::fs::write(&path, current.replace(psx_bevy_dep(), &older)).unwrap();
-        let dry = update(&dir, true).unwrap();
-        assert_eq!(dry["psx_bevy"]["status"], "moved");
-        assert!(std::fs::read_to_string(&path).unwrap().contains(&older), "dry run writes nothing");
-        assert_eq!(update(&dir, false).unwrap()["psx_bevy"]["status"], "moved");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), current);
-
-        // A local checkout (or a fork, or a branch) is the project's choice.
-        let local = current.replace(psx_bevy_dep(), r#"psx-bevy = { path = "../psx-bevy" }"#);
-        std::fs::write(&path, &local).unwrap();
-        assert_eq!(update(&dir, false).unwrap()["psx_bevy"]["status"], "custom");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), local);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// A project from before the split: psx-bevy/ is a member with a path
-    /// dependency, its files tracked as template-owned.
-    fn legacy_project(tag: &str) -> std::path::PathBuf {
-        let dir = scratch(tag);
-        create(&dir, Some("port"), TemplateOptions::default()).unwrap();
-        let path = dir.join("Cargo.toml");
-        let legacy = std::fs::read_to_string(&path)
-            .unwrap()
-            .replace(psx_bevy_dep(), r#"psx-bevy = { path = "psx-bevy" }"#)
-            .replace("members = [\"engine\",", "members = [\"psx-bevy\", \"engine\",");
-        std::fs::write(&path, legacy).unwrap();
+        let shell = "psx-bevy/src/shell.rs";
+        let (older, edit, merged) = ("// older template\n", "// the game's change\n", "// merged\n");
+        // The project changed a file the template has since changed too.
         let mut manifest = Manifest::read(&dir).unwrap();
-        for rel in ["psx-bevy/Cargo.toml", "psx-bevy/src/lib.rs", "psx-bevy/src/shell.rs"] {
-            let old = format!("// {rel} from an older template\n");
-            write_file(&dir, rel, old.as_bytes()).unwrap();
-            manifest.owned.insert(rel.into(), sha256(old.as_bytes()));
-        }
+        manifest.owned.insert(shell.into(), sha256(older.as_bytes()));
         manifest.write(&dir).unwrap();
-        dir
-    }
+        std::fs::write(dir.join(shell), edit).unwrap();
 
-    #[test]
-    fn update_moves_a_pre_split_project_to_the_git_dependency() {
-        let dir = legacy_project("legacy");
-        std::fs::write(dir.join("psx-bevy/src/shell.rs"), "// local edit\n").unwrap();
         let out = update(&dir, false).unwrap();
-        assert_eq!(out["removed"], json!(["psx-bevy/Cargo.toml", "psx-bevy/src/lib.rs"]));
-        assert_eq!(
-            out["conflicts"],
-            json!([{"path": "psx-bevy/src/shell.rs", "removed_upstream": true, "moved_to": PSX_BEVY_GIT}])
-        );
-        assert_eq!(out["psx_bevy"]["status"], "moved");
-        assert!(out["psx_bevy"].get("leftover").is_none(), "the edited file is already a conflict");
-        let workspace = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
-        let template = FILES.iter().find(|(rel, _)| *rel == "Cargo.toml").unwrap().1;
-        assert_eq!(workspace, template.replacen("package = \"psx-game\"", "package = \"port\"", 1));
-        assert!(dir.join("psx-bevy/src/shell.rs").exists());
-        assert!(!dir.join("psx-bevy/Cargo.toml").exists());
+        let beside = format!("{shell}.psx-new");
+        assert_eq!(out["conflicts"], json!([{"path": shell, "new_version": beside}]));
+        assert_eq!(std::fs::read_to_string(dir.join(shell)).unwrap(), edit, "edits are never overwritten");
+        assert!(dir.join(&beside).exists());
+        // Until the .psx-new is deleted the merge is still pending.
+        assert_eq!(update(&dir, false).unwrap()["conflicts"].as_array().unwrap().len(), 1);
 
-        std::fs::remove_file(dir.join("psx-bevy/src/shell.rs")).unwrap();
+        std::fs::write(dir.join(shell), merged).unwrap();
+        std::fs::remove_file(dir.join(&beside)).unwrap();
         let settled = update(&dir, false).unwrap();
         assert_eq!(settled["conflicts"], json!([]));
-        assert!(!dir.join("psx-bevy").exists(), "empty folders are removed");
+        assert_eq!(settled["edited"], json!([shell]));
+        assert_eq!(std::fs::read_to_string(dir.join(shell)).unwrap(), merged);
+        assert!(!dir.join(&beside).exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn adopt_tracks_an_existing_workspace_and_reports_an_old_psx_bevy_copy() {
-        let dir = legacy_project("adopt");
+    fn adopt_tracks_an_existing_workspace_and_keeps_psx_bevy_edits() {
+        let dir = scratch("adopt");
+        create(&dir, Some("port"), TemplateOptions::default()).unwrap();
         std::fs::remove_file(dir.join(MANIFEST)).unwrap();
         assert!(update(&dir, true).is_err());
-        std::fs::write(dir.join("vendor/psx-media/src/cue.rs"), "// copied from an older template\n").unwrap();
+        let (cue, shell) = ("vendor/psx-media/src/cue.rs", "psx-bevy/src/shell.rs");
+        std::fs::write(dir.join(cue), "// copied from an older template\n").unwrap();
+        std::fs::write(dir.join(shell), "// the game's change\n").unwrap();
         let out = adopt(&dir, Some("port"), TemplateOptions::default()).unwrap();
         assert_eq!(out["owned_missing"], json!([]));
         let up = update(&dir, false).unwrap();
-        assert_eq!(up["updated"], json!(["vendor/psx-media/src/cue.rs"]), "adopted files count as untouched");
-        assert_eq!(up["removed"], json!([]), "an untracked psx-bevy/ copy is never deleted");
-        assert_eq!(up["psx_bevy"]["status"], "moved");
-        assert_eq!(up["psx_bevy"]["leftover"]["files"].as_array().unwrap().len(), 3);
+        assert_eq!(up["updated"], json!([cue]), "adopted vendor/ files count as untouched");
+        assert_eq!(up["conflicts"], json!([{"path": shell, "new_version": format!("{shell}.psx-new")}]));
+        assert_eq!(std::fs::read_to_string(dir.join(shell)).unwrap(), "// the game's change\n");
         assert!(adopt(&dir, None, TemplateOptions::default()).is_err());
         assert!(adopt(&dir.join("missing"), None, TemplateOptions::default()).is_err());
         std::fs::remove_dir_all(&dir).unwrap();

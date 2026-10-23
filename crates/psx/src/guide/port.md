@@ -43,9 +43,9 @@ Work order:
    script events (trigger tables, bytecode, hardcoded); how a frame runs
    (update order, fields per tick).
 3. template_create into the game folder (it keeps the disc and an existing
-   AGENTS.md). The workspace is built on psx-bevy, a git dependency
-   (github.com/bombpersons/psx-bevy; general changes go through a [patch]
-   checkout, listed in docs/template.md), with engine/ (registries,
+   AGENTS.md). The workspace is psx-bevy/ (the PS1 look, ticks,
+   input, menus; the project's copy: change it where the original renders or
+   behaves differently, listing changes in docs/template.md), engine/ (registries,
    update-order sets, level and tuning formats, a sandbox example), game/
    (demo to replace), mods/example/ (a mod built on game/), editor/, tools/import/
    and vendor/ (template-owned psx-media and psx-assets for the importers). Reshape the engine skeleton to match
@@ -132,19 +132,18 @@ place of it: data-defined variants of ported behaviour (an enemy that reuses
 the shared creature module with new parameters, a new pickup kind). Given the
 original's parameters, each must reproduce the ported trajectories exactly.
 
-Template updates: template_update moves the psx-bevy git tag in Cargo.toml
-(not a fork, branch or local path), replaces untouched vendor/ files, writes
-<file>.psx-new beside edited ones and copies changed seeded files under
-.psx/template-update/ for you to merge. Projects with an old psx-bevy/
-folder are switched to the git dependency; its untouched files are removed
-and edited ones reported (moved_to). Workspaces without .psx-template.toml:
-`psx template adopt`, then update.
+Template updates: template_update replaces untouched psx-bevy/ and vendor/
+files, writes <file>.psx-new beside edited ones (merge it, keeping the change
+listed in docs/template.md, then delete the .psx-new) and copies changed
+seeded files under .psx/template-update/ for you to merge. Workspaces without
+.psx-template.toml: `psx template adopt` (psx-bevy/ files that differ from
+this build count as edited), then update.
 
 Settings menus: psx-bevy's controls and display menus are logic plus a
 built-in view. Once the game's own front end exists, turn the built-in views
 off (ControlsUi, DisplayUi), copy view.rs into game/ and restyle it or merge it
 into the game's options screen, so they look like part of the game. Don't
-restyle them inside psx-bevy (psx-bevy's README, "Making the menus the
+restyle them inside psx-bevy (psx-bevy/README.md, "Making the menus the
 game's own").
 
 Done means: the port matches recorded behaviour and looks like the original; a

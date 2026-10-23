@@ -2,9 +2,11 @@
 
 `engine/` is the reusable machinery this game runs on. Someone should be able
 to make a *different* game with it, without the original's content and without
-this game's rules. It builds on the psx-bevy library (re-exported as `engine::psx`,
-`engine::shell`, `engine::testing`, ...); build on it rather than changing it
-(psx-bevy's `AGENTS.md` says when a change is fine).
+this game's rules. It builds on `psx-bevy/` (re-exported as `engine::psx`,
+`engine::shell`, `engine::testing`, ...), the project's copy of the PS1 look,
+ticks and input: when the original renders, ticks or reads input
+differently, change psx-bevy itself (`psx-bevy/AGENTS.md` says what goes
+where).
 
 ## Cut it where the original cuts
 

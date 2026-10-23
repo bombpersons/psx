@@ -1,0 +1,35 @@
+# The PS1 look, ticks, input, menus, testing, developer MCP and launcher the
+# engine is built on. This copy is the project's: change it to suit the game
+# (AGENTS.md here). `psx template update` refreshes the files you haven't
+# changed and puts new versions beside the ones you have.
+[package]
+name = "psx-bevy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+
+[features]
+default = []
+dev-mcp = ["dep:rmcp", "dep:tokio", "dep:image"]
+
+[dependencies]
+bevy.workspace = true
+# Bevy 0.20 exposes native GLES on its renderer crate, not the facade features.
+bevy_render = { version = "=0.20.0", default-features = false, features = ["gles"] }
+# Persist physical bindings without enabling serialization on the renderer/world.
+bevy_input = { version = "=0.20.0", features = ["serialize"] }
+rmcp = { version = "3.5.1", features = ["transport-io"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-std"], optional = true }
+serde.workspace = true
+serde_json.workspace = true
+# Feature alignment: rmcp and tokio-util enable `serde/rc`, `serde_json/alloc`,
+# `futures/std`, default futures-sink and default base64 0.23, all of which
+# Bevy shares. Enabling them in every build keeps the shared crates' resolved
+# features identical with and without `dev-mcp`, so switching rebuilds only the
+# MCP crates and the game instead of most of Bevy.
+futures = { version = "0.3", default-features = false, features = ["std"] }
+futures-sink = "0.3"
+base64 = "0.23"
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }

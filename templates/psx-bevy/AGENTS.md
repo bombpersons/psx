@@ -14,12 +14,12 @@ the start. Read the guide for the crate you are working in:
   psx-assets for them; don't edit it (fix upstream in psx).
 - `editor/AGENTS.md`: the editor for the engine's formats, a modern desktop
   tool (egui) that depends on `engine/` only and grows with the port.
-- psx-bevy: the library under the engine, a git dependency
-  (<https://github.com/bombpersons/psx-bevy>) whose tag `psx template update`
-  moves. Build on it from `engine/` and `game/`; to change it, follow its
-  `AGENTS.md` (a checkout used through `[patch]`) and list the change in
-  `docs/template.md`. Its README documents the PS1 look, input, testing and
-  the developer MCP; `cargo doc --open -p psx-bevy` has its API.
+- `psx-bevy/AGENTS.md`: the base the engine is built on (the PS1 look,
+  ticks, input, menus, testing, launcher). It is this project's copy:
+  change it to suit the game, and list each change in `docs/template.md` so
+  `psx template update` stays easy to merge. Its README documents the PS1
+  look, input, testing and the developer MCP; `cargo doc --open -p psx-bevy`
+  has its API.
 
 The psx toolkit's `guide` tool (topic `port`) has the porting workflow.
 Routine check: `cargo test --workspace --all-features`.

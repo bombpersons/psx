@@ -109,14 +109,14 @@ Screenshots/logs are saved under the `/tmp/psx-depth-cue-<pid>/` path printed by
 the test. The default demo's separate headless MCP test checks the ordinary
 lit/fogged path as well.
 
-The example and GPU test now live in the psx-bevy repository
-(<https://github.com/bombpersons/psx-bevy>); run the first five commands there.
+The example and GPU test live in `templates/psx-bevy/psx-bevy/`; run the
+first five commands in `templates/psx-bevy`.
 
 ```sh
-cargo build --features dev-mcp --example depth_cue --offline
-cargo test --features dev-mcp --offline
-cargo test --features dev-mcp --test dev_mcp --offline -- --ignored --nocapture
-cargo fmt --check
-cargo clippy --features dev-mcp --all-targets --offline -- -D warnings
+cargo build -p psx-bevy --features dev-mcp --example depth_cue --offline
+cargo test -p psx-bevy --features dev-mcp --offline
+cargo test -p psx-bevy --features dev-mcp --test dev_mcp --offline -- --ignored --nocapture
+cargo fmt --all --check
+cargo clippy -p psx-bevy --features dev-mcp --all-targets --offline -- -D warnings
 cargo test -p psx -p psx-assets --all-targets --offline
 ```

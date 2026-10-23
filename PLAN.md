@@ -91,7 +91,7 @@ studies as validation inputs.
    gamepad flows, malformed profiles, failed saves, focus loss and reconnects;
    offscreen GPU/MCP verification checks the actual rendered menu. See
    [validation](research/template-controls.md) and
-   [integration](https://github.com/bombpersons/psx-bevy/blob/main/README.md#rebinding-and-the-example-controls-menu).
+   [integration](templates/psx-bevy/psx-bevy/README.md#rebinding-and-the-example-controls-menu).
 
 The first three items come from the King's Field study's `PSX_FEEDBACK.md`
 (local sibling project `../external_agent_tests/kings_field/`). Keep its game
