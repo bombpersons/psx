@@ -1,25 +1,31 @@
-//! `psx-oracle`: developer checks of the native core against PCSX-Redux.
+//! `psx-oracle`: developer checks of the native core against Mednafen's
+//! PlayStation emulation, which is taken as the ground truth.
 //!
-//! Not part of the `psx` toolkit agents use. `run` performs a bounded Redux run
-//! and writes the same RAM/VRAM/screen artifacts as `psx run`, for diffing
-//! (`psx vram-diff`, `psx ram-diff`); `lockstep` compares the CPU instruction by
-//! instruction from BIOS reset. Needs external/pcsx-redux or `PSX_REDUX_BIN`.
-//! Run from the project root: `cargo run -p psx-oracle -- run ...`.
+//! Not part of the `psx` toolkit agents use. `run` plays a disc, PS-X EXE or
+//! the BIOS alone and writes the same RAM/VRAM/screen artifacts as `psx run`,
+//! for diffing (`psx vram-diff`, `psx ram-diff`); `lockstep` compares the CPU
+//! instruction by instruction from BIOS reset.
+//!
+//! GPL-2.0-or-later: built from Mednafen 1.32.1's sources (`mednafen/`, see
+//! README.md). Run from the project root: `cargo run --release -p psx-oracle -- run ...`.
 
+#[cfg(mednafen)]
+mod ffi;
+#[cfg(mednafen)]
 mod lockstep;
+#[cfg(mednafen)]
+mod run;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
-use psx_redux::{Backend, Job, Media, ReplayEvent, Watch};
 use serde_json::{Value, json};
 
 #[derive(Parser)]
-#[command(about = "Check the native core against a PCSX-Redux oracle (psx development only)")]
+#[command(about = "Check the native core against Mednafen (psx development only)")]
 struct Cli {
-    /// Project root holding bios/, external/ and .psx/.
+    /// Project root holding bios/ and .psx/.
     #[arg(long, default_value = ".")]
     root: PathBuf,
     #[command(subcommand)]
@@ -28,189 +34,103 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Bounded run in a Redux worker; writes ram.bin, vram.bin, screen.png and a JSON report.
+    /// Bounded run; writes ram.bin, scratch.bin, vram.bin, spu.bin, screen.png, vram.png and a JSON report.
     Run {
-        /// Disc image (.cue/.bin/.iso/.chd) or PS-X EXE; omit to boot the BIOS or continue a state.
+        /// Disc image (.cue/.ccd/.toc/.m3u/.chd) or PS-X EXE; omit to boot the BIOS with an empty drive.
         media: Option<PathBuf>,
         #[arg(long)]
         bios: PathBuf,
+        /// Vblanks to run, as `psx run --frames`.
         #[arg(long, default_value_t = 60)]
         frames: u32,
         /// Output directory (default .psx/oracle/<time>-<pid>).
         #[arg(long)]
         out: Option<PathBuf>,
-        /// Write watch `ADDR[:1|2|4]` (hex); repeatable.
+        /// CPU write watch `ADDR[:1|2|4]` (hex); repeatable. DMA writes aren't seen.
         #[arg(long = "watch")]
         watches: Vec<String>,
-        /// Redux button schedule: JSON `[{"frame": N, "buttons": ["CROSS", ...]}]`.
+        /// Button schedule, as for `psx run --replay`: JSON `[{"frame": N, "buttons": ["CROSS", ...]}]`.
         #[arg(long)]
         replay: Option<PathBuf>,
-        /// Continue from a Redux save state.
+        /// Continue from a Mednafen save state (state.mcs from --save-state).
         #[arg(long)]
         from_state: Option<PathBuf>,
+        /// Write state.mcs at the end.
         #[arg(long)]
         save_state: bool,
-        /// Dynarec without the debugger: faster, no watches.
-        #[arg(long)]
-        fast: bool,
+        /// Port 1 is a DualShock (replay `sticks` apply) instead of a digital pad.
         #[arg(long)]
         dualshock: bool,
+        /// Write frames.csv: each frame's CPU cycles and display size.
         #[arg(long)]
-        trace_cd: bool,
+        frame_log: bool,
+        /// Print Mednafen's own messages.
         #[arg(long)]
-        trace_bios: bool,
-        #[arg(long, default_value_t = 10_000)]
-        max_events: u32,
-        #[arg(long, default_value_t = 300)]
-        timeout: u64,
+        verbose: bool,
     },
-    /// Run the native core and Redux side by side from BIOS reset; stop at the first divergence.
+    /// Run the native core and Mednafen side by side from BIOS reset; stop at the first divergence.
     Lockstep {
         #[arg(long)]
         bios: PathBuf,
         /// Instructions to compare from reset.
-        #[arg(long, default_value_t = 100_000)]
+        #[arg(long, default_value_t = 1_000_000)]
         steps: u64,
         /// Instructions of history shown at a divergence.
         #[arg(long, default_value_t = 12)]
         context: usize,
-        /// GDB single-step with full register comparison (about 20 steps/s).
-        #[arg(long)]
-        exact: bool,
         /// Write the core's screen and VRAM as <PREFIX>.screen.png / .vram.png at the end.
         #[arg(long)]
         dump: Option<PathBuf>,
-        /// Wall-clock limit in seconds.
-        #[arg(long)]
-        timeout: Option<u64>,
     },
 }
 
-fn main() -> ExitCode {
-    let cli = Cli::parse();
-    // Redux runs inside its job directory, so every path it is given must be absolute.
-    let abs = |p: PathBuf| std::path::absolute(&p).unwrap_or(p);
-    let root = &abs(cli.root);
-    let (ok, value) = match cli.command {
-        Command::Lockstep { bios, steps, context, exact, dump, timeout } => {
-            let deadline = timeout.map(|s| Instant::now() + Duration::from_secs(s));
-            if exact {
-                lockstep::run(root, &bios, steps, context, deadline)
-            } else {
-                lockstep::run_trace(root, &bios, steps, context, dump.as_deref(), deadline)
-            }
-        }
-        Command::Run {
-            media,
-            bios,
-            frames,
-            out,
-            watches,
-            replay,
-            from_state,
-            save_state,
-            fast,
-            dualshock,
-            trace_cd,
-            trace_bios,
-            max_events,
-            timeout,
-        } => {
-            let (bios, media, replay, from_state) = (abs(bios), media.map(abs), replay.map(abs), from_state.map(abs));
-            let job = (|| {
-                let watches = watches.iter().map(|w| parse_watch(w)).collect::<Result<Vec<_>, _>>()?;
-                let replay: Vec<ReplayEvent> = match replay {
-                    Some(p) => serde_json::from_slice(&std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?)
-                        .map_err(|e| format!("{}: {e}", p.display()))?,
-                    None => Vec::new(),
-                };
-                let media = match media {
-                    None => Media::None,
-                    Some(p) if psx_media::exe::is_exe_path(&p) => Media::Exe(p),
-                    Some(p) => Media::Disc(redux_disc(root, &p).map_err(|e| e.to_string())?),
-                };
-                Ok::<_, String>(Job {
-                    bios,
-                    media,
-                    frames,
-                    replay,
-                    watches,
-                    max_watch_hits: 10_000,
-                    load_state: from_state,
-                    save_state,
-                    timeout: Duration::from_secs(timeout),
-                    realtime: false,
-                    trace_cd,
-                    trace_bios,
-                    max_events,
-                    analog_pad: dualshock,
-                })
-            })();
-            match job {
-                Ok(job) => run(root, &job, !fast, out),
-                Err(e) => (false, json!({"error": e})),
-            }
-        }
-    };
-    println!("{}", serde_json::to_string_pretty(&value).unwrap());
-    if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+/// One pad state from `frame` on: buttons in the pad's bit order, sticks lx, ly, rx, ry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Input {
+    pub frame: u32,
+    pub buttons: u16,
+    pub sticks: [u8; 4],
 }
 
-fn run(root: &Path, job: &Job, interpreter: bool, out: Option<PathBuf>) -> (bool, Value) {
-    let mut backend = match Backend::from_project(root) {
-        Ok(b) => b,
-        Err(e) => return (false, json!({"error": e.to_string()})),
-    };
-    backend.interpreter = interpreter;
-    let dir = out.unwrap_or_else(|| {
-        let stamp =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-        root.join(".psx/oracle").join(format!("{stamp}-{}", std::process::id()))
-    });
-    let out = match psx_redux::run(&backend, job, &dir) {
-        Ok(o) => o,
-        Err(e) => return (false, json!({"error": e.to_string()})),
-    };
-    if let Ok((w, h, rgb)) = out.screen_rgb() {
-        let _ = write_png(&out.file("screen.png"), w, h, &rgb, png::ColorType::Rgb);
+/// A replay file as `psx run` reads it: `frame`, `buttons`, optional
+/// `sticks` and `until` (a neutral state from that frame).
+fn replay(path: &Path) -> Result<Vec<Input>, String> {
+    let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let events: Vec<Value> = serde_json::from_slice(&std::fs::read(path).map_err(|e| err(&e))?).map_err(|e| err(&e))?;
+    let mut out = Vec::new();
+    for e in &events {
+        let frame = e["frame"].as_u64().ok_or_else(|| err(&"each event needs a frame"))? as u32;
+        let mut buttons = 0;
+        for b in e["buttons"].as_array().into_iter().flatten() {
+            let name = b.as_str().unwrap_or_default();
+            buttons |= psx_core::sio0::button_from_name(name).ok_or_else(|| err(&format!("unknown button {b}")))?;
+        }
+        let sticks = match &e["sticks"] {
+            Value::Null => [0x80; 4],
+            s => serde_json::from_value(s.clone()).map_err(|e| err(&e))?,
+        };
+        out.push(Input { frame, buttons, sticks });
+        if let Some(until) = e["until"].as_u64() {
+            out.push(Input { frame: until as u32, buttons: 0, sticks: [0x80; 4] });
+        }
     }
-    if let Ok(bytes) = std::fs::read(out.file("vram.bin")) {
-        let mut vram = psx_gpu::Vram::default();
-        vram.load_bytes(&bytes);
-        let _ = write_png(&out.file("vram.png"), 1024, 512, &vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba);
-    }
-    let complete = out.report.termination == "frames_reached" && out.report.reached_frames >= job.frames;
-    (
-        complete,
-        json!({
-            "status": if complete { "complete" } else { "partial" },
-            "run_dir": out.dir,
-            "termination": out.report.termination,
-            "frames": {"requested": out.report.requested_frames, "reached": out.report.reached_frames},
-            "cpu_cycles": out.report.cpu_cycles,
-            "registers": out.report.registers,
-            "watch": {"hits": out.report.watch_hits, "first": out.hits.iter().take(64).collect::<Vec<_>>()},
-            "event_logs": out.report.event_logs,
-            "bios_call_counts": out.report.bios_call_counts,
-            "identity": {"backend": backend.binary, "backend_sha256": backend.identity().ok(), "interpreter": backend.interpreter},
-            "wall_ms": out.wall_ms,
-        }),
-    )
+    out.sort_by_key(|i| i.frame);
+    Ok(out)
 }
 
-fn parse_watch(s: &str) -> Result<Watch, String> {
+fn parse_watch(s: &str) -> Result<(u32, u32), String> {
     let (addr, width) = s.split_once(':').unwrap_or((s, "4"));
     let addr = psx_media::memmap::parse_hex(addr).ok_or_else(|| format!("bad watch address {addr:?}"))?;
     let width: u32 = width.parse().map_err(|_| format!("bad watch width {width:?}"))?;
     if ![1, 2, 4].contains(&width) {
         return Err("watch width must be 1, 2 or 4".into());
     }
-    Ok(Watch { addr, width })
+    Ok((addr & 0x1FFF_FFFF, width))
 }
 
-/// A disc path Redux can open: CUE/BIN/ISO as given; a CHD (which Redux cannot
-/// read) is written once as CUE/BIN under `.psx/cache/discs/<content fingerprint>/`.
-fn redux_disc(root: &Path, p: &Path) -> psx_media::Result<PathBuf> {
+/// A disc path Mednafen can open: as given, except a CHD (which it can't
+/// read), written once as CUE/BIN under `.psx/cache/discs/<content fingerprint>/`.
+fn oracle_disc(root: &Path, p: &Path) -> psx_media::Result<PathBuf> {
     use psx_media::MediaError;
     if !p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("chd")) {
         return Ok(p.to_path_buf());
@@ -232,10 +152,125 @@ fn redux_disc(root: &Path, p: &Path) -> psx_media::Result<PathBuf> {
     Ok(cue)
 }
 
-pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgb: &[u8], color: png::ColorType) -> std::io::Result<()> {
-    let file = std::fs::File::create(path)?;
+pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
+    let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let file = std::fs::File::create(path).map_err(|e| err(&e))?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-    enc.set_color(color);
+    enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()?.write_image_data(rgb).map_err(std::io::Error::other)
+    enc.write_header().and_then(|mut w| w.write_image_data(rgba)).map_err(|e| err(&e))
+}
+
+pub struct RunJob {
+    pub media: Option<PathBuf>,
+    pub bios: PathBuf,
+    pub frames: u32,
+    pub inputs: Vec<Input>,
+    pub watches: Vec<(u32, u32)>,
+    pub from_state: Option<PathBuf>,
+    pub save_state: bool,
+    pub dualshock: bool,
+    pub frame_log: bool,
+    pub verbose: bool,
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let abs = |p: PathBuf| std::path::absolute(&p).unwrap_or(p);
+    let root = abs(cli.root);
+    let (ok, value) = match cli.command {
+        Command::Run {
+            media,
+            bios,
+            frames,
+            out,
+            watches,
+            replay: replay_path,
+            from_state,
+            save_state,
+            dualshock,
+            frame_log,
+            verbose,
+        } => {
+            let job = (|| {
+                let media = match media.map(abs) {
+                    Some(p) if psx_media::exe::is_exe_path(&p) => Some(p),
+                    Some(p) => Some(oracle_disc(&root, &p).map_err(|e| e.to_string())?),
+                    None => None,
+                };
+                Ok::<_, String>(RunJob {
+                    media,
+                    bios: abs(bios),
+                    frames,
+                    inputs: replay_path.as_deref().map(replay).transpose()?.unwrap_or_default(),
+                    watches: watches.iter().map(|w| parse_watch(w)).collect::<Result<_, _>>()?,
+                    from_state: from_state.map(abs),
+                    save_state,
+                    dualshock,
+                    frame_log,
+                    verbose,
+                })
+            })();
+            let dir = abs(out.unwrap_or_else(|| {
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                root.join(".psx/oracle").join(format!("{stamp}-{}", std::process::id()))
+            }));
+            match job.and_then(|job| run_job(&job, &dir)) {
+                Ok(v) => (v["status"] == "complete", v),
+                Err(e) => (false, json!({"error": e})),
+            }
+        }
+        Command::Lockstep { bios, steps, context, dump } => lockstep_job(&root, &abs(bios), steps, context, dump),
+    };
+    println!("{}", serde_json::to_string_pretty(&value).unwrap());
+    if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+#[cfg(mednafen)]
+fn run_job(job: &RunJob, dir: &Path) -> Result<Value, String> {
+    run::run(job, dir)
+}
+
+#[cfg(mednafen)]
+fn lockstep_job(root: &Path, bios: &Path, steps: u64, context: usize, dump: Option<PathBuf>) -> (bool, Value) {
+    lockstep::run(root, bios, steps, context, dump.as_deref())
+}
+
+#[cfg(not(mednafen))]
+fn run_job(_: &RunJob, _: &Path) -> Result<Value, String> {
+    Err("psx-oracle is only built for x86_64 Linux".into())
+}
+
+#[cfg(not(mednafen))]
+fn lockstep_job(_: &Path, _: &Path, _: u64, _: usize, _: Option<PathBuf>) -> (bool, Value) {
+    (false, json!({"error": "psx-oracle is only built for x86_64 Linux"}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replays_read_like_psx_run_and_reject_unknown_buttons() {
+        let dir = std::env::temp_dir().join(format!("psx-oracle-replay-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("r.json");
+        std::fs::write(&path, r#"[{"frame": 30, "buttons": []}, {"frame": 10, "buttons": ["cross", "START"], "sticks": [0, 255, 128, 128], "until": 20}]"#).unwrap();
+        let inputs = replay(&path).unwrap();
+        assert_eq!(
+            inputs,
+            vec![
+                Input { frame: 10, buttons: 1 << 14 | 1 << 3, sticks: [0, 255, 128, 128] },
+                Input { frame: 20, buttons: 0, sticks: [128; 4] },
+                Input { frame: 30, buttons: 0, sticks: [128; 4] },
+            ]
+        );
+        std::fs::write(&path, r#"[{"frame": 0, "buttons": ["X"]}]"#).unwrap();
+        assert!(replay(&path).is_err());
+        assert_eq!(parse_watch("80014808:2").unwrap(), (0x14808, 2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

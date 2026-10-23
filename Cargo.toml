@@ -8,7 +8,6 @@ members = [
     "crates/psx-gte",
     "crates/psx-media",
     "crates/psx-oracle",
-    "crates/psx-redux",
     "crates/psx-symbols",
 ]
 # The game template is its own workspace; this keeps its vendored crates from
@@ -27,7 +26,6 @@ psx-assets = { path = "crates/psx-assets" }
 psx-gpu = { path = "crates/psx-gpu" }
 psx-gte = { path = "crates/psx-gte" }
 psx-media = { path = "crates/psx-media" }
-psx-redux = { path = "crates/psx-redux" }
 psx-symbols = { path = "crates/psx-symbols" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

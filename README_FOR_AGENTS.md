@@ -45,7 +45,7 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | `psx str <image>::/PATH -o DIR [--frames A..B --channel N --y4m]` | Decode an STR movie offline (MDEC bitstream v1/v2/v3, FF7's prefixed frames): `frame_NNNNN.png`, `audio.wav` (same decoder as `psx xa`), `contact.png`, `frames.json` and a JSON summary (size, frame count, fps, BS versions, XA channels). Polygon streams, iki, v0, EA and encrypted variants are detected and refused. Pixels come from the native core's MDEC model and match the emulator bit for bit; see [research/str-movies.md](research/str-movies.md) |
 | `psx textures <run_dir> [--page X,Y,DEPTH --clut X,Y] [--vram FILE]` | Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT pair a `--gpu-frame` capture used, full and cropped to the UVs sampled, or one page by hand. A capture is decoded from `gpu_frame_vram.bin`, the VRAM at the end of the captured frame (games that stream sprite frames into VRAM every tick need this), falling back to the run's final `vram.bin` |
 | Frame → Bevy | `psx textures` also writes `textures/scene.psxscene`; the template's `PsxSceneRoot` (and `cargo run -- --scene ...`) spawns it as sprites and meshes. Mirrored quads become flipped sprites with their texture rect moved one texel, as the PS1 samples them |
-| `psx gpu-replay <stream.bin> -o vram.bin` / `psx vram-diff a.bin b.bin` | Replay a GP0 stream into `psx-gpu`; diff two VRAM dumps per pixel (per-cell counts, channel deltas, diff PNG). `tools/probes/gpu/compare.sh` diffs `psx-gpu` against Redux on the GPU probe EXE |
+| `psx gpu-replay <stream.bin> -o vram.bin` / `psx vram-diff a.bin b.bin` | Replay a GP0 stream into `psx-gpu`; diff two VRAM dumps per pixel (per-cell counts, channel deltas, diff PNG). `tools/probes/gpu/compare.sh` diffs `psx-gpu` against Mednafen on the GPU probe EXE |
 | `psx assets scan <image.cue>[::/PATH] \| <file-or-directory> [--json]` | Find standard TIM/TMD/VAB/VAG assets by signature + full validation. A bare disc scans every file; `::/DIR/` selects an ISO directory. Host directories expand recursively in sorted order without following symlinks, retaining sibling `.DIR`/`.VB` lookup; `ram.bin` maps relocated TMDs at 0x80000000. DOT-T and Croc `.DIR` archives expose all entries, including empty entries and archives without known assets; hits carry entry indices, names where available and byte provenance. See [archive support](research/archive-support.md) |
 | `psx assets extract <source> -o DIR [--kind K] [--offset HEX] [--textures SRC]` | TIM → PNG per CLUT, TMD → glTF (texture pages decoded from the TIMs in the same file or `--textures` sources, through a virtual VRAM), VAB/VAG → WAV per waveform (+ programs/tones JSON); the original bytes are written next to each. See [research/assets.md](research/assets.md) |
 | `psx assets extract <source> --entry N -o DIR` | Extract one zero-based archive entry as raw bytes, including sector padding or an empty entry. Requires one source file; excludes `--kind`, `--offset` and `--textures`. Both asset commands accept `--archive dot-t` for explicit validation or `--archive none` for a flat scan |
@@ -54,7 +54,7 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | LibCrypt discs | Put the redump `.sbi`/`.lsd` beside the `.cue` or `.chd`; `psx disc` reports it and the native core's GetlocP honours it |
 | `psx sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |
 | `psx addr 0x80010000` | Segment, memory region and folded offset |
-| `psx run [disc\|exe] [--bios B] --frames N [...]` | Bounded run on the native core, which gives exact observations, native save states, `--trace` for windowed instruction traces with coverage and call summaries, `--memcard1/2 PATH|new` for memory cards (written cards are saved to the run directory, never to your file), `--gpu-frame N` to decode one frame's GPU commands (primitives, texture pages, CLUTs, VRAM at the end of that frame, its drawing area, before/after/wireframe PNGs), and `--pad dualshock` for analog games (replay events take `"sticks": [lx, ly, rx, ry]`; Redux gets its analog pad). Captures RAM, VRAM, screen, registers and an optional state. `--watch ADDR[:W]` reports CPU/DMA writers with PC and value; `--trace-cd` and `--trace-bios` log CD and BIOS activity; `--trace-spu` logs sound voice key on/off with pitch, volume, ADSR, storing PC and a sample hash that matches `assets extract`'s per-waveform `adpcm_sha256`, plus sound RAM uploads (`spu.jsonl`; the report groups key ons by sample); `--replay`, `--from-state`/`--save-state`; `--fast` uses the Redux dynarec (no observation). The full report is always written to `<run_dir>/report.json`; `--brief` prints a summary with artifact descriptors, `--summary` only status, paths and counts for the requested observations |
+| `psx run [disc\|exe] [--bios B] --frames N [...]` | Bounded run on the native core, which gives exact observations, native save states, `--trace` for windowed instruction traces with coverage and call summaries, `--memcard1/2 PATH|new` for memory cards (written cards are saved to the run directory, never to your file), `--gpu-frame N` to decode one frame's GPU commands (primitives, texture pages, CLUTs, VRAM at the end of that frame, its drawing area, before/after/wireframe PNGs), and `--pad dualshock` for analog games (replay events take `"sticks": [lx, ly, rx, ry]`). Captures RAM, VRAM, screen, registers and an optional state. `--watch ADDR[:W]` reports CPU/DMA writers with PC and value; `--trace-cd` and `--trace-bios` log CD and BIOS activity; `--trace-spu` logs sound voice key on/off with pitch, volume, ADSR, storing PC and a sample hash that matches `assets extract`'s per-waveform `adpcm_sha256`, plus sound RAM uploads (`spu.jsonl`; the report groups key ons by sample); `--replay`, `--from-state`/`--save-state`. The full report is always written to `<run_dir>/report.json`; `--brief` prints a summary with artifact descriptors, `--summary` only status, paths and counts for the requested observations |
 | `psx handoff [disc] --request TEXT [--from-state S] [--detach]` / `psx handoff-status DIR [--wait N]` | Ask the person at the machine to play to a point: a window shows the game with the request in a side panel (never over the game); keyboard and gamepad with a rebinding menu (F1 or Start+Select), quick save/load, start over, and hand back with a note. Writes `state.bin`, `input.json` (their input as a `--replay` from the handoff start), `screen.png` and `report.json`. MCP `handoff` always detaches; poll `handoff_status`. See `guide --topic input` |
 | `psx run --gpu-next-draw [--gpu-frame F --gpu-search-frames N]` | Capture the first completed frame with draw commands, starting at F (default 0), searching at most N frames (default 60, range 1..=600) within `--frames`. Reports selected relative and absolute frame numbers, or an explicit miss. See below |
 | `psx run --sample ADDR:FMT[:NAME]` | Per-frame values: `samples.csv` with `run_frame,frame,<columns>`, one row per vblank (`--sample-every N`), read byte-exact from RAM/scratchpad as `u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F` (e.g. `fx16.16`) or a watch-style width `1/2/4` (unsigned). MCP also takes typed `{"addr", "format", "name"}` entries. Row N is memory after N frames of the run |
@@ -234,7 +234,7 @@ A 2D capture-to-template study with a rebuilt mechanic (Mega Man 8's walk and ju
 against RAM) is in [research/case-study-megaman8.md](research/case-study-megaman8.md) and
 [examples/megaman8-movement](examples/megaman8-movement/README.md).
 Runs use the in-tree native core and a locally available BIOS; static media/asset tools need
-neither. PCSX-Redux is only a test oracle for developing `psx` itself: see
+neither. Mednafen is only a test oracle for developing `psx` itself: see
 [Developing psx](#developing-psx). Ghidra operations require a local installation
 as described below.
 
@@ -483,16 +483,26 @@ PSX_ROOT=/path/to/psx cargo test -p psx --release --test native_observe -- --ign
 
 ## Developing psx
 
-`psx-oracle` (`crates/psx-oracle`, not published or exposed over MCP) checks the native core against
-PCSX-Redux built at the pinned commit in `external/pcsx-redux` (or `PSX_REDUX_BIN`). Run it from the
-project root:
+`psx-oracle` (`crates/psx-oracle`, not published or exposed over MCP, x86_64 Linux only) checks the
+native core against Mednafen 1.32.1, which is the ground truth for psx. Mednafen's sources are copied
+into the crate with a few marked changes (its README lists them), and the crate is GPL like them; nothing
+else links it. Run it from the project root:
 
-- `cargo run --release -p psx-oracle -- run [disc|exe] --bios B --frames N [--out DIR] [--watch ADDR[:W]]`
-  writes Redux's `ram.bin`, `vram.bin`, `screen.png` and `vram.png` for `psx ram-diff` / `psx vram-diff`
-  against a native run with the same BIOS. A `.chd` is unpacked once to CUE/BIN under `.psx/cache/discs/`.
-- `cargo run --release -p psx-oracle -- lockstep --bios B [--steps N] [--exact]` compares the CPU with
-  Redux instruction by instruction from BIOS reset and stops at the first divergence.
-- `tools/probes/gpu/compare.sh PSX PSX_ORACLE OUT_DIR` diffs `psx-gpu` against Redux on the GPU probe.
+- `cargo run --release -p psx-oracle -- run [disc|exe] --bios B --frames N [--out DIR] [--watch ADDR[:W]]
+  [--replay R] [--dualshock]` writes `ram.bin`, `scratch.bin`, `vram.bin`, `spu.bin`, `screen.png` and
+  `vram.png` for `psx ram-diff` / `psx vram-diff` against a native run with the same BIOS and replay.
+  Frames are vblanks, as in `psx run`. The console region is the BIOS's. A `.chd` is unpacked once to
+  CUE/BIN under `.psx/cache/discs/`. Without media it boots the BIOS with an empty drive.
+- `cargo run --release -p psx-oracle -- lockstep --bios B [--steps N]` runs the native core and Mednafen
+  side by side from BIOS reset, comparing PC, the instruction, every register and the delayed load
+  before each instruction, and stops at the first divergence. The two models' timing differs, so I/O
+  load values and the interrupt line are taken from Mednafen and counted.
+- `tools/probes/gpu/compare.sh PSX PSX_ORACLE OUT_DIR` diffs `psx-gpu` against Mednafen on the GPU probe.
+
+The native core's timing is not Mednafen's yet: it charges flat CPU costs (2 cycles an instruction, 22
+from BIOS ROM) and its frames are exactly 50 or 59.94 Hz, where Mednafen's follow the GPU clock
+(49.76 Hz on a PAL console). After the same number of frames a game may have reached a slightly
+different moment in each.
 
 ### Formatting
 

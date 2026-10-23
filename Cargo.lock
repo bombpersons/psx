@@ -149,6 +149,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6651c9ed80effdc7db0ff72512157f901af5e3549e341e24b1dd4887d836d838"
 dependencies = [
  "find-msvc-tools",
+ "jobserver",
+ "libc",
  "shlex",
 ]
 
@@ -718,6 +720,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jobserver"
+version = "0.1.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+dependencies = [
+ "getrandom",
+ "libc",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1064,22 +1076,14 @@ dependencies = [
 name = "psx-oracle"
 version = "0.3.10"
 dependencies = [
+ "cc",
  "clap",
  "png",
  "psx-core",
  "psx-gpu",
  "psx-media",
- "psx-redux",
- "serde_json",
-]
-
-[[package]]
-name = "psx-redux"
-version = "0.3.10"
-dependencies = [
  "serde",
  "serde_json",
- "sha2",
 ]
 
 [[package]]

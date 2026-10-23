@@ -53,7 +53,7 @@ pub enum StateError {
 impl std::fmt::Display for StateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StateError::NotAState => write!(f, "not a psx-core save state (PCSX-Redux states need --backend redux)"),
+            StateError::NotAState => write!(f, "not a psx-core save state"),
             StateError::Format(v) => {
                 write!(f, "save state format {v} is not supported (this core writes format {FORMAT})")
             }

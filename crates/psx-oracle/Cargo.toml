@@ -3,18 +3,20 @@ name = "psx-oracle"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
-description = "Developer tool: check the native core against a PCSX-Redux oracle"
+# Built from Mednafen's sources (mednafen/), so the whole program is GPL.
+# Nothing else in the workspace links this crate.
+license = "GPL-2.0-or-later"
+description = "Developer tool: check the native core against Mednafen's PlayStation emulation"
 publish = false
 
 [dependencies]
 psx-core = { workspace = true }
 psx-gpu = { workspace = true }
 psx-media = { workspace = true }
-psx-redux = { workspace = true }
 png = "0.18"
+serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 
-[lints.rust]
-unsafe_code = "forbid"
+[build-dependencies]
+cc = { version = "1", features = ["parallel"] }

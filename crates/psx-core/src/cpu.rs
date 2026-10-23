@@ -111,8 +111,19 @@ pub struct Cpu {
     load_in: (usize, u32),
     /// The current instruction's register write (MIPS writes at most one GPR).
     wreg: (usize, u32),
+    /// The current instruction is a branch (taken or not): the next is its delay slot.
     branch: bool,
     delay_slot: bool,
+    /// The current branch is taken / the delay slot's branch was (Cause.BT).
+    /// Not in save states: only an exception in the delay slot right after a
+    /// restore would miss BT.
+    #[serde(skip)]
+    taken: bool,
+    #[serde(skip)]
+    delay_taken: bool,
+    /// The instruction being executed (0 before it is fetched), for Cause.CE.
+    #[serde(skip)]
+    instr: u32,
     pub cop0: [u32; 32],
     pub gte: Gte,
     pub cycles: u64,
@@ -149,6 +160,9 @@ impl Cpu {
             wreg: (0, 0),
             branch: false,
             delay_slot: false,
+            taken: false,
+            delay_taken: false,
+            instr: 0,
             cop0,
             gte: Gte::new(),
             cycles: 0,
@@ -167,6 +181,8 @@ impl Cpu {
         self.next_pc = pc.wrapping_add(4);
         self.branch = false;
         self.delay_slot = false;
+        self.taken = false;
+        self.delay_taken = false;
     }
 
     #[inline]
@@ -201,12 +217,14 @@ impl Cpu {
         let sr = self.cop0[cop0::SR];
         // Push the KU/IE stack (bits 0..5 shift left by two).
         self.cop0[cop0::SR] = (sr & !0x3F) | ((sr << 2) & 0x3F);
-        let mut c = self.cause_ip() & !0x8000_007C;
-        c |= (cause as u32) << 2;
+        // Cause keeps only its interrupt bits; CE is the instruction's bits
+        // 26-27 for every exception (psx-spx, Mednafen).
+        let mut c = self.cause_ip() & 0xFF00;
+        c |= (cause as u32) << 2 | (self.instr >> 26 & 3) << 28;
         let handler = if sr & (1 << 22) != 0 { 0xBFC0_0180 } else { 0x8000_0080 };
         if self.delay_slot {
             self.cop0[cop0::EPC] = epc_pc.wrapping_sub(4);
-            c |= 1 << 31;
+            c |= 1 << 31 | (self.delay_taken as u32) << 30;
         } else {
             self.cop0[cop0::EPC] = epc_pc;
         }
@@ -231,7 +249,10 @@ impl Cpu {
         bus.cur_pc = pc;
         self.cycles += if pc & 0x1FC0_0000 == 0x1FC0_0000 { 22 } else { 2 };
         self.delay_slot = self.branch;
+        self.delay_taken = self.taken;
         self.branch = false;
+        self.taken = false;
+        self.instr = 0;
 
         if pc & 3 != 0 {
             self.flush_load();
@@ -251,6 +272,7 @@ impl Cpu {
                 return;
             }
         };
+        self.instr = instruction;
         if self.interrupt_pending() {
             // EPC is the instruction about to execute; it runs after RFE.
             self.flush_load();
@@ -272,8 +294,13 @@ impl Cpu {
             info.exception(e);
         }
         // Indices are always < 32; the mask only spares the bounds checks.
+        // A load into the register a load in flight is about to write cancels
+        // that load: `lw t1; lw t1` never shows the first value (Mednafen,
+        // DuckStation). LWL/LWR have already merged it.
         let (lr, lv) = self.load_in;
-        self.regs[lr & 31] = lv;
+        if self.load.0 != lr {
+            self.regs[lr & 31] = lv;
+        }
         let (wr, wv) = self.wreg;
         self.regs[wr & 31] = wv;
         self.regs[0] = 0;
@@ -282,6 +309,16 @@ impl Cpu {
     fn branch_to(&mut self, target: u32) {
         self.next_pc = target;
         self.branch = true;
+        self.taken = true;
+    }
+
+    /// A conditional branch: its delay slot is one (Cause.BD) taken or not.
+    fn cond_branch(&mut self, cond: bool, offset: u32) {
+        if cond {
+            self.rel_branch(offset);
+        } else {
+            self.branch = true;
+        }
     }
 
     fn rel_branch(&mut self, offset: u32) {
@@ -432,35 +469,17 @@ impl Cpu {
                 if link {
                     self.set_reg(31, self.next_pc);
                 }
-                if taken {
-                    self.rel_branch(imm);
-                }
+                self.cond_branch(taken, imm);
             }
             0x02 => self.branch_to((self.pc & 0xF000_0000) | ((i & 0x03FF_FFFF) << 2)),
             0x03 => {
                 self.set_reg(31, self.next_pc);
                 self.branch_to((self.pc & 0xF000_0000) | ((i & 0x03FF_FFFF) << 2));
             }
-            0x04 => {
-                if s == t {
-                    self.rel_branch(imm)
-                }
-            }
-            0x05 => {
-                if s != t {
-                    self.rel_branch(imm)
-                }
-            }
-            0x06 => {
-                if (s as i32) <= 0 {
-                    self.rel_branch(imm)
-                }
-            }
-            0x07 => {
-                if (s as i32) > 0 {
-                    self.rel_branch(imm)
-                }
-            }
+            0x04 => self.cond_branch(s == t, imm),
+            0x05 => self.cond_branch(s != t, imm),
+            0x06 => self.cond_branch((s as i32) <= 0, imm),
+            0x07 => self.cond_branch((s as i32) > 0, imm),
             0x08 => match (s as i32).checked_add(simm as i32) {
                 Some(v) => self.set_reg(rt, v as u32),
                 None => return self.fail(Exception::Overflow, pc),
@@ -588,13 +607,21 @@ impl Cpu {
         Ok(())
     }
 
+    /// The delayed load in flight `(register, value)`; register 0 is none.
+    pub fn pending_load(&self) -> (usize, u32) {
+        self.load
+    }
+
     /// Raise an external interrupt now (lockstep: follow an IRQ the oracle took).
     pub fn force_interrupt(&mut self) {
         self.flush_load();
         let pc = self.pc;
         self.delay_slot = self.branch;
+        self.delay_taken = self.taken;
+        self.instr = 0;
         self.cop0[cop0::CAUSE] |= 0x400;
         self.exception(Exception::Interrupt, pc);
         self.branch = false;
+        self.taken = false;
     }
 }

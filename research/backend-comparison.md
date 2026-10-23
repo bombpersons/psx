@@ -64,5 +64,5 @@ The probe EXE has known RAM locations, taken from the ELF:
 
 - **DMA writes.** Do write breakpoints fire for DMA? Probably not, since breakpoints are checked in the CPU memory path. This needs a DMA probe; the expected answer is that DMA writers are invisible to `--watch` (R3).
 - **CD loads.** Are CD-ROM DMA loads (overlays) visible? This is the next experiment, using the kernel and CD logging on Croc.
-- **Independent oracle.** A screenshot comparison against DuckStation regtest has not been done yet.
+- **Independent oracle.** A screenshot comparison against DuckStation regtest has not been done yet. Mednafen 1.32.1 has replaced Redux as the oracle (`crates/psx-oracle`, built from its sources). On Crash's N. Sanity Beach (scph7502, `replay_start_cross.json`, 4504 frames) it draws the beach without the tearing past x=1023 that the pinned Redux shares with the old `psx-gpu`. After 4504 frames its cycle count is 0.3% above the native core's (3.040 G against 3.031 G), so Crash's pose differs by a few frames.
 - **States across builds.** Does a state load across Redux builds? States should be bound to the backend sha256 until proven otherwise.

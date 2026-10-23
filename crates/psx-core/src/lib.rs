@@ -3,7 +3,7 @@
 //! Stage 1 is the CPU: an R3000A interpreter over a bus with RAM, scratchpad,
 //! BIOS and an I/O register file. Devices (interrupt controller, timers, DMA,
 //! GPU, CD-ROM, SPU) come next. Correctness is established by lockstep
-//! comparison against PCSX-Redux (`psx lockstep`), not assumed.
+//! comparison against Mednafen (`psx-oracle lockstep`), not assumed.
 
 pub mod bus;
 pub mod cdrom;

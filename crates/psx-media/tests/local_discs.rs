@@ -89,7 +89,7 @@ fn chd_matches_cue() {
         for lba in 0..cue.end_lba() {
             assert!(chd.read_raw(lba).unwrap() == cue.read_raw(lba).unwrap(), "{} LBA {lba}", chd_path.display());
         }
-        // What `run --backend redux` hands PCSX-Redux for a CHD.
+        // What `psx-oracle run` hands Mednafen for a CHD.
         let out = dir.join("round-trip");
         std::fs::create_dir_all(&out).unwrap();
         let copy = Disc::open(chd.write_bin_cue(&out, "copy").unwrap()).unwrap();

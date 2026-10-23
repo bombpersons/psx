@@ -37,7 +37,7 @@ The full story is in the [write-up](research/case-study-megaman8.md).
 
 - **Exact answers.** The emulator reports what really happened: the storing instruction, the CD
   sector, the GPU command, the sound sample. It's checked against
-  [PCSX-Redux](https://github.com/grumpycoders/pcsx-redux) and hardware tests, and gets about 19
+  [Mednafen](https://mednafen.github.io/) and hardware tests, and gets about 19
   PAL games to gameplay so far.
 - **Cheap experiments.** Save a checkpoint once, then branch short runs from it with different
   buttons, all inline in one call.
