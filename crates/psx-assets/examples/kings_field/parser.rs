@@ -2,7 +2,7 @@
 //! remains unchanged. The current profile is validated against King's Field
 //! (PAL SCES-00510) RTMD banks, not claimed compatible with other games.
 
-use psx_assets::tmd::{polygon_reference_range, Tmd, TMD_ID};
+use psx_assets::tmd::{TMD_ID, Tmd, polygon_reference_range};
 
 /// Both representations are useful: normal game code consumes the typed model,
 /// and the existing template can load the normalized standard TMD bytes.
@@ -63,7 +63,9 @@ pub fn normalize_kings_field(bytes: &[u8]) -> Result<NormalizedTmd, String> {
                 let location = payload + field;
                 let reference = u16::from_le_bytes(bytes[location..location + 2].try_into().unwrap());
                 if !reference.is_multiple_of(8) {
-                    return Err(format!("RTMD object {object}, primitive {primitive}: reference {reference} is not an eight-byte offset"));
+                    return Err(format!(
+                        "RTMD object {object}, primitive {primitive}: reference {reference} is not an eight-byte offset"
+                    ));
                 }
                 normalized[location..location + 2].copy_from_slice(&(reference / 8).to_le_bytes());
             }

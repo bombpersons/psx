@@ -4,9 +4,9 @@ use std::path::Path;
 
 use psx_media::disc::{sha256_bytes, sha256_file};
 use psx_media::iso9660::{Entry, FileSystem};
-use psx_media::system_cnf::{SystemCnf, DEFAULT_BOOT};
+use psx_media::system_cnf::{DEFAULT_BOOT, SystemCnf};
 use psx_media::{Disc, MediaError, PsxExe};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 type R = psx_media::Result<Value>;
 
@@ -162,7 +162,10 @@ pub(crate) fn extract_window(image: &Path, path: &str, offset: u32, length: u32,
         return Err(MediaError::Malformed(format!("{} is a directory", e.path)));
     }
     if offset >= e.size {
-        return Err(MediaError::Malformed(format!("offset 0x{offset:X} is past the end of {} (0x{:X} bytes)", e.path, e.size)));
+        return Err(MediaError::Malformed(format!(
+            "offset 0x{offset:X} is past the end of {} (0x{:X} bytes)",
+            e.path, e.size
+        )));
     }
     let length = length.min(e.size - offset);
     let first = offset / 2048;
@@ -180,7 +183,11 @@ pub(crate) fn extract_window(image: &Path, path: &str, offset: u32, length: u32,
         if i == first {
             header = match s.form {
                 psx_media::disc::SectorForm::Mode1 => {
-                    if disc.read_raw(s.lba)?.0.len() > 2048 { 16 } else { 0 }
+                    if disc.read_raw(s.lba)?.0.len() > 2048 {
+                        16
+                    } else {
+                        0
+                    }
                 }
                 _ => 24,
             };

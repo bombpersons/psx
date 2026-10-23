@@ -6,9 +6,15 @@ use std::path::Path;
 use psx_core::xa::{Coding, XaDecoder};
 use psx_media::iso9660::FileSystem;
 use psx_media::{Disc, MediaError};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-pub fn run(image: &Path, path: &str, file: Option<u8>, channel: Option<u8>, out: Option<&Path>) -> psx_media::Result<Value> {
+pub fn run(
+    image: &Path,
+    path: &str,
+    file: Option<u8>,
+    channel: Option<u8>,
+    out: Option<&Path>,
+) -> psx_media::Result<Value> {
     let disc = Disc::open(image)?;
     let fs = FileSystem::read(&disc)?;
     let entry = fs.entry(path)?;
@@ -56,7 +62,8 @@ pub fn run(image: &Path, path: &str, file: Option<u8>, channel: Option<u8>, out:
         let samples: Vec<i16> = pcm.iter().flat_map(|&(l, r)| [l, r]).collect();
         crate::native::write_wav(out, &samples).map_err(|e| MediaError::io(out, e))?;
         let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
-        result["wav"] = json!({"path": out, "sectors": sectors.len(), "seconds": pcm.len() as f64 / 44_100.0, "peak": peak});
+        result["wav"] =
+            json!({"path": out, "sectors": sectors.len(), "seconds": pcm.len() as f64 / 44_100.0, "peak": peak});
     }
     Ok(result)
 }

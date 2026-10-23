@@ -10,11 +10,14 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// PS1 buttons in menu order (the d-pad and face buttons first).
-pub const ACTIONS: [&str; 16] =
-    ["UP", "DOWN", "LEFT", "RIGHT", "CROSS", "CIRCLE", "SQUARE", "TRIANGLE", "L1", "R1", "L2", "R2", "START", "SELECT", "L3", "R3"];
+pub const ACTIONS: [&str; 16] = [
+    "UP", "DOWN", "LEFT", "RIGHT", "CROSS", "CIRCLE", "SQUARE", "TRIANGLE", "L1", "R1", "L2", "R2", "START", "SELECT",
+    "L3", "R3",
+];
 
 /// Keys the handoff window keeps for itself; they cannot be bound.
-pub const RESERVED_KEYS: [&str; 14] = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Tab", "Escape"];
+pub const RESERVED_KEYS: [&str; 14] =
+    ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Tab", "Escape"];
 
 /// The pad bit (see `psx_core::sio0::button`) of an action.
 pub fn bit(action: usize) -> u16 {
@@ -50,7 +53,24 @@ impl Default for Bindings {
         let some = |names: [&str; 16]| names.map(|n| (!n.is_empty()).then(|| n.to_string()));
         Bindings {
             // The template's defaults (psx-bevy controller bindings).
-            keyboard: some(["Up", "Down", "Left", "Right", "X", "C", "Z", "S", "Q", "E", "Key1", "Key3", "Enter", "RightShift", "", ""]),
+            keyboard: some([
+                "Up",
+                "Down",
+                "Left",
+                "Right",
+                "X",
+                "C",
+                "Z",
+                "S",
+                "Q",
+                "E",
+                "Key1",
+                "Key3",
+                "Enter",
+                "RightShift",
+                "",
+                "",
+            ]),
             gamepad: some([
                 "DPadUp",
                 "DPadDown",
@@ -175,7 +195,8 @@ pub fn load(path: &Path) -> Result<Option<Bindings>, String> {
     if doc.version != 1 {
         return Err(format!("{}: unsupported controls version {}", path.display(), doc.version));
     }
-    let mut b = Bindings { keyboard: Default::default(), gamepad: Default::default(), stick_deadzone: doc.stick_deadzone };
+    let mut b =
+        Bindings { keyboard: Default::default(), gamepad: Default::default(), stick_deadzone: doc.stick_deadzone };
     for (device, map) in [(Device::Keyboard, &doc.keyboard), (Device::Gamepad, &doc.gamepad)] {
         for (action, input) in map {
             let i = ACTIONS
@@ -194,7 +215,8 @@ pub fn save(path: &Path, b: &Bindings) -> Result<(), String> {
     let map = |slots: &[Option<String>; 16]| {
         slots.iter().enumerate().filter_map(|(i, s)| s.as_ref().map(|s| (ACTIONS[i].to_string(), s.clone()))).collect()
     };
-    let doc = Document { version: 1, keyboard: map(&b.keyboard), gamepad: map(&b.gamepad), stick_deadzone: b.stick_deadzone };
+    let doc =
+        Document { version: 1, keyboard: map(&b.keyboard), gamepad: map(&b.gamepad), stick_deadzone: b.stick_deadzone };
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }

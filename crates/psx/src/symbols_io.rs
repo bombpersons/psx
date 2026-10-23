@@ -1,7 +1,7 @@
 //! Symbol loading and residency checks shared by runtime and static tools.
 use crate::bound_symbols;
 use psx_media::{MediaError, PsxExe};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// Symbols for one executable, with its code bytes when known so that a name
@@ -74,13 +74,14 @@ pub(crate) fn load_symbols(paths: &[PathBuf]) -> psx_media::Result<Vec<ScopedSym
             let v: Value = serde_json::from_str(&text).map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
             if v["format"] == 2 {
                 let doc = serde_json::from_value(v).map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
-                let bound = bound_symbols::Loaded::load(doc, p.parent().unwrap_or(Path::new("."))).map_err(MediaError::Malformed)?;
+                let bound = bound_symbols::Loaded::load(doc, p.parent().unwrap_or(Path::new(".")))
+                    .map_err(MediaError::Malformed)?;
                 out.push(ScopedSymbols { name, table: bound.table(), code: None, bound: Some(bound) });
                 continue;
             }
             let source = v["source"].as_str().unwrap_or_default().to_string();
-            let report: psx_symbols::MatchReportIn =
-                serde_json::from_value(v["report"].clone()).map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
+            let report: psx_symbols::MatchReportIn = serde_json::from_value(v["report"].clone())
+                .map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
             let bytes = psx_media::source::read(&source)?;
             if v["exe_sha256"].as_str().is_some_and(|hash| hash != psx_media::disc::sha256_bytes(&bytes)) {
                 return Err(MediaError::Malformed(format!("{name}: symbol source hash mismatch")));
@@ -132,15 +133,22 @@ pub(crate) fn name_pc(scopes: &[ScopedSymbols], pc: u32, ram: Option<&[u8]>) -> 
 /// Names computed after a run must not claim historical snapshot residency.
 pub(crate) fn final_name(scopes: &[ScopedSymbols], pc: u32, ram: Option<&[u8]>) -> Value {
     match name_pc(scopes, pc, ram) {
-        Some((name, SymbolCheck::BodyMatch, source)) => json!({"candidate_name":name,"symbols":source,"check":"final_ram_only",
-            "diagnostic":"Function body matches final RAM; historical event residency is unknown."}),
+        Some((name, SymbolCheck::BodyMatch, source)) => {
+            json!({"candidate_name":name,"symbols":source,"check":"final_ram_only",
+            "diagnostic":"Function body matches final RAM; historical event residency is unknown."})
+        }
         Some((name, check, source)) => json!({"name":name,"exe":source,"check":check.as_str()}),
         None => Value::Null,
     }
 }
 
 /// `psx symbols`: name PsyQ library functions in an EXE by signature matching.
-pub(crate) fn symbols_cmd(source: &str, sigs_dir: &Path, min_concrete: usize, out: Option<PathBuf>) -> psx_media::Result<Value> {
+pub(crate) fn symbols_cmd(
+    source: &str,
+    sigs_dir: &Path,
+    min_concrete: usize,
+    out: Option<PathBuf>,
+) -> psx_media::Result<Value> {
     let bytes = psx_media::source::read(source)?;
     let exe = PsxExe::parse(&bytes)?;
     let sigs = psx_symbols::load_dir(sigs_dir).map_err(|e| {
@@ -204,7 +212,10 @@ mod tests {
             bound: None,
         };
         let mut image = vec![7; 128];
-        assert_eq!(scoped.describe_image(0xa0010004, 0x80010000, &image, 0x4000).as_deref(), Some("library_function+0x4"));
+        assert_eq!(
+            scoped.describe_image(0xa0010004, 0x80010000, &image, 0x4000).as_deref(),
+            Some("library_function+0x4")
+        );
         image[4] = 8;
         assert!(scoped.describe_image(0x80010004, 0x80010000, &image, 0x4000).is_none());
         assert!(scoped.describe_image(0x1f800004, 0x80010000, &image, 0x4000).is_none());

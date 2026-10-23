@@ -2,8 +2,8 @@
 //! validates it and reuses its normal model exporters. No GPU packet encoding is
 //! required from the parser. Coordinates are signed PS1 units (Y down, Z forward).
 
-use crate::tim::{clut_from_cba, TexPage};
-use crate::tmd::{Tmd, TmdObject, TmdPolygon, FLAG_FCE, FLAG_LGT, MODE_ABE, MODE_IIP, MODE_QUAD, MODE_TGE, MODE_TME};
+use crate::tim::{TexPage, clut_from_cba};
+use crate::tmd::{FLAG_FCE, FLAG_LGT, MODE_ABE, MODE_IIP, MODE_QUAD, MODE_TGE, MODE_TME, Tmd, TmdObject, TmdPolygon};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -74,7 +74,9 @@ impl ModelDocument {
                 if p.vertices.iter().any(|&v| v as usize >= object.vertices.len()) {
                     return Err(fail("vertex index out of range"));
                 }
-                if ![0, 1, n].contains(&p.normals.len()) || p.normals.iter().any(|&v| v as usize >= object.normals.len()) {
+                if ![0, 1, n].contains(&p.normals.len())
+                    || p.normals.iter().any(|&v| v as usize >= object.normals.len())
+                {
                     return Err(fail("normal count or index out of range"));
                 }
                 if ![0, 1, n].contains(&p.colors.len()) {
@@ -96,7 +98,9 @@ impl ModelDocument {
                     };
                     let cba = match (texture.depth, texture.clut) {
                         (16, None) => 0,
-                        (4 | 8, Some([cx, cy])) if cx <= 1008 && cx.is_multiple_of(16) && cy < 512 => (cy << 6) | (cx / 16),
+                        (4 | 8, Some([cx, cy])) if cx <= 1008 && cx.is_multiple_of(16) && cy < 512 => {
+                            (cy << 6) | (cx / 16)
+                        }
                         _ => return Err(fail("indexed textures require an aligned CLUT; direct colour has no CLUT")),
                     };
                     (cba, (x / 64) | ((y / 256) << 4) | (depth << 7))
@@ -124,7 +128,16 @@ impl ModelDocument {
                 }
                 let flag = if p.normals.is_empty() { FLAG_LGT } else { 0 } | if p.double_sided { FLAG_FCE } else { 0 };
                 let colors = if p.colors.is_empty() && p.texture.is_none() { vec![[255; 3]] } else { p.colors };
-                object.polygons.push(TmdPolygon { mode, flag, vertices: p.vertices, normals: p.normals, colors, uvs: p.uvs, cba, tsb });
+                object.polygons.push(TmdPolygon {
+                    mode,
+                    flag,
+                    vertices: p.vertices,
+                    normals: p.normals,
+                    colors,
+                    uvs: p.uvs,
+                    cba,
+                    tsb,
+                });
             }
             model.objects.push(object);
         }
@@ -156,7 +169,11 @@ impl From<&Tmd> for ModelDocument {
                             texture: p.textured().then(|| {
                                 let page = TexPage::from_tsb(p.tsb);
                                 let clut = clut_from_cba(p.cba);
-                                Texture { page: [page.x, page.y], depth: page.bits, clut: (page.bits != 16).then_some([clut.0, clut.1]) }
+                                Texture {
+                                    page: [page.x, page.y],
+                                    depth: page.bits,
+                                    clut: (page.bits != 16).then_some([clut.0, clut.1]),
+                                }
                             }),
                             semi_transparent: p.semi_transparent(),
                             double_sided: p.double_sided(),

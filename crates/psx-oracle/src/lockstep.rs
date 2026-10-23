@@ -16,9 +16,9 @@ use std::time::Instant;
 
 use psx_core::disasm::{disasm, reg};
 use psx_core::{Machine, Width};
-use psx_redux::gdb::{GdbSession, Regs};
 use psx_redux::Backend;
-use serde_json::{json, Value};
+use psx_redux::gdb::{GdbSession, Regs};
+use serde_json::{Value, json};
 
 fn h(v: u32) -> String {
     format!("0x{v:08X}")
@@ -89,7 +89,14 @@ fn reg_index(name: &str) -> Option<usize> {
 
 /// Fast mode: stream Redux's instruction trace and check each instruction's
 /// PC, word and source-operand values before the core executes it.
-pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump: Option<&Path>, deadline: Option<Instant>) -> (bool, Value) {
+pub fn run_trace(
+    root: &Path,
+    bios_path: &Path,
+    steps: u64,
+    context: usize,
+    dump: Option<&Path>,
+    deadline: Option<Instant>,
+) -> (bool, Value) {
     use std::io::BufRead;
     let err = |code: &str, m: String| (false, json!({"error": {"code": code, "message": m}}));
     let backend = match Backend::from_project(root) {
@@ -214,7 +221,8 @@ pub fn run_trace(root: &Path, bios_path: &Path, steps: u64, context: usize, dump
         let screen = std::path::PathBuf::from(format!("{}.screen.png", prefix.display()));
         let vram = std::path::PathBuf::from(format!("{}.vram.png", prefix.display()));
         let ok1 = crate::write_png(&screen, w, hgt, &rgba, png::ColorType::Rgba).is_ok();
-        let ok2 = crate::write_png(&vram, 1024, 512, &m.bus.gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok();
+        let ok2 =
+            crate::write_png(&vram, 1024, 512, &m.bus.gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok();
         dumped = json!({"screen": ok1.then_some(screen), "vram": ok2.then_some(vram),
             "display": {"start": m.bus.gpu.display.start, "width": w, "height": hgt}});
     }

@@ -1,6 +1,6 @@
 //! CUE sheet parsing. Only the commands that affect disc geometry are kept.
 
-use crate::error::{malformed, MediaError, Result};
+use crate::error::{MediaError, Result, malformed};
 
 pub const FRAMES_PER_SECOND: u32 = 75;
 

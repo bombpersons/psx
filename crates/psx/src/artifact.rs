@@ -10,7 +10,7 @@ use clap::{Args, ValueEnum};
 use psx_media::disc::sha256_bytes;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const SCAN_BYTES: u64 = 4 * 1024 * 1024;
 const JSON_BYTES: u64 = 16 * 1024 * 1024;
@@ -178,7 +178,8 @@ impl ReadArgs {
             return Err(invalid("artifact must be a regular file or directory"));
         }
         let format = if self.format == Format::Auto { detected(&p) } else { self.format };
-        let row_filters = self.frame_from.is_some() || self.frame_to.is_some() || self.pc.is_some() || !self.columns.is_empty();
+        let row_filters =
+            self.frame_from.is_some() || self.frame_to.is_some() || self.pc.is_some() || !self.columns.is_empty();
         if (row_filters && !matches!(format, Format::Jsonl | Format::Csv))
             || (self.contains.is_some() && !matches!(format, Format::Jsonl | Format::Csv | Format::Text))
         {
@@ -248,7 +249,10 @@ impl ReadArgs {
                     let len = row.to_string().len();
                     if bytes + len > RESPONSE_BYTES {
                         if selected.is_empty() {
-                            return Err(failure("limit_exceeded", "One JSON row exceeds 96 KiB; select a narrower pointer."));
+                            return Err(failure(
+                                "limit_exceeded",
+                                "One JSON row exceeds 96 KiB; select a narrower pointer.",
+                            ));
                         }
                         break;
                     }
@@ -287,7 +291,8 @@ impl ReadArgs {
             if !b.starts_with(b"\x89PNG\r\n\x1a\n") {
                 return Err(failure("invalid_artifact", "image mode requires a PNG"));
             }
-            let reader = png::Decoder::new(std::io::Cursor::new(&b)).read_info().map_err(|e| failure("invalid_artifact", e))?;
+            let reader =
+                png::Decoder::new(std::io::Cursor::new(&b)).read_info().map_err(|e| failure("invalid_artifact", e))?;
             let info = reader.info();
             out["image"] = json!({"path":p,"mime_type":"image/png","width":info.width,"height":info.height});
             out["artifact"]["sha256"] = json!(sha256_bytes(&b));
@@ -297,7 +302,8 @@ impl ReadArgs {
         }
         if out["page"]["truncated"] == true && out["page"].get("next_cursor").is_none() {
             let pos = out["page"]["next_offset"].as_u64().unwrap();
-            out["page"]["next_cursor"] = json!(encode(Cursor { source, query, position: pos, record: pos, skip_until: 0 }));
+            out["page"]["next_cursor"] =
+                json!(encode(Cursor { source, query, position: pos, record: pos, skip_until: 0 }));
         }
         let after = fs::metadata(&p).map_err(io)?;
         if after.len() != m.len() || after.modified().ok() != m.modified().ok() {
@@ -328,7 +334,8 @@ impl ReadArgs {
         let mut f = BufReader::new(File::open(p).map_err(io)?);
         let header = if format == Format::Csv {
             let (n, header) = record(&mut f, format)?;
-            let fields = csv(&header)?.ok_or_else(|| failure("invalid_artifact", "CSV header has an unclosed quote"))?;
+            let fields =
+                csv(&header)?.ok_or_else(|| failure("invalid_artifact", "CSV header has an unclosed quote"))?;
             let unique: std::collections::BTreeSet<_> = fields.iter().collect();
             if n == 0 || fields.iter().any(String::is_empty) || unique.len() != fields.len() {
                 return Err(failure("invalid_artifact", "CSV needs a nonempty header with unique columns"));
@@ -365,9 +372,8 @@ impl ReadArgs {
             position += n;
             scanned += 1;
             let row = match format {
-                Format::Jsonl => {
-                    serde_json::from_slice(&line).map_err(|e| failure("invalid_artifact", format!("JSONL record {index}: {e}")))?
-                }
+                Format::Jsonl => serde_json::from_slice(&line)
+                    .map_err(|e| failure("invalid_artifact", format!("JSONL record {index}: {e}")))?,
                 Format::Csv => {
                     let fields = csv(&line)?.ok_or_else(|| failure("invalid_artifact", "CSV has an unclosed quote"))?;
                     let header = header.as_ref().unwrap();
@@ -379,16 +385,21 @@ impl ReadArgs {
                     }
                     Value::Object(header.iter().cloned().zip(fields.into_iter().map(Value::String)).collect())
                 }
-                _ => json!(std::str::from_utf8(&line)
-                    .map_err(|_| failure("invalid_artifact", "Text is not UTF-8; use hex mode"))?
-                    .trim_end_matches(['\r', '\n'])),
+                _ => json!(
+                    std::str::from_utf8(&line)
+                        .map_err(|_| failure("invalid_artifact", "Text is not UTF-8; use hex mode"))?
+                        .trim_end_matches(['\r', '\n'])
+                ),
             };
             if index >= skip_until && self.matches(&row, pc) {
                 let row = self.project(row)?;
                 let len = row.to_string().len();
                 if returned_bytes + len > RESPONSE_BYTES {
                     if rows.is_empty() {
-                        return Err(failure("limit_exceeded", "Record exceeds response budget; project fewer columns or use hex mode"));
+                        return Err(failure(
+                            "limit_exceeded",
+                            "Record exceeds response budget; project fewer columns or use hex mode",
+                        ));
                     }
                     position = before;
                     break;

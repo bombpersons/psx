@@ -5,8 +5,8 @@
 //! higher indices are drawn first, and within one bucket the most recently
 //! added primitive is drawn first (AddPrim links at the head).
 
-use crate::prim::Prim;
 use crate::Gpu;
+use crate::prim::Prim;
 
 #[derive(Clone, Debug)]
 pub struct OrderingTable {

@@ -11,8 +11,8 @@ use std::collections::VecDeque;
 
 const ZIGZAG: [usize; 64] = [
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21,
-    28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61,
-    54, 47, 55, 62, 63,
+    28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54,
+    47, 55, 62, 63,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,7 +112,13 @@ impl Mdec {
             self.params.clear();
             self.remaining = match v >> 29 {
                 1 => v & 0xFFFF,
-                2 => if v & 1 != 0 { 32 } else { 16 },
+                2 => {
+                    if v & 1 != 0 {
+                        32
+                    } else {
+                        16
+                    }
+                }
                 3 => 32,
                 _ => 0,
             };
@@ -157,7 +163,12 @@ impl Mdec {
 
     /// RLE-decode one 8×8 block (psx-spx `decode_block`); false at end of input.
     /// The 0xFE00 end code has run 63, which pushes `k` past 63 and ends the block.
-    fn decode_block(&self, halves: &mut std::iter::Peekable<impl Iterator<Item = u16>>, q: &[u8; 64], blk: &mut [i32; 64]) -> bool {
+    fn decode_block(
+        &self,
+        halves: &mut std::iter::Peekable<impl Iterator<Item = u16>>,
+        q: &[u8; 64],
+        blk: &mut [i32; 64],
+    ) -> bool {
         *blk = [0; 64];
         let mut n = loop {
             match halves.next() {

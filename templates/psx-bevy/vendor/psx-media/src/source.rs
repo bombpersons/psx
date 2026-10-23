@@ -10,7 +10,9 @@ pub fn split(source: &str, path: Option<&str>) -> Result<(PathBuf, String)> {
     match (source.split_once("::"), path) {
         (Some((img, p)), None) => Ok((PathBuf::from(img), p.to_string())),
         (None, Some(p)) => Ok((PathBuf::from(source), p.to_string())),
-        (Some(_), Some(_)) => Err(MediaError::Malformed("give the path either as IMAGE::/PATH or as a second argument".into())),
+        (Some(_), Some(_)) => {
+            Err(MediaError::Malformed("give the path either as IMAGE::/PATH or as a second argument".into()))
+        }
         (None, None) => Err(MediaError::Malformed("missing ISO path: use IMAGE::/PATH or IMAGE /PATH".into())),
     }
 }

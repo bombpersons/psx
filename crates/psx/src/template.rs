@@ -16,7 +16,7 @@ use std::path::Path;
 
 use psx_media::MediaError;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 macro_rules! files {
@@ -127,9 +127,7 @@ const REGION_LINE: &str = "pub const REGION: Region = Region::Ntsc;";
 const FIELDS_PER_TICK_LINE: &str = "pub const FIELDS_PER_TICK: u32 = 1;";
 
 /// Video region (`REGION` in game/src/lib.rs).
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TemplateRegion {
     /// 60 Hz display.
@@ -363,17 +361,14 @@ fn remove_empty_dirs(dir: &Path) {
 fn configure_lib(contents: &str, options: TemplateOptions) -> psx_media::Result<String> {
     if !contents.contains(REGION_LINE) || !contents.contains(FIELDS_PER_TICK_LINE) {
         return Err(MediaError::Malformed(
-            "template game/src/lib.rs no longer has the REGION / FIELDS_PER_TICK lines template create rewrites"
-                .into(),
+            "template game/src/lib.rs no longer has the REGION / FIELDS_PER_TICK lines template create rewrites".into(),
         ));
     }
-    Ok(contents
-        .replacen(REGION_LINE, &format!("pub const REGION: Region = {};", options.region.rust()), 1)
-        .replacen(
-            FIELDS_PER_TICK_LINE,
-            &format!("pub const FIELDS_PER_TICK: u32 = {};", options.fields_per_tick),
-            1,
-        ))
+    Ok(contents.replacen(REGION_LINE, &format!("pub const REGION: Region = {};", options.region.rust()), 1).replacen(
+        FIELDS_PER_TICK_LINE,
+        &format!("pub const FIELDS_PER_TICK: u32 = {};", options.fields_per_tick),
+        1,
+    ))
 }
 
 /// Every template file as this project gets it: package name, region and
@@ -383,19 +378,15 @@ fn render(name: &str, options: TemplateOptions) -> psx_media::Result<Vec<(&'stat
         .iter()
         .map(|(rel, contents)| {
             let contents = match *rel {
-                "game/Cargo.toml" => contents.replacen(
-                    &format!("name = \"{TEMPLATE_PACKAGE}\""),
-                    &format!("name = \"{name}\""),
-                    1,
-                ),
+                "game/Cargo.toml" => {
+                    contents.replacen(&format!("name = \"{TEMPLATE_PACKAGE}\""), &format!("name = \"{name}\""), 1)
+                }
                 // The package's own entry and every dependency on it (mods).
                 "Cargo.lock" => contents.replace(&format!("\"{TEMPLATE_PACKAGE}\""), &format!("\"{name}\"")),
                 // The workspace's `game` dependency names the package.
-                "Cargo.toml" => contents.replacen(
-                    &format!("package = \"{TEMPLATE_PACKAGE}\""),
-                    &format!("package = \"{name}\""),
-                    1,
-                ),
+                "Cargo.toml" => {
+                    contents.replacen(&format!("package = \"{TEMPLATE_PACKAGE}\""), &format!("package = \"{name}\""), 1)
+                }
                 "game/src/lib.rs" => configure_lib(contents, options)?,
                 _ => contents.to_string(),
             };
@@ -577,7 +568,8 @@ pub fn update(dest: &Path, dry_run: bool) -> psx_media::Result<Value> {
             }
         }
     }
-    let gone: Vec<String> = manifest.owned.keys().filter(|rel| !new_owned.contains_key(rel.as_str())).cloned().collect();
+    let gone: Vec<String> =
+        manifest.owned.keys().filter(|rel| !new_owned.contains_key(rel.as_str())).cloned().collect();
     for rel in gone {
         let base = manifest.owned.get(&rel).cloned();
         match current(&rel) {
@@ -899,7 +891,10 @@ mod tests {
         std::fs::write(dir.join("psx-bevy/src/shell.rs"), "// local edit\n").unwrap();
         let out = update(&dir, false).unwrap();
         assert_eq!(out["removed"], json!(["psx-bevy/Cargo.toml", "psx-bevy/src/lib.rs"]));
-        assert_eq!(out["conflicts"], json!([{"path": "psx-bevy/src/shell.rs", "removed_upstream": true, "moved_to": PSX_BEVY_GIT}]));
+        assert_eq!(
+            out["conflicts"],
+            json!([{"path": "psx-bevy/src/shell.rs", "removed_upstream": true, "moved_to": PSX_BEVY_GIT}])
+        );
         assert_eq!(out["psx_bevy"]["status"], "moved");
         assert!(out["psx_bevy"].get("leftover").is_none(), "the edited file is already a conflict");
         let workspace = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
@@ -993,7 +988,10 @@ mod tests {
             for name in names {
                 let ours = std::fs::read_to_string(src.join(&name)).unwrap();
                 let theirs = FILES.iter().find(|(p, _)| *p == format!("{prefix}{name}")).unwrap().1;
-                assert!(ours == theirs, "templates/psx-bevy/{prefix}{name} differs from crates/{krate}/src/{name}; copy it over");
+                assert!(
+                    ours == theirs,
+                    "templates/psx-bevy/{prefix}{name} differs from crates/{krate}/src/{name}; copy it over"
+                );
             }
             let manifest = FILES.iter().find(|(p, _)| *p == format!("{VENDOR_PREFIX}{krate}/Cargo.toml")).unwrap().1;
             assert!(

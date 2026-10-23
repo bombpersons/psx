@@ -300,11 +300,7 @@ impl Steps {
 
     #[inline(always)]
     fn value(&self) -> i64 {
-        if self.neg {
-            self.base - self.q
-        } else {
-            self.base + self.q
-        }
+        if self.neg { self.base - self.q } else { self.base + self.q }
     }
 
     #[inline(always)]
@@ -360,11 +356,7 @@ impl Walk {
 
     #[inline(always)]
     fn attr(&self, k: usize) -> i64 {
-        if k < 3 {
-            self.colour[k].value()
-        } else {
-            self.uv[k - 3]
-        }
+        if k < 3 { self.colour[k].value() } else { self.uv[k - 3] }
     }
 }
 
@@ -426,7 +418,13 @@ pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     if width == 0 {
         return;
     }
-    let n_attrs = if sh.textured { 5 } else if sh.gouraud { 3 } else { 0 };
+    let n_attrs = if sh.textured {
+        5
+    } else if sh.gouraud {
+        3
+    } else {
+        0
+    };
     if n_attrs > 0 {
         width = if width < 0 { width.min(-0x1000) } else { width.max(0x1000) };
     }
@@ -438,7 +436,12 @@ pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
         *g = ((span << 10) / width) as i32 as i64;
     }
     let setup = Setup { a, b, c, b_right: width < 0, grad };
-    let p = Pipe { grad: grad.map(|g| g as i32), flat: [v[0].r, v[0].g, v[0].b], blend: sh.blend, set: if ras.set_mask { 0x8000 } else { 0 } };
+    let p = Pipe {
+        grad: grad.map(|g| g as i32),
+        flat: [v[0].r, v[0].g, v[0].b],
+        blend: sh.blend,
+        set: if ras.set_mask { 0x8000 } else { 0 },
+    };
     let mask = ras.check_mask;
     if !sh.textured {
         consts!(rows [S, NoTexture] [false, false,] [sh.semi, mask, sh.gouraud, sh.dither] [] (surface, &NoTexture, ras, &p, &setup));
@@ -546,13 +549,15 @@ pub fn line<S: Surface + ?Sized>(surface: &mut S, r: &Raster, sh: &Shade, a: Vtx
         if !sh.gouraud || steps == 0 {
             return [a.r, a.g, a.b];
         }
-        let at = |p: i32, q: i32| ((((p as i64) << 16) + (((q - p) as i64) << 16) * i as i64 / steps as i64) >> 16) as i32;
+        let at =
+            |p: i32, q: i32| ((((p as i64) << 16) + (((q - p) as i64) << 16) * i as i64 / steps as i64) >> 16) as i32;
         [at(a.r, b.r), at(a.g, b.g), at(a.b, b.b)]
     };
     let (mut x, mut y) = (a.x, a.y);
     // Error term and its increments for a straight and a diagonal step.
     let x_major = dx >= dy;
-    let (mut err, straight, diag) = if x_major { (3 * dy - dx, 2 * dy, 2 * (dy - dx)) } else { (2 * dx - dy, 2 * dx, 2 * (dx - dy)) };
+    let (mut err, straight, diag) =
+        if x_major { (3 * dy - dx, 2 * dy, 2 * (dy - dx)) } else { (2 * dx - dy, 2 * dx, 2 * (dx - dy)) };
     for i in 0..=steps {
         plot(surface, &NoTexture, r, &sh, x, y, colour(i), None);
         if err <= 0 {
@@ -595,7 +600,12 @@ pub fn rect<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     }
     // U as 16.16 so the triangle pixel loop can walk it; V is fixed per row.
     let du = if flip.0 { -1 } else { 1 };
-    let p = Pipe { grad: [0, 0, 0, du << 16, 0], flat: [origin.r, origin.g, origin.b], blend: sh.blend, set: if r.set_mask { 0x8000 } else { 0 } };
+    let p = Pipe {
+        grad: [0, 0, 0, du << 16, 0],
+        flat: [origin.r, origin.g, origin.b],
+        blend: sh.blend,
+        set: if r.set_mask { 0x8000 } else { 0 },
+    };
     let area = (x0, y0, x1, y1);
     let mask = r.check_mask;
     if !sh.textured {
@@ -606,7 +616,14 @@ pub fn rect<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
 }
 
 /// The rows of [`rect`] for one sprite kind (flat colour, no dither).
-fn rect_rows<S: Surface + ?Sized, T: TexelSource<S> + ?Sized, const TEX: bool, const RAW: bool, const SEMI: bool, const MASK: bool>(
+fn rect_rows<
+    S: Surface + ?Sized,
+    T: TexelSource<S> + ?Sized,
+    const TEX: bool,
+    const RAW: bool,
+    const SEMI: bool,
+    const MASK: bool,
+>(
     surface: &mut S,
     tex: &T,
     p: &Pipe,
@@ -698,7 +715,13 @@ pub(crate) mod reference {
         if width == 0 {
             return;
         }
-        let n_attrs = if sh.textured { 5 } else if sh.gouraud { 3 } else { 0 };
+        let n_attrs = if sh.textured {
+            5
+        } else if sh.gouraud {
+            3
+        } else {
+            0
+        };
         if n_attrs > 0 {
             width = if width < 0 { width.min(-0x1000) } else { width.max(0x1000) };
         }

@@ -14,23 +14,23 @@ use std::path::{Path, PathBuf};
 
 use psx_core::mdec::Mdec;
 use psx_media::iso9660::FileSystem;
-use psx_media::str_video::{bs_offset, decode_bs, BsError, BsHeader, Frame, FrameAssembler, StrHeader, STR_HEADER_LEN};
+use psx_media::str_video::{BsError, BsHeader, Frame, FrameAssembler, STR_HEADER_LEN, StrHeader, bs_offset, decode_bs};
 use psx_media::{Disc, MediaError};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Zig-zag position → raster index (the order MDEC quant tables are stored in).
 const ZAGZIG: [usize; 64] = [
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21,
-    28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61,
-    54, 47, 55, 62, 63,
+    28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54,
+    47, 55, 62, 63,
 ];
 
 /// MPEG-1 default intra matrix, raster order; libpress uploads it zig-zagged
 /// (02h,10h,10h,13h,...) for both luma and chroma.
 const DEFAULT_QUANT: [u8; 64] = [
     2, 16, 19, 22, 26, 27, 29, 34, 16, 16, 22, 24, 27, 29, 34, 37, 19, 22, 26, 27, 29, 34, 34, 38, 22, 22, 26, 27, 29,
-    34, 37, 40, 22, 26, 27, 29, 32, 35, 40, 48, 26, 27, 29, 32, 35, 40, 48, 58, 26, 27, 29, 34, 38, 46, 56, 69, 27,
-    29, 35, 38, 46, 56, 69, 83,
+    34, 37, 40, 22, 26, 27, 29, 32, 35, 40, 48, 26, 27, 29, 32, 35, 40, 48, 58, 26, 27, 29, 34, 38, 46, 56, 69, 27, 29,
+    35, 38, 46, 56, 69, 83,
 ];
 
 /// Standard MDEC(3) IDCT scale table (psx-spx), row-major.
@@ -61,7 +61,8 @@ fn standard_mdec() -> Mdec {
 
 /// Run one macroblock's halfwords through MDEC(1) at 24 bpp; 16×16 RGB.
 fn decode_macroblock(m: &mut Mdec, halfwords: &[u16]) -> Vec<u8> {
-    let mut words: Vec<u32> = halfwords.chunks(2).map(|c| c[0] as u32 | (*c.get(1).unwrap_or(&0xFE00) as u32) << 16).collect();
+    let mut words: Vec<u32> =
+        halfwords.chunks(2).map(|c| c[0] as u32 | (*c.get(1).unwrap_or(&0xFE00) as u32) << 16).collect();
     if words.is_empty() {
         words.push(0xFE00_FE00);
     }
@@ -184,14 +185,19 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
     }
     // Probe the BS variant of the first frame before writing anything.
     let variants: BTreeMap<String, usize> = scan.frames.iter().fold(BTreeMap::new(), |mut m, f| {
-        *m.entry(BsHeader::parse(&f.data[bs_offset(&f.data)..]).map_or("too_short".into(), |h| h.variant())).or_default() += 1;
+        *m.entry(BsHeader::parse(&f.data[bs_offset(&f.data)..]).map_or("too_short".into(), |h| h.variant()))
+            .or_default() += 1;
         m
     });
     if a.frame_parser.is_none() && !variants.keys().any(|v| matches!(v.as_str(), "v1" | "v2" | "v3")) {
         return Err(MediaError::Unsupported(format!(
             "{}: STR video sectors, but no BS v1/v2/v3 bitstreams (variants seen {variants:?}{}); polygon streams, iki, v0, EA and encrypted formats are not decoded",
             entry.path,
-            if scan.frames.iter().all(|f| f.width == 0 && f.height == 0) { ", 0x0 dimensions: likely a polygon stream" } else { "" }
+            if scan.frames.iter().all(|f| f.width == 0 && f.height == 0) {
+                ", 0x0 dimensions: likely a polygon stream"
+            } else {
+                ""
+            }
         )));
     }
 
@@ -218,7 +224,8 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
             let speed = [75.0, 150.0].into_iter().find(|s| (raw - s).abs() / s < 0.03).unwrap_or(raw);
             fps["drive_sectors_per_second"] = json!(round2(speed));
             fps["drive_sectors_per_second_raw"] = json!(round2(raw));
-            fps["speed_source"] = json!(format!("XA channel {} interleave 1/{}", channel.unwrap_or(0), gaps[gaps.len() / 2]));
+            fps["speed_source"] =
+                json!(format!("XA channel {} interleave 1/{}", channel.unwrap_or(0), gaps[gaps.len() / 2]));
             fps["fps"] = json!(round2(speed / spf));
         }
     }
@@ -229,7 +236,8 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
     // Frames kept for the contact sheet: up to 24 evenly spaced over the range.
     let in_range = last.min(frames_total).saturating_sub(first - 1);
     let sheet_count = in_range.min(24);
-    let sheet: std::collections::BTreeSet<usize> = (0..sheet_count).map(|i| first + i * in_range / sheet_count).collect();
+    let sheet: std::collections::BTreeSet<usize> =
+        (0..sheet_count).map(|i| first + i * in_range / sheet_count).collect();
     let mut mdec = standard_mdec();
     let mut dims: BTreeMap<String, usize> = BTreeMap::new();
     let mut quants = (u16::MAX, 0u16);
@@ -284,7 +292,8 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
                 }
                 let name = format!("frame_{index:05}.png");
                 let p = a.out.join(&name);
-                crate::run::write_png(&p, f.width as u32, f.height as u32, &rgb, png::ColorType::Rgb).map_err(|e| MediaError::io(&p, e))?;
+                crate::run::write_png(&p, f.width as u32, f.height as u32, &rgb, png::ColorType::Rgb)
+                    .map_err(|e| MediaError::io(&p, e))?;
                 rec["png"] = json!(name);
                 rec["bs"] = json!({"version": h.version, "quant": h.quant, "end_code": end});
                 if a.y4m {
@@ -296,15 +305,19 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
                 written.push(index);
             }
             Err(e) => {
-                *errors.entry(match &e {
-                    BsError::Unsupported(v) => format!("unsupported_{v}"),
-                    BsError::Truncated { .. } => "truncated".into(),
-                    BsError::BadCode { .. } => "bad_code".into(),
-                    BsError::BlockOverflow { .. } => "block_overflow".into(),
-                    BsError::TooShort => "too_short".into(),
-                }).or_default() += 1;
+                *errors
+                    .entry(match &e {
+                        BsError::Unsupported(v) => format!("unsupported_{v}"),
+                        BsError::Truncated { .. } => "truncated".into(),
+                        BsError::BadCode { .. } => "bad_code".into(),
+                        BsError::BlockOverflow { .. } => "block_overflow".into(),
+                        BsError::TooShort => "too_short".into(),
+                    })
+                    .or_default() += 1;
                 if error_samples.len() < 10 {
-                    error_samples.push(json!({"index": index, "str_frame": f.number, "lba": f.first_lba, "error": e.to_string()}));
+                    error_samples.push(
+                        json!({"index": index, "str_frame": f.number, "lba": f.first_lba, "error": e.to_string()}),
+                    );
                 }
                 rec["error"] = json!(e.to_string());
             }
@@ -363,7 +376,8 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
         "y4m": a.y4m.then(|| a.out.join("movie.y4m")),
         "summary": summary,
     });
-    std::fs::write(&summary, serde_json::to_string_pretty(&result).unwrap_or_default()).map_err(|e| MediaError::io(&summary, e))?;
+    std::fs::write(&summary, serde_json::to_string_pretty(&result).unwrap_or_default())
+        .map_err(|e| MediaError::io(&summary, e))?;
     Ok(result)
 }
 

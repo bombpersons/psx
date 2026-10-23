@@ -11,8 +11,8 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Mutex;
 
-use chd::metadata::{KnownMetadata, MetadataTag};
 use chd::Chd;
+use chd::metadata::{KnownMetadata, MetadataTag};
 
 use crate::cue::TrackMode;
 use crate::error::{MediaError, Result};
@@ -50,7 +50,9 @@ struct Cache {
 
 fn chd_error(path: &Path, e: chd::Error) -> MediaError {
     match e {
-        chd::Error::RequiresParent => MediaError::Unsupported(format!("{}: CHDs with a parent are not supported", path.display())),
+        chd::Error::RequiresParent => {
+            MediaError::Unsupported(format!("{}: CHDs with a parent are not supported", path.display()))
+        }
         e => MediaError::Malformed(format!("{}: {e}", path.display())),
     }
 }
@@ -74,7 +76,10 @@ impl ChdImage {
                 let m = meta.read(chd.inner()).map_err(|e| chd_error(path, e))?;
                 texts.push(String::from_utf8_lossy(&m.value).trim_end_matches('\0').to_string());
             } else if KnownMetadata::is_cdrom(tag) {
-                return Err(MediaError::Unsupported(format!("{}: legacy or GD-ROM CHD track metadata", path.display())));
+                return Err(MediaError::Unsupported(format!(
+                    "{}: legacy or GD-ROM CHD track metadata",
+                    path.display()
+                )));
             }
         }
         let tracks = parse_tracks(&texts)?;
@@ -122,7 +127,8 @@ pub(crate) fn parse_tracks(texts: &[String]) -> Result<Vec<ChdTrack>> {
     let mut tracks = Vec::new();
     let mut chd_frame = 0;
     for t in texts {
-        let num = |key: &str| -> Result<u32> { field(t, key).ok_or_else(|| bad(t, key))?.parse().map_err(|_| bad(t, key)) };
+        let num =
+            |key: &str| -> Result<u32> { field(t, key).ok_or_else(|| bad(t, key))?.parse().map_err(|_| bad(t, key)) };
         let number = num("TRACK")?;
         let mode = match field(t, "TYPE").ok_or_else(|| bad(t, "TYPE"))? {
             "MODE1_RAW" => TrackMode::Mode1Raw,
@@ -157,8 +163,28 @@ mod tests {
             "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:300 PREGAP:150 PGTYPE:VAUDIO PGSUB:NONE POSTGAP:0".into(),
         ])
         .unwrap();
-        assert_eq!(t[0], ChdTrack { number: 1, mode: TrackMode::Mode2Raw, frames: 1001, pregap: 0, pregap_stored: false, chd_frame: 0 });
-        assert_eq!(t[1], ChdTrack { number: 2, mode: TrackMode::Audio, frames: 300, pregap: 150, pregap_stored: true, chd_frame: 1004 });
+        assert_eq!(
+            t[0],
+            ChdTrack {
+                number: 1,
+                mode: TrackMode::Mode2Raw,
+                frames: 1001,
+                pregap: 0,
+                pregap_stored: false,
+                chd_frame: 0
+            }
+        );
+        assert_eq!(
+            t[1],
+            ChdTrack {
+                number: 2,
+                mode: TrackMode::Audio,
+                frames: 300,
+                pregap: 150,
+                pregap_stored: true,
+                chd_frame: 1004
+            }
+        );
         assert!(parse_tracks(&["TRACK:1 TYPE:MODE2_FORM1 SUBTYPE:NONE FRAMES:4".into()]).is_err());
         assert!(parse_tracks(&["TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:4".into()]).is_err());
     }

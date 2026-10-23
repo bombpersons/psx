@@ -104,11 +104,7 @@ impl Pad {
 
     /// Data bytes in the current reply (after 5Ah).
     fn reply_len(&self) -> usize {
-        if self.config || self.analog {
-            6
-        } else {
-            2
-        }
+        if self.config || self.analog { 6 } else { 2 }
     }
 
     /// Byte `seq` (1 = command byte) of a transfer that began with 01h.
@@ -192,7 +188,10 @@ mod tests {
         // Exit config: zeros in config mode, not button data.
         assert_eq!(xfer(&mut p, &[0x43, 0, 0, 0, 0, 0, 0, 0])[3..], [0; 6]);
         assert!(p.analog && p.locked && !p.config);
-        assert_eq!(xfer(&mut p, &[0x42, 0, 0, 0, 0, 0, 0, 0]), vec![0xFF, 0x73, 0x5A, 0xFF, 0xFF, 0x10, 0x20, 0x30, 0x40]);
+        assert_eq!(
+            xfer(&mut p, &[0x42, 0, 0, 0, 0, 0, 0, 0]),
+            vec![0xFF, 0x73, 0x5A, 0xFF, 0xFF, 0x10, 0x20, 0x30, 0x40]
+        );
     }
 
     #[test]

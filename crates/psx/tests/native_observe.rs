@@ -21,8 +21,17 @@ fn run(root: &Path, out: &Path, extra: &[&str]) -> Value {
     let replay = out.with_extension("json");
     std::fs::write(&replay, r#"[{"frame": 0, "buttons": ["CROSS"]}]"#).unwrap();
     let mut args = vec![
-        "run", "media/Mega Man 8.cue", "--bios", "bios/scph7502.bin", "--from-state", ".psx/mm8-study/s3900/state.bin",
-        "--replay", replay.to_str().unwrap(), "--out", out.to_str().unwrap(), "--brief",
+        "run",
+        "media/Mega Man 8.cue",
+        "--bios",
+        "bios/scph7502.bin",
+        "--from-state",
+        ".psx/mm8-study/s3900/state.bin",
+        "--replay",
+        replay.to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+        "--brief",
     ];
     args.extend_from_slice(extra);
     let o = Command::new(BIN).args(&args).env("PSX_ROOT", root).output().unwrap();
@@ -45,7 +54,8 @@ fn samples_reproduce_the_recorded_jump_and_pokes_take_effect() {
     };
     let dir = std::env::temp_dir().join(format!("psx-observe-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let samples = ["--sample", "8015E8AC:fx16.16:y", "--sample", "8015E8B4:fx16.16:vy", "--sample", "8015E89E:u8:state"];
+    let samples =
+        ["--sample", "8015E8AC:fx16.16:y", "--sample", "8015E8B4:fx16.16:vy", "--sample", "8015E89E:u8:state"];
 
     // Held jump: the recorded trajectory (tick t = sample row t + 1) from the study.
     let mut args = vec!["--frames", "62"];
@@ -54,7 +64,10 @@ fn samples_reproduce_the_recorded_jump_and_pokes_take_effect() {
     assert_eq!(r["status"], "complete", "{r}");
     assert_eq!(r["frames"]["start"], 3900);
     let csv = std::fs::read_to_string(dir.join("jump/samples.csv")).unwrap();
-    let recorded = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/megaman8-movement/tests/data/jump_hold.csv")).unwrap();
+    let recorded = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/megaman8-movement/tests/data/jump_hold.csv"),
+    )
+    .unwrap();
     let ys = column(&csv, "y");
     let mut ticks = 0;
     for line in recorded.lines().filter(|l| !l.starts_with('#')) {

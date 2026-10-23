@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use sha2::{Digest, Sha256};
 
 use crate::cue::{CueSheet, TrackMode};
-use crate::error::{malformed, MediaError, Result};
+use crate::error::{MediaError, Result, malformed};
 
 pub const SYNC: [u8; 12] = [0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0];
 pub const LEAD_IN_SECTORS: u32 = 150;
@@ -103,7 +103,9 @@ pub const IMAGE_EXTENSIONS: &[&str] = &["cue", "bin", "img", "iso", "chd"];
 
 /// Whether `path` has a disc image extension (case-insensitive).
 pub fn is_image_path(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()).is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 fn file_len(path: &Path) -> Result<u64> {
@@ -133,9 +135,7 @@ impl Disc {
                 let mut f = File::open(path).map_err(|e| MediaError::io(path, e))?;
                 f.read_exact(&mut head).map_err(|e| MediaError::io(path, e))?;
                 if head[..12] != SYNC {
-                    return Err(MediaError::Unsupported(
-                        "bare .bin without CD sync pattern; supply its .cue".into(),
-                    ));
+                    return Err(MediaError::Unsupported("bare .bin without CD sync pattern; supply its .cue".into()));
                 }
                 let mode = if head[15] == 1 { TrackMode::Mode1Raw } else { TrackMode::Mode2Raw };
                 Self::open_single(path, mode)
@@ -216,7 +216,14 @@ impl Disc {
             handles.push(File::open(&fpath).map_err(|e| MediaError::io(&fpath, e))?);
             files.push(ImageFile { name: cf.name.clone(), path: fpath, bytes });
         }
-        Ok(Disc { source: path.to_path_buf(), files, tracks, store: Store::Files(Mutex::new(handles)), subq: Default::default(), subq_source: None })
+        Ok(Disc {
+            source: path.to_path_buf(),
+            files,
+            tracks,
+            store: Store::Files(Mutex::new(handles)),
+            subq: Default::default(),
+            subq_source: None,
+        })
     }
 
     fn open_chd(path: &Path) -> Result<Self> {
@@ -244,7 +251,14 @@ impl Disc {
             lba += t.frames - skip;
         }
         let files = vec![ImageFile { name: file_name(path), path: path.to_path_buf(), bytes: file_len(path)? }];
-        Ok(Disc { source: path.to_path_buf(), files, tracks, store: Store::Chd(Box::new(image)), subq: Default::default(), subq_source: None })
+        Ok(Disc {
+            source: path.to_path_buf(),
+            files,
+            tracks,
+            store: Store::Chd(Box::new(image)),
+            subq: Default::default(),
+            subq_source: None,
+        })
     }
 
     pub fn track_for_lba(&self, lba: u32) -> Option<&Track> {
@@ -292,9 +306,7 @@ impl Disc {
         let (raw, mode) = self.read_raw(lba)?;
         match mode {
             TrackMode::Audio => Err(MediaError::NotFound(format!("LBA {lba} is in an audio track"))),
-            TrackMode::Mode1Cooked => {
-                Ok(DataSector { lba, form: SectorForm::Mode1, subheader: None, data: raw })
-            }
+            TrackMode::Mode1Cooked => Ok(DataSector { lba, form: SectorForm::Mode1, subheader: None, data: raw }),
             TrackMode::Mode1Raw | TrackMode::Mode2Raw => {
                 if raw[..12] != SYNC {
                     return malformed(format!("LBA {lba} has no sync pattern"));
@@ -426,7 +438,12 @@ mod tests {
         .unwrap();
         let disc = Disc::open(dir.join("g.cue")).unwrap();
         let copy = Disc::open(disc.write_bin_cue(&out, "g").unwrap()).unwrap();
-        let geometry = |d: &Disc| d.tracks.iter().map(|t| (t.number, t.mode, t.first_lba, t.start_lba, t.sectors, t.unstored_pregap)).collect::<Vec<_>>();
+        let geometry = |d: &Disc| {
+            d.tracks
+                .iter()
+                .map(|t| (t.number, t.mode, t.first_lba, t.start_lba, t.sectors, t.unstored_pregap))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(geometry(&copy), geometry(&disc));
         assert_eq!(copy.files.len(), 3);
         for (a, b) in disc.tracks.iter().zip(&copy.tracks) {

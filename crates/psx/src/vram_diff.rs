@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use psx_media::{MediaError, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const W: usize = 1024;
 const H: usize = 512;
@@ -17,7 +17,12 @@ const H: usize = 512;
 fn read_vram(path: &Path) -> Result<Vec<u16>> {
     let bytes = std::fs::read(path).map_err(|e| MediaError::io(path, e))?;
     if bytes.len() < W * H * 2 {
-        return Err(MediaError::Malformed(format!("{}: {} bytes, expected {}", path.display(), bytes.len(), W * H * 2)));
+        return Err(MediaError::Malformed(format!(
+            "{}: {} bytes, expected {}",
+            path.display(),
+            bytes.len(),
+            W * H * 2
+        )));
     }
     Ok(bytes[..W * H * 2].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect())
 }
@@ -114,7 +119,9 @@ pub fn diff(args: DiffArgs) -> Result<Value> {
     if let (Some(p), Some(img)) = (args.png, img) {
         crate::run::write_png(p, W as u32, H as u32, &img, png::ColorType::Rgba).map_err(|e| MediaError::io(p, e))?;
     }
-    let hist = |m: &BTreeMap<i32, usize>| m.iter().map(|(k, v)| (format!("{k:+}"), json!(v))).collect::<serde_json::Map<_, _>>();
+    let hist = |m: &BTreeMap<i32, usize>| {
+        m.iter().map(|(k, v)| (format!("{k:+}"), json!(v))).collect::<serde_json::Map<_, _>>()
+    };
     Ok(json!({
         "a": args.a,
         "b": args.b,

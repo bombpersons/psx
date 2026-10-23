@@ -10,20 +10,20 @@ use clap::{Parser, Subcommand};
 
 use commands::{Ctx, Op};
 
+mod artifact;
 mod assets_cmd;
 mod bios;
-mod context;
-mod artifact;
-mod page;
 mod bound_symbols;
 mod code;
 mod commands;
+mod context;
 mod ghidra;
 mod guide;
 mod handoff;
 mod mcp;
 mod media_cmd;
 mod native;
+mod page;
 mod parser;
 mod parser_template;
 mod provenance;
@@ -180,7 +180,10 @@ fn main() -> ExitCode {
     if let Some(root) = pinned_root {
         if let Err(e) = std::env::set_current_dir(&root) {
             let abs = std::path::absolute(&root).unwrap_or(root);
-            println!("{}", serde_json::json!({"error": {"code": "invalid_arguments", "message": format!("project root {} (--root / PSX_ROOT): {e}", abs.display())}}));
+            println!(
+                "{}",
+                serde_json::json!({"error": {"code": "invalid_arguments", "message": format!("project root {} (--root / PSX_ROOT): {e}", abs.display())}})
+            );
             return ExitCode::from(1);
         }
     }
@@ -239,4 +242,4 @@ pub(crate) fn instance_suffix() -> String {
     }
 }
 
-pub(crate) use symbols_io::{final_name, load_symbols, name_pc, ScopedSymbols, SymbolCheck};
+pub(crate) use symbols_io::{ScopedSymbols, SymbolCheck, final_name, load_symbols, name_pc};

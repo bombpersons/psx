@@ -42,7 +42,9 @@ jobs:
           fi
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo fmt --all --check --manifest-path templates/psx-bevy/Cargo.toml
       - uses: Swatinem/rust-cache@v2
       # Gamepads in the handoff window (gilrs) link libudev on Linux.
       - run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config

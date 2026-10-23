@@ -65,7 +65,8 @@ impl Archive {
         let count = u16::from_le_bytes(bytes.get(..2).ok_or("DOT-T count truncated")?.try_into().unwrap()) as usize;
         let table_end = 2 + (count + 1) * 2;
         let table = bytes.get(2..table_end).ok_or("DOT-T offset table truncated")?;
-        let offsets: Vec<usize> = table.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b) as usize * SECTOR).collect();
+        let offsets: Vec<usize> =
+            table.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b) as usize * SECTOR).collect();
         if offsets[0] < table_end {
             return Err("DOT-T first entry overlaps the offset table".into());
         }
@@ -109,7 +110,8 @@ impl Archive {
     /// a 12-byte name, u32 size, u32 byte offset and reserved word. Optional
     /// trailing data (including Croc's checksum) is not interpreted here.
     pub fn croc_dir(directory: &[u8], archive_len: usize) -> Result<Self, String> {
-        let count = u32::from_le_bytes(directory.get(..4).ok_or("Croc DIR count truncated")?.try_into().unwrap()) as usize;
+        let count =
+            u32::from_le_bytes(directory.get(..4).ok_or("Croc DIR count truncated")?.try_into().unwrap()) as usize;
         if count == 0 || count > (directory.len() - 4) / 24 {
             return Err("Croc DIR entry table truncated or empty".into());
         }
@@ -176,9 +178,15 @@ mod tests {
 
     #[test]
     fn rejects_truncated_overlapping_unordered_and_inexact_tables() {
-        for bytes in
-            [vec![], vec![1], vec![2, 0, 1, 0], fixture(&[0, 2], 2), fixture(&[1, 3, 2, 4], 4), fixture(&[1, 3], 2), fixture(&[1, 1], 2)]
-        {
+        for bytes in [
+            vec![],
+            vec![1],
+            vec![2, 0, 1, 0],
+            fixture(&[0, 2], 2),
+            fixture(&[1, 3, 2, 4], 4),
+            fixture(&[1, 3], 2),
+            fixture(&[1, 1], 2),
+        ] {
             assert!(Archive::dot_t(&bytes).is_err());
             assert!(Archive::detect_dot_t(&bytes).is_none());
         }

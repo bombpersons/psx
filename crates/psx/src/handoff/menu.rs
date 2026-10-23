@@ -6,7 +6,7 @@
 //! (d-pad, South to choose, East to go back, North to clear). Changes apply
 //! at once; Save writes them to the controls file for later handoffs.
 
-use super::bindings::{Bindings, Device, ACTIONS};
+use super::bindings::{ACTIONS, Bindings, Device};
 
 const DEADZONE_ROW: usize = ACTIONS.len();
 const DEFAULTS_ROW: usize = DEADZONE_ROW + 1;
@@ -21,7 +21,10 @@ enum Mode {
     Browse,
     /// Waiting for an input for the selected row; armed once everything is released,
     /// so the press that started listening is not taken as the binding.
-    Listen { armed: bool, ticks: u32 },
+    Listen {
+        armed: bool,
+        ticks: u32,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -110,7 +113,8 @@ impl Menu {
             Nav::Left | Nav::Right => {}
             Nav::Accept if action_row => {
                 self.mode = Mode::Listen { armed: false, ticks: 0 };
-                self.status = format!("Press a {} input for {} (Escape cancels)", self.device.label(), ACTIONS[self.row]);
+                self.status =
+                    format!("Press a {} input for {} (Escape cancels)", self.device.label(), ACTIONS[self.row]);
             }
             Nav::Accept => match self.row {
                 DEFAULTS_ROW => {
@@ -131,7 +135,15 @@ impl Menu {
         Outcome::Stay
     }
 
-    fn listen(&mut self, b: &mut Bindings, keys: &[&str], pad: &[&str], held: bool, armed: bool, ticks: u32) -> Outcome {
+    fn listen(
+        &mut self,
+        b: &mut Bindings,
+        keys: &[&str],
+        pad: &[&str],
+        held: bool,
+        armed: bool,
+        ticks: u32,
+    ) -> Outcome {
         if keys.contains(&"Escape") {
             self.mode = Mode::Browse;
             self.status = "Cancelled".into();
@@ -151,7 +163,9 @@ impl Menu {
             Some(input) => {
                 self.mode = Mode::Browse;
                 self.status = match b.assign(self.row, self.device, input) {
-                    Ok(Some(other)) => format!("{} = {input}; {} now has the old input", ACTIONS[self.row], ACTIONS[other]),
+                    Ok(Some(other)) => {
+                        format!("{} = {input}; {} now has the old input", ACTIONS[self.row], ACTIONS[other])
+                    }
                     Ok(None) => format!("{} = {input}", ACTIONS[self.row]),
                     Err(e) => e,
                 };
@@ -167,7 +181,13 @@ impl Menu {
             ("CONTROLS".to_string(), false),
             ("Arrows/d-pad move, Enter/South choose,".to_string(), false),
             ("Delete/North clear, Esc/East close.".to_string(), false),
-            (format!("Gamepads: {}", if gamepads.is_empty() { "none found".to_string() } else { gamepads.join(", ") }), false),
+            (
+                format!(
+                    "Gamepads: {}",
+                    if gamepads.is_empty() { "none found".to_string() } else { gamepads.join(", ") }
+                ),
+                false,
+            ),
             (String::new(), false),
             (format!("{:<9}{:<17}{:<17}", "BUTTON", "KEYBOARD", "GAMEPAD"), false),
         ];
@@ -184,7 +204,10 @@ impl Menu {
                     format!(" {name}")
                 }
             };
-            out.push((format!("{action:<9}{:<17}{:<17}", cell(Device::Keyboard), cell(Device::Gamepad)), self.row == i));
+            out.push((
+                format!("{action:<9}{:<17}{:<17}", cell(Device::Keyboard), cell(Device::Gamepad)),
+                self.row == i,
+            ));
         }
         out.push((format!("Stick deadzone  < {:.2} >", b.stick_deadzone), self.row == DEADZONE_ROW));
         out.push(("Restore defaults".into(), self.row == DEFAULTS_ROW));

@@ -79,7 +79,12 @@ fn chd_matches_cue() {
         }
         let cue = Disc::open(media(&format!("{}.cue", chd_path.file_stem().unwrap().to_string_lossy()))).unwrap();
         let chd = Disc::open(&chd_path).unwrap();
-        let geometry = |d: &Disc| d.tracks.iter().map(|t| (t.number, t.mode, t.first_lba, t.start_lba, t.sectors, t.unstored_pregap)).collect::<Vec<_>>();
+        let geometry = |d: &Disc| {
+            d.tracks
+                .iter()
+                .map(|t| (t.number, t.mode, t.first_lba, t.start_lba, t.sectors, t.unstored_pregap))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(geometry(&chd), geometry(&cue), "{}", chd_path.display());
         for lba in 0..cue.end_lba() {
             assert!(chd.read_raw(lba).unwrap() == cue.read_raw(lba).unwrap(), "{} LBA {lba}", chd_path.display());

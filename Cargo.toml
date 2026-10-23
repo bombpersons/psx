@@ -11,6 +11,9 @@ members = [
     "crates/psx-redux",
     "crates/psx-symbols",
 ]
+# The game template is its own workspace; this keeps its vendored crates from
+# being taken for members of this one when cargo runs inside the template.
+exclude = ["templates"]
 
 [workspace.package]
 version = "0.3.8"

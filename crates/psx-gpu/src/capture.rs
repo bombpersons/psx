@@ -103,10 +103,16 @@ pub fn decode(start: &DrawState, commands: &[Vec<u32>]) -> Vec<Command> {
 
 fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
     let op = (p[0] >> 24) as u8;
-    let mut c = Command { index, op, words: p.len(), kind: "nop", offset: [st.offset.0, st.offset.1], ..Default::default() };
+    let mut c =
+        Command { index, op, words: p.len(), kind: "nop", offset: [st.offset.0, st.offset.1], ..Default::default() };
     let word = |i: usize| p.get(i).copied().unwrap_or(0);
     let xy = |w: u32, st: &DrawState| (sext11(w) + st.offset.0, sext11(w >> 16) + st.offset.1);
-    let size = |w: u32| ((((w & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1) as i32, ((((w >> 16) & 0xFFFF).wrapping_sub(1) & 0x1FF) + 1) as i32);
+    let size = |w: u32| {
+        (
+            (((w & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1) as i32,
+            ((((w >> 16) & 0xFFFF).wrapping_sub(1) & 0x1FF) + 1) as i32,
+        )
+    };
     let pos = |w: u32| ((w & 0x3FF) as i32, ((w >> 16) & 0x1FF) as i32);
     match op {
         0x02 => {
@@ -276,10 +282,18 @@ mod tests {
         let st = DrawState { offset: (100, 50), texpage: 0, ..Default::default() };
         // E5 offset is already in `st`; GT4 (3Ch): colour+xy+uv(clut) per vertex.
         let words = vec![
-            0x3C10_2030, 0x0000_0000, 0x7FC0_0201, // v0: rgb 30/20/10, (0,0), uv 01/02, clut (0, 511)
-            0x0040_5060, 0x0000_0010, 0x0095_0403, // v1: (16,0), page 0x95
-            0x0070_8090, 0x0010_0000, 0x0000_0605, // v2
-            0x00A0_B0C0, 0x0010_0010, 0x0000_0807, // v3
+            0x3C10_2030,
+            0x0000_0000,
+            0x7FC0_0201, // v0: rgb 30/20/10, (0,0), uv 01/02, clut (0, 511)
+            0x0040_5060,
+            0x0000_0010,
+            0x0095_0403, // v1: (16,0), page 0x95
+            0x0070_8090,
+            0x0010_0000,
+            0x0000_0605, // v2
+            0x00A0_B0C0,
+            0x0010_0010,
+            0x0000_0807, // v3
         ];
         let c = &decode(&st, &[words])[0];
         assert_eq!((c.kind, c.textured, c.gouraud), ("poly4", true, true));

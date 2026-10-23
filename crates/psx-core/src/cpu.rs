@@ -304,7 +304,15 @@ impl Cpu {
         self.branch_to(target);
     }
 
-    fn load_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, pc: u32, info: &mut impl StepSink, rt: usize) -> Result<u32, Exception> {
+    fn load_mem(
+        &mut self,
+        bus: &mut Bus,
+        addr: u32,
+        w: Width,
+        pc: u32,
+        info: &mut impl StepSink,
+        rt: usize,
+    ) -> Result<u32, Exception> {
         // Widths are 1, 2 or 4: a mask test (is_multiple_of compiles to a divide here).
         if addr & (w as u32 - 1) != 0 {
             self.cop0[cop0::BADVADDR] = addr;
@@ -322,7 +330,15 @@ impl Cpu {
         Ok(v)
     }
 
-    fn store_mem(&mut self, bus: &mut Bus, addr: u32, w: Width, value: u32, pc: u32, info: &mut impl StepSink) -> Result<(), Exception> {
+    fn store_mem(
+        &mut self,
+        bus: &mut Bus,
+        addr: u32,
+        w: Width,
+        value: u32,
+        pc: u32,
+        info: &mut impl StepSink,
+    ) -> Result<(), Exception> {
         // Widths are 1, 2 or 4: a mask test (is_multiple_of compiles to a divide here).
         if addr & (w as u32 - 1) != 0 {
             self.cop0[cop0::BADVADDR] = addr;

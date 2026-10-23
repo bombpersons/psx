@@ -158,7 +158,9 @@ impl Tracer {
         match self.state {
             Window::Done => return,
             Window::Waiting => {
-                if bus.frames < self.cfg.from_frame || self.cfg.start_pc.is_some_and(|p| p & 0x1FFF_FFFF != info.pc & 0x1FFF_FFFF) {
+                if bus.frames < self.cfg.from_frame
+                    || self.cfg.start_pc.is_some_and(|p| p & 0x1FFF_FFFF != info.pc & 0x1FFF_FFFF)
+                {
                     return;
                 }
                 self.state = Window::Active;
@@ -181,14 +183,16 @@ impl Tracer {
         if let Some((n, site)) = self.pending_call {
             if n <= 1 {
                 self.pending_call = None;
-                let c = self.calls.entry(pc).or_insert_with(|| CallStat { first_frame: bus.frames, ..Default::default() });
+                let c =
+                    self.calls.entry(pc).or_insert_with(|| CallStat { first_frame: bus.frames, ..Default::default() });
                 c.count += 1;
                 c.last_frame = bus.frames;
                 if c.callers.len() < 64 || c.callers.contains_key(&site) {
                     *c.callers.entry(site).or_default() += 1;
                 }
                 if (shown || self.in_range(site & 0x1FFF_FFFF)) && room {
-                    let name = self.namer.as_ref().and_then(|n| n(pc, &bus.ram)).map(|n| format!(" {n}")).unwrap_or_default();
+                    let name =
+                        self.namer.as_ref().and_then(|n| n(pc, &bus.ram)).map(|n| format!(" {n}")).unwrap_or_default();
                     self.write(format_args!("-> {pc:08x}{name} (from {site:08x})\n"));
                 }
             } else {

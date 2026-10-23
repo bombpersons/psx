@@ -69,18 +69,8 @@ pub mod op {
     }
 }
 
-const MAC_POS: [u32; 4] = [
-    flag::MAC0_POS,
-    flag::MAC1_POS,
-    flag::MAC2_POS,
-    flag::MAC3_POS,
-];
-const MAC_NEG: [u32; 4] = [
-    flag::MAC0_NEG,
-    flag::MAC1_NEG,
-    flag::MAC2_NEG,
-    flag::MAC3_NEG,
-];
+const MAC_POS: [u32; 4] = [flag::MAC0_POS, flag::MAC1_POS, flag::MAC2_POS, flag::MAC3_POS];
+const MAC_NEG: [u32; 4] = [flag::MAC0_NEG, flag::MAC1_NEG, flag::MAC2_NEG, flag::MAC3_NEG];
 const IR_SAT: [u32; 4] = [flag::IR0_SAT, flag::IR1_SAT, flag::IR2_SAT, flag::IR3_SAT];
 const COLOR_SAT: [u32; 3] = [flag::COLOR_R_SAT, flag::COLOR_G_SAT, flag::COLOR_B_SAT];
 
@@ -101,20 +91,12 @@ struct Acc {
 
 impl Acc {
     fn new(v: i64) -> Self {
-        Acc {
-            val: wrap44(v),
-            pos: v > MAC_MAX,
-            neg: v < MAC_MIN,
-        }
+        Acc { val: wrap44(v), pos: v > MAC_MAX, neg: v < MAC_MIN }
     }
 
     fn add(self, x: i64) -> Self {
         let r = self.val + x;
-        Acc {
-            val: wrap44(r),
-            pos: self.pos || r > MAC_MAX,
-            neg: self.neg || r < MAC_MIN,
-        }
+        Acc { val: wrap44(r), pos: self.pos || r > MAC_MAX, neg: self.neg || r < MAC_MIN }
     }
 }
 
@@ -210,11 +192,7 @@ const fn sext(v: i16) -> u32 {
 /// Read 32-bit word `k` (0..=4) of a packed 3x3 matrix.
 fn mat_read(m: &[[i16; 3]; 3], k: usize) -> u32 {
     let e = |i: usize| m[i / 3][i % 3];
-    if k == 4 {
-        sext(e(8))
-    } else {
-        pack(e(2 * k), e(2 * k + 1))
-    }
+    if k == 4 { sext(e(8)) } else { pack(e(2 * k), e(2 * k + 1)) }
 }
 
 fn mat_write(m: &mut [[i16; 3]; 3], k: usize, v: u32) {
@@ -328,11 +306,7 @@ impl Gte {
 
     /// FLAG register with the bit-31 error summary.
     pub fn flag(&self) -> u32 {
-        let err = if self.flag & flag::ERROR_MASK != 0 {
-            flag::ERROR
-        } else {
-            0
-        };
+        let err = if self.flag & flag::ERROR_MASK != 0 { flag::ERROR } else { 0 };
         self.flag | err
     }
 
@@ -354,10 +328,7 @@ impl Gte {
     /// Returns the command's documented cycle count, or `None` for an
     /// unassigned opcode (which leaves all registers untouched).
     pub fn execute(&mut self, cmd: u32) -> Option<u32> {
-        let m = Mode {
-            sf: cmd >> 19 & 1 != 0,
-            lm: cmd >> 10 & 1 != 0,
-        };
+        let m = Mode { sf: cmd >> 19 & 1 != 0, lm: cmd >> 10 & 1 != 0 };
         let opcode = cmd & 0x3F;
         let cycles = match opcode {
             op::RTPS => 15,
@@ -446,10 +417,7 @@ impl Gte {
             op::GPL => {
                 let (ir, ir0, mac) = (self.ir, self.ir[0] as i64, self.mac);
                 let sh = if m.sf { 12 } else { 0 };
-                self.set_macs(
-                    m,
-                    [1, 2, 3].map(|i| Acc::new(((mac[i] as i64) << sh) + ir0 * ir[i] as i64)),
-                );
+                self.set_macs(m, [1, 2, 3].map(|i| Acc::new(((mac[i] as i64) << sh) + ir0 * ir[i] as i64)));
                 self.push_color();
             }
             _ => unreachable!(),
@@ -515,14 +483,7 @@ impl Gte {
 
     /// MAC1-3 = (T*0x1000 + M*V) >> (sf*12), with the far-color hardware bug
     /// when `fc_bug` is set. Does not touch IR. Returns the raw 44-bit MACs.
-    fn mat_vec(
-        &mut self,
-        sf: bool,
-        mx: [[i64; 3]; 3],
-        v: [i64; 3],
-        t: [i64; 3],
-        fc_bug: bool,
-    ) -> [i64; 3] {
+    fn mat_vec(&mut self, sf: bool, mx: [[i64; 3]; 3], v: [i64; 3], t: [i64; 3], fc_bug: bool) -> [i64; 3] {
         let mut raw = [0; 3];
         for i in 0..3 {
             let row = mx[i];
@@ -533,10 +494,7 @@ impl Gte {
                 self.lim_b(i + 1, junk, false);
                 Acc::new(row[1] * v[1]).add(row[2] * v[2])
             } else {
-                Acc::new(t[i] << 12)
-                    .add(row[0] * v[0])
-                    .add(row[1] * v[1])
-                    .add(row[2] * v[2])
+                Acc::new(t[i] << 12).add(row[0] * v[0]).add(row[1] * v[1]).add(row[2] * v[2])
             };
             self.mac[i + 1] = self.mac_value(i + 1, a, sf);
             raw[i] = a.val;
@@ -545,11 +503,7 @@ impl Gte {
     }
 
     fn vertex(&self, i: usize) -> [i64; 3] {
-        if i < 3 {
-            self.v[i].map(i64::from)
-        } else {
-            [self.ir[1], self.ir[2], self.ir[3]].map(i64::from)
-        }
+        if i < 3 { self.v[i].map(i64::from) } else { [self.ir[1], self.ir[2], self.ir[3]].map(i64::from) }
     }
 
     /// One RTPS step for vertex `vi`; `last` also computes depth cue (IR0).
@@ -582,7 +536,8 @@ impl Gte {
         let sy = lim_g(&mut self.flag, sy >> 16, flag::SY2_SAT);
         self.push_sxy(pack(sx, sy));
         if let Some(log) = &mut self.projections {
-            let view = [raw[0] >> 12, raw[1] >> 12, raw[2] >> 12].map(|v| v.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+            let view =
+                [raw[0] >> 12, raw[1] >> 12, raw[2] >> 12].map(|v| v.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
             log.push(Projection { sx, sy, view });
         }
 
@@ -629,11 +584,7 @@ impl Gte {
             _ => {
                 // Undefined "garbage" matrix observed on hardware.
                 let r = self.rgbc[0] as i64;
-                let (r13, r22, ir0) = (
-                    self.rt[0][2] as i64,
-                    self.rt[1][1] as i64,
-                    self.ir[0] as i64,
-                );
+                let (r13, r22, ir0) = (self.rt[0][2] as i64, self.rt[1][1] as i64, self.ir[0] as i64);
                 [[-(r << 4), r << 4, ir0], [r13; 3], [r22; 3]]
             }
         };
@@ -686,8 +637,7 @@ impl Gte {
 
     /// MAC/IR = RGBC * IR.
     fn color_apply(&mut self, m: Mode) {
-        let input =
-            [0, 1, 2].map(|i| Acc::new(((self.rgbc[i] as i64) << 4) * self.ir[i + 1] as i64));
+        let input = [0, 1, 2].map(|i| Acc::new(((self.rgbc[i] as i64) << 4) * self.ir[i + 1] as i64));
         self.set_macs(m, input);
     }
 
@@ -808,12 +758,7 @@ impl Gte {
     pub fn rtps(&mut self, v: Vec3i16) -> RtpsResult {
         self.set_vertex(0, v);
         self.execute(op::encode(op::RTPS, true, false));
-        RtpsResult {
-            sxy: ScreenXY::from_u32(self.sxy[2]),
-            sz: self.sz[3],
-            ir0: self.ir[0],
-            flags: self.flag(),
-        }
+        RtpsResult { sxy: ScreenXY::from_u32(self.sxy[2]), sz: self.sz[3], ir0: self.ir[0], flags: self.flag() }
     }
 
     /// Project three vertices (RTPT, sf=1, lm=0). Leaves them in SXY0-2 so

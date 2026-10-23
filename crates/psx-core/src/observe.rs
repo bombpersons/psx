@@ -157,7 +157,15 @@ impl SpuLog {
         }
         let upload = SpuUpload { address, bytes: 2, source: "cpu", ram: None };
         let recorded = self.events.len() < self.max;
-        self.record(SpuEvent { frame, cycle, event: "upload", voice: None, pc: Some(pc), key_on: None, upload: Some(upload) });
+        self.record(SpuEvent {
+            frame,
+            cycle,
+            event: "upload",
+            voice: None,
+            pc: Some(pc),
+            key_on: None,
+            upload: Some(upload),
+        });
         // Merging needs the event in the log; unrecorded halfwords count individually.
         self.cpu_upload_end = recorded.then_some(address + 2);
     }

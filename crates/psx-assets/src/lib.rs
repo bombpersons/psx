@@ -16,7 +16,7 @@ pub mod tmd;
 pub mod upload;
 pub mod vab;
 
-pub use scan::{scan, Hit, Info, Kind};
+pub use scan::{Hit, Info, Kind, scan};
 pub use tim::{Tim, TimAlpha, Vram};
 pub use tmd::Tmd;
 pub use vab::{Vab, Vag};
@@ -39,7 +39,10 @@ mod tests {
         for f in ["tim.rs", "tmd.rs"] {
             let ours = std::fs::read_to_string(root.join("src").join(f)).unwrap();
             let theirs = std::fs::read_to_string(bevy.join("src/psx/formats").join(f)).unwrap();
-            assert!(ours == theirs, "psx-bevy's src/psx/formats/{f} differs from crates/psx-assets/src/{f}; copy it over");
+            assert!(
+                ours == theirs,
+                "psx-bevy's src/psx/formats/{f} differs from crates/psx-assets/src/{f}; copy it over"
+            );
         }
     }
 }

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct RunArgs {
     pub media: Option<PathBuf>,
@@ -67,11 +67,7 @@ pub struct ObserveArgs {
 /// Physical address with main RAM mirrors folded (what read watches compare).
 pub fn fold(addr: u32) -> u32 {
     let p = addr & 0x1FFF_FFFF;
-    if p < 0x0080_0000 {
-        p & 0x1F_FFFF
-    } else {
-        p
-    }
+    if p < 0x0080_0000 { p & 0x1F_FFFF } else { p }
 }
 
 /// `LO-HI` or `ADDR[:WIDTH]` (hex) as a folded `[lo, hi)` range.
@@ -83,7 +79,9 @@ pub fn parse_range_spec(s: &str) -> Result<(u32, u32), String> {
             (a, b.checked_sub(a).filter(|&n| n > 0).ok_or_else(|| format!("empty range {s:?}"))?)
         }
         None => match s.split_once(':') {
-            Some((a, w)) => (h(a)?, w.parse::<u32>().ok().filter(|&n| n > 0).ok_or_else(|| format!("bad width in {s:?}"))?),
+            Some((a, w)) => {
+                (h(a)?, w.parse::<u32>().ok().filter(|&n| n > 0).ok_or_else(|| format!("bad width in {s:?}"))?)
+            }
             None => (h(s)?, 4),
         },
     };
@@ -115,7 +113,9 @@ impl CardArgs {
     pub fn pad_kind(&self) -> Result<psx_core::pad::PadKind, String> {
         match &self.pad {
             None => Ok(psx_core::pad::PadKind::Digital),
-            Some(p) => psx_core::pad::PadKind::from_name(p).ok_or_else(|| format!("unknown pad {p:?} (digital | dualshock)")),
+            Some(p) => {
+                psx_core::pad::PadKind::from_name(p).ok_or_else(|| format!("unknown pad {p:?} (digital | dualshock)"))
+            }
         }
     }
 
@@ -202,17 +202,18 @@ pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgb: &[u8], color: png::Col
 }
 
 pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
-    let events=match crate::replay::resolve(a.replay.as_deref(),a.input.as_ref(),a.frames as u64) {
-        Ok(e)=>e,Err(e)=>return (false,err("invalid_arguments",e)),
+    let events = match crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64) {
+        Ok(e) => e,
+        Err(e) => return (false, err("invalid_arguments", e)),
     };
-    let input_report=crate::replay::report(&events);
-    let (ok,mut value)=run_resolved(root,a,events);
-    if value.get("error").is_none(){
+    let input_report = crate::replay::report(&events);
+    let (ok, mut value) = run_resolved(root, a, events);
+    if value.get("error").is_none() {
         let application = value["input"]["application"].take();
         value["input"] = input_report;
         value["input"]["application"] = application;
     }
-    (ok,value)
+    (ok, value)
 }
 
 fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool, Value) {
@@ -225,7 +226,9 @@ fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (
     if a.trace.gpu_search_frames.is_some_and(|n| !(1..=600).contains(&n)) {
         return (false, err("invalid_arguments", "--gpu-search-frames must be in 1..=600"));
     }
-    if a.trace.gpu_next_draw && a.trace.gpu_frame.unwrap_or(0).checked_add(a.trace.gpu_search_frames.unwrap_or(60) as u64).is_none() {
+    if a.trace.gpu_next_draw
+        && a.trace.gpu_frame.unwrap_or(0).checked_add(a.trace.gpu_search_frames.unwrap_or(60) as u64).is_none()
+    {
         return (false, err("invalid_arguments", "GPU search frame range overflows u64"));
     }
     crate::run_native::run(root, a, events)
@@ -247,7 +250,20 @@ pub(crate) fn brief(v: &Value) -> Value {
         "watch": {"enabled":v["watch"]["enabled"],"hits": v["watch"]["hits"], "recorded": v["watch"]["recorded"],
             "complete":v["watch"]["complete"],"file":v["watch"]["file"]},
     });
-    for k in ["build", "resolved", "input", "pad", "artifacts", "samples", "pokes", "screens", "states", "read_watch", "spu", "wall_ms"] {
+    for k in [
+        "build",
+        "resolved",
+        "input",
+        "pad",
+        "artifacts",
+        "samples",
+        "pokes",
+        "screens",
+        "states",
+        "read_watch",
+        "spu",
+        "wall_ms",
+    ] {
         if !v[k].is_null() {
             b[k] = v[k].clone();
         }
@@ -262,9 +278,21 @@ pub(crate) fn brief(v: &Value) -> Value {
     if v["gpu_frame"].is_object() {
         let g = &v["gpu_frame"];
         let mut summary = serde_json::Map::new();
-        for key in
-            ["error", "status", "reason", "mode", "search", "frame", "run_frame", "absolute_frame", "complete", "commands", "draw_commands", "draw_filter", "content"]
-        {
+        for key in [
+            "error",
+            "status",
+            "reason",
+            "mode",
+            "search",
+            "frame",
+            "run_frame",
+            "absolute_frame",
+            "complete",
+            "commands",
+            "draw_commands",
+            "draw_filter",
+            "content",
+        ] {
             if let Some(value) = g.get(key) {
                 summary.insert(key.into(), value.clone());
             }
@@ -273,7 +301,8 @@ pub(crate) fn brief(v: &Value) -> Value {
     }
     if v["trace"].is_object() {
         let t = &v["trace"];
-        b["trace"] = json!({"instructions": t["instructions"], "lines": t["lines"], "lines_dropped": t["lines_dropped"]});
+        b["trace"] =
+            json!({"instructions": t["instructions"], "lines": t["lines"], "lines_dropped": t["lines_dropped"]});
     }
     b
 }

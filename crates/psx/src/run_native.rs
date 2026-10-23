@@ -3,13 +3,13 @@
 use std::path::Path;
 use std::time::Instant;
 
-use psx_core::disasm::reg;
-use psx_core::state::{disc_fingerprint, MediaId, StateError};
-use psx_core::trace::{Namer, TraceConfig, Tracer};
 use psx_core::Machine;
-use serde_json::{json, Value};
+use psx_core::disasm::reg;
+use psx_core::state::{MediaId, StateError, disc_fingerprint};
+use psx_core::trace::{Namer, TraceConfig, Tracer};
+use serde_json::{Value, json};
 
-use crate::run::{write_png, RunArgs};
+use crate::run::{RunArgs, write_png};
 
 fn err(code: &str, message: impl std::fmt::Display) -> (bool, Value) {
     (false, json!({"error": {"code": code, "message": message.to_string()}}))
@@ -39,7 +39,10 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     };
     // Replay events: pad state from each frame (frames counted from the run start).
     if crate::replay::uses_sticks(&events) && m.bus.sio0.pad.kind != psx_core::pad::PadKind::DualShock {
-        return err("invalid_arguments", "input sticks require a dualshock pad (configure it at boot; checkpoint pads are restored)");
+        return err(
+            "invalid_arguments",
+            "input sticks require a dualshock pad (configure it at boot; checkpoint pads are restored)",
+        );
     }
     if let Err(e) = attach_observers(&mut m, &a) {
         return e;
@@ -54,10 +57,11 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
         Ok(p) => p,
         Err(e) => return err("invalid_arguments", e),
     };
-    let read_ranges = match obs.watch_reads.iter().map(|s| crate::run::parse_range_spec(s)).collect::<Result<Vec<_>, _>>() {
-        Ok(r) => r,
-        Err(e) => return err("invalid_arguments", format!("--watch-reads: {e}")),
-    };
+    let read_ranges =
+        match obs.watch_reads.iter().map(|s| crate::run::parse_range_spec(s)).collect::<Result<Vec<_>, _>>() {
+            Ok(r) => r,
+            Err(e) => return err("invalid_arguments", format!("--watch-reads: {e}")),
+        };
     let mut reads: Vec<Value> = Vec::new();
     let mut read_hits: u64 = 0;
     let mut readers: std::collections::HashMap<u32, u64> = Default::default();
@@ -69,7 +73,8 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
         Err(e) => return err(e.code(), e),
     };
     let dir = a.out.clone().unwrap_or_else(|| {
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let stamp =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         root.join(".psx/runs").join(format!("{stamp}-{}-native{}", std::process::id(), crate::instance_suffix()))
     });
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -236,14 +241,22 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
             v
         })
         .collect();
-    if !a.watches.is_empty(){put("writes.jsonl", jsonl(hits.clone()).as_bytes());}
+    if !a.watches.is_empty() {
+        put("writes.jsonl", jsonl(hits.clone()).as_bytes());
+    }
     let mut event_logs = serde_json::Map::new();
     if let Some(cd) = &m.bus.obs.cd {
-        put("cd_native.jsonl", jsonl(cd.iter().map(|t| with_run_frame(serde_json::to_value(t).unwrap())).collect()).as_bytes());
+        put(
+            "cd_native.jsonl",
+            jsonl(cd.iter().map(|t| with_run_frame(serde_json::to_value(t).unwrap())).collect()).as_bytes(),
+        );
         event_logs.insert("cd_native".into(), json!({"events": cd.len(), "recorded": cd.len()}));
     }
     if let Some(b) = &m.bus.obs.bios {
-        put("bios.jsonl", jsonl(b.iter().map(|t| with_run_frame(serde_json::to_value(t).unwrap())).collect()).as_bytes());
+        put(
+            "bios.jsonl",
+            jsonl(b.iter().map(|t| with_run_frame(serde_json::to_value(t).unwrap())).collect()).as_bytes(),
+        );
         event_logs.insert("bios".into(), json!({"events": b.len(), "recorded": b.len()}));
     }
     let spu_report = match &m.bus.obs.spu {
@@ -446,7 +459,10 @@ pub(crate) fn boot(
         })?;
         if header.media != *media_id {
             let show = |m: &Option<MediaId>| serde_json::to_string(m).unwrap_or_default();
-            return Err(err("identity_mismatch", format!("state was saved with media {}, but --media is {}", show(&header.media), show(media_id))));
+            return Err(err(
+                "identity_mismatch",
+                format!("state was saved with media {}, but --media is {}", show(&header.media), show(media_id)),
+            ));
         }
         // Reinsert without resetting the drive: its state came from the file.
         m.bus.cdrom.disc = disc;
@@ -566,7 +582,12 @@ fn resolve(spec: &str, scopes: &[crate::ScopedSymbols]) -> Result<(u32, Option<u
         .ok_or_else(|| format!("{spec:?} is neither a hex address nor a function in --symbols"))
 }
 
-fn make_tracer(a: &RunArgs, scopes: &std::rc::Rc<Vec<crate::ScopedSymbols>>, start_frame: u64, dir: &Path) -> Result<Tracer, String> {
+fn make_tracer(
+    a: &RunArgs,
+    scopes: &std::rc::Rc<Vec<crate::ScopedSymbols>>,
+    start_frame: u64,
+    dir: &Path,
+) -> Result<Tracer, String> {
     let t = &a.trace;
     let mut ranges = Vec::new();
     for r in &t.trace_ranges {
@@ -583,7 +604,13 @@ fn make_tracer(a: &RunArgs, scopes: &std::rc::Rc<Vec<crate::ScopedSymbols>>, sta
         ranges.push((lo & 0x1FFF_FFFF, (lo & 0x1FFF_FFFF) + (hi - lo)));
     }
     let start_pc = t.trace_start.as_deref().map(|s| resolve(s, scopes).map(|r| r.0)).transpose()?;
-    let cfg = TraceConfig { from_frame: start_frame + t.trace_from_frame, start_pc, frames: t.trace_frames, ranges, max_lines: a.max_events as u64 };
+    let cfg = TraceConfig {
+        from_frame: start_frame + t.trace_from_frame,
+        start_pc,
+        frames: t.trace_frames,
+        ranges,
+        max_lines: a.max_events as u64,
+    };
     let path = dir.join("trace.txt");
     let mut file = std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     {
@@ -638,7 +665,9 @@ fn trace_outputs(
             })
         })
         .collect();
-    for (file, bytes) in [("coverage.txt", text.into_bytes()), ("calls.json", serde_json::to_vec_pretty(&calls_json).unwrap())] {
+    for (file, bytes) in
+        [("coverage.txt", text.into_bytes()), ("calls.json", serde_json::to_vec_pretty(&calls_json).unwrap())]
+    {
         let p = dir.join(file);
         std::fs::write(&p, &bytes).map_err(|e| format!("{}: {e}", p.display()))?;
         files.insert(file.into(), json!({"path": p, "sha256": sha256(&bytes)}));
@@ -646,7 +675,9 @@ fn trace_outputs(
     files.insert("trace.txt".into(), json!({"path": dir.join("trace.txt")}));
     let exceptions: serde_json::Map<String, Value> =
         t.exceptions.iter().map(|(code, n)| (psx_core::trace::exception_name(*code).to_string(), json!(n))).collect();
-    let window = |w: Option<(u64, u64)>| w.map(|(f, c)| json!({"frame": f, "run_frame": f as i64 - start_frame as i64, "cycle": c}));
+    let window = |w: Option<(u64, u64)>| {
+        w.map(|(f, c)| json!({"frame": f, "run_frame": f as i64 - start_frame as i64, "cycle": c}))
+    };
     Ok(json!({
         "started": window(t.started), "stopped": window(t.stopped),
         "instructions": t.instructions,
@@ -687,10 +718,11 @@ fn gpu_frame_outputs(
     for c in decoded.iter_mut().filter(|c| c.kind == "poly3" || c.kind == "poly4") {
         polys += 1;
         let [ox, oy] = c.offset;
-        let cands: Vec<&Vec<usize>> = match c.vertices.iter().map(|v| by_xy.get(&(v.x - ox, v.y - oy))).collect::<Option<Vec<_>>>() {
-            Some(c) => c,
-            None => continue,
-        };
+        let cands: Vec<&Vec<usize>> =
+            match c.vertices.iter().map(|v| by_xy.get(&(v.x - ox, v.y - oy))).collect::<Option<Vec<_>>>() {
+                Some(c) => c,
+                None => continue,
+            };
         // Anchor on each candidate of vertex 0; take the nearest candidate of each other vertex.
         let mut best: Option<(usize, Vec<usize>)> = None;
         for &a in cands[0] {
@@ -779,7 +811,15 @@ fn gpu_frame_outputs(
     let (aw, ah) = ((x2 - x1 + 1).clamp(0, 1024), (y2 - y1 + 1).clamp(0, 512));
     if aw > 0 && ah > 0 && x1 >= 0 && y1 >= 0 && x1 + aw <= 1024 && y1 + ah <= 512 {
         let p = dir.join("gpu_frame_screen.png");
-        if write_png(&p, aw as u32, ah as u32, &end_vram.rgba15(x1 as _, y1 as _, aw as _, ah as _), png::ColorType::Rgba).is_ok() {
+        if write_png(
+            &p,
+            aw as u32,
+            ah as u32,
+            &end_vram.rgba15(x1 as _, y1 as _, aw as _, ah as _),
+            png::ColorType::Rgba,
+        )
+        .is_ok()
+        {
             files.insert("gpu_frame_screen.png".into(), json!({"path": p, "area": [x1, y1, aw, ah]}));
         }
     }

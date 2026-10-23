@@ -8,7 +8,7 @@ use std::path::Path;
 
 use psx_core::disasm::disasm;
 use psx_media::{MediaError, PsxExe};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn bad(m: impl std::fmt::Display) -> MediaError {
     MediaError::Malformed(m.to_string())
@@ -56,7 +56,13 @@ impl Code {
                     exe: exe.map(|(_, h, p)| (0x8000_0000 | (h.text_addr & 0x1F_FFFF), p)),
                 })
             }
-            (None, Some((s, h, p))) => Ok(Code { base: 0x8000_0000 | (h.text_addr & 0x1F_FFFF), bytes: p, origin: s, gp: (h.gp != 0).then_some(h.gp), exe: None }),
+            (None, Some((s, h, p))) => Ok(Code {
+                base: 0x8000_0000 | (h.text_addr & 0x1F_FFFF),
+                bytes: p,
+                origin: s,
+                gp: (h.gp != 0).then_some(h.gp),
+                exe: None,
+            }),
             (None, None) => Err(bad("give an EXE source and/or ram (a run directory or ram.bin)")),
         }
     }
@@ -102,12 +108,21 @@ impl Code {
     }
 
     fn words(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        self.bytes.as_chunks::<4>().0.iter().enumerate().map(|(i, w)| (self.base.wrapping_add(4 * i as u32), u32::from_le_bytes(*w)))
+        self.bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (self.base.wrapping_add(4 * i as u32), u32::from_le_bytes(*w)))
     }
 
     /// Every `jal` target in the code.
     pub fn jal_targets(&self) -> BTreeSet<u32> {
-        self.words().filter(|&(_, i)| i >> 26 == 3).map(|(pc, i)| jump_target(pc, i)).filter(|&t| self.word(t).is_some()).collect()
+        self.words()
+            .filter(|&(_, i)| i >> 26 == 3)
+            .map(|(pc, i)| jump_target(pc, i))
+            .filter(|&t| self.word(t).is_some())
+            .collect()
     }
 }
 
@@ -125,7 +140,8 @@ fn branch_target(pc: u32, i: u32) -> Option<u32> {
 fn plausible_address(a: u32) -> bool {
     let seg = a >> 29;
     let p = a & 0x1FFF_FFFF;
-    (seg == 4 || seg == 5) && p < 0x0080_0000 || (0x1F80_0000..0x1F80_3000).contains(&p) && (seg == 0 || seg == 4 || seg == 5)
+    (seg == 4 || seg == 5) && p < 0x0080_0000
+        || (0x1F80_0000..0x1F80_3000).contains(&p) && (seg == 0 || seg == 4 || seg == 5)
 }
 
 /// `addiu sp, sp, -N`.
@@ -210,7 +226,17 @@ impl Resolver {
                     let t = if op == 0x0D { b | (i & 0xFFFF) } else { b.wrapping_add(simm) };
                     // Constants built with lui+ori are only addresses when they point into memory.
                     if plausible_address(t) {
-                        out.push(Ref { target: t, kind: "addr", via: if via == "gp+imm" { "gp+imm" } else if op == 0x0D { "lui+ori" } else { "lui+addiu" } });
+                        out.push(Ref {
+                            target: t,
+                            kind: "addr",
+                            via: if via == "gp+imm" {
+                                "gp+imm"
+                            } else if op == 0x0D {
+                                "lui+ori"
+                            } else {
+                                "lui+addiu"
+                            },
+                        });
                     }
                 }
             }
@@ -266,22 +292,35 @@ pub fn function_extent(code: &Code, addr: u32, jal: &BTreeSet<u32>, max: u32) ->
     let mut s = addr;
     let mut start_evidence = "backward_search_limit";
     for _ in 0..max {
-        if jal.contains(&s) { start_evidence = "jal_target"; break; }
-        if code.word(s).is_some_and(is_prologue) { start_evidence = "stack_prologue"; break; }
+        if jal.contains(&s) {
+            start_evidence = "jal_target";
+            break;
+        }
+        if code.word(s).is_some_and(is_prologue) {
+            start_evidence = "stack_prologue";
+            break;
+        }
         match s.checked_sub(4).filter(|&p| code.word(p).is_some()) {
             Some(p) => s = p,
-            None => { start_evidence = "image_start"; break; }
+            None => {
+                start_evidence = "image_start";
+                break;
+            }
         }
     }
     loop {
         let (e, stop_reason) = function_end(code, s, jal, max);
-        if addr < e { return Some(FunctionExtent {start:s,end:e,start_evidence,stop_reason}); }
+        if addr < e {
+            return Some(FunctionExtent { start: s, end: e, start_evidence, stop_reason });
+        }
         s = e;
-        while s < addr && code.word(s) == Some(0) { s += 4; }
+        while s < addr && code.word(s) == Some(0) {
+            s += 4;
+        }
         start_evidence = "sequential_heuristic";
         if e == s && s > addr {
             let (end, stop_reason) = function_end(code, addr, jal, max);
-            return Some(FunctionExtent {start:addr,end,start_evidence,stop_reason});
+            return Some(FunctionExtent { start: addr, end, start_evidence, stop_reason });
         }
     }
 }
@@ -290,22 +329,28 @@ fn function_end(code: &Code, start: u32, jal: &BTreeSet<u32>, max: u32) -> (u32,
     let mut pc = start;
     let mut reach = start;
     for _ in 0..max {
-        let Some(i) = code.word(pc) else { return (pc.max(start+4), "image_end") };
-        if pc != start && pc > reach && (jal.contains(&pc) || is_prologue(i)) { return (pc,"next_entry"); }
+        let Some(i) = code.word(pc) else { return (pc.max(start + 4), "image_end") };
+        if pc != start && pc > reach && (jal.contains(&pc) || is_prologue(i)) {
+            return (pc, "next_entry");
+        }
         if let Some(t) = branch_target(pc, i) {
-            if t > reach && t.wrapping_sub(start) < 0x10_0000 { reach = t; }
+            if t > reach && t.wrapping_sub(start) < 0x10_0000 {
+                reach = t;
+            }
         }
         let tail_jump = i >> 26 == 0x02 && {
             let t = jump_target(pc, i);
             t < start || t > pc + 8
         };
         if (i == JR_RA || tail_jump) && reach <= pc + 4 {
-            if code.word(pc+4).is_none() { return (pc+4,"image_end"); }
-            return (pc+8,if i == JR_RA {"return"} else {"tail_jump"});
+            if code.word(pc + 4).is_none() {
+                return (pc + 4, "image_end");
+            }
+            return (pc + 8, if i == JR_RA { "return" } else { "tail_jump" });
         }
         pc += 4;
     }
-    (pc.max(start+4),"search_limit")
+    (pc.max(start + 4), "search_limit")
 }
 
 pub struct ListOpts<'a> {
@@ -350,7 +395,12 @@ pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, Stri
                     }
                 }
                 "branch" => {}
-                _ => notes.push(format!("{} 0x{:08X}{}", r.kind, r.target, name(r.target).map(|n| format!(" {n}")).unwrap_or_default())),
+                _ => notes.push(format!(
+                    "{} 0x{:08X}{}",
+                    r.kind,
+                    r.target,
+                    name(r.target).map(|n| format!(" {n}")).unwrap_or_default()
+                )),
             }
         }
         let mut v = json!({"addr": format!("0x{a:08X}"), "word": format!("{i:08X}"), "asm": asm, "label": lbl});
@@ -371,7 +421,9 @@ pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, Stri
                 text.push('\n'); // after a return's delay slot
             }
             let asm_l = match refs.iter().find(|r| r.kind == "branch") {
-                Some(r) if targets.contains(&r.target) && label(r.target).is_none() => asm.replace(&format!("0x{:08X}", r.target), &format!("loc_{:08X}", r.target)),
+                Some(r) if targets.contains(&r.target) && label(r.target).is_none() => {
+                    asm.replace(&format!("0x{:08X}", r.target), &format!("loc_{:08X}", r.target))
+                }
                 _ => asm,
             };
             let note = if notes.is_empty() { String::new() } else { format!("  ; {}", notes.join(", ")) };
@@ -417,20 +469,29 @@ pub fn xrefs(code: &Code, lo: u32, hi: u32, data: bool) -> Vec<(u32, Ref)> {
 
 /// Group xrefs by the function containing each referencing PC.
 #[allow(clippy::too_many_arguments)]
-pub fn xref_report(code: &Code, lo: u32, hi: u32, data: bool, scopes: &[crate::ScopedSymbols], offset: usize, limit: usize, text: bool) -> (Value, String) {
+pub fn xref_report(
+    code: &Code,
+    lo: u32,
+    hi: u32,
+    data: bool,
+    scopes: &[crate::ScopedSymbols],
+    offset: usize,
+    limit: usize,
+    text: bool,
+) -> (Value, String) {
     let refs = xrefs(code, lo, hi, data);
     let jal = code.jal_targets();
     let mut by_kind: BTreeMap<&str, u64> = BTreeMap::new();
     let mut funcs: BTreeMap<u32, u64> = BTreeMap::new();
     let mut lines = Vec::new();
     let mut out = String::new();
-    for (index,(pc, r)) in refs.iter().enumerate() {
+    for (index, (pc, r)) in refs.iter().enumerate() {
         *by_kind.entry(r.kind).or_default() += 1;
         let f = if r.kind == "data" { None } else { function_bounds(code, *pc, &jal, 16384).map(|b| b.0) };
         if let Some(f) = f {
             *funcs.entry(f).or_default() += 1;
         }
-        if index>=offset && lines.len() < limit {
+        if index >= offset && lines.len() < limit {
             let word = code.word(*pc).unwrap_or(0);
             let fname = f.and_then(|f| code.name(scopes, f, 0));
             lines.push(json!({
@@ -444,7 +505,13 @@ pub fn xref_report(code: &Code, lo: u32, hi: u32, data: bool, scopes: &[crate::S
                     (Some(f), None) => format!("  in fn_{f:08X}"),
                     _ => String::new(),
                 };
-                out += &format!("{pc:08X}  {:<6} {:<10} {:<36} -> {:08X}{fdesc}\n", r.kind, r.via, lines.last().unwrap()["asm"].as_str().unwrap_or(""), r.target);
+                out += &format!(
+                    "{pc:08X}  {:<6} {:<10} {:<36} -> {:08X}{fdesc}\n",
+                    r.kind,
+                    r.via,
+                    lines.last().unwrap()["asm"].as_str().unwrap_or(""),
+                    r.target
+                );
             }
         }
     }
@@ -487,8 +554,8 @@ pub(crate) fn disasm_cmd(a: crate::commands::DisasmArgs) -> psx_media::Result<Va
         let jal = code.jal_targets();
         let extent = function_extent(&code, f, &jal, function_budget)
             .ok_or_else(|| MediaError::Malformed(format!("0x{f:08X} is outside the code ({})", code.origin)))?;
-        let (s,e) = (extent.start,extent.end);
-        let listed_end = count.map_or(e, |n| s.saturating_add(4*n).min(e));
+        let (s, e) = (extent.start, extent.end);
+        let listed_end = count.map_or(e, |n| s.saturating_add(4 * n).min(e));
         let callers = xrefs(&code, s, s + 4, false).iter().filter(|(_, r)| r.kind == "call").count();
         (
             s,
@@ -510,7 +577,9 @@ pub(crate) fn disasm_cmd(a: crate::commands::DisasmArgs) -> psx_media::Result<Va
     let (lines, listing) = listing(&code, start, end, &ListOpts { scopes: &scopes, text });
     let mut warnings = Vec::new();
     if func.as_ref().is_some_and(|f| f["truncated"] == true) {
-        warnings.push("Function boundary search is incomplete; increase --function-budget. Reported bounds are partial.".into());
+        warnings.push(
+            "Function boundary search is incomplete; increase --function-budget. Reported bounds are partial.".into(),
+        );
     }
     if func.as_ref().is_some_and(|f| f["listing_truncated"] == true) {
         warnings.push("Listing limited by --count; omit it to list the discovered function.".into());
@@ -523,7 +592,12 @@ pub(crate) fn disasm_cmd(a: crate::commands::DisasmArgs) -> psx_media::Result<Va
         }
     }
     if lines.is_empty() {
-        warnings.push(format!("0x{start:08X} is outside the code ({}: 0x{:08X}..0x{:08X})", code.origin, code.base, code.end()));
+        warnings.push(format!(
+            "0x{start:08X} is outside the code ({}: 0x{:08X}..0x{:08X})",
+            code.origin,
+            code.base,
+            code.end()
+        ));
     }
     let mut v = json!({"source": source.clone().unwrap_or_else(|| code.origin.clone()), "lines": lines,
         "listing":{"start":format!("0x{start:08X}"),"end":format!("0x{end:08X}"),
@@ -573,9 +647,22 @@ mod tests {
     // 80010030 g: (leaf, no prologue) lui t0,0x8015 / ori t0,t0,0xE89C / jr ra / nop
     fn sample() -> Code {
         code(&[
-            0x27BD_FFE8, 0x1080_0003, 0x0000_0000, JR_RA, 0x0000_0000, //
-            0x3C01_8015, 0x8C22_E89C, 0xAF82_0010, 0x0C00_400C, 0x0000_0000, JR_RA, 0x0000_0000, //
-            0x3C08_8015, 0x3508_E89C, JR_RA, 0x0000_0000, //
+            0x27BD_FFE8,
+            0x1080_0003,
+            0x0000_0000,
+            JR_RA,
+            0x0000_0000, //
+            0x3C01_8015,
+            0x8C22_E89C,
+            0xAF82_0010,
+            0x0C00_400C,
+            0x0000_0000,
+            JR_RA,
+            0x0000_0000, //
+            0x3C08_8015,
+            0x3508_E89C,
+            JR_RA,
+            0x0000_0000, //
             0x8001_0030, // a pointer to g
         ])
     }
@@ -586,7 +673,11 @@ mod tests {
         let jal = c.jal_targets();
         assert_eq!(jal.iter().copied().collect::<Vec<_>>(), vec![0x8001_0030]);
         assert_eq!(function_bounds(&c, 0x8001_0000, &jal, 1000), Some((0x8001_0000, 0x8001_0030)));
-        assert_eq!(function_bounds(&c, 0x8001_0018, &jal, 1000), Some((0x8001_0000, 0x8001_0030)), "enclosing function");
+        assert_eq!(
+            function_bounds(&c, 0x8001_0018, &jal, 1000),
+            Some((0x8001_0000, 0x8001_0030)),
+            "enclosing function"
+        );
         assert_eq!(function_bounds(&c, 0x8001_0034, &jal, 1000), Some((0x8001_0030, 0x8001_0040)));
     }
 

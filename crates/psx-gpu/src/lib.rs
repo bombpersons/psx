@@ -199,11 +199,7 @@ impl DrawState {
     }
 
     pub(crate) fn set_mask_bit(&self) -> u16 {
-        if self.set_mask {
-            0x8000
-        } else {
-            0
-        }
+        if self.set_mask { 0x8000 } else { 0 }
     }
 }
 
@@ -297,11 +293,7 @@ pub fn command_len(cmd: u32) -> Option<usize> {
             if op & 0x08 != 0 {
                 return None;
             }
-            if op & 0x10 != 0 {
-                4
-            } else {
-                3
-            }
+            if op & 0x10 != 0 { 4 } else { 3 }
         }
         0x60..=0x7F => 2 + ((op & 0x04 != 0) as usize) + ((op & 0x18 == 0) as usize),
         0x80..=0x9F => 4,
@@ -794,7 +786,8 @@ mod tests {
                 reference.gp0_all(&words);
                 REFERENCE.set(false);
                 if fast.vram.as_slice() != reference.vram.as_slice() {
-                    let i = fast.vram.as_slice().iter().zip(reference.vram.as_slice()).position(|(a, b)| a != b).unwrap();
+                    let i =
+                        fast.vram.as_slice().iter().zip(reference.vram.as_slice()).position(|(a, b)| a != b).unwrap();
                     panic!(
                         "sequence {seq} command {cmd} {words:08X?} state {:?}: first difference at ({}, {}): {:04X} vs reference {:04X}",
                         fast.state,

@@ -9,10 +9,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use psx_media::iso9660::FileSystem;
-use psx_media::{memmap, Disc, MediaError};
+use psx_media::{Disc, MediaError, memmap};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Where a command runs: `root` is the project directory (bios/, media/,
 /// external/, .psx/). Relative paths in arguments resolve against the process
@@ -40,7 +40,8 @@ impl Outcome {
     pub(crate) fn with_path_context(mut self, ctx: &Ctx) -> Self {
         if self.value["error"]["code"] == "io_error" {
             self.value["error"]["project_root"] = json!(ctx.root);
-            self.value["error"]["path_resolution"] = json!("Relative paths are resolved against project_root, not the client working directory.");
+            self.value["error"]["path_resolution"] =
+                json!("Relative paths are resolved against project_root, not the client working directory.");
         }
         self
     }
@@ -53,8 +54,13 @@ impl Outcome {
                 if let MediaError::Io { path, .. } = &e {
                     value["error"]["path"] = json!(std::path::absolute(path).unwrap_or_else(|_| path.clone()));
                 }
-                Outcome { value, exit: if matches!(e, MediaError::Unsupported(_)) { 2 } else { 1 }, pretty: false, text: false }
-            },
+                Outcome {
+                    value,
+                    exit: if matches!(e, MediaError::Unsupported(_)) { 2 } else { 1 },
+                    pretty: false,
+                    text: false,
+                }
+            }
         }
     }
 
@@ -74,11 +80,7 @@ impl Outcome {
         if self.text {
             return self.value["text"].as_str().unwrap_or_default().trim_end().to_string();
         }
-        if self.pretty {
-            serde_json::to_string_pretty(&self.value).unwrap()
-        } else {
-            self.value.to_string()
-        }
+        if self.pretty { serde_json::to_string_pretty(&self.value).unwrap() } else { self.value.to_string() }
     }
 }
 
@@ -312,7 +314,8 @@ pub struct StrArgs {
 impl Op for StrArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::media(psx_media::source::split(&self.source, self.path.as_deref()).and_then(|(image, path)| {
-            let frame_parser = crate::parser::Spec::new(self.frame_parser.as_ref(), &self.frame_parser_args, self.parser_timeout)?;
+            let frame_parser =
+                crate::parser::Spec::new(self.frame_parser.as_ref(), &self.frame_parser_args, self.parser_timeout)?;
             crate::str_cmd::run(crate::str_cmd::Args {
                 image: &image,
                 path: &path,
@@ -367,7 +370,11 @@ impl AssetParsersArgs {
             return Err(MediaError::Malformed("choose --model-parser or --asset-parser".into()));
         }
         Ok(crate::parser::Parsers {
-            archive: crate::parser::Spec::new(self.archive_parser.as_ref(), &self.archive_parser_args, self.parser_timeout)?,
+            archive: crate::parser::Spec::new(
+                self.archive_parser.as_ref(),
+                &self.archive_parser_args,
+                self.parser_timeout,
+            )?,
             model: crate::parser::Spec::new(self.model_parser.as_ref(), &self.model_parser_args, self.parser_timeout)?,
             asset: crate::parser::Spec::new(self.asset_parser.as_ref(), &self.asset_parser_args, self.parser_timeout)?,
             cancel: ctx.cancel.clone(),
@@ -505,7 +512,9 @@ impl Op for MemcardArgs {
             let saves = card.saves();
             let used: usize = saves.iter().map(|s| s.blocks.len()).sum();
             let formatted = &card.sector(0)[..2] == b"MC";
-            Ok(json!({"image": image, "formatted": formatted, "blocks_used": used, "blocks_free": 15 - used.min(15), "saves": saves}))
+            Ok(
+                json!({"image": image, "formatted": formatted, "blocks_used": used, "blocks_free": 15 - used.min(15), "saves": saves}),
+            )
         })())
     }
 }
@@ -762,14 +771,16 @@ impl Op for RunCmdArgs {
         if out.value.get("error").is_none() {
             out.value["build"] = crate::context::build();
             out.value["resolved"] = json!({"bios_selection":resolved.bios_reason});
-            out.value["artifacts"] = json!(out.value["files"]
-                .as_object()
-                .map(|files| files
-                    .values()
-                    .filter_map(|f| f["path"].as_str())
-                    .filter_map(|p| crate::artifact::descriptor(std::path::Path::new(p)).ok())
-                    .collect::<Vec<_>>())
-                .unwrap_or_default());
+            out.value["artifacts"] = json!(
+                out.value["files"]
+                    .as_object()
+                    .map(|files| files
+                        .values()
+                        .filter_map(|f| f["path"].as_str())
+                        .filter_map(|p| crate::artifact::descriptor(std::path::Path::new(p)).ok())
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default()
+            );
         }
         // The full report always goes to the run directory.
         if let Some(dir) = out.value["run_dir"].as_str().map(PathBuf::from) {
@@ -903,10 +914,13 @@ pub struct NativeArgs {
 
 impl Op for NativeArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        let resolved = match crate::context::resolve(&ctx.root,self.disc,self.bios,None,false) {
-            Ok(r)=>r,Err(e)=>return crate::context::failed(e),
+        let resolved = match crate::context::resolve(&ctx.root, self.disc, self.bios, None, false) {
+            Ok(r) => r,
+            Err(e) => return crate::context::failed(e),
         };
-        if let Some(e) = resolved.setup_error() {return crate::context::failed(e);}
+        if let Some(e) = resolved.setup_error() {
+            return crate::context::failed(e);
+        }
         let bios = resolved.bios.unwrap();
         let hex = |b: &Option<String>| b.as_deref().and_then(psx_media::memmap::parse_hex);
         Outcome::pair(crate::native::run(crate::native::Options {
@@ -964,10 +978,16 @@ pub struct DisasmArgs {
     pub gp: Option<String>,
 }
 
-fn d_function_budget() -> u32 { 4096 }
+fn d_function_budget() -> u32 {
+    4096
+}
 
 pub(crate) fn opt_hex(s: &Option<String>, what: &str) -> psx_media::Result<Option<u32>> {
-    s.as_deref().map(|a| psx_media::memmap::parse_hex(a).ok_or_else(|| MediaError::Malformed(format!("bad {what} {a:?} (hex)")))).transpose()
+    s.as_deref()
+        .map(|a| {
+            psx_media::memmap::parse_hex(a).ok_or_else(|| MediaError::Malformed(format!("bad {what} {a:?} (hex)")))
+        })
+        .transpose()
 }
 
 impl Op for DisasmArgs {
@@ -1025,7 +1045,10 @@ impl Op for XrefsArgs {
                 if let Some(g) = opt_hex(&gp, "gp")? {
                     code.gp = Some(g);
                 }
-                let addr = |s: &str| psx_media::memmap::parse_hex(s).ok_or_else(|| MediaError::Malformed(format!("bad hex address {s:?}")));
+                let addr = |s: &str| {
+                    psx_media::memmap::parse_hex(s)
+                        .ok_or_else(|| MediaError::Malformed(format!("bad hex address {s:?}")))
+                };
                 let (lo, hi) = match target.split_once('-') {
                     Some((l, h)) => (addr(l)?, addr(h)?),
                     None => {
@@ -1075,7 +1098,7 @@ pub struct RamDiffArgs {
     #[arg(long, default_value_t = d_ram_limit())]
     #[serde(default = "d_ram_limit")]
     pub limit: usize,
-    #[arg(long, default_value_t=0)]
+    #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub offset: usize,
 }
@@ -1149,7 +1172,7 @@ pub struct RamSearchArgs {
     #[arg(long, default_value_t = d_ram_limit())]
     #[serde(default = "d_ram_limit")]
     pub limit: usize,
-    #[arg(long, default_value_t=0)]
+    #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub offset: usize,
 }
@@ -1274,7 +1297,14 @@ impl Op for VramDiffArgs {
                 }
                 None => None,
             };
-            crate::vram_diff::diff(crate::vram_diff::DiffArgs { a: &a, b: &b, cell, region, png: png.as_deref(), samples })
+            crate::vram_diff::diff(crate::vram_diff::DiffArgs {
+                a: &a,
+                b: &b,
+                cell,
+                region,
+                png: png.as_deref(),
+                samples,
+            })
         })())
     }
 }

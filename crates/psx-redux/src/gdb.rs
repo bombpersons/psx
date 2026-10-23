@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::{io, Backend, ReduxError, Result};
+use crate::{Backend, ReduxError, Result, io};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Regs {

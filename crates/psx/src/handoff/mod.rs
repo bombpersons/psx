@@ -15,9 +15,9 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use psx_core::state::MediaId;
 use psx_core::Machine;
-use serde_json::{json, Value};
+use psx_core::state::MediaId;
+use serde_json::{Value, json};
 
 use crate::commands::{Ctx, Op, Outcome};
 use crate::replay::Input;
@@ -87,10 +87,11 @@ const STALE_S: u128 = 20;
 impl Op for HandoffArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         let mut a = self;
-        let resolved = match crate::context::resolve(&ctx.root, a.media.take(), a.bios.take(), a.from_state.as_deref(), false) {
-            Ok(r) => r,
-            Err(e) => return crate::context::failed(e),
-        };
+        let resolved =
+            match crate::context::resolve(&ctx.root, a.media.take(), a.bios.take(), a.from_state.as_deref(), false) {
+                Ok(r) => r,
+                Err(e) => return crate::context::failed(e),
+            };
         if let Some(e) = resolved.setup_error() {
             return crate::context::failed(e);
         }
@@ -101,7 +102,12 @@ impl Op for HandoffArgs {
             return crate::context::failed(e);
         }
         let dir = a.out.clone().unwrap_or_else(|| {
-            ctx.root.join(".psx/handoffs").join(format!("{}-{}{}", now_ms(), std::process::id(), crate::instance_suffix()))
+            ctx.root.join(".psx/handoffs").join(format!(
+                "{}-{}{}",
+                now_ms(),
+                std::process::id(),
+                crate::instance_suffix()
+            ))
         });
         let dir = std::path::absolute(&dir).unwrap_or(dir);
         if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -129,7 +135,10 @@ pub fn capability() -> Value {
 /// Fail early, with advice, when no window can be shown.
 fn can_open_window() -> Result<(), Value> {
     if !cfg!(feature = "window") {
-        return Err(error("unsupported", "this psx was built without the `window` feature (cargo build --features window)"));
+        return Err(error(
+            "unsupported",
+            "this psx was built without the `window` feature (cargo build --features window)",
+        ));
     }
     if cfg!(all(unix, not(target_os = "macos")))
         && std::env::var_os("DISPLAY").is_none_or(|v| v.is_empty())
@@ -177,7 +186,10 @@ fn detach(ctx: &Ctx, dir: &Path) -> (bool, Value) {
 
 /// `__handoff-child <run_dir>`: the detached window process.
 pub fn child(dir: &Path) -> Outcome {
-    let a: HandoffArgs = match std::fs::read(dir.join("request.json")).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string())) {
+    let a: HandoffArgs = match std::fs::read(dir.join("request.json"))
+        .map_err(|e| e.to_string())
+        .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
+    {
         Ok(a) => a,
         Err(e) => return crate::context::failed(error("invalid_arguments", format!("{}: {e}", dir.display()))),
     };
@@ -193,7 +205,10 @@ impl Op for HandoffStatusArgs {
 fn status(dir: &Path, wait: u64) -> (bool, Value) {
     let dir = &std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     if !dir.join("request.json").is_file() {
-        return (false, error("invalid_arguments", format!("{} is not a handoff directory (no request.json)", dir.display())));
+        return (
+            false,
+            error("invalid_arguments", format!("{} is not a handoff directory (no request.json)", dir.display())),
+        );
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(wait);
     loop {
@@ -202,15 +217,22 @@ fn status(dir: &Path, wait: u64) -> (bool, Value) {
             return (ok, report);
         }
         let live = read_json(&dir.join("live.json"));
-        let age_ms = |v: &Option<Value>| v.as_ref().and_then(|v| v["updated_unix_ms"].as_u64()).map(|t| now_ms().saturating_sub(t as u128));
-        let started_ms = std::fs::metadata(dir.join("request.json")).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map(|d| d.as_millis());
+        let age_ms = |v: &Option<Value>| {
+            v.as_ref().and_then(|v| v["updated_unix_ms"].as_u64()).map(|t| now_ms().saturating_sub(t as u128))
+        };
+        let started_ms = std::fs::metadata(dir.join("request.json"))
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_millis());
         let stale = match age_ms(&live) {
             Some(age) => age > STALE_S * 1000,
             None => started_ms.is_none_or(|s| s > 60_000),
         };
         if stale {
             let log = std::fs::read_to_string(dir.join("launch.log")).unwrap_or_default();
-            let tail: String = log.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            let tail: String =
+                log.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
             return (
                 false,
                 json!({"status": "abandoned", "run_dir": dir, "live": live,
@@ -218,8 +240,11 @@ fn status(dir: &Path, wait: u64) -> (bool, Value) {
             );
         }
         if std::time::Instant::now() >= deadline {
-            return (true, json!({"status": "waiting", "run_dir": dir, "live": live,
-                "next_call": {"tool": "handoff_status", "arguments": {"run_dir": dir, "wait": 300}}}));
+            return (
+                true,
+                json!({"status": "waiting", "run_dir": dir, "live": live,
+                "next_call": {"tool": "handoff_status", "arguments": {"run_dir": dir, "wait": 300}}}),
+            );
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -340,8 +365,15 @@ fn start(a: &HandoffArgs) -> Result<Session, Value> {
     let bios_path = a.bios.as_ref().ok_or_else(|| error("invalid_arguments", "no BIOS"))?;
     let bios = std::fs::read(bios_path).map_err(|e| error("io_error", format!("{}: {e}", bios_path.display())))?;
     let medium = crate::run_native::open_media(a.media.as_deref()).map_err(|(_, v)| v)?;
-    let m = crate::run_native::boot(a.from_state.as_deref(), &a.cards, bios.clone(), medium.exe.as_deref(), medium.disc, &medium.id)
-        .map_err(|(_, v)| v)?;
+    let m = crate::run_native::boot(
+        a.from_state.as_deref(),
+        &a.cards,
+        bios.clone(),
+        medium.exe.as_deref(),
+        medium.disc,
+        &medium.id,
+    )
+    .map_err(|(_, v)| v)?;
     let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
     let start = m.save_state(medium.id.clone());
     Ok(Session { m, bios, start_frame, events: Vec::new(), quick: None, start, media_id: medium.id })
@@ -405,14 +437,16 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> (b
     };
     let replay = replay_json(&s.events);
     let written = put("note.txt", note.as_bytes())
-        .and_then(|_| put("state.bin", &state)).and_then(|_| put("input.json", replay.as_bytes())).and_then(|_| {
-        for (slot, card) in s.m.bus.sio0.cards.iter().enumerate() {
-            if let Some(c) = card.as_ref().filter(|c| c.writes > 0) {
-                put(&format!("memcard{}.mcd", slot + 1), &c.data)?;
+        .and_then(|_| put("state.bin", &state))
+        .and_then(|_| put("input.json", replay.as_bytes()))
+        .and_then(|_| {
+            for (slot, card) in s.m.bus.sio0.cards.iter().enumerate() {
+                if let Some(c) = card.as_ref().filter(|c| c.writes > 0) {
+                    put(&format!("memcard{}.mcd", slot + 1), &c.data)?;
+                }
             }
-        }
-        Ok(())
-    });
+            Ok(())
+        });
     if let Err(e) = written {
         return (false, error("io_error", e));
     }
@@ -423,7 +457,11 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> (b
     }
     let mut warnings = Vec::new();
     if s.events.len() > crate::replay::FILE_EVENT_LIMIT {
-        warnings.push(format!("{} input events exceed the replay limit ({}); input.json cannot be replayed whole", s.events.len(), crate::replay::FILE_EVENT_LIMIT));
+        warnings.push(format!(
+            "{} input events exceed the replay limit ({}); input.json cannot be replayed whole",
+            s.events.len(),
+            crate::replay::FILE_EVENT_LIMIT
+        ));
     }
     let mut replay_args = json!({"replay": dir.join("input.json"), "frames": frames, "save_state": true});
     if let Some(m) = &a.media {
@@ -560,8 +598,14 @@ mod tests {
         let root = std::env::current_dir().unwrap().join("../..");
         let r = crate::context::resolve(&root, Some(disc.into()), None, None, false).unwrap();
         let a = HandoffArgs {
-            request: "test".into(), media: r.media, bios: r.bios, from_state: None, cards: Default::default(),
-            out: None, verify: true, detach: false,
+            request: "test".into(),
+            media: r.media,
+            bios: r.bios,
+            from_state: None,
+            cards: Default::default(),
+            out: None,
+            verify: true,
+            detach: false,
         };
         let mut s = start(&a).unwrap();
         let cross = psx_core::sio0::button::CROSS;

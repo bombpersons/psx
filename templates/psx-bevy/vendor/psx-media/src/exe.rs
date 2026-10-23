@@ -13,7 +13,7 @@ pub fn is_exe_path(path: &std::path::Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| EXE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-use crate::error::{malformed, Result};
+use crate::error::{Result, malformed};
 use crate::memmap::{self, Region};
 
 pub const HEADER_SIZE: usize = 0x800;

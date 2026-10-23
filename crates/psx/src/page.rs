@@ -1,5 +1,5 @@
 //! Shared response pagination; completeness here concerns returned rows, not format coverage.
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub fn metadata(total: usize, offset: usize, returned: usize, limit: usize) -> Value {
     let next = offset.saturating_add(returned);
@@ -9,11 +9,7 @@ pub fn metadata(total: usize, offset: usize, returned: usize, limit: usize) -> V
 }
 
 pub fn validate(limit: usize) -> Result<(), String> {
-    if (1..=1000).contains(&limit) {
-        Ok(())
-    } else {
-        Err("limit must be 1..=1000".into())
-    }
+    if (1..=1000).contains(&limit) { Ok(()) } else { Err("limit must be 1..=1000".into()) }
 }
 
 pub fn default_limit() -> usize {

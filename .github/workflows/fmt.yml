@@ -1,0 +1,19 @@
+# rustfmt on every push and pull request: the psx workspace and the game
+# template (rustfmt.toml in each: 120 columns). Fix with `cargo fmt --all`
+# at the root and in templates/psx-bevy.
+name: Format
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo fmt --all --check --manifest-path templates/psx-bevy/Cargo.toml

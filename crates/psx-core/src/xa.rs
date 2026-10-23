@@ -114,11 +114,7 @@ impl XaDecoder {
                 }
             }
         }
-        if coding.stereo {
-            left.into_iter().zip(right).collect()
-        } else {
-            left.into_iter().map(|s| (s, s)).collect()
-        }
+        if coding.stereo { left.into_iter().zip(right).collect() } else { left.into_iter().map(|s| (s, s)).collect() }
     }
 
     /// Resample native-rate frames to 44.1 kHz onto `out` (seven outputs per six inputs).
@@ -213,7 +209,10 @@ mod tests {
             d.resample(&input, 37_800, &mut out);
             let y: Vec<f64> = out.iter().skip(500).map(|&(l, _)| l as f64).collect();
             let w = 2.0 * std::f64::consts::PI * f / 44_100.0;
-            let (re, im) = y.iter().enumerate().fold((0.0, 0.0), |(re, im), (m, &v)| (re + v * (w * m as f64).cos(), im + v * (w * m as f64).sin()));
+            let (re, im) = y
+                .iter()
+                .enumerate()
+                .fold((0.0, 0.0), |(re, im), (m, &v)| (re + v * (w * m as f64).cos(), im + v * (w * m as f64).sin()));
             2.0 * (re * re + im * im).sqrt() / y.len() as f64
         };
         let (low, mid) = (tone(1000.0), tone(10_000.0));

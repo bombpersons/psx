@@ -54,7 +54,9 @@ impl std::fmt::Display for StateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StateError::NotAState => write!(f, "not a psx-core save state (PCSX-Redux states need --backend redux)"),
-            StateError::Format(v) => write!(f, "save state format {v} is not supported (this core writes format {FORMAT})"),
+            StateError::Format(v) => {
+                write!(f, "save state format {v} is not supported (this core writes format {FORMAT})")
+            }
             StateError::Corrupt(e) => write!(f, "corrupt save state: {e}"),
             StateError::BiosMismatch { expected, actual } => {
                 write!(f, "state was saved with BIOS sha256 {expected}, but this BIOS is {actual}")
@@ -90,7 +92,9 @@ pub fn disc_fingerprint(disc: &psx_media::Disc) -> String {
 fn disc_layout(disc: &psx_media::Disc) -> String {
     disc.tracks
         .iter()
-        .map(|t| format!("{} {:?} {} {} {} {};", t.number, t.mode, t.first_lba, t.start_lba, t.sectors, t.unstored_pregap))
+        .map(|t| {
+            format!("{} {:?} {} {} {} {};", t.number, t.mode, t.first_lba, t.start_lba, t.sectors, t.unstored_pregap)
+        })
         .chain(disc.subq.iter().map(|(lba, q)| format!("subq {lba} {q:?};")))
         .collect()
 }
@@ -144,7 +148,9 @@ impl Machine {
             return Err(StateError::BiosMismatch { expected: header.bios_sha256, actual });
         }
         let mut body = Vec::new();
-        flate2::read::GzDecoder::new(&bytes[at..]).read_to_end(&mut body).map_err(|e| StateError::Corrupt(e.to_string()))?;
+        flate2::read::GzDecoder::new(&bytes[at..])
+            .read_to_end(&mut body)
+            .map_err(|e| StateError::Corrupt(e.to_string()))?;
         let mut restored: Machine = postcard::from_bytes(&body).map_err(|e| StateError::Corrupt(e.to_string()))?;
         restored.bus.bios = std::mem::take(&mut m.bus.bios);
         restored.bus.after_restore();
@@ -161,7 +167,9 @@ pub(crate) mod big_array {
         a.as_slice().serialize(s)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(d: D) -> Result<[T; N], D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(
+        d: D,
+    ) -> Result<[T; N], D::Error> {
         let v = Vec::<T>::deserialize(d)?;
         let n = v.len();
         v.try_into().map_err(|_| D::Error::invalid_length(n, &"a fixed-size array"))

@@ -115,11 +115,7 @@ pub enum BusError {
 }
 
 fn physical(addr: u32) -> u32 {
-    if addr >= 0xC000_0000 {
-        addr
-    } else {
-        addr & 0x1FFF_FFFF
-    }
+    if addr >= 0xC000_0000 { addr } else { addr & 0x1FFF_FFFF }
 }
 
 impl Bus {
@@ -166,8 +162,15 @@ impl Bus {
         if self.obs.active() && self.obs.overlaps(start, bytes) {
             let (frame, cycle) = (self.frames, self.now);
             self.obs.record(crate::observe::WriteHit {
-                frame, cycle, writer: crate::observe::Writer::Dma, address: 0x8000_0000 | (start & 0x1F_FFFF),
-                width: bytes, pc: None, value: None, old: None, dma_channel: Some(ch),
+                frame,
+                cycle,
+                writer: crate::observe::Writer::Dma,
+                address: 0x8000_0000 | (start & 0x1F_FFFF),
+                width: bytes,
+                pc: None,
+                value: None,
+                old: None,
+                dma_channel: Some(ch),
             });
         }
     }
@@ -307,7 +310,13 @@ impl Bus {
             for voice in (0..24).filter(|v| ended & (1 << v) != 0) {
                 log.awaiting_end &= !(1 << voice);
                 log.record(crate::observe::SpuEvent {
-                    frame: self.frames, cycle: self.now, event: "end", voice: Some(voice), pc: None, key_on: None, upload: None,
+                    frame: self.frames,
+                    cycle: self.now,
+                    event: "end",
+                    voice: Some(voice),
+                    pc: None,
+                    key_on: None,
+                    upload: None,
                 });
             }
         }
@@ -466,11 +475,19 @@ impl Bus {
                 if chcr & 1 != 0 {
                     if let Some(log) = &mut self.obs.spu {
                         let upload = crate::observe::SpuUpload {
-                            address: self.spu.transfer_addr(), bytes: words * 4, source: "dma", ram: Some(0x8000_0000 | addr),
+                            address: self.spu.transfer_addr(),
+                            bytes: words * 4,
+                            source: "dma",
+                            ram: Some(0x8000_0000 | addr),
                         };
                         log.record(crate::observe::SpuEvent {
-                            frame: self.frames, cycle: self.now, event: "upload", voice: None, pc: Some(self.cur_pc),
-                            key_on: None, upload: Some(upload),
+                            frame: self.frames,
+                            cycle: self.now,
+                            event: "upload",
+                            voice: None,
+                            pc: Some(self.cur_pc),
+                            key_on: None,
+                            upload: Some(upload),
                         });
                     }
                 }
@@ -504,8 +521,14 @@ impl Bus {
                 let (frame, cycle, pc) = (self.frames, self.now, self.cur_pc);
                 if let Some(log) = &mut self.obs.cd {
                     log.push(crate::observe::CdTransfer {
-                        frame, cycle, lba, fifo_offset: off, bytes: (words * 4).min(remaining), sector_size: size,
-                        ram: 0x8000_0000 | (madr & 0x1F_FFFC), pc,
+                        frame,
+                        cycle,
+                        lba,
+                        fifo_offset: off,
+                        bytes: (words * 4).min(remaining),
+                        sector_size: size,
+                        ram: 0x8000_0000 | (madr & 0x1F_FFFC),
+                        pc,
                     });
                 }
                 self.observe_dma(3, madr & 0x1F_FFFC, words * 4);
@@ -718,8 +741,14 @@ impl Bus {
                 let v = le(&self.io, (p - 0x1F80_1000) as usize);
                 // Memory control (1F801000-23h, RAM_SIZE 1F801060h) and SIO1's mode/control/baud
                 // (1F801058-5Fh) are plain read/write latches, so the stored value is the answer.
-                let latch = (0x1F80_1000..0x1F80_1024).contains(&p) || (0x1F80_1060..0x1F80_1064).contains(&p) || (0x1F80_1058..0x1F80_1060).contains(&p);
-                let handled = latch || (0x1F80_1C00..0x1F80_1E00).contains(&p) || (0x1F80_1800..0x1F80_1804).contains(&p) || (0x1F80_1070..0x1F80_1078).contains(&p) || (0x1F80_1080..0x1F80_1100).contains(&p);
+                let latch = (0x1F80_1000..0x1F80_1024).contains(&p)
+                    || (0x1F80_1060..0x1F80_1064).contains(&p)
+                    || (0x1F80_1058..0x1F80_1060).contains(&p);
+                let handled = latch
+                    || (0x1F80_1C00..0x1F80_1E00).contains(&p)
+                    || (0x1F80_1800..0x1F80_1804).contains(&p)
+                    || (0x1F80_1070..0x1F80_1078).contains(&p)
+                    || (0x1F80_1080..0x1F80_1100).contains(&p);
                 if !handled {
                     *self.unhandled_reads.entry(p).or_default() += 1;
                 }
@@ -769,8 +798,15 @@ impl Bus {
                     let old = self.ram[o..o + n].iter().rev().fold(0u32, |acc, &x| (acc << 8) | x as u32);
                     let (frame, cycle, pc) = (self.frames, self.cpu_now(), self.cur_pc);
                     self.obs.record(crate::observe::WriteHit {
-                        frame, cycle, writer: crate::observe::Writer::Cpu, address: addr, width: n as u32,
-                        pc: Some(pc), value: Some(value & (u32::MAX >> (32 - 8 * n))), old: Some(old), dma_channel: None,
+                        frame,
+                        cycle,
+                        writer: crate::observe::Writer::Cpu,
+                        address: addr,
+                        width: n as u32,
+                        pc: Some(pc),
+                        value: Some(value & (u32::MAX >> (32 - 8 * n))),
+                        old: Some(old),
+                        dma_channel: None,
                     });
                 }
                 put(&mut self.ram, o)
@@ -810,7 +846,11 @@ impl Bus {
                 } else if p & !3 == DICR {
                     // Bits 24-30 are write-1-to-clear flags; bit 31 is computed.
                     let cur = self.io_word(DICR);
-                    let v = if width == Width::Word { value } else { (cur & !(0xFFFF << (8 * (p & 2)))) | (value << (8 * (p & 2))) };
+                    let v = if width == Width::Word {
+                        value
+                    } else {
+                        (cur & !(0xFFFF << (8 * (p & 2)))) | (value << (8 * (p & 2)))
+                    };
                     let flags = (cur & 0x7F00_0000) & !(v & 0x7F00_0000);
                     self.set_dicr((v & 0x00FF_803F) | flags);
                 } else if p & !3 == I_STAT {
@@ -847,15 +887,21 @@ impl Bus {
 mod tests {
     #[test]
     fn cd_history_keeps_exact_frames_across_video_mode_changes_and_polling() {
-        let mut m=crate::Machine::new(vec![0;512*1024]);
-        m.bus.frames=42;m.bus.now=10_000_000;m.bus.gpu.display.mode=8;
-        m.bus.write(0x1f801801,crate::Width::Byte,1).unwrap();
-        m.bus.frames=43;m.bus.now=11_000_000;m.bus.gpu.display.mode=0;
-        m.bus.write(0x1f801801,crate::Width::Byte,1).unwrap();
-        let command=m.bus.cdrom.recent.back().unwrap();
-        assert_eq!(command.frame,Some(42));assert_eq!(command.last_frame,Some(43));
-        assert_eq!(command.time,10_000_000);assert_eq!(command.last_time,11_000_000);
-        assert_eq!(command.repeats,2);
+        let mut m = crate::Machine::new(vec![0; 512 * 1024]);
+        m.bus.frames = 42;
+        m.bus.now = 10_000_000;
+        m.bus.gpu.display.mode = 8;
+        m.bus.write(0x1f801801, crate::Width::Byte, 1).unwrap();
+        m.bus.frames = 43;
+        m.bus.now = 11_000_000;
+        m.bus.gpu.display.mode = 0;
+        m.bus.write(0x1f801801, crate::Width::Byte, 1).unwrap();
+        let command = m.bus.cdrom.recent.back().unwrap();
+        assert_eq!(command.frame, Some(42));
+        assert_eq!(command.last_frame, Some(43));
+        assert_eq!(command.time, 10_000_000);
+        assert_eq!(command.last_time, 11_000_000);
+        assert_eq!(command.repeats, 2);
     }
 
     use super::*;
@@ -901,7 +947,10 @@ mod tests {
 
         let log = b.obs.spu.as_ref().unwrap();
         let kinds: Vec<_> = log.events.iter().map(|e| (e.event, e.voice)).collect();
-        assert_eq!(kinds, [("upload", None), ("upload", None), ("key_on", Some(1)), ("end", Some(1)), ("key_off", Some(1))]);
+        assert_eq!(
+            kinds,
+            [("upload", None), ("upload", None), ("key_on", Some(1)), ("end", Some(1)), ("key_off", Some(1))]
+        );
         let dma = log.events[0].upload.as_ref().unwrap();
         assert_eq!((dma.address, dma.bytes, dma.source, dma.ram), (0x1000, 48, "dma", Some(0x8010_0000)));
         let cpu = log.events[1].upload.as_ref().unwrap();

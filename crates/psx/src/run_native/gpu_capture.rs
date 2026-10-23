@@ -2,8 +2,8 @@
 //! projections are retained while searching; the selected snapshot is immutable.
 
 use psx_core::Machine;
-use psx_gpu::{vram::Vram, Display, DrawState};
-use serde_json::{json, Value};
+use psx_gpu::{Display, DrawState, vram::Vram};
+use serde_json::{Value, json};
 
 use crate::run::{GpuDrawFilter, TraceArgs};
 
@@ -47,7 +47,14 @@ pub(super) struct GpuCapture {
 }
 
 fn projections(m: &mut Machine) -> Vec<Projection> {
-    m.cpu.gte.projections.take().unwrap_or_default().into_iter().map(|p| Projection { sx: p.sx, sy: p.sy, view: p.view }).collect()
+    m.cpu
+        .gte
+        .projections
+        .take()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| Projection { sx: p.sx, sy: p.sy, view: p.view })
+        .collect()
 }
 
 fn draws(command: &[u32]) -> bool {
@@ -90,11 +97,17 @@ impl GpuCapture {
             let current = projections(m);
             self.inspected += u32::from(complete);
             let draw_commands = commands.iter().filter(|c| draws(c)).count();
-            let primitives = commands.iter().filter(|c| c.first().is_some_and(|w| matches!(w >> 24, 0x20..=0x7f))).count();
-            let textured = commands.iter().filter(|c| c.first().is_some_and(|w| {
-                let op = w >> 24;
-                matches!(op, 0x20..=0x3f | 0x60..=0x7f) && op & 4 != 0
-            })).count();
+            let primitives =
+                commands.iter().filter(|c| c.first().is_some_and(|w| matches!(w >> 24, 0x20..=0x7f))).count();
+            let textured = commands
+                .iter()
+                .filter(|c| {
+                    c.first().is_some_and(|w| {
+                        let op = w >> 24;
+                        matches!(op, 0x20..=0x3f | 0x60..=0x7f) && op & 4 != 0
+                    })
+                })
+                .count();
             let qualifying = match self.filter {
                 GpuDrawFilter::Any => draw_commands,
                 GpuDrawFilter::Primitives => primitives,
@@ -185,8 +198,16 @@ mod tests {
     use super::*;
 
     fn search(from: u64, limit: u32) -> GpuCapture {
-        GpuCapture::new(&TraceArgs { gpu_frame: Some(from), gpu_next_draw: true, gpu_search_frames: Some(limit), ..Default::default() }, (from + u64::from(limit)) as u32)
-            .unwrap()
+        GpuCapture::new(
+            &TraceArgs {
+                gpu_frame: Some(from),
+                gpu_next_draw: true,
+                gpu_search_frames: Some(limit),
+                ..Default::default()
+            },
+            (from + u64::from(limit)) as u32,
+        )
+        .unwrap()
     }
 
     fn advance(c: &mut GpuCapture, m: &mut Machine, start: u64, finish: bool) {
@@ -197,7 +218,11 @@ mod tests {
     #[test]
     fn search_metadata_exposes_the_effective_run_budget() {
         for (from, frames, effective) in [(0, 1, 1), (4, 8, 4), (8, 8, 0), (9, 8, 0), (0, 90, 60)] {
-            let capture = GpuCapture::new(&TraceArgs { gpu_frame:Some(from), gpu_next_draw:true, ..Default::default() }, frames).unwrap();
+            let capture = GpuCapture::new(
+                &TraceArgs { gpu_frame: Some(from), gpu_next_draw: true, ..Default::default() },
+                frames,
+            )
+            .unwrap();
             let metadata = capture.missing("frames_reached");
             assert_eq!(metadata["search"]["max_frames"], 60);
             assert_eq!(metadata["search"]["run_budget_frames"], frames);
@@ -277,8 +302,16 @@ mod tests {
     fn draw_filters_skip_fills_and_optionally_untextured_primitives() {
         for (filter, expected) in [(GpuDrawFilter::Primitives, 1), (GpuDrawFilter::Textured, 2)] {
             let mut m = Machine::new(vec![]);
-            let mut c = GpuCapture::new(&TraceArgs { gpu_next_draw:true, gpu_search_frames:Some(3),
-                gpu_draw_filter:Some(filter), ..Default::default() }, 3).unwrap();
+            let mut c = GpuCapture::new(
+                &TraceArgs {
+                    gpu_next_draw: true,
+                    gpu_search_frames: Some(3),
+                    gpu_draw_filter: Some(filter),
+                    ..Default::default()
+                },
+                3,
+            )
+            .unwrap();
             c.boundary(&mut m, 0, false);
             m.bus.gpu.gp0_all(&[0x020000ff, 0, 0x00010010]);
             advance(&mut c, &mut m, 0, false);

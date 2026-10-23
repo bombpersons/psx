@@ -1,6 +1,6 @@
 //! Explicit raw VRAM uploads. Pixel depth and palette roles belong to the
 //! consuming texture page, so these rectangles contain uninterpreted u16 words.
-use crate::tim::{Vram, VramRect, VRAM_HEIGHT, VRAM_WIDTH};
+use crate::tim::{VRAM_HEIGHT, VRAM_WIDTH, Vram, VramRect};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
@@ -43,10 +43,16 @@ impl UploadDocument {
             .enumerate()
             .map(|(index, record)| {
                 let [x, y, w, h] = record.rect;
-                if w == 0 || h == 0 || usize::from(x) + usize::from(w) > VRAM_WIDTH || usize::from(y) + usize::from(h) > VRAM_HEIGHT {
+                if w == 0
+                    || h == 0
+                    || usize::from(x) + usize::from(w) > VRAM_WIDTH
+                    || usize::from(y) + usize::from(h) > VRAM_HEIGHT
+                {
                     return Err(format!("upload {index}: rectangle outside VRAM or empty"));
                 }
-                if record.source_size == 0 || record.source_offset.checked_add(record.source_size).is_none_or(|end| end > source_len) {
+                if record.source_size == 0
+                    || record.source_offset.checked_add(record.source_size).is_none_or(|end| end > source_len)
+                {
                     return Err(format!("upload {index}: source span out of bounds or empty"));
                 }
                 let bytes = base64::engine::general_purpose::STANDARD
@@ -117,12 +123,23 @@ mod tests {
         palette[1] = 0x1f;
         for upload in [
             Upload { source_offset: 0, source_size: 1, rect: VramRect { x: 0, y: 500, w: 16, h: 1 }, words: palette },
-            Upload { source_offset: 0, source_size: 1, rect: VramRect { x: 640, y: 256, w: 1, h: 1 }, words: vec![0x1111] },
-            Upload { source_offset: 0, source_size: 1, rect: VramRect { x: 1, y: 500, w: 1, h: 1 }, words: vec![0x83e0] },
+            Upload {
+                source_offset: 0,
+                source_size: 1,
+                rect: VramRect { x: 640, y: 256, w: 1, h: 1 },
+                words: vec![0x1111],
+            },
+            Upload {
+                source_offset: 0,
+                source_size: 1,
+                rect: VramRect { x: 1, y: 500, w: 1, h: 1 },
+                words: vec![0x83e0],
+            },
         ] {
             upload.apply(&mut vram);
         }
-        let (rgba, covered) = vram.decode_page(TexPage { x: 640, y: 256, bits: 4, abr: 0 }, (0, 500), TimAlpha::SemiStp);
+        let (rgba, covered) =
+            vram.decode_page(TexPage { x: 640, y: 256, bits: 4, abr: 0 }, (0, 500), TimAlpha::SemiStp);
         assert_eq!(&rgba[..16], &[0, 255, 0, 128].repeat(4));
         assert_eq!(covered, 4.0 / (256.0 * 256.0));
         assert_eq!(vram.data[256 * 1024 + 640], 0x1111);

@@ -11,10 +11,10 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::tim::{clut_from_cba, TexPage};
-use crate::tmd::{Tmd, TmdPolygon, MODE_TGE};
+use crate::tim::{TexPage, clut_from_cba};
+use crate::tmd::{MODE_TGE, Tmd, TmdPolygon};
 
 /// What a textured polygon samples: page, CLUT position (4/8-bit pages only).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -52,11 +52,7 @@ pub fn texture_keys(tmd: &Tmd) -> Vec<TextureKey> {
 }
 
 fn srgb_to_linear(c: f32) -> f32 {
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -99,11 +95,7 @@ fn corner(obj: &crate::tmd::TmdObject, p: &TmdPolygon, i: usize) -> ([f32; 3], [
     let uv = p.uvs.get(i).map(|t| [t[0] as f32 / 256.0, t[1] as f32 / 256.0]).unwrap_or([0.0, 0.0]);
     let c = p.color(i);
     let col = if p.textured() {
-        if p.colors.is_empty() || p.mode & MODE_TGE != 0 {
-            [1.0; 3]
-        } else {
-            c.map(|x| (x as f32 / 128.0).min(1.0))
-        }
+        if p.colors.is_empty() || p.mode & MODE_TGE != 0 { [1.0; 3] } else { c.map(|x| (x as f32 / 128.0).min(1.0)) }
     } else {
         c.map(|x| x as f32 / 255.0)
     };
@@ -134,7 +126,8 @@ pub fn tmd_to_gltf(tmd: &Tmd, name: &str, image_uri: &dyn Fn(&TextureKey) -> Opt
             buffer.extend_from_slice(&f.to_le_bytes());
         }
         views.push(json!({"buffer": 0, "byteOffset": offset, "byteLength": data.len() * 4, "target": 34962}));
-        let mut acc = json!({"bufferView": views.len() - 1, "componentType": 5126, "count": data.len() / comps, "type": kind});
+        let mut acc =
+            json!({"bufferView": views.len() - 1, "componentType": 5126, "count": data.len() / comps, "type": kind});
         if minmax {
             let mut lo = vec![f32::MAX; comps];
             let mut hi = vec![f32::MIN; comps];
@@ -199,7 +192,8 @@ pub fn tmd_to_gltf(tmd: &Tmd, name: &str, image_uri: &dyn Fn(&TextureKey) -> Opt
             let mut attrs = json!({"POSITION": pos});
             if has_normals {
                 // Unlit polygons have no normals; give them +y so the accessor stays valid.
-                let n: Vec<f32> = g.nrm.iter().flat_map(|n| if n == &[0.0; 3] { [0.0, 1.0, 0.0] } else { *n }).collect();
+                let n: Vec<f32> =
+                    g.nrm.iter().flat_map(|n| if n == &[0.0; 3] { [0.0, 1.0, 0.0] } else { *n }).collect();
                 attrs["NORMAL"] = json!(push(n, 3, "VEC3", false, &mut accessors));
             }
             if tex.is_some() {
@@ -250,8 +244,23 @@ mod tests {
         let obj = TmdObject {
             vertices: vec![[0, 0, 0], [10, 0, 0], [0, -10, 5], [10, -10, 0]],
             polygons: vec![
-                TmdPolygon { mode: 0x2D, flag: 1, vertices: vec![0, 1, 2, 3], colors: vec![[128, 128, 128]], uvs: vec![[0, 0], [64, 0], [0, 64], [64, 64]], cba: 1, tsb: 5, ..Default::default() },
-                TmdPolygon { mode: 0x21, flag: 1, vertices: vec![0, 1, 2], colors: vec![[255, 0, 0]], ..Default::default() },
+                TmdPolygon {
+                    mode: 0x2D,
+                    flag: 1,
+                    vertices: vec![0, 1, 2, 3],
+                    colors: vec![[128, 128, 128]],
+                    uvs: vec![[0, 0], [64, 0], [0, 64], [64, 64]],
+                    cba: 1,
+                    tsb: 5,
+                    ..Default::default()
+                },
+                TmdPolygon {
+                    mode: 0x21,
+                    flag: 1,
+                    vertices: vec![0, 1, 2],
+                    colors: vec![[255, 0, 0]],
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
@@ -261,7 +270,14 @@ mod tests {
         assert_eq!(doc["meshes"][0]["primitives"].as_array().unwrap().len(), 2);
         assert_eq!(doc["images"][0]["uri"], "page320_0_4b_clut16_0.png");
         // Quad = 2 triangles = 6 corners; position max y = +10 after the flip.
-        let quad_pos = doc["meshes"][0]["primitives"].as_array().unwrap().iter().find(|p| p["attributes"].get("TEXCOORD_0").is_some()).unwrap()["attributes"]["POSITION"].as_u64().unwrap();
+        let quad_pos = doc["meshes"][0]["primitives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["attributes"].get("TEXCOORD_0").is_some())
+            .unwrap()["attributes"]["POSITION"]
+            .as_u64()
+            .unwrap();
         assert_eq!(doc["accessors"][quad_pos as usize]["count"], 6);
         assert_eq!(doc["accessors"][quad_pos as usize]["max"][1], 10.0);
         assert_eq!(doc["accessors"][quad_pos as usize]["min"][2], -5.0);

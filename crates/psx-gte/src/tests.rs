@@ -100,10 +100,7 @@ fn ctrl_sign_extension_and_h_quirk() {
     g.write_ctrl(0, 0x2000_1000);
     g.write_ctrl(3, 0xFFFF_0001);
     let m = g.rotation().m;
-    assert_eq!(
-        (m[0][0], m[0][1], m[2][0], m[2][1], m[2][2]),
-        (0x1000, 0x2000, 1, -1, -2)
-    );
+    assert_eq!((m[0][0], m[0][1], m[2][0], m[2][1], m[2][2]), (0x1000, 0x2000, 1, -1, -2));
 }
 
 #[test]
@@ -121,15 +118,7 @@ fn flag_register_bit31() {
     let mut g = Gte::new();
     g.write_ctrl(31, 0xFFFF_FFFF);
     assert_eq!(g.read_ctrl(31), 0xFFFF_F000);
-    for (bit, err) in [
-        (12, false),
-        (13, true),
-        (18, true),
-        (19, false),
-        (22, false),
-        (23, true),
-        (30, true),
-    ] {
+    for (bit, err) in [(12, false), (13, true), (18, true), (19, false), (22, false), (23, true), (30, true)] {
         g.write_ctrl(31, 1 << bit);
         assert_eq!(g.read_ctrl(31) & ERR != 0, err, "bit {bit}");
     }
@@ -143,33 +132,21 @@ fn sxy_fifo() {
     for i in 1..=4u32 {
         g.write_data(15, i);
     }
-    assert_eq!(
-        [g.read_data(12), g.read_data(13), g.read_data(14)],
-        [2, 3, 4]
-    );
+    assert_eq!([g.read_data(12), g.read_data(13), g.read_data(14)], [2, 3, 4]);
     assert_eq!(g.read_data(15), 4); // SXYP mirrors SXY2
     g.write_data(14, 9); // direct writes do not push
-    assert_eq!(
-        [g.read_data(12), g.read_data(13), g.read_data(15)],
-        [2, 3, 9]
-    );
+    assert_eq!([g.read_data(12), g.read_data(13), g.read_data(15)], [2, 3, 9]);
 }
 
 #[test]
 fn irgb_orgb() {
     let mut g = Gte::new();
     g.write_data(28, 0xFFFF_FFFF);
-    assert_eq!(
-        [g.read_data(9), g.read_data(10), g.read_data(11)],
-        [0xF80; 3]
-    );
+    assert_eq!([g.read_data(9), g.read_data(10), g.read_data(11)], [0xF80; 3]);
     assert_eq!(g.read_data(28), 0x7FFF);
     assert_eq!(g.read_data(29), 0x7FFF);
     g.write_data(28, 0b00011_00010_00001);
-    assert_eq!(
-        [g.read_data(9), g.read_data(10), g.read_data(11)],
-        [0x80, 0x100, 0x180]
-    );
+    assert_eq!([g.read_data(9), g.read_data(10), g.read_data(11)], [0x80, 0x100, 0x180]);
     // ORGB saturates IR/0x80 to 0..=0x1F.
     g.write_data(9, 0xFFFF_FF00); // -256
     g.write_data(10, 0x7FFF);
@@ -206,33 +183,14 @@ fn rtps_known_vectors() {
     let mut g = camera(1000);
     // z = 1000 = H: no scaling.
     let r = g.rtps(Vec3i16::new(100, 50, 0));
-    assert_eq!(
-        r,
-        RtpsResult {
-            sxy: ScreenXY::new(260, 170),
-            sz: 1000,
-            ir0: 0x800,
-            flags: 0
-        }
-    );
+    assert_eq!(r, RtpsResult { sxy: ScreenXY::new(260, 170), sz: 1000, ir0: 0x800, flags: 0 });
     assert_eq!(g.mac(), Vec3i32::new(100, 50, 1000));
     assert_eq!(g.read_data(24), 0x80_0000); // MAC0 = DQB + DQA * 0x10000
-                                            // z = 2000: half size.
+    // z = 2000: half size.
     let r = g.rtps(Vec3i16::new(-200, 300, 1000));
     assert_eq!(unr_divide(1000, 2000).0, 0x8000);
-    assert_eq!(
-        r,
-        RtpsResult {
-            sxy: ScreenXY::new(60, 270),
-            sz: 2000,
-            ir0: 0xC00,
-            flags: 0
-        }
-    );
-    assert_eq!(
-        [g.read_data(17), g.read_data(18), g.read_data(19)],
-        [0, 1000, 2000]
-    );
+    assert_eq!(r, RtpsResult { sxy: ScreenXY::new(60, 270), sz: 2000, ir0: 0xC00, flags: 0 });
+    assert_eq!([g.read_data(17), g.read_data(18), g.read_data(19)], [0, 1000, 2000]);
     assert_eq!(g.read_data(13), ScreenXY::new(260, 170).to_u32());
 }
 
@@ -249,10 +207,7 @@ fn rtps_divide_overflow_and_sx_saturation() {
     let mut g = camera(100);
     let r = g.rtps(Vec3i16::new(1000, -1000, 0));
     assert_eq!(r.sxy, ScreenXY::new(0x3FF, -0x400));
-    assert_eq!(
-        r.flags,
-        ERR | flag::DIV_OVERFLOW | flag::SX2_SAT | flag::SY2_SAT
-    );
+    assert_eq!(r.flags, ERR | flag::DIV_OVERFLOW | flag::SX2_SAT | flag::SY2_SAT);
 }
 
 #[test]
@@ -308,11 +263,7 @@ fn rtps_lm_clamps_ir() {
 fn rtpt_equals_three_rtps() {
     let mut base = camera(800);
     base.set_rotation(&rot_matrix(Vec3i16::new(100, 300, 50)));
-    let verts = [
-        Vec3i16::new(-300, 200, 100),
-        Vec3i16::new(400, -100, 0),
-        Vec3i16::new(50, 900, -700),
-    ];
+    let verts = [Vec3i16::new(-300, 200, 100), Vec3i16::new(400, -100, 0), Vec3i16::new(50, 900, -700)];
 
     let mut a = base.clone();
     let rt = a.rtpt(verts);
@@ -324,10 +275,7 @@ fn rtpt_equals_three_rtps() {
         last = b.rtps(v);
         flags |= last.flags;
     }
-    assert_eq!(
-        rt.sxy,
-        [12, 13, 14].map(|i| ScreenXY::from_u32(b.read_data(i)))
-    );
+    assert_eq!(rt.sxy, [12, 13, 14].map(|i| ScreenXY::from_u32(b.read_data(i))));
     assert_eq!(rt.sz, [17, 18, 19].map(|i| b.read_data(i) as u16));
     assert_eq!(rt.ir0, last.ir0);
     assert_eq!(rt.flags, flags);
@@ -343,10 +291,7 @@ fn mac_44bit_overflow() {
     g.set_translation(Vec3i32::new(i32::MAX, i32::MIN, 0));
     g.write_data(0, 0x7FFF);
     g.execute(mvmva(true, false, 0, 0, 0));
-    assert_eq!(
-        g.flag(),
-        ERR | flag::MAC1_POS | flag::IR1_SAT | flag::IR2_SAT
-    );
+    assert_eq!(g.flag(), ERR | flag::MAC1_POS | flag::IR1_SAT | flag::IR2_SAT);
     // Wrapped at 44 bits: (2^31-1)*2^12 + 0x7FFF^2 - 2^44, >> 12.
     let raw = ((i32::MAX as i64) << 12) + 0x7FFF * 0x7FFF - (1 << 44);
     assert_eq!(g.mac().x, (raw >> 12) as i32);
@@ -470,10 +415,7 @@ fn gpf_gpl_and_color_fifo() {
     g.write_data(11, (-0x1000i32) as u32);
     g.execute(op::encode(op::GPF, true, false));
     assert_eq!(g.mac(), Vec3i32::new(0x800, 0x1000, -0x800));
-    assert_eq!(
-        Rgbc::from_u32(g.read_data(22)),
-        Rgbc::new(0x80, 0xFF, 0, 0x2C)
-    );
+    assert_eq!(Rgbc::from_u32(g.read_data(22)), Rgbc::new(0x80, 0xFF, 0, 0x2C));
     assert_eq!(g.flag(), flag::COLOR_G_SAT | flag::COLOR_B_SAT);
 
     g.write_data(25, 1);
@@ -505,11 +447,7 @@ fn dpcs_interpolates_to_far_color() {
 fn lit() -> Gte {
     let mut g = Gte::new();
     g.set_light_matrix(&Matrix::new([[0, 0, 0x1000], [0; 3], [0; 3]]));
-    g.set_color_matrix(&Matrix::new([
-        [0x1000, 0, 0],
-        [0x1000, 0, 0],
-        [0x1000, 0, 0],
-    ]));
+    g.set_color_matrix(&Matrix::new([[0x1000, 0, 0], [0x1000, 0, 0], [0x1000, 0, 0]]));
     g
 }
 
@@ -526,10 +464,7 @@ fn ncds_lighting_and_depth_cue() {
     assert_eq!(g.ncds(n, c), Rgbc::new(0, 0, 0, 0x30));
     // Back-facing normal: lm=1 clamps to zero light.
     g.write_data(8, 0);
-    assert_eq!(
-        g.ncds(Vec3i16::new(0, 0, -0x1000), c),
-        Rgbc::new(0, 0, 0, 0x30)
-    );
+    assert_eq!(g.ncds(Vec3i16::new(0, 0, -0x1000), c), Rgbc::new(0, 0, 0, 0x30));
     assert_eq!(g.flag(), ERR | flag::IR1_SAT);
     assert_eq!(g.nccs(n, c), c);
 }
@@ -540,10 +475,7 @@ fn ncs_color_saturation() {
     g.set_back_color(Vec3i32::new(0x2000, -0x1000, 0));
     let out = g.ncs(Vec3i16::ZERO, Rgbc::new(1, 2, 3, 0x20));
     assert_eq!(out, Rgbc::new(255, 0, 0, 0x20));
-    assert_eq!(
-        g.flag(),
-        ERR | flag::IR2_SAT | flag::COLOR_R_SAT | flag::COLOR_G_SAT
-    );
+    assert_eq!(g.flag(), ERR | flag::IR2_SAT | flag::COLOR_R_SAT | flag::COLOR_G_SAT);
 }
 
 #[test]
@@ -555,14 +487,7 @@ fn triple_color_commands_push_three() {
     }
     g.execute(op::encode(op::NCCT, true, true));
     let rgb = [20, 21, 22].map(|r| Rgbc::from_u32(g.read_data(r)));
-    assert_eq!(
-        rgb,
-        [
-            Rgbc::new(10, 20, 30, 1),
-            Rgbc::new(5, 10, 15, 1),
-            Rgbc::new(0, 0, 0, 1)
-        ]
-    );
+    assert_eq!(rgb, [Rgbc::new(10, 20, 30, 1), Rgbc::new(5, 10, 15, 1), Rgbc::new(0, 0, 0, 1)]);
 }
 
 #[test]
@@ -580,16 +505,10 @@ fn execute_decoding() {
 
 #[test]
 fn trig_table() {
-    assert_eq!(
-        [rsin(0), rsin(1024), rsin(2048), rsin(3072)],
-        [0, 4096, 0, -4096]
-    );
+    assert_eq!([rsin(0), rsin(1024), rsin(2048), rsin(3072)], [0, 4096, 0, -4096]);
     assert_eq!([rcos(0), rcos(1024), rcos(2048)], [4096, 0, -4096]);
     assert_eq!(rsin(512), 2896);
-    assert_eq!(
-        (1..=6).map(rsin).collect::<Vec<_>>(),
-        [6, 13, 19, 25, 31, 38]
-    );
+    assert_eq!((1..=6).map(rsin).collect::<Vec<_>>(), [6, 13, 19, 25, 31, 38]);
     assert_eq!(rsin(-1), -6);
     assert_eq!(rsin(4096 + 5), rsin(5));
     for a in 0..4096 {
@@ -601,15 +520,9 @@ fn trig_table() {
 fn matrix_helpers() {
     assert_eq!(rot_matrix(Vec3i16::ZERO), Matrix::IDENTITY);
     let m = rot_matrix(Vec3i16::new(0, 0, 1024));
-    assert_eq!(
-        apply_matrix(&m, Vec3i16::new(100, 0, 0)),
-        Vec3i32::new(0, 100, 0)
-    );
+    assert_eq!(apply_matrix(&m, Vec3i16::new(100, 0, 0)), Vec3i32::new(0, 100, 0));
     let m = rot_matrix(Vec3i16::new(1024, 0, 0));
-    assert_eq!(
-        apply_matrix_sv(&m, Vec3i16::new(0, 100, 0)),
-        Vec3i16::new(0, 0, 100)
-    );
+    assert_eq!(apply_matrix_sv(&m, Vec3i16::new(0, 100, 0)), Vec3i16::new(0, 0, 100));
     let r = rot_matrix(Vec3i16::new(123, 456, 789));
     assert_eq!(mul_matrix(&Matrix::IDENTITY, &r), r);
     assert_eq!(r.m[0][2] as i32, rsin(456)); // Rx·Ry·Rz puts sin(y) at m[0][2]
@@ -630,11 +543,7 @@ fn matrix_helpers() {
 #[test]
 fn mul_matrix_matches_gte_mvmva() {
     let a = rot_matrix(Vec3i16::new(300, -200, 1000));
-    let b = Matrix::new([
-        [0x7000, -0x7000, 3],
-        [0x1234, 0x7FFF, -5],
-        [-0x8000, 7, 0x4000],
-    ]);
+    let b = Matrix::new([[0x7000, -0x7000, 3], [0x1234, 0x7FFF, -5], [-0x8000, 7, 0x4000]]);
     let p = mul_matrix(&a, &b);
     let mut g = Gte::new();
     g.set_rotation(&a);

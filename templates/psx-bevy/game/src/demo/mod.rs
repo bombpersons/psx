@@ -16,6 +16,7 @@
 //!   and a 2D HUD of sprites over 3D.
 pub mod player;
 
+use crate::disc::GameData;
 use bevy::{
     asset::RenderAssetUsages,
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor},
@@ -29,7 +30,6 @@ use engine::controller::Button;
 use engine::prelude::*;
 use engine::psx::{PsxAnchor, PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxSprite, PsxStp, PsxView};
 use engine::psx::{font, psx_indices, psx_palette, rgb15};
-use crate::disc::GameData;
 use player::Player;
 
 /// The spinner object type and anything with [`Spin`]: rules only.

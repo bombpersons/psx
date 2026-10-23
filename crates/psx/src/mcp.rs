@@ -31,7 +31,7 @@ use rmcp::model::{
 };
 use rmcp::service::{NotificationContext, Peer, RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::sync::Semaphore;
 
 use crate::commands::{self, Ctx, Op, Outcome};
@@ -229,7 +229,10 @@ fn brief_descriptions(value: &mut Value) {
 /// (not one inside "e.g." or "i.e.").
 fn first_sentence(text: &str) -> String {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let end = text.match_indices(". ").map(|(i, _)| i).find(|&i| !["e.g", "i.e", "etc", "vs"].iter().any(|a| text[..i].ends_with(a)));
+    let end = text
+        .match_indices(". ")
+        .map(|(i, _)| i)
+        .find(|&i| !["e.g", "i.e", "etc", "vs"].iter().any(|a| text[..i].ends_with(a)));
     match end {
         Some(i) => text[..=i].to_string(),
         None => text,
@@ -311,13 +314,15 @@ fn prepare(tool: &ToolDef, args: Map<String, Value>, ctx: &Ctx) -> Result<(Value
 fn screen_path(tool: &str, v: &Value) -> Option<String> {
     let p = match tool {
         "run" => {
-            if let Some(path) = v["files"]["screen.png"]["path"].as_str().or(v["screen"].as_str()) { return Some(path.into()); }
+            if let Some(path) = v["files"]["screen.png"]["path"].as_str().or(v["screen"].as_str()) {
+                return Some(path.into());
+            }
             // Compact reports retain the run directory, but list artifact names.
             // Only attach a screenshot when the report says it was written.
             let listed = v["files"].as_array()?.iter().any(|f| f == "screen.png");
             let dir = v["run_dir"].as_str()?;
             return listed.then(|| std::path::Path::new(dir).join("screen.png").to_string_lossy().into_owned());
-        },
+        }
         "handoff_status" => &v["files"]["screen.png"]["path"],
         "native" => &v["dump"]["screen"],
         "artifact_read" => &v["image"]["path"],
@@ -334,7 +339,10 @@ fn spill(tool: &str, value: Value, ctx: &Ctx) -> Value {
     let dir = ctx.root.join(".psx/mcp");
     let path = dir.join(format!("{tool}-{}.json", stamp()));
     if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &text)) {
-        return error_value("io_error", format!("result of {} bytes could not be written to {}: {e}", text.len(), path.display()));
+        return error_value(
+            "io_error",
+            format!("result of {} bytes could not be written to {}: {e}", text.len(), path.display()),
+        );
     }
     // Keep small top-level values inline; describe the rest.
     let mut summary = Map::new();
@@ -463,8 +471,9 @@ impl PsxServer {
             Ok(r) => r,
             Err(e) => return respond(e, None),
         };
-        let cap = args.get("timeout").and_then(Value::as_u64).map(|s| Duration::from_secs(s) + GRACE).unwrap_or(DEFAULT_CAP);
-        let queued_at=std::time::Instant::now();
+        let cap =
+            args.get("timeout").and_then(Value::as_u64).map(|s| Duration::from_secs(s) + GRACE).unwrap_or(DEFAULT_CAP);
+        let queued_at = std::time::Instant::now();
         let permit = if tool.heavy {
             tokio::select! {
                 p = tokio::time::timeout(cap,self.slots.clone().acquire_owned()) => match p {
@@ -479,7 +488,9 @@ impl PsxServer {
         };
         let call = tool.call;
         let tool_name = tool.name;
-        let supervised = isolated || name.starts_with("ghidra_") || name == "bios_install"
+        let supervised = isolated
+            || name.starts_with("ghidra_")
+            || name == "bios_install"
             || ["archive_parser", "model_parser", "asset_parser", "texture_parser", "frame_parser"]
                 .iter()
                 .any(|key| args.get(*key).is_some_and(Value::is_string));
@@ -579,11 +590,21 @@ impl ServerHandler for PsxServer {
         Ok(ListToolsResult::with_all_items(self.tools.as_ref().clone()))
     }
 
-    async fn call_tool(&self, request: CallToolRequestParams, context: RequestContext<RoleServer>) -> Result<CallToolResponse, McpError> {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
         if !self.defs.contains_key(request.name.as_ref()) {
-            return Err(McpError::new(ErrorCode::METHOD_NOT_FOUND, format!("unknown psx tool {:?}", request.name), None));
+            return Err(McpError::new(
+                ErrorCode::METHOD_NOT_FOUND,
+                format!("unknown psx tool {:?}", request.name),
+                None,
+            ));
         }
-        Ok(self.call(request.name.as_ref(), request.arguments.unwrap_or_default(), &context.peer, context.ct.clone()).await)
+        Ok(self
+            .call(request.name.as_ref(), request.arguments.unwrap_or_default(), &context.peer, context.ct.clone())
+            .await)
     }
 }
 
@@ -716,7 +737,12 @@ mod tests {
         // 50K on 2026-10-17; 52K from 2026-10-20 for handoff and handoff_status.
         assert!(size <= 52_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
-            assert!(t.description.len() <= 400, "{} description is {} bytes; move detail into a guide topic", t.name, t.description.len());
+            assert!(
+                t.description.len() <= 400,
+                "{} description is {} bytes; move detail into a guide topic",
+                t.name,
+                t.description.len()
+            );
         }
     }
 }

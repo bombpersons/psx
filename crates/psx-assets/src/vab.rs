@@ -62,7 +62,11 @@ impl Vag {
         if data_size == 0 || !data_size.is_multiple_of(16) || data_size > 16 << 20 {
             return Err(format!("implausible VAG data size {data_size}"));
         }
-        let name = b[32..48].iter().take_while(|&&c| c != 0).map(|&c| if c.is_ascii_graphic() || c == b' ' { c as char } else { '?' }).collect();
+        let name = b[32..48]
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| if c.is_ascii_graphic() || c == b' ' { c as char } else { '?' })
+            .collect();
         let avail = b.len() - VAG_HEADER;
         let data_size = data_size.min(avail);
         Ok(Vag { version: be32(b, 4), rate, name, data_size, size: VAG_HEADER + data_size })
@@ -175,7 +179,12 @@ impl Vab {
                     program: le16(b, o + 20) as i16,
                     vag: le16(b, o + 22) as i16,
                 };
-                if tone.vag < 0 || tone.vag as usize > vags || tone.min_note > 127 || tone.max_note > 127 || tone.center > 127 {
+                if tone.vag < 0
+                    || tone.vag as usize > vags
+                    || tone.min_note > 127
+                    || tone.max_note > 127
+                    || tone.center > 127
+                {
                     return Err(format!("program {p} tone {k}: implausible fields (vag {})", tone.vag));
                 }
                 t.push(tone);
@@ -212,7 +221,8 @@ impl Vab {
             let Some(body) = b.get(at..at + self.body_size) else { return false };
             ranges.iter().all(|r| adpcm::plausible_sample(&body[r.clone()]))
         };
-        let prefixed = b.get(h..h + 4).is_some_and(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize == self.body_size);
+        let prefixed =
+            b.get(h..h + 4).is_some_and(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize == self.body_size);
         if prefixed && fits(h + 4) {
             return Some(h + 4);
         }
@@ -273,7 +283,7 @@ pub fn levels(pcm: &[i16]) -> (f64, f64) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::adpcm::{block, FLAG_END};
+    use crate::adpcm::{FLAG_END, block};
 
     pub fn vag_bytes(rate: u32) -> Vec<u8> {
         let mut b = Vec::new();

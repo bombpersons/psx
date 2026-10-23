@@ -110,9 +110,12 @@ fn tim_info(t: &Tim) -> Info {
 /// Shared model summary for the standard scanner and explicit format adapters.
 pub fn tmd_info(t: &Tmd) -> Info {
     Info::Tmd {
-        objects: t.objects.len(), vertices: t.vertex_count(), polygons: t.polygon_count(),
+        objects: t.objects.len(),
+        vertices: t.vertex_count(),
+        polygons: t.polygon_count(),
         textured: t.objects.iter().flat_map(|o| &o.polygons).filter(|p| p.textured()).count(),
-        skipped: t.objects.iter().map(|o| o.skipped).sum(), fixp: t.fixp,
+        skipped: t.objects.iter().map(|o| o.skipped).sum(),
+        fixp: t.fixp,
     }
 }
 
@@ -205,9 +208,22 @@ mod tests {
     fn tmd() -> Vec<u8> {
         let mut b = Vec::new();
         let words: [u32; 3 + 7 + 6 + 4] = [
-            0x41, 0, 1, // header
-            28, 3, 52, 0, 52, 1, 0, // object: 3 vertices at 28, 0 normals, 1 primitive at 52
-            0, 0, 100, 0, 100 << 16, 0, // vertices (x,y),(z,pad)
+            0x41,
+            0,
+            1, // header
+            28,
+            3,
+            52,
+            0,
+            52,
+            1,
+            0, // object: 3 vertices at 28, 0 normals, 1 primitive at 52
+            0,
+            0,
+            100,
+            0,
+            100 << 16,
+            0,                                   // vertices (x,y),(z,pad)
             u32::from_le_bytes([0, 3, 1, 0x21]), // unlit flat tri
             0x21FF_FFFF,
             1 << 16,

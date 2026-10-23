@@ -32,7 +32,9 @@ impl std::fmt::Display for ReduxError {
             ReduxError::Setup(m) => write!(f, "setup: {m}"),
             ReduxError::Io(p, e) => write!(f, "{}: {e}", p.display()),
             ReduxError::Timeout { seconds, log_tail } => write!(f, "timed out after {seconds}s\n{log_tail}"),
-            ReduxError::Failed { status, log_tail } => write!(f, "redux exited ({status}) without a result\n{log_tail}"),
+            ReduxError::Failed { status, log_tail } => {
+                write!(f, "redux exited ({status}) without a result\n{log_tail}")
+            }
         }
     }
 }
@@ -74,7 +76,10 @@ impl Backend {
         let job_script = root.join("tools/redux/psx_job.lua");
         for p in [&binary, &job_script] {
             if !p.exists() {
-                return Err(ReduxError::Setup(format!("{} not found (build PCSX-Redux or set PSX_REDUX_BIN)", p.display())));
+                return Err(ReduxError::Setup(format!(
+                    "{} not found (build PCSX-Redux or set PSX_REDUX_BIN)",
+                    p.display()
+                )));
             }
         }
         Ok(Backend { binary, job_script, interpreter: true })

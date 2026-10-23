@@ -1,6 +1,6 @@
 //! Working stdlib-only Python external parser starters, with authored inputs.
 use psx_media::{MediaError, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum, serde::Deserialize, schemars::JsonSchema)]
@@ -76,17 +76,27 @@ impl Kind {
 }
 
 pub fn create(dest: &Path, kind: Kind) -> Result<Value> {
-    if dest.exists() && (!dest.is_dir() || std::fs::read_dir(dest).map_err(|e| MediaError::io(dest, e))?.next().is_some()) {
+    if dest.exists()
+        && (!dest.is_dir() || std::fs::read_dir(dest).map_err(|e| MediaError::io(dest, e))?.next().is_some())
+    {
         return Err(MediaError::Malformed(format!("{} must be a new or empty directory", dest.display())));
     }
     std::fs::create_dir_all(dest).map_err(|e| MediaError::io(dest, e))?;
     let demo = match kind {
         Kind::Model => "psx assets extract sample.bin --model-parser ./parser.py -o out",
-        Kind::Archive => "psx assets extract sample.bin --archive-parser ./parser.py --entry 1 -o out\n# Entry 1 is TRI1; chain it with a generated model parser using --model-parser.",
+        Kind::Archive => {
+            "psx assets extract sample.bin --archive-parser ./parser.py --entry 1 -o out\n# Entry 1 is TRI1; chain it with a generated model parser using --model-parser."
+        }
         Kind::Asset => "psx assets extract sample.bin --asset-parser ./parser.py -o out",
-        Kind::Video => "# sample.bin is a wrapped 16x16 frame, not an STR disc image.\n# For a disc using this wrapper:\npsx str disc.cue::/MOVIE.STR --frame-parser ./parser.py -o out",
+        Kind::Video => {
+            "# sample.bin is a wrapped 16x16 frame, not an STR disc image.\n# For a disc using this wrapper:\npsx str disc.cue::/MOVIE.STR --frame-parser ./parser.py -o out"
+        }
     };
-    let readme = format!("# {} parser starter\n\n`parser.py` uses only Python 3's standard library. Replace `decode()` with your format logic. `sample.bin` is authored test data, with no game assets.\n\nTry the contract directly (from this directory):\n\n```sh\n./parser.py < sample.bin > result.json\n{}\n```\n\nSee [PROTOCOL.md](PROTOCOL.md) for the versioned contracts, context variables, limits and model conventions. Diagnostics go to stderr; stdout must be one JSON document. Executables in any language can implement the same contract.\n",kind.name(),demo);
+    let readme = format!(
+        "# {} parser starter\n\n`parser.py` uses only Python 3's standard library. Replace `decode()` with your format logic. `sample.bin` is authored test data, with no game assets.\n\nTry the contract directly (from this directory):\n\n```sh\n./parser.py < sample.bin > result.json\n{}\n```\n\nSee [PROTOCOL.md](PROTOCOL.md) for the versioned contracts, context variables, limits and model conventions. Diagnostics go to stderr; stdout must be one JSON document. Executables in any language can implement the same contract.\n",
+        kind.name(),
+        demo
+    );
     for (name, bytes) in [
         ("parser.py", kind.script().as_bytes().to_vec()),
         ("sample.bin", kind.sample()),
@@ -100,7 +110,8 @@ pub fn create(dest: &Path, kind: Kind) -> Result<Value> {
     {
         use std::os::unix::fs::PermissionsExt;
         let path = dest.join("parser.py");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).map_err(|e| MediaError::io(&path, e))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| MediaError::io(&path, e))?;
     }
     Ok(
         json!({"dest":dest,"kind":kind.name(),"parser":dest.join("parser.py"),"sample":dest.join("sample.bin"),"files":["parser.py","sample.bin","README.md","PROTOCOL.md"]}),
@@ -124,11 +135,17 @@ mod tests {
             let output = parser::run(&spec, &kind.sample(), kind.name(), &[], None).unwrap();
             match kind {
                 Kind::Model => {
-                    let model = parser::document::<psx_assets::model_document::ModelDocument>(&output.bytes).unwrap().into_model().unwrap();
+                    let model = parser::document::<psx_assets::model_document::ModelDocument>(&output.bytes)
+                        .unwrap()
+                        .into_model()
+                        .unwrap();
                     assert_eq!(model.polygon_count(), 1);
                 }
                 Kind::Archive => {
-                    let index = parser::document::<parser::ArchiveDocument>(&output.bytes).unwrap().validate(kind.sample().len()).unwrap();
+                    let index = parser::document::<parser::ArchiveDocument>(&output.bytes)
+                        .unwrap()
+                        .validate(kind.sample().len())
+                        .unwrap();
                     assert_eq!(index.entries.len(), 2);
                     assert_eq!(index.entries[0].size, 0);
                     assert_eq!(index.entries[1].bytes(&kind.sample()).unwrap(), Kind::Model.sample());

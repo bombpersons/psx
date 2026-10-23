@@ -278,7 +278,16 @@ pub fn match_code(code: &[u8], base: u32, sigs: &[ObjectSig], min_concrete: usiz
     }
     objects.sort_by_key(|o| o.address);
     symbols.sort_by_key(|s| s.address);
-    MatchReport { base, code_bytes: code.len(), min_concrete, versions, chosen_version: chosen, objects, ambiguous, symbols }
+    MatchReport {
+        base,
+        code_bytes: code.len(),
+        min_concrete,
+        versions,
+        chosen_version: chosen,
+        objects,
+        ambiguous,
+        symbols,
+    }
 }
 
 /// The parts of a serialised [`MatchReport`] needed to rebuild a symbol table.
@@ -318,10 +327,9 @@ impl SymbolTable {
     /// `name+0xOFF` for the function containing `addr`, if any precedes it
     /// within `max_distance` bytes.
     pub fn describe(&self, addr: u32, max_distance: u32) -> Option<String> {
-        let (a, name) = self.entries[..self.entries.partition_point(|e| e.0 <= addr)]
-            .iter()
-            .rev()
-            .find(|(a, _)| self.bodies.get(a).is_none_or(|ranges| ranges.iter().any(|&(lo, hi)| lo <= addr && addr < hi)))?;
+        let (a, name) = self.entries[..self.entries.partition_point(|e| e.0 <= addr)].iter().rev().find(|(a, _)| {
+            self.bodies.get(a).is_none_or(|ranges| ranges.iter().any(|&(lo, hi)| lo <= addr && addr < hi))
+        })?;
         let off = addr - a;
         (off <= max_distance).then(|| if off == 0 { name.clone() } else { format!("{name}+0x{off:X}") })
     }

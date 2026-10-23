@@ -18,10 +18,10 @@
 
 use std::path::Path;
 
-use psx_media::iso9660::FileSystem;
 use psx_media::Disc;
+use psx_media::iso9660::FileSystem;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Deserialize)]
 struct CdEvent {
@@ -169,7 +169,9 @@ pub fn decode(events_path: &Path, disc: &Disc) -> std::io::Result<(Vec<Load>, Ve
         match (e.reg.as_str(), e.reg.as_u64(), e.index) {
             (Some("dma3_data"), ..) => {
                 // Snapshot of the transfer just recorded: resolve its sector by content.
-                let (Some(l), Some(head), Some(sum)) = (loads.last_mut(), e.head.as_deref(), e.adler32) else { continue };
+                let (Some(l), Some(head), Some(sum)) = (loads.last_mut(), e.head.as_deref(), e.adler32) else {
+                    continue;
+                };
                 if Some(l.ram) != e.madr {
                     continue;
                 }
@@ -180,7 +182,8 @@ pub fn decode(events_path: &Path, disc: &Disc) -> std::io::Result<(Vec<Load>, Ve
                     l.bytes = b;
                 }
                 let head = hex_bytes(head);
-                let (hit, evidence) = resolve(&mut sectors, l.lba, Some((l.lba, l.sector_offset)), l.sector_size, l.bytes, &head, sum);
+                let (hit, evidence) =
+                    resolve(&mut sectors, l.lba, Some((l.lba, l.sector_offset)), l.sector_size, l.bytes, &head, sum);
                 l.lba_evidence = evidence;
                 if let Some((lba, off)) = hit {
                     l.lba = lba;
@@ -326,7 +329,11 @@ fn expected(disc: &Disc, run: &Run) -> Option<Vec<u8>> {
     let mut data = Vec::new();
     for i in 0..run.sectors {
         let (raw, _) = disc.read_raw(run.lba + i).ok()?;
-        let fifo = if run.sector_size == 2340 { raw.get(12..12 + 2340)?.to_vec() } else { disc.read_data(run.lba + i).ok()?.data[..2048].to_vec() };
+        let fifo = if run.sector_size == 2340 {
+            raw.get(12..12 + 2340)?.to_vec()
+        } else {
+            disc.read_data(run.lba + i).ok()?.data[..2048].to_vec()
+        };
         data.extend_from_slice(fifo.get(run.first_offset as usize..)?);
     }
     Some(data)
@@ -492,10 +499,18 @@ pub fn report(run_dir: &Path, disc_path: &Path, symbols: &[crate::ScopedSymbols]
     let native = run_dir.join("cd_native.jsonl");
     let (loads, notes, method) = if native.exists() {
         let loads = native_loads(&native).map_err(|e| format!("cd_native.jsonl: {e}"))?;
-        (loads, Vec::new(), "native core: the drive model recorded each DMA's sector and FIFO offset; runs also compared with final RAM")
+        (
+            loads,
+            Vec::new(),
+            "native core: the drive model recorded each DMA's sector and FIFO offset; runs also compared with final RAM",
+        )
     } else {
         let (l, n) = decode(&run_dir.join("cd.jsonl"), &disc).map_err(|e| format!("cd.jsonl: {e}"))?;
-        (l, n, "CD register protocol; each DMA3 payload matched to disc sectors by content; runs also compared with final RAM")
+        (
+            l,
+            n,
+            "CD register protocol; each DMA3 payload matched to disc sectors by content; runs also compared with final RAM",
+        )
     };
     let fs = FileSystem::read(&disc).ok();
     let ram = std::fs::read(run_dir.join("ram.bin")).ok();

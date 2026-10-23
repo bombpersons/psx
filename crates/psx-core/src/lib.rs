@@ -10,9 +10,9 @@ pub mod cdrom;
 pub mod cpu;
 pub mod disasm;
 pub mod mdec;
-pub mod pad;
 pub mod memcard;
 pub mod observe;
+pub mod pad;
 pub mod sio0;
 pub mod spu;
 pub mod state;
@@ -72,7 +72,8 @@ impl Machine {
         if observe::bios_call_is_quiet(table, function) {
             return;
         }
-        let path_call = matches!((table, function), ("A0", 0x00) | ("A0", 0x42) | ("A0", 0x51) | ("B0", 0x32) | ("B0", 0x42));
+        let path_call =
+            matches!((table, function), ("A0", 0x00) | ("A0", 0x42) | ("A0", 0x51) | ("B0", 0x32) | ("B0", 0x42));
         let path = path_call.then(|| {
             let mut s = String::new();
             for i in 0..128 {

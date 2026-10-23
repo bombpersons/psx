@@ -123,8 +123,16 @@ impl Sio0 {
                     self.irq_flag = false; // acknowledge
                 }
                 if v & (1 << 6) != 0 {
-                    let (cards, log, pad) = (std::mem::take(&mut self.cards), self.log.take(), std::mem::take(&mut self.pad));
-                    *self = Sio0 { buttons: self.buttons, transfers: self.transfers, cards, log, pad, ..Default::default() };
+                    let (cards, log, pad) =
+                        (std::mem::take(&mut self.cards), self.log.take(), std::mem::take(&mut self.pad));
+                    *self = Sio0 {
+                        buttons: self.buttons,
+                        transfers: self.transfers,
+                        cards,
+                        log,
+                        pad,
+                        ..Default::default()
+                    };
                     return;
                 }
                 if v & 2 == 0 {

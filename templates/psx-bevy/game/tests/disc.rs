@@ -22,7 +22,12 @@ fn write_disc(dir: &Path) -> PathBuf {
 
 fn app(disc: Option<&Path>, out: &Path) -> bevy::app::App {
     let mut app = headless_app(game::tick_rate(game::REGION));
-    app.add_plugins(GameDataPlugin { import: true, disc: disc.map(Path::to_path_buf), screens: false, out: Some(out.into()) });
+    app.add_plugins(GameDataPlugin {
+        import: true,
+        disc: disc.map(Path::to_path_buf),
+        screens: false,
+        out: Some(out.into()),
+    });
     app
 }
 

@@ -17,7 +17,6 @@ pub struct SystemCnf {
 
 pub const DEFAULT_BOOT: &str = "cdrom:PSX.EXE;1";
 
-
 impl SystemCnf {
     pub fn parse(bytes: &[u8]) -> Self {
         let text = String::from_utf8_lossy(bytes);

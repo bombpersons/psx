@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use psx_redux::{Backend, Job, Media, ReplayEvent, Watch};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Parser)]
 #[command(about = "Check the native core against a PCSX-Redux oracle (psx development only)")]
@@ -100,7 +100,22 @@ fn main() -> ExitCode {
                 lockstep::run_trace(root, &bios, steps, context, dump.as_deref(), deadline)
             }
         }
-        Command::Run { media, bios, frames, out, watches, replay, from_state, save_state, fast, dualshock, trace_cd, trace_bios, max_events, timeout } => {
+        Command::Run {
+            media,
+            bios,
+            frames,
+            out,
+            watches,
+            replay,
+            from_state,
+            save_state,
+            fast,
+            dualshock,
+            trace_cd,
+            trace_bios,
+            max_events,
+            timeout,
+        } => {
             let (bios, media, replay, from_state) = (abs(bios), media.map(abs), replay.map(abs), from_state.map(abs));
             let job = (|| {
                 let watches = watches.iter().map(|w| parse_watch(w)).collect::<Result<Vec<_>, _>>()?;
@@ -148,7 +163,8 @@ fn run(root: &Path, job: &Job, interpreter: bool, out: Option<PathBuf>) -> (bool
     };
     backend.interpreter = interpreter;
     let dir = out.unwrap_or_else(|| {
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let stamp =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         root.join(".psx/oracle").join(format!("{stamp}-{}", std::process::id()))
     });
     let out = match psx_redux::run(&backend, job, &dir) {

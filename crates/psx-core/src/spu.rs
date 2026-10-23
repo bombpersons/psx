@@ -203,7 +203,9 @@ impl Voice {
     /// Gaussian interpolation of the four most recent samples at the pitch counter.
     fn interpolate(&self) -> i32 {
         let idx = (self.counter >> 12) as isize;
-        let at = |k: isize| -> i32 { if k >= 0 { self.samples[k as usize] as i32 } else { self.old[(3 + k) as usize] as i32 } };
+        let at = |k: isize| -> i32 {
+            if k >= 0 { self.samples[k as usize] as i32 } else { self.old[(3 + k) as usize] as i32 }
+        };
         let i = ((self.counter >> 4) & 0xFF) as usize;
         ((GAUSS[0x0FF - i] * at(idx - 3)) >> 15)
             + ((GAUSS[0x1FF - i] * at(idx - 2)) >> 15)
@@ -401,7 +403,14 @@ impl Reverb {
 
     /// One 44.1 kHz sample: takes the reverb input, returns the output (after
     /// the output volume) and whether an access hit the IRQ address.
-    fn tick(&mut self, ram: &mut [u8], regs: &[u16], write: bool, input: (i32, i32), irq: Option<u32>) -> ((i32, i32), bool) {
+    fn tick(
+        &mut self,
+        ram: &mut [u8],
+        regs: &[u16],
+        write: bool,
+        input: (i32, i32),
+        irq: Option<u32>,
+    ) -> ((i32, i32), bool) {
         self.pos = (self.pos + 1) % RING;
         let pos = self.pos;
         self.input[pos] = sat(input.0) as i16;
@@ -478,7 +487,13 @@ impl Volume {
             return;
         }
         let rate = (self.raw & 0x7F) as u32;
-        let env = Env { rate, exp: self.raw & 0x4000 != 0, dec: self.raw & 0x2000 != 0, neg: self.raw & 0x1000 != 0, frozen: rate == 0x7F };
+        let env = Env {
+            rate,
+            exp: self.raw & 0x4000 != 0,
+            dec: self.raw & 0x2000 != 0,
+            neg: self.raw & 0x1000 != 0,
+            frozen: rate == 0x7F,
+        };
         self.level = env.tick(self.level, &mut self.counter);
     }
 }
@@ -751,10 +766,18 @@ impl Spu {
                 Env { rate, exp: v.adsr_lo & 0x8000 != 0, dec: false, neg: false, frozen: rate == 0x7F }
             }
             // Decay: always exponential, step -8, 4-bit shift.
-            Phase::Decay => Env { rate: (((v.adsr_lo >> 4) & 0xF) as u32) << 2, exp: true, dec: true, neg: false, frozen: false },
+            Phase::Decay => {
+                Env { rate: (((v.adsr_lo >> 4) & 0xF) as u32) << 2, exp: true, dec: true, neg: false, frozen: false }
+            }
             Phase::Sustain => {
                 let rate = ((v.adsr_hi >> 6) & 0x7F) as u32;
-                Env { rate, exp: v.adsr_hi & 0x8000 != 0, dec: v.adsr_hi & 0x4000 != 0, neg: false, frozen: rate == 0x7F }
+                Env {
+                    rate,
+                    exp: v.adsr_hi & 0x8000 != 0,
+                    dec: v.adsr_hi & 0x4000 != 0,
+                    neg: false,
+                    frozen: rate == 0x7F,
+                }
             }
             // Release: step -8, 5-bit shift (all ones never steps).
             Phase::Release => {
@@ -869,7 +892,8 @@ impl Spu {
         }
         // CD audio input (SPUCNT bit 0) through the CD volume (0x1DB0/0x1DB2).
         if self.cnt & 1 != 0 {
-            let (cl, cr) = (mul15(cd_l, self.regs[0x1B0 >> 1] as i16 as i32), mul15(cd_r, self.regs[0x1B2 >> 1] as i16 as i32));
+            let (cl, cr) =
+                (mul15(cd_l, self.regs[0x1B0 >> 1] as i16 as i32), mul15(cd_r, self.regs[0x1B2 >> 1] as i16 as i32));
             l += cl;
             r += cr;
             // SPUCNT bit 2: CD audio into the reverb.
@@ -924,7 +948,7 @@ mod tests {
             (rv::V_IN[0], 0x7FFF),
             (rv::V_IIR, 0x7FFF),
             (rv::V_COMB[0], 0x7FFF),
-            (rv::M_SAME[0], 0x10), // written 64 steps ahead...
+            (rv::M_SAME[0], 0x10),   // written 64 steps ahead...
             (rv::M_COMB12[0][0], 0), // ...of where comb 1 reads
             // Keep the other taps clear of that line. With vAPF = 0 each all-pass
             // stage is a pure delay of dAPF (8 bytes = 4 steps).
@@ -999,7 +1023,7 @@ mod tests {
         let mut r = Reverb { addr: 0x70000, ..Default::default() };
         let mut outs = Vec::new();
         for n in 0..400 {
-            outs.push(r.tick(&mut ram, &regs, true, (if n == 0 { 0x7FFF } else { 0 }, 0), None).0 .0);
+            outs.push(r.tick(&mut ram, &regs, true, (if n == 0 { 0x7FFF } else { 0 }, 0), None).0.0);
         }
         let nonzero = outs.iter().filter(|&&o| o != 0).count();
         assert!(nonzero > 20, "impulse response spans the FIR ({nonzero} samples)");

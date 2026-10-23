@@ -4,10 +4,10 @@ use crate::{
     commands::{Ctx, Op, Outcome},
 };
 use clap::Args;
-use psx_media::{disc::sha256_file, MediaError, PsxExe};
+use psx_media::{MediaError, PsxExe, disc::sha256_file};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -31,7 +31,8 @@ fn config(root: &Path) -> Result<Config, Value> {
             if b.len() > 64 * 1024 {
                 return Err(error("invalid_config", "Project config exceeds 64 KiB"));
             }
-            let c: Config = serde_json::from_slice(&b).map_err(|e| error("invalid_config", format!("{}: {e}", p.display())))?;
+            let c: Config =
+                serde_json::from_slice(&b).map_err(|e| error("invalid_config", format!("{}: {e}", p.display())))?;
             if c.format != 1 {
                 return Err(error("invalid_config", "Project config requires format: 1"));
             }
@@ -51,11 +52,7 @@ fn media_error(e: MediaError) -> Value {
     error(e.code(), e)
 }
 fn absolute(root: &Path, p: &Path) -> PathBuf {
-    if p.is_absolute() {
-        p.to_owned()
-    } else {
-        root.join(p)
-    }
+    if p.is_absolute() { p.to_owned() } else { root.join(p) }
 }
 
 pub fn build() -> Value {
@@ -147,7 +144,10 @@ impl Resolved {
         })
     }
     pub fn bios_error(&self) -> Value {
-        let mut v = error("bios_required", "No BIOS selected. Use bios_list, install one, or pass bios. See candidates and next_action.");
+        let mut v = error(
+            "bios_required",
+            "No BIOS selected. Use bios_list, install one, or pass bios. See candidates and next_action.",
+        );
         v["error"]["candidates"] = json!(self.candidates);
         v["error"]["selection"] = json!(self.bios_reason);
         v["error"]["required_sha256"] = json!(self.state.as_ref().map(|s| &s.bios_sha256));
@@ -182,7 +182,8 @@ pub fn resolve(
     });
     // An explicit BIOS requires no inventory or media inspection before validation.
     let region = if discover || bios_path.is_none() { region(media.as_deref())? } else { None };
-    let mut candidates = if discover || bios_path.is_none() { bios::inventory(root).map_err(media_error)? } else { vec![] };
+    let mut candidates =
+        if discover || bios_path.is_none() { bios::inventory(root).map_err(media_error)? } else { vec![] };
     if bios_path.is_none() {
         if let Some(p) = &cfg.bios {
             let p = absolute(root, p);
@@ -212,15 +213,15 @@ pub fn resolve(
         (Some(absolute(root, &p)), "project_config")
     } else if let Some(r) = region {
         let preferred = bios::CATALOG.iter().filter(|c| c.region == r).find_map(|known| {
-            candidates
-                .iter()
-                .filter(|c| c.sha256 == known.sha256)
-                .min_by_key(|c| (!c.path.file_name().is_some_and(|n| n.eq_ignore_ascii_case(known.file)), c.path.clone()))
+            candidates.iter().filter(|c| c.sha256 == known.sha256).min_by_key(|c| {
+                (!c.path.file_name().is_some_and(|n| n.eq_ignore_ascii_case(known.file)), c.path.clone())
+            })
         });
         if let Some(c) = preferred {
             (Some(c.path.clone()), "regional_catalog_preference")
         } else {
-            let mut compatible: Vec<_> = candidates.iter().filter(|c| c.bytes == 524288 && c.region == Some(r)).collect();
+            let mut compatible: Vec<_> =
+                candidates.iter().filter(|c| c.bytes == 524288 && c.region == Some(r)).collect();
             compatible.sort_by(|a, b| a.sha256.cmp(&b.sha256));
             compatible.dedup_by_key(|c| &c.sha256);
             if compatible.len() == 1 {
@@ -299,13 +300,15 @@ impl Op for ArgsContext {
         if setup.is_none() {
             next_calls.push(json!({"tool":"run","arguments":{"media":r.media,"bios":r.bios,"frames":60,"save_state":true,"brief":true,"return_screen":true}}));
         }
-        Outcome::media(Ok(json!({"status":if setup.is_none(){"ready"}else{"needs_setup"},"build":build(),"project_root":ctx.root,
+        Outcome::media(Ok(
+            json!({"status":if setup.is_none(){"ready"}else{"needs_setup"},"build":build(),"project_root":ctx.root,
             "config":profile,"saved":self.save,"output_root":ctx.root.join(".psx"),"bios_dir":bios::store(),
             "signatures":{"path":signatures,"available":signatures.is_dir(),
                 "selection":sigs_selection,
                 "layout":"<version>/<LIB>.json","override":"symbols.sigs / --sigs; shared default: PSX_SIGS_DIR (use an absolute path)"},
             "resolved":{"media":r.media,"bios":r.bios,"bios_selection":r.bios_reason,"disc_region_hint":r.region.map(|r|r.hint())},
             "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),"state":r.state,"setup":setup,"capabilities":capabilities(),"warnings":r.warnings,
-            "next_calls":next_calls})))
+            "next_calls":next_calls}),
+        ))
     }
 }

@@ -55,6 +55,6 @@ mod unr;
 #[cfg(test)]
 mod tests;
 
-pub use gte::{flag, op, Gte, RtpsResult, RtptResult};
+pub use gte::{Gte, RtpsResult, RtptResult, flag, op};
 pub use types::{Matrix, Rgbc, ScreenXY, Vec3i16, Vec3i32};
-pub use unr::{lzcr, unr_divide, UNR_TABLE};
+pub use unr::{UNR_TABLE, lzcr, unr_divide};

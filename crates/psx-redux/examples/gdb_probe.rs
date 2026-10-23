@@ -1,5 +1,5 @@
 //! Smoke test: start Redux paused, read registers, single-step a few times.
-use psx_redux::{gdb::GdbSession, Backend};
+use psx_redux::{Backend, gdb::GdbSession};
 use std::path::Path;
 
 fn main() {

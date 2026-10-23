@@ -313,7 +313,10 @@ mod tests {
         c.data[64 * SECTOR..64 * SECTOR + 3].copy_from_slice(b"SC\x11");
         c.data[64 * SECTOR + 4..64 * SECTOR + 8].copy_from_slice(b"Test");
         let s = c.saves();
-        assert_eq!((s.len(), s[0].filename.as_str(), s[0].title.as_str(), s[0].blocks.clone()), (1, "BESLES", "Test", vec![1]));
+        assert_eq!(
+            (s.len(), s[0].filename.as_str(), s[0].title.as_str(), s[0].blocks.clone()),
+            (1, "BESLES", "Test", vec![1])
+        );
     }
 
     #[test]

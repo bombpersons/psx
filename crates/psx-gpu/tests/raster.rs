@@ -1,6 +1,6 @@
+use psx_gpu::Gpu;
 use psx_gpu::ot::OrderingTable;
 use psx_gpu::prim::*;
-use psx_gpu::Gpu;
 
 fn gpu() -> Gpu {
     let mut g = Gpu::new();
@@ -48,7 +48,8 @@ fn quad_halves_do_not_overlap_under_additive_blend() {
         poly.semi = true;
     }
     let mut w = Vec::new();
-    Env::TexPage { page: TexPage::new(0, 0, TexDepth::Direct15, Blend::Add), dither: false, draw_to_display: false }.encode(&mut w);
+    Env::TexPage { page: TexPage::new(0, 0, TexDepth::Direct15, Blend::Add), dither: false, draw_to_display: false }
+        .encode(&mut w);
     g.gp0_all(&w);
     draw(&mut g, p);
     // Every pixel blended exactly once: 0 + 8 (64>>3).
@@ -69,7 +70,15 @@ fn clut4_texture_and_transparent_texel() {
     g.gp0_all(&w);
     let tex = Texture { page: TexPage::at(640, 0, TexDepth::Clut4, Blend::Half), clut: Clut::at(0, 480), raw: true };
     let v = |x, y, u| PolyVertex { xy: Xy(x, y), color: Rgb::NEUTRAL, uv: Uv(u, 0) };
-    draw(&mut g, Prim::Poly(Poly { verts: vec![v(100, 100, 0), v(104, 100, 4), v(100, 101, 0), v(104, 101, 4)], gouraud: false, texture: Some(tex), semi: false }));
+    draw(
+        &mut g,
+        Prim::Poly(Poly {
+            verts: vec![v(100, 100, 0), v(104, 100, 4), v(100, 101, 0), v(104, 101, 4)],
+            gouraud: false,
+            texture: Some(tex),
+            semi: false,
+        }),
+    );
     let row: Vec<u16> = (100..104).map(|x| g.vram.get(x, 100)).collect();
     assert_eq!(row, vec![0x001F, 0, 0x001F, 0]);
 }
@@ -82,7 +91,10 @@ fn modulation_neutral_colour_is_identity() {
     g.gp0_all(&w);
     let tex = Texture { page: TexPage::at(640, 0, TexDepth::Direct15, Blend::Half), clut: Clut(0), raw: false };
     let v = |x, y| PolyVertex { xy: Xy(x, y), color: Rgb::NEUTRAL, uv: Uv(0, 0) };
-    draw(&mut g, Prim::Poly(Poly { verts: vec![v(0, 0), v(2, 0), v(0, 2)], gouraud: false, texture: Some(tex), semi: false }));
+    draw(
+        &mut g,
+        Prim::Poly(Poly { verts: vec![v(0, 0), v(2, 0), v(0, 2)], gouraud: false, texture: Some(tex), semi: false }),
+    );
     assert_eq!(g.vram.get(0, 0), 0x7C1F | 0x0200);
 }
 
@@ -94,7 +106,10 @@ fn sprite_fill_and_draw_area_clip() {
     Env::DrawArea { x1: 0, y1: 0, x2: 9, y2: 9 }.encode(&mut w);
     g.gp0_all(&w);
     assert_eq!(g.vram.get(31, 3), 0x7C00);
-    draw(&mut g, Prim::Sprite(Sprite { xy: Xy(5, 5), size: (16, 16), color: Rgb(255, 0, 0), texture: None, semi: false }));
+    draw(
+        &mut g,
+        Prim::Sprite(Sprite { xy: Xy(5, 5), size: (16, 16), color: Rgb(255, 0, 0), texture: None, semi: false }),
+    );
     // Clipped to x,y in 5..=9: 25 pixels of red.
     assert_eq!(count(&g, |p| p == 0x001F), 25);
 }
@@ -105,7 +120,18 @@ fn polyline_and_offset() {
     let mut w = Vec::new();
     Env::DrawOffset { x: 100, y: 100 }.encode(&mut w);
     g.gp0_all(&w);
-    draw(&mut g, Prim::Line(Line { points: vec![(Xy(0, 0), Rgb(255, 255, 255)), (Xy(4, 0), Rgb(255, 255, 255)), (Xy(4, 4), Rgb(255, 255, 255))], gouraud: false, semi: false }));
+    draw(
+        &mut g,
+        Prim::Line(Line {
+            points: vec![
+                (Xy(0, 0), Rgb(255, 255, 255)),
+                (Xy(4, 0), Rgb(255, 255, 255)),
+                (Xy(4, 4), Rgb(255, 255, 255)),
+            ],
+            gouraud: false,
+            semi: false,
+        }),
+    );
     assert_eq!(count(&g, |p| p != 0), 9);
     assert_ne!(g.vram.get(104, 104), 0);
 }

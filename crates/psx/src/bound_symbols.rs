@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use psx_media::{
     disc::sha256_bytes,
-    memmap::{resolve, Region},
+    memmap::{Region, resolve},
 };
 use serde::{Deserialize, Serialize};
 
@@ -54,7 +54,7 @@ impl Loaded {
         if !document.input.is_absolute() {
             document.input = parent.join(&document.input);
         }
-        if std::fs::metadata(&document.input).map_err(|e| e.to_string())?.len() > 64*1024*1024 {
+        if std::fs::metadata(&document.input).map_err(|e| e.to_string())?.len() > 64 * 1024 * 1024 {
             return Err("symbol input exceeds 64 MiB".into());
         }
         let bytes = std::fs::read(&document.input).map_err(|e| e.to_string())?;
@@ -76,7 +76,12 @@ impl Loaded {
             .ok_or("symbol mapping exceeds copied input")?;
         let mut entries = std::collections::HashSet::new();
         for f in &document.functions {
-            if f.name.is_empty() || f.name.chars().any(char::is_whitespace) || f.body.is_empty() || !entries.insert(f.address) || f.address & 3 != 0 {
+            if f.name.is_empty()
+                || f.name.chars().any(char::is_whitespace)
+                || f.body.is_empty()
+                || !entries.insert(f.address)
+                || f.address & 3 != 0
+            {
                 return Err("invalid or duplicate bound function".into());
             }
             let mut previous = document.base;
@@ -94,8 +99,12 @@ impl Loaded {
                 return Err("function entry is outside its body".into());
             }
         }
-        let mut intervals: Vec<_> =
-            document.functions.iter().enumerate().flat_map(|(i, f)| f.body.iter().map(move |r| (r.start, r.end, i, 0))).collect();
+        let mut intervals: Vec<_> = document
+            .functions
+            .iter()
+            .enumerate()
+            .flat_map(|(i, f)| f.body.iter().map(move |r| (r.start, r.end, i, 0)))
+            .collect();
         intervals.sort_unstable();
         let mut max_end = 0;
         for interval in &mut intervals {

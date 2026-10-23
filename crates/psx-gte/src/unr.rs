@@ -37,9 +37,5 @@ pub fn unr_divide(h: u16, sz3: u16) -> (u32, bool) {
 /// LZCR: leading zero count if `lzcs` is non-negative, otherwise leading one
 /// count. Range 1..=32.
 pub const fn lzcr(lzcs: u32) -> u32 {
-    if (lzcs as i32) < 0 {
-        lzcs.leading_ones()
-    } else {
-        lzcs.leading_zeros()
-    }
+    if (lzcs as i32) < 0 { lzcs.leading_ones() } else { lzcs.leading_zeros() }
 }

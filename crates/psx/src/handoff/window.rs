@@ -60,8 +60,14 @@ enum Screen {
 
 pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String), String> {
     let title: String = request.chars().take(60).collect();
-    let opts = WindowOptions { resize: true, scale: Scale::X1, scale_mode: ScaleMode::AspectRatioStretch, ..WindowOptions::default() };
-    let mut win = Window::new(&format!("psx handoff: {title}"), W, H, opts).map_err(|e| format!("could not open a window: {e}"))?;
+    let opts = WindowOptions {
+        resize: true,
+        scale: Scale::X1,
+        scale_mode: ScaleMode::AspectRatioStretch,
+        ..WindowOptions::default()
+    };
+    let mut win = Window::new(&format!("psx handoff: {title}"), W, H, opts)
+        .map_err(|e| format!("could not open a window: {e}"))?;
     // Pacing is ours (the console's field rate), not minifb's.
     win.set_target_fps(0);
     let typed = Rc::new(RefCell::new(Vec::new()));
@@ -216,7 +222,10 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                 }
                 if request_lines.len() > rows {
                     let last = (scroll + shown).min(request_lines.len());
-                    p.line(&format!("lines {}-{last} of {}: PgUp/PgDn, wheel", scroll + 1, request_lines.len()), YELLOW);
+                    p.line(
+                        &format!("lines {}-{last} of {}: PgUp/PgDn, wheel", scroll + 1, request_lines.len()),
+                        YELLOW,
+                    );
                 }
                 p.y = bottom_y;
                 for (keys, what) in [
@@ -237,7 +246,10 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                     (true, true) => "DualShock, analog mode",
                 };
                 let n = pads.names().len();
-                p.line(&format!("{}frame {}", if paused { "PAUSED  " } else { "" }, s.rel()), if paused { YELLOW } else { GREY });
+                p.line(
+                    &format!("{}frame {}", if paused { "PAUSED  " } else { "" }, s.rel()),
+                    if paused { YELLOW } else { GREY },
+                );
                 p.line(&format!("{mode}; {n} gamepad{}", if n == 1 { "" } else { "s" }), GREY);
                 if let Some(lines) = message {
                     p.gap();
@@ -331,7 +343,12 @@ fn pad_state(s: &Session, b: &Bindings, keys: &[String], pad: &[String], pads: &
     let mut buttons = b.buttons(keys.iter().map(String::as_str), pad.iter().map(String::as_str));
     let [lx, ly, rx, ry] = pads.sticks();
     let dz = b.stick_deadzone;
-    let sticks = [bindings::stick_byte(lx, dz, false), bindings::stick_byte(ly, dz, true), bindings::stick_byte(rx, dz, false), bindings::stick_byte(ry, dz, true)];
+    let sticks = [
+        bindings::stick_byte(lx, dz, false),
+        bindings::stick_byte(ly, dz, true),
+        bindings::stick_byte(rx, dz, false),
+        bindings::stick_byte(ry, dz, true),
+    ];
     if s.analog() {
         (buttons, sticks)
     } else {
@@ -357,7 +374,9 @@ impl Pads {
     fn new() -> Self {
         let (gilrs, error) = match gilrs::Gilrs::new() {
             Ok(g) => (Some(g), None),
-            Err(gilrs::Error::NotImplemented(g)) => (Some(g), Some("gamepads are not supported on this platform".to_string())),
+            Err(gilrs::Error::NotImplemented(g)) => {
+                (Some(g), Some("gamepads are not supported on this platform".to_string()))
+            }
             Err(e) => (None, Some(e.to_string())),
         };
         Pads { gilrs, error, held: Vec::new(), pressed: Vec::new(), active: None }
@@ -396,7 +415,8 @@ impl Pads {
                 EventType::ButtonReleased(b, c) => self.release(id, &Self::name(b, c)),
                 // Some pads report the d-pad as a hat axis rather than buttons.
                 EventType::AxisChanged(axis @ (Axis::DPadX | Axis::DPadY), v, _) => {
-                    let (neg, pos) = if axis == Axis::DPadX { ("DPadLeft", "DPadRight") } else { ("DPadDown", "DPadUp") };
+                    let (neg, pos) =
+                        if axis == Axis::DPadX { ("DPadLeft", "DPadRight") } else { ("DPadDown", "DPadUp") };
                     for (name, on) in [(neg, v < -0.5), (pos, v > 0.5)] {
                         if on {
                             self.press(id, name.into());

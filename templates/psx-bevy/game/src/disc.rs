@@ -187,11 +187,7 @@ pub fn run_import(reader: &DiscReader, out: &Path, progress: &ImportProgress) ->
     std::fs::create_dir_all(&partial).map_err(|e| io(&partial, e))?;
     progress.set(0.0, "Starting");
     import::import(reader, &partial, progress)?;
-    let stamp = ImportStamp {
-        version: import::VERSION,
-        serial: reader.serial.clone(),
-        disc: file_name(&reader.path),
-    };
+    let stamp = ImportStamp { version: import::VERSION, serial: reader.serial.clone(), disc: file_name(&reader.path) };
     let json = serde_json::to_vec_pretty(&stamp).map_err(|e| e.to_string())?;
     std::fs::write(partial.join(STAMP_FILE), json).map_err(|e| io(&partial, e))?;
     if out.exists() {
@@ -350,8 +346,16 @@ mod screens {
             .with_children(|root| {
                 root.spawn((Heading, Text::default(), TextFont::from_font_size(34.0), TextColor(TEXT)));
                 root.spawn((Body, Text::default(), TextFont::from_font_size(18.0), TextColor(DIM)));
-                root.spawn((Track, Node { width: percent(100), height: px(8), ..default() }, BackgroundColor(DIM.with_alpha(0.15))))
-                    .with_child((Bar, Node { width: percent(0), height: percent(100), ..default() }, BackgroundColor(ACCENT)));
+                root.spawn((
+                    Track,
+                    Node { width: percent(100), height: px(8), ..default() },
+                    BackgroundColor(DIM.with_alpha(0.15)),
+                ))
+                .with_child((
+                    Bar,
+                    Node { width: percent(0), height: percent(100), ..default() },
+                    BackgroundColor(ACCENT),
+                ));
             });
     }
 
@@ -387,11 +391,9 @@ mod screens {
                 let (fraction, step) = status.progress.get();
                 (format!("Importing from {}", status.disc), format!("{step}\n\nThis only happens once."), fraction)
             }
-            GameData::Failed => (
-                "Import failed".to_string(),
-                format!("{}\n\nPress Enter or Start to try again.", status.error),
-                0.0,
-            ),
+            GameData::Failed => {
+                ("Import failed".to_string(), format!("{}\n\nPress Enter or Start to try again.", status.error), 0.0)
+            }
             GameData::Ready => return,
         };
         if heading.0 != head {

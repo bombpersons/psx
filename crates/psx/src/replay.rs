@@ -30,7 +30,8 @@ pub enum Button {
 impl<'de> Deserialize<'de> for Button {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        let bit = psx_core::sio0::button_from_name(&s).ok_or_else(|| serde::de::Error::custom(format!("unknown button {s:?}")))?;
+        let bit = psx_core::sio0::button_from_name(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown button {s:?}")))?;
         Ok(BUTTONS[bit.trailing_zeros() as usize])
     }
 }
@@ -114,7 +115,10 @@ pub fn resolve(path: Option<&std::path::Path>, inline: Option<&Events>, frames: 
     };
     let limit = if path.is_some() { FILE_EVENT_LIMIT } else { INLINE_EVENT_LIMIT };
     if events.len() > limit {
-        return Err(format!("at most {limit} input events are allowed{}", if path.is_some() { "" } else { " inline (use a replay file)" }));
+        return Err(format!(
+            "at most {limit} input events are allowed{}",
+            if path.is_some() { "" } else { " inline (use a replay file)" }
+        ));
     }
     let mut out = Vec::with_capacity(events.len());
     let mut previous = None;
@@ -135,7 +139,11 @@ pub fn resolve(path: Option<&std::path::Path>, inline: Option<&Events>, frames: 
         }
         let mut bits = 0u16;
         for b in &e.buttons {
-            let bit = 1u16 << BUTTONS.iter().position(|candidate| std::mem::discriminant(candidate) == std::mem::discriminant(b)).unwrap();
+            let bit = 1u16
+                << BUTTONS
+                    .iter()
+                    .position(|candidate| std::mem::discriminant(candidate) == std::mem::discriminant(b))
+                    .unwrap();
             if bits & bit != 0 {
                 return Err("duplicate button in input state".into());
             }

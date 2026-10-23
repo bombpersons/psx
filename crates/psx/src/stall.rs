@@ -6,7 +6,7 @@
 //! there is one.
 
 use psx_core::Machine;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Frames without a GPU draw before a run is flagged (2 s at NTSC).
 const IDLE_FRAMES: u64 = 120;
@@ -25,7 +25,9 @@ pub fn warnings(m: &Machine) -> Vec<Value> {
     let cd_loop = cd_retry_loop(m, since);
     let (_, _, rgba) = m.bus.gpu.display_rgba();
     let blank = rgba.as_chunks::<4>().0.iter().all(|p| p[..3] == [0, 0, 0]);
-    let mut message = format!("no GPU draw commands in the last {idle} frames (since frame {since}), so the displayed frame has not changed");
+    let mut message = format!(
+        "no GPU draw commands in the last {idle} frames (since frame {since}), so the displayed frame has not changed"
+    );
     if let Some(l) = &cd_loop {
         message.push_str(&format!(
             "; the CPU keeps seeking the CD to LBA {}{} ({} Setlocs, about every {} frames): this looks like a load stuck in a retry loop, \
@@ -36,9 +38,13 @@ pub fn warnings(m: &Machine) -> Vec<Value> {
             l["period_frames"],
         ));
     } else if blank {
-        message.push_str("; the display is blank, so the game may be hung (check final_pc / hot PCs and the CD command history)");
+        message.push_str(
+            "; the display is blank, so the game may be hung (check final_pc / hot PCs and the CD command history)",
+        );
     } else {
-        message.push_str("; expected on a still title, menu or loading screen, suspicious if the game should be animating");
+        message.push_str(
+            "; expected on a still title, menu or loading screen, suspicious if the game should be animating",
+        );
     }
     vec![json!({
         "code": "no_gpu_draws",
@@ -104,7 +110,16 @@ mod tests {
     use psx_core::cdrom::RecentCommand;
 
     fn cmd(frame: u64, command: u8, params: &[u8]) -> RecentCommand {
-        RecentCommand { time: 0, frame: Some(frame), last_time: 0, last_frame: Some(frame), command, params: params.to_vec(), ints: vec![3], repeats: 1 }
+        RecentCommand {
+            time: 0,
+            frame: Some(frame),
+            last_time: 0,
+            last_frame: Some(frame),
+            command,
+            params: params.to_vec(),
+            ints: vec![3],
+            repeats: 1,
+        }
     }
 
     #[test]
@@ -120,7 +135,10 @@ mod tests {
         assert_eq!(w[0]["frames_without_draws"], 500);
         assert_eq!(w[0]["screen_blank"], true);
         let l = &w[0]["cd_retry_loop"];
-        assert_eq!((l["lba"].as_u64(), l["setlocs"].as_u64(), l["period_frames"].as_u64()), (Some(129726), Some(4), Some(8)));
+        assert_eq!(
+            (l["lba"].as_u64(), l["setlocs"].as_u64(), l["period_frames"].as_u64()),
+            (Some(129726), Some(4), Some(8))
+        );
         assert!(w[0]["message"].as_str().unwrap().contains("retry loop"));
     }
 

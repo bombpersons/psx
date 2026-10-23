@@ -489,6 +489,14 @@ project root:
   Redux instruction by instruction from BIOS reset and stops at the first divergence.
 - `tools/probes/gpu/compare.sh PSX PSX_ORACLE OUT_DIR` diffs `psx-gpu` against Redux on the GPU probe.
 
+### Formatting
+
+Code is rustfmt-formatted (`rustfmt.toml`: 120 columns). Run `cargo fmt --all` at the root and in
+`templates/psx-bevy` before committing; the Format workflow
+([.github/workflows/fmt.yml](.github/workflows/fmt.yml)) and the release checks fail otherwise.
+After formatting `crates/psx-media` or `crates/psx-assets`, copy them to the template's `vendor/`
+(a test checks the copies match).
+
 ### Releases
 
 Pushing a version tag builds and publishes a GitHub Release
