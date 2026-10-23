@@ -990,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "psx"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "base64",
  "clap",
@@ -1014,7 +1014,7 @@ dependencies = [
 
 [[package]]
 name = "psx-assets"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "base64",
  "serde",
@@ -1024,7 +1024,7 @@ dependencies = [
 
 [[package]]
 name = "psx-core"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "flate2",
  "postcard",
@@ -1039,21 +1039,21 @@ dependencies = [
 
 [[package]]
 name = "psx-gpu"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "psx-gte"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "psx-media"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "chd",
  "serde",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "psx-oracle"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "clap",
  "png",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "psx-redux"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "serde",
  "serde_json",
@@ -1084,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "psx-symbols"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "serde",
  "serde_json",
