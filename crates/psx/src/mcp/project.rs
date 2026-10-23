@@ -1,6 +1,7 @@
 //! Explicit per-request project roots without changing the MCP server's process CWD.
 //! Closing the worker's input cooperatively cancels supervised descendants first.
-use super::{ARGS_LIMIT, Ctx, Outcome, error_value};
+use super::{ARGS_LIMIT, Ctx, Outcome};
+use crate::Error;
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, Read, Write},
@@ -9,18 +10,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) fn resolve(default: &Path, value: Option<&Value>) -> Result<PathBuf, Value> {
+pub(super) fn resolve(default: &Path, value: Option<&Value>) -> crate::Result<PathBuf> {
     let Some(value) = value else { return Ok(default.to_owned()) };
     let path = value
         .as_str()
         .filter(|p| !p.is_empty())
-        .ok_or_else(|| error_value("invalid_arguments", "project_root must be a nonempty directory path"))?;
+        .ok_or_else(|| Error::invalid("project_root must be a nonempty directory path"))?;
     let absolute = default.join(path);
     let root = absolute.canonicalize().map_err(|e| {
-        error_value("io_error", format!("project_root {} (base {}): {e}", absolute.display(), default.display()))
+        Error::new("io_error", format!("project_root {} (base {}): {e}", absolute.display(), default.display()))
     })?;
     if !root.is_dir() {
-        return Err(error_value("invalid_arguments", format!("project_root {} is not a directory", root.display())));
+        return Err(Error::invalid(format!("project_root {} is not a directory", root.display())));
     }
     Ok(root)
 }
@@ -209,12 +210,7 @@ pub(crate) fn worker(ctx: &Ctx) -> Outcome {
         }
         Ok(result)
     }
-    run(ctx).unwrap_or_else(|error| Outcome {
-        value: error_value("invalid_arguments", error),
-        exit: 1,
-        pretty: false,
-        text: false,
-    })
+    run(ctx).unwrap_or_else(|e| Error::invalid(e).into())
 }
 
 #[cfg(test)]

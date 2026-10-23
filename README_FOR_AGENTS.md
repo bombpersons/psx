@@ -281,7 +281,11 @@ Tools: `guide`, `context`, `bios_list`, `bios_install`, `artifact_read`,
   isolated worker and additionally identify `project_root` in results/continuation
   calls; `context` then also reports `project_root_source: "client_roots"`.
   Errors include `{"error": {"code", "message"}}`
-  with `isError: true`. A partial run is a result, not an error.
+  with `isError: true`. Common codes: `invalid_arguments` (a missing, conflicting or
+  out-of-range argument), `malformed_input` (an input file's contents), `io_error`
+  (with `path`), `not_found`, `unsupported_format` (CLI exit code 2), `parser_failed`
+  (an external parser), `bios_required` and `media_required` (with next steps),
+  `timeout` and `cancelled`. A partial run is a result, not an error.
   The one exception is `text: true` (`disasm`, `xrefs`, `ram_view`): the CLI prints only
   the listing, while the tool returns text plus metadata. Disassembly/xref text
   responses omit duplicate instruction/reference arrays. Asset scans without

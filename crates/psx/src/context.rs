@@ -1,10 +1,10 @@
 //! Deterministic first-use discovery and project defaults; no process-wide cwd changes.
 use crate::{
-    bios,
+    Error, bios,
     commands::{Ctx, Op, Outcome},
 };
 use clap::Args;
-use psx_media::{MediaError, PsxExe, disc::sha256_file};
+use psx_media::{PsxExe, disc::sha256_file};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -24,32 +24,23 @@ struct Config {
     #[serde(default, rename = "backend", skip_serializing)]
     _backend: Option<serde::de::IgnoredAny>,
 }
-fn config(root: &Path) -> Result<Config, Value> {
+fn config(root: &Path) -> crate::Result<Config> {
     let p = root.join(".psx/project.json");
     match fs::read(&p) {
         Ok(b) => {
             if b.len() > 64 * 1024 {
-                return Err(error("invalid_config", "Project config exceeds 64 KiB"));
+                return Err(Error::new("invalid_config", "Project config exceeds 64 KiB"));
             }
-            let c: Config =
-                serde_json::from_slice(&b).map_err(|e| error("invalid_config", format!("{}: {e}", p.display())))?;
+            let c: Config = serde_json::from_slice(&b)
+                .map_err(|e| Error::new("invalid_config", format!("{}: {e}", p.display())))?;
             if c.format != 1 {
-                return Err(error("invalid_config", "Project config requires format: 1"));
+                return Err(Error::new("invalid_config", "Project config requires format: 1"));
             }
             Ok(c)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-        Err(e) => Err(error("io_error", format!("{}: {e}", p.display()))),
+        Err(e) => Err(Error::io(&p, e)),
     }
-}
-pub fn error(code: &str, message: impl ToString) -> Value {
-    json!({"error":{"code":code,"message":message.to_string()}})
-}
-pub fn failed(value: Value) -> Outcome {
-    Outcome { value, exit: 1, pretty: true, text: false }
-}
-fn media_error(e: MediaError) -> Value {
-    error(e.code(), e)
 }
 fn absolute(root: &Path, p: &Path) -> PathBuf {
     if p.is_absolute() { p.to_owned() } else { root.join(p) }
@@ -72,25 +63,25 @@ pub fn capabilities() -> Value {
         "handoff":crate::handoff::capability(),
     })
 }
-fn native_header(path: &Path) -> Result<Option<psx_core::state::Header>, Value> {
-    let mut f = fs::File::open(path).map_err(|e| error("io_error", format!("{}: {e}", path.display())))?;
+fn native_header(path: &Path) -> crate::Result<Option<psx_core::state::Header>> {
+    let mut f = fs::File::open(path).map_err(|e| Error::io(path, e))?;
     let mut prefix = [0; 12];
     match f.read_exact(&mut prefix) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(error("io_error", e)),
+        Err(e) => return Err(Error::io(path, e)),
     }
     if &prefix[..8] != psx_core::state::MAGIC {
         return Ok(None);
     }
     let len = u32::from_le_bytes(prefix[8..].try_into().unwrap()) as usize;
     if len > 64 * 1024 {
-        return Err(error("invalid_state", "State header exceeds 64 KiB"));
+        return Err(Error::new("invalid_state", "State header exceeds 64 KiB"));
     }
     let mut b = prefix.to_vec();
     b.resize(12 + len, 0);
-    f.read_exact(&mut b[12..]).map_err(|e| error("invalid_state", format!("Truncated state header: {e}")))?;
-    psx_core::state::read_header(&b).map(|h| Some(h.0)).map_err(|e| error("invalid_state", e))
+    f.read_exact(&mut b[12..]).map_err(|e| Error::new("invalid_state", format!("Truncated state header: {e}")))?;
+    psx_core::state::read_header(&b).map(|h| Some(h.0)).map_err(|e| Error::new("invalid_state", e))
 }
 /// A report can supply paths only when it cryptographically identifies this state.
 fn state_report(path: &Path) -> Option<Value> {
@@ -108,14 +99,14 @@ fn report_path(root: &Path, report: &Value, key: &str) -> Option<PathBuf> {
     let p = absolute(root, Path::new(report["identity"][key].as_str()?));
     p.is_file().then_some(p)
 }
-fn region(media: Option<&Path>) -> Result<Option<bios::Region>, Value> {
+fn region(media: Option<&Path>) -> crate::Result<Option<bios::Region>> {
     let Some(p) = media else { return Ok(None) };
     let exe = psx_media::exe::is_exe_path(p);
     let hint = if exe {
-        let b = psx_media::source::read(&p.to_string_lossy()).map_err(media_error)?;
-        PsxExe::parse(&b).map_err(media_error)?.region_hint().map(str::to_owned)
+        let b = psx_media::source::read(&p.to_string_lossy())?;
+        PsxExe::parse(&b)?.region_hint().map(str::to_owned)
     } else {
-        let disc = crate::media_cmd::disc_summary(p, false).map_err(media_error)?;
+        let disc = crate::media_cmd::disc_summary(p, false)?;
         disc["boot_exe"]["header"]["region_hint"].as_str().map(str::to_owned)
     };
     Ok(hint.and_then(|h| bios::Region::from_hint(&h)))
@@ -132,33 +123,32 @@ pub struct Resolved {
     pub warnings: Vec<String>,
 }
 impl Resolved {
-    pub fn setup_error(&self) -> Option<Value> {
+    pub fn setup_error(&self) -> Option<Error> {
         if self.bios.is_none() {
             return Some(self.bios_error());
         }
         self.media_required.then(|| {
-            error(
+            Error::new(
                 "media_required",
                 "This checkpoint requires media; pass its disc/EXE or configure matching project media with context --image PATH --save.",
             )
         })
     }
-    pub fn bios_error(&self) -> Value {
-        let mut v = error(
+    pub fn bios_error(&self) -> Error {
+        let next_action = match self.region {
+            Some(r) if self.state.is_none() => {
+                json!({"tool":"bios_install","arguments":{"region":r,"download":true},"explicit_setup_action":true})
+            }
+            _ => json!({"tool":"bios_list","arguments":{}}),
+        };
+        Error::new(
             "bios_required",
             "No BIOS selected. Use bios_list, install one, or pass bios. See candidates and next_action.",
-        );
-        v["error"]["candidates"] = json!(self.candidates);
-        v["error"]["selection"] = json!(self.bios_reason);
-        v["error"]["required_sha256"] = json!(self.state.as_ref().map(|s| &s.bios_sha256));
-        v["error"]["next_action"] = if self.state.is_some() {
-            json!({"tool":"bios_list","arguments":{}})
-        } else if let Some(r) = self.region {
-            json!({"tool":"bios_install","arguments":{"region":r,"download":true},"explicit_setup_action":true})
-        } else {
-            json!({"tool":"bios_list","arguments":{}})
-        };
-        v
+        )
+        .with("candidates", &self.candidates)
+        .with("selection", self.bios_reason)
+        .with("required_sha256", self.state.as_ref().map(|s| &s.bios_sha256))
+        .with("next_action", next_action)
     }
 }
 /// Explicit BIOS wins (including intentional identity-mismatch diagnostics).
@@ -169,7 +159,7 @@ pub fn resolve(
     bios_path: Option<PathBuf>,
     from_state: Option<&Path>,
     discover: bool,
-) -> Result<Resolved, Value> {
+) -> crate::Result<Resolved> {
     let cfg = config(root)?;
     let state = from_state.map(native_header).transpose()?.flatten();
     let report = from_state.and_then(state_report);
@@ -182,13 +172,12 @@ pub fn resolve(
     });
     // An explicit BIOS requires no inventory or media inspection before validation.
     let region = if discover || bios_path.is_none() { region(media.as_deref())? } else { None };
-    let mut candidates =
-        if discover || bios_path.is_none() { bios::inventory(root).map_err(media_error)? } else { vec![] };
+    let mut candidates = if discover || bios_path.is_none() { bios::inventory(root)? } else { vec![] };
     if bios_path.is_none() {
         if let Some(p) = &cfg.bios {
             let p = absolute(root, p);
             if p.is_file() && !candidates.iter().any(|c| c.path == p) {
-                candidates.push(bios::inspect(&p).map_err(media_error)?);
+                candidates.push(bios::inspect(&p)?);
             }
         }
     }
@@ -254,41 +243,34 @@ pub struct ArgsContext {
 }
 impl Op for ArgsContext {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        let r = match resolve(&ctx.root, self.image, self.bios, self.from_state.as_deref(), true) {
-            Ok(r) => r,
-            Err(e) => return failed(e),
-        };
-        let selected_info = match r.bios.as_ref().map(|p| bios::inspect(&absolute(&ctx.root, p))).transpose() {
-            Ok(v) => v,
-            Err(e) => return Outcome::media(Err(e)),
-        };
+        Outcome::result(self.run(ctx))
+    }
+}
+
+impl ArgsContext {
+    fn run(self, ctx: &Ctx) -> crate::Result<Value> {
+        let r = resolve(&ctx.root, self.image, self.bios, self.from_state.as_deref(), true)?;
+        let selected_info = r.bios.as_ref().map(|p| bios::inspect(&absolute(&ctx.root, p))).transpose()?;
         let profile = ctx.root.join(".psx/project.json");
-        let (signatures, sigs_selection) = crate::commands::sigs_default();
+        let (signatures, sigs_selection) = crate::symbols_io::sigs_default();
         let signatures = absolute(&ctx.root, &signatures);
         if self.save {
             if let Some(e) = r.setup_error() {
-                return failed(e);
+                return Err(e);
             }
             let bios = r.bios.as_ref().unwrap();
-            if let Err(e) = bios::inspect(&absolute(&ctx.root, bios)) {
-                return Outcome::media(Err(e));
-            }
+            bios::inspect(&absolute(&ctx.root, bios))?;
             let cfg = Config {
                 format: 1,
                 media: r.media.as_ref().map(|p| absolute(&ctx.root, p)),
                 bios: Some(absolute(&ctx.root, bios)),
                 _backend: None,
             };
-            let temp = profile.with_extension(format!("tmp-{}-{}", std::process::id(), crate::instance_suffix()));
-            let write = fs::create_dir_all(profile.parent().unwrap())
-                .and_then(|_| fs::write(&temp, serde_json::to_vec_pretty(&cfg).unwrap()))
-                .and_then(|_| fs::rename(&temp, &profile));
-            if let Err(e) = write {
-                let _ = fs::remove_file(&temp);
-                return failed(error("io_error", e));
-            }
+            fs::create_dir_all(profile.parent().unwrap())
+                .and_then(|_| crate::write_atomic(&profile, &serde_json::to_vec_pretty(&cfg).unwrap()))
+                .map_err(|e| Error::io(&profile, e))?;
         }
-        let setup = r.setup_error().map(|v| v["error"].clone());
+        let setup = r.setup_error().map(|e| e.to_value()["error"].take());
         let mut template = json!({"tool":"template_create","arguments":{"dest":"game"}});
         if let Some(region) = r.region {
             template["arguments"]["region"] = json!(match region {
@@ -300,15 +282,13 @@ impl Op for ArgsContext {
         if setup.is_none() {
             next_calls.push(json!({"tool":"run","arguments":{"media":r.media,"bios":r.bios,"frames":60,"save_state":true,"brief":true,"return_screen":true}}));
         }
-        Outcome::media(Ok(
-            json!({"status":if setup.is_none(){"ready"}else{"needs_setup"},"build":build(),"project_root":ctx.root,
+        Ok(json!({"status":if setup.is_none(){"ready"}else{"needs_setup"},"build":build(),"project_root":ctx.root,
             "config":profile,"saved":self.save,"output_root":ctx.root.join(".psx"),"bios_dir":bios::store(),
             "signatures":{"path":signatures,"available":signatures.is_dir(),
                 "selection":sigs_selection,
                 "layout":"<version>/<LIB>.json","override":"symbols.sigs / --sigs; shared default: PSX_SIGS_DIR (use an absolute path)"},
             "resolved":{"media":r.media,"bios":r.bios,"bios_selection":r.bios_reason,"disc_region_hint":r.region.map(|r|r.hint())},
             "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),"state":r.state,"setup":setup,"capabilities":capabilities(),"warnings":r.warnings,
-            "next_calls":next_calls}),
-        ))
+            "next_calls":next_calls}))
     }
 }

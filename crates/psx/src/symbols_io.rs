@@ -1,8 +1,58 @@
 //! Symbol loading and residency checks shared by runtime and static tools.
+use crate::Error;
 use crate::bound_symbols;
-use psx_media::{MediaError, PsxExe};
+use crate::commands::{Ctx, Op, Outcome};
+use psx_media::PsxExe;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+
+pub(crate) fn d_sigs() -> PathBuf {
+    sigs_default().0
+}
+
+/// The PsyQ signature directory and why it was chosen: `PSX_SIGS_DIR`, else this
+/// project's `external/psx_psyq_signatures` when present, else the shared copy in
+/// the user data directory when present, else the project path (reported missing).
+pub(crate) fn sigs_default() -> (PathBuf, &'static str) {
+    if let Some(p) = std::env::var_os("PSX_SIGS_DIR").filter(|p| !p.is_empty()) {
+        return (p.into(), "PSX_SIGS_DIR");
+    }
+    let project = PathBuf::from("external/psx_psyq_signatures");
+    match crate::bios::data_dir().map(|d| d.join("psyq_signatures")) {
+        Some(shared) if !project.is_dir() && shared.is_dir() => (shared, "user_data"),
+        _ => (project, "project_default"),
+    }
+}
+fn d_min_concrete() -> usize {
+    24
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct SymbolsArgs {
+    /// PS-X EXE file, or `image.cue::/PATH`.
+    pub source: String,
+    /// Local signature directory (`<version>/<LIB>.json` layout). Defaults to
+    /// PSX_SIGS_DIR when set, otherwise external/psx_psyq_signatures in this project, otherwise
+    /// the copy the installer put in the user data directory (psx/psyq_signatures).
+    #[arg(long, default_value_os_t = d_sigs())]
+    #[serde(default = "d_sigs")]
+    pub sigs: PathBuf,
+    /// Minimum non-wildcard bytes for a signature to be used.
+    #[arg(long, default_value_t = d_min_concrete())]
+    #[serde(default = "d_min_concrete")]
+    pub min_concrete: usize,
+    /// Output path prefix (default .psx/symbols/<exe name>).
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+impl Op for SymbolsArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::result(symbols_cmd(&self.source, &self.sigs, self.min_concrete, self.out))
+    }
+}
 
 /// Symbols for one executable, with its code bytes when known so that a name
 /// is only applied where that code is actually resident.
@@ -65,26 +115,26 @@ impl SymbolCheck {
 
 /// Load `.sym` or `.symbols.json` files. Names describe one executable's code;
 /// overlays and loaders can reuse the same addresses, so prefer `.symbols.json`.
-pub(crate) fn load_symbols(paths: &[PathBuf]) -> psx_media::Result<Vec<ScopedSymbols>> {
+pub(crate) fn load_symbols(paths: &[PathBuf]) -> crate::Result<Vec<ScopedSymbols>> {
     let mut out = Vec::new();
     for p in paths {
-        let text = std::fs::read_to_string(p).map_err(|e| MediaError::io(p, e))?;
+        let text = std::fs::read_to_string(p).map_err(|e| Error::io(p, e))?;
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         if name.ends_with(".symbols.json") {
-            let v: Value = serde_json::from_str(&text).map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
+            let v: Value = serde_json::from_str(&text).map_err(|e| Error::malformed(format!("{name}: {e}")))?;
             if v["format"] == 2 {
-                let doc = serde_json::from_value(v).map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
-                let bound = bound_symbols::Loaded::load(doc, p.parent().unwrap_or(Path::new(".")))
-                    .map_err(MediaError::Malformed)?;
+                let doc = serde_json::from_value(v).map_err(|e| Error::malformed(format!("{name}: {e}")))?;
+                let bound =
+                    bound_symbols::Loaded::load(doc, p.parent().unwrap_or(Path::new("."))).map_err(Error::malformed)?;
                 out.push(ScopedSymbols { name, table: bound.table(), code: None, bound: Some(bound) });
                 continue;
             }
             let source = v["source"].as_str().unwrap_or_default().to_string();
-            let report: psx_symbols::MatchReportIn = serde_json::from_value(v["report"].clone())
-                .map_err(|e| MediaError::Malformed(format!("{name}: {e}")))?;
+            let report: psx_symbols::MatchReportIn =
+                serde_json::from_value(v["report"].clone()).map_err(|e| Error::malformed(format!("{name}: {e}")))?;
             let bytes = psx_media::source::read(&source)?;
             if v["exe_sha256"].as_str().is_some_and(|hash| hash != psx_media::disc::sha256_bytes(&bytes)) {
-                return Err(MediaError::Malformed(format!("{name}: symbol source hash mismatch")));
+                return Err(Error::malformed(format!("{name}: symbol source hash mismatch")));
             }
             let exe = PsxExe::parse(&bytes)?;
             out.push(ScopedSymbols {
@@ -148,20 +198,20 @@ pub(crate) fn symbols_cmd(
     sigs_dir: &Path,
     min_concrete: usize,
     out: Option<PathBuf>,
-) -> psx_media::Result<Value> {
+) -> crate::Result<Value> {
     let bytes = psx_media::source::read(source)?;
     let exe = PsxExe::parse(&bytes)?;
     let sigs = psx_symbols::load_dir(sigs_dir).map_err(|e| {
-        MediaError::NotFound(format!("signatures: {e} (run the installer with signatures, supply a local psx_psyq_signatures checkout with --sigs / MCP sigs, or set PSX_SIGS_DIR to its absolute path for all projects; context reports the default path)"))
+        Error::new("not_found", format!("signatures: {e} (run the installer with signatures, supply a local psx_psyq_signatures checkout with --sigs / MCP sigs, or set PSX_SIGS_DIR to its absolute path for all projects; context reports the default path)"))
     })?;
     let report = psx_symbols::match_code(exe.payload(&bytes), exe.text_addr, &sigs, min_concrete);
     let stem = source.rsplit(['/', '\\', ':']).next().unwrap_or("exe").trim_end_matches(";1").to_string();
     let prefix = out.unwrap_or_else(|| PathBuf::from(".psx/symbols").join(&stem));
     if let Some(parent) = prefix.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| MediaError::io(parent, e))?;
+        std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
     }
     let with_ext = |ext: &str| PathBuf::from(format!("{}.{ext}", prefix.display()));
-    let write = |p: PathBuf, text: String| std::fs::write(&p, text).map_err(|e| MediaError::io(&p, e)).map(|_| p);
+    let write = |p: PathBuf, text: String| std::fs::write(&p, text).map_err(|e| Error::io(&p, e)).map(|_| p);
     let doc = json!({
         "source": source,
         "text_addr": exe.text_addr,

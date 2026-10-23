@@ -4,9 +4,113 @@
 use std::path::Path;
 use std::time::Instant;
 
+use crate::Error;
+use crate::commands::{Ctx, Op, Outcome};
 use psx_core::disasm::disasm;
 use psx_core::{Machine, Width};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Value, json};
+use std::path::PathBuf;
+use std::time::Duration;
+
+fn deadline(timeout_s: Option<u64>) -> Option<Instant> {
+    timeout_s.map(|s| Instant::now() + Duration::from_secs(s))
+}
+fn d_native_frames() -> u64 {
+    300
+}
+fn d_max_steps() -> u64 {
+    20_000_000_000
+}
+fn d_tail() -> usize {
+    48
+}
+fn d_pad() -> String {
+    "digital".into()
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct NativeArgs {
+    /// BIOS image, e.g. bios/scph7502.bin.
+    #[arg(long)]
+    pub bios: Option<PathBuf>,
+    /// Disc image to insert (CUE/BIN/ISO/CHD); omit for an empty drive.
+    #[arg(long)]
+    pub disc: Option<PathBuf>,
+    /// Frames to run from power-on.
+    #[arg(long, default_value_t = d_native_frames())]
+    #[serde(default = "d_native_frames")]
+    pub frames: u64,
+    /// Instruction budget.
+    #[arg(long, default_value_t = d_max_steps())]
+    #[serde(default = "d_max_steps")]
+    pub max_steps: u64,
+    /// Write <PREFIX>.screen.png and <PREFIX>.vram.png at the end.
+    #[arg(long)]
+    pub dump: Option<PathBuf>,
+    /// Stop when the PC reaches this hex address and report the tail.
+    #[arg(long = "break")]
+    #[serde(rename = "break")]
+    pub brk: Option<String>,
+    /// Instructions of history kept for --break.
+    #[arg(long, default_value_t = d_tail())]
+    #[serde(default = "d_tail")]
+    pub tail: usize,
+    /// Report every change of this RAM word (hex address) with the responsible instruction.
+    #[arg(long)]
+    pub watch: Option<String>,
+    /// Start recording --watch changes at this frame.
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub watch_after: u64,
+    /// JSON `[{"frame": n, "buttons": ["CROSS"]}]` (frames from power-on).
+    #[arg(long)]
+    pub replay: Option<PathBuf>,
+    /// With --dump: also save the screen every N frames.
+    #[arg(long)]
+    pub snapshot_every: Option<u64>,
+    /// Capture the SPU output to a WAV file.
+    #[arg(long)]
+    pub wav: Option<PathBuf>,
+    /// Controller in port 1: `digital` (default) or `dualshock`.
+    #[arg(long, default_value_t = d_pad())]
+    #[serde(default = "d_pad")]
+    pub pad: String,
+    /// Wall-clock limit in seconds; stops with status "timeout" (default: none).
+    #[arg(long)]
+    pub timeout: Option<u64>,
+}
+
+impl Op for NativeArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        let resolved = match crate::context::resolve(&ctx.root, self.disc, self.bios, None, false) {
+            Ok(r) => r,
+            Err(e) => return e.into(),
+        };
+        if let Some(e) = resolved.setup_error() {
+            return e.into();
+        }
+        let bios = resolved.bios.unwrap();
+        let hex = |b: &Option<String>| b.as_deref().and_then(psx_media::memmap::parse_hex);
+        Outcome::report(run(Options {
+            bios: &bios,
+            disc: resolved.media.as_deref(),
+            frames: self.frames,
+            max_steps: self.max_steps,
+            dump: self.dump.as_deref(),
+            brk: hex(&self.brk),
+            tail: self.tail,
+            watch: hex(&self.watch),
+            watch_after: self.watch_after,
+            replay: self.replay.as_deref(),
+            snapshot_every: self.snapshot_every,
+            wav: self.wav.as_deref(),
+            pad: &self.pad,
+            deadline: deadline(self.timeout),
+        }))
+    }
+}
 
 pub struct Options<'a> {
     pub bios: &'a Path,
@@ -92,7 +196,7 @@ fn run_with_input(
     steps
 }
 
-pub fn run(o: Options) -> (bool, Value) {
+pub fn run(o: Options) -> crate::Result<(bool, Value)> {
     let Options {
         bios: bios_path,
         disc,
@@ -109,31 +213,13 @@ pub fn run(o: Options) -> (bool, Value) {
         pad,
         deadline,
     } = o;
-    let events = match replay.map(crate::replay::load).transpose() {
-        Ok(e) => e.unwrap_or_default(),
-        Err(e) => return (false, json!({"error": {"code": "invalid_arguments", "message": e}})),
-    };
-    let bios = match std::fs::read(bios_path) {
-        Ok(b) => b,
-        Err(e) => {
-            return (false, json!({"error": {"code": "io_error", "message": format!("{}: {e}", bios_path.display())}}));
-        }
-    };
+    let events = replay.map(crate::replay::load).transpose().map_err(Error::invalid)?.unwrap_or_default();
+    let bios = std::fs::read(bios_path).map_err(|e| Error::io(bios_path, e))?;
     let mut m = Machine::new(bios);
-    match psx_core::pad::PadKind::from_name(pad) {
-        Some(k) => m.bus.sio0.pad.kind = k,
-        None => {
-            return (
-                false,
-                json!({"error": {"code": "invalid_arguments", "message": format!("unknown pad {pad:?} (digital | dualshock)")}}),
-            );
-        }
-    }
+    m.bus.sio0.pad.kind = psx_core::pad::PadKind::from_name(pad)
+        .ok_or_else(|| Error::invalid(format!("unknown pad {pad:?} (digital | dualshock)")))?;
     if let Some(d) = disc {
-        match psx_media::Disc::open(d) {
-            Ok(d) => m.insert_disc(Some(d)),
-            Err(e) => return (false, json!({"error": {"code": e.code(), "message": e.to_string()}})),
-        }
+        m.insert_disc(Some(psx_media::Disc::open(d)?));
     }
     m.bus.spu.capture = wav.is_some();
     let started = Instant::now();
@@ -174,7 +260,7 @@ pub fn run(o: Options) -> (bool, Value) {
         if deadline.is_some_and(|d| Instant::now() >= d) {
             v["timed_out"] = json!(true);
         }
-        return (true, v);
+        return Ok((true, v));
     }
     if let Some(bp) = brk {
         let target = m.bus.frames + frames;
@@ -200,7 +286,7 @@ pub fn run(o: Options) -> (bool, Value) {
             steps += 1;
         }
         if !broke.is_null() {
-            return (false, json!({"status": "breakpoint", "break": broke}));
+            return Ok((false, json!({"status": "breakpoint", "break": broke})));
         }
     }
     let snap = snapshot_every.zip(dump);
@@ -251,7 +337,7 @@ pub fn run(o: Options) -> (bool, Value) {
     let pc = m.cpu.pc;
     let reached = m.bus.frames >= frames;
     let timed_out = deadline.is_some_and(|d| Instant::now() >= d);
-    (
+    Ok((
         reached,
         json!({
             "status": if reached { "frames_reached" } else if timed_out { "timeout" } else { "step_budget_exhausted" },
@@ -288,5 +374,5 @@ pub fn run(o: Options) -> (bool, Value) {
             "speed": {"instructions_per_second": (steps as f64 / secs.max(1e-9)).round(), "realtime_factor": ((m.bus.now as f64 / psx_core::bus::SYSCLK as f64) / secs.max(1e-9) * 100.0).round() / 100.0},
             "timing_model": "PCSX-Redux-like flat costs (2 cycles/instruction, +20 in BIOS ROM); not cycle-accurate",
         }),
-    )
+    ))
 }

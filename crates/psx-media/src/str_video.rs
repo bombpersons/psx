@@ -13,6 +13,7 @@
 //! iki, encrypted and other variants (anything whose header is not
 //! `3800h` + version 1..3), and non-MDEC streams that reuse the STR header.
 
+use crate::le::{u16le, u32le};
 use std::fmt;
 
 /// MDEC end-of-block halfword.
@@ -39,14 +40,6 @@ pub struct StrHeader {
 }
 
 pub const STR_HEADER_LEN: usize = 0x20;
-
-fn u16le(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-
-fn u32le(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
 
 impl StrHeader {
     /// Parse the header of a sector's user data. Returns `None` unless it has ID

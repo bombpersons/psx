@@ -17,6 +17,7 @@ mod bound_symbols;
 mod code;
 mod commands;
 mod context;
+mod error;
 mod ghidra;
 mod guide;
 mod handoff;
@@ -75,30 +76,30 @@ enum Command {
         action: ghidra::Action,
     },
     /// Tracks, volume, SYSTEM.CNF and boot executable of a disc image.
-    Disc(commands::DiscArgs),
+    Disc(media_cmd::DiscArgs),
     /// List ISO9660 entries with LBA, size, CD-XA attributes, filtering and pagination.
-    Ls(commands::LsArgs),
+    Ls(media_cmd::LsArgs),
     /// Extract one file, or every file with --all, into a directory.
     /// Form 2 / interleaved files are written as raw 2352-byte sectors with a `.raw` suffix.
-    Extract(commands::ExtractArgs),
+    Extract(media_cmd::ExtractArgs),
     /// Parse a PS-X EXE from a file, or from a disc with `image.cue::/PATH`.
-    Exe(commands::ExeArgs),
+    Exe(media_cmd::ExeArgs),
     /// List a file's XA-ADPCM audio channels (STR/XA streams), or decode one to a 44.1 kHz WAV.
-    Xa(commands::XaArgs),
+    Xa(xa_cmd::XaArgs),
     /// Find and convert TIM textures, TMD models and VAB/VAG sound banks in disc files, archives or RAM dumps.
     Assets {
         #[command(subcommand)]
         action: assets_cmd::AssetsAction,
     },
     /// Decode an STR movie (MDEC BS v1/v2/v3) into PNG frames, audio.wav and summary.json.
-    Str(commands::StrArgs),
+    Str(str_cmd::StrArgs),
     /// List the saves on a raw 128 KiB memory card image (.mcd/.mcr).
-    Memcard(commands::MemcardArgs),
+    Memcard(media_cmd::MemcardArgs),
     /// Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT
     /// pair a `--gpu-frame` capture used (with the UV bounds sampled), or one page.
-    Textures(commands::TexturesArgs),
+    Textures(textures::TexturesArgs),
     /// Describe sectors: form, XA subheader, owning file and a hex preview.
-    Sector(commands::SectorArgs),
+    Sector(media_cmd::SectorArgs),
     /// Create a native Bevy game starter or an external parser starter.
     Template {
         #[command(subcommand)]
@@ -107,7 +108,7 @@ enum Command {
     /// Run a disc, EXE or state for N frames on the native core and capture RAM, VRAM,
     /// screen and registers, with watches, traces, GPU captures, samples and states.
     /// Input can be inline or replayed.
-    Run(commands::RunCmdArgs),
+    Run(run::RunCmdArgs),
     /// Ask a person to play: open a window showing the game and REQUEST, let them play with a
     /// keyboard or gamepad, and on F12 write state.bin, their input as a replay, a screenshot
     /// and their note. --detach returns at once; poll with handoff-status.
@@ -116,19 +117,19 @@ enum Command {
     HandoffStatus(handoff::HandoffStatusArgs),
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
-    Loads(commands::LoadsArgs),
+    Loads(provenance::LoadsArgs),
     /// Name library functions in a PS-X EXE by PsyQ signature matching.
     /// Writes <out>.symbols.json, <out>.ghidra.txt (ImportSymbolsScript.py) and <out>.sym.
-    Symbols(commands::SymbolsArgs),
+    Symbols(symbols_io::SymbolsArgs),
     /// Emulator diagnostics: run the native core from power-on for N frames and report
     /// how far it got and which hardware it is missing. For game RE use `run`.
-    Native(commands::NativeArgs),
+    Native(native::NativeArgs),
     /// Disassemble MIPS code from a PS-X EXE (file or `image.cue::/PATH`) or a run's RAM:
     /// an address range, or a whole function; JSON lines or `--text`.
-    Disasm(commands::DisasmArgs),
+    Disasm(code::DisasmArgs),
     /// Cross-references to an address or range: jal/j/branch targets, lui+addiu/ori/load/store
     /// pairs, gp-relative accesses and pointer words, in an EXE or a run's RAM.
-    Xrefs(commands::XrefsArgs),
+    Xrefs(code::XrefsArgs),
     /// RAM snapshot analysis across runs: diff, cheat-finder search, side-by-side view.
     Ram {
         #[command(subcommand)]
@@ -136,11 +137,11 @@ enum Command {
     },
     /// Replay a recorded GP0 stream (`[n, words..]` u32 records, e.g. tools/probes/gpu/gp0_stream.bin)
     /// into a fresh psx-gpu and write the resulting VRAM.
-    GpuReplay(commands::GpuReplayArgs),
+    GpuReplay(vram_diff::GpuReplayArgs),
     /// Compare two raw VRAM dumps (vram.bin) pixel by pixel.
-    VramDiff(commands::VramDiffArgs),
+    VramDiff(vram_diff::VramDiffArgs),
     /// Classify a CPU address (segment, region, folded offset).
-    Addr(commands::AddrArgs),
+    Addr(media_cmd::AddrArgs),
     /// Serve every command above as an MCP tool over stdin/stdout (start it in the project root).
     Mcp(mcp::McpArgs),
 }
@@ -148,24 +149,45 @@ enum Command {
 #[derive(Subcommand)]
 enum TemplateAction {
     /// Write the Bevy game workspace (engine, game, tools, on the psx-bevy library) into a new or game directory.
-    Create(commands::TemplateCreateArgs),
+    Create(template::TemplateCreateArgs),
     /// Move psx-bevy to this build's tag and replace untouched vendor/ files; report edits and seeded changes.
-    Update(commands::TemplateUpdateArgs),
+    Update(template::TemplateUpdateArgs),
     /// Start tracking an existing template workspace (writes .psx-template.toml).
-    Adopt(commands::TemplateAdoptArgs),
+    Adopt(template::TemplateAdoptArgs),
     /// Write a working external parser, authored fixture and protocol docs.
-    Parser(commands::ParserTemplateArgs),
+    Parser(parser_template::ParserTemplateArgs),
 }
 
 #[derive(Subcommand)]
 enum RamAction {
     /// Values that differ between two ram.bin snapshots (run directories or files).
-    Diff(commands::RamDiffArgs),
+    Diff(ram::RamDiffArgs),
     /// Cheat-finder search: addresses whose values across ordered snapshots satisfy
     /// predicates (changed/unchanged/increased/decreased/delta=N, exact values, bounds).
-    Search(commands::RamSearchArgs),
+    Search(ram::RamSearchArgs),
     /// A memory window from one or more snapshots side by side, as u8..u32/i16/fx16.16.
-    View(commands::RamViewArgs),
+    View(ram::RamViewArgs),
+}
+
+impl TemplateAction {
+    fn exec(self, ctx: &Ctx) -> commands::Outcome {
+        match self {
+            Self::Create(a) => a.exec(ctx),
+            Self::Update(a) => a.exec(ctx),
+            Self::Adopt(a) => a.exec(ctx),
+            Self::Parser(a) => a.exec(ctx),
+        }
+    }
+}
+
+impl RamAction {
+    fn exec(self, ctx: &Ctx) -> commands::Outcome {
+        match self {
+            Self::Diff(a) => a.exec(ctx),
+            Self::Search(a) => a.exec(ctx),
+            Self::View(a) => a.exec(ctx),
+        }
+    }
 }
 
 /// `--root`, else `PSX_ROOT`: the directory to work in.
@@ -180,10 +202,8 @@ fn main() -> ExitCode {
     if let Some(root) = pinned_root {
         if let Err(e) = std::env::set_current_dir(&root) {
             let abs = std::path::absolute(&root).unwrap_or(root);
-            println!(
-                "{}",
-                serde_json::json!({"error": {"code": "invalid_arguments", "message": format!("project root {} (--root / PSX_ROOT): {e}", abs.display())}})
-            );
+            let message = format!("project root {} (--root / PSX_ROOT): {e}", abs.display());
+            println!("{}", Error::invalid(message).to_value());
             return ExitCode::from(1);
         }
     }
@@ -204,25 +224,19 @@ fn main() -> ExitCode {
         Command::Extract(a) => a.exec(&ctx),
         Command::Exe(a) => a.exec(&ctx),
         Command::Xa(a) => a.exec(&ctx),
-        Command::Assets { action: assets_cmd::AssetsAction::Scan(a) } => a.exec(&ctx),
-        Command::Assets { action: assets_cmd::AssetsAction::Extract(a) } => a.exec(&ctx),
+        Command::Assets { action } => action.exec(&ctx),
         Command::Str(a) => a.exec(&ctx),
         Command::Memcard(a) => a.exec(&ctx),
         Command::Textures(a) => a.exec(&ctx),
         Command::Sector(a) => a.exec(&ctx),
-        Command::Template { action: TemplateAction::Create(a) } => a.exec(&ctx),
-        Command::Template { action: TemplateAction::Update(a) } => a.exec(&ctx),
-        Command::Template { action: TemplateAction::Adopt(a) } => a.exec(&ctx),
-        Command::Template { action: TemplateAction::Parser(a) } => a.exec(&ctx),
+        Command::Template { action } => action.exec(&ctx),
         Command::Run(a) => a.exec(&ctx),
         Command::Loads(a) => a.exec(&ctx),
         Command::Symbols(a) => a.exec(&ctx),
         Command::Native(a) => a.exec(&ctx),
         Command::Disasm(a) => a.exec(&ctx),
         Command::Xrefs(a) => a.exec(&ctx),
-        Command::Ram { action: RamAction::Diff(a) } => a.exec(&ctx),
-        Command::Ram { action: RamAction::Search(a) } => a.exec(&ctx),
-        Command::Ram { action: RamAction::View(a) } => a.exec(&ctx),
+        Command::Ram { action } => action.exec(&ctx),
         Command::GpuReplay(a) => a.exec(&ctx),
         Command::VramDiff(a) => a.exec(&ctx),
         Command::Addr(a) => a.exec(&ctx),
@@ -242,4 +256,24 @@ pub(crate) fn instance_suffix() -> String {
     }
 }
 
+/// Milliseconds since the Unix epoch (0 if the clock is set before it).
+pub(crate) fn now_ms() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+}
+
+/// A file or directory name unique to this moment and job: `<unix ms>-<pid><instance suffix>`.
+pub(crate) fn stamp() -> String {
+    format!("{}-{}{}", now_ms(), std::process::id(), instance_suffix())
+}
+
+/// Write `bytes` to `path` through a temporary file beside it and a rename,
+/// so readers never see a partly written file.
+pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!("tmp-{}{}", std::process::id(), instance_suffix()));
+    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+pub(crate) use error::{Error, Result};
 pub(crate) use symbols_io::{ScopedSymbols, SymbolCheck, final_name, load_symbols, name_pc};

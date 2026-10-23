@@ -2,7 +2,7 @@
 //! stdout, diagnostics on stderr. Executables are launched directly, not through
 //! a shell. They run with the caller's normal permissions, not in a new sandbox.
 
-use psx_media::{MediaError, Result};
+use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -11,6 +11,10 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+
+pub(crate) fn default_parser_timeout() -> u64 {
+    30
+}
 
 const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const STDERR_LIMIT: usize = 64 * 1024;
@@ -25,12 +29,12 @@ pub struct Spec {
 impl Spec {
     pub fn new(program: Option<&PathBuf>, args: &[String], timeout: u64) -> Result<Option<Self>> {
         if !(1..=300).contains(&timeout) {
-            return Err(bad("parser timeout must be 1..=300 seconds"));
+            return Err(Error::invalid("parser timeout must be 1..=300 seconds"));
         }
         match program {
             Some(program) => Ok(Some(Self { program: program.clone(), args: args.to_vec(), timeout })),
             None if args.is_empty() => Ok(None),
-            None => Err(bad("parser arguments require a parser executable")),
+            None => Err(Error::invalid("parser arguments require a parser executable")),
         }
     }
 }
@@ -48,10 +52,6 @@ pub struct Output {
     pub provenance: Value,
 }
 
-fn bad(message: impl Into<String>) -> MediaError {
-    MediaError::Malformed(message.into())
-}
-
 pub fn run(
     spec: &Spec,
     bytes: &[u8],
@@ -60,13 +60,13 @@ pub fn run(
     cancel: Option<&CancellationToken>,
 ) -> Result<Output> {
     if !cfg!(unix) {
-        return Err(MediaError::Unsupported("external parser supervision currently requires Unix".into()));
+        return Err(Error::unsupported("external parser supervision currently requires Unix"));
     }
     if bytes.len() > 512 * 1024 * 1024 {
-        return Err(bad("parser input exceeds 512 MiB"));
+        return Err(Error::new("limit_exceeded", "parser input exceeds 512 MiB"));
     }
     if cancel.is_some_and(|c| c.is_cancelled()) {
-        return Err(bad("parser cancelled before launch"));
+        return Err(Error::new("cancelled", "parser cancelled before launch"));
     }
     let mut command = Command::new(&spec.program);
     command
@@ -83,7 +83,7 @@ pub fn run(
         command.process_group(0);
     }
     let mut child =
-        command.spawn().map_err(|e| bad(format!("cannot launch parser {}: {e}", spec.program.display())))?;
+        command.spawn().map_err(|e| Error::parser(format!("cannot launch parser {}: {e}", spec.program.display())))?;
     let input = child.stdin.take().unwrap();
     let output = child.stdout.take().unwrap();
     let error = child.stderr.take().unwrap();
@@ -107,18 +107,18 @@ pub fn run(
         let mut status = None;
         let outcome = loop {
             if overflow.load(Ordering::Acquire) {
-                break Err(bad("parser stdout exceeds 16 MiB or stderr exceeds 64 KiB"));
+                break Err(Error::parser("parser stdout exceeds 16 MiB or stderr exceeds 64 KiB"));
             }
             if cancel.is_some_and(|c| c.is_cancelled()) {
-                break Err(bad("parser cancelled"));
+                break Err(Error::new("cancelled", "parser cancelled"));
             }
             if Instant::now() >= deadline {
-                break Err(bad(format!("parser timed out after {} seconds", spec.timeout)));
+                break Err(Error::parser(format!("parser timed out after {} seconds", spec.timeout)));
             }
             if status.is_none() {
                 match child.try_wait() {
                     Ok(s) => status = s,
-                    Err(e) => break Err(bad(format!("parser wait failed: {e}"))),
+                    Err(e) => break Err(Error::parser(format!("parser wait failed: {e}"))),
                 }
             }
             if let Some(status) = status {
@@ -141,24 +141,24 @@ pub fn run(
         let _ = child.wait();
         let output = stdout
             .join()
-            .map_err(|_| bad("parser stdout reader failed"))?
-            .map_err(|e| bad(format!("parser stdout: {e}")))?;
+            .map_err(|_| Error::parser("parser stdout reader failed"))?
+            .map_err(|e| Error::parser(format!("parser stdout: {e}")))?;
         let diagnostics = stderr
             .join()
-            .map_err(|_| bad("parser stderr reader failed"))?
-            .map_err(|e| bad(format!("parser stderr: {e}")))?;
-        let written = writer.join().map_err(|_| bad("parser stdin writer failed"))?;
+            .map_err(|_| Error::parser("parser stderr reader failed"))?
+            .map_err(|e| Error::parser(format!("parser stderr: {e}")))?;
+        let written = writer.join().map_err(|_| Error::parser("parser stdin writer failed"))?;
         let status = outcome?;
         if overflow.load(Ordering::Acquire) {
-            return Err(bad("parser output limit exceeded"));
+            return Err(Error::parser("parser output limit exceeded"));
         }
         if !status.success() {
-            return Err(bad(format!(
+            return Err(Error::parser(format!(
                 "parser exited {status}: {}",
                 String::from_utf8_lossy(&diagnostics[..diagnostics.len().min(4096)])
             )));
         }
-        written.map_err(|e| bad(format!("parser did not accept its input: {e}")))?;
+        written.map_err(|e| Error::parser(format!("parser did not accept its input: {e}")))?;
         Ok((output, diagnostics))
     })?;
     let provenance = json!({"protocol_version":1,"executable":spec,"input_sha256":psx_media::disc::sha256_bytes(bytes),
@@ -167,7 +167,7 @@ pub fn run(
 }
 
 pub fn document<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    serde_json::from_slice(bytes).map_err(|e| bad(format!("invalid parser JSON: {e}")))
+    serde_json::from_slice(bytes).map_err(|e| Error::parser(format!("invalid parser JSON: {e}")))
 }
 
 #[derive(Deserialize)]
@@ -187,7 +187,7 @@ pub struct ArchiveEntry {
 impl ArchiveDocument {
     pub fn validate(self, source_len: usize) -> Result<psx_assets::archive::Archive> {
         if self.version != 1 {
-            return Err(bad("unsupported archive parser protocol version"));
+            return Err(Error::parser("unsupported archive parser protocol version"));
         }
         let entries = self
             .entries
@@ -195,7 +195,7 @@ impl ArchiveDocument {
             .enumerate()
             .map(|(index, e)| psx_assets::archive::Entry { index, name: e.name, offset: e.offset, size: e.size })
             .collect();
-        psx_assets::archive::Archive::external(entries, source_len).map_err(bad)
+        psx_assets::archive::Archive::external(entries, source_len).map_err(Error::parser)
     }
 }
 
@@ -212,11 +212,11 @@ impl PayloadDocument {
     pub fn decode(self) -> Result<Vec<u8>> {
         use base64::Engine;
         if self.version != 1 {
-            return Err(bad("unsupported payload parser protocol version"));
+            return Err(Error::parser("unsupported payload parser protocol version"));
         }
         base64::engine::general_purpose::STANDARD
             .decode(&self.data_base64)
-            .map_err(|e| bad(format!("invalid parser base64: {e}")))
+            .map_err(|e| Error::parser(format!("invalid parser base64: {e}")))
     }
 }
 

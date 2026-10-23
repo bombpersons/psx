@@ -1,9 +1,11 @@
 //! `psx assets scan|extract`: find TIM/TMD/VAB/VAG data in disc files,
 //! archives or RAM dumps, and convert it to PNG / glTF / WAV.
 
+use crate::Error;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::commands::{Ctx, Op, Outcome};
 use crate::parser::{self, Parsers};
 use psx_assets::archive::{Archive, Entry};
 use psx_assets::gltf::{TextureKey, texture_keys, tmd_to_gltf};
@@ -12,11 +14,172 @@ use psx_assets::scan::{self, Hit, Info, Kind, Options};
 use psx_assets::upload::{Upload, UploadDocument};
 use psx_assets::vab::{levels, wav_mono};
 use psx_assets::{Tim, TimAlpha, Tmd, Vab, Vag, Vram, adpcm};
+use psx_media::Disc;
 use psx_media::iso9660::FileSystem;
-use psx_media::{Disc, MediaError};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
-type R<T> = psx_media::Result<T>;
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct AssetParsersArgs {
+    /// Executable returning a version-1 JSON model per file/archive entry.
+    #[arg(long, conflicts_with = "asset_parser")]
+    pub model_parser: Option<PathBuf>,
+    #[arg(long = "model-parser-arg", allow_hyphen_values = true, requires = "model_parser")]
+    #[serde(default)]
+    pub model_parser_args: Vec<String>,
+    /// Executable returning a version-1 JSON archive index; replaces built-in detection.
+    #[arg(long, conflicts_with = "archive")]
+    pub archive_parser: Option<PathBuf>,
+    #[arg(long = "archive-parser-arg", allow_hyphen_values = true, requires = "archive_parser")]
+    #[serde(default)]
+    pub archive_parser_args: Vec<String>,
+    /// Executable normalizing each source entry to a standard TIM/TMD/VAB/VAG payload.
+    #[arg(long, conflicts_with = "model_parser")]
+    pub asset_parser: Option<PathBuf>,
+    #[arg(long = "asset-parser-arg", allow_hyphen_values = true, requires = "asset_parser")]
+    #[serde(default)]
+    pub asset_parser_args: Vec<String>,
+    /// Wall-clock seconds per external invocation, 1..=300.
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=300))]
+    #[serde(default = "crate::parser::default_parser_timeout")]
+    pub parser_timeout: u64,
+}
+
+impl AssetParsersArgs {
+    pub fn build(&self, ctx: &Ctx, archive: Option<&str>) -> crate::Result<crate::parser::Parsers> {
+        if self.archive_parser.is_some() && archive.is_some() {
+            return Err(Error::invalid("--archive-parser cannot combine with --archive"));
+        }
+        if self.model_parser.is_some() && self.asset_parser.is_some() {
+            return Err(Error::invalid("choose --model-parser or --asset-parser"));
+        }
+        Ok(crate::parser::Parsers {
+            archive: crate::parser::Spec::new(
+                self.archive_parser.as_ref(),
+                &self.archive_parser_args,
+                self.parser_timeout,
+            )?,
+            model: crate::parser::Spec::new(self.model_parser.as_ref(), &self.model_parser_args, self.parser_timeout)?,
+            asset: crate::parser::Spec::new(self.asset_parser.as_ref(), &self.asset_parser_args, self.parser_timeout)?,
+            cancel: ctx.cancel.clone(),
+        })
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct AssetsScanArgs {
+    /// `image.cue::/PATH` (a file; `/DIR/` or `*` for many), a disc image (every
+    /// file), a host file or a directory (recursive, sorted; no symlink traversal).
+    /// `ram.bin` dumps resolve relocated TMDs at 0x80000000.
+    pub source: String,
+    /// Case-insensitive source-file name filter; affects scanning coverage.
+    #[arg(long)]
+    pub filter: Option<String>,
+    /// Offset among files with recognized hits, uploads or archive indexes.
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub offset: usize,
+    /// Maximum files and maximum rows within each file's hit/upload/archive lists (1..=1000).
+    #[arg(long, default_value_t=crate::page::default_limit())]
+    #[serde(default = "crate::page::default_limit")]
+    pub limit: usize,
+    /// Offset within each file's hits, upload streams and archive entries. Use filter to narrow to one file.
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub item_offset: usize,
+    /// One JSON document instead of a text table (always JSON over MCP).
+    #[arg(long)]
+    #[serde(default)]
+    pub json: bool,
+    /// Only these kinds (tim, tmd, vab, vag); repeatable.
+    #[arg(long = "kind")]
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// Address of the file's first byte when it is a RAM dump (hex).
+    #[arg(long)]
+    pub ram_base: Option<String>,
+    /// Force DOT-T validation, or disable archive detection (default: automatic).
+    #[arg(long, value_parser = ["dot-t", "none"])]
+    pub archive: Option<String>,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub parsers: AssetParsersArgs,
+}
+
+impl Op for AssetsScanArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        match scan_assets(&self, ctx) {
+            Ok(Err(table)) => Outcome { text: true, ..Outcome::ok(json!({"text": table})) },
+            Ok(Ok(v)) => {
+                let mut out = Outcome::ok(v);
+                out.text = !self.json;
+                out
+            }
+            Err(e) => Outcome::result(Err(e)),
+        }
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct AssetsExtractArgs {
+    /// Same syntax as `assets scan`.
+    pub source: String,
+    /// Output directory.
+    #[arg(short, long)]
+    pub out: PathBuf,
+    /// Return summary counts and a manifest read call, without per-asset results.
+    #[arg(long)]
+    #[serde(default)]
+    pub brief: bool,
+    /// Offset in returned conversion records; extraction still processes every selected asset.
+    /// Continue by reading the saved manifest rather than repeating extraction.
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub report_offset: usize,
+    /// Maximum returned records and nested output rows (1..=1000); full results go to the manifest.
+    #[arg(long, default_value_t = crate::page::default_limit())]
+    #[serde(default = "crate::page::default_limit")]
+    pub limit: usize,
+    /// Only these kinds (tim, tmd, vab, vag); repeatable.
+    #[arg(long = "kind")]
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// Only the asset at this file offset (hex).
+    #[arg(long)]
+    pub offset: Option<String>,
+    /// More TIM or explicitly parsed upload sources (same syntax as `source`) loaded into virtual VRAM
+    /// that TMD texture pages are decoded from; repeatable.
+    #[arg(long = "textures")]
+    #[serde(default)]
+    pub textures: Vec<String>,
+    /// Executable decoding --textures inputs as standard payloads or raw VRAM upload documents.
+    #[arg(long, requires = "textures")]
+    pub texture_parser: Option<PathBuf>,
+    #[arg(long = "texture-parser-arg", allow_hyphen_values = true, requires = "texture_parser")]
+    #[serde(default)]
+    pub texture_parser_args: Vec<String>,
+    /// Address of the file's first byte when it is a RAM dump (hex).
+    #[arg(long)]
+    pub ram_base: Option<String>,
+    /// Force DOT-T validation, or disable archive detection (default: automatic).
+    #[arg(long, value_parser = ["dot-t", "none"])]
+    pub archive: Option<String>,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub parsers: AssetParsersArgs,
+    /// Extract this zero-based archive entry as raw bytes, without conversion.
+    #[arg(long, conflicts_with_all = ["offset", "kinds", "textures", "model_parser", "asset_parser", "texture_parser"])]
+    pub entry: Option<usize>,
+}
+
+impl Op for AssetsExtractArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::result(extract_assets(&self, ctx))
+    }
+}
+
+type R<T> = crate::Result<T>;
 
 /// RAM dumps (`ram.bin` from runs) start at KSEG0.
 const RAM_BASE: u32 = 0x8000_0000;
@@ -83,8 +246,7 @@ fn finish_item(mut item: Item, parsers: &Parsers) -> R<Item> {
         ];
         let output = parser::run(spec, &item.bytes[offset..offset + size], kind, &context, parsers.cancel.as_ref())?;
         let (hit, model, normalized) = if kind == "model" {
-            let model =
-                parser::document::<ModelDocument>(&output.bytes)?.into_model().map_err(MediaError::Malformed)?;
+            let model = parser::document::<ModelDocument>(&output.bytes)?.into_model().map_err(Error::malformed)?;
             (Hit { offset, size, kind: Kind::Tmd, info: scan::tmd_info(&model) }, Some(model), None)
         } else {
             // Explicit upload streams have no signature and no declared pixel
@@ -92,7 +254,7 @@ fn finish_item(mut item: Item, parsers: &Parsers) -> R<Item> {
             let value: Value = parser::document(&output.bytes)?;
             if value.get("uploads").is_some() {
                 let uploads =
-                    parser::document::<UploadDocument>(&output.bytes)?.decode(size).map_err(MediaError::Malformed)?;
+                    parser::document::<UploadDocument>(&output.bytes)?.decode(size).map_err(Error::malformed)?;
                 item.uploads.push(ParsedUploads {
                     offset,
                     size,
@@ -105,8 +267,8 @@ fn finish_item(mut item: Item, parsers: &Parsers) -> R<Item> {
             let normalized = parser::document::<parser::PayloadDocument>(&output.bytes)?.decode()?;
             let hits = scan::scan(&normalized, Options::default());
             if hits.len() != 1 || hits[0].offset != 0 || hits[0].size == 0 {
-                return Err(MediaError::Malformed(
-                    "asset parser must return one validated standard TIM/TMD/VAB/VAG at offset zero".into(),
+                return Err(Error::parser(
+                    "asset parser must return one validated standard TIM/TMD/VAB/VAG at offset zero",
                 ));
             }
             let mut hit = hits.into_iter().next().unwrap();
@@ -129,22 +291,22 @@ fn with_ext(path: &str, ext: &str) -> String {
 
 fn archive_index(bytes: &[u8], directory: Option<&[u8]>, mode: Option<&str>, ram: bool) -> R<Option<Archive>> {
     match mode {
-        Some("dot-t") => Archive::dot_t(bytes).map(Some).map_err(MediaError::Malformed),
+        Some("dot-t") => Archive::dot_t(bytes).map(Some).map_err(Error::malformed),
         Some("none") => Ok(None),
         None if ram => Ok(None),
         None => {
             Ok(directory.and_then(|d| Archive::croc_dir(d, bytes.len()).ok()).or_else(|| Archive::detect_dot_t(bytes)))
         }
-        Some(other) => Err(MediaError::Malformed(format!("unknown archive format {other:?} (dot-t, none)"))),
+        Some(other) => Err(Error::invalid(format!("unknown archive format {other:?} (dot-t, none)"))),
     }
 }
 
 /// Host directory traversal is recursive and sorted. Do not follow symlinks:
 /// a source tree may contain parent links or links to unrelated media trees.
 fn host_files(path: &Path, files: &mut Vec<PathBuf>) -> R<()> {
-    for entry in std::fs::read_dir(path).map_err(|e| MediaError::io(path, e))? {
-        let entry = entry.map_err(|e| MediaError::io(path, e))?;
-        let kind = entry.file_type().map_err(|e| MediaError::io(entry.path(), e))?;
+    for entry in std::fs::read_dir(path).map_err(|e| Error::io(path, e))? {
+        let entry = entry.map_err(|e| Error::io(path, e))?;
+        let kind = entry.file_type().map_err(|e| Error::io(entry.path(), e))?;
         if kind.is_dir() {
             host_files(&entry.path(), files)?;
         } else if kind.is_file() {
@@ -155,7 +317,7 @@ fn host_files(path: &Path, files: &mut Vec<PathBuf>) -> R<()> {
 }
 
 fn host_item(source: &str, ram_base: Option<u32>, archive_mode: Option<&str>, parsers: &Parsers) -> R<Item> {
-    let bytes = std::fs::read(source).map_err(|e| MediaError::io(source, e))?;
+    let bytes = std::fs::read(source).map_err(|e| Error::io(source, e))?;
     let p = Path::new(source);
     let looks_like_ram = p.file_name().is_some_and(|n| n == "ram.bin") || bytes.len() == 2 << 20;
     let vb = p
@@ -218,7 +380,7 @@ fn scan_inputs(
             (PathBuf::from(source), None)
         }
         None => {
-            let metadata = std::fs::metadata(source).map_err(|e| MediaError::io(source, e))?;
+            let metadata = std::fs::metadata(source).map_err(|e| Error::io(source, e))?;
             let mut files = Vec::new();
             if metadata.is_dir() {
                 host_files(Path::new(source), &mut files)?;
@@ -229,9 +391,8 @@ fn scan_inputs(
             let source_files = files.len();
             let mut items = Vec::new();
             for path in files {
-                let name = path
-                    .to_str()
-                    .ok_or_else(|| MediaError::Malformed(format!("non-UTF-8 asset path: {}", path.display())))?;
+                let name =
+                    path.to_str().ok_or_else(|| Error::invalid(format!("non-UTF-8 asset path: {}", path.display())))?;
                 if matches(name) {
                     items.push(host_item(name, ram_base, archive_mode, parsers)?);
                 }
@@ -391,16 +552,25 @@ fn uploads_json(item: &Item, stream: &ParsedUploads) -> Value {
 #[derive(clap::Subcommand)]
 pub enum AssetsAction {
     /// List TIM/TMD/VAB/VAG data found by signature + validation.
-    Scan(crate::commands::AssetsScanArgs),
+    Scan(AssetsScanArgs),
     /// Convert what `scan` finds: TIM -> PNG per CLUT, TMD -> glTF (+ texture
     /// page PNGs from TIMs in the same file or --textures), VAB/VAG -> WAV.
     /// Original bytes are written next to each conversion. --entry extracts a
     /// complete raw archive entry without interpreting its payload.
-    Extract(crate::commands::AssetsExtractArgs),
+    Extract(AssetsExtractArgs),
+}
+
+impl AssetsAction {
+    pub fn exec(self, ctx: &Ctx) -> Outcome {
+        match self {
+            Self::Scan(a) => a.exec(ctx),
+            Self::Extract(a) => a.exec(ctx),
+        }
+    }
 }
 
 /// `assets scan`: `Ok(Ok(json))`, or `Ok(Err(text))` for the text table.
-pub fn scan_assets(a: &crate::commands::AssetsScanArgs, ctx: &crate::commands::Ctx) -> R<Result<Value, String>> {
+pub fn scan_assets(a: &AssetsScanArgs, ctx: &Ctx) -> R<Result<Value, String>> {
     let parsers = a.parsers.build(ctx, a.archive.as_deref())?;
     scan_cmd(ScanArgs {
         source: &a.source,
@@ -417,13 +587,13 @@ pub fn scan_assets(a: &crate::commands::AssetsScanArgs, ctx: &crate::commands::C
 }
 
 /// `assets extract`.
-pub fn extract_assets(a: &crate::commands::AssetsExtractArgs, ctx: &crate::commands::Ctx) -> R<Value> {
-    crate::page::validate(a.limit).map_err(MediaError::Malformed)?;
+pub fn extract_assets(a: &AssetsExtractArgs, ctx: &Ctx) -> R<Value> {
+    crate::page::validate(a.limit).map_err(Error::malformed)?;
     let parsers = a.parsers.build(ctx, a.archive.as_deref())?;
     let texture_parser =
         parser::Spec::new(a.texture_parser.as_ref(), &a.texture_parser_args, a.parsers.parser_timeout)?;
     if texture_parser.is_some() && a.textures.is_empty() {
-        return Err(MediaError::Malformed("--texture-parser requires at least one --textures source".into()));
+        return Err(Error::invalid("--texture-parser requires at least one --textures source"));
     }
     let full = extract_cmd(ExtractArgs {
         source: &a.source,
@@ -469,7 +639,7 @@ fn extraction_response(mut full: Value, out: &Path, brief: bool, offset: usize, 
                     if let Some(path) = file["path"].as_str() {
                         let path = PathBuf::from(path);
                         file["sha256"] = json!(psx_media::disc::sha256_file(&path)?);
-                        file["bytes"] = json!(std::fs::metadata(&path).map_err(|e| MediaError::io(&path, e))?.len());
+                        file["bytes"] = json!(std::fs::metadata(&path).map_err(|e| Error::io(&path, e))?.len());
                     }
                 }
             }
@@ -481,14 +651,13 @@ fn extraction_response(mut full: Value, out: &Path, brief: bool, offset: usize, 
     }
     full["summary"] = json!({"records":full["extracted"],"output_files":outputs,"by_kind":kinds,"warnings":warnings,
         "skipped_primitives":skipped_primitives});
-    std::fs::create_dir_all(out).map_err(|e| MediaError::io(out, e))?;
+    std::fs::create_dir_all(out).map_err(|e| Error::io(out, e))?;
     let bytes = serde_json::to_vec_pretty(&full).unwrap();
     let hash = psx_media::disc::sha256_bytes(&bytes);
-    let manifest =
-        std::path::absolute(out).map_err(|e| MediaError::io(out, e))?.join(format!("extraction-{hash}.json"));
+    let manifest = std::path::absolute(out).map_err(|e| Error::io(out, e))?.join(format!("extraction-{hash}.json"));
     if manifest.exists() {
-        if std::fs::read(&manifest).map_err(|e| MediaError::io(&manifest, e))? != bytes {
-            return Err(MediaError::Malformed(format!("extraction manifest changed: {}", manifest.display())));
+        if std::fs::read(&manifest).map_err(|e| Error::io(&manifest, e))? != bytes {
+            return Err(Error::malformed(format!("extraction manifest changed: {}", manifest.display())));
         }
     } else {
         let staged = out.join(format!(".extraction-{}{}.tmp", std::process::id(), crate::instance_suffix()));
@@ -496,7 +665,7 @@ fn extraction_response(mut full: Value, out: &Path, brief: bool, offset: usize, 
         if let Err(e) = std::fs::rename(&staged, &manifest) {
             let _ = std::fs::remove_file(&staged);
             if std::fs::read(&manifest).ok().as_deref() != Some(bytes.as_slice()) {
-                return Err(MediaError::io(&manifest, e));
+                return Err(Error::io(&manifest, e));
             }
         }
     }
@@ -525,7 +694,7 @@ fn extraction_response(mut full: Value, out: &Path, brief: bool, offset: usize, 
             response[key] = json!(page);
         }
     }
-    response["manifest"] = crate::artifact::descriptor(&manifest).map_err(|e| MediaError::io(&manifest, e))?;
+    response["manifest"] = crate::artifact::descriptor(&manifest).map_err(|e| Error::io(&manifest, e))?;
     let list = if response["entries_page"]["total"].as_u64().unwrap_or(0) > 0 { "entries" } else { "assets" };
     response["next_call"] = json!({"tool":"artifact_read","arguments":{"path":manifest,"pointer":format!("/{list}"),"offset":offset,"limit":limit}});
     response["brief"] = json!(brief);
@@ -534,13 +703,13 @@ fn extraction_response(mut full: Value, out: &Path, brief: bool, offset: usize, 
 
 fn hex(s: &Option<String>) -> R<Option<u32>> {
     s.as_deref()
-        .map(|v| psx_media::memmap::parse_hex(v).ok_or_else(|| MediaError::Malformed(format!("bad hex value {v}"))))
+        .map(|v| psx_media::memmap::parse_hex(v).ok_or_else(|| Error::invalid(format!("bad hex value {v}"))))
         .transpose()
 }
 
 fn kinds(k: &[String]) -> R<Vec<Kind>> {
     k.iter()
-        .map(|s| Kind::parse(s).ok_or_else(|| MediaError::Malformed(format!("unknown kind {s} (tim, tmd, vab, vag)"))))
+        .map(|s| Kind::parse(s).ok_or_else(|| Error::invalid(format!("unknown kind {s} (tim, tmd, vab, vag)"))))
         .collect()
 }
 
@@ -559,7 +728,7 @@ pub struct ScanArgs<'a> {
 
 /// Returns the JSON report, or a text table when `json` is false.
 pub fn scan_cmd(a: ScanArgs) -> R<Result<Value, String>> {
-    crate::page::validate(a.limit).map_err(MediaError::Malformed)?;
+    crate::page::validate(a.limit).map_err(Error::malformed)?;
     let ScanInputs { items, source_files, selected_files, skipped } =
         scan_inputs(a.source, a.ram_base, a.archive, a.parsers, a.filter)?;
     let mut files = Vec::new();
@@ -671,11 +840,11 @@ fn safe_name(s: &str) -> String {
 }
 
 fn write(path: &Path, bytes: &[u8]) -> R<()> {
-    std::fs::write(path, bytes).map_err(|e| MediaError::io(path, e))
+    std::fs::write(path, bytes).map_err(|e| Error::io(path, e))
 }
 
 fn png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> R<()> {
-    crate::run::write_png(path, w, h, rgba, png::ColorType::Rgba).map_err(|e| MediaError::io(path, e))
+    crate::run::write_png(path, w, h, rgba, png::ColorType::Rgba).map_err(|e| Error::io(path, e))
 }
 
 fn wav_stats(pcm: &[i16], rate: u32) -> Value {
@@ -724,17 +893,17 @@ fn load_item_textures(vram: &mut Vram, item: &Item) -> (usize, usize) {
 /// `--entry N`: one archive entry's raw bytes, without interpreting them.
 fn extract_entry(a: &ExtractArgs, items: &[Item], index: usize) -> R<Value> {
     if items.len() != 1 {
-        return Err(MediaError::Malformed("--entry requires a single source file".into()));
+        return Err(Error::invalid("--entry requires a single source file"));
     }
     let item = &items[0];
     let archive = item.archive.as_ref().ok_or_else(|| {
-        MediaError::Malformed("source is not a recognized archive (use --archive dot-t for explicit validation)".into())
+        Error::malformed("source is not a recognized archive (use --archive dot-t for explicit validation)")
     })?;
     let entry = archive.entries.get(index).ok_or_else(|| {
-        MediaError::Malformed(format!("archive entry {index} out of range ({} entries)", archive.entries.len()))
+        Error::invalid(format!("archive entry {index} out of range ({} entries)", archive.entries.len()))
     })?;
     let dir = a.out.join(safe_name(&item.name));
-    std::fs::create_dir_all(&dir).map_err(|e| MediaError::io(&dir, e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
     let name = entry.name.as_deref().map(safe_name).unwrap_or_else(|| "data.bin".into());
     let path = dir.join(format!("entry_{index:04}_{name}"));
     write(&path, entry.bytes(&item.bytes).unwrap())?;
@@ -814,8 +983,8 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
             || a.parsers.asset.is_some()
             || a.texture_parser.is_some())
     {
-        return Err(MediaError::Malformed(
-            "raw --entry extraction cannot combine with asset selection or model/asset parsers".into(),
+        return Err(Error::invalid(
+            "raw --entry extraction cannot combine with asset selection or model/asset parsers",
         ));
     }
     let items = items(a.source, a.ram_base, a.archive, a.parsers)?;
@@ -834,7 +1003,7 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
             continue;
         }
         let dir = a.out.join(safe_name(&item.name));
-        std::fs::create_dir_all(&dir).map_err(|e| MediaError::io(&dir, e))?;
+        std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
         for stream in streams {
             report.push(write_upload_stream(&dir, item, stream)?);
         }
@@ -868,7 +1037,7 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
             let mut extra = json!({});
             match h.kind {
                 Kind::Tim => {
-                    let t = Tim::parse(bytes).map_err(MediaError::Malformed)?;
+                    let t = Tim::parse(bytes).map_err(Error::malformed)?;
                     let n = t.palette_count().max(1);
                     for pal in 0..n {
                         let p = if n == 1 {
@@ -884,7 +1053,7 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
                     let t = if let Some(model) = parsed.and_then(|p| p.model.as_ref()) {
                         model.clone()
                     } else {
-                        Tmd::parse_at(parent, local_offset, ram_base).map_err(MediaError::Malformed)?
+                        Tmd::parse_at(parent, local_offset, ram_base).map_err(Error::malformed)?
                     };
                     let mut pages = BTreeMap::new();
                     for key in texture_keys(&t) {
@@ -919,7 +1088,7 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
                     }
                 }
                 Kind::Vag => {
-                    let v = Vag::parse(bytes).map_err(MediaError::Malformed)?;
+                    let v = Vag::parse(bytes).map_err(Error::malformed)?;
                     let d = v.decode(bytes);
                     let p = dir.join(format!("{stem}.wav"));
                     write(&p, &wav_mono(&d.pcm, v.rate))?;
@@ -929,7 +1098,7 @@ pub fn extract_cmd(a: ExtractArgs) -> R<Value> {
                         "adpcm_sha256": adpcm::sample_sha256(data, 0)}));
                 }
                 Kind::Vab => {
-                    let v = Vab::parse(bytes).map_err(MediaError::Malformed)?;
+                    let v = Vab::parse(bytes).map_err(Error::malformed)?;
                     let body: Option<&[u8]> = if let Some(at) = v.body_offset(bytes) {
                         Some(&bytes[at..at + v.body_size])
                     } else if h.offset == 0 {

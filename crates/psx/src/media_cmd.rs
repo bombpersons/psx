@@ -1,14 +1,199 @@
 //! Static disc and executable commands: `disc`, `ls` rows, `extract`, `exe`, `sector`.
 
+use crate::Error;
 use std::path::Path;
 
+use crate::commands::{Ctx, Op, Outcome};
 use psx_media::disc::{sha256_bytes, sha256_file};
 use psx_media::iso9660::{Entry, FileSystem};
+use psx_media::memmap;
 use psx_media::system_cnf::{DEFAULT_BOOT, SystemCnf};
-use psx_media::{Disc, MediaError, PsxExe};
+use psx_media::{Disc, PsxExe};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 
-type R = psx_media::Result<Value>;
+fn d_extracted() -> PathBuf {
+    PathBuf::from("extracted")
+}
+fn d_one() -> u32 {
+    1
+}
+fn d_preview() -> usize {
+    64
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct DiscArgs {
+    /// Disc image: .cue, raw .bin (single data track), cooked .iso or CD .chd.
+    pub image: PathBuf,
+    /// Also stream SHA-256 over every image file (slow for full discs).
+    #[arg(long)]
+    #[serde(default)]
+    pub hash: bool,
+}
+
+impl Op for DiscArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::result(disc_summary(&self.image, self.hash))
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct LsArgs {
+    /// Disc image: .cue, raw .bin, .iso or .chd.
+    pub image: PathBuf,
+    /// Case-insensitive substring of the ISO path.
+    #[arg(long)]
+    pub filter: Option<String>,
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub offset: usize,
+    #[arg(long, default_value_t=crate::page::default_limit())]
+    #[serde(default = "crate::page::default_limit")]
+    pub limit: usize,
+}
+
+impl Op for LsArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::result((|| -> crate::Result<Value> {
+            crate::page::validate(self.limit).map_err(Error::invalid)?;
+            let disc = Disc::open(&self.image)?;
+            let fs = FileSystem::read(&disc)?;
+            let filter = self.filter.unwrap_or_default().to_lowercase();
+            let rows: Vec<_> = fs
+                .entries
+                .iter()
+                .map(entry_json)
+                .filter(|e| e["path"].as_str().unwrap_or("").to_lowercase().contains(&filter))
+                .collect();
+            let entries: Vec<_> = rows.iter().skip(self.offset).take(self.limit).collect();
+            Ok(json!({"volume": fs.volume, "entries": entries, "warnings": fs.warnings,
+                    "page":crate::page::metadata(rows.len(),self.offset,entries.len(),self.limit),
+                    "coverage":{"filesystem_entries":fs.entries.len(),"matching_entries":rows.len(),"scope":"ISO9660 directory index","complete":true}}))
+        })())
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct ExtractArgs {
+    /// Disc image: .cue, raw .bin, .iso or .chd.
+    pub image: PathBuf,
+    /// ISO path, e.g. `/DATA/LEVEL1.BIN` or `cdrom:\SLUS_000.79;1`.
+    pub path: Option<String>,
+    /// Extract every file instead of one path.
+    #[arg(long)]
+    #[serde(default)]
+    pub all: bool,
+    /// Output directory.
+    #[arg(short, long, default_value_os_t = d_extracted())]
+    #[serde(default = "d_extracted")]
+    pub out: PathBuf,
+    /// Read only a window of the file starting at this byte offset (hex), and
+    /// report where it sits in the image. Needs `path`.
+    #[arg(long, conflicts_with = "all")]
+    pub offset: Option<String>,
+    /// Window length in bytes (hex, default 0x100); windows up to 0x100 bytes
+    /// are also returned inline as hex.
+    #[arg(long, requires = "offset")]
+    pub length: Option<String>,
+}
+
+impl Op for ExtractArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::result((|| -> crate::Result<Value> {
+            let offset = crate::commands::opt_hex(&self.offset, "offset")?;
+            let length = crate::commands::opt_hex(&self.length, "length")?;
+            match (offset, self.path.as_deref()) {
+                (Some(off), Some(path)) if !self.all => {
+                    extract_window(&self.image, path, off, length.unwrap_or(0x100), &self.out)
+                }
+                (Some(_), _) => Err(Error::invalid("offset needs a single path, not --all")),
+                (None, _) if length.is_some() => Err(Error::invalid("length needs offset")),
+                (None, path) => extract(&self.image, path, self.all, &self.out),
+            }
+        })())
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct ExeArgs {
+    /// PS-X EXE file path, or `image.cue::/PATH` for an executable on a disc.
+    pub source: String,
+}
+
+impl Op for ExeArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::result(exe_cmd(&self.source))
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct MemcardArgs {
+    /// Raw 128 KiB memory card image (.mcd/.mcr).
+    pub image: PathBuf,
+}
+
+impl Op for MemcardArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        let image = self.image;
+        Outcome::result((|| -> crate::Result<Value> {
+            let bytes = std::fs::read(&image).map_err(|e| Error::io(&image, e))?;
+            if bytes.len() != psx_core::memcard::SIZE {
+                return Err(Error::malformed(format!("{} bytes; a raw memory card image is 131072", bytes.len())));
+            }
+            let card = psx_core::memcard::MemCard::from_image(bytes);
+            let saves = card.saves();
+            let used: usize = saves.iter().map(|s| s.blocks.len()).sum();
+            let formatted = &card.sector(0)[..2] == b"MC";
+            Ok(
+                json!({"image": image, "formatted": formatted, "blocks_used": used, "blocks_free": 15 - used.min(15), "saves": saves}),
+            )
+        })())
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct SectorArgs {
+    /// Disc image: .cue, raw .bin, .iso or .chd.
+    pub image: PathBuf,
+    /// First logical block address (sector 16 is the ISO9660 volume descriptor).
+    pub lba: u32,
+    /// Number of sectors (at most 256).
+    #[arg(long, default_value_t = d_one())]
+    #[serde(default = "d_one")]
+    pub count: u32,
+    /// Hex bytes shown per sector.
+    #[arg(long, default_value_t = d_preview())]
+    #[serde(default = "d_preview")]
+    pub preview: usize,
+}
+
+impl Op for SectorArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::result(sectors(&self.image, self.lba, self.count, self.preview))
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct AddrArgs {
+    /// Hex address, e.g. 0x80010000.
+    pub address: String,
+}
+
+impl Op for AddrArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        let address = self.address;
+        Outcome::result(
+            psx_media::memmap::parse_hex(&address)
+                .ok_or_else(|| Error::invalid(format!("bad hex address {address}")))
+                .map(|a| serde_json::to_value(memmap::resolve(a)).unwrap()),
+        )
+    }
+}
+
+type R = crate::Result<Value>;
 
 pub(crate) fn entry_json(e: &Entry) -> Value {
     json!({
@@ -57,7 +242,7 @@ pub(crate) fn disc_summary(image: &Path, hash: bool) -> R {
     // Hashes of the sectors as read, so a CHD and the CUE/BIN it came from match.
     let track_sha256 = if hash {
         let rows = disc.tracks.iter().map(|t| Ok(json!({"track": t.number, "sha256": disc.track_sha256(t)?})));
-        Some(rows.collect::<psx_media::Result<Vec<_>>>()?)
+        Some(rows.collect::<crate::Result<Vec<_>>>()?)
     } else {
         None
     };
@@ -116,14 +301,14 @@ pub(crate) fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -
     let selected: Vec<&Entry> = match (path, all) {
         (_, true) => fs.entries.iter().filter(|e| !e.is_dir).collect(),
         (Some(p), false) => vec![fs.entry(p)?],
-        (None, false) => return Err(MediaError::Malformed("give a path or --all".into())),
+        (None, false) => return Err(Error::invalid("give a path or --all")),
     };
     let mut written = Vec::new();
     let mut failed = Vec::new();
     for e in selected {
         let (bytes, raw) = match fs.read_file(&disc, e) {
             Ok(b) => (b, false),
-            Err(MediaError::Unsupported(_)) => match fs.read_file_raw(&disc, e) {
+            Err(psx_media::MediaError::Unsupported(_)) => match fs.read_file_raw(&disc, e) {
                 Ok(b) => (b, true),
                 Err(err) => {
                     failed.push(json!({"path": e.path, "error": err.to_string()}));
@@ -138,9 +323,9 @@ pub(crate) fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -
         let rel = e.path.trim_start_matches('/');
         let dest = out.join(if raw { format!("{rel}.raw") } else { rel.to_string() });
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| MediaError::io(parent, err))?;
+            std::fs::create_dir_all(parent).map_err(|err| Error::io(parent, err))?;
         }
-        std::fs::write(&dest, &bytes).map_err(|err| MediaError::io(&dest, err))?;
+        std::fs::write(&dest, &bytes).map_err(|err| Error::io(&dest, err))?;
         written.push(json!({
             "path": e.path, "lba": e.lba, "dest": dest, "bytes": bytes.len(),
             "format": if raw { "raw_2352" } else { "form1_user_data" },
@@ -159,10 +344,10 @@ pub(crate) fn extract_window(image: &Path, path: &str, offset: u32, length: u32,
     let fs = FileSystem::read(&disc)?;
     let e = fs.entry(path)?;
     if e.is_dir {
-        return Err(MediaError::Malformed(format!("{} is a directory", e.path)));
+        return Err(Error::invalid(format!("{} is a directory", e.path)));
     }
     if offset >= e.size {
-        return Err(MediaError::Malformed(format!(
+        return Err(Error::invalid(format!(
             "offset 0x{offset:X} is past the end of {} (0x{:X} bytes)",
             e.path, e.size
         )));
@@ -175,7 +360,7 @@ pub(crate) fn extract_window(image: &Path, path: &str, offset: u32, length: u32,
     for i in first..=last {
         let s = disc.read_data(e.lba + i)?;
         if s.form == psx_media::disc::SectorForm::Form2 {
-            return Err(MediaError::Unsupported(format!(
+            return Err(Error::unsupported(format!(
                 "{} has a Form 2 sector at LBA {}; file offsets only address Form 1 data, extract without offset for raw sectors",
                 e.path, s.lba
             )));
@@ -204,9 +389,9 @@ pub(crate) fn extract_window(image: &Path, path: &str, offset: u32, length: u32,
     let rel = e.path.trim_start_matches('/');
     let dest = out.join(format!("{rel}@0x{offset:X}+0x{length:X}"));
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| MediaError::io(parent, err))?;
+        std::fs::create_dir_all(parent).map_err(|err| Error::io(parent, err))?;
     }
-    std::fs::write(&dest, bytes).map_err(|err| MediaError::io(&dest, err))?;
+    std::fs::write(&dest, bytes).map_err(|err| Error::io(&dest, err))?;
     let mut v = json!({
         "path": e.path, "file_bytes": e.size, "offset": format!("0x{offset:X}"), "bytes": bytes.len(), "dest": dest,
         "sha256": sha256_bytes(bytes),

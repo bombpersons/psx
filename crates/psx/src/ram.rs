@@ -10,18 +10,187 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use psx_media::MediaError;
+use crate::Error;
+use crate::commands::{Ctx, Op, Outcome};
 use psx_media::memmap::parse_hex;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Value, json};
+
+/// `psx ram diff`.
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct RamDiffArgs {
+    /// First snapshot: a run directory or a ram.bin.
+    pub a: PathBuf,
+    /// Second snapshot.
+    pub b: PathBuf,
+    /// Unit width in bytes (aligned): 1, 2 or 4.
+    #[arg(long, default_value_t = d_width4())]
+    #[serde(default = "d_width4")]
+    pub width: u8,
+    /// Hex address range LO-HI (HI exclusive), e.g. 80100000-80200000.
+    #[arg(long)]
+    pub range: Option<String>,
+    /// Only units whose (signed, wrapping) difference is at least this large.
+    #[arg(long)]
+    pub min_delta: Option<u64>,
+    /// Show values as signed.
+    #[arg(long)]
+    #[serde(default)]
+    pub signed: bool,
+    /// Changes listed individually (counts are always complete).
+    #[arg(long, default_value_t = d_ram_limit())]
+    #[serde(default = "d_ram_limit")]
+    pub limit: usize,
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub offset: usize,
+}
+
+fn d_width4() -> u8 {
+    4
+}
+fn d_width2() -> u8 {
+    2
+}
+fn d_ram_limit() -> usize {
+    100
+}
+
+impl Op for RamDiffArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::result(diff(
+            &self.a,
+            &self.b,
+            DiffOpts {
+                width: self.width,
+                range: self.range.as_deref(),
+                min_delta: self.min_delta,
+                signed: self.signed,
+                limit: self.limit,
+                offset: self.offset,
+            },
+        ))
+    }
+}
+
+/// `psx ram search`.
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct RamSearchArgs {
+    /// Snapshots in order: run directories or ram.bin files (e.g. runs with LEFT, idle, RIGHT held).
+    #[arg(required = true)]
+    pub snapshots: Vec<PathBuf>,
+    /// Unit width in bytes: 1, 2 or 4.
+    #[arg(long, default_value_t = d_width2())]
+    #[serde(default = "d_width2")]
+    pub width: u8,
+    /// Compare values as signed (for increased/decreased, --values and --between).
+    #[arg(long)]
+    #[serde(default)]
+    pub signed: bool,
+    /// Predicate between consecutive snapshots: changed, unchanged, increased,
+    /// decreased, delta=N or any. One applies to every pair; or give one per pair
+    /// (comma-separated or repeated).
+    #[arg(long = "pred")]
+    #[serde(default, rename = "pred")]
+    pub preds: Vec<String>,
+    /// Exact value per snapshot, comma-separated, `*` for any: `441,*,376`.
+    #[arg(long)]
+    pub values: Option<String>,
+    /// Every snapshot's value within LO..HI (inclusive).
+    #[arg(long)]
+    pub between: Option<String>,
+    /// Hex address range LO-HI (HI exclusive).
+    #[arg(long)]
+    pub range: Option<String>,
+    /// Address alignment in bytes (default: the width).
+    #[arg(long)]
+    pub align: Option<usize>,
+    /// Only consider the addresses an earlier search saved with --save (narrowing session).
+    #[arg(long)]
+    pub candidates: Option<PathBuf>,
+    /// Save the matching addresses as JSON for a later --candidates.
+    #[arg(long)]
+    pub save: Option<PathBuf>,
+    /// Matches listed individually (the count is always complete).
+    #[arg(long, default_value_t = d_ram_limit())]
+    #[serde(default = "d_ram_limit")]
+    pub limit: usize,
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub offset: usize,
+}
+
+impl Op for RamSearchArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::result(search(
+            &self.snapshots,
+            SearchOpts {
+                width: self.width,
+                signed: self.signed,
+                preds: &self.preds,
+                values: self.values.as_deref(),
+                between: self.between.as_deref(),
+                range: self.range.as_deref(),
+                align: self.align,
+                candidates: self.candidates.as_deref(),
+                save: self.save.as_deref(),
+                limit: self.limit,
+                offset: self.offset,
+            },
+        ))
+    }
+}
+
+/// `psx ram view`.
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct RamViewArgs {
+    /// One or more snapshots (run directories or ram.bin), shown side by side.
+    #[arg(required = true)]
+    pub snapshots: Vec<PathBuf>,
+    /// Start address (hex).
+    #[arg(long)]
+    pub addr: String,
+    /// Bytes to show (at most 64 KiB).
+    #[arg(long, default_value_t = d_view_len())]
+    #[serde(default = "d_view_len")]
+    pub len: usize,
+    /// Value format: u8 i8 x8 u16 i16 x16 u32 i32 x32 or fxI.F (e.g. fx16.16).
+    #[arg(long = "as", default_value_t = d_view_fmt())]
+    #[serde(default = "d_view_fmt", rename = "as")]
+    pub fmt: String,
+    /// Plain-text table (rows that differ between snapshots marked `*`).
+    #[arg(long)]
+    #[serde(default)]
+    pub text: bool,
+}
+
+fn d_view_len() -> usize {
+    64
+}
+fn d_view_fmt() -> String {
+    "x32".into()
+}
+
+impl Op for RamViewArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        let text = self.text;
+        Outcome::result_text(
+            view(&self.snapshots, &self.addr, self.len, &self.fmt).map(|(mut v, t)| {
+                if text {
+                    v["text"] = json!(t);
+                }
+                v
+            }),
+            text,
+        )
+    }
+}
 
 pub const RAM_SIZE: usize = 2 * 1024 * 1024;
 pub const SCRATCH_SIZE: usize = 1024;
 
-type R = psx_media::Result<Value>;
-
-fn bad(m: impl std::fmt::Display) -> MediaError {
-    MediaError::Malformed(m.to_string())
-}
+type R = crate::Result<Value>;
 
 /// Parse a number: decimal (optionally negative) or 0x-prefixed hex.
 pub fn number(s: &str) -> Option<i64> {
@@ -411,40 +580,44 @@ pub struct Snapshot {
     pub bytes: Vec<u8>,
 }
 
-pub fn load(p: &Path) -> psx_media::Result<Snapshot> {
+pub fn load(p: &Path) -> crate::Result<Snapshot> {
     let path = if p.is_dir() { p.join("ram.bin") } else { p.to_path_buf() };
-    let bytes = std::fs::read(&path).map_err(|e| MediaError::io(&path, e))?;
+    let bytes = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
     if bytes.len() != RAM_SIZE {
-        return Err(bad(format!("{}: {} bytes; a main RAM dump (ram.bin) is 2097152", path.display(), bytes.len())));
+        return Err(Error::malformed(format!(
+            "{}: {} bytes; a main RAM dump (ram.bin) is 2097152",
+            path.display(),
+            bytes.len()
+        )));
     }
     Ok(Snapshot { path, bytes })
 }
 
-fn parse_width(w: u8) -> psx_media::Result<usize> {
+fn parse_width(w: u8) -> crate::Result<usize> {
     match w {
         1 | 2 | 4 => Ok(w as usize),
-        _ => Err(bad(format!("width {w}: use 1, 2 or 4"))),
+        _ => Err(Error::invalid(format!("width {w}: use 1, 2 or 4"))),
     }
 }
 
 /// `LO-HI` (hex, HI exclusive) → RAM byte offsets.
-fn parse_range(r: Option<&str>) -> psx_media::Result<(usize, usize)> {
+fn parse_range(r: Option<&str>) -> crate::Result<(usize, usize)> {
     let Some(r) = r else { return Ok((0, RAM_SIZE)) };
-    let (lo, hi) = r.split_once('-').ok_or_else(|| bad(format!("range {r:?}: expected LO-HI in hex")))?;
+    let (lo, hi) = r.split_once('-').ok_or_else(|| Error::invalid(format!("range {r:?}: expected LO-HI in hex")))?;
     let (lo, hi) = (
-        parse_hex(lo).ok_or_else(|| bad(format!("bad range start {lo:?}")))?,
-        parse_hex(hi).ok_or_else(|| bad(format!("bad range end {hi:?}")))?,
+        parse_hex(lo).ok_or_else(|| Error::invalid(format!("bad range start {lo:?}")))?,
+        parse_hex(hi).ok_or_else(|| Error::invalid(format!("bad range end {hi:?}")))?,
     );
     let l = match locate(lo, 0) {
         Some(Mem::Ram(o)) => o,
-        _ => return Err(bad(format!("range start 0x{lo:08X} is not main RAM"))),
+        _ => return Err(Error::invalid(format!("range start 0x{lo:08X} is not main RAM"))),
     };
     let h = match hi.checked_sub(1).and_then(|last| locate(last, 1)) {
         Some(Mem::Ram(o)) => o + 1,
-        _ => return Err(bad(format!("range end 0x{hi:08X} is not main RAM"))),
+        _ => return Err(Error::invalid(format!("range end 0x{hi:08X} is not main RAM"))),
     };
     if h <= l {
-        return Err(bad(format!("empty range {r:?}")));
+        return Err(Error::invalid(format!("empty range {r:?}")));
     }
     Ok((l, h))
 }
@@ -468,7 +641,7 @@ pub struct DiffOpts<'a> {
 
 /// Units (bytes/halfwords/words, aligned) whose value differs between two snapshots.
 pub fn diff(a: &Path, b: &Path, o: DiffOpts) -> R {
-    crate::page::validate(o.limit).map_err(MediaError::Malformed)?;
+    crate::page::validate(o.limit).map_err(Error::malformed)?;
     let w = parse_width(o.width)?;
     let (sa, sb) = (load(a)?, load(b)?);
     let (lo, hi) = parse_range(o.range)?;
@@ -529,7 +702,7 @@ enum Pred {
     Delta(i64),
 }
 
-fn parse_pred(s: &str) -> psx_media::Result<Pred> {
+fn parse_pred(s: &str) -> crate::Result<Pred> {
     let s = s.trim().to_ascii_lowercase();
     Ok(match s.as_str() {
         "any" | "*" => Pred::Any,
@@ -540,7 +713,7 @@ fn parse_pred(s: &str) -> psx_media::Result<Pred> {
         _ => match s.strip_prefix("delta=").or_else(|| s.strip_prefix("delta:")).and_then(number) {
             Some(d) => Pred::Delta(d),
             None => {
-                return Err(bad(format!(
+                return Err(Error::invalid(format!(
                     "predicate {s:?}: use changed, unchanged, increased, decreased, delta=N or any"
                 )));
             }
@@ -579,12 +752,12 @@ pub struct SearchOpts<'a> {
 /// Cheat-finder search: addresses whose values across the snapshots (in
 /// order) satisfy every predicate.
 pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
-    crate::page::validate(o.limit).map_err(MediaError::Malformed)?;
+    crate::page::validate(o.limit).map_err(Error::malformed)?;
     let w = parse_width(o.width)?;
     if paths.is_empty() {
-        return Err(bad("give at least one snapshot (run directory or ram.bin)"));
+        return Err(Error::invalid("give at least one snapshot (run directory or ram.bin)"));
     }
-    let snaps = paths.iter().map(|p| load(p)).collect::<psx_media::Result<Vec<_>>>()?;
+    let snaps = paths.iter().map(|p| load(p)).collect::<crate::Result<Vec<_>>>()?;
     let n = snaps.len();
     let preds: Vec<Pred> = o
         .preds
@@ -592,13 +765,13 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
         .flat_map(|p| p.split(','))
         .filter(|p| !p.trim().is_empty())
         .map(parse_pred)
-        .collect::<psx_media::Result<_>>()?;
+        .collect::<crate::Result<_>>()?;
     let pair_preds: Vec<Pred> = match preds.len() {
         0 => vec![Pred::Any; n.saturating_sub(1)],
         1 => vec![preds[0]; n.saturating_sub(1)],
         k if k == n - 1 => preds,
         k => {
-            return Err(bad(format!(
+            return Err(Error::invalid(format!(
                 "{k} predicates for {n} snapshots: give one (applied to every consecutive pair) or {}",
                 n - 1
             )));
@@ -613,12 +786,15 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
                     if x.trim() == "*" {
                         Ok(None)
                     } else {
-                        number(x).map(Some).ok_or_else(|| bad(format!("bad value {x:?}")))
+                        number(x).map(Some).ok_or_else(|| Error::invalid(format!("bad value {x:?}")))
                     }
                 })
-                .collect::<psx_media::Result<_>>()?;
+                .collect::<crate::Result<_>>()?;
             if list.len() != n {
-                return Err(bad(format!("--values has {} entries for {n} snapshots (use * to skip one)", list.len())));
+                return Err(Error::invalid(format!(
+                    "--values has {} entries for {n} snapshots (use * to skip one)",
+                    list.len()
+                )));
             }
             Ok(list)
         })
@@ -626,10 +802,11 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
     let between = o
         .between
         .map(|b| {
-            let (l, h) = b.split_once("..").ok_or_else(|| bad(format!("--between {b:?}: expected LO..HI")))?;
-            Ok::<_, MediaError>((
-                number(l).ok_or_else(|| bad(format!("bad bound {l:?}")))?,
-                number(h).ok_or_else(|| bad(format!("bad bound {h:?}")))?,
+            let (l, h) =
+                b.split_once("..").ok_or_else(|| Error::invalid(format!("--between {b:?}: expected LO..HI")))?;
+            Ok::<_, Error>((
+                number(l).ok_or_else(|| Error::invalid(format!("bad bound {l:?}")))?,
+                number(h).ok_or_else(|| Error::invalid(format!("bad bound {h:?}")))?,
             ))
         })
         .transpose()?;
@@ -640,8 +817,9 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
     let align = o.align.unwrap_or(w).max(1);
     let restrict: Option<BTreeSet<u32>> = match o.candidates {
         Some(p) => {
-            let text = std::fs::read_to_string(p).map_err(|e| MediaError::io(p, e))?;
-            let v: Value = serde_json::from_str(&text).map_err(|e| bad(format!("{}: {e}", p.display())))?;
+            let text = std::fs::read_to_string(p).map_err(|e| Error::io(p, e))?;
+            let v: Value =
+                serde_json::from_str(&text).map_err(|e| Error::malformed(format!("{}: {e}", p.display())))?;
             Some(
                 v["addresses"]
                     .as_array()
@@ -673,10 +851,10 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
     let saved = match o.save {
         Some(p) => {
             if let Some(parent) = p.parent().filter(|p| !p.as_os_str().is_empty()) {
-                std::fs::create_dir_all(parent).map_err(|e| MediaError::io(parent, e))?;
+                std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
             }
             let doc = json!({"width": w, "addresses": found.iter().map(|&o| format!("0x{:08X}", addr_of(o))).collect::<Vec<_>>()});
-            std::fs::write(p, serde_json::to_vec_pretty(&doc).unwrap()).map_err(|e| MediaError::io(p, e))?;
+            std::fs::write(p, serde_json::to_vec_pretty(&doc).unwrap()).map_err(|e| Error::io(p, e))?;
             Some(p.to_path_buf())
         }
         None => None,
@@ -713,15 +891,15 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
 }
 
 /// A memory window from one or more snapshots side by side, marking units that differ.
-pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str) -> psx_media::Result<(Value, String)> {
-    let fmt = Fmt::parse(fmt).ok_or_else(|| bad(format!("unknown format {fmt:?}")))?;
+pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str) -> crate::Result<(Value, String)> {
+    let fmt = Fmt::parse(fmt).ok_or_else(|| Error::invalid(format!("unknown format {fmt:?}")))?;
     let w = fmt.width();
-    let snaps = paths.iter().map(|p| load(p)).collect::<psx_media::Result<Vec<_>>>()?;
+    let snaps = paths.iter().map(|p| load(p)).collect::<crate::Result<Vec<_>>>()?;
     if snaps.is_empty() {
-        return Err(bad("give at least one snapshot"));
+        return Err(Error::invalid("give at least one snapshot"));
     }
-    let a = parse_hex(addr).ok_or_else(|| bad(format!("bad hex address {addr:?}")))?;
-    let Some(Mem::Ram(start)) = locate(a, 0) else { return Err(bad(format!("0x{a:08X} is not main RAM"))) };
+    let a = parse_hex(addr).ok_or_else(|| Error::invalid(format!("bad hex address {addr:?}")))?;
+    let Some(Mem::Ram(start)) = locate(a, 0) else { return Err(Error::invalid(format!("0x{a:08X} is not main RAM"))) };
     let end = (start + len.min(64 * 1024)).min(RAM_SIZE);
     let mut rows = Vec::new();
     let mut text = format!("{:<12}{:<8}", "address", "offset");

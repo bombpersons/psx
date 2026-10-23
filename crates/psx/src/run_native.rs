@@ -9,11 +9,8 @@ use psx_core::state::{MediaId, StateError, disc_fingerprint};
 use psx_core::trace::{Namer, TraceConfig, Tracer};
 use serde_json::{Value, json};
 
+use crate::Error;
 use crate::run::{RunArgs, write_png};
-
-fn err(code: &str, message: impl std::fmt::Display) -> (bool, Value) {
-    (false, json!({"error": {"code": code, "message": message.to_string()}}))
-}
 
 mod gpu_capture;
 use gpu_capture::{CapturedFrame, GpuCapture};
@@ -22,72 +19,60 @@ fn sha256(bytes: &[u8]) -> String {
     psx_media::disc::sha256_bytes(bytes)
 }
 
-pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool, Value) {
+pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate::Result<(bool, Value)> {
     let bios = match std::fs::read(&a.bios) {
         Ok(b) => b,
-        Err(e) => return err("io_error", format!("{}: {e}", a.bios.display())),
+        Err(e) => return Err(Error::io(a.bios, e)),
     };
     let bios_sha = sha256(&bios);
     // Open the medium first: a restored state needs it to check identity.
-    let Medium { exe, disc, id: media_id } = match open_media(a.media.as_deref()) {
-        Ok(m) => m,
-        Err(e) => return e,
-    };
-    let mut m = match boot(a.from_state.as_deref(), &a.cards, bios, exe.as_deref(), disc, &media_id) {
-        Ok(m) => m,
-        Err(e) => return e,
-    };
+    let Medium { exe, disc, id: media_id } = open_media(a.media.as_deref())?;
+    let mut m = boot(a.from_state.as_deref(), &a.cards, bios, exe.as_deref(), disc, &media_id)?;
     // Replay events: pad state from each frame (frames counted from the run start).
     if crate::replay::uses_sticks(&events) && m.bus.sio0.pad.kind != psx_core::pad::PadKind::DualShock {
-        return err(
+        return Err(Error::new(
             "invalid_arguments",
             "input sticks require a dualshock pad (configure it at boot; checkpoint pads are restored)",
-        );
+        ));
     }
-    if let Err(e) = attach_observers(&mut m, &a) {
-        return e;
-    }
+    attach_observers(&mut m, &a)?;
     let obs = &a.observe;
     let mut sampler = match obs.samples.iter().map(crate::ram::SampleSpec::parse).collect::<Result<Vec<_>, _>>() {
         Ok(cols) if cols.is_empty() => None,
         Ok(cols) => Some(crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1))),
-        Err(e) => return err("invalid_arguments", e),
+        Err(e) => return Err(Error::invalid(e)),
     };
     let mut pokes = match obs.pokes.iter().map(|s| crate::ram::parse_poke(s)).collect::<Result<Vec<_>, _>>() {
         Ok(p) => p,
-        Err(e) => return err("invalid_arguments", e),
+        Err(e) => return Err(Error::invalid(e)),
     };
     let read_ranges =
         match obs.watch_reads.iter().map(|s| crate::run::parse_range_spec(s)).collect::<Result<Vec<_>, _>>() {
             Ok(r) => r,
-            Err(e) => return err("invalid_arguments", format!("--watch-reads: {e}")),
+            Err(e) => return Err(Error::invalid(format!("--watch-reads: {e}"))),
         };
     let mut reads: Vec<Value> = Vec::new();
     let mut read_hits: u64 = 0;
     let mut readers: std::collections::HashMap<u32, u64> = Default::default();
     if obs.snapshot_every == Some(0) || obs.sample_every == Some(0) {
-        return err("invalid_arguments", "--snapshot-every and --sample-every take N >= 1");
+        return Err(Error::invalid("--snapshot-every and --sample-every take N >= 1"));
     }
-    let scopes = match crate::load_symbols(&a.symbols) {
-        Ok(t) => std::rc::Rc::new(t),
-        Err(e) => return err(e.code(), e),
+    let scopes = {
+        let t = crate::load_symbols(&a.symbols)?;
+        std::rc::Rc::new(t)
     };
     let dir = a.out.clone().unwrap_or_else(|| {
-        let stamp =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-        root.join(".psx/runs").join(format!("{stamp}-{}-native{}", std::process::id(), crate::instance_suffix()))
+        root.join(".psx/runs").join(format!(
+            "{}-{}-native{}",
+            crate::now_ms(),
+            std::process::id(),
+            crate::instance_suffix()
+        ))
     });
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        return err("io_error", format!("{}: {e}", dir.display()));
+        return Err(Error::io(dir, e));
     }
-    let mut tracer = if a.trace.trace {
-        match make_tracer(&a, &scopes, m.bus.frames, &dir) {
-            Ok(t) => Some(t),
-            Err(e) => return err("invalid_arguments", e),
-        }
-    } else {
-        None
-    };
+    let mut tracer = if a.trace.trace { Some(make_tracer(&a, &scopes, m.bus.frames, &dir)?) } else { None };
 
     let started = Instant::now();
     // Frames count from power-on, including any BIOS boot spent before an EXE
@@ -95,7 +80,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
     let mut gpu_capture = GpuCapture::new(&a.trace, a.frames);
     let Some(target) = start_frame.checked_add(a.frames as u64) else {
-        return err("invalid_arguments", "run frame range overflows u64");
+        return Err(Error::invalid("run frame range overflows u64"));
     };
     let deadline = std::time::Duration::from_secs(a.timeout_s);
     let mut next = 0;
@@ -112,7 +97,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     let mut last_rel = u64::MAX;
     let mut screens: Vec<Value> = Vec::new();
     let mut states: Vec<Value> = Vec::new();
-    let mut boundary_err: Option<String> = None;
+    let mut boundary_err: Option<Error> = None;
     while m.bus.frames < target {
         let rel = m.bus.frames - start_frame;
         if rel != last_rel {
@@ -179,7 +164,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
         c.boundary(&mut m, start_frame, true);
     }
     if let Some(e) = boundary_err {
-        return err("io_error", e);
+        return Err(e);
     }
     if termination == "frames_reached" {
         // The final boundary: the state the run's files capture.
@@ -188,9 +173,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
         if let Some(s) = &mut sampler {
             s.row(rel, m.bus.frames, &m.bus.ram, &m.bus.scratch, true);
         }
-        if let Err(e) = frame_outputs(&m, rel, obs, &dir, &media_id, &mut screens, &mut states) {
-            return err("io_error", e);
-        }
+        frame_outputs(&m, rel, obs, &dir, &media_id, &mut screens, &mut states)?;
     }
     let wall_ms = started.elapsed().as_millis();
 
@@ -312,7 +295,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
         let path = dir.join("input.jsonl");
         let bytes = jsonl(applied_input);
         if let Err(e) = std::fs::write(&path, bytes.as_bytes()) {
-            return err("io_error", format!("{}: {e}", path.display()));
+            return Err(Error::io(path, e));
         }
         files.insert("input.jsonl".into(), json!({"path":path,"sha256":sha256(bytes.as_bytes())}));
     }
@@ -328,19 +311,13 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
 
     let gpu_report = match &gpu_capture {
         Some(c) => match &c.selected {
-            Some(frame) => match gpu_frame_outputs(frame, &dir, &mut files) {
-                Ok(v) => v,
-                Err(e) => return err("io_error", e),
-            },
+            Some(frame) => gpu_frame_outputs(frame, &dir, &mut files)?,
             None => c.missing(termination),
         },
         None => Value::Null,
     };
     let trace_report = match &mut tracer {
-        Some(t) => match trace_outputs(t, &m, &scopes, &dir, start_frame, &mut files) {
-            Ok(v) => v,
-            Err(e) => return err("io_error", e),
-        },
+        Some(t) => trace_outputs(t, &m, &scopes, &dir, start_frame, &mut files)?,
         None => Value::Null,
     };
     let shown: Vec<Value> = hits
@@ -367,7 +344,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
     registers.insert("cop0_cause".into(), json!(m.cpu.cop0[13]));
     registers.insert("cop0_epc".into(), json!(m.cpu.cop0[14]));
     let complete = termination == "frames_reached";
-    (
+    Ok((
         complete,
         json!({
             "status": if complete { "complete" } else { "partial" },
@@ -415,7 +392,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool,
             },
             "wall_ms": wall_ms,
         }),
-    )
+    ))
 }
 
 /// A write hit as JSON with hex strings next to the numbers and signed views
@@ -428,14 +405,14 @@ pub(crate) struct Medium {
     pub id: Option<MediaId>,
 }
 
-pub(crate) fn open_media(media: Option<&Path>) -> Result<Medium, (bool, Value)> {
+pub(crate) fn open_media(media: Option<&Path>) -> crate::Result<Medium> {
     let Some(p) = media else { return Ok(Medium::default()) };
     if psx_media::exe::is_exe_path(p) {
-        let bytes = std::fs::read(p).map_err(|e| err("io_error", format!("{}: {e}", p.display())))?;
+        let bytes = std::fs::read(p).map_err(|e| Error::io(p, e))?;
         let id = MediaId { kind: "exe".into(), sha256: sha256(&bytes) };
         Ok(Medium { exe: Some(bytes), disc: None, id: Some(id) })
     } else {
-        let d = psx_media::Disc::open(p).map_err(|e| err(e.code(), e))?;
+        let d = psx_media::Disc::open(p).map_err(Error::from)?;
         let id = MediaId { kind: "disc".into(), sha256: disc_fingerprint(&d) };
         Ok(Medium { exe: None, disc: Some(d), id: Some(id) })
     }
@@ -449,17 +426,17 @@ pub(crate) fn boot(
     exe: Option<&[u8]>,
     disc: Option<psx_media::Disc>,
     media_id: &Option<MediaId>,
-) -> Result<Machine, (bool, Value)> {
-    let invalid = |e: String| err("invalid_arguments", e);
+) -> crate::Result<Machine> {
+    let invalid = |e: String| Error::invalid(e);
     if let Some(p) = from_state {
-        let bytes = std::fs::read(p).map_err(|e| err("io_error", format!("{}: {e}", p.display())))?;
+        let bytes = std::fs::read(p).map_err(|e| Error::io(p, e))?;
         let (header, mut m) = Machine::load_state(&bytes, bios).map_err(|e| match e {
-            StateError::BiosMismatch { .. } => err("identity_mismatch", e),
-            e => err("invalid_state", e),
+            StateError::BiosMismatch { .. } => Error::new("identity_mismatch", e),
+            e => Error::new("invalid_state", e),
         })?;
         if header.media != *media_id {
             let show = |m: &Option<MediaId>| serde_json::to_string(m).unwrap_or_default();
-            return Err(err(
+            return Err(Error::new(
                 "identity_mismatch",
                 format!("state was saved with media {}, but --media is {}", show(&header.media), show(media_id)),
             ));
@@ -475,7 +452,7 @@ pub(crate) fn boot(
     m.bus.sio0.cards = cards.load().map_err(invalid)?;
     m.bus.sio0.pad.kind = cards.pad_kind().map_err(invalid)?;
     if let Some(bytes) = exe {
-        m.sideload_exe(bytes, 500_000_000).map_err(|e| err("backend_failed", e))?;
+        m.sideload_exe(bytes, 500_000_000).map_err(|e| Error::new("backend_failed", e))?;
     } else if disc.is_some() {
         m.insert_disc(disc);
     }
@@ -495,16 +472,16 @@ fn apply_due(m: &mut Machine, events: &[crate::replay::Input], next: &mut usize,
 }
 
 /// Write watches and the CD/BIOS/SPU event logs the run asked for.
-fn attach_observers(m: &mut Machine, a: &RunArgs) -> Result<(), (bool, Value)> {
+fn attach_observers(m: &mut Machine, a: &RunArgs) -> crate::Result<()> {
     for w in &a.watches {
         let (addr, width) = w.split_once(':').unwrap_or((w, "4"));
         let Some(addr) = psx_media::memmap::parse_hex(addr) else {
-            return Err(err("invalid_arguments", format!("bad watch address {addr}")));
+            return Err(Error::invalid(format!("bad watch address {addr}")));
         };
         // Any byte length: the native watch covers [ADDR, ADDR+WIDTH).
         let width: u32 = match width.parse() {
             Ok(w) if w >= 1 => w,
-            _ => return Err(err("invalid_arguments", format!("bad watch width {width:?} (bytes, e.g. 4)"))),
+            _ => return Err(Error::invalid(format!("bad watch width {width:?} (bytes, e.g. 4)"))),
         };
         m.bus.obs.watch(addr, width);
     }
@@ -550,21 +527,21 @@ fn frame_outputs(
     media_id: &Option<MediaId>,
     screens: &mut Vec<Value>,
     states: &mut Vec<Value>,
-) -> Result<(), String> {
+) -> crate::Result<()> {
     if let Some(n) = obs.snapshot_every {
         if rel.is_multiple_of(n) {
             let sd = dir.join("screens");
-            std::fs::create_dir_all(&sd).map_err(|e| format!("{}: {e}", sd.display()))?;
+            std::fs::create_dir_all(&sd).map_err(|e| Error::io(&sd, e))?;
             let (w, h, rgba) = m.bus.gpu.display_rgba();
             let p = sd.join(format!("f{rel:06}.png"));
-            write_png(&p, w, h, &rgba, png::ColorType::Rgba).map_err(|e| format!("{}: {e}", p.display()))?;
+            write_png(&p, w, h, &rgba, png::ColorType::Rgba).map_err(|e| Error::io(&p, e))?;
             screens.push(json!({"run_frame": rel, "frame": m.bus.frames, "path": p}));
         }
     }
     if obs.save_state_at.contains(&rel) && !states.iter().any(|s| s["run_frame"] == rel) {
         let p = dir.join(format!("state_f{rel:06}.bin"));
         let bytes = m.save_state(media_id.clone());
-        std::fs::write(&p, &bytes).map_err(|e| format!("{}: {e}", p.display()))?;
+        std::fs::write(&p, &bytes).map_err(|e| Error::io(&p, e))?;
         states.push(json!({"run_frame": rel, "frame": m.bus.frames, "path": p, "sha256": sha256(&bytes)}));
     }
     Ok(())
@@ -572,14 +549,14 @@ fn frame_outputs(
 
 /// Hex address (optionally 0x-prefixed) or a function name from --symbols:
 /// `(start, end of the function if known)`.
-fn resolve(spec: &str, scopes: &[crate::ScopedSymbols]) -> Result<(u32, Option<u32>), String> {
+fn resolve(spec: &str, scopes: &[crate::ScopedSymbols]) -> crate::Result<(u32, Option<u32>)> {
     if let Some(v) = psx_media::memmap::parse_hex(spec) {
         return Ok((v, None));
     }
     scopes
         .iter()
         .find_map(|s| s.table.find(spec))
-        .ok_or_else(|| format!("{spec:?} is neither a hex address nor a function in --symbols"))
+        .ok_or_else(|| Error::invalid(format!("{spec:?} is neither a hex address nor a function in --symbols")))
 }
 
 fn make_tracer(
@@ -587,7 +564,7 @@ fn make_tracer(
     scopes: &std::rc::Rc<Vec<crate::ScopedSymbols>>,
     start_frame: u64,
     dir: &Path,
-) -> Result<Tracer, String> {
+) -> crate::Result<Tracer> {
     let t = &a.trace;
     let mut ranges = Vec::new();
     for r in &t.trace_ranges {
@@ -595,11 +572,11 @@ fn make_tracer(
             Some((lo, hi)) => (resolve(lo, scopes)?.0, resolve(hi, scopes)?.0),
             None => {
                 let (lo, end) = resolve(r, scopes)?;
-                (lo, end.ok_or_else(|| format!("{r:?}: no following symbol to bound it; use LO-HI"))?)
+                (lo, end.ok_or_else(|| Error::invalid(format!("{r:?}: no following symbol to bound it; use LO-HI")))?)
             }
         };
         if hi <= lo {
-            return Err(format!("empty trace range {r:?}"));
+            return Err(Error::invalid(format!("empty trace range {r:?}")));
         }
         ranges.push((lo & 0x1FFF_FFFF, (lo & 0x1FFF_FFFF) + (hi - lo)));
     }
@@ -612,14 +589,14 @@ fn make_tracer(
         max_lines: a.max_events as u64,
     };
     let path = dir.join("trace.txt");
-    let mut file = std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut file = std::fs::File::create(&path).map_err(|e| Error::io(&path, e))?;
     {
         use std::io::Write;
         writeln!(
             file,
             "# frame cycle pc word disassembly ; effects. `frame` counts vblanks from power-on; run frame = frame - {start_frame}"
         )
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+        .map_err(|e| Error::io(&path, e))?;
     }
     let namer: Option<Namer> = if scopes.is_empty() {
         None
@@ -637,8 +614,8 @@ fn trace_outputs(
     dir: &Path,
     start_frame: u64,
     files: &mut serde_json::Map<String, Value>,
-) -> Result<Value, String> {
-    t.finish(&m.bus).map_err(|e| e.to_string())?;
+) -> crate::Result<Value> {
+    t.finish(&m.bus)?;
     let name = |pc: u32| {
         let v = crate::final_name(scopes, pc, Some(&m.bus.ram));
         (!v.is_null()).then_some(v)
@@ -669,7 +646,7 @@ fn trace_outputs(
         [("coverage.txt", text.into_bytes()), ("calls.json", serde_json::to_vec_pretty(&calls_json).unwrap())]
     {
         let p = dir.join(file);
-        std::fs::write(&p, &bytes).map_err(|e| format!("{}: {e}", p.display()))?;
+        std::fs::write(&p, &bytes).map_err(|e| Error::io(&p, e))?;
         files.insert(file.into(), json!({"path": p, "sha256": sha256(&bytes)}));
     }
     files.insert("trace.txt".into(), json!({"path": dir.join("trace.txt")}));
@@ -697,7 +674,7 @@ fn gpu_frame_outputs(
     capture: &CapturedFrame,
     dir: &Path,
     files: &mut serde_json::Map<String, Value>,
-) -> Result<Value, String> {
+) -> crate::Result<Value> {
     let start = &capture.state;
     let before = &capture.before;
     use psx_gpu::capture::decode;
@@ -788,8 +765,8 @@ fn gpu_frame_outputs(
     summary.as_object_mut().unwrap().extend(capture.metadata.as_object().unwrap().clone());
     let doc = json!({"summary": summary, "commands": decoded});
     let p = dir.join("gpu_frame.json");
-    let bytes = serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?;
-    std::fs::write(&p, &bytes).map_err(|e| format!("{}: {e}", p.display()))?;
+    let bytes = serde_json::to_vec_pretty(&doc).unwrap();
+    std::fs::write(&p, &bytes).map_err(|e| Error::io(&p, e))?;
     files.insert("gpu_frame.json".into(), json!({"path": p, "sha256": sha256(&bytes)}));
 
     let png = |name: &str, rgba: &[u8], files: &mut serde_json::Map<String, Value>| {
@@ -802,7 +779,7 @@ fn gpu_frame_outputs(
     let (end_vram, area) = (&capture.after, capture.area);
     let vram_bytes = end_vram.to_bytes();
     let p = dir.join("gpu_frame_vram.bin");
-    std::fs::write(&p, &vram_bytes).map_err(|e| format!("{}: {e}", p.display()))?;
+    std::fs::write(&p, &vram_bytes).map_err(|e| Error::io(&p, e))?;
     files.insert("gpu_frame_vram.bin".into(), json!({"path": p, "sha256": sha256(&vram_bytes)}));
     let mut after = end_vram.rgba15(0, 0, 1024, 512);
     png("gpu_frame_after.png", &after, files);

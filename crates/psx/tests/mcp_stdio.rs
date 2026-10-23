@@ -1683,7 +1683,7 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
     let (annotated, error, _) = rpc.tool("ghidra_annotate", json!({"analysis":manifest,"file":"patch.json"}));
     assert!(!error && annotated["revision"] == 2, "{annotated}");
     assert_ne!(annotated["project"], first["project"]);
-    assert!(Path::new(first["project"].as_str().unwrap()).exists());
+    assert!(!Path::new(first["project"].as_str().unwrap()).exists(), "annotating removes the project it supersedes");
     let (named, error, _) = rpc.tool("ghidra_decompile", json!({"analysis":manifest,"addr":"8001004c"}));
     assert!(!error && named["function"]["name"] == "studied_writer", "{named}");
     assert!(named["pseudocode"].as_str().unwrap().contains("studied_writer"));

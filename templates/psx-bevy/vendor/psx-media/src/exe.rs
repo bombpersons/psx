@@ -14,6 +14,7 @@ pub fn is_exe_path(path: &std::path::Path) -> bool {
 }
 
 use crate::error::{Result, malformed};
+use crate::le::u32le;
 use crate::memmap::{self, Region};
 
 pub const HEADER_SIZE: usize = 0x800;
@@ -36,10 +37,6 @@ pub struct PsxExe {
     /// File length; may exceed `0x800 + text_size` (trailing padding/data).
     pub file_size: usize,
     pub warnings: Vec<String>,
-}
-
-fn u32le(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
 
 impl PsxExe {

@@ -5,6 +5,7 @@
 pub mod adpcm;
 pub mod archive;
 pub mod gltf;
+mod le;
 pub mod model_document;
 pub mod scan;
 pub mod tim;

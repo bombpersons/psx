@@ -8,28 +8,93 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use psx_media::{MediaError, Result};
+use crate::commands::{Ctx, Op, Outcome};
+use crate::{Error, Result};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Value, json};
+use std::path::PathBuf;
+
+fn d_cell() -> usize {
+    128
+}
+fn d_samples() -> usize {
+    16
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct GpuReplayArgs {
+    /// Recorded GP0 stream of `[n, words..]` u32 records.
+    pub stream: PathBuf,
+    /// Raw VRAM output (1024x512 little-endian halfwords).
+    #[arg(long, short)]
+    pub out: PathBuf,
+    /// Also write the VRAM as a PNG.
+    #[arg(long)]
+    pub png: Option<PathBuf>,
+}
+
+impl Op for GpuReplayArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::result(replay(&self.stream, &self.out, self.png.as_deref()))
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct VramDiffArgs {
+    /// First raw VRAM dump (vram.bin).
+    pub a: PathBuf,
+    /// Second raw VRAM dump.
+    pub b: PathBuf,
+    /// Cell size for per-block counts.
+    #[arg(long, default_value_t = d_cell())]
+    #[serde(default = "d_cell")]
+    pub cell: usize,
+    /// Region `X,Y,W,H` to compare (default: all of VRAM).
+    #[arg(long)]
+    pub region: Option<String>,
+    /// Write a diff image (differing pixels red).
+    #[arg(long)]
+    pub png: Option<PathBuf>,
+    /// Differing pixels listed individually.
+    #[arg(long, default_value_t = d_samples())]
+    #[serde(default = "d_samples")]
+    pub samples: usize,
+}
+
+impl Op for VramDiffArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        let VramDiffArgs { a, b, cell, region, png, samples } = self;
+        Outcome::result((|| -> crate::Result<Value> {
+            let region = match region {
+                Some(r) => {
+                    let v: Vec<usize> = r.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                    if v.len() != 4 {
+                        return Err(Error::invalid(format!("bad region {r}, expected X,Y,W,H")));
+                    }
+                    Some((v[0], v[1], v[2], v[3]))
+                }
+                None => None,
+            };
+            diff(DiffArgs { a: &a, b: &b, cell, region, png: png.as_deref(), samples })
+        })())
+    }
+}
 
 const W: usize = 1024;
 const H: usize = 512;
 
 fn read_vram(path: &Path) -> Result<Vec<u16>> {
-    let bytes = std::fs::read(path).map_err(|e| MediaError::io(path, e))?;
+    let bytes = std::fs::read(path).map_err(|e| Error::io(path, e))?;
     if bytes.len() < W * H * 2 {
-        return Err(MediaError::Malformed(format!(
-            "{}: {} bytes, expected {}",
-            path.display(),
-            bytes.len(),
-            W * H * 2
-        )));
+        return Err(Error::malformed(format!("{}: {} bytes, expected {}", path.display(), bytes.len(), W * H * 2)));
     }
     Ok(bytes[..W * H * 2].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect())
 }
 
 /// Parse a stream file into commands.
 pub fn read_stream(path: &Path) -> Result<Vec<Vec<u32>>> {
-    let bytes = std::fs::read(path).map_err(|e| MediaError::io(path, e))?;
+    let bytes = std::fs::read(path).map_err(|e| Error::io(path, e))?;
     let words: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
     let mut cmds = Vec::new();
     let mut i = 0;
@@ -40,7 +105,7 @@ pub fn read_stream(path: &Path) -> Result<Vec<Vec<u32>>> {
         }
         let end = i + 1 + n;
         if end > words.len() {
-            return Err(MediaError::Malformed(format!("{}: record at word {i} runs past the end", path.display())));
+            return Err(Error::malformed(format!("{}: record at word {i} runs past the end", path.display())));
         }
         cmds.push(words[i + 1..end].to_vec());
         i = end;
@@ -54,10 +119,10 @@ pub fn replay(stream: &Path, out: &Path, png: Option<&Path>) -> Result<Value> {
     for c in &cmds {
         gpu.gp0_all(c);
     }
-    std::fs::write(out, gpu.vram.to_bytes()).map_err(|e| MediaError::io(out, e))?;
+    std::fs::write(out, gpu.vram.to_bytes()).map_err(|e| Error::io(out, e))?;
     if let Some(p) = png {
         crate::run::write_png(p, 1024, 512, &gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba)
-            .map_err(|e| MediaError::io(p, e))?;
+            .map_err(|e| Error::io(p, e))?;
     }
     Ok(json!({"commands": cmds.len(), "vram": out, "png": png}))
 }
@@ -117,7 +182,7 @@ pub fn diff(args: DiffArgs) -> Result<Value> {
         }
     }
     if let (Some(p), Some(img)) = (args.png, img) {
-        crate::run::write_png(p, W as u32, H as u32, &img, png::ColorType::Rgba).map_err(|e| MediaError::io(p, e))?;
+        crate::run::write_png(p, W as u32, H as u32, &img, png::ColorType::Rgba).map_err(|e| Error::io(p, e))?;
     }
     let hist = |m: &BTreeMap<i32, usize>| {
         m.iter().map(|(k, v)| (format!("{k:+}"), json!(v))).collect::<serde_json::Map<_, _>>()

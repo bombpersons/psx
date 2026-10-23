@@ -340,8 +340,7 @@ impl Bus {
     }
 
     fn ram_word(&self, addr: u32) -> u32 {
-        let o = (addr & 0x1F_FFFC) as usize;
-        u32::from_le_bytes([self.ram[o], self.ram[o + 1], self.ram[o + 2], self.ram[o + 3]])
+        self.ram_u32((addr & 0x1F_FFFC) as usize)
     }
 
     /// DMA channel 2: block transfers either way, or a linked list of GP0 packets.

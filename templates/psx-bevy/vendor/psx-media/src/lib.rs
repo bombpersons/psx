@@ -10,6 +10,7 @@ pub mod disc;
 pub mod error;
 pub mod exe;
 pub mod iso9660;
+mod le;
 pub mod memmap;
 pub mod source;
 pub mod str_video;

@@ -6,12 +6,135 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use crate::Error;
+use crate::commands::{Ctx, Op, Outcome};
 use psx_core::disasm::disasm;
-use psx_media::{MediaError, PsxExe};
+use psx_media::PsxExe;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 
-fn bad(m: impl std::fmt::Display) -> MediaError {
-    MediaError::Malformed(m.to_string())
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct DisasmArgs {
+    /// PS-X EXE file, or `image.cue::/PATH`. Optional with --ram.
+    pub source: Option<String>,
+    /// Start address (hex); defaults to the entry point.
+    #[arg(long)]
+    pub addr: Option<String>,
+    /// Maximum instructions to list; defaults to 32, or the discovered function with --function.
+    #[arg(long)]
+    pub count: Option<u32>,
+    /// Instruction budget for finding function boundaries, independent of --count (1..=262144).
+    #[arg(long, default_value_t = d_function_budget())]
+    #[serde(default = "d_function_budget")]
+    pub function_budget: u32,
+    /// `.sym` or `.symbols.json` files for labels; repeatable.
+    #[arg(long = "symbols")]
+    #[serde(default)]
+    pub symbols: Vec<PathBuf>,
+    /// Plain-text listing (`ADDR WORD asm ; notes`, with labels for symbols and
+    /// branch targets) instead of JSON lines.
+    #[arg(long)]
+    #[serde(default)]
+    pub text: bool,
+    /// Disassemble the whole function containing this hex address: back to the
+    /// nearest jal target or `addiu sp,sp,-N` prologue, forward to its final `jr ra`.
+    #[arg(long)]
+    pub function: Option<String>,
+    /// Read code from a run's RAM (run directory or ram.bin) instead of the EXE:
+    /// overlays and code loaded at run time. With an EXE source too, warns where they differ.
+    #[arg(long)]
+    pub ram: Option<PathBuf>,
+    /// gp value (hex) for resolving gp-relative loads/stores (default: the EXE header's gp).
+    #[arg(long)]
+    pub gp: Option<String>,
+}
+
+fn d_function_budget() -> u32 {
+    4096
+}
+
+impl Op for DisasmArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        let text = self.text;
+        Outcome::result_text(disasm_cmd(self), text)
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct XrefsArgs {
+    /// Target: a hex address, or a hex range LO-HI (HI exclusive) such as a whole struct.
+    pub target: String,
+    /// PS-X EXE file, or `image.cue::/PATH` (scans its load range). Optional with --ram.
+    #[arg(long)]
+    pub source: Option<String>,
+    /// Scan a run's RAM (run directory or ram.bin) instead of the EXE: all 2 MiB.
+    #[arg(long)]
+    pub ram: Option<PathBuf>,
+    /// gp value (hex) for gp-relative accesses (default: the EXE header's gp, when an EXE is given).
+    #[arg(long)]
+    pub gp: Option<String>,
+    /// Skip data words equal to the target (pointer and jump tables).
+    #[arg(long)]
+    #[serde(default)]
+    pub no_data: bool,
+    /// `.sym` or `.symbols.json` files to name the referencing functions; repeatable.
+    #[arg(long = "symbols")]
+    #[serde(default)]
+    pub symbols: Vec<PathBuf>,
+    /// References listed individually (counts are always complete).
+    #[arg(long, default_value_t = d_xref_limit())]
+    #[serde(default = "d_xref_limit")]
+    pub limit: usize,
+    #[arg(long, default_value_t = 0)]
+    #[serde(default)]
+    pub offset: usize,
+    /// Plain-text listing instead of JSON.
+    #[arg(long)]
+    #[serde(default)]
+    pub text: bool,
+}
+
+fn d_xref_limit() -> usize {
+    200
+}
+
+impl Op for XrefsArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        let XrefsArgs { target, source, ram, gp, no_data, symbols, limit, offset, text } = self;
+        Outcome::result_text(
+            (|| {
+                crate::page::validate(limit).map_err(Error::invalid)?;
+                let mut code = Code::open(source.as_deref(), ram.as_deref())?;
+                if let Some(g) = crate::commands::opt_hex(&gp, "gp")? {
+                    code.gp = Some(g);
+                }
+                let addr = |s: &str| {
+                    psx_media::memmap::parse_hex(s).ok_or_else(|| Error::invalid(format!("bad hex address {s:?}")))
+                };
+                let (lo, hi) = match target.split_once('-') {
+                    Some((l, h)) => (addr(l)?, addr(h)?),
+                    None => {
+                        let a = addr(&target)?;
+                        (a, a.wrapping_add(1))
+                    }
+                };
+                if hi <= lo {
+                    return Err(Error::invalid(format!("empty range {target:?}")));
+                }
+                let scopes = crate::load_symbols(&symbols)?;
+                let (mut v, t) = xref_report(&code, lo, hi, !no_data, &scopes, offset, limit, text);
+                if text {
+                    v["text"] = json!(t);
+                    v.as_object_mut().unwrap().remove("refs");
+                    v.as_object_mut().unwrap().remove("functions");
+                }
+                Ok(v)
+            })(),
+            text,
+        )
+    }
 }
 
 /// Bytes of code at a KSEG0 base address.
@@ -30,7 +153,7 @@ const JR_RA: u32 = 0x03E0_0008;
 
 impl Code {
     /// `source` (EXE file or `image.cue::/PATH`) and/or `ram` (run directory or ram.bin).
-    pub fn open(source: Option<&str>, ram: Option<&Path>) -> psx_media::Result<Code> {
+    pub fn open(source: Option<&str>, ram: Option<&Path>) -> crate::Result<Code> {
         let exe = match source {
             Some(s) => {
                 let bytes = psx_media::source::read(s)?;
@@ -63,7 +186,7 @@ impl Code {
                 gp: (h.gp != 0).then_some(h.gp),
                 exe: None,
             }),
-            (None, None) => Err(bad("give an EXE source and/or ram (a run directory or ram.bin)")),
+            (None, None) => Err(Error::invalid("give an EXE source and/or ram (a run directory or ram.bin)")),
         }
     }
 
@@ -536,10 +659,10 @@ pub fn xref_report(
 }
 
 /// `psx disasm`: a listing from an address, an EXE entry point or a discovered function.
-pub(crate) fn disasm_cmd(a: crate::commands::DisasmArgs) -> psx_media::Result<Value> {
-    let crate::commands::DisasmArgs { source, addr, count, function_budget, symbols, text, function, ram, gp } = a;
+pub(crate) fn disasm_cmd(a: DisasmArgs) -> crate::Result<Value> {
+    let DisasmArgs { source, addr, count, function_budget, symbols, text, function, ram, gp } = a;
     if !(1..=262144).contains(&function_budget) || count.is_some_and(|n| !(1..=262144).contains(&n)) {
-        return Err(MediaError::Malformed("count/function_budget must be 1..=262144".into()));
+        return Err(Error::invalid("count/function_budget must be 1..=262144"));
     }
     let mut code = Code::open(source.as_deref(), ram.as_deref())?;
     if let Some(g) = crate::commands::opt_hex(&gp, "gp")? {
@@ -553,7 +676,7 @@ pub(crate) fn disasm_cmd(a: crate::commands::DisasmArgs) -> psx_media::Result<Va
     let (start, end, func) = if let Some(f) = crate::commands::opt_hex(&function, "function address")? {
         let jal = code.jal_targets();
         let extent = function_extent(&code, f, &jal, function_budget)
-            .ok_or_else(|| MediaError::Malformed(format!("0x{f:08X} is outside the code ({})", code.origin)))?;
+            .ok_or_else(|| Error::invalid(format!("0x{f:08X} is outside the code ({})", code.origin)))?;
         let (s, e) = (extent.start, extent.end);
         let listed_end = count.map_or(e, |n| s.saturating_add(4 * n).min(e));
         let callers = xrefs(&code, s, s + 4, false).iter().filter(|(_, r)| r.kind == "call").count();
@@ -569,7 +692,7 @@ pub(crate) fn disasm_cmd(a: crate::commands::DisasmArgs) -> psx_media::Result<Va
         let start = match crate::commands::opt_hex(&addr, "address")? {
             Some(a) => a,
             None => entry.ok_or_else(|| {
-                MediaError::Malformed("give --addr or --function (there is no EXE entry point with --ram alone)".into())
+                Error::invalid("give --addr or --function (there is no EXE entry point with --ram alone)")
             })?,
         } & !3;
         (start, start.saturating_add(4 * count.unwrap_or(32)), None)

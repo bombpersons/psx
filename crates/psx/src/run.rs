@@ -5,6 +5,167 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::Error;
+use crate::commands::{Ctx, Op, Outcome};
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+fn d_frames() -> u32 {
+    60
+}
+fn d_run_timeout() -> u64 {
+    120
+}
+fn d_max_events() -> u32 {
+    200_000
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct RunCmdArgs {
+    /// Disc image (.cue/.bin/.iso/.chd) or PS-X EXE; omit to boot the BIOS or continue a state.
+    pub media: Option<PathBuf>,
+    /// BIOS override; otherwise exact checkpoint identity, project defaults or regional local discovery.
+    #[arg(long)]
+    pub bios: Option<PathBuf>,
+    /// Frames (vsyncs) to run: from power-on, or from the restored state with --from-state.
+    #[arg(long, default_value_t = d_frames())]
+    #[serde(default = "d_frames")]
+    pub frames: u32,
+    /// Path to a JSON file containing complete pad states. Frames are relative to this run's start,
+    /// including after --from-state. Use --input for an inline JSON array instead.
+    #[arg(long)]
+    pub replay: Option<PathBuf>,
+    /// Inline JSON array of complete pad states, e.g. '[{"frame":0,"buttons":["CROSS"],"until":5}]'.
+    /// Run-relative frame boundaries; until releases at its exclusive end; [] releases all buttons.
+    #[arg(long, conflicts_with = "replay")]
+    pub input: Option<crate::replay::Events>,
+    /// Write watch `ADDR[:WIDTH]` in hex, repeatable. Native: every CPU/DMA store into
+    /// the range goes to writes.jsonl with pc, value, old value (hex and signed views too),
+    /// `frame` (absolute, from power-on) and `run_frame` (from the run start).
+    #[arg(long = "watch")]
+    #[serde(default, rename = "watch")]
+    pub watches: Vec<String>,
+    /// Continue from a state saved by an earlier run (state.bin) instead of power-on.
+    #[arg(long)]
+    pub from_state: Option<PathBuf>,
+    /// Write state.bin into the run directory at the end.
+    #[arg(long)]
+    #[serde(default)]
+    pub save_state: bool,
+    /// Output directory (default .psx/runs/<id>).
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    /// Wall-clock limit in seconds; the run stops as "partial" when it is hit.
+    #[arg(long, default_value_t = d_run_timeout())]
+    #[serde(default = "d_run_timeout")]
+    pub timeout: u64,
+    /// Log CD-ROM controller and CD DMA register writes (cd.jsonl).
+    #[arg(long)]
+    #[serde(default)]
+    pub trace_cd: bool,
+    /// Log BIOS A0/B0/C0 function calls (bios.jsonl).
+    #[arg(long)]
+    #[serde(default)]
+    pub trace_bios: bool,
+    /// Native: log sound voice key on/off, sample ends and sound RAM uploads to spu.jsonl.
+    /// Key ons carry settings, the storing PC and a sample hash; the report groups them by sample.
+    #[arg(long)]
+    #[serde(default)]
+    pub trace_spu: bool,
+    /// `.symbols.json` (verified against RAM) or `.sym` files used to name PCs; repeatable.
+    #[arg(long = "symbols")]
+    #[serde(default)]
+    pub symbols: Vec<PathBuf>,
+    /// Cap on recorded events per trace log.
+    #[arg(long, default_value_t = d_max_events())]
+    #[serde(default = "d_max_events")]
+    pub max_events: u32,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub trace: TraceArgs,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub cards: CardArgs,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub observe: ObserveArgs,
+    /// Print a short summary (status, frames, files, samples, pokes); the full
+    /// report is always written to <run_dir>/report.json.
+    #[arg(long)]
+    #[serde(default)]
+    pub brief: bool,
+    /// Print only status, frames, the report/screen paths and counts for the requested
+    /// observations, without artifact descriptors. Overrides --brief.
+    #[arg(long)]
+    #[serde(default)]
+    pub summary: bool,
+}
+
+impl Op for RunCmdArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::report(self.run(ctx))
+    }
+}
+
+impl RunCmdArgs {
+    fn run(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
+        let a = self;
+        let resolved = crate::context::resolve(&ctx.root, a.media, a.bios, a.from_state.as_deref(), false)?;
+        if let Some(e) = resolved.setup_error() {
+            return Err(e);
+        }
+        let bios = resolved.bios.unwrap();
+        let (short, summarise) = (a.brief, a.summary);
+        let (complete, mut value) = run(
+            &ctx.root,
+            RunArgs {
+                media: resolved.media,
+                bios,
+                frames: a.frames,
+                replay: a.replay,
+                input: a.input,
+                watches: a.watches,
+                from_state: a.from_state,
+                save_state: a.save_state,
+                out: a.out,
+                timeout_s: a.timeout,
+                trace_cd: a.trace_cd,
+                trace_bios: a.trace_bios,
+                trace_spu: a.trace_spu,
+                symbols: a.symbols,
+                max_events: a.max_events,
+                trace: a.trace,
+                cards: a.cards,
+                observe: a.observe,
+            },
+        )?;
+        value["build"] = crate::context::build();
+        value["resolved"] = json!({"bios_selection":resolved.bios_reason});
+        value["artifacts"] = json!(
+            value["files"]
+                .as_object()
+                .map(|files| files
+                    .values()
+                    .filter_map(|f| f["path"].as_str())
+                    .filter_map(|p| crate::artifact::descriptor(std::path::Path::new(p)).ok())
+                    .collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+        // The full report always goes to the run directory.
+        if let Some(dir) = value["run_dir"].as_str().map(PathBuf::from) {
+            let p = dir.join("report.json");
+            value["report"] = json!(p);
+            let _ = std::fs::write(&p, serde_json::to_vec_pretty(&value).unwrap_or_default());
+        }
+        if summarise {
+            value = summary(&value);
+        } else if short {
+            value = brief(&value);
+        }
+        Ok((complete, value))
+    }
+}
+
 pub struct RunArgs {
     pub media: Option<PathBuf>,
     pub bios: PathBuf,
@@ -189,10 +350,6 @@ pub struct TraceArgs {
     pub gpu_draw_filter: Option<GpuDrawFilter>,
 }
 
-fn err(code: &str, message: impl std::fmt::Display) -> Value {
-    json!({"error": {"code": code, "message": message.to_string()}})
-}
-
 pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgb: &[u8], color: png::ColorType) -> std::io::Result<()> {
     let file = std::fs::File::create(path)?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
@@ -201,44 +358,33 @@ pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgb: &[u8], color: png::Col
     enc.write_header()?.write_image_data(rgb).map_err(std::io::Error::other)
 }
 
-pub fn run(root: &Path, a: RunArgs) -> (bool, Value) {
-    let events = match crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64) {
-        Ok(e) => e,
-        Err(e) => return (false, err("invalid_arguments", e)),
-    };
-    let input_report = crate::replay::report(&events);
-    let (ok, mut value) = run_resolved(root, a, events);
-    if value.get("error").is_none() {
-        let application = value["input"]["application"].take();
-        value["input"] = input_report;
-        value["input"]["application"] = application;
-    }
-    (ok, value)
-}
-
-fn run_resolved(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> (bool, Value) {
+pub fn run(root: &Path, a: RunArgs) -> crate::Result<(bool, Value)> {
+    let events =
+        crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64).map_err(Error::invalid)?;
     if a.trace.gpu_draw_filter.is_some() && !a.trace.gpu_next_draw {
-        return (false, err("invalid_arguments", "--gpu-draw-filter requires --gpu-next-draw"));
+        return Err(Error::invalid("--gpu-draw-filter requires --gpu-next-draw"));
     }
     if a.trace.gpu_search_frames.is_some() && !a.trace.gpu_next_draw {
-        return (false, err("invalid_arguments", "--gpu-search-frames requires --gpu-next-draw"));
+        return Err(Error::invalid("--gpu-search-frames requires --gpu-next-draw"));
     }
     if a.trace.gpu_search_frames.is_some_and(|n| !(1..=600).contains(&n)) {
-        return (false, err("invalid_arguments", "--gpu-search-frames must be in 1..=600"));
+        return Err(Error::invalid("--gpu-search-frames must be in 1..=600"));
     }
     if a.trace.gpu_next_draw
         && a.trace.gpu_frame.unwrap_or(0).checked_add(a.trace.gpu_search_frames.unwrap_or(60) as u64).is_none()
     {
-        return (false, err("invalid_arguments", "GPU search frame range overflows u64"));
+        return Err(Error::invalid("GPU search frame range overflows u64"));
     }
-    crate::run_native::run(root, a, events)
+    let input_report = crate::replay::report(&events);
+    let (complete, mut value) = crate::run_native::run(root, a, events)?;
+    let application = value["input"]["application"].take();
+    value["input"] = input_report;
+    value["input"]["application"] = application;
+    Ok((complete, value))
 }
 
 /// The `--brief` view of a run report.
 pub(crate) fn brief(v: &Value) -> Value {
-    if v.get("error").is_some() {
-        return v.clone();
-    }
     let mut frames = v["frames"].clone();
     if let Some(f) = frames.as_object_mut() {
         f.remove("numbering");
@@ -309,9 +455,6 @@ pub(crate) fn brief(v: &Value) -> Value {
 
 /// `--summary`: paths and counts only. Each observation appears when it was requested.
 pub(crate) fn summary(v: &Value) -> Value {
-    if v.get("error").is_some() {
-        return v.clone();
-    }
     let pick = |section: &Value, keys: &[&str]| {
         Value::Object(keys.iter().filter_map(|k| section.get(*k).map(|value| (k.to_string(), value.clone()))).collect())
     };

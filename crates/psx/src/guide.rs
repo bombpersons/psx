@@ -71,7 +71,7 @@ pub struct GuideArgs {
 
 impl Op for GuideArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::media(Ok(json!({
+        Outcome::ok(json!({
             "topic": self.topic,
             "title": self.topic.title(),
             "text": self.topic.text().trim(),
@@ -82,6 +82,6 @@ impl Op for GuideArgs {
                 "next_call":{"tool":"guide","arguments":{"topic":topic}}
             })).collect::<Vec<_>>(),
             "next_calls": [{"tool":"context","arguments":{}}],
-        })))
+        }))
     }
 }

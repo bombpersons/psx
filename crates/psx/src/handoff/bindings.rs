@@ -220,9 +220,7 @@ pub fn save(path: &Path, b: &Bindings) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&doc).unwrap()).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    crate::write_atomic(path, &serde_json::to_vec_pretty(&doc).unwrap()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// A stick axis (-1..1, +y up as gamepads report it) as a PS1 stick byte (0 = left/up, 255 = right/down).

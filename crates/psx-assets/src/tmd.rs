@@ -19,6 +19,8 @@
 //! the mode (IIP, QUAD, TME) and flag (LGT, GRD) bits; it is checked against
 //! `ilen`, and packets that do not match are counted as skipped.
 
+use crate::le::u32_at;
+
 /// First word of every TMD.
 pub const TMD_ID: u32 = 0x41;
 
@@ -96,10 +98,6 @@ pub struct Tmd {
     pub objects: Vec<TmdObject>,
     /// Bytes from the header to the end of the furthest table (0 when FIXP).
     pub size: usize,
-}
-
-fn u32_at(b: &[u8], o: usize) -> Option<u32> {
-    Some(u32::from_le_bytes([*b.get(o)?, *b.get(o + 1)?, *b.get(o + 2)?, *b.get(o + 3)?]))
 }
 
 fn svectors(b: &[u8], at: usize, n: usize, what: &str) -> Result<Vec<[i16; 3]>, String> {

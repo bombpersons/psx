@@ -1,10 +1,8 @@
 //! Local BIOS inventory and explicit, hash-verified installation.
+use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 use clap::{Args, Subcommand, ValueEnum};
-use psx_media::{
-    MediaError,
-    disc::{sha256_bytes, sha256_file},
-};
+use psx_media::disc::{sha256_bytes, sha256_file};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -105,12 +103,12 @@ pub fn hash_notes() -> Value {
     json!({"sha256":"SHA-256 of the entire file (bytes).",
         "native_sha256":"SHA-256 of the 512 KiB image used by the native core: longer files are truncated, shorter files zero-padded. Different lengths can legitimately produce different hashes."})
 }
-pub fn inspect(path: &Path) -> psx_media::Result<Candidate> {
-    let size = fs::metadata(path).map_err(|e| MediaError::io(path, e))?.len();
+pub fn inspect(path: &Path) -> crate::Result<Candidate> {
+    let size = fs::metadata(path).map_err(|e| Error::io(path, e))?.len();
     if size == 0 || size > 1024 * 1024 {
-        return Err(MediaError::Malformed("BIOS candidate must be 1 byte..1 MiB".into()));
+        return Err(Error::malformed("BIOS candidate must be 1 byte..1 MiB"));
     }
-    let bytes = fs::read(path).map_err(|e| MediaError::io(path, e))?;
+    let bytes = fs::read(path).map_err(|e| Error::io(path, e))?;
     let hash = sha256_bytes(&bytes);
     let native_hash = if bytes.len() == 512 * 1024 {
         hash.clone()
@@ -142,7 +140,7 @@ pub fn inspect(path: &Path) -> psx_media::Result<Candidate> {
         version,
     })
 }
-pub fn inventory(root: &Path) -> psx_media::Result<Vec<Candidate>> {
+pub fn inventory(root: &Path) -> crate::Result<Vec<Candidate>> {
     let mut out = Vec::new();
     let mut dirs = vec![root.join("bios")];
     if let Some(p) = store() {
@@ -154,22 +152,22 @@ pub fn inventory(root: &Path) -> psx_media::Result<Vec<Candidate>> {
         let entries = match fs::read_dir(&dir) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(MediaError::io(&dir, e)),
+            Err(e) => return Err(Error::io(&dir, e)),
         };
         for e in entries {
-            let p = e.map_err(|e| MediaError::io(&dir, e))?.path();
+            let p = e.map_err(|e| Error::io(&dir, e))?.path();
             if !p.is_file()
                 || !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("bin") || e.eq_ignore_ascii_case("rom"))
             {
                 continue;
             }
-            let size = fs::metadata(&p).map_err(|e| MediaError::io(&p, e))?.len();
+            let size = fs::metadata(&p).map_err(|e| Error::io(&p, e))?.len();
             if size == 0 || size > 1024 * 1024 {
                 continue;
             }
             out.push(inspect(&p)?);
             if out.len() > 256 {
-                return Err(MediaError::Malformed("more than 256 BIOS candidates; narrow PSX_BIOS_DIR".into()));
+                return Err(Error::new("limit_exceeded", "more than 256 BIOS candidates; narrow PSX_BIOS_DIR"));
             }
         }
     }
@@ -194,9 +192,9 @@ impl Action {
 pub struct ListArgs {}
 impl Op for ListArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::media(Ok(json!({"bios_dir":store(),"project_bios_dir":ctx.root.join("bios"),"hashes":hash_notes(),
-        "installed": match inventory(&ctx.root) {Ok(v)=>v,Err(e)=>return Outcome::media(Err(e))},
-        "download_catalog":CATALOG.iter().map(|c|json!({"name":c.file,"region":c.region,"sha256":c.sha256,"bytes":524288,"url":format!("{ARCHIVE}/{}",c.file)})).collect::<Vec<_>>() })))
+        Outcome::ok(json!({"bios_dir":store(),"project_bios_dir":ctx.root.join("bios"),"hashes":hash_notes(),
+        "installed": match inventory(&ctx.root) {Ok(v)=>v,Err(e)=>return Outcome::result(Err(e))},
+        "download_catalog":CATALOG.iter().map(|c|json!({"name":c.file,"region":c.region,"sha256":c.sha256,"bytes":524288,"url":format!("{ARCHIVE}/{}",c.file)})).collect::<Vec<_>>() }))
     }
 }
 #[derive(Args, Deserialize, JsonSchema)]
@@ -222,7 +220,7 @@ impl Drop for Temporary {
         let _ = fs::remove_file(&self.0);
     }
 }
-fn download(url: &str, path: &Path, ctx: &Ctx) -> psx_media::Result<()> {
+fn download(url: &str, path: &Path, ctx: &Ctx) -> crate::Result<()> {
     let mut child = Command::new("curl")
         .args([
             "--fail",
@@ -244,76 +242,73 @@ fn download(url: &str, path: &Path, ctx: &Ctx) -> psx_media::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| MediaError::Malformed(format!("BIOS download requires curl: {e}")))?;
+        .map_err(|e| Error::new("download_failed", format!("BIOS download requires curl: {e}")))?;
     let deadline = Instant::now() + Duration::from_secs(65);
     loop {
         if Instant::now() >= deadline || ctx.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(MediaError::Malformed("BIOS download stopped before installation".into()));
+            return Err(Error::new("download_failed", "BIOS download stopped before installation"));
         }
-        if let Some(status) = child.try_wait().map_err(|e| MediaError::io(path, e))? {
-            let output = child.wait_with_output().map_err(|e| MediaError::io(path, e))?;
+        if let Some(status) = child.try_wait().map_err(|e| Error::io(path, e))? {
+            let output = child.wait_with_output().map_err(|e| Error::io(path, e))?;
             if status.success() {
                 return Ok(());
             }
-            return Err(MediaError::Malformed(format!(
-                "BIOS download failed: {}; no image installed",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
+            return Err(Error::new(
+                "download_failed",
+                format!("BIOS download failed: {}; no image installed", String::from_utf8_lossy(&output.stderr).trim()),
+            ));
         }
         std::thread::sleep(Duration::from_millis(25));
     }
 }
 impl Op for InstallArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::media((|| {
+        Outcome::result((|| -> crate::Result<Value> {
             if self.from.is_some() == self.download {
-                return Err(MediaError::Malformed("give exactly one of --from or --download".into()));
+                return Err(Error::invalid("give exactly one of --from or --download"));
             }
-            let dir = self
-                .dir
-                .or_else(store)
-                .ok_or_else(|| MediaError::Malformed("set PSX_BIOS_DIR or pass --dir".into()))?;
-            let catalog =
-                if self.download {
-                    Some(CATALOG.iter().find(|c| Some(c.region) == self.region).ok_or_else(|| {
-                        MediaError::Malformed("--download requires --region pal|ntsc-u|ntsc-j".into())
-                    })?)
-                } else {
-                    None
-                };
-            fs::create_dir_all(&dir).map_err(|e| MediaError::io(&dir, e))?;
+            let dir = self.dir.or_else(store).ok_or_else(|| Error::invalid("set PSX_BIOS_DIR or pass --dir"))?;
+            let catalog = if self.download {
+                Some(
+                    CATALOG
+                        .iter()
+                        .find(|c| Some(c.region) == self.region)
+                        .ok_or_else(|| Error::invalid("--download requires --region pal|ntsc-u|ntsc-j"))?,
+                )
+            } else {
+                None
+            };
+            fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
             let temp = Temporary(dir.join(format!(".install-{}-{}", std::process::id(), crate::instance_suffix())));
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp.0)
-                .map_err(|e| MediaError::io(&temp.0, e))?;
+            fs::OpenOptions::new().write(true).create_new(true).open(&temp.0).map_err(|e| Error::io(&temp.0, e))?;
             if let Some(c) = catalog {
                 download(&format!("{ARCHIVE}/{}", c.file), &temp.0, ctx)?;
             } else {
                 let source = self.from.as_ref().unwrap();
                 inspect(source)?;
-                fs::copy(source, &temp.0).map_err(|e| MediaError::io(source, e))?;
+                fs::copy(source, &temp.0).map_err(|e| Error::io(source, e))?;
             }
             let mut candidate = inspect(&temp.0)?;
             if let Some(c) = catalog {
                 if candidate.sha256 != c.sha256 || candidate.bytes != 524288 {
-                    return Err(MediaError::Malformed(
-                        "Downloaded BIOS failed pinned SHA-256/size verification; nothing installed".into(),
+                    return Err(Error::new(
+                        "verification_failed",
+                        "Downloaded BIOS failed pinned SHA-256/size verification; nothing installed",
                     ));
                 }
             }
             if self.region.is_some() && candidate.region.is_some() && self.region != candidate.region {
-                return Err(MediaError::Malformed("BIOS region differs from --region".into()));
+                return Err(Error::invalid("BIOS region differs from --region"));
             }
             // Unknown imports remain unknown; a region flag must not turn arbitrary bytes into a verified regional BIOS.
             let dest = dir.join(format!("{}.bin", candidate.sha256));
             if dest.exists() {
                 if sha256_file(&dest)? != candidate.sha256 {
-                    return Err(MediaError::Malformed(
-                        "Installed BIOS path contains different bytes; it was preserved".into(),
+                    return Err(Error::new(
+                        "verification_failed",
+                        "Installed BIOS path contains different bytes; it was preserved",
                     ));
                 }
             } else {
@@ -322,15 +317,16 @@ impl Op for InstallArgs {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                         if sha256_file(&dest)? != candidate.sha256 {
-                            return Err(MediaError::Malformed(
-                                "Concurrent BIOS installation has different bytes".into(),
+                            return Err(Error::new(
+                                "verification_failed",
+                                "Concurrent BIOS installation has different bytes",
                             ));
                         }
                     }
-                    Err(e) => return Err(MediaError::io(&dest, e)),
+                    Err(e) => return Err(Error::io(&dest, e)),
                 }
             }
-            candidate.path = dest.canonicalize().map_err(|e| MediaError::io(&dest, e))?;
+            candidate.path = dest.canonicalize().map_err(|e| Error::io(&dest, e))?;
             Ok(
                 json!({"status":"installed","bios":candidate,"source":self.from.map(|p|json!({"file":p})).unwrap_or_else(||json!({"url":format!("{ARCHIVE}/{}",catalog.unwrap().file)})),"verification":if catalog.is_some(){"pinned_sha256"}else{"local_copy_sha256"}}),
             )

@@ -1,7 +1,26 @@
 //! Working stdlib-only Python external parser starters, with authored inputs.
-use psx_media::{MediaError, Result};
+use crate::commands::{Ctx, Op, Outcome};
+use crate::{Error, Result};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
+use std::path::PathBuf;
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct ParserTemplateArgs {
+    /// Destination directory: new or empty.
+    pub dest: PathBuf,
+    /// Parser contract to scaffold.
+    #[arg(long, value_enum)]
+    pub kind: Kind,
+}
+
+impl Op for ParserTemplateArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        Outcome::result(create(&self.dest, self.kind))
+    }
+}
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -76,12 +95,10 @@ impl Kind {
 }
 
 pub fn create(dest: &Path, kind: Kind) -> Result<Value> {
-    if dest.exists()
-        && (!dest.is_dir() || std::fs::read_dir(dest).map_err(|e| MediaError::io(dest, e))?.next().is_some())
-    {
-        return Err(MediaError::Malformed(format!("{} must be a new or empty directory", dest.display())));
+    if dest.exists() && (!dest.is_dir() || std::fs::read_dir(dest).map_err(|e| Error::io(dest, e))?.next().is_some()) {
+        return Err(Error::invalid(format!("{} must be a new or empty directory", dest.display())));
     }
-    std::fs::create_dir_all(dest).map_err(|e| MediaError::io(dest, e))?;
+    std::fs::create_dir_all(dest).map_err(|e| Error::io(dest, e))?;
     let demo = match kind {
         Kind::Model => "psx assets extract sample.bin --model-parser ./parser.py -o out",
         Kind::Archive => {
@@ -104,14 +121,13 @@ pub fn create(dest: &Path, kind: Kind) -> Result<Value> {
         ("PROTOCOL.md", include_bytes!("../../../docs/external-parsers.md").to_vec()),
     ] {
         let path = dest.join(name);
-        std::fs::write(&path, bytes).map_err(|e| MediaError::io(&path, e))?;
+        std::fs::write(&path, bytes).map_err(|e| Error::io(&path, e))?;
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let path = dest.join("parser.py");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| MediaError::io(&path, e))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).map_err(|e| Error::io(&path, e))?;
     }
     Ok(
         json!({"dest":dest,"kind":kind.name(),"parser":dest.join("parser.py"),"sample":dest.join("sample.bin"),"files":["parser.py","sample.bin","README.md","PROTOCOL.md"]}),

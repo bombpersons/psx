@@ -13,12 +13,13 @@
 //! reports progress (`live.json`) and the result.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use psx_core::Machine;
 use psx_core::state::MediaId;
 use serde_json::{Value, json};
 
+use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 use crate::replay::Input;
 
@@ -73,54 +74,44 @@ pub struct HandoffStatusArgs {
     pub wait: u64,
 }
 
-fn error(code: &str, message: impl std::fmt::Display) -> Value {
-    json!({"error": {"code": code, "message": message.to_string()}})
-}
-
-fn now_ms() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
-}
-
 /// Seconds without a `live.json` update after which a handoff counts as abandoned.
 const STALE_S: u128 = 20;
 
 impl Op for HandoffArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::report(self.start(ctx))
+    }
+}
+
+impl HandoffArgs {
+    fn start(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
         let mut a = self;
         let resolved =
-            match crate::context::resolve(&ctx.root, a.media.take(), a.bios.take(), a.from_state.as_deref(), false) {
-                Ok(r) => r,
-                Err(e) => return crate::context::failed(e),
-            };
+            crate::context::resolve(&ctx.root, a.media.take(), a.bios.take(), a.from_state.as_deref(), false)?;
         if let Some(e) = resolved.setup_error() {
-            return crate::context::failed(e);
+            return Err(e);
         }
         a.media = resolved.media.map(|p| std::path::absolute(p).unwrap_or_default());
         a.bios = resolved.bios.map(|p| std::path::absolute(p).unwrap_or_default());
         a.from_state = a.from_state.map(|p| std::path::absolute(p).unwrap_or_default());
-        if let Err(e) = can_open_window() {
-            return crate::context::failed(e);
-        }
+        can_open_window()?;
         let dir = a.out.clone().unwrap_or_else(|| {
             ctx.root.join(".psx/handoffs").join(format!(
                 "{}-{}{}",
-                now_ms(),
+                crate::now_ms(),
                 std::process::id(),
                 crate::instance_suffix()
             ))
         });
         let dir = std::path::absolute(&dir).unwrap_or(dir);
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            return crate::context::failed(error("io_error", format!("{}: {e}", dir.display())));
-        }
+        std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
         a.out = Some(dir.clone());
-        if let Err(e) = std::fs::write(dir.join("request.json"), serde_json::to_vec_pretty(&a).unwrap()) {
-            return crate::context::failed(error("io_error", format!("{}: {e}", dir.display())));
-        }
+        let request = dir.join("request.json");
+        std::fs::write(&request, serde_json::to_vec_pretty(&a).unwrap()).map_err(|e| Error::io(&request, e))?;
         if a.detach {
-            return Outcome::pair(detach(ctx, &dir));
+            return detach(ctx, &dir);
         }
-        Outcome::pair(run(a, &dir))
+        Ok(run(a, &dir))
     }
 }
 
@@ -128,14 +119,14 @@ impl Op for HandoffArgs {
 pub fn capability() -> Value {
     match can_open_window() {
         Ok(()) => json!({"available": true, "gamepads": true}),
-        Err(e) => json!({"available": false, "reason": e["error"]["message"]}),
+        Err(e) => json!({"available": false, "reason": e.message}),
     }
 }
 
 /// Fail early, with advice, when no window can be shown.
-fn can_open_window() -> Result<(), Value> {
+fn can_open_window() -> crate::Result<()> {
     if !cfg!(feature = "window") {
-        return Err(error(
+        return Err(Error::new(
             "unsupported",
             "this psx was built without the `window` feature (cargo build --features window)",
         ));
@@ -144,7 +135,7 @@ fn can_open_window() -> Result<(), Value> {
         && std::env::var_os("DISPLAY").is_none_or(|v| v.is_empty())
         && std::env::var_os("WAYLAND_DISPLAY").is_none_or(|v| v.is_empty())
     {
-        return Err(error(
+        return Err(Error::new(
             "no_display",
             "no DISPLAY or WAYLAND_DISPLAY: the handoff window needs a desktop session on the machine running psx (start the psx MCP server from one, or set DISPLAY)",
         ));
@@ -153,15 +144,11 @@ fn can_open_window() -> Result<(), Value> {
 }
 
 /// Start the window in a child process and return a ticket.
-fn detach(ctx: &Ctx, dir: &Path) -> (bool, Value) {
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(e) => return (false, error("io_error", format!("cannot find the psx executable: {e}"))),
-    };
-    let log = match std::fs::File::create(dir.join("launch.log")) {
-        Ok(f) => f,
-        Err(e) => return (false, error("io_error", format!("{}: {e}", dir.display()))),
-    };
+fn detach(ctx: &Ctx, dir: &Path) -> crate::Result<(bool, Value)> {
+    let exe =
+        std::env::current_exe().map_err(|e| Error::new("io_error", format!("cannot find the psx executable: {e}")))?;
+    let log_path = dir.join("launch.log");
+    let log = std::fs::File::create(&log_path).map_err(|e| Error::io(&log_path, e))?;
     let child = std::process::Command::new(exe)
         .arg("--root")
         .arg(&ctx.root)
@@ -172,15 +159,15 @@ fn detach(ctx: &Ctx, dir: &Path) -> (bool, Value) {
         .stderr(log)
         .spawn();
     match child {
-        Ok(c) => (
+        Ok(c) => Ok((
             true,
             json!({
                 "status": "waiting", "run_dir": dir, "pid": c.id(),
                 "note": "A window is open for the person. Poll handoff_status (wait up to 600 s per call) until status is no longer waiting; the person may take several minutes.",
                 "next_call": {"tool": "handoff_status", "arguments": {"run_dir": dir, "wait": 300}},
             }),
-        ),
-        Err(e) => (false, error("io_error", format!("could not start the handoff window: {e}"))),
+        )),
+        Err(e) => Err(Error::new("io_error", format!("could not start the handoff window: {e}"))),
     }
 }
 
@@ -191,34 +178,31 @@ pub fn child(dir: &Path) -> Outcome {
         .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
     {
         Ok(a) => a,
-        Err(e) => return crate::context::failed(error("invalid_arguments", format!("{}: {e}", dir.display()))),
+        Err(e) => return Error::invalid(format!("{}: {e}", dir.display())).into(),
     };
-    Outcome::pair(run(a, dir))
+    Outcome::report(Ok(run(a, dir)))
 }
 
 impl Op for HandoffStatusArgs {
     fn exec(self, _ctx: &Ctx) -> Outcome {
-        Outcome::pair(status(&self.run_dir, self.wait.min(600)))
+        Outcome::report(status(&self.run_dir, self.wait.min(600)))
     }
 }
 
-fn status(dir: &Path, wait: u64) -> (bool, Value) {
+fn status(dir: &Path, wait: u64) -> crate::Result<(bool, Value)> {
     let dir = &std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     if !dir.join("request.json").is_file() {
-        return (
-            false,
-            error("invalid_arguments", format!("{} is not a handoff directory (no request.json)", dir.display())),
-        );
+        return Err(Error::invalid(format!("{} is not a handoff directory (no request.json)", dir.display())));
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(wait);
     loop {
         if let Some(report) = read_json(&dir.join("report.json")) {
             let ok = report.get("error").is_none();
-            return (ok, report);
+            return Ok((ok, report));
         }
         let live = read_json(&dir.join("live.json"));
         let age_ms = |v: &Option<Value>| {
-            v.as_ref().and_then(|v| v["updated_unix_ms"].as_u64()).map(|t| now_ms().saturating_sub(t as u128))
+            v.as_ref().and_then(|v| v["updated_unix_ms"].as_u64()).map(|t| crate::now_ms().saturating_sub(t as u128))
         };
         let started_ms = std::fs::metadata(dir.join("request.json"))
             .and_then(|m| m.modified())
@@ -233,18 +217,18 @@ fn status(dir: &Path, wait: u64) -> (bool, Value) {
             let log = std::fs::read_to_string(dir.join("launch.log")).unwrap_or_default();
             let tail: String =
                 log.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-            return (
+            return Ok((
                 false,
                 json!({"status": "abandoned", "run_dir": dir, "live": live,
                     "message": "the handoff window stopped without a result (crashed, killed, or never started)", "launch_log": tail}),
-            );
+            ));
         }
         if std::time::Instant::now() >= deadline {
-            return (
+            return Ok((
                 true,
                 json!({"status": "waiting", "run_dir": dir, "live": live,
                 "next_call": {"tool": "handoff_status", "arguments": {"run_dir": dir, "wait": 300}}}),
-            );
+            ));
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -331,11 +315,8 @@ impl Session {
     /// Progress for `handoff_status`.
     pub fn write_live(&self, dir: &Path, state: &str) {
         let v = json!({"status": state, "run_frame": self.rel(), "frame": self.m.bus.frames,
-            "input_events": self.events.len(), "pid": std::process::id(), "updated_unix_ms": now_ms() as u64});
-        let tmp = dir.join("live.json.tmp");
-        if std::fs::write(&tmp, v.to_string()).is_ok() {
-            let _ = std::fs::rename(tmp, dir.join("live.json"));
-        }
+            "input_events": self.events.len(), "pid": std::process::id(), "updated_unix_ms": crate::now_ms() as u64});
+        let _ = crate::write_atomic(&dir.join("live.json"), v.to_string().as_bytes());
     }
 }
 
@@ -361,10 +342,10 @@ impl End {
     }
 }
 
-fn start(a: &HandoffArgs) -> Result<Session, Value> {
-    let bios_path = a.bios.as_ref().ok_or_else(|| error("invalid_arguments", "no BIOS"))?;
-    let bios = std::fs::read(bios_path).map_err(|e| error("io_error", format!("{}: {e}", bios_path.display())))?;
-    let medium = crate::run_native::open_media(a.media.as_deref()).map_err(|(_, v)| v)?;
+fn start(a: &HandoffArgs) -> crate::Result<Session> {
+    let bios_path = a.bios.as_ref().ok_or_else(|| Error::invalid("no BIOS"))?;
+    let bios = std::fs::read(bios_path).map_err(|e| Error::io(bios_path, e))?;
+    let medium = crate::run_native::open_media(a.media.as_deref())?;
     let m = crate::run_native::boot(
         a.from_state.as_deref(),
         &a.cards,
@@ -372,29 +353,26 @@ fn start(a: &HandoffArgs) -> Result<Session, Value> {
         medium.exe.as_deref(),
         medium.disc,
         &medium.id,
-    )
-    .map_err(|(_, v)| v)?;
+    )?;
     let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
     let start = m.save_state(medium.id.clone());
     Ok(Session { m, bios, start_frame, events: Vec::new(), quick: None, start, media_id: medium.id })
 }
 
+/// The handoff's report, also written to report.json; a failure is recorded
+/// there as an error so `handoff_status` can return it.
 fn run(a: HandoffArgs, dir: &Path) -> (bool, Value) {
-    let (ok, mut v) = match start(&a) {
-        Ok(mut s) => match play(&mut s, &a, dir) {
-            Ok((end, note)) => {
-                // The person is done; keep handoff_status from calling this abandoned while
-                // the files are written (and verify replays, which can take minutes).
-                s.write_live(dir, "finishing");
-                finish(&a, s, end, note, dir)
-            }
-            Err(e) => (false, error("window_failed", e)),
-        },
-        Err(e) => (false, e),
+    let result = start(&a).and_then(|mut s| {
+        let (end, note) = play(&mut s, &a, dir).map_err(|e| Error::new("window_failed", e))?;
+        // The person is done; keep handoff_status from calling this abandoned while
+        // the files are written (and verify replays, which can take minutes).
+        s.write_live(dir, "finishing");
+        finish(&a, s, end, note, dir)
+    });
+    let (ok, v) = match result {
+        Ok(v) => (true, v),
+        Err(e) => (false, e.with("run_dir", dir).to_value()),
     };
-    if v.get("error").is_some() {
-        v["run_dir"] = json!(dir);
-    }
     // report.json is what handoff_status returns and what `run --from-state` reads identity from.
     let _ = std::fs::write(dir.join("report.json"), serde_json::to_vec_pretty(&v).unwrap());
     (ok, v)
@@ -425,18 +403,18 @@ fn replay_json(events: &[Input]) -> String {
     format!("[\n{}\n]\n", lines.join(",\n"))
 }
 
-fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> (bool, Value) {
+fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> crate::Result<Value> {
     let frames = s.rel();
     let state = s.m.save_state(s.media_id.clone());
     let mut files = serde_json::Map::new();
-    let mut put = |name: &str, bytes: &[u8]| -> Result<(), String> {
+    let mut put = |name: &str, bytes: &[u8]| -> crate::Result<()> {
         let p = dir.join(name);
-        std::fs::write(&p, bytes).map_err(|e| format!("{}: {e}", p.display()))?;
+        std::fs::write(&p, bytes).map_err(|e| Error::io(&p, e))?;
         files.insert(name.into(), json!({"path": p, "sha256": psx_media::disc::sha256_bytes(bytes)}));
         Ok(())
     };
     let replay = replay_json(&s.events);
-    let written = put("note.txt", note.as_bytes())
+    put("note.txt", note.as_bytes())
         .and_then(|_| put("state.bin", &state))
         .and_then(|_| put("input.json", replay.as_bytes()))
         .and_then(|_| {
@@ -446,10 +424,7 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> (b
                 }
             }
             Ok(())
-        });
-    if let Err(e) = written {
-        return (false, error("io_error", e));
-    }
+        })?;
     let (w, h, rgba) = s.m.bus.gpu.display_rgba();
     let screen = dir.join("screen.png");
     if crate::run::write_png(&screen, w, h, &rgba, png::ColorType::Rgba).is_ok() {
@@ -490,9 +465,7 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> (b
         End::Declined => "The person declined or could not finish; read their note. state.bin is where they stopped.",
         End::Closed => "The window was closed without finishing; state.bin is where it stood.",
     };
-    (
-        true,
-        json!({
+    Ok(json!({
             "status": end.name(),
             "summary": summary,
             "request": a.request,
@@ -517,8 +490,7 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> (b
                 "from_state": a.from_state, "media_identity": s.media_id, "state_format": psx_core::state::FORMAT},
             "report": dir.join("report.json"),
             "build": crate::context::build(),
-        }),
-    )
+    }))
 }
 
 /// Replay the recording headless from the same start and compare the end state.
@@ -527,7 +499,7 @@ fn verify(a: &HandoffArgs, events: &[Input], frames: u64, expected: &[u8], dir: 
     let started = std::time::Instant::now();
     let mut s = match start(a) {
         Ok(s) => s,
-        Err(e) => return json!({"error": e["error"]}),
+        Err(e) => return e.to_value(),
     };
     let mut next = 0;
     let mut live_at = started;
@@ -577,14 +549,14 @@ mod tests {
     fn status_reports_waiting_then_abandoned_then_the_report() {
         let dir = std::env::temp_dir().join(format!("psx-handoff-status-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(!status(&dir, 0).0);
+        assert_eq!(status(&dir, 0).unwrap_err().code, "invalid_arguments");
         std::fs::write(dir.join("request.json"), "{}").unwrap();
-        std::fs::write(dir.join("live.json"), json!({"updated_unix_ms": now_ms() as u64}).to_string()).unwrap();
-        assert_eq!(status(&dir, 0).1["status"], "waiting");
+        std::fs::write(dir.join("live.json"), json!({"updated_unix_ms": crate::now_ms() as u64}).to_string()).unwrap();
+        assert_eq!(status(&dir, 0).unwrap().1["status"], "waiting");
         std::fs::write(dir.join("live.json"), json!({"updated_unix_ms": 0}).to_string()).unwrap();
-        assert_eq!(status(&dir, 0).1["status"], "abandoned");
+        assert_eq!(status(&dir, 0).unwrap().1["status"], "abandoned");
         std::fs::write(dir.join("report.json"), json!({"status": "done"}).to_string()).unwrap();
-        assert_eq!(status(&dir, 0).1["status"], "done");
+        assert_eq!(status(&dir, 0).unwrap().1["status"], "done");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -633,8 +605,7 @@ mod tests {
         press(&mut s, 40, cross);
         let dir = std::env::temp_dir().join(format!("psx-handoff-session-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let (ok, v) = finish(&a, s, End::Done, "note".into(), &dir);
-        assert!(ok, "{v}");
+        let v = finish(&a, s, End::Done, "note".into(), &dir).unwrap();
         assert_eq!(v["verify"]["matches"], true, "{}", v["verify"]);
         assert_eq!(v["status"], "done");
         std::fs::remove_dir_all(dir).unwrap();

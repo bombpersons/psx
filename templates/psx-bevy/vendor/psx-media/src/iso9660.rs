@@ -5,6 +5,7 @@
 //! is therefore a map of *named* extents, and [`FileSystem::owner_of`] lets a
 //! runtime sector read be attributed to a named file when one covers it.
 
+use crate::le::{u16le, u32le};
 use std::collections::HashSet;
 
 use crate::disc::{Disc, SectorForm};
@@ -70,12 +71,6 @@ pub struct FileSystem {
     pub warnings: Vec<String>,
 }
 
-fn u16le(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-fn u32le(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
 fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).trim_end_matches([' ', '\0']).to_string()
 }

@@ -55,7 +55,7 @@ Proposed implementation homes:
 
 - `crates/psx/src/ghidra.rs`: configuration, manifests, supervision and queries.
 - `tools/ghidra/*.java`: import setup, analysis export, decompilation and annotations.
-- `crates/psx/src/commands.rs`, `main.rs`, `mcp.rs`: shared argument types and registration.
+- `main.rs`, `mcp.rs`: CLI and MCP registration of the argument types in `ghidra.rs`.
 - `crates/psx-symbols`: source-bound symbols and function body ranges.
 - `.psx/ghidra/`: ignored input copies, manifests, logs and query artifacts.
 - `ghidra-projects/`: ignored Ghidra databases. Ghidra 12 rejects hidden directory

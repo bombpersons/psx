@@ -34,7 +34,8 @@ use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use serde_json::{Map, Value, json};
 use tokio::sync::Semaphore;
 
-use crate::commands::{self, Ctx, Op, Outcome};
+use crate::Error;
+use crate::commands::{Ctx, Op, Outcome};
 pub(crate) mod project;
 
 #[derive(clap::Args)]
@@ -165,7 +166,6 @@ impl ToolDef {
 
 /// Every tool. Descriptions are written for an agent doing PS1 reverse engineering.
 pub fn tools() -> Vec<ToolDef> {
-    use commands::*;
     vec![
         def::<crate::guide::GuideArgs>("guide", "Built-in workflow guidance. Omit topic for an overview. Tool descriptions are brief: argument rules and output details live in its topics.").read_only(),
         def::<crate::context::ArgsContext>("context", "Start here: the running build, project root, saved defaults (media, BIOS), local BIOS candidates and capabilities. image or from_state explains region or checkpoint identity; save=true stores the resolved defaults. Never downloads."),
@@ -179,34 +179,34 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::ghidra::DecompileArgs>("ghidra_decompile", "Pseudocode, body ranges and callers/callees for the function containing addr (hex, e.g. a writer PC). Give source (EXE or disc.cue::/PATH), ram with ranges and entries, or an analysis handle. The first call imports and analyses (minutes); needs local Ghidra. See guide topic code.").heavy(),
         def::<crate::ghidra::FunctionsArgs>("ghidra_functions", "List a Ghidra analysis's functions (entries, names, signatures, body ranges) from source, ram or an analysis handle; filter by name, page with offset/limit.").heavy(),
         def::<crate::ghidra::XrefsArgs>("ghidra_xrefs", "References to and from addr (hex code or data) in a Ghidra analysis, with type, call status and containing function; paged. Indirect references are incomplete.").heavy(),
-        def::<DiscArgs>("disc", "First look at a disc image (.cue preferred): tracks, volume, SYSTEM.CNF boot line, boot EXE header and LibCrypt subchannel status. hash=true hashes the image files (slow).").read_only(),
-        def::<LsArgs>("ls", "List ISO9660 entries (path, LBA, size, XA attributes, streamed flag) with filter/offset/limit, to map a disc's layout or find which file an LBA belongs to.").read_only(),
-        def::<ExtractArgs>("extract", "Extract one disc file (path) or every file (all=true) into out. Form 2/streamed files (XA, STR) are written as raw 2352-byte sectors (.raw). offset/length (hex) read just a byte window of one file, returned inline as hex when small, with its LBA and raw-image byte offset. Returns sizes and SHA-256."),
-        def::<ExeArgs>("exe", "Parse a PS-X EXE header (entry pc, gp, load ranges, stack, region marker, hashes) from a file or image.cue::/PATH, e.g. the BOOT path from disc.").read_only(),
-        def::<SectorArgs>("sector", "Describe raw disc sectors from lba (count up to 256): track, owning file, mode/form, XA subheader and a hex preview, for streamed data the filesystem cannot read.").read_only(),
-        def::<AddrArgs>("addr", "Classify a CPU address (hex): segment, physical address, region (main RAM with mirrors, scratchpad, I/O, BIOS, expansion) and offset within it.").read_only(),
-        def::<XaArgs>("xa", "List the XA-ADPCM channels in a streamed file (rate, stereo, duration, sectors); with channel and out, decode one channel to a 44.1 kHz WAV."),
-        def::<StrArgs>("str", "Decode an STR/MDEC movie from image.cue::/PATH into out: frame PNGs, audio.wav, a contact sheet and summary. frames limits the PNGs; frame_parser handles custom frame wrappers.").heavy(),
-        def::<AssetsScanArgs>("assets_scan", "Find TIM/TMD/VAB/VAG assets by validated signatures in disc files (image.cue::/PATH, /DIR/), disc images, host files or directories, and RAM dumps; archives and external parsers extend it. Paged; no hit does not prove absence. See guide topic assets.").heavy(),
-        def::<AssetsExtractArgs>("assets_extract", "Convert scanned assets into out: TIM to PNG, TMD to glTF, VAB/VAG to WAV with adpcm_sha256 per waveform, keeping original bytes and provenance. entry extracts one raw archive entry; brief=true returns counts. See guide topic assets.").heavy(),
-        def::<MemcardArgs>("memcard", "List the saves on a raw 128 KiB memory card image (.mcd/.mcr): product code, blocks used, title, icon frames and free blocks.").read_only(),
-        def::<TexturesArgs>("textures", "Decode VRAM texture pages to PNGs: every page/CLUT a gpu_frame run used (plus textures/scene.psxscene for the Bevy template), or one page and clut by hand from any vram.bin."),
-        def::<RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames on the native core. Drive it with input/replay; observe with sample, watch, watch_reads, poke, trace, trace_cd, trace_spu or gpu_frame; save_state makes checkpoints. Returns run_dir and the report; brief or summary shorten it. See guide topics run and input.").heavy().screen(),
+        def::<crate::media_cmd::DiscArgs>("disc", "First look at a disc image (.cue preferred): tracks, volume, SYSTEM.CNF boot line, boot EXE header and LibCrypt subchannel status. hash=true hashes the image files (slow).").read_only(),
+        def::<crate::media_cmd::LsArgs>("ls", "List ISO9660 entries (path, LBA, size, XA attributes, streamed flag) with filter/offset/limit, to map a disc's layout or find which file an LBA belongs to.").read_only(),
+        def::<crate::media_cmd::ExtractArgs>("extract", "Extract one disc file (path) or every file (all=true) into out. Form 2/streamed files (XA, STR) are written as raw 2352-byte sectors (.raw). offset/length (hex) read just a byte window of one file, returned inline as hex when small, with its LBA and raw-image byte offset. Returns sizes and SHA-256."),
+        def::<crate::media_cmd::ExeArgs>("exe", "Parse a PS-X EXE header (entry pc, gp, load ranges, stack, region marker, hashes) from a file or image.cue::/PATH, e.g. the BOOT path from disc.").read_only(),
+        def::<crate::media_cmd::SectorArgs>("sector", "Describe raw disc sectors from lba (count up to 256): track, owning file, mode/form, XA subheader and a hex preview, for streamed data the filesystem cannot read.").read_only(),
+        def::<crate::media_cmd::AddrArgs>("addr", "Classify a CPU address (hex): segment, physical address, region (main RAM with mirrors, scratchpad, I/O, BIOS, expansion) and offset within it.").read_only(),
+        def::<crate::xa_cmd::XaArgs>("xa", "List the XA-ADPCM channels in a streamed file (rate, stereo, duration, sectors); with channel and out, decode one channel to a 44.1 kHz WAV."),
+        def::<crate::str_cmd::StrArgs>("str", "Decode an STR/MDEC movie from image.cue::/PATH into out: frame PNGs, audio.wav, a contact sheet and summary. frames limits the PNGs; frame_parser handles custom frame wrappers.").heavy(),
+        def::<crate::assets_cmd::AssetsScanArgs>("assets_scan", "Find TIM/TMD/VAB/VAG assets by validated signatures in disc files (image.cue::/PATH, /DIR/), disc images, host files or directories, and RAM dumps; archives and external parsers extend it. Paged; no hit does not prove absence. See guide topic assets.").heavy(),
+        def::<crate::assets_cmd::AssetsExtractArgs>("assets_extract", "Convert scanned assets into out: TIM to PNG, TMD to glTF, VAB/VAG to WAV with adpcm_sha256 per waveform, keeping original bytes and provenance. entry extracts one raw archive entry; brief=true returns counts. See guide topic assets.").heavy(),
+        def::<crate::media_cmd::MemcardArgs>("memcard", "List the saves on a raw 128 KiB memory card image (.mcd/.mcr): product code, blocks used, title, icon frames and free blocks.").read_only(),
+        def::<crate::textures::TexturesArgs>("textures", "Decode VRAM texture pages to PNGs: every page/CLUT a gpu_frame run used (plus textures/scene.psxscene for the Bevy template), or one page and clut by hand from any vram.bin."),
+        def::<crate::run::RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames on the native core. Drive it with input/replay; observe with sample, watch, watch_reads, poke, trace, trace_cd, trace_spu or gpu_frame; save_state makes checkpoints. Returns run_dir and the report; brief or summary shorten it. See guide topics run and input.").heavy().screen(),
         ToolDef { call: call_handoff, schema: handoff_schema, ..def::<crate::handoff::HandoffArgs>("handoff", "Ask the person to play to a point you cannot easily reach: opens a window on this machine with the game and your request, and returns a ticket at once. Poll handoff_status; the result has state.bin to continue from, input.json (their input as a replay) and their note.") },
         def::<crate::handoff::HandoffStatusArgs>("handoff_status", "A handoff's progress or result: waiting, done, declined (read the note), closed or abandoned.").read_only().screen(),
-        def::<NativeArgs>("native", "Emulator diagnostic: boot the native core from power-on and report where it got (PC, CD history, SPU state, unhandled I/O, hot PCs, speed). For game investigation use run.").heavy().default_timeout().screen(),
-        def::<LoadsArgs>("loads", "Turn a run recorded with trace_cd into disc-to-RAM provenance: which file and offset each CD transfer copied where, verified against the run's final RAM. Paged; symbols names the reading code.").heavy(),
-        def::<SymbolsArgs>("symbols", "Name PsyQ library functions in an EXE by signature matching (signatures from sigs or PSX_SIGS_DIR). Writes .symbols.json for run, loads, disasm and xrefs, plus Ghidra and .sym files. Library code only.").heavy(),
-        def::<DisasmArgs>("disasm", "Disassemble MIPS from an EXE (source) or run RAM (ram) at addr, or the heuristic function containing function. Resolves lui pairs and gp-relative references; text=true gives a listing. See guide topic code.").read_only(),
-        def::<XrefsArgs>("xrefs", "Static references to a hex address or LO-HI range in an EXE or run RAM: calls, jumps, branches, lui pairs, gp-relative accesses and data pointers, grouped by function. text=true gives a listing.").read_only(),
-        def::<RamDiffArgs>("ram_diff", "Compare two RAM snapshots (run directories or ram.bin) by 1/2/4-byte unit within a range: differing units, deltas and clusters of nearby changes.").read_only(),
-        def::<RamSearchArgs>("ram_search", "Cheat-finder over ordered RAM snapshots: keep addresses matching pred (changed, increased, delta=N...), exact values or a between range; save and candidates narrow the search over rounds.").read_only(),
-        def::<RamViewArgs>("ram_view", "Show a RAM window (addr, len) from one or more snapshots side by side, decoded as u8..x32 or fxI.F, marking units that differ.").read_only(),
-        def::<ParserTemplateArgs>("template_parser_create", "Create an executable Python 3 external parser starter (kind archive, model, asset or video) with a sample input and protocol notes in dest, for assets_scan, assets_extract or str."),
-        def::<TemplateCreateArgs>("template_create", "Create a Bevy port workspace (engine, game, importers on the psx-bevy library) with the PS1 look in dest, e.g. the game folder. Set region and fields_per_tick from the original. See guide topics port, bevy."),
-        def::<TemplateUpdateArgs>("template_update", "Update the project to this build: psx-bevy's git tag and vendor/; edited files get a .psx-new copy. See guide topic port."),
-        def::<GpuReplayArgs>("gpu_replay", "Replay a recorded GP0 command stream into a fresh software GPU and write the resulting VRAM to out (and optionally a PNG). Pair with vram_diff."),
-        def::<VramDiffArgs>("vram_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
+        def::<crate::native::NativeArgs>("native", "Emulator diagnostic: boot the native core from power-on and report where it got (PC, CD history, SPU state, unhandled I/O, hot PCs, speed). For game investigation use run.").heavy().default_timeout().screen(),
+        def::<crate::provenance::LoadsArgs>("loads", "Turn a run recorded with trace_cd into disc-to-RAM provenance: which file and offset each CD transfer copied where, verified against the run's final RAM. Paged; symbols names the reading code.").heavy(),
+        def::<crate::symbols_io::SymbolsArgs>("symbols", "Name PsyQ library functions in an EXE by signature matching (signatures from sigs or PSX_SIGS_DIR). Writes .symbols.json for run, loads, disasm and xrefs, plus Ghidra and .sym files. Library code only.").heavy(),
+        def::<crate::code::DisasmArgs>("disasm", "Disassemble MIPS from an EXE (source) or run RAM (ram) at addr, or the heuristic function containing function. Resolves lui pairs and gp-relative references; text=true gives a listing. See guide topic code.").read_only(),
+        def::<crate::code::XrefsArgs>("xrefs", "Static references to a hex address or LO-HI range in an EXE or run RAM: calls, jumps, branches, lui pairs, gp-relative accesses and data pointers, grouped by function. text=true gives a listing.").read_only(),
+        def::<crate::ram::RamDiffArgs>("ram_diff", "Compare two RAM snapshots (run directories or ram.bin) by 1/2/4-byte unit within a range: differing units, deltas and clusters of nearby changes.").read_only(),
+        def::<crate::ram::RamSearchArgs>("ram_search", "Cheat-finder over ordered RAM snapshots: keep addresses matching pred (changed, increased, delta=N...), exact values or a between range; save and candidates narrow the search over rounds.").read_only(),
+        def::<crate::ram::RamViewArgs>("ram_view", "Show a RAM window (addr, len) from one or more snapshots side by side, decoded as u8..x32 or fxI.F, marking units that differ.").read_only(),
+        def::<crate::parser_template::ParserTemplateArgs>("template_parser_create", "Create an executable Python 3 external parser starter (kind archive, model, asset or video) with a sample input and protocol notes in dest, for assets_scan, assets_extract or str."),
+        def::<crate::template::TemplateCreateArgs>("template_create", "Create a Bevy port workspace (engine, game, importers on the psx-bevy library) with the PS1 look in dest, e.g. the game folder. Set region and fields_per_tick from the original. See guide topics port, bevy."),
+        def::<crate::template::TemplateUpdateArgs>("template_update", "Update the project to this build: psx-bevy's git tag and vendor/; edited files get a .psx-new copy. See guide topic port."),
+        def::<crate::vram_diff::GpuReplayArgs>("gpu_replay", "Replay a recorded GP0 command stream into a fresh software GPU and write the resulting VRAM to out (and optionally a PNG). Pair with vram_diff."),
+        def::<crate::vram_diff::VramDiffArgs>("vram_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
     ]
 }
 
@@ -272,30 +272,21 @@ fn portable_schema(value: &mut Value) {
     }
 }
 
-fn error_value(code: &str, message: impl std::fmt::Display) -> Value {
-    json!({"error": {"code": code, "message": message.to_string()}})
-}
-
-fn stamp() -> String {
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    format!("{ms}-{}{}", std::process::id(), crate::instance_suffix())
-}
-
 /// Validate and complete a call's arguments. Returns the arguments for the
 /// command and whether a screen image was requested.
-fn prepare(tool: &ToolDef, args: Map<String, Value>, ctx: &Ctx) -> Result<(Value, bool), Value> {
+fn prepare(tool: &ToolDef, args: Map<String, Value>, ctx: &Ctx) -> crate::Result<(Value, bool)> {
     let mut args = args;
     let screen = match args.remove("return_screen") {
         None => false,
         Some(Value::Bool(b)) if tool.screen => b,
-        Some(_) if tool.screen => return Err(error_value("invalid_arguments", "return_screen must be a boolean")),
-        Some(_) => return Err(error_value("invalid_arguments", format!("{} does not take return_screen", tool.name))),
+        Some(_) if tool.screen => return Err(Error::invalid("return_screen must be a boolean")),
+        Some(_) => return Err(Error::invalid(format!("{} does not take return_screen", tool.name))),
     };
     let schema = (tool.schema)();
     let known: Vec<&String> = schema["properties"].as_object().map(|p| p.keys().collect()).unwrap_or_default();
     if let Some(k) = args.keys().find(|k| !known.contains(k)) {
         let names: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-        return Err(error_value(
+        return Err(Error::new(
             "invalid_arguments",
             format!("unknown argument {k:?} for {}; expected one of {}", tool.name, names.join(", ")),
         ));
@@ -304,7 +295,7 @@ fn prepare(tool: &ToolDef, args: Map<String, Value>, ctx: &Ctx) -> Result<(Value
         args.insert("timeout".into(), json!(DEFAULT_TIMEOUT_S));
     }
     if tool.name == "native" && screen && args.get("dump").is_none_or(Value::is_null) {
-        let dir = ctx.root.join(".psx/native").join(stamp());
+        let dir = ctx.root.join(".psx/native").join(crate::stamp());
         args.insert("dump".into(), json!(dir.join("native")));
     }
     Ok((Value::Object(args), screen))
@@ -337,12 +328,13 @@ fn spill(tool: &str, value: Value, ctx: &Ctx) -> Value {
         return value;
     }
     let dir = ctx.root.join(".psx/mcp");
-    let path = dir.join(format!("{tool}-{}.json", stamp()));
+    let path = dir.join(format!("{tool}-{}.json", crate::stamp()));
     if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &text)) {
-        return error_value(
+        return Error::new(
             "io_error",
             format!("result of {} bytes could not be written to {}: {e}", text.len(), path.display()),
-        );
+        )
+        .to_value();
     }
     // Keep small top-level values inline; describe the rest.
     let mut summary = Map::new();
@@ -444,22 +436,22 @@ impl PsxServer {
     ) -> CallToolResponse {
         let tool = &self.defs[name];
         if serde_json::to_vec(&args).map(|v| v.len()).unwrap_or(0) > ARGS_LIMIT {
-            return respond(error_value("limit_exceeded", "tool arguments exceed 1 MiB"), None);
+            return respond(Error::new("limit_exceeded", "tool arguments exceed 1 MiB").to_value(), None);
         }
         let scoped = args.remove("project_root");
         if scoped.is_none() && self.require_root {
             return respond(
-                error_value(
+                Error::new(
                     "invalid_arguments",
                     "this server was started with --require-project-root; pass project_root (the game study directory) on every call",
-                ),
+                ).to_value(),
                 None,
             );
         }
         let default = self.default_root(peer).await;
         let root = match project::resolve(&default, scoped.as_ref()) {
             Ok(root) => root,
-            Err(error) => return respond(error, None),
+            Err(e) => return respond(e.to_value(), None),
         };
         // Relative paths in-process resolve against the working directory, so
         // any other root needs a worker running there.
@@ -469,7 +461,7 @@ impl PsxServer {
         let ctx = Ctx { root, cancel: Some(worker_cancel.clone()) };
         let (args, want_screen) = match prepare(tool, args, &ctx) {
             Ok(r) => r,
-            Err(e) => return respond(e, None),
+            Err(e) => return respond(e.to_value(), None),
         };
         let cap =
             args.get("timeout").and_then(Value::as_u64).map(|s| Duration::from_secs(s) + GRACE).unwrap_or(DEFAULT_CAP);
@@ -478,10 +470,10 @@ impl PsxServer {
             tokio::select! {
                 p = tokio::time::timeout(cap,self.slots.clone().acquire_owned()) => match p {
                     Ok(Ok(p)) => Some(p),
-                    Ok(Err(_)) => return respond(error_value("internal", "execution queue closed"), None),
-                    Err(_) => return respond(error_value("timeout","Deadline reached while waiting for an execution slot"),None),
+                    Ok(Err(_)) => return respond(Error::new("internal", "execution queue closed").to_value(), None),
+                    Err(_) => return respond(Error::new("timeout","Deadline reached while waiting for an execution slot").to_value(),None),
                 },
-                _ = cancel.cancelled() => return respond(error_value("cancelled", "cancelled while waiting for an execution slot"), None),
+                _ = cancel.cancelled() => return respond(Error::new("cancelled", "cancelled while waiting for an execution slot").to_value(), None),
             }
         } else {
             None
@@ -497,11 +489,11 @@ impl PsxServer {
         let mut worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let mut out = if isolated {
-                project::call(tool_name, args, &ctx).unwrap_or_else(|e| error_value("worker_failed", e))
+                project::call(tool_name, args, &ctx).unwrap_or_else(|e| Error::new("worker_failed", e).to_value())
             } else {
                 match call(args, &ctx) {
                     Ok(o) => o.value,
-                    Err(e) => error_value("invalid_arguments", e),
+                    Err(e) => Error::invalid(e).to_value(),
                 }
             };
             if from_client && tool_name == "context" && out.is_object() {
@@ -528,17 +520,17 @@ impl PsxServer {
         tokio::select! {
             r = tokio::time::timeout(cap.saturating_sub(queued_at.elapsed()), &mut worker) => match r {
                 Ok(Ok((value, shot))) => respond(value, shot),
-                Ok(Err(e)) => respond(error_value("internal", format!("{name} failed: {e}")), None),
+                Ok(Err(e)) => respond(Error::new("internal", format!("{name} failed: {e}")).to_value(), None),
                 Err(_) => {
                     worker_cancel.cancel();
                     if supervised { let _ = tokio::time::timeout(Duration::from_secs(3), &mut worker).await; }
-                    respond(error_value("timeout", if supervised { format!("{name} exceeded {} s; worker termination requested", cap.as_secs()) } else { format!("{name} exceeded {} s; it keeps running in the background and may still write its outputs", cap.as_secs()) }), None)
+                    respond(Error::new("timeout", if supervised { format!("{name} exceeded {} s; worker termination requested", cap.as_secs()) } else { format!("{name} exceeded {} s; it keeps running in the background and may still write its outputs", cap.as_secs()) }).to_value(), None)
                 },
             },
             _ = cancel.cancelled() => {
                 worker_cancel.cancel();
                 if supervised { let _ = tokio::time::timeout(Duration::from_secs(3), &mut worker).await; }
-                respond(error_value("cancelled", if supervised { format!("{name} was cancelled; worker termination requested") } else { format!("{name} was cancelled; the job keeps running in the background until its own timeout") }), None)
+                respond(Error::new("cancelled", if supervised { format!("{name} was cancelled; worker termination requested") } else { format!("{name} was cancelled; the job keeps running in the background until its own timeout") }).to_value(), None)
             },
         }
     }
@@ -692,7 +684,7 @@ async fn serve(root: std::path::PathBuf, pinned: bool, a: McpArgs) -> Result<(),
 /// `pinned`: the root came from `--root`/`PSX_ROOT`, so client roots are ignored.
 pub fn main(ctx: Ctx, a: McpArgs, pinned: bool) -> ExitCode {
     if !(1..=8).contains(&a.jobs) {
-        println!("{}", error_value("invalid_arguments", "--jobs must be 1..=8"));
+        println!("{}", Error::invalid("--jobs must be 1..=8").to_value());
         return ExitCode::from(1);
     }
     eprintln!("psx mcp: serving {} tools on stdio, project root {}", tools().len(), ctx.root.display());

@@ -11,13 +11,81 @@
 //! Projects from before the split have psx-bevy as a `psx-bevy/` member;
 //! `update` removes its untouched files and switches the manifest to git.
 
+use crate::Error;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use psx_media::MediaError;
+use crate::commands::{Ctx, Op, Outcome};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct TemplateCreateArgs {
+    /// Destination: new, empty or the game folder; never overwrites files.
+    pub dest: PathBuf,
+    /// Game package name (default: the folder's name).
+    #[arg(long)]
+    pub name: Option<String>,
+    /// The original's video region: display and tick rate. Default ntsc.
+    #[arg(long, value_enum)]
+    pub region: Option<TemplateRegion>,
+    /// Video fields per logic tick: 2 when the original waits two vblanks per frame (Croc PAL). Default 1.
+    #[arg(long)]
+    pub fields_per_tick: Option<u32>,
+}
+
+impl Op for TemplateCreateArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        let options = TemplateOptions {
+            region: self.region.unwrap_or_default(),
+            fields_per_tick: self.fields_per_tick.unwrap_or(1),
+        };
+        Outcome::result(create(&self.dest, self.name.as_deref(), options))
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct TemplateUpdateArgs {
+    /// Report changes without writing.
+    #[arg(long)]
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+impl Op for TemplateUpdateArgs {
+    /// Updates the project at the project root (`--root`, or the MCP project).
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::result(update(&ctx.root, self.dry_run))
+    }
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct TemplateAdoptArgs {
+    /// Existing template workspace (root Cargo.toml) with no .psx-template.toml.
+    pub dest: PathBuf,
+    /// The game's Cargo package name (defaults to the directory name).
+    #[arg(long)]
+    pub name: Option<String>,
+    /// The project's region, as in game/src/lib.rs. Default ntsc.
+    #[arg(long, value_enum)]
+    pub region: Option<TemplateRegion>,
+    /// The project's fields per tick, as in game/src/lib.rs. Default 1.
+    #[arg(long)]
+    pub fields_per_tick: Option<u32>,
+}
+
+impl Op for TemplateAdoptArgs {
+    fn exec(self, _: &Ctx) -> Outcome {
+        let options = TemplateOptions {
+            region: self.region.unwrap_or_default(),
+            fields_per_tick: self.fields_per_tick.unwrap_or(1),
+        };
+        Outcome::result(adopt(&self.dest, self.name.as_deref(), options))
+    }
+}
 
 macro_rules! files {
     ($($path:literal),* $(,)?) => {
@@ -83,6 +151,7 @@ const FILES: &[(&str, &str)] = files![
     "vendor/psx-assets/src/adpcm.rs",
     "vendor/psx-assets/src/archive.rs",
     "vendor/psx-assets/src/gltf.rs",
+    "vendor/psx-assets/src/le.rs",
     "vendor/psx-assets/src/lib.rs",
     "vendor/psx-assets/src/model_document.rs",
     "vendor/psx-assets/src/scan.rs",
@@ -97,6 +166,7 @@ const FILES: &[(&str, &str)] = files![
     "vendor/psx-media/src/error.rs",
     "vendor/psx-media/src/exe.rs",
     "vendor/psx-media/src/iso9660.rs",
+    "vendor/psx-media/src/le.rs",
     "vendor/psx-media/src/lib.rs",
     "vendor/psx-media/src/memmap.rs",
     "vendor/psx-media/src/source.rs",
@@ -193,23 +263,23 @@ impl Manifest {
         TemplateOptions { region: self.region, fields_per_tick: self.fields_per_tick }
     }
 
-    fn write(&self, dest: &Path) -> psx_media::Result<()> {
+    fn write(&self, dest: &Path) -> crate::Result<()> {
         let header = "# Written by `psx template create|update|adopt`. `update` compares these hashes\n\
                       # with the files to tell untouched template files from edited ones.\n";
         let body = toml_like(self);
         let path = dest.join(MANIFEST);
-        std::fs::write(&path, format!("{header}{body}")).map_err(|e| MediaError::io(&path, e))
+        std::fs::write(&path, format!("{header}{body}")).map_err(|e| Error::io(&path, e))
     }
 
-    fn read(dest: &Path) -> psx_media::Result<Self> {
+    fn read(dest: &Path) -> crate::Result<Self> {
         let path = dest.join(MANIFEST);
         let text = std::fs::read_to_string(&path).map_err(|e| {
-            MediaError::Malformed(format!(
+            Error::malformed(format!(
                 "{}: {e}; projects created before the workspace template need `psx template adopt`",
                 path.display()
             ))
         })?;
-        parse_toml_like(&text).map_err(|e| MediaError::Malformed(format!("{}: {e}", path.display())))
+        parse_toml_like(&text).map_err(|e| Error::malformed(format!("{}: {e}", path.display())))
     }
 }
 
@@ -357,10 +427,11 @@ fn remove_empty_dirs(dir: &Path) {
 }
 
 /// The template's `game/src/lib.rs` with `REGION` and `FIELDS_PER_TICK` set.
-fn configure_lib(contents: &str, options: TemplateOptions) -> psx_media::Result<String> {
+fn configure_lib(contents: &str, options: TemplateOptions) -> crate::Result<String> {
     if !contents.contains(REGION_LINE) || !contents.contains(FIELDS_PER_TICK_LINE) {
-        return Err(MediaError::Malformed(
-            "template game/src/lib.rs no longer has the REGION / FIELDS_PER_TICK lines template create rewrites".into(),
+        return Err(Error::new(
+            "internal",
+            "template game/src/lib.rs no longer has the REGION / FIELDS_PER_TICK lines template create rewrites",
         ));
     }
     Ok(contents.replacen(REGION_LINE, &format!("pub const REGION: Region = {};", options.region.rust()), 1).replacen(
@@ -372,7 +443,7 @@ fn configure_lib(contents: &str, options: TemplateOptions) -> psx_media::Result<
 
 /// Every template file as this project gets it: package name, region and
 /// tick rate filled in.
-fn render(name: &str, options: TemplateOptions) -> psx_media::Result<Vec<(&'static str, String)>> {
+fn render(name: &str, options: TemplateOptions) -> crate::Result<Vec<(&'static str, String)>> {
     FILES
         .iter()
         .map(|(rel, contents)| {
@@ -401,15 +472,15 @@ fn valid_name(name: &str) -> bool {
         && !matches!(name, "engine" | "psx-bevy" | "import" | "example-mod")
 }
 
-fn check_options(name: &str, options: TemplateOptions) -> psx_media::Result<()> {
+fn check_options(name: &str, options: TemplateOptions) -> crate::Result<()> {
     if !valid_name(name) {
-        return Err(MediaError::Malformed(format!(
+        return Err(Error::invalid(format!(
             "package name {name:?} must start with a-z, contain only a-z, 0-9, '-' or '_', and not be engine, \
              psx-bevy, import or example-mod; pass --name"
         )));
     }
     if !(1..=60).contains(&options.fields_per_tick) {
-        return Err(MediaError::Malformed(format!(
+        return Err(Error::invalid(format!(
             "fields_per_tick {} must be between 1 and 60 (vblanks the original waits per game frame)",
             options.fields_per_tick
         )));
@@ -417,12 +488,12 @@ fn check_options(name: &str, options: TemplateOptions) -> psx_media::Result<()> 
     Ok(())
 }
 
-fn write_file(dest: &Path, rel: &str, contents: &[u8]) -> psx_media::Result<()> {
+fn write_file(dest: &Path, rel: &str, contents: &[u8]) -> crate::Result<()> {
     let path = dest.join(rel);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| MediaError::io(parent, e))?;
+        std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
     }
-    std::fs::write(&path, contents).map_err(|e| MediaError::io(&path, e))
+    std::fs::write(&path, contents).map_err(|e| Error::io(&path, e))
 }
 
 /// `name` from `--name`, else the destination folder's name.
@@ -440,7 +511,7 @@ fn package_name(dest: &Path, name: Option<&str>) -> String {
     }
 }
 
-pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> psx_media::Result<Value> {
+pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crate::Result<Value> {
     let name = package_name(dest, name);
     check_options(&name, options)?;
     let files = render(&name, options)?;
@@ -461,7 +532,7 @@ pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> psx_
         clashes.push(MANIFEST);
     }
     if !clashes.is_empty() {
-        return Err(MediaError::Malformed(format!(
+        return Err(Error::invalid(format!(
             "{} already has {}; template create only adds files (use template update for an existing project)",
             dest.display(),
             clashes.join(", ")
@@ -519,7 +590,7 @@ pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> psx_
 
 /// Replaces untouched template-owned files with this psx build's versions,
 /// and reports seeded files whose template version changed.
-pub fn update(dest: &Path, dry_run: bool) -> psx_media::Result<Value> {
+pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
     let mut manifest = Manifest::read(dest)?;
     let files = render(&manifest.package, manifest.options())?;
     let new_owned: BTreeMap<&str, &String> =
@@ -575,7 +646,7 @@ pub fn update(dest: &Path, dry_run: bool) -> psx_media::Result<Value> {
             Some(now) if Some(&now) == base.as_ref() => {
                 if !dry_run {
                     let path = dest.join(&rel);
-                    std::fs::remove_file(&path).map_err(|e| MediaError::io(&path, e))?;
+                    std::fs::remove_file(&path).map_err(|e| Error::io(&path, e))?;
                     manifest.owned.remove(&rel);
                 }
                 removed.push(rel);
@@ -615,7 +686,7 @@ pub fn update(dest: &Path, dry_run: bool) -> psx_media::Result<Value> {
     // The root manifest is the project's, but its psx-bevy line follows this build.
     let dep = psx_bevy_dep();
     let root_manifest = dest.join("Cargo.toml");
-    let text = std::fs::read_to_string(&root_manifest).map_err(|e| MediaError::io(&root_manifest, e))?;
+    let text = std::fs::read_to_string(&root_manifest).map_err(|e| Error::io(&root_manifest, e))?;
     let mut psx_bevy = match move_psx_bevy(&text, dep) {
         Some(new) if new == text => json!({"status": "unchanged", "dependency": dep}),
         Some(new) => {
@@ -672,12 +743,12 @@ pub fn update(dest: &Path, dry_run: bool) -> psx_media::Result<Value> {
 /// as already merged and its `vendor/` files as the template's, so the next
 /// `update` replaces them. A pre-split `psx-bevy/` copy is not tracked (its
 /// edits are unknown): `update` switches the manifest to git and reports it.
-pub fn adopt(dest: &Path, name: Option<&str>, options: TemplateOptions) -> psx_media::Result<Value> {
+pub fn adopt(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crate::Result<Value> {
     if dest.join(MANIFEST).exists() {
-        return Err(MediaError::Malformed(format!("{} already has {MANIFEST}; use template update", dest.display())));
+        return Err(Error::invalid(format!("{} already has {MANIFEST}; use template update", dest.display())));
     }
     if !dest.join("Cargo.toml").is_file() {
-        return Err(MediaError::Malformed(format!(
+        return Err(Error::invalid(format!(
             "{} has no Cargo.toml: adopt tracks an existing template workspace (template create makes a new one)",
             dest.display()
         )));

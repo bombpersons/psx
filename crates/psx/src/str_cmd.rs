@@ -8,15 +8,72 @@
 //! feeds it, so frames match what the emulator shows. Audio goes through
 //! `psx xa` unchanged.
 
+use crate::Error;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::commands::{Ctx, Op, Outcome};
 use psx_core::mdec::Mdec;
+use psx_media::Disc;
 use psx_media::iso9660::FileSystem;
 use psx_media::str_video::{BsError, BsHeader, Frame, FrameAssembler, STR_HEADER_LEN, StrHeader, bs_offset, decode_bs};
-use psx_media::{Disc, MediaError};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Value, json};
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+pub struct StrArgs {
+    /// `image.cue::/PATH`, or the image with the ISO path in `path`.
+    pub source: String,
+    pub path: Option<String>,
+    /// Frames to write, 1-based inclusive: `A..B`, `A..`, `..B` or `N`.
+    #[arg(long)]
+    pub frames: Option<String>,
+    /// XA channel for audio.wav (default: the one with the most sectors).
+    #[arg(long)]
+    pub channel: Option<u8>,
+    #[arg(long)]
+    #[serde(default)]
+    pub no_audio: bool,
+    /// Also write an uncompressed 4:4:4 movie.y4m.
+    #[arg(long)]
+    #[serde(default)]
+    pub y4m: bool,
+    /// Executable normalizing each selected frame to a standard BS payload.
+    #[arg(long)]
+    pub frame_parser: Option<PathBuf>,
+    #[arg(long = "frame-parser-arg", allow_hyphen_values = true, requires = "frame_parser")]
+    #[serde(default)]
+    pub frame_parser_args: Vec<String>,
+    #[arg(long, default_value_t = crate::parser::default_parser_timeout(), value_parser = clap::value_parser!(u64).range(1..=300))]
+    #[serde(default = "crate::parser::default_parser_timeout")]
+    pub parser_timeout: u64,
+    /// Output directory for frames, audio.wav, contact.png, frames.json, summary.json.
+    #[arg(short, long)]
+    pub out: PathBuf,
+}
+
+impl Op for StrArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::result((|| -> crate::Result<Value> {
+            let (image, path) = psx_media::source::split(&self.source, self.path.as_deref())?;
+            let frame_parser =
+                crate::parser::Spec::new(self.frame_parser.as_ref(), &self.frame_parser_args, self.parser_timeout)?;
+            run(Args {
+                image: &image,
+                path: &path,
+                out: &self.out,
+                frames: self.frames.as_deref(),
+                channel: self.channel,
+                no_audio: self.no_audio,
+                y4m: self.y4m,
+                frame_parser: frame_parser.as_ref(),
+                cancel: ctx.cancel.as_ref(),
+            })
+        })())
+    }
+}
 
 /// Zig-zag position → raster index (the order MDEC quant tables are stored in).
 const ZAGZIG: [usize; 64] = [
@@ -102,8 +159,8 @@ pub fn decode_frame(m: &mut Mdec, data: &[u8], width: u16, height: u16) -> Resul
 }
 
 /// `A..B`, `A..`, `..B` or `N` (1-based, inclusive).
-fn parse_range(s: &str) -> Result<(usize, usize), MediaError> {
-    let bad = || MediaError::Malformed(format!("bad frame range {s:?}, expected A..B"));
+fn parse_range(s: &str) -> crate::Result<(usize, usize)> {
+    let bad = || Error::invalid(format!("bad frame range {s:?}, expected A..B"));
     let num = |t: &str, d: usize| if t.is_empty() { Ok(d) } else { t.parse::<usize>().map_err(|_| bad()) };
     let (a, b) = match s.split_once("..") {
         Some((a, b)) => (num(a, 1)?, num(b.trim_start_matches('='), usize::MAX)?),
@@ -141,7 +198,7 @@ struct Scan {
     channels: BTreeMap<(u8, u8), (u8, Vec<u32>)>,
 }
 
-fn scan(disc: &Disc, lba: u32, sectors: u32) -> psx_media::Result<Scan> {
+fn scan(disc: &Disc, lba: u32, sectors: u32) -> crate::Result<Scan> {
     let mut s = Scan::default();
     let mut asm = FrameAssembler::default();
     for l in lba..lba + sectors {
@@ -166,7 +223,7 @@ fn scan(disc: &Disc, lba: u32, sectors: u32) -> psx_media::Result<Scan> {
     Ok(s)
 }
 
-pub fn run(a: Args) -> psx_media::Result<Value> {
+pub fn run(a: Args) -> crate::Result<Value> {
     let disc = Disc::open(a.image)?;
     let fs = FileSystem::read(&disc)?;
     let entry = fs.entry(a.path)?.clone();
@@ -181,7 +238,7 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
         } else {
             "STR headers present but none with the MDEC type 8001h (custom or polygon stream)"
         };
-        return Err(MediaError::Unsupported(format!("{}: {why}; sector kinds {}", entry.path, result["sector_kinds"])));
+        return Err(Error::unsupported(format!("{}: {why}; sector kinds {}", entry.path, result["sector_kinds"])));
     }
     // Probe the BS variant of the first frame before writing anything.
     let variants: BTreeMap<String, usize> = scan.frames.iter().fold(BTreeMap::new(), |mut m, f| {
@@ -190,7 +247,7 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
         m
     });
     if a.frame_parser.is_none() && !variants.keys().any(|v| matches!(v.as_str(), "v1" | "v2" | "v3")) {
-        return Err(MediaError::Unsupported(format!(
+        return Err(Error::unsupported(format!(
             "{}: STR video sectors, but no BS v1/v2/v3 bitstreams (variants seen {variants:?}{}); polygon streams, iki, v0, EA and encrypted formats are not decoded",
             entry.path,
             if scan.frames.iter().all(|f| f.width == 0 && f.height == 0) {
@@ -231,7 +288,7 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
     }
     let fps_value = fps["fps"].as_f64().unwrap_or(15.0);
 
-    std::fs::create_dir_all(a.out).map_err(|e| MediaError::io(a.out, e))?;
+    std::fs::create_dir_all(a.out).map_err(|e| Error::io(a.out, e))?;
     let (first, last) = a.frames.map(parse_range).transpose()?.unwrap_or((1, usize::MAX));
     // Frames kept for the contact sheet: up to 24 evenly spaced over the range.
     let in_range = last.min(frames_total).saturating_sub(first - 1);
@@ -277,7 +334,7 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
             normalized = crate::parser::document::<crate::parser::PayloadDocument>(&output.bytes)?.decode()?;
             let name = format!("frame_{index:05}.bs");
             let path = a.out.join(&name);
-            std::fs::write(&path, &normalized).map_err(|e| MediaError::io(&path, e))?;
+            std::fs::write(&path, &normalized).map_err(|e| Error::io(&path, e))?;
             rec["parser"] = output.provenance;
             rec["normalized_bs"] = json!(name);
             normalized.as_slice()
@@ -293,7 +350,7 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
                 let name = format!("frame_{index:05}.png");
                 let p = a.out.join(&name);
                 crate::run::write_png(&p, f.width as u32, f.height as u32, &rgb, png::ColorType::Rgb)
-                    .map_err(|e| MediaError::io(&p, e))?;
+                    .map_err(|e| Error::io(&p, e))?;
                 rec["png"] = json!(name);
                 rec["bs"] = json!({"version": h.version, "quant": h.quant, "end_code": end});
                 if a.y4m {
@@ -325,7 +382,7 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
         per_frame.push(rec);
     }
     if let Some((mut file, _)) = y4m.take() {
-        file.flush().map_err(|e| MediaError::io(a.out.join("movie.y4m"), e))?;
+        file.flush().map_err(|e| Error::io(a.out.join("movie.y4m"), e))?;
     }
 
     let mut audio = Value::Null;
@@ -343,7 +400,7 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
     let contact = if thumbs.is_empty() { None } else { Some(contact_sheet(a.out, &thumbs)?) };
     let frames_json = a.out.join("frames.json");
     std::fs::write(&frames_json, serde_json::to_string_pretty(&per_frame).unwrap_or_default())
-        .map_err(|e| MediaError::io(&frames_json, e))?;
+        .map_err(|e| Error::io(&frames_json, e))?;
     let mut versions: BTreeMap<String, usize> = BTreeMap::new();
     for r in &per_frame {
         if let Some(v) = r["bs"]["version"].as_u64() {
@@ -377,7 +434,7 @@ pub fn run(a: Args) -> psx_media::Result<Value> {
         "summary": summary,
     });
     std::fs::write(&summary, serde_json::to_string_pretty(&result).unwrap_or_default())
-        .map_err(|e| MediaError::io(&summary, e))?;
+        .map_err(|e| Error::io(&summary, e))?;
     Ok(result)
 }
 
@@ -394,9 +451,9 @@ fn write_y4m(
     h: u16,
     fps: f64,
     rgb: &[u8],
-) -> psx_media::Result<()> {
+) -> crate::Result<()> {
     let p = dir.join("movie.y4m");
-    let io = |e| MediaError::io(&p, e);
+    let io = |e| Error::io(&p, e);
     if state.is_none() {
         let mut f = std::io::BufWriter::new(std::fs::File::create(&p).map_err(io)?);
         // The estimated rate, in thousandths.
@@ -422,7 +479,7 @@ fn write_y4m(
 }
 
 /// The given frames at half size in a 6-wide grid.
-fn contact_sheet(dir: &Path, frames: &[(usize, u16, u16, Vec<u8>)]) -> psx_media::Result<PathBuf> {
+fn contact_sheet(dir: &Path, frames: &[(usize, u16, u16, Vec<u8>)]) -> crate::Result<PathBuf> {
     let count = frames.len();
     let picks: Vec<&(usize, u16, u16, Vec<u8>)> = frames.iter().collect();
     let tw = picks.iter().map(|f| f.1 as usize).max().unwrap_or(16) / 2;
@@ -444,7 +501,7 @@ fn contact_sheet(dir: &Path, frames: &[(usize, u16, u16, Vec<u8>)]) -> psx_media
         }
     }
     let p = dir.join("contact.png");
-    crate::run::write_png(&p, sw as u32, sh as u32, &sheet, png::ColorType::Rgb).map_err(|e| MediaError::io(&p, e))?;
+    crate::run::write_png(&p, sw as u32, sh as u32, &sheet, png::ColorType::Rgb).map_err(|e| Error::io(&p, e))?;
     Ok(p)
 }
 
