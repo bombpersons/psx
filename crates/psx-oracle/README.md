@@ -31,15 +31,26 @@ unplugged, as in the native core. There are no memory cards. Runs are determinis
 ## `lockstep`
 
 `lockstep` runs the native core and Mednafen in one process from BIOS reset, with an empty drive. Before
-each instruction it compares the PC, the instruction word, r1-r31, HI, LO and the delayed load in flight.
-The core's timing differs from Mednafen's (flat CPU costs, frames of exactly 50 or 59.94 Hz), so two things
-come from Mednafen and are counted rather than treated as divergence:
+each instruction it compares the PC, the instruction word, r1-r31, HI, LO, the delayed load in flight, and
+COP0's SR, Cause (except IP2), EPC and BadVaddr. After each COP2 instruction or LWC2 it also compares the GTE's
+64 registers. Any difference stops the run. The core's timing differs from Mednafen's (flat CPU costs, frames of
+exactly 50 or 59.94 Hz), so two things come from Mednafen and are counted rather than treated as divergence:
 
 - the values of I/O loads;
 - the interrupt line, Cause.IP2.
 
-Interrupts then happen at the same instruction in both. On SCPH-1001, 300 million instructions (1,174
-frames into the shell) match, at about 2.2 million instructions a second.
+Interrupts then happen at the same instruction in both.
+
+At every vblank, main RAM, the scratchpad, VRAM and SPU RAM are compared too. These differences are reported
+(`memory`: frames differing, the first, and any left at the end) but don't stop the run, because they come from
+devices whose timing differs. VRAM differences while Mednafen's GPU still has queued work are counted
+separately. `--dump PREFIX` writes both sides' memory at the end for `psx vram-diff` and `psx ram-diff`.
+
+On SCPH-1001, 300 million instructions (1,174 frames into the shell) match, at about 2 million instructions a
+second. RAM and VRAM are identical at the end. Two transient differences remain, both timing:
+
+- Mednafen skips the displayed field's lines when drawing in 480-line interlace;
+- the SPU's voice capture buffers.
 
 ## Layout
 

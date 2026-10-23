@@ -26,6 +26,7 @@ pub struct Regs {
     pub sr: u32,
     pub cause: u32,
     pub epc: u32,
+    pub badvaddr: u32,
     /// The delayed load in flight: register (32 = none) and value.
     pub load_reg: u32,
     pub load_value: u32,
@@ -51,6 +52,8 @@ unsafe extern "C" {
     fn mdh_read(space: *const c_char, address: u32, length: u32, buffer: *mut u8) -> c_int;
     fn mdh_peek(address: u32, bytes: u32) -> u32;
     fn mdh_regs(out: *mut Regs);
+    fn mdh_gte(out: *mut u32);
+    fn mdh_gpu_busy() -> c_int;
     fn mdh_step_hook(cb: Option<HookFn>, user: *mut c_void);
     fn mdh_write_watch(address: u32, length: u32, cb: HookFn, user: *mut c_void);
     fn mdh_save_state(path: *const c_char) -> c_int;
@@ -235,6 +238,20 @@ pub fn regs() -> Regs {
     // SAFETY: the emulator is open (only called while a `Mednafen` exists).
     unsafe { mdh_regs(&mut r) };
     r
+}
+
+/// The GTE's data registers (0-31) then control registers (32-63).
+pub fn gte() -> [u32; 64] {
+    let mut r = [0; 64];
+    // SAFETY: the emulator is open; `r` holds 64 words.
+    unsafe { mdh_gte(r.as_mut_ptr()) };
+    r
+}
+
+/// The GPU has queued commands, owes drawing time, or is between a quad's halves.
+pub fn gpu_busy() -> bool {
+    // SAFETY: plain reads of the GPU's state.
+    unsafe { mdh_gpu_busy() != 0 }
 }
 
 /// A side-effect-free read of the CPU's logical address space.

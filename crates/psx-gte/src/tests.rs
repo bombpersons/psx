@@ -81,7 +81,10 @@ fn data_sign_and_zero_extension() {
     assert_eq!(g.read_data(17), 0x8001);
     g.write_data(0, 0x8000_7FFF);
     assert_eq!(g.read_data(0), 0x8000_7FFF);
-    g.write_data(31, 5); // LZCR is read-only
+    assert_eq!(g.read_data(31), 0); // LZCR is 0 at power-on (Mednafen)
+    g.write_data(31, 5); // and read-only
+    assert_eq!(g.read_data(31), 0);
+    g.write_data(30, 0);
     assert_eq!(g.read_data(31), 32);
 }
 

@@ -78,7 +78,7 @@ enum Command {
         /// Instructions of history shown at a divergence.
         #[arg(long, default_value_t = 12)]
         context: usize,
-        /// Write the core's screen and VRAM as <PREFIX>.screen.png / .vram.png at the end.
+        /// At the end, write both sides' memory as <PREFIX>.{core,mednafen}.{ram,scratchpad,vram,spu_ram}.bin, and the core's screen and VRAM as PNGs.
         #[arg(long)]
         dump: Option<PathBuf>,
     },

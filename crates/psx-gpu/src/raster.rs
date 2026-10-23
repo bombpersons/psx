@@ -7,10 +7,11 @@
 //! modulation `texel * color / 128`, 4×4 ordered dither, 15-bit output, the
 //! four semi-transparency equations and mask bits (psx-spx "GPU").
 //!
-//! Triangle interpolation and line stepping reproduce pixel values captured on
-//! real consoles (PCSX-Redux's MIT hardware suites, checked in
-//! `tests/hardware.rs`) and match Redux's software GPU on gouraud and textured
-//! output; research/native-core.md "GPU accuracy" lists the known differences.
+//! Triangles are Mednafen's (`crates/psx-oracle/mednafen/src/psx/gpu_polygon.cpp`),
+//! which psx takes as its reference; `tests/hardware.rs` checks them against
+//! pixel values captured on real consoles (PCSX-Redux's MIT hardware suites).
+//! Line stepping follows those suites; research/native-core.md "GPU accuracy"
+//! lists the known differences.
 
 pub const DITHER: [[i32; 4]; 4] = [[-4, 0, -3, 1], [2, -2, 3, -1], [-3, 1, -4, 0], [3, -1, 2, -2]];
 
@@ -139,8 +140,8 @@ pub fn plot<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
 /// Per-primitive constants of the pixel loop.
 #[derive(Clone, Copy)]
 struct Pipe {
-    /// Per-pixel change of r, g, b, u, v (16.16).
-    grad: [i32; 5],
+    /// Per-pixel change of r, g, b, u, v (8.24, wrapping).
+    grad: [u32; 5],
     /// Colour of flat-shaded primitives.
     flat: [i32; 3],
     blend: u8,
@@ -165,7 +166,7 @@ macro_rules! consts {
 }
 
 /// Shade and write pixels `x0..=x1` of row `y`, which the caller has already
-/// clipped. `s` holds r, g, b, u, v (16.16, rounding bias included) at `x0`;
+/// clipped. `s` holds r, g, b, u, v (8.24, rounding bias included) at `x0`;
 /// each advances by `p.grad` per pixel. The per-pixel arithmetic is [`plot`]'s,
 /// with the flags as constants so each primitive kind gets its own loop.
 #[inline(always)]
@@ -186,7 +187,7 @@ fn span<
     y: i32,
     x0: i32,
     x1: i32,
-    mut s: [i32; 5],
+    mut s: [u32; 5],
 ) {
     let drow = DITHER[(y & 3) as usize];
     // Half-open (x1 is a clipped surface coordinate): an inclusive range costs
@@ -198,12 +199,12 @@ fn span<
                 break 'px;
             }
             let d = if DITHERED { drow[(x & 3) as usize] } else { 0 };
-            let rgb = if GOURAUD { [s[0] >> 16, s[1] >> 16, s[2] >> 16] } else { p.flat };
+            let rgb = if GOURAUD { [s[0] >> 24, s[1] >> 24, s[2] >> 24].map(|c| c as i32) } else { p.flat };
             let mut mask_bit = 0u16;
             let mut semi = SEMI;
             let (cr, cg, cb);
             if TEX {
-                let t = tex.texel(surface, s[3] >> 16, s[4] >> 16);
+                let t = tex.texel(surface, (s[3] >> 24) as i32, (s[4] >> 24) as i32);
                 if t == 0 {
                     break 'px;
                 }
@@ -249,141 +250,205 @@ fn span<
     }
 }
 
-/// One edge of a triangle, walked top to bottom in 16.16 fixed point.
-#[derive(Clone, Copy)]
-struct Edge {
-    top: i32,
-    height: i32,
-    x: i64,
-    dx: i64,
-    /// Attributes r, g, b, u, v at the top vertex and their change along the edge, 16.16.
-    a: [i64; 5],
-    da: [i64; 5],
+fn sext11(v: i32) -> i32 {
+    (v << 21) >> 21
 }
 
-impl Edge {
-    fn new(p: &Vtx, q: &Vtx) -> Self {
-        let at = |v: &Vtx| [v.r, v.g, v.b, v.u, v.v].map(|c| (c as i64) << 16);
-        let (ap, aq) = (at(p), at(q));
-        Edge {
-            top: p.y,
-            height: q.y - p.y,
-            x: (p.x as i64) << 16,
-            dx: ((q.x - p.x) as i64) << 16,
-            a: ap,
-            da: std::array::from_fn(|k| aq[k] - ap[k]),
-        }
-    }
+/// A triangle after Mednafen's setup (`gpu_polygon.cpp`): attributes r, g,
+/// b, u, v are planes in 8.24 fixed point (`value >> 24`), anchored at a
+/// "core" vertex and stepped per pixel in x and per row in y; edges are 32.32.
+pub(crate) struct Tri {
+    /// Per-pixel and per-row change of r, g, b, u, v.
+    pub(crate) dx: [u32; 5],
+    dy: [u32; 5],
+    /// The attributes at (0, 0), with the rounding bias of half a step.
+    base: [u32; 5],
+    /// Upper and lower parts, in drawing order.
+    parts: [Part; 2],
 }
 
-/// `base + d * row / h` (truncating division, `h > 0`) for consecutive rows,
-/// kept as an exact quotient and remainder so each row is an add instead of a
-/// division.
 #[derive(Clone, Copy, Default)]
-struct Steps {
-    base: i64,
-    q: i64,
-    r: i64,
-    dq: i64,
-    dr: i64,
-    h: i64,
-    neg: bool,
+struct Part {
+    y: i32,
+    y_bound: i32,
+    /// Left and right edge X, and their change per row.
+    x: [i64; 2],
+    step: [i64; 2],
+    /// Walk upwards from `y` to `y_bound`.
+    up: bool,
 }
 
-impl Steps {
-    fn new(base: i64, d: i64, h: i64, row: i64) -> Self {
-        // Truncation is symmetric about zero: d * row / h = sign(d) * (|d| * row / h).
-        let n = d.abs();
-        let (q, r) = if row == 0 { (0, 0) } else { (n * row / h, n * row % h) };
-        Steps { base, q, r, dq: n / h, dr: n % h, h, neg: d < 0 }
-    }
-
-    #[inline(always)]
-    fn value(&self) -> i64 {
-        if self.neg { self.base - self.q } else { self.base + self.q }
-    }
-
-    #[inline(always)]
-    fn step(&mut self) {
-        self.q += self.dq;
-        self.r += self.dr;
-        if self.r >= self.h {
-            self.r -= self.h;
-            self.q += 1;
-        }
-    }
+/// An edge's starting X: just under the next integer, so `>> 32` rounds
+/// (x + 1 - 2^-21) down and pixel centres follow the top-left rule.
+fn xfp(x: i32) -> i64 {
+    ((x as i64) << 32) + (1i64 << 32) - (1 << 11)
 }
 
-/// An edge's X and attributes at the current row. Colours divide per row like
-/// X; texture coordinates step by the per-row increment truncated once, so
-/// they lag slightly on long edges.
-#[derive(Clone, Copy)]
-struct Walk {
-    x: Steps,
-    colour: [Steps; 3],
-    uv: [i64; 2],
-    duv: [i64; 2],
+/// X change per row, 32.32, rounded away from zero.
+fn xfp_step(dx: i32, dy: i32) -> i64 {
+    let mut e = (dx as i64) << 32;
+    if e < 0 {
+        e -= (dy - 1) as i64;
+    }
+    if e > 0 {
+        e += (dy - 1) as i64;
+    }
+    e / dy as i64
 }
 
-impl Walk {
-    /// Start `e` at row `y`, with colours when `colour` and UVs when `uv`.
-    fn new(e: &Edge, y: i32, colour: bool, uv: bool) -> Self {
-        let (h, row) = (e.height as i64, (y - e.top) as i64);
-        let mut w = Walk { x: Steps::new(e.x, e.dx, h, row), colour: [Steps::default(); 3], uv: [0; 2], duv: [0; 2] };
-        if colour {
-            w.colour = std::array::from_fn(|k| Steps::new(e.a[k], e.da[k], h, row));
+impl Tri {
+    /// Setup, or `None` when nothing is drawn: zero height or area, or wider
+    /// than 1023 or taller than 511 pixels. Only colours (`gouraud`) and
+    /// texture coordinates (`textured`) that vary get gradients.
+    pub(crate) fn new(v: [Vtx; 3], gouraud: bool, textured: bool) -> Option<Tri> {
+        let mut v = v;
+        // The core vertex, chosen on the unsorted vertices, and followed
+        // through the sort by y.
+        let mut cv: u32 = if v[1].x <= v[0].x {
+            if v[2].x <= v[1].x { 4 } else { 2 }
+        } else if v[2].x < v[0].x {
+            4
+        } else {
+            1
+        };
+        let swap12 = |cv: u32| ((cv >> 1) & 2) | ((cv << 1) & 4) | (cv & 1);
+        let swap01 = |cv: u32| ((cv >> 1) & 1) | ((cv << 1) & 2) | (cv & 4);
+        if v[2].y < v[1].y {
+            v.swap(2, 1);
+            cv = swap12(cv);
         }
-        if uv {
-            w.duv = [e.da[3] / h, e.da[4] / h];
-            w.uv = [e.a[3] + row * w.duv[0], e.a[4] + row * w.duv[1]];
+        if v[1].y < v[0].y {
+            v.swap(1, 0);
+            cv = swap01(cv);
         }
-        w
+        if v[2].y < v[1].y {
+            v.swap(2, 1);
+            cv = swap12(cv);
+        }
+        let core = (cv >> 1) as usize;
+        let [a, b, c] = v;
+        if a.y == c.y || c.y - a.y >= 512 {
+            return None;
+        }
+        if (c.x - a.x).abs() >= 1024 || (c.x - b.x).abs() >= 1024 || (b.x - a.x).abs() >= 1024 {
+            return None;
+        }
+        let at = |v: &Vtx, k: usize| [v.r, v.g, v.b, v.u, v.v][k];
+        let denom = (b.x - a.x).wrapping_mul(c.y - b.y).wrapping_sub((c.x - b.x).wrapping_mul(b.y - a.y));
+        if denom == 0 {
+            return None;
+        }
+        let mut t = Tri { dx: [0; 5], dy: [0; 5], base: [0; 5], parts: [Part::default(); 2] };
+        let grad = |n: i32| (n.wrapping_mul(1 << 12).wrapping_div(denom) as u32) << 12;
+        for k in 0..5 {
+            if (k < 3 && gouraud) || (k >= 3 && textured) {
+                let (pa, pb, pc) = (at(&a, k), at(&b, k), at(&c, k));
+                t.dx[k] = grad((pb - pa).wrapping_mul(c.y - b.y).wrapping_sub((pc - pb).wrapping_mul(b.y - a.y)));
+                t.dy[k] = grad((b.x - a.x).wrapping_mul(pc - pb).wrapping_sub((c.x - b.x).wrapping_mul(pb - pa)));
+            }
+            let cvx = &v[core];
+            t.base[k] = (((at(cvx, k) as u32) << 12) + (1 << 11)) << 12;
+            t.base[k] = t.base[k]
+                .wrapping_add(t.dx[k].wrapping_mul(cvx.x.wrapping_neg() as u32))
+                .wrapping_add(t.dy[k].wrapping_mul(cvx.y.wrapping_neg() as u32));
+        }
+        let base_x = xfp(a.x);
+        let base_step = xfp_step(c.x - a.x, c.y - a.y);
+        let (upper_step, right) = if b.y == a.y {
+            (0, b.x > a.x)
+        } else {
+            let s = xfp_step(b.x - a.x, b.y - a.y);
+            (s, s > base_step)
+        };
+        let lower_step = if c.y == b.y { 0 } else { xfp_step(c.x - b.x, c.y - b.y) };
+        // The core vertex picks the order: a part that starts at it is walked
+        // away from it (upwards when it is below).
+        let vo = (core != 0) as usize;
+        let vp = if core == 2 { 3 } else { 0 };
+        let r = right as usize;
+        let long_at = |y: i32| base_x.wrapping_add(((y - a.y) as i64).wrapping_mul(base_step));
+        let mut p = Part { y: v[vo].y, y_bound: v[1 ^ vo].y, up: vo != 0, ..Default::default() };
+        p.x[r] = xfp(v[vo].x);
+        p.step[r] = upper_step;
+        p.x[1 - r] = long_at(v[vo].y);
+        p.step[1 - r] = base_step;
+        t.parts[vo] = p;
+        let mut p = Part { y: v[1 ^ vp].y, y_bound: v[2 ^ vp].y, up: vp != 0, ..Default::default() };
+        p.x[r] = xfp(v[1 ^ vp].x);
+        p.step[r] = lower_step;
+        p.x[1 - r] = long_at(v[1 ^ vp].y);
+        p.step[1 - r] = base_step;
+        t.parts[vo ^ 1] = p;
+        Some(t)
     }
 
-    #[inline(always)]
-    fn step(&mut self, colour: bool, uv: bool) {
-        self.x.step();
-        if colour {
-            for c in &mut self.colour {
-                c.step();
+    /// Calls `f(y, x0, x1, attrs)` for each row's pixels `x0..=x1` inside the
+    /// clip rectangle, with the attributes at `x0`, in Mednafen's order.
+    pub(crate) fn rows(&self, ras: &Raster, mut f: impl FnMut(i32, i32, i32, [u32; 5])) {
+        let (cx0, cy0, cx1, cy1) = ras.clip;
+        let mut span = |yi: i32, l: i64, r: i64| {
+            let (x_start, x_bound) = ((l >> 32) as i32, (r >> 32) as i32);
+            let (mut adjust, mut w, mut x) = (x_start, x_bound - x_start, sext11(x_start));
+            if x < cx0 {
+                let d = cx0 - x;
+                adjust += d;
+                x += d;
+                w -= d;
+            }
+            if x + w > cx1 + 1 {
+                w = cx1 + 1 - x;
+            }
+            if w <= 0 {
+                return;
+            }
+            let s = std::array::from_fn(|k| {
+                self.base[k]
+                    .wrapping_add(self.dx[k].wrapping_mul(adjust as u32))
+                    .wrapping_add(self.dy[k].wrapping_mul(yi as u32))
+            });
+            f(sext11(yi), x, x + w - 1, s);
+        };
+        for p in &self.parts {
+            let (mut yi, mut l, mut r) = (p.y, p.x[0], p.x[1]);
+            if p.up {
+                while yi > p.y_bound {
+                    yi -= 1;
+                    l = l.wrapping_sub(p.step[0]);
+                    r = r.wrapping_sub(p.step[1]);
+                    let y = sext11(yi);
+                    if y < cy0 {
+                        break;
+                    }
+                    if y <= cy1 {
+                        span(yi, l, r);
+                    }
+                }
+            } else {
+                while yi < p.y_bound {
+                    let y = sext11(yi);
+                    if y > cy1 {
+                        break;
+                    }
+                    if y >= cy0 {
+                        span(yi, l, r);
+                    }
+                    yi += 1;
+                    l = l.wrapping_add(p.step[0]);
+                    r = r.wrapping_add(p.step[1]);
+                }
             }
         }
-        if uv {
-            self.uv[0] += self.duv[0];
-            self.uv[1] += self.duv[1];
-        }
-    }
-
-    #[inline(always)]
-    fn attr(&self, k: usize) -> i64 {
-        if k < 3 { self.colour[k].value() } else { self.uv[k - 3] }
     }
 }
 
-/// A triangle after setup: sorted vertices, edges and horizontal gradients.
-struct Setup {
-    a: Vtx,
-    b: Vtx,
-    c: Vtx,
-    /// The span through `b` is negative: `b` is on the right, the long edge on the left.
-    b_right: bool,
-    grad: [i64; 5],
-}
-
-/// Triangle scan conversion with PCSX-Redux's fixed-point rules (its software
-/// GPU is the reference this crate is diffed against; see
-/// research/native-core.md "GPU accuracy"):
-///
-/// - vertices are sorted by y; rows `top..bottom` are drawn (bottom excluded),
-///   and on each row the pixels `ceil(left) ..= ceil(right) - 1` (left edge
-///   included, right excluded);
-/// - edge X and colours are evaluated per row in 16.16 with one truncating
-///   division; texture coordinates advance by a truncated per-row step;
-/// - horizontal gradients are a single 16.16 value per attribute, derived from
-///   the span through the middle vertex (its width clamped to at least 1/16
-///   pixel), truncated toward zero;
-/// - each row starts from the left-edge value moved to the first pixel centre
-///   plus a half (round to nearest), and adds the gradient per pixel.
+/// Triangle scan conversion as Mednafen does it (`gpu_polygon.cpp`), which
+/// psx takes as the reference: see [`Tri`]. Rows run between the edges'
+/// rounded X (left included, right excluded), from the top vertex down,
+/// except that a triangle whose core vertex is the middle or bottom one draws
+/// some rows bottom-up; that only matters when it reads texels it writes.
+/// Vertices include the drawing offset and are not wrapped: each row's X and
+/// Y wrap to 11 bits signed, so a triangle that crosses x=1023 runs off the
+/// drawing area instead of splitting.
 ///
 /// Every pixel is shaded as [`plot`] would; the loop is specialised per
 /// primitive kind (texture, modulation, blending, mask test, shading, dither).
@@ -394,66 +459,25 @@ pub fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     sh: &Shade,
     v: [Vtx; 3],
 ) {
-    // Sort by y with the same compare-and-swap sequence as the reference, so
-    // ties pick the same middle vertex.
-    let [mut a, mut b, mut c] = v;
-    if a.y > b.y {
-        std::mem::swap(&mut a, &mut b);
-    }
-    if a.y > c.y {
-        std::mem::swap(&mut a, &mut c);
-    }
-    if b.y > c.y {
-        std::mem::swap(&mut b, &mut c);
-    }
-    let height = c.y - a.y;
-    if height == 0 {
-        return;
-    }
-    // Fraction (16.16) of the long edge a→c above b, and the signed width of
-    // the span through b: long edge X minus b's X. Negative means b is on the
-    // right, so the right side has two sections.
-    let t = (((b.y - a.y) as i64) << 16) / height as i64;
-    let mut width = t * (c.x - a.x) as i64 + (((a.x - b.x) as i64) << 16);
-    if width == 0 {
-        return;
-    }
-    let n_attrs = if sh.textured {
-        5
-    } else if sh.gouraud {
-        3
-    } else {
-        0
-    };
-    if n_attrs > 0 {
-        width = if width < 0 { width.min(-0x1000) } else { width.max(0x1000) };
-    }
-    let attr = |v: &Vtx, k: usize| [v.r, v.g, v.b, v.u, v.v][k] as i64;
-    let mut grad = [0i64; 5];
-    for (k, g) in grad.iter_mut().enumerate().take(n_attrs) {
-        // Attribute span width through b (scaled by 2^22), over the X span width (2^16), as 16.16.
-        let span = (t * ((attr(&c, k) - attr(&a, k)) << 6) + ((attr(&a, k) - attr(&b, k)) << 22)) as i32 as i64;
-        *g = ((span << 10) / width) as i32 as i64;
-    }
-    let setup = Setup { a, b, c, b_right: width < 0, grad };
+    let Some(tri) = Tri::new(v, sh.gouraud, sh.textured) else { return };
     let p = Pipe {
-        grad: grad.map(|g| g as i32),
+        grad: tri.dx,
         flat: [v[0].r, v[0].g, v[0].b],
         blend: sh.blend,
         set: if ras.set_mask { 0x8000 } else { 0 },
     };
     let mask = ras.check_mask;
     if !sh.textured {
-        consts!(rows [S, NoTexture] [false, false,] [sh.semi, mask, sh.gouraud, sh.dither] [] (surface, &NoTexture, ras, &p, &setup));
+        consts!(rows [S, NoTexture] [false, false,] [sh.semi, mask, sh.gouraud, sh.dither] [] (surface, &NoTexture, ras, &p, &tri));
     } else if sh.raw {
         // Raw texels ignore the colour, so neither shading nor dither matter.
-        consts!(rows [S, T] [true, true,] [sh.semi, mask] [false, false] (surface, tex, ras, &p, &setup));
+        consts!(rows [S, T] [true, true,] [sh.semi, mask] [false, false] (surface, tex, ras, &p, &tri));
     } else {
-        consts!(rows [S, T] [true, false,] [sh.semi, mask, sh.gouraud, sh.dither] [] (surface, tex, ras, &p, &setup));
+        consts!(rows [S, T] [true, false,] [sh.semi, mask, sh.gouraud, sh.dither] [] (surface, tex, ras, &p, &tri));
     }
 }
 
-/// The row walk of [`triangle`] for one primitive kind.
+/// The rows of [`triangle`] for one primitive kind.
 fn rows<
     S: Surface + ?Sized,
     T: TexelSource<S> + ?Sized,
@@ -468,56 +492,9 @@ fn rows<
     tex: &T,
     ras: &Raster,
     p: &Pipe,
-    st: &Setup,
+    tri: &Tri,
 ) {
-    let (a, b, c) = (&st.a, &st.b, &st.c);
-    let y_start = a.y.max(ras.clip.1);
-    let y_end = (c.y - 1).min(ras.clip.3);
-    if y_start > y_end {
-        return;
-    }
-    // Only the left edge's attributes seed the rows.
-    let (colour, uv) = (GOURAUD, TEX);
-    let long_attrs = (st.b_right && colour, st.b_right && uv);
-    let mut long = Walk::new(&Edge::new(a, c), y_start, long_attrs.0, long_attrs.1);
-    let mut row = |y: i32, long: &Walk, short: &Walk| {
-        let (left, right) = if st.b_right { (long, short) } else { (short, long) };
-        let lx = left.x.value();
-        let xmin = ((lx + 0xFFFF) >> 16) as i32;
-        let xmax = (((right.x.value() - 1) >> 16) as i32).min(ras.clip.2);
-        if xmax < xmin {
-            return;
-        }
-        // Seed at the first pixel, then skip any left-clipped pixels.
-        let x0 = xmin.max(ras.clip.0);
-        let mut s = [0i32; 5];
-        for (k, (sk, &g)) in s.iter_mut().zip(&st.grad).enumerate() {
-            if (k < 3 && colour) || (k >= 3 && uv) {
-                let sub = ((((xmin as i64) << 16) - lx) * g) >> 16;
-                *sk = ((left.attr(k) + sub) as i32 + 0x8000).wrapping_add((x0 - xmin).wrapping_mul(g as i32));
-            }
-        }
-        span::<S, T, TEX, RAW, SEMI, MASK, GOURAUD, DITHERED>(surface, tex, p, y, x0, xmax, s);
-    };
-    // Upper section (rows above b), then the lower one; the long edge runs through both.
-    let short_attrs = (!st.b_right && colour, !st.b_right && uv);
-    if y_start < b.y {
-        let mut short = Walk::new(&Edge::new(a, b), y_start, short_attrs.0, short_attrs.1);
-        for y in y_start..=y_end.min(b.y - 1) {
-            row(y, &long, &short);
-            long.step(long_attrs.0, long_attrs.1);
-            short.step(short_attrs.0, short_attrs.1);
-        }
-    }
-    let y_lower = y_start.max(b.y);
-    if y_lower <= y_end {
-        let mut short = Walk::new(&Edge::new(b, c), y_lower, short_attrs.0, short_attrs.1);
-        for y in y_lower..=y_end {
-            row(y, &long, &short);
-            long.step(long_attrs.0, long_attrs.1);
-            short.step(short_attrs.0, short_attrs.1);
-        }
-    }
+    tri.rows(ras, |y, x0, x1, s| span::<S, T, TEX, RAW, SEMI, MASK, GOURAUD, DITHERED>(surface, tex, p, y, x0, x1, s));
 }
 
 /// Quad as the hardware draws it: (v0,v1,v2) then (v1,v2,v3).
@@ -598,10 +575,10 @@ pub fn rect<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     if x0 > x1 || y0 > y1 {
         return;
     }
-    // U as 16.16 so the triangle pixel loop can walk it; V is fixed per row.
-    let du = if flip.0 { -1 } else { 1 };
+    // U as 8.24 so the triangle pixel loop can walk it; V is fixed per row.
+    let du: u32 = if flip.0 { 0xFF00_0000 } else { 1 << 24 };
     let p = Pipe {
-        grad: [0, 0, 0, du << 16, 0],
+        grad: [0, 0, 0, du, 0],
         flat: [origin.r, origin.g, origin.b],
         blend: sh.blend,
         set: if r.set_mask { 0x8000 } else { 0 },
@@ -636,7 +613,7 @@ fn rect_rows<
     for y in y0..=y1 {
         let row = y - origin.y;
         let v = if flip.1 { origin.v - row } else { origin.v + row };
-        span::<S, T, TEX, RAW, SEMI, MASK, false, false>(surface, tex, p, y, x0, x1, [0, 0, 0, u << 16, v << 16]);
+        span::<S, T, TEX, RAW, SEMI, MASK, false, false>(surface, tex, p, y, x0, x1, [0, 0, 0, (u as u32) << 24, (v as u32) << 24]);
     }
 }
 
@@ -646,44 +623,6 @@ fn rect_rows<
 pub(crate) mod reference {
     use super::*;
 
-    /// One edge of a triangle, walked top to bottom in 16.16 fixed point.
-    #[derive(Clone, Copy)]
-    struct Edge {
-        top: i32,
-        height: i32,
-        x: i64,
-        dx: i64,
-        a: [i64; 5],
-        da: [i64; 5],
-    }
-
-    impl Edge {
-        fn new(p: &Vtx, q: &Vtx) -> Self {
-            let at = |v: &Vtx| [v.r, v.g, v.b, v.u, v.v].map(|c| (c as i64) << 16);
-            let (ap, aq) = (at(p), at(q));
-            Edge {
-                top: p.y,
-                height: q.y - p.y,
-                x: (p.x as i64) << 16,
-                dx: ((q.x - p.x) as i64) << 16,
-                a: ap,
-                da: std::array::from_fn(|k| aq[k] - ap[k]),
-            }
-        }
-
-        fn x_at(&self, y: i32) -> i64 {
-            self.x + self.dx * (y - self.top) as i64 / self.height as i64
-        }
-
-        fn attr_at(&self, k: usize, y: i32) -> i64 {
-            let row = (y - self.top) as i64;
-            if k < 3 {
-                self.a[k] + self.da[k] * row / self.height as i64
-            } else {
-                self.a[k] + row * (self.da[k] / self.height as i64)
-            }
-        }
-    }
     pub(crate) fn triangle<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
         surface: &mut S,
         tex: &T,
@@ -691,80 +630,17 @@ pub(crate) mod reference {
         sh: &Shade,
         v: [Vtx; 3],
     ) {
-        // Sort by y with the same compare-and-swap sequence as the reference, so
-        // ties pick the same middle vertex.
-        let [mut a, mut b, mut c] = v;
-        if a.y > b.y {
-            std::mem::swap(&mut a, &mut b);
-        }
-        if a.y > c.y {
-            std::mem::swap(&mut a, &mut c);
-        }
-        if b.y > c.y {
-            std::mem::swap(&mut b, &mut c);
-        }
-        let height = c.y - a.y;
-        if height == 0 {
-            return;
-        }
-        // Fraction (16.16) of the long edge a→c above b, and the signed width of
-        // the span through b: long edge X minus b's X. Negative means b is on the
-        // right, so the right side has two sections.
-        let t = (((b.y - a.y) as i64) << 16) / height as i64;
-        let mut width = t * (c.x - a.x) as i64 + (((a.x - b.x) as i64) << 16);
-        if width == 0 {
-            return;
-        }
-        let n_attrs = if sh.textured {
-            5
-        } else if sh.gouraud {
-            3
-        } else {
-            0
-        };
-        if n_attrs > 0 {
-            width = if width < 0 { width.min(-0x1000) } else { width.max(0x1000) };
-        }
-        let attr = |v: &Vtx, k: usize| [v.r, v.g, v.b, v.u, v.v][k] as i64;
-        let mut grad = [0i64; 5];
-        for (k, g) in grad.iter_mut().enumerate().take(n_attrs) {
-            // Attribute span width through b (scaled by 2^22), over the X span width (2^16), as 16.16.
-            let span = (t * ((attr(&c, k) - attr(&a, k)) << 6) + ((attr(&a, k) - attr(&b, k)) << 22)) as i32 as i64;
-            *g = ((span << 10) / width) as i32 as i64;
-        }
-        let long = Edge::new(&a, &c);
-        let upper = Edge::new(&a, &b);
-        let lower = Edge::new(&b, &c);
-        let b_right = width < 0;
-        let y_end = (c.y - 1).min(ras.clip.3);
-        for y in a.y.max(ras.clip.1)..=y_end {
-            let short = if y < b.y { &upper } else { &lower };
-            let (left, right) = if b_right { (&long, short) } else { (short, &long) };
-            let lx = left.x_at(y);
-            let xmin = ((lx + 0xFFFF) >> 16) as i32;
-            let xmax = (((right.x_at(y) - 1) >> 16) as i32).min(ras.clip.2);
-            if xmax < xmin {
-                continue;
-            }
-            // Seed at the first pixel, then skip any left-clipped pixels.
-            let mut s = [0i32; 5];
-            for k in 0..n_attrs {
-                let sub = ((((xmin as i64) << 16) - lx) * grad[k]) >> 16;
-                s[k] = (left.attr_at(k, y) + sub) as i32 + 0x8000;
-            }
-            let x0 = xmin.max(ras.clip.0);
-            for k in 0..n_attrs {
-                s[k] = s[k].wrapping_add((x0 - xmin).wrapping_mul(grad[k] as i32));
-            }
-            for x in x0..=xmax {
-                let rgb = if sh.gouraud { [s[0] >> 16, s[1] >> 16, s[2] >> 16] } else { [v[0].r, v[0].g, v[0].b] };
-                let uv = sh.textured.then(|| (s[3] >> 16, s[4] >> 16));
+        let Some(tri) = Tri::new(v, sh.gouraud, sh.textured) else { return };
+        tri.rows(ras, |y, x0, x1, mut s| {
+            for x in x0..=x1 {
+                let rgb = if sh.gouraud { [s[0], s[1], s[2]].map(|c| (c >> 24) as i32) } else { [v[0].r, v[0].g, v[0].b] };
+                let uv = sh.textured.then(|| ((s[3] >> 24) as i32, (s[4] >> 24) as i32));
                 plot(surface, tex, ras, sh, x, y, rgb, uv);
-                for k in 0..n_attrs {
-                    s[k] = s[k].wrapping_add(grad[k] as i32);
+                for (c, d) in s.iter_mut().zip(tri.dx) {
+                    *c = c.wrapping_add(d);
                 }
             }
-        }
+        });
     }
 
     #[allow(clippy::too_many_arguments)]

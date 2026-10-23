@@ -493,10 +493,12 @@ else links it. Run it from the project root:
   `vram.png` for `psx ram-diff` / `psx vram-diff` against a native run with the same BIOS and replay.
   Frames are vblanks, as in `psx run`. The console region is the BIOS's. A `.chd` is unpacked once to
   CUE/BIN under `.psx/cache/discs/`. Without media it boots the BIOS with an empty drive.
-- `cargo run --release -p psx-oracle -- lockstep --bios B [--steps N]` runs the native core and Mednafen
-  side by side from BIOS reset, comparing PC, the instruction, every register and the delayed load
-  before each instruction, and stops at the first divergence. The two models' timing differs, so I/O
-  load values and the interrupt line are taken from Mednafen and counted.
+- `cargo run --release -p psx-oracle -- lockstep --bios B [--steps N] [--dump PREFIX]` runs the native
+  core and Mednafen side by side from BIOS reset. Before each instruction it compares PC, the
+  instruction, every register, the delayed load, COP0 and (after GTE instructions) the GTE, and it
+  stops at the first divergence. The two models' timing differs, so I/O load values and the interrupt
+  line are taken from Mednafen and counted. RAM, the scratchpad, VRAM and SPU RAM are compared at every
+  vblank and reported without stopping; `--dump` writes both sides' memory at the end.
 - `tools/probes/gpu/compare.sh PSX PSX_ORACLE OUT_DIR` diffs `psx-gpu` against Mednafen on the GPU probe.
 
 The native core's timing is not Mednafen's yet: it charges flat CPU costs (2 cycles an instruction, 22

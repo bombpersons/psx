@@ -89,13 +89,26 @@ re-derived from those values and from the arithmetic Redux documents; no Redux c
 | phase-23 O1-O3 | vertex + offset wraps to 11 bits after the add | O3 off-screen | match |
 | phase-23 R1-R3, phase-10 LG | rect width `& 3FFh`; gouraud line midpoint | match | match |
 
-**Triangle rules now in `raster::triangle`.** Vertices are sorted by y. Rows run from the top vertex down to,
-not including, the bottom one. Each row covers pixels `ceil(left) ..= ceil(right) - 1`. Edge X and edge colours
-are evaluated per row in 16.16, with one truncating division. Texture coordinates instead advance by a per-row
-step that is truncated once. There is one horizontal gradient per attribute, taken from the span through the
-middle vertex: its width is clamped to at least 1/16 pixel and the quotient is truncated toward zero. Each span
-starts from the left-edge value moved to the first pixel, **plus one half** (round to nearest), then adds the
-gradient per pixel. That half is the BIOS-logo green step.
+**Triangle rules now in `raster::triangle` (Mednafen's, 2026-10-23).** The edge walk described here was replaced
+by a port of Mednafen's `gpu_polygon.cpp` when Mednafen became the reference (see "Mednafen lockstep" below). Each
+attribute is a plane in 8.24 fixed point, anchored at a "core" vertex chosen from the unsorted vertices. Its
+per-pixel and per-row gradients are `cross * 4096 / area << 12`, and each pixel's value comes from adding them
+(`value >> 24`). Edges are 32.32, starting just under the next integer, with steps rounded away from zero. Rows run
+between the rounded edges, left included and right excluded. A triangle wider than 1023 or taller than 511 pixels
+is dropped; this is checked per triangle, so one half of a quad can still be drawn. The drawing offset is added
+without wrapping, and each row's X and Y wrap to 11 bits signed. All 104 silicon pixels and the row scans in
+`tests/hardware.rs` still match. The edge walk it replaced matched them too; it differed from Mednafen by ±1 in
+gouraud gradients, for example 1,813 pixels of the SCPH-1001 shell background.
+
+**Mednafen lockstep.** `psx-oracle lockstep` compares the CPU registers (with COP0 and the GTE) before every
+instruction, and RAM, the scratchpad, VRAM and SPU RAM at every vblank. On SCPH-1001 over 300M instructions (1,174
+frames), only two kinds of difference remain, and both come from timing:
+- **VRAM, 480-line interlace.** Mednafen doesn't draw the lines of the field being displayed unless draw-to-display
+  is set (`LineSkipTest`). The native GPU has no field state yet. The fix comes with the GPU timing.
+- **SPU RAM, the voice 1 and 3 capture buffers.** They follow the sample clock.
+
+Three things were ported along the way: the reset SR (BEV|TS), LZCR (a register that is 0 at power-on), and the
+triangle rules above.
 
 **Probe EXE.** `tools/probes/gpu` (PSYQo) sends a fixed GP0 stream: 468 commands from `gen_stream.py`, the same
 words in `gp0_stream.bin`. It draws 24 test cells of 128×128 (`gen_stream.py --list`), covering gouraud and

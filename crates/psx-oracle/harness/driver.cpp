@@ -9,6 +9,8 @@
 #include <mednafen/video.h>
 #include <mednafen/NativeVFS.h>
 #include <mednafen/psx/psx.h>
+#include <mednafen/psx/gte.h>
+#include <mednafen/psx/gpu.h>
 
 #include <cstdio>
 #include <cstring>
@@ -77,7 +79,7 @@ struct mdh_frame
 struct mdh_regs
 {
  uint32_t gpr[32];
- uint32_t hi, lo, pc, sr, cause, epc;
+ uint32_t hi, lo, pc, sr, cause, epc, badvaddr;
  // The delayed load in flight: register (32 = none) and value.
  uint32_t load_reg, load_value;
 };
@@ -231,7 +233,27 @@ void mdh_regs(struct mdh_regs* r)
  r->sr = CPU->GetRegister(PS_CPU::GSREG_SR, nullptr, 0);
  r->cause = CPU->GetRegister(PS_CPU::GSREG_CAUSE, nullptr, 0);
  r->epc = CPU->GetRegister(PS_CPU::GSREG_EPC, nullptr, 0);
+ r->badvaddr = CPU->GetRegister(PS_CPU::GSREG_BADA, nullptr, 0);
  CPU->GetPendingLoad(&r->load_reg, &r->load_value);
+}
+
+// The GTE's data registers then its control registers, as MFC2/CFC2 read them.
+void mdh_gte(uint32_t out[64])
+{
+ for(unsigned i = 0; i < 32; i++)
+ {
+  out[i] = MDFN_IEN_PSX::GTE_ReadDR(i);
+  out[32 + i] = MDFN_IEN_PSX::GTE_ReadCR(i);
+ }
+}
+
+// Whether the GPU still has work queued: commands in its FIFO, drawing time
+// owed, or the second half of a quad.
+int mdh_gpu_busy(void)
+{
+ using MDFN_IEN_PSX::GPU;
+ using MDFN_IEN_PSX::PS_GPU;
+ return GPU.BlitterFIFO.CanRead() > 0 || GPU.DrawTimeAvail < 0 || (GPU.InCmd & PS_GPU::INCMD_QUAD) != 0;
 }
 
 static void step_hook(const MDFN_IEN_PSX::pscpu_timestamp_t, uint32 pc)

@@ -147,6 +147,9 @@ pub struct Gte {
     res1: u32,
     mac: [i32; 4],
     lzcs: u32,
+    /// Set when LZCS is written; 0 at power-on, as in Mednafen.
+    #[serde(default)]
+    lzcr: u32,
     // Control registers.
     rt: [[i16; 3]; 3],
     tr: [i32; 3],
@@ -231,7 +234,7 @@ impl Gte {
             i @ 24..=27 => self.mac[i - 24] as u32,
             28 | 29 => self.orgb(),
             30 => self.lzcs,
-            _ => lzcr(self.lzcs),
+            _ => self.lzcr,
         }
     }
 
@@ -258,7 +261,10 @@ impl Gte {
                 self.ir[2] = ((value >> 5 & 0x1F) << 7) as i16;
                 self.ir[3] = ((value >> 10 & 0x1F) << 7) as i16;
             }
-            30 => self.lzcs = value,
+            30 => {
+                self.lzcs = value;
+                self.lzcr = lzcr(value);
+            }
             _ => {} // 29 ORGB and 31 LZCR are read-only.
         }
     }

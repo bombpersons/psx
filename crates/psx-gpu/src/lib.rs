@@ -485,11 +485,12 @@ impl Gpu {
             blend: ((self.state.texpage >> 5) & 3) as u8,
             dither: self.state.dither() && (gouraud || (textured && op & 0x01 == 0)),
         };
-        // The size check sees the coordinates before the drawing offset.
-        if too_large(&vs[..n]) {
-            return;
+        // Mednafen: the offset is added without wrapping (rows wrap to 11
+        // bits as they are drawn), and each triangle checks its own size.
+        for v in &mut vs[..n] {
+            v.x += self.state.offset.0;
+            v.y += self.state.offset.1;
         }
-        self.offset(&mut vs[..n]);
         let (r, tex) = (self.state.raster(), self.state.texture(clut));
         #[cfg(test)]
         if tests::REFERENCE.get() {
