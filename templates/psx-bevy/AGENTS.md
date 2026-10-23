@@ -13,7 +13,9 @@ the start. Read the guide for the crate you are working in:
   `VERSION` there. `vendor/` holds the template's copies of psx-media and
   psx-assets for them; don't edit it (fix upstream in psx).
 - `editor/AGENTS.md`: the editor for the engine's formats, a modern desktop
-  tool (egui) that depends on `engine/` only and grows with the port.
+  tool (egui) that depends on `engine/` only and grows with the port. Its MCP
+  server lets agents build levels with a person and test the editor; every
+  new editor feature gets tools there too.
 - `psx-bevy/AGENTS.md`: the base the engine is built on (the PS1 look,
   ticks, input, menus, testing, launcher). It is this project's copy:
   change it to suit the game, and list each change in `docs/template.md` so

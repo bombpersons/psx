@@ -20,6 +20,14 @@ ron.workspace = true
 # build (game, editor, mods) resolves the same Bevy features and shares one
 # compiled Bevy. See editor/AGENTS.md, "One Bevy build".
 bevy_egui.workspace = true
+# The editor's MCP server crates, unused by the engine itself and here for the
+# same reason: without them the editor turns on features of crates Bevy
+# shares (futures, rand, syn...) that the game doesn't, and each switch
+# rebuilds most of Bevy. Every build compiles them once.
+rmcp.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+axum.workspace = true
 
 [[example]]
 name = "sandbox"

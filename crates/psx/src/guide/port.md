@@ -81,6 +81,13 @@ lists the game's types). Grow it a format at a time, after the format has
 settled and the matching trajectory tests pass. Saving an unedited level
 reproduces the file exactly. An editor that needs game/ is a boundary bug.
 
+The editor has an MCP server (editor/src/mcp, editor/AGENTS.md "MCP"), so
+agents can build levels beside a person (over HTTP, Tools > Agents) or on
+their own (stdio, `--mcp --headless`), and test the editor itself through
+egui's input (`--features dev-mcp`). Grow it with the editor: whatever a
+person can create or change gets reading and editing tools in the same
+change, each edit one undo step, with a check in editor/tests/mcp.rs.
+
 The editor is a modern desktop application, not part of the game's look. It
 runs at the window's full resolution, is driven by mouse and keyboard, and
 uses ordinary UI (panels, menus, text fields, drag and drop; egui or Bevy UI

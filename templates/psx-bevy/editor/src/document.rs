@@ -109,6 +109,11 @@ impl History {
         true
     }
 
+    /// A drag or typing in a field is under way: the next change joins its step.
+    pub fn in_gesture(&self) -> bool {
+        self.coalescing
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

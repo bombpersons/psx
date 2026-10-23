@@ -5,8 +5,13 @@
 //! The template edits [`LevelData`] only. Grow it with the engine: when a
 //! format lands in `engine/`, the editor learns to create, open, show and save
 //! it (see `AGENTS.md`).
+//!
+//! Agents use it through its MCP server ([`mcp`]): reading and viewing tools,
+//! editing tools that work like the menus (each call one undo step), and, in
+//! developer builds, mouse and keyboard for testing the editor itself.
 pub mod document;
 mod files;
+pub mod mcp;
 mod panels;
 
 use bevy::app::AppExit;
@@ -44,6 +49,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<Layout>()
             .init_resource::<panels::ViewState>()
             .init_resource::<Dialogs>()
+            .init_resource::<Screen>()
             .add_systems(Startup, |mut commands: Commands| {
                 commands.spawn(Camera2d);
             })
@@ -55,6 +61,17 @@ impl Plugin for EditorPlugin {
 /// The message on the left of the status bar.
 #[derive(Resource, Default)]
 pub struct Status(pub String);
+
+/// Where the panels were drawn last frame and whether the person is part way
+/// through a gesture, for the MCP's answers.
+#[derive(Resource, Default)]
+struct Screen {
+    /// Frames drawn so far.
+    frames: u64,
+    panels: Vec<(&'static str, egui::Rect)>,
+    /// A widget is being dragged.
+    dragging: bool,
+}
 
 /// Which panels the View menu shows.
 #[derive(Resource)]
@@ -152,6 +169,8 @@ fn ui(
     mut view: ResMut<panels::ViewState>,
     mut dialogs: ResMut<Dialogs>,
     mut status: ResMut<Status>,
+    mut screen: ResMut<Screen>,
+    mut agents: Option<ResMut<mcp::Agents>>,
     mut exit: MessageWriter<AppExit>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?.clone();
@@ -164,25 +183,35 @@ fn ui(
         "editor".into(),
         egui::UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(ctx.viewport_rect()),
     );
-    egui::Panel::top("menu_bar").show(&mut root, |ui| {
-        egui::MenuBar::new().ui(ui, |ui| menu_bar(ui, &history, &mut layout, &mut commands));
+    let mut drawn = Vec::new();
+    let menu = egui::Panel::top("menu_bar").show(&mut root, |ui| {
+        egui::MenuBar::new().ui(ui, |ui| menu_bar(ui, &history, &mut layout, agents.as_deref_mut(), &mut commands));
     });
-    egui::Panel::bottom("status_bar").show(&mut root, |ui| status_bar(ui, &document, &status));
+    drawn.push(("menu bar", menu.response.rect));
+    let bar = egui::Panel::bottom("status_bar").show(&mut root, |ui| status_bar(ui, &document, &status));
+    drawn.push(("status bar", bar.response.rect));
     if layout.outline {
-        egui::Panel::left("outline")
+        let panel = egui::Panel::left("outline")
             .resizable(true)
             .default_size(220.0)
             .show(&mut root, |ui| panels::outline(ui, &document.level, &mut selection));
+        drawn.push(("outline", panel.response.rect));
     }
     if layout.inspector {
-        egui::Panel::right("inspector")
+        let panel = egui::Panel::right("inspector")
             .resizable(true)
             .default_size(280.0)
             .show(&mut root, |ui| panels::inspector(ui, &mut document.level, *selection));
+        drawn.push(("inspector", panel.response.rect));
     }
     egui::CentralPanel::default()
         .show(&mut root, |ui| panels::view(ui, &mut document.level, &mut selection, &mut view));
+    drawn.push(("view", view.rect));
+    *screen = Screen { frames: screen.frames + 1, panels: drawn, dragging: ctx.dragged_id().is_some() };
 
+    if let Some(agents) = agents.as_deref_mut() {
+        mcp::agents_window(&ctx, agents);
+    }
     let dialogs = &mut *dialogs;
     files::dialogs(&ctx, &mut dialogs.open, &mut dialogs.save_as, &mut commands);
     if let Some(pending) = dialogs.confirm.clone() {
@@ -203,7 +232,13 @@ fn ui(
     Ok(())
 }
 
-fn menu_bar(ui: &mut egui::Ui, history: &History, layout: &mut Layout, out: &mut Vec<Command>) {
+fn menu_bar(
+    ui: &mut egui::Ui,
+    history: &History,
+    layout: &mut Layout,
+    agents: Option<&mut mcp::Agents>,
+    out: &mut Vec<Command>,
+) {
     let item = |ui: &mut egui::Ui, label: &str, shortcut: Option<&egui::KeyboardShortcut>, enabled: bool| {
         let mut button = egui::Button::new(label);
         if let Some(shortcut) = shortcut {
@@ -257,6 +292,14 @@ fn menu_bar(ui: &mut egui::Ui, history: &History, layout: &mut Layout, out: &mut
             out.push(Command::ResetView);
         }
     });
+    if let Some(agents) = agents {
+        ui.menu_button("Tools", |ui| {
+            if ui.button("Agents…").on_hover_text("Let AI agents connect and help build the level").clicked() {
+                agents.window = true;
+            }
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| mcp::agents_indicator(ui, agents));
+    }
 }
 
 fn status_bar(ui: &mut egui::Ui, document: &Document, status: &Status) {
@@ -383,28 +426,33 @@ fn run(
     status: &mut Status,
     exit: &mut MessageWriter<AppExit>,
 ) {
-    match pending {
-        Pending::New => {
-            *document = Document::new_level();
-            status.0 = "New level".into();
-        }
-        Pending::Open(path) => match Document::open(&path) {
-            Ok(opened) => {
-                *document = opened;
-                status.0 = format!("Opened {}", path.display());
-            }
-            Err(e) => {
-                status.0 = format!("Could not open: {e}");
-                return;
-            }
-        },
+    let path = match pending {
+        Pending::New => None,
+        Pending::Open(path) => Some(path),
         Pending::Quit => {
             exit.write(AppExit::Success);
             return;
         }
-    }
+    };
+    status.0 = load(path.as_deref(), document, history, selection).unwrap_or_else(|e| format!("Could not open: {e}"));
+}
+
+/// Replaces the document with `path`, or a new level, and forgets the old
+/// one's history. Returns what the status bar should say.
+fn load(
+    path: Option<&std::path::Path>,
+    document: &mut Document,
+    history: &mut History,
+    selection: &mut Selection,
+) -> Result<String, String> {
+    let (opened, said) = match path {
+        Some(path) => (Document::open(path)?, format!("Opened {}", path.display())),
+        None => (Document::new_level(), "New level".into()),
+    };
+    *document = opened;
     history.clear();
     *selection = Selection::None;
+    Ok(said)
 }
 
 fn save(document: &mut Document, path: Option<PathBuf>) -> String {

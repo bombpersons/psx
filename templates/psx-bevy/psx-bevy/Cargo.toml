@@ -20,8 +20,8 @@ bevy.workspace = true
 bevy_render = { version = "=0.20.0", default-features = false, features = ["gles"] }
 # Persist physical bindings without enabling serialization on the renderer/world.
 bevy_input = { version = "=0.20.0", features = ["serialize"] }
-rmcp = { version = "3.5.1", features = ["transport-io"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-std"], optional = true }
+rmcp = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 # Feature alignment: rmcp and tokio-util enable `serde/rc`, `serde_json/alloc`,

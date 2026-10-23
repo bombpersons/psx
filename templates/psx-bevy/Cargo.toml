@@ -61,6 +61,13 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["alloc"] }
 # Hand-editable tables and tuning (the version Bevy already uses).
 ron = "0.12"
+# MCP servers: psx-bevy's game MCP (stdio, `dev-mcp`) and the editor's (stdio
+# and HTTP, editor/src/mcp). engine/ depends on all of them so every build
+# resolves the same features (editor/AGENTS.md, "One Bevy build").
+rmcp = { version = "=3.5.1", features = ["transport-io", "transport-streamable-http-server"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-std", "net"] }
+tokio-util = "0.7"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 
 # Iteration builds: your code at opt-level 1 (fast to rebuild), dependencies
 # (Bevy) at 3, so `cargo run` plays at close to release speed. Line tables

@@ -113,11 +113,20 @@ pub struct ViewState {
     pub centre: egui::Vec2,
     /// Pixels per metre.
     pub scale: f32,
+    /// Where the view was drawn last frame.
+    pub rect: egui::Rect,
 }
 
 impl Default for ViewState {
     fn default() -> Self {
-        Self { centre: egui::Vec2::ZERO, scale: 40.0 }
+        Self { centre: egui::Vec2::ZERO, scale: 40.0, rect: egui::Rect::NOTHING }
+    }
+}
+
+impl ViewState {
+    /// Where world point `p` is drawn (X right, Z down).
+    pub fn to_screen(&self, p: Vec3) -> egui::Pos2 {
+        self.rect.center() + (egui::vec2(p.x, p.z) - self.centre) * self.scale
     }
 }
 
@@ -126,7 +135,8 @@ impl Default for ViewState {
 pub fn view(ui: &mut egui::Ui, level: &mut LevelData, selection: &mut Selection, state: &mut ViewState) {
     let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
     let rect = response.rect;
-    let to_screen = |p: Vec3| rect.center() + (egui::vec2(p.x, p.z) - state.centre) * state.scale;
+    state.rect = rect;
+    let to_screen = |p: Vec3| state.to_screen(p);
     let visuals = ui.visuals();
     painter.rect_filled(rect, 0.0, visuals.extreme_bg_color);
 

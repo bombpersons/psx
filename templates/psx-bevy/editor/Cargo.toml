@@ -4,6 +4,7 @@
 #
 #   cargo run -p editor
 #   cargo run -p editor -- game/assets/demo/level.ron
+#   cargo run -p editor -- --mcp-listen 127.0.0.1:7878   # agents join over HTTP
 [package]
 name = "editor"
 version.workspace = true
@@ -16,3 +17,23 @@ engine.workspace = true
 bevy.workspace = true
 bevy_egui.workspace = true
 ron.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The editor's MCP server (src/mcp): stdio with --mcp, HTTP with --mcp-listen.
+rmcp.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+axum.workspace = true
+# Screenshots, as psx-bevy's `dev-mcp` builds them.
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.23"
+# Unused: features the game's disc reader (psx-media's CHD support) turns on
+# in crates Bevy shares, turned on here too so both builds agree.
+arrayvec = "0.7"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+
+[features]
+# The MCP's testing tools (mouse, keyboard, widgets), on stdio only:
+# `--mcp [--headless --software]`. Also psx-bevy's developer MCP, whose test
+# client the editor's GPU test uses.
+dev-mcp = ["engine/dev-mcp"]

@@ -20,7 +20,8 @@ cargo run -- --fullscreen                # borderless fullscreen (F11 toggles)
 cargo run -- --aspect window             # screen width follows the window's shape
 cargo run -p engine --example sandbox    # the engine's own tiny game
 cargo run -p example-mod                 # a mod: a tiny game built on game/
-cargo run -p editor                      # the editor for the engine's formats
+cargo run -p editor                      # the editor for the engine's formats (Tools > Agents lets agents in)
+cargo run -p editor -- --mcp --headless --software  # the editor's MCP on stdio, offscreen
 cargo test --workspace                   # headless tests: engine, game, mod, importers
 cargo run --features dev-mcp -- --mcp --headless --software  # developer MCP, offscreen
 cargo test --workspace --all-features    # routine agent check (dev-mcp everywhere)
@@ -35,7 +36,7 @@ cargo build --release                    # shipping build; developer MCP is excl
 | `engine/` | this project | This game's engine family: object type and action registries, update-order sets, level and tuning formats, `examples/sandbox.rs`. No names, numbers or assets from this game ([AGENTS.md](engine/AGENTS.md)) |
 | `game/` | this project | This title: per-type controllers, action handlers, HUD, menus, baked assets in `game/assets/`, trajectory tests ([AGENTS.md](game/AGENTS.md)) |
 | `mods/example/` | this project | An example mod: a small game built on `game` from hand-made assets, proving the game can be extended without editing it ([game/AGENTS.md](game/AGENTS.md), "Mods are crates") |
-| `editor/` | this project | The editor for the engine's formats: an egui desktop tool with File/Edit/View menus, outline, view, inspector and status bar, starting with level files. Depends on `engine` only; shares the game's Bevy build (`engine` depends on bevy_egui for that) ([AGENTS.md](editor/AGENTS.md)) |
+| `editor/` | this project | The editor for the engine's formats: an egui desktop tool with File/Edit/View menus, outline, view, inspector and status bar, starting with level files, and an MCP server (stdio and HTTP) so agents can build levels with you and test the editor. Depends on `engine` only; shares the game's Bevy build (`engine` depends on the editor's UI and MCP crates for that) ([AGENTS.md](editor/AGENTS.md)) |
 | `tools/import/` | this project | Importers: the player's disc → engine formats, with provenance. A library the game runs on first start (no Bevy), plus `cargo run -p import -- DISC` |
 | `vendor/` | psx template | `psx-media` (CUE/BIN, ISO, CHD, ISO9660) and `psx-assets` (TIM, TMD, VAB/VAG): copies of the toolkit's crates for the importers. Replaced by `psx template update` ([README](vendor/README.md)) |
 | `docs/` | this project | `engine-model.md` (what the original treats as data vs code), `evidence.md`, `template.md` (changes to `psx-bevy/`) |
