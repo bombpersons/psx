@@ -197,6 +197,14 @@ impl GpuCapture {
 mod tests {
     use super::*;
 
+    /// A machine whose GPU runs commands at once: these tests send GP0 words
+    /// without advancing time, so drawing time would never be credited.
+    fn machine() -> Machine {
+        let mut m = Machine::new(vec![]);
+        m.bus.gpu.timed = false;
+        m
+    }
+
     fn search(from: u64, limit: u32) -> GpuCapture {
         GpuCapture::new(
             &TraceArgs {
@@ -233,7 +241,7 @@ mod tests {
 
     #[test]
     fn skips_state_upload_and_copy_then_freezes_the_last_candidate() {
-        let mut m = Machine::new(vec![]);
+        let mut m = machine();
         m.bus.frames = 100;
         let mut c = search(0, 3);
         c.boundary(&mut m, 100, false);
@@ -268,7 +276,7 @@ mod tests {
 
     #[test]
     fn bounds_are_inclusive_at_start_and_exclusive_at_end() {
-        let mut m = Machine::new(vec![]);
+        let mut m = machine();
         let mut c = search(1, 1);
         c.boundary(&mut m, 0, false);
         m.bus.gpu.gp0_all(&[0x020000ff, 0, 0x00010010]); // before window
@@ -285,7 +293,7 @@ mod tests {
     #[test]
     fn exact_empty_and_partial_captures_remain_available() {
         for complete in [false, true] {
-            let mut m = Machine::new(vec![]);
+            let mut m = machine();
             let mut c = GpuCapture::new(&TraceArgs { gpu_frame: Some(0), ..Default::default() }, 1).unwrap();
             c.boundary(&mut m, 0, false);
             m.bus.frames = u64::from(complete);
@@ -301,7 +309,7 @@ mod tests {
     #[test]
     fn draw_filters_skip_fills_and_optionally_untextured_primitives() {
         for (filter, expected) in [(GpuDrawFilter::Primitives, 1), (GpuDrawFilter::Textured, 2)] {
-            let mut m = Machine::new(vec![]);
+            let mut m = machine();
             let mut c = GpuCapture::new(
                 &TraceArgs {
                     gpu_next_draw: true,
@@ -332,7 +340,7 @@ mod tests {
 
     #[test]
     fn incomplete_draw_is_not_selected_and_misses_explain_the_bound() {
-        let mut m = Machine::new(vec![]);
+        let mut m = machine();
         let mut c = search(0, 2);
         c.boundary(&mut m, 0, false);
         m.bus.gpu.gp0_all(&[0x020000ff, 0, 0x00010010]);
@@ -349,7 +357,7 @@ mod tests {
 
     #[test]
     fn draw_detection_uses_commands_even_when_pixels_do_not_change() {
-        let mut m = Machine::new(vec![]);
+        let mut m = machine();
         let mut c = search(0, 1);
         c.boundary(&mut m, 0, false);
         let before = m.bus.gpu.vram.to_bytes();
@@ -367,7 +375,7 @@ mod tests {
 
     #[test]
     fn projections_follow_the_selected_and_immediately_preceding_frames() {
-        let mut m = Machine::new(vec![]);
+        let mut m = machine();
         let mut c = search(1, 3);
         for frame in 0..=2 {
             c.boundary(&mut m, 0, false);

@@ -584,11 +584,11 @@ impl Cpu {
         // Mednafen checks events before the access's wait states (and an SPU
         // read checks again after them).
         if Bus::checks_events(a) {
-            bus.cd_events(self.cycles);
+            bus.events(self.cycles);
         }
         self.cycles += Bus::read_cost(a, bytes);
         if (0x1F80_1C00..=0x1F80_1FFF).contains(&a) {
-            bus.cd_events(self.cycles);
+            bus.events(self.cycles);
         }
         if Bus::is_io(addr) {
             self.sync(bus);
@@ -692,7 +692,7 @@ impl Cpu {
             return Ok(());
         }
         if Bus::checks_events(segment_mask(addr)) {
-            bus.cd_events(self.cycles);
+            bus.events(self.cycles);
         }
         if Bus::is_io(addr) {
             self.sync(bus);

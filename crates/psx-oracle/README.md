@@ -37,14 +37,16 @@ each instruction it compares the PC, the instruction word, r1-r31, HI, LO, the d
 COP0's SR, Cause (except IP2), EPC and BadVaddr. After each COP2 instruction or LWC2 it also compares the GTE's
 64 registers. Any difference stops the run. It also compares the cycle count (Mednafen's master clock) and
 reports the instructions after which the difference changed; `--cycles` stops at the first. The core's CPU,
-DMA and CD-ROM timing are Mednafen's, but other devices' timing isn't yet. So three things come from Mednafen
-and are counted (I/O values by register, every register listed) rather than treated as divergence:
+DMA, CD-ROM and GPU command timing are Mednafen's, but other devices' timing isn't yet. So three things come
+from Mednafen and are counted (I/O values by register, every register listed) rather than treated as
+divergence:
 
 - the values of I/O loads;
 - the interrupt line, Cause.IP2;
 - the interlaced field being displayed, whose lines the GPU skips in 480-line interlace.
 
-Interrupts then happen at the same instruction in both.
+Interrupts then happen at the same instruction in both. `--trace-adopted ADDR` prints each value adopted
+from one register to stderr (step, frame, both values) to find where a device's timing parts.
 
 At every vblank, main RAM, the scratchpad, VRAM and SPU RAM are compared too. These differences are reported
 (`memory`: frames differing, the first, and any left at the end) but don't stop the run, because they come from
@@ -52,9 +54,10 @@ devices whose timing differs. VRAM differences while Mednafen's GPU still has qu
 separately. `--dump PREFIX` writes both sides' memory at the end for `psx vram-diff` and `psx ram-diff`.
 
 With `--disc "media/Crash Bandicoot.cue"` and a START/CROSS replay, 1.4 billion instructions (4,562 frames, into
-gameplay) match cycle for cycle, with no CD-ROM register value adopted. On SCPH-1001, 300 million instructions (1,174 frames into the shell) match, cycle for cycle, at about 2 million
-instructions a second. The scratchpad is identical at every vblank. VRAM differs in 24 frames of the shell from frame 270
-(already before the CD-ROM port), and the SPU's voice capture buffers differ while sound plays.
+gameplay) match cycle for cycle. No CD-ROM, GPUSTAT or GPU DMA value is adopted; the timers, the pad and the
+SPU's envelopes are what remains. On SCPH-1001 without a disc, 100 million instructions (441 frames into the
+shell) match cycle for cycle at about 1.8 million instructions a second, with VRAM and the scratchpad identical
+at every vblank. In both runs the SPU's voice capture buffers differ while sound plays.
 
 ## Layout
 

@@ -90,7 +90,14 @@ enum Command {
         /// At the end, write both sides' memory as <PREFIX>.{core,mednafen}.{ram,scratchpad,vram,spu_ram}.bin, and the core's screen and VRAM as PNGs.
         #[arg(long)]
         dump: Option<PathBuf>,
+        /// Print each value adopted from this I/O register (hex address) to stderr, one JSON line each.
+        #[arg(long, value_parser = parse_hex)]
+        trace_adopted: Option<u32>,
     },
+}
+
+fn parse_hex(s: &str) -> Result<u32, String> {
+    u32::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).map_err(|e| format!("{s}: {e}"))
 }
 
 /// One pad state from `frame` on: buttons in the pad's bit order, sticks lx, ly, rx, ry.
@@ -110,6 +117,7 @@ pub struct LockstepJob {
     pub disc: Option<PathBuf>,
     pub inputs: Vec<Input>,
     pub dump: Option<PathBuf>,
+    pub trace_adopted: Option<u32>,
 }
 
 /// A replay file as `psx run` reads it: `frame`, `buttons`, optional
@@ -243,7 +251,7 @@ fn main() -> ExitCode {
                 Err(e) => (false, json!({"error": e})),
             }
         }
-        Command::Lockstep { bios, steps, context, cycles, disc, replay: replay_path, dump } => {
+        Command::Lockstep { bios, steps, context, cycles, disc, replay: replay_path, dump, trace_adopted } => {
             match replay_path.as_deref().map(replay).transpose() {
                 Ok(inputs) => lockstep_job(
                     &root,
@@ -255,6 +263,7 @@ fn main() -> ExitCode {
                         disc: disc.map(abs),
                         inputs: inputs.unwrap_or_default(),
                         dump,
+                        trace_adopted,
                     },
                 ),
                 Err(e) => (false, json!({"error": e})),

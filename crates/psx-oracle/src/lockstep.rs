@@ -51,6 +51,8 @@ struct State {
     io_injected: u64,
     /// Adopted I/O values by register address.
     io_by_addr: std::collections::BTreeMap<u32, u64>,
+    /// Print adoptions from this register (`--trace-adopted`).
+    trace_adopted: Option<u32>,
     irq_injected: u64,
     /// The last instruction was COP2 or LWC2, so the GTE may have changed.
     gte_changed: bool,
@@ -113,6 +115,14 @@ impl State {
                 match self.io_dest[i].take() {
                     // A value read from a device: take Mednafen's.
                     Some((addr, w)) => {
+                        if self.trace_adopted == Some(addr) {
+                            let (step, frame) = (self.done, m.bus.frames);
+                            let (core, mednafen) = (h(m.cpu.regs[i]), h(r.gpr[i]));
+                            eprintln!(
+                                "{}",
+                                json!({"adopted": h(addr), "step": step, "frame": frame, "core": core, "mednafen": mednafen})
+                            );
+                        }
                         m.cpu.regs[i] = r.gpr[i];
                         m.bus.poke_io(addr, w, r.gpr[i]);
                         self.io_injected += 1;
@@ -339,6 +349,7 @@ pub fn run(root: &Path, job: &crate::LockstepJob) -> (bool, Value) {
         io_dest: [None; 32],
         io_injected: 0,
         io_by_addr: Default::default(),
+        trace_adopted: job.trace_adopted,
         irq_injected: 0,
         gte_changed: false,
         divergence: Value::Null,

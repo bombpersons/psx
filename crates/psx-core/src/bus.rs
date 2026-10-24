@@ -76,16 +76,23 @@ pub struct Bus {
     pub last_draw_frame: u64,
     #[serde(skip)]
     draws_seen: u64,
-    /// GP1(00h)/(01h) etc. are not tracked in GPUSTAT yet; this mirrors the
-    /// display/DMA bits software set so status reads are plausible.
-    gpustat_dma_dir: u32,
+    /// The GPU's interrupt line (GP0(1Fh)), for its rising edge.
+    gpu_irq: bool,
+    /// When the GPU was last updated and its next event (Mednafen's
+    /// `GPU_Update`: drawing time, the command FIFO and the video timing).
+    gpu_ts: u64,
+    gpu_next: u64,
+    /// Dot clocks and horizontal retraces the video timing produced since the
+    /// timers last ran.
+    video_dots: u64,
+    video_hretraces: u64,
     pub timers: crate::timers::Timers,
     /// System clock cycles elapsed, as far as devices have been advanced.
     pub now: u64,
     /// CPU cycles not yet handed to devices.
     pending: u64,
-    /// When devices next need to run: the next scheduled DMA update or the
-    /// end of the video line phase, whichever is first (0: at once).
+    /// When devices next need to run: the next scheduled DMA update or GPU
+    /// event, whichever is first (0: at once).
     #[serde(skip)]
     next_event: u64,
     /// A vblank happened: Mednafen's frame ends after this instruction, and
@@ -152,10 +159,14 @@ impl Bus {
             dma: Default::default(),
             next_event: 0,
             frame_ended: false,
-            gpu: psx_gpu::Gpu::new(),
+            gpu: psx_gpu::Gpu::timed(),
             last_draw_frame: 0,
             draws_seen: 0,
-            gpustat_dma_dir: 0,
+            gpu_irq: false,
+            gpu_ts: 0,
+            gpu_next: 0,
+            video_dots: 0,
+            video_hretraces: 0,
             timers: Default::default(),
             now: 0,
             pending: 0,
@@ -280,13 +291,14 @@ impl Bus {
     #[inline]
     pub fn end_instruction(&mut self) {
         let t = self.time();
-        if t >= self.cd_next {
-            self.cd_events(t);
+        if t >= self.cd_next.min(self.gpu_next).min(self.dma_next()) {
+            self.events(t);
         }
         if self.frame_ended {
             self.frame_ended = false;
             self.flush();
             let now = self.now;
+            self.gpu_next = self.gpu_update(now);
             self.cd_update(now);
             self.dma_update(now);
             self.schedule();
@@ -294,13 +306,68 @@ impl Bus {
     }
 
     /// Mednafen's event check before an access outside RAM and the BIOS, and
-    /// at each instruction: the CD-ROM controller's events due by `t`.
+    /// at each instruction: the GPU's, the CD-ROM controller's and the DMA's
+    /// events due by `t`, in time order (and in that order at the same time,
+    /// as Mednafen's event list starts).
     #[inline]
-    pub fn cd_events(&mut self, t: u64) {
-        while self.cd_next <= t {
-            let e = self.cd_next;
-            self.cd_update(e);
+    pub fn events(&mut self, t: u64) {
+        loop {
+            let (g, c, d) = (self.gpu_next, self.cd_next, self.dma_next());
+            let e = g.min(c).min(d);
+            if e > t {
+                break;
+            }
+            if g == e {
+                self.gpu_next = self.gpu_update(g);
+            } else if c == e {
+                self.cd_update(c);
+            } else {
+                self.dma_update(d);
+            }
         }
+    }
+
+    /// The DMA's next event: the 128-clock grid point after its last update.
+    #[inline]
+    fn dma_next(&self) -> u64 {
+        self.dma.next_update(self.dma.last)
+    }
+
+    /// Bring the GPU to `t` (Mednafen's `GPU_Update`): credit drawing time
+    /// and run its FIFO once, then the video timing. Returns its next event:
+    /// at most 128 clocks away, or the end of the line phase.
+    pub(crate) fn gpu_update(&mut self, t: u64) -> u64 {
+        if t > self.gpu_ts {
+            let clocks = t - self.gpu_ts;
+            self.gpu_ts = t;
+            self.gpu.credit(clocks);
+            self.after_gpu();
+            let video = self.video.tick(clocks, &self.gpu.display);
+            if !self.external_field {
+                self.gpu.readout_field = self.video.readout_field;
+            }
+            self.video_dots += video.dot_clocks;
+            self.video_hretraces += video.hretraces;
+            if video.vblanks > 0 {
+                self.frames += video.vblanks;
+                if self.gpu.draws != self.draws_seen {
+                    self.draws_seen = self.gpu.draws;
+                    self.last_draw_frame = self.frames;
+                }
+                self.raise_irq(1);
+                self.frame_ended = true;
+            }
+        }
+        t + self.video.clocks_to_phase_end().min(128)
+    }
+
+    /// After the GPU ran commands: GP0(1Fh)'s interrupt, on its rising edge.
+    pub(crate) fn after_gpu(&mut self) {
+        let irq = self.gpu.irq;
+        if irq && !self.gpu_irq {
+            self.raise_irq(1 << 1);
+        }
+        self.gpu_irq = irq;
     }
 
     /// Bring the CD-ROM controller (which clocks the SPU) to `t`.
@@ -345,7 +412,7 @@ impl Bus {
     }
 
     fn schedule(&mut self) {
-        self.next_event = self.dma.next_update(self.now).min(self.now + self.video.clocks_to_phase_end());
+        self.next_event = self.dma.next_update(self.now).min(self.gpu_next);
     }
 
     /// System clocks elapsed including CPU time not yet handed to devices.
@@ -369,44 +436,26 @@ impl Bus {
     }
 
     fn run_devices(&mut self, cycles: u64) {
-        let start = self.now;
         self.now += cycles;
-        let video = self.video.tick(cycles, &self.gpu.display);
-        if !self.external_field {
-            self.gpu.readout_field = self.video.readout_field;
-        }
-        let irq = self.timers.tick(cycles, video.dot_clocks, video.hretraces);
+        let (dots, hretraces) = (std::mem::take(&mut self.video_dots), std::mem::take(&mut self.video_hretraces));
+        let irq = self.timers.tick(cycles, dots, hretraces);
         self.raise_irq(irq);
         if self.sio0.tick(self.now) {
             self.raise_irq(1 << 7);
         }
-        if video.vblanks > 0 {
-            self.frames += video.vblanks;
-            if self.gpu.draws != self.draws_seen {
-                self.draws_seen = self.gpu.draws;
-                self.last_draw_frame = self.frames;
-            }
-            self.raise_irq(1);
-            self.frame_ended = true;
-        }
-        let mut g = self.dma.next_update(start);
-        while g <= self.now {
-            self.dma_update(g);
-            g += crate::dma::GRID;
-        }
         self.schedule();
     }
 
-    /// GPUSTAT: always ready (bits 26-28; busy is not modelled), DMA direction,
-    /// display state, and the field and line parity from the video timing.
+    /// GPUSTAT: the GPU's state (Mednafen's `GPU_Read`), display state, and
+    /// the field and line parity from the video timing as of the GPU's last
+    /// update.
     fn gpustat(&self) -> u32 {
         let d = &self.gpu.display;
         let st = &self.gpu.state;
         let mut v = (st.texpage as u32 & 0x7FF) | ((st.set_mask as u32) << 11) | ((st.check_mask as u32) << 12);
         v |= (d.mode & 0x3F) << 17 | ((d.mode >> 6) & 1) << 16 | ((d.mode >> 7) & 1) << 14;
         v |= ((!d.enabled) as u32) << 23;
-        v |= 0b111 << 26;
-        v |= self.gpustat_dma_dir << 29;
+        v |= self.gpu.status_bits();
         // Mednafen: bit 31 is the parity of the VRAM line being read out, and
         // bit 13 the inverse of the interlaced field.
         v |= (self.video.cur_line_readout & 1) << 31;
@@ -508,6 +557,7 @@ impl Bus {
         self.irq_dirty = true;
         self.next_event = 0;
         self.cd_next = self.cdrom.next_event();
+        self.gpu.timed = true;
         // Draw tracking is not saved: count idle frames from the restore.
         self.last_draw_frame = self.frames;
         self.draws_seen = self.gpu.draws;
@@ -609,7 +659,7 @@ impl Bus {
             0x1F00_0000..=0x1F7F_FFFF => u32::MAX >> (32 - 8 * n),
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => le(&self.scratch, (p - 0x1F80_0000) as usize),
             GP0 if width == Width::Word => {
-                let v = self.gpu.gpuread().unwrap_or(0);
+                let v = self.gpu.read_data();
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
@@ -750,11 +800,10 @@ impl Bus {
                     self.timers.write(((p - TIMERS) >> 4) as usize, p & 0xC, value);
                 } else if p == GP0 && width == Width::Word {
                     self.gpu.gp0(value);
+                    self.after_gpu();
                 } else if p == GP1 && width == Width::Word {
-                    if (value >> 24) & 0x3F == 0x04 {
-                        self.gpustat_dma_dir = value & 3;
-                    }
                     self.gpu.gp1(value);
+                    self.after_gpu();
                 } else if (DMA_BASE..TIMERS).contains(&p) {
                     let now = self.now;
                     self.dma_write(now, p, value);
@@ -799,7 +848,7 @@ mod tests {
         m.bus.gpu.display.mode = 8;
         m.bus.write(0x1f801801, crate::Width::Byte, 1).unwrap();
         // Run it and acknowledge its INT3, so the next one can be answered.
-        m.bus.cd_events(10_100_000);
+        m.bus.events(10_100_000);
         for (reg, v) in [(0, 1), (3, 0x1F), (0, 0)] {
             m.bus.write(0x1f801800 + reg, crate::Width::Byte, v).unwrap();
         }
@@ -808,7 +857,7 @@ mod tests {
         m.bus.gpu.display.mode = 0;
         m.bus.write(0x1f801801, crate::Width::Byte, 1).unwrap();
         // The repeat is folded in once its response is known.
-        m.bus.cd_events(11_100_000);
+        m.bus.events(11_100_000);
         let command = m.bus.cdrom.recent.back().unwrap();
         assert_eq!(command.frame, Some(42));
         assert_eq!(command.last_frame, Some(43));
@@ -836,8 +885,10 @@ mod tests {
         b.write(DMA_BASE + 0x40, Width::Word, 0x8010_0000).unwrap();
         b.write(DMA_BASE + 0x44, Width::Word, (1 << 16) | 12).unwrap();
         b.write(DMA_BASE + 0x48, Width::Word, 0x0100_0201).unwrap();
-        // The transfer takes 48 clocks a word (Mednafen's DMA timing).
-        b.run_devices(12 * 48);
+        // The transfer takes 48 clocks a word (Mednafen's DMA timing); the
+        // DMA runs at the event check after an instruction.
+        b.tick(12 * 48);
+        b.end_instruction();
         assert_eq!(b.read(DMA_BASE + 0x48, Width::Word).unwrap() & (1 << 24), 0, "DMA done");
         // Manual FIFO writes merge into one upload while contiguous.
         spu(&mut b, 0x1A6, 0x2000 >> 3);
@@ -904,8 +955,10 @@ mod tests {
         b.write(DMA_BASE + 0x68, Width::Word, 0x1100_0002).unwrap();
         assert!(b.dma.halted, "64 of 1000 words done at the start");
         b.tick(1000);
+        b.end_instruction();
         assert!(b.dma.halted);
         b.tick(24);
+        b.end_instruction();
         assert!(!b.dma.halted, "done at the 1024-clock update");
         assert_eq!(b.read(DMA_BASE + 0x68, Width::Word).unwrap() & (1 << 24), 0, "busy cleared");
     }

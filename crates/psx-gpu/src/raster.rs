@@ -37,7 +37,7 @@ impl<S: ?Sized> TexelSource<S> for NoTexture {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Vtx {
     pub x: i32,
     pub y: i32,
@@ -394,10 +394,50 @@ impl Tri {
     /// Calls `f(y, x0, x1, attrs)` for each row's pixels `x0..=x1` inside the
     /// clip rectangle, with the attributes at `x0`, in Mednafen's order.
     pub(crate) fn rows(&self, ras: &Raster, mut f: impl FnMut(i32, i32, i32, [u32; 5])) {
+        self.walk(ras, |row| {
+            if let Some((yi, x, w, s)) = row {
+                f(sext11(yi), x, x + w - 1, s);
+            }
+        });
+    }
+
+    /// Mednafen's drawing time for the triangle (`DrawTriangle`, `DrawSpan`):
+    /// 2 for each row the vertical clip passes over, `span(w)` for each drawn
+    /// row of `w` pixels, and `texel(u, v)` for each pixel of a textured one,
+    /// in drawing order (its texture cache misses).
+    pub(crate) fn time(
+        &self,
+        ras: &Raster,
+        span: impl Fn(i32) -> i32,
+        mut texel: Option<&mut dyn FnMut(u32, u32) -> i32>,
+    ) -> i32 {
+        let mut t = 0;
+        let (du, dv) = (self.dx[3], self.dx[4]);
+        self.walk(ras, |row| match row {
+            None => t += 2,
+            Some((_, _, w, s)) => {
+                t += span(w);
+                if let Some(texel) = texel.as_mut() {
+                    let (mut u, mut v) = (s[3], s[4]);
+                    for _ in 0..w {
+                        t += texel(u >> 24, v >> 24);
+                        u = u.wrapping_add(du);
+                        v = v.wrapping_add(dv);
+                    }
+                }
+            }
+        });
+        t
+    }
+
+    /// Mednafen's row walk: `f(Some((yi, x, w, attrs)))` for each row with
+    /// pixels `x..x + w` to draw (`yi` unwrapped), and `f(None)` for each row
+    /// the vertical clip passes over before the walk reaches the drawing area.
+    fn walk(&self, ras: &Raster, mut f: impl FnMut(Option<(i32, i32, i32, [u32; 5])>)) {
         let (cx0, cy0, cx1, cy1) = ras.clip;
-        let mut span = |yi: i32, l: i64, r: i64| {
+        let span = |yi: i32, l: i64, r: i64| {
             if ras.skip_parity == Some(yi & 1) {
-                return;
+                return None;
             }
             let (x_start, x_bound) = ((l >> 32) as i32, (r >> 32) as i32);
             let (mut adjust, mut w, mut x) = (x_start, x_bound - x_start, sext11(x_start));
@@ -411,14 +451,14 @@ impl Tri {
                 w = cx1 + 1 - x;
             }
             if w <= 0 {
-                return;
+                return None;
             }
             let s = std::array::from_fn(|k| {
                 self.base[k]
                     .wrapping_add(self.dx[k].wrapping_mul(adjust as u32))
                     .wrapping_add(self.dy[k].wrapping_mul(yi as u32))
             });
-            f(sext11(yi), x, x + w - 1, s);
+            Some((yi, x, w, s))
         };
         for p in &self.parts {
             let (mut yi, mut l, mut r) = (p.y, p.x[0], p.x[1]);
@@ -431,8 +471,10 @@ impl Tri {
                     if y < cy0 {
                         break;
                     }
-                    if y <= cy1 {
-                        span(yi, l, r);
+                    if y > cy1 {
+                        f(None);
+                    } else if let Some(row) = span(yi, l, r) {
+                        f(Some(row));
                     }
                 }
             } else {
@@ -441,8 +483,10 @@ impl Tri {
                     if y > cy1 {
                         break;
                     }
-                    if y >= cy0 {
-                        span(yi, l, r);
+                    if y < cy0 {
+                        f(None);
+                    } else if let Some(row) = span(yi, l, r) {
+                        f(Some(row));
                     }
                     yi += 1;
                     l = l.wrapping_add(p.step[0]);

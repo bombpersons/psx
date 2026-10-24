@@ -42,7 +42,7 @@ pub struct Dma {
     /// Clocks to the next scheduled update (1-128).
     cycle_counter: i32,
     /// When the channels were last advanced.
-    last: u64,
+    pub(crate) last: u64,
     /// A manual-mode transfer holds the CPU.
     pub halted: bool,
     /// Extra clocks on each CPU data read (GPU block transfers).
@@ -87,11 +87,12 @@ impl Dma {
 
 impl Bus {
     /// Whether channel `ch` can move a word now (Mednafen's `ChCan`).
-    /// The core's MDEC decodes and its GPU draws at once, so only MDEC output
-    /// (a 32-word block decoded) and the OT clear's trigger bit gate a channel.
+    /// The core's MDEC decodes at once, so MDEC output waits only for a
+    /// 32-word block; the GPU's writes wait for its FIFO (GPUSTAT bit 28).
     fn dma_can(&self, ch: usize) -> bool {
         match ch {
             MDEC_OUT => self.mdec.out_available() >= 0x20,
+            GPU if self.dma.ch[GPU].chan_control & 1 != 0 => self.gpu.ready(),
             OTC => self.dma.ch[OTC].chan_control & (1 << 28) != 0,
             5 => false,
             _ => true,
@@ -145,9 +146,10 @@ impl Bus {
             GPU => {
                 if mode & 1 != 0 {
                     self.gpu.gp0(v);
+                    self.after_gpu();
                     v
                 } else {
-                    self.gpu.gpuread().unwrap_or(0)
+                    self.gpu.read_data()
                 }
             }
             CDROM => {
@@ -294,6 +296,7 @@ impl Bus {
 
     /// Advance every channel to `t` (Mednafen's `DMA_Update`).
     pub(crate) fn dma_update(&mut self, t: u64) {
+        self.gpu_update(t);
         let clocks = t.saturating_sub(self.dma.last) as i32;
         self.dma.last = t;
         for ch in [0, 1, 2, 3, 4, 6] {

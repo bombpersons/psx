@@ -143,8 +143,8 @@ logo at frame 109, native's at 178, because of CPU and CD-ROM timing.
     started channel runs 64 clocks at once.
   - A manual-mode (sync 0) transfer holds the CPU, which spins a clock at a time.
   - A GPU block transfer makes each CPU data read slower by the block size less one.
-- **Device catch-up.** Devices now run at the next DMA grid point or video line phase, rather than in
-  128-cycle batches.
+- **Device catch-up.** The DMA's grid events, like the GPU's and the CD-ROM controller's, run at Mednafen's
+  event checks (see the GPU section below). Other devices catch up at those points or at I/O accesses.
 
 **Mednafen CD-ROM controller (`psx-core/src/cdrom.rs`).** A port of `cdc.cpp`, with the sector and
 subchannel Q synthesis of Mednafen's image access (`CDAccess_Image.cpp`). It replaced a queue of responses
@@ -186,6 +186,52 @@ on fixed delays.
 - **Not ported.** Error correction of damaged sectors (images are clean), and the P/Q parity of
   synthesized Mode 1 gap sectors.
 
+**Mednafen GPU command timing (`psx-gpu/src/lib.rs`, `psx-core/src/bus.rs`).** A port of `gpu.cpp`'s
+command processing and its drawing-time estimate. The pixels are still `psx-gpu`'s.
+- **The FIFO.** GP0 words from the CPU or DMA enter Mednafen's command FIFO, and each write runs it once: at
+  most one command, or one word of a VRAM upload. A word that arrives with 16 queued is lost, unless the
+  command at the head still needs it. A quad's fourth vertex and a polyline's later vertices are steps of
+  their own, so a quad draws as two triangles, possibly at different times.
+- **Drawing time** (`Gpu::draw_time`, Mednafen's `DrawTimeAvail`). Each GPU update credits 2 per system
+  clock, up to 256. Every command except E3h–E5h and undefined ones takes 2, plus Mednafen's estimates:
+  - triangles: 82 (46 for a quad's second), plus 450, 288 or 180 for gouraud-textured, gouraud or
+    textured;
+  - per drawn row: twice its width when gouraud or textured, 1.5 times when blended or mask-tested,
+    otherwise its width; 2 per row the vertical clip skips on the way in;
+  - sprites and lines: 16; a sprite row costs its width (half again, in pixel pairs, when blended or
+    mask-tested), and a line 2 per step along its longer axis;
+  - fills: 46, and (width / 8) + 9 per row; copies: 2 per pixel;
+  - texture and CLUT caches: 4 per texture-cache miss, and 16 or 256 to load a CLUT that isn't cached.
+    The caches' tags follow Mednafen's, including the invalidation by uploads, copies and page changes.
+  
+  While the time is negative, drawing commands wait in the FIFO.
+- **GPUSTAT.** The GPU's own state sets bits 24 to 28: the GP0(1Fh) interrupt, the DMA request, idle,
+  VRAM read ready and FIFO ready (Mednafen's `GPU_CalcFIFOReadyBit`). Bit 15 is texture disable, through
+  GP1(09h). GP1(10h) answers on GPUREAD, and GP0(C0h) reads VRAM as it is at each read.
+- **DMA.** The GPU channel moves a word only when the FIFO is ready (`GPU_DMACanWrite`).
+- **Update points.** The GPU, with the video timing, updates:
+  - at its own event: at most 128 clocks after the last update, or at the end of a line phase;
+  - at each DMA update;
+  - at frame end.
+
+  GPU register accesses don't update it. Its events, the DMA's and the CD-ROM controller's run in time order
+  at Mednafen's event checks: each instruction, and before an access outside RAM and the BIOS, before the
+  access's wait states. The DMA used to catch up after a read's wait states, which made one GPUSTAT read in
+  100 million on SCPH-1001 differ.
+- **Untimed mode.** `Gpu::new` (replays, captures, tools) runs each command as soon as it is complete;
+  the console core uses `Gpu::timed`.
+- **Not ported.** The caches' contents: only their tags are kept, so a texel that Mednafen would read stale
+  from its cache is read from VRAM. Mednafen's line and sprite pixel rules are also not ported; `psx-gpu`'s
+  lines follow the hardware tests.
+- **Speed.** Crash alone runs about 5% slower per instruction (40.7 s against 38.3 s for 4,504 frames).
+
+On SCPH-1001 (100 million instructions), GPUSTAT used to be adopted 978,558 times and the GPU DMA's CHCR
+274,798 times; neither is adopted now, and VRAM is identical at every vblank (24 frames differed). Native
+alone, without lockstep, now ends 3,000 frames of Ridge Racer with VRAM identical to Mednafen's and 53
+halfwords of RAM differing (52,184 and 63,048 before). Vagrant Story's RAM differences fell from 18,356 to 426,
+and Crash's at frame 4,504 from 113,255 to 417. Resident Evil is in a fade at frame 3,000, and native's
+framebuffer is a shade lighter than Mednafen's there.
+
 `psx-oracle lockstep` compares the cycle count before every instruction (`--cycles` makes a difference
 fatal). On SCPH-1001, 300 million instructions (1,174 frames into the shell) match Mednafen cycle for cycle.
 With the CD-ROM port, `lockstep --disc "media/Crash Bandicoot.cue" --replay` (the replay cut to 4504
@@ -194,14 +240,16 @@ at 0 throughout. VRAM is identical at every vblank. RAM differs in 19 frames and
 buffers. No CD-ROM register value is ever adopted. Before the port, the Crash replay drifted from frame 449,
 and native left the logo at frame 719 against Mednafen's 836.
 
+With the GPU command timing (above), the same run still matches cycle for cycle, and GPUSTAT and the GPU
+DMA's CHCR, adopted 6.8M and 425K times before, are never adopted. Adopted values fell from 13.6M to 6.4M.
+VRAM differences while Mednafen's GPU still had queued work fell from 697 frames to 2.
+
 The values still adopted name the next devices to port:
 
 | Register | Values adopted | What differs |
 |---|---|---|
-| GPUSTAT | 6.8M | busy and ready bits; native's GPU is never busy |
 | Timer 1 counter | 4.6M | timers |
 | JOY_STAT | 1.65M | the pad's serial timing |
-| GPU DMA CHCR | 425K | GPU DMA ends when the GPU's FIFO allows |
 | I_STAT | 99K | interrupt timing of those devices |
 | Voices' ADSR volumes | 1–3K each | the SPU |
 
