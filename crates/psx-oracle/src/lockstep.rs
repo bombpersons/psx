@@ -304,14 +304,9 @@ fn dump_files(emu: &Mednafen, m: &Machine, prefix: &Path) -> Value {
     Value::Object(out)
 }
 
-pub fn run(
-    root: &Path,
-    bios_path: &Path,
-    steps: u64,
-    context: usize,
-    strict_cycles: bool,
-    dump: Option<&Path>,
-) -> (bool, Value) {
+pub fn run(root: &Path, job: &crate::LockstepJob) -> (bool, Value) {
+    let (bios_path, steps, context, strict_cycles) = (job.bios.as_path(), job.steps, job.context, job.strict_cycles);
+    let (disc, inputs, dump) = (job.disc.as_deref(), job.inputs.as_slice(), job.dump.as_deref());
     let err = |code: &str, m: String| (false, json!({"error": {"code": code, "message": m}}));
     let bios = match std::fs::read(bios_path) {
         Ok(b) => b,
@@ -319,11 +314,18 @@ pub fn run(
     };
     let base = root.join(".psx/lockstep").join(std::process::id().to_string());
     let region = Region::of_bios(&bios);
-    let mut emu = match Mednafen::open(&base, bios_path, None, region, false, false) {
+    let image = match disc.map(psx_media::Disc::open).transpose() {
+        Ok(d) => d,
+        Err(e) => return err("bad_disc", e.to_string()),
+    };
+    let mut emu = match Mednafen::open(&base, bios_path, disc, region, false, false) {
         Ok(e) => e,
         Err(e) => return err("backend_unavailable", e),
     };
     let mut m = Machine::new(bios);
+    if image.is_some() {
+        m.insert_disc(image);
+    }
     // Interrupts and the displayed field come from Mednafen; device timing
     // is compared separately.
     m.bus.irq_sources = false;
@@ -355,7 +357,14 @@ pub fn run(
     // run that stops calling the hook.
     let mut frames = 0u64;
     let mut diffs: [MemoryDiff; 4] = Default::default();
+    let mut inputs = inputs.iter().peekable();
+    let (mut buttons, mut sticks) = (0u16, [0x80u8; 4]);
     while !state.borrow().stop && frames < steps / 1000 + 100 {
+        while let Some(i) = inputs.next_if(|i| i.frame as u64 <= frames) {
+            (buttons, sticks) = (i.buttons, i.sticks);
+        }
+        emu.set_pad(buttons, sticks);
+        state.borrow_mut().m.bus.sio0.buttons = buttons;
         emu.frame(false);
         frames += 1;
         let s = state.borrow();
@@ -369,9 +378,7 @@ pub fn run(
         dumped = dump_files(&emu, &s.m, prefix);
     }
     let ok = s.divergence.is_null() && s.done >= steps;
-    let mut by_addr: Vec<_> = s.io_by_addr.iter().collect();
-    by_addr.sort_by(|a, b| b.1.cmp(a.1));
-    let io_by_register: serde_json::Map<_, _> = by_addr.iter().take(12).map(|(a, n)| (h(**a), json!(n))).collect();
+    let io_by_register: serde_json::Map<_, _> = s.io_by_addr.iter().map(|(a, n)| (h(*a), json!(n))).collect();
     (
         ok,
         json!({

@@ -106,6 +106,9 @@ pub struct Bus {
     pub external_field: bool,
     pub cdrom: crate::cdrom::Cdrom,
     cdrom_irq: bool,
+    /// When the CD-ROM controller next needs an update (its own event, as in Mednafen).
+    #[serde(skip)]
+    cd_next: u64,
     pub sio0: crate::sio0::Sio0,
     pub mdec: crate::mdec::Mdec,
     pub spu: crate::spu::Spu,
@@ -134,6 +137,7 @@ impl Bus {
         let mut b = bios;
         b.resize(BIOS_SIZE, 0);
         let video = crate::video::Video::new(crate::video::bios_is_pal(&b));
+        let cdrom = crate::cdrom::Cdrom::new(None, crate::cdrom::bios_scex(&b));
         Bus {
             ram: vec![0; RAM_SIZE],
             scratch: [0; SCRATCH_SIZE],
@@ -161,8 +165,9 @@ impl Bus {
             frames: 0,
             irq_sources: true,
             external_field: false,
-            cdrom: Default::default(),
+            cdrom,
             cdrom_irq: false,
+            cd_next: 0,
             sio0: Default::default(),
             mdec: Default::default(),
             spu: Default::default(),
@@ -274,13 +279,69 @@ impl Bus {
     /// `Emulate` returns and brings the DMA up to date.
     #[inline]
     pub fn end_instruction(&mut self) {
+        let t = self.time();
+        if t >= self.cd_next {
+            self.cd_events(t);
+        }
         if self.frame_ended {
             self.frame_ended = false;
             self.flush();
             let now = self.now;
+            self.cd_update(now);
             self.dma_update(now);
             self.schedule();
         }
+    }
+
+    /// Mednafen's event check before an access outside RAM and the BIOS, and
+    /// at each instruction: the CD-ROM controller's events due by `t`.
+    #[inline]
+    pub fn cd_events(&mut self, t: u64) {
+        while self.cd_next <= t {
+            let e = self.cd_next;
+            self.cd_update(e);
+        }
+    }
+
+    /// Bring the CD-ROM controller (which clocks the SPU) to `t`.
+    fn cd_update(&mut self, t: u64) {
+        let spu_irq = self.cdrom.update(t, &mut self.spu);
+        self.after_cd(spu_irq);
+    }
+
+    fn after_cd(&mut self, spu_irq: bool) {
+        if spu_irq {
+            self.raise_irq(1 << 9);
+        }
+        let cd = self.cdrom.irq();
+        if cd && !self.cdrom_irq {
+            self.raise_irq(1 << 2);
+        }
+        self.cdrom_irq = cd;
+        self.cd_next = self.cdrom.next_event();
+        if let Some(log) = &mut self.obs.spu {
+            let ended = self.spu.endx() & log.awaiting_end;
+            for voice in (0..24).filter(|v| ended & (1 << v) != 0) {
+                log.awaiting_end &= !(1 << voice);
+                log.record(crate::observe::SpuEvent {
+                    frame: self.frames,
+                    cycle: self.cdrom.time(),
+                    event: "end",
+                    voice: Some(voice),
+                    pc: None,
+                    key_on: None,
+                    upload: None,
+                });
+            }
+        }
+    }
+
+    /// Power on a new drive holding `disc` (Mednafen `Power` then `SetDisc`).
+    pub fn insert_disc(&mut self, disc: Option<psx_media::Disc>) {
+        self.cdrom = crate::cdrom::Cdrom::new(disc, crate::cdrom::bios_scex(&self.bios));
+        self.cdrom.set_time(self.time());
+        self.cdrom_irq = false;
+        self.cd_next = self.cdrom.next_event();
     }
 
     fn schedule(&mut self) {
@@ -316,32 +377,9 @@ impl Bus {
         }
         let irq = self.timers.tick(cycles, video.dot_clocks, video.hretraces);
         self.raise_irq(irq);
-        if self.spu.tick(cycles, &mut self.cdrom.audio) {
-            self.raise_irq(1 << 9);
-        }
-        if let Some(log) = &mut self.obs.spu {
-            let ended = self.spu.endx() & log.awaiting_end;
-            for voice in (0..24).filter(|v| ended & (1 << v) != 0) {
-                log.awaiting_end &= !(1 << voice);
-                log.record(crate::observe::SpuEvent {
-                    frame: self.frames,
-                    cycle: self.now,
-                    event: "end",
-                    voice: Some(voice),
-                    pc: None,
-                    key_on: None,
-                    upload: None,
-                });
-            }
-        }
         if self.sio0.tick(self.now) {
             self.raise_irq(1 << 7);
         }
-        let cd = self.cdrom.tick(self.now);
-        if cd && !self.cdrom_irq {
-            self.raise_irq(1 << 2);
-        }
-        self.cdrom_irq = cd;
         if video.vblanks > 0 {
             self.frames += video.vblanks;
             if self.gpu.draws != self.draws_seen {
@@ -469,6 +507,7 @@ impl Bus {
     pub(crate) fn after_restore(&mut self) {
         self.irq_dirty = true;
         self.next_event = 0;
+        self.cd_next = self.cdrom.next_event();
         // Draw tracking is not saved: count idle frames from the restore.
         self.last_draw_frame = self.frames;
         self.draws_seen = self.gpu.draws;
@@ -517,6 +556,13 @@ impl Bus {
             | 0x1F80_1820..=0x1F80_1827 => 1,
             _ => 0,
         }
+    }
+
+    /// Whether Mednafen's `MemRW` runs due events before an access to the
+    /// physical (segment-masked) address `a`: anything but RAM and the BIOS.
+    #[inline]
+    pub fn checks_events(a: u32) -> bool {
+        !(a < 0x0080_0000 || (0x1FC0_0000..=0x1FC7_FFFF).contains(&a))
     }
 
     /// True when a virtual address decodes to the I/O region.
@@ -587,12 +633,9 @@ impl Bus {
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
-            0x1F80_1800..=0x1F80_1803 => {
-                let now = self.now;
-                let mut v = 0u32;
-                for i in 0..n as u32 {
-                    v |= (self.cdrom.read((p + i).min(0x1F80_1803) - 0x1F80_1800, now) as u32) << (8 * i);
-                }
+            // Mednafen: one 8-bit register read whatever the width, mirrored every 4 bytes.
+            0x1F80_1800..=0x1F80_180F => {
+                let v = self.cdrom.read(p & 3) as u32;
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
@@ -619,10 +662,8 @@ impl Bus {
                 let latch = (0x1F80_1000..0x1F80_1024).contains(&p)
                     || (0x1F80_1060..0x1F80_1064).contains(&p)
                     || (0x1F80_1058..0x1F80_1060).contains(&p);
-                let handled = latch
-                    || (0x1F80_1C00..0x1F80_1E00).contains(&p)
-                    || (0x1F80_1800..0x1F80_1804).contains(&p)
-                    || (0x1F80_1070..0x1F80_1078).contains(&p);
+                let handled =
+                    latch || (0x1F80_1C00..0x1F80_1E00).contains(&p) || (0x1F80_1070..0x1F80_1078).contains(&p);
                 if !handled {
                     *self.unhandled_reads.entry(p).or_default() += 1;
                 }
@@ -701,9 +742,10 @@ impl Bus {
                 } else if (0x1F80_1040..0x1F80_1050).contains(&p) {
                     let now = self.now;
                     self.sio0.write(p - 0x1F80_1040, value, now);
-                } else if (0x1F80_1800..0x1F80_1804).contains(&p) {
+                } else if (0x1F80_1800..0x1F80_1810).contains(&p) {
                     let now = self.now;
-                    self.cdrom.write_at_frame(p - 0x1F80_1800, value as u8, now, self.frames);
+                    let fired = self.cdrom.write(p & 3, value as u8, now, Some(self.frames), &mut self.spu);
+                    self.after_cd(fired);
                 } else if (TIMERS..TIMERS + 0x30).contains(&p) {
                     self.timers.write(((p - TIMERS) >> 4) as usize, p & 0xC, value);
                 } else if p == GP0 && width == Width::Word {
@@ -756,10 +798,17 @@ mod tests {
         m.bus.now = 10_000_000;
         m.bus.gpu.display.mode = 8;
         m.bus.write(0x1f801801, crate::Width::Byte, 1).unwrap();
+        // Run it and acknowledge its INT3, so the next one can be answered.
+        m.bus.cd_events(10_100_000);
+        for (reg, v) in [(0, 1), (3, 0x1F), (0, 0)] {
+            m.bus.write(0x1f801800 + reg, crate::Width::Byte, v).unwrap();
+        }
         m.bus.frames = 43;
         m.bus.now = 11_000_000;
         m.bus.gpu.display.mode = 0;
         m.bus.write(0x1f801801, crate::Width::Byte, 1).unwrap();
+        // The repeat is folded in once its response is known.
+        m.bus.cd_events(11_100_000);
         let command = m.bus.cdrom.recent.back().unwrap();
         assert_eq!(command.frame, Some(42));
         assert_eq!(command.last_frame, Some(43));
@@ -808,9 +857,14 @@ mod tests {
         spu(&mut b, 0x188, 1 << 3);
         b.obs.spu = log;
         spu(&mut b, 0x188, 1 << 1);
-        b.run_devices(200_000);
+        // The CD-ROM controller clocks the SPU.
+        let advance = |b: &mut Bus, n: u64| {
+            b.tick(n);
+            b.end_instruction();
+        };
+        advance(&mut b, 200_000);
         spu(&mut b, 0x18C, 1 << 1);
-        b.run_devices(200_000);
+        advance(&mut b, 200_000);
 
         let log = b.obs.spu.as_ref().unwrap();
         let kinds: Vec<_> = log.events.iter().map(|e| (e.event, e.voice)).collect();

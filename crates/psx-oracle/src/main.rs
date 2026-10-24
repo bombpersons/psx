@@ -81,6 +81,12 @@ enum Command {
         /// Stop at the first instruction whose cycle cost differs from Mednafen's.
         #[arg(long)]
         cycles: bool,
+        /// A disc image (.cue, .bin) in the drive of both, from power-on; default empty.
+        #[arg(long)]
+        disc: Option<PathBuf>,
+        /// Pad 1 input, as for `run --replay` (frames count from power-on).
+        #[arg(long)]
+        replay: Option<PathBuf>,
         /// At the end, write both sides' memory as <PREFIX>.{core,mednafen}.{ram,scratchpad,vram,spu_ram}.bin, and the core's screen and VRAM as PNGs.
         #[arg(long)]
         dump: Option<PathBuf>,
@@ -93,6 +99,17 @@ pub struct Input {
     pub frame: u32,
     pub buttons: u16,
     pub sticks: [u8; 4],
+}
+
+/// What `lockstep` compares, from its command line.
+pub struct LockstepJob {
+    pub bios: PathBuf,
+    pub steps: u64,
+    pub context: usize,
+    pub strict_cycles: bool,
+    pub disc: Option<PathBuf>,
+    pub inputs: Vec<Input>,
+    pub dump: Option<PathBuf>,
 }
 
 /// A replay file as `psx run` reads it: `frame`, `buttons`, optional
@@ -226,8 +243,22 @@ fn main() -> ExitCode {
                 Err(e) => (false, json!({"error": e})),
             }
         }
-        Command::Lockstep { bios, steps, context, cycles, dump } => {
-            lockstep_job(&root, &abs(bios), steps, context, cycles, dump)
+        Command::Lockstep { bios, steps, context, cycles, disc, replay: replay_path, dump } => {
+            match replay_path.as_deref().map(replay).transpose() {
+                Ok(inputs) => lockstep_job(
+                    &root,
+                    &LockstepJob {
+                        bios: abs(bios),
+                        steps,
+                        context,
+                        strict_cycles: cycles,
+                        disc: disc.map(abs),
+                        inputs: inputs.unwrap_or_default(),
+                        dump,
+                    },
+                ),
+                Err(e) => (false, json!({"error": e})),
+            }
         }
     };
     println!("{}", serde_json::to_string_pretty(&value).unwrap());
@@ -240,15 +271,8 @@ fn run_job(job: &RunJob, dir: &Path) -> Result<Value, String> {
 }
 
 #[cfg(mednafen)]
-fn lockstep_job(
-    root: &Path,
-    bios: &Path,
-    steps: u64,
-    context: usize,
-    cycles: bool,
-    dump: Option<PathBuf>,
-) -> (bool, Value) {
-    lockstep::run(root, bios, steps, context, cycles, dump.as_deref())
+fn lockstep_job(root: &Path, job: &LockstepJob) -> (bool, Value) {
+    lockstep::run(root, job)
 }
 
 #[cfg(not(mednafen))]
@@ -257,7 +281,7 @@ fn run_job(_: &RunJob, _: &Path) -> Result<Value, String> {
 }
 
 #[cfg(not(mednafen))]
-fn lockstep_job(_: &Path, _: &Path, _: u64, _: usize, _: bool, _: Option<PathBuf>) -> (bool, Value) {
+fn lockstep_job(_: &Path, _: &LockstepJob) -> (bool, Value) {
     (false, json!({"error": "psx-oracle is only built for x86_64 Linux"}))
 }
 

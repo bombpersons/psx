@@ -580,7 +580,16 @@ impl Cpu {
         }
         self.cycles += ((self.t.read_fudge >> 4) & 2) as u64;
         let start = self.cycles;
-        self.cycles += bus.dma.cycle_steal + Bus::read_cost(a, bytes);
+        self.cycles += bus.dma.cycle_steal;
+        // Mednafen checks events before the access's wait states (and an SPU
+        // read checks again after them).
+        if Bus::checks_events(a) {
+            bus.cd_events(self.cycles);
+        }
+        self.cycles += Bus::read_cost(a, bytes);
+        if (0x1F80_1C00..=0x1F80_1FFF).contains(&a) {
+            bus.cd_events(self.cycles);
+        }
         if Bus::is_io(addr) {
             self.sync(bus);
         }
@@ -681,6 +690,9 @@ impl Cpu {
         if self.cop0[cop0::SR] & (1 << 16) != 0 {
             self.isolated_store(bus, addr, w as u32, value);
             return Ok(());
+        }
+        if Bus::checks_events(segment_mask(addr)) {
+            bus.cd_events(self.cycles);
         }
         if Bus::is_io(addr) {
             self.sync(bus);

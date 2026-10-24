@@ -506,12 +506,13 @@ The native core's video, CPU and DMA timing are Mednafen's:
 - scanlines, fields and vblank follow the GPU clock (49.76 Hz frames on a PAL console, 59.83 Hz on NTSC);
 - instructions cost what Mednafen charges (instruction cache, load latency, bus wait states,
   multiply/divide and GTE latencies);
-- DMA runs on Mednafen's 128-clock grid and holds the CPU as Mednafen does.
+- DMA runs on Mednafen's 128-clock grid and holds the CPU as Mednafen does;
+- the CD-ROM controller (`cdrom.rs`) is a port of Mednafen's `cdc.cpp`, with its command phases, seek times,
+  sector pipeline, random delays (Mednafen's PRNG) and XA/CD-DA audio, and it clocks the SPU as Mednafen's does.
 
-The BIOS runs cycle for cycle as Mednafen's. CD-ROM delays still differ, and so do the GPU's busy
-time, the timers and the pad's serial timing. So once a game loads, the same frame can find it at a
-different moment in each. On Crash, both reach the logo at frame 109, but native leaves it at frame
-719 and Mednafen at 836.
+The BIOS, and Crash Bandicoot booting from its disc, run cycle for cycle as Mednafen's
+(`psx-oracle lockstep --disc`). The GPU's busy time, the timers and the pad's serial timing still differ;
+lockstep takes those registers' values from Mednafen.
 
 ### Formatting
 

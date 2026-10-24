@@ -731,14 +731,25 @@ impl Spu {
     /// Advance by `cycles`, pulling one CD audio frame per output sample from
     /// `cd`; returns true if the SPU interrupt fired.
     pub fn tick(&mut self, cycles: u64, cd: &mut std::collections::VecDeque<(i16, i16)>) -> bool {
+        self.tick_with(cycles, || cd.pop_front().unwrap_or((0, 0)))
+    }
+
+    /// Advance by `cycles`, taking each output sample's CD audio input from
+    /// `cd` (the CD-ROM controller clocks the SPU, as in Mednafen).
+    pub fn tick_with(&mut self, cycles: u64, mut cd: impl FnMut() -> (i16, i16)) -> bool {
         self.cycles += cycles;
         let mut irq = false;
         while self.cycles >= CYCLES_PER_SAMPLE {
             self.cycles -= CYCLES_PER_SAMPLE;
-            self.cd_in = cd.pop_front().unwrap_or((0, 0));
+            self.cd_in = cd();
             irq |= self.sample();
         }
         irq
+    }
+
+    /// System clocks until the next output sample (Mednafen's `clock_divider`).
+    pub fn clocks_to_sample(&self) -> u64 {
+        CYCLES_PER_SAMPLE - self.cycles
     }
 
     fn decode_block(&mut self, i: usize) -> bool {

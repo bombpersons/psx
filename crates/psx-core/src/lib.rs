@@ -163,7 +163,7 @@ impl Machine {
 
     /// Insert a disc (CUE/BIN/ISO/CHD via `psx-media`); `None` means an empty drive.
     pub fn insert_disc(&mut self, disc: Option<psx_media::Disc>) {
-        self.bus.cdrom = cdrom::Cdrom::new(disc);
+        self.bus.insert_disc(disc);
     }
 
     /// Take an external interrupt now and keep IP2 asserted until acknowledged.

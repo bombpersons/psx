@@ -6,6 +6,7 @@ Developer tool only: it isn't part of the `psx` toolkit, and it is built only on
 ```bash
 cargo run --release -p psx-oracle -- run "media/Crash Bandicoot.cue" --bios bios/scph7502.bin --frames 4504 --replay .psx/native/replay_start_cross.json
 cargo run --release -p psx-oracle -- lockstep --bios bios/SCPH1001.BIN --steps 100000000
+cargo run --release -p psx-oracle -- lockstep --bios bios/scph7502.bin --disc "media/Crash Bandicoot.cue" --steps 200000000 --cycles
 ```
 
 ## `run`
@@ -30,13 +31,14 @@ unplugged, as in the native core. There are no memory cards. Runs are determinis
 
 ## `lockstep`
 
-`lockstep` runs the native core and Mednafen in one process from BIOS reset, with an empty drive. Before
+`lockstep` runs the native core and Mednafen in one process from BIOS reset. The drive is empty unless
+`--disc` gives a CUE/BIN image, and `--replay` feeds pad 1 as `run` does. Before
 each instruction it compares the PC, the instruction word, r1-r31, HI, LO, the delayed load in flight, and
 COP0's SR, Cause (except IP2), EPC and BadVaddr. After each COP2 instruction or LWC2 it also compares the GTE's
 64 registers. Any difference stops the run. It also compares the cycle count (Mednafen's master clock) and
-reports the instructions after which the difference changed; `--cycles` stops at the first. The core's CPU and
-DMA timing are Mednafen's, but other devices' timing isn't yet. So three things come from Mednafen and are
-counted (I/O values by register) rather than treated as divergence:
+reports the instructions after which the difference changed; `--cycles` stops at the first. The core's CPU,
+DMA and CD-ROM timing are Mednafen's, but other devices' timing isn't yet. So three things come from Mednafen
+and are counted (I/O values by register, every register listed) rather than treated as divergence:
 
 - the values of I/O loads;
 - the interrupt line, Cause.IP2;
@@ -49,9 +51,10 @@ At every vblank, main RAM, the scratchpad, VRAM and SPU RAM are compared too. Th
 devices whose timing differs. VRAM differences while Mednafen's GPU still has queued work are counted
 separately. `--dump PREFIX` writes both sides' memory at the end for `psx vram-diff` and `psx ram-diff`.
 
-On SCPH-1001, 300 million instructions (1,174 frames into the shell) match, cycle for cycle, at about 2 million
-instructions a second. RAM, the scratchpad and VRAM are identical at every vblank. Only the SPU's voice capture buffers differ
-while sound plays, because they follow the sample clock.
+With `--disc "media/Crash Bandicoot.cue"` and a START/CROSS replay, 1.4 billion instructions (4,562 frames, into
+gameplay) match cycle for cycle, with no CD-ROM register value adopted. On SCPH-1001, 300 million instructions (1,174 frames into the shell) match, cycle for cycle, at about 2 million
+instructions a second. The scratchpad is identical at every vblank. VRAM differs in 24 frames of the shell from frame 270
+(already before the CD-ROM port), and the SPU's voice capture buffers differ while sound plays.
 
 ## Layout
 

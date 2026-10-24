@@ -146,13 +146,64 @@ logo at frame 109, native's at 178, because of CPU and CD-ROM timing.
 - **Device catch-up.** Devices now run at the next DMA grid point or video line phase, rather than in
   128-cycle batches.
 
+**Mednafen CD-ROM controller (`psx-core/src/cdrom.rs`).** A port of `cdc.cpp`, with the sector and
+subchannel Q synthesis of Mednafen's image access (`CDAccess_Image.cpp`). It replaced a queue of responses
+on fixed delays.
+- **Commands.** A command is received 10,500 to 13,500 clocks after it is written, plus 1,815 per
+  parameter. It runs 8,500 clocks later and raises its acknowledge. Its own delay then leads to the second
+  response: Mednafen's seek times, Pause's delay that grows across the disc, ReadTOC's 30M, GetID's 33,868.
+  Mednafen's register layout applies:
+  - index 0 reads `FFh` at `1F801803`;
+  - the parameter and result FIFOs wrap as Mednafen's do;
+  - wider accesses are a single byte access, mirrored every 4 bytes up to `1F80180F`.
+- **The head.** Seeks take Mednafen's `CalcSeekTime`: the distance, a second to start the motor, a resume
+  penalty when paused, and a random part. Sectors then come every 1/75 s (1/150 s at double speed) through a
+  two-sector pipeline.
+  - Paused, the head dances back 9 sectors before its target.
+  - A logical seek (ReadN/ReadS, SeekL) ends on the first header that matches, and GetlocL reports it.
+  - GetlocP reports the last Q with a good CRC, so LibCrypt sectors repeat the previous position.
+- **Interrupts.** After each interrupt, new results wait 2,000 clocks once it is acknowledged. Sector and
+  report interrupts (INT1, INT4) wait in Mednafen's single async slot.
+- **Audio.** The SPU runs inside the controller's update and takes CD audio a sample at a time. CD-DA goes
+  through a 588-sample buffer. XA-ADPCM is decoded a whole sector at a time and resampled to 44.1 kHz with
+  Mednafen's 25-tap filter. The volume matrix and Mute are applied after resampling. Mednafen ignores the
+  XA mute bit of `1F801803` index 3, and so does the port.
+- **Spin-up.** A disc takes a second to spin up after insertion. Commands before then fail with 80h, as
+  the BIOS sees in Mednafen.
+- **Disc identity.** GetID reports the disc's SCEx string by Mednafen's rules: SYSTEM.CNF's boot file
+  prefix, else the licence text, else the console's region. A disc that isn't a PlayStation disc fails
+  ReadN.
+- **Random delays.** They come from Mednafen's PRNG (only the controller draws on it), seeded at power-on.
+  GCC evaluates Reset's `std::max(rand, seek)` with the seek first, and the port draws in that order.
+- **Update points.** The controller is updated when Mednafen's event handler would update it:
+  - at its own next event, checked at each instruction;
+  - before each access outside RAM and the BIOS, before the access's wait states (an SPU read checks again
+    after them);
+  - on a write to its registers;
+  - at frame end.
+  
+  CD reads don't update it, and neither do Mednafen's.
+- **Not ported.** Error correction of damaged sectors (images are clean), and the P/Q parity of
+  synthesized Mode 1 gap sectors.
+
 `psx-oracle lockstep` compares the cycle count before every instruction (`--cycles` makes a difference
 fatal). On SCPH-1001, 300 million instructions (1,174 frames into the shell) match Mednafen cycle for cycle.
-On the Crash replay the frames match within a few cycles up to frame 448. Both BIOSes reach the interlaced
-logo at frame 109. From frame 449 the game's loading differs (CD-ROM timing): native leaves the logo at
-frame 719, Mednafen at 836. Device state still differs from Mednafen's: in that lockstep run, the I/O load
-values adopted are mostly GPUSTAT (1.05M; native's GPU never reports busy), timer 2 (422K), JOY_STAT (346K)
-and GPU DMA's CHCR (275K).
+With the CD-ROM port, `lockstep --disc "media/Crash Bandicoot.cue" --replay` (the replay cut to 4504
+frames, SCPH-7502) matches for 1.4 billion instructions, 4,562 frames into gameplay, with the cycle offset
+at 0 throughout. VRAM is identical at every vblank. RAM differs in 19 frames and SPU RAM in its capture
+buffers. No CD-ROM register value is ever adopted. Before the port, the Crash replay drifted from frame 449,
+and native left the logo at frame 719 against Mednafen's 836.
+
+The values still adopted name the next devices to port:
+
+| Register | Values adopted | What differs |
+|---|---|---|
+| GPUSTAT | 6.8M | busy and ready bits; native's GPU is never busy |
+| Timer 1 counter | 4.6M | timers |
+| JOY_STAT | 1.65M | the pad's serial timing |
+| GPU DMA CHCR | 425K | GPU DMA ends when the GPU's FIFO allows |
+| I_STAT | 99K | interrupt timing of those devices |
+| Voices' ADSR volumes | 1–3K each | the SPU |
 
 **Probe EXE.** `tools/probes/gpu` (PSYQo) sends a fixed GP0 stream: 468 commands from `gen_stream.py`, the same
 words in `gp0_stream.bin`. It draws 24 test cells of 128×128 (`gen_stream.py --list`), covering gouraud and
