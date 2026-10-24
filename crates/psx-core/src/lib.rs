@@ -30,15 +30,12 @@ pub use cpu::{Cpu, StepInfo};
 pub struct Machine {
     pub cpu: Cpu,
     pub bus: Bus,
-    /// Interrupt asserted from outside (lockstep following the oracle), held
-    /// until software acknowledges I_STAT.
-    pub forced_irq: bool,
 }
 
 impl Machine {
     /// Power-on state: CPU at the BIOS reset vector.
     pub fn new(bios: Vec<u8>) -> Self {
-        Machine { cpu: Cpu::new(), bus: Bus::new(bios), forced_irq: false }
+        Machine { cpu: Cpu::new(), bus: Bus::new(bios) }
     }
 
     pub fn step(&mut self) -> StepInfo {
@@ -52,19 +49,71 @@ impl Machine {
         if self.bus.obs.bios.is_some() {
             self.observe_bios_call();
         }
-        if self.bus.take_irq_ack() {
-            self.forced_irq = false;
-        }
-        self.cpu.irq_line = self.forced_irq || self.bus.irq_line();
+        self.cpu.irq_line = self.bus.irq_line();
         // While a manual-mode DMA holds the CPU, it spins in place: the time
         // is the instruction's that started it (or that it interrupted).
         while !self.cpu.step_with(&mut self.bus, info) {
             self.bus.end_instruction();
         }
+        self.finish_step();
+    }
+
+    /// After an instruction: due events, a frame's end, and the time a DMA
+    /// then holds the CPU.
+    #[inline(always)]
+    fn finish_step(&mut self) {
         self.bus.end_instruction();
         while self.bus.dma.halted && !self.cpu.step_with(&mut self.bus, &mut ()) {
             self.bus.end_instruction();
         }
+    }
+
+    /// Step while `go` holds, at most `max_steps` times; the same as
+    /// [`Machine::step`] each time, without the record. Between device
+    /// events, and with no I/O access, nothing but the CPU changes (as in
+    /// Mednafen's `RunReal`, which runs to `next_event_ts`): instructions
+    /// then run without handing time to the bus or checking events, until
+    /// the CPU's clock reaches [`Bus::deadline`] or an access outside RAM,
+    /// BIOS and scratchpad clears it.
+    #[inline(always)]
+    fn run_steps(&mut self, max_steps: u64, until_cycle: u64, go: impl Fn(&Machine) -> bool) -> u64 {
+        let mut n = 0;
+        if self.bus.obs.bios.is_some() || self.bus.obs.active() {
+            while n < max_steps && go(self) {
+                self.step_with(&mut ());
+                n += 1;
+            }
+            return n;
+        }
+        while n < max_steps && go(self) {
+            self.step_with(&mut ());
+            n += 1;
+            if self.bus.dma.halted {
+                continue;
+            }
+            // `go` can only change at an instruction's ending (a frame's end)
+            // or with the CPU's clock, which `until_cycle` bounds.
+            self.bus.deadline = self.bus.next_deadline();
+            self.cpu.irq_line = self.bus.irq_line();
+            self.cpu.refresh_int();
+            let limit = self.bus.deadline.min(until_cycle);
+            let start = n;
+            while n < max_steps && self.cpu.cycles < limit {
+                self.cpu.step_unsynced(&mut self.bus);
+                n += 1;
+                if self.cpu.cycles >= self.bus.deadline {
+                    break;
+                }
+            }
+            if n == start {
+                continue;
+            }
+            self.cpu.sync(&mut self.bus);
+            if self.cpu.cycles >= self.bus.deadline {
+                self.finish_step();
+            }
+        }
+        n
     }
 
     fn observe_bios_call(&mut self) {
@@ -144,24 +193,14 @@ impl Machine {
     /// that many times, for run loops that only act at frame boundaries.
     pub fn run_frame_steps(&mut self, max_steps: u64) -> u64 {
         let frame = self.bus.frames;
-        let mut n = 0;
-        while n < max_steps && self.bus.frames == frame {
-            self.step_with(&mut ());
-            n += 1;
-        }
-        n
+        self.run_steps(max_steps, u64::MAX, |m| m.bus.frames == frame)
     }
 
     /// Step until the next instruction starts at or after `cycle` (CPU
     /// cycles since power-on), or `max_steps` have run; returns the number
     /// executed.
     pub fn run_to_cycle(&mut self, cycle: u64, max_steps: u64) -> u64 {
-        let mut n = 0;
-        while n < max_steps && self.cpu.cycles < cycle {
-            self.step_with(&mut ());
-            n += 1;
-        }
-        n
+        self.run_steps(max_steps, cycle, |m| m.cpu.cycles < cycle)
     }
 
     /// Run until `frames` more vblanks have occurred (or `max_steps`).
@@ -177,12 +216,5 @@ impl Machine {
     /// Insert a disc (CUE/BIN/ISO/CHD via `psx-media`); `None` means an empty drive.
     pub fn insert_disc(&mut self, disc: Option<psx_media::Disc>) {
         self.bus.insert_disc(disc);
-    }
-
-    /// Take an external interrupt now and keep IP2 asserted until acknowledged.
-    pub fn force_interrupt(&mut self) {
-        self.forced_irq = true;
-        self.cpu.irq_line = true;
-        self.cpu.force_interrupt();
     }
 }

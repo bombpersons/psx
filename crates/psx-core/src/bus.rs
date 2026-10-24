@@ -59,8 +59,6 @@ pub struct Bus {
     io_log: Vec<IoAccess>,
     #[serde(skip)]
     pub log_io: bool,
-    /// Set when software writes I_STAT; cleared by [`Bus::take_irq_ack`].
-    irq_acknowledged: bool,
     /// Started transfers with no device model (their RAM/device effects are missing).
     #[serde(skip)]
     pub unmodelled_dma: Vec<UnmodelledDma>,
@@ -97,23 +95,25 @@ pub struct Bus {
     /// its DMA catches up there ([`Bus::end_instruction`]).
     #[serde(skip)]
     frame_ended: bool,
+    /// [`Bus::irq_line`]'s cache, recomputed after a restore.
+    #[serde(skip)]
     irq_cache: bool,
+    #[serde(skip)]
     irq_dirty: bool,
     /// Scanlines, fields and vblank (Mednafen's GPU timing).
     pub video: crate::video::Video,
     /// Completed video frames (vblanks).
     pub frames: u64,
-    /// When false, devices do not raise interrupts (lockstep supplies them).
-    pub irq_sources: bool,
-    /// When true, the video timing doesn't set the GPU's readout field
-    /// (lockstep supplies it).
-    #[serde(skip)]
-    pub external_field: bool,
     pub cdrom: crate::cdrom::Cdrom,
     cdrom_irq: bool,
     /// When the CD-ROM controller next needs an update (its own event, as in Mednafen).
     #[serde(skip)]
     cd_next: u64,
+    /// For [`crate::Machine`]'s run loop: CPU time before which no device
+    /// event is due ([`Bus::next_deadline`]); 0 after an access outside
+    /// RAM, BIOS and scratchpad, which may have changed any device.
+    #[serde(skip)]
+    pub(crate) deadline: u64,
     pub sio0: crate::sio0::Sio0,
     pub mdec: crate::mdec::Mdec,
     pub spu: crate::spu::Spu,
@@ -137,6 +137,13 @@ fn physical(addr: u32) -> u32 {
     if addr >= 0xC000_0000 { addr } else { addr & 0x1FFF_FFFF }
 }
 
+/// The scratchpad offset of a virtual address that reaches it (not through KSEG1).
+#[inline(always)]
+pub fn scratch_offset(addr: u32) -> Option<usize> {
+    let p = physical(addr);
+    (p & !0x3FF == 0x1F80_0000 && addr >> 29 != 5).then_some((p & 0x3FF) as usize)
+}
+
 impl Bus {
     pub fn new(bios: Vec<u8>) -> Self {
         let mut b = bios;
@@ -151,7 +158,6 @@ impl Bus {
             cache_control: 0,
             io_log: Vec::new(),
             log_io: false,
-            irq_acknowledged: false,
             unmodelled_dma: Vec::new(),
             recent_dma: Default::default(),
             dma: Default::default(),
@@ -171,11 +177,10 @@ impl Bus {
             irq_dirty: true,
             video,
             frames: 0,
-            irq_sources: true,
-            external_field: false,
             cdrom,
             cdrom_irq: false,
             cd_next: 0,
+            deadline: 0,
             sio0: Default::default(),
             mdec: Default::default(),
             spu: Default::default(),
@@ -265,7 +270,7 @@ impl Bus {
     }
 
     pub(crate) fn raise_irq(&mut self, bits: u32) {
-        if self.irq_sources && bits != 0 {
+        if bits != 0 {
             let v = self.io_word(I_STAT) | bits;
             self.poke_io(I_STAT, Width::Word, v);
         }
@@ -373,9 +378,7 @@ impl Bus {
                 self.timer_next = next;
             }
             self.after_timers();
-            if !self.external_field {
-                self.gpu.readout_field = self.video.readout_field;
-            }
+            self.gpu.readout_field = self.video.readout_field;
             if video.vblanks > 0 {
                 self.frames += video.vblanks;
                 if self.gpu.draws != self.draws_seen {
@@ -437,6 +440,16 @@ impl Bus {
         self.cdrom.set_time(self.time());
         self.cdrom_irq = false;
         self.cd_next = self.cdrom.next_event();
+    }
+
+    /// The earliest of the next device flush and the devices' next events.
+    pub(crate) fn next_deadline(&self) -> u64 {
+        self.next_event
+            .min(self.cd_next)
+            .min(self.gpu_next)
+            .min(self.timer_next)
+            .min(self.dma_next())
+            .min(self.sio0.next)
     }
 
     fn schedule(&mut self) {
@@ -585,16 +598,6 @@ impl Bus {
         self.draws_seen = self.gpu.draws;
     }
 
-    #[inline]
-    pub fn take_irq_ack(&mut self) -> bool {
-        // Runs every instruction: only store when the flag is set.
-        let acked = self.irq_acknowledged;
-        if acked {
-            self.irq_acknowledged = false;
-        }
-        acked
-    }
-
     fn log_access(&mut self, a: IoAccess) {
         if self.log_io {
             self.io_log.push(a);
@@ -643,10 +646,43 @@ impl Bus {
         (0x1F80_1000..0x1F80_3000).contains(&p)
     }
 
+    /// An aligned read at a physical RAM address (below 8 MiB, mirrored).
+    #[inline(always)]
+    pub(crate) fn read_ram(&self, p: u32, width: Width) -> u32 {
+        let o = p as usize % RAM_SIZE;
+        match width {
+            Width::Word => self.ram_u32(o),
+            Width::Half => u16::from_le_bytes([self.ram[o], self.ram[o + 1]]) as u32,
+            Width::Byte => self.ram[o] as u32,
+        }
+    }
+
     /// Word at a RAM offset (`o` is already reduced modulo [`RAM_SIZE`]).
     #[inline(always)]
     fn ram_u32(&self, o: usize) -> u32 {
         u32::from_le_bytes(self.ram[o..o + 4].try_into().unwrap())
+    }
+
+    /// A scratchpad access at offset `o` (from [`scratch_offset`]); a
+    /// misaligned one wraps within the 1 KiB.
+    #[inline(always)]
+    pub fn read_scratch(&self, o: usize, width: Width) -> u32 {
+        let s = &self.scratch;
+        match width {
+            Width::Word if o <= SCRATCH_SIZE - 4 => u32::from_le_bytes(s[o..o + 4].try_into().unwrap()),
+            Width::Half if o <= SCRATCH_SIZE - 2 => u16::from_le_bytes([s[o], s[o + 1]]) as u32,
+            _ => (0..width as usize).rev().fold(0, |v, i| v << 8 | s[(o + i) % SCRATCH_SIZE] as u32),
+        }
+    }
+
+    #[inline(always)]
+    pub fn write_scratch(&mut self, o: usize, width: Width, value: u32) {
+        let s = &mut self.scratch;
+        match width {
+            Width::Word if o <= SCRATCH_SIZE - 4 => s[o..o + 4].copy_from_slice(&value.to_le_bytes()),
+            Width::Half if o <= SCRATCH_SIZE - 2 => s[o..o + 2].copy_from_slice(&(value as u16).to_le_bytes()),
+            _ => (0..width as usize).for_each(|i| s[(o + i) % SCRATCH_SIZE] = (value >> (8 * i)) as u8),
+        }
     }
 
     #[inline(always)]
@@ -655,22 +691,21 @@ impl Bus {
         // Fast paths: RAM and BIOS (the overwhelmingly common cases), inlined
         // into the CPU; everything else goes through the out-of-line decoder.
         if p < 0x0080_0000 {
-            let o = p as usize % RAM_SIZE;
-            return Ok(match width {
-                Width::Word => self.ram_u32(o),
-                Width::Half => u16::from_le_bytes([self.ram[o], self.ram[o + 1]]) as u32,
-                Width::Byte => self.ram[o] as u32,
-            });
+            return Ok(self.read_ram(p, width));
         }
         if width == Width::Word && (0x1FC0_0000..0x1FC8_0000).contains(&p) {
             let o = (p - 0x1FC0_0000) as usize;
             return Ok(u32::from_le_bytes(self.bios[o..o + 4].try_into().unwrap()));
+        }
+        if let Some(o) = scratch_offset(addr) {
+            return Ok(self.read_scratch(o, width));
         }
         self.read_slow(addr, p, width)
     }
 
     #[inline(never)]
     fn read_slow(&mut self, addr: u32, p: u32, width: Width) -> Result<u32, BusError> {
+        self.deadline = 0;
         if (0x1F80_1000..0x1F80_3000).contains(&p) {
             self.flush();
         }
@@ -784,11 +819,16 @@ impl Bus {
             }
             return Ok(());
         }
+        if let Some(o) = scratch_offset(addr) {
+            self.write_scratch(o, width, value);
+            return Ok(());
+        }
         self.write_slow(addr, p, width, value)
     }
 
     #[inline(never)]
     fn write_slow(&mut self, addr: u32, p: u32, width: Width, value: u32) -> Result<(), BusError> {
+        self.deadline = 0;
         if (0x1F80_1000..0x1F80_3000).contains(&p) {
             self.flush();
             if (I_STAT..I_MASK + 4).contains(&p) {
@@ -864,7 +904,6 @@ impl Bus {
                     // up by the byte offset, is ANDed into the 16-bit status.
                     let v = self.io_word(I_STAT) & (value << (8 * (p & 3))) & 0xFFFF;
                     self.poke_io(I_STAT, Width::Word, v);
-                    self.irq_acknowledged = true;
                 } else if p & !3 == I_MASK {
                     self.poke_io(I_MASK, Width::Word, (value << (8 * (p & 3))) & 0xFFFF);
                 } else if p < 0x1F80_1024 {

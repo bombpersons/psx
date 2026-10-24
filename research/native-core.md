@@ -299,7 +299,7 @@ the devices in `input/`:
   and a narrow write to I_STAT clears the bytes it misses, as in Mednafen's `irq.cpp`.
 
 With that, lockstep no longer needs Mednafen's interrupts: the core raises its own, and lockstep compares
-Cause.IP2 (`--adopt-irqs` restores the old forcing). It also uses the core's interlaced display field and
+Cause.IP2 (the old forcing, `--adopt-irqs`, was later removed). It also uses the core's interlaced display field and
 counts instructions where it differs. On the Crash run (1.4 billion instructions) every interrupt comes from
 the core, the field never differs and the cycle count matches throughout. JOY_STAT and I_STAT, adopted 1.65M
 and 99K times, are never adopted; adopted values fell from 1.78M to 27,560, all of them the SPU's (the voices'
@@ -994,6 +994,45 @@ The changes, all in `psx-gpu` (`raster.rs`, `lib.rs`):
 Paired runs of the two intermediate builds (before the CLUT copy and the last two tweaks) gave ratios within about ±3% of these. In the Crash profile, triangle work fell from 33.1% to 21.1% of samples, so the rasteriser itself runs about 1.8× faster. Most of what remains is the dependent texture-word → CLUT load and the three modulate clamps. The interpreter is again the larger part.
 
 Cost: the variants add about 400 KB of machine code to the `psx` binary. The generic `Surface`/`TexelSource` API, `plot`, `triangle`, `quad` and `rect` keep their signatures. Native framebuffers get the specialised loops too, with their own texel source.
+
+#### Fourth pass: after the Mednafen timing port
+
+The Mednafen timing port (instruction cache, load-delay absorption, the 128-clock DMA grid and per-device events) made the core cycle-exact. It also slowed it: Tomb Raider fell from 50–54M to about 32M instructions/s. The bench is 6000 frames of the suite's replay in 52 s, about 115 fps or 1.9× real time. `perf` (now installed) gives:
+- **Self time:** the step loop 53%, `execute` 14%, `load_mem` 6%, `Spu::sample` 5%, the textured-triangle row loop 4.5%, `end_instruction` 3.5% and DMA 2%.
+- **`perf stat`:** 302 host instructions per guest instruction at 2.7 IPC, with 1% branch misses and few cache misses. The cost is instruction count, not stalls.
+- **The guest:** CPI is 2.4 (1.0G cycles for 415M instructions over 1500 frames). DMA-halted spins are under 1% of steps.
+- **No dominant line:** sampling by retired instructions spreads the step loop over dozens of lines of 1–4% each. The load-delay timing (`issue_timing`, a second decode of every instruction) is the largest group at about a quarter of the loop.
+
+Tried and not kept, each within noise (112–115 fps):
+- One cached earliest-event time instead of the five-way minimum in `end_instruction`.
+- The BIOS-call observer check hoisted out of the loop as a const generic.
+
+Kept, because they remove code or match Mednafen better, though neither is faster:
+- **IRQ adoption is gone.** That covers `--adopt-irqs`, `Machine::forced_irq`, `Bus::irq_sources`/`external_field` and the acknowledge flag; the suite adopts nothing. Save-state format 18.
+- **Scratchpad accesses are inline.** CPU stores to the scratchpad no longer run due events first, as in Mednafen's `WriteMemory`.
+
+Faster needed structural changes, which followed. Each step below kept the bench's screen and RAM hashes unchanged (6000 frames; Mednafen runs the same replay at about 300 fps):
+
+| Change | Time | fps |
+|---|---|---|
+| Before | 52.3 s | 115 |
+| Run between device events (`Machine::run_steps`) | 42.7 s | 140 |
+| Register dependencies from per-opcode tables | 40.1 s | 149 |
+| `execute` inlined | 39.1 s | 153 |
+| Instruction cache as a flat array | 37.6 s | 159 |
+| Cached interrupt check (Mednafen's `IPCache`) | 38.3 s | 156 |
+| Dependencies and load retire in each opcode's arm | 35.1 s | 170 |
+| The load in flight lands inside the instruction (`DO_LDS`) | 33.3 s | 179 |
+| Branch flags in one byte; `read_absorb` indexed without bounds checks (not timed alone: 7% fewer cycles) | — | — |
+| RAM loads and stores inline, the rest out of line | 29.4 s | 203 |
+| Loads split by opcode; `segment_mask` as a table; no DMA-hold check between events | 27.7 s | 216 |
+
+- **Running between events:** below `Bus::deadline` the loop runs `Cpu::step_unsynced`, with no bus sync, `end_instruction` or interrupt refresh. The deadline is the earliest of the next event, CD, GPU, timer, DMA and controller-port times. `read_slow` and `write_slow` zero it, so any access outside RAM, BIOS and scratchpad ends the run. A DMA hold can only start at such an access or at an event, so the fast step skips that check. `frame_batched_run_equals_single_steps` checks the two loops give identical states.
+- **The load delay as in Mednafen:** each opcode's arm clears its registers' absorb entries and retires the load in flight (`issue`). The load then lands in the register file (`land`); loads, MFC0 and MFC2/CFC2 into the same register cancel it instead. The per-step `load_in`/`wreg` copies are gone. A landed load keeps its value with register 0 as the target; zeroing the pair cost 3% of cycles. Save-state format 19.
+- **Cycle-bound, not stall-bound:** host instructions fell from 104G to 80G per 1500 frames, and cycles from 33G to 24G, at about 3.3 IPC with 0.6% branch misses. A typical ALU instruction is now about 117 host instructions and a RAM load about 145.
+- **Tried and not kept:** a branch-free `issue_cycle` was slightly slower.
+
+What remains is spread thin: operand decode (~28 host instructions per guest instruction), fetch, the timing bookkeeping and loop control at 5–15 each. `Spu::sample` is 10%, spread over the Gaussian interpolation, envelope and decoder.
 
 ### Debugging trail: from a kernel overwrite to playing FMVs
 

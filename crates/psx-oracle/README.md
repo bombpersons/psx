@@ -41,8 +41,7 @@ reports the instructions after which the difference changed; `--cycles` stops at
 DMA, CD-ROM, GPU command, timer, controller port, SPU and MDEC timing are Mednafen's. The value of an I/O
 load that still differs is taken from Mednafen and counted by register (`io_values_adopted_by_register`)
 rather than treated as divergence. Instructions before which the interlaced field being displayed (whose lines the GPU skips in
-480-line interlace) differs are counted too (`field_differs`). `--adopt-irqs` takes the interrupt line and
-that field from Mednafen instead, as lockstep did before the devices' timing was ported. `--trace-adopted
+480-line interlace) differs are counted too (`field_differs`). `--trace-adopted
 ADDR` prints each value adopted from one register to stderr (step, frame, PC, cycle, both values) to find
 where a device's timing parts.
 

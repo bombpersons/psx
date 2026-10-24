@@ -497,8 +497,8 @@ else links it. Run it from the project root:
   the native core and Mednafen side by side from BIOS reset. Before each instruction it compares PC,
   the instruction, every register, the delayed load, COP0 and (after GTE instructions) the GTE, and it
   stops at the first divergence. It also compares the cycle count and reports where it changes;
-  `--cycles` stops there. The core raises its own interrupts and lockstep compares the interrupt line
-  (`--adopt-irqs` takes it from Mednafen). An I/O load value that still differs is taken from Mednafen
+  `--cycles` stops there. The core raises its own interrupts and lockstep compares the interrupt line.
+  An I/O load value that still differs is taken from Mednafen
   and counted by register. RAM, the scratchpad, VRAM and SPU RAM are compared at every
   frame end where both are at the same instruction, and reported without stopping; `--dump` writes both
   sides' memory at the end. `--fast` runs frames at full speed and compares at each frame end (about 15M
