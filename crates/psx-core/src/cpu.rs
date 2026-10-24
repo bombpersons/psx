@@ -132,20 +132,21 @@ pub struct Cpu {
 
 /// [`Cpu::spin_key`].
 #[derive(PartialEq)]
+/// Fields in the order compared: what differs most often first.
 pub(crate) struct SpinKey {
+    pc: u32,
+    next_pc: u32,
+    bd: u8,
+    int: (bool, bool),
+    load: (usize, u32),
+    waits: [u64; 2],
     regs: [u32; 32],
     hi: u32,
     lo: u32,
-    pc: u32,
-    next_pc: u32,
-    load: (usize, u32),
-    bd: u8,
-    cop0: [u32; 32],
-    absorb: [u8; 33],
     timing: [u8; 3],
     ld_absorb: u32,
-    waits: [u64; 2],
-    int: (bool, bool),
+    absorb: [u8; 33],
+    cop0: [u32; 32],
 }
 
 /// [`Cpu::bd`]'s bits.
@@ -1271,6 +1272,24 @@ impl Cpu {
         k.regs = [0; 32];
         k.load.1 = 0;
         k
+    }
+
+    /// `self.loop_key() == *k`, without building the key.
+    pub(crate) fn loop_key_is(&self, k: &SpinKey) -> bool {
+        let t = &self.t;
+        let same = self.pc == k.pc
+            && self.next_pc == k.next_pc
+            && self.bd == k.bd
+            && (self.int_pending, self.irq_line) == k.int
+            && self.load.0 == k.load.0
+            && [t.gte_done.saturating_sub(self.cycles), t.muldiv_done.saturating_sub(self.cycles)] == k.waits
+            && (self.hi, self.lo) == (k.hi, k.lo)
+            && [t.read_absorb_which, t.read_fudge, t.ld_which] == k.timing
+            && t.ld_absorb == k.ld_absorb
+            && t.read_absorb[..33] == k.absorb
+            && self.cop0 == k.cop0;
+        debug_assert_eq!(same, self.loop_key() == *k);
+        same
     }
 
     /// Whether fetching `pc` now takes the time it took the last time: it

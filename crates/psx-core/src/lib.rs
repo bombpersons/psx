@@ -62,6 +62,9 @@ struct Wait {
     regs: [loops::Aff; 32],
     load: (usize, loops::Aff),
     out: loops::Outcome,
+    /// When the last skip ended: the time the pass after the one then
+    /// starting begins, and its number.
+    next: Option<(u64, u64)>,
 }
 
 struct SpinSlot {
@@ -175,7 +178,9 @@ impl Machine {
         let found = self.spin.slots.iter().position(|s| s.as_ref().is_some_and(|s| s.key == key));
         if let Some(i) = found {
             let s = self.spin.slots[i].as_mut().unwrap();
-            if s.breaks == breaks && s.bus == bus && cycles > s.cycles {
+            // (`n` counts from each run's start: a slot from an earlier run
+            // can be ahead of it.)
+            if s.breaks == breaks && s.bus == bus && cycles > s.cycles && *n >= s.steps {
                 let (period, steps) = (cycles - s.cycles, *n - s.steps);
                 let limit = self.bus.next_deadline().min(until_cycle);
                 let mut k = if limit > cycles { (limit - 1 - cycles) / period } else { 0 };
@@ -314,13 +319,14 @@ impl Machine {
                     regs,
                     load,
                     out,
+                    next: None,
                 })
             })
             .flatten()
             .filter(|w| w.trace.iter().all(|&(pc, _)| self.cpu.fetches_alike(&self.bus, pc)));
         self.spin.trace = trace;
-        let w = w?;
-        self.skip_passes(&w, 0, n, max_steps, until_cycle);
+        let mut w = w?;
+        w.next = self.skip_passes(&w, 0, n, max_steps, until_cycle);
         self.spin.wait = Some(w);
         Some(true)
     }
@@ -331,7 +337,25 @@ impl Machine {
         if !self.loop_run_setup(until_cycle) {
             return;
         }
-        let w = self.spin.wait.take().unwrap();
+        let mut w = self.spin.wait.take().unwrap();
+        // Where the next pass should start: an event comes first (run on to
+        // it and look again), or run there and check the state in place.
+        if let Some((t, j)) = w.next.take() {
+            if self.cpu.cycles < t && self.bus.deadline <= t {
+                w.next = Some((t, j));
+                self.spin.wait = Some(w);
+                return;
+            }
+            match self.run_to_head(&w, t, n, max_steps) {
+                Some(true) if self.loop_key_is(&w) && w.out.passes > j && self.loop_at(&w, j) => {
+                    w.next = self.skip_passes(&w, j, n, max_steps, until_cycle);
+                    self.spin.wait = Some(w);
+                    return;
+                }
+                Some(_) => return,
+                None => {}
+            }
+        }
         self.spin.trace.clear();
         match self.loop_steps((w.pc, w.next_pc), w.trace.len(), n, max_steps) {
             Some(true) => {}
@@ -342,15 +366,57 @@ impl Machine {
             None => return,
         }
         if let Some(j) = self.loop_pass(&w) {
-            self.skip_passes(&w, j, n, max_steps, until_cycle);
+            w.next = self.skip_passes(&w, j, n, max_steps, until_cycle);
             self.spin.wait = Some(w);
         }
+    }
+
+    /// Run at full speed to time `t`, before the run's next event, when a
+    /// pass of `w` should start (the clock, at the loop's start, saying
+    /// nothing else of the CPU's course: its fetches are as they were, since
+    /// they take the same time). Some(true) when the CPU is then at the
+    /// loop's start, Some(false) when it is elsewhere (the run's step
+    /// finished as `run_steps` would), None when it is already past `t`.
+    fn run_to_head(&mut self, w: &Wait, t: u64, n: &mut u64, max_steps: u64) -> Option<bool> {
+        let deadline = self.bus.deadline;
+        if self.cpu.cycles > t {
+            return None;
+        }
+        if self.cpu.cycles < t {
+            self.bus.deadline = t;
+            *n += self.cpu.run_unsynced(&mut self.bus, max_steps - *n);
+            self.cpu.sync(&mut self.bus);
+        }
+        let io = self.bus.deadline == 0;
+        if !io && self.cpu.cycles == t && (self.cpu.pc, self.cpu.next_pc()) == (w.pc, w.next_pc) {
+            return Some(true);
+        }
+        if io || self.cpu.cycles >= deadline {
+            self.finish_step();
+        }
+        Some(false)
+    }
+
+    /// The CPU's timing state and the DMA's as when `w` was found.
+    fn loop_key_is(&self, w: &Wait) -> bool {
+        self.cpu.loop_key_is(&w.key) && self.loop_bus_key() == w.bus
+    }
+
+    /// Whether the CPU, at the loop's start, and the RAM it reads and
+    /// stores are where pass `j` of `w` starts.
+    fn loop_at(&self, w: &Wait, j: u64) -> bool {
+        let (regs, load) = (&self.cpu.regs, self.cpu.load_raw());
+        (1..32).all(|r| regs[r] == w.regs[r].at(j))
+            && load.0 == w.load.0
+            && load.1 == w.load.1.at(j)
+            && w.out.stores.iter().all(|&(addr, width, v)| self.read_mem(addr, width) == Some(v.at(j.wrapping_sub(1))))
+            && w.out.reads.iter().all(|&(addr, width, v)| self.read_mem(addr, width) == Some(v))
     }
 
     /// The pass of `w` the CPU's state (at the loop's start) is the start
     /// of, counting from `w`'s pass 0, if it is one.
     fn loop_pass(&self, w: &Wait) -> Option<u64> {
-        if self.cpu.loop_key() != w.key || self.loop_bus_key() != w.bus {
+        if !self.loop_key_is(w) {
             return None;
         }
         if !w.trace.iter().all(|&(pc, _)| self.cpu.fetches_alike(&self.bus, pc)) {
@@ -371,24 +437,22 @@ impl Machine {
             Some((a, v, after)) => loops::pass_of(a, v)?.wrapping_add(after),
             None => 0,
         };
-        let on_course = (1..32).all(|r| regs[r] == w.regs[r].at(j))
-            && load.0 == w.load.0
-            && load.1 == w.load.1.at(j)
-            && w.out.stores.iter().zip(&stored).all(|(s, &v)| v == s.2.at(j.wrapping_sub(1)))
-            && w.out.reads.iter().all(|&(addr, width, v)| self.read_mem(addr, width) == Some(v));
-        (on_course && j < w.out.passes).then_some(j)
+        (j < w.out.passes && self.loop_at(w, j)).then_some(j)
     }
 
     /// Skip passes of `w` from its pass `j` (the CPU at its start), up to
     /// the next event, the step limit or the last pass that repeats it.
-    fn skip_passes(&mut self, w: &Wait, j: u64, n: &mut u64, max_steps: u64, until_cycle: u64) {
+    /// Returns when the pass after the one the CPU is then at the start of
+    /// begins, and its number, for [`Machine::run_to_head`].
+    fn skip_passes(&mut self, w: &Wait, j: u64, n: &mut u64, max_steps: u64, until_cycle: u64) -> Option<(u64, u64)> {
         let steps = w.trace.len() as u64;
         let limit = self.bus.next_deadline().min(until_cycle);
         let cycles = self.cpu.cycles;
         let k = if limit > cycles { (limit - 1 - cycles) / w.period } else { 0 };
         let k = k.min(w.out.passes - j).min((max_steps - *n) / steps);
+        let next = (j + k + 1 < w.out.passes).then_some((cycles + (k + 1) * w.period, j + k + 1));
         if k == 0 {
-            return;
+            return next;
         }
         for (r, a) in self.cpu.regs.iter_mut().zip(w.regs).skip(1) {
             *r = a.at(j + k);
@@ -400,6 +464,7 @@ impl Machine {
         self.cpu.skip_cycles(k * w.period);
         self.bus.skip_cycles(k * w.period);
         *n += k * steps;
+        next
     }
 
     fn observe_bios_call(&mut self) {

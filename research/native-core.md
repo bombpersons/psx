@@ -1074,7 +1074,7 @@ On the 1500-frame window the core is now faster than Mednafen (13.6G against 16.
 
 #### Sixth pass: pixels on a second thread
 
-The GPU's drawing time comes from geometry and the texture cache tags, never from what VRAM holds. So a command's pixels can be drawn later as long as nothing reads VRAM first. `psx_gpu::paint::Painter` owns the VRAM, behind an `Arc<Mutex>`:
+The GPU's drawing time comes from geometry and the texture cache tags, never from what VRAM holds. So a command's pixels can be drawn later as long as nothing reads VRAM first. `psx_gpu::paint::Painter` owns the VRAM, behind an `Arc<RwLock>`:
 - Each fill, copy, primitive and CPU→VRAM word becomes a `Job`. Jobs go to a worker thread in batches of 256 and run in order.
 - `Gpu::vram.lock()` waits for every job queued so far. It is used for GPUREAD, display readout, dumps and save states.
 - With one CPU, or with `PSX_GPU_THREAD=0`, jobs run inline.
@@ -1091,6 +1091,22 @@ Profile-guided optimisation (`-Cprofile-use`, trained on six discs or on the ben
 The lockstep suite got faster too:
 - **Memory reads.** Half of a `lockstep --fast` run went to reading Mednafen's memory at each frame end through its debugger, one byte per call. The harness now copies main RAM and VRAM directly and SPU RAM a halfword at a time; the dumps are byte-identical.
 - **Parallel runs.** `suite` meant to run three at a time, but its worker loop held the queue's lock through each run (`while let ... = queue.lock().unwrap().pop_front()` keeps the guard for the loop body), so the runs went one by one. It now runs one per core, longest first.
+
+#### Seventh pass: resuming wait loops in place
+
+Tomb Raider's bench resumes a found wait loop 5.4M times, about 900 per frame. Each resume stepped the CPU one instruction at a time to the loop's start, then checked it against the loop: a full `loop_key`, icache line checks over the trace, and solving for the pass number from a stored word. Now each skip records when the next pass should start and its number `j`, and a resume does this instead:
+- **An event comes first:** do nothing. The ordinary run carries on to the event and the next resume looks again.
+- **Otherwise:** run at full speed (`run_unsynced`) to exactly that time. If the CPU is then at the loop's start, compare its timing state in place (`Cpu::loop_key_is`; debug builds check it against `loop_key`), then the registers, load slot and RAM against pass `j`. Arriving at the exact cycle implies the fetches took the same time, so the icache check is skipped. Most resumes find the CPU already at that time: the event fell on a pass's start.
+- **Anything else** (off course, or past the time) falls back to the old path.
+
+93% of resumes now take the fast path. Hashes are unchanged in both release and debug builds.
+
+| Replay | Before | After | Mednafen |
+|---|---|---|---|
+| Tomb Raider, 6000 frames | 352 fps | 370 fps | 318 fps |
+| Crash Bandicoot, 7905 frames | 269 fps | 274 fps | 265 fps |
+
+A debug build found an overflow in `skip_spin`. `n` counts from each run's start, so a spin slot recorded by an earlier run can be ahead of it. Release wrapped the step count to a huge value that skipped nothing, and the slot is now just ignored, which skips nothing either.
 
 ### Debugging trail: from a kernel overwrite to playing FMVs
 
