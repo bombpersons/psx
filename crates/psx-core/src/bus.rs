@@ -82,11 +82,9 @@ pub struct Bus {
     /// `GPU_Update`: drawing time, the command FIFO and the video timing).
     gpu_ts: u64,
     gpu_next: u64,
-    /// Dot clocks and horizontal retraces the video timing produced since the
-    /// timers last ran.
-    video_dots: u64,
-    video_hretraces: u64,
+    /// The root counters (Mednafen's `timer.cpp`) and their next event.
     pub timers: crate::timers::Timers,
+    timer_next: u64,
     /// System clock cycles elapsed, as far as devices have been advanced.
     pub now: u64,
     /// CPU cycles not yet handed to devices.
@@ -165,9 +163,8 @@ impl Bus {
             gpu_irq: false,
             gpu_ts: 0,
             gpu_next: 0,
-            video_dots: 0,
-            video_hretraces: 0,
             timers: Default::default(),
+            timer_next: 1024,
             now: 0,
             pending: 0,
             irq_cache: false,
@@ -291,7 +288,7 @@ impl Bus {
     #[inline]
     pub fn end_instruction(&mut self) {
         let t = self.time();
-        if t >= self.cd_next.min(self.gpu_next).min(self.dma_next()) {
+        if t >= self.cd_next.min(self.gpu_next).min(self.timer_next).min(self.dma_next()) {
             self.events(t);
         }
         if self.frame_ended {
@@ -300,20 +297,21 @@ impl Bus {
             let now = self.now;
             self.gpu_next = self.gpu_update(now);
             self.cd_update(now);
+            self.timer_update(now);
             self.dma_update(now);
             self.schedule();
         }
     }
 
     /// Mednafen's event check before an access outside RAM and the BIOS, and
-    /// at each instruction: the GPU's, the CD-ROM controller's and the DMA's
-    /// events due by `t`, in time order (and in that order at the same time,
-    /// as Mednafen's event list starts).
+    /// at each instruction: the GPU's, the CD-ROM controller's, the timers'
+    /// and the DMA's events due by `t`, in time order (and in that order at
+    /// the same time, as Mednafen's event list starts).
     #[inline]
     pub fn events(&mut self, t: u64) {
         loop {
-            let (g, c, d) = (self.gpu_next, self.cd_next, self.dma_next());
-            let e = g.min(c).min(d);
+            let (g, c, tm, d) = (self.gpu_next, self.cd_next, self.timer_next, self.dma_next());
+            let e = g.min(c).min(tm).min(d);
             if e > t {
                 break;
             }
@@ -321,10 +319,23 @@ impl Bus {
                 self.gpu_next = self.gpu_update(g);
             } else if c == e {
                 self.cd_update(c);
+            } else if tm == e {
+                self.timer_update(tm);
             } else {
                 self.dma_update(d);
             }
         }
+    }
+
+    /// Bring the timers to `t` (Mednafen's `TIMER_Update`).
+    fn timer_update(&mut self, t: u64) {
+        self.timer_next = self.timers.update(t);
+        self.after_timers();
+    }
+
+    fn after_timers(&mut self) {
+        let irq = self.timers.take_irq();
+        self.raise_irq(irq);
     }
 
     /// The DMA's next event: the 128-clock grid point after its last update.
@@ -342,12 +353,14 @@ impl Bus {
             self.gpu_ts = t;
             self.gpu.credit(clocks);
             self.after_gpu();
-            let video = self.video.tick(clocks, &self.gpu.display);
+            let video = self.video.tick(clocks, t, &self.gpu.display, &mut self.timers);
+            if let Some(next) = video.timer_next {
+                self.timer_next = next;
+            }
+            self.after_timers();
             if !self.external_field {
                 self.gpu.readout_field = self.video.readout_field;
             }
-            self.video_dots += video.dot_clocks;
-            self.video_hretraces += video.hretraces;
             if video.vblanks > 0 {
                 self.frames += video.vblanks;
                 if self.gpu.draws != self.draws_seen {
@@ -437,9 +450,6 @@ impl Bus {
 
     fn run_devices(&mut self, cycles: u64) {
         self.now += cycles;
-        let (dots, hretraces) = (std::mem::take(&mut self.video_dots), std::mem::take(&mut self.video_hretraces));
-        let irq = self.timers.tick(cycles, dots, hretraces);
-        self.raise_irq(irq);
         if self.sio0.tick(self.now) {
             self.raise_irq(1 << 7);
         }
@@ -663,8 +673,10 @@ impl Bus {
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
-            0x1F80_1100..=0x1F80_112F => {
-                let v = self.timers.read(((p - TIMERS) >> 4) as usize, p & 0xC) >> (8 * (p & 3));
+            0x1F80_1100..=0x1F80_113F => {
+                let now = self.now;
+                let v = self.timers.read(now, p - TIMERS);
+                self.after_timers();
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
@@ -796,8 +808,10 @@ impl Bus {
                     let now = self.now;
                     let fired = self.cdrom.write(p & 3, value as u8, now, Some(self.frames), &mut self.spu);
                     self.after_cd(fired);
-                } else if (TIMERS..TIMERS + 0x30).contains(&p) {
-                    self.timers.write(((p - TIMERS) >> 4) as usize, p & 0xC, value);
+                } else if (TIMERS..TIMERS + 0x40).contains(&p) {
+                    let now = self.now;
+                    self.timer_next = self.timers.write(now, p - TIMERS, value);
+                    self.after_timers();
                 } else if p == GP0 && width == Width::Word {
                     self.gpu.gp0(value);
                     self.after_gpu();

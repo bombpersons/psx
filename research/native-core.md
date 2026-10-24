@@ -117,7 +117,7 @@ they follow the sample clock. Ported along the way:
   3413 alternately in NTSC.
 - Fields are 314 lines (PAL) or 263 (NTSC); interlaced, 313/312 and 263/262 alternately.
 - Vblank runs from GP1(07h)'s end line to its start line.
-- Timer 0 gets whole dot clocks and timer 1 each retrace.
+- Timer 0 gets whole dot clocks and timer 1 each retrace (see the timer port below).
 - GPUSTAT bit 31 is the parity of the VRAM line being read out, and bit 13 the inverse of the field.
 
 A PAL frame is 680,626 system clocks (49.76 Hz) and an NTSC one 566,121 (59.83 Hz), where native had 677,376 and
@@ -253,6 +253,34 @@ The values still adopted name the next devices to port:
 | I_STAT | 99K | interrupt timing of those devices |
 | Voices' ADSR volumes | 1–3K each | the SPU |
 
+**Mednafen timers (`psx-core/src/timers.rs`).** A port of `timer.cpp`:
+- **Lazy counting.** Counters on the system clock catch up only at their own event (Mednafen's
+  `CalcNextEvent`: the next target or overflow that could interrupt, at most 1024 clocks away), at register
+  reads and writes, and twice at each end of a line phase in `GPU_Update`. The timers' event runs in the
+  event list between the CD-ROM controller's and the DMA's.
+- **GPU sources.** The video timing hands timer 0 its dots per chunk and timer 1 one clock per horizontal
+  retrace, and tells the timers when retrace and vblank start and end. So these counters run only as far as
+  the GPU has been updated.
+- **Sync modes.** Timer 1's modes 1, 3, 5 and 7 follow vblank. Timer 0's mode 3 resets at the end of each
+  retrace. Timer 2 stops in modes 1 and 3. Timers don't count until their mode is first written.
+- **Flags.** The compare flag clears on a mode read only while the counter isn't at the target. Mode bit 10
+  (the interrupt line) is never set, as in Mednafen; an interrupt is a pulse to I_STAT, and `IRQDone` stops
+  a one-shot from repeating until bit 6's auto-reset or a write.
+- **Registers.** Byte and halfword writes shift into the 16-bit register as `TIMER_Write` does, and
+  0x1F801130-0x1F80113F is the timers' open bus.
+
+On the Crash lockstep run (1.4 billion instructions, still cycle for cycle), timer 1's counter, adopted 4.6M
+times before, is never adopted. Adopted values fell from 6.38M to 1.78M:
+
+| Register | Values adopted | What differs |
+|---|---|---|
+| JOY_STAT | 1.65M | the pad's serial timing |
+| I_STAT | 99K | the pad's interrupt timing |
+| Voices' ADSR volumes | 1.6–2.9K each | the SPU |
+
+On SCPH-1001 (100 million instructions) no timer value is adopted, and the cycle offset stays at 0. Native
+Crash alone at frame 4,504 is about where it was (421 bytes of RAM differ from Mednafen's).
+
 **Probe EXE.** `tools/probes/gpu` (PSYQo) sends a fixed GP0 stream: 468 commands from `gen_stream.py`, the same
 words in `gp0_stream.bin`. It draws 24 test cells of 128×128 (`gen_stream.py --list`), covering gouraud and
 dither, textures in all depths, the four blend modes, lines and polylines, rects, texture windows, mask bits,
@@ -341,7 +369,7 @@ The profile shows what the software is waiting for.
 
 New devices for this:
 
-- **Timers** (`timers.rs`): sysclock, dotclock, hblank and sysclock/8 sources; target/0xFFFF reset; IRQ modes; reached flags. Sync modes are not modelled yet.
+- **Timers** (`timers.rs`): a port of Mednafen's `timer.cpp` (see "Mednafen timers" above).
 - **VBlank:** PAL 50 Hz / NTSC 59.94 Hz frames on I_STAT bit 0. (Since 2026-10-24 the video timing is
   Mednafen's; see "Mednafen video timing".)
 - **Timing:** flat per-instruction costs like Redux (2 cycles, +20 in BIOS ROM). Not cycle-accurate. (Since

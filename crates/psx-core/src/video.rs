@@ -24,6 +24,8 @@ pub struct Events {
     pub hretraces: u64,
     /// Vblank started (the vblank interrupt, and a new frame).
     pub vblanks: u64,
+    /// The timers' next event, when a line phase ended and updated them.
+    pub timer_next: Option<u64>,
 }
 
 /// Whether a BIOS is a PAL console's: the region letter ending its version
@@ -99,8 +101,10 @@ impl Video {
         (((self.line_clocks as u64) << 16).saturating_sub(self.gpu_clock_frac).div_ceil(ratio)).max(1)
     }
 
-    /// Advance by `cycles` system clocks with the display set up as `d`.
-    pub fn tick(&mut self, cycles: u64, d: &psx_gpu::Display) -> Events {
+    /// Advance by `cycles` system clocks, to system clock `t`, with the
+    /// display set up as `d`, clocking `timers` with dots and retraces and
+    /// telling them of retrace and vblank as Mednafen's `GPU_Update` does.
+    pub fn tick(&mut self, cycles: u64, t: u64, d: &psx_gpu::Display, timers: &mut crate::timers::Timers) -> Events {
         let mut ev = Events::default();
         self.gpu_clock_frac += cycles * if self.pal_console { RATIO_PAL } else { RATIO_NTSC };
         let mut gpu_clocks = self.gpu_clock_frac >> 16;
@@ -111,22 +115,29 @@ impl Video {
             gpu_clocks -= chunk as u64;
             self.line_clocks -= chunk;
             self.dot_clocks += chunk;
-            ev.dot_clocks += (self.dot_clocks / divider) as u64;
+            let dots = self.dot_clocks / divider;
+            ev.dot_clocks += dots as u64;
             self.dot_clocks %= divider;
+            timers.add_dot_clocks(dots);
             if self.line_clocks == 0 {
-                self.end_phase(d, &mut ev);
+                timers.update(t);
+                self.end_phase(d, &mut ev, timers);
+                ev.timer_next = Some(timers.update(t));
             }
         }
         ev
     }
 
-    fn end_phase(&mut self, d: &psx_gpu::Display, ev: &mut Events) {
+    fn end_phase(&mut self, d: &psx_gpu::Display, ev: &mut Events, timers: &mut crate::timers::Timers) {
         self.hretrace = !self.hretrace;
         if self.hretrace {
+            timers.set_hretrace(true);
             self.line_clocks = HRETRACE;
             ev.hretraces += 1;
+            timers.clock_hretrace();
             return;
         }
+        timers.set_hretrace(false);
         let pal_mode = d.mode & 0x08 != 0;
         let interlaced = d.mode & 0x20 != 0;
         self.line_clocks = if pal_mode { 3405 } else { 3412 + self.phase_change as u32 } - HRETRACE;
@@ -156,6 +167,7 @@ impl Video {
         if self.scanline == vert_start && self.in_vblank {
             self.in_vblank = false;
         }
+        timers.set_vblank(self.in_vblank);
         let y_start = d.start.1 as u32;
         self.cur_line_readout = if d.mode & 0x24 == 0x24 {
             y_start + (self.cur_y_offset << 1) + if self.in_vblank { 0 } else { self.readout_field as u32 }
@@ -179,10 +191,10 @@ mod tests {
     /// System clocks from one vblank to the next, after the first (the field
     /// length starts NTSC's and changes at scanline 0).
     fn frame_clocks(pal_console: bool, mode: u32) -> Vec<u64> {
-        let (mut v, d) = (Video::new(pal_console), display(mode));
+        let (mut v, d, mut timers) = (Video::new(pal_console), display(mode), crate::timers::Timers::default());
         let mut starts = Vec::new();
         for t in 0..4_000_000u64 {
-            if v.tick(1, &d).vblanks > 0 {
+            if v.tick(1, t, &d, &mut timers).vblanks > 0 {
                 starts.push(t);
             }
         }
@@ -203,11 +215,11 @@ mod tests {
 
     #[test]
     fn interlaced_fields_alternate_in_length_and_parity() {
-        let (mut v, d) = (Video::new(false), display(0x24));
+        let (mut v, d, mut timers) = (Video::new(false), display(0x24), crate::timers::Timers::default());
         let mut fields = Vec::new();
         let mut last = 0;
         for t in 0..3_000_000u64 {
-            if v.tick(1, &d).vblanks > 0 {
+            if v.tick(1, t, &d, &mut timers).vblanks > 0 {
                 fields.push((t - last, v.readout_field));
                 last = t;
             }

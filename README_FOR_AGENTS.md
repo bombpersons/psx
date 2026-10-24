@@ -502,7 +502,7 @@ else links it. Run it from the project root:
   vblank and reported without stopping; `--dump` writes both sides' memory at the end.
 - `tools/probes/gpu/compare.sh PSX PSX_ORACLE OUT_DIR` diffs `psx-gpu` against Mednafen on the GPU probe.
 
-The native core's video, CPU, DMA, CD-ROM and GPU command timing are Mednafen's:
+The native core's video, CPU, DMA, CD-ROM, GPU command and timer timing are Mednafen's:
 - scanlines, fields and vblank follow the GPU clock (49.76 Hz frames on a PAL console, 59.83 Hz on NTSC);
 - instructions cost what Mednafen charges (instruction cache, load latency, bus wait states,
   multiply/divide and GTE latencies);
@@ -511,11 +511,13 @@ The native core's video, CPU, DMA, CD-ROM and GPU command timing are Mednafen's:
   sector pipeline, random delays (Mednafen's PRNG) and XA/CD-DA audio, and it clocks the SPU as Mednafen's does;
 - GP0 words go through Mednafen's command FIFO and wait for its drawing-time estimate, so GPUSTAT's busy
   and ready bits and the GPU's DMA follow Mednafen's (`psx-gpu`'s `Gpu::timed`; tools that replay GP0
-  words use the untimed `Gpu::new`, which runs each command as soon as it is complete).
+  words use the untimed `Gpu::new`, which runs each command as soon as it is complete);
+- the timers (`timers.rs`, Mednafen's `timer.cpp`) catch up at their own events, register accesses and the
+  GPU's line phases, and take dots, retraces and vblank from the video timing.
 
 The BIOS, and Crash Bandicoot booting from its disc, run cycle for cycle as Mednafen's
-(`psx-oracle lockstep --disc`). The timers and the pad's serial timing still differ; lockstep takes
-those registers' values from Mednafen.
+(`psx-oracle lockstep --disc`). The pad's serial timing still differs; lockstep takes its registers'
+values from Mednafen.
 
 ### Formatting
 
