@@ -37,24 +37,25 @@ each instruction it compares the PC, the instruction word, r1-r31, HI, LO, the d
 COP0's SR, Cause, EPC and BadVaddr, and the interrupt line (Cause.IP2), which the core raises itself. After each COP2 instruction or LWC2 it also compares the GTE's
 64 registers. Any difference stops the run. It also compares the cycle count (Mednafen's master clock) and
 reports the instructions after which the difference changed; `--cycles` stops at the first. The core's CPU,
-DMA, CD-ROM, GPU command, timer and controller port timing are Mednafen's, but the SPU's isn't yet. So the
-values of I/O loads come from Mednafen when they differ and are counted by register rather than treated as
-divergence. Instructions before which the interlaced field being displayed (whose lines the GPU skips in
+DMA, CD-ROM, GPU command, timer, controller port and SPU timing are Mednafen's, but the MDEC's isn't yet. So
+the values of I/O loads come from Mednafen when they differ and are counted by register
+(`io_values_adopted_by_register`) rather than treated as divergence. Instructions before which the interlaced field being displayed (whose lines the GPU skips in
 480-line interlace) differs are counted too (`field_differs`). `--adopt-irqs` takes the interrupt line and
 that field from Mednafen instead, as lockstep did before the devices' timing was ported. `--trace-adopted
 ADDR` prints each value adopted from one register to stderr (step, frame, PC, cycle, both values) to find
 where a device's timing parts.
 
 At every vblank, main RAM, the scratchpad, VRAM and SPU RAM are compared too. These differences are reported
-(`memory`: frames differing, the first, and any left at the end) but don't stop the run, because they come from
-devices whose timing differs. VRAM differences while Mednafen's GPU still has queued work are counted
+(`memory`: frames differing, the first, and any left at the end) but don't stop the run. The comparison runs
+when Mednafen's frame ends, and its last device updates there may not have reached the core yet. At the end
+of a run Mednafen also finishes its frame after lockstep stops, so `at_end` is only approximate. VRAM differences while Mednafen's GPU still has queued work are counted
 separately. `--dump PREFIX` writes both sides' memory at the end for `psx vram-diff` and `psx ram-diff`.
 
 With `--disc "media/Crash Bandicoot.cue"` and a START/CROSS replay, 1.4 billion instructions (4,562 frames, into
-gameplay) match cycle for cycle. Every interrupt comes from the core, and the only values adopted (27,560) are
-the SPU's: the voices' current ADSR volumes and SPUSTAT. On SCPH-1001 without a disc, 100 million instructions (441 frames into the
-shell) match cycle for cycle at about 1.8 million instructions a second, with VRAM and the scratchpad identical
-at every vblank. In both runs the SPU's voice capture buffers differ while sound plays.
+gameplay) match cycle for cycle. Every interrupt comes from the core and no I/O value is adopted. VRAM is identical
+at every vblank; RAM differs at 18 of them and SPU RAM at 11, but no load reads a differing value. On SCPH-1001 without a disc,
+100 million instructions (441 frames into the shell) match cycle for cycle at about 1.8 million instructions a
+second, also adopting nothing, with VRAM and the scratchpad identical at every vblank.
 
 ## Layout
 

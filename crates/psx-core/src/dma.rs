@@ -163,10 +163,10 @@ impl Bus {
             SPU => {
                 extra = 47;
                 let fired = if mode & 1 != 0 {
-                    self.spu.fifo_write(v as u16) | self.spu.fifo_write((v >> 16) as u16)
+                    self.spu.dma_write(v)
                 } else {
-                    let ((lo, f0), (hi, f1)) = (self.spu.fifo_read(), self.spu.fifo_read());
-                    return self.dma_word_done(ch, mode, extra, lo as u32 | (hi as u32) << 16, f0 | f1);
+                    let (w, fired) = self.spu.dma_read();
+                    return self.dma_word_done(ch, mode, extra, w, fired);
                 };
                 return self.dma_word_done(ch, mode, extra, v, fired);
             }

@@ -715,14 +715,18 @@ impl Bus {
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
+            // Mednafen: a word reads two halfwords; a narrower read gets the
+            // halfword at the even address, cut to its width.
             0x1F80_1C00..=0x1F80_1FFF => {
-                let mut v = 0u32;
-                let mut o = p & !1;
-                while o < p + n as u32 {
-                    v |= (self.spu.read16(o - 0x1F80_1C00) as u32) << (8 * (o - (p & !1)));
-                    o += 2;
+                let o = (p & !1) - 0x1F80_1C00;
+                let v = if width == Width::Word {
+                    self.spu.read16(o) as u32 | (self.spu.read16(o | 2) as u32) << 16
+                } else {
+                    self.spu.read16(o) as u32 & (u32::MAX >> (32 - 8 * n))
+                };
+                if self.spu.take_irq() {
+                    self.raise_irq(1 << 9);
                 }
-                let v = if p & 1 != 0 { v >> 8 } else { v };
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
@@ -812,7 +816,7 @@ impl Bus {
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => put(&mut self.scratch, (p - 0x1F80_0000) as usize),
             0x1F80_1000..=0x1F80_2FFF => {
                 if (0x1F80_1C00..0x1F80_2000).contains(&p) {
-                    let mut fired = self.spu_write((p & !1) - 0x1F80_1C00, value as u16);
+                    let mut fired = self.spu_write((p & !1) - 0x1F80_1C00, (value & (u32::MAX >> (32 - 8 * n))) as u16);
                     if width == Width::Word {
                         fired |= self.spu_write((p & !1) + 2 - 0x1F80_1C00, (value >> 16) as u16);
                     }
@@ -943,6 +947,10 @@ mod tests {
         spu(&mut b, 0x36, 0x1000 >> 3);
         let log = b.obs.spu.take();
         spu(&mut b, 0x188, 1 << 3);
+        // Key on takes effect at the next sample (a second write before it
+        // would replace this one).
+        b.tick(2000);
+        b.end_instruction();
         b.obs.spu = log;
         spu(&mut b, 0x188, 1 << 1);
         // The CD-ROM controller clocks the SPU.

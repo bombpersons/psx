@@ -306,6 +306,31 @@ and 99K times, are never adopted; adopted values fell from 1.78M to 27,560, all 
 current ADSR volumes and SPUSTAT). On SCPH-1001, 100 million instructions adopt 445 values, all the SPU's.
 Native Crash alone reaches frame 4,504 at 3,051,788,459 cycles, 4 from Mednafen's 3,051,788,463.
 
+**Mednafen SPU (`psx-core/src/spu.rs`).** A port of `spu.cpp` and `spu_reverb.inc`, replacing the psx-spx
+model described under "SPU completion" and the sections before it:
+- **Samples.** The CD-ROM controller clocks the SPU one sample every 768 system clocks, as before. Each sample,
+  every voice decodes ADPCM four samples at a time, interpolates with Mednafen's FIR table (the same values
+  as psx-spx's Gaussian table, summed and shifted by 15), runs its envelope and volume sweeps and steps its
+  pitch counter. Then the capture buffers are written, key on and key off take effect, the noise generator
+  steps and reverb runs at 22.05 kHz with Mednafen's resamplers.
+- **Key on and off.** Writes to KON and KOFF collect until the next sample. A second write to the same half
+  in one sample replaces the first. A keyed voice starts four samples later.
+- **SPUSTAT** is latched once per sample: SPUCNT bits 0-5, the interrupt bit, and bit 11 from the capture
+  position while the transfer mode is 4.
+- **Interrupt.** With SPUCNT bit 6 set, the IRQ address is matched by the voices' decoders, by transfers
+  in either direction, by capture and reverb RAM accesses, and by setting the transfer address or the IRQ
+  address itself. The line stays asserted until bit 6 is cleared.
+- **Registers.** Reads of the current volumes, ENDX and the rest come from Mednafen's register array. A word
+  access is two halfword accesses, and a byte read takes the halfword it falls in.
+
+With that, lockstep adopts no I/O values. Crash from its disc (1.4 billion instructions, 4,562 frames)
+matches cycle for cycle and adopts nothing (27,560 values before). So does SCPH-1001 over 100 million
+instructions (445 before). Memory still differs at some vblanks: 18 in the Crash run for RAM (the first at
+frame 1,006, 1,095 bytes from 0x14FAC8) and 11 for SPU RAM (a few bytes of the voice capture buffers). No
+load ever read a differing value, or lockstep would have diverged, so these are differences in when each
+side's memory is sampled at the frame's end. The comparison at the end of a run doesn't line up either:
+Mednafen finishes its frame after lockstep stops.
+
 **Probe EXE.** `tools/probes/gpu` (PSYQo) sends a fixed GP0 stream: 468 commands from `gen_stream.py`, the same
 words in `gp0_stream.bin`. It draws 24 test cells of 128×128 (`gen_stream.py --list`), covering gouraud and
 dither, textures in all depths, the four blend modes, lines and polylines, rects, texture windows, mask bits,
@@ -444,6 +469,9 @@ Two CD-audio gaps then blocked "Spiel Starten". Both were found by comparing Red
 Result: **Lara in the Caves level, natively**, with the title music (CD-DA) mixed into the captured audio.
 
 ### SPU (`spu.rs`) and audio capture
+
+(Since 2026-10-24 the SPU is a port of Mednafen's `spu.cpp`; see "Mednafen SPU". The SPU sections below
+describe the earlier model.)
 
 The SPU models:
 
@@ -934,6 +962,8 @@ The examples `cdlog` and `iolog` log CD transfers and commands, and chosen I/O r
 CPU lockstep is unaffected: 30M instructions still match after these changes, because lockstep keeps adopting I/O values and following Redux's interrupts.
 
 ### SPU completion: noise, pitch modulation, Gaussian interpolation, reverb FIR, envelope edge cases
+
+(Replaced on 2026-10-24 by the port of Mednafen's SPU; see "Mednafen SPU".)
 
 Everything below follows psx-spx's SPU chapter. Where psx-spx is silent, the choice is named with its source.
 
