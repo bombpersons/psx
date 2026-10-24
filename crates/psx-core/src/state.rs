@@ -22,7 +22,7 @@ use crate::Machine;
 
 pub const MAGIC: &[u8; 8] = b"PSXSTATE";
 /// Bumped whenever the encoded machine changes shape; older states are rejected.
-pub const FORMAT: u32 = 10;
+pub const FORMAT: u32 = 11;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaId {
@@ -207,12 +207,12 @@ mod tests {
     fn frame_batched_run_equals_single_steps() {
         let mut single = Machine::new(counting_bios());
         let mut batched = Machine::new(counting_bios());
-        // Crosses several vblanks (the counting loop runs from BIOS at 22 cycles/instruction).
+        // Crosses several vblanks (the counting loop runs uncached from BIOS at 5 cycles/instruction).
         let mut n = 0;
-        while n < 200_000 {
-            n += batched.run_frame_steps(200_000 - n);
+        while n < 800_000 {
+            n += batched.run_frame_steps(800_000 - n);
         }
-        for _ in 0..200_000 {
+        for _ in 0..800_000 {
             single.step();
         }
         assert!(batched.bus.frames > 3);

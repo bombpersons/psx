@@ -121,7 +121,6 @@ fn step_frac(frac: &mut u64, cycles: u64, rate: u64) -> u64 {
 mod tests {
     use super::*;
 
-
     #[test]
     fn target_reset_and_irq() {
         let mut t = Timers::default();

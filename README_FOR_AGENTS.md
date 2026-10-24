@@ -493,19 +493,25 @@ else links it. Run it from the project root:
   `vram.png` for `psx ram-diff` / `psx vram-diff` against a native run with the same BIOS and replay.
   Frames are vblanks, as in `psx run`. The console region is the BIOS's. A `.chd` is unpacked once to
   CUE/BIN under `.psx/cache/discs/`. Without media it boots the BIOS with an empty drive.
-- `cargo run --release -p psx-oracle -- lockstep --bios B [--steps N] [--dump PREFIX]` runs the native
-  core and Mednafen side by side from BIOS reset. Before each instruction it compares PC, the
-  instruction, every register, the delayed load, COP0 and (after GTE instructions) the GTE, and it
-  stops at the first divergence. The two models' timing differs, so I/O load values and the interrupt
-  line are taken from Mednafen and counted. RAM, the scratchpad, VRAM and SPU RAM are compared at every
+- `cargo run --release -p psx-oracle -- lockstep --bios B [--steps N] [--cycles] [--dump PREFIX]` runs
+  the native core and Mednafen side by side from BIOS reset. Before each instruction it compares PC,
+  the instruction, every register, the delayed load, COP0 and (after GTE instructions) the GTE, and it
+  stops at the first divergence. It also compares the cycle count and reports where it changes;
+  `--cycles` stops there. Device timing still differs, so I/O load values and the interrupt line are
+  taken from Mednafen and counted by register. RAM, the scratchpad, VRAM and SPU RAM are compared at every
   vblank and reported without stopping; `--dump` writes both sides' memory at the end.
 - `tools/probes/gpu/compare.sh PSX PSX_ORACLE OUT_DIR` diffs `psx-gpu` against Mednafen on the GPU probe.
 
-The native core's video timing is Mednafen's: its scanlines, fields and vblank follow the GPU clock
-(49.76 Hz frames on a PAL console, 59.83 Hz on NTSC). Its CPU timing is not Mednafen's yet: it
-charges flat costs (2 cycles an instruction, 22 from BIOS ROM), and CD-ROM delays differ. So the same
-frame can find a game at a slightly different moment in each; on Crash, Mednafen's BIOS reaches the
-logo at frame 109 and native's at 178.
+The native core's video, CPU and DMA timing are Mednafen's:
+- scanlines, fields and vblank follow the GPU clock (49.76 Hz frames on a PAL console, 59.83 Hz on NTSC);
+- instructions cost what Mednafen charges (instruction cache, load latency, bus wait states,
+  multiply/divide and GTE latencies);
+- DMA runs on Mednafen's 128-clock grid and holds the CPU as Mednafen does.
+
+The BIOS runs cycle for cycle as Mednafen's. CD-ROM delays still differ, and so do the GPU's busy
+time, the timers and the pad's serial timing. So once a game loads, the same frame can find it at a
+different moment in each. On Crash, both reach the logo at frame 109, but native leaves it at frame
+719 and Mednafen at 836.
 
 ### Formatting
 

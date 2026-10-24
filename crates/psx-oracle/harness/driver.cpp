@@ -37,6 +37,10 @@ bool dualshock = false;
 EmulateSpecStruct last;
 void (*hook)(uint32_t pc, int breakpoint, void* user) = nullptr;
 void* hook_user = nullptr;
+// Master clock at the start of the current Emulate call, and the CPU's
+// timestamp (relative to it) at the last step hook.
+uint64 master_base = 0;
+int64 hook_timestamp = 0;
 }  // namespace
 
 namespace Mednafen
@@ -184,6 +188,7 @@ int mdh_frame(struct mdh_frame* out, int render)
   espec.SoundBufMaxSize = 0;
   espec.skip = !render;
   MDFNI_Emulate(&espec);
+  master_base += espec.MasterCycles;
   cycles += espec.MasterCycles;
   last = espec;
  }
@@ -259,8 +264,13 @@ int mdh_gpu_busy(void)
 // The interlaced field being read out for display (the GPU skips its lines).
 int mdh_gpu_readout_field(void) { return MDFN_IEN_PSX::GPU.field_ram_readout; }
 
-static void step_hook(const MDFN_IEN_PSX::pscpu_timestamp_t, uint32 pc)
+// Master clock (CPU cycles since power-on) when the last step hook ran,
+// that is, before the instruction at its PC.
+uint64_t mdh_cpu_time(void) { return master_base + hook_timestamp; }
+
+static void step_hook(const MDFN_IEN_PSX::pscpu_timestamp_t timestamp, uint32 pc)
 {
+ hook_timestamp = timestamp;
  // While DMA holds the CPU, the hook runs every cycle without the instruction executing.
  if(hook && !MDFN_IEN_PSX::CPU->IsHalted())
   hook(pc, 0, hook_user);

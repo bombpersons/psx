@@ -17,8 +17,6 @@ pub const TIMERS: u32 = 0x1F80_1100;
 pub const GP0: u32 = 0x1F80_1810;
 /// System clock (Hz).
 pub const SYSCLK: u64 = 33_868_800;
-/// Device catch-up granularity in system clocks (see [`Bus::tick`]).
-pub const DEVICE_BATCH: u64 = 128;
 pub const GP1: u32 = 0x1F80_1814;
 
 /// A DMA transfer the bus started but whose device side is not modelled yet.
@@ -66,8 +64,8 @@ pub struct Bus {
     /// Started transfers with no device model (their RAM/device effects are missing).
     #[serde(skip)]
     pub unmodelled_dma: Vec<UnmodelledDma>,
-    /// MDEC-out (channel 1) transfer waiting for decoder output: (madr, bcr, chcr, words).
-    pending_mdec_out: Option<(u32, u32, u32, u32)>,
+    /// The DMA controller (Mednafen's).
+    pub dma: crate::dma::Dma,
     /// The most recent DMA transfers (channel, madr, bcr, chcr), newest last.
     #[serde(skip)]
     pub recent_dma: std::collections::VecDeque<UnmodelledDma>,
@@ -86,6 +84,14 @@ pub struct Bus {
     pub now: u64,
     /// CPU cycles not yet handed to devices.
     pending: u64,
+    /// When devices next need to run: the next scheduled DMA update or the
+    /// end of the video line phase, whichever is first (0: at once).
+    #[serde(skip)]
+    next_event: u64,
+    /// A vblank happened: Mednafen's frame ends after this instruction, and
+    /// its DMA catches up there ([`Bus::end_instruction`]).
+    #[serde(skip)]
+    frame_ended: bool,
     irq_cache: bool,
     irq_dirty: bool,
     /// Scanlines, fields and vblank (Mednafen's GPU timing).
@@ -139,7 +145,9 @@ impl Bus {
             irq_acknowledged: false,
             unmodelled_dma: Vec::new(),
             recent_dma: Default::default(),
-            pending_mdec_out: None,
+            dma: Default::default(),
+            next_event: 0,
+            frame_ended: false,
             gpu: psx_gpu::Gpu::new(),
             last_draw_frame: 0,
             draws_seen: 0,
@@ -243,22 +251,40 @@ impl Bus {
         self.video.field_cycles(self.gpu.display.mode)
     }
 
-    fn raise_irq(&mut self, bits: u32) {
+    pub(crate) fn raise_irq(&mut self, bits: u32) {
         if self.irq_sources && bits != 0 {
             let v = self.io_word(I_STAT) | bits;
             self.poke_io(I_STAT, Width::Word, v);
         }
     }
 
-    /// Account `cycles` of CPU time. Devices catch up in batches of
-    /// [`DEVICE_BATCH`] cycles and always before any I/O access, so software
-    /// never observes stale device state; interrupts can be up to one batch late.
+    /// Account `cycles` of CPU time. Devices catch up at their next event
+    /// (Mednafen's: the 128-clock DMA grid and the video line phases) and
+    /// always before any I/O access, so software never observes stale device
+    /// state; other devices' interrupts can be up to 128 clocks late.
     #[inline]
     pub fn tick(&mut self, cycles: u64) {
         self.pending += cycles;
-        if self.pending >= DEVICE_BATCH {
+        if self.now + self.pending >= self.next_event {
             self.flush();
         }
+    }
+
+    /// After each instruction: when a frame ended during it, Mednafen's
+    /// `Emulate` returns and brings the DMA up to date.
+    #[inline]
+    pub fn end_instruction(&mut self) {
+        if self.frame_ended {
+            self.frame_ended = false;
+            self.flush();
+            let now = self.now;
+            self.dma_update(now);
+            self.schedule();
+        }
+    }
+
+    fn schedule(&mut self) {
+        self.next_event = self.dma.next_update(self.now).min(self.now + self.video.clocks_to_phase_end());
     }
 
     /// System clocks elapsed including CPU time not yet handed to devices.
@@ -282,6 +308,7 @@ impl Bus {
     }
 
     fn run_devices(&mut self, cycles: u64) {
+        let start = self.now;
         self.now += cycles;
         let video = self.video.tick(cycles, &self.gpu.display);
         if !self.external_field {
@@ -322,53 +349,14 @@ impl Bus {
                 self.last_draw_frame = self.frames;
             }
             self.raise_irq(1);
+            self.frame_ended = true;
         }
-    }
-
-    fn ram_word(&self, addr: u32) -> u32 {
-        self.ram_u32((addr & 0x1F_FFFC) as usize)
-    }
-
-    /// DMA channel 2: block transfers either way, or a linked list of GP0 packets.
-    fn dma_gpu(&mut self, madr: u32, bcr: u32, chcr: u32) {
-        let to_device = chcr & 1 != 0;
-        let step: u32 = if chcr & 2 != 0 { 4u32.wrapping_neg() } else { 4 };
-        match (chcr >> 9) & 3 {
-            2 => {
-                let mut addr = madr & 0x1F_FFFC;
-                for _ in 0..0x10_0000 {
-                    let header = self.ram_word(addr);
-                    for i in 1..=(header >> 24) {
-                        let w = self.ram_word(addr + 4 * i);
-                        self.gpu.gp0(w);
-                    }
-                    if header & 0x80_0000 != 0 {
-                        break;
-                    }
-                    addr = header & 0x1F_FFFC;
-                }
-            }
-            0 | 1 => {
-                let words = if (chcr >> 9) & 3 == 0 {
-                    if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF }
-                } else {
-                    (bcr & 0xFFFF) * (bcr >> 16).max(1)
-                };
-                let mut addr = madr & 0x1F_FFFC;
-                for _ in 0..words {
-                    if to_device {
-                        let w = self.ram_word(addr);
-                        self.gpu.gp0(w);
-                    } else {
-                        let w = self.gpu.gpuread().unwrap_or(0);
-                        let o = addr as usize;
-                        self.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
-                    }
-                    addr = addr.wrapping_add(step) & 0x1F_FFFC;
-                }
-            }
-            _ => {}
+        let mut g = self.dma.next_update(start);
+        while g <= self.now {
+            self.dma_update(g);
+            g += crate::dma::GRID;
         }
+        self.schedule();
     }
 
     /// GPUSTAT: always ready (bits 26-28; busy is not modelled), DMA direction,
@@ -393,102 +381,47 @@ impl Bus {
         (self.video.scanline as u64, self.video.in_vblank)
     }
 
-    /// CHCR was written: run the transfer immediately if it is started.
-    /// Completion interrupts are not raised yet.
-    fn dma_start(&mut self, ch: u32) {
-        let base = DMA_BASE + 0x10 * ch;
-        let (madr, bcr, chcr) = (self.io_word(base), self.io_word(base + 4), self.io_word(base + 8));
-        let sync = (chcr >> 9) & 3;
-        // Mode 0 needs the trigger bit (28); other modes start on bit 24 alone.
-        let started = chcr & (1 << 24) != 0 && (sync != 0 || chcr & (1 << 28) != 0);
-        if !started {
-            return;
-        }
+    /// A channel was started (CHCR bit 24 set): analysis hooks only; the
+    /// transfer itself runs in [`crate::dma`].
+    pub(crate) fn dma_started(&mut self, ch: usize) {
+        let c = self.dma.ch[ch];
+        let (madr, bcr, chcr) = (c.base_addr, c.block_control, c.chan_control);
+        let ch = ch as u32;
         if self.recent_dma.len() >= 32 {
             self.recent_dma.pop_front();
         }
         self.recent_dma.push_back(UnmodelledDma { channel: ch, madr, bcr, chcr });
+        let words = if (chcr >> 9) & 3 == 0 {
+            if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF }
+        } else {
+            (bcr & 0xFFFF) * (bcr >> 16).max(1)
+        };
         match ch {
-            6 => {
-                // Ordering-table clear: a backwards linked list ending in 0xFFFFFF.
-                let mut addr = madr & 0x1F_FFFC;
-                let words = if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF };
-                self.observe_dma(6, addr.wrapping_sub(4 * (words - 1)) & 0x1F_FFFC, words * 4);
-                for i in 0..words {
-                    let v = if i == words - 1 { 0x00FF_FFFF } else { addr.wrapping_sub(4) & 0x1F_FFFF };
-                    let o = addr as usize % RAM_SIZE;
-                    self.ram[o..o + 4].copy_from_slice(&v.to_le_bytes());
-                    addr = addr.wrapping_sub(4) & 0x1F_FFFC;
-                }
-            }
-            2 => self.dma_gpu(madr, bcr, chcr),
-            0 => {
-                let words = Self::dma_words(bcr, chcr);
-                let step: u32 = if chcr & 2 != 0 { 4u32.wrapping_neg() } else { 4 };
-                let mut addr = madr & 0x1F_FFFC;
-                for _ in 0..words {
-                    let w = self.ram_word(addr);
-                    self.mdec.write_word(w);
-                    addr = addr.wrapping_add(step) & 0x1F_FFFC;
-                }
-                self.try_mdec_out();
-            }
-            1 => {
-                // Request-driven: completes only once the MDEC has produced the data.
-                self.pending_mdec_out = Some((madr, bcr, chcr, Self::dma_words(bcr, chcr)));
-                self.try_mdec_out();
-                return;
-            }
+            6 => self.observe_dma(6, madr.wrapping_sub(4 * (words - 1)) & 0x1F_FFFC, words * 4),
+            1 => self.observe_dma(1, madr & 0x1F_FFFC, words * 4),
+            2 if chcr & 1 == 0 && (chcr >> 9) & 3 != 2 => self.observe_dma(2, madr & 0x1F_FFFC, words * 4),
             4 => {
-                let words = Self::dma_words(bcr, chcr);
                 if chcr & 1 == 0 {
                     self.observe_dma(4, madr & 0x1F_FFFC, words * 4);
-                }
-                let mut addr = madr & 0x1F_FFFC;
-                let mut fired = false;
-                if chcr & 1 != 0 {
-                    if let Some(log) = &mut self.obs.spu {
-                        let upload = crate::observe::SpuUpload {
-                            address: self.spu.transfer_addr(),
-                            bytes: words * 4,
-                            source: "dma",
-                            ram: Some(0x8000_0000 | addr),
-                        };
-                        log.record(crate::observe::SpuEvent {
-                            frame: self.frames,
-                            cycle: self.now,
-                            event: "upload",
-                            voice: None,
-                            pc: Some(self.cur_pc),
-                            key_on: None,
-                            upload: Some(upload),
-                        });
-                    }
-                }
-                for _ in 0..words {
-                    if chcr & 1 != 0 {
-                        let w = self.ram_word(addr);
-                        fired |= self.spu.fifo_write(w as u16);
-                        fired |= self.spu.fifo_write((w >> 16) as u16);
-                    } else {
-                        let ((lo, f0), (hi, f1)) = (self.spu.fifo_read(), self.spu.fifo_read());
-                        fired |= f0 | f1;
-                        let w = lo as u32 | (hi as u32) << 16;
-                        let o = addr as usize;
-                        self.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
-                    }
-                    addr = (addr + 4) & 0x1F_FFFC;
-                }
-                if fired {
-                    self.raise_irq(1 << 9);
+                } else if let Some(log) = &mut self.obs.spu {
+                    let upload = crate::observe::SpuUpload {
+                        address: self.spu.transfer_addr(),
+                        bytes: words * 4,
+                        source: "dma",
+                        ram: Some(0x8000_0000 | (madr & 0x1F_FFFC)),
+                    };
+                    log.record(crate::observe::SpuEvent {
+                        frame: self.frames,
+                        cycle: self.now,
+                        event: "upload",
+                        voice: None,
+                        pc: Some(self.cur_pc),
+                        key_on: None,
+                        upload: Some(upload),
+                    });
                 }
             }
             3 => {
-                let words = if (chcr >> 9) & 3 == 0 {
-                    if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF }
-                } else {
-                    (bcr & 0xFFFF) * (bcr >> 16).max(1)
-                };
                 self.cdrom.note_dma(words * 4);
                 let (lba, off, size) = self.cdrom.fifo_state();
                 let remaining = self.cdrom.fifo_remaining();
@@ -506,72 +439,9 @@ impl Bus {
                     });
                 }
                 self.observe_dma(3, madr & 0x1F_FFFC, words * 4);
-                let mut addr = madr & 0x1F_FFFC;
-                for _ in 0..words {
-                    let w = self.cdrom.dma_word();
-                    let o = addr as usize;
-                    self.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
-                    addr = (addr + 4) & 0x1F_FFFC;
-                }
             }
-            _ => self.unmodelled_dma.push(UnmodelledDma { channel: ch, madr, bcr, chcr }),
-        }
-        self.finish_dma(ch, chcr);
-    }
-
-    fn dma_words(bcr: u32, chcr: u32) -> u32 {
-        if (chcr >> 9) & 3 == 0 {
-            if bcr & 0xFFFF == 0 { 0x10000 } else { bcr & 0xFFFF }
-        } else {
-            (bcr & 0xFFFF) * (bcr >> 16).max(1)
-        }
-    }
-
-    /// Finish a pending MDEC-out DMA if enough decoded words are available.
-    fn try_mdec_out(&mut self) {
-        let Some((madr, _bcr, chcr, words)) = self.pending_mdec_out else { return };
-        if self.mdec.out_available() < words as usize {
-            return;
-        }
-        self.pending_mdec_out = None;
-        self.observe_dma(1, madr & 0x1F_FFFC, words * 4);
-        let step: u32 = if chcr & 2 != 0 { 4u32.wrapping_neg() } else { 4 };
-        let mut addr = madr & 0x1F_FFFC;
-        for _ in 0..words {
-            let w = self.mdec.dma_out_word();
-            let o = addr as usize;
-            self.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
-            addr = addr.wrapping_add(step) & 0x1F_FFFC;
-        }
-        self.finish_dma(1, chcr);
-    }
-
-    /// Mark channel `ch` complete: clear busy bits and flag DICR.
-    fn finish_dma(&mut self, ch: u32, chcr: u32) {
-        let base = DMA_BASE + 0x10 * ch;
-        self.poke_io(base + 8, Width::Word, chcr & !((1 << 24) | (1 << 28)));
-        // A completion flag is only latched while both the channel's enable and
-        // the master enable (bit 23) are set (as PCSX-Redux does); otherwise
-        // stale flags would fire when software later enables the interrupt.
-        let dicr = self.io_word(DICR);
-        if dicr & (1 << 23) != 0 && dicr & (1 << (16 + ch)) != 0 {
-            self.set_dicr(dicr | (1 << (24 + ch)));
-        }
-    }
-
-    /// Store DICR, recompute the master flag and raise I_STAT bit 3 on its rising edge.
-    fn set_dicr(&mut self, v: u32) {
-        let old_master = self.io_word(DICR) & (1 << 31) != 0;
-        // Master flag as PCSX-Redux computes it: force, or master enable with *any*
-        // channel flag set (not ANDed with the per-channel enables, unlike the
-        // psx-spx formula). Croc's loader depends on this: enabling DMA IRQs
-        // fires once and its handler acknowledges stale flags left by the BIOS.
-        // Open question: which formula real hardware uses.
-        let master = v & (1 << 15) != 0 || (v & (1 << 23) != 0 && (v >> 24) & 0x7F != 0);
-        let v = (v & 0x7FFF_FFFF) | ((master as u32) << 31);
-        self.poke_io(DICR, Width::Word, v);
-        if master && !old_master {
-            self.raise_irq(1 << 3);
+            5 => self.unmodelled_dma.push(UnmodelledDma { channel: ch, madr, bcr, chcr }),
+            _ => {}
         }
     }
 
@@ -598,6 +468,7 @@ impl Bus {
     /// Recompute derived caches after a save state was decoded.
     pub(crate) fn after_restore(&mut self) {
         self.irq_dirty = true;
+        self.next_event = 0;
         // Draw tracking is not saved: count idle frames from the restore.
         self.last_draw_frame = self.frames;
         self.draws_seen = self.gpu.draws;
@@ -621,6 +492,31 @@ impl Bus {
 
     pub fn take_io_log(&mut self) -> Vec<IoAccess> {
         std::mem::take(&mut self.io_log)
+    }
+
+    /// Wait states of a CPU read, Mednafen's `MemRW`: `a` is the address
+    /// after Mednafen's segment masking and `bytes` the access size (3 for
+    /// the 24-bit halves of LWL/LWR). The CPU adds its own 2 cycles (1 for
+    /// LWCz) on top.
+    pub fn read_cost(a: u32, bytes: u32) -> u64 {
+        match a {
+            0..=0x007F_FFFF => 3,
+            0x1F80_1C00..=0x1F80_1FFF => {
+                if bytes == 4 {
+                    36
+                } else {
+                    16
+                }
+            }
+            0x1F80_1800..=0x1F80_180F => 6 * bytes.next_power_of_two() as u64,
+            0x1F80_1000..=0x1F80_1023
+            | 0x1F80_1040..=0x1F80_105F
+            | 0x1F80_1070..=0x1F80_1077
+            | 0x1F80_1080..=0x1F80_113F
+            | 0x1F80_1810..=0x1F80_1817
+            | 0x1F80_1820..=0x1F80_1827 => 1,
+            _ => 0,
+        }
     }
 
     /// True when a virtual address decodes to the I/O region.
@@ -711,6 +607,11 @@ impl Bus {
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
+            DMA_BASE..=0x1F80_10FF => {
+                let v = self.dma.read(p) & (u32::MAX >> (32 - 8 * n));
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
+                v
+            }
             0x1F80_1000..=0x1F80_2FFF => {
                 let v = le(&self.io, (p - 0x1F80_1000) as usize);
                 // Memory control (1F801000-23h, RAM_SIZE 1F801060h) and SIO1's mode/control/baud
@@ -721,8 +622,7 @@ impl Bus {
                 let handled = latch
                     || (0x1F80_1C00..0x1F80_1E00).contains(&p)
                     || (0x1F80_1800..0x1F80_1804).contains(&p)
-                    || (0x1F80_1070..0x1F80_1078).contains(&p)
-                    || (0x1F80_1080..0x1F80_1100).contains(&p);
+                    || (0x1F80_1070..0x1F80_1078).contains(&p);
                 if !handled {
                     *self.unhandled_reads.entry(p).or_default() += 1;
                 }
@@ -798,7 +698,6 @@ impl Bus {
                     }
                 } else if (p == 0x1F80_1820 || p == 0x1F80_1824) && width == Width::Word {
                     self.mdec.write(p - 0x1F80_1820, value);
-                    self.try_mdec_out();
                 } else if (0x1F80_1040..0x1F80_1050).contains(&p) {
                     let now = self.now;
                     self.sio0.write(p - 0x1F80_1040, value, now);
@@ -814,19 +713,9 @@ impl Bus {
                         self.gpustat_dma_dir = value & 3;
                     }
                     self.gpu.gp1(value);
-                } else if p & !3 >= DMA_BASE && p & !3 < DPCR && (p & 0xF) == 8 {
-                    put(&mut self.io, (p - 0x1F80_1000) as usize);
-                    self.dma_start((p - DMA_BASE) >> 4);
-                } else if p & !3 == DICR {
-                    // Bits 24-30 are write-1-to-clear flags; bit 31 is computed.
-                    let cur = self.io_word(DICR);
-                    let v = if width == Width::Word {
-                        value
-                    } else {
-                        (cur & !(0xFFFF << (8 * (p & 2)))) | (value << (8 * (p & 2)))
-                    };
-                    let flags = (cur & 0x7F00_0000) & !(v & 0x7F00_0000);
-                    self.set_dicr((v & 0x00FF_803F) | flags);
+                } else if (DMA_BASE..TIMERS).contains(&p) {
+                    let now = self.now;
+                    self.dma_write(now, p, value);
                 } else if p & !3 == I_STAT {
                     // Interrupt acknowledge: writing 0 clears a bit, 1 leaves it.
                     let cur = self.io_word(I_STAT);
@@ -839,7 +728,8 @@ impl Bus {
                 self.log_access(IoAccess { addr: p, width, write: true, value });
             }
             0x1FC0_0000..=0x1FC7_FFFF => {}
-            0xFFFE_0130 => self.cache_control = value,
+            // Bits 6 and 10 don't stick (Mednafen's SetBIU).
+            0xFFFE_0130 => self.cache_control = value & !0x440,
             _ => return Err(BusError::Unmapped(p)),
         }
         Ok(())
@@ -897,6 +787,9 @@ mod tests {
         b.write(DMA_BASE + 0x40, Width::Word, 0x8010_0000).unwrap();
         b.write(DMA_BASE + 0x44, Width::Word, (1 << 16) | 12).unwrap();
         b.write(DMA_BASE + 0x48, Width::Word, 0x0100_0201).unwrap();
+        // The transfer takes 48 clocks a word (Mednafen's DMA timing).
+        b.run_devices(12 * 48);
+        assert_eq!(b.read(DMA_BASE + 0x48, Width::Word).unwrap() & (1 << 24), 0, "DMA done");
         // Manual FIFO writes merge into one upload while contiguous.
         spu(&mut b, 0x1A6, 0x2000 >> 3);
         for v in [1, 2, 3, 4] {
@@ -947,6 +840,20 @@ mod tests {
         assert_eq!(w(&mut b, 0x8010_0010), 0x0010_000C);
         assert_eq!(w(&mut b, 0x8010_0004), 0x00FF_FFFF);
         assert_eq!(w(&mut b, DMA_BASE + 0x68) & (1 << 24), 0, "busy cleared");
+    }
+
+    #[test]
+    fn long_otc_dma_holds_the_cpu_until_the_grid() {
+        let mut b = Bus::new(vec![]);
+        b.write(DMA_BASE + 0x60, Width::Word, 0x8010_1000).unwrap();
+        b.write(DMA_BASE + 0x64, Width::Word, 1000).unwrap();
+        b.write(DMA_BASE + 0x68, Width::Word, 0x1100_0002).unwrap();
+        assert!(b.dma.halted, "64 of 1000 words done at the start");
+        b.tick(1000);
+        assert!(b.dma.halted);
+        b.tick(24);
+        assert!(!b.dma.halted, "done at the 1024-clock update");
+        assert_eq!(b.read(DMA_BASE + 0x68, Width::Word).unwrap() & (1 << 24), 0, "busy cleared");
     }
 
     #[test]

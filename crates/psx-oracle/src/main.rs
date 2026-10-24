@@ -78,6 +78,9 @@ enum Command {
         /// Instructions of history shown at a divergence.
         #[arg(long, default_value_t = 12)]
         context: usize,
+        /// Stop at the first instruction whose cycle cost differs from Mednafen's.
+        #[arg(long)]
+        cycles: bool,
         /// At the end, write both sides' memory as <PREFIX>.{core,mednafen}.{ram,scratchpad,vram,spu_ram}.bin, and the core's screen and VRAM as PNGs.
         #[arg(long)]
         dump: Option<PathBuf>,
@@ -223,7 +226,9 @@ fn main() -> ExitCode {
                 Err(e) => (false, json!({"error": e})),
             }
         }
-        Command::Lockstep { bios, steps, context, dump } => lockstep_job(&root, &abs(bios), steps, context, dump),
+        Command::Lockstep { bios, steps, context, cycles, dump } => {
+            lockstep_job(&root, &abs(bios), steps, context, cycles, dump)
+        }
     };
     println!("{}", serde_json::to_string_pretty(&value).unwrap());
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
@@ -235,8 +240,15 @@ fn run_job(job: &RunJob, dir: &Path) -> Result<Value, String> {
 }
 
 #[cfg(mednafen)]
-fn lockstep_job(root: &Path, bios: &Path, steps: u64, context: usize, dump: Option<PathBuf>) -> (bool, Value) {
-    lockstep::run(root, bios, steps, context, dump.as_deref())
+fn lockstep_job(
+    root: &Path,
+    bios: &Path,
+    steps: u64,
+    context: usize,
+    cycles: bool,
+    dump: Option<PathBuf>,
+) -> (bool, Value) {
+    lockstep::run(root, bios, steps, context, cycles, dump.as_deref())
 }
 
 #[cfg(not(mednafen))]
@@ -245,7 +257,7 @@ fn run_job(_: &RunJob, _: &Path) -> Result<Value, String> {
 }
 
 #[cfg(not(mednafen))]
-fn lockstep_job(_: &Path, _: &Path, _: u64, _: usize, _: Option<PathBuf>) -> (bool, Value) {
+fn lockstep_job(_: &Path, _: &Path, _: u64, _: usize, _: bool, _: Option<PathBuf>) -> (bool, Value) {
     (false, json!({"error": "psx-oracle is only built for x86_64 Linux"}))
 }
 

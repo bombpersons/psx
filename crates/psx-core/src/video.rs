@@ -93,6 +93,12 @@ impl Video {
         (lines * line * 65536 / ratio as u128 / 100) as u64
     }
 
+    /// System clocks until the current line phase ends (Mednafen's next GPU event).
+    pub fn clocks_to_phase_end(&self) -> u64 {
+        let ratio = if self.pal_console { RATIO_PAL } else { RATIO_NTSC };
+        (((self.line_clocks as u64) << 16).saturating_sub(self.gpu_clock_frac).div_ceil(ratio)).max(1)
+    }
+
     /// Advance by `cycles` system clocks with the display set up as `d`.
     pub fn tick(&mut self, cycles: u64, d: &psx_gpu::Display) -> Events {
         let mut ev = Events::default();

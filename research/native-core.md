@@ -15,7 +15,7 @@ Per-game status and open emulation issues are summarised in [docs/compatibility.
   that logs every access.
 - **Devices so far:**
   - Interrupt controller: I_STAT acknowledge semantics, I_MASK, and the IP2 line.
-  - DMA controller: starts transfers on CHCR, and implements channel 6 (ordering-table clear) exactly. Other channels are recorded as unmodelled.
+  - DMA controller: starts transfers on CHCR, and implements channel 6 (ordering-table clear) exactly. Other channels are recorded as unmodelled. (Since 2026-10-24 it is Mednafen's; see "Mednafen CPU and DMA timing".)
 - **Reset state.** SR starts at `0x10900000` to match Redux. Most SR bits are undefined on hardware at reset.
 - **Not modelled yet:** instruction cache, real timing (one cycle per instruction), the GTE-command vs interrupt quirk, timers,
   GPU, CD-ROM, SPU, MDEC, pads and memory cards.
@@ -125,6 +125,35 @@ A PAL frame is 680,626 system clocks (49.76 Hz) and an NTSC one 566,121 (59.83 H
 was 3,030.7M before. What remains is the moment display modes change: Mednafen's BIOS switches to the interlaced
 logo at frame 109, native's at 178, because of CPU and CD-ROM timing.
 
+**Mednafen CPU and DMA timing (`psx-core/src/cpu.rs`, `dma.rs`).** These are ports of `cpu.cpp`'s
+`RunReal`, `psx.cpp`'s `MemRW` and `dma.cpp`:
+- **Fetches.** The instruction cache fills 4-word lines: 3 clocks plus 1 per word from the missed word to the
+  line's end. Fetches from KSEG1 or with the cache off cost 4. Isolated-cache stores (SR.IsC) set its tags or
+  data, as the BIOS's cache flush does.
+- **A clock per instruction.** A load's latency can absorb this clock until the loaded register is used.
+- **Data reads.** They cost 2 (1 for LWCz), plus the bus's wait states (`Bus::read_cost`): RAM 3, SPU 16
+  or 36, CD-ROM 6 per byte, other I/O 1, BIOS and scratchpad 0. A read right after another load skips the
+  2-clock turnaround.
+- **Multiply and divide.** Multiplies take 7, 10 or 14 clocks, by the first operand's leading zeros, and
+  divides 37. MFHI/MFLO wait for them.
+- **The GTE.** Commands take Mednafen's counts (AVSZ4 is 5); moves and loads wait for them. Unassigned
+  opcodes alias as Mednafen's do. No interrupt is taken at a COP2 instruction.
+- **DMA.** Channels advance on a 128-clock grid, on each DMA register write, and at each frame's end.
+  - Costs: a clock per word; SPU +47; CD-ROM reads +8; linked-list headers 10 or 15; GPU blocks +7. A
+    started channel runs 64 clocks at once.
+  - A manual-mode (sync 0) transfer holds the CPU, which spins a clock at a time.
+  - A GPU block transfer makes each CPU data read slower by the block size less one.
+- **Device catch-up.** Devices now run at the next DMA grid point or video line phase, rather than in
+  128-cycle batches.
+
+`psx-oracle lockstep` compares the cycle count before every instruction (`--cycles` makes a difference
+fatal). On SCPH-1001, 300 million instructions (1,174 frames into the shell) match Mednafen cycle for cycle.
+On the Crash replay the frames match within a few cycles up to frame 448. Both BIOSes reach the interlaced
+logo at frame 109. From frame 449 the game's loading differs (CD-ROM timing): native leaves the logo at
+frame 719, Mednafen at 836. Device state still differs from Mednafen's: in that lockstep run, the I/O load
+values adopted are mostly GPUSTAT (1.05M; native's GPU never reports busy), timer 2 (422K), JOY_STAT (346K)
+and GPU DMA's CHCR (275K).
+
 **Probe EXE.** `tools/probes/gpu` (PSYQo) sends a fixed GP0 stream: 468 commands from `gen_stream.py`, the same
 words in `gp0_stream.bin`. It draws 24 test cells of 128×128 (`gen_stream.py --list`), covering gouraud and
 dither, textures in all depths, the four blend modes, lines and polylines, rects, texture windows, mask bits,
@@ -216,7 +245,8 @@ New devices for this:
 - **Timers** (`timers.rs`): sysclock, dotclock, hblank and sysclock/8 sources; target/0xFFFF reset; IRQ modes; reached flags. Sync modes are not modelled yet.
 - **VBlank:** PAL 50 Hz / NTSC 59.94 Hz frames on I_STAT bit 0. (Since 2026-10-24 the video timing is
   Mednafen's; see "Mednafen video timing".)
-- **Timing:** flat per-instruction costs like Redux (2 cycles, +20 in BIOS ROM). Not cycle-accurate.
+- **Timing:** flat per-instruction costs like Redux (2 cycles, +20 in BIOS ROM). Not cycle-accurate. (Since
+  2026-10-24 the CPU and DMA timing are Mednafen's; see "Mednafen CPU and DMA timing".)
 - **GPUSTAT bit 31:** odd/even line from the current scanline (per field when interlaced), 0 in vblank.
 - **SPUSTAT:** mirrors SPUCNT bits 0–5. There is no SPU model yet.
 

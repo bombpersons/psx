@@ -9,6 +9,7 @@ pub mod bus;
 pub mod cdrom;
 pub mod cpu;
 pub mod disasm;
+pub mod dma;
 pub mod mdec;
 pub mod memcard;
 pub mod observe;
@@ -54,9 +55,15 @@ impl Machine {
             self.forced_irq = false;
         }
         self.cpu.irq_line = self.forced_irq || self.bus.irq_line();
-        let before = self.cpu.cycles;
-        self.cpu.step_with(&mut self.bus, info);
-        self.bus.tick(self.cpu.cycles - before);
+        // While a manual-mode DMA holds the CPU, it spins in place: the time
+        // is the instruction's that started it (or that it interrupted).
+        while !self.cpu.step_with(&mut self.bus, info) {
+            self.bus.end_instruction();
+        }
+        self.bus.end_instruction();
+        while self.bus.dma.halted && !self.cpu.step_with(&mut self.bus, &mut ()) {
+            self.bus.end_instruction();
+        }
     }
 
     fn observe_bios_call(&mut self) {

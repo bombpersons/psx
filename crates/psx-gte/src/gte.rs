@@ -329,13 +329,26 @@ impl Gte {
     // Command execution
     // ---------------------------------------------------------------------
 
-    /// Execute a COP2 command word (only the low 25 bits are decoded).
+    /// Execute a COP2 command word (only the low 25 bits are decoded), as
+    /// Mednafen's `GTE_Instruction` does: unassigned opcodes alias the
+    /// nearest command or do nothing but clear FLAG.
     ///
-    /// Returns the command's documented cycle count, or `None` for an
-    /// unassigned opcode (which leaves all registers untouched).
-    pub fn execute(&mut self, cmd: u32) -> Option<u32> {
+    /// Returns the cycles until the result is ready: Mednafen's count less
+    /// the one the issuing instruction takes.
+    pub fn execute(&mut self, cmd: u32) -> u32 {
         let m = Mode { sf: cmd >> 19 & 1 != 0, lm: cmd >> 10 & 1 != 0 };
-        let opcode = cmd & 0x3F;
+        let opcode = match cmd & 0x3F {
+            0x00 | 0x01 => op::RTPS,
+            0x04 | 0x06 => op::NCLIP,
+            0x15 | 0x16 => op::NCDT,
+            0x18 | 0x19 | 0x1B => op::NCCS,
+            0x1D | 0x1E => op::NCS,
+            0x1F | 0x20 => op::NCT,
+            0x21 | 0x23..=0x28 => op::SQR,
+            0x1A | 0x29 => op::DCPL,
+            0x2B..=0x2D => op::AVSZ3,
+            o => o,
+        };
         let cycles = match opcode {
             op::RTPS => 15,
             op::NCLIP => 8,
@@ -348,12 +361,14 @@ impl Gte {
             op::CC => 11,
             op::NCS => 14,
             op::NCT => 30,
-            op::SQR | op::AVSZ3 | op::GPF | op::GPL => 5,
+            op::SQR | op::AVSZ3 | op::AVSZ4 | op::GPF | op::GPL => 5,
             op::DPCT => 17,
-            op::AVSZ4 => 6,
             op::RTPT => 23,
             op::NCCT => 39,
-            _ => return None,
+            _ => {
+                self.flag = 0;
+                return 0;
+            }
         };
         self.flag = 0;
         match opcode {
@@ -428,7 +443,7 @@ impl Gte {
             }
             _ => unreachable!(),
         }
-        Some(cycles)
+        cycles - 1
     }
 
     // ---------------------------------------------------------------------

@@ -55,6 +55,7 @@ unsafe extern "C" {
     fn mdh_gte(out: *mut u32);
     fn mdh_gpu_busy() -> c_int;
     fn mdh_gpu_readout_field() -> c_int;
+    fn mdh_cpu_time() -> u64;
     fn mdh_step_hook(cb: Option<HookFn>, user: *mut c_void);
     fn mdh_write_watch(address: u32, length: u32, cb: HookFn, user: *mut c_void);
     fn mdh_save_state(path: *const c_char) -> c_int;
@@ -259,6 +260,12 @@ pub fn gpu_busy() -> bool {
 pub fn gpu_readout_field() -> bool {
     // SAFETY: a plain read of the GPU's state.
     unsafe { mdh_gpu_readout_field() != 0 }
+}
+
+/// CPU cycles since power-on, before the instruction the step hook is at.
+pub fn cpu_time() -> u64 {
+    // SAFETY: a plain read of the harness's clock.
+    unsafe { mdh_cpu_time() }
 }
 
 /// A side-effect-free read of the CPU's logical address space.

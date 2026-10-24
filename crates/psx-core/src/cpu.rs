@@ -6,8 +6,11 @@
 //! Cause.IP, cache isolation (SR.IsC drops stores), overflow/address-error/
 //! reserved-instruction/coprocessor-unusable exceptions, and COP2 via psx-gte.
 //!
-//! Not modelled yet: instruction cache, cycle-accurate timing (a flat
-//! per-instruction cost, see [`Cpu::step`]), the GTE-command-vs-interrupt quirk.
+//! Timing is Mednafen's (`crates/psx-oracle/mednafen/src/psx/cpu.cpp`): the
+//! instruction cache (4-word fills, 4 cycles per uncached fetch), a cycle per
+//! instruction that a load's latency can absorb until its register is used,
+//! the bus's wait states ([`Bus::read_cost`]), multiply/divide and GTE
+//! latencies, and no interrupts at COP2 instructions.
 
 use psx_gte::Gte;
 
@@ -129,6 +132,57 @@ pub struct Cpu {
     pub cycles: u64,
     /// External interrupt line (Cause.IP2), driven by the interrupt controller.
     pub irq_line: bool,
+    t: Timing,
+}
+
+/// Mednafen's CPU timing state, named as in `cpu.cpp`.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Timing {
+    /// Instruction cache: per word, the tag (address, | 2 when invalid) and data.
+    icache: Vec<(u32, u32)>,
+    /// Cycles of a load's latency still to absorb, by destination register
+    /// (32: a load with none, LWCz).
+    #[serde(with = "crate::state::big_array")]
+    read_absorb: [u8; 33],
+    read_absorb_which: u8,
+    /// The register the last retiring load wrote (32: none): a load right
+    /// after another skips the 2-cycle bus turnaround.
+    read_fudge: u8,
+    /// The load in flight's register (32: none) and latency, for the timing only.
+    ld_which: u8,
+    ld_absorb: u32,
+    /// When the GTE's and the multiplier's results are ready.
+    gte_done: u64,
+    muldiv_done: u64,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Timing {
+            icache: vec![(2, 0); 1024],
+            read_absorb: [0; 33],
+            read_absorb_which: 0,
+            read_fudge: 0,
+            ld_which: 32,
+            ld_absorb: 0,
+            gte_done: 0,
+            muldiv_done: 0,
+        }
+    }
+}
+
+/// Mednafen's `addr_mask`: KSEG0 and KSEG1 lose their segment bits.
+fn segment_mask(a: u32) -> u32 {
+    match a >> 29 {
+        4 => a & 0x7FFF_FFFF,
+        5 => a & 0x1FFF_FFFF,
+        _ => a,
+    }
+}
+
+/// Multiply latency by the leading zeros of the first operand (Mednafen's `MULT_Tab24`).
+fn mult_cycles(lz: u32) -> u64 {
+    7 + if lz < 12 { 4 } else { 0 } + if lz < 21 { 3 } else { 0 }
 }
 
 impl Default for Cpu {
@@ -166,6 +220,7 @@ impl Cpu {
             gte: Gte::new(),
             cycles: 0,
             irq_line: false,
+            t: Timing::default(),
         }
     }
 
@@ -235,18 +290,56 @@ impl Cpu {
     /// Execute one instruction (or take a pending interrupt).
     pub fn step(&mut self, bus: &mut Bus) -> StepInfo {
         let mut info = StepInfo::default();
-        self.step_with(bus, &mut info);
+        while !self.step_with(bus, &mut info) {}
         info
     }
 
-    /// [`Cpu::step`], reporting what happened to `info`.
+    /// [`Cpu::step`], reporting what happened to `info`. The bus's devices
+    /// are brought up to the CPU's time before each access and at the end.
+    /// False when a DMA holds the CPU and it only spun for a cycle (nothing
+    /// was executed or reported).
     #[inline(always)]
-    pub fn step_with<I: StepSink>(&mut self, bus: &mut Bus, info: &mut I) {
-        // Timing model (PCSX-Redux's, not hardware-exact): 2 cycles per
-        // instruction, 20 more while executing from BIOS ROM.
+    pub fn step_with<I: StepSink>(&mut self, bus: &mut Bus, info: &mut I) -> bool {
+        let ran = self.step_inner(bus, info);
+        self.sync(bus);
+        ran
+    }
+
+    /// A cycle per instruction, unless a load's latency absorbs it.
+    #[inline(always)]
+    fn issue_cycle(&mut self) {
+        let w = self.t.read_absorb_which as usize;
+        if self.t.read_absorb[w] != 0 {
+            self.t.read_absorb[w] -= 1;
+        } else {
+            self.cycles += 1;
+        }
+    }
+
+    /// Hand the cycles the CPU has used to the bus.
+    #[inline(always)]
+    fn sync(&self, bus: &mut Bus) {
+        let t = bus.time();
+        if self.cycles > t {
+            bus.tick(self.cycles - t);
+        }
+    }
+
+    #[inline(always)]
+    fn step_inner<I: StepSink>(&mut self, bus: &mut Bus, info: &mut I) -> bool {
         let pc = self.pc;
         bus.cur_pc = pc;
-        self.cycles += if pc & 0x1FC0_0000 == 0x1FC0_0000 { 22 } else { 2 };
+        // Held by DMA, Mednafen's CPU still fetches and spends the cycle, and
+        // runs the instruction only if it is COP2.
+        let mut fetched = None;
+        if bus.dma.halted && pc & 3 == 0 {
+            let r = self.fetch(bus, pc);
+            self.issue_cycle();
+            match r {
+                Ok(i) if i >> 26 != 0x12 => return false,
+                r => fetched = Some(r),
+            }
+        }
         self.delay_slot = self.branch;
         self.delay_taken = self.taken;
         self.branch = false;
@@ -259,26 +352,32 @@ impl Cpu {
             self.exception(Exception::LoadAddressError, pc);
             info.begin(pc, 0);
             info.exception(Exception::LoadAddressError);
-            return;
+            return true;
         }
-        let instruction = match bus.read(pc, Width::Word) {
+        let prefetched = fetched.is_some();
+        let instruction = match fetched.unwrap_or_else(|| self.fetch(bus, pc)) {
             Ok(i) => i,
             Err(_) => {
                 self.flush_load();
                 self.exception(Exception::InstructionBusError, pc);
                 info.begin(pc, 0);
                 info.exception(Exception::InstructionBusError);
-                return;
+                return true;
             }
         };
         self.instr = instruction;
-        if self.interrupt_pending() {
+        if !prefetched {
+            self.issue_cycle();
+        }
+        // Mednafen takes no interrupt at a COP2 instruction.
+        if self.interrupt_pending() && instruction >> 26 != 0x12 {
             // EPC is the instruction about to execute; it runs after RFE.
+            self.retire_timing();
             self.flush_load();
             self.exception(Exception::Interrupt, pc);
             info.begin(pc, instruction);
             info.exception(Exception::Interrupt);
-            return;
+            return true;
         }
 
         self.pc = self.next_pc;
@@ -289,6 +388,7 @@ impl Cpu {
         self.load_in = std::mem::take(&mut self.load);
         self.wreg = (0, 0);
         info.begin(pc, instruction);
+        self.issue_timing(instruction);
         if let Err(e) = self.execute(bus, instruction, pc, info) {
             info.exception(e);
         }
@@ -303,6 +403,214 @@ impl Cpu {
         let (wr, wv) = self.wreg;
         self.regs[wr & 31] = wv;
         self.regs[0] = 0;
+        true
+    }
+
+    /// Fetch through the instruction cache (Mednafen's `ReadInstruction`).
+    #[inline(always)]
+    fn fetch(&mut self, bus: &mut Bus, pc: u32) -> Result<u32, crate::bus::BusError> {
+        let enabled = bus.cache_control & 0x800 != 0;
+        let i = (pc as usize & 0xFFC) >> 2;
+        let (tag, data) = self.t.icache[i];
+        if enabled && tag == pc {
+            return Ok(data);
+        }
+        self.cancel_absorb();
+        if pc >= 0xA000_0000 || !enabled {
+            self.cycles += 4;
+            return bus.read(pc, Width::Word);
+        }
+        let line = pc & !0xF;
+        for w in 0..4 {
+            self.t.icache[(i & !3) + w].0 = line | (w as u32) << 2 | 2;
+        }
+        self.cycles += 3;
+        for w in (i & 3)..4 {
+            self.cycles += 1;
+            let a = line | (w as u32) << 2;
+            self.t.icache[(i & !3) + w] = (a, bus.read(a, Width::Word)?);
+        }
+        Ok(self.t.icache[i].1)
+    }
+
+    /// A load or cache miss ends any absorption in progress.
+    #[inline(always)]
+    fn cancel_absorb(&mut self) {
+        self.t.read_absorb[self.t.read_absorb_which as usize] = 0;
+        self.t.read_absorb_which = 0;
+    }
+
+    /// Mednafen's `DO_LDS` as far as timing goes: the retiring load's latency
+    /// starts being absorbed.
+    #[inline(always)]
+    fn retire_timing(&mut self) {
+        let w = self.t.ld_which;
+        self.t.read_absorb[w as usize] = self.t.ld_absorb as u8;
+        self.t.read_fudge = w;
+        self.t.read_absorb_which |= w & 0x1F;
+        self.t.ld_which = 32;
+    }
+
+    /// Before an instruction executes: its register dependencies end the
+    /// absorption of loads into them (Mednafen's `GPR_DEP`/`GPR_RES`), then
+    /// the load in flight retires.
+    #[inline(always)]
+    fn issue_timing(&mut self, i: u32) {
+        let (rs, rt, rd) = ((i >> 21 & 31) as usize, (i >> 16 & 31) as usize, (i >> 11 & 31) as usize);
+        let back = self.t.read_absorb[0];
+        let mut clear = |r: usize| self.t.read_absorb[r] = 0;
+        match i >> 26 {
+            0x00 => match i & 0x3F {
+                0x00 | 0x02 | 0x03 => {
+                    clear(rt);
+                    clear(rd)
+                }
+                0x04 | 0x06 | 0x07 | 0x20..=0x27 | 0x2A | 0x2B => {
+                    clear(rs);
+                    clear(rt);
+                    clear(rd)
+                }
+                0x08 | 0x09 => {
+                    clear(rs);
+                    clear(rd)
+                }
+                0x10 | 0x12 => clear(rd),
+                0x11 | 0x13 => clear(rs),
+                0x18..=0x1B => {
+                    clear(rs);
+                    clear(rt)
+                }
+                _ => {}
+            },
+            0x01 => {
+                clear(rs);
+                clear(if rt & 0x1E == 0x10 { 31 } else { 0 });
+            }
+            0x03 => clear(31),
+            0x04 | 0x05 => {
+                clear(rs);
+                clear(rt)
+            }
+            0x06 | 0x07 => clear(rs),
+            0x08..=0x0E => {
+                clear(rs);
+                clear(rt)
+            }
+            0x0F => clear(rt),
+            0x20..=0x26 => clear(rs),
+            0x28..=0x2B | 0x2E => {
+                clear(rs);
+                clear(rt)
+            }
+            _ => {}
+        }
+        if i >> 26 != 0x03 {
+            self.t.read_absorb[0] = back;
+        }
+        let rt8 = rt as u8;
+        match i >> 26 {
+            // LWL/LWR into the register in flight merge with it instead.
+            0x22 | 0x26 if self.t.ld_which == rt8 => self.t.read_fudge = 0,
+            0x22 | 0x26 => self.retire_timing(),
+            // A load into the register in flight cancels it (when it can issue).
+            0x20 | 0x24 => self.cancel_then_retire(rt8),
+            0x21 | 0x23 | 0x25 => {
+                let width = if i >> 26 == 0x23 { 4 } else { 2 };
+                if self.regs[rs].wrapping_add(sext16(i & 0xFFFF)) & (width - 1) == 0 {
+                    self.cancel_then_retire(rt8);
+                } else {
+                    self.retire_timing();
+                }
+            }
+            0x10 if i >> 21 & 31 == 0 && matches!(rd, 3 | 5..=9 | 0x0B..=0x0F) => self.cancel_then_retire(rt8),
+            0x12 if self.cop0[cop0::SR] & (1 << 30) != 0 && matches!(i >> 21 & 31, 0 | 2) => {
+                self.cancel_then_retire(rt8)
+            }
+            _ => self.retire_timing(),
+        }
+    }
+
+    #[inline(always)]
+    fn cancel_then_retire(&mut self, rt: u8) {
+        if self.t.ld_which == rt {
+            self.t.ld_which = 0;
+        }
+        self.retire_timing();
+    }
+
+    /// Wait for the GTE (Mednafen's `gte_ts_done`); returns the cycles waited.
+    #[inline(always)]
+    fn gte_wait(&mut self) -> u64 {
+        let waited = self.t.gte_done.saturating_sub(self.cycles);
+        self.cycles += waited;
+        waited
+    }
+
+    /// MFHI/MFLO wait for the multiplier, absorbing load latency meanwhile.
+    fn muldiv_wait(&mut self) {
+        if self.cycles < self.t.muldiv_done {
+            if self.cycles == self.t.muldiv_done - 1 {
+                self.t.muldiv_done -= 1;
+            } else {
+                while self.cycles < self.t.muldiv_done {
+                    let w = self.t.read_absorb_which as usize;
+                    self.t.read_absorb[w] = self.t.read_absorb[w].saturating_sub(1);
+                    self.cycles += 1;
+                }
+            }
+        }
+    }
+
+    /// A data read's timing, around the access itself (Mednafen's
+    /// `ReadMemory`): `bytes` is Mednafen's access size, `lwc` for LWCz.
+    #[inline(always)]
+    fn read_timed(
+        &mut self,
+        bus: &mut Bus,
+        addr: u32,
+        w: Width,
+        bytes: u32,
+        lwc: bool,
+    ) -> Result<u32, crate::bus::BusError> {
+        self.cancel_absorb();
+        let a = segment_mask(addr);
+        if (0x1F80_0000..=0x1F80_03FF).contains(&a) {
+            self.t.ld_absorb = 0;
+            return bus.read(addr, w);
+        }
+        self.cycles += ((self.t.read_fudge >> 4) & 2) as u64;
+        let start = self.cycles;
+        self.cycles += bus.dma.cycle_steal + Bus::read_cost(a, bytes);
+        if Bus::is_io(addr) {
+            self.sync(bus);
+        }
+        let v = bus.read(addr, w);
+        self.cycles += if lwc { 1 } else { 2 };
+        self.t.ld_absorb = (self.cycles - start) as u32;
+        v
+    }
+
+    /// A store with the cache isolated (SR.IsC) reaches the instruction
+    /// cache's tags or data, or the scratchpad (Mednafen's `WriteMemory`).
+    fn isolated_store(&mut self, bus: &mut Bus, addr: u32, bytes: u32, value: u32) {
+        let biu = bus.cache_control;
+        if biu & 0x800 != 0 {
+            if biu & 7 != 0 {
+                let valid = if biu & 4 != 0 { (value << ((addr & 3) * 8)) & 0xF } else { 0 };
+                let line = ((addr & 0xFF0) >> 2) as usize;
+                for i in 0..4 {
+                    let invalid = if valid & (1 << i) != 0 { 0 } else { 2 };
+                    self.t.icache[line + i].0 = invalid | (addr & !0xF) | (i as u32) << 2;
+                }
+            } else {
+                self.t.icache[((addr & 0xFFC) >> 2) as usize].1 = value << ((addr & 3) * 8);
+            }
+        }
+        if biu & 0x81 == 0x80 {
+            for i in 0..bytes {
+                bus.scratch[((addr + i) & 0x3FF) as usize] = (value >> (8 * i)) as u8;
+            }
+        }
     }
 
     fn branch_to(&mut self, target: u32) {
@@ -325,6 +633,7 @@ impl Cpu {
         self.branch_to(target);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn load_mem(
         &mut self,
         bus: &mut Bus,
@@ -333,6 +642,8 @@ impl Cpu {
         pc: u32,
         info: &mut impl StepSink,
         rt: usize,
+        bytes: u32,
+        lwc: bool,
     ) -> Result<u32, Exception> {
         // Widths are 1, 2 or 4: a mask test (is_multiple_of compiles to a divide here).
         if addr & (w as u32 - 1) != 0 {
@@ -343,7 +654,7 @@ impl Cpu {
         if Bus::is_io(addr) {
             info.io_load(addr, rt as u8);
         }
-        let v = bus.read(addr, w).map_err(|_| {
+        let v = self.read_timed(bus, addr, w, bytes, lwc).map_err(|_| {
             self.exception(Exception::DataBusError, pc);
             Exception::DataBusError
         })?;
@@ -368,7 +679,11 @@ impl Cpu {
         }
         info.mem(MemAccess { addr, value, width: w as u8, store: true });
         if self.cop0[cop0::SR] & (1 << 16) != 0 {
-            return Ok(()); // cache isolated: the store hits the (unmodelled) cache only
+            self.isolated_store(bus, addr, w as u32, value);
+            return Ok(());
+        }
+        if Bus::is_io(addr) {
+            self.sync(bus);
         }
         bus.write(addr, w, value).map_err(|_| {
             self.exception(Exception::DataBusError, pc);
@@ -406,21 +721,31 @@ impl Cpu {
                 }
                 0x0C => return self.fail(Exception::Syscall, pc),
                 0x0D => return self.fail(Exception::Break, pc),
-                0x10 => self.set_reg(rd, self.hi),
+                0x10 => {
+                    self.muldiv_wait();
+                    self.set_reg(rd, self.hi)
+                }
                 0x11 => self.hi = s,
-                0x12 => self.set_reg(rd, self.lo),
+                0x12 => {
+                    self.muldiv_wait();
+                    self.set_reg(rd, self.lo)
+                }
                 0x13 => self.lo = s,
                 0x18 => {
+                    self.t.muldiv_done =
+                        self.cycles + mult_cycles((s ^ ((s as i32) >> 31) as u32 | 0x400).leading_zeros());
                     let p = (s as i32 as i64) * (t as i32 as i64);
                     self.hi = (p >> 32) as u32;
                     self.lo = p as u32;
                 }
                 0x19 => {
+                    self.t.muldiv_done = self.cycles + mult_cycles((s | 0x400).leading_zeros());
                     let p = (s as u64) * (t as u64);
                     self.hi = (p >> 32) as u32;
                     self.lo = p as u32;
                 }
                 0x1A => {
+                    self.t.muldiv_done = self.cycles + 37;
                     let (n, d) = (s as i32, t as i32);
                     if d == 0 {
                         self.hi = s;
@@ -434,6 +759,7 @@ impl Cpu {
                     }
                 }
                 0x1B => {
+                    self.t.muldiv_done = self.cycles + 37;
                     if t == 0 {
                         self.hi = s;
                         self.lo = 0xFFFF_FFFF;
@@ -500,7 +826,8 @@ impl Cpu {
                     0x21 | 0x25 => Width::Half,
                     _ => Width::Word,
                 };
-                let v = self.load_mem(bus, addr, w, pc, info, rt)?;
+                let v = self.load_mem(bus, addr, w, pc, info, rt, w as u32, false)?;
+                self.t.ld_which = rt as u8;
                 let v = match op {
                     0x20 => v as u8 as i8 as i32 as u32,
                     0x21 => v as u16 as i16 as i32 as u32,
@@ -511,7 +838,10 @@ impl Cpu {
             0x22 | 0x26 => {
                 // LWL/LWR merge with the in-flight value of rt (bypassing the load delay).
                 let addr = s.wrapping_add(simm);
-                let aligned = self.load_mem(bus, addr & !3, Width::Word, pc, info, rt)?;
+                let k = addr & 3;
+                let bytes = if op == 0x22 { k + 1 } else { 4 - k };
+                let aligned = self.load_mem(bus, addr & !3, Width::Word, pc, info, rt, bytes, false)?;
+                self.t.ld_which = rt as u8;
                 // In-flight load to rt merges (LWL/LWR bypass the load delay).
                 let cur = if self.load_in.0 == rt { self.load_in.1 } else { self.regs[rt] };
                 let sh = (addr & 3) * 8;
@@ -530,11 +860,15 @@ impl Cpu {
             0x2A | 0x2E => {
                 let addr = s.wrapping_add(simm);
                 let aligned_addr = addr & !3;
-                let mem = if self.cop0[cop0::SR] & (1 << 16) != 0 {
+                if self.cop0[cop0::SR] & (1 << 16) != 0 {
+                    // Mednafen stores the 1-4 bytes the instruction covers.
+                    let k = addr & 3;
+                    let (a, bytes, v) =
+                        if op == 0x2A { (aligned_addr, k + 1, t >> (24 - 8 * k)) } else { (addr, 4 - k, t) };
+                    self.isolated_store(bus, a, bytes, v);
                     return Ok(());
-                } else {
-                    bus.read(aligned_addr, Width::Word).unwrap_or(0)
-                };
+                }
+                let mem = bus.read(aligned_addr, Width::Word).unwrap_or(0);
                 let sh = (addr & 3) * 8;
                 let v = if op == 0x2A {
                     let keep = 0xFFFF_FF00u32.checked_shl(sh).unwrap_or(0);
@@ -547,11 +881,17 @@ impl Cpu {
             }
             0x32 => {
                 let addr = s.wrapping_add(simm);
-                let v = self.load_mem(bus, addr, Width::Word, pc, info, 0)?;
+                if addr & 3 == 0 {
+                    self.gte_wait();
+                }
+                let v = self.load_mem(bus, addr, Width::Word, pc, info, 0, 4, true)?;
                 self.gte.write_data(rt, v);
             }
             0x3A => {
                 let addr = s.wrapping_add(simm);
+                if addr & 3 == 0 {
+                    self.gte_wait();
+                }
                 let v = self.gte.read_data(rt);
                 self.store_mem(bus, addr, Width::Word, v, pc, info)?;
             }
@@ -568,6 +908,10 @@ impl Cpu {
             0x00 => {
                 let v = if rd == cop0::CAUSE { self.cause_ip() } else { self.cop0[rd] };
                 self.load = (rt, v);
+                if matches!(rd, 3 | 5..=9 | 0x0B..=0x0F) {
+                    self.t.ld_absorb = 0;
+                    self.t.ld_which = rt as u8;
+                }
             }
             0x04 => {
                 let v = self.regs[rt];
@@ -593,14 +937,26 @@ impl Cpu {
         let rt = ((i >> 16) & 31) as usize;
         let rd = ((i >> 11) & 31) as usize;
         if i & (1 << 25) != 0 {
-            self.gte.execute(i & 0x01FF_FFFF);
+            self.gte_wait();
+            self.t.gte_done = self.cycles + self.gte.execute(i & 0x01FF_FFFF) as u64;
             return Ok(());
         }
-        match (i >> 21) & 31 {
-            0x00 => self.load = (rt, self.gte.read_data(rd)),
-            0x02 => self.load = (rt, self.gte.read_ctrl(rd)),
-            0x04 => self.gte.write_data(rd, self.regs[rt]),
-            0x06 => self.gte.write_ctrl(rd, self.regs[rt]),
+        let op = (i >> 21) & 31;
+        match op {
+            0x00 | 0x02 => {
+                // A move from the GTE waits for it; the wait is the load's latency.
+                self.t.ld_absorb = self.gte_wait() as u32;
+                self.t.ld_which = rt as u8;
+                self.load = (rt, if op == 0 { self.gte.read_data(rd) } else { self.gte.read_ctrl(rd) });
+            }
+            0x04 => {
+                self.gte_wait();
+                self.gte.write_data(rd, self.regs[rt])
+            }
+            0x06 => {
+                self.gte_wait();
+                self.gte.write_ctrl(rd, self.regs[rt])
+            }
             _ => return self.fail(Exception::ReservedInstruction, pc),
         }
         Ok(())

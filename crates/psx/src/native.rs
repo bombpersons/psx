@@ -372,7 +372,7 @@ pub fn run(o: Options) -> crate::Result<(bool, Value)> {
             },
             "dump": dumped,
             "speed": {"instructions_per_second": (steps as f64 / secs.max(1e-9)).round(), "realtime_factor": ((m.bus.now as f64 / psx_core::bus::SYSCLK as f64) / secs.max(1e-9) * 100.0).round() / 100.0},
-            "timing_model": "Mednafen's video timing; flat CPU costs (2 cycles/instruction, +20 in BIOS ROM), not Mednafen's",
+            "timing_model": "Mednafen's video, CPU and DMA timing; other devices' timing (CD-ROM, GPU busy, timers, pads) differs",
         }),
     ))
 }

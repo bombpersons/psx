@@ -62,7 +62,12 @@ pub struct Raster {
 
 impl Raster {
     pub fn full(width: u32, height: u32) -> Self {
-        Raster { clip: (0, 0, width as i32 - 1, height as i32 - 1), check_mask: false, set_mask: false, skip_parity: None }
+        Raster {
+            clip: (0, 0, width as i32 - 1, height as i32 - 1),
+            check_mask: false,
+            set_mask: false,
+            skip_parity: None,
+        }
     }
 }
 
@@ -621,7 +626,15 @@ fn rect_rows<
     for y in (y0..=y1).filter(|&y| skip_parity != Some(y & 1)) {
         let row = y - origin.y;
         let v = if flip.1 { origin.v - row } else { origin.v + row };
-        span::<S, T, TEX, RAW, SEMI, MASK, false, false>(surface, tex, p, y, x0, x1, [0, 0, 0, (u as u32) << 24, (v as u32) << 24]);
+        span::<S, T, TEX, RAW, SEMI, MASK, false, false>(
+            surface,
+            tex,
+            p,
+            y,
+            x0,
+            x1,
+            [0, 0, 0, (u as u32) << 24, (v as u32) << 24],
+        );
     }
 }
 
@@ -641,7 +654,8 @@ pub(crate) mod reference {
         let Some(tri) = Tri::new(v, sh.gouraud, sh.textured) else { return };
         tri.rows(ras, |y, x0, x1, mut s| {
             for x in x0..=x1 {
-                let rgb = if sh.gouraud { [s[0], s[1], s[2]].map(|c| (c >> 24) as i32) } else { [v[0].r, v[0].g, v[0].b] };
+                let rgb =
+                    if sh.gouraud { [s[0], s[1], s[2]].map(|c| (c >> 24) as i32) } else { [v[0].r, v[0].g, v[0].b] };
                 let uv = sh.textured.then(|| ((s[3] >> 24) as i32, (s[4] >> 24) as i32));
                 plot(surface, tex, ras, sh, x, y, rgb, uv);
                 for (c, d) in s.iter_mut().zip(tri.dx) {

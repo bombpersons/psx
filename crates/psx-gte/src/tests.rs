@@ -497,11 +497,13 @@ fn triple_color_commands_push_three() {
 fn execute_decoding() {
     let mut g = Gte::new();
     g.write_ctrl(31, 0x7FFF_F000);
-    assert_eq!(g.execute(0x3B), None); // unassigned: untouched
-    assert_eq!(g.read_ctrl(31), 0xFFFF_F000);
-    // Real-world libgte encoding with junk upper bits.
-    assert_eq!(g.execute(0x4A18_0001), Some(15));
-    assert_eq!(g.execute(0x4A28_0030), Some(23));
+    assert_eq!(g.execute(0x3B), 0); // unassigned: only FLAG is cleared (Mednafen)
+    assert_eq!(g.read_ctrl(31), 0);
+    // Real-world libgte encoding with junk upper bits; the cycle count less the issuing one.
+    assert_eq!(g.execute(0x4A18_0001), 14);
+    assert_eq!(g.execute(0x4A28_0030), 22);
+    // Aliases: 0x00 is RTPS.
+    assert_eq!(g.execute(0x00), 14);
 }
 
 // --- math ---------------------------------------------------------------------------

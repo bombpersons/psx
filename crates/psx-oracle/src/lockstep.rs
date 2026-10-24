@@ -4,7 +4,9 @@
 //! Cause (but IP2), EPC and BadVaddr, and after each COP2 instruction or LWC2
 //! the GTE's 64 registers.
 //!
-//! The two models' timing differs (the core's CPU costs are flat), so two
+//! The cycle count is compared too (Mednafen's master clock): changes in the
+//! difference are reported, and with `--cycles` they stop the run. The CPU
+//! and DMA timing are Mednafen's, but other devices' isn't yet, so these
 //! things Mednafen knows are adopted rather than counted as divergence:
 //! - the value of every load from I/O space, which depends on device timing
 //!   (applied to the destination register once the load retires, and stored
@@ -47,11 +49,20 @@ struct State {
     /// Registers an I/O load wrote (or will write once it retires).
     io_dest: [Option<(u32, Width)>; 32],
     io_injected: u64,
+    /// Adopted I/O values by register address.
+    io_by_addr: std::collections::BTreeMap<u32, u64>,
     irq_injected: u64,
     /// The last instruction was COP2 or LWC2, so the GTE may have changed.
     gte_changed: bool,
     divergence: Value,
     stop: bool,
+    /// Core cycles minus Mednafen's, before the current instruction.
+    cycle_offset: i64,
+    /// Instructions after which the offset changed, the first few of them.
+    cycle_changes: u64,
+    cycle_events: Vec<Value>,
+    /// A cycle difference is a divergence.
+    strict_cycles: bool,
 }
 
 impl State {
@@ -105,6 +116,7 @@ impl State {
                         m.cpu.regs[i] = r.gpr[i];
                         m.bus.poke_io(addr, w, r.gpr[i]);
                         self.io_injected += 1;
+                        *self.io_by_addr.entry(addr).or_default() += 1;
                     }
                     None => {
                         problems.push(json!({"what": reg(i as u32), "core": h(m.cpu.regs[i]), "mednafen": h(r.gpr[i])}))
@@ -145,6 +157,21 @@ impl State {
                         problems.push(json!({"what": name, "core": h(core), "mednafen": h(v)}));
                     }
                 }
+            }
+        }
+        // Cycles: compared against Mednafen's master clock before each
+        // instruction; a change in the offset is the previous instruction's.
+        let offset = m.cpu.cycles as i64 - ffi::cpu_time() as i64;
+        if problems.is_empty() && offset != self.cycle_offset {
+            let by = offset - self.cycle_offset;
+            self.cycle_offset = offset;
+            self.cycle_changes += 1;
+            if self.strict_cycles {
+                problems.push(json!({"what": "cycles", "core_minus_mednafen": by,
+                                     "after": self.history.back().cloned()}));
+            } else if self.cycle_events.len() < 16 {
+                self.cycle_events.push(json!({"step": self.done, "after": self.history.back().cloned(),
+                                              "core_minus_mednafen": by, "offset": offset}));
             }
         }
         if !problems.is_empty() {
@@ -205,8 +232,12 @@ fn ranges(a: &[u8], b: &[u8], base: u32) -> (u64, Vec<Value>) {
 
 /// Memory compared at each vblank: name, Mednafen's address space and
 /// start, the core's bytes, and the address shown for offset 0.
-const MEMORIES: [(&str, &str, u32, u32); 4] =
-    [("ram", "ram", 0, 0), ("scratchpad", "cpu", 0x1F80_0000, 0x1F80_0000), ("vram", "gpu", 0, 0), ("spu_ram", "spu", 0, 0)];
+const MEMORIES: [(&str, &str, u32, u32); 4] = [
+    ("ram", "ram", 0, 0),
+    ("scratchpad", "cpu", 0x1F80_0000, 0x1F80_0000),
+    ("vram", "gpu", 0, 0),
+    ("spu_ram", "spu", 0, 0),
+];
 
 #[derive(Default)]
 struct MemoryDiff {
@@ -273,7 +304,14 @@ fn dump_files(emu: &Mednafen, m: &Machine, prefix: &Path) -> Value {
     Value::Object(out)
 }
 
-pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize, dump: Option<&Path>) -> (bool, Value) {
+pub fn run(
+    root: &Path,
+    bios_path: &Path,
+    steps: u64,
+    context: usize,
+    strict_cycles: bool,
+    dump: Option<&Path>,
+) -> (bool, Value) {
     let err = |code: &str, m: String| (false, json!({"error": {"code": code, "message": m}}));
     let bios = match std::fs::read(bios_path) {
         Ok(b) => b,
@@ -298,10 +336,15 @@ pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize, dump: Opti
         history: VecDeque::with_capacity(context + 1),
         io_dest: [None; 32],
         io_injected: 0,
+        io_by_addr: Default::default(),
         irq_injected: 0,
         gte_changed: false,
         divergence: Value::Null,
         stop: false,
+        cycle_offset: 0,
+        cycle_changes: 0,
+        cycle_events: Vec::new(),
+        strict_cycles,
     }));
     let started = Instant::now();
     {
@@ -326,6 +369,9 @@ pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize, dump: Opti
         dumped = dump_files(&emu, &s.m, prefix);
     }
     let ok = s.divergence.is_null() && s.done >= steps;
+    let mut by_addr: Vec<_> = s.io_by_addr.iter().collect();
+    by_addr.sort_by(|a, b| b.1.cmp(a.1));
+    let io_by_register: serde_json::Map<_, _> = by_addr.iter().take(12).map(|(a, n)| (h(**a), json!(n))).collect();
     (
         ok,
         json!({
@@ -335,7 +381,14 @@ pub fn run(root: &Path, bios_path: &Path, steps: u64, context: usize, dump: Opti
             "frames": emu.vblanks(),
             "final_pc": h(s.m.cpu.pc),
             "io_values_adopted": s.io_injected,
+            "io_values_adopted_by_register": io_by_register,
             "interrupts_injected": s.irq_injected,
+            "cycles": {
+                "core": s.m.cpu.cycles,
+                "core_minus_mednafen": s.cycle_offset,
+                "instructions_changing_offset": s.cycle_changes,
+                "first_changes": s.cycle_events,
+            },
             "core_dump": dumped,
             "divergence": s.divergence,
             "memory": MEMORIES.iter().zip(&diffs).map(|((name, ..), d)| (name.to_string(), json!({
