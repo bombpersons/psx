@@ -252,21 +252,26 @@ void mdh_gte(uint32_t out[64])
  }
 }
 
-// Whether the GPU still has work queued: commands in its FIFO, drawing time
-// owed, or the second half of a quad.
-int mdh_gpu_busy(void)
-{
- using MDFN_IEN_PSX::GPU;
- using MDFN_IEN_PSX::PS_GPU;
- return GPU.BlitterFIFO.CanRead() > 0 || GPU.DrawTimeAvail < 0 || (GPU.InCmd & PS_GPU::INCMD_QUAD) != 0;
-}
-
 // The interlaced field being read out for display (the GPU skips its lines).
 int mdh_gpu_readout_field(void) { return MDFN_IEN_PSX::GPU.field_ram_readout; }
 
 // Master clock (CPU cycles since power-on) when the last step hook ran,
 // that is, before the instruction at its PC.
 uint64_t mdh_cpu_time(void) { return master_base + hook_timestamp; }
+
+// Master clock at the end of the last frame: the next instruction starts there.
+uint64_t mdh_frame_time(void) { return master_base; }
+
+// DMA holds the CPU (the next instruction hasn't started).
+int mdh_cpu_halted(void) { return MDFN_IEN_PSX::CPU->IsHalted(); }
+
+// After loading a state saved between frames: the master clock and vblank
+// count it was saved at (neither is part of Mednafen's state).
+void mdh_set_clock(uint64_t master, uint64_t vblanks)
+{
+ master_base = master;
+ MDFN_IEN_PSX::psxm_vblanks = vblanks;
+}
 
 static void step_hook(const MDFN_IEN_PSX::pscpu_timestamp_t timestamp, uint32 pc)
 {

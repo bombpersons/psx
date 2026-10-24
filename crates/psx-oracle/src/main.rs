@@ -96,6 +96,12 @@ enum Command {
         /// Take the interrupt line and the displayed interlaced field from Mednafen instead of comparing the core's.
         #[arg(long)]
         adopt_irqs: bool,
+        /// Run each frame at full speed and compare at its end; a frame that differs is run again instruction by instruction from the last checkpoint.
+        #[arg(long)]
+        fast: bool,
+        /// With --fast, frames between checkpoints.
+        #[arg(long, default_value_t = 60)]
+        checkpoint_every: u64,
     },
 }
 
@@ -122,6 +128,8 @@ pub struct LockstepJob {
     pub dump: Option<PathBuf>,
     pub trace_adopted: Option<u32>,
     pub adopt_irqs: bool,
+    pub fast: bool,
+    pub checkpoint_every: u64,
 }
 
 /// A replay file as `psx run` reads it: `frame`, `buttons`, optional
@@ -265,6 +273,8 @@ fn main() -> ExitCode {
             dump,
             trace_adopted,
             adopt_irqs,
+            fast,
+            checkpoint_every,
         } => match replay_path.as_deref().map(replay).transpose() {
             Ok(inputs) => lockstep_job(
                 &root,
@@ -278,6 +288,8 @@ fn main() -> ExitCode {
                     dump,
                     trace_adopted,
                     adopt_irqs,
+                    fast,
+                    checkpoint_every,
                 },
             ),
             Err(e) => (false, json!({"error": e})),

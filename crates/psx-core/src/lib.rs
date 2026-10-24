@@ -151,6 +151,18 @@ impl Machine {
         n
     }
 
+    /// Step until the next instruction starts at or after `cycle` (CPU
+    /// cycles since power-on), or `max_steps` have run; returns the number
+    /// executed.
+    pub fn run_to_cycle(&mut self, cycle: u64, max_steps: u64) -> u64 {
+        let mut n = 0;
+        while n < max_steps && self.cpu.cycles < cycle {
+            self.step_with(&mut ());
+            n += 1;
+        }
+        n
+    }
+
     /// Run until `frames` more vblanks have occurred (or `max_steps`).
     pub fn run_frames(&mut self, frames: u64, max_steps: u64) -> u64 {
         let target = self.bus.frames + frames;

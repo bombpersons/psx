@@ -53,9 +53,11 @@ unsafe extern "C" {
     fn mdh_peek(address: u32, bytes: u32) -> u32;
     fn mdh_regs(out: *mut Regs);
     fn mdh_gte(out: *mut u32);
-    fn mdh_gpu_busy() -> c_int;
     fn mdh_gpu_readout_field() -> c_int;
     fn mdh_cpu_time() -> u64;
+    fn mdh_frame_time() -> u64;
+    fn mdh_cpu_halted() -> c_int;
+    fn mdh_set_clock(master: u64, vblanks: u64);
     fn mdh_step_hook(cb: Option<HookFn>, user: *mut c_void);
     fn mdh_write_watch(address: u32, length: u32, cb: HookFn, user: *mut c_void);
     fn mdh_save_state(path: *const c_char) -> c_int;
@@ -224,6 +226,13 @@ impl Mednafen {
         Ok(())
     }
 
+    /// After [`Mednafen::load_state`] of a state saved between frames: the
+    /// clock ([`frame_time`]) and vblank count it was saved at.
+    pub fn set_clock(&mut self, master: u64, vblanks: u64) {
+        // SAFETY: plain writes of the harness's counters.
+        unsafe { mdh_set_clock(master, vblanks) }
+    }
+
     pub fn load_state(&mut self, path: &Path) -> Result<(), String> {
         let p = c_path(path)?;
         // SAFETY: valid C string.
@@ -250,12 +259,6 @@ pub fn gte() -> [u32; 64] {
     r
 }
 
-/// The GPU has queued commands, owes drawing time, or is between a quad's halves.
-pub fn gpu_busy() -> bool {
-    // SAFETY: plain reads of the GPU's state.
-    unsafe { mdh_gpu_busy() != 0 }
-}
-
 /// The interlaced field the GPU reads out for display, latched at vblank.
 pub fn gpu_readout_field() -> bool {
     // SAFETY: a plain read of the GPU's state.
@@ -266,6 +269,19 @@ pub fn gpu_readout_field() -> bool {
 pub fn cpu_time() -> u64 {
     // SAFETY: a plain read of the harness's clock.
     unsafe { mdh_cpu_time() }
+}
+
+/// CPU cycles since power-on at the end of the last frame, where the next
+/// instruction starts (unless DMA holds the CPU there).
+pub fn frame_time() -> u64 {
+    // SAFETY: a plain read of the harness's clock.
+    unsafe { mdh_frame_time() }
+}
+
+/// DMA holds the CPU: the next instruction hasn't started.
+pub fn cpu_halted() -> bool {
+    // SAFETY: a plain read of the CPU's state.
+    unsafe { mdh_cpu_halted() != 0 }
 }
 
 /// A side-effect-free read of the CPU's logical address space.

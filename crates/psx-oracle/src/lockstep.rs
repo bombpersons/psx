@@ -17,13 +17,17 @@
 //!
 //! Adoption counts are reported; anything else that differs stops the run.
 //!
-//! At every vblank, main RAM, the scratchpad, VRAM and SPU RAM are compared
-//! too. Those differences are recorded, not fatal: the CPUs agree, so they
-//! come from a device (DMA, the GPU or the SPU), possibly only from when its
-//! work lands.
+//! At the end of every frame, main RAM, the scratchpad, VRAM and SPU RAM are
+//! compared too, where both sides are at the same instruction. Those
+//! differences are recorded, not fatal: the CPUs agree, so they come from a
+//! device (DMA, the GPU or the SPU).
+//!
+//! `--fast` runs each frame at full speed on both sides and compares the CPU,
+//! the GTE, the cycle count and memory at its end, rerunning a frame that
+//! differs instruction by instruction from the last checkpoint.
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -68,6 +72,9 @@ struct State {
     cycle_events: Vec<Value>,
     /// A cycle difference is a divergence.
     strict_cycles: bool,
+    /// Frame ends where the two weren't at the same instruction, so memory
+    /// wasn't compared.
+    frames_not_compared: u64,
 }
 
 impl State {
@@ -268,8 +275,6 @@ const MEMORIES: [(&str, &str, u32, u32); 4] = [
 #[derive(Default)]
 struct MemoryDiff {
     frames: u64,
-    /// VRAM differences while Mednafen's GPU was still busy (not counted).
-    busy: u64,
     first: Value,
     last: Value,
 }
@@ -292,11 +297,6 @@ fn compare_memory(emu: &Mednafen, m: &Machine, frame: u64, step: u64, diffs: &mu
             continue;
         }
         let (bytes, at) = ranges(&ours, &theirs, *base);
-        // Mednafen's GPU takes time to draw; the core's draws at once.
-        if *name == "vram" && ffi::gpu_busy() {
-            d.busy += 1;
-            continue;
-        }
         d.frames += 1;
         d.last = json!({"frame": frame, "step": step, "bytes": bytes, "ranges": at});
         if d.first.is_null() {
@@ -330,9 +330,237 @@ fn dump_files(emu: &Mednafen, m: &Machine, prefix: &Path) -> Value {
     Value::Object(out)
 }
 
+impl State {
+    fn new(m: Machine, job: &crate::LockstepJob) -> Self {
+        State {
+            m,
+            steps: job.steps,
+            context: job.context,
+            done: 0,
+            history: VecDeque::with_capacity(job.context + 1),
+            io_dest: [None; 32],
+            io_injected: 0,
+            io_by_addr: Default::default(),
+            trace_adopted: job.trace_adopted,
+            adopt_irqs: job.adopt_irqs,
+            irq_injected: 0,
+            field_differs: 0,
+            gte_changed: false,
+            divergence: Value::Null,
+            stop: false,
+            cycle_offset: 0,
+            cycle_changes: 0,
+            cycle_events: Vec::new(),
+            strict_cycles: job.strict_cycles,
+            frames_not_compared: 0,
+        }
+    }
+}
+
+/// Pad 1 during frame `frame`: the last input at or before it.
+fn pad_at(inputs: &[crate::Input], frame: u64) -> (u16, [u8; 4]) {
+    let n = inputs.partition_point(|i| i.frame as u64 <= frame);
+    n.checked_sub(1).map_or((0, [0x80; 4]), |i| (inputs[i].buttons, inputs[i].sticks))
+}
+
+/// Instruction by instruction from where both sides are, until a
+/// divergence, `steps` instructions in all, or vblank `until`.
+fn precise(
+    emu: &mut Mednafen,
+    state: State,
+    inputs: &[crate::Input],
+    until: Option<u64>,
+    diffs: &mut [MemoryDiff; 4],
+) -> State {
+    // Every frame is a few hundred thousand instructions; this only bounds a
+    // run that stops calling the hook.
+    let limit = emu.vblanks() + (state.steps - state.done.min(state.steps)) / 1000 + 100;
+    let state = Rc::new(RefCell::new(state));
+    {
+        let state = state.clone();
+        emu.step_hook(move |pc, _| state.borrow_mut().check(pc));
+    }
+    while !state.borrow().stop && emu.vblanks() < until.unwrap_or(limit).min(limit) {
+        let (buttons, sticks) = pad_at(inputs, emu.vblanks());
+        emu.set_pad(buttons, sticks);
+        state.borrow_mut().m.bus.sio0.buttons = buttons;
+        emu.frame(false);
+        let mut s = state.borrow_mut();
+        if at_frame_end(&s.m) {
+            compare_memory(emu, &s.m, emu.vblanks(), s.done, diffs);
+        } else {
+            s.frames_not_compared += 1;
+        }
+    }
+    emu.unhook();
+    Rc::try_unwrap(state).ok().expect("the hook is removed").into_inner()
+}
+
+/// The core's next instruction is Mednafen's, where its frame ended: not
+/// when DMA holds Mednafen's CPU there (the core's step runs the whole
+/// transfer), nor when the core stopped short at its step budget.
+fn at_frame_end(m: &Machine) -> bool {
+    !ffi::cpu_halted() && m.cpu.cycles == ffi::frame_time() && m.cpu.pc == ffi::regs().pc
+}
+
+/// Both sides between frames, for a precise rerun.
+struct Checkpoint {
+    core: Vec<u8>,
+    mednafen: PathBuf,
+    master: u64,
+    vblanks: u64,
+    steps: u64,
+}
+
+fn checkpoint(emu: &Mednafen, m: &Machine, path: &Path, steps: u64) -> Result<Checkpoint, String> {
+    emu.save_state(path)?;
+    let (master, vblanks) = (ffi::frame_time(), emu.vblanks());
+    Ok(Checkpoint { core: m.save_state(None), mednafen: path.to_path_buf(), master, vblanks, steps })
+}
+
+fn restore(emu: &mut Mednafen, m: &mut Machine, c: &Checkpoint) -> Result<(), String> {
+    emu.load_state(&c.mednafen)?;
+    emu.set_clock(c.master, c.vblanks);
+    let (_, mut restored) = Machine::load_state(&c.core, m.bus.bios.clone()).map_err(|e| e.to_string())?;
+    restored.bus.cdrom.disc = m.bus.cdrom.disc.take();
+    *m = restored;
+    Ok(())
+}
+
+/// Between frames, where Mednafen's next instruction starts: what differs
+/// in the CPU, the GTE and the cycle count.
+fn frame_problems(m: &mut Machine) -> Vec<Value> {
+    let r = ffi::regs();
+    let mut problems = Vec::new();
+    let t = ffi::frame_time();
+    if m.cpu.cycles != t {
+        problems.push(json!({"what": "cycles", "core": m.cpu.cycles, "mednafen": t}));
+    }
+    if m.cpu.pc != r.pc {
+        problems.push(json!({"what": "pc", "core": h(m.cpu.pc), "mednafen": h(r.pc)}));
+    }
+    for i in 1..32 {
+        if m.cpu.regs[i] != r.gpr[i] {
+            problems.push(json!({"what": reg(i as u32), "core": h(m.cpu.regs[i]), "mednafen": h(r.gpr[i])}));
+        }
+    }
+    let theirs = if r.load_reg == 0 || r.load_reg >= 32 { (0, 0) } else { (r.load_reg as usize, r.load_value) };
+    let ours = match m.cpu.pending_load() {
+        (0, _) => (0, 0),
+        l => l,
+    };
+    if ours != theirs {
+        problems.push(json!({"what": "delayed load", "core": [reg(ours.0 as u32), h(ours.1)],
+                             "mednafen": [reg(theirs.0 as u32), h(theirs.1)]}));
+    }
+    use psx_core::cpu::cop0;
+    let c = &m.cpu.cop0;
+    for (what, core, theirs) in [
+        ("hi", m.cpu.hi, r.hi),
+        ("lo", m.cpu.lo, r.lo),
+        ("sr", c[cop0::SR], r.sr),
+        ("cause", c[cop0::CAUSE] & !0x400, r.cause & !0x400),
+        ("epc", c[cop0::EPC], r.epc),
+        ("badvaddr", c[cop0::BADVADDR], r.badvaddr),
+    ] {
+        if core != theirs {
+            problems.push(json!({"what": what, "core": h(core), "mednafen": h(theirs)}));
+        }
+    }
+    if m.bus.irq_line() != (r.cause & 0x400 != 0) {
+        problems.push(json!({"what": "interrupt line (cause.ip2)", "core": m.bus.irq_line(),
+                             "mednafen": r.cause & 0x400 != 0}));
+    }
+    for (i, &v) in ffi::gte().iter().enumerate() {
+        let core = if i < 32 { m.cpu.gte.read_data(i) } else { m.cpu.gte.read_ctrl(i - 32) };
+        if core != v {
+            let name = if i < 32 { format!("gte data {i}") } else { format!("gte ctrl {}", i - 32) };
+            problems.push(json!({"what": name, "core": h(core), "mednafen": h(v)}));
+        }
+    }
+    problems
+}
+
+#[derive(Default)]
+struct Fast {
+    checkpoints: u64,
+    reruns: Vec<Value>,
+}
+
+/// `--fast`: both sides run a frame at full speed, then the CPU, the GTE,
+/// the cycle count and memory are compared where Mednafen's frame ended.
+/// When the CPU state differs, both go back to the last checkpoint and run
+/// to the end of that frame instruction by instruction, which finds the
+/// instruction (adopting I/O values as the precise mode does); if they
+/// agree again by then, the fast run goes on.
+fn fast(
+    emu: &mut Mednafen,
+    mut st: State,
+    job: &crate::LockstepJob,
+    base: &Path,
+    diffs: &mut [MemoryDiff; 4],
+) -> Result<(State, Fast), String> {
+    let mut f = Fast::default();
+    let path = base.join("checkpoint.mcs");
+    let mut cp: Option<Checkpoint> = None;
+    // Both sides are at the same instruction (so a checkpoint can be taken).
+    let mut aligned = true;
+    while st.done < st.steps {
+        let vb = emu.vblanks();
+        if aligned && cp.as_ref().is_none_or(|c| vb >= c.vblanks + job.checkpoint_every.max(1)) {
+            cp = Some(checkpoint(emu, &st.m, &path, st.done)?);
+            f.checkpoints += 1;
+        }
+        let (buttons, sticks) = pad_at(&job.inputs, vb);
+        emu.set_pad(buttons, sticks);
+        st.m.bus.sio0.buttons = buttons;
+        emu.frame(false);
+        st.done += st.m.run_to_cycle(ffi::frame_time(), u64::MAX);
+        // DMA holds Mednafen's CPU, and the core's next instruction starts
+        // after it: compare at the next frame.
+        if ffi::cpu_halted() {
+            st.frames_not_compared += 1;
+            aligned = false;
+            continue;
+        }
+        let problems = frame_problems(&mut st.m);
+        compare_memory(emu, &st.m, emu.vblanks(), st.done, diffs);
+        if problems.is_empty() {
+            aligned = true;
+            continue;
+        }
+        let Some(c) = cp.as_ref() else {
+            st.divergence = json!({"frame": emu.vblanks(), "step": st.done, "problems": problems});
+            break;
+        };
+        restore(emu, &mut st.m, c)?;
+        let (from, adopted) = (c.vblanks, st.io_injected);
+        st.done = c.steps;
+        st.history.clear();
+        st.io_dest = [None; 32];
+        st.gte_changed = false;
+        st.cycle_offset = 0;
+        st.strict_cycles = true;
+        st = precise(emu, st, &job.inputs, Some(vb + 1), &mut Default::default());
+        f.reruns.push(json!({"frames": [from, vb + 1], "found": problems,
+                             "io_values_adopted": st.io_injected - adopted}));
+        if st.stop {
+            break;
+        }
+        let problems = frame_problems(&mut st.m);
+        if !problems.is_empty() {
+            st.divergence = json!({"frame": emu.vblanks(), "step": st.done, "problems": problems,
+                                   "note": "instruction by instruction the frame matched, but not at its end"});
+            break;
+        }
+        aligned = true;
+        cp = None;
+    }
+    Ok((st, f))
+}
+
 pub fn run(root: &Path, job: &crate::LockstepJob) -> (bool, Value) {
-    let (bios_path, steps, context, strict_cycles) = (job.bios.as_path(), job.steps, job.context, job.strict_cycles);
-    let (disc, inputs, dump) = (job.disc.as_deref(), job.inputs.as_slice(), job.dump.as_deref());
+    let (bios_path, steps, disc, dump) = (job.bios.as_path(), job.steps, job.disc.as_deref(), job.dump.as_deref());
     let err = |code: &str, m: String| (false, json!({"error": {"code": code, "message": m}}));
     let bios = match std::fs::read(bios_path) {
         Ok(b) => b,
@@ -355,52 +583,18 @@ pub fn run(root: &Path, job: &crate::LockstepJob) -> (bool, Value) {
     // With --adopt-irqs, the interrupts and the displayed field come from Mednafen.
     m.bus.irq_sources = !job.adopt_irqs;
     m.bus.external_field = job.adopt_irqs;
-    let state = Rc::new(RefCell::new(State {
-        m,
-        steps,
-        context,
-        done: 0,
-        history: VecDeque::with_capacity(context + 1),
-        io_dest: [None; 32],
-        io_injected: 0,
-        io_by_addr: Default::default(),
-        trace_adopted: job.trace_adopted,
-        adopt_irqs: job.adopt_irqs,
-        irq_injected: 0,
-        field_differs: 0,
-        gte_changed: false,
-        divergence: Value::Null,
-        stop: false,
-        cycle_offset: 0,
-        cycle_changes: 0,
-        cycle_events: Vec::new(),
-        strict_cycles,
-    }));
     let started = Instant::now();
-    {
-        let state = state.clone();
-        emu.step_hook(move |pc, _| state.borrow_mut().check(pc));
-    }
-    // Every frame is a few hundred thousand instructions; this only bounds a
-    // run that stops calling the hook.
-    let mut frames = 0u64;
     let mut diffs: [MemoryDiff; 4] = Default::default();
-    let mut inputs = inputs.iter().peekable();
-    let (mut buttons, mut sticks) = (0u16, [0x80u8; 4]);
-    while !state.borrow().stop && frames < steps / 1000 + 100 {
-        while let Some(i) = inputs.next_if(|i| i.frame as u64 <= frames) {
-            (buttons, sticks) = (i.buttons, i.sticks);
+    let state = State::new(m, job);
+    let (s, fast_report) = if job.fast {
+        match fast(&mut emu, state, job, &base, &mut diffs) {
+            Ok((s, f)) => (s, Some(f)),
+            Err(e) => return err("checkpoint", e),
         }
-        emu.set_pad(buttons, sticks);
-        state.borrow_mut().m.bus.sio0.buttons = buttons;
-        emu.frame(false);
-        frames += 1;
-        let s = state.borrow();
-        compare_memory(&emu, &s.m, emu.vblanks(), s.done, &mut diffs);
-    }
-    emu.unhook();
+    } else {
+        (precise(&mut emu, state, &job.inputs, None, &mut diffs), None)
+    };
     let secs = started.elapsed().as_secs_f64();
-    let s = state.borrow();
     let mut dumped = Value::Null;
     if let Some(prefix) = dump {
         dumped = dump_files(&emu, &s.m, prefix);
@@ -411,6 +605,7 @@ pub fn run(root: &Path, job: &crate::LockstepJob) -> (bool, Value) {
         ok,
         json!({
             "status": if !s.divergence.is_null() { "diverged" } else if s.done >= steps { "matched" } else { "stopped" },
+            "mode": if job.fast { "fast" } else { "precise" },
             "steps_compared": s.done,
             "steps_requested": steps,
             "frames": emu.vblanks(),
@@ -425,18 +620,29 @@ pub fn run(root: &Path, job: &crate::LockstepJob) -> (bool, Value) {
                 "instructions_changing_offset": s.cycle_changes,
                 "first_changes": s.cycle_events,
             },
+            "fast": fast_report.map(|f| json!({
+                "checkpoint_every": job.checkpoint_every,
+                "checkpoints": f.checkpoints,
+                "reruns": f.reruns,
+            })),
             "core_dump": dumped,
             "divergence": s.divergence,
+            "memory_frames_not_compared": s.frames_not_compared,
             "memory": MEMORIES.iter().zip(&diffs).map(|((name, ..), d)| (name.to_string(), json!({
                 "frames_differing": d.frames,
-                "frames_differing_while_gpu_busy": (*name == "vram").then_some(d.busy),
                 "first": d.first,
                 "at_end": d.last,
             }))).collect::<serde_json::Map<_, _>>(),
             "steps_per_second": (s.done as f64 / secs.max(1e-9)).round(),
-            "compared": ["pc", "instruction word", "r1-r31", "hi", "lo", "delayed load",
-                         "sr", "cause", "the interrupt line (unless --adopt-irqs)", "epc", "badvaddr", "gte after cop2/lwc2",
-                         "ram, scratchpad, vram and spu ram at each vblank"],
+            "compared": if job.fast {
+                json!(["at the end of each frame: pc, r1-r31, hi, lo, delayed load, sr, cause, the interrupt line, epc,
+                        badvaddr, the gte, the cycle count, ram, scratchpad, vram and spu ram; a frame whose cpu state
+                        differs is run again instruction by instruction from the last checkpoint"])
+            } else {
+                json!(["pc", "instruction word", "r1-r31", "hi", "lo", "delayed load",
+                       "sr", "cause", "the interrupt line (unless --adopt-irqs)", "epc", "badvaddr", "gte after cop2/lwc2",
+                       "ram, scratchpad, vram and spu ram at each vblank"])
+            },
             "oracle": {"backend": "mednafen", "version": ffi::version(), "region": region.name()},
         }),
     )

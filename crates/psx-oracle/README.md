@@ -7,6 +7,7 @@ Developer tool only: it isn't part of the `psx` toolkit, and it is built only on
 cargo run --release -p psx-oracle -- run "media/Crash Bandicoot.cue" --bios bios/scph7502.bin --frames 4504 --replay .psx/native/replay_start_cross.json
 cargo run --release -p psx-oracle -- lockstep --bios bios/SCPH1001.BIN --steps 100000000
 cargo run --release -p psx-oracle -- lockstep --bios bios/scph7502.bin --disc "media/Crash Bandicoot.cue" --steps 200000000 --cycles
+cargo run --release -p psx-oracle -- lockstep --bios bios/scph7502.bin --disc "media/Crash Bandicoot.cue" --replay .psx/native/replay_start_cross.json --steps 1400000000 --fast
 ```
 
 ## `run`
@@ -45,15 +46,24 @@ that field from Mednafen instead, as lockstep did before the devices' timing was
 ADDR` prints each value adopted from one register to stderr (step, frame, PC, cycle, both values) to find
 where a device's timing parts.
 
-At every vblank, main RAM, the scratchpad, VRAM and SPU RAM are compared too. These differences are reported
-(`memory`: frames differing, the first, and any left at the end) but don't stop the run. The comparison runs
-when Mednafen's frame ends, and its last device updates there may not have reached the core yet. At the end
-of a run Mednafen also finishes its frame after lockstep stops, so `at_end` is only approximate. VRAM differences while Mednafen's GPU still has queued work are counted
-separately. `--dump PREFIX` writes both sides' memory at the end for `psx vram-diff` and `psx ram-diff`.
+At the end of every frame, main RAM, the scratchpad, VRAM and SPU RAM are compared too. These differences are
+reported (`memory`: frames differing, the first, and the last frame end compared) but don't stop the run. They
+are compared only where the core's next instruction is Mednafen's: not when the frame ended while DMA held
+Mednafen's CPU (Mednafen stops mid-transfer; one core step runs all of it), nor at the last frame, which
+Mednafen finishes after the core stops at `--steps` (`memory_frames_not_compared` counts these). `--dump
+PREFIX` writes both sides' memory at the end for `psx vram-diff` and `psx ram-diff`.
+
+`--fast` runs each frame at full speed on both sides instead, and compares at Mednafen's frame end: the cycle
+count, r1-r31, HI, LO, the delayed load, COP0, the interrupt line, the GTE and memory. Every
+`--checkpoint-every` frames (60) it saves both sides. When the CPU state differs at a frame end, both go back
+to the last checkpoint and run to that frame's end instruction by instruction as above, with `--cycles`, which
+finds the instruction; if that frame then matches (an adopted I/O value), the fast run goes on. `fast.reruns`
+lists these. It runs at about 15 million instructions a second, eight times the precise mode, so a long
+human-played replay takes minutes rather than an hour.
 
 With `--disc "media/Crash Bandicoot.cue"` and a START/CROSS replay, 1.4 billion instructions (4,562 frames, into
-gameplay) match cycle for cycle. Every interrupt comes from the core and no I/O value is adopted. VRAM is identical
-at every vblank; RAM differs at 18 of them and SPU RAM at 11, but no load reads a differing value. On SCPH-1001 without a disc,
+gameplay) match cycle for cycle. Every interrupt comes from the core and no I/O value is adopted. Memory is identical
+at every frame end compared. On SCPH-1001 without a disc,
 100 million instructions (441 frames into the shell) match cycle for cycle at about 1.8 million instructions a
 second, also adopting nothing, with VRAM and the scratchpad identical at every vblank. Croc (800 million
 instructions, through the Fox movie), Final Fantasy VII and Resident Evil (2 billion each, through their opening

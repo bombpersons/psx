@@ -493,14 +493,17 @@ else links it. Run it from the project root:
   `vram.png` for `psx ram-diff` / `psx vram-diff` against a native run with the same BIOS and replay.
   Frames are vblanks, as in `psx run`. The console region is the BIOS's. A `.chd` is unpacked once to
   CUE/BIN under `.psx/cache/discs/`. Without media it boots the BIOS with an empty drive.
-- `cargo run --release -p psx-oracle -- lockstep --bios B [--steps N] [--cycles] [--dump PREFIX]` runs
+- `cargo run --release -p psx-oracle -- lockstep --bios B [--steps N] [--cycles] [--fast] [--dump PREFIX]` runs
   the native core and Mednafen side by side from BIOS reset. Before each instruction it compares PC,
   the instruction, every register, the delayed load, COP0 and (after GTE instructions) the GTE, and it
   stops at the first divergence. It also compares the cycle count and reports where it changes;
   `--cycles` stops there. The core raises its own interrupts and lockstep compares the interrupt line
   (`--adopt-irqs` takes it from Mednafen). An I/O load value that still differs is taken from Mednafen
   and counted by register. RAM, the scratchpad, VRAM and SPU RAM are compared at every
-  vblank and reported without stopping; `--dump` writes both sides' memory at the end.
+  frame end where both are at the same instruction, and reported without stopping; `--dump` writes both
+  sides' memory at the end. `--fast` runs frames at full speed and compares at each frame end (about 15M
+  instructions/s, eight times faster); a frame that differs is rerun instruction by instruction from the
+  last checkpoint to find the instruction. Use it for long replays.
 - `tools/probes/gpu/compare.sh PSX PSX_ORACLE OUT_DIR` diffs `psx-gpu` against Mednafen on the GPU probe.
 
 The native core's video, CPU, DMA, CD-ROM, GPU command, timer, controller port, SPU and MDEC timing are Mednafen's:

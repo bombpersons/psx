@@ -372,9 +372,26 @@ the core returned the stored value. The bus now follows Mednafen's `MemRW` for t
 | Croc (START), Fox movie | 800M | 2,758 | identical | 0 |
 | Final Fantasy VII (New Game, opening movie) | 2B | 6,623 | identical | 0 |
 | Resident Evil (START, CROSS), intro movie and mansion | 2B | 7,005 | identical | 0 |
+| Tomb Raider (PAL), 6.5 minutes played by hand in `psx handoff`, then idle (`--fast`) | 8B | 26,388 | identical | 0 |
 
-Every interrupt comes from the core in all five. VRAM is identical at every vblank; RAM and SPU RAM differ
-at some (FF7: 36 and 50), which no load ever reads.
+Every interrupt comes from the core in all six, and memory is identical at every frame end where both
+sides are at the same instruction (see below).
+
+**Memory at frame ends, and `lockstep --fast`.** Lockstep used to report RAM and SPU RAM differing at some
+vblanks (FF7: 36 and 50 frames), which no load ever read. They were frames that ended while a DMA transfer
+held Mednafen's CPU: Mednafen's frame stops mid-transfer, but one step of the core runs the whole transfer, so
+the core was ahead. The other was the last frame, which Mednafen finishes after the core stops at its step
+budget. Memory is now compared only where the core's next instruction is Mednafen's (same cycle and PC, CPU
+not held), and in all five runs it is then identical at every frame end: 1 frame of the BIOS run, 19 of
+Crash, 9 of Croc, 59 of FF7 and 23 of RE aren't compared.
+
+`--fast` runs each frame at full speed on both sides and compares at Mednafen's frame end: the cycle count,
+the CPU registers, COP0, the GTE and memory. Every 60 frames (`--checkpoint-every`) it saves both sides
+(Mednafen's save state, the core's `save_state`). When a frame end differs, both go back to the checkpoint and
+run to that frame's end instruction by instruction, which finds the instruction (or adopts an I/O value and
+goes on). The five runs match in fast mode at 14-16 million instructions a second, eight or nine times the
+precise mode's 1.8 million: FF7's 2 billion take about 2 minutes. Corrupting a core register at Crash's frame
+1,000 sent both back to the frame-960 checkpoint; the precise rerun matched, so both sides restore exactly.
 
 **Probe EXE.** `tools/probes/gpu` (PSYQo) sends a fixed GP0 stream: 468 commands from `gen_stream.py`, the same
 words in `gp0_stream.bin`. It draws 24 test cells of 128×128 (`gen_stream.py --list`), covering gouraud and
