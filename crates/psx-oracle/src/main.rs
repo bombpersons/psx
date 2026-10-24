@@ -15,6 +15,7 @@ mod ffi;
 mod lockstep;
 #[cfg(mednafen)]
 mod run;
+mod suite;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -97,11 +98,23 @@ enum Command {
         #[arg(long)]
         adopt_irqs: bool,
         /// Run each frame at full speed and compare at its end; a frame that differs is run again instruction by instruction from the last checkpoint.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["adopt_irqs", "trace_adopted"])]
         fast: bool,
         /// With --fast, frames between checkpoints.
         #[arg(long, default_value_t = 60)]
         checkpoint_every: u64,
+    },
+    /// Run the lockstep suite (suite/suite.json) with --fast; each run must match with nothing adopted.
+    Suite {
+        /// The suite file; default the crate's suite/suite.json.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Only these runs, by name.
+        #[arg(long)]
+        only: Vec<String>,
+        /// Runs at once.
+        #[arg(long, default_value_t = 3)]
+        jobs: usize,
     },
 }
 
@@ -294,6 +307,9 @@ fn main() -> ExitCode {
             ),
             Err(e) => (false, json!({"error": e})),
         },
+        Command::Suite { file, only, jobs } => {
+            suite::run(&root, &file.map(abs).unwrap_or_else(suite::default_file), &only, jobs)
+        }
     };
     println!("{}", serde_json::to_string_pretty(&value).unwrap());
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }

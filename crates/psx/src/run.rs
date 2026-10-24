@@ -72,6 +72,16 @@ pub struct RunCmdArgs {
     #[arg(long)]
     #[serde(default)]
     pub trace_spu: bool,
+    /// Native: record the console's mixed sound output (SPU voices, reverb and CD audio, as the
+    /// game sets them) to audio.wav, 44.1 kHz stereo 16-bit, from the run start.
+    #[arg(long)]
+    #[serde(default)]
+    pub audio: bool,
+    /// Native: profile the CPU's cycles (Mednafen's timing, including time DMA holds the CPU) by
+    /// function into profile.json: functions are call targets, named from --symbols.
+    #[arg(long)]
+    #[serde(default)]
+    pub profile: bool,
     /// `.symbols.json` (verified against RAM) or `.sym` files used to name PCs; repeatable.
     #[arg(long = "symbols")]
     #[serde(default)]
@@ -132,6 +142,8 @@ impl RunCmdArgs {
                 trace_cd: a.trace_cd,
                 trace_bios: a.trace_bios,
                 trace_spu: a.trace_spu,
+                audio: a.audio,
+                profile: a.profile,
                 symbols: a.symbols,
                 max_events: a.max_events,
                 trace: a.trace,
@@ -180,6 +192,8 @@ pub struct RunArgs {
     pub trace_cd: bool,
     pub trace_bios: bool,
     pub trace_spu: bool,
+    pub audio: bool,
+    pub profile: bool,
     pub symbols: Vec<PathBuf>,
     pub max_events: u32,
     pub trace: TraceArgs,
@@ -408,6 +422,8 @@ pub(crate) fn brief(v: &Value) -> Value {
         "states",
         "read_watch",
         "spu",
+        "audio",
+        "profile",
         "wall_ms",
     ] {
         if !v[k].is_null() {
@@ -473,10 +489,12 @@ pub(crate) fn summary(v: &Value) -> Value {
     if v["watch"]["enabled"] == true {
         s["watch"] = pick(&v["watch"], &["hits", "recorded", "complete", "file"]);
     }
-    let sections: [(&str, &[&str]); 7] = [
+    let sections: [(&str, &[&str]); 9] = [
+        ("profile", &["file", "cycles", "functions", "top"]),
         ("read_watch", &["hits", "recorded", "complete", "file"]),
         ("samples", &["file", "rows"]),
         ("spu", &["file", "events", "recorded", "complete"]),
+        ("audio", &["file", "seconds", "peak"]),
         ("trace", &["instructions", "lines", "lines_dropped"]),
         ("gpu_frame", &["status", "reason", "frame", "run_frame", "draw_commands"]),
         ("screens", &["dir", "count"]),

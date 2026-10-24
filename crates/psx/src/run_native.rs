@@ -72,6 +72,15 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return Err(Error::io(dir, e));
     }
+    let mut wav = None;
+    if a.audio {
+        let p = dir.join("audio.wav");
+        wav = Some(crate::native::WavStream::create(&p).map_err(|e| Error::io(p, e))?);
+        m.bus.spu.capture = true;
+        m.bus.spu.take_samples();
+    }
+    let mut profiler = a.profile.then(|| psx_core::profile::Profiler::new(m.cpu.cycles));
+    let start_pc = m.cpu.pc;
     let mut tracer = if a.trace.trace { Some(make_tracer(&a, &scopes, m.bus.frames, &dir)?) } else { None };
 
     let started = Instant::now();
@@ -103,6 +112,12 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         if rel != last_rel {
             // A frame boundary (vblank), or the run start: observe first, then intervene.
             last_rel = rel;
+            if let Some(w) = &mut wav {
+                if let Err(e) = w.push(&m.bus.spu.take_samples()) {
+                    boundary_err = Some(Error::io(dir.join("audio.wav"), e));
+                    break;
+                }
+            }
             if let Some(c) = &mut gpu_capture {
                 c.boundary(&mut m, start_frame, false);
             }
@@ -122,8 +137,11 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         // Everything above acts only when the frame counter changes, so without
         // per-instruction observers (tracer, read watches) the machine can run the
         // rest of the frame in one call (stopping at the next timeout check).
-        if tracer.is_some() || !read_ranges.is_empty() || bound_watches {
+        if tracer.is_some() || !read_ranges.is_empty() || bound_watches || profiler.is_some() {
             let info = m.step();
+            if let Some(p) = &mut profiler {
+                p.after_step(&info, m.cpu.cycles);
+            }
             if bound_watches {
                 for hit in &m.bus.obs.hits[hit_names.len()..] {
                     hit_names.push(hit.pc.map(|pc| observed_name(pc, &m.bus.ram)).unwrap_or(Value::Null));
@@ -176,6 +194,18 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         frame_outputs(&m, rel, obs, &dir, &media_id, &mut screens, &mut states)?;
     }
     let wall_ms = started.elapsed().as_millis();
+    let audio_report = match wav {
+        Some(mut w) => {
+            let p = dir.join("audio.wav");
+            let samples = m.bus.spu.take_samples();
+            w.push(&samples).map_err(|e| Error::io(p.clone(), e))?;
+            let (count, peak) = (w.samples, w.peak);
+            w.finish().map_err(|e| Error::io(p.clone(), e))?;
+            json!({"file": p, "seconds": count as f64 / 88_200.0, "peak": peak, "silent": peak == 0,
+                   "format": "44.1 kHz stereo 16-bit PCM, the SPU's mixed output (voices, reverb, CD audio) after the main volume"})
+        }
+        None => Value::Null,
+    };
 
     let mut files = serde_json::Map::new();
     let mut put = |name: &str, bytes: &[u8]| {
@@ -309,6 +339,13 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         files.insert("vram.png".into(), json!({"path": vram}));
     }
 
+    let profile_report = match &profiler {
+        Some(p) => profile_outputs(p, start_pc, &m, &scopes, &dir, &mut files)?,
+        None => Value::Null,
+    };
+    if audio_report.is_object() {
+        files.insert("audio.wav".into(), json!({"path": dir.join("audio.wav")}));
+    }
     let gpu_report = match &gpu_capture {
         Some(c) => match &c.selected {
             Some(frame) => gpu_frame_outputs(frame, &dir, &mut files)?,
@@ -374,6 +411,8 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             "samples": samples_report,
             "read_watch": reads_report,
             "spu": spu_report,
+            "audio": audio_report,
+            "profile": profile_report,
             "pokes": if pokes.is_empty() { Value::Null } else { json!(pokes.iter().map(|p| p.report()).collect::<Vec<_>>()) },
             "screens": if obs.snapshot_every.is_some() { json!({"dir": dir.join("screens"), "count": screens.len(), "first": screens.first(), "last": screens.last()}) } else { Value::Null },
             "states": if obs.save_state_at.is_empty() { Value::Null } else { json!(states) },
@@ -846,6 +885,48 @@ fn gpu_frame_outputs(
     }
     png("gpu_frame_wire.png", &after, files);
     Ok(summary)
+}
+
+/// profile.json: every function by cycles, named from --symbols, and the
+/// report's summary of the top ones.
+fn profile_outputs(
+    p: &psx_core::profile::Profiler,
+    start_pc: u32,
+    m: &Machine,
+    scopes: &[crate::ScopedSymbols],
+    dir: &Path,
+    files: &mut serde_json::Map<String, Value>,
+) -> crate::Result<Value> {
+    let total = p.total_cycles.max(1) as f64;
+    let functions: Vec<Value> = p
+        .functions(start_pc)
+        .iter()
+        .map(|f| {
+            // Code runs from KSEG0 (or the BIOS from KSEG1), as names are recorded.
+            let at = |phys: u32| if phys >= 0x1FC0_0000 { phys | 0xA000_0000 } else { phys | 0x8000_0000 };
+            let name = crate::name_pc(scopes, at(f.entry), Some(&m.bus.ram)).map(|(n, ..)| n);
+            json!({
+                "entry": format!("0x{:08X}", at(f.entry)), "name": name,
+                "cycles": f.cycles, "share": (f.cycles as f64 / total * 10_000.0).round() / 100.0,
+                "instructions": f.instructions, "calls": f.calls,
+                "cycles_per_call": (f.calls > 0).then(|| f.cycles / f.calls),
+                "hottest_pc": format!("0x{:08X}", at(f.hottest_pc)), "hottest_pc_cycles": f.hottest_cycles,
+            })
+        })
+        .collect();
+    let path = dir.join("profile.json");
+    let body = json!({
+        "cycles": p.total_cycles, "instructions": p.instructions, "outside_ram_and_bios_cycles": p.other_cycles(),
+        "note": "cycles are Mednafen's CPU timing, including time DMA held the CPU; a function is a call target \
+                 (or the exception vector), and code reached only by a plain jump counts towards the entry below it; \
+                 share is percent of all cycles",
+        "functions": functions,
+    });
+    let bytes = serde_json::to_vec_pretty(&body).unwrap_or_default();
+    std::fs::write(&path, &bytes).map_err(|e| Error::io(path.clone(), e))?;
+    files.insert("profile.json".into(), json!({"path": path, "sha256": sha256(&bytes)}));
+    Ok(json!({"file": path, "cycles": p.total_cycles, "functions": body["functions"].as_array().map_or(0, |f| f.len()),
+              "top": body["functions"].as_array().map(|f| f.iter().take(10).cloned().collect::<Vec<_>>())}))
 }
 
 /// The `--trace-spu` report: event counts, and recorded key ons grouped by the

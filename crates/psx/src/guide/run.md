@@ -25,6 +25,13 @@ Observations (native):
   each keyed voice's first END and sound RAM uploads to spu.jsonl. spu.samples
   groups key ons by sample; sample_sha256 equals assets_extract adpcm_sha256,
   and upload.ram_hex is the sample's main RAM source.
+- audio records what the console plays (SPU voices, reverb and CD/XA audio,
+  mixed as the game sets them) to audio.wav, 44.1 kHz stereo, from the run
+  start; the report gives its length and peak (peak 0: silent).
+- profile writes profile.json: CPU cycles by function (call targets, named
+  from symbols), with calls, cycles per call and the hottest instruction.
+  Cycles are Mednafen's timing, so shares are real; time in the game's VSync
+  wait shows how much of each frame it leaves idle.
 - gpu_frame N captures one frame's GPU commands; gpu_next_draw searches for
   drawing (see guide topic assets). snapshot_every saves screens/fNNNNNN.png.
 - memcard1/memcard2 take a .mcd path or new; originals are never modified and

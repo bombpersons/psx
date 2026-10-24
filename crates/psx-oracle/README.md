@@ -69,6 +69,19 @@ second, also adopting nothing, with VRAM and the scratchpad identical at every v
 instructions, through the Fox movie), Final Fantasy VII and Resident Evil (2 billion each, through their opening
 movies) match the same way; research/native-core.md has the table.
 
+## `suite`
+
+`suite` runs the lockstep checks in `suite/suite.json` with `--fast`, three at a time (`--jobs`), each in a
+process of its own; `--only NAME` picks runs. A run passes when it matches with no I/O value adopted, no frame
+rerun, memory identical at every frame end compared, and the frame count the file records. A run whose BIOS or
+disc isn't in the project is skipped. The replays are in `suite/`; `tomb_raider.json` is 6.5 minutes of play
+recorded with `psx handoff`. Run it before a release (the discs can't go to CI); it takes about 10 minutes,
+bounded by Tomb Raider's 8 billion instructions.
+
+```bash
+cargo run --release -p psx-oracle -- suite
+```
+
 ## Layout
 
 - `mednafen/` holds the parts of Mednafen 1.32.1 that the PSX module needs. They come from

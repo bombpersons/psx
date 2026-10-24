@@ -143,7 +143,17 @@ fn late(deadline: Option<Instant>, steps: u64) -> bool {
 
 pub(crate) fn write_wav(path: &Path, samples: &[i16]) -> std::io::Result<()> {
     let data_len = (samples.len() * 2) as u32;
-    let mut b = Vec::with_capacity(44 + data_len as usize);
+    let mut b = wav_header(data_len);
+    b.reserve(data_len as usize);
+    for s in samples {
+        b.extend_from_slice(&s.to_le_bytes());
+    }
+    std::fs::write(path, b)
+}
+
+/// The 44-byte header of a 44.1 kHz stereo 16-bit WAV holding `data_len` bytes.
+fn wav_header(data_len: u32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(44);
     b.extend_from_slice(b"RIFF");
     b.extend_from_slice(&(36 + data_len).to_le_bytes());
     b.extend_from_slice(b"WAVEfmt ");
@@ -156,10 +166,43 @@ pub(crate) fn write_wav(path: &Path, samples: &[i16]) -> std::io::Result<()> {
     b.extend_from_slice(&16u16.to_le_bytes());
     b.extend_from_slice(b"data");
     b.extend_from_slice(&data_len.to_le_bytes());
-    for s in samples {
-        b.extend_from_slice(&s.to_le_bytes());
+    b
+}
+
+/// A WAV written as the samples arrive; the header's sizes are filled in by
+/// [`WavStream::finish`].
+pub(crate) struct WavStream {
+    file: std::io::BufWriter<std::fs::File>,
+    pub samples: u64,
+    pub peak: u16,
+}
+
+impl WavStream {
+    pub fn create(path: &Path) -> std::io::Result<Self> {
+        use std::io::Write;
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        file.write_all(&wav_header(0))?;
+        Ok(WavStream { file, samples: 0, peak: 0 })
     }
-    std::fs::write(path, b)
+
+    /// Interleaved L, R samples.
+    pub fn push(&mut self, samples: &[i16]) -> std::io::Result<()> {
+        use std::io::Write;
+        for s in samples {
+            self.file.write_all(&s.to_le_bytes())?;
+            self.peak = self.peak.max(s.unsigned_abs());
+        }
+        self.samples += samples.len() as u64;
+        Ok(())
+    }
+
+    pub fn finish(self) -> std::io::Result<()> {
+        use std::io::{Seek, Write};
+        let mut file = self.file.into_inner().map_err(|e| e.into_error())?;
+        let data_len = u32::try_from(self.samples * 2).unwrap_or(u32::MAX);
+        file.seek(std::io::SeekFrom::Start(0))?;
+        file.write_all(&wav_header(data_len))
+    }
 }
 
 /// Run until `target` frames, applying replay events and periodic snapshots.

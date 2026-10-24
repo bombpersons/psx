@@ -1,0 +1,11 @@
+{
+  "about": "psx-oracle suite: lockstep --fast runs that must match Mednafen. bios and disc are relative to the project root, replay to this file. frames is what Mednafen reaches in the steps given.",
+  "runs": [
+    {"name": "bios", "bios": "bios/SCPH1001.BIN", "steps": 100000000, "frames": 441},
+    {"name": "crash", "bios": "bios/scph7502.bin", "disc": "media/Crash Bandicoot.cue", "replay": "start_cross.json", "steps": 1400000000, "frames": 4562},
+    {"name": "croc", "bios": "bios/scph7502.bin", "disc": "media/Croc - Legend of the Gobbos.cue", "replay": "start.json", "steps": 800000000, "frames": 2758},
+    {"name": "ff7", "bios": "bios/scph7502.bin", "disc": "media/Final Fantasy VII (Disc 1).cue", "replay": "ff7.json", "steps": 2000000000, "frames": 6623},
+    {"name": "resident_evil", "bios": "bios/scph7502.bin", "disc": "media/Resident Evil.cue", "replay": "start_cross.json", "steps": 2000000000, "frames": 7005},
+    {"name": "tomb_raider", "bios": "bios/scph7502.bin", "disc": "media/Tomb Raider.cue", "replay": "tomb_raider.json", "steps": 8000000000, "frames": 26388}
+  ]
+}
