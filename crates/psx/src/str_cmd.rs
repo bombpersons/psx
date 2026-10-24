@@ -102,17 +102,14 @@ const SCALE_TABLE: [u16; 64] = [
 /// The core's MDEC loaded as libpress `DecDCTReset` leaves it.
 fn standard_mdec() -> Mdec {
     let mut m = Mdec::default();
-    m.write_word(3 << 29);
-    for pair in SCALE_TABLE.chunks(2) {
-        m.write_word(pair[0] as u32 | (pair[1] as u32) << 16);
-    }
+    let mut words = vec![3 << 29];
+    words.extend(SCALE_TABLE.chunks(2).map(|pair| pair[0] as u32 | (pair[1] as u32) << 16));
     let zz: Vec<u8> = ZAGZIG.iter().map(|&i| DEFAULT_QUANT[i]).collect();
-    m.write_word((2 << 29) | 1);
+    words.push((2 << 29) | 1);
     for _ in 0..2 {
-        for q in zz.chunks(4) {
-            m.write_word(u32::from_le_bytes([q[0], q[1], q[2], q[3]]));
-        }
+        words.extend(zz.chunks(4).map(|q| u32::from_le_bytes([q[0], q[1], q[2], q[3]])));
     }
+    m.feed_untimed(words);
     m
 }
 
@@ -123,12 +120,9 @@ fn decode_macroblock(m: &mut Mdec, halfwords: &[u16]) -> Vec<u8> {
     if words.is_empty() {
         words.push(0xFE00_FE00);
     }
-    m.write_word((1 << 29) | (2 << 27) | words.len() as u32);
-    for w in words {
-        m.write_word(w);
-    }
-    let n = m.out_available();
-    let bytes: Vec<u8> = (0..n).flat_map(|_| m.dma_out_word().to_le_bytes()).collect();
+    let command = (1 << 29) | (2 << 27) | words.len() as u32;
+    let bytes: Vec<u8> =
+        m.feed_untimed(std::iter::once(command).chain(words)).iter().flat_map(|w| w.to_le_bytes()).collect();
     let mut rgb = vec![0u8; 16 * 16 * 3];
     let k = bytes.len().min(rgb.len());
     rgb[..k].copy_from_slice(&bytes[..k]);

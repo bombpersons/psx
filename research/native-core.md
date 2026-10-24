@@ -331,6 +331,27 @@ load ever read a differing value, or lockstep would have diverged, so these are 
 side's memory is sampled at the frame's end. The comparison at the end of a run doesn't line up either:
 Mednafen finishes its frame after lockstep stops.
 
+**Mednafen MDEC (`psx-core/src/mdec.rs`).** A port of `mdec.cpp`, replacing the psx-spx model that decoded a
+whole command as soon as its last word arrived:
+- **FIFOs and clocks.** Words go through 32-word input and output FIFOs. The decoder is a state machine
+  that runs on each DMA update (Mednafen's `DMA_Update` calls `MDEC_Run` with the clocks since the last,
+  banking at most 128) and whenever a FIFO is written or read. It stops wherever it would wait: for input,
+  for room in the output, or for clocks. A command costs a clock and each finished block 512.
+- **DMA.** Channel 0 moves a word only while the input FIFO is empty and a command wants data. Channel 1
+  waits for a full output FIFO. Each output word goes to RAM at Mednafen's offset, so a block's 8-pixel rows
+  land as rows of a 16-pixel macroblock.
+- **Decoding.** Dequantisation, the two fixed-point IDCT passes (the matrix stored shifted right by 3),
+  the integer YCbCr to RGB conversion and the four output depths are Mednafen's. MDEC1 reads give Mednafen's
+  status bits, and any width reaches the registers, as in Mednafen.
+
+`psx str` decodes on the same model through `Mdec::feed_untimed`, which places the output words as channel 1
+would. Croc's FOXLOGO frame 40 differs from the old model's decode by 1.5 levels on average.
+
+Croc with a START replay plays the Fox logo movie from frame 1,238. Before this, lockstep diverged at frame
+1,235 (instruction 326M): MDEC1's status was adopted, and the core's DMA interrupt came early because the
+old model had finished decoding at once. Now 800 million instructions (2,758 frames) match cycle for cycle,
+adopting no I/O values. RAM differs at 10 vblanks (sampling, as above), and VRAM and SPU RAM never do.
+
 **Probe EXE.** `tools/probes/gpu` (PSYQo) sends a fixed GP0 stream: 468 commands from `gen_stream.py`, the same
 words in `gp0_stream.bin`. It draws 24 test cells of 128×128 (`gen_stream.py --list`), covering gouraud and
 dither, textures in all depths, the four blend modes, lines and polylines, rects, texture windows, mask bits,

@@ -386,7 +386,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             "files": files,
             "identity": {
                 "backend": "psx-core", "backend_version": env!("CARGO_PKG_VERSION"),
-                "timing_model": "Mednafen's video, CPU, DMA, CD-ROM, GPU command, timer, controller port and SPU timing; the MDEC's timing differs",
+                "timing_model": "Mednafen's video, CPU, DMA, CD-ROM, GPU command, timer, controller port, SPU and MDEC timing",
                 "bios": a.bios, "bios_sha256": bios_sha, "media": a.media, "media_identity": media_id,
                 "from_state": a.from_state, "state_format": psx_core::state::FORMAT,
             },

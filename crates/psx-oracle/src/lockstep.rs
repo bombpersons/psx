@@ -6,8 +6,8 @@
 //!
 //! The cycle count is compared too (Mednafen's master clock): changes in the
 //! difference are reported, and with `--cycles` they stop the run. Device
-//! timing is Mednafen's except the MDEC's, so the value of a load from I/O
-//! space that differs is adopted rather than counted as divergence (applied
+//! timing is Mednafen's, but the value of a load from I/O space that still
+//! differs is adopted rather than counted as divergence (applied
 //! to the destination register once the load retires, and stored into the
 //! core's I/O register file). Instructions before which the displayed
 //! interlaced field differs are counted. With `--adopt-irqs`, the interrupt

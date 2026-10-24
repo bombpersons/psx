@@ -697,8 +697,8 @@ impl Bus {
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
-            0x1F80_1820 | 0x1F80_1824 if width == Width::Word => {
-                let v = self.mdec.read(p - 0x1F80_1820);
+            0x1F80_1820..=0x1F80_1827 => {
+                let v = self.mdec.read(p) & (u32::MAX >> (32 - 8 * n));
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
@@ -823,8 +823,8 @@ impl Bus {
                     if fired {
                         self.raise_irq(1 << 9);
                     }
-                } else if (p == 0x1F80_1820 || p == 0x1F80_1824) && width == Width::Word {
-                    self.mdec.write(p - 0x1F80_1820, value);
+                } else if (0x1F80_1820..0x1F80_1828).contains(&p) {
+                    self.mdec.write(p, value & (u32::MAX >> (32 - 8 * n)));
                 } else if (0x1F80_1040..0x1F80_1050).contains(&p) {
                     let now = self.now;
                     self.sio0.write(now, p - 0x1F80_1040, value);

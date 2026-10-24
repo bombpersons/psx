@@ -32,7 +32,9 @@ Options: `--frames A..B` (1-based, inclusive; also `A..`, `..B`, `N`),
    MDEC0. The end-of-frame code (1FFh / `1111111111`) is checked after the
    last macroblock and reported per frame.
 4. **RLE → pixels** on the native core's hardware MDEC model
-   (`psx_core::mdec::Mdec`, unchanged). It is loaded as libpress
+   (`psx_core::mdec::Mdec`, since 2026-10-24 a port of Mednafen's `mdec.cpp`,
+   fed untimed with `feed_untimed`, which places the output words as DMA
+   channel 1 would). It is loaded as libpress
    `DecDCTReset` leaves it: the standard IDCT scale table (MDEC(3)) and the
    MPEG default intra matrix in zig-zag order for luma and chroma (MDEC(2)).
    Each macroblock goes in as an MDEC(1) 24 bpp command, and macroblocks are
@@ -112,8 +114,10 @@ psx native --bios bios/scph7502.bin --disc "media/Croc - Legend of the Gobbos.cu
 - **Audio:** `audio.wav` is byte-identical (`cmp`) to `psx xa … --channel N -o` for Croc FOXLOGO (ch 1), Tomb Raider CAFE (ch 1) and Mega Man 8 CAPCOM15 (ch 1). It is the same code.
 
 Because both paths use `psx_core::mdec`, this does not test the MDEC model
-against real hardware. The model's known approximations (IDCT rounding,
-floating-point YUV→RGB; see `mdec.rs` and psx-spx) apply to both.
+against real hardware. The checks above predate the port of Mednafen's MDEC. The
+old model rounded its IDCT differently and converted YUV→RGB in floating point. Croc's
+FOXLOGO frame 40 decoded by both models differs by 1.5 levels on average (352 of 76,800 pixels by
+more than 8). The model is now Mednafen's and is checked in lockstep (see native-core.md, "Mednafen MDEC").
 
 ## Open
 

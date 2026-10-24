@@ -498,12 +498,12 @@ else links it. Run it from the project root:
   the instruction, every register, the delayed load, COP0 and (after GTE instructions) the GTE, and it
   stops at the first divergence. It also compares the cycle count and reports where it changes;
   `--cycles` stops there. The core raises its own interrupts and lockstep compares the interrupt line
-  (`--adopt-irqs` takes it from Mednafen). I/O load values that still differ (MDEC) are taken from
-  Mednafen and counted by register. RAM, the scratchpad, VRAM and SPU RAM are compared at every
+  (`--adopt-irqs` takes it from Mednafen). An I/O load value that still differs is taken from Mednafen
+  and counted by register. RAM, the scratchpad, VRAM and SPU RAM are compared at every
   vblank and reported without stopping; `--dump` writes both sides' memory at the end.
 - `tools/probes/gpu/compare.sh PSX PSX_ORACLE OUT_DIR` diffs `psx-gpu` against Mednafen on the GPU probe.
 
-The native core's video, CPU, DMA, CD-ROM, GPU command, timer, controller port and SPU timing are Mednafen's:
+The native core's video, CPU, DMA, CD-ROM, GPU command, timer, controller port, SPU and MDEC timing are Mednafen's:
 - scanlines, fields and vblank follow the GPU clock (49.76 Hz frames on a PAL console, 59.83 Hz on NTSC);
 - instructions cost what Mednafen charges (instruction cache, load latency, bus wait states,
   multiply/divide and GTE latencies);
@@ -518,7 +518,8 @@ The native core's video, CPU, DMA, CD-ROM, GPU command, timer, controller port a
 - the controller port (`sio0.rs`, Mednafen's `frontio.cpp`) shifts bytes a bit at a time through the pad
   (`pad.rs`, `gamepad.cpp`/`dualshock.cpp`) and memory cards (`memcard.rs`, `memcard.cpp`), with their DSR
   delays;
-- the SPU (`spu.rs`) is a port of Mednafen's `spu.cpp` and `spu_reverb.inc`, sample for sample.
+- the SPU (`spu.rs`) is a port of Mednafen's `spu.cpp` and `spu_reverb.inc`, sample for sample;
+- the MDEC (`mdec.rs`) is a port of Mednafen's `mdec.cpp`: its FIFOs, decoding clocks and DMA output order.
 
 The BIOS, and Crash Bandicoot booting from its disc, run cycle for cycle as Mednafen's
 (`psx-oracle lockstep --disc`), raising every interrupt at the same instruction and reading the same value from every I/O register.

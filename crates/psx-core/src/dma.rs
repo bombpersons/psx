@@ -87,11 +87,11 @@ impl Dma {
 
 impl Bus {
     /// Whether channel `ch` can move a word now (Mednafen's `ChCan`).
-    /// The core's MDEC decodes at once, so MDEC output waits only for a
-    /// 32-word block; the GPU's writes wait for its FIFO (GPUSTAT bit 28).
+    /// The GPU's writes wait for its FIFO (GPUSTAT bit 28).
     fn dma_can(&self, ch: usize) -> bool {
         match ch {
-            MDEC_OUT => self.mdec.out_available() >= 0x20,
+            MDEC_IN => self.mdec.dma_can_write(),
+            MDEC_OUT => self.mdec.dma_can_read(),
             GPU if self.dma.ch[GPU].chan_control & 1 != 0 => self.gpu.ready(),
             OTC => self.dma.ch[OTC].chan_control & (1 << 28) != 0,
             5 => false,
@@ -124,13 +124,16 @@ impl Bus {
         self.dma.halted = halt;
     }
 
-    /// One word between RAM and the channel's device (Mednafen's `ChRW`).
-    fn dma_word(&mut self, ch: usize, mode: u32, v: u32) -> u32 {
+    /// One word between RAM and the channel's device (Mednafen's `ChRW`),
+    /// and the offset in words from the channel's address at which a word
+    /// read from the device goes (only the MDEC's output has one).
+    fn dma_word(&mut self, ch: usize, mode: u32, v: u32) -> (u32, u32) {
         let mut extra = 0;
+        let mut offs = 0;
         let v = match ch {
             MDEC_IN => {
                 if mode & 1 != 0 {
-                    self.mdec.write_word(v);
+                    self.mdec.dma_write(v);
                     v
                 } else {
                     0
@@ -140,7 +143,9 @@ impl Bus {
                 if mode & 1 != 0 {
                     v
                 } else {
-                    self.mdec.dma_out_word()
+                    let w;
+                    (w, offs) = self.mdec.dma_read();
+                    w
                 }
             }
             GPU => {
@@ -166,9 +171,9 @@ impl Bus {
                     self.spu.dma_write(v)
                 } else {
                     let (w, fired) = self.spu.dma_read();
-                    return self.dma_word_done(ch, mode, extra, w, fired);
+                    return (self.dma_word_done(ch, mode, extra, w, fired), 0);
                 };
-                return self.dma_word_done(ch, mode, extra, v, fired);
+                return (self.dma_word_done(ch, mode, extra, v, fired), 0);
             }
             OTC => {
                 let c = &self.dma.ch[OTC];
@@ -182,7 +187,7 @@ impl Bus {
                 }
             }
         };
-        self.dma_word_done(ch, mode, extra, v, false)
+        (self.dma_word_done(ch, mode, extra, v, false), offs)
     }
 
     fn dma_word_done(&mut self, ch: usize, mode: u32, extra: i32, v: u32, spu_irq: bool) -> u32 {
@@ -240,9 +245,9 @@ impl Bus {
                     break;
                 }
                 let v = if mode & 1 != 0 { self.ram_u32_at(addr) } else { 0 };
-                let v = self.dma_word(ch, mode, v);
+                let (v, offs) = self.dma_word(ch, mode, v);
                 if mode & 1 == 0 {
-                    let o = (addr & 0x1F_FFFC) as usize;
+                    let o = (addr.wrapping_add(offs << 2) & 0x1F_FFFC) as usize;
                     self.ram[o..o + 4].copy_from_slice(&v.to_le_bytes());
                 }
                 let c = &mut self.dma.ch[ch];
@@ -299,6 +304,7 @@ impl Bus {
         self.gpu_update(t);
         let clocks = t.saturating_sub(self.dma.last) as i32;
         self.dma.last = t;
+        self.mdec.run(clocks);
         for ch in [0, 1, 2, 3, 4, 6] {
             self.dma_run_channel(ch, clocks);
         }
