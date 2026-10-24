@@ -352,6 +352,30 @@ Croc with a START replay plays the Fox logo movie from frame 1,238. Before this,
 old model had finished decoding at once. Now 800 million instructions (2,758 frames) match cycle for cycle,
 adopting no I/O values. RAM differs at 10 vblanks (sampling, as above), and VRAM and SPU RAM never do.
 
+**Undecoded and narrow I/O.** Final Fantasy VII and Resident Evil (scph7502, `replay_ff7.json` and
+`replay_start_cross.json`, through their opening movies) then matched over 2 billion instructions each. FF7
+adopted one value, a read of RAM_SIZE (1F801060h). Mednafen doesn't decode that address, so it reads 0, while
+the core returned the stored value. The bus now follows Mednafen's `MemRW` for the remaining registers:
+- any I/O address Mednafen doesn't decode reads as 0;
+- memory control (1F801000-23h) keeps writes through `SysControl_Mask` and reads with 1F00h in the high half of
+  the first two registers. Mednafen indexes it with `(A & 1Fh) >> 2`, so 1F801020h aliases register 0;
+- SIO1 (1F801050-5Fh) is Mednafen's dummy `sio.cpp`: data, mode, control and baud rate latch, and status
+  reads 0;
+- devices get the store's whole register value, as Mednafen passes it: GP0/GP1 at any width (shifted by
+  the byte offset), I_STAT and I_MASK (16 bits after the shift), the MDEC, and 16 bits for the SPU even from
+  a byte store.
+
+| Disc (replay) | Instructions | Frames | Cycles | Adopted |
+|---|---|---|---|---|
+| SCPH-1001, no disc | 100M | 441 | identical | 0 |
+| Crash Bandicoot (START, CROSS) | 1.4B | 4,562 | identical | 0 |
+| Croc (START), Fox movie | 800M | 2,758 | identical | 0 |
+| Final Fantasy VII (New Game, opening movie) | 2B | 6,623 | identical | 0 |
+| Resident Evil (START, CROSS), intro movie and mansion | 2B | 7,005 | identical | 0 |
+
+Every interrupt comes from the core in all five. VRAM is identical at every vblank; RAM and SPU RAM differ
+at some (FF7: 36 and 50), which no load ever reads.
+
 **Probe EXE.** `tools/probes/gpu` (PSYQo) sends a fixed GP0 stream: 468 commands from `gen_stream.py`, the same
 words in `gp0_stream.bin`. It draws 24 test cells of 128×128 (`gen_stream.py --list`), covering gouraud and
 dither, textures in all depths, the four blend modes, lines and polylines, rects, texture windows, mask bits,

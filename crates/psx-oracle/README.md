@@ -55,7 +55,9 @@ With `--disc "media/Crash Bandicoot.cue"` and a START/CROSS replay, 1.4 billion 
 gameplay) match cycle for cycle. Every interrupt comes from the core and no I/O value is adopted. VRAM is identical
 at every vblank; RAM differs at 18 of them and SPU RAM at 11, but no load reads a differing value. On SCPH-1001 without a disc,
 100 million instructions (441 frames into the shell) match cycle for cycle at about 1.8 million instructions a
-second, also adopting nothing, with VRAM and the scratchpad identical at every vblank.
+second, also adopting nothing, with VRAM and the scratchpad identical at every vblank. Croc (800 million
+instructions, through the Fox movie), Final Fantasy VII and Resident Evil (2 billion each, through their opening
+movies) match the same way; research/native-core.md has the table.
 
 ## Layout
 

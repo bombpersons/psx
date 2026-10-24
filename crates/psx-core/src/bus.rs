@@ -680,8 +680,10 @@ impl Bus {
             0x0000_0000..=0x007F_FFFF => le(&self.ram, p as usize % RAM_SIZE),
             0x1F00_0000..=0x1F7F_FFFF => u32::MAX >> (32 - 8 * n),
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => le(&self.scratch, (p - 0x1F80_0000) as usize),
-            GP0 if width == Width::Word => {
-                let v = self.gpu.read_data();
+            // Mednafen's `GPU_Read`: either register at any width, shifted down by the byte offset.
+            GP0..=0x1F80_1817 => {
+                let v = if p & 4 != 0 { self.gpustat() } else { self.gpu.read_data() };
+                let v = (v >> (8 * (p & 3))) & (u32::MAX >> (32 - 8 * n));
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
@@ -689,11 +691,6 @@ impl Bus {
                 let now = self.now;
                 let v = self.timers.read(now, p - TIMERS);
                 self.after_timers();
-                self.log_access(IoAccess { addr: p, width, write: false, value: v });
-                v
-            }
-            GP1 if width == Width::Word => {
-                let v = self.gpustat();
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
@@ -742,17 +739,29 @@ impl Bus {
                 v
             }
             0x1F80_1000..=0x1F80_2FFF => {
-                let v = le(&self.io, (p - 0x1F80_1000) as usize);
-                // Memory control (1F801000-23h, RAM_SIZE 1F801060h) and SIO1's mode/control/baud
-                // (1F801058-5Fh) are plain read/write latches, so the stored value is the answer.
-                let latch = (0x1F80_1000..0x1F80_1024).contains(&p)
-                    || (0x1F80_1060..0x1F80_1064).contains(&p)
-                    || (0x1F80_1058..0x1F80_1060).contains(&p);
-                let handled =
-                    latch || (0x1F80_1C00..0x1F80_1E00).contains(&p) || (0x1F80_1070..0x1F80_1078).contains(&p);
-                if !handled {
-                    *self.unhandled_reads.entry(p).or_default() += 1;
-                }
+                let v = match p {
+                    // Memory control (Mednafen's `SysControl`): 1F801020h aliases register 0.
+                    0x1F80_1000..=0x1F80_1023 => {
+                        let i = (p & 0x1F) >> 2;
+                        let or = if i < 2 { 0x1F00_0000 } else { 0 };
+                        (self.io_word(0x1F80_1000 + 4 * i) | or) >> (8 * (p & 3))
+                    }
+                    // SIO1, Mednafen's dummy `sio.cpp`: data, status (always 0), mode,
+                    // control and baud rate, each read at its halfword.
+                    0x1F80_1050..=0x1F80_105F => {
+                        let r = match p & 0xE {
+                            0x0 => self.io_word(0x1F80_1050),
+                            0x8 | 0xA | 0xE => self.io_word(0x1F80_1050 | (p & 0xE)) & 0xFFFF,
+                            _ => 0,
+                        };
+                        r >> (8 * (p & 1))
+                    }
+                    // Anything else Mednafen doesn't decode reads as 0 (RAM_SIZE at 1F801060h too).
+                    _ => {
+                        *self.unhandled_reads.entry(p).or_default() += 1;
+                        0
+                    }
+                } & (u32::MAX >> (32 - 8 * n));
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
@@ -816,7 +825,8 @@ impl Bus {
             0x1F80_0000..=0x1F80_03FF if addr >> 29 != 5 => put(&mut self.scratch, (p - 0x1F80_0000) as usize),
             0x1F80_1000..=0x1F80_2FFF => {
                 if (0x1F80_1C00..0x1F80_2000).contains(&p) {
-                    let mut fired = self.spu_write((p & !1) - 0x1F80_1C00, (value & (u32::MAX >> (32 - 8 * n))) as u16);
+                    // Mednafen's `SPU_Write` takes 16 bits, whatever the width.
+                    let mut fired = self.spu_write((p & !1) - 0x1F80_1C00, value as u16);
                     if width == Width::Word {
                         fired |= self.spu_write((p & !1) + 2 - 0x1F80_1C00, (value >> 16) as u16);
                     }
@@ -824,7 +834,7 @@ impl Bus {
                         self.raise_irq(1 << 9);
                     }
                 } else if (0x1F80_1820..0x1F80_1828).contains(&p) {
-                    self.mdec.write(p, value & (u32::MAX >> (32 - 8 * n)));
+                    self.mdec.write(p, value);
                 } else if (0x1F80_1040..0x1F80_1050).contains(&p) {
                     let now = self.now;
                     self.sio0.write(now, p - 0x1F80_1040, value);
@@ -837,23 +847,48 @@ impl Bus {
                     let now = self.now;
                     self.timer_next = self.timers.write(now, p - TIMERS, value);
                     self.after_timers();
-                } else if p == GP0 && width == Width::Word {
-                    self.gpu.gp0(value);
-                    self.after_gpu();
-                } else if p == GP1 && width == Width::Word {
-                    self.gpu.gp1(value);
+                } else if (GP0..GP0 + 8).contains(&p) {
+                    // Mednafen's `GPU_Write`: the whole value, shifted up by the byte offset.
+                    let v = value << (8 * (p & 3));
+                    if p & 4 != 0 {
+                        self.gpu.gp1(v);
+                    } else {
+                        self.gpu.gp0(v);
+                    }
                     self.after_gpu();
                 } else if (DMA_BASE..TIMERS).contains(&p) {
                     let now = self.now;
                     self.dma_write(now, p, value);
                 } else if p & !3 == I_STAT {
-                    // Interrupt acknowledge (Mednafen's `IRQ_Write`): writing 0 clears a
-                    // bit, 1 leaves it, and the bytes the access misses read as 0.
-                    let v = self.io_word(I_STAT) & ((value & (u32::MAX >> (32 - 8 * n))) << (8 * (p & 3)));
+                    // Interrupt acknowledge (Mednafen's `IRQ_Write`): the whole value, shifted
+                    // up by the byte offset, is ANDed into the 16-bit status.
+                    let v = self.io_word(I_STAT) & (value << (8 * (p & 3))) & 0xFFFF;
                     self.poke_io(I_STAT, Width::Word, v);
                     self.irq_acknowledged = true;
                 } else if p & !3 == I_MASK {
-                    self.poke_io(I_MASK, Width::Word, (value & (u32::MAX >> (32 - 8 * n))) << (8 * (p & 3)));
+                    self.poke_io(I_MASK, Width::Word, (value << (8 * (p & 3))) & 0xFFFF);
+                } else if p < 0x1F80_1024 {
+                    // Memory control: the whole value, shifted and masked (Mednafen's `SysControl_Mask`).
+                    const MASK: [u32; 8] = [
+                        0x00FF_FFFF,
+                        0x00FF_FFFF,
+                        0xFFFF_FFFF,
+                        0x2F1F_FFFF,
+                        0xFFFF_FFFF,
+                        0x2F1F_FFFF,
+                        0x2F1F_FFFF,
+                        0xFFFF_FFFF,
+                    ];
+                    let i = (p & 0x1F) >> 2;
+                    self.poke_io(0x1F80_1000 + 4 * i, Width::Word, (value << (8 * (p & 3))) & MASK[i as usize]);
+                } else if (0x1F80_1050..0x1F80_1060).contains(&p) {
+                    // SIO1 (Mednafen's dummy `sio.cpp`): data, mode, control and baud rate latch.
+                    let v = value << (8 * (p & 1));
+                    match p & 0xE {
+                        0x0 => self.poke_io(0x1F80_1050, Width::Word, v),
+                        0x8 | 0xA | 0xE => self.poke_io(0x1F80_1050 | (p & 0xE), Width::Half, v),
+                        _ => {}
+                    }
                 } else {
                     put(&mut self.io, (p - 0x1F80_1000) as usize);
                 }
