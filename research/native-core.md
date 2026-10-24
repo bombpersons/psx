@@ -281,6 +281,31 @@ times before, is never adopted. Adopted values fell from 6.38M to 1.78M:
 On SCPH-1001 (100 million instructions) no timer value is adopted, and the cycle offset stays at 0. Native
 Crash alone at frame 4,504 is about where it was (421 bytes of RAM differ from Mednafen's).
 
+**Mednafen controller port (`psx-core/src/sio0.rs`, `pad.rs`, `memcard.rs`).** A port of `frontio.cpp` and
+the devices in `input/`:
+- **Bits.** A byte is shifted a bit at a time, each bit taking the baud reload value (times 1, 16 or 64 by
+  JOY_MODE, at least 20h) in system clocks. The port catches up at its own event (after the DMA's in the
+  event list) and at register accesses.
+- **Buffers.** One transmit and one receive byte; a receive starts only after a JOY_DATA read has made the
+  receiver wait. JOY_STAT has TX ready, RX ready, DSR (32 clocks from the pulse) and the interrupt bit.
+- **Devices.** The digital pad (`gamepad.cpp`) and the DualShock (`dualshock.cpp`, with config mode and the
+  rumble commands) fix each reply byte at the end of the byte before, and pulse DSR 40h clocks after a byte
+  when they have more to send; the memory card (`memcard.cpp`) pulses 100h clocks after, answers Read and
+  Write, and doesn't answer Get ID (53h). A device restarts its command when DTR (JOY_CTRL bit 1, with bit 13
+  choosing the port) rises.
+- **Interrupt.** DSR, and with JOY_CTRL bits 10 and 11 a byte sent or received, assert the line (I_STAT bit
+  7 on its rising edge). It stays asserted until JOY_CTRL bit 4.
+- **I_STAT and I_MASK** read with 1F80h in the high half, a write to I_MASK replaces it whatever the width,
+  and a narrow write to I_STAT clears the bytes it misses, as in Mednafen's `irq.cpp`.
+
+With that, lockstep no longer needs Mednafen's interrupts: the core raises its own, and lockstep compares
+Cause.IP2 (`--adopt-irqs` restores the old forcing). It also uses the core's interlaced display field and
+counts instructions where it differs. On the Crash run (1.4 billion instructions) every interrupt comes from
+the core, the field never differs and the cycle count matches throughout. JOY_STAT and I_STAT, adopted 1.65M
+and 99K times, are never adopted; adopted values fell from 1.78M to 27,560, all of them the SPU's (the voices'
+current ADSR volumes and SPUSTAT). On SCPH-1001, 100 million instructions adopt 445 values, all the SPU's.
+Native Crash alone reaches frame 4,504 at 3,051,788,459 cycles, 4 from Mednafen's 3,051,788,463.
+
 **Probe EXE.** `tools/probes/gpu` (PSYQo) sends a fixed GP0 stream: 468 commands from `gen_stream.py`, the same
 words in `gp0_stream.bin`. It draws 24 test cells of 128×128 (`gen_stream.py --list`), covering gouraud and
 dither, textures in all depths, the four blend modes, lines and polylines, rects, texture windows, mask bits,
@@ -549,7 +574,7 @@ The new `psx native` report field `spu.active_voices` showed the stuck voices: p
 
 ### Memory cards (`memcard.rs`, SIO0)
 
-Either slot can hold a card. The protocol supports Read (52h), Write (57h) and Get ID (53h), the FLAG byte's "new card" bit (cleared by the first write), checksums (a bad checksum gives end status 4Eh), and invalid sectors.
+Either slot can hold a card. The protocol (since replaced by Mednafen's; see "Mednafen controller port") supported Read (52h), Write (57h) and Get ID (53h), the FLAG byte's "new card" bit (cleared by the first write), checksums (a bad checksum gives end status 4Eh), and invalid sectors.
 
 SIO0 now routes each transfer by its address byte: 01h goes to the pad (port 1), 81h to a card in the selected slot. Empty slots still read FFh with no /ACK.
 

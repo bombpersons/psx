@@ -497,12 +497,13 @@ else links it. Run it from the project root:
   the native core and Mednafen side by side from BIOS reset. Before each instruction it compares PC,
   the instruction, every register, the delayed load, COP0 and (after GTE instructions) the GTE, and it
   stops at the first divergence. It also compares the cycle count and reports where it changes;
-  `--cycles` stops there. Device timing still differs, so I/O load values and the interrupt line are
-  taken from Mednafen and counted by register. RAM, the scratchpad, VRAM and SPU RAM are compared at every
+  `--cycles` stops there. The core raises its own interrupts and lockstep compares the interrupt line
+  (`--adopt-irqs` takes it from Mednafen). The SPU's timing still differs, so I/O load values that differ
+  are taken from Mednafen and counted by register. RAM, the scratchpad, VRAM and SPU RAM are compared at every
   vblank and reported without stopping; `--dump` writes both sides' memory at the end.
 - `tools/probes/gpu/compare.sh PSX PSX_ORACLE OUT_DIR` diffs `psx-gpu` against Mednafen on the GPU probe.
 
-The native core's video, CPU, DMA, CD-ROM, GPU command and timer timing are Mednafen's:
+The native core's video, CPU, DMA, CD-ROM, GPU command, timer and controller port timing are Mednafen's:
 - scanlines, fields and vblank follow the GPU clock (49.76 Hz frames on a PAL console, 59.83 Hz on NTSC);
 - instructions cost what Mednafen charges (instruction cache, load latency, bus wait states,
   multiply/divide and GTE latencies);
@@ -513,11 +514,14 @@ The native core's video, CPU, DMA, CD-ROM, GPU command and timer timing are Medn
   and ready bits and the GPU's DMA follow Mednafen's (`psx-gpu`'s `Gpu::timed`; tools that replay GP0
   words use the untimed `Gpu::new`, which runs each command as soon as it is complete);
 - the timers (`timers.rs`, Mednafen's `timer.cpp`) catch up at their own events, register accesses and the
-  GPU's line phases, and take dots, retraces and vblank from the video timing.
+  GPU's line phases, and take dots, retraces and vblank from the video timing;
+- the controller port (`sio0.rs`, Mednafen's `frontio.cpp`) shifts bytes a bit at a time through the pad
+  (`pad.rs`, `gamepad.cpp`/`dualshock.cpp`) and memory cards (`memcard.rs`, `memcard.cpp`), with their DSR
+  delays.
 
 The BIOS, and Crash Bandicoot booting from its disc, run cycle for cycle as Mednafen's
-(`psx-oracle lockstep --disc`). The pad's serial timing still differs; lockstep takes its registers'
-values from Mednafen.
+(`psx-oracle lockstep --disc`), raising every interrupt at the same instruction. The SPU's timing still
+differs; lockstep takes its registers' values from Mednafen.
 
 ### Formatting
 

@@ -1,20 +1,19 @@
 //! `psx-oracle lockstep`: the native core and Mednafen side by side from the
-//! BIOS reset vector (no disc), compared before every instruction: PC, the
-//! instruction word, r1-r31, HI, LO, the delayed load in flight, COP0's SR,
-//! Cause (but IP2), EPC and BadVaddr, and after each COP2 instruction or LWC2
-//! the GTE's 64 registers.
+//! BIOS reset vector, compared before every instruction: PC, the instruction
+//! word, r1-r31, HI, LO, the delayed load in flight, COP0's SR, Cause, EPC
+//! and BadVaddr, the interrupt line (Cause.IP2, which the core raises
+//! itself), and after each COP2 instruction or LWC2 the GTE's 64 registers.
 //!
 //! The cycle count is compared too (Mednafen's master clock): changes in the
-//! difference are reported, and with `--cycles` they stop the run. The CPU
-//! and DMA timing are Mednafen's, but other devices' isn't yet, so these
-//! things Mednafen knows are adopted rather than counted as divergence:
-//! - the value of every load from I/O space, which depends on device timing
-//!   (applied to the destination register once the load retires, and stored
-//!   into the core's I/O register file);
-//! - interrupts: the core's interrupt line (Cause.IP2) follows Mednafen's,
-//!   and when Mednafen enters an exception vector and the core did not, the
-//!   core takes an external interrupt at the same point;
-//! - the interlaced field being displayed, whose lines the GPU doesn't draw.
+//! difference are reported, and with `--cycles` they stop the run. Device
+//! timing is Mednafen's except the SPU's, so the value of a load from I/O
+//! space that differs is adopted rather than counted as divergence (applied
+//! to the destination register once the load retires, and stored into the
+//! core's I/O register file). Instructions before which the displayed
+//! interlaced field differs are counted. With `--adopt-irqs`, the interrupt
+//! line and that field follow Mednafen's instead, and when Mednafen enters
+//! an exception vector and the core did not, the core takes an external
+//! interrupt at the same point.
 //!
 //! Adoption counts are reported; anything else that differs stops the run.
 //!
@@ -53,7 +52,11 @@ struct State {
     io_by_addr: std::collections::BTreeMap<u32, u64>,
     /// Print adoptions from this register (`--trace-adopted`).
     trace_adopted: Option<u32>,
+    /// The interrupt line comes from Mednafen (`--adopt-irqs`).
+    adopt_irqs: bool,
     irq_injected: u64,
+    /// Instructions before which the displayed interlaced field differed.
+    field_differs: u64,
     /// The last instruction was COP2 or LWC2, so the GTE may have changed.
     gte_changed: bool,
     divergence: Value,
@@ -79,13 +82,21 @@ impl State {
         }
         let r = ffi::regs();
         let m = &mut self.m;
-        // The interrupt line (Cause.IP2) follows Mednafen's, so the core sees
-        // the same pending interrupt and takes it when Mednafen does.
-        m.forced_irq = r.cause & 0x400 != 0;
+        // With --adopt-irqs the interrupt line (Cause.IP2) follows Mednafen's,
+        // so the core sees the same pending interrupt and takes it when
+        // Mednafen does.
+        if self.adopt_irqs {
+            m.forced_irq = r.cause & 0x400 != 0;
+        }
         // So is the field the GPU skips in 480-line interlace, which follows
-        // the video timing.
-        m.bus.gpu.readout_field = ffi::gpu_readout_field();
-        if pc != m.cpu.pc && VECTORS.contains(&pc) && !VECTORS.contains(&m.cpu.pc) {
+        // the video timing; otherwise instructions where it differs are counted.
+        let field = ffi::gpu_readout_field();
+        if self.adopt_irqs {
+            m.bus.gpu.readout_field = field;
+        } else if m.bus.gpu.readout_field != field {
+            self.field_differs += 1;
+        }
+        if self.adopt_irqs && pc != m.cpu.pc && VECTORS.contains(&pc) && !VECTORS.contains(&m.cpu.pc) {
             m.force_interrupt();
             self.irq_injected += 1;
         }
@@ -120,7 +131,7 @@ impl State {
                             let (core, mednafen) = (h(m.cpu.regs[i]), h(r.gpr[i]));
                             eprintln!(
                                 "{}",
-                                json!({"adopted": h(addr), "step": step, "frame": frame, "core": core, "mednafen": mednafen})
+                                json!({"adopted": h(addr), "step": step, "frame": frame, "pc": h(pc), "cycle": m.bus.time(), "core": core, "mednafen": mednafen})
                             );
                         }
                         m.cpu.regs[i] = r.gpr[i];
@@ -157,6 +168,11 @@ impl State {
                 if core != theirs {
                     problems.push(json!({"what": what, "core": h(core), "mednafen": h(theirs)}));
                 }
+            }
+            if !self.adopt_irqs && m.bus.irq_line() != (r.cause & 0x400 != 0) {
+                problems.push(json!({"what": "interrupt line (cause.ip2)", "core": m.bus.irq_line(),
+                                     "mednafen": r.cause & 0x400 != 0, "i_stat": h(m.bus.io_word(psx_core::bus::I_STAT)),
+                                     "i_mask": h(m.bus.io_word(psx_core::bus::I_MASK))}));
             }
             if self.gte_changed {
                 let theirs = ffi::gte();
@@ -336,10 +352,9 @@ pub fn run(root: &Path, job: &crate::LockstepJob) -> (bool, Value) {
     if image.is_some() {
         m.insert_disc(image);
     }
-    // Interrupts and the displayed field come from Mednafen; device timing
-    // is compared separately.
-    m.bus.irq_sources = false;
-    m.bus.external_field = true;
+    // With --adopt-irqs, the interrupts and the displayed field come from Mednafen.
+    m.bus.irq_sources = !job.adopt_irqs;
+    m.bus.external_field = job.adopt_irqs;
     let state = Rc::new(RefCell::new(State {
         m,
         steps,
@@ -350,7 +365,9 @@ pub fn run(root: &Path, job: &crate::LockstepJob) -> (bool, Value) {
         io_injected: 0,
         io_by_addr: Default::default(),
         trace_adopted: job.trace_adopted,
+        adopt_irqs: job.adopt_irqs,
         irq_injected: 0,
+        field_differs: 0,
         gte_changed: false,
         divergence: Value::Null,
         stop: false,
@@ -401,6 +418,7 @@ pub fn run(root: &Path, job: &crate::LockstepJob) -> (bool, Value) {
             "io_values_adopted": s.io_injected,
             "io_values_adopted_by_register": io_by_register,
             "interrupts_injected": s.irq_injected,
+            "field_differs": s.field_differs,
             "cycles": {
                 "core": s.m.cpu.cycles,
                 "core_minus_mednafen": s.cycle_offset,
@@ -417,7 +435,7 @@ pub fn run(root: &Path, job: &crate::LockstepJob) -> (bool, Value) {
             }))).collect::<serde_json::Map<_, _>>(),
             "steps_per_second": (s.done as f64 / secs.max(1e-9)).round(),
             "compared": ["pc", "instruction word", "r1-r31", "hi", "lo", "delayed load",
-                         "sr", "cause (but IP2)", "epc", "badvaddr", "gte after cop2/lwc2",
+                         "sr", "cause", "the interrupt line (unless --adopt-irqs)", "epc", "badvaddr", "gte after cop2/lwc2",
                          "ram, scratchpad, vram and spu ram at each vblank"],
             "oracle": {"backend": "mednafen", "version": ffi::version(), "region": region.name()},
         }),

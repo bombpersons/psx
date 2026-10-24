@@ -1,6 +1,7 @@
-//! PlayStation memory card (psx-spx "Memory Card Read/Write Commands" and
-//! "Memory Card Data Format"): 128 KiB as 1024 sectors ("frames") of 128
-//! bytes, answering Read (52h), Write (57h) and Get ID (53h) over SIO0.
+//! PlayStation memory card (psx-spx "Memory Card Data Format"): 128 KiB as
+//! 1024 sectors ("frames") of 128 bytes. Its protocol is Mednafen's
+//! (`input/memcard.cpp`): Read (52h) and Write (57h); Get ID (53h) isn't
+//! answered.
 
 pub const SIZE: usize = 128 * 1024;
 pub const SECTOR: usize = 128;
@@ -60,7 +61,7 @@ impl MemCard {
         &self.data[n as usize * SECTOR..(n as usize + 1) * SECTOR]
     }
 
-    fn write_sector(&mut self, n: u16, bytes: &[u8]) {
+    pub(crate) fn write_sector(&mut self, n: u16, bytes: &[u8]) {
         self.data[n as usize * SECTOR..(n as usize + 1) * SECTOR].copy_from_slice(bytes);
         self.flag &= !FLAG_NEW;
         self.writes += 1;
@@ -152,93 +153,150 @@ impl MemCard {
     }
 }
 
-/// Progress through one card command.
+/// A card's end of the serial link (Mednafen's `InputDevice_Memcard`).
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct CardSession {
+pub(crate) struct CardPort {
+    link: crate::pad::Link,
     command: u8,
-    /// Bytes exchanged after the command byte.
-    k: u32,
     addr: u16,
-    sum: u8,
-    last: u8,
-    buf: Vec<u8>,
+    calced_xor: u8,
+    write_xor: u8,
+    rw: Vec<u8>,
 }
 
-impl CardSession {
-    /// The command byte (second byte after 81h). Returns the reply and
-    /// whether the card acknowledges.
-    pub fn start(card: &MemCard, command: u8) -> (Self, u8, bool) {
-        let ok = matches!(command, 0x52 | 0x57 | 0x53);
-        (CardSession { command, ..Default::default() }, card.flag, ok)
+impl CardPort {
+    pub fn set_dtr(&mut self, dtr: bool) {
+        self.link.set_dtr(dtr);
     }
 
-    /// One further byte. Returns `(reply, ack)`; no ack ends the command.
-    pub fn exchange(&mut self, card: &mut MemCard, tx: u8) -> (u8, bool) {
-        let k = self.k;
-        self.k += 1;
-        match (self.command, k) {
-            (_, 0) => (0x5A, true),
-            (_, 1) => (0x5D, true),
-            // Get ID: 5C 5D 04 00 00 80.
-            (0x53, 2) => (0x5C, true),
-            (0x53, 3) => (0x5D, true),
-            (0x53, 4) => (0x04, true),
-            (0x53, 5 | 6) => (0x00, true),
-            (0x53, _) => (0x80, false),
-            // Address (both commands): MSB, LSB.
-            (_, 2) => {
-                self.addr = (tx as u16) << 8;
-                self.last = tx;
-                (0x00, true)
+    /// One bit each way. Returns the bit sent and the DSR pulse delay.
+    pub fn clock(&mut self, card: &mut MemCard, txd: bool) -> (bool, i32) {
+        if !self.link.dtr() {
+            return (true, 0);
+        }
+        let (out, done) = self.link.shift(txd);
+        if done {
+            self.byte(card);
+        }
+        (out, self.link.dsr(0x100))
+    }
+
+    fn byte(&mut self, card: &mut MemCard) {
+        let rx = self.link.rx;
+        let l = &mut self.link;
+        let phase = l.phase;
+        match phase {
+            0 if rx != 0x81 => l.phase = -1,
+            0 => {
+                l.send(&[card.flag & FLAG_NEW]);
+                l.phase = 1;
             }
-            (_, 3) => {
-                self.addr |= tx as u16;
-                self.sum = (self.addr >> 8) as u8 ^ tx;
-                let r = self.last;
-                self.last = tx;
-                (r, true)
-            }
-            // Read: 5C 5D MSB LSB, 128 data, checksum, 47h.
-            (0x52, 4) => (0x5C, true),
-            (0x52, 5) => (0x5D, true),
-            (0x52, 6) if self.addr > 0x3FF => (0xFF, true),
-            (0x52, 7) if self.addr > 0x3FF => (0xFF, false),
-            (0x52, 6) => ((self.addr >> 8) as u8, true),
-            (0x52, 7) => (self.addr as u8, true),
-            (0x52, 8..=135) => {
-                let b = card.sector(self.addr)[(k - 8) as usize];
-                self.sum ^= b;
-                (b, true)
-            }
-            (0x52, 136) => (self.sum, true),
-            (0x52, _) => (0x47, false),
-            // Write: 128 data, checksum (each echoed one byte late), 5C 5D, end status.
-            (0x57, 4..=131) => {
-                self.buf.push(tx);
-                self.sum ^= tx;
-                let r = self.last;
-                self.last = tx;
-                (r, true)
-            }
-            (0x57, 132) => {
-                let good = tx == self.sum;
-                self.sum = if good { 0x47 } else { 0x4E };
-                let r = self.last;
-                (r, true)
-            }
-            (0x57, 133) => (0x5C, true),
-            (0x57, 134) => (0x5D, true),
-            (0x57, _) => {
-                if self.addr > 0x3FF {
-                    return (0xFF, false);
+            1 => {
+                self.command = rx;
+                if rx == b'R' || rx == b'W' {
+                    l.phase = 2;
+                    l.send(&[0x5A]);
+                } else {
+                    l.phase = -1;
+                    l.tx[0] = 0;
+                    l.count = 0;
                 }
-                if self.sum == 0x47 {
-                    let buf = std::mem::take(&mut self.buf);
-                    card.write_sector(self.addr, &buf);
-                }
-                (self.sum, false)
             }
-            _ => (0xFF, false),
+            2 => {
+                l.send(&[0x5D]);
+                l.phase = 3;
+            }
+            3 => {
+                l.send(&[0]);
+                l.phase = if self.command == b'R' { 1000 } else { 2000 };
+            }
+            // Read: the address (echoed), 5Ch 5Dh, the address, 128 bytes, XOR, 47h.
+            1000 => {
+                self.addr = (rx as u16) << 8;
+                l.send(&[rx]);
+                l.phase += 1;
+            }
+            1001 => {
+                self.addr |= rx as u16;
+                l.send(b"\\");
+                l.phase += 1;
+            }
+            1002 => {
+                if self.addr as usize >= SIZE / SECTOR {
+                    self.addr = 0xFFFF;
+                }
+                self.calced_xor = 0;
+                l.send(b"]");
+                l.phase += 1;
+            }
+            1003 => {
+                let b = (self.addr >> 8) as u8;
+                self.calced_xor ^= b;
+                l.send(&[b]);
+                l.phase += 1;
+            }
+            1004 => {
+                let b = self.addr as u8;
+                self.calced_xor ^= b;
+                l.send(&[b]);
+                l.phase = if self.addr == 0xFFFF { -1 } else { 1024 };
+            }
+            1024..=1151 => {
+                let b = card.sector(self.addr)[(phase - 1024) as usize];
+                self.calced_xor ^= b;
+                l.send(&[b]);
+                l.phase += 1;
+            }
+            1152 => {
+                l.send(&[self.calced_xor]);
+                l.phase += 1;
+            }
+            1153 => {
+                l.send(b"G");
+                l.phase = -1;
+            }
+            // Write: the address, 128 bytes and the XOR (each echoed), 5Ch 5Dh, the end status.
+            2000 => {
+                self.calced_xor = rx;
+                self.addr = (rx as u16) << 8;
+                l.send(&[rx]);
+                l.phase += 1;
+            }
+            2001 => {
+                self.calced_xor ^= rx;
+                self.addr |= rx as u16;
+                self.rw = vec![0; SECTOR];
+                l.send(&[rx]);
+                l.phase = 2048;
+            }
+            2048..=2175 => {
+                self.calced_xor ^= rx;
+                self.rw[(phase - 2048) as usize] = rx;
+                l.send(&[rx]);
+                l.phase += 1;
+            }
+            2176 => {
+                self.write_xor = rx;
+                l.send(b"\\");
+                l.phase += 1;
+            }
+            2177 => {
+                l.send(b"]");
+                l.phase += 1;
+            }
+            2178 => {
+                let status = if self.calced_xor != self.write_xor {
+                    b'N'
+                } else if self.addr as usize >= SIZE / SECTOR {
+                    0xFF
+                } else {
+                    card.write_sector(self.addr, &self.rw);
+                    b'G'
+                };
+                l.send(&[status]);
+                l.phase = -1;
+            }
+            _ => {}
         }
     }
 }
@@ -247,16 +305,18 @@ impl CardSession {
 mod tests {
     use super::*;
 
+    /// A command after 81h; returns every byte received and checks DSR
+    /// follows all but the last.
     fn run(card: &mut MemCard, cmd: u8, tx: &[u8]) -> Vec<u8> {
-        let (mut s, flag, ok) = CardSession::start(card, cmd);
-        assert!(ok);
-        let mut rx = vec![flag];
-        for (i, &b) in tx.iter().enumerate() {
-            let (r, ack) = s.exchange(card, b);
+        let mut port = CardPort::default();
+        port.set_dtr(true);
+        let mut rx = Vec::new();
+        for (i, &b) in [0x81, cmd].iter().chain(tx).enumerate() {
+            let (r, ack) = crate::pad::tests::byte(&mut |t| port.clock(card, t), b);
             rx.push(r);
-            assert_eq!(ack, i + 1 < tx.len(), "ack at byte {i}");
+            assert_eq!(ack, i < tx.len() + 1, "ack at byte {i}");
         }
-        rx
+        rx[1..].to_vec()
     }
 
     #[test]
@@ -317,12 +377,5 @@ mod tests {
             (s.len(), s[0].filename.as_str(), s[0].title.as_str(), s[0].blocks.clone()),
             (1, "BESLES", "Test", vec![1])
         );
-    }
-
-    #[test]
-    fn get_id() {
-        let mut c = MemCard::formatted();
-        let rx = run(&mut c, 0x53, &[0; 8]);
-        assert_eq!(&rx[1..], &[0x5A, 0x5D, 0x5C, 0x5D, 0x04, 0x00, 0x00, 0x80]);
     }
 }

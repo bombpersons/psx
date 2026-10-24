@@ -288,7 +288,7 @@ impl Bus {
     #[inline]
     pub fn end_instruction(&mut self) {
         let t = self.time();
-        if t >= self.cd_next.min(self.gpu_next).min(self.timer_next).min(self.dma_next()) {
+        if t >= self.cd_next.min(self.gpu_next).min(self.timer_next).min(self.dma_next()).min(self.sio0.next) {
             self.events(t);
         }
         if self.frame_ended {
@@ -299,6 +299,7 @@ impl Bus {
             self.cd_update(now);
             self.timer_update(now);
             self.dma_update(now);
+            self.sio_update(now);
             self.schedule();
         }
     }
@@ -310,8 +311,8 @@ impl Bus {
     #[inline]
     pub fn events(&mut self, t: u64) {
         loop {
-            let (g, c, tm, d) = (self.gpu_next, self.cd_next, self.timer_next, self.dma_next());
-            let e = g.min(c).min(tm).min(d);
+            let (g, c, tm, d, s) = (self.gpu_next, self.cd_next, self.timer_next, self.dma_next(), self.sio0.next);
+            let e = g.min(c).min(tm).min(d).min(s);
             if e > t {
                 break;
             }
@@ -321,9 +322,23 @@ impl Bus {
                 self.cd_update(c);
             } else if tm == e {
                 self.timer_update(tm);
-            } else {
+            } else if d == e {
                 self.dma_update(d);
+            } else {
+                self.sio_update(s);
             }
+        }
+    }
+
+    /// Bring the controller port to `t` (Mednafen's `FrontIO::Update`).
+    fn sio_update(&mut self, t: u64) {
+        self.sio0.next = self.sio0.update(t);
+        self.after_sio();
+    }
+
+    fn after_sio(&mut self) {
+        if self.sio0.take_irq() {
+            self.raise_irq(1 << 7);
         }
     }
 
@@ -450,9 +465,6 @@ impl Bus {
 
     fn run_devices(&mut self, cycles: u64) {
         self.now += cycles;
-        if self.sio0.tick(self.now) {
-            self.raise_irq(1 << 7);
-        }
         self.schedule();
     }
 
@@ -542,7 +554,7 @@ impl Bus {
         }
     }
 
-    fn io_word(&self, phys: u32) -> u32 {
+    pub fn io_word(&self, phys: u32) -> u32 {
         let o = (phys - 0x1F80_1000) as usize;
         u32::from_le_bytes([self.io[o], self.io[o + 1], self.io[o + 2], self.io[o + 3]])
     }
@@ -691,7 +703,9 @@ impl Bus {
                 v
             }
             0x1F80_1040..=0x1F80_104F => {
-                let v = self.sio0.read(p - 0x1F80_1040);
+                let now = self.now;
+                let v = self.sio0.read(now, p - 0x1F80_1040) & (u32::MAX >> (32 - 8 * n));
+                self.after_sio();
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
@@ -709,6 +723,12 @@ impl Bus {
                     o += 2;
                 }
                 let v = if p & 1 != 0 { v >> 8 } else { v };
+                self.log_access(IoAccess { addr: p, width, write: false, value: v });
+                v
+            }
+            // Mednafen's `IRQ_Read`: the high bits read as 1F80h.
+            I_STAT..=0x1F80_1077 => {
+                let v = ((self.io_word(p & !3) | 0x1F80_0000) >> (8 * (p & 3))) & (u32::MAX >> (32 - 8 * n));
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
             }
@@ -803,7 +823,8 @@ impl Bus {
                     self.mdec.write(p - 0x1F80_1820, value);
                 } else if (0x1F80_1040..0x1F80_1050).contains(&p) {
                     let now = self.now;
-                    self.sio0.write(p - 0x1F80_1040, value, now);
+                    self.sio0.write(now, p - 0x1F80_1040, value);
+                    self.after_sio();
                 } else if (0x1F80_1800..0x1F80_1810).contains(&p) {
                     let now = self.now;
                     let fired = self.cdrom.write(p & 3, value as u8, now, Some(self.frames), &mut self.spu);
@@ -822,11 +843,13 @@ impl Bus {
                     let now = self.now;
                     self.dma_write(now, p, value);
                 } else if p & !3 == I_STAT {
-                    // Interrupt acknowledge: writing 0 clears a bit, 1 leaves it.
-                    let cur = self.io_word(I_STAT);
-                    let v = cur & (value << (8 * (p & 3)) | !(u32::MAX >> (32 - 8 * n) << (8 * (p & 3))));
+                    // Interrupt acknowledge (Mednafen's `IRQ_Write`): writing 0 clears a
+                    // bit, 1 leaves it, and the bytes the access misses read as 0.
+                    let v = self.io_word(I_STAT) & ((value & (u32::MAX >> (32 - 8 * n))) << (8 * (p & 3)));
                     self.poke_io(I_STAT, Width::Word, v);
                     self.irq_acknowledged = true;
+                } else if p & !3 == I_MASK {
+                    self.poke_io(I_MASK, Width::Word, (value & (u32::MAX >> (32 - 8 * n))) << (8 * (p & 3)));
                 } else {
                     put(&mut self.io, (p - 0x1F80_1000) as usize);
                 }
@@ -1001,7 +1024,7 @@ mod tests {
         assert!(b.irq_pending());
         b.write(I_STAT, Width::Word, !0b001).unwrap();
         assert!(!b.irq_pending());
-        assert_eq!(b.read(I_STAT, Width::Word).unwrap(), 0b100);
+        assert_eq!(b.read(I_STAT, Width::Word).unwrap(), 0x1F80_0000 | 0b100);
     }
 
     #[test]

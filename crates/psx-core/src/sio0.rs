@@ -1,17 +1,15 @@
-//! Controller / memory-card serial port (psx-spx "Controllers and Memory Cards").
+//! Controller / memory-card serial port, ported from Mednafen's `frontio.cpp`.
 //!
-//! Modelled: JOY_DATA/STAT/MODE/CTRL/BAUD, one-byte transfers with an RX
-//! FIFO, /ACK interrupts (I_STAT bit 7) after a delay, a digital pad or a
-//! DualShock in port 1 (see [`crate::pad`]), and memory cards in either
-//! slot (see [`crate::memcard`]). Empty slots read 0xFF with no /ACK.
+//! JOY_DATA/STAT/MODE/CTRL/BAUD with one-byte transmit and receive buffers.
+//! Bytes are shifted a bit at a time, each bit taking the baud reload value
+//! (scaled by the mode's factor) in system clocks, through the controller in
+//! port 1 (see [`crate::pad`]) and the memory cards (see [`crate::memcard`]);
+//! port 2 has no controller. A device with more to send pulses DSR (/ACK),
+//! which raises the interrupt (I_STAT bit 7) when JOY_CTRL bit 12 enables it.
+//! The port catches up at its own event and at register accesses.
 
-use std::collections::VecDeque;
-
-use crate::memcard::{CardSession, MemCard};
+use crate::memcard::{CardPort, MemCard};
 use crate::pad::Pad;
-
-/// Delay from a byte transfer to the device's /ACK interrupt (~1 byte at 250 kHz + ack).
-const ACK_DELAY: u64 = 1_500;
 
 /// PS1 digital pad buttons (bit set = pressed; transmitted inverted).
 pub mod button {
@@ -57,35 +55,44 @@ pub fn button_from_name(name: &str) -> Option<u16> {
     })
 }
 
-/// One exchanged byte: (time, JOY_CTRL, tx, rx, ack).
+/// One exchanged byte: (time, JOY_CTRL, tx, rx, DSR pending).
 pub type ByteLog = (u64, u16, u8, u8, bool);
 
-/// The device answering the current transfer sequence.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-enum Target {
-    #[default]
-    None,
-    Pad,
-    /// Card in slot 0/1, before (None) and after its command byte.
-    Card(usize, Option<CardSession>),
-}
+const SCALE_SHIFT: [u32; 4] = [0, 0, 4, 6];
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Sio0 {
-    rx: VecDeque<u8>,
+    last: u64,
+    /// The port's next event (Mednafen's `PSX_EVENT_FIO`).
+    pub next: u64,
+    clock_divider: i32,
+    rx_pending: bool,
+    tx_pending: bool,
+    rx_busy: bool,
+    tx_busy: bool,
+    rx_avail: bool,
+    rx_buf: u8,
+    tx_buf: u8,
+    rx_bits: u32,
+    tx_bits: u32,
     mode: u16,
     ctrl: u16,
     baud: u16,
-    irq_flag: bool,
-    ack_at: Option<u64>,
-    /// Position in the current pad command (0 = expecting address).
-    seq: u8,
-    target: Target,
+    /// The interrupt line (JOY_STAT bit 9), held until JOY_CTRL bit 4.
+    istatus: bool,
+    /// Per device (pad port 1, pad port 2, card 1, card 2): clocks until DSR
+    /// pulses, and when the pulse ends.
+    dsr_delay: [i32; 4],
+    dsr_until: [Option<u64>; 4],
+    /// The interrupt line rose since the bus last looked.
+    irq: bool,
     /// Pressed buttons on the port-1 pad.
     pub buttons: u16,
+    /// Bytes written to JOY_DATA.
     pub transfers: u64,
     /// Memory cards in slots 1 and 2.
     pub cards: [Option<MemCard>; 2],
+    card_ports: [CardPort; 2],
     /// The controller in port 1 (its buttons come from `buttons`).
     pub pad: Pad,
     /// When `Some`, every byte exchanged.
@@ -94,121 +101,224 @@ pub struct Sio0 {
 }
 
 impl Sio0 {
-    pub fn read(&mut self, off: u32) -> u32 {
-        match off {
-            0x0 => self.rx.pop_front().map_or(0xFF, |b| b as u32),
+    /// Whether the interrupt line rose since the last call.
+    pub fn take_irq(&mut self) -> bool {
+        std::mem::take(&mut self.irq)
+    }
+
+    fn assert_irq(&mut self) {
+        if !self.istatus {
+            self.irq = true;
+        }
+        self.istatus = true;
+    }
+
+    fn reload(&self) -> i32 {
+        ((((self.baud as u32) << SCALE_SHIFT[(self.mode & 3) as usize]) & !1).max(0x20)) as i32
+    }
+
+    fn next_event(&self, t: u64, mut next: i32) -> u64 {
+        if self.clock_divider > 0 && self.clock_divider < next {
+            next = self.clock_divider;
+        }
+        for &d in &self.dsr_delay {
+            if d > 0 && next > d {
+                next = d;
+            }
+        }
+        t + next as u64
+    }
+
+    /// Mednafen's `CheckStartStopPending`: start a pending transfer, or stop.
+    fn start_stop(&mut self, t: u64, set_event: bool) {
+        if (self.rx_pending && self.ctrl & 4 != 0) || (self.tx_pending && self.ctrl & 1 != 0) {
+            if self.rx_pending {
+                self.rx_pending = false;
+                self.rx_busy = true;
+                self.rx_avail = false;
+                self.rx_buf = 0;
+                self.rx_bits = 0;
+            }
+            if self.tx_pending {
+                self.tx_pending = false;
+                self.tx_busy = true;
+                self.tx_bits = 0;
+            }
+            self.clock_divider = self.reload();
+        }
+        if self.ctrl & 5 == 0 {
+            self.rx_busy = false;
+            self.tx_busy = false;
+        }
+        if !self.rx_busy && !self.tx_busy {
+            self.clock_divider = 0;
+        }
+        if set_event {
+            self.next = self.next_event(t, 0x1000_0000);
+        }
+    }
+
+    /// Bring the port to `t` (Mednafen's `FrontIO::Update`). Returns its next event.
+    pub fn update(&mut self, t: u64) -> u64 {
+        let clocks = t.saturating_sub(self.last) as i32;
+        // Mednafen hands devices new input as each frame starts.
+        self.pad.buttons = self.buttons;
+        for i in 0..4 {
+            if self.dsr_delay[i] > 0 {
+                self.dsr_delay[i] -= clocks;
+                if self.dsr_delay[i] <= 0 {
+                    self.dsr_until[i] = Some((t as i64 + 32 + self.dsr_delay[i] as i64) as u64);
+                    if self.ctrl & 0x1000 != 0 {
+                        self.assert_irq();
+                    }
+                }
+            }
+        }
+        let mut check = false;
+        if self.clock_divider > 0 {
+            self.clock_divider -= clocks;
+            while self.clock_divider <= 0 && (self.rx_busy || self.tx_busy) {
+                let mut txd = false;
+                if self.tx_busy {
+                    txd = (self.tx_buf >> self.tx_bits) & 1 != 0;
+                    self.tx_bits = (self.tx_bits + 1) & 7;
+                    if self.tx_bits == 0 {
+                        check = true;
+                        self.tx_busy = false;
+                        if self.ctrl & 0x400 != 0 {
+                            self.assert_irq();
+                        }
+                    }
+                }
+                let (rxd, d) = self.pad.clock(txd);
+                self.dsr_delay[0] = d;
+                self.dsr_delay[1] = 0;
+                let mut rxd = rxd;
+                for slot in 0..2 {
+                    let (b, d) = match &mut self.cards[slot] {
+                        Some(card) => self.card_ports[slot].clock(card, txd),
+                        None => (true, 0),
+                    };
+                    rxd &= b;
+                    self.dsr_delay[2 + slot] = d;
+                }
+                if self.rx_busy {
+                    self.rx_buf = (self.rx_buf & !(1 << self.rx_bits)) | (rxd as u8) << self.rx_bits;
+                    self.rx_bits = (self.rx_bits + 1) & 7;
+                    if self.rx_bits == 0 {
+                        check = true;
+                        self.rx_busy = false;
+                        self.rx_avail = true;
+                        if let Some(log) = &mut self.log {
+                            log.push((t, self.ctrl, self.tx_buf, self.rx_buf, self.dsr_delay.iter().any(|&d| d > 0)));
+                        }
+                        if self.ctrl & 0x800 != 0 {
+                            self.assert_irq();
+                        }
+                    }
+                }
+                self.clock_divider += self.reload();
+            }
+        }
+        self.last = t;
+        if check {
+            self.start_stop(t, false);
+        }
+        self.next_event(t, 0x1000_0000)
+    }
+
+    fn set_dtr(&mut self) {
+        let sel = self.ctrl & 2 != 0;
+        let port2 = self.ctrl & 0x2000 != 0;
+        self.pad.set_dtr(sel && !port2);
+        self.card_ports[0].set_dtr(sel && !port2);
+        self.card_ports[1].set_dtr(sel && port2);
+        for (i, on) in [(0, sel && !port2), (1, sel && port2)] {
+            if !on {
+                self.dsr_delay[i] = 0;
+                self.dsr_delay[i + 2] = 0;
+                self.dsr_until[i] = None;
+                self.dsr_until[i + 2] = None;
+            }
+        }
+    }
+
+    /// A read of register `a` (0x1F801040-0x1F80104F) at `t`.
+    pub fn read(&mut self, t: u64, a: u32) -> u32 {
+        self.update(t);
+        let v = match a & 0xE {
+            0x0 | 0x2 => {
+                let b = self.rx_buf as u32;
+                let v = b * 0x0101_0101;
+                self.rx_avail = false;
+                self.rx_pending = true;
+                self.rx_busy = false;
+                self.start_stop(t, true);
+                v >> ((a & 2) * 8)
+            }
             0x4 => {
-                let mut s = 0b101; // TX ready (bit 0) and TX finished (bit 2)
-                if !self.rx.is_empty() {
-                    s |= 1 << 1;
+                let mut v = 0;
+                if !self.tx_pending && !self.tx_busy {
+                    v |= 1;
                 }
-                if self.irq_flag {
-                    s |= 1 << 9;
+                if self.rx_avail {
+                    v |= 2;
                 }
-                s
+                if self.dsr_until.iter().any(|u| u.is_some_and(|u| t < u)) {
+                    v |= 0x80;
+                }
+                if self.istatus {
+                    v |= 0x200;
+                }
+                v
             }
             0x8 => self.mode as u32,
             0xA => self.ctrl as u32,
             0xE => self.baud as u32,
             _ => 0,
-        }
+        };
+        v >> ((a & 1) * 8)
     }
 
-    pub fn write(&mut self, off: u32, v: u32, now: u64) {
-        match off {
-            0x0 => self.transfer(v as u8, now),
-            0x8 => self.mode = v as u16,
+    /// A write of `v` to register `a` at `t`.
+    pub fn write(&mut self, t: u64, a: u32, v: u32) {
+        let v = v << ((a & 1) * 8);
+        self.update(t);
+        match a & 0xE {
+            0x0 | 0x2 => {
+                self.tx_buf = (v << ((a & 2) * 8)) as u8;
+                self.tx_pending = true;
+                self.tx_busy = false;
+                self.transfers += 1;
+            }
+            0x8 => self.mode = (v & 0x13F) as u16,
             0xA => {
-                if v & (1 << 4) != 0 {
-                    self.irq_flag = false; // acknowledge
+                self.ctrl = (v & 0x3F2F) as u16;
+                if v & 0x10 != 0 {
+                    self.istatus = false;
                 }
-                if v & (1 << 6) != 0 {
-                    let (cards, log, pad) =
-                        (std::mem::take(&mut self.cards), self.log.take(), std::mem::take(&mut self.pad));
-                    *self = Sio0 {
-                        buttons: self.buttons,
-                        transfers: self.transfers,
-                        cards,
-                        log,
-                        pad,
-                        ..Default::default()
-                    };
-                    return;
+                if v & 0x40 != 0 {
+                    self.istatus = false;
+                    self.clock_divider = 0;
+                    self.rx_pending = false;
+                    self.tx_pending = false;
+                    self.rx_busy = false;
+                    self.tx_busy = false;
+                    self.rx_avail = false;
+                    self.tx_buf = 0;
+                    self.rx_buf = 0;
+                    self.rx_bits = 0;
+                    self.tx_bits = 0;
+                    self.mode = 0;
+                    self.ctrl = 0;
+                    self.baud = 0;
                 }
-                if v & 2 == 0 {
-                    self.seq = 0; // /JOYn deselected: device resets
-                    self.target = Target::None;
-                }
-                self.ctrl = v as u16 & !(1 << 4);
+                self.set_dtr();
             }
             0xE => self.baud = v as u16,
             _ => {}
         }
-    }
-
-    fn transfer(&mut self, tx: u8, now: u64) {
-        self.transfers += 1;
-        let port2 = self.ctrl & (1 << 13) != 0;
-        let selected = self.ctrl & 2 != 0;
-        let slot = port2 as usize;
-        let (rx, ack) = if !selected {
-            (0xFF, false)
-        } else if self.seq == 0 {
-            // The address byte picks the device.
-            match tx {
-                0x01 if !port2 => {
-                    self.target = Target::Pad;
-                    (0xFF, true)
-                }
-                0x81 if self.cards[slot].is_some() => {
-                    self.target = Target::Card(slot, None);
-                    (0xFF, true)
-                }
-                _ => (0xFF, false),
-            }
-        } else {
-            match &mut self.target {
-                Target::Pad => {
-                    self.pad.buttons = self.buttons;
-                    self.pad.exchange(self.seq, tx)
-                }
-                Target::Card(slot, session) => match (self.cards[*slot].as_mut(), session) {
-                    (Some(card), Some(s)) => s.exchange(card, tx),
-                    (Some(card), session @ None) => {
-                        let (s, flag, ok) = CardSession::start(card, tx);
-                        *session = Some(s);
-                        (flag, ok)
-                    }
-                    (None, _) => (0xFF, false),
-                },
-                Target::None => (0xFF, false),
-            }
-        };
-        if let Some(log) = &mut self.log {
-            log.push((now, self.ctrl, tx, rx, ack));
-        }
-        self.seq = if ack { self.seq.saturating_add(1) } else { 0 };
-        if !ack {
-            self.target = Target::None;
-        }
-        if self.rx.len() < 8 {
-            self.rx.push_back(rx);
-        }
-        if ack && self.ctrl & (1 << 12) != 0 {
-            self.ack_at = Some(now + ACK_DELAY);
-        }
-    }
-
-    /// Returns true when an /ACK interrupt fires at `now`.
-    pub fn tick(&mut self, now: u64) -> bool {
-        match self.ack_at {
-            Some(t) if now >= t => {
-                self.ack_at = None;
-                self.irq_flag = true;
-                true
-            }
-            _ => false,
-        }
+        self.start_stop(t, true);
     }
 }
 
@@ -216,18 +326,30 @@ impl Sio0 {
 mod tests {
     use super::*;
 
+    /// Write JOY_DATA and wait for the byte to come back.
+    fn exchange(s: &mut Sio0, t: &mut u64, tx: u8) -> (u8, bool) {
+        s.write(*t, 0, tx as u32);
+        while s.read(*t, 4) & 2 == 0 {
+            *t = s.next;
+            s.next = s.update(*t);
+        }
+        // DSR comes 0x40 clocks after the byte, if at all.
+        *t += 0x60;
+        s.next = s.update(*t);
+        let irq = s.take_irq();
+        s.write(*t, 0xA, 0x1013); // acknowledge
+        (s.read(*t, 0) as u8, irq)
+    }
+
     #[test]
     fn digital_pad_poll() {
         let mut s = Sio0 { buttons: button::CROSS | button::START, ..Default::default() };
-        s.write(0xA, 0x1003, 0); // TX enable, select, ACK IRQ enable
-        let mut got = Vec::new();
-        for (i, tx) in [0x01u8, 0x42, 0, 0, 0].into_iter().enumerate() {
-            s.write(0x0, tx as u32, i as u64 * 10_000);
-            got.push(s.read(0x0) as u8);
-            let acked = s.tick(i as u64 * 10_000 + ACK_DELAY);
-            assert_eq!(acked, i < 4, "byte {i}");
-            s.write(0xA, 0x1013, 0);
-        }
-        assert_eq!(got, vec![0xFF, 0x41, 0x5A, !0x08u8, !0x40u8]);
+        let mut t = 0;
+        s.write(t, 0xE, 0x88);
+        s.write(t, 0x8, 0x0D);
+        s.write(t, 0xA, 0x1003); // TX enable, select, DSR IRQ enable
+        s.read(t, 0); // a JOY_DATA read makes the receiver wait for the next byte
+        let got: Vec<(u8, bool)> = [0x01u8, 0x42, 0, 0, 0].into_iter().map(|b| exchange(&mut s, &mut t, b)).collect();
+        assert_eq!(got, vec![(0xFF, true), (0x41, true), (0x5A, true), (!0x08u8, true), (!0x40u8, false)]);
     }
 }

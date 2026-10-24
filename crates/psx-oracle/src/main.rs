@@ -93,6 +93,9 @@ enum Command {
         /// Print each value adopted from this I/O register (hex address) to stderr, one JSON line each.
         #[arg(long, value_parser = parse_hex)]
         trace_adopted: Option<u32>,
+        /// Take the interrupt line and the displayed interlaced field from Mednafen instead of comparing the core's.
+        #[arg(long)]
+        adopt_irqs: bool,
     },
 }
 
@@ -118,6 +121,7 @@ pub struct LockstepJob {
     pub inputs: Vec<Input>,
     pub dump: Option<PathBuf>,
     pub trace_adopted: Option<u32>,
+    pub adopt_irqs: bool,
 }
 
 /// A replay file as `psx run` reads it: `frame`, `buttons`, optional
@@ -251,24 +255,33 @@ fn main() -> ExitCode {
                 Err(e) => (false, json!({"error": e})),
             }
         }
-        Command::Lockstep { bios, steps, context, cycles, disc, replay: replay_path, dump, trace_adopted } => {
-            match replay_path.as_deref().map(replay).transpose() {
-                Ok(inputs) => lockstep_job(
-                    &root,
-                    &LockstepJob {
-                        bios: abs(bios),
-                        steps,
-                        context,
-                        strict_cycles: cycles,
-                        disc: disc.map(abs),
-                        inputs: inputs.unwrap_or_default(),
-                        dump,
-                        trace_adopted,
-                    },
-                ),
-                Err(e) => (false, json!({"error": e})),
-            }
-        }
+        Command::Lockstep {
+            bios,
+            steps,
+            context,
+            cycles,
+            disc,
+            replay: replay_path,
+            dump,
+            trace_adopted,
+            adopt_irqs,
+        } => match replay_path.as_deref().map(replay).transpose() {
+            Ok(inputs) => lockstep_job(
+                &root,
+                &LockstepJob {
+                    bios: abs(bios),
+                    steps,
+                    context,
+                    strict_cycles: cycles,
+                    disc: disc.map(abs),
+                    inputs: inputs.unwrap_or_default(),
+                    dump,
+                    trace_adopted,
+                    adopt_irqs,
+                },
+            ),
+            Err(e) => (false, json!({"error": e})),
+        },
     };
     println!("{}", serde_json::to_string_pretty(&value).unwrap());
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
