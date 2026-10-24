@@ -363,9 +363,14 @@ pub fn run(o: Options) -> crate::Result<(bool, Value)> {
         let screen = std::path::PathBuf::from(format!("{}.screen.png", prefix.display()));
         let vram = std::path::PathBuf::from(format!("{}.vram.png", prefix.display()));
         let ok1 = crate::run::write_png(&screen, w, h, &rgba, png::ColorType::Rgba).is_ok();
-        let ok2 =
-            crate::run::write_png(&vram, 1024, 512, &m.bus.gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba)
-                .is_ok();
+        let ok2 = crate::run::write_png(
+            &vram,
+            1024,
+            512,
+            &m.bus.gpu.vram.lock().rgba15(0, 0, 1024, 512),
+            png::ColorType::Rgba,
+        )
+        .is_ok();
         dumped = json!({"screen": ok1.then_some(screen), "vram": ok2.then_some(vram)});
     }
     let audio = match wav {

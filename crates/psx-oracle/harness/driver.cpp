@@ -11,6 +11,7 @@
 #include <mednafen/psx/psx.h>
 #include <mednafen/psx/gte.h>
 #include <mednafen/psx/gpu.h>
+#include <mednafen/psx/spu.h>
 
 #include <cstdio>
 #include <cstring>
@@ -213,6 +214,30 @@ const uint32_t* mdh_pixels(int32_t* pitch)
 // One of the PSX debugger's address spaces: "cpu", "ram", "spu" or "gpu".
 int mdh_read(const char* space, uint32_t address, uint32_t length, uint8_t* buffer)
 {
+ // The debugger reads a byte per call; main RAM, VRAM and SPU RAM are
+ // plain arrays (little-endian, as the host), copied here as it would read
+ // them when the range doesn't wrap.
+ const std::string s(space);
+ if(s == "ram" && address + (uint64_t)length <= sizeof(MDFN_IEN_PSX::MainRAM.data8))
+ {
+  memcpy(buffer, MDFN_IEN_PSX::MainRAM.data8 + address, length);
+  return 0;
+ }
+ if(s == "gpu" && address + (uint64_t)length <= sizeof(MDFN_IEN_PSX::GPU.GPURAM))
+ {
+  memcpy(buffer, (const uint8_t*)MDFN_IEN_PSX::GPU.GPURAM + address, length);
+  return 0;
+ }
+ if(s == "spu" && address % 2 == 0 && length % 2 == 0 && address + (uint64_t)length <= 0x80000)
+ {
+  for(uint32_t i = 0; i < length; i += 2)
+  {
+   const uint16_t v = MDFN_IEN_PSX::SPU->PeekSPURAM((address + i) >> 1);
+   buffer[i] = v;
+   buffer[i + 1] = v >> 8;
+  }
+  return 0;
+ }
  for(auto const& a : *game->Debugger->AddressSpaces)
   if(a.name == space)
   {

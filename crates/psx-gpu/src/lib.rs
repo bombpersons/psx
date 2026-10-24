@@ -150,6 +150,8 @@ macro_rules! with_page_texture {
     }};
 }
 
+pub mod paint;
+
 /// Hardware drops a primitive when any edge it draws spans 1024+ pixels
 /// horizontally or 512+ vertically. For a quad these are the edges of its two
 /// triangles: the perimeter plus the shared v1-v2 diagonal, but not v0-v3
@@ -375,7 +377,8 @@ impl TexAddr {
 /// The pixels are psx-gpu's own (`raster`); only the time is Mednafen's.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Gpu {
-    pub vram: Vram,
+    /// Drawn on a worker thread; reading it waits for the drawing (see [`paint`]).
+    pub vram: paint::Painter,
     pub state: DrawState,
     pub display: Display,
     /// Mednafen's `BlitterFIFO`: up to 16 words on the console, 32 here as in
@@ -425,7 +428,7 @@ pub struct Gpu {
 impl Default for Gpu {
     fn default() -> Self {
         Gpu {
-            vram: Vram::default(),
+            vram: paint::Painter::default(),
             state: DrawState::default(),
             display: Display::default(),
             fifo: Default::default(),
@@ -566,9 +569,10 @@ impl Gpu {
             return self.data_read;
         }
         let f = &mut self.fb;
+        let vram = self.vram.lock();
         let mut ex = 0;
         for i in 0..2 {
-            ex |= (self.vram.get(f.cur_x as i32, f.cur_y as i32) as u32) << (i * 16);
+            ex |= (vram.get(f.cur_x as i32, f.cur_y as i32) as u32) << (i * 16);
             f.cur_x += 1;
             if f.cur_x == f.x + f.w {
                 if f.cur_y + 1 == f.y + f.h {
@@ -725,13 +729,13 @@ impl Gpu {
         FbRw { x, y, w, h, cur_x: x, cur_y: y }
     }
 
-    fn fb_write_word(&mut self, mut data: u32) {
+    fn fb_write_word(&mut self, data: u32) {
+        let mut at = [(0, 0); 2];
+        let mut n = 0;
         for _ in 0..2 {
             let f = self.fb;
-            let (x, y) = (f.cur_x as i32, f.cur_y as i32);
-            if !(self.state.check_mask && self.vram.get(x, y) & 0x8000 != 0) {
-                self.vram.set(x, y, data as u16 | self.state.set_mask_bit());
-            }
+            at[n] = (f.cur_x as i32, f.cur_y as i32);
+            n += 1;
             self.fb.cur_x += 1;
             if self.fb.cur_x == f.x + f.w {
                 self.fb.cur_x = f.x;
@@ -741,8 +745,9 @@ impl Gpu {
                     break;
                 }
             }
-            data >>= 16;
         }
+        let (check, set) = (self.state.check_mask, self.state.set_mask_bit());
+        self.vram.push(paint::Job::Pixels { at, n: n as u8, data, check, set });
     }
 
     fn invalidate_tex_cache(&mut self) {
@@ -905,15 +910,10 @@ impl Gpu {
         }
         #[cfg(test)]
         if tests::REFERENCE.get() {
-            raster::reference::triangle(&mut self.vram, &tex, &r, &sh, vs);
+            raster::reference::triangle(&mut *self.vram.lock_mut(), &tex, &r, &sh, vs);
             return;
         }
-        let vram = &mut self.vram;
-        if !textured {
-            raster::triangle(vram, &raster::NoTexture, &r, &sh, vs);
-        } else {
-            with_page_texture!(tex, vram, r.clip, |t| raster::triangle(vram, t, &r, &sh, vs));
-        }
+        self.vram.push(paint::Job::Tri { vs, r, sh, tex });
     }
 
     /// A line, or a polyline's segment (Mednafen's `Command_DrawLine`).
@@ -963,7 +963,7 @@ impl Gpu {
         let mut ab = [a, b];
         self.offset(&mut ab);
         let r = self.raster();
-        raster::line(&mut self.vram, &r, &sh, ab[0], ab[1]);
+        self.vram.push(paint::Job::Line { ab, r, sh });
     }
 
     fn rectangle(&mut self, p: &[u32]) {
@@ -1004,15 +1004,10 @@ impl Gpu {
         }
         #[cfg(test)]
         if tests::REFERENCE.get() {
-            raster::reference::rect(&mut self.vram, &tex, &ras, &sh, origin, w, h, flip);
+            raster::reference::rect(&mut *self.vram.lock_mut(), &tex, &ras, &sh, origin, w, h, flip);
             return;
         }
-        let vram = &mut self.vram;
-        if !textured {
-            raster::rect(vram, &raster::NoTexture, &ras, &sh, origin, w, h, flip);
-        } else {
-            with_page_texture!(tex, vram, ras.clip, |t| raster::rect(vram, t, &ras, &sh, origin, w, h, flip));
-        }
+        self.vram.push(paint::Job::Rect { o: origin, w, h, flip, r: ras, sh, tex });
     }
 
     /// Mednafen's drawing time for a sprite (`DrawSprite`): per row drawn,
@@ -1081,12 +1076,9 @@ impl Gpu {
         let h = ((p[2] >> 16) & 0x1FF) as i32;
         let skip = self.skip_parity();
         self.draw_time -= 46;
-        for row in (0..h).filter(|row| skip != Some((y + row) & 1)) {
-            self.draw_time -= (w >> 3) + 9;
-            for col in 0..w {
-                self.vram.set(x + col, y + row, value);
-            }
-        }
+        let rows = (0..h).filter(|row| skip != Some((y + row) & 1)).count() as i32;
+        self.draw_time -= rows * ((w >> 3) + 9);
+        self.vram.push(paint::Job::Fill { x, y, w, h, value, skip });
     }
 
     fn copy(&mut self, p: &[u32]) {
@@ -1096,16 +1088,8 @@ impl Gpu {
         let h = ((((p[3] >> 16) & 0xFFFF).wrapping_sub(1) & 0x1FF) + 1) as i32;
         self.invalidate_tex_cache();
         self.draw_time -= w * h * 2;
-        for row in 0..h {
-            let line: Vec<u16> = (0..w).map(|c| self.vram.get(sx + c, sy + row)).collect();
-            for (c, v) in line.into_iter().enumerate() {
-                let (x, y) = (dx + c as i32, dy + row);
-                if self.state.check_mask && self.vram.get(x, y) & 0x8000 != 0 {
-                    continue;
-                }
-                self.vram.set(x, y, v | self.state.set_mask_bit());
-            }
-        }
+        let (check, set) = (self.state.check_mask, self.state.set_mask_bit());
+        self.vram.push(paint::Job::Copy { s: (sx, sy), d: (dx, dy), w, h, check, set });
     }
 
     /// GP1(00h) (Mednafen's `SoftReset`).
@@ -1172,9 +1156,9 @@ impl Gpu {
         let (w, h) = (self.display.width(), self.display.height());
         let (x, y) = (self.display.start.0 as i32, self.display.start.1 as i32);
         let rgba = if self.display.rgb24() {
-            self.vram.rgb24(x, y, w, h).chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect()
+            self.vram.lock().rgb24(x, y, w, h).chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect()
         } else {
-            let mut px = self.vram.rgba15(x, y, w, h);
+            let mut px = self.vram.lock().rgba15(x, y, w, h);
             px.chunks_mut(4).for_each(|c| c[3] = 255);
             px
         };
@@ -1223,11 +1207,11 @@ mod tests {
         assert_eq!(g.draw_time, -(2 + 46 + 10 * (8 + 9)));
         assert_eq!(g.status_bits() & (1 << 26), 0, "busy");
         g.gp0_all(&[0x6000_FF00, 200 | (200 << 16), 4 | (4 << 16)]);
-        assert_eq!(g.vram.get(201, 201), 0, "the sprite waits");
+        assert_eq!(g.vram.lock().get(201, 201), 0, "the sprite waits");
         g.credit(108);
-        assert_eq!(g.vram.get(201, 201), 0);
+        assert_eq!(g.vram.lock().get(201, 201), 0);
         g.credit(1);
-        assert_ne!(g.vram.get(201, 201), 0, "drawn once the time is back to 0");
+        assert_ne!(g.vram.lock().get(201, 201), 0, "drawn once the time is back to 0");
         assert_eq!(g.draw_time, -(2 + 16 + 4 * 4));
         g.credit(1000);
         assert_eq!(g.draw_time, 256, "credit is capped");
@@ -1249,7 +1233,7 @@ mod tests {
         assert!(g.ready());
         // 46 for a second triangle and its 28 pixels.
         assert_eq!(g.draw_time, -(46 + 28));
-        assert_ne!(g.vram.get(7, 7), 0);
+        assert_ne!(g.vram.lock().get(7, 7), 0);
     }
 
     /// GP1(10h) answers with drawing state on GPUREAD; GP0(C0h) reads VRAM as
@@ -1264,7 +1248,7 @@ mod tests {
         assert_eq!(g.read_data(), 0x7FF);
         g.gp0_all(&[0xC000_0000, 0, 2 | (1 << 16)]);
         assert_ne!(g.status_bits() & (1 << 27), 0);
-        g.vram.set(1, 0, 0x1234);
+        g.vram.lock_mut().set(1, 0, 0x1234);
         assert_eq!(g.read_data(), 0x1234 << 16);
         assert_eq!(g.read_data(), 0x7FF, "back to the info answer");
     }
@@ -1309,7 +1293,8 @@ mod tests {
         g.gp0_all(&[0xE300_0000 | 512, 0xE400_0000 | 1023 | (255 << 10), 0xE500_0000 | 768 | (128 << 11)]);
         // x 200..300 relative, so 968..1068 in VRAM: only 968..1023 is in the area.
         g.gp0_all(&[0x2000_00FF, xy(200, -100), xy(300, -100), xy(200, -60)]);
-        let row = |y: usize| &g.vram.as_slice()[y * 1024..(y + 1) * 1024];
+        let vram = g.vram.lock();
+        let row = |y: usize| &vram.as_slice()[y * 1024..(y + 1) * 1024];
         let drawn: Vec<usize> = row(30).iter().enumerate().filter(|(_, &p)| p != 0).map(|(x, _)| x).collect();
         assert_eq!((drawn.first(), drawn.last()), (Some(&968), Some(&1023)));
         assert!(row(30)[512..968].iter().all(|&p| p == 0));
@@ -1325,7 +1310,7 @@ mod tests {
         let sequences = if cfg!(debug_assertions) { 40 } else { 400 };
         for seq in 0..sequences {
             let mut fast = Gpu::new();
-            for p in fast.vram.as_mut_slice() {
+            for p in fast.vram.lock_mut().as_mut_slice() {
                 *p = rng.next() as u16;
             }
             let mut reference = Gpu::new();
@@ -1381,16 +1366,22 @@ mod tests {
                 REFERENCE.set(true);
                 reference.gp0_all(&words);
                 REFERENCE.set(false);
-                if fast.vram.as_slice() != reference.vram.as_slice() {
-                    let i =
-                        fast.vram.as_slice().iter().zip(reference.vram.as_slice()).position(|(a, b)| a != b).unwrap();
+                if fast.vram.lock().as_slice() != reference.vram.lock().as_slice() {
+                    let i = fast
+                        .vram
+                        .lock()
+                        .as_slice()
+                        .iter()
+                        .zip(reference.vram.lock().as_slice())
+                        .position(|(a, b)| a != b)
+                        .unwrap();
                     panic!(
                         "sequence {seq} command {cmd} {words:08X?} state {:?}: first difference at ({}, {}): {:04X} vs reference {:04X}",
                         fast.state,
                         i % 1024,
                         i / 1024,
-                        fast.vram.as_slice()[i],
-                        reference.vram.as_slice()[i]
+                        fast.vram.lock().as_slice()[i],
+                        reference.vram.lock().as_slice()[i]
                     );
                 }
             }

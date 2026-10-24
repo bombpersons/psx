@@ -109,9 +109,9 @@ enum Command {
         /// Only these runs, by name.
         #[arg(long)]
         only: Vec<String>,
-        /// Runs at once.
-        #[arg(long, default_value_t = 3)]
-        jobs: usize,
+        /// Runs at once (default: one per CPU core).
+        #[arg(long)]
+        jobs: Option<usize>,
     },
 }
 

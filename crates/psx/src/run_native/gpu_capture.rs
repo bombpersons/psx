@@ -133,7 +133,7 @@ impl GpuCapture {
                 self.selected = Some(CapturedFrame {
                     state: c.state,
                     before: c.before,
-                    after: m.bus.gpu.vram.clone(),
+                    after: m.bus.gpu.vram.lock().clone(),
                     area: m.bus.gpu.state.area,
                     commands,
                     projections: all_projections,
@@ -163,7 +163,7 @@ impl GpuCapture {
                 run_frame: rel,
                 absolute_frame: m.bus.frames,
                 state: m.bus.gpu.state,
-                before: m.bus.gpu.vram.clone(),
+                before: m.bus.gpu.vram.lock().clone(),
                 prior_projections: std::mem::take(&mut self.previous),
             });
             m.bus.gpu.log = Some(Vec::new());
@@ -267,7 +267,7 @@ mod tests {
         advance(&mut c, &mut m, 100, true);
         let frame = c.selected.as_ref().unwrap();
         assert_eq!(frame.after.to_bytes(), captured);
-        assert_ne!(frame.after.to_bytes(), m.bus.gpu.vram.to_bytes());
+        assert_ne!(frame.after.to_bytes(), m.bus.gpu.vram.lock().to_bytes());
         assert_eq!(frame.display.start, (10, 20));
         assert_eq!(frame.ctrl[2], 320);
         assert!(m.bus.gpu.log.is_none());
@@ -360,7 +360,7 @@ mod tests {
         let mut m = machine();
         let mut c = search(0, 1);
         c.boundary(&mut m, 0, false);
-        let before = m.bus.gpu.vram.to_bytes();
+        let before = m.bus.gpu.vram.lock().to_bytes();
         m.bus.gpu.gp0_all(&[0x02000000, 0, 0x00010010]); // black on black
         advance(&mut c, &mut m, 0, true);
         assert_eq!(c.selected.as_ref().unwrap().after.to_bytes(), before);

@@ -262,7 +262,7 @@ fn core_memory(m: &Machine, name: &str) -> Vec<u8> {
     match name {
         "ram" => m.bus.ram.clone(),
         "scratchpad" => m.bus.scratch.to_vec(),
-        "vram" => m.bus.gpu.vram.as_slice().iter().flat_map(|p| p.to_le_bytes()).collect(),
+        "vram" => m.bus.gpu.vram.lock().as_slice().iter().flat_map(|p| p.to_le_bytes()).collect(),
         _ => m.bus.spu.ram.clone(),
     }
 }
@@ -304,7 +304,7 @@ fn dump_files(emu: &Mednafen, m: &Machine, prefix: &Path) -> Value {
     }
     let (w, hgt, rgba) = m.bus.gpu.display_rgba();
     put("core.screen.png".into(), crate::write_png(&file("core.screen.png"), w, hgt, &rgba).is_ok());
-    let vram = m.bus.gpu.vram.rgba15(0, 0, 1024, 512);
+    let vram = m.bus.gpu.vram.lock().rgba15(0, 0, 1024, 512);
     put("core.vram.png".into(), crate::write_png(&file("core.vram.png"), 1024, 512, &vram).is_ok());
     Value::Object(out)
 }

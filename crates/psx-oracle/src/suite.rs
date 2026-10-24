@@ -84,7 +84,7 @@ fn one(root: &Path, dir: &Path, run: &Value) -> Value {
     })
 }
 
-pub fn run(root: &Path, file: &Path, only: &[String], jobs: usize) -> (bool, Value) {
+pub fn run(root: &Path, file: &Path, only: &[String], jobs: Option<usize>) -> (bool, Value) {
     let suite: Value = match std::fs::read(file)
         .map_err(|e| e.to_string())
         .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
@@ -93,7 +93,7 @@ pub fn run(root: &Path, file: &Path, only: &[String], jobs: usize) -> (bool, Val
         Err(e) => return (false, json!({"error": format!("{}: {e}", file.display())})),
     };
     let dir = file.parent().unwrap_or(Path::new("."));
-    let runs: Vec<(usize, Value)> = suite["runs"]
+    let mut runs: Vec<(usize, Value)> = suite["runs"]
         .as_array()
         .into_iter()
         .flatten()
@@ -101,13 +101,19 @@ pub fn run(root: &Path, file: &Path, only: &[String], jobs: usize) -> (bool, Val
         .cloned()
         .enumerate()
         .collect();
+    // The longest runs first, so the last to finish starts early.
+    runs.sort_by_key(|(_, r)| std::cmp::Reverse(r["steps"].as_u64().unwrap_or(0)));
+    let jobs = jobs.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get())).min(runs.len());
     let started = Instant::now();
     let queue = Mutex::new(runs.into_iter().collect::<VecDeque<_>>());
     let results = Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for _ in 0..jobs.max(1) {
             s.spawn(|| {
-                while let Some((i, run)) = queue.lock().unwrap().pop_front() {
+                loop {
+                    // Its own statement, so the queue isn't held during the run.
+                    let next = queue.lock().unwrap().pop_front();
+                    let Some((i, run)) = next else { break };
                     let r = one(root, dir, &run);
                     eprintln!("{} {}", r["name"].as_str().unwrap_or("?"), r["result"].as_str().unwrap_or("?"));
                     results.lock().unwrap().push((i, r));

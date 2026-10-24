@@ -1072,6 +1072,26 @@ The bench's remaining profile:
 
 On the 1500-frame window the core is now faster than Mednafen (13.6G against 16.3G cycles). Over the whole bench it's within 4% (19.5 s against 18.9 s).
 
+#### Sixth pass: pixels on a second thread
+
+The GPU's drawing time comes from geometry and the texture cache tags, never from what VRAM holds. So a command's pixels can be drawn later as long as nothing reads VRAM first. `psx_gpu::paint::Painter` owns the VRAM, behind an `Arc<Mutex>`:
+- Each fill, copy, primitive and CPU→VRAM word becomes a `Job`. Jobs go to a worker thread in batches of 256 and run in order.
+- `Gpu::vram.lock()` waits for every job queued so far. It is used for GPUREAD, display readout, dumps and save states.
+- With one CPU, or with `PSX_GPU_THREAD=0`, jobs run inline.
+
+| Replay | Committed build | Pixels on a thread | Mednafen |
+|---|---|---|---|
+| Tomb Raider, 6000 frames | 309 fps | 351 fps | 318 fps |
+| Crash Bandicoot, 7905 frames | 230 fps | 267 fps | 265 fps |
+
+Screens and RAM are identical in both modes, and Crash's final RAM equals Mednafen's. The Crash replay is a person playing the first levels (a handoff, `--verify`).
+
+Profile-guided optimisation (`-Cprofile-use`, trained on six discs or on the bench replay alone) was 6% slower than the plain fat-LTO build, so it isn't used.
+
+The lockstep suite got faster too:
+- **Memory reads.** Half of a `lockstep --fast` run went to reading Mednafen's memory at each frame end through its debugger, one byte per call. The harness now copies main RAM and VRAM directly and SPU RAM a halfword at a time; the dumps are byte-identical.
+- **Parallel runs.** `suite` meant to run three at a time, but its worker loop held the queue's lock through each run (`while let ... = queue.lock().unwrap().pop_front()` keeps the guard for the loop body), so the runs went one by one. It now runs one per core, longest first.
+
 ### Debugging trail: from a kernel overwrite to playing FMVs
 
 This trail shows the toolkit's method on a real bug. Every step used `psx` tools with evidence from both emulators.

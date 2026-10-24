@@ -229,7 +229,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     }
     put("ram.bin", &m.bus.ram);
     put("scratch.bin", &m.bus.scratch);
-    put("vram.bin", &m.bus.gpu.vram.to_bytes());
+    put("vram.bin", &m.bus.gpu.vram.lock().to_bytes());
     let jsonl = |items: Vec<Value>| items.iter().map(|v| v.to_string() + "\n").collect::<String>();
     // Every log carries `frame` (absolute, from power-on, as the core counts) and
     // `run_frame` (from the run start, as --frames/--replay/--poke/--gpu-frame count).
@@ -335,7 +335,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         files.insert("screen.png".into(), json!({"path": screen}));
     }
     let vram = dir.join("vram.png");
-    if write_png(&vram, 1024, 512, &m.bus.gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok() {
+    if write_png(&vram, 1024, 512, &m.bus.gpu.vram.lock().rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok() {
         files.insert("vram.png".into(), json!({"path": vram}));
     }
 

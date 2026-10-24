@@ -34,8 +34,8 @@ fn gouraud_tri(g: &mut Gpu, v: [(u32, i32, i32); 3]) {
 fn check(g: &Gpu, name: &str, probes: &[(i32, i32, u16)]) {
     let bad: Vec<String> = probes
         .iter()
-        .filter(|&&(x, y, want)| g.vram.get(x, y) != want)
-        .map(|&(x, y, want)| format!("({x},{y}) got {:04x} want {want:04x}", g.vram.get(x, y)))
+        .filter(|&&(x, y, want)| g.vram.lock().get(x, y) != want)
+        .map(|&(x, y, want)| format!("({x},{y}) got {:04x} want {want:04x}", g.vram.lock().get(x, y)))
         .collect();
     assert!(bad.is_empty(), "{name}: {} of {} probes differ: {bad:?}", bad.len(), probes.len());
 }
@@ -101,7 +101,7 @@ fn gouraud_line_midpoint() {
 }
 
 fn covered_row(g: &Gpu, y: i32) -> (usize, i32, i32) {
-    let xs: Vec<i32> = (0..1024).filter(|&x| g.vram.get(x, y) != 0).collect();
+    let xs: Vec<i32> = (0..1024).filter(|&x| g.vram.lock().get(x, y) != 0).collect();
     (xs.len(), xs.first().copied().unwrap_or(-1), xs.last().copied().unwrap_or(-1))
 }
 

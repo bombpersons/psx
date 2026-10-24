@@ -422,7 +422,7 @@ mod tests {
         // A 15-bit texture page at (0, 0): every texel distinct.
         for v in 0..32 {
             for u in 0..32 {
-                gpu.vram.set(u, v, (1 + u as u16) | (v as u16) << 5 | 0x4000);
+                gpu.vram.lock_mut().set(u, v, (1 + u as u16) | (v as u16) << 5 | 0x4000);
             }
         }
         gpu.gp0_all(&[0xE300_0000]);
@@ -479,8 +479,8 @@ mod tests {
                     let (u, v) =
                         ((tu as f64 + s * tw as f64).floor() as i32, (tv as f64 + t * th as f64).floor() as i32);
                     assert_eq!(
-                        gpu.vram.get((rx + px) as i32, (ry + py) as i32),
-                        gpu.vram.get(u, v),
+                        gpu.vram.lock().get((rx + px) as i32, (ry + py) as i32),
+                        gpu.vram.lock().get(u, v),
                         "element {} pixel ({px}, {py}) samples texel ({u}, {v})",
                         e["command"]
                     );

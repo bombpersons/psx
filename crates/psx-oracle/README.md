@@ -70,7 +70,7 @@ movies) match the same way; research/native-core.md has the table.
 
 ## `suite`
 
-`suite` runs the lockstep checks in `suite/suite.json` with `--fast`, three at a time (`--jobs`), each in a
+`suite` runs the lockstep checks in `suite/suite.json` with `--fast`, one per CPU core at a time (`--jobs`), longest first, each in a
 process of its own; `--only NAME` picks runs. A run passes when it matches with no I/O value adopted, no frame
 rerun, memory identical at every frame end compared, and the frame count the file records. A run whose BIOS or
 disc isn't in the project is skipped. The replays are in `suite/`; `tomb_raider.json` is 6.5 minutes of play

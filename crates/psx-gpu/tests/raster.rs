@@ -17,7 +17,7 @@ fn draw(g: &mut Gpu, p: Prim) {
 }
 
 fn count(g: &Gpu, f: impl Fn(u16) -> bool) -> usize {
-    g.vram.as_slice().iter().filter(|&&p| f(p)).count()
+    g.vram.lock().as_slice().iter().filter(|&&p| f(p)).count()
 }
 
 fn flat(verts: &[(i16, i16)], c: Rgb) -> Prim {
@@ -35,9 +35,9 @@ fn quad_covers_exact_rectangle_with_top_left_rule() {
     draw(&mut g, flat(&[(10, 10), (20, 10), (10, 20), (20, 20)], Rgb(255, 255, 255)));
     // Right and bottom edges are excluded: 10x10 pixels.
     assert_eq!(count(&g, |p| p != 0), 100);
-    assert_ne!(g.vram.get(10, 10), 0);
-    assert_eq!(g.vram.get(20, 10), 0);
-    assert_eq!(g.vram.get(10, 20), 0);
+    assert_ne!(g.vram.lock().get(10, 10), 0);
+    assert_eq!(g.vram.lock().get(20, 10), 0);
+    assert_eq!(g.vram.lock().get(10, 20), 0);
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn clut4_texture_and_transparent_texel() {
             semi: false,
         }),
     );
-    let row: Vec<u16> = (100..104).map(|x| g.vram.get(x, 100)).collect();
+    let row: Vec<u16> = (100..104).map(|x| g.vram.lock().get(x, 100)).collect();
     assert_eq!(row, vec![0x001F, 0, 0x001F, 0]);
 }
 
@@ -95,7 +95,7 @@ fn modulation_neutral_colour_is_identity() {
         &mut g,
         Prim::Poly(Poly { verts: vec![v(0, 0), v(2, 0), v(0, 2)], gouraud: false, texture: Some(tex), semi: false }),
     );
-    assert_eq!(g.vram.get(0, 0), 0x7C1F | 0x0200);
+    assert_eq!(g.vram.lock().get(0, 0), 0x7C1F | 0x0200);
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn sprite_fill_and_draw_area_clip() {
     Env::Fill { x: 0, y: 0, w: 32, h: 4, color: Rgb(0, 0, 255) }.encode(&mut w);
     Env::DrawArea { x1: 0, y1: 0, x2: 9, y2: 9 }.encode(&mut w);
     g.gp0_all(&w);
-    assert_eq!(g.vram.get(31, 3), 0x7C00);
+    assert_eq!(g.vram.lock().get(31, 3), 0x7C00);
     draw(
         &mut g,
         Prim::Sprite(Sprite { xy: Xy(5, 5), size: (16, 16), color: Rgb(255, 0, 0), texture: None, semi: false }),
@@ -133,7 +133,7 @@ fn polyline_and_offset() {
         }),
     );
     assert_eq!(count(&g, |p| p != 0), 9);
-    assert_ne!(g.vram.get(104, 104), 0);
+    assert_ne!(g.vram.lock().get(104, 104), 0);
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn ordering_table_draws_far_first() {
     ot.add(2, &flat(&[(0, 0), (8, 0), (0, 8)], Rgb(255, 0, 0)));
     ot.add(10, &flat(&[(0, 0), (8, 0), (0, 8)], Rgb(0, 255, 0)));
     ot.draw(&mut g);
-    assert_eq!(g.vram.get(1, 1), 0x001F, "near (z=2) red drawn last, on top");
+    assert_eq!(g.vram.lock().get(1, 1), 0x001F, "near (z=2) red drawn last, on top");
 }
 
 #[test]

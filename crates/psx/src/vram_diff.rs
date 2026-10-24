@@ -119,9 +119,9 @@ pub fn replay(stream: &Path, out: &Path, png: Option<&Path>) -> Result<Value> {
     for c in &cmds {
         gpu.gp0_all(c);
     }
-    std::fs::write(out, gpu.vram.to_bytes()).map_err(|e| Error::io(out, e))?;
+    std::fs::write(out, gpu.vram.lock().to_bytes()).map_err(|e| Error::io(out, e))?;
     if let Some(p) = png {
-        crate::run::write_png(p, 1024, 512, &gpu.vram.rgba15(0, 0, 1024, 512), png::ColorType::Rgba)
+        crate::run::write_png(p, 1024, 512, &gpu.vram.lock().rgba15(0, 0, 1024, 512), png::ColorType::Rgba)
             .map_err(|e| Error::io(p, e))?;
     }
     Ok(json!({"commands": cmds.len(), "vram": out, "png": png}))
