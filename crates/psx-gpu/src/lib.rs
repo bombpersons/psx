@@ -331,18 +331,28 @@ impl TexAddr {
     /// holds 256 blocks of 4 halfwords (64×64 texels at 4 bits, 64×32 at 8
     /// bits, 32×32 at 15 bits).
     fn fetch(&self, tags: &mut [u32], u: u32, v: u32) -> i32 {
+        self.fetch_block(tags, self.block(u, v))
+    }
+
+    /// The cache block (its first halfword's VRAM address) holding texel `(u, v)`.
+    #[inline(always)]
+    fn block(&self, u: u32, v: u32) -> u32 {
         let u_ext = (u & self.u_and).wrapping_add(self.u_add);
         let x = (u_ext >> (2 - self.depth)) & 1023;
         let y = (v & self.v_and).wrapping_add(self.v_add);
-        let gro = y.wrapping_mul(1024).wrapping_add(x);
+        y.wrapping_mul(1024).wrapping_add(x) & !3
+    }
+
+    #[inline(always)]
+    fn fetch_block(&self, tags: &mut [u32], block: u32) -> i32 {
         let i = if self.depth == 0 {
-            ((gro >> 2) & 3) | ((gro >> 8) & 0xFC)
+            ((block >> 2) & 3) | ((block >> 8) & 0xFC)
         } else {
-            ((gro >> 2) & 7) | ((gro >> 7) & 0xF8)
+            ((block >> 2) & 7) | ((block >> 7) & 0xF8)
         };
         let tag = &mut tags[i as usize];
-        if *tag != gro & !3 {
-            *tag = gro & !3;
+        if *tag != block {
+            *tag = block;
             4
         } else {
             0
@@ -505,6 +515,12 @@ impl Gpu {
 
     /// Credit `clocks` system clocks of drawing time and run the FIFO once
     /// (Mednafen's `GPU_Update`).
+    /// Nothing queued and drawing time full: crediting more time changes
+    /// nothing, however it is split.
+    pub fn idle(&self) -> bool {
+        self.fifo.is_empty() && self.draw_time == 256
+    }
+
     pub fn credit(&mut self, clocks: u64) {
         if clocks == 0 {
             return;
@@ -868,9 +884,22 @@ impl Gpu {
             };
             let t = if textured {
                 let (a, tags) = (TexAddr::new(&self.state), &mut self.tex_tags);
-                tri.time(&r, span, Some(&mut |u, v| a.fetch(tags, u, v)))
+                // A texel in the block the last one was in hits the cache.
+                let mut last = !0;
+                tri.time(
+                    &r,
+                    span,
+                    Some(|u, v| {
+                        let b = a.block(u, v);
+                        if b == last {
+                            return 0;
+                        }
+                        last = b;
+                        a.fetch_block(tags, b)
+                    }),
+                )
             } else {
-                tri.time(&r, span, None)
+                tri.time(&r, span, None::<fn(u32, u32) -> i32>)
             };
             self.draw_time -= t;
         }

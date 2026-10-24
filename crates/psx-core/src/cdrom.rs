@@ -1474,6 +1474,11 @@ impl Cdrom {
         }
     }
 
+    /// The register index selected by writes to 1F801800h.
+    pub fn reg_selector(&self) -> u8 {
+        self.reg_selector
+    }
+
     pub fn read(&mut self, reg: u32) -> u8 {
         match reg & 3 {
             0 => {

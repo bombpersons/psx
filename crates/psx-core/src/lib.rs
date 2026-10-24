@@ -10,6 +10,7 @@ pub mod cdrom;
 pub mod cpu;
 pub mod disasm;
 pub mod dma;
+mod loops;
 pub mod mdec;
 pub mod memcard;
 pub mod observe;
@@ -30,12 +31,51 @@ pub use cpu::{Cpu, StepInfo};
 pub struct Machine {
     pub cpu: Cpu,
     pub bus: Bus,
+    #[serde(skip)]
+    spin: Spin,
+}
+
+/// The last I/O accesses' states, for [`Machine::skip_spin`].
+#[derive(Default)]
+struct Spin {
+    slots: [Option<SpinSlot>; 4],
+    next: usize,
+    /// Wait-loop probes that found nothing in a row, and the run ends to let
+    /// pass before the next (see `Machine::skip_loop`).
+    loop_fails: u32,
+    loop_backoff: u32,
+    trace: Vec<(u32, u32)>,
+    /// The wait loop last found, kept across the events that end its skips.
+    wait: Option<Wait>,
+}
+
+/// A wait loop's pass as [`loops::evaluate`] found it, pass 0 being the one
+/// after the two that ran for real: `regs` and `load` are the CPU's at the
+/// start of each pass.
+struct Wait {
+    pc: u32,
+    next_pc: u32,
+    key: cpu::SpinKey,
+    bus: u64,
+    period: u64,
+    trace: Vec<(u32, u32)>,
+    regs: [loops::Aff; 32],
+    load: (usize, loops::Aff),
+    out: loops::Outcome,
+}
+
+struct SpinSlot {
+    key: cpu::SpinKey,
+    bus: (u8, u64),
+    cycles: u64,
+    steps: u64,
+    breaks: u64,
 }
 
 impl Machine {
     /// Power-on state: CPU at the BIOS reset vector.
     pub fn new(bios: Vec<u8>) -> Self {
-        Machine { cpu: Cpu::new(), bus: Bus::new(bios) }
+        Machine { cpu: Cpu::new(), bus: Bus::new(bios), spin: Spin::default() }
     }
 
     pub fn step(&mut self) -> StepInfo {
@@ -86,34 +126,280 @@ impl Machine {
             return n;
         }
         while n < max_steps && go(self) {
-            self.step_with(&mut ());
-            n += 1;
-            if self.bus.dma.halted {
-                continue;
-            }
             // `go` can only change at an instruction's ending (a frame's end)
             // or with the CPU's clock, which `until_cycle` bounds.
-            self.bus.deadline = self.bus.next_deadline();
-            self.cpu.irq_line = self.bus.irq_line();
-            self.cpu.refresh_int();
-            let limit = self.bus.deadline.min(until_cycle);
-            let start = n;
-            while n < max_steps && self.cpu.cycles < limit {
-                self.cpu.step_unsynced(&mut self.bus);
-                n += 1;
-                if self.cpu.cycles >= self.bus.deadline {
-                    break;
+            if !self.bus.dma.halted {
+                // The run's end is a deadline too (finishing an instruction
+                // there runs no event that is not due).
+                self.bus.deadline = self.bus.next_deadline().min(until_cycle);
+                self.cpu.irq_line = self.bus.irq_line();
+                self.cpu.refresh_int();
+                let start = n;
+                n += self.cpu.run_unsynced(&mut self.bus, max_steps - n);
+                if n > start {
+                    self.cpu.sync(&mut self.bus);
+                    if self.cpu.cycles >= self.bus.deadline {
+                        let io = self.bus.deadline == 0;
+                        self.finish_step();
+                        // Not past the run's end (a frame's end, say).
+                        if !self.bus.dma.halted && !self.bus.log_io && go(self) {
+                            if io {
+                                self.skip_spin(&mut n, max_steps, until_cycle);
+                            } else {
+                                self.skip_loop(&mut n, max_steps, until_cycle);
+                            }
+                        }
+                    }
+                    continue;
                 }
             }
-            if n == start {
-                continue;
-            }
-            self.cpu.sync(&mut self.bus);
-            if self.cpu.cycles >= self.bus.deadline {
-                self.finish_step();
-            }
+            // Held by a DMA, or at an event's time: one step as `step` takes it.
+            self.step_with(&mut ());
+            n += 1;
         }
         n
+    }
+
+    /// After an I/O access, skip a polling loop's passes up to the next
+    /// event. When the CPU's state (times relative to its clock) and the
+    /// CD-ROM index are as at an earlier access, and nothing in between could
+    /// have changed anything else ([`Bus::spin_breaks`]: no events, no
+    /// interrupts, stores, GTE operations, cache fills or I/O but pure reads),
+    /// every pass from here repeats that one exactly, shifted in time, until
+    /// an event. Whole passes ending before the next event are skipped by
+    /// moving the clocks and the step count on.
+    fn skip_spin(&mut self, n: &mut u64, max_steps: u64, until_cycle: u64) {
+        let key = self.cpu.spin_key();
+        let bus = self.bus.spin_key();
+        let (cycles, breaks) = (self.cpu.cycles, self.bus.spin_breaks);
+        let found = self.spin.slots.iter().position(|s| s.as_ref().is_some_and(|s| s.key == key));
+        if let Some(i) = found {
+            let s = self.spin.slots[i].as_mut().unwrap();
+            if s.breaks == breaks && s.bus == bus && cycles > s.cycles {
+                let (period, steps) = (cycles - s.cycles, *n - s.steps);
+                let limit = self.bus.next_deadline().min(until_cycle);
+                let mut k = if limit > cycles { (limit - 1 - cycles) / period } else { 0 };
+                if let Some(m) = (max_steps - *n).checked_div(steps) {
+                    k = k.min(m);
+                }
+                if k > 0 {
+                    self.cpu.skip_cycles(k * period);
+                    self.bus.skip_cycles(k * period);
+                    *n += k * steps;
+                }
+            }
+            s.cycles = self.cpu.cycles;
+            s.steps = *n;
+            s.breaks = breaks;
+            s.bus = bus;
+            return;
+        }
+        self.spin.slots[self.spin.next] = Some(SpinSlot { key, bus, cycles, steps: *n, breaks });
+        self.spin.next = (self.spin.next + 1) % self.spin.slots.len();
+    }
+
+    /// After an event, skip a wait loop's passes up to the next one, when
+    /// they touch only RAM (`crate::loops`): the loop found before, if the
+    /// CPU is still on its course, else one a probe finds. Probes that find
+    /// none back off, up to 64 run ends.
+    fn skip_loop(&mut self, n: &mut u64, max_steps: u64, until_cycle: u64) {
+        if self.spin.wait.is_some() {
+            self.resume_loop(n, max_steps, until_cycle);
+            return;
+        }
+        if self.spin.loop_backoff > 0 {
+            self.spin.loop_backoff -= 1;
+            return;
+        }
+        match self.probe_loop(n, max_steps, until_cycle) {
+            Some(true) => self.spin.loop_fails = 0,
+            Some(false) => {}
+            None => {
+                self.spin.loop_fails = (self.spin.loop_fails + 1).min(6);
+                self.spin.loop_backoff = 1 << self.spin.loop_fails;
+            }
+        }
+    }
+
+    /// Set up a run as `run_steps` does; false when an interrupt is due.
+    fn loop_run_setup(&mut self, until_cycle: u64) -> bool {
+        self.bus.deadline = self.bus.next_deadline().min(until_cycle);
+        self.cpu.irq_line = self.bus.irq_line();
+        self.cpu.refresh_int();
+        !self.cpu.int_pending_cached()
+    }
+
+    /// Step until the CPU is at `pcs` (its PC and next PC) again, at most
+    /// `max` steps, recording them in [`Spin::trace`]: Some(true) there,
+    /// Some(false) when the run ended first (after finishing the step that
+    /// ended it), None when it wasn't back within `max`.
+    fn loop_steps(&mut self, pcs: (u32, u32), max: usize, n: &mut u64, max_steps: u64) -> Option<bool> {
+        let mut r = None;
+        for _ in 0..max {
+            if *n >= max_steps {
+                r = Some(false);
+                break;
+            }
+            let at = self.cpu.pc;
+            self.cpu.step_unsynced(&mut self.bus);
+            *n += 1;
+            self.spin.trace.push((at, self.cpu.last_instr()));
+            if self.cpu.cycles >= self.bus.deadline {
+                self.cpu.sync(&mut self.bus);
+                self.finish_step();
+                return Some(false);
+            }
+            if (self.cpu.pc, self.cpu.next_pc()) == pcs {
+                r = Some(true);
+                break;
+            }
+        }
+        self.cpu.sync(&mut self.bus);
+        r
+    }
+
+    /// What a pass's time depends on in the devices: the DMA's cycle stealing.
+    fn loop_bus_key(&self) -> u64 {
+        self.bus.dma.cycle_steal
+    }
+
+    fn read_mem(&self, addr: u32, w: Width) -> Option<u32> {
+        let a = cpu::segment_mask(addr);
+        if a < 0x0080_0000 {
+            Some(self.bus.read_ram(a, w))
+        } else {
+            bus::scratch_offset(addr).map(|o| self.bus.read_scratch(o, w))
+        }
+    }
+
+    /// Run two passes of the loop the CPU may be in, then skip the passes
+    /// that repeat them. Some(false) when an interrupt is due, None when it
+    /// found no such loop (or the run ended first, at an event, an I/O
+    /// access or the step limit).
+    fn probe_loop(&mut self, n: &mut u64, max_steps: u64, until_cycle: u64) -> Option<bool> {
+        const MAX_PASS: usize = 48;
+        if !self.loop_run_setup(until_cycle) {
+            return Some(false);
+        }
+        // With the cache isolated, stores reach the instruction cache.
+        if self.cpu.cop0[cpu::cop0::SR] & (1 << 16) != 0 {
+            return None;
+        }
+        let pcs = (self.cpu.pc, self.cpu.next_pc());
+        self.spin.trace.clear();
+        let mut snaps = Vec::with_capacity(2);
+        for _ in 0..2 {
+            // A run that ends first counts as no loop found, so that probes
+            // outside loops back off.
+            self.loop_steps(pcs, MAX_PASS, n, max_steps).filter(|&back| back)?;
+            snaps.push((self.cpu.loop_key(), self.loop_bus_key(), self.cpu.regs, self.cpu.load_raw(), self.cpu.cycles));
+        }
+        let trace = std::mem::take(&mut self.spin.trace);
+        let steps = trace.len() / 2;
+        let (a, b) = trace.split_at(steps);
+        let (s1, s2) = (&snaps[0], &snaps[1]);
+        let same = a == b && s1.0 == s2.0 && s1.1 == s2.1 && s2.4 > s1.4;
+        let w = same
+            .then(|| {
+                let regs = std::array::from_fn(|k| loops::Aff { b: s2.2[k], d: s2.2[k].wrapping_sub(s1.2[k]) });
+                let load = (s2.3.0, loops::Aff { b: s2.3.1, d: s2.3.1.wrapping_sub(s1.3.1) });
+                let out = loops::evaluate(b, regs, load, pcs, |a, w| self.read_mem(a, w))?;
+                Some(Wait {
+                    pc: pcs.0,
+                    next_pc: pcs.1,
+                    key: self.cpu.loop_key(),
+                    bus: s2.1,
+                    period: s2.4 - s1.4,
+                    trace: b.to_vec(),
+                    regs,
+                    load,
+                    out,
+                })
+            })
+            .flatten()
+            .filter(|w| w.trace.iter().all(|&(pc, _)| self.cpu.fetches_alike(&self.bus, pc)));
+        self.spin.trace = trace;
+        let w = w?;
+        self.skip_passes(&w, 0, n, max_steps, until_cycle);
+        self.spin.wait = Some(w);
+        Some(true)
+    }
+
+    /// Run to the found loop's start and, if the CPU is there as one of its
+    /// passes would leave it, skip passes again; else forget the loop.
+    fn resume_loop(&mut self, n: &mut u64, max_steps: u64, until_cycle: u64) {
+        if !self.loop_run_setup(until_cycle) {
+            return;
+        }
+        let w = self.spin.wait.take().unwrap();
+        self.spin.trace.clear();
+        match self.loop_steps((w.pc, w.next_pc), w.trace.len(), n, max_steps) {
+            Some(true) => {}
+            Some(false) => {
+                self.spin.wait = Some(w);
+                return;
+            }
+            None => return,
+        }
+        if let Some(j) = self.loop_pass(&w) {
+            self.skip_passes(&w, j, n, max_steps, until_cycle);
+            self.spin.wait = Some(w);
+        }
+    }
+
+    /// The pass of `w` the CPU's state (at the loop's start) is the start
+    /// of, counting from `w`'s pass 0, if it is one.
+    fn loop_pass(&self, w: &Wait) -> Option<u64> {
+        if self.cpu.loop_key() != w.key || self.loop_bus_key() != w.bus {
+            return None;
+        }
+        if !w.trace.iter().all(|&(pc, _)| self.cpu.fetches_alike(&self.bus, pc)) {
+            return None;
+        }
+        let (regs, load) = (&self.cpu.regs, self.cpu.load_raw());
+        let mut stored = Vec::with_capacity(w.out.stores.len());
+        for &(addr, width, _) in &w.out.stores {
+            stored.push(self.read_mem(addr, width)?);
+        }
+        // The pass number, from something that moves by an odd step; 0 when
+        // nothing moves.
+        let moving = (1..32).find(|&r| w.regs[r].d != 0).map(|r| (w.regs[r], regs[r], 0));
+        let moving = moving
+            .or_else(|| (w.load.1.d != 0).then_some((w.load.1, load.1, 0)))
+            .or_else(|| w.out.stores.iter().zip(&stored).find(|(s, _)| s.2.d != 0).map(|(s, &v)| (s.2, v, 1)));
+        let j = match moving {
+            Some((a, v, after)) => loops::pass_of(a, v)?.wrapping_add(after),
+            None => 0,
+        };
+        let on_course = (1..32).all(|r| regs[r] == w.regs[r].at(j))
+            && load.0 == w.load.0
+            && load.1 == w.load.1.at(j)
+            && w.out.stores.iter().zip(&stored).all(|(s, &v)| v == s.2.at(j.wrapping_sub(1)))
+            && w.out.reads.iter().all(|&(addr, width, v)| self.read_mem(addr, width) == Some(v));
+        (on_course && j < w.out.passes).then_some(j)
+    }
+
+    /// Skip passes of `w` from its pass `j` (the CPU at its start), up to
+    /// the next event, the step limit or the last pass that repeats it.
+    fn skip_passes(&mut self, w: &Wait, j: u64, n: &mut u64, max_steps: u64, until_cycle: u64) {
+        let steps = w.trace.len() as u64;
+        let limit = self.bus.next_deadline().min(until_cycle);
+        let cycles = self.cpu.cycles;
+        let k = if limit > cycles { (limit - 1 - cycles) / w.period } else { 0 };
+        let k = k.min(w.out.passes - j).min((max_steps - *n) / steps);
+        if k == 0 {
+            return;
+        }
+        for (r, a) in self.cpu.regs.iter_mut().zip(w.regs).skip(1) {
+            *r = a.at(j + k);
+        }
+        self.cpu.set_load_value(w.load.1.at(j + k));
+        for &(addr, width, v) in &w.out.stores {
+            let _ = self.bus.write(addr, width, v.at(j + k - 1));
+        }
+        self.cpu.skip_cycles(k * w.period);
+        self.bus.skip_cycles(k * w.period);
+        *n += k * steps;
     }
 
     fn observe_bios_call(&mut self) {

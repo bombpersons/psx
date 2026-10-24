@@ -280,6 +280,11 @@ impl Mdec {
     }
 
     /// Run for `clocks` more clocks (Mednafen's `MDEC_Run`).
+    /// Waiting for a command with none queued: running only banks clocks.
+    pub fn idle(&self) -> bool {
+        matches!(self.phase, Phase::Command) && self.input.is_empty()
+    }
+
     pub fn run(&mut self, clocks: i32) {
         self.clock_counter = (self.clock_counter + clocks).min(128);
         loop {

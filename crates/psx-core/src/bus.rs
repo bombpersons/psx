@@ -80,6 +80,9 @@ pub struct Bus {
     /// `GPU_Update`: drawing time, the command FIFO and the video timing).
     gpu_ts: u64,
     gpu_next: u64,
+    /// The GPU event from which idle GPU and DMA updates are being skipped
+    /// (see [`Bus::wake`]); the GPU's next event is then its phase's end.
+    lazy: Option<u64>,
     /// The root counters (Mednafen's `timer.cpp`) and their next event.
     pub timers: crate::timers::Timers,
     timer_next: u64,
@@ -114,6 +117,12 @@ pub struct Bus {
     /// RAM, BIOS and scratchpad, which may have changed any device.
     #[serde(skip)]
     pub(crate) deadline: u64,
+    /// Counts what could make a polling loop's next pass differ from its
+    /// last (see `Machine::skip_spin`): events, interrupts, CPU stores and
+    /// GTE operations, and I/O accesses other than pure reads and the CD-ROM
+    /// index write.
+    #[serde(skip)]
+    pub(crate) spin_breaks: u64,
     pub sio0: crate::sio0::Sio0,
     pub mdec: crate::mdec::Mdec,
     pub spu: crate::spu::Spu,
@@ -169,6 +178,7 @@ impl Bus {
             gpu_irq: false,
             gpu_ts: 0,
             gpu_next: 0,
+            lazy: None,
             timers: Default::default(),
             timer_next: 1024,
             now: 0,
@@ -181,6 +191,7 @@ impl Bus {
             cdrom_irq: false,
             cd_next: 0,
             deadline: 0,
+            spin_breaks: 0,
             sio0: Default::default(),
             mdec: Default::default(),
             spu: Default::default(),
@@ -271,6 +282,7 @@ impl Bus {
 
     pub(crate) fn raise_irq(&mut self, bits: u32) {
         if bits != 0 {
+            self.spin_breaks += 1;
             let v = self.io_word(I_STAT) | bits;
             self.poke_io(I_STAT, Width::Word, v);
         }
@@ -300,6 +312,7 @@ impl Bus {
             self.frame_ended = false;
             self.flush();
             let now = self.now;
+            self.wake(now + 1);
             self.gpu_next = self.gpu_update(now);
             self.cd_update(now);
             self.timer_update(now);
@@ -321,8 +334,14 @@ impl Bus {
             if e > t {
                 break;
             }
+            self.spin_breaks += 1;
             if g == e {
+                if self.lazy.is_some() {
+                    self.wake(g);
+                    continue;
+                }
                 self.gpu_next = self.gpu_update(g);
+                self.maybe_idle(g);
             } else if c == e {
                 self.cd_update(c);
             } else if tm == e {
@@ -361,7 +380,44 @@ impl Bus {
     /// The DMA's next event: the 128-clock grid point after its last update.
     #[inline]
     fn dma_next(&self) -> u64 {
-        self.dma.next_update(self.dma.last)
+        if self.lazy.is_some() { u64::MAX } else { self.dma.next_update(self.dma.last) }
+    }
+
+    /// Mednafen updates the GPU and the DMA at least every 128 clocks. While
+    /// the GPU, DMA and MDEC are idle and timer 0 does not count dots, those
+    /// updates only add saturated drawing time, bank DMA and MDEC clocks and
+    /// advance the video counters within a line phase, which come out the
+    /// same in one update as in many. So after an idle GPU event at `t` they
+    /// are skipped up to the phase's end (still an event), and [`Bus::wake`]
+    /// replays them before anything could tell: an access to the GPU, DMA,
+    /// MDEC or timers.
+    fn maybe_idle(&mut self, t: u64) {
+        if self.gpu_ts == t && self.gpu.idle() && self.dma_idle() && !self.timers.counts_dots() {
+            self.lazy = Some(t);
+            self.gpu_next = t + self.video.clocks_to_phase_end();
+            self.schedule();
+        }
+    }
+
+    /// Replay the skipped updates due before `t` as Mednafen makes them (the
+    /// DMA's at multiples of 128, the GPU's every 128 clocks from the event
+    /// it went idle at) and schedule the next ones again.
+    pub(crate) fn wake(&mut self, t: u64) {
+        let Some(c0) = self.lazy.take() else { return };
+        let phase_end = self.gpu_next;
+        // The phase's end stays an event of its own.
+        let t = t.min(phase_end);
+        let gpu_last = if t > c0 { c0 + (t - 1 - c0) / 128 * 128 } else { c0 };
+        let dma_last = t.saturating_sub(1) / 128 * 128;
+        if gpu_last < dma_last {
+            self.gpu_update(gpu_last);
+        }
+        if dma_last > self.dma.last {
+            self.dma_update(dma_last);
+        }
+        self.gpu_update(gpu_last);
+        self.gpu_next = (gpu_last + 128).min(phase_end);
+        self.schedule();
     }
 
     /// Bring the GPU to `t` (Mednafen's `GPU_Update`): credit drawing time
@@ -453,7 +509,8 @@ impl Bus {
     }
 
     fn schedule(&mut self) {
-        self.next_event = self.dma.next_update(self.now).min(self.gpu_next);
+        self.next_event =
+            if self.lazy.is_some() { self.gpu_next } else { self.dma.next_update(self.now).min(self.gpu_next) };
     }
 
     /// System clocks elapsed including CPU time not yet handed to devices.
@@ -703,9 +760,42 @@ impl Bus {
         self.read_slow(addr, p, width)
     }
 
+    /// Account `cycles` of skipped loop passes (see `Machine::skip_spin`),
+    /// as CPU time handed over like any other.
+    pub(crate) fn skip_cycles(&mut self, cycles: u64) {
+        self.tick(cycles);
+    }
+
+    /// What a polling loop's pass depends on in the devices besides their
+    /// state, which is still between events: the CD-ROM register index and
+    /// the CPU time not yet handed over.
+    pub(crate) fn spin_key(&self) -> (u8, u64) {
+        (self.cdrom.reg_selector(), self.pending)
+    }
+
+    /// Before a write to the GPU, DMA, MDEC or timers: the skipped updates
+    /// due by now, as the events Mednafen runs before an access. Reads see
+    /// nothing the skipped updates would change (the GPU's and MDEC's state
+    /// is idle, the DMA's registers still, and the video's readout line and
+    /// field and timer 1's retrace counts change only at phase ends).
+    #[inline(always)]
+    fn wake_for(&mut self, p: u32) {
+        if self.lazy.is_some() && matches!(p, DMA_BASE..=0x1F80_10FF | 0x1F80_1100..=0x1F80_113F | GP0..=0x1F80_1827) {
+            self.wake(self.time() + 1);
+        }
+    }
+
     #[inline(never)]
     fn read_slow(&mut self, addr: u32, p: u32, width: Width) -> Result<u32, BusError> {
         self.deadline = 0;
+        // Reads that change nothing and return the same until an event:
+        // GPUSTAT, CD-ROM status and interrupt flags, the interrupt and DMA
+        // registers.
+        if !matches!(p, 0x1F80_1814..=0x1F80_1817 | I_STAT..=0x1F80_10FF)
+            && !(matches!(p, 0x1F80_1800..=0x1F80_180F) && matches!(p & 3, 0 | 3))
+        {
+            self.spin_breaks += 1;
+        }
         if (0x1F80_1000..0x1F80_3000).contains(&p) {
             self.flush();
         }
@@ -829,6 +919,12 @@ impl Bus {
     #[inline(never)]
     fn write_slow(&mut self, addr: u32, p: u32, width: Width, value: u32) -> Result<(), BusError> {
         self.deadline = 0;
+        // The CD-ROM index write only selects a register (the value is in
+        // the polling loop's key).
+        if !(matches!(p, 0x1F80_1800..=0x1F80_180F) && p & 3 == 0) {
+            self.spin_breaks += 1;
+        }
+        self.wake_for(p);
         if (0x1F80_1000..0x1F80_3000).contains(&p) {
             self.flush();
             if (I_STAT..I_MASK + 4).contains(&p) {

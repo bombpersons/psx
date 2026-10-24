@@ -409,7 +409,7 @@ impl Tri {
         &self,
         ras: &Raster,
         span: impl Fn(i32) -> i32,
-        mut texel: Option<&mut dyn FnMut(u32, u32) -> i32>,
+        mut texel: Option<impl FnMut(u32, u32) -> i32>,
     ) -> i32 {
         let mut t = 0;
         let (du, dv) = (self.dx[3], self.dx[4]);

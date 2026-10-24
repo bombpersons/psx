@@ -1034,6 +1034,44 @@ Faster needed structural changes, which followed. Each step below kept the bench
 
 What remains is spread thin: operand decode (~28 host instructions per guest instruction), fetch, the timing bookkeeping and loop control at 5–15 each. `Spu::sample` is 10%, spread over the Gaussian interpolation, envelope and decoder.
 
+#### Fifth pass: skipping what nothing can see
+
+Mednafen runs the bench (`psx-oracle run ... --frames 6000`) in 18.9 s, 318 fps. Its 1500-frame window is 16.3G host cycles. Each step below kept the bench's screen and RAM hashes, and the suite matches in lockstep:
+
+| Change | 1500-frame cycles | Bench fps |
+|---|---|---|
+| Fourth pass | 24.0G | 216 |
+| No slow step at each run's end; DMA idle early-out | 22.4G | — |
+| Idle GPU/DMA updates skipped (`Bus::lazy`), replayed before writes | 21.0G | — |
+| Polling loops fast-forwarded at I/O (`Machine::skip_spin`) | 19.7G | 230 |
+| Run limit folded into the deadline; decode fields read where used | 17.05G | 254 |
+| The instruction loop a function of its own (`Cpu::run_unsynced`) | 16.6G | 263 |
+| Wait loops on RAM fast-forwarded (`crate::loops`) | 13.9G | 302 |
+| Timers schedule no event when no counter can interrupt | 13.6G | 307 |
+
+- **Lazy idle ticks:** Mednafen updates the GPU and DMA at least every 128 clocks. While the GPU's FIFO is empty and its drawing time full, every DMA channel and the MDEC are idle and timer 0 doesn't count dots, those updates only bank clocks. After such a GPU event they are skipped to the line phase's end. `Bus::wake` replays them, at the times Mednafen makes them, before any write to the GPU, DMA, MDEC or timers and at a frame's end. Reads see nothing the skipped updates would change.
+- **Polling loops (`skip_spin`):** at each run end caused by an I/O access, the CPU's state (times relative to its clock), the CD-ROM register index and a count of everything that could change what the next pass sees are compared with earlier run ends. That count covers events, interrupts, impure I/O reads, I/O writes, RAM stores, COP2, SWL/SWR and icache fills. When they match, whole passes are skipped up to the next event.
+- **Wait loops (`crate::loops`):** the profile (`psx run --profile`) shows Tomb Raider spends 52% of its guest cycles in PsyQ's `VSync`, which polls a RAM counter the vblank interrupt bumps while counting a timeout down on the stack. Every pass stores, so `skip_spin` never fires.
+  - **Detection:** after an event, two passes run for real. If they took the same path and time, `loops::evaluate` runs the pass on values `base + j·step`: registers and stored words move by constant steps, and RAM only read stays still, since only the CPU writes RAM between events. It handles linear ALU ops, compares and branches, and RAM or scratchpad accesses at fixed addresses, with the load delay as `Cpu::execute` has it. Anything else gives up: mult/div, COP, non-linear ops on moving values, wrapping compares.
+  - **Skip:** each compare and branch bounds how many passes keep their outcome, and those passes are applied at once. They end before the next event, the step limit or the run's end.
+  - **Across events:** the loop is kept. After each event the CPU runs to the loop's start, and the skip resumes if its state, its icache lines and the RAM it reads are exactly where pass `j` would leave them. Probes that find no loop back off up to 64 run ends.
+  - **Time accounting:** skipped time is handed to the bus as ordinary CPU time (`Bus::tick`), so save states equal a straight run's.
+- **Timers:** Mednafen's `CalcNextEvent` caps the timers' next event at 1024 clocks. Splitting a counter's clocking changes nothing (target, overflow, prescaler and repeat-mode logic come out the same), so with no counter able to interrupt there is no timer event. This cuts a third of the events during the wait loops.
+- **Texture-cache timing:** `Tri::time` takes its texel closure by value (it was `&mut dyn FnMut`). A texel in the same cache block as the last one is a hit without a tag lookup.
+- **Tried and not kept:**
+  - skipping inaudible SPU voices (fewer instructions, no fewer cycles);
+  - constant-divisor video divisions;
+  - a branchy early-out in `retire_timing`;
+  - counting timer-counter reads as pure.
+
+The bench's remaining profile:
+- **CPU:** `run_unsynced` 32%.
+- **SPU:** `Spu::sample` 12%, a faithful per-sample port that costs about what Mednafen's does.
+- **GPU:** the textured-triangle rows 11%, plus `Tri::time` 4%.
+- **Wait-loop bookkeeping:** each event during a wait still costs a partial pass and a check, about 10% together.
+
+On the 1500-frame window the core is now faster than Mednafen (13.6G against 16.3G cycles). Over the whole bench it's within 4% (19.5 s against 18.9 s).
+
 ### Debugging trail: from a kernel overwrite to playing FMVs
 
 This trail shows the toolkit's method on a real bug. Every step used `psx` tools with evidence from both emulators.

@@ -198,8 +198,29 @@ impl Bus {
         v
     }
 
+    /// No channel moving or armed and the MDEC idle: a DMA update then only
+    /// banks clocks, the same however the time is split.
+    pub(crate) fn dma_idle(&self) -> bool {
+        [0, 1, 2, 3, 4, 6].iter().all(|&ch| {
+            let c = &self.dma.ch[ch];
+            c.word_counter == 0 && c.chan_control & (1 << 24) == 0
+        }) && self.mdec.idle()
+    }
+
     /// Advance channel `ch` by `clocks` (Mednafen's `RunChannelI`).
+    #[inline(always)]
     fn dma_run_channel(&mut self, ch: usize, clocks: i32) {
+        // Idle (the common case): the loop below would only bank the clocks.
+        let c = &mut self.dma.ch[ch];
+        if c.word_counter == 0 && c.chan_control & (1 << 24) == 0 {
+            c.clock_counter = (c.clock_counter + clocks).min(0);
+            return;
+        }
+        self.dma_run_channel_busy(ch, clocks);
+    }
+
+    #[inline(never)]
+    fn dma_run_channel_busy(&mut self, ch: usize, clocks: i32) {
         let mode = self.dma.ch[ch].chan_control & !(0x11 << 24);
         self.dma.ch[ch].clock_counter += clocks;
         while self.dma.ch[ch].clock_counter > 0 {

@@ -46,9 +46,11 @@ impl Timers {
     }
 
     /// Clocks until a counter clocked by the system clock could interrupt
-    /// (Mednafen's `CalcNextEvent`), at most 1024.
+    /// (Mednafen's `CalcNextEvent`). Mednafen also caps it at 1024; the
+    /// extra updates change nothing (a counter's clocks can be split
+    /// anywhere), so here there is no event when none could interrupt.
     fn next_event(&self) -> u64 {
-        let mut next = 1024u32;
+        let mut next = u32::MAX;
         for (i, t) in self.t.iter().enumerate() {
             if t.mode & 0x30 == 0 {
                 continue;
@@ -186,6 +188,11 @@ impl Timers {
             }
         }
         self.hretrace = status;
+    }
+
+    /// Timer 0 counts the GPU's dot clock (which arrives with the GPU's updates).
+    pub fn counts_dots(&self) -> bool {
+        self.t[0].mode & 0x100 != 0
     }
 
     pub fn add_dot_clocks(&mut self, n: u32) {

@@ -130,6 +130,24 @@ pub struct Cpu {
     t: Timing,
 }
 
+/// [`Cpu::spin_key`].
+#[derive(PartialEq)]
+pub(crate) struct SpinKey {
+    regs: [u32; 32],
+    hi: u32,
+    lo: u32,
+    pc: u32,
+    next_pc: u32,
+    load: (usize, u32),
+    bd: u8,
+    cop0: [u32; 32],
+    absorb: [u8; 33],
+    timing: [u8; 3],
+    ld_absorb: u32,
+    waits: [u64; 2],
+    int: (bool, bool),
+}
+
 /// [`Cpu::bd`]'s bits.
 mod bd {
     pub const BRANCH: u8 = 1;
@@ -177,7 +195,7 @@ impl Default for Timing {
 
 /// Mednafen's `addr_mask`: KSEG0 and KSEG1 lose their segment bits.
 #[inline(always)]
-fn segment_mask(a: u32) -> u32 {
+pub(crate) fn segment_mask(a: u32) -> u32 {
     const MASK: [u32; 8] = [!0, !0, !0, !0, 0x7FFF_FFFF, 0x1FFF_FFFF, !0, !0];
     a & MASK[(a >> 29) as usize]
 }
@@ -330,6 +348,20 @@ impl Cpu {
         self.step_inner::<(), false>(bus, &mut ());
     }
 
+    /// [`Cpu::step_unsynced`] until the CPU's clock reaches [`Bus::deadline`]
+    /// (which an access outside RAM, BIOS and scratchpad clears), at most
+    /// `max_steps` times; returns the steps taken. A function of its own, so
+    /// the hot loop is compiled apart from the event handling around it.
+    #[inline(never)]
+    pub(crate) fn run_unsynced(&mut self, bus: &mut Bus, max_steps: u64) -> u64 {
+        let mut n = 0;
+        while n < max_steps && self.cycles < bus.deadline {
+            self.step_unsynced(bus);
+            n += 1;
+        }
+        n
+    }
+
     /// A cycle per instruction, unless a load's latency absorbs it.
     #[inline(always)]
     fn issue_cycle(&mut self) {
@@ -433,6 +465,7 @@ impl Cpu {
             self.cycles += 4;
             return bus.read(pc, Width::Word);
         }
+        bus.spin_breaks += 1;
         let line = pc & !0xF;
         for w in 0..4 {
             self.t.icache[(i & !3) + w].0 = line | (w as u32) << 2 | 2;
@@ -680,6 +713,7 @@ impl Cpu {
     ) -> Result<(), Exception> {
         // RAM, the common case, inline (with the cache not isolated).
         if segment_mask(addr) < 0x0080_0000 && addr & (w as u32 - 1) == 0 && self.cop0[cop0::SR] & (1 << 16) == 0 {
+            bus.spin_breaks += 1;
             info.mem(MemAccess { addr, value, width: w as u8, store: true });
             return bus.write(addr, w, value).map_err(|_| {
                 self.exception(Exception::DataBusError, pc);
@@ -699,6 +733,10 @@ impl Cpu {
         pc: u32,
         info: &mut impl StepSink,
     ) -> Result<(), Exception> {
+        // I/O stores count in `Bus::write_slow` (some are pure).
+        if !Bus::is_io(addr) {
+            bus.spin_breaks += 1;
+        }
         // Widths are 1, 2 or 4: a mask test (is_multiple_of compiles to a divide here).
         if addr & (w as u32 - 1) != 0 {
             self.cop0[cop0::BADVADDR] = addr;
@@ -737,45 +775,62 @@ impl Cpu {
         let op = i >> 26;
         let rs = ((i >> 21) & 31) as usize;
         let rt = ((i >> 16) & 31) as usize;
-        let rd = ((i >> 11) & 31) as usize;
-        let shamt = (i >> 6) & 31;
-        let imm = i & 0xFFFF;
-        let simm = sext16(imm);
+        // Decoded where used, not for every instruction.
+        macro_rules! rd {
+            () => {
+                ((i >> 11) & 31) as usize
+            };
+        }
+        macro_rules! shamt {
+            () => {
+                (i >> 6) & 31
+            };
+        }
+        macro_rules! imm {
+            () => {
+                i & 0xFFFF
+            };
+        }
+        macro_rules! simm {
+            () => {
+                sext16(i & 0xFFFF)
+            };
+        }
         let s = self.regs[rs];
         let t = self.regs[rt];
         match op {
             0x00 => match i & 0x3F {
                 0x00 => {
-                    self.issue([rt, rd]);
-                    self.set_reg(rd, t << shamt)
+                    self.issue([rt, rd!()]);
+                    self.set_reg(rd!(), t << shamt!())
                 }
                 0x02 => {
-                    self.issue([rt, rd]);
-                    self.set_reg(rd, t >> shamt)
+                    self.issue([rt, rd!()]);
+                    self.set_reg(rd!(), t >> shamt!())
                 }
                 0x03 => {
-                    self.issue([rt, rd]);
-                    self.set_reg(rd, ((t as i32) >> shamt) as u32)
+                    self.issue([rt, rd!()]);
+                    self.set_reg(rd!(), ((t as i32) >> shamt!()) as u32)
                 }
                 0x04 => {
-                    self.issue([rs, rt, rd]);
-                    self.set_reg(rd, t << (s & 31))
+                    self.issue([rs, rt, rd!()]);
+                    self.set_reg(rd!(), t << (s & 31))
                 }
                 0x06 => {
-                    self.issue([rs, rt, rd]);
-                    self.set_reg(rd, t >> (s & 31))
+                    self.issue([rs, rt, rd!()]);
+                    self.set_reg(rd!(), t >> (s & 31))
                 }
                 0x07 => {
-                    self.issue([rs, rt, rd]);
-                    self.set_reg(rd, ((t as i32) >> (s & 31)) as u32)
+                    self.issue([rs, rt, rd!()]);
+                    self.set_reg(rd!(), ((t as i32) >> (s & 31)) as u32)
                 }
                 0x08 => {
-                    self.issue([rs, rd]);
+                    self.issue([rs, rd!()]);
                     self.branch_to(s)
                 }
                 0x09 => {
-                    self.issue([rs, rd]);
-                    self.set_reg(rd, self.next_pc);
+                    self.issue([rs, rd!()]);
+                    self.set_reg(rd!(), self.next_pc);
                     self.branch_to(s);
                 }
                 0x0C => {
@@ -787,18 +842,18 @@ impl Cpu {
                     return self.fail(Exception::Break, pc);
                 }
                 0x10 => {
-                    self.issue([rd]);
+                    self.issue([rd!()]);
                     self.muldiv_wait();
-                    self.set_reg(rd, self.hi)
+                    self.set_reg(rd!(), self.hi)
                 }
                 0x11 => {
                     self.issue([rs]);
                     self.hi = s
                 }
                 0x12 => {
-                    self.issue([rd]);
+                    self.issue([rd!()]);
                     self.muldiv_wait();
-                    self.set_reg(rd, self.lo)
+                    self.set_reg(rd!(), self.lo)
                 }
                 0x13 => {
                     self.issue([rs]);
@@ -846,50 +901,50 @@ impl Cpu {
                     }
                 }
                 0x20 => {
-                    self.issue([rs, rt, rd]);
+                    self.issue([rs, rt, rd!()]);
                     match (s as i32).checked_add(t as i32) {
-                        Some(v) => self.set_reg(rd, v as u32),
+                        Some(v) => self.set_reg(rd!(), v as u32),
                         None => return self.fail(Exception::Overflow, pc),
                     }
                 }
                 0x21 => {
-                    self.issue([rs, rt, rd]);
-                    self.set_reg(rd, s.wrapping_add(t))
+                    self.issue([rs, rt, rd!()]);
+                    self.set_reg(rd!(), s.wrapping_add(t))
                 }
                 0x22 => {
-                    self.issue([rs, rt, rd]);
+                    self.issue([rs, rt, rd!()]);
                     match (s as i32).checked_sub(t as i32) {
-                        Some(v) => self.set_reg(rd, v as u32),
+                        Some(v) => self.set_reg(rd!(), v as u32),
                         None => return self.fail(Exception::Overflow, pc),
                     }
                 }
                 0x23 => {
-                    self.issue([rs, rt, rd]);
-                    self.set_reg(rd, s.wrapping_sub(t))
+                    self.issue([rs, rt, rd!()]);
+                    self.set_reg(rd!(), s.wrapping_sub(t))
                 }
                 0x24 => {
-                    self.issue([rs, rt, rd]);
-                    self.set_reg(rd, s & t)
+                    self.issue([rs, rt, rd!()]);
+                    self.set_reg(rd!(), s & t)
                 }
                 0x25 => {
-                    self.issue([rs, rt, rd]);
-                    self.set_reg(rd, s | t)
+                    self.issue([rs, rt, rd!()]);
+                    self.set_reg(rd!(), s | t)
                 }
                 0x26 => {
-                    self.issue([rs, rt, rd]);
-                    self.set_reg(rd, s ^ t)
+                    self.issue([rs, rt, rd!()]);
+                    self.set_reg(rd!(), s ^ t)
                 }
                 0x27 => {
-                    self.issue([rs, rt, rd]);
-                    self.set_reg(rd, !(s | t))
+                    self.issue([rs, rt, rd!()]);
+                    self.set_reg(rd!(), !(s | t))
                 }
                 0x2A => {
-                    self.issue([rs, rt, rd]);
-                    self.set_reg(rd, ((s as i32) < (t as i32)) as u32)
+                    self.issue([rs, rt, rd!()]);
+                    self.set_reg(rd!(), ((s as i32) < (t as i32)) as u32)
                 }
                 0x2B => {
-                    self.issue([rs, rt, rd]);
-                    self.set_reg(rd, (s < t) as u32)
+                    self.issue([rs, rt, rd!()]);
+                    self.set_reg(rd!(), (s < t) as u32)
                 }
                 _ => {
                     self.retire_timing();
@@ -905,7 +960,7 @@ impl Cpu {
                 if link {
                     self.set_reg(31, self.next_pc);
                 }
-                self.cond_branch(taken, imm);
+                self.cond_branch(taken, imm!());
             }
             0x02 => {
                 self.issue([]);
@@ -918,58 +973,58 @@ impl Cpu {
             }
             0x04 => {
                 self.issue([rs, rt]);
-                self.cond_branch(s == t, imm)
+                self.cond_branch(s == t, imm!())
             }
             0x05 => {
                 self.issue([rs, rt]);
-                self.cond_branch(s != t, imm)
+                self.cond_branch(s != t, imm!())
             }
             0x06 => {
                 self.issue([rs]);
-                self.cond_branch((s as i32) <= 0, imm)
+                self.cond_branch((s as i32) <= 0, imm!())
             }
             0x07 => {
                 self.issue([rs]);
-                self.cond_branch((s as i32) > 0, imm)
+                self.cond_branch((s as i32) > 0, imm!())
             }
             0x08 => {
                 self.issue([rs, rt]);
-                match (s as i32).checked_add(simm as i32) {
+                match (s as i32).checked_add(simm!() as i32) {
                     Some(v) => self.set_reg(rt, v as u32),
                     None => return self.fail(Exception::Overflow, pc),
                 }
             }
             0x09 => {
                 self.issue([rs, rt]);
-                self.set_reg(rt, s.wrapping_add(simm))
+                self.set_reg(rt, s.wrapping_add(simm!()))
             }
             0x0A => {
                 self.issue([rs, rt]);
-                self.set_reg(rt, ((s as i32) < (simm as i32)) as u32)
+                self.set_reg(rt, ((s as i32) < (simm!() as i32)) as u32)
             }
             0x0B => {
                 self.issue([rs, rt]);
-                self.set_reg(rt, (s < simm) as u32)
+                self.set_reg(rt, (s < simm!()) as u32)
             }
             0x0C => {
                 self.issue([rs, rt]);
-                self.set_reg(rt, s & imm)
+                self.set_reg(rt, s & imm!())
             }
             0x0D => {
                 self.issue([rs, rt]);
-                self.set_reg(rt, s | imm)
+                self.set_reg(rt, s | imm!())
             }
             0x0E => {
                 self.issue([rs, rt]);
-                self.set_reg(rt, s ^ imm)
+                self.set_reg(rt, s ^ imm!())
             }
             0x0F => {
                 self.issue([rt]);
-                self.set_reg(rt, imm << 16)
+                self.set_reg(rt, imm!() << 16)
             }
             0x10 => {
                 // MFC0 of these registers loads like a memory read.
-                if rs == 0 && matches!(rd, 3 | 5..=9 | 0x0B..=0x0F) {
+                if rs == 0 && matches!(rd!(), 3 | 5..=9 | 0x0B..=0x0F) {
                     self.cancel_then_retire(rt as u8);
                 } else {
                     self.retire_timing();
@@ -983,6 +1038,7 @@ impl Cpu {
             }
             0x12 => {
                 // MFC2/CFC2 load (when COP2 is usable).
+                bus.spin_breaks += 1;
                 let loads = self.cop0[cop0::SR] & (1 << 30) != 0 && matches!(rs, 0 | 2);
                 if loads {
                     self.cancel_then_retire(rt as u8);
@@ -993,14 +1049,18 @@ impl Cpu {
                 self.cop2_op(i, pc, t)?
             }
             // Each with its width as a constant.
-            0x20 => self.load_op(bus, s.wrapping_add(simm), Width::Byte, pc, info, rs, rt, |v| v as u8 as i8 as u32)?,
-            0x21 => self.load_op(bus, s.wrapping_add(simm), Width::Half, pc, info, rs, rt, |v| v as u16 as i16 as u32)?,
-            0x23 => self.load_op(bus, s.wrapping_add(simm), Width::Word, pc, info, rs, rt, |v| v)?,
-            0x24 => self.load_op(bus, s.wrapping_add(simm), Width::Byte, pc, info, rs, rt, |v| v)?,
-            0x25 => self.load_op(bus, s.wrapping_add(simm), Width::Half, pc, info, rs, rt, |v| v)?,
+            0x20 => {
+                self.load_op(bus, s.wrapping_add(simm!()), Width::Byte, pc, info, rs, rt, |v| v as u8 as i8 as u32)?
+            }
+            0x21 => {
+                self.load_op(bus, s.wrapping_add(simm!()), Width::Half, pc, info, rs, rt, |v| v as u16 as i16 as u32)?
+            }
+            0x23 => self.load_op(bus, s.wrapping_add(simm!()), Width::Word, pc, info, rs, rt, |v| v)?,
+            0x24 => self.load_op(bus, s.wrapping_add(simm!()), Width::Byte, pc, info, rs, rt, |v| v)?,
+            0x25 => self.load_op(bus, s.wrapping_add(simm!()), Width::Half, pc, info, rs, rt, |v| v)?,
             0x22 | 0x26 => {
                 // LWL/LWR merge with the in-flight value of rt (bypassing the load delay).
-                let addr = s.wrapping_add(simm);
+                let addr = s.wrapping_add(simm!());
                 self.deps([rs]);
                 // LWL/LWR into the register in flight merge with it instead.
                 if self.t.ld_which == rt as u8 {
@@ -1027,19 +1087,20 @@ impl Cpu {
             }
             0x28 => {
                 self.issue([rs, rt]);
-                self.store_mem(bus, s.wrapping_add(simm), Width::Byte, t, pc, info)?
+                self.store_mem(bus, s.wrapping_add(simm!()), Width::Byte, t, pc, info)?
             }
             0x29 => {
                 self.issue([rs, rt]);
-                self.store_mem(bus, s.wrapping_add(simm), Width::Half, t, pc, info)?
+                self.store_mem(bus, s.wrapping_add(simm!()), Width::Half, t, pc, info)?
             }
             0x2B => {
                 self.issue([rs, rt]);
-                self.store_mem(bus, s.wrapping_add(simm), Width::Word, t, pc, info)?
+                self.store_mem(bus, s.wrapping_add(simm!()), Width::Word, t, pc, info)?
             }
             0x2A | 0x2E => {
+                bus.spin_breaks += 1;
                 self.issue([rs, rt]);
-                let addr = s.wrapping_add(simm);
+                let addr = s.wrapping_add(simm!());
                 let aligned_addr = addr & !3;
                 if self.cop0[cop0::SR] & (1 << 16) != 0 {
                     // Mednafen stores the 1-4 bytes the instruction covers.
@@ -1061,8 +1122,9 @@ impl Cpu {
                 self.store_mem(bus, aligned_addr, Width::Word, v, pc, info)?;
             }
             0x32 => {
+                bus.spin_breaks += 1;
                 self.issue([]);
-                let addr = s.wrapping_add(simm);
+                let addr = s.wrapping_add(simm!());
                 if addr & 3 == 0 {
                     self.gte_wait();
                 }
@@ -1071,7 +1133,7 @@ impl Cpu {
             }
             0x3A => {
                 self.issue([]);
-                let addr = s.wrapping_add(simm);
+                let addr = s.wrapping_add(simm!());
                 if addr & 3 == 0 {
                     self.gte_wait();
                 }
@@ -1179,6 +1241,73 @@ impl Cpu {
             _ => return self.fail(Exception::ReservedInstruction, pc),
         }
         Ok(())
+    }
+
+    /// What a polling loop's pass depends on in the CPU, with times relative
+    /// to its clock (see `Machine::skip_spin`).
+    pub(crate) fn spin_key(&self) -> SpinKey {
+        let t = &self.t;
+        SpinKey {
+            regs: self.regs,
+            hi: self.hi,
+            lo: self.lo,
+            pc: self.pc,
+            next_pc: self.next_pc,
+            load: self.load,
+            bd: self.bd,
+            cop0: self.cop0,
+            absorb: t.read_absorb[..33].try_into().unwrap(),
+            timing: [t.read_absorb_which, t.read_fudge, t.ld_which],
+            ld_absorb: t.ld_absorb,
+            waits: [t.gte_done.saturating_sub(self.cycles), t.muldiv_done.saturating_sub(self.cycles)],
+            int: (self.int_pending, self.irq_line),
+        }
+    }
+
+    /// [`Cpu::spin_key`] without the registers and the value of the load in
+    /// flight, which a wait loop's passes step (see `crate::loops`).
+    pub(crate) fn loop_key(&self) -> SpinKey {
+        let mut k = self.spin_key();
+        k.regs = [0; 32];
+        k.load.1 = 0;
+        k
+    }
+
+    /// Whether fetching `pc` now takes the time it took the last time: it
+    /// hits the instruction cache, or bypasses it.
+    pub(crate) fn fetches_alike(&self, bus: &Bus, pc: u32) -> bool {
+        let enabled = bus.cache_control & 0x800 != 0;
+        pc >= 0xA000_0000 || !enabled || self.t.icache[(pc as usize & 0xFFC) >> 2].0 == pc
+    }
+
+    /// The load in flight as it is held (its value stays after it lands).
+    pub(crate) fn load_raw(&self) -> (usize, u32) {
+        self.load
+    }
+
+    pub(crate) fn set_load_value(&mut self, v: u32) {
+        self.load.1 = v;
+    }
+
+    /// The instruction the last step ran.
+    pub(crate) fn last_instr(&self) -> u32 {
+        self.instr
+    }
+
+    pub(crate) fn int_pending_cached(&self) -> bool {
+        self.int_pending
+    }
+
+    /// Move the CPU's clock on by `cycles` of passes that changed nothing else.
+    pub(crate) fn skip_cycles(&mut self, cycles: u64) {
+        self.cycles += cycles;
+        // Waits already over stay over; pending ones are equal in every pass.
+        if self.t.gte_done > self.cycles - cycles {
+            self.t.gte_done += cycles;
+        }
+        if self.t.muldiv_done > self.cycles - cycles {
+            self.t.muldiv_done += cycles;
+        }
     }
 
     /// The delayed load in flight `(register, value)`; register 0 is none.
