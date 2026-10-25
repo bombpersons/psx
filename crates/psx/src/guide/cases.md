@@ -58,8 +58,9 @@ timing and coverage (an until's rows resolved again).
 same is exact; otherwise the first differing cells are listed. Run it after
 a psx update or a map change; write=true replaces the cases that differ.
 A key this psx writes that a case lacks (timing, in a case from an older
-psx) is listed in case_keys_to_add, not a difference; write=true adds it.
-Writing keeps keys added to a case by hand.
+psx) is listed in case_keys_to_add, not a difference; write=true adds it
+at the end of the case's JSON and leaves the rest of its files as they
+were. Writing a case that differs keeps keys added to it by hand.
 A case record over an existing case needs replace=true.
 
 Start states: take them where the behaviour starts (a handoff's mark, a

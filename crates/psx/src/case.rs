@@ -269,8 +269,15 @@ fn coverage(t: &Table, specs: &[String], compared: &[String]) -> Result<Value, S
 /// JSON as serde's pretty printer writes it, but with arrays of plain
 /// values (numbers, names, null) on one line, so long vectors stay short.
 fn pretty(v: &Value) -> String {
-    fn go(v: &Value, indent: usize, out: &mut String) {
-        let pad = "  ".repeat(indent + 1);
+    let mut s = String::new();
+    write_json(v, "  ", 0, &mut s);
+    s + "\n"
+}
+
+/// `pretty`'s writer, indenting by `unit`, starting `indent` levels in.
+fn write_json(v: &Value, unit: &str, indent: usize, out: &mut String) {
+    fn go(v: &Value, unit: &str, indent: usize, out: &mut String) {
+        let pad = unit.repeat(indent + 1);
         match v {
             Value::Array(a) if a.iter().all(|x| !x.is_array() && !x.is_object()) => {
                 *out += &serde_json::to_string(v).unwrap_or_default().replace(',', ", ");
@@ -279,26 +286,53 @@ fn pretty(v: &Value) -> String {
                 out.push_str("[\n");
                 for (i, x) in a.iter().enumerate() {
                     out.push_str(&pad);
-                    go(x, indent + 1, out);
+                    go(x, unit, indent + 1, out);
                     out.push_str(if i + 1 < a.len() { ",\n" } else { "\n" });
                 }
-                *out += &format!("{}]", "  ".repeat(indent));
+                *out += &format!("{}]", unit.repeat(indent));
             }
             Value::Object(m) if !m.is_empty() => {
                 out.push_str("{\n");
                 for (i, (k, x)) in m.iter().enumerate() {
                     *out += &format!("{pad}{}: ", Value::String(k.clone()));
-                    go(x, indent + 1, out);
+                    go(x, unit, indent + 1, out);
                     out.push_str(if i + 1 < m.len() { ",\n" } else { "\n" });
                 }
-                *out += &format!("{}}}", "  ".repeat(indent));
+                *out += &format!("{}}}", unit.repeat(indent));
             }
             _ => *out += &serde_json::to_string(v).unwrap_or_default(),
         }
     }
-    let mut s = String::new();
-    go(v, 0, &mut s);
-    s + "\n"
+    go(v, unit, indent, out)
+}
+
+/// A case file's text with keys added at its end, in the file's own indent
+/// and key order, the rest of the text as it was.
+fn add_keys(text: &str, keys: &[(&str, &Value)]) -> Option<String> {
+    let end = text.rfind('}')?;
+    let body = text[..end].trim_end();
+    // The indent of the first key, or two spaces.
+    let unit = text
+        .lines()
+        .nth(1)
+        .map(|l| &l[..l.len() - l.trim_start().len()])
+        .filter(|u| !u.is_empty() && body.contains('"'))
+        .unwrap_or("  ");
+    let mut out = body.to_string();
+    for (i, (k, v)) in keys.iter().enumerate() {
+        out += if i == 0 && !body.ends_with('{') {
+            ",\n"
+        } else if i == 0 {
+            "\n"
+        } else {
+            ",\n"
+        };
+        out += &format!("{unit}{}: ", Value::String(k.to_string()));
+        write_json(v, unit, 1, &mut out);
+    }
+    out.push('\n');
+    out += &text[end..];
+    Some(out)
 }
 
 /// The case keys record writes; save keeps any others a case already has.
@@ -605,8 +639,18 @@ impl Op for CaseCheckArgs {
                     if !added.is_empty() {
                         d["case_keys_to_add"] = json!(added);
                     }
-                    if self.write && (d["same"] != true || !added.is_empty()) {
+                    if self.write && d["same"] != true {
                         d["written"] = save(&r, name, &cases, &recipes)?;
+                    } else if self.write && !added.is_empty() {
+                        // The cells match: add the keys and leave the files
+                        // as they are otherwise.
+                        let path = cases.join(format!("{name}.json"));
+                        let text = String::from_utf8_lossy(&read(&path)?).into_owned();
+                        let new: Vec<(&str, &Value)> = added.iter().map(|k| (*k, &r.case[*k])).collect();
+                        let out = add_keys(&text, &new)
+                            .ok_or_else(|| Error::malformed(format!("case {name}: not a JSON object")))?;
+                        write(&path, out.as_bytes())?;
+                        d["written"] = json!({"case": path, "added": added});
                     }
                     Ok(d)
                 };
@@ -634,7 +678,7 @@ impl Op for CaseCheckArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::{Table, coverage, differences, pretty, timing};
+    use super::{Table, add_keys, coverage, differences, pretty, timing};
     use serde_json::json;
 
     #[test]
@@ -671,6 +715,23 @@ mod tests {
         assert!(err("S:x:0..until state=9").contains("never holds"));
         assert!(err("S:x:0..9").contains("not within"));
         assert!(err("S").contains("SPEC:COLUMNS"));
+    }
+
+    #[test]
+    fn added_keys_keep_the_files_layout() {
+        let text = "{\n \"id\": \"a\",\n \"input\": [\n  {\n   \"frame\": 0\n  }\n ]\n}";
+        let t = json!({"ticks_run": [0, 1], "rule": "r"});
+        let out = add_keys(text, &[("timing", &t)]).unwrap();
+        assert_eq!(
+            out,
+            "{\n \"id\": \"a\",\n \"input\": [\n  {\n   \"frame\": 0\n  }\n ],\n \"timing\": {\n  \"rule\": \"r\",\n  \"ticks_run\": [0, 1]\n }\n}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!((v["id"].clone(), v["timing"].clone()), (json!("a"), t.clone()));
+        assert_eq!(
+            add_keys("{}\n", &[("timing", &t)]).unwrap(),
+            "{\n  \"timing\": {\n    \"rule\": \"r\",\n    \"ticks_run\": [0, 1]\n  }\n}\n"
+        );
     }
 
     #[test]
