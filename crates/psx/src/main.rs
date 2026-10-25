@@ -35,6 +35,7 @@ mod replay;
 mod run;
 mod run_native;
 mod stall;
+mod states;
 mod str_cmd;
 mod symbols_io;
 mod template;
@@ -126,6 +127,11 @@ enum Command {
         #[command(subcommand)]
         action: CaseAction,
     },
+    /// Named start states, each with its chain of runs from power-on.
+    States {
+        #[command(subcommand)]
+        action: StatesAction,
+    },
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
     Loads(provenance::LoadsArgs),
@@ -170,6 +176,18 @@ enum TemplateAction {
 }
 
 #[derive(Subcommand)]
+enum StatesAction {
+    /// Run from a named state (or power-on) and name the state it ends in.
+    Make(Box<states::StatesMakeArgs>),
+    /// Name a state an earlier run or handoff made; its chain comes from the runs' reports.
+    Save(states::StatesSaveArgs),
+    /// The named states, and whether each is present.
+    List(states::StatesListArgs),
+    /// Replay chains from power-on on this psx and compare the states they make.
+    Rebuild(states::StatesRebuildArgs),
+}
+
+#[derive(clap::Subcommand)]
 enum CaseAction {
     /// Record a case: the subject's fields every field from a start state with input.
     Record(Box<case::CaseRecordArgs>),
@@ -259,6 +277,12 @@ fn main() -> ExitCode {
         Command::Case { action } => match action {
             CaseAction::Record(a) => a.exec(&ctx),
             CaseAction::Check(a) => a.exec(&ctx),
+        },
+        Command::States { action } => match action {
+            StatesAction::Make(a) => a.exec(&ctx),
+            StatesAction::Save(a) => a.exec(&ctx),
+            StatesAction::List(a) => a.exec(&ctx),
+            StatesAction::Rebuild(a) => a.exec(&ctx),
         },
         Command::GpuReplay(a) => a.exec(&ctx),
         Command::VramDiff(a) => a.exec(&ctx),

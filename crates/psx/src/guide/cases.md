@@ -38,5 +38,6 @@ a psx update or a map change; write=true replaces the cases that differ.
 A case record over an existing case needs replace=true.
 
 Start states: take them where the behaviour starts (a handoff's mark, a
-run's save_state, or run until a named state holds) and keep them with
-the recipes; the case's row 0 is that state.
+run's save_state, or run until a named state holds) and name them with
+states make or states save (guide topic states), so each rebuilds from
+power-on; the case's row 0 is that state.

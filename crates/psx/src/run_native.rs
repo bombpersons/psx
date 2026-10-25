@@ -442,6 +442,9 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     registers.insert("cop0_cause".into(), json!(m.cpu.cop0[13]));
     registers.insert("cop0_epc".into(), json!(m.cpu.cop0[14]));
     let complete = termination == "frames_reached" || termination == "until_met";
+    let from_state_sha256 = a.from_state.as_deref().and_then(|p| std::fs::read(p).ok()).map(|b| sha256(&b));
+    // How the machine was set up at power-on (a state carries its cards and pad).
+    let cards_at_power_on = if a.from_state.is_some() { Value::Null } else { json!(a.cards) };
     Ok((
         complete,
         json!({
@@ -471,7 +474,11 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             "gpu_frame": gpu_report,
             "samples": samples_report,
             "tick_finder": tick_report,
-            "until": if until.is_empty() { Value::Null } else { crate::until::report(&until, met, &m.bus.ram, &m.bus.scratch) },
+            "until": if until.is_empty() { Value::Null } else {
+                let mut v = crate::until::report(&until, met, &m.bus.ram, &m.bus.scratch);
+                v["map"] = json!(map.as_ref().map(|f| std::path::absolute(&f.path).unwrap_or_else(|_| f.path.clone())));
+                v
+            },
             "read_watch": reads_report,
             "spu": spu_report,
             "audio": audio_report,
@@ -491,6 +498,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
                 "timing_model": "Mednafen's video, CPU, DMA, CD-ROM, GPU command, timer, controller port, SPU and MDEC timing",
                 "bios": a.bios, "bios_sha256": bios_sha, "media": a.media, "media_identity": media_id,
                 "from_state": a.from_state, "state_format": psx_core::state::FORMAT,
+                "from_state_sha256": from_state_sha256, "cards": cards_at_power_on,
             },
             "wall_ms": wall_ms,
         }),

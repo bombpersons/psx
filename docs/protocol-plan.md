@@ -31,20 +31,20 @@ Branch: `protocol`. Committed piece by piece.
   records cases again from their recipes and compares them cell by cell.
   Guide topic `cases`. (Brief item 4.)
 
+- **Handoff checks**: `handoff --expect` in the `until` syntax; the
+  result gives each condition's value at the hand-back, a verdict and
+  `ask_again`. (Brief item 8.)
+- **Start-state chains and rebuilds**: `states make` / `states save` name a
+  state (`.psx/states/NAME.bin`) and write its chain of runs from power-on
+  (`notes/states/NAME.json`, from the runs' reports); `states rebuild`
+  replays chains on the current build (shared steps once), gives the first
+  differing step and named values old and new, and with `replace` keeps
+  the old states by the build that made them. Guide topic `states`. TR2's
+  `courtyard` and `open` rebuild byte for byte from power-on. (Brief item
+  12.)
+
 ## Phase 1: evidence tools
 
-1. **Handoff checks** (item 8). A handoff request takes `expect`
-   conditions in the `until` syntax (`lara.room=16`, `health>500`); the
-   result says whether each held at the hand-back, with the values, and a
-   plain verdict on whether to ask again.
-2. **Start-state chains and rebuilds** (item 12, and "recovering on its
-   own"). Every saved state records how it was made: its parent state (or
-   power-on), the input, any `until` conditions, the psx build. `psx
-   states rebuild` replays a chain from power-on on the current build and
-   compares named samples at the end; old runs are kept by the emulator
-   version that made them; `case check` after a rebuild gives the triage
-   list (instrument change, or real divergence). Model:
-   `tr2-rs/tools/recordings.py rebuild-states`.
 3. **Case format additions** the second implementer asked for: timing
    vectors (rows to ticks run and the field each tick read, from the tick
    column) and an optional per-case `coverage` key (per spec, the columns

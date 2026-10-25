@@ -443,6 +443,8 @@ impl Session {
         write("ram.bin", &self.m.bus.ram[..])?;
         self.write_screen(&mdir.join("screen.png")).map_err(|e| format!("screen.png: {e}"))?;
         write("mark.json", mark.json().to_string().as_bytes())?;
+        // The input up to the mark: with the handoff's start, how to make its state again.
+        write("input.json", replay_json(&self.events).as_bytes())?;
         self.marks.push(mark);
         Ok(n)
     }

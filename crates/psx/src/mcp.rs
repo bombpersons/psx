@@ -195,6 +195,10 @@ pub fn tools() -> Vec<ToolDef> {
         ToolDef { call: call_handoff, schema: handoff_schema, ..def::<crate::handoff::HandoffArgs>("handoff", "Ask the person to play to a point you cannot easily reach: opens a window on this machine with the game and your request, and returns a ticket at once. Poll handoff_status; the result has state.bin to continue from, input.json (their input as a replay), their note, and the moments they marked with F6 (state, RAM and screen each, with RAM diffs between them).") },
         def::<crate::case::CaseRecordArgs>("case_record", "Record a case for a spec from a start state, input and a field map subject: the case JSON, its CSV with the tick column, and a recipe. See guide topic cases.").heavy(),
         def::<crate::case::CaseCheckArgs>("case_check", "Record cases again from their recipes and compare them with the published CSVs, cell by cell. See guide topic cases.").heavy(),
+        def::<crate::states::StatesMakeArgs>("states_make", "Run from a named start state (or power-on) and name the state it ends in: .psx/states/NAME.bin, and its chain of runs from power-on in notes/states/NAME.json. See guide topic states.").heavy(),
+        def::<crate::states::StatesSaveArgs>("states_save", "Name a state an earlier run or handoff made; its chain from power-on comes from the runs' reports. See guide topic states."),
+        def::<crate::states::StatesListArgs>("states_list", "The named start states: description, steps from power-on, and whether each is present.").read_only(),
+        def::<crate::states::StatesRebuildArgs>("states_rebuild", "Replay start states' chains from power-on on this psx and compare: which step first differs, and named values old and new. replace puts rebuilt states in place. See guide topic states.").heavy(),
         def::<crate::handoff::HandoffStatusArgs>("handoff_status", "A handoff's progress or result: waiting, done, declined (read the note), closed or abandoned.").read_only().screen(),
         def::<crate::native::NativeArgs>("native", "Emulator diagnostic: boot the native core from power-on and report where it got (PC, CD history, SPU state, unhandled I/O, hot PCs, speed). For game investigation use run.").heavy().default_timeout().screen(),
         def::<crate::provenance::LoadsArgs>("loads", "Turn a run recorded with trace_cd into disc-to-RAM provenance: which file and offset each CD transfer copied where, verified against the run's final RAM. Paged; symbols names the reading code.").heavy(),
@@ -729,8 +733,9 @@ mod tests {
             .map(|t| t.name.len() + t.description.len() + serde_json::to_string(&t.input_schema()).unwrap().len())
             .sum();
         // 50K on 2026-10-17; 52K from 2026-10-20 for handoff and handoff_status; 56K from
-        // 2026-10-25 for case_record and case_check.
-        assert!(size <= 56_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // 2026-10-25 for case_record and case_check; 61.5K from 2026-10-25 for the four
+        // states tools.
+        assert!(size <= 61_500, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,
