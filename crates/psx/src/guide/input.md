@@ -43,7 +43,8 @@ where the game keeps something, ask for marks too: "press F6 just before and
 just after you pick up the key".
 
 The person plays with keyboard or gamepad (F1 or Start+Select rebinds, saved
-per user), can quick save/load (F5/F7), start over from the handoff start
+per user), can rewind about 5 s at a time (F2, up to 2 minutes), quick
+save/load (F5/F7), start over from the handoff start
 (F8 twice), mark moments for you with an optional label (F6), mute the sound (F4), and
 hands back with F12 (done) or F10 (cannot do it), both with an
 optional note. Results:
@@ -51,7 +52,7 @@ optional note. Results:
 - status done | declined | closed (window closed) | abandoned (process died);
 - state.bin: continue with run from_state (report.json supplies media and BIOS);
 - input.json: every pad change since the handoff start as a replay, with input
-  lost to quick loads and restarts removed. `reproduce` gives the run call that
+  undone by rewinds, quick loads and restarts removed. `reproduce` gives the run call that
   replays it; verify=true checks it reproduces state.bin;
 - ram.bin, screen.png and the person's note;
 - marks: each F6 press as marks/<n>/ (state.bin, ram.bin, screen.png,

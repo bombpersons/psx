@@ -260,7 +260,17 @@ pub(crate) struct Session {
     start_ram: Vec<u8>,
     media_id: Option<MediaId>,
     pub marks: Vec<Mark>,
+    /// States every [`REWIND_EVERY`] frames along the current route, with
+    /// the number of input events that reached each, for [`Session::rewind`].
+    history: std::collections::VecDeque<(u64, Vec<u8>, usize)>,
 }
+
+/// Frames between rewind states (about 5 s), and how many are kept (2 minutes).
+const REWIND_EVERY: u64 = 300;
+const REWIND_KEEP: usize = 24;
+/// A rewind goes back at least this far (1 s), so a press just after a
+/// state was taken still undoes something.
+const REWIND_MIN: u64 = 60;
 
 /// A moment the person marked, written to `marks/<n>/` at once.
 #[cfg_attr(not(feature = "window"), allow(dead_code))]
@@ -316,6 +326,25 @@ impl Session {
         while self.m.bus.frames == f {
             self.m.run_frame_steps(1 << 22);
         }
+        let rel = self.rel();
+        if self.history.back().is_none_or(|h| rel >= h.0 + REWIND_EVERY) {
+            if self.history.len() == REWIND_KEEP {
+                self.history.pop_front();
+            }
+            self.history.push_back((rel, self.m.save_state(self.media_id.clone()), self.events.len()));
+        }
+    }
+
+    /// Back to the latest rewind state at least [`REWIND_MIN`] frames ago:
+    /// the frames gone back, or None when there is none.
+    pub fn rewind(&mut self) -> Result<Option<u64>, String> {
+        let now = self.rel();
+        let Some(i) = self.history.iter().rposition(|h| h.0 + REWIND_MIN <= now) else { return Ok(None) };
+        self.history.truncate(i + 1);
+        let (rel, bytes, n) = self.history[i].clone();
+        let events = self.events[..n].to_vec();
+        self.restore(&bytes, events)?;
+        Ok(Some(now - rel))
     }
 
     pub fn quick_save(&mut self) {
@@ -325,7 +354,10 @@ impl Session {
     /// Back to the quick save, if there is one.
     pub fn quick_load(&mut self) -> Result<bool, String> {
         match self.quick.clone() {
-            Some((bytes, events)) => self.restore(&bytes, events).map(|_| true),
+            Some((bytes, events)) => {
+                self.history.clear();
+                self.restore(&bytes, events).map(|_| true)
+            }
             None => Ok(false),
         }
     }
@@ -333,6 +365,7 @@ impl Session {
     /// Back to where the handoff started (the quick save is kept).
     pub fn restart(&mut self) -> Result<(), String> {
         let bytes = self.start.clone();
+        self.history.clear();
         self.restore(&bytes, Vec::new())
     }
 
@@ -438,6 +471,7 @@ fn start(a: &HandoffArgs) -> crate::Result<Session> {
         start_ram,
         media_id: medium.id,
         marks: Vec::new(),
+        history: Default::default(),
     })
 }
 
@@ -767,6 +801,14 @@ mod tests {
         s.quick_load().unwrap();
         press(&mut s, 40, cross);
         s.mark(&dir).unwrap();
+        // Rewind past input: it is dropped, and play goes on from there.
+        press(&mut s, 330, 0);
+        press(&mut s, 20, start_btn);
+        let (at, events) = (s.rel(), s.events.len());
+        let back = s.rewind().unwrap().unwrap();
+        assert!(back >= REWIND_MIN && s.events.len() < events, "{back} {}", s.events.len());
+        assert_eq!(s.rel(), at - back);
+        press(&mut s, 30, cross);
         let v = finish(&a, s, End::Done, "note".into(), &dir).unwrap();
         assert_eq!(v["verify"]["matches"], true, "{}", v["verify"]);
         assert_eq!(v["status"], "done");

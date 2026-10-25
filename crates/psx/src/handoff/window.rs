@@ -169,6 +169,17 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                         Some((_, dy)) if dy > 0.0 => scroll = scroll.saturating_sub(WHEEL_LINES),
                         _ => {}
                     }
+                    if has("F2") {
+                        match s.rewind() {
+                            Ok(Some(back)) => {
+                                audio.as_ref().inspect(|a| a.clear());
+                                let secs = back as f64 * s.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64;
+                                msg.show(format!("Went back {secs:.0} s. F2 again goes further."));
+                            }
+                            Ok(None) => msg.show("Nothing further back to rewind to."),
+                            Err(e) => msg.show(format!("Rewind failed: {e}")),
+                        }
+                    }
                     if has("F5") {
                         s.quick_save();
                         msg.show("Quick saved. F7 comes back here.");
@@ -264,7 +275,7 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                 // The keys and status sit at the bottom; the request takes
                 // the rest of the panel, scrolling when it is longer.
                 let message = msg.current().map(|text| wrap(text, COLS));
-                let bottom = 9 + 3 + message.as_ref().map_or(0, Vec::len);
+                let bottom = 10 + 3 + message.as_ref().map_or(0, Vec::len);
                 let bottom_y = (H - 8).saturating_sub(bottom * ROW + if message.is_some() { GAP } else { 0 });
                 p.line("THE AGENT ASKS:", YELLOW);
                 let rows = (bottom_y.saturating_sub(GAP + p.y) / ROW).max(2);
@@ -287,6 +298,7 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                     ("F10", "Can't do it: tell the agent why"),
                     ("F6", "Mark this moment for the agent"),
                     ("F8", "Start over (press twice)"),
+                    ("F2", "Rewind about 5 s (again: further)"),
                     ("F5/F7", "Quick save / quick load"),
                     ("F3", "Pause"),
                     ("F4", "Sound on/off"),
