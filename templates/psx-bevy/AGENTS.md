@@ -25,3 +25,7 @@ the start. Read the guide for the crate you are working in:
 
 The psx toolkit's `guide` tool (topic `port`) has the porting workflow.
 Routine check: `cargo test --workspace --all-features`.
+Iteration builds link Bevy as a shared library (default feature `dynamic`),
+which only `cargo run` and `cargo test` find: start binaries through cargo,
+not from `target/`. Shipping build: `cargo build --release
+--no-default-features`.

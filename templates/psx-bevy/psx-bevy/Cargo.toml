@@ -11,7 +11,10 @@ license = "MIT OR Apache-2.0"
 publish.workspace = true
 
 [features]
-default = []
+default = ["dynamic"]
+# Bevy as a shared library for iteration builds (workspace Cargo.toml). A
+# release build without it: `cargo build --release --no-default-features`.
+dynamic = ["bevy/dynamic_linking"]
 dev-mcp = ["dep:rmcp", "dep:tokio", "dep:image"]
 
 [dependencies]

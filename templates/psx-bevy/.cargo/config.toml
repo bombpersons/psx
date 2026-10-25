@@ -1,0 +1,5 @@
+# Doctests run from a temporary folder, where the shared Bevy library and the
+# Rust standard library it needs (feature `dynamic`, workspace Cargo.toml)
+# are not on the library path. An rpath in the doctest binary finds them.
+[build]
+rustdocflags = ["-C", "rpath"]

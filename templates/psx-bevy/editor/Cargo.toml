@@ -33,6 +33,9 @@ arrayvec = "0.7"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 [features]
+default = ["dynamic"]
+# Bevy as a shared library (workspace Cargo.toml).
+dynamic = ["engine/dynamic"]
 # The MCP's testing tools (mouse, keyboard, widgets), on stdio only:
 # `--mcp [--headless --software]`. Also psx-bevy's developer MCP, whose test
 # client the editor's GPU test uses.

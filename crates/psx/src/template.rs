@@ -93,6 +93,7 @@ macro_rules! files {
 }
 
 const FILES: &[(&str, &str)] = files![
+    ".cargo/config.toml",
     ".gitignore",
     "AGENTS.md",
     "Cargo.lock",
@@ -772,7 +773,7 @@ mod tests {
         assert!(lock.contains("name = \"my-game\"") && !lock.contains(TEMPLATE_PACKAGE));
         let workspace = std::fs::read_to_string(game.join("Cargo.toml")).unwrap();
         assert!(workspace.contains("package = \"my-game\""));
-        assert!(workspace.contains(r#"psx-bevy = { path = "psx-bevy" }"#));
+        assert!(workspace.contains(r#"psx-bevy = { path = "psx-bevy", default-features = false }"#));
         assert!(game.join("psx-bevy/src/lib.rs").exists());
         assert!(game.join("engine/examples/sandbox.rs").exists());
         let lib = std::fs::read_to_string(game.join("game/src/lib.rs")).unwrap();

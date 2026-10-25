@@ -36,8 +36,13 @@ and `tests/dev_mcp.rs` are the crate's own GPU checks.
 
 `cargo build`/`cargo run` already compile Bevy at full optimisation (only the
 workspace's crates are built at `opt-level = 1`), so they run at close to
-release speed. `--release` builds all of Bevy a second time, which takes
-minutes on a cold target: use it for shipping and profiling, not for iteration.
+release speed. The default feature `dynamic` links Bevy as one shared
+library, so a change relinks each test binary in seconds instead of copying
+all of Bevy into every one (about five times faster with forty tests); only
+`cargo run` and `cargo test` know where that library is. `--release
+--no-default-features` builds all of Bevy a second time and links it in,
+which takes minutes on a cold target: use it for shipping and profiling, not
+for iteration.
 Turning `dev-mcp` on for the first time compiles only the MCP crates (rmcp,
 tokio, schemars) and the workspace, about 25 crates: psx-bevy's `Cargo.toml`
 enables the features those crates would otherwise switch on in shared
@@ -150,8 +155,7 @@ depths 20, 40 and 100 above a large slanted wall. Its developer MCP controls can
 change the curve/colour, texture, camera projection and fog while paused:
 
 ```sh
-cargo build -p psx-bevy --features dev-mcp --example depth_cue
-target/debug/examples/depth_cue --mcp --headless --software
+cargo run -p psx-bevy --features dev-mcp --example depth_cue -- --mcp --headless --software
 # Opt-in GPU/MCP verification; saves and checks the rendered PNGs:
 cargo test -p psx-bevy --features dev-mcp --test dev_mcp reciprocal_depth_cue_rendering -- --ignored --nocapture
 ```
@@ -620,7 +624,7 @@ cargo fmt --all --check  # rustfmt.toml: 120 columns
 ```
 
 When changing feature-gated startup code, also run `cargo test --workspace`
-with default features. Before shipping, run `cargo build --release`. These can
+with default features. Before shipping, run `cargo build --release --no-default-features`. These can
 compile a separate dependency feature set/profile, so keep them outside the
 routine agent iteration cycle unless the change requires them.
 

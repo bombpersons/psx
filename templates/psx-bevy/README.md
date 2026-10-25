@@ -25,7 +25,7 @@ cargo run -p editor -- --mcp --headless --software  # the editor's MCP on stdio,
 cargo test --workspace                   # headless tests: engine, game, mod, importers
 cargo run --features dev-mcp -- --mcp --headless --software  # developer MCP, offscreen
 cargo test --workspace --all-features    # routine agent check (dev-mcp everywhere)
-cargo build --release                    # shipping build; developer MCP is excluded
+cargo build --release --no-default-features  # shipping build: Bevy linked in, developer MCP excluded
 ```
 
 ## Layout
