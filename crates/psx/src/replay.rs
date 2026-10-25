@@ -60,7 +60,7 @@ pub struct Event {
     pub frame: u64,
     /// Complete held button set; [] releases all buttons. Names are case insensitive.
     pub buttons: Vec<Button>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sticks: Option<[u8; 4]>,
     /// Optional exclusive release boundary; emits a neutral state there. Cannot overlap another event.
     #[serde(default, skip_serializing_if = "Option::is_none")]

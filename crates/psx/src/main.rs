@@ -14,6 +14,7 @@ mod artifact;
 mod assets_cmd;
 mod bios;
 mod bound_symbols;
+mod case;
 mod code;
 mod commands;
 mod context;
@@ -118,6 +119,13 @@ enum Command {
     Handoff(handoff::HandoffArgs),
     /// Progress or result of a handoff: waiting, done, declined, closed or abandoned.
     HandoffStatus(handoff::HandoffStatusArgs),
+    /// Record a case (start state, input and a field map subject in; the case's JSON,
+    /// observation CSV with the tick column, and a recipe out), or check cases by
+    /// recording them again.
+    Case {
+        #[command(subcommand)]
+        action: CaseAction,
+    },
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
     Loads(provenance::LoadsArgs),
@@ -159,6 +167,14 @@ enum TemplateAction {
     Adopt(template::TemplateAdoptArgs),
     /// Write a working external parser, authored fixture and protocol docs.
     Parser(parser_template::ParserTemplateArgs),
+}
+
+#[derive(Subcommand)]
+enum CaseAction {
+    /// Record a case: the subject's fields every field from a start state with input.
+    Record(Box<case::CaseRecordArgs>),
+    /// Record cases again from their recipes and compare with the published CSVs.
+    Check(case::CaseCheckArgs),
 }
 
 #[derive(Subcommand)]
@@ -240,6 +256,10 @@ fn main() -> ExitCode {
         Command::Disasm(a) => a.exec(&ctx),
         Command::Xrefs(a) => a.exec(&ctx),
         Command::Ram { action } => action.exec(&ctx),
+        Command::Case { action } => match action {
+            CaseAction::Record(a) => a.exec(&ctx),
+            CaseAction::Check(a) => a.exec(&ctx),
+        },
         Command::GpuReplay(a) => a.exec(&ctx),
         Command::VramDiff(a) => a.exec(&ctx),
         Command::Addr(a) => a.exec(&ctx),

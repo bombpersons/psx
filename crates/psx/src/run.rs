@@ -118,7 +118,7 @@ impl Op for RunCmdArgs {
 }
 
 impl RunCmdArgs {
-    fn run(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
+    pub(crate) fn run(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
         let a = self;
         let resolved = crate::context::resolve(&ctx.root, a.media, a.bios, a.from_state.as_deref(), false)?;
         if let Some(e) = resolved.setup_error() {

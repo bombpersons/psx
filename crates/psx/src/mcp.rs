@@ -193,6 +193,8 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::textures::TexturesArgs>("textures", "Decode VRAM texture pages to PNGs: every page/CLUT a gpu_frame run used (plus textures/scene.psxscene for the Bevy template), or one page and clut by hand from any vram.bin."),
         def::<crate::run::RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames on the native core. Drive it with input/replay; observe with sample, watch, watch_reads, poke, trace, trace_cd, trace_spu or gpu_frame; save_state makes checkpoints. Returns run_dir and the report; brief or summary shorten it. See guide topics run and input.").heavy().screen(),
         ToolDef { call: call_handoff, schema: handoff_schema, ..def::<crate::handoff::HandoffArgs>("handoff", "Ask the person to play to a point you cannot easily reach: opens a window on this machine with the game and your request, and returns a ticket at once. Poll handoff_status; the result has state.bin to continue from, input.json (their input as a replay), their note, and the moments they marked with F6 (state, RAM and screen each, with RAM diffs between them).") },
+        def::<crate::case::CaseRecordArgs>("case_record", "Record a case for a spec: a start state, input and a field map subject in; specs/cases/NAME.json and .csv (with the tick column and timing) and a recipe in notes/recordings out. See guide topic cases.").heavy(),
+        def::<crate::case::CaseCheckArgs>("case_check", "Record cases again from their recipes and compare with the published CSVs, cell by cell; write=true replaces those that differ. See guide topic cases.").heavy(),
         def::<crate::handoff::HandoffStatusArgs>("handoff_status", "A handoff's progress or result: waiting, done, declined (read the note), closed or abandoned.").read_only().screen(),
         def::<crate::native::NativeArgs>("native", "Emulator diagnostic: boot the native core from power-on and report where it got (PC, CD history, SPU state, unhandled I/O, hot PCs, speed). For game investigation use run.").heavy().default_timeout().screen(),
         def::<crate::provenance::LoadsArgs>("loads", "Turn a run recorded with trace_cd into disc-to-RAM provenance: which file and offset each CD transfer copied where, verified against the run's final RAM. Paged; symbols names the reading code.").heavy(),
@@ -726,8 +728,9 @@ mod tests {
             .iter()
             .map(|t| t.name.len() + t.description.len() + serde_json::to_string(&t.input_schema()).unwrap().len())
             .sum();
-        // 50K on 2026-10-17; 52K from 2026-10-20 for handoff and handoff_status.
-        assert!(size <= 52_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // 50K on 2026-10-17; 52K from 2026-10-20 for handoff and handoff_status; 56K from
+        // 2026-10-25 for case_record and case_check.
+        assert!(size <= 56_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,
