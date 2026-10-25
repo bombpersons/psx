@@ -183,7 +183,7 @@ impl Machine {
             if s.breaks == breaks && s.bus == bus && cycles > s.cycles && *n >= s.steps {
                 let (period, steps) = (cycles - s.cycles, *n - s.steps);
                 let limit = self.bus.next_deadline().min(until_cycle);
-                let mut k = if limit > cycles { (limit - 1 - cycles) / period } else { 0 };
+                let mut k = limit.saturating_sub(cycles + 1) / period;
                 if let Some(m) = (max_steps - *n).checked_div(steps) {
                     k = k.min(m);
                 }
@@ -292,29 +292,43 @@ impl Machine {
         }
         let pcs = (self.cpu.pc, self.cpu.next_pc());
         self.spin.trace.clear();
+        struct Snap {
+            key: cpu::SpinKey,
+            bus: u64,
+            regs: [u32; 32],
+            load: (usize, u32),
+            cycles: u64,
+        }
         let mut snaps = Vec::with_capacity(2);
         for _ in 0..2 {
             // A run that ends first counts as no loop found, so that probes
             // outside loops back off.
             self.loop_steps(pcs, MAX_PASS, n, max_steps).filter(|&back| back)?;
-            snaps.push((self.cpu.loop_key(), self.loop_bus_key(), self.cpu.regs, self.cpu.load_raw(), self.cpu.cycles));
+            snaps.push(Snap {
+                key: self.cpu.loop_key(),
+                bus: self.loop_bus_key(),
+                regs: self.cpu.regs,
+                load: self.cpu.load_raw(),
+                cycles: self.cpu.cycles,
+            });
         }
         let trace = std::mem::take(&mut self.spin.trace);
         let steps = trace.len() / 2;
         let (a, b) = trace.split_at(steps);
-        let (s1, s2) = (&snaps[0], &snaps[1]);
-        let same = a == b && s1.0 == s2.0 && s1.1 == s2.1 && s2.4 > s1.4;
+        let (s2, s1) = (snaps.pop().unwrap(), &snaps[0]);
+        let same = a == b && s1.key == s2.key && s1.bus == s2.bus && s2.cycles > s1.cycles;
         let w = same
             .then(|| {
-                let regs = std::array::from_fn(|k| loops::Aff { b: s2.2[k], d: s2.2[k].wrapping_sub(s1.2[k]) });
-                let load = (s2.3.0, loops::Aff { b: s2.3.1, d: s2.3.1.wrapping_sub(s1.3.1) });
+                let regs =
+                    std::array::from_fn(|k| loops::Aff { b: s2.regs[k], d: s2.regs[k].wrapping_sub(s1.regs[k]) });
+                let load = (s2.load.0, loops::Aff { b: s2.load.1, d: s2.load.1.wrapping_sub(s1.load.1) });
                 let out = loops::evaluate(b, regs, load, pcs, |a, w| self.read_mem(a, w))?;
                 Some(Wait {
                     pc: pcs.0,
                     next_pc: pcs.1,
-                    key: self.cpu.loop_key(),
-                    bus: s2.1,
-                    period: s2.4 - s1.4,
+                    key: s2.key,
+                    bus: s2.bus,
+                    period: s2.cycles - s1.cycles,
                     trace: b.to_vec(),
                     regs,
                     load,
@@ -323,7 +337,7 @@ impl Machine {
                 })
             })
             .flatten()
-            .filter(|w| w.trace.iter().all(|&(pc, _)| self.cpu.fetches_alike(&self.bus, pc)));
+            .filter(|w| self.loop_fetches_alike(w));
         self.spin.trace = trace;
         let mut w = w?;
         w.next = self.skip_passes(&w, 0, n, max_steps, until_cycle);
@@ -340,9 +354,8 @@ impl Machine {
         let mut w = self.spin.wait.take().unwrap();
         // Where the next pass should start: an event comes first (run on to
         // it and look again), or run there and check the state in place.
-        if let Some((t, j)) = w.next.take() {
+        if let Some((t, j)) = w.next {
             if self.cpu.cycles < t && self.bus.deadline <= t {
-                w.next = Some((t, j));
                 self.spin.wait = Some(w);
                 return;
             }
@@ -402,6 +415,11 @@ impl Machine {
         self.cpu.loop_key_is(&w.key) && self.loop_bus_key() == w.bus
     }
 
+    /// Whether every fetch of a pass of `w` takes the time it took.
+    fn loop_fetches_alike(&self, w: &Wait) -> bool {
+        w.trace.iter().all(|&(pc, _)| self.cpu.fetches_alike(&self.bus, pc))
+    }
+
     /// Whether the CPU, at the loop's start, and the RAM it reads and
     /// stores are where pass `j` of `w` starts.
     fn loop_at(&self, w: &Wait, j: u64) -> bool {
@@ -419,7 +437,7 @@ impl Machine {
         if !self.loop_key_is(w) {
             return None;
         }
-        if !w.trace.iter().all(|&(pc, _)| self.cpu.fetches_alike(&self.bus, pc)) {
+        if !self.loop_fetches_alike(w) {
             return None;
         }
         let (regs, load) = (&self.cpu.regs, self.cpu.load_raw());
@@ -448,8 +466,7 @@ impl Machine {
         let steps = w.trace.len() as u64;
         let limit = self.bus.next_deadline().min(until_cycle);
         let cycles = self.cpu.cycles;
-        let k = if limit > cycles { (limit - 1 - cycles) / w.period } else { 0 };
-        let k = k.min(w.out.passes - j).min((max_steps - *n) / steps);
+        let k = (limit.saturating_sub(cycles + 1) / w.period).min(w.out.passes - j).min((max_steps - *n) / steps);
         let next = (j + k + 1 < w.out.passes).then_some((cycles + (k + 1) * w.period, j + k + 1));
         if k == 0 {
             return next;

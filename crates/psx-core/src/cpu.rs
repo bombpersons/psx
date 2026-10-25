@@ -130,9 +130,9 @@ pub struct Cpu {
     t: Timing,
 }
 
-/// [`Cpu::spin_key`].
+/// [`Cpu::spin_key`]: fields in the order compared, what differs most often
+/// first.
 #[derive(PartialEq)]
-/// Fields in the order compared: what differs most often first.
 pub(crate) struct SpinKey {
     pc: u32,
     next_pc: u32,
