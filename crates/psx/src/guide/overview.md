@@ -9,7 +9,8 @@ which may differ from the client harness's working directory.
 Typical routes:
 - Setup: context -> disc -> ls / exe -> a bounded run with checkpoints.
 - Gameplay: from_state + input variations -> ram_diff / ram_search -> sample /
-  watch -> disasm / Ghidra -> poke to test a hypothesis.
+  watch -> disasm / Ghidra -> poke to test a hypothesis. Name what you find in
+  a field map (samples.toml), with the game's tick, so samples carry names.
 - Assets: filtered assets_scan -> assets_extract; use an external parser for
   custom formats. GPU captures and textures provide visual reference.
 - Rebuild: template_create -> decoded assets and idiomatic Bevy rules -> compare
@@ -18,7 +19,7 @@ Typical routes:
   workspace) -> importers -> feature by feature, with an editor alongside.
 
 Tool descriptions are brief; guide topics hold the details. Use the run, input,
-code, assets, bevy and port topics for the relevant route, and troubleshooting for
+fields, code, assets, bevy and port topics for the relevant route, and troubleshooting for
 unexpected results. Inspect returned files with artifact_read:
 JSON by RFC 6901 pointer, JSONL/CSV/text by rows (frame_from/frame_to with
 frame_field, hex pc, contains, columns), hex for raw bytes and PNG as an image.

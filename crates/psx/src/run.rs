@@ -207,10 +207,17 @@ pub struct ObserveArgs {
     /// Sample a RAM/scratchpad value at every frame boundary (vblank) into samples.csv:
     /// `ADDR:FMT[:NAME]`, FMT one of u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F (fx16.16, fx4.12)
     /// or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Little-endian,
-    /// read byte-exact from emulated memory; repeatable.
+    /// read byte-exact from emulated memory; repeatable. With a field map (--map), a name
+    /// from it instead: `GLOBAL`, `SUBJECT` (all its fields), `SUBJECT.FIELD`,
+    /// `SUBJECT[N]` or `SUBJECT[N].FIELD`.
     #[arg(long = "sample")]
     #[serde(default, rename = "sample")]
     pub samples: Vec<crate::ram::SampleSpec>,
+    /// Field map naming the game's memory and its tick (guide topic fields); default
+    /// samples.toml in the project root when it exists. A map with [tick] adds a `tick`
+    /// column to samples.csv: the game's ticks completed since the run start.
+    #[arg(long)]
+    pub map: Option<PathBuf>,
     /// Sample every Nth frame only (the last frame is always sampled).
     #[arg(long)]
     pub sample_every: Option<u64>,

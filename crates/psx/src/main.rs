@@ -18,6 +18,7 @@ mod code;
 mod commands;
 mod context;
 mod error;
+mod fieldmap;
 mod ghidra;
 mod guide;
 mod handoff;

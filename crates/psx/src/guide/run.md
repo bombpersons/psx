@@ -12,7 +12,9 @@ Observations (native):
   text or {"addr", "format", "name"}; FMT is u8 i8 x8 u16 i16 x16 u32 i32 x32,
   fxI.F (fx16.16, fx4.12) or a watch-style width 1/2/4 (unsigned), default u32.
   Row N is memory after N run frames, before frame N's input and pokes.
-  sample_every thins rows; the last frame is always sampled.
+  sample_every thins rows; the last frame is always sampled. With a field map
+  (samples.toml, or map) sample takes names, and a [tick] adds a tick column:
+  see guide topic fields.
 - watch ADDR[:WIDTH] logs every CPU/DMA store into the range to writes.jsonl
   with writer PC, old and new value. watch_changes_only drops same-value stores.
 - watch_reads LO-HI or ADDR[:WIDTH] logs CPU loads to reads.jsonl with PC.

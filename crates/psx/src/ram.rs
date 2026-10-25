@@ -350,6 +350,8 @@ pub struct Sample {
     pub fmt: Fmt,
     pub name: String,
     pub mem: Mem,
+    /// Named by the field map: reports give the name only.
+    pub mapped: bool,
 }
 
 pub fn parse_sample(s: &str) -> Result<Sample, String> {
@@ -362,6 +364,11 @@ pub fn parse_sample(s: &str) -> Result<Sample, String> {
 /// (1, 2, 4, as in watches) reads unsigned.
 fn sample(a: &str, f: &str, name: Option<&str>, label: &str) -> Result<Sample, String> {
     let addr = parse_hex(a).ok_or_else(|| format!("{label}: bad hex address {a:?}"))?;
+    sample_at(addr, f, name, label)
+}
+
+/// A column at `addr` read as format `f` (or a bare width 1/2/4, unsigned).
+pub fn sample_at(addr: u32, f: &str, name: Option<&str>, label: &str) -> Result<Sample, String> {
     let fmt = match f.trim() {
         "1" => Fmt::Unsigned(1),
         "2" => Fmt::Unsigned(2),
@@ -375,7 +382,7 @@ fn sample(a: &str, f: &str, name: Option<&str>, label: &str) -> Result<Sample, S
     if name.contains([',', '"', '\n']) {
         return Err(format!("{label}: names cannot contain commas or quotes"));
     }
-    Ok(Sample { addr, fmt, name, mem })
+    Ok(Sample { addr, fmt, name, mem, mapped: false })
 }
 
 /// A `sample` column as given: `ADDR:FMT[:NAME]` text, or over MCP/JSON a
@@ -454,34 +461,39 @@ pub fn read_mem(ram: &[u8], scratch: &[u8], mem: Mem, width: usize) -> u32 {
     }
 }
 
-/// Per-frame samples, written as CSV: `run_frame,frame,<columns...>`.
+/// Per-frame samples, written as CSV: `run_frame,frame[,tick],<columns...>`.
 pub struct Sampler {
     pub columns: Vec<Sample>,
     pub every: u64,
+    /// A `tick` column: the game's ticks completed, given to each row.
+    pub tick: bool,
     pub out: String,
     pub rows: u64,
     last: Option<u64>,
 }
 
 impl Sampler {
-    pub fn new(columns: Vec<Sample>, every: u64) -> Self {
-        let mut out = String::from("run_frame,frame");
+    pub fn new(columns: Vec<Sample>, every: u64, tick: bool) -> Self {
+        let mut out = String::from(if tick { "run_frame,frame,tick" } else { "run_frame,frame" });
         for c in &columns {
             out.push(',');
             out.push_str(&c.name);
         }
         out.push('\n');
-        Sampler { columns, every: every.max(1), out, rows: 0, last: None }
+        Sampler { columns, every: every.max(1), tick, out, rows: 0, last: None }
     }
 
     /// Record a row for `run_frame` if it is due (every Nth frame, or `force`).
-    pub fn row(&mut self, run_frame: u64, frame: u64, ram: &[u8], scratch: &[u8], force: bool) {
+    pub fn row(&mut self, run_frame: u64, frame: u64, tick: u64, ram: &[u8], scratch: &[u8], force: bool) {
         if self.last == Some(run_frame) || !(force || run_frame.is_multiple_of(self.every)) {
             return;
         }
         self.last = Some(run_frame);
         self.rows += 1;
         self.out += &format!("{run_frame},{frame}");
+        if self.tick {
+            self.out += &format!(",{tick}");
+        }
         for c in &self.columns {
             self.out.push(',');
             self.out += &c.fmt.render(read_mem(ram, scratch, c.mem, c.fmt.width()));
@@ -1018,16 +1030,22 @@ mod tests {
     fn sampler_reads_bytes_little_endian() {
         let mut ram = vec![0u8; RAM_SIZE];
         let scratch = [0u8; SCRATCH_SIZE];
-        let mut s =
-            Sampler::new(vec![parse_sample("80000010:fx16.16:y").unwrap(), parse_sample("80000012:i16").unwrap()], 2);
+        let mut s = Sampler::new(
+            vec![parse_sample("80000010:fx16.16:y").unwrap(), parse_sample("80000012:i16").unwrap()],
+            2,
+            true,
+        );
         write_le(&mut ram, 0x10, 4, 0x01B9_8000);
-        s.row(0, 100, &ram, &scratch, false);
-        s.row(1, 101, &ram, &scratch, false); // not due
+        s.row(0, 100, 0, &ram, &scratch, false);
+        s.row(1, 101, 1, &ram, &scratch, false); // not due
         // A halfword store into the high half is seen by the word view.
         write_le(&mut ram, 0x12, 2, 0x01BF);
-        s.row(2, 102, &ram, &scratch, false);
-        s.row(3, 103, &ram, &scratch, true);
-        assert_eq!(s.out, "run_frame,frame,y,0x80000012:i16\n0,100,441.5,441\n2,102,447.5,447\n3,103,447.5,447\n");
+        s.row(2, 102, 1, &ram, &scratch, false);
+        s.row(3, 103, 3, &ram, &scratch, true);
+        assert_eq!(
+            s.out,
+            "run_frame,frame,tick,y,0x80000012:i16\n0,100,0,441.5,441\n2,102,1,447.5,447\n3,103,3,447.5,447\n"
+        );
         assert_eq!(s.rows, 3);
     }
 

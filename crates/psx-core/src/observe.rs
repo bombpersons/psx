@@ -171,10 +171,20 @@ impl SpuLog {
     }
 }
 
+/// Stores into a range counted rather than recorded (a game's tick counter):
+/// from `pc` only when it is set, compared by physical address.
+#[derive(Clone, Debug)]
+pub struct Counter {
+    pub range: (u32, u32),
+    pub pc: Option<u32>,
+    pub count: u64,
+}
+
 #[derive(Default)]
 pub struct Observer {
     /// Physical RAM ranges `[start, end)` to watch.
     pub watches: Vec<(u32, u32)>,
+    pub counters: Vec<Counter>,
     pub hits: Vec<WriteHit>,
     pub hit_count: u64,
     pub max_hits: usize,
@@ -200,20 +210,73 @@ impl Observer {
         }
     }
 
+    /// Count stores into `[addr, addr + width)`, from `pc` if given.
+    pub fn count(&mut self, addr: u32, width: u32, pc: Option<u32>) -> usize {
+        let p = addr & 0x1F_FFFF;
+        self.counters.push(Counter { range: (p, p + width.max(1)), pc: pc.map(|pc| pc & 0x1FFF_FFFF), count: 0 });
+        self.counters.len() - 1
+    }
+
     #[inline]
     pub fn active(&self) -> bool {
-        !self.watches.is_empty()
+        !self.watches.is_empty() || !self.counters.is_empty()
     }
 
     pub fn overlaps(&self, phys: u32, len: u32) -> bool {
         let (a, b) = (phys & 0x1F_FFFF, (phys & 0x1F_FFFF) + len);
-        self.watches.iter().any(|&(s, e)| a < e && b > s)
+        self.watches.iter().chain(self.counters.iter().map(|c| &c.range)).any(|&(s, e)| a < e && b > s)
     }
 
     pub fn record(&mut self, hit: WriteHit) {
+        let (a, b) = (hit.address & 0x1F_FFFF, (hit.address & 0x1F_FFFF) + hit.width);
+        for c in &mut self.counters {
+            if a < c.range.1 && b > c.range.0 && c.pc.is_none_or(|pc| hit.pc.is_some_and(|h| h & 0x1FFF_FFFF == pc)) {
+                c.count += 1;
+            }
+        }
+        if !self.watches.iter().any(|&(s, e)| a < e && b > s) {
+            return;
+        }
         self.hit_count += 1;
         if self.hits.len() < self.max_hits {
             self.hits.push(hit);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store(address: u32, pc: Option<u32>) -> WriteHit {
+        WriteHit {
+            frame: 0,
+            cycle: 0,
+            writer: if pc.is_some() { Writer::Cpu } else { Writer::Dma },
+            address,
+            width: 4,
+            pc,
+            value: Some(1),
+            old: Some(0),
+            dma_channel: None,
+        }
+    }
+
+    #[test]
+    fn counters_count_stores_without_recording_them() {
+        let mut o = Observer::default();
+        let any = o.count(0x8008_7AA4, 4, None);
+        let from = o.count(0x8008_7AA4, 4, Some(0x8001_DD64));
+        assert!(o.active() && o.overlaps(0x0008_7AA4, 4));
+        // KUSEG and KSEG0 name the same code and the same RAM.
+        o.record(store(0x0008_7AA4, Some(0x0001_DD64)));
+        o.record(store(0x8008_7AA4, Some(0x8002_0000)));
+        o.record(store(0x8008_7AA2, None)); // a DMA over the counter
+        o.record(store(0x8008_7AA8, Some(0x8001_DD64))); // next word
+        assert_eq!((o.counters[any].count, o.counters[from].count), (3, 1));
+        assert_eq!((o.hit_count, o.hits.len()), (0, 0));
+        o.watch(0x8008_7AA8, 4);
+        o.record(store(0x8008_7AA8, None));
+        assert_eq!((o.hit_count, o.counters[any].count), (1, 3));
     }
 }

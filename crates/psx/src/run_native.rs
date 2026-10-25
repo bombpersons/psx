@@ -37,11 +37,33 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     }
     attach_observers(&mut m, &a)?;
     let obs = &a.observe;
-    let mut sampler = match obs.samples.iter().map(crate::ram::SampleSpec::parse).collect::<Result<Vec<_>, _>>() {
-        Ok(cols) if cols.is_empty() => None,
-        Ok(cols) => Some(crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1))),
-        Err(e) => return Err(Error::invalid(e)),
-    };
+    let map = crate::fieldmap::FieldMap::load(obs.map.as_deref()).map_err(Error::invalid)?;
+    let mut cols = Vec::new();
+    for spec in &obs.samples {
+        // A bare token is a name when the map has it or it is not hex.
+        let name = match spec {
+            crate::ram::SampleSpec::Text(s) if !s.contains(':') => Some(s)
+                .filter(|s| map.as_ref().is_some_and(|f| f.knows(s)) || psx_media::memmap::parse_hex(s).is_none()),
+            _ => None,
+        };
+        match (name, &map) {
+            (Some(s), Some(f)) => cols.extend(f.resolve(s).map_err(Error::invalid)?),
+            (Some(s), None) => {
+                return Err(Error::invalid(format!(
+                    "--sample {s:?}: names come from a field map (samples.toml in the project root, or --map; guide topic fields)"
+                )));
+            }
+            (None, _) => cols.push(spec.parse().map_err(Error::invalid)?),
+        }
+    }
+    // The game's tick, counted while sampling.
+    let tick = map.as_ref().and_then(|f| f.tick.clone()).filter(|_| !cols.is_empty());
+    let tick_counter = tick.as_ref().map(|t| m.bus.obs.count(t.addr, t.width, t.pc));
+    let ticks = |m: &Machine| tick_counter.map_or(0, |i| m.bus.obs.counters[i].count);
+    let mut per_field: std::collections::BTreeMap<u64, u64> = Default::default();
+    let mut last_ticks = 0;
+    let mut sampler =
+        (!cols.is_empty()).then(|| crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1), tick.is_some()));
     let mut pokes = match obs.pokes.iter().map(|s| crate::ram::parse_poke(s)).collect::<Result<Vec<_>, _>>() {
         Ok(p) => p,
         Err(e) => return Err(Error::invalid(e)),
@@ -121,8 +143,13 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             if let Some(c) = &mut gpu_capture {
                 c.boundary(&mut m, start_frame, false);
             }
+            if tick.is_some() && rel > 0 {
+                let t = ticks(&m);
+                *per_field.entry(t - last_ticks).or_default() += 1;
+                last_ticks = t;
+            }
             if let Some(s) = &mut sampler {
-                s.row(rel, m.bus.frames, &m.bus.ram, &m.bus.scratch, false);
+                s.row(rel, m.bus.frames, ticks(&m), &m.bus.ram, &m.bus.scratch, false);
             }
             if let Err(e) = frame_outputs(&m, rel, obs, &dir, &media_id, &mut screens, &mut states) {
                 boundary_err = Some(e);
@@ -188,8 +215,11 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         // The final boundary: the state the run's files capture.
         let rel = m.bus.frames - start_frame;
         apply_due(&mut m, &events, &mut next, rel, &mut applied_input);
+        if tick.is_some() && rel > 0 {
+            *per_field.entry(ticks(&m) - last_ticks).or_default() += 1;
+        }
         if let Some(s) = &mut sampler {
-            s.row(rel, m.bus.frames, &m.bus.ram, &m.bus.scratch, true);
+            s.row(rel, m.bus.frames, ticks(&m), &m.bus.ram, &m.bus.scratch, true);
         }
         frame_outputs(&m, rel, obs, &dir, &media_id, &mut screens, &mut states)?;
     }
@@ -298,8 +328,18 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             put("samples.csv", s.out.as_bytes());
             json!({
                 "file": dir.join("samples.csv"), "rows": s.rows, "every": s.every,
-                "columns": s.columns.iter().map(|c| json!({"name": c.name, "address_hex": format!("0x{:08X}", c.addr), "format": c.fmt.name()})).collect::<Vec<_>>(),
+                "columns": s.columns.iter().map(|c| if c.mapped {
+                    json!({"name": c.name, "format": c.fmt.name()})
+                } else {
+                    json!({"name": c.name, "address_hex": format!("0x{:08X}", c.addr), "format": c.fmt.name()})
+                }).collect::<Vec<_>>(),
                 "timing": "row N = memory at the Nth vblank of the run (row 0 = the starting memory), before that frame's replay input and pokes",
+                "map": map.as_ref().map(|f| f.report()),
+                "tick": tick.as_ref().map(|_| json!({
+                    "ticks": ticks(&m),
+                    "fields_by_ticks_run": per_field.iter().map(|(k, v)| (k.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),
+                    "column": "tick = the game's ticks completed since the run start, at the row's vblank; ticks between rows r-1 and r ran during field r-1",
+                })),
             })
         }
         None => Value::Null,
