@@ -62,6 +62,9 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     let ticks = |m: &Machine| tick_counter.map_or(0, |i| m.bus.obs.counters[i].count);
     let mut per_field: std::collections::BTreeMap<u64, u64> = Default::default();
     let mut last_ticks = 0;
+    if obs.find_tick {
+        m.bus.obs.census = Some(Default::default());
+    }
     let mut sampler =
         (!cols.is_empty()).then(|| crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1), tick.is_some()));
     let mut pokes = match obs.pokes.iter().map(|s| crate::ram::parse_poke(s)).collect::<Result<Vec<_>, _>>() {
@@ -143,6 +146,9 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             if let Some(c) = &mut gpu_capture {
                 c.boundary(&mut m, start_frame, false);
             }
+            if let Some(c) = m.bus.obs.census.as_mut().filter(|_| rel > 0) {
+                c.end_field();
+            }
             if tick.is_some() && rel > 0 {
                 let t = ticks(&m);
                 *per_field.entry(t - last_ticks).or_default() += 1;
@@ -215,6 +221,9 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         // The final boundary: the state the run's files capture.
         let rel = m.bus.frames - start_frame;
         apply_due(&mut m, &events, &mut next, rel, &mut applied_input);
+        if let Some(c) = m.bus.obs.census.as_mut().filter(|_| rel > 0) {
+            c.end_field();
+        }
         if tick.is_some() && rel > 0 {
             *per_field.entry(ticks(&m) - last_ticks).or_default() += 1;
         }
@@ -339,8 +348,21 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
                     "ticks": ticks(&m),
                     "fields_by_ticks_run": per_field.iter().map(|(k, v)| (k.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),
                     "column": "tick = the game's ticks completed since the run start, at the row's vblank; ticks between rows r-1 and r ran during field r-1",
+                    "changed_without_tick": s.columns.iter().zip(&s.untimed).filter(|(_, u)| u.0 > 0)
+                        .map(|(c, u)| (c.name.clone(), json!({"rows": u.0, "first": u.1})))
+                        .collect::<serde_json::Map<_, _>>(),
+                    "check": "a column that changes on a row whose tick did not is updated outside the tick (or [tick] is at the wrong point of the game's loop): see guide topic fields",
                 })),
             })
+        }
+        None => Value::Null,
+    };
+    let tick_report = match &m.bus.obs.census {
+        Some(c) => {
+            let (mut section, file) = crate::tickfind::report(c);
+            put("tick_finder.json", serde_json::to_string_pretty(&file).unwrap_or_default().as_bytes());
+            section["file"] = json!(dir.join("tick_finder.json"));
+            section
         }
         None => Value::Null,
     };
@@ -449,6 +471,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             "trace": trace_report,
             "gpu_frame": gpu_report,
             "samples": samples_report,
+            "tick_finder": tick_report,
             "read_watch": reads_report,
             "spu": spu_report,
             "audio": audio_report,

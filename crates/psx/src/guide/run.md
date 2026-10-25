@@ -15,6 +15,9 @@ Observations (native):
   sample_every thins rows; the last frame is always sampled. With a field map
   (samples.toml, or map) sample takes names, and a [tick] adds a tick column:
   see guide topic fields.
+- find_tick counts every CPU store to main RAM by PC and address and groups
+  them by the fields they fell in (tick_finder.json): finding a game's tick,
+  guide topic fields.
 - watch ADDR[:WIDTH] logs every CPU/DMA store into the range to writes.jsonl
   with writer PC, old and new value. watch_changes_only drops same-value stores.
 - watch_reads LO-HI or ADDR[:WIDTH] logs CPU loads to reads.jsonl with PC.

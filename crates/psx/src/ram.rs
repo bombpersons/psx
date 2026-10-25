@@ -470,6 +470,10 @@ pub struct Sampler {
     pub out: String,
     pub rows: u64,
     last: Option<u64>,
+    /// The last row's tick and raw values, and per column the rows that
+    /// changed without a tick (run frames, the first few).
+    prev: Option<(u64, Vec<u32>)>,
+    pub untimed: Vec<(u64, Vec<u64>)>,
 }
 
 impl Sampler {
@@ -480,7 +484,8 @@ impl Sampler {
             out.push_str(&c.name);
         }
         out.push('\n');
-        Sampler { columns, every: every.max(1), tick, out, rows: 0, last: None }
+        let untimed = vec![(0, Vec::new()); columns.len()];
+        Sampler { columns, every: every.max(1), tick, out, rows: 0, last: None, prev: None, untimed }
     }
 
     /// Record a row for `run_frame` if it is due (every Nth frame, or `force`).
@@ -494,11 +499,24 @@ impl Sampler {
         if self.tick {
             self.out += &format!(",{tick}");
         }
-        for c in &self.columns {
+        let raw: Vec<u32> = self.columns.iter().map(|c| read_mem(ram, scratch, c.mem, c.fmt.width())).collect();
+        for (c, &v) in self.columns.iter().zip(&raw) {
             self.out.push(',');
-            self.out += &c.fmt.render(read_mem(ram, scratch, c.mem, c.fmt.width()));
+            self.out += &c.fmt.render(v);
         }
         self.out.push('\n');
+        if let Some((t, before)) = self.prev.as_ref().filter(|_| self.tick) {
+            for (i, (a, b)) in before.iter().zip(&raw).enumerate() {
+                if a != b && *t == tick {
+                    let u = &mut self.untimed[i];
+                    u.0 += 1;
+                    if u.1.len() < 8 {
+                        u.1.push(run_frame);
+                    }
+                }
+            }
+        }
+        self.prev = Some((tick, raw));
     }
 }
 
@@ -1047,6 +1065,11 @@ mod tests {
             "run_frame,frame,tick,y,0x80000012:i16\n0,100,0,441.5,441\n2,102,1,447.5,447\n3,103,3,447.5,447\n"
         );
         assert_eq!(s.rows, 3);
+        // Both columns changed between rows 0 and 2 with a tick, so in time.
+        assert_eq!(s.untimed, vec![(0, vec![]), (0, vec![])]);
+        write_le(&mut ram, 0x10, 2, 0);
+        s.row(4, 104, 3, &ram, &scratch, false);
+        assert_eq!(s.untimed, vec![(1, vec![4]), (0, vec![])]);
     }
 
     fn snap(dir: &Path, name: &str, words: &[(usize, u32)]) -> PathBuf {

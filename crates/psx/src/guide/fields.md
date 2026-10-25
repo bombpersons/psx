@@ -43,15 +43,29 @@ The report's samples.tick gives the total and fields_by_ticks_run (how many
 fields ran 0, 1, 2 ... ticks): steady play is one count, catch-up shows more.
 
 Finding the tick, for any game:
-1. Find a value the game logic changes every tick (a timer or a position
-   while moving), with ram_search over a few runs.
-2. watch it for a few hundred frames. The PC that stores it is in the logic;
-   follow it up the callers (xrefs, ghidra) to the loop that runs the logic
-   one or more times per frame.
-3. In that loop, find a store made once per pass: a pass counter, or a
-   field accumulator the loop subtracts from. That address, and the PC if
-   other code writes it too, is [tick].
-4. Check it: run with the map and sample the value from step 1. It should
-   change only on rows where tick changed, and over a slow scene some fields
-   should run two ticks (fields_by_ticks_run).
+1. run find_tick over a few hundred frames of play (from a state in a level,
+   with input). It counts every CPU store to main RAM by PC and address and
+   groups the pairs stored in exactly the same fields, as many times; the
+   report's tick_finder lists the groups with the most storing PCs first
+   (tick_finder.json has every member). A game's logic stores its variables
+   once a tick, so the first group whose fields_by_stores is not "1 in every
+   field" is usually the logic's, and its fields_by_stores is the tick's
+   rhythm ({"0": 300, "1": 300}: a tick every other field). A double-buffered
+   game also shows a pair of groups each stored every fourth field: drawing.
+2. Pick a store made once per pass of the game's loop. A counter (or step) is
+   best; otherwise find the loop: profile lists functions by calls, and those
+   called once per pass have it as caller (trace's calls.json gives callers).
+   Take a store on the path every pass takes (where the loop's branches
+   rejoin, or the head of a function called there), as the objects' update
+   starts. Confirm it is in the group: reading the code alone misleads, a
+   branch can skip a store.
+3. Put it in the map as [tick] (write = its write, pc = its pc) and sample the
+   subject with it. samples.tick.fields_by_ticks_run should match the group;
+   catch-up shows as fields running 2 ticks over a slow scene.
+4. samples.tick.changed_without_tick lists columns that changed on a row whose
+   tick did not. Empty is exact. Rows there mean the column is updated outside
+   the tick, or the marker is at the wrong point of the loop (a pass that
+   crosses a vblank puts the update and the marker in different fields): move
+   the marker to the point closest after the subject's update starts, and
+   note any rows that remain in the case.
 The tick counter must be in main RAM.

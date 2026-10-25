@@ -38,6 +38,7 @@ mod str_cmd;
 mod symbols_io;
 mod template;
 mod textures;
+mod tickfind;
 mod vram_diff;
 mod xa_cmd;
 

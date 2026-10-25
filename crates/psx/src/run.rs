@@ -218,6 +218,11 @@ pub struct ObserveArgs {
     /// column to samples.csv: the game's ticks completed since the run start.
     #[arg(long)]
     pub map: Option<PathBuf>,
+    /// Group every CPU store by the fields it fell in, to find the game's tick (guide
+    /// topic fields). Writes tick_finder.json; run a few hundred frames of play.
+    #[arg(long)]
+    #[serde(default)]
+    pub find_tick: bool,
     /// Sample every Nth frame only (the last frame is always sampled).
     #[arg(long)]
     pub sample_every: Option<u64>,
@@ -424,6 +429,7 @@ pub(crate) fn brief(v: &Value) -> Value {
         "pad",
         "artifacts",
         "samples",
+        "tick_finder",
         "pokes",
         "screens",
         "states",
@@ -496,7 +502,8 @@ pub(crate) fn summary(v: &Value) -> Value {
     if v["watch"]["enabled"] == true {
         s["watch"] = pick(&v["watch"], &["hits", "recorded", "complete", "file"]);
     }
-    let sections: [(&str, &[&str]); 9] = [
+    let sections: [(&str, &[&str]); 10] = [
+        ("tick_finder", &["file", "fields", "pairs"]),
         ("profile", &["file", "cycles", "functions", "top"]),
         ("read_watch", &["hits", "recorded", "complete", "file"]),
         ("samples", &["file", "rows"]),
