@@ -38,11 +38,14 @@ drawn over the game. Over MCP it returns a ticket at once; poll
 waiting. People take minutes.
 
 Write the request as a precise target: the level and spot, which way to face,
-health or items, and whether a cutscene should already have played.
+health or items, and whether a cutscene should already have played. To find
+where the game keeps something, ask for marks too: "press F6 just before and
+just after you pick up the key".
 
 The person plays with keyboard or gamepad (F1 or Start+Select rebinds, saved
-per user), can quick save/load (F5/F7) and start over from the handoff start
-(F8 twice), and hands back with F12 (done) or F10 (cannot do it), both with an
+per user), can quick save/load (F5/F7), start over from the handoff start
+(F8 twice), mark moments for you with an optional label (F6), mute the sound (F4), and
+hands back with F12 (done) or F10 (cannot do it), both with an
 optional note. Results:
 
 - status done | declined | closed (window closed) | abandoned (process died);
@@ -50,7 +53,14 @@ optional note. Results:
 - input.json: every pad change since the handoff start as a replay, with input
   lost to quick loads and restarts removed. `reproduce` gives the run call that
   replays it; verify=true checks it reproduces state.bin;
-- screen.png and the person's note.
+- ram.bin, screen.png and the person's note;
+- marks: each F6 press as marks/<n>/ (state.bin, ram.bin, screen.png,
+  mark.json with the label and frames). The report gives each mark's RAM diff
+  against the mark before it on its route (or the start: marks/start/ram.bin),
+  a run call to continue from it, and on_route (false when a quick load or
+  start over took play elsewhere afterwards). route_snapshots lists start, the
+  marks on the route and the end in order, ready for ram_search. handoff_status
+  lists the marks made so far while the person plays.
 
 Start from a checkpoint near the target rather than power-on when you have one.
 For analog games boot with pad dualshock: a digital pad maps the left stick to

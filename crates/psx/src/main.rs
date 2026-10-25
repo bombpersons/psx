@@ -111,7 +111,7 @@ enum Command {
     Run(run::RunCmdArgs),
     /// Ask a person to play: open a window showing the game and REQUEST, let them play with a
     /// keyboard or gamepad, and on F12 write state.bin, their input as a replay, a screenshot
-    /// and their note. --detach returns at once; poll with handoff-status.
+    /// and their note; F6 marks moments on the way (state, RAM and screen each). --detach returns at once; poll with handoff-status.
     Handoff(handoff::HandoffArgs),
     /// Progress or result of a handoff: waiting, done, declined, closed or abandoned.
     HandoffStatus(handoff::HandoffStatusArgs),

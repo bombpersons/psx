@@ -6,7 +6,11 @@
 //! - `state.bin`: the machine at the end (continue with `run --from-state`);
 //! - `input.json`: everything the person pressed, as a `run --replay` file
 //!   that starts where the handoff started, so the route can be replayed;
-//! - `screen.png`, `note.txt` (the person's note), and `report.json` (the result).
+//! - `ram.bin`, `screen.png`, `note.txt` (the person's note), and
+//!   `report.json` (the result);
+//! - `marks/<n>/`: moments the person marked (F6) on the way, each with
+//!   `state.bin`, `ram.bin`, `screen.png` and `mark.json` (label, frames);
+//!   the report diffs each one's RAM against the mark before it on its route.
 //!
 //! The window runs in the calling process, or with `--detach` (always over MCP)
 //! in a child process: the call returns a ticket at once and `handoff_status`
@@ -24,6 +28,8 @@ use crate::commands::{Ctx, Op, Outcome};
 use crate::replay::Input;
 
 // Without the window only their tests use these.
+#[cfg(feature = "window")]
+mod audio;
 #[cfg_attr(not(feature = "window"), allow(dead_code))]
 pub mod bindings;
 #[cfg_attr(not(feature = "window"), allow(dead_code))]
@@ -247,10 +253,39 @@ pub(crate) struct Session {
     start_frame: u64,
     /// Complete pad states, one per change, at run frames.
     pub events: Vec<Input>,
-    quick: Option<Vec<u8>>,
+    /// The quick save and the input recorded up to it.
+    quick: Option<(Vec<u8>, Vec<Input>)>,
     /// The machine at the handoff start, for starting over.
     start: Vec<u8>,
+    start_ram: Vec<u8>,
     media_id: Option<MediaId>,
+    pub marks: Vec<Mark>,
+}
+
+/// A moment the person marked, written to `marks/<n>/` at once.
+#[cfg_attr(not(feature = "window"), allow(dead_code))]
+pub(crate) struct Mark {
+    pub n: usize,
+    pub label: String,
+    /// Run frame and absolute frame.
+    rel: u64,
+    frame: u64,
+    /// The input recorded up to the mark: whether the mark is on the route
+    /// play ended on is whether this is that route's input up to it.
+    events: Vec<Input>,
+    dir: PathBuf,
+}
+
+impl Mark {
+    /// Whether `events` (a route's input) reaches this mark's state at its frame.
+    fn on(&self, events: &[Input], rel: u64) -> bool {
+        let upto = |e: &[Input]| e.iter().take_while(|e| e.frame < self.rel).count();
+        rel >= self.rel && upto(events) == self.events.len() && events[..self.events.len()] == self.events[..]
+    }
+
+    fn json(&self) -> Value {
+        json!({"n": self.n, "label": self.label, "run_frame": self.rel, "frame": self.frame, "dir": self.dir})
+    }
 }
 
 #[cfg_attr(not(feature = "window"), allow(dead_code))]
@@ -284,13 +319,13 @@ impl Session {
     }
 
     pub fn quick_save(&mut self) {
-        self.quick = Some(self.m.save_state(self.media_id.clone()));
+        self.quick = Some((self.m.save_state(self.media_id.clone()), self.events.clone()));
     }
 
     /// Back to the quick save, if there is one.
     pub fn quick_load(&mut self) -> Result<bool, String> {
         match self.quick.clone() {
-            Some(bytes) => self.restore(&bytes).map(|_| true),
+            Some((bytes, events)) => self.restore(&bytes, events).map(|_| true),
             None => Ok(false),
         }
     }
@@ -298,24 +333,60 @@ impl Session {
     /// Back to where the handoff started (the quick save is kept).
     pub fn restart(&mut self) -> Result<(), String> {
         let bytes = self.start.clone();
-        self.restore(&bytes)
+        self.restore(&bytes, Vec::new())
     }
 
-    /// Restore a state of this session. Input recorded after it is dropped, so
-    /// the recording still replays to wherever play continues from here.
-    fn restore(&mut self, bytes: &[u8]) -> Result<(), String> {
+    /// Restore a state of this session with the input that reached it, so the
+    /// recording still replays to wherever play continues from here.
+    fn restore(&mut self, bytes: &[u8], events: Vec<Input>) -> Result<(), String> {
         let (_, mut m) = Machine::load_state(bytes, self.bios.clone()).map_err(|e| e.to_string())?;
         m.bus.cdrom.disc = self.m.bus.cdrom.disc.take();
+        m.bus.spu.capture = self.m.bus.spu.capture;
         self.m = m;
-        let rel = self.rel();
-        self.events.retain(|e| e.frame < rel);
+        self.events = events;
         Ok(())
+    }
+
+    /// Mark this moment: its state, RAM and screen go to `marks/<n>/` in `dir`.
+    pub fn mark(&mut self, dir: &Path) -> Result<usize, String> {
+        let n = self.marks.len() + 1;
+        let mdir = dir.join("marks").join(n.to_string());
+        let mark = Mark {
+            n,
+            label: String::new(),
+            rel: self.rel(),
+            frame: self.m.bus.frames,
+            events: self.events.clone(),
+            dir: mdir.clone(),
+        };
+        let write =
+            |name: &str, bytes: &[u8]| std::fs::write(mdir.join(name), bytes).map_err(|e| format!("{name}: {e}"));
+        std::fs::create_dir_all(&mdir).map_err(|e| format!("{}: {e}", mdir.display()))?;
+        write("state.bin", &self.m.save_state(self.media_id.clone()))?;
+        write("ram.bin", &self.m.bus.ram[..])?;
+        self.write_screen(&mdir.join("screen.png")).map_err(|e| format!("screen.png: {e}"))?;
+        write("mark.json", mark.json().to_string().as_bytes())?;
+        self.marks.push(mark);
+        Ok(n)
+    }
+
+    /// Give mark `n` a label.
+    pub fn label_mark(&mut self, n: usize, label: &str) -> Result<(), String> {
+        let mark = &mut self.marks[n - 1];
+        mark.label = label.to_string();
+        std::fs::write(mark.dir.join("mark.json"), mark.json().to_string()).map_err(|e| format!("mark.json: {e}"))
+    }
+
+    fn write_screen(&self, p: &Path) -> std::io::Result<()> {
+        let (w, h, rgba) = self.m.bus.gpu.display_rgba();
+        crate::run::write_png(p, w, h, &rgba, png::ColorType::Rgba)
     }
 
     /// Progress for `handoff_status`.
     pub fn write_live(&self, dir: &Path, state: &str) {
         let v = json!({"status": state, "run_frame": self.rel(), "frame": self.m.bus.frames,
-            "input_events": self.events.len(), "pid": std::process::id(), "updated_unix_ms": crate::now_ms() as u64});
+            "input_events": self.events.len(), "marks": self.marks.iter().map(Mark::json).collect::<Vec<_>>(),
+            "pid": std::process::id(), "updated_unix_ms": crate::now_ms() as u64});
         let _ = crate::write_atomic(&dir.join("live.json"), v.to_string().as_bytes());
     }
 }
@@ -356,7 +427,18 @@ fn start(a: &HandoffArgs) -> crate::Result<Session> {
     )?;
     let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
     let start = m.save_state(medium.id.clone());
-    Ok(Session { m, bios, start_frame, events: Vec::new(), quick: None, start, media_id: medium.id })
+    let start_ram = m.bus.ram.to_vec();
+    Ok(Session {
+        m,
+        bios,
+        start_frame,
+        events: Vec::new(),
+        quick: None,
+        start,
+        start_ram,
+        media_id: medium.id,
+        marks: Vec::new(),
+    })
 }
 
 /// The handoff's report, also written to report.json; a failure is recorded
@@ -417,6 +499,7 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> cr
     put("note.txt", note.as_bytes())
         .and_then(|_| put("state.bin", &state))
         .and_then(|_| put("input.json", replay.as_bytes()))
+        .and_then(|_| put("ram.bin", &s.m.bus.ram[..]))
         .and_then(|_| {
             for (slot, card) in s.m.bus.sio0.cards.iter().enumerate() {
                 if let Some(c) = card.as_ref().filter(|c| c.writes > 0) {
@@ -425,9 +508,8 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> cr
             }
             Ok(())
         })?;
-    let (w, h, rgba) = s.m.bus.gpu.display_rgba();
     let screen = dir.join("screen.png");
-    if crate::run::write_png(&screen, w, h, &rgba, png::ColorType::Rgba).is_ok() {
+    if s.write_screen(&screen).is_ok() {
         files.insert("screen.png".into(), json!({"path": screen}));
     }
     let mut warnings = Vec::new();
@@ -456,6 +538,7 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> cr
     if verify["matches"] == false {
         warnings.push("replaying input.json did not reproduce state.bin; continue from state.bin, and treat the replay as approximate".into());
     }
+    let marks = marks_report(&s, a, frames, dir);
     let mut continue_args = json!({"from_state": dir.join("state.bin")});
     if let Some(m) = &a.media {
         continue_args["media"] = json!(m);
@@ -479,6 +562,7 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> cr
                 "sticks": [s.m.bus.sio0.pad.sticks[2], s.m.bus.sio0.pad.sticks[3], s.m.bus.sio0.pad.sticks[0], s.m.bus.sio0.pad.sticks[1]],
                 "motors": [s.m.bus.sio0.pad.motors.0, s.m.bus.sio0.pad.motors.1]},
             "files": files,
+            "marks": marks,
             "continue": {"tool": "run", "arguments": continue_args},
             "reproduce": {"tool": "run", "arguments": replay_args,
                 "note": "Replays the person's input from the handoff start; ends in the same state when emulation is deterministic (verify=true checks)."},
@@ -491,6 +575,64 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> cr
             "report": dir.join("report.json"),
             "build": crate::context::build(),
     }))
+}
+
+/// The marks, each with its RAM diffed against the mark before it on its
+/// route (or the handoff start).
+fn marks_report(s: &Session, a: &HandoffArgs, frames: u64, dir: &Path) -> Value {
+    if s.marks.is_empty() {
+        return json!({"count": 0, "list": []});
+    }
+    let start_ram = dir.join("marks/start/ram.bin");
+    let wrote_start =
+        std::fs::create_dir_all(dir.join("marks/start")).and_then(|_| std::fs::write(&start_ram, &s.start_ram)).is_ok();
+    let list: Vec<Value> = s
+        .marks
+        .iter()
+        .map(|m| {
+            let before = s
+                .marks
+                .iter()
+                .filter(|p| (p.rel, p.n) < (m.rel, m.n) && p.on(&m.events, m.rel))
+                .max_by_key(|p| (p.rel, p.n));
+            let against = before.map_or(start_ram.clone(), |p| p.dir.join("ram.bin"));
+            let opts =
+                crate::ram::DiffOpts { width: 4, range: None, min_delta: None, signed: false, limit: 12, offset: 0 };
+            let diff = match crate::ram::diff(&against, &m.dir.join("ram.bin"), opts) {
+                Ok(d) if before.is_some() || wrote_start => json!({
+                    "against": before.map_or(json!("start"), |p| json!(p.n)),
+                    "differing_words": d["differing"],
+                    "clusters": d["clusters"],
+                    "changes": d["changes"],
+                }),
+                Ok(_) => Value::Null,
+                Err(e) => e.to_value(),
+            };
+            let mut continue_args = json!({"from_state": m.dir.join("state.bin")});
+            if let Some(media) = &a.media {
+                continue_args["media"] = json!(media);
+            }
+            let mut v = m.json();
+            v["on_route"] = json!(m.on(&s.events, frames));
+            v["files"] = json!({"state": m.dir.join("state.bin"), "ram": m.dir.join("ram.bin"),
+                "screen": m.dir.join("screen.png")});
+            v["ram_diff"] = diff;
+            v["continue"] = json!({"tool": "run", "arguments": continue_args});
+            v
+        })
+        .collect();
+    // Snapshots along the route in order, start to end, for ram_search.
+    let mut on: Vec<&Mark> = s.marks.iter().filter(|m| m.on(&s.events, frames)).collect();
+    on.sort_by_key(|m| (m.rel, m.n));
+    let mut route = vec![json!(dir.join("marks/start"))];
+    route.extend(on.iter().map(|m| json!(m.dir)));
+    route.push(json!(dir));
+    json!({
+        "count": s.marks.len(),
+        "list": list,
+        "route_snapshots": route,
+        "note": "Each mark dir holds ram.bin, so ram_diff and ram_search take mark dirs as snapshots. A mark off the route was made before a quick load or start over took play elsewhere; its files still hold that moment. ram_diff lists the first 12 changed words; call ram_diff on the dirs for more.",
+    })
 }
 
 /// Replay the recording headless from the same start and compare the end state.
@@ -546,6 +688,21 @@ mod tests {
     }
 
     #[test]
+    fn marks_are_on_the_route_whose_input_reaches_them() {
+        let ev = |frame, buttons| Input { frame, buttons, sticks: [0x80; 4] };
+        let mark =
+            |rel, events: Vec<Input>| Mark { n: 1, label: String::new(), rel, frame: rel, events, dir: PathBuf::new() };
+        let route = [ev(0, 0), ev(10, 1), ev(20, 0), ev(30, 2)];
+        // Made at frame 25 with the route's input so far; later input does not matter.
+        assert!(mark(25, route[..3].to_vec()).on(&route, 40));
+        assert!(mark(20, route[..2].to_vec()).on(&route, 40), "input at the mark's frame comes after it");
+        // Play ended before it, or reached its frame by other input.
+        assert!(!mark(25, route[..3].to_vec()).on(&route, 24));
+        assert!(!mark(25, vec![ev(0, 0), ev(10, 4)]).on(&route, 40));
+        assert!(!mark(25, route[..2].to_vec()).on(&route, 40));
+    }
+
+    #[test]
     fn status_reports_waiting_then_abandoned_then_the_report() {
         let dir = std::env::temp_dir().join(format!("psx-handoff-status-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -562,7 +719,7 @@ mod tests {
 
     /// Plays a real disc headless the way the window does: input, a quick save
     /// and load, starting over, then hand-back with verify. Needs a disc:
-    /// PSX_TEST_DISC=media/game.cue cargo test -p psx --release handoff_session -- --ignored
+    /// PSX_TEST_DISC=$PWD/media/game.cue cargo test -p psx --release handoff_session -- --ignored
     #[test]
     #[ignore]
     fn handoff_session_replays_to_the_same_state() {
@@ -586,6 +743,10 @@ mod tests {
         press(&mut s, 300, 0);
         press(&mut s, 5, start_btn);
         press(&mut s, 100, 0);
+        let dir = std::env::temp_dir().join(format!("psx-handoff-session-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(s.mark(&dir).unwrap(), 1);
+        s.label_mark(1, "before the save").unwrap();
         s.quick_save();
         let saved_at = s.rel();
         press(&mut s, 10, cross);
@@ -595,19 +756,27 @@ mod tests {
         assert!(s.events.iter().all(|e| e.frame < saved_at), "input after the quick save is dropped");
         press(&mut s, 7, cross);
         press(&mut s, 60, 0);
+        s.mark(&dir).unwrap();
         s.restart().unwrap();
         assert_eq!((s.rel(), s.events.len()), (0, 0));
         press(&mut s, 200, 0);
         press(&mut s, 3, start_btn);
         press(&mut s, 120, cross);
         press(&mut s, 30, 0);
+        // Back to the save made on the first route: its input comes back too.
         s.quick_load().unwrap();
         press(&mut s, 40, cross);
-        let dir = std::env::temp_dir().join(format!("psx-handoff-session-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        s.mark(&dir).unwrap();
         let v = finish(&a, s, End::Done, "note".into(), &dir).unwrap();
         assert_eq!(v["verify"]["matches"], true, "{}", v["verify"]);
         assert_eq!(v["status"], "done");
+        let marks = &v["marks"]["list"];
+        let on: Vec<bool> = (0..3).map(|i| marks[i]["on_route"].as_bool().unwrap()).collect();
+        assert_eq!(on, [true, false, true]);
+        assert_eq!(marks[0]["label"], "before the save");
+        assert_eq!(marks[0]["ram_diff"]["against"], "start");
+        assert_eq!(marks[2]["ram_diff"]["against"], 1);
+        assert_eq!(v["marks"]["route_snapshots"].as_array().unwrap().len(), 4);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

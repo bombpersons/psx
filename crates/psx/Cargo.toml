@@ -25,6 +25,7 @@ sha2 = { workspace = true }
 minifb = { version = "0.29", optional = true }
 gilrs = { version = "0.11", optional = true }
 font8x8 = { version = "0.3", optional = true }
+cpal = { version = "0.17", optional = true }
 
 [build-dependencies]
 sha2 = { workspace = true }
@@ -34,6 +35,6 @@ unsafe_code = "forbid"
 
 [features]
 default = ["window"]
-# `psx handoff`: a window a person plays in (keyboard and gamepads). Build with
-# --no-default-features for a headless binary.
-window = ["dep:minifb", "dep:gilrs", "dep:font8x8"]
+# `psx handoff`: a window a person plays in (keyboard and gamepads), with
+# sound. Build with --no-default-features for a headless binary.
+window = ["dep:minifb", "dep:gilrs", "dep:font8x8", "dep:cpal"]

@@ -46,8 +46,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo fmt --all --check --manifest-path templates/psx-bevy/Cargo.toml
       - uses: Swatinem/rust-cache@v2
-      # Gamepads in the handoff window (gilrs) link libudev on Linux.
-      - run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      # Gamepads (gilrs) and sound (cpal) in the handoff window link libudev and ALSA on Linux.
+      - run: sudo apt-get update && sudo apt-get install -y libudev-dev libasound2-dev pkg-config
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
@@ -80,9 +80,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      # Gamepads in the handoff window (gilrs) link libudev on Linux.
+      # Gamepads (gilrs) and sound (cpal) in the handoff window link libudev and ALSA on Linux.
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libasound2-dev pkg-config
       - run: cargo build --profile dist --locked -p psx --target ${{ matrix.target }}
       - name: Package
         run: |
