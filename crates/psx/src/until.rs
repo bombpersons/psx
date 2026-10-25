@@ -72,6 +72,17 @@ impl Until {
     }
 }
 
+/// Whether each condition holds now, with its value (names only).
+pub fn check(conds: &[Until], ram: &[u8], scratch: &[u8]) -> Value {
+    let each: Vec<Value> = conds
+        .iter()
+        .map(|c| {
+            json!({"condition": c.text, "holds": c.holds(ram, scratch), "value": c.col.fmt.json(c.raw(ram, scratch))})
+        })
+        .collect();
+    json!({"met": each.iter().all(|c| c["holds"] == true), "conditions": each})
+}
+
 /// The report section: whether every condition held, where, and the values
 /// at the run's end (names only).
 pub fn report(conds: &[Until], met: Option<(u64, u64)>, ram: &[u8], scratch: &[u8]) -> Value {
@@ -117,6 +128,9 @@ mod tests {
         assert!(holds("x<0") && holds("x<=-5") && !holds("x>-5") && holds("x>=-5"));
         assert!(holds("lara.y=1.5") && holds("lara.y>1"));
         assert!(holds("80010000:u8=3") && holds("80010004:u16=0xFFFB"));
+        let conds = vec![parse("menu=3", Some(&map)).unwrap(), parse("x>0", Some(&map)).unwrap()];
+        let v = super::check(&conds, &ram, &scratch);
+        assert_eq!((v["met"].clone(), v["conditions"][1]["value"].clone()), (false.into(), (-5).into()));
         let err = |s: &str| parse(s, Some(&map)).unwrap_err();
         assert!(err("lara=1").contains("names 2 fields"));
         assert!(err("menu").contains("NAME=VALUE"));

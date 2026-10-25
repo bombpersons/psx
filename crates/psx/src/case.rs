@@ -88,7 +88,7 @@ pub struct CaseRecordArgs {
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CaseCheckArgs {
-    /// Case ids; default every recipe in the recipes directory.
+    /// Case ids; default every recipe.
     #[serde(default)]
     pub names: Vec<String>,
     /// Directory of the case files (default specs/cases).
@@ -97,7 +97,7 @@ pub struct CaseCheckArgs {
     /// Directory of the recipes (default notes/recordings).
     #[arg(long)]
     pub recipes: Option<PathBuf>,
-    /// Write the new recording over a case that differs.
+    /// Replace the cases that differ.
     #[arg(long)]
     #[serde(default)]
     pub write: bool,
