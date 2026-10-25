@@ -357,7 +357,7 @@ pub struct Sample {
 pub fn parse_sample(s: &str) -> Result<Sample, String> {
     let mut it = s.splitn(3, ':');
     let (a, f, n) = (it.next().unwrap_or(""), it.next().unwrap_or("u32"), it.next());
-    sample(a, f, n, &format!("--sample {s:?}"))
+    sample(a, f, n, &format!("{s:?}"))
 }
 
 /// Shared by the `ADDR:FMT[:NAME]` text and typed forms. A bare byte width
@@ -443,7 +443,7 @@ impl std::str::FromStr for SampleSpec {
 impl SampleSpec {
     pub fn parse(&self) -> Result<Sample, String> {
         match self {
-            SampleSpec::Text(s) => parse_sample(s),
+            SampleSpec::Text(s) => parse_sample(s).map_err(|e| format!("--sample {e}")),
             SampleSpec::Typed(t) => sample(
                 &t.addr,
                 t.format.as_deref().unwrap_or("u32"),

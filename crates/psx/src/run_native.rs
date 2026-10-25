@@ -40,22 +40,14 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     let map = crate::fieldmap::FieldMap::load(obs.map.as_deref()).map_err(Error::invalid)?;
     let mut cols = Vec::new();
     for spec in &obs.samples {
-        // A bare token is a name when the map has it or it is not hex.
-        let name = match spec {
-            crate::ram::SampleSpec::Text(s) if !s.contains(':') => Some(s)
-                .filter(|s| map.as_ref().is_some_and(|f| f.knows(s)) || psx_media::memmap::parse_hex(s).is_none()),
-            _ => None,
-        };
-        match (name, &map) {
-            (Some(s), Some(f)) => cols.extend(f.resolve(s).map_err(Error::invalid)?),
-            (Some(s), None) => {
-                return Err(Error::invalid(format!(
-                    "--sample {s:?}: names come from a field map (samples.toml in the project root, or --map; guide topic fields)"
-                )));
-            }
-            (None, _) => cols.push(spec.parse().map_err(Error::invalid)?),
+        match spec {
+            crate::ram::SampleSpec::Text(s) => cols
+                .extend(crate::fieldmap::select(s, map.as_ref()).map_err(|e| Error::invalid(format!("--sample {e}")))?),
+            _ => cols.push(spec.parse().map_err(Error::invalid)?),
         }
     }
+    let until = obs.until.iter().map(|s| crate::until::parse(s, map.as_ref())).collect::<Result<Vec<_>, _>>();
+    let until = until.map_err(Error::invalid)?;
     // The game's tick, counted while sampling.
     let tick = map.as_ref().and_then(|f| f.tick.clone()).filter(|_| !cols.is_empty());
     let tick_counter = tick.as_ref().map(|t| m.bus.obs.count(t.addr, t.width, t.pc));
@@ -120,6 +112,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     let mut next = 0;
     let mut applied_input = Vec::new();
     let mut termination = "frames_reached";
+    let mut met = None;
     let mut steps: u64 = 0;
     let bound_watches = scopes.iter().any(|s| s.bound.is_some()) && !a.watches.is_empty();
     let mut hit_names: Vec<Value> = Vec::new();
@@ -137,6 +130,12 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         if rel != last_rel {
             // A frame boundary (vblank), or the run start: observe first, then intervene.
             last_rel = rel;
+            if !until.is_empty() && until.iter().all(|u| u.holds(&m.bus.ram, &m.bus.scratch)) {
+                // Met: this boundary is the run's last (below).
+                met = Some((rel, m.bus.frames));
+                termination = "until_met";
+                break;
+            }
             if let Some(w) = &mut wav {
                 if let Err(e) = w.push(&m.bus.spu.take_samples()) {
                     boundary_err = Some(Error::io(dir.join("audio.wav"), e));
@@ -217,7 +216,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     if let Some(e) = boundary_err {
         return Err(e);
     }
-    if termination == "frames_reached" {
+    if termination == "frames_reached" || termination == "until_met" {
         // The final boundary: the state the run's files capture.
         let rel = m.bus.frames - start_frame;
         apply_due(&mut m, &events, &mut next, rel, &mut applied_input);
@@ -442,7 +441,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     registers.insert("cop0_sr".into(), json!(m.cpu.cop0[12]));
     registers.insert("cop0_cause".into(), json!(m.cpu.cop0[13]));
     registers.insert("cop0_epc".into(), json!(m.cpu.cop0[14]));
-    let complete = termination == "frames_reached";
+    let complete = termination == "frames_reached" || termination == "until_met";
     Ok((
         complete,
         json!({
@@ -472,6 +471,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             "gpu_frame": gpu_report,
             "samples": samples_report,
             "tick_finder": tick_report,
+            "until": if until.is_empty() { Value::Null } else { crate::until::report(&until, met, &m.bus.ram, &m.bus.scratch) },
             "read_watch": reads_report,
             "spu": spu_report,
             "audio": audio_report,

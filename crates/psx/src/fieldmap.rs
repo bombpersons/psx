@@ -206,7 +206,7 @@ impl FieldMap {
     /// The columns `sel` names: `global`, `subject`, `subject.field`,
     /// `subject[N]` or `subject[N].field`.
     pub fn resolve(&self, sel: &str) -> Result<Vec<Sample>, String> {
-        let label = format!("--sample {sel:?}");
+        let label = format!("{sel:?}");
         if let Some((n, addr, fmt)) = self.globals.iter().find(|g| g.0 == sel) {
             return Ok(vec![Sample { mapped: true, ..sample_at(*addr, fmt, Some(n), &label)? }]);
         }
@@ -253,6 +253,19 @@ impl FieldMap {
 
     pub fn report(&self) -> Value {
         json!({"path": self.path, "names": self.names()})
+    }
+}
+
+/// The columns a text selector names: a map name, or else `ADDR[:FMT[:NAME]]`.
+/// A bare token is a name when the map has it or it is not hex.
+pub fn select(s: &str, map: Option<&FieldMap>) -> Result<Vec<Sample>, String> {
+    let name = !s.contains(':') && (map.is_some_and(|f| f.knows(s)) || psx_media::memmap::parse_hex(s).is_none());
+    match (name, map) {
+        (true, Some(f)) => f.resolve(s),
+        (true, None) => Err(format!(
+            "{s:?}: names come from a field map (samples.toml in the project root, or --map; guide topic fields)"
+        )),
+        (false, _) => crate::ram::parse_sample(s).map(|c| vec![c]),
     }
 }
 

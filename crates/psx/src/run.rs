@@ -40,7 +40,7 @@ pub struct RunCmdArgs {
     #[arg(long, conflicts_with = "replay")]
     pub input: Option<crate::replay::Events>,
     /// Write watch `ADDR[:WIDTH]` in hex, repeatable. Native: every CPU/DMA store into
-    /// the range goes to writes.jsonl with pc, value, old value (hex and signed views too),
+    /// the range goes to writes.jsonl with pc, value, old value,
     /// `frame` (absolute, from power-on) and `run_frame` (from the run start).
     #[arg(long = "watch")]
     #[serde(default, rename = "watch")]
@@ -72,13 +72,13 @@ pub struct RunCmdArgs {
     #[arg(long)]
     #[serde(default)]
     pub trace_spu: bool,
-    /// Native: record the console's mixed sound output (SPU voices, reverb and CD audio, as the
-    /// game sets them) to audio.wav, 44.1 kHz stereo 16-bit, from the run start.
+    /// Native: record the console's mixed sound output to audio.wav, 44.1 kHz stereo
+    /// 16-bit, from the run start.
     #[arg(long)]
     #[serde(default)]
     pub audio: bool,
-    /// Native: profile the CPU's cycles (Mednafen's timing, including time DMA holds the CPU) by
-    /// function into profile.json: functions are call targets, named from --symbols.
+    /// Native: profile the CPU's cycles (Mednafen's timing) by function into
+    /// profile.json: functions are call targets, named from --symbols.
     #[arg(long)]
     #[serde(default)]
     pub profile: bool,
@@ -206,8 +206,7 @@ pub struct RunArgs {
 pub struct ObserveArgs {
     /// Sample a RAM/scratchpad value at every frame boundary (vblank) into samples.csv:
     /// `ADDR:FMT[:NAME]`, FMT one of u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F (fx16.16, fx4.12)
-    /// or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Little-endian,
-    /// read byte-exact from emulated memory; repeatable. With a field map (--map), a name
+    /// or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Repeatable. With a field map (--map), a name
     /// from it instead: `GLOBAL`, `SUBJECT` (all its fields), `SUBJECT.FIELD`,
     /// `SUBJECT[N]` or `SUBJECT[N].FIELD`.
     #[arg(long = "sample")]
@@ -223,11 +222,16 @@ pub struct ObserveArgs {
     #[arg(long)]
     #[serde(default)]
     pub find_tick: bool,
+    /// Stop at the first vblank where `NAME=VALUE` holds (or != < <= > >=; guide topic
+    /// fields). Repeatable: all must hold.
+    #[arg(long)]
+    #[serde(default)]
+    pub until: Vec<String>,
     /// Sample every Nth frame only (the last frame is always sampled).
     #[arg(long)]
     pub sample_every: Option<u64>,
     /// Write memory at the start of a run frame: `ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`
-    /// (VALUE decimal, -decimal or 0xHEX, or a fraction for fx formats; WIDTH 1/2/4, default 4;
+    /// (VALUE decimal, 0xHEX or a fraction for fx; WIDTH 1/2/4, default 4;
     /// default frame 0; a range re-applies it every frame). Reported under `pokes`; repeatable.
     #[arg(long = "poke")]
     #[serde(default, rename = "poke")]
@@ -430,6 +434,7 @@ pub(crate) fn brief(v: &Value) -> Value {
         "artifacts",
         "samples",
         "tick_finder",
+        "until",
         "pokes",
         "screens",
         "states",
@@ -502,7 +507,8 @@ pub(crate) fn summary(v: &Value) -> Value {
     if v["watch"]["enabled"] == true {
         s["watch"] = pick(&v["watch"], &["hits", "recorded", "complete", "file"]);
     }
-    let sections: [(&str, &[&str]); 10] = [
+    let sections: [(&str, &[&str]); 11] = [
+        ("until", &["met", "run_frame", "values"]),
         ("tick_finder", &["file", "fields", "pairs"]),
         ("profile", &["file", "cycles", "functions", "top"]),
         ("read_watch", &["hits", "recorded", "complete", "file"]),

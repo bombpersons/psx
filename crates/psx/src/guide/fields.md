@@ -69,3 +69,15 @@ Finding the tick, for any game:
    the marker to the point closest after the subject's update starts, and
    note any rows that remain in the case.
 The tick counter must be in main RAM.
+
+Waiting on a state. until NAME=VALUE stops the run at the first vblank
+where the value holds (also != < <= > >=), so a scripted route waits for
+the game rather than a fixed field, which an emulator update or a slow load
+can move. NAME is one column (a global, SUBJECT.FIELD, or ADDR:FMT) and
+VALUE is written in its format (3, -2, 0x80, 1.5 for fx); several must all
+hold. Termination is until_met; the report's until gives run_frame and the
+values. The run's files and state.bin (save_state) are from that vblank, so
+a route is a chain: run until the menu is up, then from_state with the
+press at frame 0, held long enough for the game to take it. A condition
+already true at the start stops at run_frame 0; frames caps the wait, and
+until.met false means it never came.
