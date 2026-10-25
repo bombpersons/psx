@@ -118,6 +118,8 @@ impl Job {
 
 /// Jobs handed to the worker at once.
 const BATCH: usize = 256;
+/// Batches sent and not yet back.
+const MAX_OUT: usize = 64;
 
 struct Worker {
     tx: Sender<Vec<Job>>,
@@ -152,10 +154,30 @@ impl Worker {
 
     fn wait(&mut self) {
         while self.out > 0 {
-            let batch = self.done.recv().expect("psx-gpu paint thread");
-            self.spare.push(batch);
+            self.take_back();
+        }
+    }
+
+    fn take_back(&mut self) {
+        let batch = self.done.recv().expect("psx-gpu paint thread");
+        self.spare.push(batch);
+        self.out -= 1;
+    }
+
+    /// Send a full batch. Drawn batches are taken back as they come, and
+    /// the CPU waits once `MAX_OUT` are queued: a game that never reads VRAM
+    /// never syncs, and they piled up.
+    fn send(&mut self, batch: &mut Vec<Job>) {
+        while let Ok(b) = self.done.try_recv() {
+            self.spare.push(b);
             self.out -= 1;
         }
+        while self.out >= MAX_OUT {
+            self.take_back();
+        }
+        let next = self.spare.pop().unwrap_or_else(|| Vec::with_capacity(BATCH));
+        self.tx.send(std::mem::replace(batch, next)).expect("psx-gpu paint thread");
+        self.out += 1;
     }
 }
 
@@ -206,10 +228,7 @@ impl Painter {
         q.batch.push(job);
         *self.busy.get_mut() = true;
         if q.batch.len() >= BATCH {
-            let next = w.spare.pop().unwrap_or_else(|| Vec::with_capacity(BATCH));
-            let full = std::mem::replace(&mut q.batch, next);
-            w.tx.send(full).expect("psx-gpu paint thread");
-            w.out += 1;
+            w.send(&mut q.batch);
         }
     }
 
@@ -222,9 +241,7 @@ impl Painter {
         let q = &mut *guard;
         if let Some(w) = &mut q.worker {
             if !q.batch.is_empty() {
-                let next = w.spare.pop().unwrap_or_else(|| Vec::with_capacity(BATCH));
-                w.tx.send(std::mem::replace(&mut q.batch, next)).expect("psx-gpu paint thread");
-                w.out += 1;
+                w.send(&mut q.batch);
             }
             // The worker is idle once everything sent is back.
             w.wait();
