@@ -42,13 +42,11 @@ Branch: `protocol`. Committed piece by piece.
   the old states by the build that made them. Guide topic `states`. TR2's
   `courtyard` and `open` rebuild byte for byte from power-on. (Brief item
   12.)
-
-## Phase 1: evidence tools
-
-3. **Case format additions** the second implementer asked for: timing
-   vectors (rows to ticks run and the field each tick read, from the tick
-   column) and an optional per-case `coverage` key (per spec, the columns
-   and rows it claims).
+- **Case format additions**: the case's `timing` vectors (per row, the
+  ticks run and the field they read) and `coverage` (per spec, the
+  compared columns and the rows it claims, rows ending at an `until` on
+  the case's columns). `case check` adds them to older cases and keeps
+  keys added by hand. (Section 6.)
 
 ## Phase 2: the barrier
 

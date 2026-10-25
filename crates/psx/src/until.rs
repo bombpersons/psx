@@ -8,13 +8,38 @@ use crate::fieldmap::FieldMap;
 use crate::ram::{Fmt, Sample, read_mem, signed};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Op {
+pub enum Op {
     Eq,
     Ne,
     Lt,
     Le,
     Gt,
     Ge,
+}
+
+impl Op {
+    pub fn test<T: PartialOrd>(self, v: T, want: T) -> bool {
+        match self {
+            Op::Eq => v == want,
+            Op::Ne => v != want,
+            Op::Lt => v < want,
+            Op::Le => v <= want,
+            Op::Gt => v > want,
+            Op::Ge => v >= want,
+        }
+    }
+}
+
+/// `NAME OP VALUE` split into its parts, OP one of = != < <= > >=.
+pub fn split(s: &str) -> Result<(&str, Op, &str), String> {
+    let bad = || format!("--until {s:?}: expected NAME=VALUE (or != < <= > >=)");
+    let at = s.find(['=', '!', '<', '>']).ok_or_else(bad)?;
+    let (sel, rest) = (s[..at].trim(), &s[at..]);
+    let (op, value) = [("!=", Op::Ne), ("<=", Op::Le), (">=", Op::Ge), ("=", Op::Eq), ("<", Op::Lt), (">", Op::Gt)]
+        .into_iter()
+        .find_map(|(t, op)| rest.strip_prefix(t).map(|v| (op, v.trim())))
+        .ok_or_else(bad)?;
+    Ok((sel, op, value))
 }
 
 /// One condition: a sample column compared with a value in its format.
@@ -37,13 +62,7 @@ fn ordered(fmt: Fmt, raw: u32) -> i64 {
 /// `NAME OP VALUE`, OP one of = != < <= > >=. NAME is one field map column
 /// (a global or SUBJECT.FIELD) or ADDR:FMT; VALUE is written in its format.
 pub fn parse(s: &str, map: Option<&FieldMap>) -> Result<Until, String> {
-    let at =
-        s.find(['=', '!', '<', '>']).ok_or_else(|| format!("--until {s:?}: expected NAME=VALUE (or != < <= > >=)"))?;
-    let (sel, rest) = (s[..at].trim(), &s[at..]);
-    let (op, value) = [("!=", Op::Ne), ("<=", Op::Le), (">=", Op::Ge), ("=", Op::Eq), ("<", Op::Lt), (">", Op::Gt)]
-        .into_iter()
-        .find_map(|(t, op)| rest.strip_prefix(t).map(|v| (op, v.trim())))
-        .ok_or_else(|| format!("--until {s:?}: expected NAME=VALUE (or != < <= > >=)"))?;
+    let (sel, op, value) = split(s)?;
     let mut cols = crate::fieldmap::select(sel, map).map_err(|e| format!("--until {e}"))?;
     if cols.len() != 1 {
         return Err(format!("--until {s:?}: {sel} names {} fields; name one (SUBJECT.FIELD)", cols.len()));
@@ -60,15 +79,7 @@ impl Until {
     }
 
     pub fn holds(&self, ram: &[u8], scratch: &[u8]) -> bool {
-        let v = ordered(self.col.fmt, self.raw(ram, scratch));
-        match self.op {
-            Op::Eq => v == self.want,
-            Op::Ne => v != self.want,
-            Op::Lt => v < self.want,
-            Op::Le => v <= self.want,
-            Op::Gt => v > self.want,
-            Op::Ge => v >= self.want,
-        }
+        self.op.test(ordered(self.col.fmt, self.raw(ram, scratch)), self.want)
     }
 }
 

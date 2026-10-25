@@ -46,6 +46,11 @@ pub struct CaseRecordArgs {
     #[arg(long)]
     #[serde(default)]
     pub compare: Vec<String>,
+    /// SPEC:COLUMNS[:ROWS], what a spec claims (COLUMNS a,b or *; ROWS A..B, A.. or
+    /// A..until COND, COND in until's syntax on columns, & between); repeatable.
+    #[arg(long)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage: Vec<String>,
     /// The spec the case supports, e.g. SPEC-0007.
     #[arg(long)]
     pub spec: String,
@@ -158,19 +163,161 @@ struct Recorded {
     report: Value,
 }
 
-/// The rows whose tick rose, counted from row 0's tick column.
+/// The rows whose tick rose, counted from row 0's tick column, and the
+/// timing vectors: per row, the ticks completed since the row before and the
+/// field they ran in and read (row r's ticks read field r-1).
 fn timing(t: &Table) -> Option<Value> {
     let i = t.column("tick")?;
     let ticks: Vec<u64> = t.rows.iter().map(|r| r[i].parse().unwrap_or(0)).collect();
     let total = ticks.last().copied().unwrap_or(0);
     let first = (1..ticks.len()).find(|&r| ticks[r] > ticks[r - 1]);
     let fields = ticks.len().saturating_sub(1) as u64;
+    let run: Vec<u64> =
+        (0..ticks.len()).map(|r| if r == 0 { 0 } else { ticks[r].saturating_sub(ticks[r - 1]) }).collect();
+    let reads: Vec<Option<usize>> = run.iter().enumerate().map(|(r, &n)| (n > 0).then(|| r - 1)).collect();
     Some(json!({
         "ticks": total,
         "first_tick": first,
         "fields_per_tick": (total > 0).then(|| (fields as f64 / total as f64).round() as u64),
+        "vectors": {
+            "rule": "row r's ticks_run ticks completed since row r-1; they ran during field reads_field (r-1) and read its pad",
+            "ticks_run": run,
+            "reads_field": reads,
+        },
     }))
 }
+
+/// A cell as a number: decimal, fixed point or 0x hex.
+fn number(s: &str) -> Option<f64> {
+    let s = s.trim();
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(h) => u64::from_str_radix(h, 16).ok().map(|n| n as f64),
+        None => s.parse().ok(),
+    }
+}
+
+/// The first row from `from` where every condition (until's syntax, on the
+/// table's columns) holds.
+fn first_holding(t: &Table, conds: &str, from: usize) -> Result<Option<usize>, String> {
+    let mut parsed = Vec::new();
+    for c in conds.split('&') {
+        let (name, op, want) = crate::until::split(c)?;
+        let i = t.column(name).ok_or_else(|| format!("until {c:?}: {name:?} is not a column"))?;
+        let want = number(want).ok_or_else(|| format!("until {c:?}: {want:?} is not a number"))?;
+        parsed.push((i, op, want));
+    }
+    Ok((from..t.rows.len()).find(|&r| {
+        parsed.iter().all(|&(i, op, want)| t.rows[r].get(i).and_then(|v| number(v)).is_some_and(|v| op.test(v, want)))
+    }))
+}
+
+/// `coverage` from SPEC:COLUMNS[:ROWS]: per spec, the compared columns it
+/// claims and the rows, first and last inclusive (an until's last row is the
+/// first where it holds).
+fn coverage(t: &Table, specs: &[String], compared: &[String]) -> Result<Value, String> {
+    let mut out = serde_json::Map::new();
+    let last = t.rows.len().saturating_sub(1);
+    for s in specs {
+        let mut parts = s.splitn(3, ':');
+        let (spec, cols, rows) = (parts.next().unwrap_or("").trim(), parts.next(), parts.next());
+        let cols = cols.ok_or_else(|| format!("coverage {s:?}: expected SPEC:COLUMNS[:ROWS]"))?;
+        let columns: Vec<String> = match cols.trim() {
+            "*" => compared.to_vec(),
+            c => c.split(',').map(|c| c.trim().to_string()).collect(),
+        };
+        for c in &columns {
+            if !compared.contains(c) {
+                return Err(format!("coverage {s:?}: {c:?} is not a compared column ({})", compared.join(", ")));
+            }
+        }
+        let mut claim = json!({"columns": columns});
+        let (a, b) = match rows.map(str::trim) {
+            None | Some("") => (0, last),
+            Some(r) => {
+                let (a, b) = r
+                    .split_once("..")
+                    .ok_or_else(|| format!("coverage {s:?}: rows {r:?}: expected A..B, A.. or A..until COND"))?;
+                let a: usize = match a.trim() {
+                    "" => 0,
+                    n => n.parse().map_err(|_| format!("coverage {s:?}: row {n:?} is not a number"))?,
+                };
+                let b = match b.trim() {
+                    "" => last,
+                    u if u.starts_with("until") => {
+                        let cond = u["until".len()..].trim();
+                        claim["until"] = json!(cond);
+                        first_holding(t, cond, a)
+                            .map_err(|e| format!("coverage {s:?}: {e}"))?
+                            .ok_or_else(|| format!("coverage {s:?}: {cond:?} never holds from row {a}"))?
+                    }
+                    n => n.parse().map_err(|_| format!("coverage {s:?}: row {n:?} is not a number"))?,
+                };
+                (a, b)
+            }
+        };
+        if a > b || b > last {
+            return Err(format!("coverage {s:?}: rows {a}..{b} are not within 0..{last}"));
+        }
+        claim["rows"] = json!([a, b]);
+        if out.insert(spec.to_string(), claim).is_some() {
+            return Err(format!("coverage: {spec} is claimed twice"));
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+/// JSON as serde's pretty printer writes it, but with arrays of plain
+/// values (numbers, names, null) on one line, so long vectors stay short.
+fn pretty(v: &Value) -> String {
+    fn go(v: &Value, indent: usize, out: &mut String) {
+        let pad = "  ".repeat(indent + 1);
+        match v {
+            Value::Array(a) if a.iter().all(|x| !x.is_array() && !x.is_object()) => {
+                *out += &serde_json::to_string(v).unwrap_or_default().replace(',', ", ");
+            }
+            Value::Array(a) if !a.is_empty() => {
+                out.push_str("[\n");
+                for (i, x) in a.iter().enumerate() {
+                    out.push_str(&pad);
+                    go(x, indent + 1, out);
+                    out.push_str(if i + 1 < a.len() { ",\n" } else { "\n" });
+                }
+                *out += &format!("{}]", "  ".repeat(indent));
+            }
+            Value::Object(m) if !m.is_empty() => {
+                out.push_str("{\n");
+                for (i, (k, x)) in m.iter().enumerate() {
+                    *out += &format!("{pad}{}: ", Value::String(k.clone()));
+                    go(x, indent + 1, out);
+                    out.push_str(if i + 1 < m.len() { ",\n" } else { "\n" });
+                }
+                *out += &format!("{}}}", "  ".repeat(indent));
+            }
+            _ => *out += &serde_json::to_string(v).unwrap_or_default(),
+        }
+    }
+    let mut s = String::new();
+    go(v, 0, &mut s);
+    s + "\n"
+}
+
+/// The case keys record writes; save keeps any others a case already has.
+const CASE_KEYS: [&str; 14] = [
+    "id",
+    "spec",
+    "role",
+    "level",
+    "subject",
+    "start",
+    "input",
+    "activation",
+    "observations",
+    "compare",
+    "fields_per_tick",
+    "first_tick",
+    "timing",
+    "coverage",
+];
 
 fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
     if a.name.is_empty() || !a.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
@@ -301,9 +448,28 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
                 case[k] = v[k].clone();
             }
         }
+        case["timing"] = v["vectors"].clone();
     }
     if !a.activation.is_empty() {
         case["activation"] = json!(a.activation);
+    }
+    let compared: Vec<String> = compare.keys().cloned().collect();
+    if !a.coverage.is_empty() {
+        let c = coverage(&t, &a.coverage, &compared).map_err(Error::invalid)?;
+        let claims = |col: &str| {
+            c.as_object()
+                .into_iter()
+                .flat_map(|m| m.values())
+                .any(|v| v["columns"].as_array().is_some_and(|a| a.iter().any(|x| x == col)))
+        };
+        let unclaimed: Vec<&str> = compared.iter().map(String::as_str).filter(|col| !claims(col)).collect();
+        if !unclaimed.is_empty() {
+            warnings.push(format!(
+                "no spec's coverage claims {}: claim them or say which spec they wait for",
+                unclaimed.join(", ")
+            ));
+        }
+        case["coverage"] = c;
     }
     let csv = t.text();
     // The recipe: these arguments with the input inlined, and what they ran on.
@@ -336,11 +502,19 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
 }
 
 fn save(r: &Recorded, name: &str, cases: &Path, recipes: &Path) -> crate::Result<Value> {
-    let pretty = |v: &Value| serde_json::to_string_pretty(v).unwrap_or_default() + "\n";
     let (case, csv, recipe) =
         (cases.join(format!("{name}.json")), cases.join(format!("{name}.csv")), recipes.join(format!("{name}.json")));
+    // Keys someone added to the case by hand (notes, say) stay.
+    let mut new = r.case.clone();
+    if let Ok(Value::Object(old)) = std::fs::read(&case).map(|b| serde_json::from_slice(&b).unwrap_or(Value::Null)) {
+        for (k, v) in old {
+            if !CASE_KEYS.contains(&k.as_str()) {
+                new[k] = v;
+            }
+        }
+    }
     write(&csv, r.csv.as_bytes())?;
-    write(&case, pretty(&r.case).as_bytes())?;
+    write(&case, pretty(&new).as_bytes())?;
     write(&recipe, pretty(&r.recipe).as_bytes())?;
     Ok(json!({"case": case, "observations": csv, "recipe": recipe}))
 }
@@ -418,12 +592,20 @@ impl Op for CaseCheckArgs {
                     let mut d = differences(&old, &Table::parse(&r.csv));
                     let case: Value = serde_json::from_slice(&read(&cases.join(format!("{name}.json")))?)
                         .map_err(|e| Error::malformed(format!("case {name}: {e}")))?;
-                    let keys = ["fields_per_tick", "first_tick", "input", "subject"];
-                    let changed: Vec<&str> = keys.into_iter().filter(|k| case[k] != r.case[k]).collect();
+                    let keys = ["fields_per_tick", "first_tick", "input", "subject", "timing", "coverage"];
+                    // A key this psx writes that the published case lacks
+                    // (made by an older psx) is added, not a difference.
+                    let added: Vec<&str> =
+                        keys.into_iter().filter(|k| case.get(k).is_none() && !r.case[k].is_null()).collect();
+                    let changed: Vec<&str> =
+                        keys.into_iter().filter(|k| !added.contains(k) && case[k] != r.case[k]).collect();
                     d["same"] = json!(d["same"] == true && changed.is_empty());
                     d["case_keys_changed"] = json!(changed);
                     d["warnings"] = json!(warnings);
-                    if self.write && d["same"] != true {
+                    if !added.is_empty() {
+                        d["case_keys_to_add"] = json!(added);
+                    }
+                    if self.write && (d["same"] != true || !added.is_empty()) {
                         d["written"] = save(&r, name, &cases, &recipes)?;
                     }
                     Ok(d)
@@ -431,7 +613,8 @@ impl Op for CaseCheckArgs {
                 let mut v = one().unwrap_or_else(|e| json!({"same": false, "error": e.to_value()["error"]}));
                 if v["same"] == true {
                     same += 1;
-                    v = json!({"same": true});
+                    v = json!({"same": true, "case_keys_to_add": v.get("case_keys_to_add"), "written": v.get("written")});
+                    v.as_object_mut().into_iter().for_each(|m| m.retain(|_, x| !x.is_null()));
                 }
                 v["case"] = json!(name);
                 results.push(v);
@@ -451,7 +634,8 @@ impl Op for CaseCheckArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::{Table, differences, timing};
+    use super::{Table, coverage, differences, pretty, timing};
+    use serde_json::json;
 
     #[test]
     fn timing_comes_from_the_tick_column() {
@@ -461,6 +645,43 @@ mod tests {
         // Five fields, four ticks (one a catch-up): steady play is a tick a field.
         assert_eq!(v["fields_per_tick"], 1);
         assert!(timing(&Table::parse("run_frame,frame,x\n0,1,2\n")).is_none());
+    }
+
+    #[test]
+    fn timing_vectors_give_each_rows_ticks_and_the_field_they_read() {
+        // The brief's example: tick 0, 2, 2, 2, 3 runs 2, 0, 0, 1 ticks on
+        // rows 1 to 4, reading fields 0, -, -, 3.
+        let t = Table::parse("run_frame,frame,tick\n0,0,0\n1,1,2\n2,2,2\n3,3,2\n4,4,3\n");
+        let v = &timing(&t).unwrap()["vectors"];
+        assert_eq!(v["ticks_run"], json!([0, 2, 0, 0, 1]));
+        assert_eq!(v["reads_field"], json!([null, 0, null, null, 3]));
+    }
+
+    #[test]
+    fn coverage_resolves_rows_and_checks_columns() {
+        let t = Table::parse("run_frame,frame,tick,x,state\n0,0,0,1,0\n1,1,1,2,0\n2,2,2,3,2\n3,3,3,3,2\n");
+        let cols = vec!["x".to_string(), "state".to_string()];
+        let c = coverage(&t, &["SPEC-1:x:0..until state=2".into(), "SPEC-2:*:2..".into()], &cols).unwrap();
+        assert_eq!(c["SPEC-1"], json!({"columns": ["x"], "rows": [0, 2], "until": "state=2"}));
+        assert_eq!(c["SPEC-2"], json!({"columns": ["x", "state"], "rows": [2, 3]}));
+        assert_eq!(coverage(&t, &["S:x".into()], &cols).unwrap()["S"]["rows"], json!([0, 3]));
+        assert_eq!(coverage(&t, &["S:x:1..until x>=3&state!=0".into()], &cols).unwrap()["S"]["rows"], json!([1, 2]));
+        let err = |s: &str| coverage(&t, &[s.into()], &cols).unwrap_err();
+        assert!(err("S:y").contains("not a compared column"));
+        assert!(err("S:x:0..until state=9").contains("never holds"));
+        assert!(err("S:x:0..9").contains("not within"));
+        assert!(err("S").contains("SPEC:COLUMNS"));
+    }
+
+    #[test]
+    fn pretty_keeps_plain_arrays_on_one_line() {
+        let v = json!({"a": [1, null, 2], "b": [{"x": ["L", "R"]}], "c": {}, "d": []});
+        let s = pretty(&v);
+        assert_eq!(
+            s,
+            "{\n  \"a\": [1, null, 2],\n  \"b\": [\n    {\n      \"x\": [\"L\", \"R\"]\n    }\n  ],\n  \"c\": {},\n  \"d\": []\n}\n"
+        );
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&s).unwrap(), v);
     }
 
     #[test]
