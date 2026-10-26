@@ -159,7 +159,25 @@ that is the cheaper part to redo once specs and cases exist.
    by hand in its form); the existing tests become the implementer's bar.
 4. Create the clean repository new (port init), not as a branch: the old
    history holds the tainted code. Publish the specs; copy in the kept and
-   audited code.
+   audited code. The implementer is a session that has never seen the old
+   port or the original's code, started fresh in its own folder.
+   Repositories set up by hand before psx had the protocol's files take
+   them with port adopt:
+
+     port adopt --investigator INV [--implementer IMP] [--reviewer REV]
+                [--legacy OLD]... [--media DISC] [--dry-run]
+
+   It writes only what is missing (the role files, protocol.toml, .mcp.json
+   with psx or clean mode, the reviewer's repository if there is none, data/
+   if there is none), adds to JSON settings what they lack (deny rules,
+   clean mode, the message check's settings) and overwrites nothing; where
+   a repository already has its own message check or AGENTS.md, it keeps
+   them and says so. Each --legacy port is denied to the implementer
+   (with its sessions' folders), listed in protocol.toml's [legacy], and its
+   notes/ and docs/ join the text the message check refuses. It ends with
+   what only a person settles: the field map, the start states to
+   publish, the case runner's cases_from_folder, the legacy triage.
+   Running it again changes nothing.
 5. Reimplement one system at a time, starting with what most cases cover.
    The old port is the reference until the clean one passes the same cases.
 

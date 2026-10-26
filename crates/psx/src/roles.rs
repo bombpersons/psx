@@ -175,6 +175,10 @@ pub struct Setting {
     pub executables: Vec<String>,
     /// psx's own project folder, where it keeps its analyses.
     pub psx_root: Option<PathBuf>,
+    /// Ports written before the protocol by someone who read the original's
+    /// code: the implementer never reads them, and their notes are the
+    /// investigator's.
+    pub legacy: Vec<PathBuf>,
 }
 
 fn absolute(p: &Path) -> PathBuf {
@@ -255,6 +259,9 @@ fn settings(role: Role, repos: &Repos, s: &Setting) -> Value {
             deny.push(format!("Bash(*{}*)", psx_exe()));
             deny_repo(&mut deny, &repos.investigator, true);
             deny_repo(&mut deny, &repos.reviewer, true);
+            for l in &s.legacy {
+                deny_repo(&mut deny, l, true);
+            }
             if let Some(root) = &s.psx_root {
                 // psx's own folder keeps its analyses (and the disc) in .psx/ and media/.
                 if repos.implementer.starts_with(root) {
@@ -326,10 +333,24 @@ fn clean_mcp_json(repos: &Repos) -> Value {
 
 /// The implementer's message check settings.
 fn barrier_json(repos: &Repos, s: &Setting) -> Value {
-    json!({
+    let mut v = json!({
         "investigator": repos.investigator, "names": s.executables,
         "published": ["specs", "questions"], "log": "notes/guidance.jsonl", "confirm_prefix": "[cross]",
-    })
+    });
+    if !s.legacy.is_empty() {
+        v["notes"] = json!(barrier_notes(repos, s));
+    }
+    v
+}
+
+/// The text a message must not repeat: the investigator's notes, and a
+/// legacy port's notes and docs.
+fn barrier_notes(repos: &Repos, s: &Setting) -> Vec<PathBuf> {
+    let mut notes = vec![repos.investigator.join("notes")];
+    for l in &s.legacy {
+        notes.extend(["notes", "docs"].map(|d| l.join(d)).into_iter().filter(|p| p.is_dir()));
+    }
+    notes
 }
 
 /// The investigator's `protocol.toml`.
@@ -350,7 +371,18 @@ fn protocol_toml(game: &str, repos: &Repos, s: &Setting) -> String {
         let names: Vec<String> = s.executables.iter().map(|e| q(e)).collect();
         t += &format!("executables = [{}]\n", names.join(", "));
     }
+    if !s.legacy.is_empty() {
+        t += &legacy_toml(&s.legacy);
+    }
     t
+}
+
+fn legacy_toml(legacy: &[PathBuf]) -> String {
+    let q = |p: &PathBuf| serde_json::to_string(&p.display().to_string()).unwrap_or_default();
+    format!(
+        "\n# Ports written before the protocol, which the implementer never reads.\n[legacy]\nports = [{}]\n",
+        legacy.iter().map(q).collect::<Vec<_>>().join(", ")
+    )
 }
 
 /// The investigator's protocol settings, if it has them: (implementer,
@@ -541,21 +573,89 @@ fn link_or_copy(from: &Path, to: &Path) -> crate::Result<()> {
     r.map_err(|e| Error::io(to, e))
 }
 
+/// What a disc gives a port: its executables, kept from the implementer,
+/// and every other file as its data.
+struct DiscFiles {
+    /// The executables' names, refused at the barrier.
+    executables: Vec<String>,
+    /// The executables' and SYSTEM.CNF's paths.
+    excluded: Vec<String>,
+    /// (path, read raw, bytes)
+    data: Vec<(String, bool, Vec<u8>)>,
+    failed: Vec<Value>,
+    /// The image's own files (the cue and its tracks).
+    sources: Vec<PathBuf>,
+}
+
+fn disc_files(media: &Path) -> crate::Result<DiscFiles> {
+    use psx_media::disc::Disc;
+    use psx_media::iso9660::FileSystem;
+    let disc = Disc::open(media)?;
+    let fs = FileSystem::read(&disc)?;
+    // The executables: SYSTEM.CNF's boot file, and every PS-X EXE on the disc.
+    let cnf = fs.find("/SYSTEM.CNF").and_then(|e| fs.read_file(&disc, e).ok());
+    let boot = cnf
+        .as_deref()
+        .map(psx_media::system_cnf::SystemCnf::parse)
+        .and_then(|c| c.boot)
+        .unwrap_or_else(|| psx_media::system_cnf::DEFAULT_BOOT.into());
+    let boot = boot_path(&boot);
+    let (mut data, mut excluded, mut failed) = (Vec::new(), Vec::new(), Vec::new());
+    for e in fs.entries.iter().filter(|e| !e.is_dir) {
+        let (bytes, raw) = match fs.read_file(&disc, e) {
+            Ok(b) => (b, false),
+            Err(psx_media::MediaError::Unsupported(_)) => match fs.read_file_raw(&disc, e) {
+                Ok(b) => (b, true),
+                Err(err) => {
+                    failed.push(json!({"path": e.path, "error": err.to_string()}));
+                    continue;
+                }
+            },
+            Err(err) => {
+                failed.push(json!({"path": e.path, "error": err.to_string()}));
+                continue;
+            }
+        };
+        let upper = e.path.to_ascii_uppercase();
+        if upper == boot || upper == "/SYSTEM.CNF" || is_executable(&bytes) {
+            excluded.push(e.path.clone());
+            continue;
+        }
+        data.push((e.path.clone(), raw, bytes));
+    }
+    let mut executables: Vec<String> = excluded
+        .iter()
+        .filter(|p| !p.eq_ignore_ascii_case("/SYSTEM.CNF"))
+        .map(|p| p.trim_start_matches('/').rsplit('/').next().unwrap_or(p).to_string())
+        .collect();
+    executables.dedup();
+    let mut sources = vec![disc.source.clone()];
+    sources.extend(disc.files.iter().map(|f| f.path.clone()));
+    sources.sort();
+    sources.dedup();
+    Ok(DiscFiles { executables, excluded, data, failed, sources })
+}
+
+/// The data files into the implementer's data/, with the disc's paths;
+/// their bytes.
+fn write_data(implementer: &Path, data: &[(String, bool, Vec<u8>)]) -> crate::Result<usize> {
+    let mut bytes = 0usize;
+    for (path, raw, b) in data {
+        let rel = path.trim_start_matches('/');
+        let rel = if *raw { format!("{rel}.raw") } else { rel.to_string() };
+        let to = implementer.join("data").join(rel);
+        if let Some(d) = to.parent() {
+            std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+        }
+        std::fs::write(&to, b).map_err(|e| Error::io(&to, e))?;
+        bytes += b.len();
+    }
+    Ok(bytes)
+}
+
 impl PortInitArgs {
     fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
-        use psx_media::disc::Disc;
-        use psx_media::iso9660::FileSystem;
         let media = absolute(&ctx.root.join(&self.media));
-        let disc = Disc::open(&media)?;
-        let fs = FileSystem::read(&disc)?;
-        // The executables: SYSTEM.CNF's boot file, and every PS-X EXE on the disc.
-        let cnf = fs.find("/SYSTEM.CNF").and_then(|e| fs.read_file(&disc, e).ok());
-        let boot = cnf
-            .as_deref()
-            .map(psx_media::system_cnf::SystemCnf::parse)
-            .and_then(|c| c.boot)
-            .unwrap_or_else(|| psx_media::system_cnf::DEFAULT_BOOT.into());
-        let boot = boot_path(&boot);
         let game = self.game.clone().unwrap_or_else(|| game_name(&media));
         let dest = absolute(&ctx.root.join(&self.dest));
         let repos = Repos {
@@ -569,39 +669,12 @@ impl PortInitArgs {
             }
         }
         // The data files, read first so a disc that cannot be read writes nothing.
-        let (mut data, mut excluded, mut failed) = (Vec::new(), Vec::new(), Vec::new());
-        for e in fs.entries.iter().filter(|e| !e.is_dir) {
-            let (bytes, raw) = match fs.read_file(&disc, e) {
-                Ok(b) => (b, false),
-                Err(psx_media::MediaError::Unsupported(_)) => match fs.read_file_raw(&disc, e) {
-                    Ok(b) => (b, true),
-                    Err(err) => {
-                        failed.push(json!({"path": e.path, "error": err.to_string()}));
-                        continue;
-                    }
-                },
-                Err(err) => {
-                    failed.push(json!({"path": e.path, "error": err.to_string()}));
-                    continue;
-                }
-            };
-            let upper = e.path.to_ascii_uppercase();
-            if upper == boot || upper == "/SYSTEM.CNF" || is_executable(&bytes) {
-                excluded.push(e.path.clone());
-                continue;
-            }
-            data.push((e.path.clone(), raw, bytes));
-        }
-        let mut executables: Vec<String> = excluded
-            .iter()
-            .filter(|p| !p.eq_ignore_ascii_case("/SYSTEM.CNF"))
-            .map(|p| p.trim_start_matches('/').rsplit('/').next().unwrap_or(p).to_string())
-            .collect();
-        executables.dedup();
+        let DiscFiles { executables, excluded, data, failed, sources: linked } = disc_files(&media)?;
         let s = Setting {
             media: Some(media.clone()),
             executables: executables.clone(),
             psx_root: Some(absolute(&ctx.root)),
+            legacy: Vec::new(),
         };
         let options = TemplateOptions {
             region: self.region.unwrap_or_default(),
@@ -620,10 +693,6 @@ impl PortInitArgs {
         let imp = create(&repos.implementer, Role::Implementer, &game, &repos, &s, Some(&name), options)?;
         let rev = create(&repos.reviewer, Role::Reviewer, &game, &repos, &s, None, options)?;
         // The investigator's disc and BIOS, linked from where they are.
-        let mut linked = vec![disc.source.clone()];
-        linked.extend(disc.files.iter().map(|f| f.path.clone()));
-        linked.sort();
-        linked.dedup();
         for f in &linked {
             let to = repos.investigator.join("media").join(f.file_name().unwrap_or_default());
             if !to.exists() {
@@ -638,17 +707,7 @@ impl PortInitArgs {
             }
         }
         // The implementer's data files.
-        let mut bytes = 0usize;
-        for (path, raw, b) in &data {
-            let rel = path.trim_start_matches('/');
-            let rel = if *raw { format!("{rel}.raw") } else { rel.to_string() };
-            let to = repos.implementer.join("data").join(rel);
-            if let Some(d) = to.parent() {
-                std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
-            }
-            std::fs::write(&to, b).map_err(|e| Error::io(&to, e))?;
-            bytes += b.len();
-        }
+        let bytes = write_data(&repos.implementer, &data)?;
         let mut git = Vec::new();
         for p in [&repos.investigator, &repos.implementer, &repos.reviewer] {
             let ok = std::process::Command::new("git")
@@ -680,6 +739,494 @@ impl PortInitArgs {
 }
 
 impl Op for PortInitArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::result(self.run(ctx))
+    }
+}
+
+/// `port adopt`: the protocol's files added to repositories that already
+/// exist, as for a port begun before psx had them, or one being moved under
+/// the protocol. Nothing is overwritten: a missing file is written, a JSON
+/// setting gains what it lacks (deny rules, servers, the message check), and
+/// whatever only a person can settle is listed.
+#[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PortAdoptArgs {
+    /// The investigator's repository.
+    #[arg(long)]
+    pub investigator: PathBuf,
+    /// The implementer's repository (default: the one protocol.toml names).
+    #[arg(long)]
+    #[serde(default)]
+    pub implementer: Option<PathBuf>,
+    /// The reviewer's repository, created if it does not exist (default: the one protocol.toml names).
+    #[arg(long)]
+    #[serde(default)]
+    pub reviewer: Option<PathBuf>,
+    /// A port written before the protocol by someone who read the original's code; repeatable.
+    /// The implementer is denied it, and the message check refuses text from its notes and docs.
+    #[arg(long)]
+    #[serde(default)]
+    pub legacy: Vec<PathBuf>,
+    /// The disc image (default: protocol.toml's).
+    #[arg(long)]
+    #[serde(default)]
+    pub media: Option<PathBuf>,
+    /// The game's name in the roles' instructions (default: protocol.toml's, else the disc image's name).
+    #[arg(long)]
+    #[serde(default)]
+    pub game: Option<String>,
+    /// Say what would change, and change nothing.
+    #[arg(long)]
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// What adopting changed, or would.
+#[derive(Default)]
+struct Adoption {
+    dry_run: bool,
+    written: Vec<String>,
+    merged: Vec<String>,
+    /// Files kept as they are though psx would write them differently.
+    differing: Vec<String>,
+    todo: Vec<String>,
+}
+
+impl Adoption {
+    fn put(&self, p: &Path, text: &str) -> crate::Result<()> {
+        if self.dry_run {
+            return Ok(());
+        }
+        if let Some(d) = p.parent() {
+            std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+        }
+        std::fs::write(p, text).map_err(|e| Error::io(p, e))
+    }
+
+    /// `text` at `rel` unless a file is there already.
+    fn file(&mut self, repo: &Path, rel: &str, text: &str) -> crate::Result<()> {
+        let p = repo.join(rel);
+        match std::fs::read_to_string(&p) {
+            Ok(have) => {
+                if have != text {
+                    self.differing.push(p.display().to_string());
+                }
+                Ok(())
+            }
+            Err(_) => {
+                self.put(&p, text)?;
+                self.written.push(p.display().to_string());
+                Ok(())
+            }
+        }
+    }
+
+    /// A JSON file: `ours` if there is none, else what it has with
+    /// `merge` applied.
+    fn json(
+        &mut self,
+        repo: &Path,
+        rel: &str,
+        ours: &Value,
+        merge: impl FnOnce(&mut Value, &Value, &mut Vec<String>),
+    ) -> crate::Result<()> {
+        let p = repo.join(rel);
+        let Ok(bytes) = std::fs::read(&p) else {
+            self.put(&p, &pretty(ours))?;
+            self.written.push(p.display().to_string());
+            return Ok(());
+        };
+        let mut have: Value =
+            serde_json::from_slice(&bytes).map_err(|e| Error::malformed(format!("{}: {e}", p.display())))?;
+        if !have.is_object() {
+            return Err(Error::malformed(format!("{}: not a JSON object", p.display())));
+        }
+        let before = have.clone();
+        let mut notes = Vec::new();
+        merge(&mut have, ours, &mut notes);
+        self.todo.extend(notes.into_iter().map(|n| format!("{}: {n}", p.display())));
+        if have != before {
+            self.put(&p, &pretty(&have))?;
+            self.merged.push(p.display().to_string());
+        }
+        Ok(())
+    }
+}
+
+/// The strings of `ours` that `have` lacks, appended to it.
+fn union(have: &mut Value, ours: &Value) {
+    let Some(ours) = ours.as_array() else { return };
+    if !have.is_array() {
+        *have = json!([]);
+    }
+    let list = have.as_array_mut().expect("an array");
+    for v in ours {
+        if !list.contains(v) {
+            list.push(v.clone());
+        }
+    }
+}
+
+/// An agent host's settings: our permissions and servers added to theirs,
+/// our message check unless it has its own.
+fn merge_settings(have: &mut Value, ours: &Value, notes: &mut Vec<String>) {
+    for k in ["deny", "allow"] {
+        if ours["permissions"].get(k).is_some() {
+            if !have["permissions"].is_object() {
+                have["permissions"] = json!({});
+            }
+            union(&mut have["permissions"][k], &ours["permissions"][k]);
+        }
+    }
+    if let Some(servers) = ours.get("enabledMcpjsonServers") {
+        let extra: Vec<String> = have["enabledMcpjsonServers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|s| !servers.as_array().is_some_and(|o| o.contains(s)))
+            .filter_map(|s| s.as_str().map(str::to_string))
+            .collect();
+        if !extra.is_empty() {
+            notes.push(format!("enables {} besides clean mode: take them out", extra.join(", ")));
+        }
+        union(&mut have["enabledMcpjsonServers"], servers);
+    }
+    let Some(ours_hook) = ours["hooks"]["UserPromptSubmit"].as_array() else { return };
+    let commands: Vec<String> = have["hooks"]["UserPromptSubmit"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|h| h["hooks"].as_array().cloned().unwrap_or_default())
+        .filter_map(|h| h["command"].as_str().map(str::to_string))
+        .collect();
+    if commands.iter().any(|c| c.contains("barrier hook")) {
+        return;
+    }
+    if commands.is_empty() {
+        if !have["hooks"].is_object() {
+            have["hooks"] = json!({});
+        }
+        have["hooks"]["UserPromptSubmit"] = json!(ours_hook);
+    } else {
+        let psx = ours_hook[0]["hooks"][0]["command"].as_str().unwrap_or_default();
+        notes.push(format!(
+            "its own message check is kept ({}); psx's is `{psx}`, which logs to the same notes/guidance.jsonl: put it in place of yours once you have checked it does all yours does",
+            commands.join("; ")
+        ));
+    }
+}
+
+/// MCP servers: ours added; any other the role should not have, listed.
+fn merge_mcp(have: &mut Value, ours: &Value, only_ours: bool, notes: &mut Vec<String>) {
+    if !have["mcpServers"].is_object() {
+        have["mcpServers"] = json!({});
+    }
+    for (name, server) in ours["mcpServers"].as_object().into_iter().flatten() {
+        match have["mcpServers"].get(name) {
+            None => have["mcpServers"][name] = server.clone(),
+            Some(s) if s != server => {
+                notes.push(format!("server {name} is kept as it is; psx would write {server}"));
+            }
+            Some(_) => {}
+        }
+    }
+    if only_ours {
+        let extra: Vec<&String> =
+            have["mcpServers"].as_object().into_iter().flatten().map(|(k, _)| k).filter(|k| *k != "clean").collect();
+        if !extra.is_empty() {
+            notes.push(format!(
+                "servers besides clean mode ({}): take them out",
+                extra.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+        }
+    }
+}
+
+/// The message check's settings: what it lacks, and the legacy notes in
+/// whichever key it reads them from.
+fn merge_barrier(have: &mut Value, ours: &Value, legacy: &[PathBuf]) {
+    // The names the first message check used for notes and published.
+    let alias = |k: &str| match k {
+        "published" => Some("published_paths"),
+        _ => None,
+    };
+    for (k, v) in ours.as_object().into_iter().flatten() {
+        if k == "notes" || alias(k).is_some_and(|a| have.get(a).is_some()) {
+            continue;
+        }
+        if have.get(k).is_none() {
+            have[k] = v.clone();
+        } else if k == "names" {
+            union(&mut have[k], v);
+        }
+    }
+    if legacy.is_empty() {
+        return;
+    }
+    let key = if have.get("notes").is_none() && have.get("dirty_paths").is_some() { "dirty_paths" } else { "notes" };
+    union(&mut have[key], &ours["notes"]);
+}
+
+fn read_toml(p: &Path) -> Option<toml::Value> {
+    toml::from_str(&std::fs::read_to_string(p).ok()?).ok()
+}
+
+impl PortAdoptArgs {
+    fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
+        let at = |p: &Path| absolute(&ctx.root.join(p));
+        let investigator = at(&self.investigator);
+        if !investigator.is_dir() {
+            return Err(Error::invalid(format!("{} is not a folder", investigator.display())));
+        }
+        let toml_path = investigator.join("protocol.toml");
+        let have_toml = read_toml(&toml_path);
+        if have_toml.is_none() && toml_path.exists() {
+            return Err(Error::malformed(format!("{} does not parse", toml_path.display())));
+        }
+        let named = |k: &str| -> Option<PathBuf> {
+            let p = PathBuf::from(have_toml.as_ref()?.get("repositories")?.get(k)?.as_str()?);
+            Some(if p.is_absolute() { p } else { investigator.join(p) })
+        };
+        let need = |given: &Option<PathBuf>, k: &str| -> crate::Result<PathBuf> {
+            given
+                .as_deref()
+                .map(at)
+                .or_else(|| named(k).map(|p| absolute(&p)))
+                .ok_or_else(|| Error::invalid(format!("give --{k}: the investigator's protocol.toml names no {k}")))
+        };
+        let repos = Repos {
+            investigator: investigator.clone(),
+            implementer: need(&self.implementer, "implementer")?,
+            reviewer: need(&self.reviewer, "reviewer")?,
+        };
+        if !repos.implementer.is_dir() {
+            return Err(Error::invalid(format!(
+                "{} is not a folder: a new port is port init's",
+                repos.implementer.display()
+            )));
+        }
+        let legacy: Vec<PathBuf> = self.legacy.iter().map(|p| at(p)).collect();
+        for l in &legacy {
+            if !l.is_dir() {
+                return Err(Error::invalid(format!("{} is not a folder", l.display())));
+            }
+            if [&repos.investigator, &repos.implementer, &repos.reviewer].contains(&l) {
+                return Err(Error::invalid(format!(
+                    "{} is one of the port's repositories; a legacy port is apart from them",
+                    l.display()
+                )));
+            }
+        }
+        let toml_str =
+            |t: &str, k: &str| -> Option<String> { Some(have_toml.as_ref()?.get(t)?.get(k)?.as_str()?.to_string()) };
+        let media = self
+            .media
+            .as_deref()
+            .map(at)
+            .or_else(|| toml_str("disc", "media").map(|m| absolute(&investigator.join(m))));
+        let disc = media.as_deref().map(disc_files).transpose()?;
+        let game = self
+            .game
+            .clone()
+            .or_else(|| have_toml.as_ref().and_then(|t| t.get("game")?.as_str().map(str::to_string)))
+            .or_else(|| media.as_deref().map(game_name))
+            .unwrap_or_else(|| "the game".into());
+        let mut executables = disc.as_ref().map(|d| d.executables.clone()).unwrap_or_default();
+        if executables.is_empty() {
+            executables = have_toml
+                .as_ref()
+                .and_then(|t| t.get("disc")?.get("executables")?.as_array().cloned())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+        }
+        // psx's own folder (its analyses in .psx/, discs in media/), unless
+        // it is one of the port's repositories.
+        let root = absolute(&ctx.root);
+        let psx_root = (![&repos.investigator, &repos.implementer, &repos.reviewer].contains(&&root)
+            && !legacy.contains(&root)
+            && (root.join(".psx").is_dir() || root.join("media").is_dir()))
+        .then_some(root);
+        let s = Setting { media: media.clone(), executables, psx_root, legacy: legacy.clone() };
+        let mut a = Adoption { dry_run: self.dry_run, ..Adoption::default() };
+
+        // The investigator's.
+        let inv = &repos.investigator;
+        for (rel, text) in INVESTIGATOR {
+            a.file(inv, rel, &fill(text, &game, Some(&repos)))?;
+        }
+        if let Some(t) = &have_toml {
+            let mut add = String::new();
+            for (k, want) in [("implementer", &repos.implementer), ("reviewer", &repos.reviewer)] {
+                match named(k).map(|p| absolute(&p)) {
+                    Some(p) if p == *want => {}
+                    Some(p) => a.todo.push(format!(
+                        "{}: its {k} is {}, not {}; change it if that is wrong",
+                        toml_path.display(),
+                        p.display(),
+                        want.display()
+                    )),
+                    None => a.todo.push(format!(
+                        "{}: add {k} = {:?} under [repositories]",
+                        toml_path.display(),
+                        want.display().to_string()
+                    )),
+                }
+            }
+            if t.get("disc").is_none() && (s.media.is_some() || !s.executables.is_empty()) {
+                let q = |v: &str| serde_json::to_string(v).unwrap_or_default();
+                add += "\n[disc]\n";
+                if let Some(m) = &s.media {
+                    add += &format!("media = {}\n", q(&m.display().to_string()));
+                }
+                let names: Vec<String> = s.executables.iter().map(|e| q(e)).collect();
+                add += &format!("executables = [{}]\n", names.join(", "));
+            }
+            let listed: Vec<PathBuf> = t
+                .get("legacy")
+                .and_then(|l| l.get("ports")?.as_array().cloned())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(|p| absolute(Path::new(p))))
+                .collect();
+            if t.get("legacy").is_none() && !legacy.is_empty() {
+                add += &legacy_toml(&legacy);
+            } else if let Some(l) = legacy.iter().find(|l| !listed.contains(l)) {
+                a.todo.push(format!("{}: add {:?} to [legacy] ports", toml_path.display(), l.display().to_string()));
+            }
+            if !add.is_empty() {
+                let text = std::fs::read_to_string(&toml_path).map_err(|e| Error::io(&toml_path, e))?;
+                a.put(&toml_path, &format!("{}{add}", text.trim_end_matches('\n').to_string() + "\n"))?;
+                a.merged.push(toml_path.display().to_string());
+            }
+        } else {
+            a.put(&toml_path, &protocol_toml(&game, &repos, &s))?;
+            a.written.push(toml_path.display().to_string());
+        }
+        a.json(inv, ".mcp.json", &mcp_json(&repos), |h, o, n| merge_mcp(h, o, false, n))?;
+        a.json(inv, ".claude/settings.json", &settings(Role::Investigator, &repos, &s), merge_settings)?;
+
+        // The reviewer's: a new repository, or what it lacks.
+        let rev = &repos.reviewer;
+        let mut git = Vec::new();
+        if std::fs::read_dir(rev).map(|mut d| d.next().is_none()).unwrap_or(true) {
+            if !self.dry_run {
+                std::fs::create_dir_all(rev).map_err(|e| Error::io(rev, e))?;
+                let made = create(rev, Role::Reviewer, &game, &repos, &s, None, TemplateOptions::default())?;
+                for w in made["written"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    a.written.push(rev.join(w).display().to_string());
+                }
+                let ok = std::process::Command::new("git")
+                    .args(["init", "-q"])
+                    .current_dir(rev)
+                    .status()
+                    .is_ok_and(|s| s.success());
+                git.push(json!({"repository": rev, "git_init": ok}));
+            } else {
+                a.written.push(format!("{} (a new reviewer's repository)", rev.display()));
+            }
+        } else {
+            for (rel, text) in REVIEWER {
+                a.file(rev, rel, &fill(text, &game, Some(&repos)))?;
+            }
+            a.json(rev, ".mcp.json", &mcp_json(&repos), |h, o, n| merge_mcp(h, o, false, n))?;
+            a.json(rev, ".claude/settings.json", &settings(Role::Reviewer, &repos, &s), merge_settings)?;
+        }
+
+        // The implementer's.
+        let imp = &repos.implementer;
+        for (rel, text) in IMPLEMENTER_EXTRA {
+            a.file(imp, rel, text)?;
+        }
+        a.file(imp, "AGENTS.md", &fill(IMPLEMENTER_AGENTS, &game, None))?;
+        let barrier = barrier_json(&repos, &s);
+        a.json(imp, ".claude/barrier.json", &barrier, |h, o, _| merge_barrier(h, o, &legacy))?;
+        a.json(imp, ".mcp.json", &clean_mcp_json(&repos), |h, o, n| merge_mcp(h, o, true, n))?;
+        a.json(imp, ".claude/settings.json", &settings(Role::Implementer, &repos, &s), merge_settings)?;
+        let ignore = imp.join(".gitignore");
+        let ignored = std::fs::read_to_string(&ignore).unwrap_or_default();
+        if !ignored.lines().any(|l| matches!(l.trim(), "data/" | "/data/" | "data" | "/data")) {
+            let text = format!(
+                "{}\n# The game's data files, from the player's disc (never commit them).\ndata/\n",
+                ignored.trim_end_matches('\n')
+            );
+            a.put(&ignore, text.trim_start_matches('\n'))?;
+            a.merged.push(ignore.display().to_string());
+        }
+        let mut data_files = 0;
+        match &disc {
+            Some(d) if !imp.join("data").exists() => {
+                if !self.dry_run {
+                    write_data(imp, &d.data)?;
+                }
+                data_files = d.data.len();
+                a.written.push(format!("{} ({} files)", imp.join("data").display(), d.data.len()));
+            }
+            Some(_) => {}
+            None => a.todo.push(
+                "give --media: without the disc no executable names reach the message check and protocol.toml, and data/ is not filled".into(),
+            ),
+        }
+
+        // What only a person settles.
+        if a.differing.iter().any(|f| f.ends_with("AGENTS.md")) {
+            a.todo.push("AGENTS.md is kept where a role already had one (see differing): bring in what the role's current instructions add (psx template create --role ROLE into an empty folder writes them)".into());
+        }
+        if !imp.join(".psx-template.toml").is_file() {
+            a.todo.push(format!(
+                "{} is not from psx's template: clean mode replays cases with the port's own runner, so it needs a case test reading PSX_CASES and writing verdicts to PSX_RESULTS (the template's game/tests/cases.rs)",
+                imp.display()
+            ));
+        } else if !crate::publish::files_under(&imp.join("game/tests"))
+            .iter()
+            .any(|p| std::fs::read_to_string(p).is_ok_and(|t| t.contains("cases_from_folder")))
+        {
+            a.todo.push("the implementer's game/tests has no cases_from_folder test: copy it from psx's template (game/tests/cases.rs) so clean mode's heldout can run the port's cases".into());
+        }
+        let has_specs = crate::publish::files_under(&imp.join("specs")).iter().any(|p| {
+            p.extension().is_some_and(|e| e == "md")
+                && p.file_name().is_some_and(|n| n != "README.md" && n != "INDEX.md" && n != "glossary.md")
+        });
+        if has_specs && !imp.join("notes/published.jsonl").is_file() {
+            a.todo.push("the implementer has specs but no publishing log (notes/published.jsonl): they crossed by hand, so the ledger counts none; stage and cross them with psx publish once the reviewer approves".into());
+        }
+        let states = crate::publish::files_under(&imp.join("specs/states"));
+        if !states.iter().any(|p| p.extension().is_some_and(|e| e == "json")) {
+            a.todo.push("no start state is published: the investigator publishes the states clean mode records from (specs/states/, each with a description in game terms)".into());
+        }
+        let samples = inv.join("samples.toml");
+        let template_samples = INVESTIGATOR.iter().find(|(r, _)| *r == "samples.toml").map(|f| f.1);
+        // A dry run has not written it yet.
+        if std::fs::read_to_string(&samples).map_or(self.dry_run, |t| Some(t.as_str()) == template_samples) {
+            a.todo.push(format!(
+                "{}: the field map is the template's; the investigator fills in the game's fields",
+                samples.display()
+            ));
+        }
+        if std::fs::read_dir(inv.join("bios")).map(|mut d| d.next().is_none()).unwrap_or(true) {
+            a.todo.push("the investigator's bios/ is empty: psx bios install there".into());
+        }
+        if !clean_exe().is_file() {
+            a.todo.push(format!(
+                "{} is not built: cargo build --release -p psx-clean, or clean mode will not start",
+                clean_exe().display()
+            ));
+        }
+        if !legacy.is_empty() {
+            a.todo.push("sort each legacy port's modules into keep, audit or rewrite, with the reviewer (guide topic cleanroom, Migrating a port that predates the protocol); copy into the implementer's repository only what the reviewer clears".into());
+        }
+        Ok(json!({
+            "dry_run": self.dry_run, "game": game,
+            "repositories": {"investigator": repos.investigator, "implementer": repos.implementer, "reviewer": repos.reviewer, "legacy": legacy},
+            "written": a.written, "merged": a.merged, "differing": a.differing,
+            "data_files": data_files, "executables": s.executables, "git": git,
+            "todo": a.todo, "cautions": CAUTIONS,
+        }))
+    }
+}
+
+impl Op for PortAdoptArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::result(self.run(ctx))
     }
@@ -784,5 +1331,79 @@ mod tests {
         assert!(server["command"].as_str().unwrap().ends_with(&format!("psx-clean{}", std::env::consts::EXE_SUFFIX)));
         assert_eq!(server["args"], json!(["--investigator", "/w/investigate", "mcp"]));
         assert_eq!(m["mcpServers"].as_object().unwrap().len(), 1);
+    }
+
+    /// An existing port with its own access rules and message check: adopt
+    /// adds to them and overwrites nothing, the legacy port is denied, and
+    /// a second run changes nothing.
+    #[test]
+    fn adopt_extends_what_is_there() {
+        let w = std::env::temp_dir().join(format!("psx-adopt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&w);
+        let put = |rel: &str, text: &str| {
+            let p = w.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        put("inv/notes/states.md", "how the states were made\n");
+        put("old/notes/player.md", "the old port's notes\n");
+        put("imp/AGENTS.md", "# Our own instructions\n");
+        put(".psx/keep", "");
+        put(
+            "imp/.claude/settings.json",
+            r#"{"permissions": {"deny": ["WebFetch", "Edit(notes/guidance.jsonl)"]},
+                "hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 check.py"}]}]}}"#,
+        );
+        put("imp/.claude/barrier.json", r#"{"dirty_paths": ["/elsewhere/notes"], "published_paths": ["specs"]}"#);
+        put("imp/.gitignore", "target/\n/data/\n");
+        let ctx = Ctx { root: w.clone(), cancel: None };
+        let args = PortAdoptArgs {
+            investigator: "inv".into(),
+            implementer: Some("imp".into()),
+            reviewer: Some("rev".into()),
+            legacy: vec!["old".into()],
+            media: None,
+            game: Some("Some Game".into()),
+            dry_run: false,
+        };
+        let dry = PortAdoptArgs { dry_run: true, ..args.clone() }.run(&ctx).unwrap();
+        assert!(!w.join("inv/protocol.toml").exists() && !w.join("rev").exists(), "{dry}");
+        let v = args.run(&ctx).unwrap();
+        let (inv, imp, old) = (absolute(&w.join("inv")), absolute(&w.join("imp")), absolute(&w.join("old")));
+
+        let settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(imp.join(".claude/settings.json")).unwrap()).unwrap();
+        let deny: Vec<&str> =
+            settings["permissions"]["deny"].as_array().unwrap().iter().filter_map(|d| d.as_str()).collect();
+        assert_eq!(&deny[..2], ["WebFetch", "Edit(notes/guidance.jsonl)"]);
+        assert_eq!(deny.iter().filter(|d| **d == "WebFetch").count(), 1);
+        assert!(deny.contains(&format!("Read(/{}/**)", old.display()).as_str()));
+        assert!(deny.contains(&format!("Read(/{}/**)", inv.display()).as_str()) && deny.contains(&"mcp__psx"));
+        assert_eq!(settings["permissions"]["allow"], json!(["mcp__clean"]));
+        // Their message check stays; psx's waits on the person.
+        let hooks = settings["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0]["hooks"][0]["command"], "python3 check.py");
+        let todo = v["todo"].as_array().unwrap();
+        let says = |w: &str| todo.iter().any(|t| t.as_str().unwrap().contains(w));
+        assert!(says("its own message check is kept") && says("legacy port") && says("give --media"), "{v}");
+        assert!(says("no start state") && says("AGENTS.md is kept"));
+        let barrier: Value =
+            serde_json::from_str(&std::fs::read_to_string(imp.join(".claude/barrier.json")).unwrap()).unwrap();
+        assert_eq!(barrier["investigator"], json!(inv));
+        assert_eq!(barrier["dirty_paths"], json!(["/elsewhere/notes", inv.join("notes"), old.join("notes")]));
+        assert!(barrier.get("notes").is_none());
+        assert_eq!(std::fs::read_to_string(imp.join("AGENTS.md")).unwrap(), "# Our own instructions\n");
+        assert_eq!(std::fs::read_to_string(imp.join(".gitignore")).unwrap(), "target/\n/data/\n");
+        assert!(imp.join(".mcp.json").is_file() && imp.join("questions/README.md").is_file());
+        let toml = std::fs::read_to_string(inv.join("protocol.toml")).unwrap();
+        assert!(toml.contains("[legacy]") && toml.contains(&old.display().to_string()), "{toml}");
+        assert!(w.join("rev/AGENTS.md").is_file() && w.join("rev/.claude/settings.json").is_file());
+
+        // Nothing left to add.
+        let again = PortAdoptArgs { implementer: None, reviewer: None, ..args }.run(&ctx).unwrap();
+        assert_eq!(again["written"], json!([]), "{again}");
+        assert_eq!(again["merged"], json!([]), "{again}");
+        let _ = std::fs::remove_dir_all(&w);
     }
 }

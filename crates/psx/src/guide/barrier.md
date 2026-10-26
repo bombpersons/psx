@@ -21,7 +21,8 @@ repositories. git init runs in each. The game's name defaults to the disc
 image's file name. With protocol.toml, publish needs no to or reviews and
 refuses the executables' names. template create DEST --role ROLE writes one
 of the three alone, with the others assumed as siblings (investigate,
-clean, review) unless given.
+clean, review) unless given. port adopt adds these files to repositories
+that already exist, overwriting nothing (guide topic cleanroom, Migrating).
 
 The person starts each agent's session in its own folder; an
 investigator never starts the others', since a session it starts would

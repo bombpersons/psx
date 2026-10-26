@@ -234,6 +234,25 @@ Branch: `protocol`. Committed piece by piece.
   the network nor leave files in the port. Releases and the installers
   carry psx-clean beside psx.
 
+- **`psx port adopt`**: the protocol's files for repositories that already
+  exist (a port begun before psx had them, or one moved under the
+  protocol). Missing files are written (the role files, `protocol.toml`,
+  `.mcp.json`, the reviewer's repository, `data/`); JSON settings gain what
+  they lack (deny rules, clean mode, the message check's keys, under the
+  first hook's key names where those are used); nothing is overwritten, and
+  a repository's own message check or AGENTS.md is kept and listed.
+  `--legacy` names a port written by someone who read the original's code:
+  the implementer is denied it and its sessions, `protocol.toml` lists it
+  under `[legacy]`, and its notes and docs join the text the message check
+  refuses. It ends with what only a person settles (the field map, start
+  states, the runner's `cases_from_folder`, specs crossed by hand, the
+  legacy triage); a second run changes nothing. On copies of TR2's
+  repositories with `tr2-rs` as legacy: a new reviewer repository, the
+  existing python message check kept, psx's check refusing `TOMB2.EXE` on
+  the merged settings, and clean mode answering. The ledger now carries
+  clean mode's last heldout verdict per kept-back case, and a verified spec
+  whose kept-back cases fail is the investigator's (thin specs).
+
 ## Phase 3: workspaces and guidance
 
 Done.

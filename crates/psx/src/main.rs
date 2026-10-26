@@ -235,6 +235,10 @@ enum PortAction {
     /// Write the three repositories side by side with their instructions and access rules,
     /// the disc for the investigator and its data files (not the executable) for the implementer.
     Init(roles::PortInitArgs),
+    /// Add the protocol's files to repositories that already exist (a port begun before them, or
+    /// moved under the protocol): missing files written, settings extended, nothing overwritten,
+    /// and a list of what only a person settles. --legacy names a port the implementer never reads.
+    Adopt(roles::PortAdoptArgs),
 }
 
 #[derive(clap::Subcommand)]
@@ -360,6 +364,7 @@ fn main() -> ExitCode {
         },
         Command::Port { action } => match action {
             PortAction::Init(a) => a.exec(&ctx),
+            PortAction::Adopt(a) => a.exec(&ctx),
         },
         Command::Publish { action } => match action {
             PublishAction::Stage(a) => a.exec(&ctx),
