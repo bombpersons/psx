@@ -138,6 +138,22 @@ Branch: `protocol`. Committed piece by piece.
   `800A0000` and `SEL.BIN` at `80180000` found from one traced snapshot,
   and every instruction traced runs executed in game RAM lies in a found
   function (Crash and Symphony of the Night).
+- **Corpus coverage** (`psx coverage RUN...`): traced runs write
+  `executed.bin` (each executed RAM word with the instruction it ran as);
+  coverage credits each word to the executable or overlay holding a
+  stretch of what ran there and writes `coverage.json` beside the
+  inventory: per function its blocks executed and not, calls and the runs
+  reaching it, with executed code in no function or in no image (and the
+  run frames it was called in). The inventory now takes traced call
+  targets and executed code only where the code at hand is what ran,
+  finds code that ran and was loaded over in the disc's files, splits code
+  loaded over part of a file into overlays of its own, keeps the BIOS
+  shell apart (`bios_code`), allows loads into the zero register and ends
+  candidates at eight nops. TR2's boot, Crash's first level and Symphony
+  of the Night's title: every executed word in a function but 6 and 115
+  short fragments (TR2, Crash), all 162 TR2 handlers still found; in
+  Symphony of the Night the shell is told from the game at the same
+  addresses.
 
 ## Phase 3: workspaces and guidance
 
@@ -145,9 +161,6 @@ Done.
 
 ## Phase 4: measuring and driving
 
-10. **Corpus coverage** (item 10): runs' `coverage.txt` merged into
-    executed blocks per function, so "exercised" is a query and the
-    unexecuted blocks are a list to classify.
 11. **The ledger and `psx protocol next --role R`** (item 2): units,
     stages and exit checks; questions and choices given as work; audits
     due; an emulator change makes rebuilding the next step. `overview`

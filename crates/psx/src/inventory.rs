@@ -10,9 +10,9 @@
 //! which static analysis from the entry alone misses). Gaps no function
 //! covers are listed, with how many of their words decode as instructions,
 //! so they can be classified.
+use crate::Error;
 use crate::code::Code;
 use crate::commands::{Ctx, Op, Outcome};
-use crate::Error;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -33,6 +33,9 @@ pub struct InventoryArgs {
 }
 
 const JR_RA: u32 = 0x03E0_0008;
+
+/// The name a BIOS ROM is matched under, among the disc's files.
+const BIOS: &str = "BIOS ";
 /// Longest function the analysis follows, in instructions.
 const MAX_FUNCTION: u32 = 0x4000;
 
@@ -53,8 +56,9 @@ fn valid(i: u32) -> bool {
 }
 
 /// Code a compiler emits: a valid instruction that does not write the zero
-/// register (other than `nop`). Tables of data often decode as valid
-/// instructions, rarely as sensible ones.
+/// register (other than `nop`, and loads into it: a read a hardware register
+/// needs to sync). Tables of data often decode as valid instructions, rarely
+/// as sensible ones.
 fn sensible(i: u32) -> bool {
     if !valid(i) {
         return false;
@@ -72,7 +76,7 @@ fn sensible(i: u32) -> bool {
             !(rd == 0 && !matches!(funct, 0x08 | 0x0C | 0x0D | 0x11 | 0x13 | 0x18..=0x1B))
                 && !(matches!(funct, 0x00 | 0x02 | 0x03) && rt == 0)
         }
-        0x08..=0x0F | 0x20..=0x26 => rt != 0,
+        0x08..=0x0F => rt != 0,
         _ => true,
     }
 }
@@ -146,7 +150,7 @@ impl<'a> Analysis<'a> {
     /// word or the limit.
     fn extent(&self, start: u32) -> (u32, &'static str) {
         let next = self.functions.range(start + 1..).next().map(|(&a, _)| a).unwrap_or(u32::MAX);
-        let (mut pc, mut reach) = (start, start);
+        let (mut pc, mut reach, mut zeros) = (start, start, 0);
         for _ in 0..MAX_FUNCTION {
             if pc >= next {
                 return (next, "next_function");
@@ -154,6 +158,11 @@ impl<'a> Analysis<'a> {
             let Some(i) = self.code.word(pc) else { return (pc, "image_end") };
             if !sensible(i) {
                 return (pc, "invalid");
+            }
+            // Eight nops in a row are padding or memory not loaded yet.
+            zeros = if i == 0 { zeros + 1 } else { 0 };
+            if zeros == 8 {
+                return (pc - 28, "invalid");
             }
             if let Some(t) = branch_target(pc, i) {
                 if t > reach && t < next {
@@ -163,7 +172,11 @@ impl<'a> Analysis<'a> {
             let mut tail = false;
             if i >> 26 == 0x02 {
                 let t = jump_target(pc, i);
-                if t > pc + 4 && t < next && !self.functions.contains_key(&t) && t.wrapping_sub(start) < 4 * MAX_FUNCTION {
+                if t > pc + 4
+                    && t < next
+                    && !self.functions.contains_key(&t)
+                    && t.wrapping_sub(start) < 4 * MAX_FUNCTION
+                {
                     reach = reach.max(t);
                 } else {
                     tail = true;
@@ -232,7 +245,8 @@ impl<'a> Analysis<'a> {
     fn pointers(&mut self, words: &[(u32, u32)]) -> usize {
         let Some((lo, hi)) = self.search() else { return 0 };
         let before = self.functions.len();
-        let targets: BTreeSet<u32> = words.iter().map(|&(_, w)| w).filter(|&w| w % 4 == 0 && w >= lo && w < hi).collect();
+        let targets: BTreeSet<u32> =
+            words.iter().map(|&(_, w)| w).filter(|&w| w % 4 == 0 && w >= lo && w < hi).collect();
         for t in targets {
             if !(self.allowed)(t) {
                 continue;
@@ -309,6 +323,38 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Code a traced run executed that no function covers: where each
+    /// stretch of executed words this code holds starts. Only a stretch of
+    /// four words or a whole run of executed words, and only one that
+    /// decodes to an end: code loaded over this code shares nops and
+    /// returns with it.
+    fn executed(&mut self, ran: &BTreeSet<(u32, u32)>) {
+        let Some((lo, hi)) = self.search() else { return };
+        let addrs: BTreeSet<u32> = ran.range((lo, 0)..(hi, 0)).map(|&(a, _)| a).collect();
+        let held: Vec<u32> =
+            ran.range((lo, 0)..(hi, 0)).filter(|&&(a, w)| self.code.word(a) == Some(w)).map(|&(a, _)| a).collect();
+        let mut starts = Vec::new();
+        let mut k = 0;
+        while k < held.len() {
+            let mut e = k + 1;
+            while e < held.len() && held[e] == held[e - 1] + 4 {
+                e += 1;
+            }
+            let (s, end) = (held[k], held[e - 1] + 4);
+            let whole = !addrs.contains(&(s - 4)) && !addrs.contains(&end);
+            if e - k >= 4 || whole {
+                starts.push(s);
+            }
+            k = e;
+        }
+        for a in starts {
+            if self.containing(a).is_none() && (self.allowed)(a) && self.extent(a).1 != "invalid" {
+                self.seed(a, "executed");
+                self.drain();
+            }
+        }
+    }
+
     fn gaps(&self, lo: u32, hi: u32) -> Vec<Value> {
         let mut out = Vec::new();
         let mut at = lo;
@@ -333,15 +379,15 @@ impl<'a> Analysis<'a> {
 
     fn report(&self) -> (Vec<Value>, Value) {
         let (lo, hi) = self.span().unwrap_or_default();
-        self.report_in(lo, hi)
+        self.report_in(lo, hi, &|_| true)
     }
 
     /// The functions starting in `[lo, hi)`, their totals and the gaps
     /// between them.
-    fn report_in(&self, lo: u32, hi: u32) -> (Vec<Value>, Value) {
+    fn report_in(&self, lo: u32, hi: u32, keep: &dyn Fn(u32) -> bool) -> (Vec<Value>, Value) {
         let mut rows = Vec::new();
         let (mut instructions, mut blocks, mut pointers) = (0u64, 0u64, 0usize);
-        for f in self.functions.range(lo..hi).map(|(_, f)| f) {
+        for f in self.functions.range(lo..hi).map(|(_, f)| f).filter(|f| keep(f.start)) {
             pointers += f.found_by.iter().all(|h| *h == "pointer") as usize;
             let mut leaders = BTreeSet::from([f.start]);
             let mut pc = f.start;
@@ -369,6 +415,7 @@ impl<'a> Analysis<'a> {
             blocks += leaders.len() as u64;
             rows.push(json!({
                 "entry": hex(f.start), "end": hex(f.end), "instructions": n, "blocks": leaders.len(),
+                "block_starts": leaders.iter().map(|&l| hex(l)).collect::<Vec<_>>(),
                 "found_by": f.found_by.iter().collect::<Vec<_>>(), "ends": f.ends,
             }));
         }
@@ -389,6 +436,9 @@ impl<'a> Analysis<'a> {
 fn loaded_from(ram: &[u8], lo: u32, hi: u32, files: &[(String, Vec<u8>)]) -> Option<(Value, u32, u32)> {
     let o = (lo & 0x1F_FFFF) as usize;
     let needle = ram.get(o..(o + 64).min((hi & 0x1F_FFFF) as usize))?;
+    if needle.iter().all(|&b| b == 0) {
+        return None;
+    }
     let mut best: Option<(usize, Value, u32, u32)> = None;
     for (path, bytes) in files {
         for off in memchr::memmem::find_iter(bytes, needle).take(8) {
@@ -418,6 +468,14 @@ fn loaded_from(ram: &[u8], lo: u32, hi: u32, files: &[(String, Vec<u8>)]) -> Opt
             while last + 1 < windows && good(last + 1) {
                 last += 1;
             }
+            // Zeros match zeros anywhere: not at the extent's ends.
+            let zeros = |w: usize| bytes[4 * w * window..(4 * (w + 1) * window).min(4 * n)].iter().all(|&b| b == 0);
+            while first < here && zeros(first) {
+                first += 1;
+            }
+            while last > here && zeros(last) {
+                last -= 1;
+            }
             let (a, b) = (first * window, ((last + 1) * window).min(n));
             let same = (a..b).filter(|&k| eq(k)).count();
             if best.as_ref().is_some_and(|x| x.0 >= same) {
@@ -437,14 +495,22 @@ fn loaded_from(ram: &[u8], lo: u32, hi: u32, files: &[(String, Vec<u8>)]) -> Opt
 /// Groups of functions with less than 4 KiB between one's end and the
 /// next's start: one overlay each.
 fn clusters(a: &Analysis) -> Vec<(u32, u32)> {
+    cluster(a.functions.values().map(|f| (f.start, f.end)))
+}
+
+fn cluster(spans: impl Iterator<Item = (u32, u32)>) -> Vec<(u32, u32)> {
     let mut out: Vec<(u32, u32)> = Vec::new();
-    for f in a.functions.values() {
+    for (start, end) in spans {
         match out.last_mut() {
-            Some(c) if f.start < c.1 + 0x1000 => c.1 = c.1.max(f.end),
-            _ => out.push((f.start, f.end)),
+            Some(c) if start < c.1 + 0x1000 => c.1 = c.1.max(end),
+            _ => out.push((start, end)),
         }
     }
     out
+}
+
+fn parse_hex(v: &Value) -> u32 {
+    v.as_str().and_then(|s| u32::from_str_radix(s, 16).ok()).unwrap_or(0)
 }
 
 fn hex(a: u32) -> String {
@@ -463,8 +529,63 @@ fn trace_calls(run: &Path) -> Vec<u32> {
 }
 
 /// A snapshot: its run directory, RAM, the executables it holds (with the
-/// share of each unchanged) and its trace's call targets.
-type Snap = (PathBuf, Vec<u8>, Vec<(usize, f64)>, Vec<u32>);
+/// share of each unchanged) and its trace's call targets, each with the
+/// instruction it ran there when the run recorded executed.bin.
+struct Snap {
+    label: String,
+    /// What its trace executed: `(address, instruction)`.
+    ran: Vec<(u32, u32)>,
+    ram: Vec<u8>,
+    resident: Vec<(usize, f64)>,
+    calls: Vec<(u32, Option<u32>)>,
+}
+
+/// Code a traced run executed that neither its RAM at the end nor an
+/// executable holds: `(address, instruction)`, in address order.
+fn lost_code(ram: &[u8], ran: &[(u32, u32, u64)], exes: &[Exe]) -> Vec<(u32, u32)> {
+    let word = |b: &[u8], o: usize| b.get(o..o + 4).map(|w| u32::from_le_bytes(w.try_into().unwrap()));
+    ran.iter()
+        .filter(|&&(a, w, _)| {
+            (0x8001_0000..0x8020_0000).contains(&a)
+                && word(ram, (a & 0x1F_FFFF) as usize) != Some(w)
+                && !exes.iter().any(|e| a >= e.lo && a < e.hi() && word(&e.payload, (a - e.lo) as usize) == Some(w))
+        })
+        .map(|&(a, w, _)| (a, w))
+        .collect()
+}
+
+/// Where lost code was loaded from: the disc files holding runs of it, as
+/// `(file, address its first byte was loaded at)`.
+fn placements(lost: &[(u32, u32)], files: &[(String, Vec<u8>)]) -> Vec<(usize, u32)> {
+    let mut out: Vec<(usize, u32)> = Vec::new();
+    let holds = |&(f, at): &(usize, u32), a: u32, w: u32| {
+        let o = a.wrapping_sub(at) as usize;
+        files[f].1.get(o..o + 4).is_some_and(|b| u32::from_le_bytes(b.try_into().unwrap()) == w)
+    };
+    let mut k = 0;
+    while k < lost.len() {
+        let mut e = k + 1;
+        while e < lost.len() && lost[e].0 == lost[e - 1].0 + 4 {
+            e += 1;
+        }
+        let run = &lost[k..e];
+        k = e;
+        if run.len() < 4 || out.iter().any(|p| holds(p, run[0].0, run[0].1)) {
+            continue;
+        }
+        let needle: Vec<u8> = run.iter().take(16).flat_map(|&(_, w)| w.to_le_bytes()).collect();
+        'files: for (f, (_, bytes)) in files.iter().enumerate() {
+            for off in memchr::memmem::find_iter(bytes, &needle).take(4) {
+                let Some(at) = run[0].0.checked_sub(off as u32) else { continue };
+                if off % 4 == 0 && at >= 0x8000_0000 {
+                    out.push((f, at));
+                    break 'files;
+                }
+            }
+        }
+    }
+    out
+}
 
 struct Exe {
     path: String,
@@ -494,7 +615,12 @@ impl Exe {
     }
 }
 
-fn default_out(ctx: &Ctx) -> PathBuf {
+/// Where inventory keeps an overlay's bytes, by their sha256.
+pub(crate) fn overlay_bytes(root: &Path, sha: &str) -> PathBuf {
+    root.join(".psx/overlays").join(format!("{sha}.bin"))
+}
+
+pub(crate) fn default_out(ctx: &Ctx) -> PathBuf {
     if ctx.root.join("protocol.toml").is_file() {
         ctx.root.join("notes/inventory.json")
     } else {
@@ -502,7 +628,7 @@ fn default_out(ctx: &Ctx) -> PathBuf {
     }
 }
 
-fn protocol_media(root: &Path) -> Option<PathBuf> {
+pub(crate) fn protocol_media(root: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(root.join("protocol.toml")).ok()?;
     let v: toml::Value = toml::from_str(&text).ok()?;
     Some(PathBuf::from(v.get("disc")?.get("media")?.as_str()?))
@@ -515,8 +641,9 @@ impl InventoryArgs {
         let at = |p: &Path| if p.is_absolute() { p.to_path_buf() } else { ctx.root.join(p) };
         let media = match &self.media {
             Some(m) => at(m),
-            None => protocol_media(&ctx.root)
-                .ok_or_else(|| Error::invalid("give a disc image, or run in a repository whose protocol.toml names one"))?,
+            None => protocol_media(&ctx.root).ok_or_else(|| {
+                Error::invalid("give a disc image, or run in a repository whose protocol.toml names one")
+            })?,
         };
         let disc = Disc::open(&media)?;
         let fs = FileSystem::read(&disc)?;
@@ -555,41 +682,115 @@ impl InventoryArgs {
             }
         }
 
+        // The BIOS ROMs the runs booted: the shell they copy into RAM at
+        // power-on (the logo) is the BIOS's code, not the game's.
+        for r in &self.ram {
+            let report: Option<Value> =
+                std::fs::read_to_string(at(r).join("report.json")).ok().and_then(|t| serde_json::from_str(&t).ok());
+            let Some(bios) = report.as_ref().and_then(|v| v["identity"]["bios"].as_str()).map(PathBuf::from) else {
+                continue;
+            };
+            let name = format!("{BIOS}{}", bios.file_name().unwrap_or_default().to_string_lossy());
+            if !contents.iter().any(|c| c.0 == name) {
+                if let Ok(bytes) = std::fs::read(at(&bios)) {
+                    contents.push((name, bytes));
+                }
+            }
+        }
+
         // The snapshots: which executable each holds, and their traces.
+        // Code a trace ran that is gone by the end (loaded over again) is
+        // searched for in the disc's files; each file found is analysed as
+        // if a snapshot held it alone, where the run ran it.
         let mut snaps: Vec<Snap> = Vec::new();
         for r in &self.ram {
             let dir = at(r);
             let snap = crate::ram::load(&dir)?;
             let resident: Vec<(usize, f64)> =
                 exes.iter().enumerate().map(|(i, e)| (i, e.resident(&snap.bytes))).filter(|&(_, s)| s >= 0.9).collect();
-            snaps.push((dir, snap.bytes, resident, trace_calls(&at(r))));
+            let ran = crate::coverage::executed(&dir).ok();
+            // One entry per instruction a target ran as (code loaded over
+            // code runs as several).
+            let mut ran_at: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+            for &(a, w, _) in ran.iter().flatten() {
+                ran_at.entry(a).or_default().push(w);
+            }
+            let calls: Vec<(u32, Option<u32>)> = trace_calls(&dir)
+                .into_iter()
+                .flat_map(|t| match &ran {
+                    None => vec![(t, None)],
+                    Some(_) => ran_at
+                        .get(&(0x8000_0000 | (t & 0x1F_FFFF)))
+                        .map(|ws| ws.iter().map(|&w| (t, Some(w))).collect())
+                        .unwrap_or_default(),
+                })
+                .collect();
+            let lost = ran.as_deref().map(|r| lost_code(&snap.bytes, r, &exes)).unwrap_or_default();
+            for (f, at) in placements(&lost, &contents) {
+                let mut ram = vec![0u8; snap.bytes.len()];
+                let o = (at & 0x1F_FFFF) as usize;
+                let bytes = &contents[f].1;
+                let n = bytes.len().min(ram.len().saturating_sub(o));
+                ram[o..o + n].copy_from_slice(&bytes[..n]);
+                let label = format!("{} (ran {} loaded at {})", dir.display(), contents[f].0, hex(at));
+                let calls = calls
+                    .iter()
+                    .copied()
+                    .filter(|&(t, w)| {
+                        w.is_some_and(|w| {
+                            let k = (t & 0x1F_FFFF) as usize;
+                            ram.get(k..k + 4).is_some_and(|b| u32::from_le_bytes(b.try_into().unwrap()) == w)
+                        })
+                    })
+                    .collect();
+                snaps.push(Snap { label, ram, resident: Vec::new(), calls, ran: Vec::new() });
+            }
+            let ran = ran.unwrap_or_default().into_iter().map(|(a, w, _)| (a, w)).collect();
+            snaps.push(Snap { label: dir.display().to_string(), ram: snap.bytes, resident, calls, ran });
         }
+
+        // Traced call targets with the instruction run there: a seed in any
+        // executable or snapshot holding that instruction there.
+        let ran_calls: BTreeSet<(u32, u32)> =
+            snaps.iter().flat_map(|s| s.calls.iter().filter_map(|&(t, w)| Some((t, w?)))).collect();
+        let ran_words: BTreeSet<(u32, u32)> = snaps.iter().flat_map(|s| s.ran.iter().copied()).collect();
 
         let mut executables = Vec::new();
         // Each executable's functions, for the calls they make into overlays.
         let mut found: Vec<Vec<(u32, u32)>> = Vec::new();
         let mut totals = (0u64, 0u64, 0u64);
         for (i, exe) in exes.iter().enumerate() {
-            let code = Code { base: exe.lo, bytes: exe.payload.clone(), origin: exe.path.clone(), gp: exe.gp, exe: None };
+            let code =
+                Code { base: exe.lo, bytes: exe.payload.clone(), origin: exe.path.clone(), gp: exe.gp, exe: None };
             let (lo, hi) = (exe.lo, exe.hi());
             let mut a = Analysis::new(&code, Some((lo, hi)), Box::new(move |x| x >= lo && x < hi));
             a.seed(exe.entry, "entry");
             a.drain();
-            let held: Vec<&Snap> = snaps.iter().filter(|s| s.2.iter().any(|&(j, _)| j == i)).collect();
-            for s in &held {
-                for &t in &s.3 {
+            let held: Vec<&Snap> = snaps.iter().filter(|s| s.resident.iter().any(|&(j, _)| j == i)).collect();
+            // Where the executable's code is what a run ran there; a trace
+            // without executed.bin, in snapshots holding the executable.
+            for &(t, w) in &ran_calls {
+                if code.word(t) == Some(w) {
                     a.seed(t, "trace_call");
+                }
+            }
+            for s in &held {
+                for &(t, w) in &s.calls {
+                    if w.is_none() {
+                        a.seed(t, "trace_call");
+                    }
                 }
             }
             a.drain();
             let mut pointer_words = words(&exe.payload, exe.lo);
             for s in &held {
-                pointer_words.extend(words(&s.1, 0x8000_0000));
+                pointer_words.extend(words(&s.ram, 0x8000_0000));
             }
             // Until no new function is found: each round's functions may
             // call more, and widen the span pointers may land in.
             while a.pointers(&pointer_words) > 0 {}
             a.prologues();
+            a.executed(&ran_words);
             while a.pointers(&pointer_words) > 0 {}
             let (functions, rest) = a.report();
             add(&mut totals, &rest["totals"]);
@@ -597,19 +798,20 @@ impl InventoryArgs {
             executables.push(json!({
                 "path": exe.path, "boot": exe.boot, "loads_at": hex(exe.lo), "end": hex(exe.hi()),
                 "entry": hex(exe.entry),
-                "snapshots": held.iter().map(|s| s.0.display().to_string()).collect::<Vec<_>>(),
+                "snapshots": held.iter().map(|s| s.label.clone()).collect::<Vec<_>>(),
                 "totals": rest["totals"], "gaps": rest["gaps"], "functions": functions,
             }));
         }
 
         // Overlays: code a snapshot holds that is no executable's (RAM that
         // still equals an executable's bytes is that executable's), reached
-        // by calls from the executables' code still in place or recorded by
+        // by calls from the resident executables' code still in place, or recorded by
         // the snapshot's trace. Below 0x80010000 is the BIOS kernel's.
         let mut overlays: Vec<Value> = Vec::new();
+        let mut bios_code: Vec<Value> = Vec::new();
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
-        for (dir, ram, _, calls) in &snaps {
-            let code = Code { base: 0x8000_0000, bytes: ram.clone(), origin: dir.display().to_string(), gp: None, exe: None };
+        for Snap { label, ram, calls, resident, .. } in &snaps {
+            let code = Code { base: 0x8000_0000, bytes: ram.clone(), origin: label.clone(), gp: None, exe: None };
             let mut theirs = vec![false; ram.len() / 4];
             for e in &exes {
                 let o = (e.lo & 0x1F_FFFF) as usize;
@@ -622,7 +824,9 @@ impl InventoryArgs {
             let held = |x: u32| theirs.get(((x & 0x1F_FFFF) / 4) as usize).copied().unwrap_or(true);
             let outside = |x: u32| (0x8001_0000..0x8020_0000).contains(&x) && !held(x);
             let mut a = Analysis::new(&code, None, Box::new(outside));
-            for (i, _) in exes.iter().enumerate() {
+            // Calls from the executables the snapshot holds (executables
+            // sharing library code at the same addresses look held there too).
+            for &(i, _) in resident {
                 for &(start, end) in &found[i] {
                     if !(start..end).step_by(4).all(held) {
                         continue;
@@ -635,8 +839,14 @@ impl InventoryArgs {
                     }
                 }
             }
-            for &t in calls {
-                a.seed(t, "trace_call");
+            for &(t, w) in calls
+                .iter()
+                .filter(|c| c.1.is_none())
+                .chain(&ran_calls.iter().map(|&(t, w)| (t, Some(w))).collect::<Vec<_>>())
+            {
+                if w.is_none_or(|w| code.word(t) == Some(w)) {
+                    a.seed(t, "trace_call");
+                }
             }
             a.drain();
             if a.functions.is_empty() {
@@ -661,30 +871,97 @@ impl InventoryArgs {
                     a.region = Some((lo, hi));
                     while a.pointers(&ram_words) > 0 {}
                     a.prologues();
+                    a.executed(&ran_words);
                 }
                 if a.functions.len() == before {
                     break;
                 }
             }
+            // A file's extent claims only the functions whose code is the
+            // file's: others are code loaded over part of it, overlays of
+            // their own (matched to a file of their own when one holds them).
+            let mut foreign: BTreeSet<u32> = BTreeSet::new();
+            for (lo, hi, file) in &regions {
+                let Some(f) = file else { continue };
+                let Some((_, bytes)) = contents.iter().find(|c| f["path"] == c.0.as_str()) else { continue };
+                let at = parse_hex(&f["loads_at"]);
+                for func in a.functions.range(lo..hi).map(|(_, f)| f) {
+                    let n = ((func.end - func.start) / 4) as usize;
+                    let same = (func.start..func.end)
+                        .step_by(4)
+                        .filter(|&x| {
+                            let k = (x - at) as usize;
+                            bytes
+                                .get(k..k + 4)
+                                .is_some_and(|b| code.word(x) == Some(u32::from_le_bytes(b.try_into().unwrap())))
+                        })
+                        .count();
+                    if 2 * same < n {
+                        foreign.insert(func.start);
+                    }
+                }
+            }
+            let mut regions: Vec<(u32, u32, Option<Value>, bool)> =
+                regions.into_iter().map(|(lo, hi, f)| (lo, hi, f, false)).collect();
+            for (lo, hi) in cluster(foreign.iter().map(|s| (*s, a.functions[s].end))) {
+                // Its own file only when that file's extent is the cluster's.
+                let found = loaded_from(ram, lo, hi, &contents).filter(|f| f.1 <= lo && f.2 >= hi);
+                let (rlo, rhi) = found.as_ref().map(|f| (f.1, f.2)).unwrap_or((lo, hi));
+                regions.push((rlo, rhi, found.map(|f| f.0), true));
+            }
             regions.sort_by_key(|r| r.0);
-            for (lo, hi, file) in regions {
-                let (functions, rest) = a.report_in(lo, hi);
+            for (lo, hi, file, over) in regions {
+                let (functions, rest) = a.report_in(lo, hi, &|s| foreign.contains(&s) == over);
                 if functions.is_empty() {
                     continue;
                 }
                 let o = (lo & 0x1F_FFFF) as usize..(hi & 0x1F_FFFF) as usize;
-                let sha = crate::publish::sha256(&ram[o]);
+                let sha = crate::publish::sha256(&ram[o.clone()]);
+                let from_bios = file.as_ref().and_then(|f| f["path"].as_str()).is_some_and(|p| p.starts_with(BIOS));
+                if from_bios {
+                    // Kept apart, for coverage to credit; one entry per BIOS
+                    // and address it was loaded at, over the widest extent.
+                    let at = file.as_ref().map(|f| (f["path"].clone(), f["loads_at"].clone()));
+                    let same = bios_code
+                        .iter()
+                        .position(|b| Some((b["file"]["path"].clone(), b["file"]["loads_at"].clone())) == at);
+                    if let Some(k) = same {
+                        let (blo, bhi) = (parse_hex(&bios_code[k]["start"]), parse_hex(&bios_code[k]["end"]));
+                        if hi - lo <= bhi - blo {
+                            if let Some(runs) = bios_code[k]["snapshots"].as_array_mut() {
+                                runs.push(json!(label));
+                            }
+                            continue;
+                        }
+                        bios_code.remove(k);
+                    }
+                    let keep = overlay_bytes(&ctx.root, &sha);
+                    if let Some(d) = keep.parent() {
+                        std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+                    }
+                    std::fs::write(&keep, &ram[o.clone()]).map_err(|e| Error::io(&keep, e))?;
+                    bios_code.push(
+                        json!({"start": hex(lo), "end": hex(hi), "sha256": sha, "file": file, "snapshots": [label]}),
+                    );
+                    continue;
+                }
                 if let Some(&k) = seen.get(&sha) {
                     if let Some(runs) = overlays[k]["snapshots"].as_array_mut() {
-                        runs.push(json!(dir.display().to_string()));
+                        runs.push(json!(label));
                     }
                     continue;
                 }
                 add(&mut totals, &rest["totals"]);
+                // Its bytes, for coverage to tell it from code loaded over it.
+                let keep = overlay_bytes(&ctx.root, &sha);
+                if let Some(d) = keep.parent() {
+                    std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+                }
+                std::fs::write(&keep, &ram[o.clone()]).map_err(|e| Error::io(&keep, e))?;
                 seen.insert(sha.clone(), overlays.len());
                 overlays.push(json!({
                     "start": hex(lo), "end": hex(hi), "sha256": sha, "file": file,
-                    "snapshots": [dir.display().to_string()],
+                    "snapshots": [label],
                     "totals": rest["totals"], "gaps": rest["gaps"], "functions": functions,
                 }));
             }
@@ -702,8 +979,8 @@ impl InventoryArgs {
         let inventory = json!({
             "inventory": 1, "made": crate::publish::utc_now(), "psx": crate::context::version(),
             "media": media, "boot": boot, "totals": summary,
-            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); an overlay is code a snapshot holds outside its executables; gaps are what no function covers, with how many words decode as instructions",
-            "executables": executables, "overlays": overlays, "disc": {"files": files},
+            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); an overlay is code a snapshot holds outside its executables (code from the BIOS ROM, the shell, is listed under bios_code instead); gaps are what no function covers, with how many words decode as instructions",
+            "executables": executables, "overlays": overlays, "bios_code": bios_code, "disc": {"files": files},
         });
         if let Some(d) = out.parent() {
             std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
@@ -711,8 +988,9 @@ impl InventoryArgs {
         let text = serde_json::to_string_pretty(&inventory).unwrap_or_default() + "\n";
         std::fs::write(&out, text).map_err(|e| Error::io(&out, e))?;
         let history = out.with_file_name("inventory_history.jsonl");
-        let line = serde_json::to_string(&json!({"made": inventory["made"], "psx": inventory["psx"], "totals": summary}))
-            .unwrap_or_default();
+        let line =
+            serde_json::to_string(&json!({"made": inventory["made"], "psx": inventory["psx"], "totals": summary}))
+                .unwrap_or_default();
         use std::io::Write;
         std::fs::OpenOptions::new()
             .create(true)
@@ -728,6 +1006,7 @@ impl InventoryArgs {
             "out": out, "history": history, "totals": summary, "previous": previous,
             "executables": executables.iter().map(|x| json!({"path": x["path"], "boot": x["boot"], "totals": x["totals"]})).collect::<Vec<_>>(),
             "overlays": per(&overlays, "start"),
+            "bios_code": bios_code.iter().map(|b| json!({"start": b["start"], "end": b["end"], "file": b["file"]["path"]})).collect::<Vec<_>>(),
             "next": "artifact_read the inventory for functions and gaps; keep it in the investigator's notes so the ledger can count against it",
         }))
     }
@@ -843,5 +1122,34 @@ mod tests {
         let a = Analysis::new(&c, None, Box::new(|_| true));
         assert!(!a.starts_function(0x8001_0008));
         assert!(!a.starts_function(0x8001_0018));
+        // A load into the zero register syncs with hardware: code. Eight
+        // nops in a row are not.
+        assert!(sensible(0x8C40_0000), "lw zero, 0(v0)");
+        let mut w = vec![PROLOGUE];
+        w.extend([NOP; 8]);
+        w.extend([JR_RA, NOP]);
+        let c = code(&w);
+        let mut a = Analysis::new(&c, None, Box::new(|_| true));
+        a.seed(0x8001_0000, "entry");
+        a.drain();
+        assert_eq!((a.functions[&0x8001_0000].end, a.functions[&0x8001_0000].ends), (0x8001_0004, "invalid"));
+    }
+
+    #[test]
+    fn code_a_run_ran_and_lost_is_found_in_the_file_it_came_from() {
+        // The file's code ran at 0x80100000 (its byte 8 there), then was
+        // loaded over: RAM holds the nop, an executable the return.
+        let file: Vec<u32> = vec![1, 2, PROLOGUE, 0x0001_2345, 0x0002_3456, JR_RA, NOP, 9];
+        let files = vec![("/OVL.BIN".to_string(), file.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>())];
+        let payload = JR_RA.to_le_bytes().to_vec();
+        let exe = Exe { path: "/MAIN.EXE".into(), boot: true, lo: 0x8010_000C, payload, entry: 0, gp: None };
+        let ran: Vec<(u32, u32, u64)> =
+            file[2..7].iter().enumerate().map(|(k, &w)| (0x8010_0000 + 4 * k as u32, w, 1)).collect();
+        let ram = vec![0u8; 0x20_0000];
+        let lost = lost_code(&ram, &ran, &[exe]);
+        assert_eq!(lost.len(), 3);
+        assert_eq!(placements(&lost, &files), vec![], "too short a run to search for");
+        let lost: Vec<(u32, u32)> = ran.iter().map(|&(a, w, _)| (a, w)).collect();
+        assert_eq!(placements(&lost, &files), vec![(0, 0x800F_FFF8)]);
     }
 }

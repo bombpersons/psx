@@ -752,9 +752,19 @@ fn trace_outputs(
             })
         })
         .collect();
-    for (file, bytes) in
-        [("coverage.txt", text.into_bytes()), ("calls.json", serde_json::to_vec_pretty(&calls_json).unwrap())]
-    {
+    // Each executed RAM word with the instruction it executed as, so
+    // coverage can tell code loaded over other code apart.
+    let mut executed = b"PSXEXEC1".to_vec();
+    for (addr, word, n) in t.executed() {
+        executed.extend(addr.to_le_bytes());
+        executed.extend(word.to_le_bytes());
+        executed.extend(n.to_le_bytes());
+    }
+    for (file, bytes) in [
+        ("coverage.txt", text.into_bytes()),
+        ("calls.json", serde_json::to_vec_pretty(&calls_json).unwrap()),
+        ("executed.bin", executed),
+    ] {
         let p = dir.join(file);
         std::fs::write(&p, &bytes).map_err(|e| Error::io(&p, e))?;
         files.insert(file.into(), json!({"path": p, "sha256": sha256(&bytes)}));

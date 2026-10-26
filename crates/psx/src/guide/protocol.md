@@ -67,15 +67,36 @@ game goes (a level, a menu, a cutscene): a snapshot holding an executable
 adds the tables it fills at runtime, and code it holds that no executable
 does is an overlay, matched to the disc file it was loaded from and the
 part of it RAM still holds. A traced run (run --trace) adds its call
-targets, calls through pointers included, which is what finds overlays
-reached only through pointers. Each executable and overlay lists its gaps,
+targets, calls through pointers included, and where it executed code no
+function covers, each only where the code at hand is what the run ran
+there; code it ran that was loaded over by the end is looked for in the
+disc's files. Code the BIOS copies into RAM at power-on (its shell) is
+listed apart under bios_code. Each executable and overlay lists its gaps,
 what no function covers, with how many words decode as code: classify
 them, or record the game reaching them. Take an inventory again whenever
 the corpus reaches somewhere new.
 
-This psx does not compute the ledger yet. Keep the units, their stages and
-the specs covering them in notes/LOOP.md, and run --trace's coverage.txt for
-what the corpus executes.
+## Coverage
+
+coverage merges what traced runs executed into the inventory: per
+function, its blocks executed and not, how often it was called and which
+runs reached it, written to coverage.json beside the inventory.
+
+  coverage RUN RUN2 ...
+
+A unit is exercised when a corpus run executes one of its blocks; the
+unexecuted blocks of exercised functions, and the functions no run
+reached, are the list to classify (dead, debug only, unreachable on this
+disc) or to record. Each executed word is credited to the executable or
+overlay whose code ran there, so code loaded over other code is told
+apart. Two lists say the inventory is short: executed_outside_functions
+(code the analysis missed) and in_no_image (code no snapshot holds: an
+overlay loaded and replaced before the run's end, often compressed on the
+disc). For the second, called gives the run frames the run called into it:
+run to one of them and take the inventory again with that snapshot as ram.
+
+Keep the units, their stages and the specs covering them in notes/LOOP.md
+until psx computes the ledger.
 
 ## The loop
 

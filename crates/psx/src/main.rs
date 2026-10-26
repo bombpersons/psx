@@ -18,6 +18,7 @@ mod case;
 mod code;
 mod commands;
 mod context;
+mod coverage;
 mod error;
 mod fieldmap;
 mod ghidra;
@@ -148,6 +149,8 @@ enum Command {
     },
     /// Every function of every executable on the disc and of the overlays in RAM snapshots, with instruction counts and basic blocks, and the disc's file list: the porting protocol's inventory.
     Inventory(inventory::InventoryArgs),
+    /// What traced runs executed, per function of the inventory: blocks executed and not, and the runs reaching each.
+    Coverage(coverage::CoverageArgs),
     /// Named start states, each with its chain of runs from power-on.
     States {
         #[command(subcommand)]
@@ -347,6 +350,7 @@ fn main() -> ExitCode {
             PublishAction::Check(a) => a.exec(&ctx),
         },
         Command::Inventory(a) => a.exec(&ctx),
+        Command::Coverage(a) => a.exec(&ctx),
         Command::States { action } => match action {
             StatesAction::Make(a) => a.exec(&ctx),
             StatesAction::Save(a) => a.exec(&ctx),

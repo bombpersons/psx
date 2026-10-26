@@ -26,7 +26,9 @@ Observations (native):
 - poke ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..] writes memory at the start of
   a run frame to test a hypothesis; keep an unmodified control run.
 - trace writes trace.txt (windowed by trace_from_frame / trace_range),
-  coverage.txt and calls.json; max_events caps every event log.
+  coverage.txt, calls.json and executed.bin (each executed word with the
+  instruction it ran as, which coverage reads); max_events caps every event
+  log.
 - trace_cd logs CD transfers for loads; trace_bios logs BIOS calls.
 - trace_spu logs voice key on/off (settings, storing PC, sample_sha256),
   each keyed voice's first END and sound RAM uploads to spu.jsonl. spu.samples
