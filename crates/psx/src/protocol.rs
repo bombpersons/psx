@@ -1411,6 +1411,16 @@ fn refresh(ctx: &Ctx) -> crate::Result<(Repos, Ledger, PathBuf)> {
     let (implementer, reviewer, _) = crate::roles::protocol(&ctx.root).ok_or_else(|| {
         Error::invalid("run in the investigator's repository: its protocol.toml names the others (psx port init)")
     })?;
+    // A folder that is not there reads as one with no specs, questions or
+    // audits: say so rather than count nothing.
+    for (k, p) in [("implementer", &implementer), ("reviewer", &reviewer)] {
+        if !p.is_dir() {
+            return Err(Error::invalid(format!(
+                "protocol.toml's {k} is {}, which is not a folder: if the repository was moved or renamed, write where it is now under [repositories] ({k} = \"../NAME\")",
+                p.display()
+            )));
+        }
+    }
     let r = Repos { investigator: ctx.root.clone(), implementer, reviewer };
     let l = ledger(ctx, &r)?;
     let out = crate::inventory::default_out(ctx).with_file_name("ledger.json");

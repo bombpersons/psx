@@ -285,7 +285,9 @@ fn write_json(v: &Value, unit: &str, indent: usize, out: &mut String) {
         let pad = unit.repeat(indent + 1);
         match v {
             Value::Array(a) if a.iter().all(|x| !x.is_array() && !x.is_object()) => {
-                *out += &serde_json::to_string(v).unwrap_or_default().replace(',', ", ");
+                // Each item as JSON, so a comma inside a string stays as it is.
+                let items: Vec<String> = a.iter().map(|x| serde_json::to_string(x).unwrap_or_default()).collect();
+                *out += &format!("[{}]", items.join(", "));
             }
             Value::Array(a) if !a.is_empty() => {
                 out.push_str("[\n");
@@ -698,6 +700,13 @@ impl Op for CaseCheckArgs {
                             recipe["args"][k] = json!(crate::moved::store(&ctx.root, &p));
                         }
                     }
+                    // psx 0.6.0 and older added a space after each comma here at
+                    // every check: the columns again as written.
+                    for c in recipe["args"]["coverage"].as_array_mut().into_iter().flatten() {
+                        if let Some(t) = c.as_str().filter(|t| t.contains(", ")) {
+                            *c = json!(t.split(',').map(str::trim).collect::<Vec<_>>().join(","));
+                        }
+                    }
                     recipe["checked"] = json!({"emulator": crate::context::emulator(), "time": crate::publish::utc_now(),
                         "same": d["same"] == true});
                     write(&recipes.join(format!("{name}.json")), pretty(&recipe).as_bytes())?;
@@ -805,6 +814,10 @@ mod tests {
             "{\n  \"a\": [1, null, 2],\n  \"b\": [\n    {\n      \"x\": [\"L\", \"R\"]\n    }\n  ],\n  \"c\": {},\n  \"d\": []\n}\n"
         );
         assert_eq!(serde_json::from_str::<serde_json::Value>(&s).unwrap(), v);
+        // A comma inside a string is the string's: written again, it stays.
+        let v = json!({"coverage": ["SPEC-0006:state,goal:1..until state=2"]});
+        assert_eq!(pretty(&v), "{\n  \"coverage\": [\"SPEC-0006:state,goal:1..until state=2\"]\n}\n");
+        assert_eq!(pretty(&serde_json::from_str(&pretty(&v)).unwrap()), pretty(&v));
     }
 
     #[test]
