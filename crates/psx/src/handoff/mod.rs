@@ -234,8 +234,13 @@ pub fn child(dir: &Path) -> Outcome {
 }
 
 impl Op for HandoffStatusArgs {
-    fn exec(self, _ctx: &Ctx) -> Outcome {
-        Outcome::report(status(&self.run_dir, self.wait.min(600)))
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        // A handoff from before the project moved names the old folder.
+        let run_dir = crate::moved::find(&ctx.root, &self.run_dir);
+        Outcome::report(status(&run_dir, self.wait.min(600)).map(|(ok, mut v)| {
+            crate::moved::relocate(&ctx.root, &mut v);
+            (ok, v)
+        }))
     }
 }
 
