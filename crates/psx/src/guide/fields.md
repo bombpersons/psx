@@ -99,7 +99,10 @@ until.met false means it never came.
 - Input: the console's pad reaches the game through its own input word.
   Hold one button and diff against holding none for the word; a write
   watch on it gives the one routine that writes it, and xrefs on it the
-  readers, which are where the game's behaviour starts.
+  readers, which are where the game's behaviour starts: xrefs bits=MASK
+  with one button's bit lists the code that tests that button. A bit no
+  single button sets is made by the writer (a modifier held with another):
+  read the writer.
 - Arrays of objects: one element found, the others are a stride apart;
   xrefs on the first element's address often finds the table's base.
 - An object at another address in each level (or each time it is made):
