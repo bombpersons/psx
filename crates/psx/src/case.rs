@@ -509,6 +509,11 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
     // The recipe: these arguments with the input inlined, and what they ran on.
     let mut args = a.clone();
     (args.replay, args.cases, args.recipes, args.replace) = (None, None, None, false);
+    // Paths in the project relative to it, so the project can move.
+    let store = |p: &Path| crate::moved::store(&ctx.root, p);
+    args.from_state = store(&args.from_state);
+    args.map = args.map.as_deref().map(store);
+    args.media = args.media.as_deref().map(store);
     args.input = serde_json::from_value(input).ok();
     let id = &report["identity"];
     let state = read(&a.from_state)?;
@@ -518,7 +523,7 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
         "recorded_with": crate::context::version(),
         "emulator": crate::context::emulator(),
         "state_sha256": sha256(&state),
-        "map": samples["map"]["path"],
+        "map": samples["map"]["path"].as_str().map(|p| store(Path::new(p))),
         "map_sha256": samples["map"]["path"].as_str().and_then(|p| std::fs::read(p).ok()).map(|b| sha256(&b)),
         "media_identity": id["media_identity"], "bios_sha256": id["bios_sha256"],
         "rows": t.rows.len(), "csv_sha256": sha256(csv.as_bytes()),
@@ -616,8 +621,13 @@ impl Op for CaseCheckArgs {
                 let one = || -> crate::Result<Value> {
                     let recipe: Value = serde_json::from_slice(&read(&recipes.join(format!("{name}.json")))?)
                         .map_err(|e| Error::malformed(format!("recipe {name}: {e}")))?;
-                    let args: CaseRecordArgs = serde_json::from_value(recipe["args"].clone())
+                    let mut args: CaseRecordArgs = serde_json::from_value(recipe["args"].clone())
                         .map_err(|e| Error::malformed(format!("recipe {name}: args: {e}")))?;
+                    // A recipe from before the project moved names its old folder.
+                    let root = &ctx.root;
+                    args.from_state = crate::moved::find(root, &args.from_state);
+                    args.map = args.map.map(|p| crate::moved::find(root, &p));
+                    args.media = args.media.map(|p| crate::moved::find(root, &p));
                     let mut warnings = Vec::new();
                     if recipe["state_sha256"].as_str() != Some(&sha256(&read(&args.from_state)?)) {
                         warnings.push("the start state changed since the case was recorded");
@@ -643,6 +653,13 @@ impl Op for CaseCheckArgs {
                     // When and on which emulator it was last checked, and whether
                     // it held (psx protocol next reads this).
                     let mut recipe = recipe;
+                    // Paths in the project, written back relative to it.
+                    for k in ["from_state", "map", "media"] {
+                        if let Some(p) = recipe["args"][k].as_str().map(|p| crate::moved::find(&ctx.root, Path::new(p)))
+                        {
+                            recipe["args"][k] = json!(crate::moved::store(&ctx.root, &p));
+                        }
+                    }
                     recipe["checked"] = json!({"emulator": crate::context::emulator(), "time": crate::publish::utc_now(),
                         "same": d["same"] == true});
                     write(&recipes.join(format!("{name}.json")), pretty(&recipe).as_bytes())?;

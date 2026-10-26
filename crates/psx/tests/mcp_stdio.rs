@@ -436,7 +436,8 @@ fn scoped_projects_keep_paths_defaults_continuations_and_screens_isolated() {
         assert_eq!(result["project_root"], json!(project));
         assert_eq!(result["next_calls"][0]["arguments"]["project_root"], json!(project));
         let config: Value = serde_json::from_slice(&std::fs::read(project.join(".psx/project.json")).unwrap()).unwrap();
-        assert_eq!(config["bios"], json!(project.join("bios.bin")));
+        // Inside the project: relative, so the project can move.
+        assert_eq!(config["bios"], json!("bios.bin"));
         let (read, error, _) = rpc.tool("artifact_read", json!({"project_root":project,"path":"note.txt"}));
         assert!(!error && read["items"] == json!([name]), "{read}");
     }

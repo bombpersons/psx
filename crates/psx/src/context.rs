@@ -101,7 +101,8 @@ fn state_report(path: &Path) -> Option<Value> {
     bound.then_some(v)
 }
 fn report_path(root: &Path, report: &Value, key: &str) -> Option<PathBuf> {
-    let p = absolute(root, Path::new(report["identity"][key].as_str()?));
+    // Its run may have been in the project's old folder.
+    let p = crate::moved::find(root, Path::new(report["identity"][key].as_str()?));
     p.is_file().then_some(p)
 }
 fn region(media: Option<&Path>) -> crate::Result<Option<bios::Region>> {
@@ -172,7 +173,10 @@ pub fn resolve(
         if state.as_ref().is_some_and(|s| s.media.is_none()) {
             None
         } else {
-            report.as_ref().and_then(|r| report_path(root, r, "media")).or(cfg.media.map(|p| absolute(root, &p)))
+            report
+                .as_ref()
+                .and_then(|r| report_path(root, r, "media"))
+                .or(cfg.media.map(|p| crate::moved::find(root, &p)))
         }
     });
     // An explicit BIOS requires no inventory or media inspection before validation.
@@ -180,7 +184,7 @@ pub fn resolve(
     let mut candidates = if discover || bios_path.is_none() { bios::inventory(root)? } else { vec![] };
     if bios_path.is_none() {
         if let Some(p) = &cfg.bios {
-            let p = absolute(root, p);
+            let p = crate::moved::find(root, p);
             if p.is_file() && !candidates.iter().any(|c| c.path == p) {
                 candidates.push(bios::inspect(&p)?);
             }
@@ -204,7 +208,7 @@ pub fn resolve(
         }
         (matching.map(|c| c.path.clone()), "state_sha256")
     } else if let Some(p) = cfg.bios {
-        (Some(absolute(root, &p)), "project_config")
+        (Some(crate::moved::find(root, &p)), "project_config")
     } else if let Some(r) = region {
         let preferred = bios::CATALOG.iter().filter(|c| c.region == r).find_map(|known| {
             candidates.iter().filter(|c| c.sha256 == known.sha256).min_by_key(|c| {
@@ -267,8 +271,9 @@ impl ArgsContext {
             bios::inspect(&absolute(&ctx.root, bios))?;
             let cfg = Config {
                 format: 1,
-                media: r.media.as_ref().map(|p| absolute(&ctx.root, p)),
-                bios: Some(absolute(&ctx.root, bios)),
+                // Inside the project, relative to it, so the project can move.
+                media: r.media.as_ref().map(|p| crate::moved::store(&ctx.root, p)),
+                bios: Some(crate::moved::store(&ctx.root, bios)),
                 _backend: None,
             };
             fs::create_dir_all(profile.parent().unwrap())

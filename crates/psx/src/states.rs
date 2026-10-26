@@ -177,9 +177,10 @@ fn check_name(name: &str) -> crate::Result<()> {
 }
 
 /// A path as the chain notes it: relative to the project root when inside it.
+/// A path as a chain keeps it: relative to the root inside the project, so
+/// the project can move (a path from an older report is found first).
 fn noted(ctx: &Ctx, p: &Path) -> String {
-    let abs = absolute(ctx, p);
-    abs.strip_prefix(&ctx.root).unwrap_or(&abs).to_string_lossy().into_owned()
+    crate::moved::store(&ctx.root, &crate::moved::find(&ctx.root, p)).to_string_lossy().into_owned()
 }
 
 fn absolute(ctx: &Ctx, p: &Path) -> PathBuf {
@@ -296,7 +297,8 @@ fn finish_step(
     sha: String,
 ) -> crate::Result<(Value, Value, Option<PathBuf>)> {
     let id = &report["identity"];
-    let parent = id["from_state"].as_str().map(|p| absolute(ctx, Path::new(p)));
+    // The report may be from before the project moved.
+    let parent = id["from_state"].as_str().map(|p| crate::moved::find(&ctx.root, Path::new(p)));
     if let Some(m) = run["map"].as_str().map(|m| noted(ctx, Path::new(m))) {
         run["map"] = json!(m);
     }
@@ -412,7 +414,10 @@ fn run_step(
 ) -> crate::Result<(PathBuf, Value)> {
     let mut run = step["run"].clone();
     if let Some(m) = media.as_str() {
-        run["media"] = json!(absolute(ctx, Path::new(m)));
+        run["media"] = json!(crate::moved::find(&ctx.root, Path::new(m)));
+    }
+    if let Some(m) = run["map"].as_str() {
+        run["map"] = json!(crate::moved::find(&ctx.root, Path::new(m)));
     }
     run["from_state"] = json!(parent);
     run["out"] = json!(out);
@@ -572,6 +577,11 @@ fn rebuild(ctx: &Ctx, a: StatesRebuildArgs) -> crate::Result<(bool, Value)> {
     let mut all_same = true;
     for (name, mut chain) in all.into_iter().filter(|(n, _)| a.names.is_empty() || a.names.contains(n)) {
         let steps = chain["steps"].as_array().cloned().unwrap_or_default();
+        // A chain from an older psx may keep its disc absolute: written back relative.
+        let kept_media = chain["media"].clone();
+        if let Some(m) = kept_media.as_str() {
+            chain["media"] = json!(noted(ctx, Path::new(m)));
+        }
         let (mut parent, mut key, mut ran, mut reused, mut first_differing) =
             (None::<PathBuf>, String::new(), 0, 0, None);
         let mut bios = None;
@@ -665,7 +675,7 @@ fn rebuild(ctx: &Ctx, a: StatesRebuildArgs) -> crate::Result<(bool, Value)> {
                 changed |= step["emulator"] != *emulator;
                 step["emulator"] = emulator.clone();
             }
-            if changed {
+            if changed || chain["media"] != kept_media {
                 write(&chain_dir.join(format!("{name}.json")), pretty(&chain).as_bytes())?;
             }
         }

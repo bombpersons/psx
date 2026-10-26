@@ -12,6 +12,17 @@ mcp --require-project-root refuses calls that omit project_root.
 context(save:true) persists defaults in the selected root's .psx/project.json: use it
 deliberately, since other clients sharing the root see those defaults too.
 
+Moving a project: the files psx keeps (saved defaults, state chains, case
+recipes) name what lies inside the project relative to its root, so the
+folder can move. Files written by an older psx, and run and handoff
+reports, keep absolute paths; one that no longer exists is found again by
+its trailing components under the root (.psx/states/a.bin, samples.toml),
+or beside it (rom/game.cue for a disc kept next to the project). states
+rebuild and case check write a chain's disc and a recipe's paths back
+relative; context save does the same for the defaults. A chain checks each
+state's hash, so a state found wrongly stops it (chain_broken) rather than
+passing.
+
 bios_list inventories installed images. bios_install can import a local dump;
 download:true is an explicit setup action, never an automatic part of inspection
 or running. Native checkpoints require the exact BIOS/media identity they saved.

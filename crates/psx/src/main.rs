@@ -29,6 +29,7 @@ mod inventory;
 mod leak;
 mod mcp;
 mod media_cmd;
+mod moved;
 mod native;
 mod page;
 mod parser;
