@@ -10,7 +10,8 @@ Input: input (inline array) or replay (file); see guide topic input.
 Observations (native):
 - sample writes samples.csv, one row per vblank. Each entry is ADDR:FMT[:NAME]
   text or {"addr", "format", "name"}; FMT is u8 i8 x8 u16 i16 x16 u32 i32 x32,
-  fxI.F (fx16.16, fx4.12) or a watch-style width 1/2/4 (unsigned), default u32.
+  fxI.F (fx16.16, fx4.12), bits of a word (u16[14], u8[4..7]; guide topic
+  fields) or a watch-style width 1/2/4 (unsigned), default u32.
   Row N is memory after N run frames, before frame N's input and pokes.
   sample_every thins rows; the last frame is always sampled. With a field map
   (samples.toml, or map) sample takes names, and a [tick] adds a tick column:

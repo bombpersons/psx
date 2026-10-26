@@ -55,7 +55,7 @@ pub struct Until {
 fn ordered(fmt: Fmt, raw: u32) -> i64 {
     match fmt {
         Fmt::Signed(w) | Fmt::Fixed(w, _) => signed(raw, w as usize),
-        Fmt::Unsigned(_) | Fmt::Hex(_) => raw as i64,
+        Fmt::Unsigned(_) | Fmt::Hex(_) | Fmt::Bits(..) => raw as i64,
     }
 }
 

@@ -252,6 +252,9 @@ pub enum Fmt {
     Hex(u8),
     /// Signed fixed point: total bytes, fraction bits (`fx16.16` = (4, 16)).
     Fixed(u8, u8),
+    /// Unsigned bits of a word: bytes read, lowest bit, bits (`u16[14]` =
+    /// (2, 14, 1), `u8[4..7]` = (1, 4, 4)). The value is the bits alone.
+    Bits(u8, u8, u8),
 }
 
 impl Fmt {
@@ -273,6 +276,15 @@ impl Fmt {
                 _ => None,
             };
         }
+        if let Some((n, bits)) = s.strip_prefix('u').and_then(|r| r.strip_suffix(']')?.split_once('[')) {
+            let width = w(n)?;
+            let bit = |b: &str| b.trim().parse::<u8>().ok().filter(|&b| b < width * 8);
+            let (lo, hi) = match bits.split_once("..") {
+                Some((a, b)) => (bit(a)?, bit(b)?),
+                None => (bit(bits)?, bit(bits)?),
+            };
+            return (lo <= hi).then(|| Fmt::Bits(width, lo, hi - lo + 1));
+        }
         if let Some(n) = s.strip_prefix('u') {
             return w(n).map(Fmt::Unsigned);
         }
@@ -287,7 +299,33 @@ impl Fmt {
 
     pub fn width(self) -> usize {
         match self {
-            Fmt::Unsigned(w) | Fmt::Signed(w) | Fmt::Hex(w) | Fmt::Fixed(w, _) => w as usize,
+            Fmt::Unsigned(w) | Fmt::Signed(w) | Fmt::Hex(w) | Fmt::Fixed(w, _) | Fmt::Bits(w, ..) => w as usize,
+        }
+    }
+
+    /// The bits a `Bits` format takes, in place (`u16[14]` = 0x4000); all
+    /// of the word for the others.
+    pub fn mask(self) -> u32 {
+        match self {
+            Fmt::Bits(_, lo, n) => (u32::MAX >> (32 - n)) << lo,
+            _ => u32::MAX >> (32 - 8 * self.width()),
+        }
+    }
+
+    /// The value in a word read at this format's width: its bits alone for
+    /// `Bits`, the word for the others.
+    pub fn take(self, raw: u32) -> u32 {
+        match self {
+            Fmt::Bits(_, lo, _) => (raw & self.mask()) >> lo,
+            _ => raw,
+        }
+    }
+
+    /// `word` with this format's value `v` (as `encode` gives it) in place.
+    pub fn put(self, word: u32, v: u32) -> u32 {
+        match self {
+            Fmt::Bits(_, lo, _) => (word & !self.mask()) | ((v << lo) & self.mask()),
+            _ => v,
         }
     }
 
@@ -297,13 +335,15 @@ impl Fmt {
             Fmt::Signed(w) => format!("i{}", w * 8),
             Fmt::Hex(w) => format!("x{}", w * 8),
             Fmt::Fixed(w, f) => format!("fx{}.{f}", w * 8 - f),
+            Fmt::Bits(w, lo, 1) => format!("u{}[{lo}]", w * 8),
+            Fmt::Bits(w, lo, n) => format!("u{}[{lo}..{}]", w * 8, lo + n - 1),
         }
     }
 
-    /// Text form (CSV cells, tables).
+    /// Text form (CSV cells, tables), of a value as `take` gives it.
     pub fn render(self, raw: u32) -> String {
         match self {
-            Fmt::Unsigned(_) => raw.to_string(),
+            Fmt::Unsigned(_) | Fmt::Bits(..) => raw.to_string(),
             Fmt::Signed(w) => signed(raw, w as usize).to_string(),
             Fmt::Hex(w) => format!("0x{raw:0width$X}", width = w as usize * 2),
             Fmt::Fixed(w, f) => {
@@ -320,18 +360,23 @@ impl Fmt {
 
     pub fn json(self, raw: u32) -> Value {
         match self {
-            Fmt::Unsigned(_) => json!(raw),
+            Fmt::Unsigned(_) | Fmt::Bits(..) => json!(raw),
             Fmt::Signed(w) => json!(signed(raw, w as usize)),
             Fmt::Hex(_) => json!(self.render(raw)),
             Fmt::Fixed(w, f) => json!(signed(raw, w as usize) as f64 / (1u64 << f) as f64),
         }
     }
 
-    /// Encode a value written in this format (`1.5` for fx16.16, `-2`, `0x80`).
+    /// Encode a value written in this format (`1.5` for fx16.16, `-2`, `0x80`;
+    /// for bits, the bits' value, which must fit them: 0 or 1 for one bit).
     pub fn encode(self, s: &str) -> Option<u32> {
         let w = self.width();
         let mask = if w == 4 { u32::MAX } else { (1u32 << (8 * w)) - 1 };
         let v = match self {
+            Fmt::Bits(..) => {
+                let v = number(s)?;
+                return u32::try_from(v).ok().filter(|&v| v <= self.take(self.mask()));
+            }
             Fmt::Fixed(_, f) if number(s).is_none() => {
                 let x: f64 = s.trim().parse().ok()?;
                 (x * (1u64 << f) as f64).round() as i64
@@ -371,9 +416,10 @@ impl Sample {
         }
     }
 
-    /// The raw value now, or none where a pointer leads outside memory.
+    /// The value now (a bit field's bits alone), or none where a pointer
+    /// leads outside memory.
     pub fn read(&self, ram: &[u8], scratch: &[u8]) -> Option<u32> {
-        self.place(ram, scratch).map(|m| read_mem(ram, scratch, m, self.fmt.width()))
+        self.place(ram, scratch).map(|m| self.fmt.take(read_mem(ram, scratch, m, self.fmt.width())))
     }
 
     /// As JSON: null where the value is absent.
@@ -401,7 +447,7 @@ pub fn sample_at(addr: u32, f: &str, name: Option<&str>, label: &str) -> Result<
         "1" => Fmt::Unsigned(1),
         "2" => Fmt::Unsigned(2),
         "4" => Fmt::Unsigned(4),
-        f => Fmt::parse(f).ok_or_else(|| format!("{label}: unknown format {f:?} (u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F, e.g. fx16.16 or fx4.12, or a width 1/2/4)"))?,
+        f => Fmt::parse(f).ok_or_else(|| format!("{label}: unknown format {f:?} (u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F, e.g. fx16.16 or fx4.12, bits of a word as u16[14] or u8[4..7], or a width 1/2/4)"))?,
     };
     let mem =
         locate(addr, fmt.width()).ok_or_else(|| format!("{label}: 0x{addr:08X} is not main RAM or scratchpad"))?;
@@ -577,10 +623,12 @@ impl Poke {
     }
 
     pub fn apply(&mut self, run_frame: u64, ram: &mut [u8], scratch: &mut [u8]) {
-        match self.at.place(ram, scratch) {
-            Some(Mem::Ram(o)) => write_le(ram, o, self.width(), self.value),
-            Some(Mem::Scratch(o)) => write_le(scratch, o, self.width(), self.value),
-            None => return self.skipped.push(run_frame),
+        // A bit field keeps the word's other bits as they are now.
+        let Some(m) = self.at.place(ram, scratch) else { return self.skipped.push(run_frame) };
+        let word = self.at.fmt.put(read_mem(ram, scratch, m, self.width()), self.value);
+        match m {
+            Mem::Ram(o) => write_le(ram, o, self.width(), word),
+            Mem::Scratch(o) => write_le(scratch, o, self.width(), word),
         }
         self.applied.push(run_frame);
     }
@@ -994,7 +1042,9 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
 
 /// A memory window from one or more snapshots side by side, marking units that differ.
 pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str) -> crate::Result<(Value, String)> {
-    let fmt = Fmt::parse(fmt).ok_or_else(|| Error::invalid(format!("unknown format {fmt:?}")))?;
+    let fmt = Fmt::parse(fmt)
+        .filter(|f| !matches!(f, Fmt::Bits(..)))
+        .ok_or_else(|| Error::invalid(format!("unknown format {fmt:?}")))?;
     let w = fmt.width();
     let snaps = paths.iter().map(|p| load(p)).collect::<crate::Result<Vec<_>>>()?;
     if snaps.is_empty() {
@@ -1066,6 +1116,18 @@ mod tests {
         assert_eq!(Fmt::Hex(2).render(0x2A), "0x002A");
         assert_eq!(Fmt::Fixed(4, 16).encode("1.5"), Some(0x0001_8000));
         assert_eq!(Fmt::Signed(2).encode("-1"), Some(0xFFFF));
+        // Bits of a word: the value is the bits alone, and must fit them.
+        let active = Fmt::parse("u16[14]").unwrap();
+        assert_eq!((active, active.name(), active.mask()), (Fmt::Bits(2, 14, 1), "u16[14]".into(), 0x4000));
+        assert_eq!((active.take(0x4003), active.take(0x0003)), (1, 0));
+        assert_eq!((active.encode("1"), active.encode("2"), active.encode("-1")), (Some(1), None, None));
+        assert_eq!((active.put(0x0003, 1), active.put(0xC003, 0)), (0x4003, 0x8003));
+        let nibble = Fmt::parse("u8[4..7]").unwrap();
+        assert_eq!((nibble.name(), nibble.take(0xA5), nibble.put(0xA5, 3)), ("u8[4..7]".into(), 0xA, 0x35));
+        assert_eq!(Fmt::parse("u32[0..31]").unwrap().mask(), u32::MAX);
+        for bad in ["u8[8]", "u16[5..4]", "i16[3]", "u16[]", "u16[a]"] {
+            assert_eq!(Fmt::parse(bad), None, "{bad}");
+        }
     }
 
     #[test]

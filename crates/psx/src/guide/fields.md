@@ -31,7 +31,20 @@ find things.
   offset = "0"           # optional, hex, added to it; stride and count work too
 
 FMT is a sample format (u8 i16 x32 fx16.16 ...) or a width 1/2/4. Fields keep
-the map's order. sample then takes:
+the map's order, and several may share an offset.
+
+A flag inside a word is a field of its own: u16[14] reads bit 14 of a 16-bit
+word as 0 or 1, u8[4..7] bits 4 to 7 as a number. Name the flags rather than
+the word (or beside it), so a case and its spec say active is 1, not that a
+byte holds 64: where the original keeps the flag is its layout, which a port
+need not copy. A poke writes the bits alone and keeps the word's others;
+until compares the bits' value.
+
+  [structs.object]
+  flags = "28:x16"
+  active = "28:u16[14]"
+
+sample then takes:
 - camera_x, a global, as the column camera_x;
 - player, every field, as player.x, player.yaw, ...;
 - player.x, one field;

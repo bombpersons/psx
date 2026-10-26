@@ -32,7 +32,7 @@
 //!
 //! `--sample` then takes `camera_x`, `player` (every field, as `player.x`
 //! ...), `player.x`, `placement[3]` or `placement[3].yaw`. FMT is a
-//! `--sample` format (u8 i16 x32 fx16.16 ...) or a width 1/2/4.
+//! `--sample` format (u8 i16 x32 fx16.16 u16[14] ...) or a width 1/2/4.
 
 use crate::ram::{Sample, sample_at};
 use psx_media::memmap::parse_hex;
@@ -421,6 +421,32 @@ stride = "4C"
             let e = parse_poke(spec, Some(&m)).unwrap_err();
             assert!(e.contains(says), "{spec}: {e}");
         }
+    }
+
+    #[test]
+    fn bit_fields_read_and_write_their_bits_alone() {
+        use crate::ram::parse_poke;
+        let m = FieldMap::parse(
+            "[structs.o]\nflags = \"28:x16\"\nactive = \"28:u16[14]\"\nmode = \"28:u16[0..2]\"\n\
+             [subjects.door]\nstruct = \"o\"\nat = \"80100000\"\n",
+            "samples.toml".into(),
+        )
+        .unwrap();
+        let mut ram = vec![0u8; crate::ram::RAM_SIZE];
+        let mut scratch = vec![0u8; crate::ram::SCRATCH_SIZE];
+        ram[0x10_0028..0x10_002A].copy_from_slice(&0xC005u16.to_le_bytes());
+        let mut s = crate::ram::Sampler::new(m.resolve("door").unwrap(), 1, false);
+        s.row(0, 0, 0, &ram, &scratch, true);
+        assert_eq!(s.out, "run_frame,frame,door.flags,door.active,door.mode\n0,0,0xC005,1,5\n");
+        // A poke changes its bits and keeps the word's others.
+        let mut p = parse_poke("door.active=0", Some(&m)).unwrap();
+        p.apply(0, &mut ram, &mut scratch);
+        assert_eq!(u16::from_le_bytes([ram[0x10_0028], ram[0x10_0029]]), 0x8005);
+        assert_eq!(p.report()["format"], "u16[14]");
+        assert!(parse_poke("door.active=2", Some(&m)).unwrap_err().contains("bad value"));
+        let until = crate::until::parse("door.mode=5", Some(&m)).unwrap();
+        assert!(until.holds(&ram, &scratch));
+        assert!(FieldMap::parse("[structs.o]\na = \"0:u8[8]\"", "x".into()).err().unwrap().contains("bits of a word"));
     }
 
     #[test]
