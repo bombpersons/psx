@@ -24,7 +24,11 @@ Observations (native):
   with writer PC, old and new value. watch_changes_only drops same-value stores.
 - watch_reads LO-HI or ADDR[:WIDTH] logs CPU loads to reads.jsonl with PC.
 - poke ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..] writes memory at the start of
-  a run frame to test a hypothesis; keep an unmodified control run.
+  a run frame to test a hypothesis; keep an unmodified control run. With a
+  field map, NAME=VALUE[@...] writes one field by name (lara.x=100), VALUE in
+  the field's format; through a pointer subject it writes where the pointer
+  leads at that frame, and a frame whose pointer is null writes nothing
+  (counted as skipped).
 - trace writes trace.txt (windowed by trace_from_frame / trace_range),
   coverage.txt, calls.json and executed.bin (each executed word with the
   instruction it ran as, which coverage reads); max_events caps every event

@@ -22,6 +22,18 @@ fields) and writes three files:
       --sample camera_x --input '[{"frame":0,"buttons":["LEFT"],"until":40}]' \
       --spec SPEC-0007 --role calibration --level assault
 
+Input that is not the pad (an object switched on or off, a trigger the
+recording cannot reach by play): poke NAME=VALUE[@FRAME|@A..B|@A..] writes a
+field by its map name, as run's poke does, at the start of run frame FRAME
+(default 0): row FRAME is before it and the write shows from row FRAME+1, so
+the tick ending on that row is the first to see it. Each written field is a
+column and an activation (the runner gives the rebuild its value before each
+tick), never an address: case record refuses ADDR=VALUE. The recipe keeps
+the pokes, so case check writes them again.
+
+  case record door_close --subject 'placement[72]' --frames 160 \
+      --poke 'placement[72].flags=0@20' --compare state --compare goal ...
+
 Timing (rows and ticks as guide topic fields describes): row 0 is the
 subject before any tick; tick counts the ticks completed since row 0, and
 the ticks between rows r-1 and r ran during field r-1 and read its pad.
