@@ -20,11 +20,14 @@ pub enum Topic {
     Assets,
     Bevy,
     Port,
+    Protocol,
+    Cleanroom,
+    Review,
     Troubleshooting,
 }
 
 impl Topic {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 16] = [
         Self::Overview,
         Self::Setup,
         Self::Input,
@@ -37,6 +40,9 @@ impl Topic {
         Self::Assets,
         Self::Bevy,
         Self::Port,
+        Self::Protocol,
+        Self::Cleanroom,
+        Self::Review,
         Self::Troubleshooting,
     ];
 
@@ -54,6 +60,9 @@ impl Topic {
             Self::Assets => "Find, decode and validate assets",
             Self::Bevy => "Rebuild the game in Bevy",
             Self::Port => "Port a whole game as an engine and a game",
+            Self::Protocol => "Follow the porting protocol to a complete port",
+            Self::Cleanroom => "Keep the roles apart in a clean-room port",
+            Self::Review => "Review bundles and audit the port",
             Self::Troubleshooting => "Diagnose incomplete or unexpected results",
         }
     }
@@ -72,6 +81,9 @@ impl Topic {
             Self::Assets => include_str!("guide/assets.md"),
             Self::Bevy => include_str!("guide/bevy.md"),
             Self::Port => include_str!("guide/port.md"),
+            Self::Protocol => include_str!("guide/protocol.md"),
+            Self::Cleanroom => include_str!("guide/cleanroom.md"),
+            Self::Review => include_str!("guide/review.md"),
             Self::Troubleshooting => include_str!("guide/troubleshooting.md"),
         }
     }

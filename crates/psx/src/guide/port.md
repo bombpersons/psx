@@ -1,3 +1,13 @@
+Two ways to port. Under the porting protocol (guide topics protocol and
+cleanroom), the people who read the original's code never write the port's:
+what follows is then the investigator's model of the original (how it cuts
+engine from game, what it runs per type, what it reads from tables), the
+understanding it writes specs and cases from, and the implementer gets the
+architecture from its own repository's AGENTS.md. psx port init sets that
+up. Without the protocol, one agent reads the original and writes the port,
+and the port is derived from the original's code: say so to the person
+before starting, and point them to guide topic protocol.
+
 A port has three goals, in order: it behaves exactly like the original; it is
 organised so that new levels, enemies, items and weapons, and changes to the
 player's controller, are easy to make; and it has an editor that can author new
@@ -31,7 +41,8 @@ usable on its own: the player must not need the inventory or HUD to run, and
 dependencies between features are explicit or optional.
 
 Evidence: the disc and psx are the only sources. Back every ported behaviour
-with runtime observations or binary evidence and say which in docs/evidence.md.
+with runtime observations or binary evidence and say which in docs/evidence.md
+(under the protocol, in the specs and cases).
 
 Work order:
 1. context, then boot the game and save reference checkpoints.
@@ -57,8 +68,9 @@ Work order:
    output changes), so players need only the game and their disc.
    Validate structurally: every source byte accounted for, every reference in
    range. Raw formats live only in importers.
-5. Port feature by feature: record the original (replay + sample), place the
-   code by the rules in engine/AGENTS.md, add a trajectory or screenshot
+5. Port feature by feature: record the original as cases (guide topic cases),
+   place the code by the rules in engine/AGENTS.md, replay the cases in the
+   port (engine::testing::Case, game/tests/cases.rs) or add a screenshot
    check, run the sandbox.
 6. Keep docs current: what is verified, against what, what is provisional.
 

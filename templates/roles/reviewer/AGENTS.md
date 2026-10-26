@@ -26,6 +26,12 @@ Your outputs are one-sided:
 
 You never write specs, and you never start another role's session.
 
+## Where to start
+
+psx's `guide` topics `review` (this role in full), `cleanroom` (what may
+cross) and `protocol` (the investigator's procedure, and what makes a case
+separate rules).
+
 ## Reviewing a bundle
 
 `psx publish stage` writes a bundle to the investigator's

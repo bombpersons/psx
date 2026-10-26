@@ -17,10 +17,16 @@ Typical routes:
   recorded trajectories and rendered output against the original evidence.
 - Whole port: engine model from evidence -> template_create (engine + game
   workspace) -> importers -> feature by feature, with an editor alongside.
+- Clean-room port: port_init writes the investigator's, implementer's and
+  reviewer's repositories; the investigator records cases and writes specs,
+  the reviewer approves each bundle, publish carries it across. Read the
+  protocol topic first, then cleanroom; the reviewer reads review. In a
+  role's repository, its AGENTS.md says where to start.
 
 Tool descriptions are brief; guide topics hold the details. Use the run, input,
-fields, cases, states, barrier, code, assets, bevy and port topics for the relevant route, and troubleshooting for
-unexpected results. Inspect returned files with artifact_read:
+fields, cases, states, barrier, code, assets, bevy and port topics for the
+relevant route, protocol, cleanroom and review for a clean-room port, and
+troubleshooting for unexpected results. Inspect returned files with artifact_read:
 JSON by RFC 6901 pointer, JSONL/CSV/text by rows (frame_from/frame_to with
 frame_field, hex pc, contains, columns), hex for raw bytes and PNG as an image.
 Continue with page.next_cursor, reusing the filters; totals stay null until a

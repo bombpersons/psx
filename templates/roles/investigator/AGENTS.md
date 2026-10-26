@@ -19,9 +19,11 @@ from yours would share your notes.
 
 ## Where to start
 
-Start with psx's `context`, then the `guide` topics `overview`, `run`,
-`input`, `fields`, `cases`, `states`, `barrier` and `code`. `protocol.toml`
-names the three repositories and the disc.
+Start with psx's `context`, then the `guide` topics `protocol` (the
+procedure, making cases that separate, finding things in RAM) and
+`cleanroom` (what may cross), then `run`, `input`, `fields`, `cases`,
+`states`, `barrier` and `code`. `protocol.toml` names the three
+repositories and the disc.
 
 ## Your work
 

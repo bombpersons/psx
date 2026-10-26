@@ -105,13 +105,24 @@ Branch: `protocol`. Committed piece by piece.
   specs). tr2-clean's case tests rewritten on it pass the same 62 cases,
   with tr2-investigate's timing vectors; a planted vector and a planted
   cell are caught.
+- **Guide topics** (section 4): `protocol` (what complete means, units,
+  stages and credits, the loop, making cases that separate, finding things
+  in RAM, play-throughs, emulator changes, the port's own tools, reporting
+  gaps by the "different game" test; the ledger kept by hand in
+  `notes/LOOP.md` until phase 4), `cleanroom` (roles, what may cross, the
+  disc, tables in the executable, small algorithms, questions and choices,
+  people and agent hosts, records, migrating an existing port) and
+  `review` (what the reviewer writes and to whom, the bundle checklist with
+  restated rules and unnamed data values, audits, sending things back).
+  `overview` gains the clean-room route, `port` says where it sits under
+  the protocol and records features as cases, `troubleshooting` covers
+  menus that ignore short presses and interrupted analyses. The
+  investigator's and reviewer's `AGENTS.md` start from the new topics.
+  `overview`'s "start with `psx protocol next`" waits for item 11.
 
 ## Phase 3: workspaces and guidance
 
-8. **Guide topics** (section 4): new `protocol`, `cleanroom` and
-   `review`; `overview`, `port` and `troubleshooting` changed. Includes
-   the defaults for making cases that separate, finding things in RAM,
-   the port's own tools, and reporting gaps by the "different game" test.
+Done.
 
 ## Phase 4: measuring and driving
 
@@ -124,7 +135,9 @@ Branch: `protocol`. Committed piece by piece.
     unexecuted blocks are a list to classify.
 11. **The ledger and `psx protocol next --role R`** (item 2): units,
     stages and exit checks; questions and choices given as work; audits
-    due; an emulator change makes rebuilding the next step.
+    due; an emulator change makes rebuilding the next step. `overview`
+    then starts with `protocol next`, and `protocol`'s hand-kept ledger
+    paragraph goes.
 12. **`psx protocol report`** (`--plain` for the person) (item 11) and
     **`psx audit`** (item 13): the mechanical checks of section 2 (above
     all, every number in the implementer's code appears in a spec, a case
