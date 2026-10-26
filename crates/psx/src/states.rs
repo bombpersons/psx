@@ -547,9 +547,7 @@ fn compare(ctx: &Ctx, old: &[u8], new: &[u8], bios: &Path, cols: &[crate::ram::S
             return json!({"old_unreadable": format!("{e}"), "note": "an older psx made it: compare by cases (psx case check)"});
         }
     };
-    let value = |m: &psx_core::Machine, c: &crate::ram::Sample| {
-        c.fmt.json(crate::ram::read_mem(&m.bus.ram, &m.bus.scratch, c.mem, c.fmt.width()))
-    };
+    let value = |m: &psx_core::Machine, c: &crate::ram::Sample| c.json(&m.bus.ram, &m.bus.scratch);
     let values: serde_json::Map<String, Value> =
         cols.iter().map(|c| (c.name.clone(), json!({"old": value(&o, c), "new": value(&n, c)}))).collect();
     let differ: Vec<usize> = (0..o.bus.ram.len()).filter(|&i| o.bus.ram[i] != n.bus.ram[i]).collect();

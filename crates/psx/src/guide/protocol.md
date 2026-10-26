@@ -125,7 +125,8 @@ audit is due (every few implemented specs, [protocol] audit_every, and at
 a loop's end, until audit records one: guide topic review); the findings
 of a failed audit; revising a rejected bundle and crossing an approved one;
 taking the inventory and coverage again; answering questions and choices
-(a choice is answered by a line starting Answer: under it); thin specs (a
+(specs/answers/Q-NNNN.md, a choice under its number in
+specs/answers/CHOICES.md; answered once crossed); thin specs (a
 verified spec whose kept-back cases fail); recording missing cases; staging; then a few units to specify, formats first, unless
 [protocol] specs_ahead crossed specs wait for the implementer; and
 classifying what no run reaches.

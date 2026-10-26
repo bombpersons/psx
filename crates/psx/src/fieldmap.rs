@@ -23,6 +23,11 @@
 //! at = "8017C61C"
 //! stride = "4C"
 //! count = 256               # optional bound on the index
+//!
+//! [subjects.enemy]          # found through a pointer: the address held at
+//! struct = "object"         # pointer (plus offset, hex), read anew at each
+//! pointer = "800A1234"      # sample; empty while null or not memory
+//! offset = "0"              # optional; stride and count work here too
 //! ```
 //!
 //! `--sample` then takes `camera_x`, `player` (every field, as `player.x`
@@ -53,7 +58,10 @@ struct Field {
 struct Subject {
     name: String,
     layout: String,
+    /// The address, or (`pointer`) where the address is kept.
     at: u32,
+    /// Through a pointer: the offset added to the address it holds.
+    via: Option<u32>,
     /// Indexed subjects: the element size, and the index bound if given.
     stride: Option<(u32, Option<u32>)>,
 }
@@ -165,14 +173,34 @@ impl FieldMap {
             claim(n, "subject")?;
             let what = format!("subjects.{n}");
             let s = v.as_table().ok_or_else(|| format!("{what}: expected a table"))?;
-            if let Some(k) = s.keys().find(|k| !["struct", "at", "stride", "count"].contains(&k.as_str())) {
-                return Err(format!("{what}: unknown key {k} (struct, at, stride, count)"));
+            let keys = ["struct", "at", "pointer", "offset", "stride", "count"];
+            if let Some(k) = s.keys().find(|k| !keys.contains(&k.as_str())) {
+                return Err(format!("{what}: unknown key {k} ({})", keys.join(", ")));
             }
             let layout = text(s.get("struct").ok_or_else(|| format!("{what}: needs struct = \"NAME\""))?, &what)?;
             if !structs.iter().any(|(k, _)| k == layout) {
                 return Err(format!("{what}: no [structs.{layout}]"));
             }
-            let at = hex(text(s.get("at").ok_or_else(|| format!("{what}: needs at = \"ADDR\""))?, &what)?, &what)?;
+            let (at, via) = match (s.get("at"), s.get("pointer")) {
+                (Some(a), None) => {
+                    if s.contains_key("offset") {
+                        return Err(format!("{what}: offset goes with pointer"));
+                    }
+                    (hex(text(a, &what)?, &what)?, None)
+                }
+                (None, Some(p)) => {
+                    let p = hex(text(p, &what)?, &format!("{what}.pointer"))?;
+                    if crate::ram::locate(p, 4).is_none() {
+                        return Err(format!("{what}.pointer: 0x{p:08X} is not main RAM or scratchpad"));
+                    }
+                    let offset = s
+                        .get("offset")
+                        .map(|o| text(o, &what).and_then(|o| hex(o, &format!("{what}.offset"))))
+                        .transpose()?;
+                    (p, Some(offset.unwrap_or(0)))
+                }
+                _ => return Err(format!("{what}: needs at = \"ADDR\" or pointer = \"ADDR\", one of them")),
+            };
             let count = s
                 .get("count")
                 .map(|v| {
@@ -186,7 +214,7 @@ impl FieldMap {
                 None if count.is_some() => return Err(format!("{what}: count needs a stride")),
                 None => None,
             };
-            subjects.push(Subject { name: n.clone(), layout: layout.to_string(), at, stride });
+            subjects.push(Subject { name: n.clone(), layout: layout.to_string(), at, via, stride });
         }
         Ok(FieldMap { path, tick, globals, structs, subjects })
     }
@@ -224,13 +252,15 @@ impl FieldMap {
         let s = self.subjects.iter().find(|s| s.name == name).ok_or_else(|| {
             format!("{label}: not a name in {} (names: {})", self.path.display(), self.names().join(", "))
         })?;
+        // From the subject's start: its address, or the pointer's offset.
+        let start = s.via.unwrap_or(s.at);
         let base = match (s.stride, index) {
-            (None, None) => s.at,
+            (None, None) => start,
             (Some((stride, count)), Some(i)) => {
                 if count.is_some_and(|c| i >= c) {
                     return Err(format!("{label}: {name} has {} elements", count.unwrap()));
                 }
-                s.at.wrapping_add(stride.wrapping_mul(i))
+                start.wrapping_add(stride.wrapping_mul(i))
             }
             (None, Some(_)) => return Err(format!("{label}: {name} is one struct, not an array")),
             (Some(_), None) => return Err(format!("{label}: {name} is an array; say which, as {name}[N]")),
@@ -245,8 +275,15 @@ impl FieldMap {
         };
         pick.into_iter()
             .map(|f| {
-                let s = sample_at(base.wrapping_add(f.offset), &f.fmt, Some(&format!("{head}.{}", f.name)), &label)?;
-                Ok(Sample { mapped: true, ..s })
+                let name = format!("{head}.{}", f.name);
+                if s.via.is_none() {
+                    let c = sample_at(base.wrapping_add(f.offset), &f.fmt, Some(&name), &label)?;
+                    return Ok(Sample { mapped: true, ..c });
+                }
+                // Read through the pointer: mem is where the address is kept.
+                let c = sample_at(s.at, &f.fmt, Some(&name), &label)?;
+                let mem = crate::ram::locate(s.at, 4).ok_or_else(|| format!("{label}: the pointer is not memory"))?;
+                Ok(Sample { mapped: true, mem, via: Some(base.wrapping_add(f.offset)), ..c })
             })
             .collect()
     }
@@ -294,6 +331,16 @@ struct = "object"
 at = "8017C61C"
 stride = "4C"
 count = 4
+
+[subjects.lara]
+struct = "object"
+pointer = "800A0000"
+
+[subjects.items]
+struct = "object"
+pointer = "800A0004"
+offset = "10"
+stride = "4C"
 "#;
 
     fn map() -> FieldMap {
@@ -312,8 +359,35 @@ count = 4
         assert_eq!(cols("camera_x"), [("camera_x".into(), 0x8008_B258)]);
         assert_eq!(cols("player"), [("player.x".into(), 0x8017_C8B0), ("player.yaw".into(), 0x8017_C8BE)]);
         assert_eq!(cols("placement[2].yaw"), [("placement[2].yaw".into(), 0x8017_C61C + 2 * 0x4C + 0x42)]);
-        assert_eq!(m.names(), ["camera_x", "player", "placement[N]"]);
+        assert_eq!(m.names(), ["camera_x", "player", "placement[N]", "lara", "items[N]"]);
         assert!(m.knows("placement[1].x") && !m.knows("8008B258"));
+    }
+
+    #[test]
+    fn pointer_subjects_follow_the_pointer_at_each_read() {
+        let m = map();
+        let mut ram = vec![0u8; crate::ram::RAM_SIZE];
+        let scratch = vec![0u8; crate::ram::SCRATCH_SIZE];
+        let put = |ram: &mut Vec<u8>, at: usize, v: u32| ram[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        let x = m.resolve("lara.x").unwrap().remove(0);
+        let yaw = m.resolve("items[2].yaw").unwrap().remove(0);
+        assert_eq!(x.name, "lara.x");
+        // Null, then pointing at an object, then moved: read where it points now.
+        assert_eq!((x.read(&ram, &scratch), yaw.read(&ram, &scratch)), (None, None));
+        put(&mut ram, 0xA0000, 0x8010_0000);
+        put(&mut ram, 0x10_0034, 7);
+        assert_eq!(x.read(&ram, &scratch), Some(7));
+        put(&mut ram, 0xA0000, 0x8011_0000);
+        put(&mut ram, 0x11_0034, 9);
+        assert_eq!(x.read(&ram, &scratch), Some(9));
+        put(&mut ram, 0xA0004, 0x8012_0000);
+        ram[0x12_0000 + 0x10 + 2 * 0x4C + 0x42] = 5;
+        assert_eq!(yaw.read(&ram, &scratch), Some(5));
+        // A row: the absent value is an empty cell.
+        put(&mut ram, 0xA0000, 0);
+        let mut s = crate::ram::Sampler::new(vec![x, yaw], 1, false);
+        s.row(0, 0, 0, &ram, &scratch, true);
+        assert_eq!(s.out, "run_frame,frame,lara.x,items[2].yaw\n0,0,,5\n");
     }
 
     #[test]
@@ -324,7 +398,7 @@ count = 4
             ("placement[4]", "has 4 elements"),
             ("player[0]", "not an array"),
             ("player.speed", "no field \"speed\" (x, yaw)"),
-            ("enemy", "names: camera_x, player, placement[N]"),
+            ("enemy", "names: camera_x, player, placement[N], lara, items[N]"),
         ] {
             let e = m.resolve(sel).unwrap_err();
             assert!(e.contains(says), "{sel}: {e}");
@@ -335,6 +409,16 @@ count = 4
             ("[subjects.a]\nstruct = \"none\"\nat = \"80000000\"", "no [structs.none]"),
             ("[ticks]\nwrite = \"0\"", "unknown section [ticks]"),
             ("[globals]\nx = \"1F000000:u8\"", "not main RAM"),
+            ("[structs.o]\nx = \"0\"\n[subjects.a]\nstruct = \"o\"", "needs at = \"ADDR\" or pointer"),
+            (
+                "[structs.o]\nx = \"0\"\n[subjects.a]\nstruct = \"o\"\nat = \"80000000\"\npointer = \"80000000\"",
+                "one of them",
+            ),
+            (
+                "[structs.o]\nx = \"0\"\n[subjects.a]\nstruct = \"o\"\nat = \"80000000\"\noffset = \"4\"",
+                "offset goes with pointer",
+            ),
+            ("[structs.o]\nx = \"0\"\n[subjects.a]\nstruct = \"o\"\npointer = \"1F000000\"", "not main RAM"),
         ] {
             let e = FieldMap::parse(toml, "m.toml".into()).err().unwrap();
             assert!(e.contains(says), "{toml}: {e}");

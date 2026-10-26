@@ -156,6 +156,31 @@ impl Spec {
     }
 }
 
+/// Where a question or choice stands: its answer crossed in specs/answers/,
+/// written there and not crossed yet, written into the question itself
+/// (before answers crossed), or none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Answer {
+    Open,
+    Written,
+    Crossed,
+    InPlace,
+}
+
+impl Answer {
+    fn answered(self) -> bool {
+        matches!(self, Answer::Crossed | Answer::InPlace)
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Answer::Open => "open",
+            Answer::Written => "written",
+            Answer::Crossed => "crossed",
+            Answer::InPlace => "in_place",
+        }
+    }
+}
+
 fn specs(dir: &Path) -> crate::Result<Vec<Spec>> {
     let mut out = Vec::new();
     for p in crate::publish::files_under(dir) {
@@ -814,8 +839,15 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
     );
     let classified_units = units.iter().filter(|u| u.classified.is_some()).count();
 
-    // Questions and choices.
+    // Questions and choices, answered in specs/answers/ (Q-NNNN.md, and
+    // CHOICES.md numbered as the choices are), which cross like specs; an
+    // answer written into the question itself still counts.
     let qdir = r.implementer.join("questions");
+    let answer = |rel: &str| match theirs(rel) {
+        Some(_) => Answer::Crossed,
+        None if specs_dir.join(rel).is_file() => Answer::Written,
+        None => Answer::Open,
+    };
     let mut questions = Vec::new();
     for p in crate::publish::files_under(&qdir) {
         let name = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -823,11 +855,35 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
             continue;
         }
         let text = std::fs::read_to_string(&p).unwrap_or_default();
-        let answered = text.lines().any(|l| l.starts_with('#') && l.to_ascii_lowercase().contains("answer"));
+        let in_place = text.lines().any(|l| l.starts_with('#') && l.to_ascii_lowercase().contains("answer"));
         let title = text.lines().find(|l| l.starts_with('#')).unwrap_or_default().trim_start_matches('#').trim();
-        questions.push((name.trim_end_matches(".md").to_string(), short(title), cited(&text), answered));
+        let state = if in_place { Answer::InPlace } else { answer(&format!("answers/{name}")) };
+        questions.push((name.trim_end_matches(".md").to_string(), short(title), cited(&text), state));
     }
-    let choice_list = choices(&std::fs::read_to_string(qdir.join("CHOICES.md")).unwrap_or_default());
+    let numbers = |p: PathBuf| -> BTreeSet<String> {
+        choices(&std::fs::read_to_string(p).unwrap_or_default()).into_iter().map(|c| c.0).collect()
+    };
+    let settled = match theirs("answers/CHOICES.md") {
+        Some(_) => numbers(impl_specs.join("answers/CHOICES.md")),
+        None => BTreeSet::new(),
+    };
+    let written = numbers(specs_dir.join("answers/CHOICES.md"));
+    let choice_list: Vec<(String, String, Answer)> =
+        choices(&std::fs::read_to_string(qdir.join("CHOICES.md")).unwrap_or_default())
+            .into_iter()
+            .map(|(n, text, in_place)| {
+                let state = if in_place {
+                    Answer::InPlace
+                } else if settled.contains(&n) {
+                    Answer::Crossed
+                } else if written.contains(&n) {
+                    Answer::Written
+                } else {
+                    Answer::Open
+                };
+                (n, text, state)
+            })
+            .collect();
 
     // Bundles: crossed, or current (staged on what has crossed) and waiting.
     let crossed: BTreeSet<String> =
@@ -905,7 +961,7 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         }
     }
     let crossed_specs: Vec<&Spec> = all.iter().filter(|s| states[&s.id].crossed).collect();
-    let open_q = |id: &str| questions.iter().any(|q| !q.3 && q.2.contains(id));
+    let open_q = |id: &str| questions.iter().any(|q| !q.3.answered() && q.2.contains(id));
     let loop_ended =
         !crossed_specs.is_empty() && crossed_specs.iter().all(|s| states[&s.id].stage >= 5 || open_q(&s.id));
     let implemented_unaudited: Vec<&String> = unaudited_specs.iter().filter(|s| states[*s].cited).collect();
@@ -1007,19 +1063,20 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
             ));
         }
     }
-    let open_questions: Vec<&(String, String, BTreeSet<String>, bool)> = questions.iter().filter(|q| !q.3).collect();
+    let open_questions: Vec<&(String, String, BTreeSet<String>, Answer)> =
+        questions.iter().filter(|q| q.3 == Answer::Open).collect();
     if !open_questions.is_empty() {
         inv_work.push(work(
             "answer_questions",
-            format!("{} questions from the implementer: answer each in game terms by changing a spec or recording a case, then append the answer naming what changed", open_questions.len()),
+            format!("{} questions from the implementer: answer each in game terms by changing a spec or recording a case, then write specs/answers/Q-NNNN.md naming what changed, and publish it with them", open_questions.len()),
             json!({"questions": open_questions.iter().map(|q| json!({"question": q.0, "title": q.1, "specs": q.2})).collect::<Vec<_>>()}),
         ));
     }
-    let open_choices: Vec<&(String, String, bool)> = choice_list.iter().filter(|c| !c.2).collect();
+    let open_choices: Vec<&(String, String, Answer)> = choice_list.iter().filter(|c| c.2 == Answer::Open).collect();
     if !open_choices.is_empty() {
         inv_work.push(work(
             "answer_choices",
-            format!("{} choices the implementer made that the specs did not settle (questions/CHOICES.md): settle each in a spec or a case, and add an Answer line under it", open_choices.len()),
+            format!("{} choices the implementer made that the specs did not settle (questions/CHOICES.md): settle each in a spec or a case, then answer it under its number in specs/answers/CHOICES.md and publish", open_choices.len()),
             json!({"choices": open_choices.iter().take(20).map(|c| json!({"choice": c.0, "text": short(&c.1)})).collect::<Vec<_>>()}),
         ));
     }
@@ -1181,7 +1238,7 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
             json!({"cases": untested}),
         ));
     }
-    let open_mine: Vec<&String> = open_questions.iter().map(|q| &q.0).collect();
+    let open_mine: Vec<&String> = questions.iter().filter(|q| !q.3.answered()).map(|q| &q.0).collect();
     if audit_due {
         // Only recording verdicts, for the audit to see, until it is done.
         imp_work.retain(|w| matches!(w["do"].as_str(), Some("wait_for_audit" | "run_cases")));
@@ -1249,8 +1306,9 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
             if let Some(c) = &u.classified { v["classified"] = json!(c); }
             v
         }).collect::<Vec<_>>(),
-        "questions": questions.iter().map(|q| json!({"question": q.0, "specs": q.2, "answered": q.3})).collect::<Vec<_>>(),
-        "choices": {"total": choice_list.len(), "open": open_choices.len()},
+        "questions": questions.iter().map(|q| json!({"question": q.0, "specs": q.2, "answered": q.3.answered(), "answer": q.3.name()})).collect::<Vec<_>>(),
+        "choices": {"total": choice_list.len(), "open": open_choices.len(),
+            "unsettled": choice_list.iter().filter(|c| !c.2.answered()).count()},
         "audits": {"due": audit_due, "unaudited_bundles": unaudited, "loop_ended": loop_ended,
             "last": last_audit.as_ref().map(|a| json!({"time": a["time"], "mechanical": a["mechanical"], "judgment": a["judgment"], "bundles": a["bundles"].as_array().map_or(0, Vec::len)}))},
         "emulator_changes": {"states": stale_chains, "cases": stale_cases.len(), "differing": differing},
@@ -1277,6 +1335,52 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
             }
         }
     }
+    // Answers that crossed, newest first: what to read before going on.
+    let mut crossed_at: BTreeMap<String, String> = BTreeMap::new();
+    for e in &log.entries {
+        for f in e["files"].as_array().into_iter().flatten().filter_map(|f| f["path"].as_str()) {
+            let rel = f.strip_prefix("specs/").unwrap_or(f);
+            if rel.starts_with("answers/") {
+                crossed_at.insert(rel.to_string(), e["time"].as_str().unwrap_or_default().to_string());
+            }
+        }
+    }
+    let mut answered: Vec<(String, String)> = questions
+        .iter()
+        .filter(|q| q.3 == Answer::Crossed)
+        .map(|q| {
+            let rel = format!("answers/{}.md", q.0);
+            let names = cited(&std::fs::read_to_string(impl_specs.join(&rel)).unwrap_or_default());
+            let names = if names.is_empty() {
+                String::new()
+            } else {
+                format!("; names {}", names.into_iter().collect::<Vec<_>>().join(", "))
+            };
+            let title = q.1.strip_prefix(q.0.as_str()).map_or(q.1.as_str(), |t| t.trim_start_matches([':', ' ', '.']));
+            (crossed_at.get(&rel).cloned().unwrap_or_default(), format!("{}, {title}: specs/{rel}{names}", q.0))
+        })
+        .collect();
+    let settled_choices: Vec<&String> = choice_list.iter().filter(|c| c.2 == Answer::Crossed).map(|c| &c.0).collect();
+    if !settled_choices.is_empty() {
+        answered.push((
+            crossed_at.get("answers/CHOICES.md").cloned().unwrap_or_default(),
+            format!(
+                "{} {}: specs/answers/CHOICES.md",
+                if settled_choices.len() == 1 { "choice" } else { "choices" },
+                settled_choices.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")
+            ),
+        ));
+    }
+    if !answered.is_empty() {
+        answered.sort_by(|a, b| b.0.cmp(&a.0));
+        md += "\n## Answered\n\nNewest first. Read the answer and the specs it names, then go on with the work it held up; ask again in a new question if it does not settle yours.\n\n";
+        for (time, line) in answered.iter().take(10) {
+            md += &format!("- {line} (crossed {time})\n");
+        }
+        if answered.len() > 10 {
+            md += &format!("- and {} answered before these\n", answered.len() - 10);
+        }
+    }
     md += "\n## Specs\n\n| Spec | Title | Stage | Cases passing |\n|---|---|---|---|\n";
     for s in &crossed_specs {
         let st = &states[&s.id];
@@ -1284,10 +1388,10 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         md += &format!("| {} | {} | {} | {pass} of {} |\n", s.id, s.title, stage_of(&s.id), st.port_cases.len());
     }
     md += &format!(
-        "\nQuestions open: {}. Choices listed: {} ({} not settled yet).\n",
-        open_questions.len(),
+        "\nQuestions waiting for an answer: {}. Choices listed: {} ({} not settled yet).\n",
+        questions.iter().filter(|q| !q.3.answered()).count(),
         choice_list.len(),
-        open_choices.len()
+        choice_list.iter().filter(|c| !c.2.answered()).count()
     );
 
     Ok(Ledger { value, investigator: inv_work, implementer: imp_work, reviewer: rev_work, implementer_view: md })
@@ -1652,6 +1756,47 @@ mod tests {
         );
         assert_eq!(c.len(), 2);
         assert!(c[0].2 && !c[1].2);
+    }
+
+    #[test]
+    fn answers_count_once_they_cross() {
+        let w = std::env::temp_dir().join(format!("psx-answers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&w);
+        let put = |rel: &str, text: &str| write(&w.join(rel), text.as_bytes()).unwrap();
+        put("inv/specs/walk.md", "---\nid: SPEC-0001\ntitle: Walking\n---\n");
+        for q in ["Q-0001", "Q-0002", "Q-0003"] {
+            put(&format!("imp/questions/{q}.md"), &format!("# {q}: SPEC-0001\n\nWhy?\n"));
+        }
+        put("imp/questions/Q-0004.md", "# Q-0004\n\nWhy?\n\n## Answer (investigator)\n\nSee SPEC-0001.\n");
+        put("imp/questions/CHOICES.md", "1. One.\n2. Two.\n3. Three.\n");
+        put("inv/specs/answers/Q-0002.md", "SPEC-0001 now says so.\n");
+        put("inv/specs/answers/Q-0003.md", "Not crossed yet.\n");
+        put("inv/specs/answers/CHOICES.md", "2. Settled.\n3. Settled, not crossed.\n");
+        put("imp/specs/answers/Q-0002.md", "SPEC-0001 now says so.\n");
+        put("imp/specs/answers/CHOICES.md", "2. Settled.\n");
+        let entry = json!({"time": "2026-10-26T18:00:00Z", "bundle": "ab", "files": [
+            {"path": "answers/Q-0002.md", "sha256": "x"}, {"path": "answers/CHOICES.md", "sha256": "y"}]});
+        put("imp/notes/published.jsonl", &format!("{entry}\n"));
+        let ctx = Ctx { root: w.join("inv"), cancel: None };
+        let r = Repos { investigator: w.join("inv"), implementer: w.join("imp"), reviewer: w.join("rev") };
+        let l = ledger(&ctx, &r).unwrap();
+        let states: Vec<(&str, &str)> = l.value["questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| (q["question"].as_str().unwrap(), q["answer"].as_str().unwrap()))
+            .collect();
+        assert_eq!(states, [("Q-0001", "open"), ("Q-0002", "crossed"), ("Q-0003", "written"), ("Q-0004", "in_place")]);
+        assert_eq!(l.value["choices"]["open"], 1);
+        assert_eq!(l.value["choices"]["unsettled"], 2);
+        // The investigator answers only what has no answer yet.
+        let asked = l.investigator.iter().find(|w| w["do"] == "answer_questions").unwrap();
+        assert_eq!(asked["questions"].as_array().unwrap().len(), 1, "{asked}");
+        assert!(l.implementer_view.contains("## Answered"), "{}", l.implementer_view);
+        assert!(l.implementer_view.contains("Q-0002, SPEC-0001: specs/answers/Q-0002.md; names SPEC-0001"));
+        assert!(l.implementer_view.contains("choice 2: specs/answers/CHOICES.md"));
+        assert!(l.implementer_view.contains("Questions waiting for an answer: 2."));
+        let _ = std::fs::remove_dir_all(&w);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 
 use crate::fieldmap::FieldMap;
-use crate::ram::{Fmt, Sample, read_mem, signed};
+use crate::ram::{Fmt, Sample, signed};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -74,12 +74,9 @@ pub fn parse(s: &str, map: Option<&FieldMap>) -> Result<Until, String> {
 }
 
 impl Until {
-    pub fn raw(&self, ram: &[u8], scratch: &[u8]) -> u32 {
-        read_mem(ram, scratch, self.col.mem, self.col.fmt.width())
-    }
-
+    /// Never while a pointer leads outside memory.
     pub fn holds(&self, ram: &[u8], scratch: &[u8]) -> bool {
-        self.op.test(ordered(self.col.fmt, self.raw(ram, scratch)), self.want)
+        self.col.read(ram, scratch).is_some_and(|v| self.op.test(ordered(self.col.fmt, v), self.want))
     }
 }
 
@@ -87,9 +84,7 @@ impl Until {
 pub fn check(conds: &[Until], ram: &[u8], scratch: &[u8]) -> Value {
     let each: Vec<Value> = conds
         .iter()
-        .map(|c| {
-            json!({"condition": c.text, "holds": c.holds(ram, scratch), "value": c.col.fmt.json(c.raw(ram, scratch))})
-        })
+        .map(|c| json!({"condition": c.text, "holds": c.holds(ram, scratch), "value": c.col.json(ram, scratch)}))
         .collect();
     json!({"met": each.iter().all(|c| c["holds"] == true), "conditions": each})
 }
@@ -97,8 +92,7 @@ pub fn check(conds: &[Until], ram: &[u8], scratch: &[u8]) -> Value {
 /// The report section: whether every condition held, where, and the values
 /// at the run's end (names only).
 pub fn report(conds: &[Until], met: Option<(u64, u64)>, ram: &[u8], scratch: &[u8]) -> Value {
-    let values: serde_json::Map<_, _> =
-        conds.iter().map(|c| (c.col.name.clone(), c.col.fmt.json(c.raw(ram, scratch)))).collect();
+    let values: serde_json::Map<_, _> = conds.iter().map(|c| (c.col.name.clone(), c.col.json(ram, scratch))).collect();
     let mut v = json!({
         "conditions": conds.iter().map(|c| &c.text).collect::<Vec<_>>(),
         "met": met.is_some(),
