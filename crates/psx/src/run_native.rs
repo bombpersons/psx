@@ -59,10 +59,11 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     }
     let mut sampler =
         (!cols.is_empty()).then(|| crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1), tick.is_some()));
-    let mut pokes = match obs.pokes.iter().map(|s| crate::ram::parse_poke(s)).collect::<Result<Vec<_>, _>>() {
-        Ok(p) => p,
-        Err(e) => return Err(Error::invalid(e)),
-    };
+    let mut pokes =
+        match obs.pokes.iter().map(|s| crate::ram::parse_poke(s, map.as_ref())).collect::<Result<Vec<_>, _>>() {
+            Ok(p) => p,
+            Err(e) => return Err(Error::invalid(e)),
+        };
     let read_ranges =
         match obs.watch_reads.iter().map(|s| crate::run::parse_range_spec(s)).collect::<Result<Vec<_>, _>>() {
             Ok(r) => r,

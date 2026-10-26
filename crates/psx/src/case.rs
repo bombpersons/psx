@@ -38,6 +38,11 @@ pub struct CaseRecordArgs {
     #[arg(long = "sample")]
     #[serde(default, rename = "sample")]
     pub samples: Vec<String>,
+    /// NAME=VALUE[@FRAME|@A..B|@A..], run's poke by map name: input that is not the pad,
+    /// shown from row FRAME+1; each written field is an activation column. Repeatable.
+    #[arg(long = "poke")]
+    #[serde(default, rename = "poke", skip_serializing_if = "Vec::is_empty")]
+    pub pokes: Vec<String>,
     /// A column that is input rather than compared; repeatable.
     #[arg(long)]
     #[serde(default)]
@@ -371,9 +376,18 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
     };
     let mut sample = vec![a.subject.clone()];
     sample.extend(a.samples.iter().cloned());
+    // Each written field is a column (the subject's own fields already are).
+    let written: Vec<String> =
+        a.pokes.iter().map(|p| p.split(['=', '@']).next().unwrap_or("").trim().to_string()).collect();
+    let prefix = format!("{}.", a.subject);
+    for w in &written {
+        if !w.starts_with(&prefix) && !sample.contains(w) {
+            sample.push(w.clone());
+        }
+    }
     let run: crate::run::RunCmdArgs = serde_json::from_value(json!({
         "media": a.media, "from_state": a.from_state, "frames": a.frames,
-        "input": input, "map": a.map, "sample": sample,
+        "input": input, "map": a.map, "sample": sample, "poke": a.pokes,
     }))
     .map_err(|e| Error::invalid(format!("case record: {e}")))?;
     let (complete, report) = run.run(ctx)?;
@@ -381,11 +395,18 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
         return Err(Error::new("run_incomplete", format!("the run ended early ({})", report["termination"]))
             .with("run_dir", &report["run_dir"]));
     }
+    // By name only: the case says what was written, never where.
+    let pokes = report["pokes"].as_array().cloned().unwrap_or_default();
+    if let Some(p) = pokes.iter().find(|p| p["name"].is_null()) {
+        return Err(Error::invalid(format!(
+            "poke {}: case record writes by field map name, so the case can say what it sets (name it in the map)",
+            p["spec"]
+        )));
+    }
     let samples = &report["samples"];
     let file = samples["file"].as_str().map(PathBuf::from).unwrap_or_default();
     let mut t = Table::parse(&String::from_utf8_lossy(&read(&file)?));
     // The subject's fields by their own names; the case names its subject.
-    let prefix = format!("{}.", a.subject);
     for h in &mut t.header {
         if let Some(f) = h.strip_prefix(&prefix) {
             *h = f.to_string();
@@ -400,7 +421,14 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
     let known = |c: &str| t.column(c).is_some() && !fixed.contains(&c);
     let columns: Vec<&String> = t.header.iter().filter(|h| !fixed.contains(&h.as_str())).collect();
     let list = || columns.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ");
-    for c in &a.activation {
+    let mut activation = a.activation.clone();
+    for w in &written {
+        let c = w.strip_prefix(&prefix).unwrap_or(w).to_string();
+        if !activation.contains(&c) {
+            activation.push(c);
+        }
+    }
+    for c in &activation {
         if !known(c) {
             return Err(Error::invalid(format!("activation {c:?} is not a column ({})", list())));
         }
@@ -422,11 +450,21 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
         compare.insert(col.to_string(), tol);
     }
     if a.compare.is_empty() {
-        for c in columns.iter().filter(|c| !a.activation.contains(c)) {
+        for c in columns.iter().filter(|c| !activation.contains(c)) {
             compare.insert(c.to_string(), json!(0));
         }
     }
     let mut warnings = Vec::new();
+    for c in compare.keys().filter(|c| activation.contains(c)) {
+        warnings
+            .push(format!("{c} is written (an activation) and compared: compare it only if the game changes it too"));
+    }
+    for p in pokes.iter().filter(|p| !p["skipped"].is_null()) {
+        warnings.push(format!(
+            "poke {} wrote nothing on {} run frames (from {}): its pointer was null or led outside memory",
+            p["spec"], p["skipped"], p["first_skipped_run_frame"]
+        ));
+    }
     let timing = timing(&t);
     match &timing {
         None => warnings.push(
@@ -484,8 +522,8 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
         }
         case["timing"] = v["vectors"].clone();
     }
-    if !a.activation.is_empty() {
-        case["activation"] = json!(a.activation);
+    if !activation.is_empty() {
+        case["activation"] = json!(activation);
     }
     let compared: Vec<String> = compare.keys().cloned().collect();
     if !a.coverage.is_empty() {
