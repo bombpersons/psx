@@ -21,8 +21,11 @@ across snapshots; ram_diff clusters nearby changes between two snapshots.
 ghidra_decompile takes source plus addr and imports/analyzes automatically.
 Reuse its analysis handle for further functions, references and pseudocode.
 For runtime overlays, supply ram with explicit ranges and entries, and gp when
-known. Same-analysis queries queue within deadlines; foreign/GUI locks remain
-errors. Do not remove another analysis owner's lock to make a query succeed.
+known. Same-analysis queries queue within deadlines; a project open in the
+Ghidra GUI is an error until it is closed. A query interrupted (its psx
+killed, or a deadline) is dealt with by the next query on that analysis,
+which stops what is left of it; its result says so under recovered. Leave
+lock files alone: removing one by hand loses that record.
 
 symbols names matching PsyQ library code, not every game function. Low coverage
 alone does not prove a bad match; ambiguous signatures are skipped. Ghidra names
