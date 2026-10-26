@@ -486,7 +486,7 @@ fn is_executable(bytes: &[u8]) -> bool {
 }
 
 /// The boot path in SYSTEM.CNF as an ISO path (`cdrom:\SLUS_005.67;1` is `/SLUS_005.67`).
-fn boot_path(boot: &str) -> String {
+pub(crate) fn boot_path(boot: &str) -> String {
     let p = boot.trim_start_matches("cdrom:").trim_start_matches("cdrom0:");
     let p = p.split(';').next().unwrap_or(p).replace('\\', "/");
     format!("/{}", p.trim_start_matches('/')).to_ascii_uppercase()

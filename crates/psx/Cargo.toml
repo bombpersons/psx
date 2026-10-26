@@ -13,6 +13,7 @@ psx-core = { workspace = true }
 psx-gpu = { workspace = true }
 psx-symbols = { workspace = true }
 png = "0.18"
+memchr = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { version = "4", features = ["derive"] }

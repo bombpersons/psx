@@ -23,6 +23,7 @@ mod fieldmap;
 mod ghidra;
 mod guide;
 mod handoff;
+mod inventory;
 mod leak;
 mod mcp;
 mod media_cmd;
@@ -145,6 +146,8 @@ enum Command {
         #[command(subcommand)]
         action: PublishAction,
     },
+    /// Every function of every executable on the disc and of the overlays in RAM snapshots, with instruction counts and basic blocks, and the disc's file list: the porting protocol's inventory.
+    Inventory(inventory::InventoryArgs),
     /// Named start states, each with its chain of runs from power-on.
     States {
         #[command(subcommand)]
@@ -343,6 +346,7 @@ fn main() -> ExitCode {
             PublishAction::Cross(a) => a.exec(&ctx),
             PublishAction::Check(a) => a.exec(&ctx),
         },
+        Command::Inventory(a) => a.exec(&ctx),
         Command::States { action } => match action {
             StatesAction::Make(a) => a.exec(&ctx),
             StatesAction::Save(a) => a.exec(&ctx),

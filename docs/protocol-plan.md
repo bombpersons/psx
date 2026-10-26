@@ -120,16 +120,31 @@ Branch: `protocol`. Committed piece by piece.
   investigator's and reviewer's `AGENTS.md` start from the new topics.
   `overview`'s "start with `psx protocol next`" waits for item 11.
 
+- **`psx inventory`** (item 9): every function of every PS-X EXE on the
+  disc and of the overlays in RAM snapshots, with instructions, basic
+  blocks, how each was found and how it ends, the gaps no function covers
+  (with how many words decode as code), and the disc's file list; written
+  to `notes/inventory.json` beside `protocol.toml` with totals appended to
+  `inventory_history.jsonl` (for the discovery gate). psx's own analysis:
+  the entry, calls in functions found, starts after a return or with a
+  prologue, pointers in the executable and in snapshots holding it, traced
+  call targets; words a compiler never emits (writes to `$zero`, shifts of
+  it, undecodable delay slots) end a candidate. An overlay is code a
+  snapshot holds that no executable does, matched to the disc file it was
+  loaded from and the part RAM still holds. TR2: all 162 state handlers
+  its investigator collected by hand are found from `TOMB2.EXE` alone
+  (Ghidra's static analysis found 92), 1271 of Ghidra's 1272 functions
+  from its RAM-seeded analysis; Symphony of the Night's `DRA.BIN` at
+  `800A0000` and `SEL.BIN` at `80180000` found from one traced snapshot,
+  and every instruction traced runs executed in game RAM lies in a found
+  function (Crash and Symphony of the Night).
+
 ## Phase 3: workspaces and guidance
 
 Done.
 
 ## Phase 4: measuring and driving
 
-9. **`psx inventory`** (item 9): every function and overlay with its
-   instruction count and basic blocks, including functions reached only
-   through pointer tables (analysis seeded from RAM snapshots), plus the
-   disc's file list. The ledger's denominator.
 10. **Corpus coverage** (item 10): runs' `coverage.txt` merged into
     executed blocks per function, so "exercised" is a query and the
     unexecuted blocks are a list to classify.

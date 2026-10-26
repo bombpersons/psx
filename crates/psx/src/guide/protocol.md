@@ -49,13 +49,38 @@ is the weighted mean of the credits, for code, formats and the whole. An
 estimated date only means something once the inventory stops growing: while
 it grew more than 5% in the last four weeks, give none.
 
+## The inventory
+
+inventory takes the code and format inventories' starting point: every
+function of every PS-X EXE on the disc, with its instructions and basic
+blocks, and the disc's file list, written to notes/inventory.json (in a
+repository with protocol.toml; out sets another place), with each run's
+totals appended to inventory_history.jsonl beside it, so its growth shows.
+
+  inventory --ram RUN --ram RUN2 ...
+
+Functions are found from each executable's entry, the calls in functions
+already found, code that starts after a return or with a stack prologue,
+and pointers into code: the handlers a table dispatches to, which analysis
+from the entry alone misses. Give ram run directories from the places the
+game goes (a level, a menu, a cutscene): a snapshot holding an executable
+adds the tables it fills at runtime, and code it holds that no executable
+does is an overlay, matched to the disc file it was loaded from and the
+part of it RAM still holds. A traced run (run --trace) adds its call
+targets, calls through pointers included, which is what finds overlays
+reached only through pointers. Each executable and overlay lists its gaps,
+what no function covers, with how many words decode as code: classify
+them, or record the game reaching them. Take an inventory again whenever
+the corpus reaches somewhere new.
+
 This psx does not compute the ledger yet. Keep the units, their stages and
-the specs covering them in notes/LOOP.md, and run --trace's coverage.txt and
-calls.json for what the corpus executes.
+the specs covering them in notes/LOOP.md, and run --trace's coverage.txt for
+what the corpus executes.
 
 ## The loop
 
-1. Inventory: ghidra analyze, the disc's file list (ls), format tables.
+1. Inventory: inventory, with snapshots of the places the game goes;
+   format tables for the disc's files.
 2. Corpus: record playthroughs against the checklist (handoff for people),
    kept as input plus a named start state.
 3. Per system unit, bottom-up (formats, then what everything shares: the

@@ -1309,6 +1309,7 @@ dependencies = [
  "cpal",
  "font8x8",
  "gilrs",
+ "memchr",
  "minifb",
  "png",
  "psx-assets",
