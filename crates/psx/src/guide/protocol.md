@@ -157,8 +157,9 @@ plain it is JSON, with the stages by kind.
    order of a tick, timing, collision; then the player; then the rest):
    find the behaviour (below), record cases (guide topic cases), write the
    spec, publish stage; the reviewer approves; publish cross. The
-   implementer builds it until its cases pass, and its questions come back
-   as spec changes and new cases.
+   implementer builds it until its cases pass, checking itself against
+   the original in clean mode as it goes, and its questions come back as
+   spec changes and new cases.
 4. A divergence found replaying the corpus goes back as a question in game
    terms ("lands two units further on row 812 of the long-jump case"),
    never as code.
@@ -181,7 +182,10 @@ Defaults:
   a threshold and just past it), and one that holds two inputs together.
 - Record calibration cases while working a rule out, then heldout cases
   afterwards, made without looking at the port; keep some back
-  ("kept_back": true) for the reviewer.
+  ("kept_back": true): the reviewer checks with them, and clean mode's
+  heldout runs the port on them without showing them (guide topic
+  cleanroom). Give every name a case uses a glossary entry and publish
+  the start states, so the implementer can record from them too.
 - Give each case coverage (guide topic cases): which spec claims which
   columns and rows, so the port compares what it has built and knows what
   the rest waits for.

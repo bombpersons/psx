@@ -284,11 +284,16 @@ fn settings(role: Role, repos: &Repos, s: &Setting) -> Value {
                     "Bash(*published.jsonl*)",
                     "Edit(specs/**)",
                     "Write(specs/**)",
+                    // Its servers: clean mode only.
+                    "Edit(.mcp.json)",
+                    "Write(.mcp.json)",
+                    "Bash(*.mcp.json*)",
                 ]
                 .map(String::from),
             );
             json!({
-                "permissions": {"deny": deny},
+                "permissions": {"allow": ["mcp__clean"], "deny": deny},
+                "enabledMcpjsonServers": ["clean"],
                 "hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": format!("{} barrier hook", psx_exe())}]}]},
             })
         }
@@ -301,6 +306,21 @@ fn mcp_json(repos: &Repos) -> Value {
     json!({"mcpServers": {"psx": {
         "command": psx_exe(),
         "args": ["--root", repos.investigator, "mcp"],
+    }}})
+}
+
+/// psx-clean, beside psx.
+fn clean_exe() -> PathBuf {
+    let psx = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("psx"));
+    psx.with_file_name(format!("psx-clean{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// Clean mode for the implementer, on the investigator's project: the only
+/// part of psx it reaches.
+fn clean_mcp_json(repos: &Repos) -> Value {
+    json!({"mcpServers": {"clean": {
+        "command": clean_exe(),
+        "args": ["--investigator", repos.investigator, "mcp"],
     }}})
 }
 
@@ -398,13 +418,20 @@ pub fn create(
             write_new(dest, ".mcp.json", &pretty(&mcp_json(repos)), &mut written)?;
         }
         Role::Implementer => {
-            for p in [".claude/settings.json", ".claude/barrier.json"] {
+            for p in [".claude/settings.json", ".claude/barrier.json", ".mcp.json"] {
                 if dest.join(p).exists() {
                     return Err(Error::invalid(format!("{} already exists", dest.join(p).display())));
                 }
             }
             out["template"] = crate::template::create_for(dest, name, options, Some(game))?;
             write_new(dest, ".claude/barrier.json", &pretty(&barrier_json(repos, s)), &mut written)?;
+            write_new(dest, ".mcp.json", &pretty(&clean_mcp_json(repos)), &mut written)?;
+            if !clean_exe().is_file() {
+                out["warnings"] = json!([format!(
+                    "{} is not built: cargo build --release -p psx-clean, or clean mode will not start",
+                    clean_exe().display()
+                )]);
+            }
         }
     }
     write_new(dest, ".claude/settings.json", &pretty(&settings(role, repos, s)), &mut written)?;
@@ -637,7 +664,8 @@ impl PortInitArgs {
             "repositories": {"investigator": repos.investigator, "implementer": repos.implementer, "reviewer": repos.reviewer},
             "investigator": {"written": mcp(&inv), "media_files": linked.len(), "bios_files": bios.len()},
             "implementer": {"written": mcp(&imp), "template": imp["template"]["owned_files"], "data_files": data.len(), "data_bytes": bytes,
-                            "data_raw": data.iter().filter(|d| d.1).map(|d| &d.0).collect::<Vec<_>>()},
+                            "data_raw": data.iter().filter(|d| d.1).map(|d| &d.0).collect::<Vec<_>>(),
+                            "warnings": imp["warnings"]},
             "reviewer": {"written": mcp(&rev)},
             "left_out": excluded, "unreadable": failed, "git": git,
             "cautions": CAUTIONS,
@@ -737,5 +765,24 @@ mod tests {
     #[test]
     fn host_keys() {
         assert_eq!(host_key(Path::new("/home/a/projects/re_x/psx")), "-home-a-projects-re-x-psx");
+    }
+
+    #[test]
+    fn the_implementer_reaches_clean_mode_and_nothing_else_of_psx() {
+        let repos = Repos {
+            investigator: PathBuf::from("/w/investigate"),
+            implementer: PathBuf::from("/w/clean"),
+            reviewer: PathBuf::from("/w/review"),
+        };
+        let s = settings(Role::Implementer, &repos, &Setting::default());
+        let has = |k: &str, v: &str| s["permissions"][k].as_array().unwrap().iter().any(|x| x == v);
+        assert!(has("allow", "mcp__clean") && has("deny", "mcp__psx"));
+        assert!(has("deny", "Edit(.mcp.json)") && has("deny", "Edit(notes/**)"));
+        assert_eq!(s["enabledMcpjsonServers"], json!(["clean"]));
+        let m = clean_mcp_json(&repos);
+        let server = &m["mcpServers"]["clean"];
+        assert!(server["command"].as_str().unwrap().ends_with(&format!("psx-clean{}", std::env::consts::EXE_SUFFIX)));
+        assert_eq!(server["args"], json!(["--investigator", "/w/investigate", "mcp"]));
+        assert_eq!(m["mcpServers"].as_object().unwrap().len(), 1);
     }
 }

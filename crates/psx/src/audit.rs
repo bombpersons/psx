@@ -460,6 +460,30 @@ impl AuditArgs {
             json!({"breaks": breaks}),
         ));
 
+        // What the implementer asked the original since the last audit.
+        let after = previous.last().and_then(|r| r["time"].as_str().map(str::to_string)).unwrap_or_default();
+        let oracle = std::fs::read_to_string(implementer.join("notes/oracle.jsonl")).unwrap_or_default();
+        let (mut tools, mut unsandboxed) = (BTreeMap::<String, u64>::new(), Vec::new());
+        for v in oracle.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+            if v["time"].as_str().unwrap_or_default() <= after.as_str() {
+                continue;
+            }
+            *tools.entry(v["tool"].as_str().unwrap_or("?").to_string()).or_default() += 1;
+            if v["tool"] == "heldout" && v["result"]["sandboxed"] == json!(false) {
+                unsandboxed.push(v["time"].clone());
+            }
+        }
+        checks.push(check(
+            "clean_mode",
+            unsandboxed.is_empty().then_some(true),
+            if unsandboxed.is_empty() {
+                "the requests the implementer made of the original since the last audit (notes/oracle.jsonl), by tool"
+            } else {
+                "not checked: the kept-back cases were run outside a sandbox (no bwrap), so the runner could have kept them; read what the runner does with PSX_CASES"
+            },
+            json!({"requests": tools, "heldout_unsandboxed": unsandboxed}),
+        ));
+
         // Refused tool calls in the implementer's sessions.
         let tdir = self.transcripts.as_ref().map(|p| ctx.root.join(p)).or_else(|| transcripts_of(&implementer));
         let denied = match tdir.as_ref().filter(|d| d.is_dir()) {

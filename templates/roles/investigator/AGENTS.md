@@ -45,7 +45,12 @@ For each spec:
 3. Record **calibration** cases while working the behaviour out, then
    **heldout** cases afterwards, to test it. Make cases that tell rules
    apart, not only cases that show them. A heldout case you keep back
-   for the reviewer's checks gets `"kept_back": true`.
+   for the reviewer's checks gets `"kept_back": true`; clean mode runs
+   the port on it without showing it.
+   The implementer checks itself against the original in clean mode
+   (psx guide topic `cleanroom`), asking by the glossary's names and the
+   published start states: give each sample name a glossary entry, and
+   publish the starts its cases use (`publish stage state=NAME`).
 4. Put the addresses and routines behind each spec in
    `notes/provenance.json`, keyed by spec id, `routines` keyed by address
    (with the executable's or file's name beside it where two hold code

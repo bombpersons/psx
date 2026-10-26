@@ -207,6 +207,33 @@ Branch: `protocol`. Committed piece by piece.
   planted constant, address, copied note line and unanswered crossing
   were each caught.
 
+- **`psx-clean`** (item 13, brief item 5): clean mode, its own binary
+  and MCP server beside psx, with no command that shows code, memory,
+  addresses, traces or states. `port init` gives the implementer a
+  `.mcp.json` with only it (allowed; psx and edits to `.mcp.json` stay
+  denied). It calls psx on the investigator's repository, keeps its
+  working files there and passes on neither psx's output nor its messages;
+  a request names only published things (start states in `specs/states/`,
+  crossed spec ids, the glossary's terms and the crossed cases' subjects
+  and columns). `next` returns NEXT.md brought up to date; `record` writes
+  an exploratory case to the implementer's `notes/oracle/` (case keys
+  only, unpublished fields and address-like columns left out); `compare`
+  gives the first row and column where the port's run differs; `heldout`
+  runs the port's runner (the template's `cases_from_folder`, PSX_CASES and
+  PSX_RESULTS) on the kept-back cases under bubblewrap (the port and
+  cargo's home as discarded overlays, the other repositories hidden, no
+  network) and returns pass, fail, waiting or no_result per case and spec;
+  `screens` gives pictures by row, side by side with the port's. Every
+  request goes into `notes/oracle.jsonl`, chained; the audit lists the
+  requests and marks heldout runs without a sandbox. On a Crash port
+  (published start, a calibration case crossed, two kept back): an
+  exploratory case replayed unchanged through the port's runner, compare
+  found its first difference, side-by-side pictures, heldout gave each
+  kept-back case's verdict in under a second with the runner built, and a
+  hostile runner could neither see the investigator's repository, reach
+  the network nor leave files in the port. Releases and the installers
+  carry psx-clean beside psx.
+
 ## Phase 3: workspaces and guidance
 
 Done.
@@ -217,13 +244,7 @@ Done.
 
 ## Phase 5: clean mode
 
-13. **`psx clean`** (item 5): a separate binary and MCP server that
-    physically lacks every tainted command, so the implementer's access
-    rules can allow it while denying psx. `record` (an exploratory case
-    from a published start), `compare` (against the port's output),
-    `heldout` (pass or fail per kept-back case, the runner's output not
-    returned) and side-by-side screenshots; answers only in published
-    names; every request logged to the implementer's `notes/oracle.jsonl`.
+Done.
 
 ## Defaults taken
 

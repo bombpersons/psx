@@ -1338,6 +1338,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "psx-clean"
+version = "0.4.4"
+dependencies = [
+ "clap",
+ "png",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+]
+
+[[package]]
 name = "psx-core"
 version = "0.4.4"
 dependencies = [

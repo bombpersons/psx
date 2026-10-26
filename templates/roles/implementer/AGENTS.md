@@ -24,7 +24,8 @@ You must never use, look for or ask for:
 
 - the game's executable, disassembly, decompiled code, memory dumps or
   emulator states;
-- the `psx` tool or its MCP server;
+- the `psx` tool or its MCP server (clean mode, below, is the one part
+  of it you have);
 - the investigator's or the reviewer's repository, or any other
   repository on this machine;
 - other reimplementations of the game or its engine, or recollections of
@@ -33,9 +34,9 @@ You must never use, look for or ask for:
 
 ## Where to start
 
-Start every session with `notes/NEXT.md`: psx writes it from the ledger
-(which specs to build, which cases fail, which have no verdict yet) each
-time the investigator or the person runs it. Cite the spec id in the code
+Start every session with clean mode's `next`, which brings
+`notes/NEXT.md` up to date from the ledger (which specs to build, which
+cases fail, which have no verdict yet) and returns it. Cite the spec id in the code
 that implements it; the case tests' `write_run` leaves each case's verdict
 per spec, which is how a spec counts as verified.
 
@@ -44,6 +45,27 @@ come from a spec, a case or the game's data as the port reads it (a value
 you choose yourself is a choice: list it), and comments and commit
 messages say what the game does in the specs' words. psx adds a line to
 `AUDIT.md` for each audit; commit it as it is.
+
+## Clean mode
+
+The `clean` MCP server runs the original game and tells you how it
+behaved, in the names the specs publish, never how it works:
+
+- `record`: an exploratory case from a published start (`specs/states/`)
+  with any input, its subject and samples named as in the glossary and
+  the cases, written to `notes/oracle/` in a case's form. Replay it
+  unchanged with your case runner: "does it really do that?" is one
+  record and one test. Exploratory cases are evidence for you only; a
+  rule you rely on still needs a spec, so ask for one.
+- `compare`: your runner's run of a case (`write_run`'s CSV) against the
+  original's recording: the first row and column that differ.
+- `heldout`: your case runner on cases the investigator kept back, which
+  you never see: pass or fail per case, with its spec. It runs the
+  `cases_from_folder` test in `game/tests/cases.rs`; keep that taking
+  every subject you have a runner for.
+- `screens`: the original's pictures by row, side by side with yours.
+
+Every request is logged in `notes/oracle.jsonl` for the audit.
 
 ## Questions and choices
 
@@ -75,7 +97,8 @@ commit implements:
     Role: implementer
     Spec: SPEC-0002, SPEC-0009
 
-Leave `notes/` to psx: it commits the guidance log and the publishing log.
+Leave `notes/` to psx: it commits the guidance, publishing and clean-mode
+logs, and clean mode's recordings in `notes/oracle/`.
 
 ## The code
 

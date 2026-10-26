@@ -17,3 +17,8 @@ lists the rest as waiting for their specs. A case whose start is a state
 (`specs/states/`) is set up as that state's description says. Use
 tolerance 0 where the spec says the rule is exact.
 
+Choose the runner by the case's subject (`runner` in `tests/cases.rs`):
+then the same runners replay clean mode's exploratory cases in
+`notes/oracle/`, and `cases_from_folder` runs any folder of cases, which
+is how clean mode's `heldout` runs the cases kept back from you.
+
