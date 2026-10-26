@@ -60,18 +60,13 @@ totals appended to inventory_history.jsonl beside it, so its growth shows.
 
   inventory --ram RUN --ram RUN2 ...
 
-Functions are found from each executable's entry, the calls in functions
-already found, code that starts after a return or with a stack prologue,
-and pointers into code: the handlers a table dispatches to, which analysis
-from the entry alone misses. Give ram run directories from the places the
-game goes (a level, a menu, a cutscene): a snapshot holding an executable
-adds the tables it fills at runtime, and code it holds that no executable
-does is an overlay, matched to the disc file it was loaded from and the
-part of it RAM still holds. A traced run (run --trace) adds its call
-targets, calls through pointers included, and where it executed code no
-function covers, each only where the code at hand is what the run ran
-there; code it ran that was loaded over by the end is looked for in the
-disc's files. Code the BIOS copies into RAM at power-on (its shell) is
+Functions are found from each executable's entry, calls, code after a
+return or with a stack prologue, and pointers into code (the handlers a
+table dispatches to). Give ram run directories from the places the game
+goes (a level, a menu, a cutscene): a snapshot adds the tables filled at
+runtime, and code no executable holds is an overlay, matched to the disc
+file it came from. A traced run (run --trace) adds its call targets and
+the code it executed, where the code at hand is what ran there. Code the BIOS copies into RAM at power-on (its shell) is
 listed apart under bios_code. Each executable and overlay lists its gaps,
 what no function covers, with how many words decode as code: classify
 them, or record the game reaching them. Take an inventory again whenever
@@ -91,9 +86,8 @@ reached, are the list to classify (dead, debug only, unreachable on this
 disc) or to record. Each executed word is credited to the executable or
 overlay whose code ran there, so code loaded over other code is told
 apart. Two lists say the inventory is short: executed_outside_functions
-(code the analysis missed) and in_no_image (code no snapshot holds: an
-overlay loaded and replaced before the run's end, often compressed on the
-disc). For the second, called gives the run frames the run called into it:
+(code the analysis missed) and in_no_image (an overlay replaced before the
+run's end, often compressed on the disc). For the second, called gives the run frames the run called into it:
 run to one of them and take the inventory again with that snapshot as ram.
 
 ## The ledger and next
@@ -121,16 +115,18 @@ now first. Nothing in it is kept by hand; each exit check is a file:
   target's tmp folder; protocol.toml's [protocol] results moves it);
   integrated: a corpus case (role corpus) passes, or for a format a
   round_trip verdict (write_result);
+- heldout: clean mode's last verdict on each case kept back for the spec
+  (notes/oracle.jsonl; a changed case counts as not run); no stage needs it;
 - formats: a format spec's files (patterns) and records ({name: fields})
   in its front matter; disc files no format spec names are listed.
 The work it gives: rebuilding start states and checking cases again when
 the emulator changed (until then they are not evidence); waiting while an
 audit is due (every few implemented specs, [protocol] audit_every, and at
 a loop's end, until audit records one: guide topic review); the findings
-of a failed audit; revising a rejected bundle and crossing an approved one; taking
-the inventory and coverage again; answering questions and choices (a
-choice is answered by a line starting Answer: under it); recording
-missing cases; staging; then a few units to specify, formats first, unless
+of a failed audit; revising a rejected bundle and crossing an approved one;
+taking the inventory and coverage again; answering questions and choices
+(a choice is answered by a line starting Answer: under it); thin specs (a
+verified spec whose kept-back cases fail); recording missing cases; staging; then a few units to specify, formats first, unless
 [protocol] specs_ahead crossed specs wait for the implementer; and
 classifying what no run reaches.
 
@@ -139,13 +135,10 @@ classifying what no run reaches.
   protocol report --plain
 
 The ledger for the person: complete by kind, and an estimated date with
-its range (the slower and faster halves of the last four weeks of the
-ledger's history), or why there is none: while the inventory grew more
-than 5% in four weeks the total is not known, and a ledger that has
-hardly changed gives no rate. plain adds what moved on (and back) since
-the person's last plain report, and what waits on them: a play-through
-window open, or a reviewer's or implementer's session to start. Without
-plain it is JSON, with the stages by kind.
+its range (from the last four weeks of the ledger's history), or why there
+is none (the inventory still growing, or too little change). plain adds
+what moved since the person's last plain report and what waits on them (a
+play-through, a session to start); without it, JSON with the stages.
 
 ## The loop
 
@@ -155,7 +148,7 @@ plain it is JSON, with the stages by kind.
    kept as input plus a named start state.
 3. Per system unit, bottom-up (formats, then what everything shares: the
    order of a tick, timing, collision; then the player; then the rest):
-   find the behaviour (below), record cases (guide topic cases), write the
+   find the behaviour (guide topic fields), record cases (guide topic cases), write the
    spec, publish stage; the reviewer approves; publish cross. The
    implementer builds it until its cases pass, checking itself against
    the original in clean mode as it goes, and its questions come back as
@@ -190,22 +183,6 @@ Defaults:
   columns and rows, so the port compares what it has built and knows what
   the rest waits for.
 
-## Finding things in RAM
-
-- The player's object: search 32-bit values over a range for its position
-  while it moves one way (ram_search width=4 with between and increased),
-  then narrow with more snapshots. A narrow field (a 16-bit heading) gives
-  thousands of candidates; a wide one moving steadily gives a few. The
-  object's other fields are near it: ram_view the struct across snapshots,
-  then name it in the field map (guide topic fields).
-- The tick: run find_tick (guide topic fields).
-- Input: the console's pad reaches the game through its own input word.
-  Hold one button and diff against holding none for the word; a write
-  watch on it gives the one routine that writes it, and xrefs on it the
-  readers, which are where the game's behaviour starts.
-- Arrays of objects: one element found, the others are a stride apart;
-  xrefs on the first element's address often finds the table's base.
-
 ## Play-throughs
 
 When a state is out of a script's reach, ask a person through handoff.
@@ -219,11 +196,10 @@ rebuilds from power-on.
 ## When the emulator changes
 
 The emulator is the instrument evidence is measured with. After a psx
-update: states rebuild to replay every start state's chain from power-on; case check
-to record every case again (write=true replaces those that differ, after
-you understand why); the port's tests then run against the new cases, and a
-difference is an instrument change until triaged, not a port regression.
-Play-throughs that no longer reach their goal are asked for again.
+update: states rebuild, then case check (write=true replaces cases that
+differ, once you understand why); a difference is an instrument change
+until triaged, not a port regression. Play-throughs that no longer reach
+their goal are asked for again.
 
 ## The port's own tools
 

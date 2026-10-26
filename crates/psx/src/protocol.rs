@@ -576,7 +576,28 @@ struct SpecState {
     port_cases: Vec<(String, Option<bool>)>,
     /// Verdicts of other kinds: (kind, name, passed).
     others: Vec<(String, String, bool)>,
+    /// Cases kept back for it, with clean mode's last verdict on each
+    /// (pass, fail, waiting or no_result; None: never run as it is now).
+    heldout: Vec<(String, Option<String>)>,
     stage: usize,
+}
+
+/// Clean mode's last heldout verdict on each kept-back case, by label,
+/// from the implementer's notes/oracle.jsonl.
+fn heldout_verdicts(implementer: &Path) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let text = std::fs::read_to_string(implementer.join("notes/oracle.jsonl")).unwrap_or_default();
+    for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+        if v["tool"] != "heldout" {
+            continue;
+        }
+        for c in v["result"]["cases"].as_array().into_iter().flatten() {
+            if let (Some(label), Some(verdict)) = (c["case"].as_str(), c["verdict"].as_str()) {
+                out.insert(label.to_string(), verdict.to_string());
+            }
+        }
+    }
+    out
 }
 
 fn spec_stage(s: &SpecState, format: bool) -> usize {
@@ -655,6 +676,24 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
             }
         }
     }
+    // The cases kept back, by their spec, under the label clean mode gives them.
+    let heldout_seen = heldout_verdicts(&r.implementer);
+    let mut kept_back: BTreeMap<String, Vec<(String, Option<String>)>> = BTreeMap::new();
+    for p in crate::publish::files_under(&cases_dir) {
+        let Ok(bytes) = std::fs::read(&p) else { continue };
+        let v = if p.extension().and_then(|e| e.to_str()) == Some("json") {
+            serde_json::from_slice::<Value>(&bytes).ok()
+        } else {
+            None
+        };
+        let Some(v) = v.filter(|v| v["kept_back"] == json!(true)) else { continue };
+        let label = format!("k{}", &crate::publish::sha256(&bytes)[..10]);
+        let name = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        kept_back
+            .entry(v["spec"].as_str().unwrap_or_default().to_string())
+            .or_default()
+            .push((name, heldout_seen.get(&label).cloned()));
+    }
     // The crossed cases, by the specs they claim, with when they last changed.
     let mut port_claims: BTreeMap<String, Vec<(String, u64, bool)>> = BTreeMap::new();
     for p in crate::publish::files_under(&impl_cases) {
@@ -702,6 +741,7 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
                 st.others.push((v.kind.clone(), v.name.clone(), *ok));
             }
         }
+        st.heldout = kept_back.remove(&s.id).unwrap_or_default();
         st.stage = spec_stage(&st, s.format());
         states.insert(s.id.clone(), st);
     }
@@ -983,6 +1023,23 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
             json!({"choices": open_choices.iter().take(20).map(|c| json!({"choice": c.0, "text": short(&c.1)})).collect::<Vec<_>>()}),
         ));
     }
+    // A port that passes a spec's own cases and fails those kept back: the spec is not enough.
+    let thin: Vec<Value> = all
+        .iter()
+        .filter(|s| states[&s.id].stage >= 5 && states[&s.id].heldout.iter().any(|h| h.1.as_deref() == Some("fail")))
+        .map(|s| {
+            let failing: Vec<&String> =
+                states[&s.id].heldout.iter().filter(|h| h.1.as_deref() == Some("fail")).map(|h| &h.0).collect();
+            json!({"spec": s.id, "title": s.title, "failing": failing})
+        })
+        .collect();
+    if !thin.is_empty() {
+        inv_work.push(work(
+            "thin_specs",
+            format!("{} specs whose crossed cases the port passes fail cases kept back: each spec leaves out something those cases show; write it into the spec, or cross a case that shows it", thin.len()),
+            json!({"specs": thin}),
+        ));
+    }
     if !differing.is_empty() {
         inv_work.push(work(
             "triage_cases",
@@ -1180,6 +1237,7 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
                 "changed_since_crossing": st.changed, "cited": st.cited,
                 "cases": st.cases.iter().map(|(n, c)| json!({"case": n, "check": format!("{c:?}").to_lowercase()})).collect::<Vec<_>>(),
                 "port_cases": st.port_cases.iter().map(|(n, v)| json!({"case": n, "passed": v})).collect::<Vec<_>>(),
+                "heldout": st.heldout.iter().map(|(n, v)| json!({"case": n, "verdict": v})).collect::<Vec<_>>(),
                 "code_units": units.iter().filter(|u| u.specs.contains(&s.id)).count(),
             })
         }).collect::<Vec<_>>(),
@@ -1594,6 +1652,26 @@ mod tests {
         );
         assert_eq!(c.len(), 2);
         assert!(c[0].2 && !c[1].2);
+    }
+
+    #[test]
+    fn heldout_verdicts_are_the_last_run_on_each_case() {
+        let dir = std::env::temp_dir().join(format!("psx-heldout-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        let line = |tool: &str, cases: Value| json!({"tool": tool, "result": {"cases": cases}}).to_string();
+        let log = [
+            line(
+                "heldout",
+                json!([{"case": "k1", "spec": "SPEC-0001", "verdict": "fail"}, {"case": "k2", "verdict": "pass"}]),
+            ),
+            line("compare", json!([{"case": "k2", "verdict": "fail"}])),
+            line("heldout", json!([{"case": "k1", "spec": "SPEC-0001", "verdict": "pass"}])),
+        ];
+        std::fs::write(dir.join("notes/oracle.jsonl"), log.join("\n") + "\n").unwrap();
+        let v = heldout_verdicts(&dir);
+        assert_eq!(v.get("k1").map(String::as_str), Some("pass"));
+        assert_eq!(v.get("k2").map(String::as_str), Some("pass"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

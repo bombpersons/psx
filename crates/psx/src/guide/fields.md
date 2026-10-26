@@ -81,3 +81,19 @@ a route is a chain: run until the menu is up, then from_state with the
 press at frame 0, held long enough for the game to take it. A condition
 already true at the start stops at run_frame 0; frames caps the wait, and
 until.met false means it never came.
+
+## Finding things in RAM
+
+- The player's object: search 32-bit values over a range for its position
+  while it moves one way (ram_search width=4 with between and increased),
+  then narrow with more snapshots. A narrow field (a 16-bit heading) gives
+  thousands of candidates; a wide one moving steadily gives a few. The
+  object's other fields are near it: ram_view the struct across snapshots,
+  then name it in the field map.
+- The tick: run find_tick (above).
+- Input: the console's pad reaches the game through its own input word.
+  Hold one button and diff against holding none for the word; a write
+  watch on it gives the one routine that writes it, and xrefs on it the
+  readers, which are where the game's behaviour starts.
+- Arrays of objects: one element found, the others are a stride apart;
+  xrefs on the first element's address often finds the table's base.
