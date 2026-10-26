@@ -49,7 +49,7 @@ impl Topic {
             Self::Fields => "Name the game's memory and find its tick",
             Self::Cases => "Record cases and check them again",
             Self::States => "Keep start states that rebuild from power-on",
-            Self::Barrier => "Check what crosses to the implementer",
+            Self::Barrier => "Check and publish what crosses to the implementer",
             Self::Code => "Follow runtime evidence into code",
             Self::Assets => "Find, decode and validate assets",
             Self::Bevy => "Rebuild the game in Bevy",

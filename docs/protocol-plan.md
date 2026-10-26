@@ -56,17 +56,23 @@ Branch: `protocol`. Committed piece by piece.
   with the notes but not published. Guide topic `barrier`. tr2-investigate's
   and tr2-clean's specs are clean; its notes and planted leaks in TR2 and
   Crash text are caught.
+- **Publishing** (`psx publish stage` / `cross` / `check`): stage takes
+  what changed in the investigator's `specs/` since the last crossing
+  (specs, glossary, cases with their observations, start-state
+  descriptions from the chains; a case marked `kept_back` stays behind),
+  runs the leak checker and writes `.psx/bundles/HASH/`, the hash covering
+  each file and the version it replaces. `cross` copies a bundle only when
+  the reviewer's `reviews/HASH.json` approves it, logging it to the
+  implementer's `notes/published.jsonl` (hash-chained); `check` and every
+  crossing test that `specs/` is exactly the logged, still-approved
+  bundles. Tried on copies of TR2's repositories (adopting tr2-clean's
+  existing specs, partial stages, stale bundles, removals, a tampered
+  bundle, a rewritten review, an edited log) and on a Crash spec, case
+  and state. (Brief item 3.)
 
 ## Phase 2: the barrier
 
-5. **`psx publish --stage` and `psx publish`** (item 3). Specs, cases,
-   the sample glossary (names, units, meanings) and start-state
-   descriptions are bundled with a hash; a bundle crosses only when an
-   approval of that exact hash exists (`reviews/<hash>.json`); every
-   publish checks that the implementer's `specs/` is the union of the
-   approved bundles. Models: `tr2-rs/tools/publish_cases.py`,
-   `tr2-investigate/tools/publish_specs.py`.
-6. **The message check as a psx command** (`psx barrier hook`), so the
+5. **The message check as a psx command** (`psx barrier hook`), so the
    implementer's `UserPromptSubmit` hook is one line: the same checker,
    `[cross]` passing with a log entry, `guidance.jsonl` hash-chained.
    Model: `tr2-clean/.claude/hooks/barrier_check.py` and `barrier.json`.

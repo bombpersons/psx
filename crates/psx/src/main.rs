@@ -31,6 +31,7 @@ mod page;
 mod parser;
 mod parser_template;
 mod provenance;
+mod publish;
 mod ram;
 mod replay;
 mod run;
@@ -133,6 +134,11 @@ enum Command {
         #[command(subcommand)]
         action: BarrierAction,
     },
+    /// Carry specs and cases to the implementer, only as the reviewer approved them.
+    Publish {
+        #[command(subcommand)]
+        action: PublishAction,
+    },
     /// Named start states, each with its chain of runs from power-on.
     States {
         #[command(subcommand)]
@@ -198,6 +204,16 @@ enum BarrierAction {
     /// Check files or text for what would carry the original's code across: addresses,
     /// hex, code-shaped text, tool and symbol names, text copied from the notes.
     Check(leak::BarrierCheckArgs),
+}
+
+#[derive(clap::Subcommand)]
+enum PublishAction {
+    /// Check what changed in specs since the last crossing and write it as a bundle with its hash.
+    Stage(publish::PublishStageArgs),
+    /// Copy a bundle into the implementer's specs, only if reviews/HASH.json approves it.
+    Cross(publish::PublishCrossArgs),
+    /// Check that the implementer's specs are exactly the approved bundles that crossed.
+    Check(publish::PublishCheckArgs),
 }
 
 #[derive(clap::Subcommand)]
@@ -293,6 +309,11 @@ fn main() -> ExitCode {
         },
         Command::Barrier { action } => match action {
             BarrierAction::Check(a) => a.exec(&ctx),
+        },
+        Command::Publish { action } => match action {
+            PublishAction::Stage(a) => a.exec(&ctx),
+            PublishAction::Cross(a) => a.exec(&ctx),
+            PublishAction::Check(a) => a.exec(&ctx),
         },
         Command::States { action } => match action {
             StatesAction::Make(a) => a.exec(&ctx),

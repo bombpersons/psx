@@ -395,7 +395,7 @@ pub fn text_files(path: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn form_of(p: &Path) -> Form {
+pub fn form_of(p: &Path) -> Form {
     match p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("csv") => Form::Csv,
         Some("json" | "jsonl" | "toml") => Form::Data,
@@ -406,7 +406,7 @@ fn form_of(p: &Path) -> Form {
 /// Files over this are skipped as notes (run outputs, traces).
 const NOTES_LIMIT: u64 = 4 << 20;
 
-fn read_text(p: &Path, limit: u64) -> Option<String> {
+pub fn read_text(p: &Path, limit: u64) -> Option<String> {
     let meta = std::fs::metadata(p).ok()?;
     if meta.len() > limit {
         return None;
