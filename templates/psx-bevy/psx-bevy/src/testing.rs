@@ -42,7 +42,7 @@ pub mod case;
 pub mod mcp;
 pub mod trajectory;
 pub use crate::shell::InjectedMouse;
-pub use case::{Case, CaseReport, CaseRun, Claim, RowTicks, Start, write_result};
+pub use case::{Case, CaseReport, CaseRun, Claim, RowTicks, Start, Written, write_result};
 pub use trajectory::{Alignment, Comparison, Replay, Trajectory, compare, compare_from};
 
 /// One tick of injected input: pad buttons and the mouse. `Vec<Button>`

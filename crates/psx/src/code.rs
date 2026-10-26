@@ -324,11 +324,15 @@ pub struct Ref {
 pub struct Resolver {
     hi: [Option<u32>; 32],
     gp: Option<u32>,
+    /// Also an address built in KUSEG (`lui 0x8` for 0x0008xxxx), which
+    /// main RAM mirrors: kept where a range is asked for, which filters the
+    /// constants it lets through.
+    kuseg: bool,
 }
 
 impl Resolver {
     pub fn new(gp: Option<u32>) -> Self {
-        Resolver { hi: [None; 32], gp }
+        Resolver { hi: [None; 32], gp, kuseg: false }
     }
 
     pub fn reset(&mut self) {
@@ -364,7 +368,7 @@ impl Resolver {
                 if let Some((b, via)) = base(rs) {
                     let t = if op == 0x0D { b | (i & 0xFFFF) } else { b.wrapping_add(simm) };
                     // Constants built with lui+ori are only addresses when they point into memory.
-                    if plausible_address(t) {
+                    if plausible_address(t) || self.kuseg && t < 0x0020_0000 {
                         out.push(Ref {
                             target: t,
                             kind: "addr",
@@ -587,7 +591,7 @@ pub fn xrefs(code: &Code, lo: u32, hi: u32, data: bool) -> Vec<(u32, Ref)> {
     let (l, h) = (norm(lo), norm(hi));
     let inside = |a: u32| (l..h).contains(&norm(a));
     let mut out = Vec::new();
-    let mut res = Resolver::new(code.gp);
+    let mut res = Resolver { kuseg: true, ..Resolver::new(code.gp) };
     let mut after_return = false;
     for (pc, i) in code.words() {
         for r in res.step(pc, i) {
@@ -948,6 +952,23 @@ mod tests {
             vec![(0x8001_0004, json!("0x400")), (0x8001_0014, json!("0x10000"))]
         );
         assert!(pcs(&Filter { kinds: vec!["store".into()], bits: None }).is_empty());
+    }
+
+    #[test]
+    fn xrefs_find_a_table_built_in_the_kuseg_mirror() {
+        let c = code(&[
+            0x3C08_0008, // lui t0, 0x8
+            0x2508_1234, // addiu t0, t0, 0x1234: the table at 0x00081234
+            0x3C09_0001, // lui t1, 0x1
+            0x2529_0010, // addiu t1, t1, 0x10: 0x00010010, outside the range asked
+            JR_RA,
+            0x0000_0000,
+        ]);
+        let r = xrefs(&c, 0x8008_1234, 0x8008_1238, false);
+        assert_eq!(
+            r.iter().map(|(pc, r)| (*pc, r.kind, r.via, r.target)).collect::<Vec<_>>(),
+            [(0x8001_0004, "addr", "lui+addiu", 0x0008_1234)]
+        );
     }
 
     #[test]

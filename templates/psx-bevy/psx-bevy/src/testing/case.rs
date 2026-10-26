@@ -99,6 +99,23 @@ impl fmt::Display for Claim {
     }
 }
 
+/// A field the case's recording wrote (case record's poke): input that is
+/// not the pad, set at the start of each field in `from..=to` (no `to`: to
+/// the end), so the ticks of those fields see it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Written {
+    pub column: String,
+    pub value: f64,
+    pub from: u64,
+    pub to: Option<u64>,
+}
+
+impl Written {
+    pub fn due(&self, field: u64) -> bool {
+        field >= self.from && self.to.is_none_or(|t| field <= t)
+    }
+}
+
 /// The ticks the runner runs before one row, and the field whose pad they read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RowTicks {
@@ -197,6 +214,28 @@ impl Case {
             Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
             _ => Vec::new(),
         }
+    }
+
+    /// The fields the recording wrote, with the values it wrote: a row shows
+    /// a field after the tick, so these, not the rows, say what was given.
+    /// [`CaseRun::write`] gives them to the rebuild.
+    pub fn writes(&self) -> Result<Vec<Written>, String> {
+        let bad = |w: &Value| format!("{}: write {w} is not {{column, value, fields: {{from, to}}}}", self.name);
+        let list = match &self.json["writes"] {
+            Value::Null => return Ok(Vec::new()),
+            Value::Array(a) => a,
+            w => return Err(bad(w)),
+        };
+        list.iter()
+            .map(|w| {
+                Ok(Written {
+                    column: w["column"].as_str().ok_or_else(|| bad(w))?.to_string(),
+                    value: w["value"].as_f64().ok_or_else(|| bad(w))?,
+                    from: w["fields"]["from"].as_u64().ok_or_else(|| bad(w))?,
+                    to: w["fields"]["to"].as_u64(),
+                })
+            })
+            .collect()
     }
 
     /// The compared columns with their tolerances, in the case's order.
@@ -349,7 +388,7 @@ impl Case {
 
     /// The case's runner: [`CaseRun::run`] replays it in an app.
     pub fn runner(&self) -> CaseRun<'_> {
-        CaseRun { case: self, implementing: None, before: None }
+        CaseRun { case: self, implementing: None, before: None, write: None }
     }
 }
 
@@ -363,6 +402,7 @@ fn number(cell: &str) -> Option<f64> {
 }
 
 type BeforeTick<'a> = Box<dyn FnMut(&mut App, usize) + 'a>;
+type WriteField<'a> = Box<dyn FnMut(&mut App, &str, f64) + 'a>;
 
 /// How to replay a case: which specs the rebuild implements, and what to do
 /// before each tick.
@@ -370,6 +410,7 @@ pub struct CaseRun<'a> {
     case: &'a Case,
     implementing: Option<Vec<String>>,
     before: Option<BeforeTick<'a>>,
+    write: Option<WriteField<'a>>,
 }
 
 impl<'a> CaseRun<'a> {
@@ -385,6 +426,15 @@ impl<'a> CaseRun<'a> {
     /// [`Case::activation`]'s columns.
     pub fn before_tick(mut self, f: impl FnMut(&mut App, usize) + 'a) -> Self {
         self.before = Some(Box::new(f));
+        self
+    }
+
+    /// Sets a column the recording wrote ([`Case::writes`]) to a value, in
+    /// the case's units: called before the first tick that sees the write
+    /// (a write in a field with no tick waits for the next one). Needed for
+    /// a case with writes.
+    pub fn write(mut self, f: impl FnMut(&mut App, &str, f64) + 'a) -> Self {
+        self.write = Some(Box::new(f));
         self
     }
 
@@ -409,6 +459,13 @@ impl<'a> CaseRun<'a> {
         let last = compared.iter().map(|c| *c.rows.end()).max();
         let schedule = case.schedule().unwrap_or_else(|e| panic!("{e}"));
         let replay = case.input().unwrap_or_else(|e| panic!("{e}"));
+        let writes = case.writes().unwrap_or_else(|e| panic!("{e}"));
+        if !writes.is_empty() && self.write.is_none() {
+            let columns: Vec<&str> = writes.iter().map(|w| w.column.as_str()).collect();
+            panic!("{}: the recording wrote {columns:?}: give them to the rebuild with CaseRun::write", case.name);
+        }
+        // Written since the last tick, by column (the latest value wins).
+        let mut pending: Vec<(&str, f64)> = Vec::new();
 
         let read_row = |world: &World, read: &mut dyn FnMut(&World, &str) -> Option<f64>| -> Vec<f64> {
             columns
@@ -431,9 +488,18 @@ impl<'a> CaseRun<'a> {
         }
         for row in 1..=last.unwrap_or(0) {
             let mut done = RowTicks { ticks: 0, reads_field: None };
+            for w in writes.iter().filter(|w| w.due(row as u64 - 1)) {
+                pending.retain(|(c, _)| *c != w.column);
+                pending.push((&w.column, w.value));
+            }
             for _ in 0..schedule[row].ticks {
                 // The ticks before row r ran during field r - 1 and read its pad.
                 let field = row as u64 - 1;
+                if let Some(write) = self.write.as_mut() {
+                    for (column, value) in pending.drain(..) {
+                        write(app, column, value);
+                    }
+                }
                 if let Some(before) = self.before.as_mut() {
                     before(app, row);
                 }
@@ -679,6 +745,38 @@ mod tests {
         assert_eq!((claim.spec.as_deref(), claim.rows.clone()), (Some("SPEC-1"), 0..=5));
         assert_eq!(comparison.columns[0].first_divergence, None, "x follows the pad: {report}");
         assert_eq!(comparison.columns[1].first_divergence, Some(5));
+    }
+
+    #[test]
+    fn gives_the_rebuild_what_the_recording_wrote_before_the_tick_that_sees_it() {
+        // Written in field 2 (no tick: it waits for row 4's) and from field 4 on.
+        let writes = r#", "writes": [{"column": "x", "value": 7, "fields": {"from": 2, "to": 2}},
+            {"column": "y", "value": 1, "fields": {"from": 4, "to": null}}]"#;
+        let case = case(writes);
+        assert_eq!(case.writes().unwrap()[1], Written { column: "y".into(), value: 1.0, from: 4, to: None });
+        let mut app = headless_app(TickRate::every_field(Region::Ntsc));
+        app.add_systems(FixedUpdate, count.in_set(GameSystems::Game));
+        let e = app.world_mut().spawn(Count(case.first("x"))).id();
+        let given = std::cell::RefCell::new(Vec::new());
+        let report = case
+            .runner()
+            .write(|app, column, value| {
+                given.borrow_mut().push((column.to_string(), value, app.world().get::<Count>(e).unwrap().0));
+            })
+            .run(&mut app, |w, c| match c {
+                "x" => Some(w.get::<Count>(e)?.0),
+                "y" => Some(9.0),
+                _ => None,
+            });
+        // x was 2 when field 2's write reached the tick of row 4; y once, before row 5's.
+        assert_eq!(given.into_inner(), [("x".to_string(), 7.0, 2.0), ("y".to_string(), 1.0, 3.0)], "{report}");
+    }
+
+    #[test]
+    #[should_panic(expected = "give them to the rebuild with CaseRun::write")]
+    fn a_case_with_writes_needs_a_writer() {
+        let case = case(r#", "writes": [{"column": "y", "value": 1, "fields": {"from": 4, "to": null}}]"#);
+        run(&case, None, 9.0);
     }
 
     #[test]

@@ -11,6 +11,8 @@ xrefs finds static callers/references, with limited indirect-reference coverage.
 listing.next_addr continues a disasm listing. xrefs accepts a hex address or a
 LO-HI range (a whole struct) and also reports aligned data words equal to the
 address (pointer/jump tables; no_data skips them); give gp for RAM-only scans.
+An address built in main RAM's KUSEG mirror (lui 0x8 + addiu for 0x0008xxxx)
+counts as the same address.
 A busy global (an input word, a flags word) has hundreds: kind keeps loads or
 stores, and bits=MASK keeps the loads whose value is tested with those bits
 (andi, or and with a constant), each with the bits it tests. Loads that

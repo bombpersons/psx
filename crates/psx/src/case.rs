@@ -113,9 +113,18 @@ pub struct CaseCheckArgs {
     pub write: bool,
 }
 
-fn dirs(ctx: &Ctx, cases: &Option<PathBuf>, recipes: &Option<PathBuf>) -> (PathBuf, PathBuf) {
+fn dirs(ctx: &Ctx, cases: &Option<PathBuf>, recipes: &Option<PathBuf>) -> crate::Result<(PathBuf, PathBuf)> {
     let at = |d: &Option<PathBuf>, default: &str| d.clone().unwrap_or_else(|| ctx.root.join(default));
-    (at(cases, "specs/cases"), at(recipes, "notes/recordings"))
+    let (c, r) = (at(cases, "specs/cases"), at(recipes, "notes/recordings"));
+    // A case and its recipe are both NAME.json: one folder would hold one of them.
+    let canon = |p: &Path| p.canonicalize().ok();
+    if c == r || canon(&c).is_some_and(|x| Some(x) == canon(&r)) {
+        return Err(Error::invalid(format!(
+            "cases and recipes are both {}: a case and its recipe are both NAME.json, so give them separate folders",
+            c.display()
+        )));
+    }
+    Ok((c, r))
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -343,7 +352,7 @@ fn add_keys(text: &str, keys: &[(&str, &Value)]) -> Option<String> {
 }
 
 /// The case keys record writes; save keeps any others a case already has.
-const CASE_KEYS: [&str; 14] = [
+const CASE_KEYS: [&str; 15] = [
     "id",
     "spec",
     "role",
@@ -352,6 +361,7 @@ const CASE_KEYS: [&str; 14] = [
     "start",
     "input",
     "activation",
+    "writes",
     "observations",
     "compare",
     "fields_per_tick",
@@ -476,8 +486,19 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
         Some(v) if v["ticks"] == 0 => warnings.push("no tick ran: is the game paused, or [tick] wrong?".to_string()),
         Some(_) => {}
     }
+    // A poke shows on the row after its field, tick or not: not the tick's.
+    let poked = |row: u64| {
+        pokes.iter().any(|p| {
+            let (a, b) = (p["first_run_frame"].as_u64(), p["last_run_frame"].as_u64());
+            a.zip(b).is_some_and(|(a, b)| (a + 1..=b + 1).contains(&row))
+        })
+    };
     let changed = &samples["tick"]["changed_without_tick"];
-    if changed.as_object().is_some_and(|m| !m.is_empty()) {
+    let unexplained = changed.as_object().into_iter().flatten().any(|(_, c)| {
+        let first: Vec<u64> = c["first"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+        c["rows"].as_u64() > Some(first.len() as u64) || first.iter().any(|&r| !poked(r))
+    });
+    if unexplained {
         warnings.push(
             "columns changed on rows whose tick did not (timing.changed_without_tick): note them in the case or move [tick] (guide topic fields)"
                 .to_string(),
@@ -526,6 +547,24 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
     }
     if !activation.is_empty() {
         case["activation"] = json!(activation);
+    }
+    // What each poke wrote and when: a row shows a field after the tick, so
+    // a field the tick also writes would not show the value given.
+    let writes: Vec<Value> = pokes
+        .iter()
+        .map(|p| {
+            let name = p["name"].as_str().unwrap_or_default();
+            let fmt = p["format"].as_str().and_then(crate::ram::Fmt::parse);
+            let raw = p["value"].as_u64().unwrap_or_default() as u32;
+            json!({
+                "column": name.strip_prefix(&prefix).unwrap_or(name),
+                "value": fmt.map_or(json!(raw), |f| f.json(raw)),
+                "fields": p["run_frames"],
+            })
+        })
+        .collect();
+    if !writes.is_empty() {
+        case["writes"] = json!(writes);
     }
     let compared: Vec<String> = compare.keys().cloned().collect();
     if !a.coverage.is_empty() {
@@ -602,7 +641,7 @@ fn save(r: &Recorded, name: &str, cases: &Path, recipes: &Path) -> crate::Result
 impl Op for CaseRecordArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::result((|| {
-            let (cases, recipes) = dirs(ctx, &self.cases, &self.recipes);
+            let (cases, recipes) = dirs(ctx, &self.cases, &self.recipes)?;
             let existing = cases.join(format!("{}.json", self.name));
             if existing.exists() && !self.replace {
                 return Err(Error::invalid(format!(
@@ -647,7 +686,7 @@ fn differences(old: &Table, new: &Table) -> Value {
 impl Op for CaseCheckArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::report((|| {
-            let (cases, recipes) = dirs(ctx, &self.cases, &self.recipes);
+            let (cases, recipes) = dirs(ctx, &self.cases, &self.recipes)?;
             let mut names = self.names.clone();
             if names.is_empty() {
                 let list = std::fs::read_dir(&recipes).map_err(|e| Error::io(&recipes, e))?;
@@ -677,7 +716,7 @@ impl Op for CaseCheckArgs {
                     let mut d = differences(&old, &Table::parse(&r.csv));
                     let case: Value = serde_json::from_slice(&read(&cases.join(format!("{name}.json")))?)
                         .map_err(|e| Error::malformed(format!("case {name}: {e}")))?;
-                    let keys = ["fields_per_tick", "first_tick", "input", "subject", "timing", "coverage"];
+                    let keys = ["fields_per_tick", "first_tick", "input", "writes", "subject", "timing", "coverage"];
                     // A key this psx writes that the published case lacks
                     // (made by an older psx) is added, not a difference.
                     let added: Vec<&str> =
