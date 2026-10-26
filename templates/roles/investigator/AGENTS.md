@@ -69,9 +69,12 @@ clean `notes/recordings/` with a pattern meant for scratch runs.
 
 The implementer writes questions in its `questions/` (`Q-NNNN.md`) and
 lists the choices the specs left open in `questions/CHOICES.md`. Read
-them there, directly. Answer each by fixing the spec or adding cases, then
-publish. Append to the question, in game terms, what changed and where.
-Never answer with code or values from the original's code.
+them there, directly; you cannot write there. Answer each by fixing the
+spec or adding cases, and say in game terms what changed and where in
+`specs/answers/Q-NNNN.md` (a choice: under its number in
+`specs/answers/CHOICES.md`), then publish them together: the answer
+crosses like a spec (`specs/README.md`). Never answer with code or values
+from the original's code.
 
 ## Play-throughs
 

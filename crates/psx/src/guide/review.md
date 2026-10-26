@@ -89,4 +89,5 @@ from the corrected spec. publish check tests the specs alone, any time.
 To the investigator, in game terms and by spec id: what to rewrite in a
 spec, a case that does not separate, a missing case, a contradiction
 between specs. Answers to the implementer's questions are the
-investigator's, through a spec change; the reviewer only reviews them.
+investigator's, through a spec change and specs/answers/, which cross in
+its bundles; the reviewer reviews them like specs.

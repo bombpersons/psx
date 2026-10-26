@@ -4,7 +4,8 @@ Behaviour specifications of {{GAME}}, written by the investigator for the
 clean implementation. This folder is what crosses to the implementer, and
 only through publishing, as the reviewer approved it: the specs, the
 [glossary](glossary.md), the [index](INDEX.md), the case files in
-`cases/` and the start-state descriptions in `states/`.
+`cases/`, the start-state descriptions in `states/` and the answers to
+the implementer's questions in `answers/`.
 
 ## Rules for a spec
 
@@ -24,6 +25,16 @@ only through publishing, as the reviewer approved it: the specs, the
 
 Where an observation came from in the original's code is kept on the
 investigator's side, in `notes/provenance.json`, keyed by spec id.
+
+## Answers
+
+The implementer's questions are answered here, since nothing else reaches
+its repository: `answers/Q-NNNN.md` for its question `questions/Q-NNNN.md`,
+and `answers/CHOICES.md` for its `questions/CHOICES.md`, a numbered list
+with each answer under the number of the choice it settles. An answer
+says in game terms what changed and names the specs and cases; it follows
+the rules for a spec. It crosses with those changes, and the question
+counts as answered once it has crossed. A follow-up is a new question.
 
 ## Kinds
 

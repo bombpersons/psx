@@ -73,12 +73,13 @@ If a spec is missing, unclear or seems wrong (a case fails and the spec
 does not explain why), do not guess from outside knowledge. Write a
 question, `questions/Q-NNNN.md` (`questions/README.md` gives the form),
 and carry on with something else. Questions are answered by changes to
-the specs and cases.
+the specs and cases, with `specs/answers/Q-NNNN.md` saying what changed;
+`notes/NEXT.md` lists the answers that have arrived.
 
 Where the specs leave something open and you choose, list the choice in
-`questions/CHOICES.md`, numbered, with the spec it concerns. The
-investigator answers each like a question, on a line starting `Answer:`
-under it.
+`questions/CHOICES.md`, numbered, with the spec it concerns, and keep
+the numbers. The investigator settles each like a question, under its
+number in `specs/answers/CHOICES.md`.
 
 ## The person
 
