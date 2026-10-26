@@ -34,6 +34,7 @@ mod provenance;
 mod publish;
 mod ram;
 mod replay;
+mod roles;
 mod run;
 mod run_native;
 mod stall;
@@ -134,6 +135,11 @@ enum Command {
         #[command(subcommand)]
         action: BarrierAction,
     },
+    /// A clean-room port: the investigator's, implementer's and reviewer's repositories.
+    Port {
+        #[command(subcommand)]
+        action: PortAction,
+    },
     /// Carry specs and cases to the implementer, only as the reviewer approved them.
     Publish {
         #[command(subcommand)]
@@ -207,6 +213,13 @@ enum BarrierAction {
     /// The check on each message to the implementer, as its UserPromptSubmit hook: the event
     /// on stdin, settings in .claude/barrier.json, every message logged to notes/guidance.jsonl.
     Hook(leak::BarrierHookArgs),
+}
+
+#[derive(clap::Subcommand)]
+enum PortAction {
+    /// Write the three repositories side by side with their instructions and access rules,
+    /// the disc for the investigator and its data files (not the executable) for the implementer.
+    Init(roles::PortInitArgs),
 }
 
 #[derive(clap::Subcommand)]
@@ -321,6 +334,9 @@ fn main() -> ExitCode {
         Command::Barrier { action } => match action {
             BarrierAction::Check(a) => a.exec(&ctx),
             BarrierAction::Hook(_) => unreachable!("handled above"),
+        },
+        Command::Port { action } => match action {
+            PortAction::Init(a) => a.exec(&ctx),
         },
         Command::Publish { action } => match action {
             PublishAction::Stage(a) => a.exec(&ctx),

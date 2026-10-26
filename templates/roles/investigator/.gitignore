@@ -1,0 +1,5 @@
+.psx/
+bios/
+media/
+notes/explore/*
+!notes/explore/README.md

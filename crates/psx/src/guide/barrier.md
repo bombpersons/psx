@@ -1,3 +1,32 @@
+A clean-room port has three repositories side by side, one per agent:
+
+  port init PORTS --media "media/Game.cue" [--game NAME] [--fields-per-tick N]
+
+writes PORTS/investigate (the investigator: AGENTS.md for the role, specs/
+with its rules, glossary and index, notes/provenance.json, notes/LOOP.md,
+notes/recordings/ and a git-ignored notes/explore/, samples.toml, the disc
+and BIOS linked into media/ and bios/, protocol.toml naming the other two
+repositories and the disc's executables, and .mcp.json for psx),
+PORTS/clean (the implementer: psx's Bevy workspace with its own AGENTS.md
+and architecture rules, guidance written for working from specs and cases,
+questions/, notes/, and data/: every file on the disc but SYSTEM.CNF and
+the executables) and PORTS/review (the reviewer: AGENTS.md, reviews/,
+audits/, .mcp.json). Each gets .claude/settings.json: the implementer's
+denies psx, the web, the other repositories, psx's own folder, the disc's
+folder, the host's session folders for the other agents, and edits to
+.claude/, notes/ and specs/, and runs barrier hook on every message (its
+.claude/barrier.json names the investigator and the executables); the
+investigator's and reviewer's deny the web and writing into the others'
+repositories. git init runs in each. The game's name defaults to the disc
+image's file name. With protocol.toml, publish needs no to or reviews and
+refuses the executables' names. template create DEST --role ROLE writes one
+of the three alone, with the others assumed as siblings (investigate,
+clean, review) unless given.
+
+The person starts each agent's session in its own folder; an
+investigator never starts the others', since a session it starts would
+share its notes.
+
 In a clean-room port the investigator reads the original's code and the
 implementer never does: only specs (behaviour in game terms) and cases
 (observations) cross to it. barrier check looks at what is about to cross,

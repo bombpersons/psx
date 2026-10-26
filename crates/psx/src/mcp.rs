@@ -214,6 +214,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::ram::RamViewArgs>("ram_view", "Show a RAM window (addr, len) from one or more snapshots side by side, decoded as u8..x32 or fxI.F, marking units that differ.").read_only(),
         def::<crate::parser_template::ParserTemplateArgs>("template_parser_create", "Create an executable Python 3 external parser starter (kind archive, model, asset or video) with a sample input and protocol notes in dest, for assets_scan, assets_extract or str."),
         def::<crate::template::TemplateCreateArgs>("template_create", "Create a Bevy port workspace (psx-bevy, engine, game, importers) with the PS1 look in dest, e.g. the game folder. Set region and fields_per_tick from the original. See guide topics port, bevy."),
+        def::<crate::roles::PortInitArgs>("port_init", "Set up a clean-room port in dest: the investigator's, implementer's and reviewer's repositories with instructions and access rules. See guide topic barrier."),
         def::<crate::template::TemplateUpdateArgs>("template_update", "Update the project's psx-bevy/ and vendor/ files to this build; edited files get a .psx-new copy. See guide topic port."),
         def::<crate::vram_diff::GpuReplayArgs>("gpu_replay", "Replay a recorded GP0 command stream into a fresh software GPU and write the resulting VRAM to out (and optionally a PNG). Pair with vram_diff."),
         def::<crate::vram_diff::VramDiffArgs>("vram_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
@@ -739,8 +740,8 @@ mod tests {
         // 50K on 2026-10-17; 52K from 2026-10-20 for handoff and handoff_status; 56K from
         // 2026-10-25 for case_record and case_check; 61.5K from 2026-10-25 for the four
         // states tools; 63K from 2026-10-26 for barrier_check; 65K from 2026-10-26 for the
-        // three publish tools.
-        assert!(size <= 65_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // three publish tools; 67.5K from 2026-10-26 for port_init and template_create's roles.
+        assert!(size <= 67_500, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,

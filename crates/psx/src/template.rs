@@ -34,15 +34,46 @@ pub struct TemplateCreateArgs {
     /// Video fields per logic tick: 2 when the original waits two vblanks per frame (Croc PAL). Default 1.
     #[arg(long)]
     pub fields_per_tick: Option<u32>,
+    /// A clean-room role's repository instead. See guide topic barrier.
+    #[arg(long, value_enum)]
+    #[serde(default)]
+    pub role: Option<crate::roles::Role>,
+    /// With role: the game's name in its instructions.
+    #[arg(long)]
+    #[serde(default)]
+    pub game: Option<String>,
+    /// With role: the investigator's repository (default ../investigate).
+    #[arg(long)]
+    #[serde(default)]
+    pub investigator: Option<PathBuf>,
+    /// With role: the implementer's repository (default ../clean).
+    #[arg(long)]
+    #[serde(default)]
+    pub implementer: Option<PathBuf>,
+    /// With role: the reviewer's repository (default ../review).
+    #[arg(long)]
+    #[serde(default)]
+    pub reviewer: Option<PathBuf>,
 }
 
 impl Op for TemplateCreateArgs {
-    fn exec(self, _: &Ctx) -> Outcome {
+    fn exec(self, ctx: &Ctx) -> Outcome {
         let options = TemplateOptions {
             region: self.region.unwrap_or_default(),
             fields_per_tick: self.fields_per_tick.unwrap_or(1),
         };
-        Outcome::result(create(&self.dest, self.name.as_deref(), options))
+        match self.role {
+            Some(role) => Outcome::result(crate::roles::create_role(
+                ctx,
+                &self.dest,
+                role,
+                self.game.as_deref(),
+                [&self.investigator, &self.implementer, &self.reviewer],
+                self.name.as_deref(),
+                options,
+            )),
+            None => Outcome::result(create(&self.dest, self.name.as_deref(), options)),
+        }
     }
 }
 
@@ -92,7 +123,7 @@ macro_rules! files {
     };
 }
 
-const FILES: &[(&str, &str)] = files![
+pub(crate) const FILES: &[(&str, &str)] = files![
     ".cargo/config.toml",
     ".gitignore",
     "AGENTS.md",
@@ -292,6 +323,8 @@ struct Manifest {
     package: String,
     region: TemplateRegion,
     fields_per_tick: u32,
+    /// The implementer's workspace in a clean-room port: the game's name in its instructions.
+    clean: Option<String>,
     /// Template-owned files and the sha256 of the content the template wrote.
     owned: BTreeMap<String, String>,
     /// Seeded files and the sha256 of the template's version of them.
@@ -334,6 +367,9 @@ fn toml_like(m: &Manifest) -> String {
         m.region.name(),
         m.fields_per_tick
     );
+    if let Some(game) = &m.clean {
+        out.push_str(&format!("role = \"implementer\"\ngame = {game:?}\n"));
+    }
     for (table, entries) in [("owned", &m.owned), ("seeded", &m.seeded)] {
         out.push_str(&format!("\n[{table}]\n"));
         for (path, hash) in entries {
@@ -380,6 +416,11 @@ fn parse_toml_like(text: &str) -> Result<Manifest, String> {
         package: get("package")?,
         region,
         fields_per_tick: get("fields_per_tick")?.parse().map_err(|e| format!("fields_per_tick: {e}"))?,
+        clean: match top.get("role").map(String::as_str) {
+            Some("implementer") => Some(get("game")?),
+            Some(other) => return Err(format!("role {other:?}: only implementer has a workspace")),
+            None => None,
+        },
         owned,
         seeded,
     })
@@ -429,8 +470,8 @@ fn configure_lib(contents: &str, options: TemplateOptions) -> crate::Result<Stri
 
 /// Every template file as this project gets it: package name, region and
 /// tick rate filled in.
-fn render(name: &str, options: TemplateOptions) -> crate::Result<Vec<(&'static str, String)>> {
-    FILES
+fn render(name: &str, options: TemplateOptions, clean: Option<&str>) -> crate::Result<Vec<(&'static str, String)>> {
+    let mut files: Vec<(&'static str, String)> = FILES
         .iter()
         .map(|(rel, contents)| {
             let contents = match *rel {
@@ -448,7 +489,11 @@ fn render(name: &str, options: TemplateOptions) -> crate::Result<Vec<(&'static s
             };
             Ok((*rel, contents))
         })
-        .collect()
+        .collect::<crate::Result<_>>()?;
+    if let Some(game) = clean {
+        crate::roles::implementer_files(&mut files, game)?;
+    }
+    Ok(files)
 }
 
 fn valid_name(name: &str) -> bool {
@@ -498,9 +543,20 @@ fn package_name(dest: &Path, name: Option<&str>) -> String {
 }
 
 pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crate::Result<Value> {
+    create_for(dest, name, options, None)
+}
+
+/// `create`, or with `clean` the implementer's workspace in a clean-room
+/// port of that game.
+pub fn create_for(
+    dest: &Path,
+    name: Option<&str>,
+    options: TemplateOptions,
+    clean: Option<&str>,
+) -> crate::Result<Value> {
     let name = package_name(dest, name);
     check_options(&name, options)?;
-    let files = render(&name, options)?;
+    let files = render(&name, options, clean)?;
     // The destination may hold the disc and the user's own AGENTS.md: refuse
     // only when a file the template would write is already there.
     let mut skipped = Vec::new();
@@ -530,6 +586,7 @@ pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crat
         package: name.clone(),
         region: options.region,
         fields_per_tick: options.fields_per_tick,
+        clean: clean.map(str::to_string),
         owned: BTreeMap::new(),
         seeded: BTreeMap::new(),
     };
@@ -580,7 +637,7 @@ pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crat
 /// under `.psx/template-update/` and reported.
 pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
     let mut manifest = Manifest::read(dest)?;
-    let files = render(&manifest.package, manifest.options())?;
+    let files = render(&manifest.package, manifest.options(), manifest.clean.as_deref())?;
     let new_owned: BTreeMap<&str, &String> =
         files.iter().filter(|(rel, _)| is_owned(rel)).map(|(rel, c)| (*rel, c)).collect();
     let current = |rel: &str| std::fs::read(dest.join(rel)).ok().map(|b| sha256(&b));
@@ -717,13 +774,14 @@ pub fn adopt(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crate
     }
     let name = package_name(dest, name);
     check_options(&name, options)?;
-    let files = render(&name, options)?;
+    let files = render(&name, options, None)?;
     let mut manifest = Manifest {
         template: "psx-bevy".into(),
         psx: psx_version(),
         package: name,
         region: options.region,
         fields_per_tick: options.fields_per_tick,
+        clean: None,
         owned: BTreeMap::new(),
         seeded: BTreeMap::new(),
     };
@@ -933,6 +991,7 @@ mod tests {
             package: "my-game".into(),
             region: TemplateRegion::Pal,
             fields_per_tick: 2,
+            clean: Some("Some \"Game\"".into()),
             owned: BTreeMap::from([("vendor/README.md".into(), "sha256:00".into())]),
             seeded: BTreeMap::from([("game/src/lib.rs".into(), "sha256:11".into())]),
         };

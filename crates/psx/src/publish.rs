@@ -29,9 +29,10 @@ pub struct PublishStageArgs {
     /// files gone from it are removed on the other side).
     #[serde(default)]
     pub paths: Vec<PathBuf>,
-    /// The implementer's repository.
+    /// The implementer's repository (default protocol.toml's).
     #[arg(long)]
-    pub to: PathBuf,
+    #[serde(default)]
+    pub to: Option<PathBuf>,
     /// The investigator's specs (default specs).
     #[arg(long)]
     #[serde(default)]
@@ -66,22 +67,26 @@ pub struct PublishStageArgs {
 pub struct PublishCrossArgs {
     /// The bundle's hash (or a unique prefix of it).
     pub bundle: String,
-    /// The implementer's repository.
+    /// The implementer's repository (default protocol.toml's).
     #[arg(long)]
-    pub to: PathBuf,
-    /// The reviewer's verdicts (its reviews/ directory).
+    #[serde(default)]
+    pub to: Option<PathBuf>,
+    /// The reviewer's verdicts (default protocol.toml's reviewer, reviews/).
     #[arg(long)]
-    pub reviews: PathBuf,
+    #[serde(default)]
+    pub reviews: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PublishCheckArgs {
-    /// The implementer's repository.
+    /// The implementer's repository (default protocol.toml's).
     #[arg(long)]
-    pub to: PathBuf,
-    /// The reviewer's verdicts (its reviews/ directory).
+    #[serde(default)]
+    pub to: Option<PathBuf>,
+    /// The reviewer's verdicts (default protocol.toml's reviewer, reviews/).
     #[arg(long)]
-    pub reviews: PathBuf,
+    #[serde(default)]
+    pub reviews: Option<PathBuf>,
 }
 
 pub(crate) fn sha256(bytes: &[u8]) -> String {
@@ -133,7 +138,7 @@ fn tree(dir: &Path) -> crate::Result<BTreeMap<String, String>> {
     Ok(out)
 }
 
-fn files_under(path: &Path) -> Vec<PathBuf> {
+pub(crate) fn files_under(path: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut todo = vec![path.to_path_buf()];
     while let Some(p) = todo.pop() {
@@ -275,6 +280,32 @@ fn invariant(to: &Path, reviews: &Path, log: &Log) -> crate::Result<Value> {
     }))
 }
 
+/// The implementer's repository and the reviewer's verdicts: as given, else
+/// from the investigator's protocol.toml (`psx port init`).
+fn sides(ctx: &Ctx, to: &Option<PathBuf>, reviews: &Option<PathBuf>) -> crate::Result<(PathBuf, PathBuf)> {
+    let protocol = crate::roles::protocol(&ctx.root);
+    let to = match (to, &protocol) {
+        (Some(p), _) => at(ctx, p),
+        (None, Some((i, _, _))) => i.clone(),
+        (None, None) => {
+            return Err(Error::invalid("give to (the implementer's repository): there is no protocol.toml"));
+        }
+    };
+    let reviews = match (reviews, &protocol) {
+        (Some(p), _) => at(ctx, p),
+        (None, Some((_, r, _))) => r.join("reviews"),
+        (None, None) => PathBuf::new(),
+    };
+    Ok((to, reviews))
+}
+
+fn require_reviews(reviews: &Path) -> crate::Result<()> {
+    if reviews.as_os_str().is_empty() {
+        return Err(Error::invalid("give reviews (the reviewer's reviews/): there is no protocol.toml"));
+    }
+    Ok(())
+}
+
 fn bundles_dir(ctx: &Ctx) -> PathBuf {
     ctx.root.join(".psx/bundles")
 }
@@ -282,7 +313,7 @@ fn bundles_dir(ctx: &Ctx) -> PathBuf {
 impl PublishStageArgs {
     fn run(&self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
         let specs = at(ctx, self.specs.as_deref().unwrap_or(Path::new("specs")));
-        let to = at(ctx, &self.to);
+        let (to, _) = sides(ctx, &self.to, &None)?;
         if !specs.is_dir() {
             return Err(Error::invalid(format!("no specs at {}", specs.display())));
         }
@@ -388,7 +419,11 @@ impl PublishStageArgs {
             notes,
             published: vec![to.join("specs"), to.join("questions")],
             symbols: self.symbols.clone(),
-            name: self.name.clone(),
+            name: {
+                let mut n = self.name.clone();
+                n.extend(crate::roles::protocol(&ctx.root).map(|p| p.2).unwrap_or_default());
+                n
+            },
             allow: self.allow.clone(),
         };
         for k in &self.allow {
@@ -506,7 +541,8 @@ fn load_bundle(dir: &Path) -> crate::Result<(String, Changes)> {
 
 impl PublishCrossArgs {
     fn run(&self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
-        let (to, reviews) = (at(ctx, &self.to), at(ctx, &self.reviews));
+        let (to, reviews) = sides(ctx, &self.to, &self.reviews)?;
+        require_reviews(&reviews)?;
         let dir = find_bundle(ctx, &self.bundle)?;
         let (hash, (files, removed)) = load_bundle(&dir)?;
         let review_sha = match verdict(&reviews, &hash)? {
@@ -608,7 +644,8 @@ impl Op for PublishCrossArgs {
 impl Op for PublishCheckArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::report((|| {
-            let (to, reviews) = (at(ctx, &self.to), at(ctx, &self.reviews));
+            let (to, reviews) = sides(ctx, &self.to, &self.reviews)?;
+            require_reviews(&reviews)?;
             let log = read_log(&to)?;
             let v = invariant(&to, &reviews, &log)?;
             let holds = v["holds"] == json!(true);

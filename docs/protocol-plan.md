@@ -78,16 +78,28 @@ Branch: `protocol`. Committed piece by piece.
   stopped when the check cannot run. TR2's two logged messages pass;
   addresses, tool and library names, copied notes are stopped in TR2 and
   Crash messages, and text already published passes.
+- **The roles and `psx port init`** (brief items 1 and section 5): `port
+  init` writes the investigator's, implementer's and reviewer's
+  repositories side by side (`investigate/`, `clean/`, `review/`): each
+  role's `AGENTS.md`; the investigator's spec rules, glossary sections,
+  index, provenance, logs and recipe folders; the implementer's Bevy
+  workspace with its own architecture section and its guidance rewritten
+  for specs and cases (no reverse-engineering framing; `template update`
+  keeps it), `questions/` and `data/` (the disc without `SYSTEM.CNF` and
+  every PS-X EXE); access rules per role with the real paths, the message
+  hook wired in; the disc and BIOS linked for the investigator;
+  `protocol.toml`, which `publish` and the barrier read. `template create
+  --role` writes one role alone. Tried on TR2 (four executables left out,
+  78 data files) and Crash; publishing with no paths given works from the
+  new repositories.
 
 ## Phase 3: workspaces and guidance
 
-7. **`template create --role investigator|implementer|reviewer`**, then
-   **`psx port init`** (item 1): three repositories side by side, each
-   role's `AGENTS.md` (the implementer's with its own architecture
-   section), access rules and the message check with the real paths, the
-   disc's data files (not the executable) in the implementer's `data/`,
-   the protocol settings. Today's single-repository layout stays the
-   default. Models: `tr2-investigate/`, `tr2-clean/`.
+7. **The case runner** (section 5, "Both: the case runner"): `psx-bevy`'s
+   `testing` gains a case-file runner, one line per case, that checks
+   itself against the timing vectors, compares over each spec's coverage,
+   and takes clean mode's exploratory cases unchanged. Model:
+   `tr2-clean/game/tests/cases.rs`.
 8. **Guide topics** (section 4): new `protocol`, `cleanroom` and
    `review`; `overview`, `port` and `troubleshooting` changed. Includes
    the defaults for making cases that separate, finding things in RAM,
