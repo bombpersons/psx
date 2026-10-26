@@ -232,7 +232,8 @@ pub struct ObserveArgs {
     pub sample_every: Option<u64>,
     /// Write memory at the start of a run frame: `ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`
     /// (VALUE decimal, 0xHEX or a fraction for fx; WIDTH 1/2/4, default 4;
-    /// default frame 0; a range re-applies it every frame). Reported under `pokes`; repeatable.
+    /// default frame 0; a range re-applies it every frame), or NAME=VALUE for a map field.
+    /// Reported under `pokes`; repeatable.
     #[arg(long = "poke")]
     #[serde(default, rename = "poke")]
     pub pokes: Vec<String>,

@@ -391,6 +391,39 @@ stride = "4C"
     }
 
     #[test]
+    fn pokes_by_name_write_where_the_map_says() {
+        use crate::ram::parse_poke;
+        let m = map();
+        let mut ram = vec![0u8; crate::ram::RAM_SIZE];
+        let mut scratch = vec![0u8; crate::ram::SCRATCH_SIZE];
+        // A field in its format: fixed, signed and through a pointer.
+        let mut p = parse_poke("player.yaw=-2@1..", Some(&m)).unwrap();
+        assert_eq!((p.width(), p.value, p.from, p.to), (2, 0xFFFE, 1, None));
+        p.apply(1, &mut ram, &mut scratch);
+        assert_eq!(&ram[0x17_C8BE..0x17_C8C0], &[0xFE, 0xFF]);
+        assert_eq!((p.report()["name"].clone(), p.report().get("address").is_none()), ("player.yaw".into(), true));
+        let mut p = parse_poke("lara.x=7", Some(&m)).unwrap();
+        p.apply(0, &mut ram, &mut scratch);
+        assert_eq!((p.applied.len(), p.skipped.clone()), (0, vec![0]), "a null pointer writes nothing");
+        ram[0xA0000..0xA0004].copy_from_slice(&0x8010_0000u32.to_le_bytes());
+        p.apply(1, &mut ram, &mut scratch);
+        assert_eq!((ram[0x10_0034], p.applied.clone()), (7, vec![1]));
+        assert_eq!(p.report()["skipped"], 1);
+        // Hex is still an address; a name the map has wins.
+        assert!(!parse_poke("8008B258=1", Some(&m)).unwrap().at.mapped);
+        assert_eq!(parse_poke("camera_x=-1", Some(&m)).unwrap().value, u32::MAX);
+        for (spec, says) in [
+            ("player=1", "names 2 fields"),
+            ("player.x=1:2", "format comes from the map"),
+            ("player.speed=1", "no field"),
+            ("player.yaw=1.5", "bad value"),
+        ] {
+            let e = parse_poke(spec, Some(&m)).unwrap_err();
+            assert!(e.contains(says), "{spec}: {e}");
+        }
+    }
+
+    #[test]
     fn mistakes_are_named() {
         let m = map();
         for (sel, says) in [
