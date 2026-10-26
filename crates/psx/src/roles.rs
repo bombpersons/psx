@@ -353,35 +353,40 @@ fn barrier_notes(repos: &Repos, s: &Setting) -> Vec<PathBuf> {
     notes
 }
 
+/// A path as protocol.toml keeps it: from the investigator, so the port's
+/// folders can move together.
+fn kept(repos: &Repos, p: &Path) -> String {
+    serde_json::to_string(&crate::moved::relative(&repos.investigator, p).display().to_string()).unwrap_or_default()
+}
+
 /// The investigator's `protocol.toml`.
 fn protocol_toml(game: &str, repos: &Repos, s: &Setting) -> String {
     let q = |v: &str| serde_json::to_string(v).unwrap_or_default();
     let mut t = format!(
-        "# Written by psx port init: the port's repositories and its disc. psx publish and the\n\
-         # barrier read it.\ngame = {}\n\n[repositories]\ninvestigator = \".\"\nimplementer = {}\nreviewer = {}\n",
+        "# Written by psx port init: the port's repositories and its disc, from this one. psx\n\
+         # publish and the barrier read it.\ngame = {}\n\n[repositories]\ninvestigator = \".\"\nimplementer = {}\nreviewer = {}\n",
         q(game),
-        q(&repos.implementer.display().to_string()),
-        q(&repos.reviewer.display().to_string())
+        kept(repos, &repos.implementer),
+        kept(repos, &repos.reviewer)
     );
     if s.media.is_some() || !s.executables.is_empty() {
         t += "\n[disc]\n";
         if let Some(m) = &s.media {
-            t += &format!("media = {}\n", q(&m.display().to_string()));
+            t += &format!("media = {}\n", kept(repos, m));
         }
         let names: Vec<String> = s.executables.iter().map(|e| q(e)).collect();
         t += &format!("executables = [{}]\n", names.join(", "));
     }
     if !s.legacy.is_empty() {
-        t += &legacy_toml(&s.legacy);
+        t += &legacy_toml(repos, &s.legacy);
     }
     t
 }
 
-fn legacy_toml(legacy: &[PathBuf]) -> String {
-    let q = |p: &PathBuf| serde_json::to_string(&p.display().to_string()).unwrap_or_default();
+fn legacy_toml(repos: &Repos, legacy: &[PathBuf]) -> String {
     format!(
         "\n# Ports written before the protocol, which the implementer never reads.\n[legacy]\nports = [{}]\n",
-        legacy.iter().map(q).collect::<Vec<_>>().join(", ")
+        legacy.iter().map(|p| kept(repos, p)).collect::<Vec<_>>().join(", ")
     )
 }
 
@@ -390,9 +395,10 @@ fn legacy_toml(legacy: &[PathBuf]) -> String {
 pub fn protocol(root: &Path) -> Option<(PathBuf, PathBuf, Vec<String>)> {
     let text = std::fs::read_to_string(root.join("protocol.toml")).ok()?;
     let v: toml::Value = toml::from_str(&text).ok()?;
+    // A repository kept absolute that has moved with the others is beside this one.
     let at = |k: &str| {
         let p = PathBuf::from(v.get("repositories")?.get(k)?.as_str()?);
-        Some(if p.is_absolute() { p } else { root.join(p) })
+        Some(absolute(&if p.is_absolute() { crate::moved::sibling(root, &p) } else { root.join(p) }))
     };
     let exes = v
         .get("disc")
@@ -746,9 +752,10 @@ impl Op for PortInitArgs {
 
 /// `port adopt`: the protocol's files added to repositories that already
 /// exist, as for a port begun before psx had them, or one being moved under
-/// the protocol. Nothing is overwritten: a missing file is written, a JSON
-/// setting gains what it lacks (deny rules, servers, the message check), and
-/// whatever only a person can settle is listed.
+/// the protocol, or one whose repositories moved. A missing file is written, a
+/// JSON setting gains what it lacks (deny rules, servers, the message check),
+/// paths naming folders that are gone are replaced, and whatever only a
+/// person can settle is listed.
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PortAdoptArgs {
     /// The investigator's repository.
@@ -867,13 +874,57 @@ fn union(have: &mut Value, ours: &Value) {
     }
 }
 
+/// The absolute path a permission rule names: `Read(//PATH/**)` (and Edit,
+/// Write) or `Bash(*PATH*)`.
+fn rule_path(rule: &str) -> Option<&str> {
+    let inner = ["Read(", "Edit(", "Write("].iter().find_map(|k| rule.strip_prefix(k)?.strip_suffix(')'));
+    let p = match inner {
+        Some(i) => i.strip_prefix('/')?.trim_end_matches("/**"),
+        None => rule.strip_prefix("Bash(*")?.strip_suffix("*)")?,
+    };
+    p.starts_with('/').then_some(p)
+}
+
+/// Whether a rule keeps an agent from reading `target`: a Read rule on it or
+/// a folder holding it, or a Bash rule matching any command that names it.
+fn blocks_reading(rule: &str, target: &Path) -> bool {
+    if let Some(p) = rule.strip_prefix("Read(").and_then(|r| r.strip_suffix(')')) {
+        let p = p.strip_prefix('/').unwrap_or(p).trim_end_matches("/**");
+        return Path::new(p).is_absolute() && target.starts_with(p);
+    }
+    let Some(part) = rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(')')) else { return false };
+    let part = part.trim_matches('*');
+    !part.is_empty() && !part.contains('*') && target.to_string_lossy().contains(part)
+}
+
 /// An agent host's settings: our permissions and servers added to theirs,
-/// our message check unless it has its own.
+/// our message check unless it has its own. A rule naming a folder that is
+/// gone (the repositories moved) is dropped: it matches nothing now, and
+/// ours name where they are.
 fn merge_settings(have: &mut Value, ours: &Value, notes: &mut Vec<String>) {
     for k in ["deny", "allow"] {
         if ours["permissions"].get(k).is_some() {
             if !have["permissions"].is_object() {
                 have["permissions"] = json!({});
+            }
+            let list = &mut have["permissions"][k];
+            let mut gone = Vec::new();
+            if let Some(rules) = list.as_array_mut() {
+                let ours = ours["permissions"][k].as_array();
+                rules.retain(|r| {
+                    let stale = r.as_str().and_then(rule_path).is_some_and(|p| !Path::new(p).exists())
+                        && !ours.is_some_and(|o| o.contains(r));
+                    if stale {
+                        gone.push(r.as_str().unwrap_or_default().to_string());
+                    }
+                    !stale
+                });
+            }
+            if !gone.is_empty() {
+                notes.push(format!(
+                    "{k} rules naming folders that no longer exist were taken out (moved repositories are named where they are now): {}",
+                    gone.join(", ")
+                ));
             }
             union(&mut have["permissions"][k], &ours["permissions"][k]);
         }
@@ -924,6 +975,12 @@ fn merge_mcp(have: &mut Value, ours: &Value, only_ours: bool, notes: &mut Vec<St
     for (name, server) in ours["mcpServers"].as_object().into_iter().flatten() {
         match have["mcpServers"].get(name) {
             None => have["mcpServers"][name] = server.clone(),
+            // One that names a folder or program that is gone (the repositories
+            // or psx moved) is psx's, out of date.
+            Some(s) if s != server && missing(s).is_some() => {
+                notes.push(format!("server {name} named {}, which no longer exists: rewritten", missing(s).unwrap()));
+                have["mcpServers"][name] = server.clone();
+            }
             Some(s) if s != server => {
                 notes.push(format!("server {name} is kept as it is; psx would write {server}"));
             }
@@ -942,9 +999,29 @@ fn merge_mcp(have: &mut Value, ours: &Value, only_ours: bool, notes: &mut Vec<St
     }
 }
 
+/// The first absolute path in `v` (a server's command and arguments) that
+/// does not exist.
+fn missing(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) if Path::new(s).is_absolute() && !Path::new(s).exists() => Some(s.clone()),
+        Value::Array(a) => a.iter().find_map(missing),
+        Value::Object(m) => m.values().find_map(missing),
+        _ => None,
+    }
+}
+
 /// The message check's settings: what it lacks, and the legacy notes in
-/// whichever key it reads them from.
+/// whichever key it reads them from. An investigator or notes folder that is
+/// gone (the repositories moved) is replaced by where it is now.
 fn merge_barrier(have: &mut Value, ours: &Value, legacy: &[PathBuf]) {
+    if missing(&have["investigator"]).is_some() {
+        have["investigator"] = ours["investigator"].clone();
+    }
+    for k in ["notes", "dirty_paths"] {
+        if let Some(list) = have.get_mut(k).and_then(Value::as_array_mut) {
+            list.retain(|p| missing(p).is_none());
+        }
+    }
     // The names the first message check used for notes and published.
     let alias = |k: &str| match k {
         "published" => Some("published_paths"),
@@ -967,6 +1044,60 @@ fn merge_barrier(have: &mut Value, ours: &Value, legacy: &[PathBuf]) {
     union(&mut have[key], &ours["notes"]);
 }
 
+/// protocol.toml's paths as psx keeps them now, from the investigator: a
+/// repository, disc or legacy port it names that is gone (the port moved) or
+/// is the same place kept absolute is rewritten; one that is elsewhere and
+/// still there is kept, and noted. `named` is where a repository it names is.
+fn rewrite_paths(
+    text: &str,
+    repos: &Repos,
+    s: &Setting,
+    named: &dyn Fn(&str) -> Option<PathBuf>,
+) -> (String, Vec<String>) {
+    let mut notes = Vec::new();
+    let mut section = String::new();
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            section = t.trim_matches(['[', ']']).trim().to_string();
+        }
+        let key = t.split_once('=').map(|(k, _)| k.trim()).unwrap_or("");
+        let value = t.split_once('=').map(|(_, v)| v.trim()).unwrap_or("");
+        let now = match (section.as_str(), key) {
+            ("repositories", k @ ("implementer" | "reviewer")) => {
+                let want = if k == "implementer" { &repos.implementer } else { &repos.reviewer };
+                match named(k) {
+                    Some(p) if p != *want && p.exists() => {
+                        notes.push(format!(
+                            "its {k} is {}, not {}; change it if that is wrong",
+                            p.display(),
+                            want.display()
+                        ));
+                        None
+                    }
+                    _ => Some(format!("{k} = {}", kept(repos, want))),
+                }
+            }
+            ("disc", "media") => s.media.as_ref().map(|m| format!("media = {}", kept(repos, m))),
+            ("legacy", "ports") if !s.legacy.is_empty() => {
+                Some(format!("ports = [{}]", s.legacy.iter().map(|p| kept(repos, p)).collect::<Vec<_>>().join(", ")))
+            }
+            _ => None,
+        };
+        // A value on one line only; a multi-line array is left as it is.
+        match now {
+            Some(n) if n != t && !(key == "ports" && !value.ends_with(']')) => out.push(n),
+            _ => out.push(line.to_string()),
+        }
+    }
+    let mut text_out = out.join("\n");
+    if text.ends_with('\n') {
+        text_out.push('\n');
+    }
+    (text_out, notes)
+}
+
 fn read_toml(p: &Path) -> Option<toml::Value> {
     toml::from_str(&std::fs::read_to_string(p).ok()?).ok()
 }
@@ -983,9 +1114,11 @@ impl PortAdoptArgs {
         if have_toml.is_none() && toml_path.exists() {
             return Err(Error::malformed(format!("{} does not parse", toml_path.display())));
         }
+        // Kept absolute by an older psx, a repository that moved with the
+        // investigator is found beside it.
         let named = |k: &str| -> Option<PathBuf> {
             let p = PathBuf::from(have_toml.as_ref()?.get("repositories")?.get(k)?.as_str()?);
-            Some(if p.is_absolute() { p } else { investigator.join(p) })
+            Some(if p.is_absolute() { crate::moved::sibling(&investigator, &p) } else { investigator.join(p) })
         };
         let need = |given: &Option<PathBuf>, k: &str| -> crate::Result<PathBuf> {
             given
@@ -1005,7 +1138,23 @@ impl PortAdoptArgs {
                 repos.implementer.display()
             )));
         }
-        let legacy: Vec<PathBuf> = self.legacy.iter().map(|p| at(p)).collect();
+        // The legacy ports protocol.toml lists (found beside the investigator
+        // if they moved with it), and any given.
+        let mut legacy: Vec<PathBuf> = have_toml
+            .as_ref()
+            .and_then(|t| t.get("legacy")?.get("ports")?.as_array().cloned())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(PathBuf::from))
+            .map(|p| {
+                absolute(&if p.is_absolute() { crate::moved::sibling(&investigator, &p) } else { investigator.join(p) })
+            })
+            .collect();
+        for l in self.legacy.iter().map(|p| at(p)) {
+            if !legacy.contains(&l) {
+                legacy.push(l);
+            }
+        }
         for l in &legacy {
             if !l.is_dir() {
                 return Err(Error::invalid(format!("{} is not a folder", l.display())));
@@ -1019,11 +1168,10 @@ impl PortAdoptArgs {
         }
         let toml_str =
             |t: &str, k: &str| -> Option<String> { Some(have_toml.as_ref()?.get(t)?.get(k)?.as_str()?.to_string()) };
-        let media = self
-            .media
-            .as_deref()
-            .map(at)
-            .or_else(|| toml_str("disc", "media").map(|m| absolute(&investigator.join(m))));
+        let media =
+            self.media.as_deref().map(at).or_else(|| {
+                toml_str("disc", "media").map(|m| absolute(&crate::moved::find(&investigator, Path::new(&m))))
+            });
         let disc = media.as_deref().map(disc_files).transpose()?;
         let game = self
             .game
@@ -1057,47 +1205,37 @@ impl PortAdoptArgs {
             a.file(inv, rel, &fill(text, &game, Some(&repos)))?;
         }
         if let Some(t) = &have_toml {
+            let text = std::fs::read_to_string(&toml_path).map_err(|e| Error::io(&toml_path, e))?;
+            let (mut new, notes) = rewrite_paths(&text, &repos, &s, &|k| named(k).map(|p| absolute(&p)));
+            a.todo.extend(notes.into_iter().map(|n| format!("{}: {n}", toml_path.display())));
             let mut add = String::new();
-            for (k, want) in [("implementer", &repos.implementer), ("reviewer", &repos.reviewer)] {
-                match named(k).map(|p| absolute(&p)) {
-                    Some(p) if p == *want => {}
-                    Some(p) => a.todo.push(format!(
-                        "{}: its {k} is {}, not {}; change it if that is wrong",
+            for k in ["implementer", "reviewer"] {
+                if named(k).is_none() {
+                    let want = if k == "implementer" { &repos.implementer } else { &repos.reviewer };
+                    a.todo.push(format!(
+                        "{}: add {k} = {} under [repositories]",
                         toml_path.display(),
-                        p.display(),
-                        want.display()
-                    )),
-                    None => a.todo.push(format!(
-                        "{}: add {k} = {:?} under [repositories]",
-                        toml_path.display(),
-                        want.display().to_string()
-                    )),
+                        kept(&repos, want)
+                    ));
                 }
             }
             if t.get("disc").is_none() && (s.media.is_some() || !s.executables.is_empty()) {
                 let q = |v: &str| serde_json::to_string(v).unwrap_or_default();
                 add += "\n[disc]\n";
                 if let Some(m) = &s.media {
-                    add += &format!("media = {}\n", q(&m.display().to_string()));
+                    add += &format!("media = {}\n", kept(&repos, m));
                 }
                 let names: Vec<String> = s.executables.iter().map(|e| q(e)).collect();
                 add += &format!("executables = [{}]\n", names.join(", "));
             }
-            let listed: Vec<PathBuf> = t
-                .get("legacy")
-                .and_then(|l| l.get("ports")?.as_array().cloned())
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v.as_str().map(|p| absolute(Path::new(p))))
-                .collect();
             if t.get("legacy").is_none() && !legacy.is_empty() {
-                add += &legacy_toml(&legacy);
-            } else if let Some(l) = legacy.iter().find(|l| !listed.contains(l)) {
-                a.todo.push(format!("{}: add {:?} to [legacy] ports", toml_path.display(), l.display().to_string()));
+                add += &legacy_toml(&repos, &legacy);
             }
             if !add.is_empty() {
-                let text = std::fs::read_to_string(&toml_path).map_err(|e| Error::io(&toml_path, e))?;
-                a.put(&toml_path, &format!("{}{add}", text.trim_end_matches('\n').to_string() + "\n"))?;
+                new = format!("{}{add}", new.trim_end_matches('\n').to_string() + "\n");
+            }
+            if new != text {
+                a.put(&toml_path, &new)?;
                 a.merged.push(toml_path.display().to_string());
             }
         } else {
@@ -1106,6 +1244,27 @@ impl PortAdoptArgs {
         }
         a.json(inv, ".mcp.json", &mcp_json(&repos), |h, o, n| merge_mcp(h, o, false, n))?;
         a.json(inv, ".claude/settings.json", &settings(Role::Investigator, &repos, &s), merge_settings)?;
+        // Rules of its own that stop it reading what the protocol lets it read.
+        let inv_settings = inv.join(".claude/settings.json");
+        let have: Value =
+            std::fs::read(&inv_settings).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        // Its shell may not name the implementer (psx's own rule), but it reads its questions.
+        let readable = legacy.iter().map(|l| (l, "a legacy port", true)).chain([(
+            &repos.implementer,
+            "the implementer's questions",
+            false,
+        )]);
+        for (target, what, shell) in readable {
+            for rule in have["permissions"]["deny"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                if blocks_reading(rule, target) && (shell || rule.starts_with("Read(")) {
+                    a.todo.push(format!(
+                        "{}: {rule} keeps the investigator from reading {} ({what}), which the protocol lets it read: take it out",
+                        inv_settings.display(),
+                        target.display()
+                    ));
+                }
+            }
+        }
 
         // The reviewer's: a new repository, or what it lacks.
         let rev = &repos.reviewer;
@@ -1391,19 +1550,66 @@ mod tests {
         let barrier: Value =
             serde_json::from_str(&std::fs::read_to_string(imp.join(".claude/barrier.json")).unwrap()).unwrap();
         assert_eq!(barrier["investigator"], json!(inv));
-        assert_eq!(barrier["dirty_paths"], json!(["/elsewhere/notes", inv.join("notes"), old.join("notes")]));
+        // A notes folder that does not exist is dropped.
+        assert_eq!(barrier["dirty_paths"], json!([inv.join("notes"), old.join("notes")]));
         assert!(barrier.get("notes").is_none());
         assert_eq!(std::fs::read_to_string(imp.join("AGENTS.md")).unwrap(), "# Our own instructions\n");
         assert_eq!(std::fs::read_to_string(imp.join(".gitignore")).unwrap(), "target/\n/data/\n");
         assert!(imp.join(".mcp.json").is_file() && imp.join("questions/README.md").is_file());
         let toml = std::fs::read_to_string(inv.join("protocol.toml")).unwrap();
-        assert!(toml.contains("[legacy]") && toml.contains(&old.display().to_string()), "{toml}");
+        assert!(toml.contains("implementer = \"../imp\"") && toml.contains("ports = [\"../old\"]"), "{toml}");
         assert!(w.join("rev/AGENTS.md").is_file() && w.join("rev/.claude/settings.json").is_file());
 
         // Nothing left to add.
-        let again = PortAdoptArgs { implementer: None, reviewer: None, ..args }.run(&ctx).unwrap();
+        let again = PortAdoptArgs { implementer: None, reviewer: None, ..args.clone() }.run(&ctx).unwrap();
         assert_eq!(again["written"], json!([]), "{again}");
         assert_eq!(again["merged"], json!([]), "{again}");
-        let _ = std::fs::remove_dir_all(&w);
+
+        // The port moves. An older psx kept protocol.toml's paths absolute,
+        // and the investigator has a hand-written rule against the legacy port.
+        let toml_old = format!(
+            "game = \"Some Game\"\n[repositories]\ninvestigator = \".\"\nimplementer = {:?}\nreviewer = {:?}\n[legacy]\nports = [{:?}]\n",
+            imp.display().to_string(),
+            absolute(&w.join("rev")).display().to_string(),
+            old.display().to_string()
+        );
+        std::fs::write(inv.join("protocol.toml"), toml_old).unwrap();
+        let p = inv.join(".claude/settings.json");
+        let mut have: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        have["permissions"]["deny"].as_array_mut().unwrap().push(json!("Bash(*old*)"));
+        std::fs::write(&p, pretty(&have)).unwrap();
+        let w2 = std::env::temp_dir().join(format!("psx-adopt-moved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&w2);
+        std::fs::rename(&w, &w2).unwrap();
+        let (inv2, imp2) = (absolute(&w2.join("inv")), absolute(&w2.join("imp")));
+        // The others are found beside the investigator before adopt runs.
+        let (i, r, _) = protocol(&inv2).unwrap();
+        assert_eq!((i, r), (imp2.clone(), absolute(&w2.join("rev"))));
+        let ctx2 = Ctx { root: w2.clone(), cancel: None };
+        let moved = PortAdoptArgs { implementer: None, reviewer: None, legacy: vec![], ..args }.run(&ctx2).unwrap();
+        let toml = std::fs::read_to_string(inv2.join("protocol.toml")).unwrap();
+        assert!(toml.contains("implementer = \"../imp\"") && toml.contains("ports = [\"../old\"]"), "{toml}");
+        let deny = |repo: &Path| -> Vec<String> {
+            let v: Value =
+                serde_json::from_str(&std::fs::read_to_string(repo.join(".claude/settings.json")).unwrap()).unwrap();
+            v["permissions"]["deny"].as_array().unwrap().iter().map(|d| d.as_str().unwrap().to_string()).collect()
+        };
+        let old_root = w.display().to_string();
+        for repo in [&inv2, &imp2] {
+            let d = deny(repo);
+            assert!(!d.iter().any(|r| r.contains(&old_root) && rule_path(r).is_some()), "{d:?}");
+        }
+        assert!(deny(&imp2).contains(&format!("Read(/{}/**)", absolute(&w2.join("old")).display())));
+        let mcp: Value = serde_json::from_str(&std::fs::read_to_string(inv2.join(".mcp.json")).unwrap()).unwrap();
+        assert_eq!(mcp["mcpServers"]["psx"]["args"][1], json!(inv2));
+        let barrier: Value =
+            serde_json::from_str(&std::fs::read_to_string(imp2.join(".claude/barrier.json")).unwrap()).unwrap();
+        assert_eq!(barrier["investigator"], json!(inv2));
+        let todo = moved["todo"].as_array().unwrap();
+        let says = |w: &str| todo.iter().any(|t| t.as_str().unwrap().contains(w));
+        assert!(says("Bash(*old*) keeps the investigator from reading"), "{moved}");
+        assert!(says("no longer exist were taken out") && says("which no longer exists: rewritten"), "{moved}");
+        assert!(!says("the implementer's questions"), "psx's own Bash rule on the implementer is not flagged: {moved}");
+        let _ = std::fs::remove_dir_all(&w2);
     }
 }
