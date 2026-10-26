@@ -147,7 +147,7 @@ pub struct Clean {
     implementer: PathBuf,
     reviewer: Option<PathBuf>,
     psx: PathBuf,
-    settings: Option<toml::Value>,
+    settings: toml::Value,
 }
 
 /// What crossed to the implementer: start states, spec ids and names.
@@ -335,11 +335,11 @@ impl Clean {
                 me.with_file_name(format!("psx{}", std::env::consts::EXE_SUFFIX))
             }
         };
-        Ok(Clean { investigator, implementer, reviewer, psx, settings: Some(settings) })
+        Ok(Clean { investigator, implementer, reviewer, psx, settings })
     }
 
     fn setting(&self, table: &str, key: &str) -> Option<&toml::Value> {
-        self.settings.as_ref()?.get(table)?.get(key)
+        self.settings.get(table)?.get(key)
     }
 
     fn max_frames(&self) -> u32 {
@@ -600,12 +600,12 @@ impl Clean {
         write(&case_path, text.as_bytes())?;
 
         let mut warnings = Vec::new();
-        if !kept.contains("tick") {
-            warnings.push("no tick column: the investigator has not given the game's tick, so the case cannot say which fields ticks ran in".to_string());
-        } else if table.rows.first().map(|r| r.get(table.column("tick").unwrap_or(0)))
-            == table.rows.last().map(|r| r.get(table.column("tick").unwrap_or(0)))
-        {
-            warnings.push("no tick ran: is the game paused at this start?".to_string());
+        match table.column("tick").filter(|_| kept.contains("tick")) {
+            None => warnings.push("no tick column: the investigator has not given the game's tick, so the case cannot say which fields ticks ran in".to_string()),
+            Some(t) if table.rows.first().map(|r| r.get(t)) == table.rows.last().map(|r| r.get(t)) => {
+                warnings.push("no tick ran: is the game paused at this start?".to_string())
+            }
+            Some(_) => {}
         }
         if !unclaimed.is_empty() {
             let list: Vec<&str> = unclaimed.iter().map(String::as_str).collect();
@@ -912,7 +912,7 @@ impl Clean {
         if let [_, m] = self.media().as_slice() {
             args.insert(1, m.clone());
         }
-        let report = self.psx(&args)?;
+        self.psx(&args)?;
         let out = self.implementer.join("notes/oracle").join(&a.name);
         let mut pictures = Vec::new();
         let mut sides = Vec::new();
@@ -943,7 +943,6 @@ impl Clean {
                 }
             }
         }
-        drop(report);
         Ok(json!({
             "pictures": pictures, "side_by_side": sides,
             "logged": {"status": "ok", "pictures": pictures.len(), "side_by_side": sides.len(), "bytes": bytes},
