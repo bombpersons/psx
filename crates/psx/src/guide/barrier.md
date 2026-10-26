@@ -75,3 +75,30 @@ those bytes.
   result lists unapproved files (changed after crossing, or carried by no
   bundle), missing ones, reviews and log breaks; it exits 1 unless the
   invariant holds.
+
+The message check: what the person types to the implementer passes the
+same checks before the agent sees it. barrier hook is the implementer's
+UserPromptSubmit hook (CLI only; the host runs it, not the agent), so its
+.claude/settings.json needs one line:
+
+  "hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command",
+      "command": "/path/to/psx barrier hook"}]}]}
+
+Settings are in the implementer's .claude/barrier.json, paths relative to
+its repository:
+
+  {"investigator": "../investigate", "names": ["TOMB2.EXE"],
+   "published": ["specs", "questions"], "log": "notes/guidance.jsonl",
+   "confirm_prefix": "[cross]"}
+
+investigator gives the symbol names from its .psx analysis and its notes/
+for copied text; notes, symbols (files) and allow (kinds) are also taken,
+and the first hook's dirty_paths and published_paths still work. Each
+message is logged as guidance (nothing found), stopped (exit 2: the person
+is told why and pointed to the investigator, and the log keeps only the
+kinds found, never the text) or crossing (the message starts with
+confirm_prefix: it goes through, and the agent is told to write it up as
+a question before acting on it). Each log entry carries the sha256 of the
+line before it, so a rewritten history shows. If the check cannot run (no
+settings, a bad event) the message is stopped. Deny the implementer
+.claude/ and the log in its access rules.

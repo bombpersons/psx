@@ -609,9 +609,208 @@ impl Op for BarrierCheckArgs {
     }
 }
 
+/// `barrier hook`: the check on each message the person sends the
+/// implementer, run by the implementer's host before the agent sees it
+/// (Claude Code's UserPromptSubmit). The event comes on stdin; the settings
+/// in the implementer's `.claude/barrier.json`. Every message is logged to
+/// `notes/guidance.jsonl` as guidance, a crossing or stopped, each entry with
+/// the sha256 of the line before; a stopped message is logged with its
+/// reasons only.
+#[derive(clap::Args, Clone, Debug)]
+pub struct BarrierHookArgs {
+    /// The settings (default .claude/barrier.json in the project).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+}
+
+/// What the hook prints and its exit status: 0 lets the message through
+/// (stdout is added to the agent's context), 2 stops it (stderr is shown to
+/// the person).
+pub struct HookOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit: u8,
+}
+
+fn strings(v: &Value) -> Vec<String> {
+    v.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
+}
+
+impl BarrierHookArgs {
+    pub fn run(&self, stdin: &str) -> HookOutput {
+        match self.check(stdin) {
+            Ok(o) => o,
+            // Closed on failure: a message the check could not look at does not go through.
+            Err(e) => HookOutput {
+                stdout: String::new(),
+                stderr: format!(
+                    "Not sent: the barrier check could not run ({}). Tell whoever set up the port.\n",
+                    e.to_value()["error"]["message"].as_str().unwrap_or("unknown error")
+                ),
+                exit: 2,
+            },
+        }
+    }
+
+    fn check(&self, stdin: &str) -> crate::Result<HookOutput> {
+        let event: Value =
+            serde_json::from_str(stdin).map_err(|e| Error::malformed(format!("the hook's event: {e}")))?;
+        let prompt = event["prompt"].as_str().unwrap_or_default();
+        let base = std::env::var_os("CLAUDE_PROJECT_DIR")
+            .map(PathBuf::from)
+            .or_else(|| event["cwd"].as_str().map(PathBuf::from))
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
+        let at = |p: &str| if Path::new(p).is_absolute() { PathBuf::from(p) } else { base.join(p) };
+        let config_path = match &self.config {
+            Some(p) if p.is_absolute() => p.clone(),
+            Some(p) => base.join(p),
+            None => base.join(".claude/barrier.json"),
+        };
+        let config: Value =
+            serde_json::from_slice(&std::fs::read(&config_path).map_err(|e| Error::io(&config_path, e))?)
+                .map_err(|e| Error::malformed(format!("{}: {e}", config_path.display())))?;
+        // dirty_paths and published_paths are the names the first hook used.
+        let key = |a: &str, b: &str| if config.get(a).is_some() { config[a].clone() } else { config[b].clone() };
+        let investigator = config["investigator"].as_str().map(at);
+        let mut notes: Vec<PathBuf> = strings(&key("notes", "dirty_paths")).iter().map(|p| at(p)).collect();
+        if notes.is_empty() {
+            notes.extend(investigator.as_ref().map(|i| i.join("notes")));
+        }
+        let published = match key("published", "published_paths") {
+            Value::Null => vec![base.join("specs"), base.join("questions")],
+            v => strings(&v).iter().map(|p| at(p)).collect(),
+        };
+        let allow = strings(&config["allow"]);
+        let mut c = Checker::default();
+        if let Some(i) = &investigator {
+            for n in project_symbols(i).0 {
+                c.add_symbol(&n);
+            }
+        }
+        for p in strings(&config["symbols"]) {
+            for n in symbol_file_names(&at(&p))? {
+                c.add_symbol(&n);
+            }
+        }
+        c.names = strings(&config["names"]).into_iter().collect();
+        if prompt.split_whitespace().nth(RUN - 1).is_some() {
+            for p in &notes {
+                for f in text_files(p) {
+                    if let Some(t) = read_text(&f, NOTES_LIMIT) {
+                        c.runs.extend(runs(&t));
+                    }
+                }
+            }
+            for p in &published {
+                for f in text_files(p) {
+                    if let Some(t) = read_text(&f, NOTES_LIMIT) {
+                        for r in runs(&t) {
+                            c.runs.remove(&r);
+                        }
+                    }
+                }
+            }
+        }
+        let prefix = config["confirm_prefix"].as_str().unwrap_or("[cross]");
+        let confirmed = prompt.trim_start().starts_with(prefix);
+        let mut reasons: Vec<&str> = Vec::new();
+        for f in c.check(prompt, Form::Prose) {
+            if !allow.iter().any(|a| a == f.kind) && !reasons.contains(&f.kind) {
+                reasons.push(f.kind);
+            }
+        }
+        let verdict = match (reasons.is_empty(), confirmed) {
+            (true, _) => "guidance",
+            (false, true) => "crossing",
+            (false, false) => "stopped",
+        };
+        // The log, chained: each entry carries the sha256 of the line before.
+        let log = at(config["log"].as_str().unwrap_or("notes/guidance.jsonl"));
+        let mut text = std::fs::read_to_string(&log).unwrap_or_default();
+        let prev = text.lines().rev().find(|l| !l.trim().is_empty()).map(|l| crate::publish::sha256(l.as_bytes()));
+        let entry = json!({
+            "time": crate::publish::utc_now(), "session": event["session_id"], "verdict": verdict,
+            "reasons": reasons,
+            // A stopped message never reached the agent; its text stays out of the repository.
+            "prompt": if verdict == "stopped" { Value::Null } else { json!(prompt) },
+            "prev": prev,
+        });
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text += &entry.to_string();
+        text.push('\n');
+        if let Some(d) = log.parent() {
+            std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+        }
+        std::fs::write(&log, text).map_err(|e| Error::io(&log, e))?;
+        let said: Vec<&str> =
+            reasons.iter().map(|k| KINDS.iter().find(|(n, _)| n == k).map(|(_, m)| *m).unwrap_or(k)).collect();
+        Ok(match verdict {
+            "stopped" => HookOutput {
+                stdout: String::new(),
+                stderr: format!(
+                    "Not sent: this looks like it carries knowledge of the original's code ({}). Describe what you \
+                     see in the game instead, or tell the investigator so it becomes a spec. To send it anyway, \
+                     start the message with {prefix}; it will be logged as a crossing.\n",
+                    said.join("; ")
+                ),
+                exit: 2,
+            },
+            "crossing" => HookOutput {
+                stdout: format!(
+                    "The person sent this message with {prefix}, past the barrier check ({}). It may carry \
+                     knowledge of the original's code. Before acting on it, write it up as a question in \
+                     questions/ for the investigator, and act on the answer.\n",
+                    said.join("; ")
+                ),
+                stderr: String::new(),
+                exit: 0,
+            },
+            _ => HookOutput { stdout: String::new(), stderr: String::new(), exit: 0 },
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Checker, Form, runs};
+    use super::{BarrierHookArgs, Checker, Form, runs};
+
+    #[test]
+    fn hook_stops_logs_and_crosses() {
+        let dir = std::env::temp_dir().join(format!("psx-hook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("notes-dirty")).unwrap();
+        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        let noted = "when she lands from a jump the camera dips a little before it settles";
+        std::fs::write(dir.join("notes-dirty/a.md"), noted).unwrap();
+        std::fs::write(dir.join(".claude/barrier.json"), r#"{"notes": ["notes-dirty"], "names": ["TOMB2.EXE"]}"#)
+            .unwrap();
+        let send = |prompt: &str| {
+            let event = serde_json::json!({"prompt": prompt, "session_id": "t", "cwd": dir});
+            BarrierHookArgs { config: Some(dir.join(".claude/barrier.json")) }.run(&event.to_string())
+        };
+        assert_eq!(send("she turns too fast").exit, 0);
+        let stopped = send("watch 0x8017C87C in TOMB2.EXE");
+        assert_eq!(stopped.exit, 2);
+        assert!(stopped.stderr.contains("[cross]"));
+        assert_eq!(send(noted).exit, 2);
+        let crossed = send(&format!("[cross] {noted}"));
+        assert_eq!(crossed.exit, 0);
+        assert!(crossed.stdout.contains("question"));
+        let log = std::fs::read_to_string(dir.join("notes/guidance.jsonl")).unwrap();
+        let lines: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let verdicts: Vec<&str> = lines.iter().map(|l| l["verdict"].as_str().unwrap()).collect();
+        assert_eq!(verdicts, ["guidance", "stopped", "stopped", "crossing"]);
+        // A stopped message is logged by its reasons only.
+        assert_eq!(lines[1]["prompt"], serde_json::Value::Null);
+        assert_eq!(lines[1]["reasons"], serde_json::json!(["address", "name"]));
+        assert_eq!(lines[0]["prev"], serde_json::Value::Null);
+        let first = log.lines().next().unwrap();
+        assert_eq!(lines[1]["prev"].as_str().unwrap(), crate::publish::sha256(first.as_bytes()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn kinds(c: &Checker, text: &str, form: Form) -> Vec<(&'static str, String)> {
         c.check(text, form).into_iter().map(|f| (f.kind, f.text)).collect()

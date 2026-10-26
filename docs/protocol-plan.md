@@ -69,13 +69,15 @@ Branch: `protocol`. Committed piece by piece.
   existing specs, partial stages, stale bundles, removals, a tampered
   bundle, a rewritten review, an edited log) and on a Crash spec, case
   and state. (Brief item 3.)
-
-## Phase 2: the barrier
-
-5. **The message check as a psx command** (`psx barrier hook`), so the
-   implementer's `UserPromptSubmit` hook is one line: the same checker,
-   `[cross]` passing with a log entry, `guidance.jsonl` hash-chained.
-   Model: `tr2-clean/.claude/hooks/barrier_check.py` and `barrier.json`.
+- **The message check** (`psx barrier hook`): the implementer's
+  `UserPromptSubmit` hook is one line. The same checker, with settings in
+  `.claude/barrier.json` (the investigator's repository for its symbols
+  and notes; the first hook's keys still read); every message logged to
+  `notes/guidance.jsonl`, hash-chained, as guidance, stopped (reasons
+  only) or crossing (`[cross]`, and the agent told to make it a question);
+  stopped when the check cannot run. TR2's two logged messages pass;
+  addresses, tool and library names, copied notes are stopped in TR2 and
+  Crash messages, and text already published passes.
 
 ## Phase 3: workspaces and guidance
 

@@ -84,7 +84,7 @@ pub struct PublishCheckArgs {
     pub reviews: PathBuf,
 }
 
-fn sha256(bytes: &[u8]) -> String {
+pub(crate) fn sha256(bytes: &[u8]) -> String {
     use sha2::Digest;
     format!("{:x}", sha2::Sha256::digest(bytes))
 }
@@ -106,7 +106,7 @@ fn at(ctx: &Ctx, p: &Path) -> PathBuf {
 }
 
 /// The time now, UTC, as 2026-10-26T12:34:56Z.
-fn utc_now() -> String {
+pub(crate) fn utc_now() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let (days, rest) = ((secs / 86400) as i64, secs % 86400);
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).

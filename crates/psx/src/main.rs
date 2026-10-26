@@ -204,6 +204,9 @@ enum BarrierAction {
     /// Check files or text for what would carry the original's code across: addresses,
     /// hex, code-shaped text, tool and symbol names, text copied from the notes.
     Check(leak::BarrierCheckArgs),
+    /// The check on each message to the implementer, as its UserPromptSubmit hook: the event
+    /// on stdin, settings in .claude/barrier.json, every message logged to notes/guidance.jsonl.
+    Hook(leak::BarrierHookArgs),
 }
 
 #[derive(clap::Subcommand)]
@@ -274,6 +277,14 @@ fn main() -> ExitCode {
         }
     }
     let ctx = Ctx { root: std::env::current_dir().unwrap_or_default(), cancel: None };
+    if let Command::Barrier { action: BarrierAction::Hook(a) } = &cli.command {
+        let mut stdin = String::new();
+        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin);
+        let out = a.run(&stdin);
+        print!("{}", out.stdout);
+        eprint!("{}", out.stderr);
+        return ExitCode::from(out.exit);
+    }
     let out = match cli.command {
         Command::McpCall => mcp::project::worker(&ctx),
         Command::HandoffChild { run_dir } => handoff::child(&run_dir),
@@ -309,6 +320,7 @@ fn main() -> ExitCode {
         },
         Command::Barrier { action } => match action {
             BarrierAction::Check(a) => a.exec(&ctx),
+            BarrierAction::Hook(_) => unreachable!("handled above"),
         },
         Command::Publish { action } => match action {
             PublishAction::Stage(a) => a.exec(&ctx),
