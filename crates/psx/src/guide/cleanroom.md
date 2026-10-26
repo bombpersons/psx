@@ -177,7 +177,9 @@ that is the cheaper part to redo once specs and cases exist.
    notes/ and docs/ join the text the message check refuses. It ends with
    what only a person settles: the field map, the start states to
    publish, the case runner's cases_from_folder, the legacy triage.
-   Running it again changes nothing.
+   Running it again changes nothing, unless the repositories moved (guide
+   topic barrier, Moving a port). Its legacy ports default to
+   protocol.toml's.
 5. Reimplement one system at a time, starting with what most cases cover.
    The old port is the reference until the clean one passes the same cases.
 

@@ -24,6 +24,17 @@ of the three alone, with the others assumed as siblings (investigate,
 clean, review) unless given. port adopt adds these files to repositories
 that already exist, overwriting nothing (guide topic cleanroom, Migrating).
 
+Moving a port: protocol.toml names the other repositories, the disc and
+the legacy ports from the investigator (../clean), so they move together;
+one an older psx kept absolute is found again by name beside the
+investigator. The access rules, .mcp.json and barrier.json must name
+absolute paths, and after a move they match nothing: run port adopt
+--investigator INV again. It takes out rules naming folders that no longer
+exist and adds the current ones, rewrites a server or the message check's
+investigator and notes when they name a folder that is gone, rewrites
+protocol.toml's paths, and warns about the investigator's own rules that
+keep it from reading a legacy port or the implementer's questions.
+
 The person starts each agent's session in its own folder; an
 investigator never starts the others', since a session it starts would
 share its notes.
