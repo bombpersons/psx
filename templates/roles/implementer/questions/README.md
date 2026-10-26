@@ -7,10 +7,12 @@
 - what you tried;
 - the question.
 
-The investigator reads this folder directly and appends an answer, in game
-terms, naming what changed in the specs. Nothing tainted travels this way:
-never put the original's code here, and the investigator's answers come
-back as spec changes, through review.
+The investigator reads this folder directly and never writes here. Its
+answer comes back through review with the spec changes it made:
+`specs/answers/Q-NNNN.md`, in game terms, naming what changed, and
+`notes/NEXT.md` lists it when it arrives. Ask a follow-up as a new
+question. Never put the original's code here.
 
 `CHOICES.md` lists every choice the specs left open, numbered, with the
-spec it concerns. `LOOP.md` is the implementer's log.
+spec it concerns; keep the numbers, since `specs/answers/CHOICES.md`
+settles each by its number. `LOOP.md` is the implementer's log.

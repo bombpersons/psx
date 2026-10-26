@@ -78,8 +78,13 @@ The implementer cannot look at RAM, so a divergence it cannot explain
 becomes questions/Q-NNNN.md in its repository (what was expected, what the
 port did, which case). Where a spec leaves something open and it chooses,
 the choice goes in questions/CHOICES.md. The investigator reads both
-directly and answers by changing a spec or adding cases, then publishing;
-never by explaining the original's code. The log is part of the record.
+directly (it cannot write there) and answers by changing a spec or adding
+cases, never by explaining the original's code. It says what changed in
+specs/answers/Q-NNNN.md, or under the choice's number in
+specs/answers/CHOICES.md, and publishes them together: the answer crosses
+and is reviewed like a spec, the ledger counts the question answered once
+it has crossed, and the implementer's NEXT.md lists it. The log is part of
+the record.
 
 ## People and agent hosts
 

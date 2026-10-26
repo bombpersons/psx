@@ -252,6 +252,15 @@ Branch: `protocol`. Committed piece by piece.
   the merged settings, and clean mode answering. The ledger now carries
   clean mode's last heldout verdict per kept-back case, and a verified spec
   whose kept-back cases fail is the investigator's (thin specs).
+- **Answers cross.** The investigator could not answer where the protocol
+  said (the implementer's `questions/`, which its access rules deny), as
+  TR2's investigator found. Answers are now spec files:
+  `specs/answers/Q-NNNN.md`, and `specs/answers/CHOICES.md` under each
+  choice's number, staged, reviewed and crossed with the changes they name.
+  The ledger counts a question answered once its answer is in the
+  publishing log (written and not crossed, it is no longer asked for; an
+  answer written into the question still counts), and the implementer's
+  NEXT.md lists the answers that arrived, newest first.
 
 ## Phase 3: workspaces and guidance
 
