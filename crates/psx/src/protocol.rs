@@ -305,10 +305,10 @@ fn verdicts(dir: &Path) -> Vec<Verdict> {
     out
 }
 
-/// The implementer's source files' spec citations (target, data, specs,
-/// questions, notes, vendor and psx-bevy left out).
-fn citations(implementer: &Path) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
+/// The implementer's code: its .rs files (target, data, specs, questions,
+/// notes, vendor and psx-bevy left out).
+pub(crate) fn code_files(implementer: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
     let mut todo = vec![implementer.to_path_buf()];
     while let Some(d) = todo.pop() {
         for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
@@ -321,11 +321,17 @@ fn citations(implementer: &Path) -> BTreeSet<String> {
                     todo.push(p);
                 }
             } else if name.ends_with(".rs") {
-                out.extend(cited(&std::fs::read_to_string(&p).unwrap_or_default()));
+                out.push(p);
             }
         }
     }
+    out.sort();
     out
+}
+
+/// The spec ids the implementer's code cites.
+fn citations(implementer: &Path) -> BTreeSet<String> {
+    code_files(implementer).iter().flat_map(|p| cited(&std::fs::read_to_string(p).unwrap_or_default())).collect()
 }
 
 /// A case the investigator holds: whether it was checked against the
@@ -412,22 +418,15 @@ fn git_head(repo: &Path) -> Option<String> {
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-/// 64-digit hashes named anywhere in the reviewer's audits.
-fn audited(dir: &Path) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for p in crate::publish::files_under(dir) {
-        let Ok(text) = std::fs::read_to_string(&p) else { continue };
-        let b = text.as_bytes();
-        let mut i = 0;
-        while i < b.len() {
-            let n = b[i..].iter().take_while(|c| c.is_ascii_hexdigit()).count();
-            if n == 64 {
-                out.insert(text[i..i + 64].to_ascii_lowercase());
-            }
-            i += n.max(1);
-        }
-    }
-    out
+/// The bundles an audit covers: psx audit's records with the reviewer's
+/// judgment (audits/psx/).
+pub(crate) fn audited(reviewer: &Path) -> BTreeSet<String> {
+    crate::audit::records(reviewer)
+        .iter()
+        .filter(|r| r["judgment"].is_string())
+        .flat_map(|r| r["bundles"].as_array().cloned().unwrap_or_default())
+        .filter_map(|b| b.as_str().map(str::to_ascii_lowercase))
+        .collect()
 }
 
 /// A code unit: one function of the inventory.
@@ -847,7 +846,9 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         .collect();
 
     // Audits.
-    let audits = audited(&r.reviewer.join("audits"));
+    let audits = audited(&r.reviewer);
+    let last_audit = crate::audit::records(&r.reviewer).into_iter().rev().find(|r| r["judgment"].is_string());
+    let audit_failed = last_audit.as_ref().filter(|a| a["mechanical"] != "pass" || a["judgment"] != "pass");
     let mut unaudited_specs: BTreeSet<String> = BTreeSet::new();
     let mut unaudited = Vec::new();
     for e in &log.entries {
@@ -906,6 +907,18 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
             "wait_for_audit",
             format!("an audit is due ({} implemented specs no audit covers): no new work until the reviewer's report names the bundles", implemented_unaudited.len()),
             json!({"specs": implemented_unaudited}),
+        ));
+    }
+    if let Some(a) = audit_failed {
+        inv_work.push(work(
+            "audit_findings",
+            format!(
+                "the last audit ({}) found things (checks {}, reviewer {}): read its record in the reviewer's audits/psx/ and its report, change the specs they trace to and stage them; the implementer rebuilds from the corrected specs",
+                a["time"].as_str().unwrap_or_default(),
+                a["mechanical"].as_str().unwrap_or_default(),
+                a["judgment"].as_str().unwrap_or_default()
+            ),
+            json!({"reports": a["reports"]}),
         ));
     }
     match (&pending, &pending_verdict) {
@@ -1145,7 +1158,7 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
     if audit_due {
         rev_work.push(work(
             "audit",
-            format!("an audit is due: read the implementer's code for the specs below against the investigator's notes, and write a report in audits/ naming the bundle hashes it covers ({} bundles) and the implementer's commit", unaudited.len()),
+            format!("an audit is due ({} bundles): run audit for psx's checks, read the implementer's new code for the specs below against the investigator's notes, write your report in audits/ naming the bundle hashes and the commits, then audit with judgment pass or fail to record it", unaudited.len()),
             json!({"bundles": unaudited, "specs": implemented_unaudited, "implementer_commit": git_head(&r.implementer)}),
         ));
     }
@@ -1180,7 +1193,8 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         }).collect::<Vec<_>>(),
         "questions": questions.iter().map(|q| json!({"question": q.0, "specs": q.2, "answered": q.3})).collect::<Vec<_>>(),
         "choices": {"total": choice_list.len(), "open": open_choices.len()},
-        "audits": {"due": audit_due, "unaudited_bundles": unaudited, "loop_ended": loop_ended},
+        "audits": {"due": audit_due, "unaudited_bundles": unaudited, "loop_ended": loop_ended,
+            "last": last_audit.as_ref().map(|a| json!({"time": a["time"], "mechanical": a["mechanical"], "judgment": a["judgment"], "bundles": a["bundles"].as_array().map_or(0, Vec::len)}))},
         "emulator_changes": {"states": stale_chains, "cases": stale_cases.len(), "differing": differing},
         "inputs": {"inventory": inv.as_ref().map(|_| &inv_path), "coverage": cov.as_ref().map(|_| &cov_path), "results": set.results},
     });
@@ -1221,37 +1235,45 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
     Ok(Ledger { value, investigator: inv_work, implementer: imp_work, reviewer: rev_work, implementer_view: md })
 }
 
-fn write(p: &Path, bytes: &[u8]) -> crate::Result<()> {
+pub(crate) fn write(p: &Path, bytes: &[u8]) -> crate::Result<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
     }
     std::fs::write(p, bytes).map_err(|e| Error::io(p, e))
 }
 
+/// Computes the ledger and writes it: ledger.json beside the inventory, its
+/// totals to ledger_history.jsonl when they change, and the implementer's
+/// notes/NEXT.md.
+fn refresh(ctx: &Ctx) -> crate::Result<(Repos, Ledger, PathBuf)> {
+    let (implementer, reviewer, _) = crate::roles::protocol(&ctx.root).ok_or_else(|| {
+        Error::invalid("run in the investigator's repository: its protocol.toml names the others (psx port init)")
+    })?;
+    let r = Repos { investigator: ctx.root.clone(), implementer, reviewer };
+    let l = ledger(ctx, &r)?;
+    let out = crate::inventory::default_out(ctx).with_file_name("ledger.json");
+    write(&out, format!("{}\n", serde_json::to_string_pretty(&l.value).unwrap_or_default()).as_bytes())?;
+    // Totals over time, for the estimate: a line whenever they change.
+    let history = out.with_file_name("ledger_history.jsonl");
+    let line = json!({"made": l.value["made"], "complete": l.value["complete"], "totals": {
+        "code": l.value["totals"]["code"]["stages"], "formats": l.value["totals"]["formats"]["stages"]}});
+    let last = std::fs::read_to_string(&history)
+        .ok()
+        .and_then(|t| t.lines().last().and_then(|l| serde_json::from_str::<Value>(l).ok()));
+    if last.as_ref().is_none_or(|v| v["totals"] != line["totals"]) {
+        let mut text = std::fs::read_to_string(&history).unwrap_or_default();
+        text += &format!("{}\n", serde_json::to_string(&line).unwrap_or_default());
+        write(&history, text.as_bytes())?;
+    }
+    if r.implementer.is_dir() {
+        write(&r.implementer.join("notes/NEXT.md"), l.implementer_view.as_bytes())?;
+    }
+    Ok((r, l, out))
+}
+
 impl ProtocolNextArgs {
     fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
-        let (implementer, reviewer, _) = crate::roles::protocol(&ctx.root).ok_or_else(|| {
-            Error::invalid("run in the investigator's repository: its protocol.toml names the others (psx port init)")
-        })?;
-        let r = Repos { investigator: ctx.root.clone(), implementer, reviewer };
-        let l = ledger(ctx, &r)?;
-        let out = crate::inventory::default_out(ctx).with_file_name("ledger.json");
-        write(&out, format!("{}\n", serde_json::to_string_pretty(&l.value).unwrap_or_default()).as_bytes())?;
-        // Totals over time, for the estimate: a line whenever they change.
-        let history = out.with_file_name("ledger_history.jsonl");
-        let line = json!({"made": l.value["made"], "complete": l.value["complete"], "totals": {
-            "code": l.value["totals"]["code"]["stages"], "formats": l.value["totals"]["formats"]["stages"]}});
-        let last = std::fs::read_to_string(&history)
-            .ok()
-            .and_then(|t| t.lines().last().and_then(|l| serde_json::from_str::<Value>(l).ok()));
-        if last.as_ref().is_none_or(|v| v["totals"] != line["totals"]) {
-            let mut text = std::fs::read_to_string(&history).unwrap_or_default();
-            text += &format!("{}\n", serde_json::to_string(&line).unwrap_or_default());
-            write(&history, text.as_bytes())?;
-        }
-        if r.implementer.is_dir() {
-            write(&r.implementer.join("notes/NEXT.md"), l.implementer_view.as_bytes())?;
-        }
+        let (r, l, out) = refresh(ctx)?;
         let work = match self.role {
             Role::Investigator => l.investigator,
             Role::Implementer => l.implementer,
@@ -1265,6 +1287,273 @@ impl ProtocolNextArgs {
             v["written"] = json!(r.implementer.join("notes/NEXT.md"));
         }
         Ok(v)
+    }
+}
+
+#[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ProtocolReportArgs {
+    /// Text for the person.
+    #[arg(long)]
+    #[serde(default)]
+    pub plain: bool,
+}
+
+const DAY: f64 = 86400.0;
+/// The window the estimate and the inventory's growth are measured over.
+const WINDOW: u64 = 28 * 86400;
+
+/// Least-squares slope of (time, complete), per second.
+fn slope(points: &[(u64, f64)]) -> Option<f64> {
+    if points.len() < 2 {
+        return None;
+    }
+    let n = points.len() as f64;
+    let t0 = points[0].0 as f64;
+    let (mx, my) = points.iter().fold((0.0, 0.0), |(a, b), (t, c)| (a + (*t as f64 - t0) / n, b + c / n));
+    let (mut sxy, mut sxx) = (0.0, 0.0);
+    for (t, c) in points {
+        let x = *t as f64 - t0 - mx;
+        sxy += x * (c - my);
+        sxx += x * x;
+    }
+    (sxx > 0.0).then(|| sxy / sxx)
+}
+
+/// How much the inventory's instructions grew over the window, from
+/// inventory_history.jsonl: (growth, takes in the window).
+fn inventory_growth(history: &str, now: u64) -> Option<(f64, usize)> {
+    let takes: Vec<(u64, f64)> = history
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| Some((crate::publish::unix(v["made"].as_str()?)?, v["totals"]["instructions"].as_f64()?)))
+        .collect();
+    let last = takes.last()?.1;
+    let since = now.saturating_sub(WINDOW);
+    let base = takes.iter().rev().find(|t| t.0 < since).or(takes.first())?.1;
+    Some(((last - base) / base.max(1.0), takes.iter().filter(|t| t.0 >= since).count()))
+}
+
+/// The estimated date the port is complete, with its range, or why there is
+/// none: from the ledger's history over the last four weeks, while the
+/// inventory has stopped growing.
+fn estimate(history: &[(u64, f64)], now: u64, complete: f64, growth: Option<(f64, usize)>) -> Result<Value, String> {
+    let Some((growth, _)) = growth else {
+        return Err("there is no inventory history yet (inventory_history.jsonl, written by each inventory)".into());
+    };
+    if growth > 0.05 {
+        return Err(format!(
+            "the inventory grew {:.0}% in the last four weeks (more than 5%), so the total is not known yet",
+            growth * 100.0
+        ));
+    }
+    if complete >= 1.0 {
+        return Ok(json!({"date": crate::publish::iso(now)[..10], "done": true}));
+    }
+    let mut points: Vec<(u64, f64)> = history.iter().filter(|p| p.0 + WINDOW >= now && p.0 <= now).copied().collect();
+    points.push((now, complete));
+    let span = now - points[0].0;
+    if points.len() < 3 || span < 3600 {
+        return Err(format!(
+            "not enough history yet: the ledger changed {} times in the last four weeks",
+            points.len() - 1
+        ));
+    }
+    let rate = slope(&points)
+        .filter(|r| *r > 0.0)
+        .ok_or_else(|| format!("no progress over the last {:.0} days", (span as f64 / DAY).ceil()))?;
+    // The range: the slower and faster halves of the window.
+    let mid = points[0].0 + span / 2;
+    let halves = [
+        slope(&points.iter().filter(|p| p.0 <= mid).copied().collect::<Vec<_>>()),
+        slope(&points.iter().filter(|p| p.0 >= mid).copied().collect::<Vec<_>>()),
+    ];
+    let rates: Vec<f64> = halves.iter().flatten().copied().chain([rate]).collect();
+    let fast = rates.iter().copied().fold(rate, f64::max);
+    let slow = rates.iter().copied().fold(rate, f64::min);
+    let left = 1.0 - complete;
+    let at = |r: f64| crate::publish::iso(now + (left / r) as u64)[..10].to_string();
+    Ok(json!({
+        "date": at(rate), "earliest": at(fast), "latest": if slow > 0.0 { json!(at(slow)) } else { json!(null) },
+        "points_per_day": (rate * DAY * 100.0 * 100.0).round() / 100.0,
+        "over_days": (span as f64 / DAY * 10.0).round() / 10.0, "changes": points.len() - 1,
+    }))
+}
+
+/// A spec's stage as a number, a draft below specified.
+fn stage_index(name: &str) -> usize {
+    STAGES.iter().position(|s| *s == name).unwrap_or(1)
+}
+
+fn percent(v: &Value) -> String {
+    format!("{:.1}%", v.as_f64().unwrap_or(0.0) * 100.0)
+}
+
+/// Play-through requests open in a window on this machine.
+fn open_handoffs(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for d in std::fs::read_dir(root.join(".psx/handoffs")).into_iter().flatten().flatten() {
+        let dir = d.path();
+        if dir.join("report.json").exists() {
+            continue;
+        }
+        let Some(req) = read_json(&dir.join("request.json")) else { continue };
+        let fresh = read_json(&dir.join("live.json"))
+            .and_then(|l| l["updated_unix_ms"].as_u64())
+            .is_some_and(|t| (crate::now_ms() as u64).saturating_sub(t) < 60_000);
+        if fresh {
+            out.push(short(req["request"].as_str().unwrap_or_default()));
+        }
+    }
+    out
+}
+
+impl ProtocolReportArgs {
+    fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
+        let (r, l, out) = refresh(ctx)?;
+        let v = &l.value;
+        let now = crate::publish::unix(v["made"].as_str().unwrap_or_default()).unwrap_or(0);
+        let history: Vec<(u64, f64)> = std::fs::read_to_string(out.with_file_name("ledger_history.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|h| Some((crate::publish::unix(h["made"].as_str()?)?, h["complete"]["all"].as_f64()?)))
+            .collect();
+        let inv_history = crate::inventory::default_out(ctx).with_file_name("inventory_history.jsonl");
+        let growth = std::fs::read_to_string(&inv_history).ok().and_then(|t| inventory_growth(&t, now));
+        let complete = v["complete"]["all"].as_f64().unwrap_or(0.0);
+        let est = estimate(&history, now, complete, growth);
+
+        // What waits on the person.
+        let mut waiting = Vec::new();
+        for req in open_handoffs(&ctx.root) {
+            waiting.push(format!("a play-through request is open in a window on this machine: {req}"));
+        }
+        let first = |w: &[Value]| {
+            w.first().map(|w| {
+                (w["do"].as_str().unwrap_or_default().to_string(), w["what"].as_str().unwrap_or_default().to_string())
+            })
+        };
+        let why = |what: &str, said: String| match what {
+            "review" => "a bundle of specs waits for review".to_string(),
+            "audit" => "an audit of the port is due".to_string(),
+            "fix" => "a test fails in the port".to_string(),
+            "implement" => "specs have crossed that the port does not build yet".to_string(),
+            "run_cases" => "the port's tests have not run since their cases changed".to_string(),
+            _ => said,
+        };
+        if let Some((what, said)) = first(&l.reviewer).filter(|(d, _)| d != "nothing") {
+            waiting.push(format!("start the reviewer's session, if it is not running: {}", why(&what, said)));
+        }
+        if let Some((what, said)) = first(&l.implementer).filter(|(d, _)| !d.starts_with("wait_for")) {
+            waiting.push(format!("start the implementer's session, if it is not running: {}", why(&what, said)));
+        }
+
+        let game = std::fs::read_to_string(ctx.root.join("protocol.toml"))
+            .ok()
+            .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
+            .and_then(|t| t.get("game")?.as_str().map(str::to_string))
+            .unwrap_or_else(|| "The port".into());
+        let mut report = json!({
+            "game": game, "complete": v["complete"],
+            "stages": {"code": v["totals"]["code"]["stages"], "formats": v["totals"]["formats"]["stages"]},
+            "inventory_growth": growth.map(|(g, n)| json!({"last_four_weeks": (g * 1000.0).round() / 1000.0, "takes": n})),
+            "waiting_on_person": waiting, "ledger": out,
+        });
+        match &est {
+            Ok(e) => report["estimate"] = e.clone(),
+            Err(why) => report["no_estimate"] = json!(why),
+        }
+        if !self.plain {
+            return Ok(report);
+        }
+
+        // Since the person's last report.
+        let seen_path = out.with_file_name("report_seen.json");
+        let seen = read_json(&seen_path);
+        let specs: BTreeMap<String, (String, String)> = v["specs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| {
+                Some((
+                    s["id"].as_str()?.to_string(),
+                    (s["title"].as_str()?.to_string(), s["stage"].as_str()?.to_string()),
+                ))
+            })
+            .collect();
+        let crossings = crate::publish::read_log(&r.implementer)?.entries.len();
+        let audits = crate::audit::records(&r.reviewer).iter().filter(|a| a["judgment"].is_string()).count();
+        let mut text = format!(
+            "{game}: {} complete (code {}, formats {}).\n",
+            percent(&v["complete"]["all"]),
+            percent(&v["complete"]["code"]),
+            percent(&v["complete"]["formats"])
+        );
+        text += &match &est {
+            Ok(e) if e["done"] == json!(true) => "Every unit is integrated.\n".to_string(),
+            Ok(e) => format!(
+                "Estimate: about {}, between {} and {}, at {} points a day over the last {} days.\n",
+                e["date"].as_str().unwrap_or_default(),
+                e["earliest"].as_str().unwrap_or_default(),
+                e["latest"].as_str().unwrap_or("later (one part of that time made no progress)"),
+                e["points_per_day"],
+                e["over_days"]
+            ),
+            Err(why) => format!("No estimate yet: {why}.\n"),
+        };
+        let mut since = json!(null);
+        if let Some(s) = &seen {
+            let was = |id: &str| s["specs"][id].as_str().map(str::to_string);
+            let (mut on, mut back) = (Vec::new(), Vec::new());
+            for (id, (title, stage)) in &specs {
+                let before = was(id).unwrap_or_else(|| "new".into());
+                let (b, n) = (if before == "new" { 0 } else { stage_index(&before) }, stage_index(stage));
+                if n > b || (before == "new") {
+                    on.push(format!("{id} {title}: {before} to {stage}"));
+                } else if n < b {
+                    back.push(format!("{id} {title}: {before} back to {stage}"));
+                }
+            }
+            let delta = complete - s["complete"].as_f64().unwrap_or(0.0);
+            let new_crossings = crossings.saturating_sub(s["crossings"].as_u64().unwrap_or(0) as usize);
+            let new_audits = audits.saturating_sub(s["audits"].as_u64().unwrap_or(0) as usize);
+            text += &format!(
+                "\nSince your last report ({}): {}{:.1} points; {new_crossings} bundles crossed, {new_audits} audits recorded.\n",
+                s["made"].as_str().map_or("", |m| &m[..10.min(m.len())]),
+                if delta >= 0.0 { "+" } else { "" },
+                delta * 100.0
+            );
+            for x in &on {
+                text += &format!("- {x}\n");
+            }
+            for x in &back {
+                text += &format!("- {x} (its tests or evidence no longer hold; the agents have it as work)\n");
+            }
+            since = json!({"from": s["made"], "points": (delta * 10000.0).round() / 100.0, "moved_on": on, "dropped_back": back, "crossings": new_crossings, "audits": new_audits});
+        }
+        if waiting.is_empty() {
+            text += "\nNothing waits on you.\n";
+        } else {
+            text += "\nWaiting on you:\n";
+            for w in &waiting {
+                text += &format!("- {w}\n");
+            }
+        }
+        let seen_now = json!({
+            "made": v["made"], "complete": complete, "crossings": crossings, "audits": audits,
+            "specs": specs.iter().map(|(id, (_, st))| (id.clone(), json!(st))).collect::<serde_json::Map<_, _>>(),
+        });
+        write(&seen_path, format!("{}\n", serde_json::to_string_pretty(&seen_now).unwrap_or_default()).as_bytes())?;
+        report["since"] = since;
+        report["text"] = json!(text);
+        Ok(report)
+    }
+}
+
+impl Op for ProtocolReportArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        let plain = self.plain;
+        Outcome::result_text(self.run(ctx), plain)
     }
 }
 
@@ -1329,6 +1618,36 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(STAGES[spec_stage(&f, true)], "integrated");
+    }
+
+    #[test]
+    fn the_estimate_waits_for_the_inventory_and_gives_a_range() {
+        let day = 86400;
+        let now = 100 * day;
+        let inv = |a: u64, b: u64| {
+            format!(
+                "{{\"made\": \"{}\", \"totals\": {{\"instructions\": 1000}}}}\n{{\"made\": \"{}\", \"totals\": {{\"instructions\": {b}}}}}\n",
+                crate::publish::iso(a),
+                crate::publish::iso(now - day)
+            )
+        };
+        // Grown 10% within the window: no estimate.
+        let grown = inventory_growth(&inv(now - 40 * day, 1100), now);
+        assert!(estimate(&[], now, 0.1, grown).unwrap_err().contains("grew 10%"));
+        let steady = inventory_growth(&inv(now - 40 * day, 1020), now);
+        assert!(estimate(&[(now - day, 0.1)], now, 0.1, steady).unwrap_err().contains("not enough history"));
+        // A point a day for ten days, faster in the second half.
+        let history: Vec<(u64, f64)> = (0..10)
+            .map(|i| (now - (10 - i) * day, 0.1 + 0.01 * i as f64 + if i > 5 { 0.01 * (i - 5) as f64 } else { 0.0 }))
+            .collect();
+        let e = estimate(&history, now, 0.25, steady).unwrap();
+        let (d, a, b) = (e["date"].as_str().unwrap(), e["earliest"].as_str().unwrap(), e["latest"].as_str().unwrap());
+        assert!(a <= d && d <= b && a < b, "{e}");
+        assert!(
+            estimate(&[(now - 9 * day, 0.3), (now - 5 * day, 0.3)], now, 0.3, steady)
+                .unwrap_err()
+                .contains("no progress")
+        );
     }
 
     #[test]

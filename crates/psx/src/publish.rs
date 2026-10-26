@@ -112,7 +112,11 @@ fn at(ctx: &Ctx, p: &Path) -> PathBuf {
 
 /// The time now, UTC, as 2026-10-26T12:34:56Z.
 pub(crate) fn utc_now() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    iso(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))
+}
+
+/// Seconds since 1970 as 2026-10-26T12:34:56Z.
+pub(crate) fn iso(secs: u64) -> String {
     let (days, rest) = ((secs / 86400) as i64, secs % 86400);
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
     let z = days + 719_468;
@@ -125,6 +129,20 @@ pub(crate) fn utc_now() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rest / 3600, rest / 60 % 60, rest % 60)
+}
+
+/// 2026-10-26T12:34:56Z (or a date alone) as seconds since 1970.
+pub(crate) fn unix(iso: &str) -> Option<u64> {
+    let n = |r: std::ops::Range<usize>| iso.get(r)?.parse::<i64>().ok();
+    let (y, m, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
+    let (hh, mm, ss) = if iso.len() >= 19 { (n(11..13)?, n(14..16)?, n(17..19)?) } else { (0, 0, 0) };
+    let y = y - i64::from(m <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86400 + hh * 3600 + mm * 60 + ss).ok()
 }
 
 /// Every file under a directory (names starting with . left out), by its
@@ -242,7 +260,7 @@ pub(crate) fn approved(v: &Value) -> bool {
 
 /// The invariant: the implementer's specs/ is what the log's approved
 /// bundles add up to, with every one of them still approved as it was.
-fn invariant(to: &Path, reviews: &Path, log: &Log) -> crate::Result<Value> {
+pub(crate) fn invariant(to: &Path, reviews: &Path, log: &Log) -> crate::Result<Value> {
     let have = tree(&to.join("specs"))?;
     let mut unapproved = Vec::new();
     let mut missing = Vec::new();
@@ -673,6 +691,8 @@ mod tests {
 
     #[test]
     fn time_is_iso() {
+        assert_eq!(super::unix(&super::iso(1_792_999_999)), Some(1_792_999_999));
+        assert_eq!(super::unix("1970-01-02"), Some(86400));
         let t = utc_now();
         assert_eq!(t.len(), 20);
         assert!(t.starts_with("20") && t.ends_with('Z'));

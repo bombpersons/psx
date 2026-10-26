@@ -12,6 +12,7 @@ use commands::{Ctx, Op};
 
 mod artifact;
 mod assets_cmd;
+mod audit;
 mod bios;
 mod bound_symbols;
 mod case;
@@ -152,6 +153,8 @@ enum Command {
     Inventory(inventory::InventoryArgs),
     /// What traced runs executed, per function of the inventory: blocks executed and not, and the runs reaching each.
     Coverage(coverage::CoverageArgs),
+    /// The mechanical audit of a clean-room port: approved specs only, every number in the port's code accounted for, no addresses, symbols or copied notes, crossings followed by questions, logs intact, no refused tool calls. With --judgment, records it.
+    Audit(audit::AuditArgs),
     /// The porting protocol's ledger, and what each role does now.
     Protocol {
         #[command(subcommand)]
@@ -238,6 +241,8 @@ enum PortAction {
 enum ProtocolAction {
     /// Compute the ledger (units, stages, completion) and say what a role does now.
     Next(protocol::ProtocolNextArgs),
+    /// Completion by kind and stage, and the estimate with its range (or why there is none); --plain for the person.
+    Report(protocol::ProtocolReportArgs),
 }
 
 #[derive(clap::Subcommand)]
@@ -364,6 +369,8 @@ fn main() -> ExitCode {
         Command::Inventory(a) => a.exec(&ctx),
         Command::Coverage(a) => a.exec(&ctx),
         Command::Protocol { action: ProtocolAction::Next(a) } => a.exec(&ctx),
+        Command::Protocol { action: ProtocolAction::Report(a) } => a.exec(&ctx),
+        Command::Audit(a) => a.exec(&ctx),
         Command::States { action } => match action {
             StatesAction::Make(a) => a.exec(&ctx),
             StatesAction::Save(a) => a.exec(&ctx),

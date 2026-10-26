@@ -51,16 +51,38 @@ keeps each review's sha256, and publish check reports a changed one.
 
 ## Audits
 
-At the end of each loop, read the implementer's new code against the
-investigator's notes and the original for what no check sees: control flow
-that mirrors a routine, an ordering or a quirk that only makes sense to
-someone who read the original, a constant no spec, case or data file gives.
-Report in audits/, for the investigator and the person only: the date, the
-bundle hashes and the implementer's commit range covered, what was checked,
-what was found and which spec it traces to. A finding is
-fixed at the source: the spec changes, and the implementer rewrites the
-code from the corrected spec. publish check tests that the implementer's
-specs/ is exactly the approved bundles.
+When protocol next says one is due (every few implemented specs, and at a
+loop's end), neither other role gets new work until it is recorded.
+
+1. audit: psx's checks. The implementer's specs/ is exactly the approved
+   bundles; every number in its code appears in a spec or a case (or
+   psx's template); no addresses, symbol names or the executable's name,
+   and no eight words in a row from the investigator's notes, in its code,
+   comments or commit messages; every message the person sent with
+   [cross] was followed by a question; the publishing, guidance and
+   clean-mode logs' chains hold and the history the last audit ended at is
+   still there; its session transcripts show no tool call the host refused
+   (Claude Code's are found by its folder; transcripts gives others).
+2. Read each finding at its source. A number traced to the game's data,
+   or harmless (a test's arbitrary point), goes in audits/allowed.json
+   with the reason: {"numbers": {"5000": "a test point outside the
+   room"}, "text": {"PSX.EXE": "the console's default boot name"}}.
+   Allow nothing you cannot explain without the original's code.
+3. Read the implementer's new code against the investigator's notes and
+   the original for what no check sees: control flow that mirrors a
+   routine, an ordering or a quirk that only makes sense to someone who
+   read the original, a constant from the code rather than the data.
+4. Report in audits/, for the investigator and the person only: the date,
+   the bundle hashes audit listed and the commit range, what was checked,
+   what was found and which spec it traces to.
+5. audit with judgment pass or fail records it: audits/psx/ keeps psx's
+   checks with the hashes and commits they covered, and the port's
+   AUDIT.md gets a line of date, commits and both verdicts, no reasons.
+   It needs your report to name every bundle first.
+
+A finding is fixed at the source: the investigator changes the spec (next
+gives it a failed audit as work), and the implementer rewrites the code
+from the corrected spec. publish check tests the specs alone, any time.
 
 ## Sending things back
 

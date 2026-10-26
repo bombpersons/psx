@@ -39,6 +39,12 @@ time the investigator or the person runs it. Cite the spec id in the code
 that implements it; the case tests' `write_run` leaves each case's verdict
 per spec, which is how a spec counts as verified.
 
+Audits check the port every few specs: every number in the code must
+come from a spec, a case or the game's data as the port reads it (a value
+you choose yourself is a choice: list it), and comments and commit
+messages say what the game does in the specs' words. psx adds a line to
+`AUDIT.md` for each audit; commit it as it is.
+
 ## Questions and choices
 
 If a spec is missing, unclear or seems wrong (a case fails and the spec

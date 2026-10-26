@@ -404,7 +404,7 @@ pub fn form_of(p: &Path) -> Form {
 }
 
 /// Files over this are skipped as notes (run outputs, traces).
-const NOTES_LIMIT: u64 = 4 << 20;
+pub(crate) const NOTES_LIMIT: u64 = 4 << 20;
 
 pub fn read_text(p: &Path, limit: u64) -> Option<String> {
     let meta = std::fs::metadata(p).ok()?;
@@ -446,7 +446,7 @@ fn symbol_file_names(p: &Path) -> crate::Result<Vec<String>> {
 
 /// The project's own analysis: Ghidra function names not Ghidra's defaults
 /// (the investigator's renames included), and `psx symbols` output.
-fn project_symbols(root: &Path) -> (Vec<String>, Vec<PathBuf>) {
+pub(crate) fn project_symbols(root: &Path) -> (Vec<String>, Vec<PathBuf>) {
     let (mut names, mut files) = (Vec::new(), Vec::new());
     let ghidra = root.join(".psx/ghidra");
     for key in std::fs::read_dir(&ghidra).into_iter().flatten().flatten() {

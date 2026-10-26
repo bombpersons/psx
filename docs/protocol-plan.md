@@ -184,17 +184,36 @@ Branch: `protocol`. Committed piece by piece.
   same addresses) and a new Crash port (a format spec with records).
   `overview` starts with `protocol next`; each role's instructions too.
 
+- **`psx protocol report`** (`--plain` for the person) and **`psx
+  audit`** (items 11 and 13): the report gives completion by kind and
+  stage and an estimate with its range (least squares over the last four
+  weeks of `ledger_history.jsonl`, the range from its slower and faster
+  halves), or why there is none (the inventory grew more than 5% in four
+  weeks, too little history, no progress); plain adds what moved on or
+  back since the person's last plain report and what waits on them (an
+  open handoff window, a session to start). `audit` checks the specs are
+  the approved bundles; every number in the port's code appears in its
+  specs or cases, psx's template or the reviewer's `audits/allowed.json`
+  (each with a reason); no addresses, symbol or executable names, or
+  eight-word runs from the notes in code, comments or commit messages;
+  `[cross]` messages followed by questions; the logs' chains and the last
+  audited commit intact; no refused tool calls in the implementer's Claude
+  Code transcripts. With the reviewer's judgment (after its report names
+  every bundle) it records the checks in `audits/psx/` and a line of
+  verdicts in the port's `AUDIT.md`; `next` counts bundles audited by
+  those records and gives a failed audit to the investigator. On a copy
+  of tr2-clean three unexplained numbers (test points) and `PSX.EXE` in
+  its disc reader came up, plus the pilot's unchained guidance log; a
+  planted constant, address, copied note line and unanswered crossing
+  were each caught.
+
 ## Phase 3: workspaces and guidance
 
 Done.
 
 ## Phase 4: measuring and driving
 
-12. **`psx protocol report`** (`--plain` for the person) (item 11) and
-    **`psx audit`** (item 13): the mechanical checks of section 2 (above
-    all, every number in the implementer's code appears in a spec, a case
-    or the game's data), the report kept with the hashes and commits it
-    covered, the verdict appended to the port's `AUDIT.md`.
+Done.
 
 ## Phase 5: clean mode
 

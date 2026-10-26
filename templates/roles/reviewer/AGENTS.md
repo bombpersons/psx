@@ -63,15 +63,22 @@ that say what to change. The investigator crosses an approved bundle with
 
 When `protocol next` says an audit is due (at the end of each loop, and
 every few specs within a long one; neither other role gets new work
-until then), read the implementer's new code against the
-investigator's notes for what no check sees: control flow that mirrors a
-routine, an ordering or a quirk that only makes sense to someone who read
-the original. Report in `audits/` to the investigator and the person only, naming
-the bundle hashes the audit covers and the implementer's commit: an
-audit names its bundles, or they stay due.
+until then):
+
+1. run `psx audit` (`audit` over MCP) for psx's checks, and read each
+   finding at its source. A number traced to the game's data, or
+   harmless, goes in `audits/allowed.json` with its reason;
+2. read the implementer's new code against the investigator's notes for
+   what no check sees: control flow that mirrors a routine, an ordering
+   or a quirk that only makes sense to someone who read the original;
+3. report in `audits/`, to the investigator and the person only, naming
+   the bundle hashes `audit` listed and the commits;
+4. record it with `audit` and judgment `pass` or `fail`: psx keeps its
+   checks in `audits/psx/` and adds a line of verdicts, without reasons,
+   to the port's `AUDIT.md`.
+
 If you find something, the spec is fixed and the code is rewritten from
-the corrected spec. `psx publish check` tests that the implementer's
-`specs/` is exactly the approved bundles.
+the corrected spec. Guide topic `review` has the checks in full.
 
 ## Rules
 
