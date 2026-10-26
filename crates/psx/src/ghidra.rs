@@ -294,29 +294,74 @@ fn budget(input: &Input) -> Result<Instant> {
     Ok(Instant::now() + Duration::from_secs(input.timeout))
 }
 
-/// One owner per project, including cached readers. Never remove a lock left by
-/// another process; interrupted locks require explicit inspection by the user.
-struct Lock(PathBuf);
+/// One owner per analysis, including cached readers: an flock on psx.lock,
+/// which the kernel releases however its owner ends, so a killed query never
+/// leaves the analysis locked. The file names the owner and, while one runs, its
+/// Ghidra worker on the published project; a later owner that finds a worker
+/// there knows that query was interrupted (see [`recover`]).
+struct Lock {
+    file: File,
+    /// A query an earlier owner left unfinished on a published project.
+    interrupted: Option<Interrupted>,
+}
+struct Interrupted {
+    worker: u32,
+    /// The PID namespace the worker's number belongs to.
+    ns: String,
+    project: PathBuf,
+}
 impl Lock {
     fn acquire(dir: &Path) -> Result<Self> {
+        use std::io::Read;
         let path = dir.join("psx.lock");
-        // Publish a fully written ownership marker atomically: a concurrent reader
-        // must never mistake an empty, newly created lock for a foreign lock.
-        let temp = dir.join(format!("lock-{}.tmp", crate::stamp()));
-        let mut f = OpenOptions::new().write(true).create_new(true).open(&temp)?;
-        let staged = Self(temp);
-        writeln!(f, "psx-query-lock-v1\npid={}", std::process::id())?;
-        match fs::hard_link(&staged.0, &path) {
-            Ok(()) => Ok(Self(path)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Error::new(
-                "analysis_busy",
-                format!(
-                    "{} is owned by another query; inspect interrupted owners before removing locks",
-                    path.display()
-                ),
-            )),
-            Err(e) => Err(Error::from(e)),
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| Error::io(&path, e))?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(Error::new("analysis_busy", format!("{} is held by another query", path.display())));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(Error::io(&path, e)),
         }
+        let mut before = String::new();
+        file.read_to_string(&mut before)?;
+        let field = |k: &str| before.lines().find_map(|l| l.strip_prefix(k)).map(str::to_string);
+        let interrupted = match (field("worker=").and_then(|w| w.parse().ok()), field("project=")) {
+            (Some(worker), Some(project)) => {
+                Some(Interrupted { worker, ns: field("ns=").unwrap_or_default(), project: project.into() })
+            }
+            _ => None,
+        };
+        let mut lock = Self { file, interrupted };
+        // The record stays until recover() has dealt with it.
+        if lock.interrupted.is_none() {
+            lock.worker(None)?;
+        }
+        Ok(lock)
+    }
+    /// Records the Ghidra worker now running on the published `project`, or none.
+    fn worker(&mut self, worker: Option<(u32, &Path)>) -> Result<()> {
+        use std::io::{Seek, SeekFrom};
+        self.file.set_len(0)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        write!(self.file, "psx-query-lock-v2\npid={}\nns={}\n", std::process::id(), pid_namespace())?;
+        if let Some((pid, project)) = worker {
+            write!(self.file, "worker={pid}\nproject={}\n", project.display())?;
+        }
+        Ok(())
+    }
+    /// Deals with a query an earlier owner left unfinished (see [`recover`]):
+    /// the project it ran on and what was done, or None.
+    fn recover(&mut self) -> Result<Option<(PathBuf, Value)>> {
+        let Some(i) = self.interrupted.take() else { return Ok(None) };
+        let done = recover(&i)?;
+        self.worker(None)?;
+        Ok(Some((i.project, done)))
     }
     fn queued(dir: &Path, deadline: Instant, ctx: &Ctx) -> Result<Self> {
         loop {
@@ -324,44 +369,82 @@ impl Lock {
                 return Err(Error::new("cancelled", "Cancelled while queued for this analysis"));
             }
             if Instant::now() >= deadline {
-                return Err(Error::new(
-                    "timeout",
-                    "Deadline reached while queued for this analysis; an interrupted owner may need inspection",
-                ));
+                return Err(Error::new("timeout", "Deadline reached while queued for this analysis"));
             }
             match Self::acquire(dir) {
-                Ok(lock) => return Ok(lock),
-                Err(e) if e.code == "analysis_busy" => {
-                    // Only psx-owned locks participate in the queue. Foreign locks
-                    // (and Ghidra GUI locks checked by cached()) remain errors.
-                    let mut b = String::new();
-                    match File::open(dir.join("psx.lock")) {
-                        Ok(f) => {
-                            use std::io::Read;
-                            f.take(128).read_to_string(&mut b)?;
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(e) => return Err(Error::from(e)),
-                    }
-                    if !b.starts_with("psx-query-lock-v1\n") {
-                        return Err(e);
-                    }
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                Err(e) => return Err(e),
+                Err(e) if e.code == "analysis_busy" => std::thread::sleep(Duration::from_millis(25)),
+                other => return other,
             }
         }
     }
 }
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+fn pid_namespace() -> String {
+    fs::read_link("/proc/self/ns/pid").map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+}
+/// Processes of the worker started as process group `group` still running on
+/// `project` (Linux; elsewhere none can be seen).
+fn worker_processes(group: u32, project: &Path) -> Vec<u32> {
+    let needle = project.to_string_lossy();
+    let Ok(procs) = fs::read_dir("/proc") else { return Vec::new() };
+    procs
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| {
+            // The process group is the third field after the command name's ")".
+            let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            let pgrp = stat.rsplit_once(')').and_then(|(_, r)| r.split_whitespace().nth(2)?.parse::<u32>().ok());
+            pgrp == Some(group)
+                && fs::read(format!("/proc/{pid}/cmdline"))
+                    .is_ok_and(|c| String::from_utf8_lossy(&c).contains(&*needle))
+        })
+        .collect()
+}
+/// After a query interrupted on the published project (its psx killed, or
+/// its worker stopped at a deadline): stops a worker still running from it,
+/// removes the Ghidra lock it left, and takes the project's metadata as it now
+/// is, since a read-only query changes no analysis. Returns what was done.
+fn recover(Interrupted { worker, ns, project }: &Interrupted) -> Result<Value> {
+    let mut stopped = false;
+    if *ns == pid_namespace() && !ns.is_empty() {
+        for _ in 0..200 {
+            if worker_processes(*worker, project).is_empty() {
+                break;
+            }
+            stopped = true;
+            let _ = Command::new("kill").args(["-KILL", "--", &format!("-{worker}")]).status();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if !worker_processes(*worker, project).is_empty() {
+            return Err(Error::new(
+                "analysis_busy",
+                format!("an interrupted query's Ghidra worker (process group {worker}) would not stop"),
+            ));
+        }
+        // Ghidra's lock is the stopped worker's; one found with no worker
+        // may be a GUI's opened since, and stays.
+        if stopped {
+            remove_ghidra_lock(project);
+        }
+    } else if gui_lock(project) {
+        return Err(Error::new(
+            "analysis_busy",
+            "an interrupted query's Ghidra worker ran where psx cannot see it (another PID namespace) and its project lock remains; retry once it ends",
+        ));
     }
+    Ok(json!({"interrupted_query": true, "worker_stopped": stopped,
+        "note": "an earlier query on this analysis was interrupted; psx stopped what remained of it and kept the analysis"}))
 }
 
 /// Uses a separate Unix process group so timeout/cancellation kills Java and
 /// its native decompiler, not just the shell launcher. No shell interpolation.
-fn run_worker(command: &mut Command, log: &Path, deadline: Instant, ctx: &Ctx) -> Result<()> {
+/// A worker on a published project is recorded in its analysis's lock.
+fn run_worker(
+    command: &mut Command,
+    log: &Path,
+    deadline: Instant,
+    ctx: &Ctx,
+    published: Option<(&mut Lock, &Path)>,
+) -> Result<()> {
     if cfg!(not(unix)) {
         return Err(Error::new("unsupported_platform", "Ghidra worker supervision currently requires Unix."));
     }
@@ -380,6 +463,13 @@ fn run_worker(command: &mut Command, log: &Path, deadline: Instant, ctx: &Ctx) -
     command.stdout(output.try_clone()?).stderr(output).stdin(Stdio::null());
     let mut child =
         command.spawn().map_err(|e| Error::new("worker_unavailable", format!("{e}; log: {}", log.display())))?;
+    let project = match published {
+        Some((lock, project)) => {
+            lock.worker(Some((child.id(), project)))?;
+            Some(project)
+        }
+        None => None,
+    };
     loop {
         let cancelled = ctx.cancel.as_ref().is_some_and(|c| c.is_cancelled());
         if cancelled || Instant::now() >= deadline {
@@ -389,6 +479,7 @@ fn run_worker(command: &mut Command, log: &Path, deadline: Instant, ctx: &Ctx) -
             }
             let _ = child.kill();
             let _ = child.wait();
+            project.map(remove_ghidra_lock);
             return Err(Error::new(
                 if cancelled { "cancelled" } else { "timeout" },
                 format!("Ghidra worker stopped; interrupted analysis is not reused. Log: {}", log.display()),
@@ -582,7 +673,9 @@ struct Analysis {
     manifest: Manifest,
     index: Value,
     fresh_query: Option<Value>,
-    _lock: Lock,
+    lock: Lock,
+    /// What was done about a query an earlier owner left unfinished.
+    recovered: Option<Value>,
 }
 
 fn fingerprint(dir: &Path) -> Result<String> {
@@ -609,6 +702,12 @@ fn fingerprint(dir: &Path) -> Result<String> {
     let mut rows = Vec::new();
     walk(dir, &mut rows)?;
     Ok(sha256_bytes(rows.join("\n").as_bytes()))
+}
+/// Removes the lock a worker psx itself stopped left in its project.
+fn remove_ghidra_lock(project: &Path) {
+    for name in ["project.lock", "project.lock~"] {
+        let _ = fs::remove_file(project.join(name));
+    }
 }
 fn gui_lock(dir: &Path) -> bool {
     ["project.lock", "project.lock~"].iter().any(|name| dir.join(name).exists())
@@ -663,7 +762,7 @@ fn script_dir(dir: &Path) -> Result<PathBuf> {
     }
     Ok(p)
 }
-fn cached(path: PathBuf, lock: Lock) -> Result<Analysis> {
+fn cached(path: PathBuf, mut lock: Lock) -> Result<Analysis> {
     let value = read_json(&path)?;
     if value["format"] != FORMAT {
         return Err(Error::new(
@@ -671,17 +770,28 @@ fn cached(path: PathBuf, lock: Lock) -> Result<Analysis> {
             "Analysis format changed; query source or ram again to create a compatible analysis.",
         ));
     }
-    let manifest: Manifest = serde_json::from_value(value).map_err(|e| Error::new("invalid_artifact", e))?;
+    let mut manifest: Manifest = serde_json::from_value(value).map_err(|e| Error::new("invalid_artifact", e))?;
     if manifest.format != FORMAT || manifest.script_sha256 != sha256_bytes(SCRIPT.as_bytes()) {
         return Err(Error::new(
             "stale_analysis",
             "Analysis format/scripts changed; query the source again to create a compatible analysis.",
         ));
     }
+    let recovered = lock.recover()?;
+    // An interrupted read-only query may have touched the project's metadata.
+    let ours = recovered.as_ref().is_some_and(|(p, _)| *p == manifest.project_dir);
+    let recovered = recovered.map(|(_, done)| done);
     if gui_lock(&manifest.project_dir) {
-        return Err(Error::new("analysis_busy", "Close this analysis in the Ghidra GUI before querying it."));
+        return Err(Error::new(
+            "analysis_busy",
+            "Close this analysis in the Ghidra GUI before querying it. With no Ghidra open on it, project.lock was left by a worker killed together with its psx: remove it.",
+        ));
     }
-    if fingerprint(&manifest.project_dir)? != manifest.project_fingerprint {
+    let now = fingerprint(&manifest.project_dir)?;
+    if now != manifest.project_fingerprint && ours {
+        manifest.project_fingerprint = now;
+        save_json(&path, &manifest)?;
+    } else if now != manifest.project_fingerprint {
         return Err(Error::new(
             "stale_analysis",
             "Ghidra project changed outside psx; cached results are no longer valid. Query source with reanalyze=true for a fresh import; the edited project is preserved.",
@@ -692,7 +802,7 @@ fn cached(path: PathBuf, lock: Lock) -> Result<Analysis> {
         return Err(Error::new("invalid_artifact", "Analysis input copy has changed."));
     }
     let index = read_json(&manifest.index)?;
-    Ok(Analysis { path, manifest, index, fresh_query: None, _lock: lock })
+    Ok(Analysis { path, manifest, index, fresh_query: None, lock, recovered })
 }
 
 /// Names to apply before analysis, from `.symbols.json` reports (checked
@@ -800,11 +910,12 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
     let dir = ctx.root.join(".psx/ghidra").join(&key);
     fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
     let dir = dir.canonicalize().map_err(|e| Error::io(&dir, e))?;
-    let lock = Lock::queued(&dir, deadline, ctx)?;
+    let mut lock = Lock::queued(&dir, deadline, ctx)?;
     let path = dir.join("analysis.json");
     if path.is_file() && !input.reanalyze {
         return cached(path, lock);
     }
+    lock.recover()?;
     let attempt = dir.join(crate::stamp());
     fs::create_dir(&attempt).map_err(|e| Error::io(&attempt, e))?;
     // Ghidra 12 rejects project paths with any hidden path component, so its
@@ -855,7 +966,7 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
         .arg("-postScript")
         .arg("PsxGhidra.java")
         .arg(export);
-    run_worker(&mut cmd, &attempt.join("worker.log"), deadline, ctx)?;
+    run_worker(&mut cmd, &attempt.join("worker.log"), deadline, ctx, None)?;
     let setup_out = read_json(&setup_result).map_err(|e| {
         Error::new("ghidra_failed", format!("{}; inspect {}", e.message, attempt.join("worker.log").display()))
     })?;
@@ -909,13 +1020,17 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
     } else {
         None
     };
-    Ok(Analysis { path, manifest, index, fresh_query, _lock: lock })
+    Ok(Analysis { path, manifest, index, fresh_query, lock, recovered: None })
 }
 
 fn summary(a: &Analysis) -> Value {
-    json!({"analysis":a.path,"source":a.manifest.source,"source_sha256":a.manifest.source_sha256,"ghidra_version":a.manifest.installation.version,
+    let mut out = json!({"analysis":a.path,"source":a.manifest.source,"source_sha256":a.manifest.source_sha256,"ghidra_version":a.manifest.installation.version,
         "project":a.manifest.project_dir.join("project.gpr"),"function_count":a.index["functions"].as_array().map_or(0,Vec::len),"warnings":a.manifest.warnings,
-        "mapping":a.manifest.mapping,"provenance":a.manifest.provenance,"revision":a.manifest.revision,"references_truncated":a.index["references_truncated"],"cop2_instructions":a.index["cop2_instructions"],"rfe_instructions":a.index["rfe_instructions"]})
+        "mapping":a.manifest.mapping,"provenance":a.manifest.provenance,"revision":a.manifest.revision,"references_truncated":a.index["references_truncated"],"cop2_instructions":a.index["cop2_instructions"],"rfe_instructions":a.index["rfe_instructions"]});
+    if let Some(r) = &a.recovered {
+        out["recovered"] = r.clone();
+    }
+    out
 }
 fn references(a: &Analysis) -> &[Value] {
     a.index["references"].as_array().map_or(&[], Vec::as_slice)
@@ -940,7 +1055,13 @@ impl Op for DoctorArgs {
             let dir = ctx.root.join(".psx/ghidra/doctor");
             fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
             let log = dir.join(format!("{}.log", crate::stamp()));
-            run_worker(Command::new("java").arg("-version"), &log, Instant::now() + Duration::from_secs(15), ctx)?;
+            run_worker(
+                Command::new("java").arg("-version"),
+                &log,
+                Instant::now() + Duration::from_secs(15),
+                ctx,
+                None,
+            )?;
             Ok(
                 json!({"status":"available","ghidra":install,"java":fs::read_to_string(&log).map_err(|e| Error::io(&log, e))?,"validated_version":"12.1.4","language":LANGUAGE}),
             )
@@ -1038,7 +1159,8 @@ impl Op for DecompileArgs {
                     .arg("-postScript")
                     .arg("PsxGhidra.java")
                     .arg(&request);
-                run_worker(&mut cmd, &request.with_extension("log"), deadline, ctx)?;
+                let project = a.manifest.project_dir.clone();
+                run_worker(&mut cmd, &request.with_extension("log"), deadline, ctx, Some((&mut a.lock, &project)))?;
                 let result = read_json(&output).map_err(|e| {
                     Error::new(
                         "ghidra_failed",
@@ -1048,6 +1170,7 @@ impl Op for DecompileArgs {
                 // Ghidra may touch project metadata even in read-only mode.
                 a.manifest.project_fingerprint = fingerprint(&a.manifest.project_dir)?;
                 save_json(&a.path, &a.manifest)?;
+                a.lock.worker(None)?;
                 if result["status"] == "complete" {
                     save_json(&result_path, &result)?;
                 }
@@ -1219,7 +1342,7 @@ impl Op for AnnotateArgs {
                 .arg("-postScript")
                 .arg("PsxGhidra.java")
                 .arg(&request);
-            run_worker(&mut cmd, &attempt.join("worker.log"), deadline, ctx)?;
+            run_worker(&mut cmd, &attempt.join("worker.log"), deadline, ctx, None)?;
             a.index = read_json(&index)?;
             if !a.index["functions"].is_array() {
                 return Err(Error::new("ghidra_failed", "annotation index missing"));
@@ -1531,7 +1654,8 @@ mod tests {
         let first = Lock::acquire(&ctx.root).unwrap();
         assert_eq!(Lock::acquire(&ctx.root).err().unwrap().code, "analysis_busy");
         drop(first);
-        let _next = Lock::acquire(&ctx.root).unwrap();
+        // Queued: a fork in another test thread holds the lock's descriptor until it execs.
+        let _next = Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(2), &ctx).unwrap();
         let before = fingerprint(&ctx.root).unwrap();
         fs::write(ctx.root.join("database"), "modified").unwrap();
         assert_ne!(before, fingerprint(&ctx.root).unwrap());
@@ -1563,7 +1687,7 @@ mod tests {
         let held = Lock::acquire(&ctx.root).unwrap();
         let error = Lock::queued(&ctx.root, Instant::now() + Duration::from_millis(75), &ctx).err().unwrap();
         assert_eq!(error.code, "timeout");
-        assert!(held.0.exists(), "a timeout must preserve the owner");
+        assert_eq!(Lock::acquire(&ctx.root).err().unwrap().code, "analysis_busy", "a timeout must preserve the owner");
         let token = tokio_util::sync::CancellationToken::new();
         let cancel = token.clone();
         let thread = std::thread::spawn(move || {
@@ -1576,13 +1700,39 @@ mod tests {
             "cancelled"
         );
         thread.join().unwrap();
-        assert!(held.0.exists());
+        assert_eq!(Lock::acquire(&ctx.root).err().unwrap().code, "analysis_busy");
         drop(held);
-        fs::write(ctx.root.join("psx.lock"), "foreign owner").unwrap();
-        assert_eq!(
-            Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(2), &ctx).err().unwrap().code,
-            "analysis_busy"
-        );
+        // A lock file whose owner is gone (an older psx's, or one killed) holds nothing.
+        fs::write(ctx.root.join("psx.lock"), "psx-query-lock-v1\npid=1\n").unwrap();
+        drop(Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(2), &ctx).unwrap());
+        fs::remove_dir_all(ctx.root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_interrupted_query_is_recovered_by_the_next_owner() {
+        use std::os::unix::process::CommandExt;
+        let ctx = context();
+        let project = ctx.root.join("project-dir");
+        fs::create_dir(&project).unwrap();
+        // A query's psx was killed: its worker still runs and holds Ghidra's lock.
+        let mut worker = Command::new("sh");
+        worker.args(["-c", "sleep 60", "psx-worker-test"]).arg(&project).process_group(0);
+        let mut worker = worker.spawn().unwrap();
+        fs::write(project.join("project.lock"), "worker").unwrap();
+        {
+            let mut killed = Lock::acquire(&ctx.root).unwrap();
+            killed.worker(Some((worker.id(), &project))).unwrap();
+        }
+        let mut next = Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(2), &ctx).unwrap();
+        let (on, done) = next.recover().unwrap().unwrap();
+        assert_eq!(on, project);
+        assert_eq!(done["worker_stopped"], true);
+        assert!(worker.try_wait().unwrap().is_some() || worker.wait().is_ok());
+        assert!(!gui_lock(&project), "the dead worker's Ghidra lock is removed");
+        drop(next);
+        let again = Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(2), &ctx).unwrap();
+        assert!(again.interrupted.is_none(), "recovered once");
         fs::remove_dir_all(ctx.root).unwrap();
     }
 
@@ -1608,9 +1758,14 @@ mod tests {
             });
             let mut cmd = Command::new("sh");
             cmd.args(["-c", "sleep 60 & echo $! > \"$1\"; wait", "psx-worker-test"]).arg(&pid_file);
-            let failure =
-                run_worker(&mut cmd, &ctx.root.join("worker.log"), Instant::now() + Duration::from_millis(500), &ctx)
-                    .unwrap_err();
+            let failure = run_worker(
+                &mut cmd,
+                &ctx.root.join("worker.log"),
+                Instant::now() + Duration::from_millis(500),
+                &ctx,
+                None,
+            )
+            .unwrap_err();
             cancel.join().unwrap();
             assert_eq!(failure.code, if cancelled { "cancelled" } else { "timeout" });
             let pid = fs::read_to_string(pid_file).unwrap();

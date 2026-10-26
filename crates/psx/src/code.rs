@@ -79,6 +79,13 @@ pub struct XrefsArgs {
     #[arg(long)]
     #[serde(default)]
     pub no_data: bool,
+    /// Keep only this kind (load, store, call, jump, branch, addr, data); repeatable.
+    #[arg(long = "kind")]
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// Hex mask: only loads testing these bits of the target word.
+    #[arg(long)]
+    pub bits: Option<String>,
     /// `.sym` or `.symbols.json` files to name the referencing functions; repeatable.
     #[arg(long = "symbols")]
     #[serde(default)]
@@ -102,7 +109,7 @@ fn d_xref_limit() -> usize {
 
 impl Op for XrefsArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        let XrefsArgs { target, source, ram, gp, no_data, symbols, limit, offset, text } = self;
+        let XrefsArgs { target, source, ram, gp, no_data, kinds, bits, symbols, limit, offset, text } = self;
         Outcome::result_text(
             (|| {
                 crate::page::validate(limit).map_err(Error::invalid)?;
@@ -123,8 +130,17 @@ impl Op for XrefsArgs {
                 if hi <= lo {
                     return Err(Error::invalid(format!("empty range {target:?}")));
                 }
+                const KINDS: [&str; 7] = ["load", "store", "call", "jump", "branch", "addr", "data"];
+                if let Some(k) = kinds.iter().find(|k| !KINDS.contains(&k.as_str())) {
+                    return Err(Error::invalid(format!("kind {k:?} is not one of {}", KINDS.join(", "))));
+                }
+                let bits = crate::commands::opt_hex(&bits, "bits")?;
+                if bits == Some(0) {
+                    return Err(Error::invalid("bits needs at least one bit"));
+                }
+                let filter = Filter { kinds, bits };
                 let scopes = crate::load_symbols(&symbols)?;
-                let (mut v, t) = xref_report(&code, lo, hi, !no_data, &scopes, offset, limit, text);
+                let (mut v, t) = xref_report(&code, lo, hi, !no_data, &filter, &scopes, offset, limit, text);
                 if text {
                     v["text"] = json!(t);
                     v.as_object_mut().unwrap().remove("refs");
@@ -590,6 +606,82 @@ pub fn xrefs(code: &Code, lo: u32, hi: u32, data: bool) -> Vec<(u32, Ref)> {
     out
 }
 
+/// Which references xrefs keeps: by kind, and loads by the bits tested.
+#[derive(Default)]
+pub struct Filter {
+    pub kinds: Vec<String>,
+    /// A mask of the word at the range's start.
+    pub bits: Option<u32>,
+}
+
+/// The bits of `mask` (of the word at `lo`) that the value loaded at `pc`
+/// is tested with: by andi, or and with a constant, on the loaded register or
+/// a copy of it, in the few instructions after the load and before the
+/// register is written again.
+fn tested_bits(code: &Code, pc: u32, target: u32, lo: u32, mask: u32) -> u32 {
+    let Some(i) = code.word(pc) else { return 0 };
+    let k = (target & 0x1FFF_FFFF).wrapping_sub(lo & 0x1FFF_FFFF);
+    if !(0x20..=0x26).contains(&(i >> 26)) || k >= 4 {
+        return 0;
+    }
+    let mask = mask >> (8 * k);
+    let mut held = 1u32 << ((i >> 16) & 31);
+    let mut konst: [Option<u32>; 32] = [None; 32];
+    let mut tested = 0;
+    for n in 1..=8 {
+        let Some(w) = code.word(pc.wrapping_add(4 * n)) else { break };
+        let (op, rs, rt, rd) = (w >> 26, (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31);
+        let now = held;
+        let has = move |r: u32| r != 0 && now & (1 << r) != 0;
+        let (imm, funct) = (w & 0xFFFF, w & 0x3F);
+        if op == 0x0C && has(rs) {
+            tested |= imm & mask;
+        }
+        if op == 0 && funct == 0x24 {
+            for (a, b) in [(rs, rt), (rt, rs)] {
+                if has(a) {
+                    tested |= konst[b as usize].unwrap_or(0) & mask;
+                }
+            }
+        }
+        // A copy (addu/or with zero) holds the value too.
+        let copy = op == 0 && matches!(funct, 0x21 | 0x25) && ((has(rs) && rt == 0) || (has(rt) && rs == 0));
+        // The register this instruction writes, if any.
+        let dest = match op {
+            0 if !matches!(funct, 0x08 | 0x0C | 0x0D | 0x11 | 0x13 | 0x18..=0x1B) => Some(rd),
+            0x03 => Some(31),
+            0x08..=0x0F | 0x20..=0x26 => Some(rt),
+            _ => None,
+        };
+        if let Some(d) = dest.filter(|&d| d != 0) {
+            konst[d as usize] = match op {
+                0x0F => Some(imm << 16),
+                0x0D => konst[rs as usize].map(|c| c | imm),
+                0x09 if rs == 0 => Some(imm as i16 as i32 as u32),
+                _ => None,
+            };
+            if copy {
+                held |= 1 << d;
+            } else {
+                held &= !(1 << d);
+            }
+        }
+        if held == 0 {
+            break;
+        }
+        // jr / jalr ends the straight run after its delay slot.
+        if op == 0 && matches!(funct, 0x08 | 0x09) {
+            if let Some(slot) = code.word(pc.wrapping_add(4 * (n + 1))) {
+                if slot >> 26 == 0x0C && has((slot >> 21) & 31) {
+                    tested |= (slot & 0xFFFF) & mask;
+                }
+            }
+            break;
+        }
+    }
+    tested << (8 * k)
+}
+
 /// Group xrefs by the function containing each referencing PC.
 #[allow(clippy::too_many_arguments)]
 pub fn xref_report(
@@ -597,18 +689,31 @@ pub fn xref_report(
     lo: u32,
     hi: u32,
     data: bool,
+    filter: &Filter,
     scopes: &[crate::ScopedSymbols],
     offset: usize,
     limit: usize,
     text: bool,
 ) -> (Value, String) {
-    let refs = xrefs(code, lo, hi, data);
+    let all = xrefs(code, lo, hi, data);
+    let refs: Vec<(u32, Ref, u32)> = all
+        .iter()
+        .filter(|(_, r)| filter.kinds.is_empty() || filter.kinds.iter().any(|k| k == r.kind))
+        .filter_map(|(pc, r)| match filter.bits {
+            None => Some((*pc, r.clone(), 0)),
+            Some(m) if r.kind == "load" => {
+                let t = tested_bits(code, *pc, r.target, lo, m);
+                (t != 0).then(|| (*pc, r.clone(), t))
+            }
+            Some(_) => None,
+        })
+        .collect();
     let jal = code.jal_targets();
     let mut by_kind: BTreeMap<&str, u64> = BTreeMap::new();
     let mut funcs: BTreeMap<u32, u64> = BTreeMap::new();
     let mut lines = Vec::new();
     let mut out = String::new();
-    for (index, (pc, r)) in refs.iter().enumerate() {
+    for (index, (pc, r, tested)) in refs.iter().enumerate() {
         *by_kind.entry(r.kind).or_default() += 1;
         let f = if r.kind == "data" { None } else { function_bounds(code, *pc, &jal, 16384).map(|b| b.0) };
         if let Some(f) = f {
@@ -622,12 +727,18 @@ pub fn xref_report(
                 "target_hex": format!("0x{:08X}", r.target), "asm": if r.kind == "data" { format!(".word   0x{word:08X}") } else { disasm(word, *pc) },
                 "function_hex": f.map(|f| format!("0x{f:08X}")), "function": fname,
             }));
+            if filter.bits.is_some() {
+                lines.last_mut().unwrap()["tests_hex"] = json!(format!("0x{tested:X}"));
+            }
             if text {
-                let fdesc = match (f, &fname) {
+                let mut fdesc = match (f, &fname) {
                     (Some(_), Some(n)) => format!("  in {n}"),
                     (Some(f), None) => format!("  in fn_{f:08X}"),
                     _ => String::new(),
                 };
+                if filter.bits.is_some() {
+                    fdesc += &format!("  tests {tested:X}");
+                }
                 out += &format!(
                     "{pc:08X}  {:<6} {:<10} {:<36} -> {:08X}{fdesc}\n",
                     r.kind,
@@ -643,6 +754,7 @@ pub fn xref_report(
         "scanned": [format!("0x{:08X}", code.base), format!("0x{:08X}", code.end())],
         "gp": code.gp.map(|g| format!("0x{g:08X}")),
         "total": refs.len(), "by_kind": by_kind, "shown": lines.len(),
+        "before_filter": (filter.kinds.len() + filter.bits.is_some() as usize > 0).then_some(all.len()),
         "page":crate::page::metadata(refs.len(),offset,lines.len(),limit),
         "coverage":{"complete":true,"scope":"static direct control-flow, resolved address pairs and optional aligned data pointers","indirect_references_complete":false},
         "functions": funcs.iter().map(|(f, n)| json!({"start_hex": format!("0x{f:08X}"), "refs": n, "name": code.name(scopes, *f, 0)})).collect::<Vec<_>>(),
@@ -802,6 +914,40 @@ mod tests {
             "enclosing function"
         );
         assert_eq!(function_bounds(&c, 0x8001_0034, &jal, 1000), Some((0x8001_0030, 0x8001_0040)));
+    }
+
+    #[test]
+    fn xrefs_keep_the_loads_that_test_given_bits() {
+        let c = code(&[
+            0x3C01_8007, // lui at, 0x8007
+            0x8C22_0010, // lw v0, 0x10(at)
+            0x0000_0000,
+            0x3043_0400, // andi v1, v0, 0x400
+            0x3C01_8007,
+            0x9424_0012, // lhu a0, 0x12(at): the word's upper half
+            0x2408_0001, // addiu t0, zero, 1
+            0x0088_2824, // and a1, a0, t0: bit 16 of the word
+            0x3C01_8007,
+            0x8C26_0010, // lw a2, 0x10(at)
+            0x30C7_0002, // andi a3, a2, 2: not asked for
+            JR_RA,
+            0x0000_0000,
+        ]);
+        let pcs = |f: &Filter| {
+            let (v, _) = xref_report(&c, 0x8007_0010, 0x8007_0014, true, f, &[], 0, 100, false);
+            v["refs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| (r["pc"].as_u64().unwrap(), r["tests_hex"].clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pcs(&Filter { kinds: vec!["load".into()], bits: None }).len(), 3);
+        assert_eq!(
+            pcs(&Filter { kinds: vec![], bits: Some(0x0001_0400) }),
+            vec![(0x8001_0004, json!("0x400")), (0x8001_0014, json!("0x10000"))]
+        );
+        assert!(pcs(&Filter { kinds: vec!["store".into()], bits: None }).is_empty());
     }
 
     #[test]

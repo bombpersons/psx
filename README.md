@@ -129,7 +129,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/bom
 
 The installer checks the download's SHA-256, puts `psx` in `~/.local/bin` (Windows:
 `%LOCALAPPDATA%\psx\bin`, added to your PATH) and fetches the PsyQ signatures `psx symbols`
-uses. Run it again to update. Building from source needs Rust 1.88+:
+uses. Run it again to update. Building from source needs Rust 1.89+:
 `cargo install --locked --git https://github.com/bombpersons/psx psx psx-clean` (psx-clean is
 clean mode, which a clean-room port's implementer uses). Porting with the Bevy
 template needs Rust 1.97.1+ either way.
