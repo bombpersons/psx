@@ -42,7 +42,7 @@ The full story is in the [write-up](research/case-study-megaman8.md).
 - **Cheap experiments.** Save a checkpoint once, then branch short runs from it with different
   buttons, all inline in one call.
 - **Small replies.** Evidence lands in files; calls return paths and counts (`summary`), and
-  `artifact_read` pages through the rest. All the tool definitions fit in about 14K tokens, and the
+  `artifact_read` pages through the rest. All the tool definitions fit in about 18K tokens, and the
   `guide` tool serves recipes when they're needed.
 - **One server, many games.** Each Claude Code session works in the game folder it was opened in.
 - **Same thing on the command line.** Every tool is a `psx` command printing the same JSON.
@@ -64,6 +64,35 @@ The full story is in the [write-up](research/case-study-megaman8.md).
   against the original, controller rebinding and its own developer MCP for stepping, querying
   and screenshotting the game headless. Ports start split into a reusable engine (with a tiny
   sandbox game that proves it) and the game on top, and take template updates in place.
+- **A clean-room porting protocol.** Separate investigator, reviewer and implementer
+  repositories, a barrier that stops the original's code crossing between them, and a ledger
+  that says how complete the port is, measured against the disc. See below.
+
+## Porting under a clean room
+
+For a whole port, psx can keep the people (or agents) who read the original's code apart from
+the ones who write the new game:
+
+- **The investigator** reads the original with psx and writes specs in game terms, plus
+  cases: recordings of the original from named start states that rebuild from power-on.
+- **The reviewer** approves what crosses and audits the port.
+- **The implementer** builds the game in the Bevy template from the approved specs and cases,
+  and never touches psx or the original's code. Its one window on the original is clean mode
+  (`psx-clean`): it can record new cases from published start states, compare its runs with
+  the original's, and run its tests on cases the investigator kept back, seeing only pass or
+  fail.
+
+`psx port init` sets up the three repositories with their instructions and access rules;
+`psx port adopt` brings repositories you already have under the protocol, including a port
+written before it, which the implementer is then denied. Everything that crosses is
+checked for addresses, code and copied notes, and every message to the implementer is
+logged. `psx protocol next` tells each role what to do now, and `psx protocol report` how far
+along the port is, with an estimated date once the inventory stops growing.
+
+This lowers the legal risk of a port; it doesn't remove it, and it isn't legal advice. An AI
+implementer may also have seen other reimplementations of the game in training, which no
+access rule prevents. The procedure is in [docs/protocol-plan.md](docs/protocol-plan.md)
+and the `guide` topics `protocol` and `cleanroom`.
 
 ## See it in action
 
@@ -149,6 +178,7 @@ Custom formats need a parser. Every finding is evidence to check, not a guarante
 ## More
 
 - [README_FOR_AGENTS.md](README_FOR_AGENTS.md): every command and flag.
+- [docs/protocol-plan.md](docs/protocol-plan.md): the clean-room porting protocol and what each part does.
 - [docs/agent-workflow.md](docs/agent-workflow.md): evidence, input and project isolation.
 - [templates/psx-bevy](templates/psx-bevy/README.md): the game template (engine + game workspace).
 - [docs/ghidra-integration.md](docs/ghidra-integration.md): Ghidra analysis and symbol export.
