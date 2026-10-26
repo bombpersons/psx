@@ -352,6 +352,30 @@ pub struct Sample {
     pub mem: Mem,
     /// Named by the field map: reports give the name only.
     pub mapped: bool,
+    /// Found through a pointer (a field map subject with `pointer`): the
+    /// value is at the address held at `mem`, plus `offset`, read anew each
+    /// time, and absent while it is null or not memory.
+    pub via: Option<u32>,
+}
+
+impl Sample {
+    /// The raw value now, or none where a pointer leads outside memory.
+    pub fn read(&self, ram: &[u8], scratch: &[u8]) -> Option<u32> {
+        let width = self.fmt.width();
+        match self.via {
+            None => Some(read_mem(ram, scratch, self.mem, width)),
+            Some(offset) => {
+                let base = read_mem(ram, scratch, self.mem, 4);
+                let at = Some(base).filter(|&b| b != 0)?.wrapping_add(offset);
+                locate(at, width).map(|m| read_mem(ram, scratch, m, width))
+            }
+        }
+    }
+
+    /// As JSON: null where the value is absent.
+    pub fn json(&self, ram: &[u8], scratch: &[u8]) -> Value {
+        self.read(ram, scratch).map_or(Value::Null, |v| self.fmt.json(v))
+    }
 }
 
 pub fn parse_sample(s: &str) -> Result<Sample, String> {
@@ -382,7 +406,7 @@ pub fn sample_at(addr: u32, f: &str, name: Option<&str>, label: &str) -> Result<
     if name.contains([',', '"', '\n']) {
         return Err(format!("{label}: names cannot contain commas or quotes"));
     }
-    Ok(Sample { addr, fmt, name, mem, mapped: false })
+    Ok(Sample { addr, fmt, name, mem, mapped: false, via: None })
 }
 
 /// A `sample` column as given: `ADDR:FMT[:NAME]` text, or over MCP/JSON a
@@ -472,7 +496,7 @@ pub struct Sampler {
     last: Option<u64>,
     /// The last row's tick and raw values, and per column the rows that
     /// changed without a tick (run frames, the first few).
-    prev: Option<(u64, Vec<u32>)>,
+    prev: Option<(u64, Vec<Option<u32>>)>,
     pub untimed: Vec<(u64, Vec<u64>)>,
 }
 
@@ -499,10 +523,12 @@ impl Sampler {
         if self.tick {
             self.out += &format!(",{tick}");
         }
-        let raw: Vec<u32> = self.columns.iter().map(|c| read_mem(ram, scratch, c.mem, c.fmt.width())).collect();
+        let raw: Vec<Option<u32>> = self.columns.iter().map(|c| c.read(ram, scratch)).collect();
         for (c, &v) in self.columns.iter().zip(&raw) {
             self.out.push(',');
-            self.out += &c.fmt.render(v);
+            if let Some(v) = v {
+                self.out += &c.fmt.render(v);
+            }
         }
         self.out.push('\n');
         if let Some((t, before)) = self.prev.as_ref().filter(|_| self.tick) {

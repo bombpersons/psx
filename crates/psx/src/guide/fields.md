@@ -25,6 +25,11 @@ find things.
   stride = "4C"
   count = 256            # optional bound on the index
 
+  [subjects.lara]        # where a pointer leads, read anew at each sample
+  struct = "object"
+  pointer = "8008C6B8"   # holds the subject's address
+  offset = "0"           # optional, hex, added to it; stride and count work too
+
 FMT is a sample format (u8 i16 x32 fx16.16 ...) or a width 1/2/4. Fields keep
 the map's order. sample then takes:
 - camera_x, a global, as the column camera_x;
@@ -97,3 +102,10 @@ until.met false means it never came.
   readers, which are where the game's behaviour starts.
 - Arrays of objects: one element found, the others are a stride apart;
   xrefs on the first element's address often finds the table's base.
+- An object at another address in each level (or each time it is made):
+  find it in two places, then search for a word holding its address in
+  both (ram_search exact in each snapshot; the address may be held without
+  its 80 prefix), and name it with pointer rather than at, so one map
+  serves the whole game. A pointer read as null or outside memory leaves
+  the cell empty and an until condition on it false; a case compares an
+  empty cell as absent, so a port's run matches it with an empty cell.
