@@ -83,7 +83,7 @@ VALUE is written in its format (3, -2, 0x80, 1.5 for fx); several must all
 hold. Termination is until_met; the report's until gives run_frame and the
 values. The run's files and state.bin (save_state) are from that vblank, so
 a route is a chain: run until the menu is up, then from_state with the
-press at frame 0, held long enough for the game to take it. A condition
+press at frame 0, held as Driving menus (below) says. A condition
 already true at the start stops at run_frame 0; frames caps the wait, and
 until.met false means it never came.
 
@@ -109,3 +109,22 @@ until.met false means it never came.
   serves the whole game. A pointer read as null or outside memory leaves
   the cell empty and an until condition on it false; a case compares an
   empty cell as absent, so a port's run matches it with an empty cell.
+
+## Driving menus
+
+A game reads the pad once a tick, not once a field, and a menu usually acts
+on a press's edge: held this tick, not held the tick before. A press shorter
+than a tick can fall between two reads and never count, and two presses with
+no release between them read as one. So hold each press for two ticks and
+release for two before the next: with the tick in the map, a run's
+samples.tick gives the fields a tick takes (a menu may tick at another rate
+than play); without it, 4 fields held and 4 released suit a game ticking
+every field or every other. A game that ignores a press held that long is
+not taking input yet (a fade, a load): wait on a state, not more fields.
+
+The menu's cursor is a variable. Find it as any other: snapshots before and
+after one press of DOWN, ram_search for a value that rose by one (narrow with
+a second press, and UP to see it fall), then name it in the field map, with
+the menu's open flag or screen if there is one. until cursor=3 then waits on
+the item rather than counting presses, and a route reads which item it is on
+without a screenshot after every step.

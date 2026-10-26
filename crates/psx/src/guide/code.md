@@ -27,6 +27,22 @@ killed, or a deadline) is dealt with by the next query on that analysis,
 which stops what is left of it; its result says so under recovered. Leave
 lock files alone: removing one by hand loses that record.
 
+Functions reached only through a table (per-state handlers, object update
+routines, a jump table's cases) are often missing from an analysis of the
+EXE: nothing calls them directly. Seed a RAM analysis with the table:
+1. Find a table. A trace's "-> target (from pc)" lines show the jump into
+   one handler; xrefs on that handler's address lists the aligned data word
+   holding it, which is inside the table. Or decompile the dispatcher: a
+   call through table[state] names the base.
+2. Read it from a run's RAM with ram_view fmt=x32 from the base: entries are
+   code addresses (80xxxxxx inside the code range), and the first word that
+   is not one ends the table. The state or kind numbers index it.
+3. ghidra_analyze with ram (that run's directory), range (the code range
+   holding the entries: the EXE's text, or the overlay's) and entry once per
+   table entry; gp comes from the run's registers. The new analysis has the
+   handlers as functions, named by entry address, and what they call;
+   decompile them there.
+
 symbols names matching PsyQ library code, not every game function. Low coverage
 alone does not prove a bad match; ambiguous signatures are skipped. Ghidra names
 and pseudocode are hypotheses to check against instructions and runtime behavior,
