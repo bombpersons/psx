@@ -747,8 +747,9 @@ mod tests {
         // states tools; 63K from 2026-10-26 for barrier_check; 65K from 2026-10-26 for the
         // three publish tools; 67.5K from 2026-10-26 for port_init and template_create's roles;
         // 68.5K from 2026-10-26 for inventory; 69K from 2026-10-26 for coverage; 69.6K from
-        // 2026-10-26 for protocol_next; 70.5K from 2026-10-26 for protocol_report and audit.
-        assert!(size <= 70_500, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // 2026-10-26 for protocol_next; 70.5K from 2026-10-26 for protocol_report and audit;
+        // 70.7K from 2026-10-26 for case_record's poke.
+        assert!(size <= 70_700, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,
