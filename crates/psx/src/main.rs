@@ -23,6 +23,7 @@ mod fieldmap;
 mod ghidra;
 mod guide;
 mod handoff;
+mod leak;
 mod mcp;
 mod media_cmd;
 mod native;
@@ -127,6 +128,11 @@ enum Command {
         #[command(subcommand)]
         action: CaseAction,
     },
+    /// The barrier between investigator and implementer: check text for leaks.
+    Barrier {
+        #[command(subcommand)]
+        action: BarrierAction,
+    },
     /// Named start states, each with its chain of runs from power-on.
     States {
         #[command(subcommand)]
@@ -185,6 +191,13 @@ enum StatesAction {
     List(states::StatesListArgs),
     /// Replay chains from power-on on this psx and compare the states they make.
     Rebuild(states::StatesRebuildArgs),
+}
+
+#[derive(clap::Subcommand)]
+enum BarrierAction {
+    /// Check files or text for what would carry the original's code across: addresses,
+    /// hex, code-shaped text, tool and symbol names, text copied from the notes.
+    Check(leak::BarrierCheckArgs),
 }
 
 #[derive(clap::Subcommand)]
@@ -277,6 +290,9 @@ fn main() -> ExitCode {
         Command::Case { action } => match action {
             CaseAction::Record(a) => a.exec(&ctx),
             CaseAction::Check(a) => a.exec(&ctx),
+        },
+        Command::Barrier { action } => match action {
+            BarrierAction::Check(a) => a.exec(&ctx),
         },
         Command::States { action } => match action {
             StatesAction::Make(a) => a.exec(&ctx),

@@ -47,13 +47,18 @@ Branch: `protocol`. Committed piece by piece.
   compared columns and the rows it claims, rows ending at an `until` on
   the case's columns). `case check` adds them to older cases and keeps
   keys added by hand. (Section 6.)
+- **The leak checker** (`psx barrier check`, `leak.rs`, shared by publish
+  and the message check to come): addresses, hex constants, code-shaped
+  text (C-like statements, MIPS, decompiler output, code blocks), tool
+  names and disc serials, the original's symbol names (non-default Ghidra
+  names and `psx symbols` output in `.psx`, or given files), names given
+  to refuse, pointer-valued CSV columns, and runs of eight words shared
+  with the notes but not published. Guide topic `barrier`. tr2-investigate's
+  and tr2-clean's specs are clean; its notes and planted leaks in TR2 and
+  Crash text are caught.
 
 ## Phase 2: the barrier
 
-4. **One leak checker** shared by everything at the barrier: addresses
-   and hex constants, the original's symbol names (from psx's own Ghidra
-   and PsyQ analysis), code-shaped text, and runs of eight words shared
-   with the investigator's notes.
 5. **`psx publish --stage` and `psx publish`** (item 3). Specs, cases,
    the sample glossary (names, units, meanings) and start-state
    descriptions are bundled with a hash; a bundle crosses only when an

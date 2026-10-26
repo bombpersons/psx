@@ -15,6 +15,7 @@ pub enum Topic {
     Fields,
     Cases,
     States,
+    Barrier,
     Code,
     Assets,
     Bevy,
@@ -23,7 +24,7 @@ pub enum Topic {
 }
 
 impl Topic {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::Overview,
         Self::Setup,
         Self::Input,
@@ -31,6 +32,7 @@ impl Topic {
         Self::Fields,
         Self::Cases,
         Self::States,
+        Self::Barrier,
         Self::Code,
         Self::Assets,
         Self::Bevy,
@@ -47,6 +49,7 @@ impl Topic {
             Self::Fields => "Name the game's memory and find its tick",
             Self::Cases => "Record cases and check them again",
             Self::States => "Keep start states that rebuild from power-on",
+            Self::Barrier => "Check what crosses to the implementer",
             Self::Code => "Follow runtime evidence into code",
             Self::Assets => "Find, decode and validate assets",
             Self::Bevy => "Rebuild the game in Bevy",
@@ -64,6 +67,7 @@ impl Topic {
             Self::Fields => include_str!("guide/fields.md"),
             Self::Cases => include_str!("guide/cases.md"),
             Self::States => include_str!("guide/states.md"),
+            Self::Barrier => include_str!("guide/barrier.md"),
             Self::Code => include_str!("guide/code.md"),
             Self::Assets => include_str!("guide/assets.md"),
             Self::Bevy => include_str!("guide/bevy.md"),

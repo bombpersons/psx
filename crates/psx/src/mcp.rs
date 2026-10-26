@@ -197,6 +197,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::case::CaseCheckArgs>("case_check", "Record cases again from their recipes and compare them with the published CSVs, cell by cell. See guide topic cases.").heavy(),
         def::<crate::states::StatesMakeArgs>("states_make", "Run from a named start state (or power-on) and name the state it ends in: .psx/states/NAME.bin, and its chain of runs from power-on in notes/states/NAME.json. See guide topic states.").heavy(),
         def::<crate::states::StatesSaveArgs>("states_save", "Name a state an earlier run or handoff made; its chain from power-on comes from the runs' reports. See guide topic states."),
+        def::<crate::leak::BarrierCheckArgs>("barrier_check", "Check files or text for leaks of the original's code before they cross to the implementer. See guide topic barrier.").read_only(),
         def::<crate::states::StatesListArgs>("states_list", "The named start states: description, steps from power-on, and whether each is present.").read_only(),
         def::<crate::states::StatesRebuildArgs>("states_rebuild", "Replay start states' chains from power-on on this psx and compare: which step first differs, and named values old and new. replace puts rebuilt states in place. See guide topic states.").heavy(),
         def::<crate::handoff::HandoffStatusArgs>("handoff_status", "A handoff's progress or result: waiting, done, declined (read the note), closed or abandoned.").read_only().screen(),
@@ -734,8 +735,8 @@ mod tests {
             .sum();
         // 50K on 2026-10-17; 52K from 2026-10-20 for handoff and handoff_status; 56K from
         // 2026-10-25 for case_record and case_check; 61.5K from 2026-10-25 for the four
-        // states tools.
-        assert!(size <= 61_500, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // states tools; 63K from 2026-10-26 for barrier_check.
+        assert!(size <= 63_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,
