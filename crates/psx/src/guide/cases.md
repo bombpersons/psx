@@ -38,6 +38,11 @@ ticks ran in and read the pad of (r-1 for row r; null with no tick). Tick
 0, 2, 2, 2, 3 gives ticks_run 0, 2, 0, 0, 1 and reads_field null, 0, null,
 null, 3.
 
+A psx-bevy workspace replays cases with engine::testing::Case
+(game/tests/cases.rs): one runner per subject, one line per case. It runs
+each row's ticks with the pad of the field before, checks them against
+timing first, and compares only what the specs it implements claim.
+
 Coverage says which spec claims which cells, so a runner compares a case
 only over what each spec it implements claims, and knows which spec the
 rest waits for. coverage=SPEC:COLUMNS[:ROWS], repeatable, one per spec:

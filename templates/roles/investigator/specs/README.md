@@ -51,7 +51,7 @@ cases: [run_stop, run_stop_heldout]
 | `spec` | the spec it supports |
 | `role` | `heldout` (recorded after the behaviour was understood, to test it), `calibration` (used to work it out) or `diagnostic` (not a pass/fail test) |
 | `subject` | what is observed, in glossary terms |
-| `start` | how the port's state is set up: `from: first_row` (from the first observation), or a published start state |
+| `start` | how the port's state is set up: `{"from": "first_row"}` (from the first observation), or `{"state": NAME}`, the published start state `states/NAME.json` |
 | `input` | pad input in fields from the start: `{frame, buttons, until}`, `until` exclusive |
 | `observations` | the CSV |
 | `compare` | the columns a test compares, each with its tolerance in the column's units |

@@ -92,14 +92,22 @@ Branch: `protocol`. Committed piece by piece.
   --role` writes one role alone. Tried on TR2 (four executables left out,
   78 data files) and Crash; publishing with no paths given works from the
   new repositories.
+- **The case runner** (section 5, "Both: the case runner"):
+  `psx_bevy::testing::Case` loads a case, runs as many ticks before each
+  row as its `tick` column says with the pad of the field before, checks
+  the ticks it ran against the case's `timing` before judging behaviour,
+  and compares only the claims (`coverage`) of the specs the port says it
+  implements, listing the rest as waiting; a diagnostic case never fails,
+  an exploratory case without a spec is always compared, and
+  `write_run` writes the port's own run in the case's form. The
+  template's `game/tests/cases.rs` shows it on a case recorded from the
+  demo (a caught-up tick, a repeated row, coverage split between two
+  specs). tr2-clean's case tests rewritten on it pass the same 62 cases,
+  with tr2-investigate's timing vectors; a planted vector and a planted
+  cell are caught.
 
 ## Phase 3: workspaces and guidance
 
-7. **The case runner** (section 5, "Both: the case runner"): `psx-bevy`'s
-   `testing` gains a case-file runner, one line per case, that checks
-   itself against the timing vectors, compares over each spec's coverage,
-   and takes clean mode's exploratory cases unchanged. Model:
-   `tr2-clean/game/tests/cases.rs`.
 8. **Guide topics** (section 4): new `protocol`, `cleanroom` and
    `review`; `overview`, `port` and `troubleshooting` changed. Includes
    the defaults for making cases that separate, finding things in RAM,

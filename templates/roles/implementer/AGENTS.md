@@ -90,12 +90,13 @@ different design.
 - **Refactor freely.** The cases pin the behaviour: restructure whenever
   the code drifts from these rules, and keep every case passing.
 
-Each case becomes a test that replays its input and compares the columns
-in its `compare` map at every row, within its tolerance, over the rows
-and columns its `coverage` gives each spec. Check the runner against the
-case's `timing` first. A case that needs a spec not written yet is listed
-and left, not guessed. Routine check: `cargo test --workspace
---all-features`.
+Each case becomes a test, one line in `game/tests/cases.rs`:
+`engine::testing::Case` replays its input and compares the columns in its
+`compare` map at every row, within its tolerance, over the rows and
+columns its `coverage` gives each spec you implement, after checking its
+own ticks against the case's `timing` (`game/AGENTS.md`, "Testing
+gameplay"). A case that needs a spec not written yet is listed and left,
+not guessed. Routine check: `cargo test --workspace --all-features`.
 
 ## The log
 

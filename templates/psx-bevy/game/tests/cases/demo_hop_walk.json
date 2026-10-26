@@ -1,0 +1,45 @@
+{
+  "id": "demo_hop_walk",
+  "spec": "DEMO-0001",
+  "role": "heldout",
+  "subject": "player",
+  "start": {
+    "from": "first_row"
+  },
+  "input": [
+    {
+      "frame": 0,
+      "buttons": ["CROSS"],
+      "until": 1
+    },
+    {
+      "frame": 4,
+      "buttons": ["RIGHT"],
+      "until": 20
+    }
+  ],
+  "observations": "demo_hop_walk.csv",
+  "compare": {
+    "x": 0.0001,
+    "y": 0.0001,
+    "z": 0.0001,
+    "airborne": 0
+  },
+  "fields_per_tick": 1,
+  "first_tick": 1,
+  "timing": {
+    "rule": "row r's ticks_run ticks completed since row r-1; they ran during field reads_field (r-1) and read its pad",
+    "ticks_run": [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    "reads_field": [null, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, null, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38]
+  },
+  "coverage": {
+    "DEMO-0001": {
+      "columns": ["y", "airborne"],
+      "rows": [0, 39]
+    },
+    "DEMO-0002": {
+      "columns": ["x", "z"],
+      "rows": [0, 39]
+    }
+  }
+}
