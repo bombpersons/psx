@@ -32,6 +32,7 @@ mod native;
 mod page;
 mod parser;
 mod parser_template;
+mod protocol;
 mod provenance;
 mod publish;
 mod ram;
@@ -151,6 +152,11 @@ enum Command {
     Inventory(inventory::InventoryArgs),
     /// What traced runs executed, per function of the inventory: blocks executed and not, and the runs reaching each.
     Coverage(coverage::CoverageArgs),
+    /// The porting protocol's ledger, and what each role does now.
+    Protocol {
+        #[command(subcommand)]
+        action: ProtocolAction,
+    },
     /// Named start states, each with its chain of runs from power-on.
     States {
         #[command(subcommand)]
@@ -226,6 +232,12 @@ enum PortAction {
     /// Write the three repositories side by side with their instructions and access rules,
     /// the disc for the investigator and its data files (not the executable) for the implementer.
     Init(roles::PortInitArgs),
+}
+
+#[derive(clap::Subcommand)]
+enum ProtocolAction {
+    /// Compute the ledger (units, stages, completion) and say what a role does now.
+    Next(protocol::ProtocolNextArgs),
 }
 
 #[derive(clap::Subcommand)]
@@ -351,6 +363,7 @@ fn main() -> ExitCode {
         },
         Command::Inventory(a) => a.exec(&ctx),
         Command::Coverage(a) => a.exec(&ctx),
+        Command::Protocol { action: ProtocolAction::Next(a) } => a.exec(&ctx),
         Command::States { action } => match action {
             StatesAction::Make(a) => a.exec(&ctx),
             StatesAction::Save(a) => a.exec(&ctx),

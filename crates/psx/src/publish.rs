@@ -129,7 +129,7 @@ pub(crate) fn utc_now() -> String {
 
 /// Every file under a directory (names starting with . left out), by its
 /// path relative to it with /, and its sha256.
-fn tree(dir: &Path) -> crate::Result<BTreeMap<String, String>> {
+pub(crate) fn tree(dir: &Path) -> crate::Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
     for p in files_under(dir) {
         let rel = relative(dir, &p);
@@ -156,7 +156,7 @@ pub(crate) fn files_under(path: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn relative(base: &Path, p: &Path) -> String {
+pub(crate) fn relative(base: &Path, p: &Path) -> String {
     let r = p.strip_prefix(base).unwrap_or(p);
     r.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
 }
@@ -180,10 +180,10 @@ fn bundle_hash(files: &[(String, String, Option<String>)], removed: &[(String, S
 
 /// The implementer's log of crossings, read back: the state it adds up to,
 /// with any break in its chain.
-struct Log {
+pub(crate) struct Log {
     path: PathBuf,
-    entries: Vec<Value>,
-    state: BTreeMap<String, String>,
+    pub(crate) entries: Vec<Value>,
+    pub(crate) state: BTreeMap<String, String>,
     breaks: Vec<String>,
     last: Option<String>,
 }
@@ -192,7 +192,7 @@ fn log_path(to: &Path) -> PathBuf {
     to.join("notes/published.jsonl")
 }
 
-fn read_log(to: &Path) -> crate::Result<Log> {
+pub(crate) fn read_log(to: &Path) -> crate::Result<Log> {
     let path = log_path(to);
     let mut log =
         Log { path: path.clone(), entries: Vec::new(), state: BTreeMap::new(), breaks: Vec::new(), last: None };
@@ -222,7 +222,7 @@ fn read_log(to: &Path) -> crate::Result<Log> {
 }
 
 /// The reviewer's verdict on a bundle, with the sha256 of its file.
-fn verdict(reviews: &Path, hash: &str) -> crate::Result<Option<(Value, String)>> {
+pub(crate) fn verdict(reviews: &Path, hash: &str) -> crate::Result<Option<(Value, String)>> {
     let p = reviews.join(format!("{hash}.json"));
     let bytes = match std::fs::read(&p) {
         Ok(b) => b,
@@ -236,7 +236,7 @@ fn verdict(reviews: &Path, hash: &str) -> crate::Result<Option<(Value, String)>>
     Ok(Some((v, sha256(&bytes))))
 }
 
-fn approved(v: &Value) -> bool {
+pub(crate) fn approved(v: &Value) -> bool {
     v["verdict"].as_str() == Some("approve")
 }
 
@@ -306,7 +306,7 @@ fn require_reviews(reviews: &Path) -> crate::Result<()> {
     Ok(())
 }
 
-fn bundles_dir(ctx: &Ctx) -> PathBuf {
+pub(crate) fn bundles_dir(ctx: &Ctx) -> PathBuf {
     ctx.root.join(".psx/bundles")
 }
 

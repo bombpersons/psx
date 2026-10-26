@@ -19,7 +19,10 @@ from yours would share your notes.
 
 ## Where to start
 
-Start with psx's `context`, then the `guide` topics `protocol` (the
+Start every session with `psx protocol next --role investigator`
+(`protocol_next` over MCP): it computes the ledger and says what to do
+now, and it is the project's memory when a session ends. Then psx's
+`context`, and the `guide` topics `protocol` (the
 procedure, making cases that separate, finding things in RAM) and
 `cleanroom` (what may cross), then `run`, `input`, `fields`, `cases`,
 `states`, `barrier` and `code`. `protocol.toml` names the three
@@ -44,7 +47,10 @@ For each spec:
    apart, not only cases that show them. A heldout case you keep back
    for the reviewer's checks gets `"kept_back": true`.
 4. Put the addresses and routines behind each spec in
-   `notes/provenance.json`, keyed by spec id. They never go in `specs/`.
+   `notes/provenance.json`, keyed by spec id, `routines` keyed by address
+   (with the executable's or file's name beside it where two hold code
+   there): that is how the ledger knows which functions a spec covers.
+   They never go in `specs/`.
 5. Update `specs/INDEX.md`, then `psx publish stage` (guide topic
    `barrier`). Fix what it refuses. The reviewer reads the bundle and
    writes its verdict; when it approves, `psx publish cross HASH` carries

@@ -318,7 +318,8 @@ fn finish_step(
             ));
         }
     }
-    let step = json!({"run": run, "state": state, "state_sha256": sha, "made_with": made_with(report)});
+    let step = json!({"run": run, "state": state, "state_sha256": sha, "made_with": made_with(report),
+        "emulator": report["build"]["emulator"]});
     let media = json!({"media": id["media"], "media_identity": id["media_identity"], "bios_sha256": id["bios_sha256"]});
     Ok((step, media, parent))
 }
@@ -610,7 +611,7 @@ fn rebuild(ctx: &Ctx, a: StatesRebuildArgs) -> crate::Result<(bool, Value)> {
             if first_differing.is_none() && step["state_sha256"] != sha {
                 first_differing = Some(i);
             }
-            new_shas.push((sha, made_with(&report)));
+            new_shas.push((sha, made_with(&report), report["build"]["emulator"].clone()));
             parent = Some(file);
         }
         let Some(new_file) = parent else { continue };
@@ -651,13 +652,24 @@ fn rebuild(ctx: &Ctx, a: StatesRebuildArgs) -> crate::Result<(bool, Value)> {
                 r["old_kept"] = json!(kept);
             }
             write(&state_path, &new)?;
-            for (step, (sha, by)) in chain["steps"].as_array_mut().into_iter().flatten().zip(&new_shas) {
+            for (step, (sha, by, emulator)) in chain["steps"].as_array_mut().into_iter().flatten().zip(&new_shas) {
                 step["state_sha256"] = json!(sha);
                 step["made_with"] = json!(by);
+                step["emulator"] = emulator.clone();
             }
             chain["state_sha256"] = json!(new_sha);
             write(&chain_dir.join(format!("{name}.json")), pretty(&chain).as_bytes())?;
             r["status"] = json!(if status == "missing" { "restored" } else { "replaced" });
+        } else if !differs {
+            // Rebuilt the same on this emulator: the chain holds on it.
+            let mut changed = false;
+            for (step, (_, _, emulator)) in chain["steps"].as_array_mut().into_iter().flatten().zip(&new_shas) {
+                changed |= step["emulator"] != *emulator;
+                step["emulator"] = emulator.clone();
+            }
+            if changed {
+                write(&chain_dir.join(format!("{name}.json")), pretty(&chain).as_bytes())?;
+            }
         }
         results.push(r);
     }

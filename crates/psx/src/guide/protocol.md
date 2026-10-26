@@ -43,7 +43,8 @@ it, or it is classified); 2 specified (an approved spec covers it);
 3 evidenced (its cases exist and check against the original, case check);
 4 implemented (port code cites the spec); 5 verified (its cases pass in the
 port); 6 integrated (every corpus recording reaching it matches; a format
-round-trips in the editor). A unit whose tests start failing drops back.
+round-trips in the editor). A unit whose tests start failing drops back,
+and so does one whose cases were not checked on the current emulator.
 Credits per stage 0.05, 0.25, 0.40, 0.65, 0.85, 1.0 from stage 1; complete
 is the weighted mean of the credits, for code, formats and the whole. An
 estimated date only means something once the inventory stops growing: while
@@ -95,8 +96,43 @@ overlay loaded and replaced before the run's end, often compressed on the
 disc). For the second, called gives the run frames the run called into it:
 run to one of them and take the inventory again with that snapshot as ram.
 
-Keep the units, their stages and the specs covering them in notes/LOOP.md
-until psx computes the ledger.
+## The ledger and next
+
+Every session, of every role, starts with protocol next:
+
+  protocol next --role investigator
+
+It computes the ledger from the repositories' files, writes it to
+notes/ledger.json beside the inventory (its totals to ledger_history.jsonl
+when they change), writes the implementer's notes/NEXT.md (spec ids,
+titles and crossed case names only), and gives the role's work in order,
+now first. Nothing in it is kept by hand; each exit check is a file:
+- exercised: coverage executes the function, or notes/classified.json
+  classifies it ({"TOMB.EXE 80012345": "dead"}: dead, debug or
+  unreachable; a classified unit needs nothing more and counts complete);
+- the specs covering a function: notes/provenance.json, routines keyed by
+  an address in it (with the executable's or file's name beside the
+  address where two hold code there);
+- specified: the spec crossed (publishing log); evidenced: every case it
+  names or that claims it exists and was recorded or case checked on this
+  emulator and held; implemented: the implementer's code cites its id;
+  verified: each crossed case claiming it has a passing verdict since it
+  last changed (psx-bevy's write_run writes NAME.result.json in the
+  target's tmp folder; protocol.toml's [protocol] results moves it);
+  integrated: a corpus case (role corpus) passes, or for a format a
+  round_trip verdict (write_result);
+- formats: a format spec's files (patterns) and records ({name: fields})
+  in its front matter; disc files no format spec names are listed.
+The work it gives: rebuilding start states and checking cases again when
+the emulator changed (until then they are not evidence); waiting while an
+audit is due (every few implemented specs, [protocol] audit_every, and at
+a loop's end: a reviewer's report in audits/ names the bundle hashes it
+covers); revising a rejected bundle and crossing an approved one; taking
+the inventory and coverage again; answering questions and choices (a
+choice is answered by a line starting Answer: under it); recording
+missing cases; staging; then a few units to specify, formats first, unless
+[protocol] specs_ahead crossed specs wait for the implementer; and
+classifying what no run reaches.
 
 ## The loop
 

@@ -48,7 +48,12 @@ fn absolute(root: &Path, p: &Path) -> PathBuf {
 
 pub fn build() -> Value {
     json!({"version":env!("CARGO_PKG_VERSION"),"id":env!("PSX_BUILD_ID"),
-    "source_sha256":env!("PSX_SOURCE_SHA256"),"profile":env!("PSX_BUILD_PROFILE"),"target":env!("PSX_BUILD_TARGET")})
+    "source_sha256":env!("PSX_SOURCE_SHA256"),"emulator":emulator(),"profile":env!("PSX_BUILD_PROFILE"),"target":env!("PSX_BUILD_TARGET")})
+}
+/// The emulator's own source (the core and the native runner), which
+/// decides how a run behaves; psx's other changes leave it alone.
+pub fn emulator() -> &'static str {
+    env!("PSX_EMULATOR_ID")
 }
 pub fn version() -> String {
     format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("PSX_BUILD_ID"))

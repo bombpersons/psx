@@ -23,7 +23,7 @@
 //! // In a test: Case::load("specs/cases/walk.json").
 //! let case = Case::parse(
 //!     "walk",
-//!     r#"{"id": "walk", "spec": "SPEC-0001", "role": "heldout", "subject": "pos",
+//!     r#"{"id": "walk", "spec": "DEMO-0001", "role": "heldout", "subject": "pos",
 //!         "start": {"from": "first_row"}, "input": [{"frame": 0, "buttons": ["RIGHT"], "until": 2}],
 //!         "observations": "walk.csv", "compare": {"x": 0}}"#,
 //!     "run_frame,frame,tick,x\n0,100,0,5\n1,101,1,6\n2,102,2,7\n3,103,3,7\n",
@@ -522,13 +522,35 @@ impl CaseReport {
         assert!(self.passed(), "case mismatch\n{self}");
     }
 
+    /// Per spec compared, whether its claims held (and the timing check).
+    pub fn verdicts(&self) -> Vec<(&str, bool)> {
+        let mut out: Vec<(&str, bool)> = Vec::new();
+        for (claim, comparison) in &self.compared {
+            let Some(spec) = claim.spec.as_deref() else { continue };
+            let ok = self.timing.is_ok() && comparison.passed();
+            match out.iter_mut().find(|(s, _)| *s == spec) {
+                Some(v) => v.1 &= ok,
+                None => out.push((spec, ok)),
+            }
+        }
+        out
+    }
+
     /// The rebuild's run in the case's own form, for comparing with the
     /// original outside the tests: `NAME.csv` (run_frame, frame, tick and
     /// the compared columns, as far as the replay went) and `NAME.json` (the
-    /// case's JSON, pointing at it), in `dir`.
+    /// case's JSON, pointing at it), in `dir`; and its verdict per spec,
+    /// `NAME.result.json` ([`write_result`]), which `psx protocol next`
+    /// reads for the specs the rebuild passes.
     pub fn write_run(&self, dir: impl AsRef<Path>) -> Result<PathBuf, String> {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let kind = match self.json["role"].as_str() {
+            Some("diagnostic") => "diagnostic",
+            Some("corpus") => "corpus",
+            _ => "case",
+        };
+        write_result(dir, &self.name, kind, &self.verdicts())?;
         let mut csv = format!("run_frame,frame,tick,{}\n", self.rebuild.columns().join(","));
         for row in 0..self.rebuild.ticks() {
             let cells: Vec<String> = self
@@ -549,6 +571,24 @@ impl CaseReport {
         let text = serde_json::to_string_pretty(&json).unwrap_or_default() + "\n";
         write(dir.join(format!("{}.json", self.name)), text)
     }
+}
+
+/// A test's verdict per spec, `NAME.result.json` in `dir`: what `psx
+/// protocol next` counts as a spec verified (kind `case`: its cases pass)
+/// and integrated (`corpus`: whole recorded play-throughs replay;
+/// `round_trip`: a format reads and writes back byte for byte). Write one
+/// from any test that is evidence for a spec, in the target's temporary
+/// folder (`env!("CARGO_TARGET_TMPDIR")`), where psx looks.
+pub fn write_result(dir: impl AsRef<Path>, name: &str, kind: &str, specs: &[(&str, bool)]) -> Result<PathBuf, String> {
+    let dir = dir.as_ref();
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let specs: serde_json::Map<String, Value> = specs.iter().map(|(s, ok)| (s.to_string(), Value::Bool(*ok))).collect();
+    let v = serde_json::json!({"name": name, "kind": kind, "time": time, "specs": specs});
+    let path = dir.join(format!("{name}.result.json"));
+    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default() + "\n")
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(path)
 }
 
 impl fmt::Display for CaseReport {
@@ -662,7 +702,11 @@ mod tests {
         assert_eq!(report.waiting[0].to_string(), "SPEC-2: y over rows 0..=5");
         // Replayed only as far as SPEC-1's last row.
         assert_eq!(report.rebuild.ticks(), 4);
-        assert!(!run(&covered, None, 9.0).passed());
+        // A verdict per spec compared; the one waiting has none.
+        assert_eq!(report.verdicts(), [("SPEC-1", true)]);
+        let all = run(&covered, None, 9.0);
+        assert!(!all.passed());
+        assert_eq!(all.verdicts(), [("SPEC-1", true), ("SPEC-2", false)]);
 
         let mut cut = case("");
         cut.truncate(3);
@@ -688,6 +732,11 @@ mod tests {
         assert_eq!(again.get(4, "x"), Some(3.0));
         assert_eq!(again.get(5, "frame"), Some(55.0));
         assert!(run(&again, None, 9.0).passed());
+        let result: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(format!("{}.result.json", case.name))).unwrap())
+                .unwrap();
+        // What it found, though it never fails: psx counts no diagnostic verdict.
+        assert_eq!((result["kind"].as_str(), result["specs"]["SPEC-1"].as_bool()), (Some("diagnostic"), Some(false)));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

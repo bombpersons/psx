@@ -202,6 +202,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::publish::PublishCrossArgs>("publish_cross", "Copy a staged bundle to the implementer's specs if reviews/HASH.json approves that hash."),
         def::<crate::publish::PublishCheckArgs>("publish_check", "Check the implementer's specs are exactly the approved bundles that crossed, and the publishing log and reviews unchanged.").read_only(),
         def::<crate::inventory::InventoryArgs>("inventory", "Every function of the disc's executables and of overlays in ram snapshots, with instructions and blocks, and the disc's files. See guide topic protocol.").heavy(),
+        def::<crate::protocol::ProtocolNextArgs>("protocol_next", "The ledger, and what a role does now. Start every session with it. See guide topic protocol."),
         def::<crate::coverage::CoverageArgs>("coverage", "Traced runs' executed blocks per inventory function, and the blocks never executed. See guide topic protocol.").heavy(),
         def::<crate::states::StatesListArgs>("states_list", "The named start states: description, steps from power-on, and whether each is present.").read_only(),
         def::<crate::states::StatesRebuildArgs>("states_rebuild", "Replay start states' chains from power-on on this psx and compare: which step first differs, and named values old and new. replace puts rebuilt states in place. See guide topic states.").heavy(),
@@ -743,8 +744,9 @@ mod tests {
         // 2026-10-25 for case_record and case_check; 61.5K from 2026-10-25 for the four
         // states tools; 63K from 2026-10-26 for barrier_check; 65K from 2026-10-26 for the
         // three publish tools; 67.5K from 2026-10-26 for port_init and template_create's roles;
-        // 68.5K from 2026-10-26 for inventory; 69K from 2026-10-26 for coverage.
-        assert!(size <= 69_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // 68.5K from 2026-10-26 for inventory; 69K from 2026-10-26 for coverage; 69.6K from
+        // 2026-10-26 for protocol_next.
+        assert!(size <= 69_600, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,

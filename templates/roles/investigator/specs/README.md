@@ -40,6 +40,14 @@ depends: []              # specs this one builds on
 cases: [run_stop, run_stop_heldout]
 ```
 
+A format spec also names the disc files it describes and its record types
+with their number of fields, which the ledger weighs it by:
+
+```yaml
+files: [LEVELS/*.DAT]
+records: {header: 6, room: 14, object: 9}
+```
+
 ## Case files
 
 `cases/NAME.json` describes one recording of the original, and

@@ -109,7 +109,7 @@ Branch: `protocol`. Committed piece by piece.
   stages and credits, the loop, making cases that separate, finding things
   in RAM, play-throughs, emulator changes, the port's own tools, reporting
   gaps by the "different game" test; the ledger kept by hand in
-  `notes/LOOP.md` until phase 4), `cleanroom` (roles, what may cross, the
+  `notes/LOOP.md` until item 11), `cleanroom` (roles, what may cross, the
   disc, tables in the executable, small algorithms, questions and choices,
   people and agent hosts, records, migrating an existing port) and
   `review` (what the reviewer writes and to whom, the bundle checklist with
@@ -118,7 +118,7 @@ Branch: `protocol`. Committed piece by piece.
   the protocol and records features as cases, `troubleshooting` covers
   menus that ignore short presses and interrupted analyses. The
   investigator's and reviewer's `AGENTS.md` start from the new topics.
-  `overview`'s "start with `psx protocol next`" waits for item 11.
+  (`overview` starts with `protocol next` from item 11.)
 
 - **`psx inventory`** (item 9): every function of every PS-X EXE on the
   disc and of the overlays in RAM snapshots, with instructions, basic
@@ -155,17 +155,41 @@ Branch: `protocol`. Committed piece by piece.
   Symphony of the Night the shell is told from the game at the same
   addresses.
 
+- **The ledger and `psx protocol next --role R`** (item 11): computed,
+  never kept by hand, from the inventory and coverage, the specs' front
+  matter, provenance (routines by address; where several images hold code
+  there, the one named, a function starting there, the image provenance
+  names most, then executed code), case recipes (recorded or checked on
+  the current emulator: psx's build now has an emulator id over the core
+  and the native runner, noted in recipes, checks and state chains), the
+  publishing log, the implementer's spec citations and its tests'
+  verdicts (psx-bevy's `write_run` writes `NAME.result.json` per spec;
+  `write_result` for round trips and corpus replays), questions, choices
+  (`Answer:` lines), bundles awaiting review and audits (a report in the
+  reviewer's `audits/` naming bundle hashes). A unit's stage is the
+  highest whose check holds with every one before it; classified units
+  (`notes/classified.json`) count complete; format units are a format
+  spec's `records` with its `files` patterns, and unnamed disc files are
+  listed. `next` writes `notes/ledger.json` and `ledger_history.jsonl`
+  and the implementer's `notes/NEXT.md` (crossed names only), and gives
+  each role its work in order: rebuild and re-check after an emulator
+  change, wait while an audit is due (`audit_every` implemented specs, or
+  a loop's end), revise or cross a reviewed bundle, inventory and
+  coverage again, questions and choices, missing cases, staging, then a
+  few units to specify (formats first) unless `specs_ahead` crossed specs
+  wait for the implementer. Tried on copies of TR2's repositories
+  (adopting tr2-clean through a real stage, review and crossing: the
+  audit gate, a failing case, SPEC-0004 verified once its cases are
+  checked, its provenance on `TOMB2.EXE` rather than `MAIN.EXE` at the
+  same addresses) and a new Crash port (a format spec with records).
+  `overview` starts with `protocol next`; each role's instructions too.
+
 ## Phase 3: workspaces and guidance
 
 Done.
 
 ## Phase 4: measuring and driving
 
-11. **The ledger and `psx protocol next --role R`** (item 2): units,
-    stages and exit checks; questions and choices given as work; audits
-    due; an emulator change makes rebuilding the next step. `overview`
-    then starts with `protocol next`, and `protocol`'s hand-kept ledger
-    paragraph goes.
 12. **`psx protocol report`** (`--plain` for the person) (item 11) and
     **`psx audit`** (item 13): the mechanical checks of section 2 (above
     all, every number in the implementer's code appears in a spec, a case

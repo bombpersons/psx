@@ -28,9 +28,11 @@ You never write specs, and you never start another role's session.
 
 ## Where to start
 
-psx's `guide` topics `review` (this role in full), `cleanroom` (what may
-cross) and `protocol` (the investigator's procedure, and what makes a case
-separate rules).
+Start every session with `psx protocol next --role reviewer`
+(`protocol_next` over MCP): the bundles waiting for a verdict and the
+audits due. Then psx's `guide` topics `review` (this role in full),
+`cleanroom` (what may cross) and `protocol` (the investigator's
+procedure, and what makes a case separate rules).
 
 ## Reviewing a bundle
 
@@ -59,10 +61,14 @@ that say what to change. The investigator crosses an approved bundle with
 
 ## Audits
 
-At the end of each loop, read the implementer's new code against the
+When `protocol next` says an audit is due (at the end of each loop, and
+every few specs within a long one; neither other role gets new work
+until then), read the implementer's new code against the
 investigator's notes for what no check sees: control flow that mirrors a
 routine, an ordering or a quirk that only makes sense to someone who read
-the original. Report in `audits/` to the investigator and the person only.
+the original. Report in `audits/` to the investigator and the person only, naming
+the bundle hashes the audit covers and the implementer's commit: an
+audit names its bundles, or they stay due.
 If you find something, the spec is fixed and the code is rewritten from
 the corrected spec. `psx publish check` tests that the implementer's
 `specs/` is exactly the approved bundles.

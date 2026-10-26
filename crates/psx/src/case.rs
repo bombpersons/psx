@@ -516,6 +516,7 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
         "case": a.name,
         "args": args,
         "recorded_with": crate::context::version(),
+        "emulator": crate::context::emulator(),
         "state_sha256": sha256(&state),
         "map": samples["map"]["path"],
         "map_sha256": samples["map"]["path"].as_str().and_then(|p| std::fs::read(p).ok()).map(|b| sha256(&b)),
@@ -639,6 +640,12 @@ impl Op for CaseCheckArgs {
                     if !added.is_empty() {
                         d["case_keys_to_add"] = json!(added);
                     }
+                    // When and on which emulator it was last checked, and whether
+                    // it held (psx protocol next reads this).
+                    let mut recipe = recipe;
+                    recipe["checked"] = json!({"emulator": crate::context::emulator(), "time": crate::publish::utc_now(),
+                        "same": d["same"] == true});
+                    write(&recipes.join(format!("{name}.json")), pretty(&recipe).as_bytes())?;
                     if self.write && d["same"] != true {
                         d["written"] = save(&r, name, &cases, &recipes)?;
                     } else if self.write && !added.is_empty() {

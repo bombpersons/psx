@@ -66,7 +66,10 @@ A key this psx writes that a case lacks (timing, in a case from an older
 psx) is listed in case_keys_to_add, not a difference; write=true adds it
 at the end of the case's JSON and leaves the rest of its files as they
 were. Writing a case that differs keeps keys added to it by hand.
-A case record over an existing case needs replace=true.
+A case record over an existing case needs replace=true. Each recipe notes
+the emulator it was recorded on and, after a check, the emulator it was
+checked on and whether it held: protocol next counts a case as evidence
+only on the current emulator.
 
 Start states: take them where the behaviour starts (a handoff's mark, a
 run's save_state, or run until a named state holds) and name them with

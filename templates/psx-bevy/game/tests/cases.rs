@@ -10,7 +10,8 @@
 //! between two specs.
 //!
 //! Each run is also written in the case's form to the target's temporary
-//! folder (`write_run`), to compare with the original outside the tests.
+//! folder (`write_run`), to compare with the original outside the tests,
+//! with its verdict per spec: the record of which specs the port passes.
 use bevy::prelude::*;
 use engine::EnginePlugin;
 use engine::testing::{Case, Start, headless_app};

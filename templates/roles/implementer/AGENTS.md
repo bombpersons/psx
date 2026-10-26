@@ -31,6 +31,14 @@ You must never use, look for or ask for:
   their code. If you notice you are recalling one, stop and work from the
   specs instead.
 
+## Where to start
+
+Start every session with `notes/NEXT.md`: psx writes it from the ledger
+(which specs to build, which cases fail, which have no verdict yet) each
+time the investigator or the person runs it. Cite the spec id in the code
+that implements it; the case tests' `write_run` leaves each case's verdict
+per spec, which is how a spec counts as verified.
+
 ## Questions and choices
 
 If a spec is missing, unclear or seems wrong (a case fails and the spec
@@ -41,7 +49,8 @@ the specs and cases.
 
 Where the specs leave something open and you choose, list the choice in
 `questions/CHOICES.md`, numbered, with the spec it concerns. The
-investigator answers each like a question.
+investigator answers each like a question, on a line starting `Answer:`
+under it.
 
 ## The person
 

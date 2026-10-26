@@ -46,4 +46,7 @@ After a psx update: states rebuild, then replace=true puts the rebuilt states
 in place (the old ones move to .psx/old/BUILD/states/) and notes the new
 sha256 in the chains; then case check, whose differences are the triage
 list: an instrument change (a state that reached the same place by another
-field) or a real divergence (the game played differently).
+field) or a real divergence (the game played differently). Each chain
+step notes the emulator (the core's own source, not all of psx) it was
+made on, updated when a rebuild matches: protocol next asks for a rebuild
+only when the emulator changed.

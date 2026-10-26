@@ -2,9 +2,14 @@ Use psx to gather evidence from a PlayStation game, then implement the recovered
 rules and assets as ordinary game code. Choose the tools needed for the current
 question; a full port is not a prerequisite for a useful investigation.
 
-Start with context({}) to identify the running build, project root, configured
-media/BIOS and capabilities. Relative paths resolve against that root,
-which may differ from the client harness's working directory.
+In a port's repositories (port_init), start every session with
+protocol_next({"role": "investigator"}) (or reviewer): it computes the
+ledger and says what that role does now (guide topic protocol).
+
+Otherwise start with context({}) to identify the running build, project
+root, configured media/BIOS and capabilities. Relative paths resolve
+against that root, which may differ from the client harness's working
+directory.
 
 Typical routes:
 - Setup: context -> disc -> ls / exe -> a bounded run with checkpoints.
