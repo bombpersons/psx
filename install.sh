@@ -53,9 +53,13 @@ fi
 
 tar -xzf "$tmp/$asset" -C "$tmp"
 mkdir -p "$dir"
-cp "$tmp/psx" "$dir/psx.new"
-chmod 755 "$dir/psx.new"
-mv -f "$dir/psx.new" "$dir/psx"
+for bin in psx psx-clean; do
+    # psx-clean is clean mode, for a port's implementer; older releases lack it.
+    [ -f "$tmp/$bin" ] || continue
+    cp "$tmp/$bin" "$dir/$bin.new"
+    chmod 755 "$dir/$bin.new"
+    mv -f "$dir/$bin.new" "$dir/$bin"
+done
 say "Installed $("$dir/psx" --version) to $dir/psx"
 
 # PsyQ library signatures for `psx symbols`, in the shared data directory psx

@@ -64,6 +64,10 @@ pub struct Tracer {
     pub interrupts: u64,
     pub exceptions: BTreeMap<u8, u64>,
     ram_cover: Vec<u32>,
+    /// The instruction word each RAM word first executed as, and counts
+    /// for the other words executed there later (code loaded over code).
+    ram_word: Vec<u32>,
+    ram_other: BTreeMap<(u32, u32), u64>,
     bios_cover: Vec<u32>,
     pub calls: BTreeMap<u32, CallStat>,
     /// Steps until the callee's first instruction, and the call site.
@@ -135,6 +139,8 @@ impl Tracer {
             interrupts: 0,
             exceptions: BTreeMap::new(),
             ram_cover: vec![0; RAM_WORDS],
+            ram_word: vec![0; RAM_WORDS],
+            ram_other: BTreeMap::new(),
             bios_cover: vec![0; BIOS_WORDS],
             calls: BTreeMap::new(),
             pending_call: None,
@@ -218,8 +224,14 @@ impl Tracer {
         self.instructions += 1;
         match phys {
             0..=0x7F_FFFF => {
-                let w = &mut self.ram_cover[(phys as usize & 0x1F_FFFF) / 4];
-                *w = w.saturating_add(1);
+                let k = (phys as usize & 0x1F_FFFF) / 4;
+                let i = info.instruction;
+                if self.ram_cover[k] == 0 {
+                    self.ram_word[k] = i;
+                } else if self.ram_word[k] != i {
+                    *self.ram_other.entry((k as u32, i)).or_default() += 1;
+                }
+                self.ram_cover[k] = self.ram_cover[k].saturating_add(1);
             }
             0x1FC0_0000..=0x1FC7_FFFF => {
                 let w = &mut self.bios_cover[(phys as usize - 0x1FC0_0000) / 4];
@@ -296,6 +308,29 @@ impl Tracer {
                     (n, None) => run = Some((k, n as u64)),
                 }
             }
+        }
+        out
+    }
+
+    /// Executed RAM words as `(KSEG0 address, instruction word, executions)`,
+    /// in address order; a word executed as several instructions (code
+    /// loaded over code) appears once for each.
+    pub fn executed(&self) -> Vec<(u32, u32, u64)> {
+        let mut out = Vec::new();
+        let mut other = self.ram_other.iter().peekable();
+        for (k, &n) in self.ram_cover.iter().enumerate() {
+            if n == 0 {
+                continue;
+            }
+            let mut first = n as u64;
+            let mut rest = Vec::new();
+            while let Some((&(_, w), &c)) = other.next_if(|((o, _), _)| *o as usize == k) {
+                first = first.saturating_sub(c);
+                rest.push((w, c));
+            }
+            let addr = 0x8000_0000 + 4 * k as u32;
+            out.push((addr, self.ram_word[k], first));
+            out.extend(rest.into_iter().map(|(w, c)| (addr, w, c)));
         }
         out
     }

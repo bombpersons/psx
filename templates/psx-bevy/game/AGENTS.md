@@ -210,7 +210,21 @@ game convenient to build on:
 ## Testing gameplay
 
 `engine::testing` runs rules headless for exact ticks with scripted buttons
-(`tests/player.rs`), and compares them with the original
+(`tests/player.rs`), and compares them with the original.
+
+The usual way is a case file: `psx case record` writes the original's
+recording (`NAME.json` and its observations, `NAME.csv`; psx's guide topic
+`cases`), and `engine::testing::Case` replays it (`tests/cases.rs`). Write
+one runner per subject, which spawns it from row 0 and reads each compared
+column back in the case's units; each case is then one line. The runner
+runs as many ticks before each row as the case's `tick` column says, gives
+each the pad of the field before the row, checks that against the case's
+`timing` before any behaviour, and compares, within the case's tolerances,
+only the columns and rows each spec in `implementing` claims (its
+`coverage`), listing the rest as waiting. A failure prints each column's
+first divergence and the rows around it.
+
+Without a case file, compare a bare recording
 (`engine::testing::trajectory`):
 
 1. Record the original from a checkpoint with a replay file and one `--sample`

@@ -34,3 +34,21 @@ return_screen false and inspect JSON/logs; artifact_read on a PNG automatically
 attaches the image too. Hashes, dimensions, RAM/samples and command counts provide
 limited evidence, not visual fidelity. Report that limitation instead of claiming
 to have inspected the picture. Preserve raw artifacts and precise errors for a retest.
+
+Menus that ignore short presses. Many games read the pad once a tick, act on
+a press only after seeing the button released, or poll menus at their own
+slower rate, so a tap of one or two fields can fall between reads and do
+nothing. In menus, hold each button for several ticks (4 to 6 fields) and
+release it as long before the next press; check the screen after each step
+rather than scripting a whole menu blind. A press that works when held and
+not when tapped is the game's input timing, not lost input (input.jsonl shows
+it was applied).
+
+An interrupted analysis. A Ghidra query that times out keeps its partial
+project and is never cached as complete: retry with a larger timeout. One
+whose process was killed (a closed client, a restarted MCP server) can leave
+psx.lock in the analysis folder under .psx/ghidra/, and every later query
+reports analysis_busy. psx never removes another process's lock: read the pid
+in psx.lock, check that process is gone, then delete the file. project.lock
+means the project is open in the Ghidra GUI; close it there. A query after a
+Ghidra update reports stale_analysis and analyses again from the source.

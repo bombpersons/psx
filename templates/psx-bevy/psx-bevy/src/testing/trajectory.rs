@@ -347,6 +347,10 @@ pub struct Comparison {
     /// If the rebuild fails as aligned but matches when shifted: the rebuild
     /// reaches each state this many ticks earlier (positive) or later (negative).
     pub shift: Option<i64>,
+    /// The first row compared ([`compare_from`]); 0 for [`compare`].
+    pub first: usize,
+    /// What a row is: a tick ([`compare`]) or a field ([`compare_from`]).
+    unit: &'static str,
     original: Trajectory,
     rebuild: Trajectory,
 }
@@ -364,6 +368,27 @@ fn error(a: f64, b: f64) -> f64 {
 /// Compares the listed columns tick by tick, each with its absolute tolerance
 /// (0.0 for exact). Both trajectories must have the same number of ticks to pass.
 pub fn compare(original: &Trajectory, rebuild: &Trajectory, tolerances: &[(&str, f64)]) -> Result<Comparison, String> {
+    compare_rows(original, rebuild, tolerances, 0, "tick")
+}
+
+/// [`compare`] for rows that are video fields (a case's observations), from
+/// row `first` on: the rows before it set up the state but are not judged.
+pub fn compare_from(
+    original: &Trajectory,
+    rebuild: &Trajectory,
+    tolerances: &[(&str, f64)],
+    first: usize,
+) -> Result<Comparison, String> {
+    compare_rows(original, rebuild, tolerances, first, "row")
+}
+
+fn compare_rows(
+    original: &Trajectory,
+    rebuild: &Trajectory,
+    tolerances: &[(&str, f64)],
+    first: usize,
+    unit: &'static str,
+) -> Result<Comparison, String> {
     if tolerances.is_empty() {
         return Err("list at least one column to compare".into());
     }
@@ -377,7 +402,7 @@ pub fn compare(original: &Trajectory, rebuild: &Trajectory, tolerances: &[(&str,
         })
         .collect::<Result<Vec<_>, String>>()?;
     let errors_at = |shift: i64| {
-        let ticks = (0..rebuild.rows.len()).filter_map(move |k| {
+        let ticks = (first..rebuild.rows.len()).filter_map(move |k| {
             let o = usize::try_from(k as i64 + shift).ok()?;
             Some((k, original.rows.get(o)?, &rebuild.rows[k]))
         });
@@ -411,7 +436,7 @@ pub fn compare(original: &Trajectory, rebuild: &Trajectory, tolerances: &[(&str,
             errors.iter().zip(&pairs).all(|(e, p)| *e <= p.1)
         });
         // A shift must still cover most of the run to mean anything.
-        ok && compared * 2 > original.rows.len().max(1)
+        ok && compared * 2 > original.rows.len().saturating_sub(first).max(1)
     };
     let shift = diverged.then(|| [1, -1, 2, -2].into_iter().find(|&s| fits(s))).flatten();
     Ok(Comparison {
@@ -419,6 +444,8 @@ pub fn compare(original: &Trajectory, rebuild: &Trajectory, tolerances: &[(&str,
         rebuild_ticks: rebuild.rows.len(),
         columns,
         shift,
+        first,
+        unit,
         original: original.clone(),
         rebuild: rebuild.clone(),
     })
@@ -444,18 +471,22 @@ impl Comparison {
 impl fmt::Display for Comparison {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let verdict = if self.passed() { "match" } else { "MISMATCH" };
-        writeln!(f, "{verdict}: original {} ticks, rebuild {} ticks", self.original_ticks, self.rebuild_ticks)?;
+        let unit = self.unit;
+        writeln!(f, "{verdict}: original {} {unit}s, rebuild {} {unit}s", self.original_ticks, self.rebuild_ticks)?;
+        if self.first > 0 {
+            writeln!(f, "  compared from {unit} {}", self.first)?;
+        }
         for c in &self.columns {
             let first = c.first_divergence.map_or("-".to_string(), |t| t.to_string());
             writeln!(
                 f,
-                "  {:<16} tolerance {:<10} max error {:<12} at tick {:<5} first divergence {first}",
+                "  {:<16} tolerance {:<10} max error {:<12} at {unit} {:<5} first divergence {first}",
                 c.name, c.tolerance, c.max_error, c.max_error_tick
             )?;
         }
         if let Some(tick) = self.first_divergence() {
-            writeln!(f, "around tick {tick} (original | rebuild):")?;
-            for k in tick.saturating_sub(3)..=tick + 3 {
+            writeln!(f, "around {unit} {tick} (original | rebuild):")?;
+            for k in tick.saturating_sub(3).max(self.first)..=tick + 3 {
                 let mut line = format!("  {k:>5}");
                 for c in &self.columns {
                     let (o, r) = (self.original.get(k, &c.name), self.rebuild.get(k, &c.name));
@@ -470,10 +501,15 @@ impl fmt::Display for Comparison {
             let (n, way) = (shift.unsigned_abs(), if shift > 0 { "earlier" } else { "later" });
             writeln!(
                 f,
-                "hint: the rebuild matches when shifted: it reaches each state {n} tick(s) {way} than the original. Check input latency (when the original reads the pad) and Alignment::start."
+                "hint: the rebuild matches when shifted: it reaches each state {n} {unit}(s) {way} than the original. {}",
+                if unit == "tick" {
+                    "Check input latency (when the original reads the pad) and Alignment::start."
+                } else {
+                    "Check which field each tick reads the pad of (the case's timing)."
+                }
             )?;
         }
-        if self.original_ticks != self.rebuild_ticks {
+        if self.original_ticks != self.rebuild_ticks && unit == "tick" {
             writeln!(f, "hint: record as many ticks as the original: tick_inputs(align, original.ticks() - 1).")?;
         }
         Ok(())

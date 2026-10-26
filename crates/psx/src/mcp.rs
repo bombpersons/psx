@@ -193,6 +193,21 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::textures::TexturesArgs>("textures", "Decode VRAM texture pages to PNGs: every page/CLUT a gpu_frame run used (plus textures/scene.psxscene for the Bevy template), or one page and clut by hand from any vram.bin."),
         def::<crate::run::RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames on the native core. Drive it with input/replay; observe with sample, watch, watch_reads, poke, trace, trace_cd, trace_spu or gpu_frame; save_state makes checkpoints. Returns run_dir and the report; brief or summary shorten it. See guide topics run and input.").heavy().screen(),
         ToolDef { call: call_handoff, schema: handoff_schema, ..def::<crate::handoff::HandoffArgs>("handoff", "Ask the person to play to a point you cannot easily reach: opens a window on this machine with the game and your request, and returns a ticket at once. Poll handoff_status; the result has state.bin to continue from, input.json (their input as a replay), their note, and the moments they marked with F6 (state, RAM and screen each, with RAM diffs between them).") },
+        def::<crate::case::CaseRecordArgs>("case_record", "Record a case for a spec from a start state, input and a field map subject: the case JSON, its CSV with the tick column, and a recipe. See guide topic cases.").heavy(),
+        def::<crate::case::CaseCheckArgs>("case_check", "Record cases again from their recipes and compare them with the published CSVs, cell by cell. See guide topic cases.").heavy(),
+        def::<crate::states::StatesMakeArgs>("states_make", "Run from a named start state (or power-on) and name the state it ends in: .psx/states/NAME.bin, and its chain of runs from power-on in notes/states/NAME.json. See guide topic states.").heavy(),
+        def::<crate::states::StatesSaveArgs>("states_save", "Name a state an earlier run or handoff made; its chain from power-on comes from the runs' reports. See guide topic states."),
+        def::<crate::leak::BarrierCheckArgs>("barrier_check", "Check files or text for leaks of the original's code before they cross to the implementer. See guide topic barrier.").read_only(),
+        def::<crate::publish::PublishStageArgs>("publish_stage", "Leak-check what changed in specs since the last crossing and write it as a bundle for the reviewer. See guide topic barrier."),
+        def::<crate::publish::PublishCrossArgs>("publish_cross", "Copy a staged bundle to the implementer's specs if reviews/HASH.json approves that hash."),
+        def::<crate::publish::PublishCheckArgs>("publish_check", "Check the implementer's specs are exactly the approved bundles that crossed, and the publishing log and reviews unchanged.").read_only(),
+        def::<crate::inventory::InventoryArgs>("inventory", "Every function of the disc's executables and of overlays in ram snapshots, with instructions and blocks, and the disc's files. See guide topic protocol.").heavy(),
+        def::<crate::protocol::ProtocolNextArgs>("protocol_next", "The ledger, and what a role does now. Start every session with it. See guide topic protocol."),
+        def::<crate::protocol::ProtocolReportArgs>("protocol_report", "Completion by kind and stage, and the estimate or why there is none. plain=true: text for the person."),
+        def::<crate::audit::AuditArgs>("audit", "The mechanical audit of the port, when protocol_next says one is due. judgment records it. See guide topic review."),
+        def::<crate::coverage::CoverageArgs>("coverage", "Traced runs' executed blocks per inventory function, and the blocks never executed. See guide topic protocol.").heavy(),
+        def::<crate::states::StatesListArgs>("states_list", "The named start states: description, steps from power-on, and whether each is present.").read_only(),
+        def::<crate::states::StatesRebuildArgs>("states_rebuild", "Replay start states' chains from power-on on this psx and compare: which step first differs, and named values old and new. replace puts rebuilt states in place. See guide topic states.").heavy(),
         def::<crate::handoff::HandoffStatusArgs>("handoff_status", "A handoff's progress or result: waiting, done, declined (read the note), closed or abandoned.").read_only().screen(),
         def::<crate::native::NativeArgs>("native", "Emulator diagnostic: boot the native core from power-on and report where it got (PC, CD history, SPU state, unhandled I/O, hot PCs, speed). For game investigation use run.").heavy().default_timeout().screen(),
         def::<crate::provenance::LoadsArgs>("loads", "Turn a run recorded with trace_cd into disc-to-RAM provenance: which file and offset each CD transfer copied where, verified against the run's final RAM. Paged; symbols names the reading code.").heavy(),
@@ -204,6 +219,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::ram::RamViewArgs>("ram_view", "Show a RAM window (addr, len) from one or more snapshots side by side, decoded as u8..x32 or fxI.F, marking units that differ.").read_only(),
         def::<crate::parser_template::ParserTemplateArgs>("template_parser_create", "Create an executable Python 3 external parser starter (kind archive, model, asset or video) with a sample input and protocol notes in dest, for assets_scan, assets_extract or str."),
         def::<crate::template::TemplateCreateArgs>("template_create", "Create a Bevy port workspace (psx-bevy, engine, game, importers) with the PS1 look in dest, e.g. the game folder. Set region and fields_per_tick from the original. See guide topics port, bevy."),
+        def::<crate::roles::PortInitArgs>("port_init", "Set up a clean-room port in dest: the investigator's, implementer's and reviewer's repositories with instructions and access rules. See guide topic cleanroom."),
         def::<crate::template::TemplateUpdateArgs>("template_update", "Update the project's psx-bevy/ and vendor/ files to this build; edited files get a .psx-new copy. See guide topic port."),
         def::<crate::vram_diff::GpuReplayArgs>("gpu_replay", "Replay a recorded GP0 command stream into a fresh software GPU and write the resulting VRAM to out (and optionally a PNG). Pair with vram_diff."),
         def::<crate::vram_diff::VramDiffArgs>("vram_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
@@ -726,8 +742,13 @@ mod tests {
             .iter()
             .map(|t| t.name.len() + t.description.len() + serde_json::to_string(&t.input_schema()).unwrap().len())
             .sum();
-        // 50K on 2026-10-17; 52K from 2026-10-20 for handoff and handoff_status.
-        assert!(size <= 52_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // 50K on 2026-10-17; 52K from 2026-10-20 for handoff and handoff_status; 56K from
+        // 2026-10-25 for case_record and case_check; 61.5K from 2026-10-25 for the four
+        // states tools; 63K from 2026-10-26 for barrier_check; 65K from 2026-10-26 for the
+        // three publish tools; 67.5K from 2026-10-26 for port_init and template_create's roles;
+        // 68.5K from 2026-10-26 for inventory; 69K from 2026-10-26 for coverage; 69.6K from
+        // 2026-10-26 for protocol_next; 70.5K from 2026-10-26 for protocol_report and audit.
+        assert!(size <= 70_500, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,

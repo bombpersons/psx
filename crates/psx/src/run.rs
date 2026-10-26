@@ -40,7 +40,7 @@ pub struct RunCmdArgs {
     #[arg(long, conflicts_with = "replay")]
     pub input: Option<crate::replay::Events>,
     /// Write watch `ADDR[:WIDTH]` in hex, repeatable. Native: every CPU/DMA store into
-    /// the range goes to writes.jsonl with pc, value, old value (hex and signed views too),
+    /// the range goes to writes.jsonl with pc, value, old value,
     /// `frame` (absolute, from power-on) and `run_frame` (from the run start).
     #[arg(long = "watch")]
     #[serde(default, rename = "watch")]
@@ -72,13 +72,13 @@ pub struct RunCmdArgs {
     #[arg(long)]
     #[serde(default)]
     pub trace_spu: bool,
-    /// Native: record the console's mixed sound output (SPU voices, reverb and CD audio, as the
-    /// game sets them) to audio.wav, 44.1 kHz stereo 16-bit, from the run start.
+    /// Native: record the console's mixed sound output to audio.wav, 44.1 kHz stereo
+    /// 16-bit, from the run start.
     #[arg(long)]
     #[serde(default)]
     pub audio: bool,
-    /// Native: profile the CPU's cycles (Mednafen's timing, including time DMA holds the CPU) by
-    /// function into profile.json: functions are call targets, named from --symbols.
+    /// Native: profile the CPU's cycles (Mednafen's timing) by function into
+    /// profile.json: functions are call targets, named from --symbols.
     #[arg(long)]
     #[serde(default)]
     pub profile: bool,
@@ -118,7 +118,7 @@ impl Op for RunCmdArgs {
 }
 
 impl RunCmdArgs {
-    fn run(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
+    pub(crate) fn run(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
         let a = self;
         let resolved = crate::context::resolve(&ctx.root, a.media, a.bios, a.from_state.as_deref(), false)?;
         if let Some(e) = resolved.setup_error() {
@@ -206,16 +206,32 @@ pub struct RunArgs {
 pub struct ObserveArgs {
     /// Sample a RAM/scratchpad value at every frame boundary (vblank) into samples.csv:
     /// `ADDR:FMT[:NAME]`, FMT one of u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F (fx16.16, fx4.12)
-    /// or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Little-endian,
-    /// read byte-exact from emulated memory; repeatable.
+    /// or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Repeatable. With a field map (--map), a name
+    /// from it instead: `GLOBAL`, `SUBJECT` (all its fields), `SUBJECT.FIELD`,
+    /// `SUBJECT[N]` or `SUBJECT[N].FIELD`.
     #[arg(long = "sample")]
     #[serde(default, rename = "sample")]
     pub samples: Vec<crate::ram::SampleSpec>,
+    /// Field map naming the game's memory and its tick (guide topic fields); default
+    /// samples.toml in the project root when it exists. A map with [tick] adds a `tick`
+    /// column to samples.csv: the game's ticks completed since the run start.
+    #[arg(long)]
+    pub map: Option<PathBuf>,
+    /// Group every CPU store by the fields it fell in, to find the game's tick (guide
+    /// topic fields). Writes tick_finder.json; run a few hundred frames of play.
+    #[arg(long)]
+    #[serde(default)]
+    pub find_tick: bool,
+    /// Stop at the first vblank where `NAME=VALUE` holds (or != < <= > >=; guide topic
+    /// fields). Repeatable: all must hold.
+    #[arg(long)]
+    #[serde(default)]
+    pub until: Vec<String>,
     /// Sample every Nth frame only (the last frame is always sampled).
     #[arg(long)]
     pub sample_every: Option<u64>,
     /// Write memory at the start of a run frame: `ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`
-    /// (VALUE decimal, -decimal or 0xHEX, or a fraction for fx formats; WIDTH 1/2/4, default 4;
+    /// (VALUE decimal, 0xHEX or a fraction for fx; WIDTH 1/2/4, default 4;
     /// default frame 0; a range re-applies it every frame). Reported under `pokes`; repeatable.
     #[arg(long = "poke")]
     #[serde(default, rename = "poke")]
@@ -326,7 +342,7 @@ pub enum GpuDrawFilter {
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct TraceArgs {
     /// Trace instructions: trace.txt (capped by --max-events; its `frame` column is
-    /// absolute, see its header), coverage.txt and calls.json.
+    /// absolute, see its header), coverage.txt, calls.json and executed.bin (for coverage).
     #[arg(long)]
     #[serde(default)]
     pub trace: bool,
@@ -417,6 +433,8 @@ pub(crate) fn brief(v: &Value) -> Value {
         "pad",
         "artifacts",
         "samples",
+        "tick_finder",
+        "until",
         "pokes",
         "screens",
         "states",
@@ -489,7 +507,9 @@ pub(crate) fn summary(v: &Value) -> Value {
     if v["watch"]["enabled"] == true {
         s["watch"] = pick(&v["watch"], &["hits", "recorded", "complete", "file"]);
     }
-    let sections: [(&str, &[&str]); 9] = [
+    let sections: [(&str, &[&str]); 11] = [
+        ("until", &["met", "run_frame", "values"]),
+        ("tick_finder", &["file", "fields", "pairs"]),
         ("profile", &["file", "cycles", "functions", "top"]),
         ("read_watch", &["hits", "recorded", "complete", "file"]),
         ("samples", &["file", "rows"]),

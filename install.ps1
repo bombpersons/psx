@@ -36,6 +36,9 @@ try {
     Expand-Archive -Path (Join-Path $tmp $asset) -DestinationPath (Join-Path $tmp 'x')
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     Copy-Item -Force (Join-Path $tmp 'x\psx.exe') (Join-Path $dir 'psx.exe')
+    # psx-clean is clean mode, for a port's implementer; older releases lack it.
+    $clean = Join-Path $tmp 'x\psx-clean.exe'
+    if (Test-Path $clean) { Copy-Item -Force $clean (Join-Path $dir 'psx-clean.exe') }
 } finally {
     Remove-Item -Recurse -Force $tmp
 }

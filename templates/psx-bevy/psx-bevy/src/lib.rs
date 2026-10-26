@@ -6,6 +6,11 @@
 //!
 //! A library, used by the psx toolkit's game template and by any Bevy game.
 //! Nothing here knows about a particular game.
+
+// A binary built with `dynamic` needs Bevy's shared library beside it, which
+// only `cargo run` and `cargo test` find. Shipping builds link it statically.
+#[cfg(all(feature = "dynamic", not(debug_assertions)))]
+compile_error!("release builds link Bevy statically: cargo build --release --no-default-features");
 pub mod assets;
 pub mod controller;
 pub mod controls;

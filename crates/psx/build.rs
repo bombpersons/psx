@@ -35,6 +35,27 @@ fn main() {
         h.update(bytes);
     }
     let source = format!("{:x}", h.finalize());
+    // The emulator alone: what decides how a run behaves. Evidence recorded
+    // on another emulator is recorded again (psx protocol next).
+    let mut files = Vec::new();
+    for item in
+        ["Cargo.lock", "crates/psx-core", "crates/psx-gpu", "crates/psx-gte", "crates/psx-media", "crates/psx-assets"]
+            .into_iter()
+            .chain(["crates/psx/src/run_native.rs", "crates/psx/src/run_native"])
+    {
+        collect(&root.join(item), &mut files);
+    }
+    files.sort();
+    let mut h = Sha256::new();
+    for p in files {
+        let name = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+        let bytes = std::fs::read(&p).unwrap();
+        h.update((name.len() as u64).to_le_bytes());
+        h.update(name.as_bytes());
+        h.update((bytes.len() as u64).to_le_bytes());
+        h.update(bytes);
+    }
+    println!("cargo:rustc-env=PSX_EMULATOR_ID=emu-{}", &format!("{:x}", h.finalize())[..16]);
     let profile = std::env::var("PROFILE").unwrap();
     println!("cargo:rustc-env=PSX_SOURCE_SHA256={source}");
     println!("cargo:rustc-env=PSX_BUILD_ID=src-{}-{profile}", &source[..16]);

@@ -20,8 +20,8 @@ integer behaviour only where the game's feel depends on it, and cite the evidenc
 
 Call MCP `guide({})` for a built-in workflow overview, or
 `guide({"topic":"input"})` for focused help. CLI equivalents are `psx guide` and
-`psx guide --topic input`. Topics include setup, input, code, assets, bevy and
-troubleshooting. Guidance ships in the executable and needs no skill loader,
+`psx guide --topic input`. Topics: setup, input, run, fields, states, cases, code,
+assets, bevy, port, protocol, cleanroom, barrier, review and troubleshooting. Guidance ships in the executable and needs no skill loader,
 checkout or network; it does not run an investigation or change project settings.
 
 Start with MCP `context({})` or `psx context --image 'media/Game.cue'` to discover
@@ -35,7 +35,7 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 
 | Command | What it gives you |
 |---|---|
-| `psx guide [--topic setup\|input\|code\|assets\|bevy\|troubleshooting]` | Embedded workflow guidance, topic navigation, build identity and the current path-resolution root; MCP `guide` exposes the same documentation |
+| `psx guide [--topic TOPIC]` | Embedded workflow guidance, topic navigation, build identity and the current path-resolution root; MCP `guide` exposes the same documentation |
 | `psx artifact-read PATH [--pointer /rows --offset N --limit N]` | Read artifact directories, JSON, logs, samples, text, raw bytes or PNGs. MCP `artifact_read` attaches PNGs automatically. Stream filters and cursors keep evidence bounded; see [agent workflow](docs/agent-workflow.md) |
 | `psx disc <image.cue> [--hash]` | Tracks, volume, file counts, SYSTEM.CNF and boot EXE header; `--hash` adds file hashes and `track_sha256`, per-track hashes of the sectors as read, which match across image formats |
 | `psx ls <image> [--filter NAME --offset N --limit N]` | Paginated ISO9660 entries: LBA, size, CD-XA attributes, streamed flag; full totals and index coverage |
@@ -56,7 +56,18 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | `psx addr 0x80010000` | Segment, memory region and folded offset |
 | `psx run [disc\|exe] [--bios B] --frames N [...]` | Bounded run on the native core, which gives exact observations, native save states, `--trace` for windowed instruction traces with coverage and call summaries, `--memcard1/2 PATH|new` for memory cards (written cards are saved to the run directory, never to your file), `--gpu-frame N` to decode one frame's GPU commands (primitives, texture pages, CLUTs, VRAM at the end of that frame, its drawing area, before/after/wireframe PNGs), and `--pad dualshock` for analog games (replay events take `"sticks": [lx, ly, rx, ry]`). Captures RAM, VRAM, screen, registers and an optional state. `--watch ADDR[:W]` reports CPU/DMA writers with PC and value; `--trace-cd` and `--trace-bios` log CD and BIOS activity; `--trace-spu` logs sound voice key on/off with pitch, volume, ADSR, storing PC and a sample hash that matches `assets extract`'s per-waveform `adpcm_sha256`, plus sound RAM uploads (`spu.jsonl`; the report groups key ons by sample); `--audio` records the mixed sound output (voices, reverb, CD/XA audio) to `audio.wav`; `--profile` writes CPU cycles by function to `profile.json` (with `--symbols` for names); `--replay`, `--from-state`/`--save-state`. The full report is always written to `<run_dir>/report.json`; `--brief` prints a summary with artifact descriptors, `--summary` only status, paths and counts for the requested observations |
 | `psx handoff [disc] --request TEXT [--from-state S] [--detach]` / `psx handoff-status DIR [--wait N]` | Ask the person at the machine to play to a point: a window shows the game with the request in a side panel (never over the game); keyboard and gamepad with a rebinding menu (F1 or Start+Select), sound, rewind (F2), quick save/load, start over, marks (F6: state, RAM and screen of a moment, labelled, with RAM diffs between marks in the report), and hand back with a note. Writes `state.bin`, `ram.bin`, `input.json` (their input as a `--replay` from the handoff start), `screen.png`, `marks/<n>/` and `report.json`. MCP `handoff` always detaches; poll `handoff_status`. See `guide --topic input` |
+| `psx handoff ... --expect NAME=VALUE` | The end state asked for, in `--until`'s syntax on field map names; the result says whether the person's state meets it |
+| `psx states make NAME --frames N --description TEXT [--from STATE] [--input ...\|--replay R] [--until ...]` | Run from a named state (or power-on) and name the state it ends in. Each state (`.psx/states/NAME.bin`) has a chain of runs from power-on in `notes/states/NAME.json` |
+| `psx states save SOURCE NAME --description TEXT` / `psx states list` | Name a state an earlier run or handoff wrote (its chain comes from the runs' reports); list the named states and whether each is present |
+| `psx states rebuild [NAMES...]` | Replay each chain from power-on on this build and compare the state it makes; run after updating psx. See `guide --topic states` |
+| `psx case record NAME --from-state S --frames N --subject SUBJECT [--sample ...] [--spec SPEC] [--role R] [--compare COL[=TOL]] [--coverage SPEC:COLS[:ROWS]]` | A case: the subject's fields every field from a start state with input. Writes `specs/cases/NAME.json`, its observation CSV (with the tick column and per-row timing) and a recipe in `notes/recordings/` |
+| `psx case check [NAMES...] [--write]` | Record cases again from their recipes on this build and compare with the published CSVs; `--write` replaces those that differ. See `guide --topic cases` |
+| `psx inventory [MEDIA] [--ram RUN]...` | Every function of every PS-X EXE on the disc and of the overlays RAM snapshots hold, with instructions, basic blocks and how each was found, the gaps no function covers, and the disc's file list. Written to `notes/inventory.json` beside `protocol.toml` (else `.psx/`), each run's totals to `inventory_history.jsonl` |
+| `psx coverage RUN... [--inventory F]` | What traced runs (`run --trace`) executed, per inventory function: blocks executed and not, calls, and the runs reaching it, in `coverage.json` beside the inventory |
 | `psx run --gpu-next-draw [--gpu-frame F --gpu-search-frames N]` | Capture the first completed frame with draw commands, starting at F (default 0), searching at most N frames (default 60, range 1..=600) within `--frames`. Reports selected relative and absolute frame numbers, or an explicit miss. See below |
+| `psx run --map samples.toml --sample player --sample camera_x` | A field map names the game's memory once: globals, struct layouts, subjects (one struct at an address) and arrays of them. Samples then take names (`player`, `player.x`, `placement[3].yaw`), and `samples.csv` carries names only. `samples.toml` in the project root is read without `--map`. With `[tick]` in the map, a `tick` column counts the game's logic ticks. See `guide --topic fields` |
+| `psx run --find-tick` | Every CPU store to main RAM counted by PC and address and grouped by the fields it happens in: the candidates for the store that ends one game tick, for the map's `[tick]` |
+| `psx run --until NAME=VALUE` | Stop at the first vblank where named samples hold (also `!=`, `<`, `<=`, `>`, `>=`; repeatable, all must hold). `--frames` caps the wait; `until.met` says whether it came |
 | `psx run --sample ADDR:FMT[:NAME]` | Per-frame values: `samples.csv` with `run_frame,frame,<columns>`, one row per vblank (`--sample-every N`), read byte-exact from RAM/scratchpad as `u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F` (e.g. `fx16.16`) or a watch-style width `1/2/4` (unsigned). MCP also takes typed `{"addr", "format", "name"}` entries. Row N is memory after N frames of the run |
 | `psx run --poke ADDR=VALUE[:W\|:FMT][@F\|@A..B\|@A..]` | Write memory at the start of run frame F (or every frame of a range) to test a hypothesis; listed under `pokes` in the report |
 | `psx run --watch-reads LO-HI\|ADDR[:W]` | CPU loads from a range: `reads.jsonl` and the top reader PCs (who reads a variable, which script bytes an interpreter consumes). `--watch-changes-only` drops stores that leave a watched value unchanged |
@@ -73,6 +84,7 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | `psx template create DIR [--name N] [--region ntsc\|pal] [--fields-per-tick N]` | Native Bevy port workspace: `psx-bevy`, `engine`, `game`, `tools/import` (see below) |
 | `psx template update [--dry-run]` | Replace the project's untouched `psx-bevy/` and `vendor/` files with this build's; `.psx-new` beside edited ones; report changed seeded files |
 | `psx template adopt DIR [--name N] [--region R] [--fields-per-tick N]` | Start tracking a template workspace that has no `.psx-template.toml` |
+| `psx port init`, `port adopt`, `barrier`, `publish`, `protocol`, `audit` | Clean-room ports: see [Clean-room ports](#clean-room-ports) |
 | `psx mcp [--jobs N]` | Every command above as an MCP tool over stdio (see below) |
 
 Input images can be `.cue`, a raw `.bin` (single data track), a cooked `.iso` or a CD `.chd`
@@ -262,15 +274,20 @@ clients that work across several studies and must not fall back to a default.
 Tools: `guide`, `context`, `bios_list`, `bios_install`, `artifact_read`,
 `disc`, `ls`, `extract`, `exe`, `sector`, `addr`, `xa`, `str`, `assets_scan`,
 `assets_extract`, `memcard`, `textures`,
-`run`, `native`, `loads`, `symbols`, `disasm`, `xrefs`, `ram_diff`, `ram_search`,
-`ram_view`, `template_create`, `gpu_replay`, `vram_diff`,
+`run`, `handoff`, `handoff_status`, `native`, `loads`, `symbols`, `disasm`, `xrefs`,
+`ram_diff`, `ram_search`, `ram_view`, `template_create`, `template_update`,
+`template_parser_create`, `gpu_replay`, `vram_diff`,
 `ghidra_decompile`, `ghidra_functions`, `ghidra_xrefs`, `ghidra_analyze`, `ghidra_doctor`,
-`ghidra_annotate`, `ghidra_export_symbols`.
+`ghidra_annotate`, `ghidra_export_symbols`,
+`states_make`, `states_save`, `states_list`, `states_rebuild`, `case_record`, `case_check`,
+`inventory`, `coverage`, `port_init`, `barrier_check`, `publish_stage`, `publish_cross`,
+`publish_check`, `protocol_next`, `protocol_report`, `audit`. (`port adopt` and
+`barrier hook` are command line only.)
 
 - Tool descriptions and parameter descriptions are deliberately short (parameters keep
   their first sentence; the CLI's `--help` has the full text). The `guide` tool's topics
-  (setup, input, run, code, assets, bevy, troubleshooting) hold argument rules and
-  recipes. A unit test keeps the published definitions under 50 KB.
+  hold argument rules and recipes. A unit test keeps the published definitions under
+  70.5 KB.
 - Arguments are the CLI's long flags with `_` for `-` (`trace_cd`, `gpu_frame`,
   `memcard1`, `from_state`); positional arguments are named fields (`image`, `source`,
   `run_dir`); repeatable flags are arrays (`watch`, `symbols`, `trace_range`). Unknown
@@ -466,6 +483,45 @@ and the player edit/step test in `game/tests/dev_mcp.rs` depend on the demo.
 [game/AGENTS.md](templates/psx-bevy/game/AGENTS.md#project-layout) lists the
 required changes and compilation check. Keep `dev-mcp` enabled across the
 agent iteration cycle to reduce dependency rebuilds when switching features.
+
+## Clean-room ports
+
+A port under the porting protocol has three repositories side by side, each its own
+agent's: the investigator reads the original (psx, the disc, Ghidra) and writes specs and
+cases; the reviewer approves what crosses and audits the port; the implementer builds the
+port from crossed specs and cases only, in the Bevy template, and never reaches psx. The
+plan is [docs/protocol-plan.md](docs/protocol-plan.md); `guide` topics `protocol`,
+`cleanroom`, `barrier` and `review` hold the procedure.
+
+| Command | What it gives you |
+|---|---|
+| `psx port init DEST --media DISC [--game NAME] [--name PKG] [--region R] [--fields-per-tick N]` | `DEST/investigate`, `DEST/clean` and `DEST/review`, each with its instructions, `.claude/settings.json` access rules and git. The investigator gets the disc and BIOS linked in and `protocol.toml` naming the others; the implementer the template, `data/` (every disc file but `SYSTEM.CNF` and the executables), the message check and clean mode as its only MCP server; the reviewer `reviews/` and `audits/` |
+| `psx port adopt --investigator INV [--implementer IMP] [--reviewer REV] [--legacy OLD]... [--media DISC] [--dry-run]` | The same files for repositories that already exist: missing files written (a new reviewer's repository if there is none), JSON settings extended, nothing overwritten. `--legacy` names a port written before the protocol by someone who read the original's code: the implementer is denied it. Ends with a `todo` list of what only a person settles; a second run changes nothing |
+| `psx template create DIR --role ROLE` | One of the three repositories alone, the other two assumed as siblings |
+| `psx barrier check [PATHS...] [--text T] [--notes DIR] [--name EXE] [--allow KIND]` | What would carry the original's code across: addresses, hex constants, code-shaped text, tool, symbol and executable names, eight-word runs copied from the notes. `.csv` files are checked as observations |
+| `psx barrier hook` | The implementer's `UserPromptSubmit` hook: checks each message the person sends it (settings in `.claude/barrier.json`), stops one that leaks, and logs every message to `notes/guidance.jsonl`, chained by sha256 |
+| `psx publish stage [PATHS...] [--state NAME]...` | What changed in `specs/` since the last crossing, checked by the barrier and written as a bundle with its hash, for the reviewer |
+| `psx publish cross BUNDLE` / `psx publish check` | Copy a bundle into the implementer's `specs/`, only if the reviewer's `reviews/HASH.json` approves it, logged in the implementer's `notes/published.jsonl`; check that the implementer's specs are exactly the approved bundles |
+| `psx protocol next --role investigator\|implementer\|reviewer` | The ledger, computed from the repositories' files (inventory, coverage, provenance, publishing log, cases, verdicts, clean mode's heldout results): each unit's stage and completion, written to `notes/ledger.json`, the implementer's `notes/NEXT.md`, and the role's work in order. Every session starts with it |
+| `psx protocol report [--plain]` | Completion by kind and stage, and an estimated date with its range, or why there is none; `--plain` is text for the person |
+| `psx audit [--judgment pass\|fail]` | The mechanical audit of the implementer's repository: approved specs only, every number in its code accounted for, no addresses, symbols or copied notes, crossings followed by questions, logs intact, no refused tool calls. With the reviewer's judgment it records the audit |
+
+**Clean mode.** `psx-clean` is a separate binary and MCP server (`clean` in the
+implementer's `.mcp.json`), the only part of psx the implementer reaches. It runs psx on
+the investigator's repository and answers in published names only: start states in
+`specs/states/`, crossed spec ids, glossary terms and the crossed cases' subjects and
+columns. Tools: `record` (an exploratory case to `notes/oracle/`, for the port's own case
+runner to replay), `compare` (the first row and column where the port's run of a case
+differs), `heldout` (the port's case runner on the cases the investigator kept back, under
+bubblewrap with no network and the other repositories hidden; pass, fail, waiting or
+no_result per case only), `screens` (the original's pictures, side by side with the
+port's) and `next`. Every request is logged to `notes/oracle.jsonl`, chained, and the audit
+reads it. The same tools are `psx-clean record|compare|heldout|screens|next` on the command
+line. Build it with `cargo build --release -p psx-clean`; releases ship it beside `psx`.
+
+The template's case runner (`psx_bevy::testing::Case`, `write_run`) replays a case file in
+the port and writes its verdict per spec (`NAME.result.json`), which `protocol next` reads;
+`game/tests/cases.rs`'s `cases_from_folder` runs every case in `PSX_CASES` for clean mode.
 
 ## Local data (never committed)
 

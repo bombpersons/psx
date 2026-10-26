@@ -27,11 +27,16 @@ rust-version = "1.97.1"
 publish = false
 
 [workspace.dependencies]
-psx-bevy = { path = "psx-bevy" }
-engine = { path = "engine" }
+# Each member's default feature `dynamic` links Bevy as one shared library
+# (`bevy/dynamic_linking`, turned on in psx-bevy/Cargo.toml): a change then
+# relinks each binary and test in seconds instead of copying all of Bevy into
+# every one. These three leave it to the member being built, so
+# `--no-default-features` (the release build) links Bevy in statically.
+psx-bevy = { path = "psx-bevy", default-features = false }
+engine = { path = "engine", default-features = false }
 # The game as a library, for mods (crates built on it). `package` is the
 # game's package name; the code calls it `game`.
-game = { path = "game", package = "psx-game" }
+game = { path = "game", package = "psx-game", default-features = false }
 # The importers (tools/import), a library the game runs on first start.
 import = { path = "tools/import" }
 bevy = { version = "=0.20.0", default-features = false, features = [
@@ -72,8 +77,9 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 # Iteration builds: your code at opt-level 1 (fast to rebuild), dependencies
 # (Bevy) at 3, so `cargo run` plays at close to release speed. Line tables
 # only keeps backtraces while cutting link time and target size.
-# `cargo build --release` compiles all of Bevy again in its own profile
-# (minutes, not seconds): use it for shipping and profiling, not iteration.
+# `cargo build --release --no-default-features` compiles all of Bevy again in
+# its own profile and links it in (minutes, not seconds): use it for shipping
+# and profiling, not iteration.
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"

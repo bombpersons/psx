@@ -1,7 +1,6 @@
 //! Gameplay tests: run the demo's rules headless for exact ticks with scripted
-//! buttons. For your game, compare rules against the original with
-//! `engine::testing::trajectory`: replay a `psx run --replay` file, record
-//! the values `psx run --sample` recorded, and `compare` every tick.
+//! buttons. For your game, compare rules against recordings of the original
+//! with the case runner (`tests/cases.rs`).
 use bevy::prelude::*;
 use engine::EnginePlugin;
 use engine::controller::Button;

@@ -1,0 +1,539 @@
+//! `psx coverage`: what a corpus of traced runs executed, per function of the
+//! inventory: its blocks executed and not, and the runs that reached it. So
+//! "exercised" is a query, and the blocks never executed are a list to
+//! classify (dead, debug only, unreachable on this disc, or needing a
+//! recording).
+//!
+//! Each run's executed.bin (run --trace) gives every RAM word executed with
+//! the instruction it executed as. A word is credited to the executable or
+//! overlay whose code holds that instruction there, so code loaded over
+//! other code is told apart; where several hold it, to the one holding most
+//! of the run of consecutive words it was executed in. Executed words no
+//! image holds (code changed at runtime, an overlay no snapshot held) and
+//! executed words in no function (a function the inventory missed) are
+//! listed. The BIOS shell's code in RAM (the inventory's bios_code) is
+//! credited but counted apart.
+use crate::Error;
+use crate::commands::{Ctx, Op, Outcome};
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+#[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CoverageArgs {
+    /// Traced runs (run --trace).
+    #[arg(required = true)]
+    pub runs: Vec<PathBuf>,
+    /// Inventory (default inventory's out).
+    #[arg(long)]
+    #[serde(default)]
+    pub inventory: Option<PathBuf>,
+    /// Output (default beside the inventory).
+    #[arg(long)]
+    #[serde(default)]
+    pub out: Option<PathBuf>,
+}
+
+/// Below this is the BIOS kernel's.
+const GAME_RAM: u32 = 0x8001_0000;
+
+struct Function {
+    entry: u32,
+    end: u32,
+    blocks: Vec<u32>,
+}
+
+/// An executable or overlay: its code at its address and its functions.
+struct Image {
+    kind: &'static str,
+    name: String,
+    base: u32,
+    words: Vec<u32>,
+    functions: Vec<Function>,
+    /// Executions of each word, over the corpus.
+    count: Vec<u64>,
+    /// The runs that executed each function.
+    runs: Vec<BTreeSet<usize>>,
+}
+
+impl Image {
+    fn word(&self, addr: u32) -> Option<u32> {
+        let k = addr.checked_sub(self.base)? as usize / 4;
+        self.words.get(k).copied()
+    }
+
+    fn function(&self, addr: u32) -> Option<usize> {
+        let i = self.functions.partition_point(|f| f.entry <= addr).checked_sub(1)?;
+        (addr < self.functions[i].end).then_some(i)
+    }
+}
+
+fn parse_hex(v: &Value) -> Option<u32> {
+    u32::from_str_radix(v.as_str()?, 16).ok()
+}
+
+fn functions(v: &Value) -> crate::Result<Vec<Function>> {
+    let mut out = Vec::new();
+    for f in v.as_array().into_iter().flatten() {
+        let (Some(entry), Some(end)) = (parse_hex(&f["entry"]), parse_hex(&f["end"])) else {
+            return Err(Error::malformed("inventory function without entry and end"));
+        };
+        let mut blocks: Vec<u32> = f["block_starts"].as_array().into_iter().flatten().filter_map(parse_hex).collect();
+        if blocks.is_empty() {
+            return Err(Error::malformed(
+                "the inventory has no block_starts (made by an older psx); take the inventory again",
+            ));
+        }
+        blocks.sort_unstable();
+        out.push(Function { entry, end, blocks });
+    }
+    out.sort_by_key(|f| f.entry);
+    Ok(out)
+}
+
+fn to_words(bytes: &[u8]) -> Vec<u32> {
+    bytes.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect()
+}
+
+/// The inventory's executables, read again from its disc, and its
+/// overlays and the BIOS's code in RAM, from the bytes inventory kept (or a snapshot still holding them).
+fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
+    use psx_media::disc::Disc;
+    use psx_media::iso9660::FileSystem;
+    let mut out = Vec::new();
+    let image = |kind, name: String, base, words: Vec<u32>, functions: Vec<Function>| {
+        let n = words.len();
+        let f = functions.len();
+        Image { kind, name, base, words, functions, count: vec![0; n], runs: vec![BTreeSet::new(); f] }
+    };
+    let exes = inv["executables"].as_array().cloned().unwrap_or_default();
+    if !exes.is_empty() {
+        let media = inv["media"].as_str().ok_or_else(|| Error::malformed("inventory without media"))?;
+        let disc = Disc::open(Path::new(media))?;
+        let fs = FileSystem::read(&disc)?;
+        for e in &exes {
+            let path = e["path"].as_str().unwrap_or_default();
+            let entry = fs.find(path).ok_or_else(|| Error::invalid(format!("{path}: not on {media}")))?;
+            let bytes = fs.read_file(&disc, entry)?;
+            let exe = psx_media::PsxExe::parse(&bytes)?;
+            let base = 0x8000_0000 | (exe.text_addr & 0x1F_FFFF);
+            out.push(image(
+                "executable",
+                path.into(),
+                base,
+                to_words(exe.payload(&bytes)),
+                functions(&e["functions"])?,
+            ));
+        }
+    }
+    let overlays = inv["overlays"].as_array().into_iter().flatten().map(|o| ("overlay", o));
+    let bios = inv["bios_code"].as_array().into_iter().flatten().map(|o| ("bios", o));
+    for (kind, o) in overlays.chain(bios) {
+        let (Some(lo), Some(hi)) = (parse_hex(&o["start"]), parse_hex(&o["end"])) else { continue };
+        let sha = o["sha256"].as_str().unwrap_or_default();
+        let range = (lo & 0x1F_FFFF) as usize..(hi & 0x1F_FFFF) as usize;
+        let kept = std::fs::read(crate::inventory::overlay_bytes(root, sha)).ok();
+        let from_snapshot = || {
+            o["snapshots"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).find_map(|s| {
+                let ram = crate::ram::load(Path::new(s)).ok()?.bytes;
+                Some(ram.get(range.clone())?.to_vec())
+            })
+        };
+        let same = |b: &Vec<u8>| crate::publish::sha256(b) == sha;
+        let bytes = kept
+            .filter(same)
+            .or_else(|| from_snapshot().filter(same))
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "overlay at {lo:08X}: its bytes are neither in .psx/overlays nor in a snapshot it lists; take the inventory again"
+                ))
+            })?;
+        let name = match o["file"]["path"].as_str() {
+            Some(p) => format!("{lo:08X} {p}"),
+            None => format!("{lo:08X}"),
+        };
+        let functions = if kind == "bios" { Vec::new() } else { functions(&o["functions"])? };
+        out.push(image(kind, name, lo, to_words(&bytes), functions));
+    }
+    Ok(out)
+}
+
+/// A run's executed.bin: `(address, instruction, executions)`.
+pub(crate) fn executed(run: &Path) -> crate::Result<Vec<(u32, u32, u64)>> {
+    let path = run.join("executed.bin");
+    let bytes = std::fs::read(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::invalid(format!("{}: no executed.bin; record it with run --trace", run.display()))
+        } else {
+            Error::io(&path, e)
+        }
+    })?;
+    let body = bytes
+        .strip_prefix(b"PSXEXEC1")
+        .ok_or_else(|| Error::malformed(format!("{}: not an executed.bin", path.display())))?;
+    Ok(body
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|r| {
+            let u = |a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
+            (u(0), u(4), u64::from_le_bytes(r[8..16].try_into().unwrap()))
+        })
+        .collect())
+}
+
+/// A traced run's call targets (calls.json), with the run frames of the
+/// first and last call.
+fn run_calls(run: &Path) -> Vec<(u32, i64, i64)> {
+    let Ok(text) = std::fs::read_to_string(run.join("calls.json")) else { return Vec::new() };
+    let v: Value = serde_json::from_str(&text).unwrap_or_default();
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let a = 0x8000_0000 | (c["address"].as_u64()? as u32 & 0x1F_FFFF);
+            Some((a, c["first_run_frame"].as_i64()?, c["last_run_frame"].as_i64()?))
+        })
+        .collect()
+}
+
+/// Consecutive addresses as `[start, end)` spans.
+fn spans(addrs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for a in addrs {
+        match out.last_mut() {
+            Some(s) if s.1 == a => s.1 = a + 4,
+            _ => out.push((a, a + 4)),
+        }
+    }
+    out
+}
+
+fn hex(a: u32) -> String {
+    format!("{a:08X}")
+}
+
+/// Credits one run's executed words to images; returns the words no image
+/// holds, and per image how many words were credited. Code loaded over
+/// other code shares nops and returns with what it replaced, so an image is
+/// credited a word only when it holds a stretch of what ran there: four
+/// consecutive executed words, the whole run of consecutive executed words
+/// around it, or whole basic blocks of one of its functions. Of several, the one with a function there, then the
+/// longest stretch, then the one the run otherwise ran.
+fn credit(images: &mut [Image], run: usize, words: &[(u32, u32, u64)]) -> (Vec<(u32, u32)>, Vec<u64>) {
+    let words: Vec<(u32, u32, u64)> = words.iter().copied().filter(|r| r.0 >= GAME_RAM).collect();
+    let holders: Vec<Vec<usize>> =
+        words.iter().map(|&(a, w, _)| (0..images.len()).filter(|&i| images[i].word(a) == Some(w)).collect()).collect();
+    // Per image, the length of the stretch of consecutive addresses it holds
+    // what ran at, around each; and the run of executed addresses around each.
+    let stretch = |held: Vec<u32>| -> BTreeMap<u32, (u32, u32)> {
+        let mut out = BTreeMap::new();
+        for (s, e) in spans(held) {
+            for a in (s..e).step_by(4) {
+                out.insert(a, (s, e));
+            }
+        }
+        out
+    };
+    let mut by_image: Vec<Vec<u32>> = vec![Vec::new(); images.len()];
+    for (j, h) in holders.iter().enumerate() {
+        for &i in h {
+            by_image[i].push(words[j].0);
+        }
+    }
+    let held: Vec<BTreeMap<u32, (u32, u32)>> = by_image.into_iter().map(stretch).collect();
+    let mut addrs: Vec<u32> = words.iter().map(|w| w.0).collect();
+    addrs.dedup();
+    let executed = stretch(addrs);
+    let mut unique = vec![0u64; images.len()];
+    for h in &holders {
+        if let [i] = h[..] {
+            unique[i] += 1;
+        }
+    }
+    let mut credited = vec![0u64; images.len()];
+    let mut missing = Vec::new();
+    for (j, &(a, w, n)) in words.iter().enumerate() {
+        let (es, ee) = executed[&a];
+        let span = |i: usize| held[i].get(&a).copied().unwrap_or((a, a));
+        let len = |i: usize| ((span(i).1 - span(i).0) / 4) as u64;
+        let blocks = |i: usize| {
+            let (s, e) = span(i);
+            images[i].function(a).is_some_and(|f| {
+                let f = &images[i].functions[f];
+                f.blocks.binary_search(&s).is_ok() && (e == f.end || f.blocks.binary_search(&e).is_ok())
+            })
+        };
+        let h: Vec<usize> =
+            holders[j].iter().copied().filter(|&i| len(i) >= 4 || span(i) == (es, ee) || blocks(i)).collect();
+        let key = |i: usize| (images[i].function(a).is_some(), len(i), unique[i]);
+        let best = h.iter().map(|&i| key(i)).max();
+        let chosen: Vec<usize> = h.iter().copied().filter(|&i| Some(key(i)) == best).collect();
+        if chosen.is_empty() {
+            missing.push((a, w));
+        }
+        for i in chosen {
+            let img = &mut images[i];
+            let at = ((a - img.base) / 4) as usize;
+            img.count[at] += n;
+            if let Some(f) = img.function(a) {
+                img.runs[f].insert(run);
+            }
+            credited[i] += 1;
+        }
+    }
+    (missing, credited)
+}
+
+#[derive(Default, Clone, Copy)]
+struct Totals {
+    functions: u64,
+    exercised: u64,
+    complete: u64,
+    blocks: u64,
+    blocks_executed: u64,
+    instructions: u64,
+    instructions_executed: u64,
+    outside_functions: u64,
+}
+
+impl Totals {
+    fn add(&mut self, o: &Totals) {
+        self.functions += o.functions;
+        self.exercised += o.exercised;
+        self.complete += o.complete;
+        self.blocks += o.blocks;
+        self.blocks_executed += o.blocks_executed;
+        self.instructions += o.instructions;
+        self.instructions_executed += o.instructions_executed;
+        self.outside_functions += o.outside_functions;
+    }
+
+    fn json(&self) -> Value {
+        let share = |a: u64, b: u64| if b == 0 { 0.0 } else { (a as f64 / b as f64 * 1e4).round() / 1e4 };
+        json!({
+            "functions": self.functions, "functions_exercised": self.exercised, "functions_complete": self.complete,
+            "blocks": self.blocks, "blocks_executed": self.blocks_executed,
+            "instructions": self.instructions, "instructions_executed": self.instructions_executed,
+            "executed_outside_functions": self.outside_functions,
+            "block_share": share(self.blocks_executed, self.blocks),
+        })
+    }
+}
+
+/// Per function: its blocks executed, the ones not, the runs reaching it.
+fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
+    let mut t = Totals::default();
+    let mut rows = Vec::new();
+    let mut in_function = vec![false; img.words.len()];
+    for (fi, f) in img.functions.iter().enumerate() {
+        let k = |a: u32| ((a - img.base) / 4) as usize;
+        let ran = |a: u32| img.count.get(k(a)).is_some_and(|&n| n > 0);
+        for a in (f.entry..f.end).step_by(4) {
+            if let Some(x) = in_function.get_mut(k(a)) {
+                *x = true;
+            }
+        }
+        let mut unexecuted = Vec::new();
+        let mut blocks_executed = 0u64;
+        for (bi, &s) in f.blocks.iter().enumerate() {
+            let e = f.blocks.get(bi + 1).copied().unwrap_or(f.end);
+            if (s..e).step_by(4).any(ran) {
+                blocks_executed += 1;
+            } else {
+                unexecuted.push(json!([hex(s), hex(e)]));
+            }
+        }
+        let instructions = ((f.end - f.entry) / 4) as u64;
+        let executed = (f.entry..f.end).step_by(4).filter(|&a| ran(a)).count() as u64;
+        t.functions += 1;
+        t.exercised += (blocks_executed > 0) as u64;
+        t.complete += (unexecuted.is_empty()) as u64;
+        t.blocks += f.blocks.len() as u64;
+        t.blocks_executed += blocks_executed;
+        t.instructions += instructions;
+        t.instructions_executed += executed;
+        let mut row = json!({
+            "entry": hex(f.entry), "instructions": instructions, "executed": executed,
+            "blocks": f.blocks.len(), "blocks_executed": blocks_executed,
+            "calls": img.count.get(k(f.entry)).copied().unwrap_or(0),
+            "runs": img.runs[fi].iter().collect::<Vec<_>>(),
+        });
+        if blocks_executed > 0 && !unexecuted.is_empty() {
+            row["unexecuted"] = json!(unexecuted);
+        }
+        rows.push(row);
+    }
+    let outside: Vec<u32> = (0..img.words.len())
+        .filter(|&k| img.count[k] > 0 && !in_function[k])
+        .map(|k| img.base + 4 * k as u32)
+        .collect();
+    t.outside_functions = outside.len() as u64;
+    let outside = spans(outside)
+        .into_iter()
+        .map(|(s, e)| json!({"start": hex(s), "end": hex(e), "words": (e - s) / 4}))
+        .collect();
+    (rows, outside, t)
+}
+
+impl CoverageArgs {
+    fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
+        let at = |p: &Path| if p.is_absolute() { p.to_path_buf() } else { ctx.root.join(p) };
+        let inv_path = self.inventory.as_ref().map(|p| at(p)).unwrap_or_else(|| crate::inventory::default_out(ctx));
+        let text = std::fs::read_to_string(&inv_path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Error::invalid(format!("{}: no inventory; take one with inventory first", inv_path.display()))
+            } else {
+                Error::io(&inv_path, e)
+            }
+        })?;
+        let inv: Value =
+            serde_json::from_str(&text).map_err(|e| Error::malformed(format!("{}: {e}", inv_path.display())))?;
+        let mut images = images(&ctx.root, &inv)?;
+
+        let mut runs = Vec::new();
+        // Each run's call targets, with the run frames they were called first and last.
+        let mut calls: Vec<Vec<(u32, i64, i64)>> = Vec::new();
+        // Executed words no image holds, with the runs that executed them.
+        let mut missing: BTreeMap<(u32, u32), BTreeSet<usize>> = BTreeMap::new();
+        for (r, dir) in self.runs.iter().map(|d| at(d)).enumerate() {
+            let words = executed(&dir)?;
+            calls.push(run_calls(&dir));
+            let (miss, credited) = credit(&mut images, r, &words);
+            let game = words.iter().filter(|w| w.0 >= GAME_RAM).count();
+            for m in &miss {
+                missing.entry(*m).or_default().insert(r);
+            }
+            let per: serde_json::Map<String, Value> = images
+                .iter()
+                .zip(&credited)
+                .filter(|(_, &n)| n > 0)
+                .map(|(img, &n)| (img.name.clone(), json!(n)))
+                .collect();
+            runs.push(json!({
+                "run": dir, "words_executed": game, "words_in_no_image": miss.len(), "words_by_image": per,
+            }));
+        }
+
+        let mut totals = Totals::default();
+        let mut out_images = Vec::new();
+        let mut bios_words = 0u64;
+        for img in &images {
+            if img.kind == "bios" {
+                bios_words += img.count.iter().filter(|&&n| n > 0).count() as u64;
+                continue;
+            }
+            let (functions, outside, t) = report(img);
+            totals.add(&t);
+            out_images.push(json!({
+                "kind": img.kind, "name": img.name, "start": hex(img.base),
+                "totals": t.json(), "executed_outside_functions": outside, "functions": functions,
+            }));
+        }
+        // Words no image holds, by span: with the image covering the address
+        // when there is one (its code differs there: changed at runtime).
+        let mut no_image = Vec::new();
+        let mut addrs: BTreeMap<u32, BTreeSet<usize>> = BTreeMap::new();
+        for ((a, _), r) in &missing {
+            addrs.entry(*a).or_default().extend(r);
+        }
+        for (s, e) in spans(addrs.keys().copied()) {
+            let covering: Vec<&str> = images.iter().filter(|i| i.word(s).is_some()).map(|i| i.name.as_str()).collect();
+            let rs: BTreeSet<usize> = addrs.range(s..e).flat_map(|(_, r)| r.iter().copied()).collect();
+            // When each run called into it: a snapshot then holds it.
+            let called: Vec<Value> = rs
+                .iter()
+                .filter_map(|&r| {
+                    let c = calls[r].iter().filter(|c| c.0 >= s && c.0 < e);
+                    let (lo, hi) = c.fold((i64::MAX, i64::MIN), |(lo, hi), c| (lo.min(c.1), hi.max(c.2)));
+                    (lo <= hi).then(|| json!({"run": r, "first_run_frame": lo, "last_run_frame": hi}))
+                })
+                .collect();
+            no_image.push(json!({
+                "start": hex(s), "end": hex(e), "words": (e - s) / 4,
+                "differs_from": covering, "runs": rs, "called": called,
+            }));
+        }
+        let mut t = totals.json();
+        t["bios_words_executed"] = json!(bios_words);
+        let summary = json!({
+            "totals": t,
+            "words_in_no_image": missing.len(),
+        });
+        let out = self.out.as_ref().map(|p| at(p)).unwrap_or_else(|| inv_path.with_file_name("coverage.json"));
+        let doc = json!({
+            "coverage": 1, "made": crate::publish::utc_now(), "psx": crate::context::version(),
+            "inventory": {"path": inv_path, "made": inv["made"]},
+            "how": "each run's executed words, credited to the executable or overlay whose code holds that instruction at that address; a block is executed when any of its words is; runs are indices into runs",
+            "runs": runs, "totals": summary["totals"], "in_no_image": no_image, "images": out_images,
+        });
+        if let Some(d) = out.parent() {
+            std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+        }
+        let text = serde_json::to_string_pretty(&doc).unwrap_or_default() + "\n";
+        std::fs::write(&out, text).map_err(|e| Error::io(&out, e))?;
+        Ok(json!({
+            "out": out, "totals": summary["totals"], "words_in_no_image": summary["words_in_no_image"],
+            "images": doc["images"].as_array().into_iter().flatten().map(|i| json!({"name": i["name"], "totals": i["totals"]})).collect::<Vec<_>>(),
+            "runs": runs.iter().map(|r| json!({"run": r["run"], "words_executed": r["words_executed"], "words_in_no_image": r["words_in_no_image"]})).collect::<Vec<_>>(),
+            "next": "artifact_read the coverage for each function's unexecuted blocks: classify them, or record the corpus reaching them; executed_outside_functions and in_no_image mean the inventory missed code (take it again with these runs as ram)",
+        }))
+    }
+}
+
+impl Op for CoverageArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::result(self.run(ctx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn img(name: &str, base: u32, words: Vec<u32>, functions: Vec<Function>) -> Image {
+        let (n, f) = (words.len(), functions.len());
+        Image {
+            kind: "overlay",
+            name: name.into(),
+            base,
+            words,
+            functions,
+            count: vec![0; n],
+            runs: vec![BTreeSet::new(); f],
+        }
+    }
+
+    #[test]
+    fn code_loaded_over_code_is_credited_to_the_image_that_holds_it() {
+        // Two overlays at one address share their first word (a prologue).
+        let base = 0x8010_0000;
+        let f = || vec![Function { entry: base, end: base + 16, blocks: vec![base, base + 8] }];
+        let mut images =
+            vec![img("a", base, vec![0x27BD_FFE8, 1, 2, 3], f()), img("b", base, vec![0x27BD_FFE8, 5, 6, 7], f())];
+        // The run ran b's first block only, and a word neither holds.
+        let words = [(base, 0x27BD_FFE8, 3), (base + 4, 5, 3), (base + 8, 9, 1)];
+        let (missing, credited) = credit(&mut images, 0, &words);
+        assert_eq!(missing, vec![(base + 8, 9)]);
+        assert_eq!(credited, vec![0, 2]);
+        let (rows, outside, t) = report(&images[1]);
+        assert_eq!(rows[0]["blocks_executed"], 1);
+        assert_eq!(rows[0]["unexecuted"], json!([["80100008", "80100010"]]));
+        assert_eq!(rows[0]["calls"], 3);
+        assert!(outside.is_empty());
+        assert_eq!((t.exercised, t.complete), (1, 0));
+        let (_, _, t) = report(&images[0]);
+        assert_eq!(t.exercised, 0);
+    }
+
+    #[test]
+    fn executed_words_in_no_function_are_listed() {
+        let base = 0x8010_0000;
+        let mut images =
+            vec![img("a", base, vec![1, 2, 3, 4], vec![Function { entry: base, end: base + 8, blocks: vec![base] }])];
+        credit(&mut images, 0, &[(base, 1, 1), (base + 8, 3, 1), (base + 12, 4, 1)]);
+        let (_, outside, t) = report(&images[0]);
+        assert_eq!(outside, vec![json!({"start": "80100008", "end": "80100010", "words": 2})]);
+        assert_eq!((t.complete, t.outside_functions), (1, 2));
+    }
+}

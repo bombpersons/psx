@@ -13,7 +13,8 @@ name = "game"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["dynamic"]
+dynamic = ["engine/dynamic"]
 dev-mcp = ["engine/dev-mcp"]
 
 [dependencies]
