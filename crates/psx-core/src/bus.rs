@@ -46,6 +46,11 @@ pub struct IoAccess {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Bus {
     pub ram: Vec<u8>,
+    /// Stores that reached each 4 KiB RAM page (CPU, DMA, sideload, pokes),
+    /// counted only while it is not empty (run --trace sets it, to tell
+    /// when code it copied may have changed). Analysis only.
+    #[serde(skip)]
+    pub page_writes: Vec<u32>,
     #[serde(with = "crate::state::big_array")]
     pub scratch: [u8; SCRATCH_SIZE],
     /// Not saved: restored from the BIOS file (its hash is in the state header).
@@ -161,6 +166,7 @@ impl Bus {
         let cdrom = crate::cdrom::Cdrom::new(None, crate::cdrom::bios_scex(&b));
         Bus {
             ram: vec![0; RAM_SIZE],
+            page_writes: Vec::new(),
             scratch: [0; SCRATCH_SIZE],
             bios: b,
             io: vec![0; 0x2000],
@@ -198,6 +204,27 @@ impl Bus {
             unhandled_reads: Default::default(),
             obs: Default::default(),
             cur_pc: 0,
+        }
+    }
+
+    /// Counts a store to RAM offset `o` for [`Bus::page_writes`].
+    #[inline(always)]
+    pub(crate) fn ram_written(&mut self, o: usize) {
+        if let Some(c) = self.page_writes.get_mut(o >> 12) {
+            *c = c.wrapping_add(1);
+        }
+    }
+
+    /// Counts a store to every RAM page in `[o, o + n)` (wrapping in RAM),
+    /// for writes made outside the bus (pokes, sideloading).
+    pub fn ram_written_range(&mut self, o: usize, n: usize) {
+        if self.page_writes.is_empty() || n == 0 {
+            return;
+        }
+        let pages = self.page_writes.len();
+        for p in (o >> 12)..=((o + n - 1) >> 12) {
+            let c = &mut self.page_writes[p % pages];
+            *c = c.wrapping_add(1);
         }
     }
 
@@ -902,6 +929,7 @@ impl Bus {
         // Fast path: RAM with no write watch armed.
         if p < 0x0080_0000 && !self.obs.active() {
             let o = p as usize % RAM_SIZE;
+            self.ram_written(o);
             match width {
                 Width::Word => self.ram[o..o + 4].copy_from_slice(&value.to_le_bytes()),
                 Width::Half => self.ram[o..o + 2].copy_from_slice(&(value as u16).to_le_bytes()),
@@ -955,6 +983,7 @@ impl Bus {
                         dma_channel: None,
                     });
                 }
+                self.ram_written(o);
                 put(&mut self.ram, o)
             }
             0x1F00_0000..=0x1F7F_FFFF => {}

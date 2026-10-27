@@ -343,7 +343,7 @@ pub enum GpuDrawFilter {
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct TraceArgs {
     /// Trace instructions: trace.txt (capped by --max-events; its `frame` column is
-    /// absolute, see its header), coverage.txt, calls.json, executed.bin (for coverage) and code.bin (each code page as it ran, for inventory).
+    /// absolute, see its header), coverage.txt, calls.json, executed.bin (for coverage) and code.bin (each code page's history, for inventory).
     #[arg(long)]
     #[serde(default)]
     pub trace: bool,

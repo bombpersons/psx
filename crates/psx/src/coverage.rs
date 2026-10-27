@@ -173,18 +173,21 @@ pub(crate) fn executed(run: &Path) -> crate::Result<Vec<(u32, u32, u64)>> {
             Error::io(&path, e)
         }
     })?;
+    let u = |r: &[u8], a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
+    let n = |r: &[u8], a: usize| u64::from_le_bytes(r[a..a + 8].try_into().unwrap());
+    if let Some(body) = bytes.strip_prefix(b"PSXEXEC1") {
+        return Ok(body.as_chunks::<16>().0.iter().map(|r| (u(r, 0), u(r, 4), n(r, 8))).collect());
+    }
+    // Each record names the code page copy it ran from too; words run
+    // from several copies are summed here.
     let body = bytes
-        .strip_prefix(b"PSXEXEC1")
+        .strip_prefix(b"PSXEXEC2")
         .ok_or_else(|| Error::malformed(format!("{}: not an executed.bin", path.display())))?;
-    Ok(body
-        .as_chunks::<16>()
-        .0
-        .iter()
-        .map(|r| {
-            let u = |a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
-            (u(0), u(4), u64::from_le_bytes(r[8..16].try_into().unwrap()))
-        })
-        .collect())
+    let mut words: BTreeMap<(u32, u32), u64> = BTreeMap::new();
+    for r in body.as_chunks::<20>().0 {
+        *words.entry((u(r, 4), u(r, 8))).or_default() += n(r, 12);
+    }
+    Ok(words.into_iter().map(|((a, w), c)| (a, w, c)).collect())
 }
 
 /// A traced run's call targets (calls.json), with the run frames of the
