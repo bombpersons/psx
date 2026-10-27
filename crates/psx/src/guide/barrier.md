@@ -109,7 +109,11 @@ those bytes.
   port's notes/published.jsonl the bundle, the review's sha256, the files
   and their sha256 and the sha256 of the entry before, and lists
   replaced_unapproved: files that had arrived another way and that it
-  overwrote.
+  overwrote. It writes the port's notes/changes/HASH.md: each spec's
+  lines lost (-) and gained (+) with a line of context, new and removed
+  specs, and the other files by count, so the implementer finds the rules
+  withdrawn without diffing every spec; the implementer's NEXT.md points
+  to the latest one (read_changes).
 - check, and every cross, tests the invariant: the port's specs/ is
   exactly what the logged bundles add up to, with each one's review still
   there, still approving and unchanged, and the log's chain intact. The

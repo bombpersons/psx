@@ -57,6 +57,18 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     if obs.find_tick {
         m.bus.obs.census = Some(Default::default());
     }
+    // The map's [map] holds, tested on each row that samples its names.
+    let holds = map.as_ref().map(|f| f.holds.as_slice()).filter(|_| cols.iter().any(|c| c.mapped)).unwrap_or(&[]);
+    let mut not_holding: Option<(u64, u64, Value)> = None;
+    // Rows where they fail, and the first such row with its values.
+    let mut held = |rel: u64, m: &Machine| {
+        if !holds.iter().all(|u| u.holds(&m.bus.ram, &m.bus.scratch)) {
+            match &mut not_holding {
+                Some(x) => x.0 += 1,
+                None => not_holding = Some((1, rel, crate::until::check(holds, &m.bus.ram, &m.bus.scratch))),
+            }
+        }
+    };
     let mut sampler =
         (!cols.is_empty()).then(|| crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1), tick.is_some()));
     let mut pokes =
@@ -155,7 +167,11 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
                 last_ticks = t;
             }
             if let Some(s) = &mut sampler {
+                let rows = s.rows;
                 s.row(rel, m.bus.frames, ticks(&m), &m.bus.ram, &m.bus.scratch, false);
+                if s.rows > rows {
+                    held(rel, &m);
+                }
             }
             if let Err(e) = frame_outputs(&m, rel, obs, &dir, &media_id, &mut screens, &mut states) {
                 boundary_err = Some(e);
@@ -228,7 +244,11 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             *per_field.entry(ticks(&m) - last_ticks).or_default() += 1;
         }
         if let Some(s) = &mut sampler {
+            let rows = s.rows;
             s.row(rel, m.bus.frames, ticks(&m), &m.bus.ram, &m.bus.scratch, true);
+            if s.rows > rows {
+                held(rel, &m);
+            }
         }
         frame_outputs(&m, rel, obs, &dir, &media_id, &mut screens, &mut states)?;
     }
@@ -344,6 +364,10 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
                 }).collect::<Vec<_>>(),
                 "timing": "row N = memory at the Nth vblank of the run (row 0 = the starting memory), before that frame's replay input and pokes",
                 "map": map.as_ref().map(|f| f.report()),
+                "map_not_holding": not_holding.as_ref().map(|(rows, first, check)| json!({
+                    "rows": rows, "first_run_frame": first, "there": check,
+                    "warning": "the map's [map] holds failed on these rows: its names may read another level's memory there (a map for another level?)",
+                })),
                 "tick": tick.as_ref().map(|_| json!({
                     "ticks": ticks(&m),
                     "fields_by_ticks_run": per_field.iter().map(|(k, v)| (k.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),

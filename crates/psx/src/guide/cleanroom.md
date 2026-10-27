@@ -129,6 +129,10 @@ working files there, and passes on neither psx's output nor its messages.
   was enough, on cases the implementer never saw. Without bubblewrap it
   runs unsandboxed and says so, and the audit marks it.
 - screens: the original's pictures by row, side by side with the port's.
+- template_update: psx template update on the implementer's own
+  repository, which touches only the template's code (psx-bevy/, vendor/)
+  and carries nothing of the original; the result lists what changed and
+  what to merge.
 So the investigator publishes, for clean mode, the names it may ask by in
 the glossary (units and meanings, never the original's identifiers; the
 field map's names are those names) and start states with descriptions

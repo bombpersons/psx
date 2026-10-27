@@ -43,6 +43,8 @@ enum Command {
     Screens(clean::ScreensArgs),
     /// What the implementer does now (notes/NEXT.md, brought up to date).
     Next,
+    /// Update this repository's psx-bevy template code to this psx (psx template update).
+    TemplateUpdate(clean::TemplateUpdateArgs),
     /// Serve these as MCP tools over stdio.
     Mcp,
 }
@@ -63,6 +65,7 @@ fn main() -> ExitCode {
         Command::Heldout(a) => clean.call("heldout", serde_json::to_value(a).unwrap_or_default()),
         Command::Screens(a) => clean.call("screens", serde_json::to_value(a).unwrap_or_default()),
         Command::Next => clean.call("next", serde_json::json!({})),
+        Command::TemplateUpdate(a) => clean.call("template_update", serde_json::to_value(a).unwrap_or_default()),
     };
     match result {
         Ok(v) => {

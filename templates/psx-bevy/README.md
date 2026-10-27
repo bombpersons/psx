@@ -79,3 +79,19 @@ version is written beside them as `<file>.psx-new`: merge it into your file
 the template only seeded (everything else) are never touched; when their
 template version changed, the update copies it under `.psx/template-update/`
 for you to compare.
+
+In clean mode, where the implementer may not run `psx`, the clean server's
+`template_update` does the same: it touches only the template's own code.
+
+After an update:
+
+- Resolution fails on `bevy_dylib` (no matching version): cargo's cached
+  crates index predates the Bevy release the template now names. Delete the
+  stale entry (`~/.cargo/registry/index/*/.cache/be/vy/bevy_dylib`) and build
+  again.
+- Doctests stop with `libstd-*.so` not found: with dynamic linking a test
+  loads Rust's standard library as a shared library, and that toolchain's
+  rustdoc did not put it on the loader path. Run them with
+  `LD_LIBRARY_PATH="$(rustc --print target-libdir)" cargo test --workspace --all-features`
+  (`DYLD_FALLBACK_LIBRARY_PATH` on macOS), or leave the doctests out with
+  `--lib --bins --tests`.

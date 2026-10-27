@@ -125,6 +125,12 @@ until.met false means it never came.
   serves the whole game. A pointer read as null or outside memory leaves
   the cell empty and an until condition on it false; a case compares an
   empty cell as absent, so a port's run matches it with an empty cell.
+- A map right for one level only (its objects at fixed addresses): say
+  where it is right, so another level's memory is not read under its
+  names. [map] holds lists conditions in until's syntax, e.g.
+  holds = ["level=1"] with level a global; a sample row where one fails
+  is counted in samples.map_not_holding, and case record refuses a start
+  state where they fail and warns of later rows.
 
 ## Driving menus
 

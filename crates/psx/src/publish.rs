@@ -12,7 +12,9 @@
 //! and appends it to the implementer's `notes/published.jsonl`, each entry
 //! carrying the sha256 of the one before. `check` (and every crossing)
 //! tests the invariant: the implementer's `specs/` is exactly what the
-//! approved bundles in that log add up to.
+//! approved bundles in that log add up to. Each crossing also writes
+//! `notes/changes/HASH.md` there: the lines each spec lost and gained, so
+//! the implementer finds the rules withdrawn without diffing every spec.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -204,6 +206,94 @@ pub(crate) struct Log {
     pub(crate) state: BTreeMap<String, String>,
     breaks: Vec<String>,
     last: Option<String>,
+}
+
+/// The lines of `old` and `new` that differ, as `-`/`+` hunks with a line
+/// of context either side; `None` when they are too long to compare.
+fn line_diff(old: &str, new: &str) -> Option<String> {
+    let (a, b): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    if a.len().saturating_mul(b.len()) > 16_000_000 {
+        return None;
+    }
+    // lcs[i][j]: the longest common run of a[i..] and b[j..].
+    let w = b.len() + 1;
+    let mut lcs = vec![0u32; (a.len() + 1) * w];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            lcs[i * w + j] =
+                if a[i] == b[j] { lcs[(i + 1) * w + j + 1] + 1 } else { lcs[(i + 1) * w + j].max(lcs[i * w + j + 1]) };
+        }
+    }
+    let mut ops = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() || j < b.len() {
+        if i < a.len() && j < b.len() && a[i] == b[j] {
+            ops.push((' ', a[i]));
+            (i, j) = (i + 1, j + 1);
+        } else if i < a.len() && (j == b.len() || lcs[(i + 1) * w + j] >= lcs[i * w + j + 1]) {
+            ops.push(('-', a[i]));
+            i += 1;
+        } else {
+            ops.push(('+', b[j]));
+            j += 1;
+        }
+    }
+    let near = |k: usize| ops[k.saturating_sub(1)..(k + 2).min(ops.len())].iter().any(|o| o.0 != ' ');
+    let mut out = String::new();
+    let mut gap = false;
+    for (k, (op, line)) in ops.iter().enumerate() {
+        if *op != ' ' || near(k) {
+            if gap && !out.is_empty() {
+                out += "...\n";
+            }
+            gap = false;
+            out += &format!("{op} {line}\n");
+        } else {
+            gap = true;
+        }
+    }
+    Some(out)
+}
+
+/// What a crossing changes in the specs, for `notes/changes/HASH.md`:
+/// each spec's lines lost and gained, and the cases by count.
+fn changes_note(
+    hash: &str,
+    target: &Path,
+    dir: &Path,
+    files: &[(String, String, Option<String>)],
+    removed: &[(String, String)],
+) -> crate::Result<String> {
+    let mut out = format!(
+        "# What bundle {} changed\n\nCrossed {}. Lines a spec lost (-) are rules withdrawn or rewritten: code\nthat only they backed has lost its backing.\n",
+        &hash[..16.min(hash.len())],
+        utc_now()
+    );
+    let (mut new_cases, mut changed_cases) = (0, 0);
+    for (rel, _, was) in files {
+        if !rel.ends_with(".md") {
+            match was {
+                Some(_) => changed_cases += 1,
+                None => new_cases += 1,
+            }
+            continue;
+        }
+        let new = String::from_utf8_lossy(&read(&dir.join("files").join(rel))?).into_owned();
+        match std::fs::read_to_string(target.join(rel)).ok().filter(|_| was.is_some()) {
+            None => out += &format!("\n## {rel} (new)\n"),
+            Some(old) => match line_diff(&old, &new) {
+                Some(d) if d.is_empty() => {}
+                Some(d) => out += &format!("\n## {rel}\n\n```diff\n{d}```\n"),
+                None => out += &format!("\n## {rel} (changed; too long to compare line by line)\n"),
+            },
+        }
+    }
+    for (rel, _) in removed.iter().filter(|(r, _)| r.ends_with(".md")) {
+        out += &format!("\n## {rel} (removed)\n");
+    }
+    let gone = removed.iter().filter(|(r, _)| !r.ends_with(".md")).count();
+    out += &format!("\nOther files (cases, observations): {new_cases} new, {changed_cases} changed, {gone} removed.\n");
+    Ok(out)
 }
 
 fn log_path(to: &Path) -> PathBuf {
@@ -615,6 +705,8 @@ impl PublishCrossArgs {
             .filter(|(p, sha, _)| have.get(p).is_some_and(|h| log.state.get(p) != Some(h) && h != sha))
             .map(|(p, _, _)| p)
             .collect();
+        // Read against the specs as they were, before they are replaced.
+        let note = changes_note(&hash, &target, &dir, &files, &removed)?;
         for (rel, _, _) in &files {
             write(&target.join(rel), &read(&dir.join("files").join(rel))?)?;
         }
@@ -638,6 +730,8 @@ impl PublishCrossArgs {
         text += &line;
         text.push('\n');
         write(&log.path, text.as_bytes())?;
+        let changes = to.join("notes/changes").join(format!("{hash}.md"));
+        write(&changes, note.as_bytes())?;
         log = read_log(&to)?;
         let after = invariant(&to, &reviews, &log)?;
         let holds = after["holds"] == json!(true);
@@ -645,7 +739,7 @@ impl PublishCrossArgs {
             holds,
             json!({
                 "status": "crossed", "bundle": hash, "written": files.len(), "removed": removed.len(),
-                "log": log.path, "replaced_unapproved": replaced, "invariant": after,
+                "log": log.path, "changes": changes, "replaced_unapproved": replaced, "invariant": after,
                 "next": if holds { "the implementer's specs are the approved bundles".to_string() }
                     else { "the implementer's specs differ from the approved bundles: see invariant; a file that arrived another way is a breach to report".to_string() },
             }),
@@ -687,6 +781,14 @@ mod tests {
         let c = bundle_hash(&[("a.md".into(), "11".into(), None)], &[("b.md".into(), "33".into())]);
         assert!(a != b && a != c && b != c);
         assert_eq!(a, bundle_hash(&[("a.md".into(), "11".into(), None)], &[]));
+    }
+
+    #[test]
+    fn line_diff_shows_lines_lost_and_gained() {
+        let old = "# S\na\nb\nc\nd\ne\nf\ng\n";
+        let new = "# S\na\nb\nC\nd\ne\nf\ng\nh\n";
+        assert_eq!(super::line_diff(old, new).unwrap(), "  b\n- c\n+ C\n  d\n...\n  g\n+ h\n");
+        assert_eq!(super::line_diff(old, old).unwrap(), "");
     }
 
     #[test]
