@@ -545,6 +545,9 @@ impl Machine {
             let a = (exe.bss_addr.wrapping_add(i) as usize) & 0x1F_FFFF;
             self.bus.ram[a] = 0;
         }
+        let text = exe.payload(bytes).len();
+        self.bus.ram_written_range(exe.text_addr as usize & 0x1F_FFFF, text);
+        self.bus.ram_written_range(exe.bss_addr as usize & 0x1F_FFFF, exe.bss_size as usize);
         self.cpu.set_pc(exe.pc);
         if exe.gp != 0 {
             self.cpu.regs[28] = exe.gp;

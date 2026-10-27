@@ -112,6 +112,10 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     let mut profiler = a.profile.then(|| psx_core::profile::Profiler::new(m.cpu.cycles));
     let start_pc = m.cpu.pc;
     let mut tracer = if a.trace.trace { Some(make_tracer(&a, &scopes, m.bus.frames, &dir)?) } else { None };
+    if tracer.is_some() {
+        // The tracer copies a code page again when a store changed it.
+        m.bus.page_writes = vec![0; psx_core::bus::RAM_SIZE / psx_core::trace::CODE_PAGE];
+    }
 
     let started = Instant::now();
     // Frames count from power-on, including any BIOS boot spent before an EXE
@@ -180,6 +184,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             for p in pokes.iter_mut().filter(|p| p.due(rel)) {
                 let bus = &mut m.bus;
                 p.apply(rel, &mut bus.ram, &mut bus.scratch);
+                bus.ram_written_range(0, psx_core::bus::RAM_SIZE);
             }
         }
         apply_due(&mut m, &events, &mut next, rel, &mut applied_input);
@@ -761,38 +766,56 @@ fn trace_outputs(
         let f = name(s).and_then(|v| v["name"].as_str().map(|n| format!(" {n}"))).unwrap_or_default();
         text += &format!("{s:08x} {e:08x} {n} {total}{f}\n");
     }
-    let mut calls: Vec<(u32, &psx_core::trace::CallStat)> = t.calls.iter().map(|(k, v)| (*k, v)).collect();
-    calls.sort_by_key(|(addr, c)| (std::cmp::Reverse(c.count), *addr));
+    let mut calls: Vec<((u32, u32), &psx_core::trace::CallStat)> = t.calls.iter().map(|(k, v)| (*k, v)).collect();
+    calls.sort_by_key(|((copy, addr), c)| (std::cmp::Reverse(c.count), *addr, *copy));
+    // A copy is an index into code.bin; null where none holds the code.
+    let copy = |c: u32| (c != psx_core::trace::NO_COPY).then_some(c);
     let calls_json: Vec<Value> = calls
         .iter()
-        .map(|(addr, c)| {
-            let mut callers: Vec<(&u32, &u64)> = c.callers.iter().collect();
-            callers.sort_by_key(|(site, n)| (std::cmp::Reverse(**n), **site));
+        .map(|((target_copy, addr), c)| {
+            let mut callers: Vec<(&(u32, u32), &u64)> = c.callers.iter().collect();
+            callers.sort_by_key(|((sc, site), n)| (std::cmp::Reverse(**n), *site, *sc));
             json!({
-                "address": addr, "function": name(*addr), "count": c.count,
+                "address": addr, "copy": copy(*target_copy), "function": name(*addr), "count": c.count,
                 "address_hex": format!("0x{addr:08X}"),
                 "first_frame": c.first_frame, "last_frame": c.last_frame,
                 "first_run_frame": c.first_frame as i64 - start_frame as i64, "last_run_frame": c.last_frame as i64 - start_frame as i64,
-                "callers": callers.iter().take(16).map(|(site, n)| json!({"pc": site, "pc_hex": format!("0x{site:08X}"), "count": n})).collect::<Vec<_>>(),
+                "callers": callers.iter().take(16).map(|((sc, site), n)| json!({"pc": site, "copy": copy(*sc), "pc_hex": format!("0x{site:08X}"), "count": n})).collect::<Vec<_>>(),
             })
         })
         .collect();
-    // Each executed RAM word with the instruction it executed as, so
-    // coverage can tell code loaded over other code apart.
-    let mut executed = b"PSXEXEC1".to_vec();
-    for (addr, word, n) in t.executed() {
+    // Each executed RAM word with the code page copy it ran from (code.bin's
+    // index, all ones for none) and the instruction it executed as.
+    let mut executed = b"PSXEXEC2".to_vec();
+    for (copy, addr, word, n) in t.executed() {
+        executed.extend(copy.to_le_bytes());
         executed.extend(addr.to_le_bytes());
         executed.extend(word.to_le_bytes());
         executed.extend(n.to_le_bytes());
     }
-    // Each RAM page as it was when code in it ran (code loaded and
-    // replaced between frames included), for inventory.
-    let mut code = b"PSXCODE1".to_vec();
-    for (frame, addr, bytes) in &t.code_pages {
-        code.extend(frame.to_le_bytes());
-        code.extend(addr.to_le_bytes());
-        code.extend((bytes.len() as u32).to_le_bytes());
-        code.extend(&bytes[..]);
+    // Each code page's history: a copy whenever code ran in it changed,
+    // numbered by its order here. A page's first copy is whole (the copy
+    // before it all ones), a later one the words changed since the copy
+    // before it, as (byte offset, word).
+    let mut code = b"PSXCODE2".to_vec();
+    for c in &t.code_pages {
+        code.extend(c.frame.to_le_bytes());
+        code.extend(c.addr.to_le_bytes());
+        match &c.data {
+            psx_core::trace::CopyData::Whole(b) => {
+                code.extend(psx_core::trace::NO_COPY.to_le_bytes());
+                code.extend((b.len() as u32).to_le_bytes());
+                code.extend(&b[..]);
+            }
+            psx_core::trace::CopyData::Changed(before, words) => {
+                code.extend(before.to_le_bytes());
+                code.extend((8 * words.len() as u32).to_le_bytes());
+                for &(j, w) in words {
+                    code.extend((4 * j as u32).to_le_bytes());
+                    code.extend(w.to_le_bytes());
+                }
+            }
+        }
     }
     for (file, bytes) in [
         ("coverage.txt", text.into_bytes()),
@@ -827,7 +850,7 @@ fn trace_outputs(
         "coverage": {"runs": coverage.len(), "unique_instructions": coverage.iter().map(|c| c.2 as u64).sum::<u64>()},
         "top_calls": calls_json.iter().take(20).cloned().collect::<Vec<_>>(),
         "distinct_call_targets": calls_json.len(),
-        "code_pages": {"kept": t.code_pages.len(), "dropped": t.code_pages_dropped},
+        "code_pages": {"kept": t.code_pages.len(), "dropped": t.code_pages_dropped, "ran_from_cache": t.ran_from_cache},
     }))
 }
 

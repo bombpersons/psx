@@ -31,9 +31,11 @@ Observations (native):
   leads at that frame, and a frame whose pointer is null writes nothing
   (counted as skipped).
 - trace writes trace.txt (windowed by trace_from_frame / trace_range),
-  coverage.txt, calls.json and executed.bin (each executed word with the
-  instruction it ran as, which coverage reads); max_events caps every event
-  log.
+  coverage.txt, code.bin (each RAM page's history: a copy when code first
+  runs in it, and another whenever code runs in it after it changed),
+  executed.bin (each executed word with the copy it ran from and the
+  instruction it ran as) and calls.json (each call target and call site
+  with the copy each ran from); max_events caps every event log.
 - trace_cd logs CD transfers for loads; trace_bios logs BIOS calls.
 - trace_spu logs voice key on/off (settings, storing PC, sample_sha256),
   each keyed voice's first END and sound RAM uploads to spu.jsonl. spu.samples

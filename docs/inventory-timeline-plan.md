@@ -45,7 +45,9 @@ dirty; when code next runs in a dirty page, the trace compares it with its
 last copy: changed, a new copy; not, the mark is cleared. A page nothing
 writes after its code runs costs nothing more.
 
-- `code.bin` holds each copy: id, page, the frame it was taken.
+- `code.bin` holds each copy: id, page, the frame it was taken. A page's
+  first copy is whole, a later one the words changed since the copy before
+  it (most changes are a few variables kept beside code).
 - `executed.bin` holds (copy, address, count): each executed word against
   the copy it ran from. The instruction is the copy's.
 - `calls.json` holds each call as (caller's copy, site) → (target's copy,
@@ -127,10 +129,16 @@ Each is committed and reviewed on its own; each has its check.
    Check: a test where code is loaded over code in one page and both run;
    on GT2's boot run, every executed word is in exactly one copy, and the
    copies' count against today's 160 pages (the cap is set from it).
+   Done: 1919 copies of 127 pages in 850 KB (today's 160 pages: 658 KB);
+   every executed word in its copy, none without one. Until piece 2 the
+   inventory reduces the copies to the pages kept before, and gives the
+   same inventory.
 2. **Inventory on the timeline.** Moments, functions by address and
    hash, naming after. Old runs are refused with "record again", not read
    another way: keeping both keeps the layers. Lost code, placements,
-   `code_as_it_ran`, `only`, variants and same_range_as are removed.
+   `code_as_it_ran`, `only`, variants and same_range_as are removed, and
+   so is the reduction of copies to pages (`as_ran`). Copies whose changes
+   all fall outside the moment's functions give the same functions.
    Check: GT2's boot run gives 0 words in no image, and its function list
    is compared with today's and every difference explained (212 false
    functions from calls into replaced code are expected to go).
@@ -151,11 +159,12 @@ compared with what they gave before.
 
 ## Open questions
 
-- How many copies a long run makes when any store can dirty a page (data
-  kept in code pages, self-modifying code). If too many, compare only the
-  words written since the last copy.
-- Stale instruction cache: today a word run from the cache that RAM no
-  longer holds keeps no copy. The timeline needs the copy the cache was
-  filled from; check how often it happens on GT2.
+- How many copies a long run makes when any store can dirty a page.
+  GT2's boot: 1919 in 6600 frames, 1716 of them three pages whose only
+  changes are 1 to 4 variables beside code; kept as changed words, the
+  cap is 64 MiB of copies. Check a long playthrough.
+- Stale instruction cache: a word run from the cache that RAM no longer
+  holds is credited to the latest earlier copy holding it
+  (ran_from_cache in the trace report). GT2's boot: none.
 - The BIOS shell is copied to RAM at power-on: it becomes copies like any
   other code, named from the ROM. Check bios_code's numbers match.

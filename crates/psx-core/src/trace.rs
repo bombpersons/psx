@@ -23,8 +23,8 @@ const RAM_WORDS: usize = 0x20_0000 / 4;
 const BIOS_WORDS: usize = 0x8_0000 / 4;
 /// RAM a code page holds, in bytes.
 pub const CODE_PAGE: usize = 0x1000;
-/// Most code pages a trace keeps (16 MiB).
-pub const MAX_CODE_PAGES: usize = 4096;
+/// Most bytes of code page copies a trace keeps.
+pub const MAX_CODE_BYTES: usize = 64 << 20;
 
 /// Names a code address given the current main RAM (for residency checks).
 pub type Namer = Box<dyn Fn(u32, &[u8]) -> Option<String>>;
@@ -48,8 +48,32 @@ pub struct CallStat {
     pub count: u64,
     pub first_frame: u64,
     pub last_frame: u64,
-    /// Call sites (PC of the jal/jalr) with counts.
-    pub callers: BTreeMap<u32, u64>,
+    /// Call sites (PC of the jal/jalr) with counts, keyed by the code
+    /// page copy the call ran from (`NO_COPY` when none holds it) and pc.
+    pub callers: BTreeMap<(u32, u32), u64>,
+}
+
+/// The copy of a word no code page copy holds (past `MAX_CODE_BYTES`, or
+/// run from the instruction cache with no copy holding it).
+pub const NO_COPY: u32 = u32::MAX;
+
+/// A page's latest copy: its index, its bytes and each word's executions.
+type Latest = (u32, Box<[u8]>, Box<[u32]>);
+
+/// One copy of a code page.
+pub struct CodeCopy {
+    pub frame: u64,
+    /// The page's KSEG0 address.
+    pub addr: u32,
+    pub data: CopyData,
+}
+
+/// A page's first copy is whole; each later one holds the words that
+/// changed since the page's copy before it.
+pub enum CopyData {
+    Whole(Box<[u8]>),
+    /// The copy before (an index), and `(word index, word)` in order.
+    Changed(u32, Vec<(u16, u32)>),
 }
 
 pub struct Tracer {
@@ -68,23 +92,32 @@ pub struct Tracer {
     pub interrupts: u64,
     pub exceptions: BTreeMap<u8, u64>,
     ram_cover: Vec<u32>,
-    /// The instruction word each RAM word first executed as, and counts
-    /// for the other words executed there later (code loaded over code).
-    ram_word: Vec<u32>,
-    ram_other: BTreeMap<(u32, u32), u64>,
-    /// RAM pages as they were when code in them ran: `(frame, KSEG0
-    /// address, bytes)`, kept when a word ran as an instruction the page's
-    /// last copy does not hold, so code loaded and replaced between
-    /// frames is kept as it ran.
-    pub code_pages: Vec<(u64, u32, Box<[u8]>)>,
-    /// Per page, its latest copy in `code_pages`.
-    page_copy: Vec<Option<u32>>,
-    /// Copies not kept past `MAX_CODE_PAGES`.
+    /// Each RAM page's history: a copy of it, numbered by its index, taken
+    /// when code first runs in it and again whenever code runs in it after
+    /// a store changed it.
+    pub code_pages: Vec<CodeCopy>,
+    code_bytes: usize,
+    /// Per page, its latest copy with its bytes and the executions of each
+    /// of its words, and the bus's store count for the page
+    /// ([`Bus::page_writes`]) when last compared with it.
+    page_copy: Vec<Option<Latest>>,
+    page_seen: Vec<u32>,
+    /// Executions of copies no longer their page's latest: `(copy, word
+    /// index)`.
+    counts: BTreeMap<(u32, u32), u64>,
+    /// Copies not kept past `MAX_CODE_BYTES`.
     pub code_pages_dropped: u64,
+    /// Executions credited to an earlier copy of a page because RAM no
+    /// longer held the instruction (it ran from the instruction cache).
+    pub ran_from_cache: u64,
+    /// Executions no copy holds: `(word index, instruction)`.
+    uncopied: BTreeMap<(u32, u32), u64>,
     bios_cover: Vec<u32>,
-    pub calls: BTreeMap<u32, CallStat>,
-    /// Steps until the callee's first instruction, and the call site.
-    pending_call: Option<(u8, u32)>,
+    /// Call targets keyed by the copy the callee's first instruction ran
+    /// from (`NO_COPY` outside RAM or when none holds it) and its address.
+    pub calls: BTreeMap<(u32, u32), CallStat>,
+    /// Steps until the callee's first instruction, the call site and its copy.
+    pending_call: Option<(u8, u32, u32)>,
     io_error: Option<std::io::Error>,
 }
 
@@ -152,11 +185,14 @@ impl Tracer {
             interrupts: 0,
             exceptions: BTreeMap::new(),
             ram_cover: vec![0; RAM_WORDS],
-            ram_word: vec![0; RAM_WORDS],
-            ram_other: BTreeMap::new(),
             code_pages: Vec::new(),
-            page_copy: vec![None; 0x20_0000 / CODE_PAGE],
+            code_bytes: 0,
+            page_copy: (0..0x20_0000 / CODE_PAGE).map(|_| None).collect(),
+            page_seen: vec![0; 0x20_0000 / CODE_PAGE],
+            counts: BTreeMap::new(),
             code_pages_dropped: 0,
+            ran_from_cache: 0,
+            uncopied: BTreeMap::new(),
             bios_cover: vec![0; BIOS_WORDS],
             calls: BTreeMap::new(),
             pending_call: None,
@@ -200,17 +236,28 @@ impl Tracer {
         let phys = pc & 0x1FFF_FFFF;
         let shown = self.in_range(phys);
         let room = self.lines < self.cfg.max_lines;
+        let interrupted = info.exception == Some(0);
+        // The copy this instruction runs from (an interrupted one did not
+        // run: its page's latest copy, for a call landing there).
+        let k = (phys as usize & 0x1F_FFFF) / 4;
+        let copy = match phys {
+            0..=0x7F_FFFF if interrupted => self.page_now(k / (CODE_PAGE / 4), bus).unwrap_or(NO_COPY),
+            0..=0x7F_FFFF => self.copy_for(k, info.instruction, bus),
+            _ => NO_COPY,
+        };
 
         // Call bookkeeping: the callee's first step is two after the call.
-        if let Some((n, site)) = self.pending_call {
+        if let Some((n, site, site_copy)) = self.pending_call {
             if n <= 1 {
                 self.pending_call = None;
-                let c =
-                    self.calls.entry(pc).or_insert_with(|| CallStat { first_frame: bus.frames, ..Default::default() });
+                let c = self
+                    .calls
+                    .entry((copy, pc))
+                    .or_insert_with(|| CallStat { first_frame: bus.frames, ..Default::default() });
                 c.count += 1;
                 c.last_frame = bus.frames;
-                if c.callers.len() < 64 || c.callers.contains_key(&site) {
-                    *c.callers.entry(site).or_default() += 1;
+                if c.callers.len() < 64 || c.callers.contains_key(&(site_copy, site)) {
+                    *c.callers.entry((site_copy, site)).or_default() += 1;
                 }
                 if (shown || self.in_range(site & 0x1FFF_FFFF)) && room {
                     let name =
@@ -218,7 +265,7 @@ impl Tracer {
                     self.write(format_args!("-> {pc:08x}{name} (from {site:08x})\n"));
                 }
             } else {
-                self.pending_call = Some((n - 1, site));
+                self.pending_call = Some((n - 1, site, site_copy));
             }
         }
 
@@ -240,16 +287,16 @@ impl Tracer {
         self.instructions += 1;
         match phys {
             0..=0x7F_FFFF => {
-                let k = (phys as usize & 0x1F_FFFF) / 4;
-                let i = info.instruction;
-                let first = self.ram_cover[k] == 0;
-                if first {
-                    self.ram_word[k] = i;
-                } else if self.ram_word[k] != i {
-                    *self.ram_other.entry((k as u32, i)).or_default() += 1;
-                }
-                if first || self.ram_word[k] != i {
-                    self.keep_page(k, i, bus);
+                if copy == NO_COPY {
+                    *self.uncopied.entry((k as u32, info.instruction)).or_default() += 1;
+                } else {
+                    match &mut self.page_copy[k / (CODE_PAGE / 4)] {
+                        Some((c, _, n)) if *c == copy => {
+                            let n = &mut n[k % (CODE_PAGE / 4)];
+                            *n = n.saturating_add(1);
+                        }
+                        _ => *self.counts.entry((copy, k as u32)).or_default() += 1,
+                    }
                 }
                 self.ram_cover[k] = self.ram_cover[k].saturating_add(1);
             }
@@ -261,7 +308,7 @@ impl Tracer {
         }
         let i = info.instruction;
         if info.exception.is_none() && is_call(i) {
-            self.pending_call = Some((2, pc));
+            self.pending_call = Some((2, pc, copy));
         }
         if !shown {
             return;
@@ -300,29 +347,89 @@ impl Tracer {
         self.state = Window::Done;
     }
 
-    /// Keeps word `k`'s page as RAM holds it now, unless its last copy
-    /// already holds instruction `i` there.
-    fn keep_page(&mut self, k: usize, i: u32, bus: &Bus) {
-        let p = 4 * k / CODE_PAGE;
-        let o = 4 * k % CODE_PAGE;
-        if let Some(c) = self.page_copy[p] {
-            let b = &self.code_pages[c as usize].2;
-            if u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) == i {
-                return;
+    /// Page `p`'s latest copy, after a new one is taken if a store reached
+    /// the page since it was last compared and changed it (or none was).
+    fn page_now(&mut self, p: usize, bus: &Bus) -> Option<u32> {
+        let writes = bus.page_writes.get(p).copied().unwrap_or(0);
+        let seen = std::mem::replace(&mut self.page_seen[p], writes);
+        match &self.page_copy[p] {
+            Some((c, _, _)) if writes == seen => return Some(*c),
+            Some((c, b, _)) if b[..] == bus.ram[p * CODE_PAGE..(p + 1) * CODE_PAGE] => return Some(*c),
+            _ => {}
+        }
+        self.take_copy(p, bus)
+    }
+
+    /// Copies page `p` as RAM holds it now, keeping only the words that
+    /// changed when the page has a copy already.
+    fn take_copy(&mut self, p: usize, bus: &Bus) -> Option<u32> {
+        let now = &bus.ram[p * CODE_PAGE..(p + 1) * CODE_PAGE];
+        let data = match &self.page_copy[p] {
+            None => CopyData::Whole(now.into()),
+            Some((c, b, _)) => CopyData::Changed(
+                *c,
+                (0..CODE_PAGE / 4)
+                    .filter(|&j| b[4 * j..4 * j + 4] != now[4 * j..4 * j + 4])
+                    .map(|j| (j as u16, u32::from_le_bytes(now[4 * j..4 * j + 4].try_into().unwrap())))
+                    .collect(),
+            ),
+        };
+        let size = match &data {
+            CopyData::Whole(b) => b.len(),
+            CopyData::Changed(_, w) => 6 * w.len(),
+        };
+        if self.code_bytes + size > MAX_CODE_BYTES {
+            self.code_pages_dropped += 1;
+            return None;
+        }
+        self.code_bytes += size;
+        let c = self.code_pages.len() as u32;
+        self.code_pages.push(CodeCopy { frame: bus.frames, addr: 0x8000_0000 + (p * CODE_PAGE) as u32, data });
+        let fresh = (c, now.into(), vec![0; CODE_PAGE / 4].into());
+        if let Some((old, _, n)) = self.page_copy[p].replace(fresh) {
+            let k0 = (p * CODE_PAGE / 4) as u32;
+            for (j, &n) in n.iter().enumerate().filter(|(_, n)| **n > 0) {
+                *self.counts.entry((old, k0 + j as u32)).or_default() += n as u64;
             }
         }
-        // RAM no longer holding what ran (the instruction cache still
-        // did) has nothing to keep.
-        if bus.ram.get(4 * k..4 * k + 4).is_none_or(|w| u32::from_le_bytes(w.try_into().unwrap()) != i) {
-            return;
+        Some(c)
+    }
+
+    /// The word at byte `o` of copy `c`.
+    pub fn copy_word(&self, mut c: u32, o: usize) -> u32 {
+        loop {
+            match &self.code_pages[c as usize].data {
+                CopyData::Whole(b) => return u32::from_le_bytes(b[o..o + 4].try_into().unwrap()),
+                CopyData::Changed(before, w) => match w.binary_search_by_key(&((o / 4) as u16), |e| e.0) {
+                    Ok(i) => return w[i].1,
+                    Err(_) => c = *before,
+                },
+            }
         }
-        if self.code_pages.len() >= MAX_CODE_PAGES {
-            self.code_pages_dropped += 1;
-            return;
+    }
+
+    /// The copy word `k` ran from as instruction `i`: its page's latest,
+    /// a new one when RAM holds `i` there and the latest does not (a store
+    /// the bus did not count), or, when RAM no longer holds it (the
+    /// instruction cache did), the latest earlier copy that did.
+    fn copy_for(&mut self, k: usize, i: u32, bus: &Bus) -> u32 {
+        let p = 4 * k / CODE_PAGE;
+        let o = 4 * k % CODE_PAGE;
+        let Some(c) = self.page_now(p, bus) else { return NO_COPY };
+        if self.copy_word(c, o) == i {
+            return c;
         }
-        let bytes: Box<[u8]> = bus.ram[p * CODE_PAGE..(p + 1) * CODE_PAGE].into();
-        self.page_copy[p] = Some(self.code_pages.len() as u32);
-        self.code_pages.push((bus.frames, 0x8000_0000 + (p * CODE_PAGE) as u32, bytes));
+        if u32::from_le_bytes(bus.ram[4 * k..4 * k + 4].try_into().unwrap()) == i {
+            return self.take_copy(p, bus).unwrap_or(NO_COPY);
+        }
+        let page = 0x8000_0000 + (p * CODE_PAGE) as u32;
+        match (0..c).rev().find(|&e| self.code_pages[e as usize].addr == page && self.copy_word(e, o) == i) {
+            Some(e) => {
+                self.ran_from_cache += 1;
+                e
+            }
+            None => NO_COPY,
+        }
     }
 
     /// Flush the trace; returns the first write error, if any.
@@ -357,26 +464,19 @@ impl Tracer {
         out
     }
 
-    /// Executed RAM words as `(KSEG0 address, instruction word, executions)`,
-    /// in address order; a word executed as several instructions (code
-    /// loaded over code) appears once for each.
-    pub fn executed(&self) -> Vec<(u32, u32, u64)> {
-        let mut out = Vec::new();
-        let mut other = self.ram_other.iter().peekable();
-        for (k, &n) in self.ram_cover.iter().enumerate() {
-            if n == 0 {
-                continue;
+    /// Executed RAM words as `(copy, KSEG0 address, instruction word,
+    /// executions)`, in copy then address order, then the words no copy
+    /// holds (`NO_COPY`).
+    pub fn executed(&self) -> Vec<(u32, u32, u32, u64)> {
+        let mut all = self.counts.clone();
+        for (p, (c, _, n)) in self.page_copy.iter().enumerate().filter_map(|(p, e)| Some((p, e.as_ref()?))) {
+            for (j, &n) in n.iter().enumerate().filter(|(_, n)| **n > 0) {
+                *all.entry((*c, (p * CODE_PAGE / 4 + j) as u32)).or_default() += n as u64;
             }
-            let mut first = n as u64;
-            let mut rest = Vec::new();
-            while let Some((&(_, w), &c)) = other.next_if(|((o, _), _)| *o as usize == k) {
-                first = first.saturating_sub(c);
-                rest.push((w, c));
-            }
-            let addr = 0x8000_0000 + 4 * k as u32;
-            out.push((addr, self.ram_word[k], first));
-            out.extend(rest.into_iter().map(|(w, c)| (addr, w, c)));
         }
+        let word = |c: u32, k: u32| self.copy_word(c, 4 * k as usize % CODE_PAGE);
+        let mut out: Vec<_> = all.into_iter().map(|((c, k), n)| (c, 0x8000_0000 + 4 * k, word(c, k), n)).collect();
+        out.extend(self.uncopied.iter().map(|(&(k, i), &n)| (NO_COPY, 0x8000_0000 + 4 * k, i, n)));
         out
     }
 }
@@ -385,22 +485,72 @@ impl Tracer {
 mod tests {
     use super::*;
 
+    /// Runs instruction `i` at `pc` through the tracer.
+    fn ran(t: &mut Tracer, cpu: &Cpu, bus: &Bus, pc: u32, i: u32) {
+        let info = StepInfo { pc, instruction: i, exception: None, io_load: None, mem: None };
+        t.after_step(&info, cpu, bus);
+    }
+
+    fn put(bus: &mut Bus, addr: u32, w: u32) {
+        bus.write(addr, crate::bus::Width::Word, w).unwrap();
+    }
+
+    const JR_RA: u32 = 0x03E0_0008;
+    const JAL: u32 = 0x0C00_4000; // jal 80010000
+
     #[test]
-    fn a_code_page_is_kept_when_code_new_to_it_runs() {
+    fn code_loaded_over_code_runs_from_a_copy_of_its_own() {
         let mut bus = Bus::new(vec![]);
+        bus.page_writes = vec![0; 0x20_0000 / CODE_PAGE];
+        let cpu = Cpu::new();
         let mut t = Tracer::new(TraceConfig::default(), Box::new(std::io::sink()), None);
-        let k = 0x1_0000 / 4 + 3;
-        bus.ram[4 * k..4 * k + 4].copy_from_slice(&7u32.to_le_bytes());
-        t.keep_page(k, 7, &bus);
-        t.keep_page(k, 7, &bus);
-        assert_eq!(t.code_pages.len(), 1);
-        assert_eq!(t.code_pages[0].1, 0x8001_0000);
-        // RAM holding other than what ran (the cache's) has nothing to keep.
-        t.keep_page(k, 8, &bus);
-        assert_eq!(t.code_pages.len(), 1);
-        bus.ram[4 * k..4 * k + 4].copy_from_slice(&8u32.to_le_bytes());
-        t.keep_page(k, 8, &bus);
+        // A call into a page holding `jr ra` at 80010000.
+        put(&mut bus, 0x8001_0000, JR_RA);
+        put(&mut bus, 0x8001_0004, 1);
+        put(&mut bus, 0x8002_0000, JAL);
+        for (pc, i) in [(0x8002_0000, JAL), (0x8002_0004, 0), (0x8001_0000, JR_RA)] {
+            ran(&mut t, &cpu, &bus, pc, i);
+        }
+        // A store that leaves the page unchanged keeps its copy.
+        put(&mut bus, 0x8001_0004, 1);
+        ran(&mut t, &cpu, &bus, 0x8001_0000, JR_RA);
         assert_eq!(t.code_pages.len(), 2);
+        // Other code loaded there with the same word where it is called.
+        put(&mut bus, 0x8001_0004, 2);
+        for (pc, i) in [(0x8002_0000, JAL), (0x8002_0004, 0), (0x8001_0000, JR_RA)] {
+            ran(&mut t, &cpu, &bus, pc, i);
+        }
+        assert_eq!(t.code_pages.len(), 3);
+        assert_eq!(t.code_pages[2].addr, 0x8001_0000);
+        let calls: Vec<_> = t.calls.iter().map(|(&k, c)| (k, c.count, c.callers.clone())).collect();
+        // The caller's page was copied first.
+        let site = BTreeMap::from([((0, 0x8002_0000), 1)]);
+        assert_eq!(calls, [((1, 0x8001_0000), 1, site.clone()), ((2, 0x8001_0000), 1, site)]);
+        assert_eq!(
+            t.executed(),
+            [(0, 0x8002_0000, JAL, 2), (0, 0x8002_0004, 0, 2), (1, 0x8001_0000, JR_RA, 2), (2, 0x8001_0000, JR_RA, 1)]
+        );
+    }
+
+    #[test]
+    fn a_word_ram_no_longer_holds_ran_from_the_copy_that_did() {
+        let mut bus = Bus::new(vec![]);
+        bus.page_writes = vec![0; 0x20_0000 / CODE_PAGE];
+        let cpu = Cpu::new();
+        let mut t = Tracer::new(TraceConfig::default(), Box::new(std::io::sink()), None);
+        put(&mut bus, 0x8001_0000, 7);
+        ran(&mut t, &cpu, &bus, 0x8001_0000, 7);
+        put(&mut bus, 0x8001_0000, 8);
+        // The instruction cache still holds 7.
+        ran(&mut t, &cpu, &bus, 0x8001_0000, 7);
+        assert_eq!(t.code_pages.len(), 2);
+        assert_eq!(t.ran_from_cache, 1);
+        // A store the bus did not count is found by the word that ran.
+        bus.ram[0x1_0000..0x1_0004].copy_from_slice(&9u32.to_le_bytes());
+        ran(&mut t, &cpu, &bus, 0x8001_0000, 9);
+        // And a word no copy holds is kept apart.
+        ran(&mut t, &cpu, &bus, 0x8001_0000, 5);
+        assert_eq!(t.executed(), [(0, 0x8001_0000, 7, 2), (2, 0x8001_0000, 9, 1), (NO_COPY, 0x8001_0000, 5, 1)]);
     }
 
     #[test]

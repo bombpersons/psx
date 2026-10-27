@@ -560,15 +560,74 @@ fn lost_code(ram: &[u8], ran: &[(u32, u32, u64)], exes: &[Exe]) -> Vec<(u32, u32
 /// A traced run's code pages (code.bin): `(frame, KSEG0 address, bytes)`.
 fn code_pages(run: &Path) -> Vec<(u64, u32, Vec<u8>)> {
     let Ok(b) = std::fs::read(run.join("code.bin")) else { return Vec::new() };
-    let Some(mut rest) = b.strip_prefix(b"PSXCODE1") else { return Vec::new() };
-    let mut out = Vec::new();
-    while rest.len() >= 16 {
-        let frame = u64::from_le_bytes(rest[0..8].try_into().unwrap());
-        let addr = u32::from_le_bytes(rest[8..12].try_into().unwrap());
-        let n = u32::from_le_bytes(rest[12..16].try_into().unwrap()) as usize;
-        let Some(bytes) = rest.get(16..16 + n) else { break };
-        out.push((frame, addr, bytes.to_vec()));
-        rest = &rest[16 + n..];
+    let u = |r: &[u8], a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
+    let mut out: Vec<(u64, u32, Vec<u8>)> = Vec::new();
+    if let Some(mut rest) = b.strip_prefix(b"PSXCODE1") {
+        while rest.len() >= 16 {
+            let frame = u64::from_le_bytes(rest[0..8].try_into().unwrap());
+            let n = u(rest, 12) as usize;
+            let Some(bytes) = rest.get(16..16 + n) else { break };
+            out.push((frame, u(rest, 8), bytes.to_vec()));
+            rest = &rest[16 + n..];
+        }
+    } else if let Some(mut rest) = b.strip_prefix(b"PSXCODE2") {
+        // A later copy of a page is the words changed since the copy before.
+        while rest.len() >= 20 {
+            let frame = u64::from_le_bytes(rest[0..8].try_into().unwrap());
+            let (addr, before, n) = (u(rest, 8), u(rest, 12), u(rest, 16) as usize);
+            let Some(body) = rest.get(20..20 + n) else { break };
+            let bytes = match out.get(before as usize) {
+                None => body.to_vec(),
+                Some((_, _, b)) => {
+                    let mut b = b.clone();
+                    for r in body.as_chunks::<8>().0 {
+                        let o = u(r, 0) as usize;
+                        b[o..o + 4].copy_from_slice(&r[4..8]);
+                    }
+                    b
+                }
+            };
+            out.push((frame, addr, bytes));
+            rest = &rest[20 + n..];
+        }
+        return as_ran(out, run);
+    }
+    out
+}
+
+/// A page's copies reduced to those code pages were before page history:
+/// where a word ran for the first time, or as other than the first
+/// instruction run there, and the page's last one kept does not hold it
+/// (copies whose only change is data are dropped, and so are those of code
+/// loaded back). Until the inventory reads the timeline.
+fn as_ran(copies: Vec<(u64, u32, Vec<u8>)>, run: &Path) -> Vec<(u64, u32, Vec<u8>)> {
+    let Ok(e) = std::fs::read(run.join("executed.bin")) else { return Vec::new() };
+    let Some(body) = e.strip_prefix(b"PSXEXEC2") else { return Vec::new() };
+    let mut ran: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+    for r in body.as_chunks::<20>().0 {
+        let u = |a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
+        ran.entry(u(0)).or_default().push((u(4), u(8)));
+    }
+    let mut kept: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut first: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut out: Vec<(u64, u32, Vec<u8>)> = Vec::new();
+    for (c, copy) in copies.into_iter().enumerate() {
+        let (_, page, _) = copy;
+        let words = ran.get(&(c as u32)).map(Vec::as_slice).unwrap_or_default();
+        let new = match kept.get(&page) {
+            None => !words.is_empty(),
+            Some(&k) => words.iter().any(|&(a, w)| {
+                let o = (a - page) as usize;
+                first.get(&a).is_none_or(|&f| f != w) && out[k].2[o..o + 4] != w.to_le_bytes()
+            }),
+        };
+        for &(a, w) in words {
+            first.entry(a).or_insert(w);
+        }
+        if new {
+            kept.insert(page, out.len());
+            out.push(copy);
+        }
     }
     out
 }
@@ -1391,6 +1450,41 @@ mod tests {
         assert_eq!(images[1].0, 20);
         assert_eq!(images[2].1[0x10_0000], 4);
         assert_eq!(images[2].1[0x10_1000], 0xFF, "a page with nothing lost is left out");
+    }
+
+    #[test]
+    fn page_history_gives_the_code_pages_as_they_were_kept() {
+        let dir = std::env::temp_dir().join(format!("psx-page-history-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut code = b"PSXCODE2".to_vec();
+        let mut copy = |frame: u64, before: u32, body: &[u8]| {
+            code.extend(frame.to_le_bytes());
+            code.extend(0x8010_0000u32.to_le_bytes());
+            code.extend(before.to_le_bytes());
+            code.extend((body.len() as u32).to_le_bytes());
+            code.extend(body);
+        };
+        let changed = |o: u32, w: u32| [o.to_le_bytes(), w.to_le_bytes()].concat();
+        copy(10, u32::MAX, &[0; 0x1000]);
+        copy(11, 0, &changed(0x100, 7)); // data changed, the same code ran
+        copy(12, 1, &changed(8, 0xBBBB)); // other code ran at 8
+        copy(13, 2, &changed(8, 0)); // the first code back
+        std::fs::write(dir.join("code.bin"), code).unwrap();
+        let mut executed = b"PSXEXEC2".to_vec();
+        for (c, w) in [(0u32, 0u32), (1, 0), (2, 0xBBBB), (3, 0)] {
+            for v in [c, 0x8010_0008, w] {
+                executed.extend(v.to_le_bytes());
+            }
+            executed.extend(1u64.to_le_bytes());
+        }
+        std::fs::write(dir.join("executed.bin"), executed).unwrap();
+        let pages = code_pages(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        // As kept before page history: code loaded back kept no page.
+        let kept: Vec<(u64, u32)> =
+            pages.iter().map(|(f, _, b)| (*f, u32::from_le_bytes(b[8..12].try_into().unwrap()))).collect();
+        assert_eq!(kept, [(10, 0), (12, 0xBBBB)]);
+        assert_eq!(pages[1].2[0x100], 7, "a later copy holds the changes before it");
     }
 
     #[test]

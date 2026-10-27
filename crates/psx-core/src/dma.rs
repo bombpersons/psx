@@ -269,6 +269,7 @@ impl Bus {
                 let (v, offs) = self.dma_word(ch, mode, v);
                 if mode & 1 == 0 {
                     let o = (addr.wrapping_add(offs << 2) & 0x1F_FFFC) as usize;
+                    self.ram_written(o);
                     self.ram[o..o + 4].copy_from_slice(&v.to_le_bytes());
                 }
                 let c = &mut self.dma.ch[ch];
