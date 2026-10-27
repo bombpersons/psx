@@ -35,8 +35,9 @@ investigator and notes when they name a folder that is gone, rewrites
 protocol.toml's paths, and warns about the investigator's own rules that
 keep it from reading a legacy port or the implementer's questions.
 
-The person starts each agent's session in its own folder; an
-investigator never starts the others', since a session it starts would
+The person starts each agent's session in its own folder, or port run
+starts them as they have work (guide topic agents);
+an investigator never starts the others', since a session it starts would
 share its notes.
 
 In a clean-room port the investigator reads the original's code and the

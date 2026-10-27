@@ -23,11 +23,12 @@ pub enum Topic {
     Protocol,
     Cleanroom,
     Review,
+    Agents,
     Troubleshooting,
 }
 
 impl Topic {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::Overview,
         Self::Setup,
         Self::Input,
@@ -43,6 +44,7 @@ impl Topic {
         Self::Protocol,
         Self::Cleanroom,
         Self::Review,
+        Self::Agents,
         Self::Troubleshooting,
     ];
 
@@ -63,6 +65,7 @@ impl Topic {
             Self::Protocol => "Follow the porting protocol to a complete port",
             Self::Cleanroom => "Keep the roles apart in a clean-room port",
             Self::Review => "Review bundles and audit the port",
+            Self::Agents => "Start each role's agent when it has work (port run)",
             Self::Troubleshooting => "Diagnose incomplete or unexpected results",
         }
     }
@@ -84,6 +87,7 @@ impl Topic {
             Self::Protocol => include_str!("guide/protocol.md"),
             Self::Cleanroom => include_str!("guide/cleanroom.md"),
             Self::Review => include_str!("guide/review.md"),
+            Self::Agents => include_str!("guide/agents.md"),
             Self::Troubleshooting => include_str!("guide/troubleshooting.md"),
         }
     }

@@ -1452,6 +1452,24 @@ fn refresh(ctx: &Ctx) -> crate::Result<(Repos, Ledger, PathBuf)> {
     Ok((r, l, out))
 }
 
+/// Each role's repository and work, from a fresh ledger (`port run`).
+pub(crate) fn work_lists(ctx: &Ctx) -> crate::Result<Vec<(Role, PathBuf, Vec<Value>)>> {
+    let (r, l, _) = refresh(ctx)?;
+    Ok(vec![
+        (Role::Investigator, r.investigator, l.investigator),
+        (Role::Reviewer, r.reviewer, l.reviewer),
+        (Role::Implementer, r.implementer, l.implementer),
+    ])
+}
+
+/// Whether a role's first item of work waits on another role (or there is
+/// none): a session started for it would have nothing to do. The
+/// investigator's hold leaves it only work it may skip.
+pub(crate) fn waits(item: Option<&Value>) -> bool {
+    item.and_then(|w| w["do"].as_str())
+        .is_none_or(|d| d.starts_with("wait_for") || matches!(d, "nothing" | "awaiting_review" | "hold"))
+}
+
 impl ProtocolNextArgs {
     fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
         let (r, l, out) = refresh(ctx)?;

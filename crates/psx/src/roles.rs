@@ -243,7 +243,8 @@ fn settings(role: Role, repos: &Repos, s: &Setting) -> Value {
                 deny.push(format!("Write(/{}/**)", p.display()));
                 deny.push(format!("Bash(*{}*)", p.display()));
             }
-            json!({"permissions": {"deny": deny}})
+            // Its server loads without asking, so a headless session (port run) has it.
+            json!({"permissions": {"deny": deny}, "enabledMcpjsonServers": ["psx"]})
         }
         Role::Reviewer => {
             for p in [&repos.investigator, &repos.implementer] {
@@ -252,7 +253,7 @@ fn settings(role: Role, repos: &Repos, s: &Setting) -> Value {
                 deny.push(format!("Bash(*{}*)", p.display()));
             }
             deny.extend(["mcp__psx__publish_stage", "mcp__psx__publish_cross"].map(String::from));
-            json!({"permissions": {"deny": deny}})
+            json!({"permissions": {"deny": deny}, "enabledMcpjsonServers": ["psx"]})
         }
         Role::Implementer => {
             deny.extend(["mcp__psx", "Bash(psx:*)", "Bash(psx *)"].map(String::from));
@@ -380,8 +381,36 @@ fn protocol_toml(game: &str, repos: &Repos, s: &Setting) -> String {
     if !s.legacy.is_empty() {
         t += &legacy_toml(repos, &s.legacy);
     }
-    t
+    t + AGENTS_TOML
 }
+
+/// protocol.toml's `[agents]`, commented out: the harness each role's
+/// agent runs in under `port run`, for the person to choose.
+pub(crate) const AGENTS_TOML: &str = "
+# psx port run starts each role's agent when the ledger gives it work: one
+# headless session per item, in the role's repository, with the command
+# below ({prompt} is the item, {model} the model). Any harness with a
+# headless mode serves; it must edit and run commands without asking, so
+# the access rules in each repository's .claude/settings.json are its only
+# limits until psx sandboxes the sessions. Guide topic agents.
+# [agents]
+# max_runs = 10
+# timeout_minutes = 120
+#
+# [agents.investigator]
+# command = [\"claude\", \"-p\", \"{prompt}\", \"--model\", \"{model}\", \"--permission-mode\", \"bypassPermissions\", \"--output-format\", \"stream-json\", \"--verbose\"]
+# model = \"claude-opus-5-5\"
+#
+# [agents.reviewer]
+# command = [\"claude\", \"-p\", \"{prompt}\", \"--model\", \"{model}\", \"--permission-mode\", \"bypassPermissions\", \"--output-format\", \"stream-json\", \"--verbose\"]
+# model = \"claude-opus-5-5\"
+# (another harness: command = [\"codex\", \"exec\", \"--json\", \"-s\", \"workspace-write\", \"{prompt}\"],
+# with psx's server in its own configuration, since it does not read .mcp.json)
+#
+# [agents.implementer]
+# command = [\"claude\", \"-p\", \"{prompt}\", \"--model\", \"{model}\", \"--permission-mode\", \"bypassPermissions\", \"--output-format\", \"stream-json\", \"--verbose\"]
+# model = \"claude-sonnet-5-5\"
+";
 
 fn legacy_toml(repos: &Repos, legacy: &[PathBuf]) -> String {
     format!(
@@ -937,7 +966,8 @@ fn merge_settings(have: &mut Value, ours: &Value, notes: &mut Vec<String>) {
             .filter(|s| !servers.as_array().is_some_and(|o| o.contains(s)))
             .filter_map(|s| s.as_str().map(str::to_string))
             .collect();
-        if !extra.is_empty() {
+        let clean = servers.as_array().is_some_and(|o| o.iter().any(|s| s == "clean"));
+        if clean && !extra.is_empty() {
             notes.push(format!("enables {} besides clean mode: take them out", extra.join(", ")));
         }
         union(&mut have["enabledMcpjsonServers"], servers);
@@ -1230,6 +1260,9 @@ impl PortAdoptArgs {
             }
             if t.get("legacy").is_none() && !legacy.is_empty() {
                 add += &legacy_toml(&repos, &legacy);
+            }
+            if t.get("agents").is_none() && !text.contains("[agents") {
+                add += AGENTS_TOML;
             }
             if !add.is_empty() {
                 new = format!("{}{add}", new.trim_end_matches('\n').to_string() + "\n");

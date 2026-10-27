@@ -87,7 +87,9 @@ the ones who write the new game:
 written before it, which the implementer is then denied. Everything that crosses is
 checked for addresses, code and copied notes, and every message to the implementer is
 logged. `psx protocol next` tells each role what to do now, and `psx protocol report` how far
-along the port is, with an estimated date once the inventory stops growing.
+along the port is, with an estimated date once the inventory stops growing. `psx port run`
+starts each role's agent when it has work, one fresh headless session per item, in whichever
+agent harness `protocol.toml` names, and logs what each run did.
 
 This lowers the legal risk of a port; it doesn't remove it, and it isn't legal advice. An AI
 implementer may also have seen other reimplementations of the game in training, which no

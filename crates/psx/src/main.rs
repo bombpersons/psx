@@ -34,6 +34,7 @@ mod native;
 mod page;
 mod parser;
 mod parser_template;
+mod port_run;
 mod protocol;
 mod provenance;
 mod publish;
@@ -240,6 +241,9 @@ enum PortAction {
     /// moved under the protocol): missing files written, settings extended, nothing overwritten,
     /// and a list of what only a person settles. --legacy names a port the implementer never reads.
     Adopt(roles::PortAdoptArgs),
+    /// Start each role's agent when the ledger gives it work, one at a time, headless, with
+    /// the harness protocol.toml's [agents] names, until no role has work or a run changes nothing.
+    Run(port_run::PortRunArgs),
 }
 
 #[derive(clap::Subcommand)]
@@ -366,6 +370,7 @@ fn main() -> ExitCode {
         Command::Port { action } => match action {
             PortAction::Init(a) => a.exec(&ctx),
             PortAction::Adopt(a) => a.exec(&ctx),
+            PortAction::Run(a) => a.exec(&ctx),
         },
         Command::Publish { action } => match action {
             PublishAction::Stage(a) => a.exec(&ctx),
