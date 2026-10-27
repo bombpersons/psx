@@ -206,6 +206,7 @@ fn sandboxed(
         share: &agent.share,
         share_ro: &agent.share_ro,
         home: home.as_deref(),
+        harness: agent.command.first().map(String::as_str),
         interactive,
     };
     Ok((crate::sandbox::wrap(&policy, &cmd, &servers)?, Some(servers)))

@@ -139,6 +139,9 @@ pub(crate) struct Policy<'a> {
     pub share_ro: &'a [PathBuf],
     /// The implementer's own home folder.
     pub home: Option<&'a Path>,
+    /// The role's harness program ([agents.ROLE] command), there besides
+    /// what runs: port run --shell runs a shell, to start the harness from.
+    pub harness: Option<&'a str>,
     /// The person at the terminal (port run --shell): the session keeps it,
     /// which a headless one may not (it could type into it).
     pub interactive: bool,
@@ -209,7 +212,12 @@ pub(crate) fn wrap(p: &Policy, cmd: &[String], servers: &Servers) -> crate::Resu
                 }
             }
         }
-        let (links, dirs) = program_needs(&cmd[0]);
+        let (mut links, mut dirs) = program_needs(&cmd[0]);
+        if let Some(h) = p.harness.filter(|h| *h != cmd[0]) {
+            let (l, d) = program_needs(h);
+            links.extend(l);
+            dirs.extend(d);
+        }
         for d in dirs {
             if !m.has(&d) {
                 m.ro(&d);
@@ -246,7 +254,8 @@ pub(crate) fn wrap(p: &Policy, cmd: &[String], servers: &Servers) -> crate::Resu
         if let Some(h) = &home_dir {
             m.rw(h);
         }
-        for o in program_needs(&cmd[0]).1.into_iter().chain(servers.programs.iter().cloned()) {
+        let harness = p.harness.map(|h| program_needs(h).1).unwrap_or_default();
+        for o in program_needs(&cmd[0]).1.into_iter().chain(harness).chain(servers.programs.iter().cloned()) {
             if o.starts_with("/tmp") {
                 m.ro(&o);
             }
@@ -505,6 +514,7 @@ mod tests {
             share: &[],
             share_ro: &[],
             home: Some(&home),
+            harness: None,
             interactive: false,
         };
         let argv = wrap(&policy, &cmd, &none).unwrap();
@@ -527,6 +537,7 @@ mod tests {
             share: &[],
             share_ro: &[],
             home: None,
+            harness: None,
             interactive: true,
         };
         let m = mounts(&wrap(&policy, &cmd, &none).unwrap());
