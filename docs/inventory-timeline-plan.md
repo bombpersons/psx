@@ -24,13 +24,16 @@ and coverage guesses which one it was:
 - coverage credits a word to an image only for a stretch of four words,
   the whole run of executed words, or whole blocks, or where the words
   beside it are other images' (`beside`);
-- a traced call is matched to an image by the instruction it held
-  (call-instructions, #24).
+- a traced call target is matched to an image by any instruction run at
+  its address, so code loaded over a function's start is split where the
+  old entry falls in it.
 
 Each rule closed the gap the one before left, and each is a guess the
-trace could have answered. What is left on GT2's boot run shows it: a
-two-word `jr ra; nop` stub the inventory gives to the BIOS shell (which
-holds the same words there) and coverage gives to the game.
+trace could have answered. GT2's boot run shows it: 71 words executed
+outside functions, 69 of them loop tails cut off by calls into boot code
+seeding functions in the code later loaded there (212 false functions);
+the other two a `jr ra; nop` stub the inventory gives to the BIOS shell
+(which holds the same words there) and coverage gives to the game.
 
 ## The design
 
@@ -129,7 +132,8 @@ Each is committed and reviewed on its own; each has its check.
    another way: keeping both keeps the layers. Lost code, placements,
    `code_as_it_ran`, `only`, variants and same_range_as are removed.
    Check: GT2's boot run gives 0 words in no image, and its function list
-   is compared with today's (#24) and every difference explained.
+   is compared with today's and every difference explained (212 false
+   functions from calls into replaced code are expected to go).
 3. **Coverage by lookup.** Credit by (copy, address). Check: GT2's boot
    run gives 0 executed_outside_functions, or each one is a boundary
    error found and fixed in the analysis.
