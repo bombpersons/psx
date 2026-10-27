@@ -809,7 +809,12 @@ impl InventoryArgs {
         // the snapshot's trace. Below 0x80010000 is the BIOS kernel's.
         let mut overlays: Vec<Value> = Vec::new();
         let mut bios_code: Vec<Value> = Vec::new();
-        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+        // An image by sha256: its overlay, and which of its variants.
+        let mut seen: BTreeMap<String, (usize, Option<usize>)> = BTreeMap::new();
+        // Each overlay's extent, file, bytes, code words and function starts,
+        // to tell an image whose code is another's (its data differs) from new code.
+        let mut ranges: Vec<Held> = Vec::new();
+        let mut variants = 0;
         for Snap { label, ram, calls, resident, .. } in &snaps {
             let code = Code { base: 0x8000_0000, bytes: ram.clone(), origin: label.clone(), gp: None, exe: None };
             let mut theirs = vec![false; ram.len() / 4];
@@ -945,11 +950,47 @@ impl InventoryArgs {
                     );
                     continue;
                 }
-                if let Some(&k) = seen.get(&sha) {
-                    if let Some(runs) = overlays[k]["snapshots"].as_array_mut() {
+                if let Some(&(k, v)) = seen.get(&sha) {
+                    let at = match v {
+                        Some(v) => &mut overlays[k]["variants"][v]["snapshots"],
+                        None => &mut overlays[k]["snapshots"],
+                    };
+                    if let Some(runs) = at.as_array_mut() {
                         runs.push(json!(label));
                     }
                     continue;
+                }
+                let bytes = ram[o.clone()].to_vec();
+                let starts: BTreeSet<u32> = a
+                    .functions
+                    .range(lo..hi)
+                    .map(|(_, f)| f)
+                    .filter(|f| foreign.contains(&f.start) == over)
+                    .map(|f| f.start)
+                    .collect();
+                let code: BTreeSet<u32> = starts.iter().flat_map(|s| (*s..a.functions[s].end).step_by(4)).collect();
+                // The same extent and file as an overlay before it.
+                let path = file.as_ref().map(|f| f["path"].clone());
+                let mut same_range = Value::Null;
+                if let Some(r) = ranges.iter().find(|r| r.lo == lo && r.hi == hi && r.path == path) {
+                    let (words_differ, code_differ) = r.differs(&bytes, &code);
+                    if code_differ == 0 && starts.is_subset(&r.starts) {
+                        // Its code is the earlier image's: a variant of it, not
+                        // more functions. Coverage credits code by its words.
+                        let k = r.overlay;
+                        let list = overlays[k]
+                            .as_object_mut()
+                            .map(|o| o.entry("variants").or_insert_with(|| json!([])))
+                            .and_then(Value::as_array_mut);
+                        if let Some(list) = list {
+                            seen.insert(sha.clone(), (k, Some(list.len())));
+                            list.push(json!({"sha256": sha, "words_differ": words_differ, "snapshots": [label]}));
+                        }
+                        variants += 1;
+                        continue;
+                    }
+                    same_range = json!({"sha256": overlays[r.overlay]["sha256"], "words_differ": words_differ,
+                        "code_words_differ": code_differ});
                 }
                 add(&mut totals, &rest["totals"]);
                 // Its bytes, for coverage to tell it from code loaded over it.
@@ -958,19 +999,25 @@ impl InventoryArgs {
                     std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
                 }
                 std::fs::write(&keep, &ram[o.clone()]).map_err(|e| Error::io(&keep, e))?;
-                seen.insert(sha.clone(), overlays.len());
-                overlays.push(json!({
+                seen.insert(sha.clone(), (overlays.len(), None));
+                ranges.push(Held { lo, hi, path, bytes, code, starts, overlay: overlays.len() });
+                let mut entry = json!({
                     "start": hex(lo), "end": hex(hi), "sha256": sha, "file": file,
                     "snapshots": [label],
                     "totals": rest["totals"], "gaps": rest["gaps"], "functions": functions,
-                }));
+                });
+                if !same_range.is_null() {
+                    entry["same_range_as"] = same_range;
+                }
+                overlays.push(entry);
             }
         }
 
         let out = self.out.as_ref().map(|p| at(p)).unwrap_or_else(|| default_out(ctx));
         let summary = json!({
             "functions": totals.0, "instructions": totals.1, "blocks": totals.2,
-            "executables": exes.len(), "overlays": overlays.len(), "disc_files": files.len(),
+            "executables": exes.len(), "overlays": overlays.len(), "overlay_variants": variants,
+            "disc_files": files.len(),
         });
         let previous = std::fs::read_to_string(&out)
             .ok()
@@ -979,7 +1026,7 @@ impl InventoryArgs {
         let inventory = json!({
             "inventory": 1, "made": crate::publish::utc_now(), "psx": crate::context::version(),
             "media": media, "boot": boot, "totals": summary,
-            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); an overlay is code a snapshot holds outside its executables (code from the BIOS ROM, the shell, is listed under bios_code instead); gaps are what no function covers, with how many words decode as instructions",
+            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); an overlay is code a snapshot holds outside its executables (code from the BIOS ROM, the shell, is listed under bios_code instead); an image at an overlay's extent whose code words are that overlay's (only its data differs) is one of its variants, not another overlay, and one whose code differs notes same_range_as; gaps are what no function covers, with how many words decode as instructions",
             "executables": executables, "overlays": overlays, "bios_code": bios_code, "disc": {"files": files},
         });
         if let Some(d) = out.parent() {
@@ -1009,6 +1056,28 @@ impl InventoryArgs {
             "bios_code": bios_code.iter().map(|b| json!({"start": b["start"], "end": b["end"], "file": b["file"]["path"]})).collect::<Vec<_>>(),
             "next": "artifact_read the inventory for functions and gaps; keep it in the investigator's notes so the ledger can count against it",
         }))
+    }
+}
+
+/// An overlay as inventory found it, to compare later images at its extent with.
+struct Held {
+    lo: u32,
+    hi: u32,
+    path: Option<Value>,
+    bytes: Vec<u8>,
+    code: BTreeSet<u32>,
+    starts: BTreeSet<u32>,
+    overlay: usize,
+}
+
+impl Held {
+    /// Words of `bytes` (an image at this extent) that differ from this
+    /// overlay's, and how many of them are code (either's functions).
+    fn differs(&self, bytes: &[u8], code: &BTreeSet<u32>) -> (usize, usize) {
+        let word = |b: &[u8], x: u32| b.get((x - self.lo) as usize..(x - self.lo) as usize + 4).map(<[u8]>::to_vec);
+        let differ = |x: &u32| word(bytes, *x) != word(&self.bytes, *x);
+        let all = (self.lo..self.hi).step_by(4).filter(differ).count();
+        (all, self.code.union(code).filter(|x| differ(x)).count())
     }
 }
 
@@ -1102,6 +1171,29 @@ mod tests {
         assert_eq!((f["path"].as_str(), f["loads_at"].as_str()), (Some("/OVL.BIN"), Some("80100000")));
         assert_eq!((lo, hi), (0x8010_0000, 0x8010_2000));
         assert!(loaded_from(&ram, 0x8018_0000, 0x8018_0100, &files).is_none());
+    }
+
+    #[test]
+    fn an_image_differing_only_in_data_is_told_from_new_code() {
+        // Code at 0x00..0x10, data at 0x10..0x20.
+        let first: Vec<u8> = [PROLOGUE, NOP, JR_RA, NOP, 1, 2, 3, 4].iter().flat_map(|w| w.to_le_bytes()).collect();
+        let code: BTreeSet<u32> = (0x8010_0000..0x8010_0010).step_by(4).collect();
+        let held = Held {
+            lo: 0x8010_0000,
+            hi: 0x8010_0020,
+            path: None,
+            bytes: first.clone(),
+            code: code.clone(),
+            starts: BTreeSet::from([0x8010_0000]),
+            overlay: 0,
+        };
+        let mut data = first.clone();
+        data[0x14] = 9;
+        data[0x18] = 9;
+        assert_eq!(held.differs(&data, &code), (2, 0));
+        let mut new_code = first;
+        new_code[4..8].copy_from_slice(&jal(0x8010_0010).to_le_bytes());
+        assert_eq!(held.differs(&new_code, &code), (1, 1));
     }
 
     #[test]
