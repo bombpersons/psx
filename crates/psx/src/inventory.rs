@@ -770,10 +770,15 @@ impl InventoryArgs {
         // searched for in the disc's files; each file found is analysed as
         // if a snapshot held it alone, where the run ran it.
         let mut snaps: Vec<Snap> = Vec::new();
+        // The runs read, for protocol to tell a corpus run the inventory has
+        // not seen (or that was recorded again) from one it has.
+        let mut inputs = Vec::new();
         let mut pages = Vec::new();
         for r in &self.ram {
             let dir = at(r);
             let snap = crate::ram::load(&dir)?;
+            let executed = std::fs::read(dir.join("executed.bin")).ok().map(|b| crate::publish::sha256(&b));
+            inputs.push(json!({"run": dir, "executed_sha256": executed}));
             let resident: Vec<(usize, f64)> =
                 exes.iter().enumerate().map(|(i, e)| (i, e.resident(&snap.bytes))).filter(|&(_, s)| s >= 0.9).collect();
             let ran = crate::coverage::executed(&dir).ok();
@@ -1164,6 +1169,7 @@ impl InventoryArgs {
             "media": media, "boot": boot, "totals": summary,
             "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); an overlay is code a snapshot holds outside its executables (code from the BIOS ROM, the shell, is listed under bios_code instead); an image at an overlay's extent whose code words are that overlay's (only its data differs) is one of its variants, not another overlay, and one whose code differs notes same_range_as; gaps are what no function covers, with how many words decode as instructions",
             "executables": executables, "overlays": overlays, "bios_code": bios_code, "disc": {"files": files},
+            "ram": inputs,
         });
         if let Some(d) = out.parent() {
             std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
