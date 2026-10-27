@@ -698,7 +698,50 @@ async fn serve(root: std::path::PathBuf, pinned: bool, a: McpArgs) -> Result<(),
 }
 
 /// `pinned`: the root came from `--root`/`PSX_ROOT`, so client roots are ignored.
+/// Inside psx port run's sandbox psx is served from outside, where it can
+/// write to the other repositories (publish cross), on this socket.
+#[cfg(unix)]
+pub const SANDBOX_SOCKET: &str = "/tmp/psx-mcp/psx.sock";
+
+/// Passes stdio through to the server outside the sandbox, if there is one.
+#[cfg(unix)]
+fn bridge() -> Option<ExitCode> {
+    let s = std::os::unix::net::UnixStream::connect(SANDBOX_SOCKET).ok()?;
+    let (mut from, mut to) = (s.try_clone().ok()?, s);
+    std::thread::spawn(move || {
+        pump(&mut std::io::stdin().lock(), &mut to);
+        let _ = to.shutdown(std::net::Shutdown::Write);
+    });
+    pump(&mut from, &mut std::io::stdout().lock());
+    Some(ExitCode::SUCCESS)
+}
+
+/// Copies until the reader ends, as each read comes: io::copy may splice
+/// between a pipe and a socket and hold the messages back.
+#[cfg(unix)]
+fn pump(r: &mut impl std::io::Read, w: &mut impl std::io::Write) {
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match r.read(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => {
+                if w.write_all(&buf[..n]).and_then(|_| w.flush()).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn bridge() -> Option<ExitCode> {
+    None
+}
+
 pub fn main(ctx: Ctx, a: McpArgs, pinned: bool) -> ExitCode {
+    if let Some(code) = bridge() {
+        return code;
+    }
     if !(1..=8).contains(&a.jobs) {
         println!("{}", Error::invalid("--jobs must be 1..=8").to_value());
         return ExitCode::from(1);

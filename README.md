@@ -89,7 +89,8 @@ checked for addresses, code and copied notes, and every message to the implement
 logged. `psx protocol next` tells each role what to do now, and `psx protocol report` how far
 along the port is, with an estimated date once the inventory stops growing. `psx port run`
 starts each role's agent when it has work, one fresh headless session per item, in whichever
-agent harness `protocol.toml` names, and logs what each run did.
+agent harness `protocol.toml` names, and logs what each run did. On Linux each session runs in a
+bubblewrap sandbox, so the implementer sees only its own repository whatever the harness allows.
 
 This lowers the legal risk of a port; it doesn't remove it, and it isn't legal advice. An AI
 implementer may also have seen other reimplementations of the game in training, which no

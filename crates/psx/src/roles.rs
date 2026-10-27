@@ -188,7 +188,7 @@ fn absolute(p: &Path) -> PathBuf {
 
 /// The folder name an agent host keeps a project's sessions under
 /// (Claude Code: every character but letters and digits becomes -).
-fn host_key(p: &Path) -> String {
+pub(crate) fn host_key(p: &Path) -> String {
     p.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
@@ -388,11 +388,14 @@ fn protocol_toml(game: &str, repos: &Repos, s: &Setting) -> String {
 /// agent runs in under `port run`, for the person to choose.
 pub(crate) const AGENTS_TOML: &str = "
 # psx port run starts each role's agent when the ledger gives it work: one
-# headless session per item, in the role's repository, with the command
-# below ({prompt} is the item, {model} the model). Any harness with a
-# headless mode serves; it must edit and run commands without asking, so
-# the access rules in each repository's .claude/settings.json are its only
-# limits until psx sandboxes the sessions. Guide topic agents.
+# headless session per item, in the role's repository and in its sandbox
+# (bubblewrap), with the command below ({prompt} is the item, {model} the
+# model). Any harness with a headless mode serves; it must edit and run
+# commands without asking, so the sandbox and the access rules are its
+# limits. The investigator and the reviewer never write the others'
+# repositories; the implementer sees only its own, and has a home of its
+# own, where its harness logs in once: psx port run --shell implementer.
+# A role with no entry here is the person's to run. Guide topic agents.
 # [agents]
 # max_runs = 10
 # timeout_minutes = 120
@@ -404,8 +407,6 @@ pub(crate) const AGENTS_TOML: &str = "
 # [agents.reviewer]
 # command = [\"claude\", \"-p\", \"{prompt}\", \"--model\", \"{model}\", \"--permission-mode\", \"bypassPermissions\", \"--output-format\", \"stream-json\", \"--verbose\"]
 # model = \"claude-opus-5-5\"
-# (another harness: command = [\"codex\", \"exec\", \"--json\", \"-s\", \"workspace-write\", \"{prompt}\"],
-# with psx's server in its own configuration, since it does not read .mcp.json)
 #
 # [agents.implementer]
 # command = [\"claude\", \"-p\", \"{prompt}\", \"--model\", \"{model}\", \"--permission-mode\", \"bypassPermissions\", \"--output-format\", \"stream-json\", \"--verbose\"]
