@@ -475,7 +475,7 @@ impl CoverageArgs {
         let doc = json!({
             "coverage": 1, "made": crate::publish::utc_now(), "psx": crate::context::version(),
             "inventory": {"path": inv_path, "made": inv["made"]},
-"how": "each run's executed words, credited to the executable or overlay whose code holds that instruction at that address; a block is executed when any of its words is; runs are indices into runs; each run's recipe (the named state it started from, its arguments, its executed.bin's sha256) is what coverage check runs again",
+        "how": "each run's executed words, credited to the executable or overlay whose code holds that instruction at that address; a block is executed when any of its words is; runs are indices into runs; each run's recipe (the named state it started from, its arguments, its executed.bin's sha256) is what coverage check runs again",
             "runs": runs, "totals": summary["totals"], "in_no_image": no_image, "images": out_images,
         });
         if let Some(d) = out.parent() {
@@ -500,7 +500,8 @@ impl CoverageArgs {
         let inv_path = self.inventory.as_ref().map(|p| at(p)).unwrap_or_else(|| crate::inventory::default_out(ctx));
         let path = self.out.as_ref().map(|p| at(p)).unwrap_or_else(|| inv_path.with_file_name("coverage.json"));
         let text = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, e))?;
-        let doc: Value = serde_json::from_str(&text).map_err(|e| Error::malformed(format!("{}: {e}", path.display())))?;
+        let doc: Value =
+            serde_json::from_str(&text).map_err(|e| Error::malformed(format!("{}: {e}", path.display())))?;
         let media = std::fs::read_to_string(&inv_path)
             .ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
