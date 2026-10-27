@@ -12,7 +12,7 @@
 //! (when either side is in a traced range);
 //! interrupts and exceptions add `!!` lines.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use crate::bus::Bus;
@@ -50,6 +50,10 @@ pub struct CallStat {
     pub last_frame: u64,
     /// Call sites (PC of the jal/jalr) with counts.
     pub callers: BTreeMap<u32, u64>,
+    /// The instructions the target held when called: code loaded over
+    /// other code makes one address the start of several functions, or
+    /// of one and the middle of another.
+    pub instructions: BTreeSet<u32>,
 }
 
 pub struct Tracer {
@@ -209,6 +213,9 @@ impl Tracer {
                     self.calls.entry(pc).or_insert_with(|| CallStat { first_frame: bus.frames, ..Default::default() });
                 c.count += 1;
                 c.last_frame = bus.frames;
+                if c.instructions.len() < 64 {
+                    c.instructions.insert(info.instruction);
+                }
                 if c.callers.len() < 64 || c.callers.contains_key(&site) {
                     *c.callers.entry(site).or_default() += 1;
                 }

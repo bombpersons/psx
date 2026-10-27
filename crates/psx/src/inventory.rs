@@ -521,11 +521,20 @@ fn words(bytes: &[u8], base: u32) -> Vec<(u32, u32)> {
     bytes.as_chunks::<4>().0.iter().enumerate().map(|(i, w)| (base + 4 * i as u32, u32::from_le_bytes(*w))).collect()
 }
 
-/// A traced run's call targets (calls.json), through pointers included.
-fn trace_calls(run: &Path) -> Vec<u32> {
+/// A traced run's call targets (calls.json), through pointers included,
+/// with the instructions each held when called (a psx before calls.json
+/// noted them gives none).
+fn trace_calls(run: &Path) -> Vec<(u32, Option<Vec<u32>>)> {
     let Ok(text) = std::fs::read_to_string(run.join("calls.json")) else { return Vec::new() };
     let v: Value = serde_json::from_str(&text).unwrap_or_default();
-    v.as_array().into_iter().flatten().filter_map(|c| c["address"].as_u64().map(|a| a as u32)).collect()
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let held = c["instructions"].as_array().map(|a| a.iter().filter_map(|w| Some(w.as_u64()? as u32)).collect());
+            Some((c["address"].as_u64()? as u32, held))
+        })
+        .collect()
 }
 
 /// A snapshot: its run directory, RAM, the executables it holds (with the
@@ -782,17 +791,20 @@ impl InventoryArgs {
             let resident: Vec<(usize, f64)> =
                 exes.iter().enumerate().map(|(i, e)| (i, e.resident(&snap.bytes))).filter(|&(_, s)| s >= 0.9).collect();
             let ran = crate::coverage::executed(&dir).ok();
-            // One entry per instruction a target ran as (code loaded over
-            // code runs as several).
+            // One entry per instruction a target held when called (code
+            // loaded over code is called as several). Calls noted without
+            // them take every instruction run there, which seeds the middle
+            // of code later loaded over a function's start.
             let mut ran_at: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
             for &(a, w, _) in ran.iter().flatten() {
                 ran_at.entry(a).or_default().push(w);
             }
             let calls: Vec<(u32, Option<u32>)> = trace_calls(&dir)
                 .into_iter()
-                .flat_map(|t| match &ran {
-                    None => vec![(t, None)],
-                    Some(_) => ran_at
+                .flat_map(|(t, held)| match (held, &ran) {
+                    (Some(ws), _) if !ws.is_empty() => ws.into_iter().map(|w| (t, Some(w))).collect(),
+                    (_, None) => vec![(t, None)],
+                    (_, Some(_)) => ran_at
                         .get(&(0x8000_0000 | (t & 0x1F_FFFF)))
                         .map(|ws| ws.iter().map(|&w| (t, Some(w))).collect())
                         .unwrap_or_default(),
@@ -1409,5 +1421,16 @@ mod tests {
         assert_eq!(placements(&lost, &files), vec![], "too short a run to search for");
         let lost: Vec<(u32, u32)> = ran.iter().map(|&(a, w, _)| (a, w)).collect();
         assert_eq!(placements(&lost, &files), vec![(0, 0x800F_FFF8)]);
+    }
+
+    #[test]
+    fn a_call_target_carries_the_instructions_it_was_called_at() {
+        let dir = std::env::temp_dir().join(format!("psx-calls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let calls = json!([{"address": 0x8003_07A8u32, "instructions": [PROLOGUE]}, {"address": 0x8003_0800u32}]);
+        std::fs::write(dir.join("calls.json"), calls.to_string()).unwrap();
+        let got = trace_calls(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(got, vec![(0x8003_07A8, Some(vec![PROLOGUE])), (0x8003_0800, None)]);
     }
 }

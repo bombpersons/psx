@@ -771,7 +771,7 @@ fn trace_outputs(
             json!({
                 "address": addr, "function": name(*addr), "count": c.count,
                 "address_hex": format!("0x{addr:08X}"),
-                "first_frame": c.first_frame, "last_frame": c.last_frame,
+                "first_frame": c.first_frame, "last_frame": c.last_frame, "instructions": c.instructions,
                 "first_run_frame": c.first_frame as i64 - start_frame as i64, "last_run_frame": c.last_frame as i64 - start_frame as i64,
                 "callers": callers.iter().take(16).map(|(site, n)| json!({"pc": site, "pc_hex": format!("0x{site:08X}"), "count": n})).collect::<Vec<_>>(),
             })
