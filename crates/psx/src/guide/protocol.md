@@ -66,7 +66,10 @@ table dispatches to). Give ram run directories from the places the game
 goes (a level, a menu, a cutscene): a snapshot adds the tables filled at
 runtime, and code no executable holds is an overlay, matched to the disc
 file it came from. A traced run (run --trace) adds its call targets and
-the code it executed, where the code at hand is what ran there. Code the BIOS copies into RAM at power-on (its shell) is
+the code it executed, where the code at hand is what ran there, and its
+code pages (code.bin, RAM as it was when code in it ran): code loaded and
+replaced between frames, which no snapshot holds and no disc file
+matches, is found as it ran. Code the BIOS copies into RAM at power-on (its shell) is
 listed apart under bios_code. An image at an overlay's place whose code
 words are the overlay's (only its data differs) is one of its variants,
 counted once; one whose code differs notes same_range_as, with how many
@@ -90,8 +93,9 @@ disc) or to record. Each executed word is credited to the executable or
 overlay whose code ran there, so code loaded over other code is told
 apart. Two lists say the inventory is short: executed_outside_functions
 (code the analysis missed) and in_no_image (an overlay replaced before the
-run's end, often compressed on the disc). For the second, called gives the run frames the run called into it:
-run to one of them and take the inventory again with that snapshot as ram.
+run's end, often compressed on the disc). Take the inventory again with
+the corpus runs as ram: their code pages hold what ran (a run recorded
+by a psx before code.bin, record again).
 
 coverage keeps each run's recipe in coverage.json: the named state it
 started from (by the sha256 its report notes), its arguments with the
