@@ -27,6 +27,11 @@ to a state a chain already names (by sha256), so a run from a named state,
 or a handoff from one, saves with the whole chain. A state with no report
 and no chain cannot be saved: make it again with states make.
 
+replace=true (save, make, rebuild) keeps the chain of the state it replaces
+in notes/states/replaced/NAME-SHA.json, so a run from the state as it was
+still saves with its chain, and a state can be replaced by one that started
+from it.
+
 states list gives each named state, its description, its steps and whether
 the file is present and matches the chain.
 

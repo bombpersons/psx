@@ -423,8 +423,10 @@ fn short(s: &str) -> String {
 /// The current emulator's chains: (state, made on another emulator).
 fn chains(root: &Path, emulator: &str, version: &str) -> Vec<(String, bool)> {
     let mut out = Vec::new();
+    let replaced = root.join("notes/states/replaced");
     for p in crate::publish::files_under(&root.join("notes/states")) {
-        if p.extension().and_then(|e| e.to_str()) != Some("json") {
+        // Kept for the runs from a state since replaced, not states to rebuild.
+        if p.extension().and_then(|e| e.to_str()) != Some("json") || p.starts_with(&replaced) {
             continue;
         }
         let Some(v) = read_json(&p) else { continue };
