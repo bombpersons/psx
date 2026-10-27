@@ -394,7 +394,10 @@ fn chain_of(ctx: &Ctx, file: &Path, known: &[(String, Value)]) -> crate::Result<
                 let Some((_, c)) = known.iter().find(|(_, c)| c["state_sha256"] == n.as_str()) else {
                     return Err(Error::new(
                         "chain_broken",
-                        format!("{} changed since the run that started from it, and no chain names the state it was", p.display()),
+                        format!(
+                            "{} changed since the run that started from it, and no chain names the state it was",
+                            p.display()
+                        ),
                     ));
                 };
                 let mut before: Vec<Value> = c["steps"].as_array().cloned().unwrap_or_default();
