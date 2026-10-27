@@ -1,5 +1,5 @@
 //! `psx inventory`: every function of every executable on the disc and of
-//! the overlays RAM snapshots hold, with instruction counts and basic
+//! the code traced runs held in RAM, with instruction counts and basic
 //! blocks, and the disc's file list. The ledger's denominator.
 //!
 //! Functions are found by psx's own analysis, not Ghidra's: from the entry
@@ -7,9 +7,12 @@
 //! run recorded (calls through pointers included), and pointer words, in the
 //! executable and in RAM snapshots where it is resident, that point at the
 //! start of code no function covers yet (the handlers a table dispatches to,
-//! which static analysis from the entry alone misses). Gaps no function
-//! covers are listed, with how many of their words decode as instructions,
-//! so they can be classified.
+//! which static analysis from the entry alone misses). Code no executable
+//! holds is found the same way in each moment of a traced run's code page
+//! history, seeded by what had run then; a function is its start and the
+//! sha256 of its bytes. Gaps no executable's function covers are listed,
+//! with how many of their words decode as instructions, so they can be
+//! classified.
 use crate::Error;
 use crate::code::Code;
 use crate::commands::{Ctx, Op, Outcome};
@@ -109,6 +112,18 @@ struct Function {
     found_by: BTreeSet<&'static str>,
     /// How the extent ended: return, tail_jump, next_function, invalid, limit.
     ends: &'static str,
+    /// Its start is the trace's: a call it saw, or the entry.
+    fact: bool,
+}
+
+/// Seeds the trace or the executable vouches for (`ran`: a function a fact
+/// started, found again where the same bytes are). Every other seed (a call
+/// or jump in code, a pointer, a prologue, where a stretch of executed code
+/// starts: the trace saw it run, not where its function starts) is a
+/// guess: guesses wait until the facts are followed, and never split a
+/// function a fact started.
+fn is_fact(how: &str) -> bool {
+    matches!(how, "entry" | "trace_call" | "ran")
 }
 
 /// Code at fixed addresses (an executable, or one RAM snapshot's overlay
@@ -122,13 +137,45 @@ struct Analysis<'a> {
     region: Option<(u32, u32)>,
     functions: BTreeMap<u32, Function>,
     queue: Vec<(u32, &'static str)>,
+    /// Guessed seeds, waiting until `guesses` lets them in.
+    later: Vec<(u32, &'static str)>,
+    guessing: bool,
+    /// Words the trace saw continue the code before them (run straight on
+    /// into, or returned to by a call two words before) and no call into.
+    continues: BTreeSet<u32>,
+    /// Where a stretch of executed code may start a function: code read in
+    /// the RAM it first ran with (all of it, when unset).
+    fresh: Option<BTreeSet<u32>>,
+    /// The functions running in this very code (all, when unset): the
+    /// starts of the calls running then, and code first run then. The
+    /// calls in any other function are not followed, as what they call
+    /// may be other code by now.
+    live: Option<BTreeSet<u32>>,
     /// Pointer targets inside functions: switch cases, block leaders.
     leaders: BTreeSet<u32>,
 }
 
 impl<'a> Analysis<'a> {
     fn new(code: &'a Code, region: Option<(u32, u32)>, allowed: Box<dyn Fn(u32) -> bool + 'a>) -> Self {
-        Self { code, allowed, region, functions: BTreeMap::new(), queue: Vec::new(), leaders: BTreeSet::new() }
+        Self {
+            code,
+            allowed,
+            region,
+            functions: BTreeMap::new(),
+            queue: Vec::new(),
+            later: Vec::new(),
+            guessing: false,
+            continues: BTreeSet::new(),
+            fresh: None,
+            live: None,
+            leaders: BTreeSet::new(),
+        }
+    }
+
+    /// Lets the guessed seeds in, once the facts are followed.
+    fn guesses(&mut self) {
+        self.guessing = true;
+        self.drain();
     }
 
     fn search(&self) -> Option<(u32, u32)> {
@@ -136,8 +183,14 @@ impl<'a> Analysis<'a> {
     }
 
     fn seed(&mut self, at: u32, how: &'static str) {
-        if at.is_multiple_of(4) && self.code.word(at).is_some() && (self.allowed)(at) {
+        if !at.is_multiple_of(4) || self.code.word(at).is_none() || !(self.allowed)(at) || self.continues.contains(&at)
+        {
+            return;
+        }
+        if is_fact(how) {
             self.queue.push((at, how));
+        } else {
+            self.later.push((at, how));
         }
     }
 
@@ -146,8 +199,8 @@ impl<'a> Analysis<'a> {
     }
 
     /// The function's extent from `start`: forward until a `jr ra` or tail
-    /// `j` that no branch jumps past, the next known function, an invalid
-    /// word or the limit.
+    /// `j` that no branch jumps past and the trace saw nothing continue,
+    /// the next known function, an invalid word or the limit.
     fn extent(&self, start: u32) -> (u32, &'static str) {
         let next = self.functions.range(start + 1..).next().map(|(&a, _)| a).unwrap_or(u32::MAX);
         let (mut pc, mut reach, mut zeros) = (start, start, 0);
@@ -182,7 +235,8 @@ impl<'a> Analysis<'a> {
                     tail = true;
                 }
             }
-            if (i == JR_RA || tail) && reach <= pc + 4 {
+            // The trace saw the code after it continue it: not its end.
+            if (i == JR_RA || tail) && reach <= pc + 4 && !self.continues.contains(&(pc + 8)) {
                 if !self.code.word(pc + 4).is_some_and(sensible) {
                     return (pc, "invalid");
                 }
@@ -196,18 +250,24 @@ impl<'a> Analysis<'a> {
     /// Follows the queue: each new function's extent, and the calls and
     /// tail jumps in it.
     fn drain(&mut self) {
-        while let Some((at, how)) = self.queue.pop() {
+        loop {
+            let Some((at, how)) = self.queue.pop().or_else(|| if self.guessing { self.later.pop() } else { None })
+            else {
+                return;
+            };
             if let Some(f) = self.functions.get_mut(&at) {
                 f.found_by.insert(how);
+                f.fact |= is_fact(how);
                 continue;
             }
-            // A seed inside a function found earlier splits it only when
-            // it is a call target; a pointer there is a block in it.
+            // A seed inside a function found earlier splits it (no seed is
+            // a word the trace saw continue the code before it); a pointer
+            // there is a block in it.
             if how == "pointer" && self.containing(at).is_some() {
                 self.leaders.insert(at);
                 continue;
             }
-            let mut f = Function { start: at, end: at, found_by: BTreeSet::from([how]), ends: "" };
+            let mut f = Function { start: at, end: at, found_by: BTreeSet::from([how]), ends: "", fact: is_fact(how) };
             self.functions.insert(at, f.clone());
             (f.end, f.ends) = self.extent(at);
             // The function before may have run into this one.
@@ -220,7 +280,8 @@ impl<'a> Analysis<'a> {
                 self.functions.remove(&at);
                 continue;
             }
-            let mut pc = f.start;
+            let live = how == "executed" || self.live.as_ref().is_none_or(|l| l.contains(&at));
+            let mut pc = if live { f.start } else { f.end };
             while pc < f.end {
                 let i = self.code.word(pc).unwrap_or(0);
                 match i >> 26 {
@@ -324,31 +385,21 @@ impl<'a> Analysis<'a> {
     }
 
     /// Code a traced run executed that no function covers: where each
-    /// stretch of executed words this code holds starts. Only a stretch of
-    /// four words or a whole run of executed words, and only one that
-    /// decodes to an end: code loaded over this code shares nops and
-    /// returns with it.
+    /// stretch of executed words this code holds starts, when it decodes
+    /// to an end, a guess followed at once (after the facts, which come
+    /// first). `ran` is what ran from this very code.
     fn executed(&mut self, ran: &BTreeSet<(u32, u32)>) {
-        let Some((lo, hi)) = self.search() else { return };
-        let addrs: BTreeSet<u32> = ran.range((lo, 0)..(hi, 0)).map(|&(a, _)| a).collect();
-        let held: Vec<u32> =
-            ran.range((lo, 0)..(hi, 0)).filter(|&&(a, w)| self.code.word(a) == Some(w)).map(|&(a, _)| a).collect();
-        let mut starts = Vec::new();
-        let mut k = 0;
-        while k < held.len() {
-            let mut e = k + 1;
-            while e < held.len() && held[e] == held[e - 1] + 4 {
-                e += 1;
-            }
-            let (s, end) = (held[k], held[e - 1] + 4);
-            let whole = !addrs.contains(&(s - 4)) && !addrs.contains(&end);
-            if e - k >= 4 || whole {
-                starts.push(s);
-            }
-            k = e;
-        }
+        self.drain();
+        self.guessing = true;
+        let held: Vec<u32> = ran.iter().filter(|&&(a, w)| self.code.word(a) == Some(w)).map(|&(a, _)| a).collect();
+        let starts: Vec<u32> =
+            held.iter().enumerate().filter(|&(k, &a)| k == 0 || held[k - 1] + 4 != a).map(|(_, &a)| a).collect();
         for a in starts {
-            if self.containing(a).is_none() && (self.allowed)(a) && self.extent(a).1 != "invalid" {
+            if self.fresh.as_ref().is_none_or(|f| f.contains(&a))
+                && self.containing(a).is_none()
+                && (self.allowed)(a)
+                && self.extent(a).1 != "invalid"
+            {
                 self.seed(a, "executed");
                 self.drain();
             }
@@ -521,196 +572,391 @@ fn words(bytes: &[u8], base: u32) -> Vec<(u32, u32)> {
     bytes.as_chunks::<4>().0.iter().enumerate().map(|(i, w)| (base + 4 * i as u32, u32::from_le_bytes(*w))).collect()
 }
 
-/// A traced run's call targets (calls.json), through pointers included.
-fn trace_calls(run: &Path) -> Vec<u32> {
-    let Ok(text) = std::fs::read_to_string(run.join("calls.json")) else { return Vec::new() };
+/// Moments as `[from, to]` spans, in order.
+type Spans = Vec<(u32, u32)>;
+
+/// Whether `spans` hold moment `c`.
+fn during(spans: &Spans, c: u32) -> bool {
+    let k = spans.partition_point(|s| s.1 < c);
+    spans.get(k).is_some_and(|s| s.0 <= c)
+}
+
+/// A traced run's timeline: each code page copy (code.bin, whole), the
+/// words run from it (executed.bin), with the moment each first ran (a
+/// moment is the number of the latest copy then), and the call targets in
+/// it (calls.json), with the moments a call to each ran in, from the call
+/// until it returned. At any moment, the copy each page held is RAM's code
+/// then.
+struct Timeline {
+    copies: Vec<(u64, u32, Vec<u8>)>,
+    /// Per copy: `(address, instruction, moment, continues the code before
+    /// it)`.
+    ran: Vec<Vec<(u32, u32, u32, bool)>>,
+    /// Per copy: `(address, moments)`.
+    calls: Vec<Vec<(u32, Spans)>>,
+}
+
+/// A run's timeline: none for a run without a trace; an error for one
+/// recorded before run --trace kept each code page's history and the
+/// moments each call ran in.
+fn timeline(run: &Path) -> crate::Result<Option<Timeline>> {
+    let path = run.join("executed.bin");
+    let e = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Error::io(&path, e)),
+    };
+    let again = || {
+        Error::invalid(format!(
+            "{}: recorded before run --trace kept each code page's history and when code ran; record it again with run --trace",
+            run.display()
+        ))
+    };
+    let body = e.strip_prefix(b"PSXEXEC4").ok_or_else(again)?;
+    let copies = code_pages(run).ok_or_else(again)?;
+    let mut ran = vec![Vec::new(); copies.len()];
+    for r in body.as_chunks::<28>().0 {
+        let u = |a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
+        if let Some(v) = ran.get_mut(u(0) as usize) {
+            v.push((u(4), u(8), u(12), u(16) & 1 != 0));
+        }
+    }
+    let mut calls = vec![Vec::new(); copies.len()];
+    let text = std::fs::read_to_string(run.join("calls.json")).unwrap_or_default();
     let v: Value = serde_json::from_str(&text).unwrap_or_default();
-    v.as_array().into_iter().flatten().filter_map(|c| c["address"].as_u64().map(|a| a as u32)).collect()
+    for c in v.as_array().into_iter().flatten() {
+        let (Some(k), Some(a)) = (c["copy"].as_u64(), c["address"].as_u64()) else { continue };
+        if c.get("moments").is_none() {
+            return Err(again());
+        }
+        let spans = c["moments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| Some((s[0].as_u64()? as u32, s[1].as_u64()? as u32)))
+            .collect();
+        if let Some(v) = calls.get_mut(k as usize) {
+            v.push((0x8000_0000 | (a as u32 & 0x1F_FFFF), spans));
+        }
+    }
+    Ok(Some(Timeline { copies, ran, calls }))
 }
 
-/// A snapshot: its run directory, RAM, the executables it holds (with the
-/// share of each unchanged) and its trace's call targets, each with the
-/// instruction it ran there when the run recorded executed.bin.
-struct Snap {
-    label: String,
-    /// What its trace executed: `(address, instruction)`.
-    ran: Vec<(u32, u32)>,
+impl Timeline {
+    /// Each word the trace saw continue the code before it, with the words
+    /// that say so as its copy holds them (the word, and the two before it
+    /// when in the copy): the same bytes there continue it wherever they
+    /// are.
+    fn continuing(&self) -> Vec<(u32, [Option<u32>; 3])> {
+        let mut out = Vec::new();
+        for (c, (_, page, bytes)) in self.copies.iter().enumerate() {
+            let word = |x: u32| {
+                let k = x.checked_sub(*page)? as usize;
+                bytes.get(k..k + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            };
+            for r in self.ran[c].iter().filter(|r| r.3) {
+                out.push((r.0, [word(r.0.wrapping_sub(8)), word(r.0.wrapping_sub(4)), word(r.0)]));
+            }
+        }
+        out
+    }
+}
+
+/// Whether code `word` reads holds the words a continuing fact was seen
+/// with.
+fn holds(word: impl Fn(u32) -> Option<u32>, x: u32, seen: &[Option<u32>; 3]) -> bool {
+    [x.wrapping_sub(8), x.wrapping_sub(4), x].iter().zip(seen).all(|(&a, w)| w.is_none() || word(a) == *w)
+}
+
+/// A traced run's code page copies (code.bin), each whole: `(frame, KSEG0
+/// page, bytes)`. None for a code.bin from before page history.
+fn code_pages(run: &Path) -> Option<Vec<(u64, u32, Vec<u8>)>> {
+    let b = std::fs::read(run.join("code.bin")).ok()?;
+    let mut rest = b.strip_prefix(b"PSXCODE2")?;
+    let u = |r: &[u8], a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
+    let mut out: Vec<(u64, u32, Vec<u8>)> = Vec::new();
+    // A later copy of a page is the words changed since the copy before.
+    while rest.len() >= 20 {
+        let frame = u64::from_le_bytes(rest[0..8].try_into().unwrap());
+        let (addr, before, n) = (u(rest, 8), u(rest, 12), u(rest, 16) as usize);
+        let body = rest.get(20..20 + n)?;
+        let bytes = match out.get(before as usize) {
+            None => body.to_vec(),
+            Some((_, _, b)) => {
+                let mut b = b.clone();
+                for r in body.as_chunks::<8>().0 {
+                    let o = u(r, 0) as usize;
+                    b.get_mut(o..o + 4)?.copy_from_slice(&r[4..8]);
+                }
+                b
+            }
+        };
+        out.push((frame, addr, bytes));
+        rest = &rest[20 + n..];
+    }
+    Some(out)
+}
+
+const PAGE: u32 = 0x1000;
+
+/// The executable whose code a page holds: at least half the page's words
+/// in its range are its.
+fn resident(exes: &[Exe], page: u32, bytes: &[u8]) -> Option<usize> {
+    exes.iter().position(|e| {
+        let (lo, hi) = (page.max(e.lo), (page + bytes.len() as u32).min(e.hi()));
+        if lo >= hi {
+            return false;
+        }
+        let same = (lo..hi)
+            .step_by(4)
+            .filter(|&a| bytes[(a - page) as usize..][..4] == e.payload[(a - e.lo) as usize..][..4])
+            .count();
+        2 * same as u32 >= (hi - lo) / 4
+    })
+}
+
+/// RAM at one moment: its bytes (all ones where no code is known) and,
+/// per page, whether code is known there and the executable it holds.
+struct Moment {
     ram: Vec<u8>,
-    resident: Vec<(usize, f64)>,
-    calls: Vec<(u32, Option<u32>)>,
-    /// For code pages (code.bin): the addresses holding code no other
-    /// snapshot holds; only functions holding some of it are its own.
-    only: Option<BTreeSet<u32>>,
+    known: Vec<bool>,
+    owner: Vec<Option<usize>>,
+    /// Words that continue the code before them (see `Analysis::continues`).
+    continues: BTreeSet<u32>,
+    /// Words that first ran at this moment (see `Analysis::fresh`).
+    fresh: Option<BTreeSet<u32>>,
+    /// Calls running at this moment (see `Analysis::live`).
+    live: Option<BTreeSet<u32>>,
 }
 
-/// Code a traced run executed that neither its RAM at the end nor an
-/// executable holds: `(address, instruction)`, in address order.
-fn lost_code(ram: &[u8], ran: &[(u32, u32, u64)], exes: &[Exe]) -> Vec<(u32, u32)> {
-    let word = |b: &[u8], o: usize| b.get(o..o + 4).map(|w| u32::from_le_bytes(w.try_into().unwrap()));
-    ran.iter()
-        .filter(|&&(a, w, _)| {
-            (0x8001_0000..0x8020_0000).contains(&a)
-                && word(ram, (a & 0x1F_FFFF) as usize) != Some(w)
-                && !exes.iter().any(|e| a >= e.lo && a < e.hi() && word(&e.payload, (a - e.lo) as usize) == Some(w))
+impl Moment {
+    fn word(&self, x: u32) -> Option<u32> {
+        let o = (x & 0x1F_FFFF) as usize;
+        self.ram.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+    }
+
+    /// `x` holds the code of the executable its page holds.
+    fn held(&self, exes: &[Exe], x: u32) -> bool {
+        let Some(i) = self.owner.get(((x & 0x1F_FFFF) / PAGE) as usize).copied().flatten() else { return false };
+        let (e, o) = (&exes[i], (x & 0x1F_FFFF) as usize);
+        x >= e.lo && x < e.hi() && {
+            let k = (x - e.lo) as usize;
+            e.payload.get(k..k + 4) == self.ram.get(o..o + 4)
+        }
+    }
+
+    /// Where a moment's own code may start: game RAM (below 0x80010000 is
+    /// the BIOS kernel's) that holds known code and not an executable's.
+    fn allowed(&self, exes: &[Exe], x: u32) -> bool {
+        (0x8001_0000..0x8020_0000).contains(&x) && self.known[((x & 0x1F_FFFF) / PAGE) as usize] && !self.held(exes, x)
+    }
+}
+
+/// One moment's functions, found as in an executable: seeded by `seeds`
+/// and the words `ran` then, then pointers into code and prologues around
+/// each cluster of what they found. Per cluster: its extent and the rows
+/// of its functions.
+fn moment_functions(
+    m: &Moment,
+    exes: &[Exe],
+    seeds: &[(u32, &'static str)],
+    ran: &BTreeSet<(u32, u32)>,
+) -> Vec<(u32, u32, Vec<Value>)> {
+    let code = Code { base: 0x8000_0000, bytes: m.ram.clone(), origin: String::new(), gp: None, exe: None };
+    let mut a = Analysis::new(&code, None, Box::new(|x| m.allowed(exes, x)));
+    a.continues = m.continues.clone();
+    a.fresh = m.fresh.clone();
+    a.live = m.live.clone();
+    for &(t, how) in seeds {
+        a.seed(t, how);
+    }
+    a.drain();
+    a.executed(ran);
+    a.guesses();
+    // Words that could point at game code: the only ones pointers() reads.
+    let pointers: Vec<(u32, u32)> = (0..m.ram.len() as u32 / 4)
+        .filter(|&k| m.known[(4 * k / PAGE) as usize])
+        .map(|k| (0x8000_0000 + 4 * k, m.word(0x8000_0000 + 4 * k).unwrap_or(0)))
+        .filter(|&(_, w)| (0x8001_0000..0x8020_0000).contains(&w) && w % 4 == 0)
+        .collect();
+    for _ in 0..4 {
+        let before = a.functions.len();
+        for (lo, hi) in clusters(&a) {
+            a.region = Some((lo, hi));
+            while a.pointers(&pointers) > 0 {}
+            a.prologues();
+        }
+        if a.functions.len() == before {
+            break;
+        }
+    }
+    clusters(&a)
+        .into_iter()
+        .map(|(lo, hi)| {
+            let (rows, _) = a.report_in(lo, hi, &|_| true);
+            (lo, hi, rows)
         })
-        .map(|&(a, w, _)| (a, w))
         .collect()
 }
 
-/// A traced run's code pages (code.bin): `(frame, KSEG0 address, bytes)`.
-fn code_pages(run: &Path) -> Vec<(u64, u32, Vec<u8>)> {
-    let Ok(b) = std::fs::read(run.join("code.bin")) else { return Vec::new() };
-    let u = |r: &[u8], a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
-    let mut out: Vec<(u64, u32, Vec<u8>)> = Vec::new();
-    if let Some(mut rest) = b.strip_prefix(b"PSXCODE1") {
-        while rest.len() >= 16 {
-            let frame = u64::from_le_bytes(rest[0..8].try_into().unwrap());
-            let n = u(rest, 12) as usize;
-            let Some(bytes) = rest.get(16..16 + n) else { break };
-            out.push((frame, u(rest, 8), bytes.to_vec()));
-            rest = &rest[16 + n..];
-        }
-    } else if let Some(mut rest) = b.strip_prefix(b"PSXCODE2") {
-        // A later copy of a page is the words changed since the copy before.
-        while rest.len() >= 20 {
-            let frame = u64::from_le_bytes(rest[0..8].try_into().unwrap());
-            let (addr, before, n) = (u(rest, 8), u(rest, 12), u(rest, 16) as usize);
-            let Some(body) = rest.get(20..20 + n) else { break };
-            let bytes = match out.get(before as usize) {
-                None => body.to_vec(),
-                Some((_, _, b)) => {
-                    let mut b = b.clone();
-                    for r in body.as_chunks::<8>().0 {
-                        let o = u(r, 0) as usize;
-                        b[o..o + 4].copy_from_slice(&r[4..8]);
-                    }
-                    b
-                }
-            };
-            out.push((frame, addr, bytes));
-            rest = &rest[20 + n..];
-        }
-        return as_ran(out, run);
-    }
-    out
+/// A function: its start and the sha256 of its bytes.
+type Key = (u32, String);
+/// A disc file, the address it was loaded at and the extent of it RAM held.
+type FileAt = (String, u32, u32, u32);
+/// loaded_from's answer: the file, and the extent of it RAM holds.
+type Loaded = (Value, u32, u32);
+
+/// A function found in RAM: its row, bytes, the file naming it and the
+/// name of the code it was first found in.
+struct Found {
+    row: Value,
+    bytes: Vec<u8>,
+    /// The file, the address it was loaded at and the extent RAM held of it.
+    file: Option<FileAt>,
+    first: String,
 }
 
-/// A page's copies reduced to those code pages were before page history:
-/// where a word ran for the first time, or as other than the first
-/// instruction run there, and the page's last one kept does not hold it
-/// (copies whose only change is data are dropped, and so are those of code
-/// loaded back). Until the inventory reads the timeline.
-fn as_ran(copies: Vec<(u64, u32, Vec<u8>)>, run: &Path) -> Vec<(u64, u32, Vec<u8>)> {
-    let Ok(e) = std::fs::read(run.join("executed.bin")) else { return Vec::new() };
-    let Some(body) = e.strip_prefix(b"PSXEXEC2") else { return Vec::new() };
-    let mut ran: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
-    for r in body.as_chunks::<20>().0 {
-        let u = |a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
-        ran.entry(u(0)).or_default().push((u(4), u(8)));
+impl Found {
+    /// Started by a fact in some moment.
+    fn fact(&self) -> bool {
+        self.row["found_by"].as_array().into_iter().flatten().any(|h| h.as_str().is_some_and(is_fact))
     }
-    let mut kept: BTreeMap<u32, usize> = BTreeMap::new();
-    let mut first: BTreeMap<u32, u32> = BTreeMap::new();
-    let mut out: Vec<(u64, u32, Vec<u8>)> = Vec::new();
-    for (c, copy) in copies.into_iter().enumerate() {
-        let (_, page, _) = copy;
-        let words = ran.get(&(c as u32)).map(Vec::as_slice).unwrap_or_default();
-        let new = match kept.get(&page) {
-            None => !words.is_empty(),
-            Some(&k) => words.iter().any(|&(a, w)| {
-                let o = (a - page) as usize;
-                first.get(&a).is_none_or(|&f| f != w) && out[k].2[o..o + 4] != w.to_le_bytes()
-            }),
+}
+
+/// Each moment's functions, by start and sha256 (the same function in
+/// many moments, runs or snapshots is one; other code loaded at its
+/// address is another), named by the file their cluster was loaded from
+/// when their bytes are that file's.
+struct Finder<'a> {
+    exes: &'a [Exe],
+    /// Files code is named after: the disc's, the executables' and the BIOS ROMs.
+    files: &'a [(String, Vec<u8>)],
+    /// The executables' functions: `(start, end, calls in it)`.
+    exe_functions: Vec<Vec<(u32, u32, Vec<u32>)>>,
+    /// The executables' functions by start and sha256, not listed again.
+    exe_keys: BTreeSet<(u32, String)>,
+    found: BTreeMap<(u32, String), Found>,
+    /// Which file a cluster's first 64 bytes were loaded from.
+    named: BTreeMap<(u32, Vec<u8>), Option<Loaded>>,
+    /// Functions found before, by start and bytes: a start in every moment
+    /// holding the same bytes there, so the same code is split the same way
+    /// whichever moment it is found in.
+    known: Vec<(u32, Vec<u8>, bool)>,
+}
+
+impl Finder<'_> {
+    /// Calls from the executables' functions a moment holds whole.
+    fn exe_calls(&self, m: &Moment) -> Vec<(u32, &'static str)> {
+        let mut out = Vec::new();
+        for fs in &self.exe_functions {
+            for (s, e, calls) in fs {
+                if (*s..*e).step_by(4).all(|x| m.held(self.exes, x)) {
+                    out.extend(calls.iter().map(|&t| (t, "call_from_executable")));
+                }
+            }
+        }
+        out
+    }
+
+    /// Finds a moment's functions and keeps the new ones; `when` names
+    /// code no file holds.
+    fn take(&mut self, m: &Moment, seeds: &[(u32, &'static str)], ran: &BTreeSet<(u32, u32)>, when: &str) {
+        let mut seeds = seeds.to_vec();
+        for (s, b, fact) in &self.known {
+            let o = (s & 0x1F_FFFF) as usize;
+            if m.ram.get(o..o + b.len()) == Some(&b[..]) && m.allowed(self.exes, *s) {
+                seeds.push((*s, if *fact { "ran" } else { "same_code" }));
+            }
+        }
+        for (lo, hi, rows) in moment_functions(m, self.exes, &seeds, ran) {
+            let mut file = None;
+            for row in rows {
+                let (s, e) = (parse_hex(&row["entry"]), parse_hex(&row["end"]));
+                let bytes = m.ram[(s & 0x1F_FFFF) as usize..(e & 0x1F_FFFF) as usize].to_vec();
+                let key = (s, crate::publish::sha256(&bytes));
+                if self.exe_keys.contains(&key) {
+                    continue;
+                }
+                if let Some(f) = self.found.get_mut(&key) {
+                    let mut by: BTreeSet<String> = f.row["found_by"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .chain(row["found_by"].as_array().into_iter().flatten())
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
+                    f.row["found_by"] = json!(std::mem::take(&mut by));
+                    continue;
+                }
+                // The file the cluster was loaded from, once per cluster.
+                let file = file.get_or_insert_with(|| {
+                    let o = (lo & 0x1F_FFFF) as usize;
+                    let head = m.ram[o..(o + 64).min((hi & 0x1F_FFFF) as usize)].to_vec();
+                    self.named.entry((lo, head)).or_insert_with(|| loaded_from(&m.ram, lo, hi, self.files)).clone()
+                });
+                let file = file.as_ref().and_then(|(f, flo, fhi)| {
+                    let path = f["path"].as_str()?;
+                    let at = parse_hex(&f["loads_at"]);
+                    let (_, b) = self.files.iter().find(|c| c.0 == path)?;
+                    let k = s.checked_sub(at)? as usize;
+                    (b.get(k..k + bytes.len()) == Some(&bytes[..])).then(|| (path.to_string(), at, *flo, *fhi))
+                });
+                let first = format!("code at {}, {when}", hex(lo));
+                self.found.insert(key, Found { row, bytes, file, first });
+            }
+        }
+    }
+}
+
+/// Finds the functions of each moment of a run's timeline (after each
+/// copy), seeded by the calls into the copies it holds and the code run
+/// from them at that moment.
+fn take_timeline(f: &mut Finder, t: &Timeline) {
+    let owner: Vec<Option<usize>> = t.copies.iter().map(|(_, p, b)| resident(f.exes, *p, b)).collect();
+    let continuing = t.continuing();
+    let mut now: BTreeMap<u32, usize> = BTreeMap::new();
+    for (c, (frame, page, _)) in t.copies.iter().enumerate() {
+        now.insert(*page, c);
+        let mut m = Moment {
+            ram: vec![0xFF; 0x20_0000],
+            known: vec![false; 0x200],
+            owner: vec![None; 0x200],
+            continues: BTreeSet::new(),
+            fresh: Some(BTreeSet::new()),
+            live: Some(BTreeSet::new()),
         };
-        for &(a, w) in words {
-            first.entry(a).or_insert(w);
+        let mut called = BTreeSet::new();
+        let (mut ran, mut seeds) = (BTreeSet::new(), Vec::new());
+        // The calls running at this moment ran with RAM as it is now, and
+        // only theirs are followed here: other code a copy holds may run
+        // with other code beside it, in other moments. What ran from a copy
+        // is a fact about its bytes whenever it ran, and code seen to
+        // continue the code before it does wherever the same bytes are.
+        // Where code nothing called starts is read only in the RAM it first
+        // ran with: the moment it first ran.
+        let c = c as u32;
+        for &k in now.values() {
+            let o = (t.copies[k].1 & 0x1F_FFFF) as usize;
+            m.ram[o..o + PAGE as usize].copy_from_slice(&t.copies[k].2);
+            m.known[o / PAGE as usize] = true;
+            m.owner[o / PAGE as usize] = owner[k];
+            ran.extend(t.ran[k].iter().map(|r| (r.0, r.1)));
+            m.fresh.get_or_insert_default().extend(t.ran[k].iter().filter(|r| r.2 == c).map(|r| r.0));
+            called.extend(t.calls[k].iter().filter(|r| during(&r.1, c)).map(|r| r.0));
         }
-        if new {
-            kept.insert(page, out.len());
-            out.push(copy);
-        }
+        m.live = Some(called.clone());
+        let known = |x: u32| m.known.get(((x & 0x1F_FFFF) / PAGE) as usize) == Some(&true);
+        let continues = continuing
+            .iter()
+            .filter(|(x, seen)| known(*x) && holds(|y| known(y).then(|| m.word(y)).flatten(), *x, seen))
+            .map(|(x, _)| *x)
+            .collect();
+        m.continues = continues;
+        seeds.extend(called.iter().map(|&x| (x, "trace_call")));
+        m.continues.retain(|x| !called.contains(x));
+        seeds.extend(f.exe_calls(&m));
+        f.take(&m, &seeds, &ran, &format!("frame {frame}"));
     }
-    out
-}
-
-/// Code a run ran that no snapshot holds, as RAM held it then: the code
-/// pages (code.bin) holding some of `lost` where it ran, each laid over
-/// those before it, a new image each time a page is laid over a copy of
-/// itself that differs (code loaded over code). RAM no such page holds is
-/// 0xFF (no instruction), so no function runs on into it. `(frame of its
-/// last page, RAM, the addresses where it holds lost code)`.
-fn code_as_it_ran(
-    pages: &[(u64, u32, Vec<u8>)],
-    lost: &BTreeSet<(u32, u32)>,
-    size: usize,
-) -> Vec<(u64, Vec<u8>, BTreeSet<u32>)> {
-    let holds = |addr: u32, bytes: &[u8]| -> BTreeSet<u32> {
-        let hi = addr + bytes.len() as u32;
-        lost.range((addr, 0)..(hi, 0))
-            .filter(|&&(a, w)| bytes[(a - addr) as usize..][..4] == w.to_le_bytes())
-            .map(|&(a, _)| a)
-            .collect()
-    };
-    let mut out = Vec::new();
-    let mut now: BTreeMap<u32, (&[u8], BTreeSet<u32>)> = BTreeMap::new();
-    let mut frame = 0;
-    let emit = |now: &BTreeMap<u32, (&[u8], BTreeSet<u32>)>, frame: u64, out: &mut Vec<_>| {
-        let mut ram = vec![0xFF; size];
-        for (&a, (b, _)) in now {
-            let o = (a & 0x1F_FFFF) as usize;
-            if let Some(r) = ram.get_mut(o..o + b.len()) {
-                r.copy_from_slice(b);
-            }
-        }
-        out.push((frame, ram, now.values().flat_map(|(_, l)| l.iter().copied()).collect()));
-    };
-    for (f, addr, bytes) in pages {
-        let held = holds(*addr, bytes);
-        if held.is_empty() {
-            continue;
-        }
-        if now.get(addr).is_some_and(|(b, _)| b != &&bytes[..]) {
-            emit(&now, frame, &mut out);
-        }
-        now.insert(*addr, (bytes, held));
-        frame = *f;
-    }
-    if !now.is_empty() {
-        emit(&now, frame, &mut out);
-    }
-    out
-}
-
-/// Where lost code was loaded from: the disc files holding runs of it, as
-/// `(file, address its first byte was loaded at)`.
-fn placements(lost: &[(u32, u32)], files: &[(String, Vec<u8>)]) -> Vec<(usize, u32)> {
-    let mut out: Vec<(usize, u32)> = Vec::new();
-    let holds = |&(f, at): &(usize, u32), a: u32, w: u32| {
-        let o = a.wrapping_sub(at) as usize;
-        files[f].1.get(o..o + 4).is_some_and(|b| u32::from_le_bytes(b.try_into().unwrap()) == w)
-    };
-    let mut k = 0;
-    while k < lost.len() {
-        let mut e = k + 1;
-        while e < lost.len() && lost[e].0 == lost[e - 1].0 + 4 {
-            e += 1;
-        }
-        let run = &lost[k..e];
-        k = e;
-        if run.len() < 4 || out.iter().any(|p| holds(p, run[0].0, run[0].1)) {
-            continue;
-        }
-        let needle: Vec<u8> = run.iter().take(16).flat_map(|&(_, w)| w.to_le_bytes()).collect();
-        'files: for (f, (_, bytes)) in files.iter().enumerate() {
-            for off in memchr::memmem::find_iter(bytes, &needle).take(4) {
-                let Some(at) = run[0].0.checked_sub(off as u32) else { continue };
-                if off % 4 == 0 && at >= 0x8000_0000 {
-                    out.push((f, at));
-                    break 'files;
-                }
-            }
-        }
-    }
-    out
 }
 
 struct Exe {
@@ -824,399 +1070,283 @@ impl InventoryArgs {
             }
         }
 
-        // The snapshots: which executable each holds, and their traces.
-        // Code a trace ran that is gone by the end (loaded over again) is
-        // searched for in the disc's files; each file found is analysed as
-        // if a snapshot held it alone, where the run ran it.
-        let mut snaps: Vec<Snap> = Vec::new();
+        // The runs: each traced run's timeline, and each run's RAM at its end.
         // The runs read, for protocol to tell a corpus run the inventory has
         // not seen (or that was recorded again) from one it has.
         let mut inputs = Vec::new();
-        let mut pages = Vec::new();
+        let mut runs: Vec<(PathBuf, Option<Timeline>, Vec<u8>)> = Vec::new();
         for r in &self.ram {
             let dir = at(r);
-            let snap = crate::ram::load(&dir)?;
+            let tl = timeline(&dir)?;
+            let mut ram = crate::ram::load(&dir)?.bytes;
+            ram.resize(0x20_0000, 0);
             let executed = std::fs::read(dir.join("executed.bin")).ok().map(|b| crate::publish::sha256(&b));
             inputs.push(json!({"run": dir, "executed_sha256": executed}));
-            let resident: Vec<(usize, f64)> =
-                exes.iter().enumerate().map(|(i, e)| (i, e.resident(&snap.bytes))).filter(|&(_, s)| s >= 0.9).collect();
-            let ran = crate::coverage::executed(&dir).ok();
-            // One entry per instruction a target ran as (code loaded over
-            // code runs as several).
-            let mut ran_at: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-            for &(a, w, _) in ran.iter().flatten() {
-                ran_at.entry(a).or_default().push(w);
-            }
-            let calls: Vec<(u32, Option<u32>)> = trace_calls(&dir)
-                .into_iter()
-                .flat_map(|t| match &ran {
-                    None => vec![(t, None)],
-                    Some(_) => ran_at
-                        .get(&(0x8000_0000 | (t & 0x1F_FFFF)))
-                        .map(|ws| ws.iter().map(|&w| (t, Some(w))).collect())
-                        .unwrap_or_default(),
-                })
-                .collect();
-            let lost = ran.as_deref().map(|r| lost_code(&snap.bytes, r, &exes)).unwrap_or_default();
-            for (f, at) in placements(&lost, &contents) {
-                let mut ram = vec![0u8; snap.bytes.len()];
-                let o = (at & 0x1F_FFFF) as usize;
-                let bytes = &contents[f].1;
-                let n = bytes.len().min(ram.len().saturating_sub(o));
-                ram[o..o + n].copy_from_slice(&bytes[..n]);
-                let label = format!("{} (ran {} loaded at {})", dir.display(), contents[f].0, hex(at));
-                let calls = calls
-                    .iter()
-                    .copied()
-                    .filter(|&(t, w)| {
-                        w.is_some_and(|w| {
-                            let k = (t & 0x1F_FFFF) as usize;
-                            ram.get(k..k + 4).is_some_and(|b| u32::from_le_bytes(b.try_into().unwrap()) == w)
-                        })
-                    })
-                    .collect();
-                snaps.push(Snap { label, ram, resident: Vec::new(), calls, ran: Vec::new(), only: None });
-            }
-            pages.push((dir.clone(), code_pages(&dir), calls.clone(), ran.clone().unwrap_or_default()));
-            let ran = ran.unwrap_or_default().into_iter().map(|(a, w, _)| (a, w)).collect();
-            snaps.push(Snap { label: dir.display().to_string(), ram: snap.bytes, resident, calls, ran, only: None });
+            runs.push((dir, tl, ram));
         }
-
-        // Traced call targets with the instruction run there: a seed in any
-        // executable or snapshot holding that instruction there.
-        let ran_calls: BTreeSet<(u32, u32)> =
-            snaps.iter().flat_map(|s| s.calls.iter().filter_map(|&(t, w)| Some((t, w?)))).collect();
-        let ran_words: BTreeSet<(u32, u32)> = snaps.iter().flat_map(|s| s.ran.iter().copied()).collect();
+        // The executable each copy holds.
+        let owners: Vec<Vec<Option<usize>>> = runs
+            .iter()
+            .map(|(_, tl, _)| tl.iter().flat_map(|t| &t.copies).map(|(_, p, b)| resident(&exes, *p, b)).collect())
+            .collect();
 
         let mut executables = Vec::new();
-        // Each executable's functions, for the calls they make into overlays.
-        let mut found: Vec<Vec<(u32, u32)>> = Vec::new();
+        let mut exe_functions = Vec::new();
+        let mut exe_keys = BTreeSet::new();
         let mut totals = (0u64, 0u64, 0u64);
         for (i, exe) in exes.iter().enumerate() {
             let code =
                 Code { base: exe.lo, bytes: exe.payload.clone(), origin: exe.path.clone(), gp: exe.gp, exe: None };
             let (lo, hi) = (exe.lo, exe.hi());
             let mut a = Analysis::new(&code, Some((lo, hi)), Box::new(move |x| x >= lo && x < hi));
-            a.seed(exe.entry, "entry");
-            a.drain();
-            let held: Vec<&Snap> = snaps.iter().filter(|s| s.resident.iter().any(|&(j, _)| j == i)).collect();
-            // Where the executable's code is what a run ran there; a trace
-            // without executed.bin, in snapshots holding the executable.
-            for &(t, w) in &ran_calls {
-                if code.word(t) == Some(w) {
-                    a.seed(t, "trace_call");
-                }
-            }
-            for s in &held {
-                for &(t, w) in &s.calls {
-                    if w.is_none() {
-                        a.seed(t, "trace_call");
+            // What ran and was called in the pages holding its code.
+            let (mut ran, mut called) = (BTreeSet::new(), BTreeSet::new());
+            for ((_, tl, _), owner) in runs.iter().zip(&owners) {
+                let Some(tl) = tl else { continue };
+                for (c, (_, page, bytes)) in tl.copies.iter().enumerate().filter(|&(c, _)| owner[c] == Some(i)) {
+                    ran.extend(tl.ran[c].iter().filter(|r| code.word(r.0) == Some(r.1)).map(|r| (r.0, r.1)));
+                    for &(x, _) in &tl.calls[c] {
+                        let k = (x - page) as usize;
+                        if bytes.get(k..k + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())) == code.word(x) {
+                            called.insert(x);
+                        }
                     }
                 }
             }
+            for (_, tl, _) in &runs {
+                let Some(tl) = tl else { continue };
+                a.continues.extend(
+                    tl.continuing().iter().filter(|(x, seen)| holds(|y| code.word(y), *x, seen)).map(|(x, _)| *x),
+                );
+            }
+            a.continues.retain(|x| !called.contains(x));
+            a.seed(exe.entry, "entry");
+            for &x in &called {
+                a.seed(x, "trace_call");
+            }
             a.drain();
+            a.executed(&ran);
+            a.guesses();
+            let held: Vec<&PathBuf> =
+                runs.iter().filter(|(_, _, ram)| exe.resident(ram) >= 0.9).map(|(d, _, _)| d).collect();
             let mut pointer_words = words(&exe.payload, exe.lo);
-            for s in &held {
-                pointer_words.extend(words(&s.ram, 0x8000_0000));
+            for (_, _, ram) in runs.iter().filter(|(_, _, ram)| exe.resident(ram) >= 0.9) {
+                pointer_words.extend(words(ram, 0x8000_0000));
             }
             // Until no new function is found: each round's functions may
             // call more, and widen the span pointers may land in.
             while a.pointers(&pointer_words) > 0 {}
             a.prologues();
-            a.executed(&ran_words);
             while a.pointers(&pointer_words) > 0 {}
             let (functions, rest) = a.report();
             add(&mut totals, &rest["totals"]);
-            found.push(a.functions.values().map(|f| (f.start, f.end)).collect::<Vec<_>>());
+            exe_functions.push(
+                a.functions
+                    .values()
+                    .map(|f| {
+                        let calls = (f.start..f.end)
+                            .step_by(4)
+                            .filter_map(|pc| code.word(pc).filter(|w| w >> 26 == 3).map(|w| jump_target(pc, w)))
+                            .collect();
+                        (f.start, f.end, calls)
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            exe_keys.extend(a.functions.values().map(|f| {
+                (f.start, crate::publish::sha256(&exe.payload[(f.start - lo) as usize..(f.end - lo) as usize]))
+            }));
             executables.push(json!({
                 "path": exe.path, "boot": exe.boot, "loads_at": hex(exe.lo), "end": hex(exe.hi()),
                 "entry": hex(exe.entry),
-                "snapshots": held.iter().map(|s| s.label.clone()).collect::<Vec<_>>(),
+                "snapshots": held,
                 "totals": rest["totals"], "gaps": rest["gaps"], "functions": functions,
             }));
         }
 
-        // Overlays: code a snapshot holds that is no executable's (RAM that
-        // still equals an executable's bytes is that executable's), reached
-        // by calls from the resident executables' code still in place, or recorded by
-        // the snapshot's trace. Below 0x80010000 is the BIOS kernel's.
-        let mut overlays: Vec<Value> = Vec::new();
-        let mut bios_code: Vec<Value> = Vec::new();
-        // An image by sha256: its overlay, and which of its variants.
-        let mut seen: BTreeMap<String, (usize, Option<usize>)> = BTreeMap::new();
-        // Each overlay's extent, file, bytes, code words and function starts,
-        // to tell an image whose code is another's (its data differs) from new code.
-        let mut ranges: Vec<Held> = Vec::new();
-        let mut variants = 0;
-        // Every image found, to tell what code pages hold that none does.
-        let mut images: Vec<(u32, Vec<u8>)> = exes.iter().map(|e| (e.lo, e.payload.clone())).collect();
-        let (mut k, mut composed) = (0, false);
-        loop {
-            if k == snaps.len() {
-                if composed {
-                    break;
-                }
-                composed = true;
-                // Code a run ran that no image holds (loaded and replaced
-                // between frames, from no file found on the disc): its run's
-                // code pages hold it as it ran. Only its functions are taken
-                // from them: the rest is in the images already.
-                let size = snaps.last().map_or(0x20_0000, |s| s.ram.len());
-                let word = |b: &[u8], o: usize| b.get(o..o + 4).map(|w| u32::from_le_bytes(w.try_into().unwrap()));
-                for (dir, pages, calls, ran) in &pages {
-                    let lost: BTreeSet<(u32, u32)> = ran
-                        .iter()
-                        .filter(|&&(a, w, _)| {
-                            (0x8001_0000..0x8020_0000).contains(&a)
-                                && !images.iter().any(|(lo, b)| a >= *lo && word(b, (a - lo) as usize) == Some(w))
-                        })
-                        .map(|&(a, w, _)| (a, w))
-                        .collect();
-                    if lost.is_empty() {
-                        continue;
-                    }
-                    for (frame, ram, only) in code_as_it_ran(pages, &lost, size) {
-                        let label = format!("{} (code as it ran, by frame {frame})", dir.display());
-                        let calls = calls
-                            .iter()
-                            .copied()
-                            .filter(|&(t, w)| w.is_some_and(|w| word(&ram, (t & 0x1F_FFFF) as usize) == Some(w)))
-                            .collect();
-                        snaps.push(Snap { label, ram, resident: Vec::new(), calls, ran: Vec::new(), only: Some(only) });
-                    }
-                }
-                continue;
+        // Code no executable holds, found in each moment of each run's
+        // timeline, then in each run's RAM at its end (seeded by the
+        // functions found in it still there). Named by the files code is
+        // loaded from: the executables' too.
+        for e in &exes {
+            contents.push((e.path.clone(), e.payload.clone()));
+        }
+        let mut finder = Finder {
+            exes: &exes,
+            files: &contents,
+            exe_functions,
+            exe_keys,
+            found: BTreeMap::new(),
+            named: BTreeMap::new(),
+            known: Vec::new(),
+        };
+        // Again until nothing changes, each time with every start found for
+        // the code each moment holds, in whichever moment (a call there may
+        // come only in another): the same code is split the same way.
+        let mut before: Option<BTreeSet<Key>> = None;
+        for _ in 0..8 {
+            let now: BTreeSet<Key> = finder.found.keys().cloned().collect();
+            if before.as_ref() == Some(&now) {
+                break;
             }
-            k += 1;
-            let Snap { label, ram, calls, resident, only, .. } = &snaps[k - 1];
-            let code = Code { base: 0x8000_0000, bytes: ram.clone(), origin: label.clone(), gp: None, exe: None };
-            let mut theirs = vec![false; ram.len() / 4];
-            // Code pages hold only code no executable holds (some of it
-            // starting as the executable's code it was loaded over).
-            for e in exes.iter().filter(|_| only.is_none()) {
-                let o = (e.lo & 0x1F_FFFF) as usize;
-                for (k, w) in e.payload.as_chunks::<4>().0.iter().enumerate() {
-                    if ram.get(o + 4 * k..o + 4 * k + 4) == Some(&w[..]) {
-                        theirs[o / 4 + k] = true;
-                    }
+            before = Some(now);
+            finder.known = finder.found.iter().map(|((s, _), f)| (*s, f.bytes.clone(), f.fact())).collect();
+            finder.found.clear();
+            for (_, tl, _) in &runs {
+                if let Some(tl) = tl {
+                    take_timeline(&mut finder, tl);
                 }
             }
-            let held = |x: u32| theirs.get(((x & 0x1F_FFFF) / 4) as usize).copied().unwrap_or(true);
-            let outside = |x: u32| (0x8001_0000..0x8020_0000).contains(&x) && !held(x);
-            let mut a = Analysis::new(&code, None, Box::new(outside));
-            // Calls from the executables the snapshot holds (executables
-            // sharing library code at the same addresses look held there too).
-            for &(i, _) in resident {
-                for &(start, end) in &found[i] {
-                    if !(start..end).step_by(4).all(held) {
-                        continue;
-                    }
-                    for pc in (start..end).step_by(4) {
-                        let w = code.word(pc).unwrap_or(0);
-                        if w >> 26 == 3 {
-                            a.seed(jump_target(pc, w), "call_from_executable");
+            for (dir, tl, ram) in &runs {
+                let pages = ram.len() / PAGE as usize;
+                // A traced run's RAM at its end holds its last moment's code,
+                // and the calls running then.
+                let live = tl.as_ref().map(|tl| {
+                    let last = tl.copies.len().saturating_sub(1) as u32;
+                    let word = |b: &[u8], o: usize| b.get(o..o + 4).map(|w| w.to_vec());
+                    let mut live = BTreeSet::new();
+                    for (k, (_, page, bytes)) in tl.copies.iter().enumerate() {
+                        for (x, _) in tl.calls[k].iter().filter(|r| during(&r.1, last)) {
+                            if word(bytes, (x - page) as usize) == word(ram, (x & 0x1F_FFFF) as usize) {
+                                live.insert(*x);
+                            }
                         }
                     }
-                }
+                    live
+                });
+                let owner = (0..pages)
+                    .map(|p| resident(&exes, 0x8000_0000 + p as u32 * PAGE, &ram[p * PAGE as usize..][..PAGE as usize]))
+                    .collect();
+                let m = Moment {
+                    ram: ram.clone(),
+                    known: vec![true; pages],
+                    owner,
+                    continues: BTreeSet::new(),
+                    fresh: None,
+                    live,
+                };
+                let seeds = finder.exe_calls(&m);
+                // The functions found in the run's moments that its RAM still holds.
+                let mut more: Vec<(u32, Vec<u8>, bool)> =
+                    finder.found.iter().map(|((s, _), f)| (*s, f.bytes.clone(), f.fact())).collect();
+                more.retain(|x| !finder.known.contains(x));
+                finder.known.extend(more);
+                let name = dir.file_name().unwrap_or_default().to_string_lossy();
+                finder.take(&m, &seeds, &BTreeSet::new(), &format!("end of run {name}"));
             }
-            for &(t, w) in calls
-                .iter()
-                .filter(|c| c.1.is_none())
-                .chain(&ran_calls.iter().map(|&(t, w)| (t, Some(w))).collect::<Vec<_>>())
-            {
-                if w.is_none_or(|w| code.word(t) == Some(w)) {
-                    a.seed(t, "trace_call");
-                }
+        }
+        let Finder { mut found, exe_keys, .. } = finder;
+        // A function cut off where its moment knew no code is the start of
+        // one found whole in another.
+        let cut: Vec<Key> = found
+            .iter()
+            .filter(|(k, f)| {
+                f.row["ends"] == "invalid"
+                    && found
+                        .range((k.0, String::new())..(k.0 + 1, String::new()))
+                        .any(|(j, g)| j != *k && g.bytes.len() > f.bytes.len() && g.bytes.starts_with(&f.bytes))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in cut {
+            found.remove(&k);
+        }
+
+        // Each file code was loaded from is analysed over the extent RAM
+        // held of it, for the functions no run reached.
+        let mut groups: BTreeMap<String, (Option<FileAt>, Vec<Key>)> = BTreeMap::new();
+        for (key, f) in &found {
+            let name = match &f.file {
+                Some((p, at, _, _)) => format!("{} {p}", hex(*at)),
+                None => f.first.clone(),
+            };
+            let g = groups.entry(name).or_insert_with(|| (f.file.clone(), Vec::new()));
+            if let (Some(g), Some(f)) = (&mut g.0, &f.file) {
+                (g.2, g.3) = (g.2.min(f.2), g.3.max(f.3));
+            }
+            g.1.push(key.clone());
+        }
+        for (name, (file, keys)) in groups.iter_mut() {
+            let Some((path, _, lo, hi)) = file.clone() else { continue };
+            if path.starts_with(BIOS) || exes.iter().any(|e| e.path == path) {
+                continue;
+            }
+            let Some(bytes) = contents.iter().find(|c| c.0 == path).map(|c| &c.1) else { continue };
+            let at = file.as_ref().map(|f| f.1).unwrap_or(lo);
+            let span = &bytes[(lo - at) as usize..((hi - at) as usize).min(bytes.len())];
+            let code = Code { base: lo, bytes: span.to_vec(), origin: path.clone(), gp: None, exe: None };
+            let mut a = Analysis::new(&code, Some((lo, hi)), Box::new(move |x| x >= lo.max(0x8001_0000) && x < hi));
+            let starts: BTreeSet<u32> = keys.iter().map(|k| k.0).collect();
+            for k in keys.iter() {
+                a.seed(k.0, if found[k].fact() { "ran" } else { "same_code" });
             }
             a.drain();
-            if a.functions.is_empty() {
-                continue;
-            }
-            // Each overlay is searched on its own. Its extent is the disc file
-            // RAM holds there, when one matches; else its cluster of functions.
-            let ram_words = words(ram, 0x8000_0000);
-            // A code page's executed words are its lost code: what ran
-            // beside it there was other code, so a stretch of it is whole.
-            let lost_ran: BTreeSet<(u32, u32)>;
-            let ran_here = match only {
-                Some(o) => {
-                    lost_ran = o.iter().filter_map(|&x| Some((x, code.word(x)?))).collect();
-                    &lost_ran
-                }
-                None => &ran_words,
-            };
-            let mut regions: Vec<(u32, u32, Option<Value>)> = Vec::new();
-            for _ in 0..4 {
-                let before = a.functions.len();
-                for (lo, hi) in clusters(&a) {
-                    if regions.iter().any(|r| lo >= r.0 && lo < r.1) {
-                        continue;
-                    }
-                    let found = loaded_from(ram, lo, hi, &contents);
-                    let (rlo, rhi) = found.as_ref().map(|f| (f.1, f.2)).unwrap_or((lo, hi));
-                    regions.retain(|r| !(r.0 >= rlo && r.0 < rhi && r.2.is_none()));
-                    regions.push((rlo, rhi, found.map(|f| f.0)));
-                }
-                for &(lo, hi, _) in &regions {
-                    a.region = Some((lo, hi));
-                    while a.pointers(&ram_words) > 0 {}
-                    a.prologues();
-                    a.executed(ran_here);
-                }
-                if a.functions.len() == before {
-                    break;
-                }
-            }
-            // A file's extent claims only the functions whose code is the
-            // file's: others are code loaded over part of it, overlays of
-            // their own (matched to a file of their own when one holds them).
-            let mut foreign: BTreeSet<u32> = BTreeSet::new();
-            for (lo, hi, file) in &regions {
-                let Some(f) = file else { continue };
-                let Some((_, bytes)) = contents.iter().find(|c| f["path"] == c.0.as_str()) else { continue };
-                let at = parse_hex(&f["loads_at"]);
-                for func in a.functions.range(lo..hi).map(|(_, f)| f) {
-                    let n = ((func.end - func.start) / 4) as usize;
-                    let same = (func.start..func.end)
-                        .step_by(4)
-                        .filter(|&x| {
-                            let k = (x - at) as usize;
-                            bytes
-                                .get(k..k + 4)
-                                .is_some_and(|b| code.word(x) == Some(u32::from_le_bytes(b.try_into().unwrap())))
-                        })
-                        .count();
-                    if 2 * same < n {
-                        foreign.insert(func.start);
-                    }
-                }
-            }
-            let mut regions: Vec<(u32, u32, Option<Value>, bool)> =
-                regions.into_iter().map(|(lo, hi, f)| (lo, hi, f, false)).collect();
-            for (lo, hi) in cluster(foreign.iter().map(|s| (*s, a.functions[s].end))) {
-                // Its own file only when that file's extent is the cluster's.
-                let found = loaded_from(ram, lo, hi, &contents).filter(|f| f.1 <= lo && f.2 >= hi);
-                let (rlo, rhi) = found.as_ref().map(|f| (f.1, f.2)).unwrap_or((lo, hi));
-                regions.push((rlo, rhi, found.map(|f| f.0), true));
-            }
-            regions.sort_by_key(|r| r.0);
-            // A code page's own functions: those holding code no other snapshot holds.
-            let own = |s: u32| only.as_ref().is_none_or(|o| o.range(s..a.functions[&s].end).next().is_some());
-            for (lo, hi, file, over) in regions {
-                let mine = |s: u32| foreign.contains(&s) == over && own(s);
-                // A code page's extent is its own functions'.
-                let (lo, hi) = match only {
-                    None => (lo, hi),
-                    Some(_) => {
-                        let fs: Vec<(u32, u32)> = a
-                            .functions
-                            .range(lo..hi)
-                            .filter(|(s, _)| mine(**s))
-                            .map(|(_, f)| (f.start, f.end))
-                            .collect();
-                        let Some(l) = fs.iter().map(|f| f.0).min() else { continue };
-                        (l, fs.iter().map(|f| f.1).max().unwrap_or(l))
-                    }
-                };
-                let (functions, rest) = a.report_in(lo, hi, &mine);
-                if functions.is_empty() {
+            a.guesses();
+            let ws = words(&code.bytes, lo);
+            while a.pointers(&ws) > 0 {}
+            a.prologues();
+            while a.pointers(&ws) > 0 {}
+            for row in a.report().0 {
+                let (s, e) = (parse_hex(&row["entry"]), parse_hex(&row["end"]));
+                if starts.contains(&s) {
                     continue;
                 }
-                let o = (lo & 0x1F_FFFF) as usize..(hi & 0x1F_FFFF) as usize;
-                let sha = crate::publish::sha256(&ram[o.clone()]);
-                let from_bios = file.as_ref().and_then(|f| f["path"].as_str()).is_some_and(|p| p.starts_with(BIOS));
-                if from_bios {
-                    // Kept apart, for coverage to credit; one entry per BIOS
-                    // and address it was loaded at, over the widest extent.
-                    let at = file.as_ref().map(|f| (f["path"].clone(), f["loads_at"].clone()));
-                    let same = bios_code
-                        .iter()
-                        .position(|b| Some((b["file"]["path"].clone(), b["file"]["loads_at"].clone())) == at);
-                    if let Some(k) = same {
-                        let (blo, bhi) = (parse_hex(&bios_code[k]["start"]), parse_hex(&bios_code[k]["end"]));
-                        if hi - lo <= bhi - blo {
-                            if let Some(runs) = bios_code[k]["snapshots"].as_array_mut() {
-                                runs.push(json!(label));
-                            }
-                            continue;
-                        }
-                        bios_code.remove(k);
-                    }
-                    let keep = overlay_bytes(&ctx.root, &sha);
-                    if let Some(d) = keep.parent() {
-                        std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
-                    }
-                    std::fs::write(&keep, &ram[o.clone()]).map_err(|e| Error::io(&keep, e))?;
-                    images.push((lo, ram[o.clone()].to_vec()));
-                    bios_code.push(
-                        json!({"start": hex(lo), "end": hex(hi), "sha256": sha, "file": file, "snapshots": [label]}),
-                    );
+                let b = code.bytes[(s - lo) as usize..(e - lo) as usize].to_vec();
+                let key = (s, crate::publish::sha256(&b));
+                if found.contains_key(&key) || exe_keys.contains(&key) {
                     continue;
                 }
-                if let Some(&(k, v)) = seen.get(&sha) {
-                    let at = match v {
-                        Some(v) => &mut overlays[k]["variants"][v]["snapshots"],
-                        None => &mut overlays[k]["snapshots"],
-                    };
-                    if let Some(runs) = at.as_array_mut() {
-                        runs.push(json!(label));
-                    }
-                    continue;
-                }
-                let bytes = ram[o.clone()].to_vec();
-                let starts: BTreeSet<u32> =
-                    a.functions.range(lo..hi).map(|(_, f)| f).filter(|f| mine(f.start)).map(|f| f.start).collect();
-                let code: BTreeSet<u32> = starts.iter().flat_map(|s| (*s..a.functions[s].end).step_by(4)).collect();
-                // The same extent and file as an overlay before it.
-                let path = file.as_ref().map(|f| f["path"].clone());
-                let mut same_range = Value::Null;
-                if let Some(r) = ranges.iter().find(|r| r.lo == lo && r.hi == hi && r.path == path) {
-                    let (words_differ, code_differ) = r.differs(&bytes, &code);
-                    if code_differ == 0 && starts.is_subset(&r.starts) {
-                        // Its code is the earlier image's: a variant of it, not
-                        // more functions. Coverage credits code by its words.
-                        let k = r.overlay;
-                        let list = overlays[k]
-                            .as_object_mut()
-                            .map(|o| o.entry("variants").or_insert_with(|| json!([])))
-                            .and_then(Value::as_array_mut);
-                        if let Some(list) = list {
-                            seen.insert(sha.clone(), (k, Some(list.len())));
-                            list.push(json!({"sha256": sha, "words_differ": words_differ, "snapshots": [label]}));
-                            images.push((lo, bytes.clone()));
-                        }
-                        variants += 1;
-                        continue;
-                    }
-                    same_range = json!({"sha256": overlays[r.overlay]["sha256"], "words_differ": words_differ,
-                        "code_words_differ": code_differ});
-                }
-                add(&mut totals, &rest["totals"]);
+                found.insert(key.clone(), Found { row, bytes: b, file: file.clone(), first: name.clone() });
+                keys.push(key);
+            }
+        }
+
+        // Code from a BIOS ROM (the shell it copies into RAM at power-on) is
+        // listed apart, under bios_code.
+        let mut overlays: Vec<Value> = Vec::new();
+        let mut bios_code: Vec<Value> = Vec::new();
+        for (name, (file, mut keys)) in groups {
+            keys.sort();
+            let (mut instructions, mut blocks, mut pointers) = (0u64, 0u64, 0u64);
+            let mut functions = Vec::new();
+            for key in &keys {
+                let f = &found[key];
+                let mut row = f.row.clone();
+                row["sha256"] = json!(key.1);
+                instructions += row["instructions"].as_u64().unwrap_or(0);
+                blocks += row["blocks"].as_u64().unwrap_or(0);
+                pointers += row["found_by"].as_array().is_some_and(|b| b.iter().all(|h| h == "pointer")) as u64;
                 // Its bytes, for coverage to tell it from code loaded over it.
-                let keep = overlay_bytes(&ctx.root, &sha);
+                let keep = overlay_bytes(&ctx.root, &key.1);
                 if let Some(d) = keep.parent() {
                     std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
                 }
-                std::fs::write(&keep, &ram[o.clone()]).map_err(|e| Error::io(&keep, e))?;
-                images.push((lo, ram[o.clone()].to_vec()));
-                seen.insert(sha.clone(), (overlays.len(), None));
-                ranges.push(Held { lo, hi, path, bytes, code, starts, overlay: overlays.len() });
-                let mut entry = json!({
-                    "start": hex(lo), "end": hex(hi), "sha256": sha, "file": file,
-                    "snapshots": [label],
-                    "totals": rest["totals"], "gaps": rest["gaps"], "functions": functions,
-                });
-                if !same_range.is_null() {
-                    entry["same_range_as"] = same_range;
-                }
+                std::fs::write(&keep, &f.bytes).map_err(|e| Error::io(&keep, e))?;
+                functions.push(row);
+            }
+            let start = keys.first().map(|k| k.0).unwrap_or(0);
+            let end = keys.iter().map(|k| parse_hex(&found[k].row["end"])).max().unwrap_or(start);
+            let t = json!({"functions": functions.len(), "instructions": instructions, "blocks": blocks,
+                "found_only_through_pointers": pointers});
+            let entry = json!({
+                "name": name, "start": hex(start), "end": hex(end),
+                "file": file.as_ref().map(|(p, at, lo, hi)| json!({"path": p, "loads_at": hex(*at),
+                    "in_ram": {"start": hex(*lo), "end": hex(*hi)}})),
+                "totals": t, "functions": functions,
+            });
+            if file.as_ref().is_some_and(|f| f.0.starts_with(BIOS)) {
+                bios_code.push(entry);
+            } else {
+                add(&mut totals, &t);
                 overlays.push(entry);
             }
         }
+        overlays.sort_by_key(|o| parse_hex(&o["start"]));
+        bios_code.sort_by_key(|o| parse_hex(&o["start"]));
 
         let out = self.out.as_ref().map(|p| at(p)).unwrap_or_else(|| default_out(ctx));
         let summary = json!({
             "functions": totals.0, "instructions": totals.1, "blocks": totals.2,
-            "executables": exes.len(), "overlays": overlays.len(), "overlay_variants": variants,
+            "executables": exes.len(), "overlays": overlays.len(),
             "disc_files": files.len(),
         });
         let previous = std::fs::read_to_string(&out)
@@ -1224,9 +1354,9 @@ impl InventoryArgs {
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
             .map(|v| v["totals"].clone());
         let inventory = json!({
-            "inventory": 1, "made": crate::publish::utc_now(), "psx": crate::context::version(),
+            "inventory": 2, "made": crate::publish::utc_now(), "psx": crate::context::version(),
             "media": media, "boot": boot, "totals": summary,
-            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); an overlay is code a snapshot holds outside its executables (code from the BIOS ROM, the shell, is listed under bios_code instead); an image at an overlay's extent whose code words are that overlay's (only its data differs) is one of its variants, not another overlay, and one whose code differs notes same_range_as; gaps are what no function covers, with how many words decode as instructions",
+            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); code no executable holds is found in each moment of each traced run's code pages (RAM's code as it was then, seeded by what ran and was called in that moment, with calls followed only from code that ran in it) and in each run's RAM at its end; a function is its start and the sha256 of its bytes, listed once however many moments held it; overlays group them by the file their bytes are loaded from (analysed over the extent RAM held of it), else by the code they were first found in; code from the BIOS ROM, the shell, is listed under bios_code instead; gaps are what no executable's function covers, with how many words decode as instructions",
             "executables": executables, "overlays": overlays, "bios_code": bios_code, "disc": {"files": files},
             "ram": inputs,
         });
@@ -1257,28 +1387,6 @@ impl InventoryArgs {
             "bios_code": bios_code.iter().map(|b| json!({"start": b["start"], "end": b["end"], "file": b["file"]["path"]})).collect::<Vec<_>>(),
             "next": "artifact_read the inventory for functions and gaps; keep it in the investigator's notes so the ledger can count against it",
         }))
-    }
-}
-
-/// An overlay as inventory found it, to compare later images at its extent with.
-struct Held {
-    lo: u32,
-    hi: u32,
-    path: Option<Value>,
-    bytes: Vec<u8>,
-    code: BTreeSet<u32>,
-    starts: BTreeSet<u32>,
-    overlay: usize,
-}
-
-impl Held {
-    /// Words of `bytes` (an image at this extent) that differ from this
-    /// overlay's, and how many of them are code (either's functions).
-    fn differs(&self, bytes: &[u8], code: &BTreeSet<u32>) -> (usize, usize) {
-        let word = |b: &[u8], x: u32| b.get((x - self.lo) as usize..(x - self.lo) as usize + 4).map(<[u8]>::to_vec);
-        let differ = |x: &u32| word(bytes, *x) != word(&self.bytes, *x);
-        let all = (self.lo..self.hi).step_by(4).filter(differ).count();
-        (all, self.code.union(code).filter(|x| differ(x)).count())
     }
 }
 
@@ -1344,6 +1452,9 @@ mod tests {
         let mut a = Analysis::new(&c, Some((lo, hi)), Box::new(|_| true));
         a.seed(0x8001_0000, "entry");
         a.drain();
+        // The call in it is a guess, followed once the facts are.
+        assert_eq!(a.functions.keys().copied().collect::<Vec<_>>(), [0x8001_0000]);
+        a.guesses();
         assert_eq!(a.functions.keys().copied().collect::<Vec<_>>(), [0x8001_0000, 0x8001_0020]);
         assert_eq!(a.functions[&0x8001_0000].end, 0x8001_0020, "the branch past the first jr ra keeps it going");
         let ws = words(&c.bytes, c.base);
@@ -1372,29 +1483,6 @@ mod tests {
         assert_eq!((f["path"].as_str(), f["loads_at"].as_str()), (Some("/OVL.BIN"), Some("80100000")));
         assert_eq!((lo, hi), (0x8010_0000, 0x8010_2000));
         assert!(loaded_from(&ram, 0x8018_0000, 0x8018_0100, &files).is_none());
-    }
-
-    #[test]
-    fn an_image_differing_only_in_data_is_told_from_new_code() {
-        // Code at 0x00..0x10, data at 0x10..0x20.
-        let first: Vec<u8> = [PROLOGUE, NOP, JR_RA, NOP, 1, 2, 3, 4].iter().flat_map(|w| w.to_le_bytes()).collect();
-        let code: BTreeSet<u32> = (0x8010_0000..0x8010_0010).step_by(4).collect();
-        let held = Held {
-            lo: 0x8010_0000,
-            hi: 0x8010_0020,
-            path: None,
-            bytes: first.clone(),
-            code: code.clone(),
-            starts: BTreeSet::from([0x8010_0000]),
-            overlay: 0,
-        };
-        let mut data = first.clone();
-        data[0x14] = 9;
-        data[0x18] = 9;
-        assert_eq!(held.differs(&data, &code), (2, 0));
-        let mut new_code = first;
-        new_code[4..8].copy_from_slice(&jal(0x8010_0010).to_le_bytes());
-        assert_eq!(held.differs(&new_code, &code), (1, 1));
     }
 
     #[test]
@@ -1429,31 +1517,7 @@ mod tests {
     }
 
     #[test]
-    fn code_pages_give_lost_code_as_it_ran() {
-        let page = |fill: u8, at: usize, w: u32| {
-            let mut b = vec![fill; 0x1000];
-            b[at..at + 4].copy_from_slice(&w.to_le_bytes());
-            b
-        };
-        let pages = vec![
-            (10, 0x8010_0000, page(1, 8, 0xAAAA)),
-            (12, 0x8010_1000, page(2, 0, 0x5555)), // nothing lost
-            (20, 0x8010_0000, page(3, 8, 0xBBBB)), // loaded over the first
-            (30, 0x8010_0000, page(4, 8, 0xBBBB)), // holds it too
-        ];
-        let lost = BTreeSet::from([(0x8010_0008, 0xAAAA), (0x8010_0008, 0xBBBB)]);
-        let images = code_as_it_ran(&pages, &lost, 0x20_0000);
-        let at = |r: &Vec<u8>, o: usize| r[o..o + 4].to_vec();
-        assert_eq!(images.len(), 3, "a new image each time the page is laid over itself");
-        assert_eq!((images[0].0, at(&images[0].1, 0x10_0008)), (10, 0xAAAAu32.to_le_bytes().to_vec()));
-        assert_eq!(images[0].2, BTreeSet::from([0x8010_0008]));
-        assert_eq!(images[1].0, 20);
-        assert_eq!(images[2].1[0x10_0000], 4);
-        assert_eq!(images[2].1[0x10_1000], 0xFF, "a page with nothing lost is left out");
-    }
-
-    #[test]
-    fn page_history_gives_the_code_pages_as_they_were_kept() {
+    fn page_history_is_read_whole_and_old_runs_are_refused() {
         let dir = std::env::temp_dir().join(format!("psx-page-history-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut code = b"PSXCODE2".to_vec();
@@ -1466,42 +1530,257 @@ mod tests {
         };
         let changed = |o: u32, w: u32| [o.to_le_bytes(), w.to_le_bytes()].concat();
         copy(10, u32::MAX, &[0; 0x1000]);
-        copy(11, 0, &changed(0x100, 7)); // data changed, the same code ran
-        copy(12, 1, &changed(8, 0xBBBB)); // other code ran at 8
-        copy(13, 2, &changed(8, 0)); // the first code back
+        copy(11, 0, &changed(0x100, 7));
+        copy(12, 1, &changed(8, 0xBBBB));
         std::fs::write(dir.join("code.bin"), code).unwrap();
-        let mut executed = b"PSXEXEC2".to_vec();
-        for (c, w) in [(0u32, 0u32), (1, 0), (2, 0xBBBB), (3, 0)] {
-            for v in [c, 0x8010_0008, w] {
+        let mut executed = b"PSXEXEC4".to_vec();
+        for (c, w, continues) in [(0u32, 0u32, 0), (2, 0xBBBB, 1), (u32::MAX, 5, 0)] {
+            for v in [c, 0x8010_0008, w, c.min(2), continues] {
                 executed.extend(v.to_le_bytes());
             }
             executed.extend(1u64.to_le_bytes());
         }
-        std::fs::write(dir.join("executed.bin"), executed).unwrap();
-        let pages = code_pages(&dir);
+        std::fs::write(dir.join("executed.bin"), &executed).unwrap();
+        std::fs::write(
+            dir.join("calls.json"),
+            r#"[{"address": 2148532232, "copy": 1, "moments": [[2, 2]]}, {"address": 0, "copy": null}]"#,
+        )
+        .unwrap();
+        let t = timeline(&dir).unwrap().unwrap();
+        assert_eq!(t.copies.len(), 3);
+        assert_eq!((t.copies[2].2[0x100], &t.copies[2].2[8..12]), (7, &0xBBBBu32.to_le_bytes()[..]));
+        assert_eq!(t.ran, [vec![(0x8010_0008, 0, 0, false)], vec![], vec![(0x8010_0008, 0xBBBB, 2, true)]]);
+        assert_eq!(t.calls, [vec![], vec![(0x8010_0008, vec![(2, 2)])], vec![]]);
+        std::fs::write(dir.join("code.bin"), b"PSXCODE1").unwrap();
+        let old = timeline(&dir).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(old.contains("record it again"), "{old}");
+        std::fs::remove_file(dir.join("code.bin")).unwrap();
+        std::fs::remove_file(dir.join("executed.bin")).unwrap();
+        assert!(timeline(&dir).unwrap().is_none(), "a run without a trace is a snapshot");
         std::fs::remove_dir_all(&dir).unwrap();
-        // As kept before page history: code loaded back kept no page.
-        let kept: Vec<(u64, u32)> =
-            pages.iter().map(|(f, _, b)| (*f, u32::from_le_bytes(b[8..12].try_into().unwrap()))).collect();
-        assert_eq!(kept, [(10, 0), (12, 0xBBBB)]);
-        assert_eq!(pages[1].2[0x100], 7, "a later copy holds the changes before it");
     }
 
     #[test]
-    fn code_a_run_ran_and_lost_is_found_in_the_file_it_came_from() {
-        // The file's code ran at 0x80100000 (its byte 8 there), then was
-        // loaded over: RAM holds the nop, an executable the return.
-        let file: Vec<u32> = vec![1, 2, PROLOGUE, 0x0001_2345, 0x0002_3456, JR_RA, NOP, 9];
-        let files = vec![("/OVL.BIN".to_string(), file.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>())];
-        let payload = JR_RA.to_le_bytes().to_vec();
-        let exe = Exe { path: "/MAIN.EXE".into(), boot: true, lo: 0x8010_000C, payload, entry: 0, gp: None };
-        let ran: Vec<(u32, u32, u64)> =
-            file[2..7].iter().enumerate().map(|(k, &w)| (0x8010_0000 + 4 * k as u32, w, 1)).collect();
-        let ram = vec![0u8; 0x20_0000];
-        let lost = lost_code(&ram, &ran, &[exe]);
-        assert_eq!(lost.len(), 3);
-        assert_eq!(placements(&lost, &files), vec![], "too short a run to search for");
-        let lost: Vec<(u32, u32)> = ran.iter().map(|&(a, w, _)| (a, w)).collect();
-        assert_eq!(placements(&lost, &files), vec![(0, 0x800F_FFF8)]);
+    fn code_loaded_over_code_is_another_function_and_old_calls_stay_with_the_old_code() {
+        const ADDIU: u32 = 0x2402_0001; // addiu v0, zero, 1
+        let page = |ws: &[u32]| {
+            let mut b = vec![0u8; 0x1000];
+            for (k, w) in ws.iter().enumerate() {
+                b[4 * k..4 * k + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            b
+        };
+        // First a function at 0 and one at 0x10, called; then code loaded
+        // over both, one function from 0 to 0x20; then a variable beside it.
+        let first = page(&[PROLOGUE, NOP, JR_RA, NOP, JR_RA, NOP]);
+        let second = page(&[PROLOGUE, ADDIU, ADDIU, ADDIU, ADDIU, ADDIU, JR_RA, NOP]);
+        let mut third = second.clone();
+        third[0x800] = 9;
+        let base = 0x8010_0000;
+        let ran = |n: u32, ws: &[u8], m: u32| -> Vec<(u32, u32, u32, bool)> {
+            (0..n)
+                .map(|k| (base + 4 * k, u32::from_le_bytes(ws[4 * k as usize..][..4].try_into().unwrap()), m, false))
+                .collect()
+        };
+        let t = Timeline {
+            ran: vec![[ran(4, &first, 0), ran(6, &first, 0)[4..].to_vec()].concat(), ran(8, &second, 1), vec![]],
+            copies: vec![(10, base, first), (20, base, second), (30, base, third)],
+            calls: vec![vec![(base + 0x10, vec![(0, 0)])], vec![], vec![]],
+        };
+        let mut f = Finder {
+            exes: &[],
+            files: &[],
+            exe_functions: Vec::new(),
+            exe_keys: BTreeSet::new(),
+            found: BTreeMap::new(),
+            named: BTreeMap::new(),
+            known: Vec::new(),
+        };
+        take_timeline(&mut f, &t);
+        let got: Vec<(u32, u32, String)> =
+            f.found.values().map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]), x.first.clone())).collect();
+        assert_eq!(
+            got.iter().map(|g| (g.0, g.1)).collect::<BTreeSet<_>>(),
+            BTreeSet::from([(base, base + 0x10), (base + 0x10, base + 0x18), (base, base + 0x20)]),
+            "{got:?}"
+        );
+        assert!(got.iter().any(|g| g.1 == base + 0x20 && g.2 == "code at 80100000, frame 20"));
+    }
+
+    #[test]
+    fn code_is_seeded_only_from_the_moment_it_first_ran() {
+        // A function starts at the end of one page and runs on into the
+        // next. The second page's copy is taken first (other code ran in it);
+        // the first page is reloaded later, and only then does the
+        // function run, across both.
+        let (a, b) = (0x8010_0000u32, 0x8010_1000u32);
+        let mut page_a = vec![0xFFu8; 0x1000];
+        page_a[0xFF8..0xFFC].copy_from_slice(&PROLOGUE.to_le_bytes());
+        page_a[0xFFC..].copy_from_slice(&NOP.to_le_bytes());
+        let mut page_b = vec![0u8; 0x1000];
+        for (k, w) in [NOP, JR_RA, NOP].iter().enumerate() {
+            page_b[4 * k..4 * k + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        let t = Timeline {
+            copies: vec![(10, b, page_b), (20, a, page_a)],
+            ran: vec![
+                vec![(b, NOP, 1, true), (b + 4, JR_RA, 1, true), (b + 8, NOP, 1, true)],
+                vec![(a + 0xFF8, PROLOGUE, 1, false), (a + 0xFFC, NOP, 1, true)],
+            ],
+            calls: vec![vec![], vec![(a + 0xFF8, vec![(1, 1)])]],
+        };
+        let mut f = Finder {
+            exes: &[],
+            files: &[],
+            exe_functions: Vec::new(),
+            exe_keys: BTreeSet::new(),
+            found: BTreeMap::new(),
+            named: BTreeMap::new(),
+            known: Vec::new(),
+        };
+        take_timeline(&mut f, &t);
+        let got: Vec<(u32, u32)> =
+            f.found.values().map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]))).collect();
+        assert_eq!(got, [(a + 0xFF8, b + 0xC)], "no function starts at the second page");
+    }
+
+    #[test]
+    fn code_is_followed_only_in_the_moments_it_ran_in() {
+        // A function at the end of one page runs on into the next, and is
+        // called with both pages loaded. Later other code is loaded into
+        // the second page, beside the same first page, and nothing runs
+        // the function then: it is not read again across the new code.
+        let (a, b) = (0x8010_0000u32, 0x8010_1000u32);
+        let page = |at: usize, ws: &[u32]| {
+            let mut p = vec![0u8; 0x1000];
+            for (k, w) in ws.iter().enumerate() {
+                p[at + 4 * k..at + 4 * k + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            p
+        };
+        const ADDIU: u32 = 0x2402_0001;
+        let t = Timeline {
+            copies: vec![
+                (10, a, page(0xFF8, &[PROLOGUE, NOP])),
+                (11, b, page(0, &[NOP, JR_RA, NOP])),
+                (20, b, page(0, &[JR_RA, NOP, ADDIU, JR_RA, NOP])),
+            ],
+            ran: vec![
+                vec![(a + 0xFF8, PROLOGUE, 1, false), (a + 0xFFC, NOP, 1, true)],
+                vec![(b, NOP, 1, true), (b + 4, JR_RA, 1, true), (b + 8, NOP, 1, true)],
+                vec![],
+            ],
+            calls: vec![vec![(a + 0xFF8, vec![(1, 1)])], vec![], vec![]],
+        };
+        let mut f = Finder {
+            exes: &[],
+            files: &[],
+            exe_functions: Vec::new(),
+            exe_keys: BTreeSet::new(),
+            found: BTreeMap::new(),
+            named: BTreeMap::new(),
+            known: Vec::new(),
+        };
+        take_timeline(&mut f, &t);
+        let got: Vec<(u32, u32)> =
+            f.found.values().map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]))).collect();
+        assert_eq!(got, [(a + 0xFF8, b + 0xC)]);
+    }
+
+    #[test]
+    fn code_resumed_by_a_jump_stays_a_guess() {
+        // A function is called, stores where to go on, and jumps away
+        // (a+4); in a later moment code resumes there (a+0x10) with no
+        // call. Nothing ran straight on into it, so where that stretch
+        // starts is a guess beside the function the call started.
+        let a = 0x8010_0000u32;
+        const J_18: u32 = 0x0804_0006; // j 80100018
+        let ws = [PROLOGUE, J_18, NOP, NOP, NOP, NOP, JR_RA, NOP];
+        let mut p = vec![0u8; 0x1000];
+        for (k, w) in ws.iter().enumerate() {
+            p[4 * k..4 * k + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        let r = |k: u32, m: u32, c: bool| (a + 4 * k, ws[k as usize], m, c);
+        let t = Timeline {
+            copies: vec![(10, a, p), (20, 0x8011_0000, vec![0; 0x1000])],
+            ran: vec![
+                vec![
+                    r(0, 0, false),
+                    r(1, 0, true),
+                    r(2, 0, true),
+                    r(4, 1, false),
+                    r(5, 1, true),
+                    r(6, 0, false),
+                    r(7, 0, true),
+                ],
+                vec![],
+            ],
+            calls: vec![vec![(a, vec![(0, 0)])], vec![]],
+        };
+        let mut f = Finder {
+            exes: &[],
+            files: &[],
+            exe_functions: Vec::new(),
+            exe_keys: BTreeSet::new(),
+            found: BTreeMap::new(),
+            named: BTreeMap::new(),
+            known: Vec::new(),
+        };
+        take_timeline(&mut f, &t);
+        let got = |f: &Finder| -> BTreeSet<(u32, u32, bool)> {
+            f.found.values().map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]), x.fact())).collect()
+        };
+        assert_eq!(got(&f), BTreeSet::from([(a, a + 0x20, true), (a + 0x10, a + 0x20, false)]));
+    }
+
+    #[test]
+    fn a_guess_never_cuts_code_the_trace_started() {
+        // Code loaded at b is called and runs, skipping b+8. Beside it, old
+        // code still in RAM (it ran before b was loaded) calls b+8, meant for
+        // what was there then.
+        let (a, b) = (0x8010_0000u32, 0x8010_1000u32);
+        const ADDIU: u32 = 0x2402_0001;
+        let page = |ws: &[u32]| {
+            let mut p = vec![0u8; 0x1000];
+            for (k, w) in ws.iter().enumerate() {
+                p[4 * k..4 * k + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            p
+        };
+        let jal = 0x0C00_0000 | ((b + 8) >> 2 & 0x03FF_FFFF);
+        let new = [0x1000_0002, NOP, ADDIU, JR_RA, NOP]; // b +0xC
+        let t = Timeline {
+            copies: vec![(10, a, page(&[jal, NOP, JR_RA, NOP])), (20, b, page(&new))],
+            ran: vec![
+                vec![(a, jal, 0, false), (a + 4, NOP, 0, true), (a + 8, JR_RA, 0, false), (a + 0xC, NOP, 0, true)],
+                vec![
+                    (b, new[0], 1, false),
+                    (b + 4, NOP, 1, true),
+                    (b + 0xC, JR_RA, 1, false),
+                    (b + 0x10, NOP, 1, true),
+                ],
+            ],
+            calls: vec![vec![(a, vec![(0, 0)])], vec![(b, vec![(1, 1)])]],
+        };
+        let mut f = Finder {
+            exes: &[],
+            files: &[],
+            exe_functions: Vec::new(),
+            exe_keys: BTreeSet::new(),
+            found: BTreeMap::new(),
+            named: BTreeMap::new(),
+            known: Vec::new(),
+        };
+        take_timeline(&mut f, &t);
+        let got: BTreeSet<(u32, u32)> =
+            f.found.values().map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]))).collect();
+        assert_eq!(got, BTreeSet::from([(a, a + 0x10), (b, b + 0x14)]));
+        // Nor does a call land where the trace ran straight on.
+        let c = code(&[PROLOGUE, NOP, JR_RA, NOP]);
+        let mut x = Analysis::new(&c, None, Box::new(|_| true));
+        x.continues.insert(0x8001_0004);
+        x.seed(0x8001_0004, "trace_call");
+        x.drain();
+        assert!(x.functions.is_empty());
     }
 }

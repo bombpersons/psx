@@ -142,6 +142,40 @@ Each is committed and reviewed on its own; each has its check.
    Check: GT2's boot run gives 0 words in no image, and its function list
    is compared with today's and every difference explained (212 false
    functions from calls into replaced code are expected to go).
+   Done, with what the trace proves kept apart from what is guessed:
+   - Facts: a call landing (trace_call), the executable's entry, and
+     a word the trace saw continue the code before it: run straight on
+     from the word before (outside a jump's delay slot; after a
+     conditional branch's, taken or not, the CPU is at the word after
+     the slot or the target), or returned to by a call two words
+     before. No function starts on such a word.
+   - Each call records the moments it ran in, from the call until it
+     returned (the trace's return stack). A moment's live functions are
+     those calls; calls and tail jumps are followed only from them, so
+     code still in RAM after it stopped running seeds nothing.
+   - Guesses: everything else (calls and tail jumps read from bytes,
+     pointers, prologues, where a stretch of executed code starts, and
+     the code a function did not run). A guess may split any function,
+     traced or not, except on a word the trace saw continue. Protecting
+     a traced function's whole extent instead lost 9 BIOS call stubs
+     the executable calls with `jal`: they lay in a traced stub's
+     unrun tail.
+   - The run's end is one more moment, live with the calls running then.
+   GT2's boot run (6600 frames): 1795 functions (1092 executable, 703 in
+   47 overlay images), and 722 in the BIOS shell, now listed; 0 executed
+   outside functions; 932 exercised. Against the inventory before (1849:
+   1120 executable, 729 in 12 overlay images): the executable lost 28
+   functions and none was added. 24 were calls into other code loaded
+   over the executable (the word run there is not the executable's),
+   4 guesses now inside traced functions; 13 functions end elsewhere as
+   a result. Overlay differences are not all explained yet.
+   Open: 2 stretches (26 words) of 0x80015FF8, a state machine that
+   resumes itself by `jr s0` and branches, are in no image: a guess
+   carried by matching bytes from another moment splits it there, and
+   what ran past the split is left out. One function has two extents in
+   two moments (0x80047EA0). Both come from reading a function's body
+   from bytes; recording which call each executed word ran inside would
+   make the body of what ran a fact.
 3. **Coverage by lookup.** Credit by (copy, address). Check: GT2's boot
    run gives 0 executed_outside_functions, or each one is a boundary
    error found and fixed in the analysis.

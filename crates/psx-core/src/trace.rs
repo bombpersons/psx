@@ -25,6 +25,9 @@ const BIOS_WORDS: usize = 0x8_0000 / 4;
 pub const CODE_PAGE: usize = 0x1000;
 /// Most bytes of code page copies a trace keeps.
 pub const MAX_CODE_BYTES: usize = 64 << 20;
+/// Calls deep enough to remember where each returns to.
+const MAX_RETURNS: usize = 1024;
+const JR_RA: u32 = 0x03E0_0008;
 
 /// Names a code address given the current main RAM (for residency checks).
 pub type Namer = Box<dyn Fn(u32, &[u8]) -> Option<String>>;
@@ -47,6 +50,11 @@ pub struct TraceConfig {
 pub struct CallStat {
     pub count: u64,
     pub first_frame: u64,
+    /// The moment of the first call: the number of the latest copy taken then.
+    pub first_moment: u32,
+    /// The moments a call to it ran in, from the call until it returned,
+    /// as `[from, to]` spans of moments, in order.
+    pub moments: Vec<(u32, u32)>,
     pub last_frame: u64,
     /// Call sites (PC of the jal/jalr) with counts, keyed by the code
     /// page copy the call ran from (`NO_COPY` when none holds it) and pc.
@@ -57,8 +65,37 @@ pub struct CallStat {
 /// run from the instruction cache with no copy holding it).
 pub const NO_COPY: u32 = u32::MAX;
 
-/// A page's latest copy: its index, its bytes and each word's executions.
-type Latest = (u32, Box<[u8]>, Box<[u32]>);
+/// How a word ran.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Ran {
+    pub count: u64,
+    /// The moment it first ran.
+    pub first: u32,
+    /// It continues the code before it: it ran straight on from the word
+    /// before (which was no jump's delay slot, though it may be a branch's:
+    /// a branch taken or not goes on there), or a call two words before
+    /// returned to it.
+    pub continues: bool,
+}
+
+impl Ran {
+    fn add(&mut self, o: Ran) {
+        self.first = if self.count == 0 { o.first } else { self.first.min(o.first) };
+        self.count += o.count;
+        self.continues |= o.continues;
+    }
+}
+
+/// Adds `moment` (no earlier than the last) to spans of moments.
+fn at(moments: &mut Vec<(u32, u32)>, moment: u32) {
+    match moments.last_mut() {
+        Some(l) if moment <= l.1.saturating_add(1) => l.1 = l.1.max(moment),
+        _ => moments.push((moment, moment)),
+    }
+}
+
+/// A page's latest copy: its number, bytes, and how each word ran.
+type Latest = (u32, Box<[u8]>, Box<[Ran]>);
 
 /// One copy of a code page.
 pub struct CodeCopy {
@@ -102,22 +139,29 @@ pub struct Tracer {
     /// ([`Bus::page_writes`]) when last compared with it.
     page_copy: Vec<Option<Latest>>,
     page_seen: Vec<u32>,
-    /// Executions of copies no longer their page's latest: `(copy, word
-    /// index)`.
-    counts: BTreeMap<(u32, u32), u64>,
+    /// Executions of copies no longer their page's latest, and the moment
+    /// each word first ran: `(copy, word index)`.
+    counts: BTreeMap<(u32, u32), Ran>,
     /// Copies not kept past `MAX_CODE_BYTES`.
     pub code_pages_dropped: u64,
     /// Executions credited to an earlier copy of a page because RAM no
     /// longer held the instruction (it ran from the instruction cache).
     pub ran_from_cache: u64,
-    /// Executions no copy holds: `(word index, instruction)`.
-    uncopied: BTreeMap<(u32, u32), u64>,
+    /// Executions no copy holds, and the moment each first ran: `(word
+    /// index, instruction)`.
+    uncopied: BTreeMap<(u32, u32), Ran>,
     bios_cover: Vec<u32>,
     /// Call targets keyed by the copy the callee's first instruction ran
     /// from (`NO_COPY` outside RAM or when none holds it) and its address.
     pub calls: BTreeMap<(u32, u32), CallStat>,
     /// Steps until the callee's first instruction, the call site and its copy.
     pending_call: Option<(u8, u32, u32)>,
+    /// The physical pc that ran last, the jump or branch whose delay slot
+    /// it was, and its instruction.
+    last: Option<(u32, Option<u32>, u32)>,
+    /// Where each call not yet returned from returns to (physical), and
+    /// its callee (a `calls` key, once it ran), most recent last.
+    returns: Vec<(u32, Option<(u32, u32)>)>,
     io_error: Option<std::io::Error>,
 }
 
@@ -170,6 +214,22 @@ fn is_call(i: u32) -> bool {
     i >> 26 == 0x03 || (i >> 26 == 0 && i & 0x3F == 0x09) || (i >> 26 == 1 && (i >> 16) & 0x1E == 0x10)
 }
 
+/// A conditional branch: taken or not, the CPU after its delay slot is at
+/// its target or the word after the slot, the code it is part of.
+fn is_branch(i: u32) -> bool {
+    has_delay_slot(i) && !matches!(i >> 26, 0x00 | 0x02 | 0x03)
+}
+
+/// A jump or branch: the word after it is its delay slot.
+fn has_delay_slot(i: u32) -> bool {
+    match i >> 26 {
+        0x00 => matches!(i & 0x3F, 0x08 | 0x09),
+        0x01..=0x07 => true,
+        0x10..=0x13 => (i >> 21) & 0x1F == 0x08,
+        _ => false,
+    }
+}
+
 impl Tracer {
     pub fn new(cfg: TraceConfig, out: Box<dyn Write>, namer: Option<Namer>) -> Self {
         Tracer {
@@ -196,6 +256,8 @@ impl Tracer {
             bios_cover: vec![0; BIOS_WORDS],
             calls: BTreeMap::new(),
             pending_call: None,
+            last: None,
+            returns: Vec::new(),
             io_error: None,
         }
     }
@@ -246,16 +308,23 @@ impl Tracer {
             _ => NO_COPY,
         };
 
+        let moment = self.moment();
+
         // Call bookkeeping: the callee's first step is two after the call.
         if let Some((n, site, site_copy)) = self.pending_call {
             if n <= 1 {
                 self.pending_call = None;
-                let c = self
-                    .calls
-                    .entry((copy, pc))
-                    .or_insert_with(|| CallStat { first_frame: bus.frames, ..Default::default() });
+                let c = self.calls.entry((copy, pc)).or_insert_with(|| CallStat {
+                    first_frame: bus.frames,
+                    first_moment: moment,
+                    ..Default::default()
+                });
                 c.count += 1;
                 c.last_frame = bus.frames;
+                at(&mut c.moments, moment);
+                if let Some(r) = self.returns.last_mut().filter(|r| r.0 == site.wrapping_add(8) & 0x1FFF_FFFF) {
+                    r.1 = Some((copy, pc));
+                }
                 if c.callers.len() < 64 || c.callers.contains_key(&(site_copy, site)) {
                     *c.callers.entry((site_copy, site)).or_default() += 1;
                 }
@@ -285,17 +354,37 @@ impl Tracer {
         }
 
         self.instructions += 1;
+        // Run straight on from the word before, not as a jump's delay
+        // slot's successor (a jump may have landed there instead) though
+        // maybe as a branch's, or returned to by `jr ra` from a call two
+        // words before.
+        let after = |l: u32| l.wrapping_add(4) == phys;
+        let stepped = self.last.is_some_and(|(l, slot, _)| after(l) && slot.is_none_or(is_branch));
+        let mut returned = false;
+        if self.last.is_some_and(|(_, slot, _)| slot == Some(JR_RA)) {
+            if let Some(k) = self.returns.iter().rposition(|r| r.0 == phys) {
+                self.returns.truncate(k);
+                returned = true;
+            }
+        }
+        let slot = self.last.and_then(|(l, _, i)| (after(l) && has_delay_slot(i)).then_some(i));
+        self.last = Some((phys, slot, info.instruction));
+        if info.exception.is_none() && is_call(info.instruction) {
+            if self.returns.len() == MAX_RETURNS {
+                self.returns.remove(0);
+            }
+            self.returns.push((phys.wrapping_add(8), None));
+        }
+        let continues = stepped || returned;
         match phys {
             0..=0x7F_FFFF => {
+                let ran = Ran { count: 1, first: moment, continues };
                 if copy == NO_COPY {
-                    *self.uncopied.entry((k as u32, info.instruction)).or_default() += 1;
+                    self.uncopied.entry((k as u32, info.instruction)).or_default().add(ran);
                 } else {
                     match &mut self.page_copy[k / (CODE_PAGE / 4)] {
-                        Some((c, _, n)) if *c == copy => {
-                            let n = &mut n[k % (CODE_PAGE / 4)];
-                            *n = n.saturating_add(1);
-                        }
-                        _ => *self.counts.entry((copy, k as u32)).or_default() += 1,
+                        Some((c, _, w)) if *c == copy => w[k % (CODE_PAGE / 4)].add(ran),
+                        _ => self.counts.entry((copy, k as u32)).or_default().add(ran),
                     }
                 }
                 self.ram_cover[k] = self.ram_cover[k].saturating_add(1);
@@ -353,8 +442,8 @@ impl Tracer {
         let writes = bus.page_writes.get(p).copied().unwrap_or(0);
         let seen = std::mem::replace(&mut self.page_seen[p], writes);
         match &self.page_copy[p] {
-            Some((c, _, _)) if writes == seen => return Some(*c),
-            Some((c, b, _)) if b[..] == bus.ram[p * CODE_PAGE..(p + 1) * CODE_PAGE] => return Some(*c),
+            Some((c, ..)) if writes == seen => return Some(*c),
+            Some((c, b, ..)) if b[..] == bus.ram[p * CODE_PAGE..(p + 1) * CODE_PAGE] => return Some(*c),
             _ => {}
         }
         self.take_copy(p, bus)
@@ -366,7 +455,7 @@ impl Tracer {
         let now = &bus.ram[p * CODE_PAGE..(p + 1) * CODE_PAGE];
         let data = match &self.page_copy[p] {
             None => CopyData::Whole(now.into()),
-            Some((c, b, _)) => CopyData::Changed(
+            Some((c, b, ..)) => CopyData::Changed(
                 *c,
                 (0..CODE_PAGE / 4)
                     .filter(|&j| b[4 * j..4 * j + 4] != now[4 * j..4 * j + 4])
@@ -385,11 +474,17 @@ impl Tracer {
         self.code_bytes += size;
         let c = self.code_pages.len() as u32;
         self.code_pages.push(CodeCopy { frame: bus.frames, addr: 0x8000_0000 + (p * CODE_PAGE) as u32, data });
-        let fresh = (c, now.into(), vec![0; CODE_PAGE / 4].into());
-        if let Some((old, _, n)) = self.page_copy[p].replace(fresh) {
+        // The calls not yet returned from run on into the new moment.
+        for key in self.returns.iter().filter_map(|r| r.1) {
+            if let Some(call) = self.calls.get_mut(&key) {
+                at(&mut call.moments, c);
+            }
+        }
+        let fresh = (c, now.into(), vec![Ran::default(); CODE_PAGE / 4].into());
+        if let Some((old, _, w)) = self.page_copy[p].replace(fresh) {
             let k0 = (p * CODE_PAGE / 4) as u32;
-            for (j, &n) in n.iter().enumerate().filter(|(_, n)| **n > 0) {
-                *self.counts.entry((old, k0 + j as u32)).or_default() += n as u64;
+            for (j, r) in w.iter().enumerate().filter(|(_, r)| r.count > 0) {
+                self.counts.entry((old, k0 + j as u32)).or_default().add(*r);
             }
         }
         Some(c)
@@ -464,19 +559,25 @@ impl Tracer {
         out
     }
 
-    /// Executed RAM words as `(copy, KSEG0 address, instruction word,
-    /// executions)`, in copy then address order, then the words no copy
-    /// holds (`NO_COPY`).
-    pub fn executed(&self) -> Vec<(u32, u32, u32, u64)> {
+    /// The moment now: the number of the latest copy taken (RAM's code is
+    /// each page's latest copy).
+    fn moment(&self) -> u32 {
+        self.code_pages.len().saturating_sub(1) as u32
+    }
+
+    /// Executed RAM words as `(copy, KSEG0 address, instruction word, how
+    /// it ran)`, in copy then address order, then the words no copy holds
+    /// (`NO_COPY`).
+    pub fn executed(&self) -> Vec<(u32, u32, u32, Ran)> {
         let mut all = self.counts.clone();
-        for (p, (c, _, n)) in self.page_copy.iter().enumerate().filter_map(|(p, e)| Some((p, e.as_ref()?))) {
-            for (j, &n) in n.iter().enumerate().filter(|(_, n)| **n > 0) {
-                *all.entry((*c, (p * CODE_PAGE / 4 + j) as u32)).or_default() += n as u64;
+        for (p, (c, _, w)) in self.page_copy.iter().enumerate().filter_map(|(p, e)| Some((p, e.as_ref()?))) {
+            for (j, r) in w.iter().enumerate().filter(|(_, r)| r.count > 0) {
+                all.entry((*c, (p * CODE_PAGE / 4 + j) as u32)).or_default().add(*r);
             }
         }
         let word = |c: u32, k: u32| self.copy_word(c, 4 * k as usize % CODE_PAGE);
-        let mut out: Vec<_> = all.into_iter().map(|((c, k), n)| (c, 0x8000_0000 + 4 * k, word(c, k), n)).collect();
-        out.extend(self.uncopied.iter().map(|(&(k, i), &n)| (NO_COPY, 0x8000_0000 + 4 * k, i, n)));
+        let mut out: Vec<_> = all.into_iter().map(|((c, k), r)| (c, 0x8000_0000 + 4 * k, word(c, k), r)).collect();
+        out.extend(self.uncopied.iter().map(|(&(k, i), r)| (NO_COPY, 0x8000_0000 + 4 * k, i, *r)));
         out
     }
 }
@@ -495,7 +596,6 @@ mod tests {
         bus.write(addr, crate::bus::Width::Word, w).unwrap();
     }
 
-    const JR_RA: u32 = 0x03E0_0008;
     const JAL: u32 = 0x0C00_4000; // jal 80010000
 
     #[test]
@@ -526,9 +626,18 @@ mod tests {
         // The caller's page was copied first.
         let site = BTreeMap::from([((0, 0x8002_0000), 1)]);
         assert_eq!(calls, [((1, 0x8001_0000), 1, site.clone()), ((2, 0x8001_0000), 1, site)]);
+        assert_eq!(t.calls.values().map(|c| c.first_moment).collect::<Vec<_>>(), [1, 2]);
+        // The first call never returns: it runs on into the moment after.
+        assert_eq!(t.calls.values().map(|c| c.moments.clone()).collect::<Vec<_>>(), [vec![(1, 2)], vec![(2, 2)]]);
+        let r = |count, first, continues| Ran { count, first, continues };
         assert_eq!(
             t.executed(),
-            [(0, 0x8002_0000, JAL, 2), (0, 0x8002_0004, 0, 2), (1, 0x8001_0000, JR_RA, 2), (2, 0x8001_0000, JR_RA, 1)]
+            [
+                (0, 0x8002_0000, JAL, r(2, 0, false)),
+                (0, 0x8002_0004, 0, r(2, 0, true)),
+                (1, 0x8001_0000, JR_RA, r(2, 1, false)),
+                (2, 0x8001_0000, JR_RA, r(1, 2, false))
+            ]
         );
     }
 
@@ -550,7 +659,86 @@ mod tests {
         ran(&mut t, &cpu, &bus, 0x8001_0000, 9);
         // And a word no copy holds is kept apart.
         ran(&mut t, &cpu, &bus, 0x8001_0000, 5);
-        assert_eq!(t.executed(), [(0, 0x8001_0000, 7, 2), (2, 0x8001_0000, 9, 1), (NO_COPY, 0x8001_0000, 5, 1)]);
+        // Each with the moment it first ran (the latest copy then).
+        let r = |count, first| Ran { count, first, continues: false };
+        assert_eq!(
+            t.executed(),
+            [(0, 0x8001_0000, 7, r(2, 0)), (2, 0x8001_0000, 9, r(1, 2)), (NO_COPY, 0x8001_0000, 5, r(1, 2))]
+        );
+    }
+
+    #[test]
+    fn a_word_that_continues_the_code_before_it_is_marked() {
+        let mut bus = Bus::new(vec![]);
+        bus.page_writes = vec![0; 0x20_0000 / CODE_PAGE];
+        let cpu = Cpu::new();
+        let mut t = Tracer::new(TraceConfig::default(), Box::new(std::io::sink()), None);
+        const JAL_2: u32 = 0x0C00_8000; // jal 80020000
+        const J_14: u32 = 0x0800_4005; // j 80010014
+        const BNE: u32 = 0x1420_0003; // bne at,zero,+3
+        const B_4C: u32 = 0x1000_0002; // b 8001004C
+        // A call and its return, a jump, a `jr ra` to where no call
+        // returns, a branch not taken and one taken.
+        let code = [
+            (0x8001_0000, JAL_2, false),
+            (0x8001_0004, 0, true),
+            (0x8002_0000, JR_RA, false),
+            (0x8002_0004, 0, true),
+            (0x8001_0008, J_14, true),
+            (0x8001_000C, 0, true),
+            (0x8001_0014, JR_RA, false),
+            (0x8001_0018, 0, true),
+            (0x8001_0030, 0, false),
+            (0x8001_0034, BNE, true),
+            (0x8001_0038, 0, true),
+            (0x8001_003C, 0, true),
+            (0x8001_0040, B_4C, true),
+            (0x8001_0044, 0, true),
+            (0x8001_004C, 0, false),
+        ];
+        for (pc, i, _) in code {
+            put(&mut bus, pc, i);
+        }
+        for (pc, i, _) in code {
+            ran(&mut t, &cpu, &bus, pc, i);
+        }
+        let got: BTreeMap<u32, bool> = t.executed().iter().map(|e| (e.1, e.3.continues)).collect();
+        assert_eq!(got, code.iter().map(|&(pc, _, c)| (pc, c)).collect());
+    }
+
+    #[test]
+    fn a_call_runs_in_each_moment_until_it_returns() {
+        let mut bus = Bus::new(vec![]);
+        bus.page_writes = vec![0; 0x20_0000 / CODE_PAGE];
+        let cpu = Cpu::new();
+        let mut t = Tracer::new(TraceConfig::default(), Box::new(std::io::sink()), None);
+        // 80010000 calls 80020000, which calls 80030000 and returns; while
+        // the first call runs, code runs in two new pages (moments 3, 4).
+        const JAL_2: u32 = 0x0C00_8000; // jal 80020000
+        const JAL_3: u32 = 0x0C00_C000; // jal 80030000
+        let code = [
+            (0x8001_0000, JAL_2),
+            (0x8001_0004, 0),
+            (0x8002_0000, JAL_3),
+            (0x8002_0004, 0),
+            (0x8003_0000, JR_RA),
+            (0x8003_0004, 0),
+            (0x8002_0008, 0),
+            (0x8004_0000, 0),
+            (0x8005_0000, 0),
+            (0x8002_000C, JR_RA),
+            (0x8002_0010, 0),
+            (0x8001_0008, 0),
+            (0x8006_0000, 0),
+        ];
+        for (pc, i) in code {
+            put(&mut bus, pc, i);
+        }
+        for (pc, i) in code {
+            ran(&mut t, &cpu, &bus, pc, i);
+        }
+        let got: Vec<(u32, Vec<(u32, u32)>)> = t.calls.iter().map(|(k, c)| (k.1, c.moments.clone())).collect();
+        assert_eq!(got, [(0x8002_0000, vec![(1, 4)]), (0x8003_0000, vec![(2, 2)])]);
     }
 
     #[test]
