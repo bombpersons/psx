@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
-use crate::clean::{Clean, CompareArgs, HeldoutArgs, RecordArgs, ScreensArgs};
+use crate::clean::{Clean, CompareArgs, HeldoutArgs, RecordArgs, ScreensArgs, TemplateUpdateArgs};
 
 fn schema<T: schemars::JsonSchema>() -> Value {
     let mut v = serde_json::to_value(schemars::schema_for!(T)).unwrap_or_default();
@@ -41,6 +41,11 @@ fn tools() -> Value {
         {"name": "next", "inputSchema": {"type": "object", "properties": {}}, "description":
             "What you do now: the ledger brought up to date and your notes/NEXT.md returned (the crossed specs \
              waiting for code, those whose cases fail, questions answered). Start every session with it."},
+        {"name": "template_update", "inputSchema": schema::<TemplateUpdateArgs>(), "description":
+            "Update this repository's psx-bevy template code (vendor/, psx-bevy/) to this psx, as psx template \
+             update does: files the project never edited are replaced, edited ones get the new version beside them \
+             as FILE.psx-new to merge, and the result lists each with what to do next. It touches only the \
+             template's own code, never the game's."},
     ])
 }
 
@@ -83,7 +88,8 @@ pub fn serve(clean: &Clean) -> ExitCode {
                         "instructions": "Clean mode: the original game's behaviour, in the names the investigator published. \
                             Start with next. record makes an exploratory case from a published start (specs/states/), \
                             compare checks the port's run of a case against it, heldout runs your case runner on the \
-                            cases kept back, and screens gives pictures beside the port's. Every request is logged to \
+                            cases kept back, and screens gives pictures beside the port's. template_update brings the \
+                            template's code up to this psx. Every request is logged to \
                             notes/oracle.jsonl, which the audit reads.",
                     }),
                 );

@@ -1256,6 +1256,15 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
             json!({"open_questions": open_mine}),
         ));
     }
+    // What the latest crossing changed, by the lines each spec lost and gained.
+    let last_bundle = log.entries.last().and_then(|e| e["bundle"].as_str()).filter(|_| !audit_due);
+    if let Some(note) = last_bundle.map(|b| format!("notes/changes/{b}.md")).filter(|n| r.implementer.join(n).is_file())
+    {
+        let say = format!(
+            "the latest crossing changed specs: {note} lists the lines each lost (-) and gained (+); take out code whose rule was withdrawn"
+        );
+        imp_work.push(work("read_changes", say, json!({"changes": note})));
+    }
 
     // The reviewer's.
     let mut rev_work = Vec::new();

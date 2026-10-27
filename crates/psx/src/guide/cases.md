@@ -75,8 +75,9 @@ came from; a compared column no spec claims is a warning.
 
 case check [NAME...] records cases again from their recipes (all of them
 by default) and compares each with its published CSV cell by cell, by
-column name, and the case's fields_per_tick, first_tick, input, subject,
-timing and coverage (an until's rows resolved again).
+column name, and the case's fields_per_tick, first_tick, input, writes,
+subject, timing and coverage (an until's rows resolved again). It prints a
+line per case to stderr as it goes (psx case check: 3/280 NAME same).
 same is exact; otherwise the first differing cells are listed. Run it after
 a psx update or a map change; write=true replaces the cases that differ.
 A key this psx writes that a case lacks (timing, in a case from an older

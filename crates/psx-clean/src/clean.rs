@@ -105,6 +105,14 @@ pub struct CompareArgs {
 }
 
 #[derive(clap::Args, Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TemplateUpdateArgs {
+    /// Report what would change without writing.
+    #[arg(long)]
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(clap::Args, Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HeldoutArgs {
     /// Only the cases kept back for this spec.
     #[arg(long)]
@@ -459,6 +467,7 @@ impl Clean {
             "heldout" => parse(&args).and_then(|a| self.heldout(a)),
             "screens" => parse(&args).and_then(|a| self.screens(a)),
             "next" => self.next(),
+            "template_update" => parse(&args).and_then(|a| self.template_update(a)),
             _ => Err(format!("no tool {tool}")),
         };
         let logged = match &result {
@@ -951,6 +960,28 @@ impl Clean {
             "pictures": pictures, "side_by_side": sides,
             "logged": {"status": "ok", "pictures": pictures.len(), "side_by_side": sides.len(), "bytes": bytes},
         }))
+    }
+
+    /// psx template update on this repository: the template's own code
+    /// only, which carries nothing of the original.
+    fn template_update(&self, a: TemplateUpdateArgs) -> Result<Value> {
+        let mut c = Command::new(&self.psx);
+        c.arg("--root").arg(&self.implementer).args(["template", "update"]);
+        if a.dry_run {
+            c.arg("--dry-run");
+        }
+        let out = c.stdin(Stdio::null()).stderr(Stdio::null()).output().map_err(|_| "psx could not be started")?;
+        let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| "psx gave no result".to_string())?;
+        if let Some(e) = v.get("error") {
+            return Err(format!("template update: {}", e["message"].as_str().unwrap_or("failed")));
+        }
+        let changed = ["updated", "added", "removed", "conflicts", "seeded_changes"]
+            .map(|k| (k, json!(v[k].as_array().map_or(0, Vec::len))));
+        let mut logged = json!({"status": "ok", "from": v["from"], "to": v["to"], "dry_run": a.dry_run});
+        for (k, n) in changed {
+            logged[k] = n;
+        }
+        Ok(json!({"update": v, "logged": logged}))
     }
 
     fn next(&self) -> Result<Value> {

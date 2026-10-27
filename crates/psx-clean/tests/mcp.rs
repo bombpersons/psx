@@ -52,7 +52,7 @@ fn requests_by_published_names_only_and_every_one_logged() {
     let tools = call("tools/list", json!({}));
     let names: Vec<&str> =
         tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["record", "compare", "heldout", "screens", "next"]);
+    assert_eq!(names, ["record", "compare", "heldout", "screens", "next", "template_update"]);
 
     let tool = |call: &mut dyn FnMut(&str, Value) -> Value, name: &str, args: Value| -> (bool, Value) {
         let r = call("tools/call", json!({"name": name, "arguments": args}));
@@ -85,12 +85,15 @@ fn requests_by_published_names_only_and_every_one_logged() {
     assert!(err && v["error"].as_str().unwrap().contains("not in this repository"), "{v}");
     let (err, _) = tool(&mut call, "compare", json!({"case": "../../inv/x"}));
     assert!(err);
+    // A port that is not a template project (no .psx-template.toml).
+    let (err, v) = tool(&mut call, "template_update", json!({"dry_run": true}));
+    assert!(err, "{v}");
     drop(stdin);
     child.wait().unwrap();
 
     let log = std::fs::read_to_string(imp.join("notes/oracle.jsonl")).unwrap();
     let entries: Vec<&str> = log.lines().collect();
-    assert_eq!(entries.len(), 7);
+    assert_eq!(entries.len(), 8);
     let mut prev = Value::Null;
     for line in &entries {
         let v: Value = serde_json::from_str(line).unwrap();

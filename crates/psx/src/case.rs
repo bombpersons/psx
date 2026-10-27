@@ -416,6 +416,14 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
         )));
     }
     let samples = &report["samples"];
+    let wrong_map = &samples["map_not_holding"];
+    if wrong_map["first_run_frame"] == 0 {
+        return Err(Error::invalid(format!(
+            "the field map's [map] holds fail in the start state ({}): is it the map for this level?",
+            wrong_map["there"]["conditions"]
+        ))
+        .with("run_dir", &report["run_dir"]));
+    }
     let file = samples["file"].as_str().map(PathBuf::from).unwrap_or_default();
     let mut t = Table::parse(&String::from_utf8_lossy(&read(&file)?));
     // The subject's fields by their own names; the case names its subject.
@@ -467,6 +475,12 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
         }
     }
     let mut warnings = Vec::new();
+    if !wrong_map.is_null() {
+        warnings.push(format!(
+            "the field map's [map] holds fail on {} rows, from run frame {}: its names may read other memory there",
+            wrong_map["rows"], wrong_map["first_run_frame"]
+        ));
+    }
     for c in compare.keys().filter(|c| activation.contains(c)) {
         warnings
             .push(format!("{c} is written (an activation) and compared: compare it only if the game changes it too"));
@@ -696,7 +710,7 @@ impl Op for CaseCheckArgs {
                 names.sort();
             }
             let (mut same, mut results) = (0, Vec::new());
-            for name in &names {
+            for (i, name) in names.iter().enumerate() {
                 let one = || -> crate::Result<Value> {
                     let recipe: Value = serde_json::from_slice(&read(&recipes.join(format!("{name}.json")))?)
                         .map_err(|e| Error::malformed(format!("recipe {name}: {e}")))?;
@@ -770,6 +784,15 @@ impl Op for CaseCheckArgs {
                     v = json!({"same": true, "case_keys_to_add": v.get("case_keys_to_add"), "written": v.get("written")});
                     v.as_object_mut().into_iter().for_each(|m| m.retain(|_, x| !x.is_null()));
                 }
+                // A line per case as it goes: the report comes only at the end.
+                let verdict = if v["same"] == true {
+                    "same"
+                } else if v.get("error").is_some() {
+                    "error"
+                } else {
+                    "differs"
+                };
+                eprintln!("psx case check: {}/{} {name} {verdict}", i + 1, names.len());
                 v["case"] = json!(name);
                 results.push(v);
             }

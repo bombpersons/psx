@@ -28,6 +28,10 @@
 //! struct = "object"         # pointer (plus offset, hex), read anew at each
 //! pointer = "800A1234"      # sample; empty while null or not memory
 //! offset = "0"              # optional; stride and count work here too
+//!
+//! [map]                     # optional: where this map is right
+//! holds = ["level=1"]       # conditions (--until's syntax) true there; a
+//!                           # sample row where one fails is reported
 //! ```
 //!
 //! `--sample` then takes `camera_x`, `player` (every field, as `player.x`
@@ -72,6 +76,8 @@ pub struct FieldMap {
     globals: Vec<(String, u32, String)>,
     structs: Vec<(String, Vec<Field>)>,
     subjects: Vec<Subject>,
+    /// `[map] holds`: true wherever the map is right (the level it was made for).
+    pub holds: Vec<crate::until::Until>,
 }
 
 fn is_name(s: &str) -> bool {
@@ -113,8 +119,8 @@ impl FieldMap {
 
     pub fn parse(s: &str, path: PathBuf) -> Result<FieldMap, String> {
         let t: Table = s.parse().map_err(|e: toml::de::Error| e.message().to_string())?;
-        if let Some(k) = t.keys().find(|k| !["tick", "globals", "structs", "subjects"].contains(&k.as_str())) {
-            return Err(format!("unknown section [{k}] (tick, globals, structs, subjects)"));
+        if let Some(k) = t.keys().find(|k| !["tick", "globals", "structs", "subjects", "map"].contains(&k.as_str())) {
+            return Err(format!("unknown section [{k}] (tick, globals, structs, subjects, map)"));
         }
         let tick = table(&t, "tick")?
             .map(|t| -> Result<Tick, String> {
@@ -216,7 +222,19 @@ impl FieldMap {
             };
             subjects.push(Subject { name: n.clone(), layout: layout.to_string(), at, via, stride });
         }
-        Ok(FieldMap { path, tick, globals, structs, subjects })
+        let mut map = FieldMap { path, tick, globals, structs, subjects, holds: Vec::new() };
+        if let Some(t) = table(&t, "map")? {
+            if let Some(k) = t.keys().find(|k| *k != "holds") {
+                return Err(format!("[map]: unknown key {k} (holds)"));
+            }
+            let conds = t.get("holds").map(|v| v.as_array().ok_or("[map] holds: expected a list of conditions"));
+            for c in conds.transpose()?.into_iter().flatten() {
+                let c = text(c, "[map] holds")?;
+                let u = crate::until::parse(c, Some(&map)).map_err(|e| e.replacen("--until", "[map] holds", 1))?;
+                map.holds.push(u);
+            }
+        }
+        Ok(map)
     }
 
     pub fn names(&self) -> Vec<String> {
@@ -289,7 +307,11 @@ impl FieldMap {
     }
 
     pub fn report(&self) -> Value {
-        json!({"path": self.path, "names": self.names()})
+        let mut v = json!({"path": self.path, "names": self.names()});
+        if !self.holds.is_empty() {
+            v["holds"] = json!(self.holds.iter().map(|u| &u.text).collect::<Vec<_>>());
+        }
+        v
     }
 }
 
@@ -478,9 +500,22 @@ stride = "4C"
                 "offset goes with pointer",
             ),
             ("[structs.o]\nx = \"0\"\n[subjects.a]\nstruct = \"o\"\npointer = \"1F000000\"", "not main RAM"),
+            ("[map]\nwhere = 1", "[map]: unknown key where"),
+            ("[globals]\nlevel = \"80000000:u8\"\n[map]\nholds = [\"lvl=1\"]", "[map] holds"),
         ] {
             let e = FieldMap::parse(toml, "m.toml".into()).err().unwrap();
             assert!(e.contains(says), "{toml}: {e}");
         }
+    }
+
+    #[test]
+    fn a_map_says_where_it_is_right() {
+        let m = FieldMap::parse("[globals]\nlevel = \"80000010:u8\"\n[map]\nholds = [\"level=3\"]", "m.toml".into())
+            .unwrap();
+        let (mut ram, scratch) = (vec![0u8; 0x20_0000], vec![0u8; 0x400]);
+        assert!(!m.holds[0].holds(&ram, &scratch));
+        ram[0x10] = 3;
+        assert!(m.holds[0].holds(&ram, &scratch));
+        assert_eq!(m.report()["holds"], json!(["level=3"]));
     }
 }
