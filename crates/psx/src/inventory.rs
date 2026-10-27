@@ -961,10 +961,14 @@ impl InventoryArgs {
                     continue;
                 }
                 let bytes = ram[o.clone()].to_vec();
-                let starts: BTreeSet<u32> =
-                    a.functions.range(lo..hi).map(|(_, f)| f).filter(|f| foreign.contains(&f.start) == over).map(|f| f.start).collect();
-                let code: BTreeSet<u32> =
-                    starts.iter().flat_map(|s| (*s..a.functions[s].end).step_by(4)).collect();
+                let starts: BTreeSet<u32> = a
+                    .functions
+                    .range(lo..hi)
+                    .map(|(_, f)| f)
+                    .filter(|f| foreign.contains(&f.start) == over)
+                    .map(|f| f.start)
+                    .collect();
+                let code: BTreeSet<u32> = starts.iter().flat_map(|s| (*s..a.functions[s].end).step_by(4)).collect();
                 // The same extent and file as an overlay before it.
                 let path = file.as_ref().map(|f| f["path"].clone());
                 let mut same_range = Value::Null;
