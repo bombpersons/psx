@@ -785,6 +785,39 @@ fn trace_outputs(
             })
         })
         .collect();
+    // What each word ran inside: a call (by its target, as in calls.json),
+    // an exception (by its handler's first word), no call yet ("top"), or
+    // unknown after a return the stack did not hold ("lost"). Its body is
+    // `[copy, first, end]` ranges of words run inside it; its jumps the
+    // words a jump entered, `[copy, address, how]` (1: `sp` back to its
+    // value at the owner's first word, 2: not, 3: both seen).
+    let bodies = t.bodies();
+    let mut owners = String::from("[\n");
+    let (mut top_words, mut lost_words) = (0u64, 0u64);
+    for (k, (o, body, jumps)) in bodies.iter().enumerate() {
+        let words: u64 = body.iter().map(|r| (r.2 - r.1) as u64 / 4).sum();
+        let (kind, at) = match *o {
+            psx_core::trace::Owner::Top => {
+                top_words = words;
+                ("top", None)
+            }
+            psx_core::trace::Owner::Lost => {
+                lost_words = words;
+                ("lost", None)
+            }
+            psx_core::trace::Owner::Call(c, a) => ("call", Some((c, a))),
+            psx_core::trace::Owner::Exception(c, a) => ("exception", Some((c, a))),
+        };
+        let v = json!({
+            "owner": kind,
+            "address": at.map(|a| a.1), "address_hex": at.map(|a| format!("0x{:08X}", a.1)), "copy": at.and_then(|a| copy(a.0)),
+            "body": body.iter().map(|r| json!([copy(r.0), r.1, r.2])).collect::<Vec<_>>(),
+            "jumps": jumps.iter().map(|j| json!([copy(j.0), j.1, j.2])).collect::<Vec<_>>(),
+        });
+        owners += &v.to_string();
+        owners += if k + 1 < bodies.len() { ",\n" } else { "\n" };
+    }
+    owners += "]\n";
     // Each executed RAM word with the code page copy it ran from (code.bin's
     // index, all ones for none), the instruction it executed as, the moment
     // it first ran (the latest copy then: RAM's code was each page's latest
@@ -827,6 +860,7 @@ fn trace_outputs(
     for (file, bytes) in [
         ("coverage.txt", text.into_bytes()),
         ("calls.json", serde_json::to_vec_pretty(&calls_json).unwrap()),
+        ("owners.json", owners.into_bytes()),
         ("executed.bin", executed),
         ("code.bin", code),
     ] {
@@ -858,6 +892,12 @@ fn trace_outputs(
         "top_calls": calls_json.iter().take(20).cloned().collect::<Vec<_>>(),
         "distinct_call_targets": calls_json.len(),
         "code_pages": {"kept": t.code_pages.len(), "dropped": t.code_pages_dropped, "ran_from_cache": t.ran_from_cache},
+        "owners": {
+            "top_level_words": top_words, "unowned_words": lost_words,
+            "returns_not_held": t.stack.returns_not_held, "frames_dropped": t.stack.frames_dropped,
+            "exceptions_left_elsewhere": t.stack.exceptions_left_elsewhere,
+            "rfe_without_exception": t.stack.rfe_without_exception,
+        },
     }))
 }
 

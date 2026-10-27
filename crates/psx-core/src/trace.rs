@@ -12,11 +12,11 @@
 //! (when either side is in a traced range);
 //! interrupts and exceptions add `!!` lines.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 
 use crate::bus::Bus;
-use crate::cpu::{Cpu, StepInfo};
+use crate::cpu::{Cpu, StepInfo, cop0};
 use crate::disasm::{disasm, reg};
 
 const RAM_WORDS: usize = 0x20_0000 / 4;
@@ -28,6 +28,12 @@ pub const MAX_CODE_BYTES: usize = 64 << 20;
 /// Calls deep enough to remember where each returns to.
 const MAX_RETURNS: usize = 1024;
 const JR_RA: u32 = 0x03E0_0008;
+/// A frame no `jr ra` returns to (an exception's, or one under a lost return).
+const NO_RETURN: u32 = u32::MAX;
+/// The owner of words run with no call under way, and of those run under a
+/// return the stack did not hold ([`Tracer::owners`] indices).
+pub const OWNER_TOP: u32 = 0;
+pub const OWNER_LOST: u32 = 1;
 
 /// Names a code address given the current main RAM (for residency checks).
 pub type Namer = Box<dyn Fn(u32, &[u8]) -> Option<String>>;
@@ -94,8 +100,51 @@ fn at(moments: &mut Vec<(u32, u32)>, moment: u32) {
     }
 }
 
-/// A page's latest copy: its number, bytes, and how each word ran.
-type Latest = (u32, Box<[u8]>, Box<[Ran]>);
+/// A page's latest copy: its number, bytes, how each word ran, and the
+/// owner each word last ran for (`u32::MAX` before it ran).
+type Latest = (u32, Box<[u8]>, Box<[Ran]>, Box<[u32]>);
+
+/// What a word ran inside: the frame on top of the trace's call stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Owner {
+    /// No call under way since tracing started.
+    Top,
+    /// A return the stack did not hold: what runs under it is unknown.
+    Lost,
+    /// A call to `(copy, address)`, as [`Tracer::calls`] keys it.
+    Call(u32, u32),
+    /// An exception, by its handler's first word `(copy, address)`.
+    Exception(u32, u32),
+}
+
+/// A call or exception under way.
+#[derive(Clone, Copy, Debug)]
+struct Frame {
+    /// Where a call returns to (physical), or `NO_RETURN`.
+    ret: u32,
+    /// Its owner (an [`Tracer::owners`] index), once its first word ran.
+    owner: Option<u32>,
+    /// `sp` when its first word ran.
+    sp: u32,
+    /// An exception's EPC.
+    epc: Option<u32>,
+    /// An exception's: the word that ran before it was taken.
+    last: Option<(u32, Option<u32>, u32)>,
+}
+
+/// How the trace's call stack kept its place.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StackStats {
+    /// `jr ra` to an address no frame held.
+    pub returns_not_held: u64,
+    /// Frames pushed out by `MAX_RETURNS`.
+    pub frames_dropped: u64,
+    /// `rfe` returns to neither EPC nor the word after it (a switch to
+    /// other code, as between threads).
+    pub exceptions_left_elsewhere: u64,
+    /// `rfe` with no exception frame on the stack.
+    pub rfe_without_exception: u64,
+}
 
 /// One copy of a code page.
 pub struct CodeCopy {
@@ -159,9 +208,28 @@ pub struct Tracer {
     /// The physical pc that ran last, the jump or branch whose delay slot
     /// it was, and its instruction.
     last: Option<(u32, Option<u32>, u32)>,
-    /// Where each call not yet returned from returns to (physical), and
-    /// its callee (a `calls` key, once it ran), most recent last.
-    returns: Vec<(u32, Option<(u32, u32)>)>,
+    /// The calls and exceptions under way, most recent last.
+    returns: Vec<Frame>,
+    /// Each word's owners: what ran it, indexed by `owner_ids`.
+    pub owners: Vec<Owner>,
+    owner_ids: HashMap<Owner, u32>,
+    /// Per owner, the words run inside it as `(copy, address)` (`NO_COPY`
+    /// and the KSEG1 address for the BIOS ROM).
+    bodies: Vec<BTreeSet<(u32, u32)>>,
+    /// Per owner, the words entered by a jump (`j`, or `jr` but a return)
+    /// and whether `sp` was back to its value at the owner's first word:
+    /// bit 0 seen back (the frame torn down), bit 1 seen not.
+    jumps: Vec<BTreeMap<(u32, u32), u8>>,
+    /// The owner each BIOS ROM word last ran for.
+    bios_owner: Vec<u32>,
+    pub stack: StackStats,
+    /// An exception was taken: its EPC, for the frame its handler's first
+    /// word pushes.
+    pending_exception: Option<u32>,
+    /// `rfe` ran: the next word leaves the exception frame.
+    leaving_exception: bool,
+    /// `sp` after the step before.
+    last_sp: u32,
     io_error: Option<std::io::Error>,
 }
 
@@ -220,6 +288,10 @@ fn is_branch(i: u32) -> bool {
     has_delay_slot(i) && !matches!(i >> 26, 0x00 | 0x02 | 0x03)
 }
 
+fn is_rfe(i: u32) -> bool {
+    i >> 25 == 0x21 && i & 0x3F == 0x10
+}
+
 /// A jump or branch: the word after it is its delay slot.
 fn has_delay_slot(i: u32) -> bool {
     match i >> 26 {
@@ -258,6 +330,15 @@ impl Tracer {
             pending_call: None,
             last: None,
             returns: Vec::new(),
+            owners: vec![Owner::Top, Owner::Lost],
+            owner_ids: HashMap::from([(Owner::Top, OWNER_TOP), (Owner::Lost, OWNER_LOST)]),
+            bodies: vec![BTreeSet::new(), BTreeSet::new()],
+            jumps: vec![BTreeMap::new(), BTreeMap::new()],
+            bios_owner: vec![u32::MAX; BIOS_WORDS],
+            stack: StackStats::default(),
+            pending_exception: None,
+            leaving_exception: false,
+            last_sp: 0,
             io_error: None,
         }
     }
@@ -309,11 +390,43 @@ impl Tracer {
         };
 
         let moment = self.moment();
+        let sp_before = std::mem::replace(&mut self.last_sp, cpu.regs[29]);
+
+        // Leaving an exception (the word after `rfe`) drops its frame and
+        // what is above it. Back where it was taken, the code before is
+        // the word before the one it interrupted.
+        if std::mem::take(&mut self.leaving_exception) {
+            match self.returns.iter().rposition(|f| f.epc.is_some()) {
+                Some(k) => {
+                    let f = self.returns[k];
+                    let epc = f.epc.unwrap_or(0) & 0x1FFF_FFFF;
+                    if phys == epc {
+                        self.last = f.last;
+                    } else if phys != epc.wrapping_add(4) {
+                        self.stack.exceptions_left_elsewhere += 1;
+                    }
+                    self.returns.truncate(k);
+                }
+                None => self.stack.rfe_without_exception += 1,
+            }
+        }
+        // An exception's handler: a frame of its own.
+        if let Some(epc) = self.pending_exception.take() {
+            let id = self.owner_id(Owner::Exception(copy, pc));
+            self.push(Frame { ret: NO_RETURN, owner: Some(id), sp: sp_before, epc: Some(epc), last: self.last });
+            // The CPU, not the word before, brought it here.
+            self.last = None;
+        }
 
         // Call bookkeeping: the callee's first step is two after the call.
         if let Some((n, site, site_copy)) = self.pending_call {
             if n <= 1 {
                 self.pending_call = None;
+                let id = self.owner_id(Owner::Call(copy, pc));
+                if let Some(r) = self.returns.last_mut().filter(|r| r.ret == site.wrapping_add(8) & 0x1FFF_FFFF) {
+                    r.owner = Some(id);
+                    r.sp = sp_before;
+                }
                 let c = self.calls.entry((copy, pc)).or_insert_with(|| CallStat {
                     first_frame: bus.frames,
                     first_moment: moment,
@@ -322,9 +435,6 @@ impl Tracer {
                 c.count += 1;
                 c.last_frame = bus.frames;
                 at(&mut c.moments, moment);
-                if let Some(r) = self.returns.last_mut().filter(|r| r.0 == site.wrapping_add(8) & 0x1FFF_FFFF) {
-                    r.1 = Some((copy, pc));
-                }
                 if c.callers.len() < 64 || c.callers.contains_key(&(site_copy, site)) {
                     *c.callers.entry((site_copy, site)).or_default() += 1;
                 }
@@ -339,6 +449,7 @@ impl Tracer {
         }
 
         if let Some(e) = info.exception {
+            self.pending_exception = Some(cpu.cop0[cop0::EPC]);
             if e == 0 {
                 self.interrupts += 1;
                 if shown && room {
@@ -361,41 +472,77 @@ impl Tracer {
         let after = |l: u32| l.wrapping_add(4) == phys;
         let stepped = self.last.is_some_and(|(l, slot, _)| after(l) && slot.is_none_or(is_branch));
         let mut returned = false;
-        if self.last.is_some_and(|(_, slot, _)| slot == Some(JR_RA)) {
-            if let Some(k) = self.returns.iter().rposition(|r| r.0 == phys) {
+        // The jump (`j`, `jr`) whose delay slot ran last: this word is
+        // where it went.
+        let jump =
+            self.last.and_then(|(_, slot, _)| slot).filter(|&j| j >> 26 == 0x02 || (j >> 26 == 0 && j & 0x3F == 0x08));
+        if jump == Some(JR_RA) {
+            if let Some(k) = self.returns.iter().rposition(|r| r.ret == phys) {
                 self.returns.truncate(k);
                 returned = true;
+            } else {
+                // What runs now ran inside no call the stack knows.
+                self.stack.returns_not_held += 1;
+                if self.returns.last().is_none_or(|f| f.owner != Some(OWNER_LOST)) {
+                    let lost = Frame { ret: NO_RETURN, owner: Some(OWNER_LOST), sp: sp_before, epc: None, last: None };
+                    self.push(lost);
+                }
             }
         }
         let slot = self.last.and_then(|(l, _, i)| (after(l) && has_delay_slot(i)).then_some(i));
         self.last = Some((phys, slot, info.instruction));
+        let (owner, owner_sp) = self.top();
         if info.exception.is_none() && is_call(info.instruction) {
-            if self.returns.len() == MAX_RETURNS {
-                self.returns.remove(0);
-            }
-            self.returns.push((phys.wrapping_add(8), None));
+            self.push(Frame { ret: phys.wrapping_add(8), owner: None, sp: 0, epc: None, last: None });
         }
         let continues = stepped || returned;
-        match phys {
+        let word = match phys {
             0..=0x7F_FFFF => {
                 let ran = Ran { count: 1, first: moment, continues };
+                let addr = 0x8000_0000 + 4 * k as u32;
                 if copy == NO_COPY {
                     self.uncopied.entry((k as u32, info.instruction)).or_default().add(ran);
+                    self.bodies[owner as usize].insert((copy, addr));
                 } else {
                     match &mut self.page_copy[k / (CODE_PAGE / 4)] {
-                        Some((c, _, w)) if *c == copy => w[k % (CODE_PAGE / 4)].add(ran),
-                        _ => self.counts.entry((copy, k as u32)).or_default().add(ran),
+                        Some((c, _, w, o)) if *c == copy => {
+                            w[k % (CODE_PAGE / 4)].add(ran);
+                            if std::mem::replace(&mut o[k % (CODE_PAGE / 4)], owner) != owner {
+                                self.bodies[owner as usize].insert((copy, addr));
+                            }
+                        }
+                        _ => {
+                            self.counts.entry((copy, k as u32)).or_default().add(ran);
+                            self.bodies[owner as usize].insert((copy, addr));
+                        }
                     }
                 }
                 self.ram_cover[k] = self.ram_cover[k].saturating_add(1);
+                Some((copy, addr))
             }
             0x1FC0_0000..=0x1FC7_FFFF => {
-                let w = &mut self.bios_cover[(phys as usize - 0x1FC0_0000) / 4];
-                *w = w.saturating_add(1);
+                let j = (phys as usize - 0x1FC0_0000) / 4;
+                self.bios_cover[j] = self.bios_cover[j].saturating_add(1);
+                let addr = 0xA000_0000 + phys;
+                if std::mem::replace(&mut self.bios_owner[j], owner) != owner {
+                    self.bodies[owner as usize].insert((NO_COPY, addr));
+                }
+                Some((NO_COPY, addr))
             }
-            _ => {}
+            _ => None,
+        };
+        // A word a jump entered, with whether the owner's frame was torn
+        // down then (`sp` back to its value at the owner's first word).
+        if let (Some(_), false, Some(w)) = (jump, returned, word) {
+            if jump != Some(JR_RA) && owner > OWNER_LOST {
+                let how = if sp_before == owner_sp { 1 } else { 2 };
+                *self.jumps[owner as usize].entry(w).or_default() |= how;
+            }
         }
         let i = info.instruction;
+        if info.exception.is_none() && is_rfe(i) {
+            self.leaving_exception = true;
+        }
         if info.exception.is_none() && is_call(i) {
             self.pending_call = Some((2, pc, copy));
         }
@@ -427,6 +574,33 @@ impl Tracer {
         let sep = if fx.is_empty() { "" } else { "  ;" };
         let text = disasm(i, pc);
         self.write(format_args!("{} {} {pc:08x} {i:08x}  {text:<28}{sep}{fx}\n", bus.frames, bus.time()));
+    }
+
+    /// The id of `o` in `owners`, added when new.
+    fn owner_id(&mut self, o: Owner) -> u32 {
+        if let Some(&id) = self.owner_ids.get(&o) {
+            return id;
+        }
+        let id = self.owners.len() as u32;
+        self.owners.push(o);
+        self.owner_ids.insert(o, id);
+        self.bodies.push(BTreeSet::new());
+        self.jumps.push(BTreeMap::new());
+        id
+    }
+
+    /// The owner of what runs now and `sp` at its first word: the top frame
+    /// whose first word ran.
+    fn top(&self) -> (u32, u32) {
+        self.returns.iter().rev().find_map(|f| Some((f.owner?, f.sp))).unwrap_or((OWNER_TOP, 0))
+    }
+
+    fn push(&mut self, f: Frame) {
+        if self.returns.len() == MAX_RETURNS {
+            self.returns.remove(0);
+            self.stack.frames_dropped += 1;
+        }
+        self.returns.push(f);
     }
 
     fn stop(&mut self, bus: &Bus) {
@@ -475,13 +649,15 @@ impl Tracer {
         let c = self.code_pages.len() as u32;
         self.code_pages.push(CodeCopy { frame: bus.frames, addr: 0x8000_0000 + (p * CODE_PAGE) as u32, data });
         // The calls not yet returned from run on into the new moment.
-        for key in self.returns.iter().filter_map(|r| r.1) {
-            if let Some(call) = self.calls.get_mut(&key) {
-                at(&mut call.moments, c);
+        for f in &self.returns {
+            if let Some(Owner::Call(copy, addr)) = f.owner.map(|o| self.owners[o as usize]) {
+                if let Some(call) = self.calls.get_mut(&(copy, addr)) {
+                    at(&mut call.moments, c);
+                }
             }
         }
-        let fresh = (c, now.into(), vec![Ran::default(); CODE_PAGE / 4].into());
-        if let Some((old, _, w)) = self.page_copy[p].replace(fresh) {
+        let fresh = (c, now.into(), vec![Ran::default(); CODE_PAGE / 4].into(), vec![u32::MAX; CODE_PAGE / 4].into());
+        if let Some((old, _, w, _)) = self.page_copy[p].replace(fresh) {
             let k0 = (p * CODE_PAGE / 4) as u32;
             for (j, r) in w.iter().enumerate().filter(|(_, r)| r.count > 0) {
                 self.counts.entry((old, k0 + j as u32)).or_default().add(*r);
@@ -565,12 +741,32 @@ impl Tracer {
         self.code_pages.len().saturating_sub(1) as u32
     }
 
+    /// Each owner with the words run inside it, as `(copy, first, end)`
+    /// ranges of consecutive words in one copy, and the words a jump
+    /// entered as `(copy, address, how)` ([`Tracer::jumps`] bits).
+    #[allow(clippy::type_complexity)]
+    pub fn bodies(&self) -> Vec<(Owner, Vec<(u32, u32, u32)>, Vec<(u32, u32, u8)>)> {
+        let mut out = Vec::new();
+        for (id, &o) in self.owners.iter().enumerate() {
+            let mut ranges: Vec<(u32, u32, u32)> = Vec::new();
+            for &(c, a) in &self.bodies[id] {
+                match ranges.last_mut() {
+                    Some(r) if r.0 == c && r.2 == a => r.2 = a + 4,
+                    _ => ranges.push((c, a, a + 4)),
+                }
+            }
+            let jumps = self.jumps[id].iter().map(|(&(c, a), &h)| (c, a, h)).collect();
+            out.push((o, ranges, jumps));
+        }
+        out
+    }
+
     /// Executed RAM words as `(copy, KSEG0 address, instruction word, how
     /// it ran)`, in copy then address order, then the words no copy holds
     /// (`NO_COPY`).
     pub fn executed(&self) -> Vec<(u32, u32, u32, Ran)> {
         let mut all = self.counts.clone();
-        for (p, (c, _, w)) in self.page_copy.iter().enumerate().filter_map(|(p, e)| Some((p, e.as_ref()?))) {
+        for (p, (c, _, w, _)) in self.page_copy.iter().enumerate().filter_map(|(p, e)| Some((p, e.as_ref()?))) {
             for (j, r) in w.iter().enumerate().filter(|(_, r)| r.count > 0) {
                 all.entry((*c, (p * CODE_PAGE / 4 + j) as u32)).or_default().add(*r);
             }
@@ -739,6 +935,140 @@ mod tests {
         }
         let got: Vec<(u32, Vec<(u32, u32)>)> = t.calls.iter().map(|(k, c)| (k.1, c.moments.clone())).collect();
         assert_eq!(got, [(0x8002_0000, vec![(1, 4)]), (0x8003_0000, vec![(2, 2)])]);
+    }
+
+    /// The addresses each owner ran, by owner address (copies aside).
+    fn owned(t: &Tracer) -> BTreeMap<(&'static str, u32), Vec<u32>> {
+        let mut out = BTreeMap::new();
+        for (o, ranges, _) in t.bodies() {
+            let key = match o {
+                Owner::Top => ("top", 0),
+                Owner::Lost => ("lost", 0),
+                Owner::Call(_, a) => ("call", a),
+                Owner::Exception(_, a) => ("exception", a),
+            };
+            let words: Vec<u32> = ranges.iter().flat_map(|r| (r.1..r.2).step_by(4)).collect();
+            if !words.is_empty() {
+                out.insert(key, words);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn each_word_is_owned_by_the_call_it_ran_inside() {
+        let mut bus = Bus::new(vec![]);
+        bus.page_writes = vec![0; 0x20_0000 / CODE_PAGE];
+        let mut cpu = Cpu::new();
+        let mut t = Tracer::new(TraceConfig::default(), Box::new(std::io::sink()), None);
+        const JAL_2: u32 = 0x0C00_8000; // jal 80020000
+        const JAL_3: u32 = 0x0C00_C000; // jal 80030000
+        const JAL_5: u32 = 0x0C01_4000; // jal 80050000
+        const J_4: u32 = 0x0801_0000; // j 80040000
+        const PUSH: u32 = 0x27BD_FFF8; // addiu sp,sp,-8
+        const POP: u32 = 0x27BD_0008; // addiu sp,sp,8
+        const JR_K0: u32 = 0x0340_0008;
+        // 80020000 calls 80030000, then tail-jumps to 80040000 with its
+        // frame torn down; 80050000 jumps there with its frame up. The
+        // return to 80010010 is interrupted; after the handler, a `jr ra`
+        // goes where no call returns, and a call runs under it.
+        let code = [
+            (0x8001_0000, JAL_2, 0x100, None),
+            (0x8001_0004, 0, 0x100, None),
+            (0x8002_0000, PUSH, 0xF8, None),
+            (0x8002_0004, JAL_3, 0xF8, None),
+            (0x8002_0008, 0, 0xF8, None),
+            (0x8003_0000, JR_RA, 0xF8, None),
+            (0x8003_0004, 0, 0xF8, None),
+            (0x8002_000C, POP, 0x100, None),
+            (0x8002_0010, J_4, 0x100, None),
+            (0x8002_0014, 0, 0x100, None),
+            (0x8004_0000, JR_RA, 0x100, None),
+            (0x8004_0004, 0, 0x100, None),
+            (0x8001_0008, JAL_5, 0x100, None),
+            (0x8001_000C, 0, 0x100, None),
+            (0x8005_0000, PUSH, 0xF8, None),
+            (0x8005_0004, J_4, 0xF8, None),
+            (0x8005_0008, 0, 0xF8, None),
+            (0x8004_0000, JR_RA, 0xF8, None),
+            (0x8004_0004, 0, 0xF8, None),
+            (0x8001_0010, 0, 0xF8, Some(0)),
+            (0x8000_0080, 0, 0xF8, None),
+            (0x8000_0084, JR_K0, 0xF8, None),
+            (0x8000_0088, 0x4200_0010, 0xF8, None), // rfe
+            (0x8001_0010, 0, 0xF8, None),
+            (0x8001_0014, JR_RA, 0xF8, None),
+            (0x8001_0018, 0, 0xF8, None),
+            (0x8006_0000, 0, 0xF8, None),
+            (0x8006_0004, JAL_3, 0xF8, None),
+            (0x8006_0008, 0, 0xF8, None),
+            (0x8003_0000, JR_RA, 0xF8, None),
+            (0x8003_0004, 0, 0xF8, None),
+            (0x8006_000C, 0, 0xF8, None),
+        ];
+        for (pc, i, _, _) in code {
+            put(&mut bus, pc, i);
+        }
+        cpu.cop0[crate::cpu::cop0::EPC] = 0x8001_0010;
+        for (pc, i, sp, exception) in code {
+            cpu.regs[29] = sp;
+            let info = StepInfo { pc, instruction: i, exception, io_load: None, mem: None };
+            t.after_step(&info, &cpu, &bus);
+        }
+        let w = |r: std::ops::Range<u32>| r.step_by(4).collect::<Vec<u32>>();
+        let tail = w(0x8004_0000..0x8004_0008);
+        assert_eq!(
+            owned(&t),
+            BTreeMap::from([
+                (("top", 0), w(0x8001_0000..0x8001_001C)),
+                (("lost", 0), w(0x8006_0000..0x8006_0010)),
+                (("call", 0x8002_0000), [w(0x8002_0000..0x8002_0018), tail.clone()].concat()),
+                (("call", 0x8003_0000), w(0x8003_0000..0x8003_0008)),
+                (("call", 0x8005_0000), [tail, w(0x8005_0000..0x8005_000C)].concat()),
+                (("exception", 0x8000_0080), w(0x8000_0080..0x8000_008C)),
+            ])
+        );
+        // The tail entered by a jump: from 80020000 with its frame torn
+        // down, from 80050000 with it up.
+        let jumps: Vec<(Owner, Vec<(u32, u8)>)> = t
+            .bodies()
+            .into_iter()
+            .filter(|b| !b.2.is_empty())
+            .map(|(o, _, j)| (o, j.iter().map(|j| (j.1, j.2)).collect()))
+            .collect();
+        let call = |a| t.owners.iter().copied().find(|o| matches!(*o, Owner::Call(_, x) if x == a)).unwrap();
+        assert_eq!(jumps, [(call(0x8002_0000), vec![(0x8004_0000, 1)]), (call(0x8005_0000), vec![(0x8004_0000, 2)])]);
+        assert_eq!(t.stack, StackStats { returns_not_held: 1, ..Default::default() });
+        // The return the interrupt cut off continues the code before it.
+        assert!(t.executed().iter().any(|e| e.1 == 0x8001_0010 && e.3.continues));
+    }
+
+    #[test]
+    fn a_stack_deeper_than_kept_loses_its_oldest_frames() {
+        let mut bus = Bus::new(vec![]);
+        bus.page_writes = vec![0; 0x20_0000 / CODE_PAGE];
+        let cpu = Cpu::new();
+        let mut t = Tracer::new(TraceConfig::default(), Box::new(std::io::sink()), None);
+        const JAL_2: u32 = 0x0C00_8000; // jal 80020000
+        put(&mut bus, 0x8001_0000, JAL_2);
+        put(&mut bus, 0x8002_0000, JAL_2);
+        put(&mut bus, 0x8002_0008, JR_RA);
+        // 80020000 calls itself: with the first call, one deeper than the
+        // stack keeps.
+        ran(&mut t, &cpu, &bus, 0x8001_0000, JAL_2);
+        ran(&mut t, &cpu, &bus, 0x8001_0004, 0);
+        for _ in 0..MAX_RETURNS {
+            ran(&mut t, &cpu, &bus, 0x8002_0000, JAL_2);
+            ran(&mut t, &cpu, &bus, 0x8002_0004, 0);
+        }
+        for _ in 0..MAX_RETURNS {
+            ran(&mut t, &cpu, &bus, 0x8002_0008, JR_RA);
+            ran(&mut t, &cpu, &bus, 0x8002_000C, 0);
+        }
+        ran(&mut t, &cpu, &bus, 0x8001_0008, 0);
+        let s = StackStats { returns_not_held: 1, frames_dropped: 1, ..Default::default() };
+        assert_eq!(t.stack, s);
+        assert_eq!(owned(&t)[&("lost", 0)], [0x8001_0008]);
     }
 
     #[test]
