@@ -45,10 +45,9 @@ bytes; bytes are read only for code that never ran.
 
 The trace keeps a stack of the calls running (piece 2 uses it for the
 moments a call ran in). When a word runs, the call on top is the call it
-ran inside: its owner. Each call target in calls.json gains `body`: the
-words run while a call to it was on top, as ranges per copy
-(`[copy, first, end]`). Code runs in long straight stretches, so ranges
-stay few.
+ran inside: its owner. owners.json lists each owner with its `body`: the
+words run while it was on top, as ranges per copy (`[copy, first, end]`).
+Code runs in long straight stretches, so ranges stay few.
 
 Three things need the stack to be right:
 - **Exceptions.** An interrupt or exception is a frame of its own: its
@@ -58,10 +57,15 @@ Three things need the stack to be right:
   calls are calls inside it, as now (GT2's 0x8007EA78 and 0x8007EA98,
   called from the kernel at 0x1C18).
 - **Returns the stack does not hold.** A `jr ra` to no address on the
-  stack (a thread switch, a game swapping stacks, longjmp to a frame
-  dropped from the stack) puts an unknown frame on top. Words run under
-  it have no owner. A call made under it is known again; a return that
-  the stack does hold, below it, drops it.
+  stack (longjmp, a thread switch, a game swapping stacks) puts a
+  landing on top, owned by where it landed: no call the stack knows.
+  A call made under it is known again; a return that the stack does
+  hold, below it, drops it; another landing replaces it. The trace
+  keeps what the run says of where it landed, R: the owners R ran
+  inside after a call two words before returned there through the
+  stack (in the landing's copy of the page, or the nearest before it),
+  `sp` then, and `sp` at each landing. Whose code resumed at R is the
+  inventory's guess from that, and facts override it.
 - **The stack's depth.** At most 1024 frames are kept (`MAX_RETURNS`). A
   call that pushes the oldest out leaves it unknown when the stack
   unwinds to it.
@@ -111,8 +115,13 @@ A guess never takes a word that ran. A guessed start on one (a `jal` read
 from bytes landing inside code that ran) is kept as a candidate entry of
 the function that owns it.
 
-Words that ran with no owner (an unknown frame) are found as now: where a
-stretch starts, a guess.
+Words run under a landing whose R ran inside one owner X after returns
+through the stack are guessed to be X's (`setjmp` returns twice, as
+compilers know it: the code after it is its caller's). A call landing
+there, or the words also running inside a call the stack held, override
+that. `sp` does not decide it: a game may resume on another stack.
+Words under any other landing are found as now: where a stretch starts,
+a guess.
 
 ### What goes
 
@@ -136,14 +145,27 @@ matched to the function whose chunk holds it.
 
 Each is committed and reviewed on its own, with its check.
 
-1. **Trace: owners.** Owners per word as `body` ranges in calls.json,
-   exception frames, unknown frames, `trace.unowned_words`, the
+1. **Trace: owners.** Owners per word as `body` ranges in owners.json,
+   exception frames, landings with what the run says of them, the
    torn-down frame mark. Check: tests for a call and its body, a call
    inside a call, a tail jump, a tail shared by two calls, an interrupt
    in a call, a return the stack does not hold, a stack deeper than it
    keeps. On GT2's boot run, measure before going on: words with no
    owner, words with more than one, frames lost, calls.json's size.
    Stop and decide if words with no owner are more than a few.
+   Done. GT2's boot run: 602,844 words run inside calls, 1,807 inside
+   exceptions, 229 before any call (the BIOS's reset code); 1,711 of
+   509,604 inside more than one owner (mostly the BIOS's A0/B0/C0
+   dispatchers, jumped to by the game's stubs); no frame dropped, no
+   exception left elsewhere. 30,471 returns the stack did not hold put
+   23,241 words under landings, nearly all PsyQ's interrupt dispatcher:
+   it calls `setjmp` (A0:13h) and gives the buffer to the BIOS as its
+   exit from exceptions (B0:19h); each interrupt, the BIOS's handler
+   loads `ra`, `sp` and the saved registers from it and `jr ra`s back
+   after the call. All 23,241 have one owner R ran inside after a
+   return through the stack; 20 resumed with the same `sp` (the
+   dispatcher sets the buffer's `sp` to its own stack). owners.json is
+   1.9 MB; calls.json is unchanged.
 2. **Inventory: bodies from what ran.** Chunks, shared code split out,
    candidate entries, the image rule, guesses only on what did not run;
    the parts above removed. Check: GT2's boot run gives 0 words in no

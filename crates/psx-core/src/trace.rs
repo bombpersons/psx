@@ -28,12 +28,12 @@ pub const MAX_CODE_BYTES: usize = 64 << 20;
 /// Calls deep enough to remember where each returns to.
 const MAX_RETURNS: usize = 1024;
 const JR_RA: u32 = 0x03E0_0008;
-/// A frame no `jr ra` returns to (an exception's, or one under a lost return).
+/// A frame no `jr ra` returns to (an exception's, or a landing's).
 const NO_RETURN: u32 = u32::MAX;
-/// The owner of words run with no call under way, and of those run under a
-/// return the stack did not hold ([`Tracer::owners`] indices).
+/// The owner of words run with no call under way ([`Tracer::owners`] index).
 pub const OWNER_TOP: u32 = 0;
-pub const OWNER_LOST: u32 = 1;
+/// Most values kept of a word's owners or `sp` (see [`Seen`]).
+const MAX_SEEN: usize = 16;
 
 /// Names a code address given the current main RAM (for residency checks).
 pub type Namer = Box<dyn Fn(u32, &[u8]) -> Option<String>>;
@@ -109,8 +109,10 @@ type Latest = (u32, Box<[u8]>, Box<[Ran]>, Box<[u32]>);
 pub enum Owner {
     /// No call under way since tracing started.
     Top,
-    /// A return the stack did not hold: what runs under it is unknown.
-    Lost,
+    /// A `jr ra` to an address the stack did not hold, by where it landed
+    /// `(copy, address)`: what runs under it ran inside no call the stack
+    /// knows. See [`Tracer::landing`] for what the run says of it.
+    Landed(u32, u32),
     /// A call to `(copy, address)`, as [`Tracer::calls`] keys it.
     Call(u32, u32),
     /// An exception, by its handler's first word `(copy, address)`.
@@ -130,6 +132,43 @@ struct Frame {
     epc: Option<u32>,
     /// An exception's: the word that ran before it was taken.
     last: Option<(u32, Option<u32>, u32)>,
+}
+
+/// Values seen of something, up to `MAX_SEEN`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Seen {
+    pub values: Vec<u32>,
+    /// More were seen than kept.
+    pub more: bool,
+}
+
+impl Seen {
+    fn add(&mut self, v: u32) {
+        if !self.values.contains(&v) {
+            if self.values.len() < MAX_SEEN {
+                self.values.push(v);
+            } else {
+                self.more = true;
+            }
+        }
+    }
+}
+
+/// What the run says of a landing (an [`Owner::Landed`]) at the address R:
+/// facts that let a reader guess whose code resumed there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Landing {
+    /// The copy of R's page those returns were in: the landing's, or the
+    /// nearest before it in the page's history that has any (a page is
+    /// copied again when anything in it changes, data beside code too).
+    pub returned_copy: Option<u32>,
+    /// The owners R ran inside after a call two words before returned to
+    /// it through the stack in that copy (empty: never returned to so).
+    pub returned_inside: Seen,
+    /// `sp` there after those returns.
+    pub returned_sp: Seen,
+    /// `sp` at each landing.
+    pub landed_sp: Seen,
 }
 
 /// How the trace's call stack kept its place.
@@ -220,6 +259,11 @@ pub struct Tracer {
     /// and whether `sp` was back to its value at the owner's first word:
     /// bit 0 seen back (the frame torn down), bit 1 seen not.
     jumps: Vec<BTreeMap<(u32, u32), u8>>,
+    /// Per word (`(copy, address)`) a call two words before returned to
+    /// through the stack: the owners it ran inside then, and `sp`.
+    returned_to: HashMap<(u32, u32), (Seen, Seen)>,
+    /// Per landing owner, `sp` at each landing.
+    landed_sp: HashMap<u32, Seen>,
     /// The owner each BIOS ROM word last ran for.
     bios_owner: Vec<u32>,
     pub stack: StackStats,
@@ -288,6 +332,16 @@ fn is_branch(i: u32) -> bool {
     has_delay_slot(i) && !matches!(i >> 26, 0x00 | 0x02 | 0x03)
 }
 
+/// A word's address as owners list it: KSEG0 for RAM (mirrors folded),
+/// KSEG1 for the BIOS ROM.
+fn word_addr(phys: u32) -> u32 {
+    match phys {
+        0..=0x7F_FFFF => 0x8000_0000 + (phys & 0x1F_FFFC),
+        0x1FC0_0000..=0x1FC7_FFFF => 0xA000_0000 + phys,
+        _ => phys,
+    }
+}
+
 fn is_rfe(i: u32) -> bool {
     i >> 25 == 0x21 && i & 0x3F == 0x10
 }
@@ -330,10 +384,12 @@ impl Tracer {
             pending_call: None,
             last: None,
             returns: Vec::new(),
-            owners: vec![Owner::Top, Owner::Lost],
-            owner_ids: HashMap::from([(Owner::Top, OWNER_TOP), (Owner::Lost, OWNER_LOST)]),
-            bodies: vec![BTreeSet::new(), BTreeSet::new()],
-            jumps: vec![BTreeMap::new(), BTreeMap::new()],
+            owners: vec![Owner::Top],
+            owner_ids: HashMap::from([(Owner::Top, OWNER_TOP)]),
+            bodies: vec![BTreeSet::new()],
+            jumps: vec![BTreeMap::new()],
+            returned_to: HashMap::new(),
+            landed_sp: HashMap::new(),
             bios_owner: vec![u32::MAX; BIOS_WORDS],
             stack: StackStats::default(),
             pending_exception: None,
@@ -477,15 +533,30 @@ impl Tracer {
         let jump =
             self.last.and_then(|(_, slot, _)| slot).filter(|&j| j >> 26 == 0x02 || (j >> 26 == 0 && j & 0x3F == 0x08));
         if jump == Some(JR_RA) {
+            let at = (copy, word_addr(phys));
             if let Some(k) = self.returns.iter().rposition(|r| r.ret == phys) {
                 self.returns.truncate(k);
                 returned = true;
+                let owner = self.top().0;
+                let (owners, sps) = self.returned_to.entry(at).or_default();
+                owners.add(owner);
+                sps.add(sp_before);
             } else {
-                // What runs now ran inside no call the stack knows.
+                // What runs now ran inside no call the stack knows: a
+                // landing, owned by where it landed. One landing ends the
+                // landing it ran under.
                 self.stack.returns_not_held += 1;
-                if self.returns.last().is_none_or(|f| f.owner != Some(OWNER_LOST)) {
-                    let lost = Frame { ret: NO_RETURN, owner: Some(OWNER_LOST), sp: sp_before, epc: None, last: None };
-                    self.push(lost);
+                let id = self.owner_id(Owner::Landed(at.0, at.1));
+                self.landed_sp.entry(id).or_default().add(sp_before);
+                let f = Frame { ret: NO_RETURN, owner: Some(id), sp: sp_before, epc: None, last: None };
+                let on_landing = self
+                    .returns
+                    .last()
+                    .and_then(|t| t.owner)
+                    .is_some_and(|o| matches!(self.owners[o as usize], Owner::Landed(..)));
+                match self.returns.last_mut() {
+                    Some(t) if on_landing => *t = f,
+                    _ => self.push(f),
                 }
             }
         }
@@ -534,7 +605,7 @@ impl Tracer {
         // A word a jump entered, with whether the owner's frame was torn
         // down then (`sp` back to its value at the owner's first word).
         if let (Some(_), false, Some(w)) = (jump, returned, word) {
-            if jump != Some(JR_RA) && owner > OWNER_LOST {
+            if jump != Some(JR_RA) && owner != OWNER_TOP {
                 let how = if sp_before == owner_sp { 1 } else { 2 };
                 *self.jumps[owner as usize].entry(w).or_default() |= how;
             }
@@ -761,6 +832,21 @@ impl Tracer {
         out
     }
 
+    /// What the run says of landing owner `id` ([`Owner::Landed`]).
+    pub fn landing(&self, id: u32) -> Option<Landing> {
+        let Owner::Landed(mut c, a) = *self.owners.get(id as usize)? else { return None };
+        let landed_sp = self.landed_sp.get(&id).cloned().unwrap_or_default();
+        loop {
+            if let Some((returned_inside, returned_sp)) = self.returned_to.get(&(c, a)).cloned() {
+                return Some(Landing { returned_copy: Some(c), returned_inside, returned_sp, landed_sp });
+            }
+            match self.code_pages.get(c as usize).map(|p| &p.data) {
+                Some(CopyData::Changed(before, _)) => c = *before,
+                _ => return Some(Landing { landed_sp, ..Default::default() }),
+            }
+        }
+    }
+
     /// Executed RAM words as `(copy, KSEG0 address, instruction word, how
     /// it ran)`, in copy then address order, then the words no copy holds
     /// (`NO_COPY`).
@@ -943,7 +1029,7 @@ mod tests {
         for (o, ranges, _) in t.bodies() {
             let key = match o {
                 Owner::Top => ("top", 0),
-                Owner::Lost => ("lost", 0),
+                Owner::Landed(_, a) => ("landed", a),
                 Owner::Call(_, a) => ("call", a),
                 Owner::Exception(_, a) => ("exception", a),
             };
@@ -1021,7 +1107,7 @@ mod tests {
             owned(&t),
             BTreeMap::from([
                 (("top", 0), w(0x8001_0000..0x8001_001C)),
-                (("lost", 0), w(0x8006_0000..0x8006_0010)),
+                (("landed", 0x8006_0000), w(0x8006_0000..0x8006_0010)),
                 (("call", 0x8002_0000), [w(0x8002_0000..0x8002_0018), tail.clone()].concat()),
                 (("call", 0x8003_0000), w(0x8003_0000..0x8003_0008)),
                 (("call", 0x8005_0000), [tail, w(0x8005_0000..0x8005_000C)].concat()),
@@ -1068,7 +1154,67 @@ mod tests {
         ran(&mut t, &cpu, &bus, 0x8001_0008, 0);
         let s = StackStats { returns_not_held: 1, frames_dropped: 1, ..Default::default() };
         assert_eq!(t.stack, s);
-        assert_eq!(owned(&t)[&("lost", 0)], [0x8001_0008]);
+        assert_eq!(owned(&t)[&("landed", 0x8001_0008)], [0x8001_0008]);
+    }
+
+    #[test]
+    fn a_landing_keeps_what_the_run_says_of_where_it_landed() {
+        let mut bus = Bus::new(vec![]);
+        bus.page_writes = vec![0; 0x20_0000 / CODE_PAGE];
+        let mut cpu = Cpu::new();
+        let mut t = Tracer::new(TraceConfig::default(), Box::new(std::io::sink()), None);
+        const JAL_2: u32 = 0x0C00_8000; // jal 80020000
+        const JAL_3: u32 = 0x0C00_C000; // jal 80030000
+        const JAL_4: u32 = 0x0C01_0000; // jal 80040000
+        const PUSH: u32 = 0x27BD_FFF8; // addiu sp,sp,-8
+        const POP: u32 = 0x27BD_0008; // addiu sp,sp,8
+        // 80020000 calls 80030000 (as `setjmp`), which returns to
+        // 8002000C. Later 80040000 (as `longjmp`) puts back `sp` and
+        // `jr ra`s there, a return the stack does not hold.
+        let code = [
+            (0x8001_0000, JAL_2, 0x100),
+            (0x8001_0004, 0, 0x100),
+            (0x8002_0000, PUSH, 0xF8),
+            (0x8002_0004, JAL_3, 0xF8),
+            (0x8002_0008, 0, 0xF8),
+            (0x8003_0000, JR_RA, 0xF8),
+            (0x8003_0004, 0, 0xF8),
+            (0x8002_000C, 0, 0xF8),
+            (0x8002_0010, POP, 0x100),
+            (0x8002_0014, JR_RA, 0x100),
+            (0x8002_0018, 0, 0x100),
+            (0x8001_0008, 0, 0x100),
+            (0x8001_000C, JAL_4, 0x100),
+            (0x8001_0010, 0, 0x100),
+            (0x8004_0000, JR_RA, 0xF8),
+            (0x8004_0004, 0, 0xF8),
+            (0x8002_000C, 0, 0xF8),
+            (0x8002_0010, POP, 0x100),
+        ];
+        for (pc, i, _) in code {
+            put(&mut bus, pc, i);
+        }
+        for (pc, i, sp) in code {
+            cpu.regs[29] = sp;
+            ran(&mut t, &cpu, &bus, pc, i);
+        }
+        // The landing owns what ran after it; the call's owner keeps what
+        // ran before.
+        let o = owned(&t);
+        assert_eq!(o[&("landed", 0x8002_000C)], [0x8002_000C, 0x8002_0010]);
+        assert_eq!(o[&("call", 0x8002_0000)], (0x8002_0000..0x8002_001C).step_by(4).collect::<Vec<_>>());
+        let landed = t.owners.iter().position(|o| matches!(o, Owner::Landed(..))).unwrap() as u32;
+        let x = t.owners.iter().position(|o| matches!(*o, Owner::Call(_, 0x8002_0000))).unwrap() as u32;
+        let seen = |v: Vec<u32>| Seen { values: v, more: false };
+        assert_eq!(
+            t.landing(landed),
+            Some(Landing {
+                returned_copy: Some(1),
+                returned_inside: seen(vec![x]),
+                returned_sp: seen(vec![0xF8]),
+                landed_sp: seen(vec![0xF8])
+            })
+        );
     }
 
     #[test]
