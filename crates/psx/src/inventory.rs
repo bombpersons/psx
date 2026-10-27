@@ -531,7 +531,8 @@ fn trace_calls(run: &Path) -> Vec<(u32, Option<Vec<u32>>)> {
         .into_iter()
         .flatten()
         .filter_map(|c| {
-            let held = c["instructions"].as_array().map(|a| a.iter().filter_map(|w| Some(w.as_u64()? as u32)).collect());
+            let held =
+                c["instructions"].as_array().map(|a| a.iter().filter_map(|w| Some(w.as_u64()? as u32)).collect());
             Some((c["address"].as_u64()? as u32, held))
         })
         .collect()
