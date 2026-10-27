@@ -776,7 +776,8 @@ fn trace_outputs(
             let mut callers: Vec<(&(u32, u32), &u64)> = c.callers.iter().collect();
             callers.sort_by_key(|((sc, site), n)| (std::cmp::Reverse(**n), *site, *sc));
             json!({
-                "address": addr, "copy": copy(*target_copy), "function": name(*addr), "count": c.count,
+                "address": addr, "copy": copy(*target_copy), "first_moment": c.first_moment, "moments": c.moments,
+                "function": name(*addr), "count": c.count,
                 "address_hex": format!("0x{addr:08X}"),
                 "first_frame": c.first_frame, "last_frame": c.last_frame,
                 "first_run_frame": c.first_frame as i64 - start_frame as i64, "last_run_frame": c.last_frame as i64 - start_frame as i64,
@@ -785,13 +786,19 @@ fn trace_outputs(
         })
         .collect();
     // Each executed RAM word with the code page copy it ran from (code.bin's
-    // index, all ones for none) and the instruction it executed as.
-    let mut executed = b"PSXEXEC2".to_vec();
-    for (copy, addr, word, n) in t.executed() {
+    // index, all ones for none), the instruction it executed as, the moment
+    // it first ran (the latest copy then: RAM's code was each page's latest
+    // copy), flags (1: it continues the code before it, run straight on
+    // from the word before, no delay slot, or returned to by a call two
+    // words before) and its executions.
+    let mut executed = b"PSXEXEC4".to_vec();
+    for (copy, addr, word, r) in t.executed() {
         executed.extend(copy.to_le_bytes());
         executed.extend(addr.to_le_bytes());
         executed.extend(word.to_le_bytes());
-        executed.extend(n.to_le_bytes());
+        executed.extend(r.first.to_le_bytes());
+        executed.extend((r.continues as u32).to_le_bytes());
+        executed.extend(r.count.to_le_bytes());
     }
     // Each code page's history: a copy whenever code ran in it changed,
     // numbered by its order here. A page's first copy is whole (the copy

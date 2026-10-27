@@ -46,6 +46,8 @@ struct Function {
     entry: u32,
     end: u32,
     blocks: Vec<u32>,
+    /// The sha256 of its bytes, for code no executable holds.
+    sha: Option<String>,
 }
 
 /// An executable or overlay: its code at its address and its functions.
@@ -90,7 +92,7 @@ fn functions(v: &Value) -> crate::Result<Vec<Function>> {
             ));
         }
         blocks.sort_unstable();
-        out.push(Function { entry, end, blocks });
+        out.push(Function { entry, end, blocks, sha: f["sha256"].as_str().map(String::from) });
     }
     out.sort_by_key(|f| f.entry);
     Ok(out)
@@ -100,9 +102,13 @@ fn to_words(bytes: &[u8]) -> Vec<u32> {
     bytes.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect()
 }
 
-/// The inventory's executables, read again from its disc, and its
-/// overlays and the BIOS's code in RAM, from the bytes inventory kept (or a snapshot still holding them).
+/// The inventory's executables, read again from its disc, and each function
+/// of its overlays and of the BIOS's code in RAM, from the bytes inventory
+/// kept.
 fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
+    if inv["inventory"].as_u64() < Some(2) {
+        return Err(Error::invalid("the inventory was made by an older psx; take the inventory again"));
+    }
     use psx_media::disc::Disc;
     use psx_media::iso9660::FileSystem;
     let mut out = Vec::new();
@@ -134,31 +140,20 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
     let overlays = inv["overlays"].as_array().into_iter().flatten().map(|o| ("overlay", o));
     let bios = inv["bios_code"].as_array().into_iter().flatten().map(|o| ("bios", o));
     for (kind, o) in overlays.chain(bios) {
-        let (Some(lo), Some(hi)) = (parse_hex(&o["start"]), parse_hex(&o["end"])) else { continue };
-        let sha = o["sha256"].as_str().unwrap_or_default();
-        let range = (lo & 0x1F_FFFF) as usize..(hi & 0x1F_FFFF) as usize;
-        let kept = std::fs::read(crate::inventory::overlay_bytes(root, sha)).ok();
-        let from_snapshot = || {
-            o["snapshots"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).find_map(|s| {
-                let ram = crate::ram::load(Path::new(s)).ok()?.bytes;
-                Some(ram.get(range.clone())?.to_vec())
-            })
-        };
-        let same = |b: &Vec<u8>| crate::publish::sha256(b) == sha;
-        let bytes = kept
-            .filter(same)
-            .or_else(|| from_snapshot().filter(same))
-            .ok_or_else(|| {
-                Error::invalid(format!(
-                    "overlay at {lo:08X}: its bytes are neither in .psx/overlays nor in a snapshot it lists; take the inventory again"
-                ))
-            })?;
-        let name = match o["file"]["path"].as_str() {
-            Some(p) => format!("{lo:08X} {p}"),
-            None => format!("{lo:08X}"),
-        };
-        let functions = if kind == "bios" { Vec::new() } else { functions(&o["functions"])? };
-        out.push(image(kind, name, lo, to_words(&bytes), functions));
+        let name = o["name"].as_str().unwrap_or_default();
+        for f in functions(&o["functions"])? {
+            let sha = f.sha.clone().unwrap_or_default();
+            let bytes = std::fs::read(crate::inventory::overlay_bytes(root, &sha))
+                .ok()
+                .filter(|b| crate::publish::sha256(b) == sha)
+                .ok_or_else(|| {
+                    Error::invalid(format!(
+                        "{name}: the bytes of its function at {:08X} are not in .psx/overlays; take the inventory again",
+                        f.entry
+                    ))
+                })?;
+            out.push(image(kind, name.into(), f.entry, to_words(&bytes), vec![f]));
+        }
     }
     Ok(out)
 }
@@ -178,14 +173,17 @@ pub(crate) fn executed(run: &Path) -> crate::Result<Vec<(u32, u32, u64)>> {
     if let Some(body) = bytes.strip_prefix(b"PSXEXEC1") {
         return Ok(body.as_chunks::<16>().0.iter().map(|r| (u(r, 0), u(r, 4), n(r, 8))).collect());
     }
-    // Each record names the code page copy it ran from too; words run
-    // from several copies are summed here.
-    let body = bytes
-        .strip_prefix(b"PSXEXEC2")
-        .ok_or_else(|| Error::malformed(format!("{}: not an executed.bin", path.display())))?;
+    // Each record names the code page copy it ran from too (and from v4,
+    // the moment it first ran and how); words run from several copies are
+    // summed here.
+    let (body, size) = match (bytes.strip_prefix(b"PSXEXEC2"), bytes.strip_prefix(b"PSXEXEC4")) {
+        (Some(b), _) => (b, 20),
+        (_, Some(b)) => (b, 28),
+        _ => return Err(Error::malformed(format!("{}: not an executed.bin", path.display()))),
+    };
     let mut words: BTreeMap<(u32, u32), u64> = BTreeMap::new();
-    for r in body.as_chunks::<20>().0 {
-        *words.entry((u(r, 4), u(r, 8))).or_default() += n(r, 12);
+    for r in body.chunks_exact(size) {
+        *words.entry((u(r, 4), u(r, 8))).or_default() += n(r, size - 8);
     }
     Ok(words.into_iter().map(|((a, w), c)| (a, w, c)).collect())
 }
@@ -399,6 +397,9 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
         if blocks_executed > 0 && !unexecuted.is_empty() {
             row["unexecuted"] = json!(unexecuted);
         }
+        if let Some(sha) = &f.sha {
+            row["sha256"] = json!(sha);
+        }
         rows.push(row);
     }
     let outside: Vec<u32> = (0..img.words.len())
@@ -458,8 +459,9 @@ impl CoverageArgs {
             }));
         }
 
+        // An overlay's functions are an image each: reported together.
         let mut totals = Totals::default();
-        let mut out_images = Vec::new();
+        let mut groups: Vec<(&Image, Vec<Value>, Vec<Value>, Totals)> = Vec::new();
         let mut bios_words = 0u64;
         for img in &images {
             if img.kind == "bios" {
@@ -468,11 +470,24 @@ impl CoverageArgs {
             }
             let (functions, outside, t) = report(img);
             totals.add(&t);
-            out_images.push(json!({
-                "kind": img.kind, "name": img.name, "start": hex(img.base),
-                "totals": t.json(), "executed_outside_functions": outside, "functions": functions,
-            }));
+            match groups.iter_mut().find(|g| g.0.kind == img.kind && g.0.name == img.name) {
+                Some(g) => {
+                    g.1.extend(functions);
+                    g.2.extend(outside);
+                    g.3.add(&t);
+                }
+                None => groups.push((img, functions, outside, t)),
+            }
         }
+        let out_images: Vec<Value> = groups
+            .into_iter()
+            .map(|(img, functions, outside, t)| {
+                json!({
+                    "kind": img.kind, "name": img.name, "start": hex(img.base),
+                    "totals": t.json(), "executed_outside_functions": outside, "functions": functions,
+                })
+            })
+            .collect();
         // Words no image holds, by span: with the image covering the address
         // when there is one (its code differs there: changed at runtime).
         let mut no_image = Vec::new();
@@ -626,7 +641,7 @@ mod tests {
     fn code_loaded_over_code_is_credited_to_the_image_that_holds_it() {
         // Two overlays at one address share their first word (a prologue).
         let base = 0x8010_0000;
-        let f = || vec![Function { entry: base, end: base + 16, blocks: vec![base, base + 8] }];
+        let f = || vec![Function { entry: base, end: base + 16, blocks: vec![base, base + 8], sha: None }];
         let mut images =
             vec![img("a", base, vec![0x27BD_FFE8, 1, 2, 3], f()), img("b", base, vec![0x27BD_FFE8, 5, 6, 7], f())];
         // The run ran b's first block only, and a word neither holds.
@@ -649,7 +664,7 @@ mod tests {
         // Code (a BIOS's shell, no functions) ran two words, `jr ra; nop`,
         // where the game's overlay later ran its own code around them.
         let base = 0x8010_0000;
-        let f = vec![Function { entry: base, end: base + 16, blocks: vec![base] }];
+        let f = vec![Function { entry: base, end: base + 16, blocks: vec![base], sha: None }];
         let mut images =
             vec![img("game", base, vec![1, 2, 3, 4], f), img("shell", base + 4, vec![0x03E0_0008, 0, 0x1234], vec![])];
         let words = [(base, 1, 9), (base + 4, 2, 9), (base + 4, 0x03E0_0008, 1), (base + 8, 0, 1), (base + 8, 3, 9)];
@@ -666,8 +681,12 @@ mod tests {
     #[test]
     fn executed_words_in_no_function_are_listed() {
         let base = 0x8010_0000;
-        let mut images =
-            vec![img("a", base, vec![1, 2, 3, 4], vec![Function { entry: base, end: base + 8, blocks: vec![base] }])];
+        let mut images = vec![img(
+            "a",
+            base,
+            vec![1, 2, 3, 4],
+            vec![Function { entry: base, end: base + 8, blocks: vec![base], sha: None }],
+        )];
         credit(&mut images, 0, &[(base, 1, 1), (base + 8, 3, 1), (base + 12, 4, 1)]);
         let (_, outside, t) = report(&images[0]);
         assert_eq!(outside, vec![json!({"start": "80100008", "end": "80100010", "words": 2})]);

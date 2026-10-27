@@ -63,20 +63,23 @@ totals appended to inventory_history.jsonl beside it, so its growth shows.
 Functions are found from each executable's entry, calls, code after a
 return or with a stack prologue, and pointers into code (the handlers a
 table dispatches to). Give ram run directories from the places the game
-goes (a level, a menu, a cutscene): a snapshot adds the tables filled at
-runtime, and code no executable holds is an overlay, matched to the disc
-file it came from. A traced run (run --trace) adds its call targets and
-the code it executed, where the code at hand is what ran there, and its
-code pages (code.bin, RAM as it was when code in it ran): code loaded and
-replaced between frames, which no snapshot holds and no disc file
-matches, is found as it ran. Code the BIOS copies into RAM at power-on (its shell) is
-listed apart under bios_code. An image at an overlay's place whose code
-words are the overlay's (only its data differs) is one of its variants,
-counted once; one whose code differs notes same_range_as, with how many
-words and code words differ. Each executable and overlay lists its gaps,
-what no function covers, with how many words decode as code: classify
-them, or record the game reaching them. Take an inventory again whenever
-the corpus reaches somewhere new.
+goes (a level, a menu, a cutscene), recorded with run --trace: a traced
+run's code pages (code.bin) are RAM's code at each moment of the run, and
+code no executable holds is found in each moment, seeded by what ran and
+was called in that moment (executed.bin and calls.json), and in each run's
+RAM at its end (the tables filled at runtime). Code loaded over other
+code is found as it ran, compressed on the disc or not. A function is its
+start and the sha256 of its bytes: the same function in many moments or
+runs is listed once, and other code loaded at its address is another.
+Overlays group them by the disc file their bytes are loaded from (that
+file is analysed over the extent RAM held of it, for the functions no run
+reached), else by the code they were first found in ("code at 80030000,
+frame 3661"). Code the BIOS copies into RAM at power-on (its shell) is
+listed apart under bios_code. A run recorded by an older psx is refused:
+record it again with run --trace. Each executable lists its gaps, what no
+function covers, with how many words decode as code: classify them, or
+record the game reaching them. Take an inventory again whenever the
+corpus reaches somewhere new.
 
 ## Coverage
 
@@ -92,12 +95,12 @@ reached, are the list to classify (dead, debug only, unreachable on this
 disc) or to record. Each executed word is credited to the executable or
 overlay whose code ran there, so code loaded over other code is told
 apart. Two lists say the inventory is short: executed_outside_functions
-(code the analysis missed) and in_no_image (an overlay replaced before the
-run's end, often compressed on the disc). Take the inventory again with
-the corpus runs as ram: their code pages hold what ran (a run recorded
-by a psx before code.bin, record again). What is left once the inventory
-has read every corpus run is code it cannot place: the ledger's
-inventory_gaps says so, and another pass will not change it.
+(code the analysis missed in an executable) and in_no_image (code no
+function the inventory found holds). Take the inventory again with the
+corpus runs as ram (a run recorded by an older psx, record again). What
+is left once the inventory has read every corpus run is code it cannot
+place: the ledger's inventory_gaps says so, and another pass will not
+change it.
 
 coverage keeps each run's recipe in coverage.json: the named state it
 started from (by the sha256 its report notes), its arguments with the

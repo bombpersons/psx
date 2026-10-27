@@ -33,9 +33,13 @@ Observations (native):
 - trace writes trace.txt (windowed by trace_from_frame / trace_range),
   coverage.txt, code.bin (each RAM page's history: a copy when code first
   runs in it, and another whenever code runs in it after it changed),
-  executed.bin (each executed word with the copy it ran from and the
-  instruction it ran as) and calls.json (each call target and call site
-  with the copy each ran from); max_events caps every event log.
+  executed.bin (each executed word with the copy it ran from, the
+  instruction it ran as, the moment it first ran: the number of the latest
+  copy then, and whether it ever continued the code before it: ran
+  straight on from the word before, outside a jump's delay slot (after a
+  branch's, taken or not), or was returned to by a call two words before) and calls.json (each call target and
+  call site with the copy each ran from, and the moments a call to it ran
+  in, from the call until it returned); max_events caps every event log.
 - trace_cd logs CD transfers for loads; trace_bios logs BIOS calls.
 - trace_spu logs voice key on/off (settings, storing PC, sample_sha256),
   each keyed voice's first END and sound RAM uploads to spu.jsonl. spu.samples

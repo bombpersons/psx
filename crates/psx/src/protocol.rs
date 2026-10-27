@@ -475,13 +475,15 @@ fn hex(v: &Value) -> Option<u32> {
 /// Every function of the inventory's executables and overlays, with what
 /// coverage says of it.
 fn code_units(inv: &Value, cov: Option<&Value>) -> Vec<Unit> {
-    let mut seen: BTreeMap<(String, u32), (bool, u64)> = BTreeMap::new();
+    // By image, entry and (for code no executable holds) the sha256 of its bytes.
+    let mut seen: BTreeMap<(String, u32, String), (bool, u64)> = BTreeMap::new();
+    let sha = |f: &Value| f["sha256"].as_str().unwrap_or_default().to_string();
     for img in cov.and_then(|c| c["images"].as_array()).into_iter().flatten() {
         let name = img["name"].as_str().unwrap_or_default();
         for f in img["functions"].as_array().into_iter().flatten() {
             if let Some(e) = hex(&f["entry"]) {
                 let ran = f["executed"].as_u64().unwrap_or(0) > 0;
-                seen.insert((name.to_string(), e), (ran, f["calls"].as_u64().unwrap_or(0)));
+                seen.insert((name.to_string(), e, sha(f)), (ran, f["calls"].as_u64().unwrap_or(0)));
             }
         }
     }
@@ -491,18 +493,15 @@ fn code_units(inv: &Value, cov: Option<&Value>) -> Vec<Unit> {
         .into_iter()
         .flatten()
         .map(|e| (e["path"].as_str().unwrap_or_default().to_string(), e));
-    let overlays = inv["overlays"].as_array().into_iter().flatten().map(|o| {
-        let lo = o["start"].as_str().unwrap_or_default();
-        let name = match o["file"]["path"].as_str() {
-            Some(p) => format!("{lo} {p}"),
-            None => lo.to_string(),
-        };
-        (name, o)
-    });
+    let overlays = inv["overlays"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| (o["name"].as_str().unwrap_or_default().to_string(), o));
     for (image, e) in exes.chain(overlays) {
         for f in e["functions"].as_array().into_iter().flatten() {
             let (Some(entry), Some(end)) = (hex(&f["entry"]), hex(&f["end"])) else { continue };
-            let (executed, calls) = seen.get(&(image.clone(), entry)).copied().unwrap_or((false, 0));
+            let (executed, calls) = seen.get(&(image.clone(), entry, sha(f))).copied().unwrap_or((false, 0));
             out.push(Unit {
                 image: image.clone(),
                 entry,
