@@ -95,7 +95,9 @@ apart. Two lists say the inventory is short: executed_outside_functions
 (code the analysis missed) and in_no_image (an overlay replaced before the
 run's end, often compressed on the disc). Take the inventory again with
 the corpus runs as ram: their code pages hold what ran (a run recorded
-by a psx before code.bin, record again).
+by a psx before code.bin, record again). What is left once the inventory
+has read every corpus run is code it cannot place: the ledger's
+inventory_gaps says so, and another pass will not change it.
 
 coverage keeps each run's recipe in coverage.json: the named state it
 started from (by the sha256 its report notes), its arguments with the
