@@ -38,17 +38,29 @@ fn player(case: &Case) -> CaseReport {
     app.add_plugins((EnginePlugin, PlayerPlugin));
     let at = |c: &str| case.first(c) as f32;
     let player = app.world_mut().spawn((Player, Transform::from_xyz(at("x"), at("y"), at("z")))).id();
-    case.runner().implementing(IMPLEMENTED).run(&mut app, |world, column| {
-        let position = world.get::<Transform>(player)?.translation;
-        let value = match column {
-            "x" => position.x,
-            "y" => position.y,
-            "z" => position.z,
-            "airborne" => f32::from(u8::from(matches!(world.get::<Hop>(player)?, Hop::Airborne { .. }))),
-            _ => return None,
-        };
-        Some(f64::from(value))
-    })
+    case.runner()
+        .implementing(IMPLEMENTED)
+        // A field the recording set (case record's poke), in the case's units.
+        .write(|app, column, value| {
+            let mut t = app.world_mut().get_mut::<Transform>(player).unwrap();
+            match column {
+                "x" => t.translation.x = value as f32,
+                "y" => t.translation.y = value as f32,
+                "z" => t.translation.z = value as f32,
+                _ => panic!("{}: the player's runner cannot write {column:?}", case.name),
+            }
+        })
+        .run(&mut app, |world, column| {
+            let position = world.get::<Transform>(player)?.translation;
+            let value = match column {
+                "x" => position.x,
+                "y" => position.y,
+                "z" => position.z,
+                "airborne" => f32::from(u8::from(matches!(world.get::<Hop>(player)?, Hop::Airborne { .. }))),
+                _ => return None,
+            };
+            Some(f64::from(value))
+        })
 }
 
 /// The runner for a case's subject, by the subject's name.

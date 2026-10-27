@@ -25,7 +25,7 @@ const RUNNER: &str = "cargo test --test cases cases_from_folder -- --exact";
 /// Seconds a heldout run may take unless [clean] heldout_timeout says otherwise.
 const RUNNER_TIMEOUT: u64 = 1800;
 /// The keys of a case clean mode passes on (case record's).
-const CASE_KEYS: [&str; 14] = [
+const CASE_KEYS: [&str; 15] = [
     "id",
     "spec",
     "role",
@@ -34,6 +34,7 @@ const CASE_KEYS: [&str; 14] = [
     "start",
     "input",
     "activation",
+    "writes",
     "observations",
     "compare",
     "fields_per_tick",
@@ -576,6 +577,9 @@ impl Clean {
         }
         if let Some(l) = case.get_mut("activation").and_then(Value::as_array_mut) {
             l.retain(|c| c.as_str().is_some_and(|c| kept.contains(c)));
+        }
+        if let Some(l) = case.get_mut("writes").and_then(Value::as_array_mut) {
+            l.retain(|w| w["column"].as_str().is_some_and(|c| kept.contains(c)));
         }
         let mut unclaimed: BTreeSet<String> =
             case["compare"].as_object().into_iter().flatten().map(|(k, _)| k.clone()).collect();
