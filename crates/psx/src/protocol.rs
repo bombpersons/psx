@@ -665,7 +665,8 @@ struct Ledger {
 
 /// The corpus runs (coverage's) another inventory could learn from: those
 /// it has not read, or read before they were recorded again; and those
-/// recorded before run --trace kept the code as it ran (code.bin).
+/// recorded before run --trace kept the code as it ran (code.bin), to
+/// record again first.
 fn unseen_runs(inv: &Value, cov: &Value) -> (Vec<String>, Vec<String>) {
     let read: BTreeSet<(String, Option<String>)> = inv["ram"]
         .as_array()
@@ -679,7 +680,8 @@ fn unseen_runs(inv: &Value, cov: &Value) -> (Vec<String>, Vec<String>) {
         let executed = std::fs::read(dir.join("executed.bin")).ok().map(|b| crate::publish::sha256(&b));
         if !read.contains(&(run.to_string(), executed)) {
             unread.push(run.to_string());
-        } else if !dir.join("code.bin").is_file() {
+        }
+        if !dir.join("code.bin").is_file() {
             without_code.push(run.to_string());
         }
     }
@@ -1093,7 +1095,13 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         );
         let (unread, without_code) = unseen_runs(i, c);
         let name = |r: &String| Path::new(r).file_name().map_or(r.clone(), |n| n.to_string_lossy().into_owned());
-        if missing + outside as usize > 0 && !unread.is_empty() {
+        if missing + outside as usize > 0 && !without_code.is_empty() {
+            inv_work.push(work(
+                "corpus",
+                format!("{lacks}, and {} corpus runs were recorded before run --trace kept the code as it ran (code.bin), which the inventory needs for code loaded and replaced between frames: record them again with run --trace (the same start, input and trace window: its recipe in coverage.json, or its report), run coverage over the new runs, and take the inventory with them", without_code.len()),
+                json!({"runs": without_code}),
+            ));
+        } else if missing + outside as usize > 0 && !unread.is_empty() {
             inv_work.push(work(
                 "inventory",
                 format!(
@@ -1101,12 +1109,6 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
                     unread.iter().map(name).collect::<Vec<_>>().join(", ")
                 ),
                 json!({"runs": unread}),
-            ));
-        } else if missing + outside as usize > 0 && !without_code.is_empty() {
-            inv_work.push(work(
-                "corpus",
-                format!("{lacks}, and {} corpus runs were recorded before run --trace kept the code as it ran (code.bin), which the inventory needs for code loaded and replaced between frames: record them again with run --trace (the same start, input and trace window: each run's recipe in coverage.json), run coverage over the new runs, and take the inventory again with them", without_code.len()),
-                json!({"runs": without_code}),
             ));
         } else if missing + outside as usize > 0 {
             inventory_gaps = json!({"stretches_in_no_image": missing, "words_in_no_function": outside,
@@ -1926,6 +1928,7 @@ mod tests {
         let cov = json!({"runs": [{"run": a}, {"run": b}, {"run": c}]});
         // c was recorded again since; b has no code pages.
         assert_eq!(unseen_runs(&inv, &cov), (vec![c.clone()], vec![b.clone()]));
+        assert_eq!(unseen_runs(&json!({}), &cov), (vec![a.clone(), b.clone(), c.clone()], vec![b.clone()]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
