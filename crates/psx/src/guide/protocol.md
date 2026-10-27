@@ -90,6 +90,19 @@ apart. Two lists say the inventory is short: executed_outside_functions
 run's end, often compressed on the disc). For the second, called gives the run frames the run called into it:
 run to one of them and take the inventory again with that snapshot as ram.
 
+coverage keeps each run's recipe in coverage.json: the named state it
+started from (by the sha256 its report notes), its arguments with the
+trace window, and its executed.bin's sha256. The run directories can go;
+the recipes are the corpus.
+
+  coverage --check
+
+runs every recipe again (into .psx/corpus-check/) and compares what each
+executed: same, differs (this psx ran other code: coverage over the runs
+again takes the corpus anew), state_changed (states rebuild first) or
+no_recipe (a run from a state no chain names, which states save names, or
+from an older psx: record it again).
+
 ## The ledger and next
 
 Every session, of every role, starts with protocol next:

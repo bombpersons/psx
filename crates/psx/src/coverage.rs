@@ -22,8 +22,13 @@ use std::path::{Path, PathBuf};
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CoverageArgs {
     /// Traced runs (run --trace).
-    #[arg(required = true)]
+    #[arg(required_unless_present = "check")]
+    #[serde(default)]
     pub runs: Vec<PathBuf>,
+    /// Run the recipes coverage kept again; compare what each executed.
+    #[arg(long, conflicts_with = "runs")]
+    #[serde(default)]
+    pub check: bool,
     /// Inventory (default inventory's out).
     #[arg(long)]
     #[serde(default)]
@@ -410,8 +415,14 @@ impl CoverageArgs {
                 .filter(|(_, &n)| n > 0)
                 .map(|(img, &n)| (img.name.clone(), json!(n)))
                 .collect();
+            // How to make it again, kept with the coverage (run directories are not).
+            let (recipe, no_recipe) = match crate::states::recipe_of(ctx, &dir) {
+                Ok(r) => (r, Value::Null),
+                Err(why) => (Value::Null, json!(why)),
+            };
             runs.push(json!({
                 "run": dir, "words_executed": game, "words_in_no_image": miss.len(), "words_by_image": per,
+                "recipe": recipe, "no_recipe": no_recipe,
             }));
         }
 
@@ -464,7 +475,7 @@ impl CoverageArgs {
         let doc = json!({
             "coverage": 1, "made": crate::publish::utc_now(), "psx": crate::context::version(),
             "inventory": {"path": inv_path, "made": inv["made"]},
-            "how": "each run's executed words, credited to the executable or overlay whose code holds that instruction at that address; a block is executed when any of its words is; runs are indices into runs",
+"how": "each run's executed words, credited to the executable or overlay whose code holds that instruction at that address; a block is executed when any of its words is; runs are indices into runs; each run's recipe (the named state it started from, its arguments, its executed.bin's sha256) is what coverage check runs again",
             "runs": runs, "totals": summary["totals"], "in_no_image": no_image, "images": out_images,
         });
         if let Some(d) = out.parent() {
@@ -475,14 +486,88 @@ impl CoverageArgs {
         Ok(json!({
             "out": out, "totals": summary["totals"], "words_in_no_image": summary["words_in_no_image"],
             "images": doc["images"].as_array().into_iter().flatten().map(|i| json!({"name": i["name"], "totals": i["totals"]})).collect::<Vec<_>>(),
-            "runs": runs.iter().map(|r| json!({"run": r["run"], "words_executed": r["words_executed"], "words_in_no_image": r["words_in_no_image"]})).collect::<Vec<_>>(),
+            "runs": runs.iter().map(|r| json!({"run": r["run"], "words_executed": r["words_executed"], "words_in_no_image": r["words_in_no_image"], "no_recipe": r["no_recipe"]})).collect::<Vec<_>>(),
             "next": "artifact_read the coverage for each function's unexecuted blocks: classify them, or record the corpus reaching them; executed_outside_functions and in_no_image mean the inventory missed code (take it again with these runs as ram)",
         }))
     }
 }
 
+impl CoverageArgs {
+    /// Each recipe run again into .psx/corpus-check/, its executed.bin
+    /// compared with the one the coverage notes.
+    fn check(&self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
+        let at = |p: &Path| if p.is_absolute() { p.to_path_buf() } else { ctx.root.join(p) };
+        let inv_path = self.inventory.as_ref().map(|p| at(p)).unwrap_or_else(|| crate::inventory::default_out(ctx));
+        let path = self.out.as_ref().map(|p| at(p)).unwrap_or_else(|| inv_path.with_file_name("coverage.json"));
+        let text = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, e))?;
+        let doc: Value = serde_json::from_str(&text).map_err(|e| Error::malformed(format!("{}: {e}", path.display())))?;
+        let media = std::fs::read_to_string(&inv_path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .map(|i| i["media"].clone())
+            .unwrap_or(Value::Null);
+        let mut all_same = true;
+        let mut results = Vec::new();
+        let mut again = Vec::new();
+        for (k, r) in doc["runs"].as_array().into_iter().flatten().enumerate() {
+            let recipe = &r["recipe"];
+            if recipe.is_null() {
+                all_same = false;
+                results.push(json!({"run": r["run"], "status": "no_recipe", "why": r["no_recipe"]}));
+                continue;
+            }
+            let mut run = recipe["run"].clone();
+            if let Some(name) = recipe["from"].as_str() {
+                let state = crate::states::state_file(ctx, name);
+                let sha = std::fs::read(&state).ok().map(|b| crate::publish::sha256(&b));
+                if sha.as_deref() != recipe["from_state_sha256"].as_str() {
+                    all_same = false;
+                    results.push(json!({"run": r["run"], "from": name, "status": "state_changed",
+                        "why": "the named state is missing or not the one the run started from: states rebuild (replace), then take the corpus again"}));
+                    continue;
+                }
+                run["from_state"] = json!(state);
+            }
+            let out = ctx.root.join(".psx/corpus-check").join(format!("{k:03}"));
+            let _ = std::fs::remove_dir_all(&out);
+            run["media"] = media.clone();
+            run["out"] = json!(out);
+            run["summary"] = json!(true);
+            run["timeout"] = json!(7200);
+            let args: crate::run::RunCmdArgs =
+                serde_json::from_value(run).map_err(|e| Error::malformed(format!("a corpus recipe's run: {e}")))?;
+            let (complete, report) = args.run(ctx)?;
+            let executed = std::fs::read(out.join("executed.bin")).ok().map(|b| crate::publish::sha256(&b));
+            let status = if !complete {
+                "incomplete"
+            } else if executed.as_deref() == recipe["executed_sha256"].as_str() {
+                "same"
+            } else {
+                "differs"
+            };
+            all_same &= status == "same";
+            again.push(out.clone());
+            let mut row = json!({"run": r["run"], "from": recipe["from"], "status": status, "again": out});
+            if !complete {
+                row["termination"] = report["termination"].clone();
+            }
+            results.push(row);
+        }
+        let mut out = json!({"status": if all_same { "same" } else { "differs" }, "coverage": path, "runs": results});
+        if !all_same {
+            out["next"] = json!(
+                "a run that differs executed other code on this psx: coverage over the runs again (their again directories) takes the corpus anew; no_recipe and state_changed say what to make first"
+            );
+        }
+        Ok((all_same, out))
+    }
+}
+
 impl Op for CoverageArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
+        if self.check {
+            return Outcome::report(self.check(ctx));
+        }
         Outcome::result(self.run(ctx))
     }
 }
