@@ -1011,19 +1011,26 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
     // The investigator's work, in order.
     let mut inv_work = Vec::new();
     let mut inventory_gaps = Value::Null;
-    let few = |v: &[&String]| -> Vec<String> { v.iter().take(12).map(|s| s.to_string()).collect() };
+    // The first twelve names, and how many more there are.
+    let few = |key: &str, v: &[&String]| -> Value {
+        let mut out = json!({key: v.iter().take(12).collect::<Vec<_>>()});
+        if v.len() > 12 {
+            out["more"] = json!(v.len() - 12);
+        }
+        out
+    };
     if !stale_chains.is_empty() {
         inv_work.push(work(
             "rebuild_states",
             format!("the emulator changed since {} start states were made: rebuild them from power-on (states rebuild), and replace those that differ once you understand why", stale_chains.len()),
-            json!({"states": few(&stale_chains)}),
+            few("states", &stale_chains),
         ));
     }
     if !stale_cases.is_empty() {
         inv_work.push(work(
             "check_cases",
             format!("{} cases were not checked against the original on this emulator: case check records them again (write=true replaces those that differ, after you understand why); until then they are not evidence", stale_cases.len()),
-            json!({"cases": few(&stale_cases), "count": stale_cases.len()}),
+            few("cases", &stale_cases),
         ));
     }
     if audit_due {
@@ -1146,7 +1153,7 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         inv_work.push(work(
             "triage_cases",
             format!("{} cases differ from the original on this emulator: an instrument change or a case that was wrong; record them again once understood", differing.len()),
-            json!({"cases": few(&differing)}),
+            few("cases", &differing),
         ));
     }
     let without_cases: Vec<Value> = all
