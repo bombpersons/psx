@@ -663,6 +663,29 @@ struct Ledger {
     implementer_view: String,
 }
 
+/// The corpus runs (coverage's) another inventory could learn from: those
+/// it has not read, or read before they were recorded again; and those
+/// recorded before run --trace kept the code as it ran (code.bin).
+fn unseen_runs(inv: &Value, cov: &Value) -> (Vec<String>, Vec<String>) {
+    let read: BTreeSet<(String, Option<String>)> = inv["ram"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| Some((r["run"].as_str()?.to_string(), r["executed_sha256"].as_str().map(String::from))))
+        .collect();
+    let (mut unread, mut without_code) = (Vec::new(), Vec::new());
+    for run in cov["runs"].as_array().into_iter().flatten().filter_map(|r| r["run"].as_str()) {
+        let dir = Path::new(run);
+        let executed = std::fs::read(dir.join("executed.bin")).ok().map(|b| crate::publish::sha256(&b));
+        if !read.contains(&(run.to_string(), executed)) {
+            unread.push(run.to_string());
+        } else if !dir.join("code.bin").is_file() {
+            without_code.push(run.to_string());
+        }
+    }
+    (unread, without_code)
+}
+
 fn work(what: &str, text: String, details: Value) -> Value {
     let mut v = json!({"do": what, "what": text});
     if let (Some(m), Some(d)) = (v.as_object_mut(), details.as_object()) {
@@ -985,6 +1008,7 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
 
     // The investigator's work, in order.
     let mut inv_work = Vec::new();
+    let mut inventory_gaps = Value::Null;
     let few = |v: &[&String]| -> Vec<String> { v.iter().take(12).map(|s| s.to_string()).collect() };
     if !stale_chains.is_empty() {
         inv_work.push(work(
@@ -1057,12 +1081,29 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         }
         let missing = c["in_no_image"].as_array().map_or(0, Vec::len);
         let outside = c["totals"]["executed_outside_functions"].as_u64().unwrap_or(0);
-        if missing + outside as usize > 0 {
+        let lacks = format!(
+            "the corpus executed code the inventory lacks ({missing} stretches in no image, {outside} words in no function)"
+        );
+        let (unread, without_code) = unseen_runs(i, c);
+        let name = |r: &String| Path::new(r).file_name().map_or(r.clone(), |n| n.to_string_lossy().into_owned());
+        if missing + outside as usize > 0 && !unread.is_empty() {
             inv_work.push(work(
                 "inventory",
-                format!("the corpus executed code the inventory lacks ({missing} stretches in no image, {outside} words in no function): take the inventory again, with snapshots from the run frames coverage gives"),
-                json!({}),
+                format!(
+                    "{lacks}: take the inventory again with the corpus runs it has not read as ram ({})",
+                    unread.iter().map(name).collect::<Vec<_>>().join(", ")
+                ),
+                json!({"runs": unread}),
             ));
+        } else if missing + outside as usize > 0 && !without_code.is_empty() {
+            inv_work.push(work(
+                "corpus",
+                format!("{lacks}, and {} corpus runs were recorded before run --trace kept the code as it ran (code.bin), which the inventory needs for code loaded and replaced between frames: record them again with run --trace (the same start, input and trace window: each run's recipe in coverage.json), run coverage over the new runs, and take the inventory again with them", without_code.len()),
+                json!({"runs": without_code}),
+            ));
+        } else if missing + outside as usize > 0 {
+            inventory_gaps = json!({"stretches_in_no_image": missing, "words_in_no_function": outside,
+                "why": "the inventory read every corpus run and the code each ran: what is left is code it cannot place, and taking it again will not change that; coverage's in_no_image and executed_outside_functions list it"});
         }
     }
     let open_questions: Vec<&(String, String, BTreeSet<String>, Answer)> =
@@ -1322,6 +1363,7 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
             "unsettled": choice_list.iter().filter(|c| !c.2.answered()).count()},
         "audits": {"due": audit_due, "unaudited_bundles": unaudited, "loop_ended": loop_ended,
             "last": last_audit.as_ref().map(|a| json!({"time": a["time"], "mechanical": a["mechanical"], "judgment": a["judgment"], "bundles": a["bundles"].as_array().map_or(0, Vec::len)}))},
+        "inventory_gaps": inventory_gaps,
         "emulator_changes": {"states": stale_chains, "cases": stale_cases.len(), "differing": differing},
         "inputs": {"inventory": inv.as_ref().map(|_| &inv_path), "coverage": cov.as_ref().map(|_| &cov_path), "results": set.results},
     });
@@ -1855,6 +1897,28 @@ mod tests {
         let v = heldout_verdicts(&dir);
         assert_eq!(v.get("k1").map(String::as_str), Some("pass"));
         assert_eq!(v.get("k2").map(String::as_str), Some("pass"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inventory_is_asked_for_again_only_for_runs_it_has_not_read() {
+        let dir = std::env::temp_dir().join(format!("psx-unseen-{}", std::process::id()));
+        let run = |name: &str, executed: &[u8], code: bool| {
+            let r = dir.join(name);
+            std::fs::create_dir_all(&r).unwrap();
+            std::fs::write(r.join("executed.bin"), executed).unwrap();
+            if code {
+                std::fs::write(r.join("code.bin"), b"PSXCODE1").unwrap();
+            }
+            r.display().to_string()
+        };
+        let (a, b, c) = (run("a", b"1", true), run("b", b"2", false), run("c", b"3", true));
+        let sha = |x: &[u8]| crate::publish::sha256(x);
+        let inv = json!({"ram": [{"run": a, "executed_sha256": sha(b"1")}, {"run": b, "executed_sha256": sha(b"2")},
+            {"run": c, "executed_sha256": sha(b"old")}]});
+        let cov = json!({"runs": [{"run": a}, {"run": b}, {"run": c}]});
+        // c was recorded again since; b has no code pages.
+        assert_eq!(unseen_runs(&inv, &cov), (vec![c.clone()], vec![b.clone()]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
