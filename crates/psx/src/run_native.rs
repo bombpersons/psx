@@ -800,7 +800,16 @@ fn trace_outputs(
     let window = |w: Option<(u64, u64)>| {
         w.map(|(f, c)| json!({"frame": f, "run_frame": f as i64 - start_frame as i64, "cycle": c}))
     };
+    // The window as run's arguments give it, for a recipe to run again.
+    let options = json!({
+        "trace_from_frame": t.cfg.from_frame.saturating_sub(start_frame),
+        "trace_start": t.cfg.start_pc.map(|p| format!("{p:08X}")),
+        "trace_frames": t.cfg.frames,
+        "trace_range": t.cfg.ranges.iter().map(|(lo, hi)| format!("{lo:08X}-{hi:08X}")).collect::<Vec<_>>(),
+        "max_events": t.cfg.max_lines,
+    });
     Ok(json!({
+        "options": options,
         "started": window(t.started), "stopped": window(t.stopped),
         "instructions": t.instructions,
         "lines": t.lines, "lines_dropped": t.lines_dropped, "max_lines": t.cfg.max_lines,

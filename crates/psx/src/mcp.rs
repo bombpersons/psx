@@ -792,8 +792,8 @@ mod tests {
         // 68.5K from 2026-10-26 for inventory; 69K from 2026-10-26 for coverage; 69.6K from
         // 2026-10-26 for protocol_next; 70.5K from 2026-10-26 for protocol_report and audit;
         // 70.7K from 2026-10-26 for case_record's poke; 71K from 2026-10-26 for xrefs' kind
-        // and bits.
-        assert!(size <= 71_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // and bits; 71.2K from 2026-10-27 for coverage's check.
+        assert!(size <= 71_200, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,

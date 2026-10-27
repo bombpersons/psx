@@ -260,6 +260,14 @@ fn step_of(ctx: &Ctx, file: &Path) -> crate::Result<(Value, Value, Parent)> {
         Some(n) => json!(n.parse::<u64>().map_err(|_| Error::invalid(format!("{name}: not a checkpoint name")))?),
         None => json!("end"),
     };
+    let run = run_from_report(&report, &state);
+    finish_step(ctx, &report, run, state, sha)
+}
+
+/// The run arguments a run's report gives: its frames, input, pokes, until
+/// conditions, and from power-on its pad and cards; `state` a checkpoint's
+/// frame (or "end").
+fn run_from_report(report: &Value, state: &Value) -> Value {
     let mut run = json!({"frames": report["frames"]["requested"], "input": events(&report["input"]["events"])});
     if let Some(n) = state.as_u64() {
         run["save_state_at"] = json!([n]);
@@ -289,7 +297,53 @@ fn step_of(ctx: &Ctx, file: &Path) -> crate::Result<(Value, Value, Parent)> {
             }
         }
     }
-    finish_step(ctx, &report, run, state, sha)
+    run
+}
+
+/// How to make a traced run again: the named state it started from (by the
+/// sha256 its report notes; null from power-on), its arguments with the trace
+/// window, and the sha256 of its executed.bin. Err names why there is none.
+pub(crate) fn recipe_of(ctx: &Ctx, dir: &Path) -> Result<Value, String> {
+    let report = read_json(&dir.join("report.json")).map_err(|e| e.to_string())?;
+    if !report["reproduce"].is_null() {
+        return Err("a handoff: the person's play, not a recorded run".into());
+    }
+    let options = report["trace"]["options"].as_object().ok_or(
+        "its report does not note the trace window (an older psx): run it again with run --trace for a recipe",
+    )?;
+    let mut run = run_from_report(&report, &json!("end"));
+    if let Some(m) = run["map"].as_str().map(|m| noted(ctx, Path::new(m))) {
+        run["map"] = json!(m);
+    }
+    run["trace"] = json!(true);
+    for (k, v) in options {
+        if !(v.is_null() || v.as_array().is_some_and(Vec::is_empty) || v == &json!(0)) {
+            run[k] = v.clone();
+        }
+    }
+    let id = &report["identity"];
+    let from = match id["from_state_sha256"].as_str() {
+        None => Value::Null,
+        Some(sha) => {
+            let (_, chain_dir) = Dirs { states: None, chains: None }.get(ctx);
+            let named = chains(&chain_dir).into_iter().find(|(_, c)| c["state_sha256"] == sha);
+            let Some((name, _)) = named else {
+                return Err(format!(
+                    "it started from a state no chain names ({}): name it with states save for a recipe",
+                    id["from_state"].as_str().unwrap_or("?")
+                ));
+            };
+            json!(name)
+        }
+    };
+    let executed = read(&dir.join("executed.bin")).map_err(|e| e.to_string())?;
+    Ok(json!({"from": from, "from_state_sha256": id["from_state_sha256"], "run": run,
+        "executed_sha256": sha256(&executed)}))
+}
+
+/// A named state's file, as `psx states` keeps it.
+pub(crate) fn state_file(ctx: &Ctx, name: &str) -> PathBuf {
+    Dirs { states: None, chains: None }.get(ctx).0.join(format!("{name}.bin"))
 }
 
 fn finish_step(
@@ -792,6 +846,39 @@ mod tests {
         std::fs::write(&named, b"edited again").unwrap();
         let e = save(&ctx, &root.join("r4/state.bin"), "x", "x", &dirs, false).unwrap_err();
         assert!(e.to_string().contains("no chain names"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_traced_run_gives_a_recipe_from_its_named_start() {
+        let root = std::env::temp_dir().join(format!("psx-states-recipe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ctx = Ctx { root: root.clone(), cancel: None };
+        let run = root.join("r");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::create_dir_all(root.join("notes/states")).unwrap();
+        std::fs::write(root.join("notes/states/title.json"), json!({"state_sha256": "abc"}).to_string()).unwrap();
+        std::fs::write(run.join("executed.bin"), b"PSXEXEC1").unwrap();
+        let report = |options: Value, sha: &str| {
+            json!({"frames": {"requested": 120}, "input": {"events": [{"frame": 3, "buttons": ["START"]}]},
+                "identity": {"from_state": ".psx/states/title.bin", "from_state_sha256": sha},
+                "trace": {"options": options}})
+        };
+        let options = json!({"trace_from_frame": 20, "trace_start": null, "trace_frames": 60, "trace_range": [], "max_events": 50});
+        std::fs::write(run.join("report.json"), report(options.clone(), "abc").to_string()).unwrap();
+        let r = recipe_of(&ctx, &run).unwrap();
+        assert_eq!(r["from"], "title");
+        assert_eq!(r["executed_sha256"], sha256(b"PSXEXEC1"));
+        assert_eq!(
+            r["run"],
+            json!({"frames": 120, "input": [{"frame": 3, "buttons": ["START"]}], "trace": true,
+                "trace_from_frame": 20, "trace_frames": 60, "max_events": 50})
+        );
+        // From a state no chain names, or from an older psx's report: none, and why.
+        std::fs::write(run.join("report.json"), report(options, "def").to_string()).unwrap();
+        assert!(recipe_of(&ctx, &run).unwrap_err().contains("states save"));
+        std::fs::write(run.join("report.json"), report(Value::Null, "abc").to_string()).unwrap();
+        assert!(recipe_of(&ctx, &run).unwrap_err().contains("older psx"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
