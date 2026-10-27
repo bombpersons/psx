@@ -96,7 +96,8 @@ An implementer's session is never started from, forked from or continued
 from an investigator's: hosts share context between related sessions. Each
 agent works in its own folder, so memory and transcripts kept by path are
 not shared, and the implementer's access rules deny the other agents'
-session folders. The person starts each role's session in its own folder.
+session folders. The person starts each role's session in its own folder,
+by hand or with port run (guide topic agents).
 
 ## Clean mode
 
