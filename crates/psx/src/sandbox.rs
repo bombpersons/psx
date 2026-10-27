@@ -283,6 +283,9 @@ pub(crate) fn wrap(p: &Policy, cmd: &[String], servers: &Servers) -> crate::Resu
             .map(|path| std::env::split_paths(&path).map(|d| d.join("psx")).collect())
             .unwrap_or_default();
         psx.extend(std::env::current_exe().ok());
+        // A link (~/.local/bin/psx to a build) cannot be mounted on: mask
+        // what it names, and a link to what the sandbox lacks names nothing.
+        let mut psx: Vec<PathBuf> = psx.iter().filter_map(|x| x.canonicalize().ok()).collect();
         psx.sort();
         psx.dedup();
         let masked: Vec<PathBuf> = psx.into_iter().filter(|x| x.is_file() && m.has(x)).collect();
