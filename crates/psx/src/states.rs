@@ -218,9 +218,12 @@ struct Chain {
     bios_sha256: Value,
 }
 
+/// A state a run started from, and the sha256 its report notes for it.
+type Parent = Option<(PathBuf, Option<String>)>;
+
 /// The step that made `file` (a state a run or handoff wrote), and the state
 /// it started from.
-fn step_of(ctx: &Ctx, file: &Path) -> crate::Result<(Value, Value, Option<PathBuf>)> {
+fn step_of(ctx: &Ctx, file: &Path) -> crate::Result<(Value, Value, Parent)> {
     let dir = file.parent().unwrap_or(Path::new("."));
     let sha = sha256(&read(file)?);
     // A handoff mark: marks/N/ inside the handoff's directory.
@@ -295,7 +298,7 @@ fn finish_step(
     mut run: Value,
     state: Value,
     sha: String,
-) -> crate::Result<(Value, Value, Option<PathBuf>)> {
+) -> crate::Result<(Value, Value, Parent)> {
     let id = &report["identity"];
     // The report may be from before the project moved.
     let parent = id["from_state"].as_str().map(|p| crate::moved::find(&ctx.root, Path::new(p)));
@@ -312,18 +315,11 @@ fn finish_step(
             }
         }
     }
-    if let (Some(p), Some(noted_sha)) = (&parent, id["from_state_sha256"].as_str()) {
-        if sha256(&read(p)?) != noted_sha {
-            return Err(Error::new(
-                "chain_broken",
-                format!("{} changed since the run that started from it", p.display()),
-            ));
-        }
-    }
     let step = json!({"run": run, "state": state, "state_sha256": sha, "made_with": made_with(report),
         "emulator": report["build"]["emulator"]});
     let media = json!({"media": id["media"], "media_identity": id["media_identity"], "bios_sha256": id["bios_sha256"]});
-    Ok((step, media, parent))
+    let noted_sha = id["from_state_sha256"].as_str().map(str::to_string);
+    Ok((step, media, parent.map(|p| (p, noted_sha))))
 }
 
 /// The chains in `chains`, by name.
@@ -339,6 +335,27 @@ fn chains(chains: &Path) -> Vec<(String, Value)> {
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+/// The chains a state's sha256 is looked up in: the named states', and
+/// those of the states they replaced (notes/states/replaced/), so a run from
+/// a state since replaced keeps its chain.
+fn known_chains(chain_dir: &Path) -> Vec<(String, Value)> {
+    let mut all = chains(chain_dir);
+    all.extend(chains(&chain_dir.join("replaced")));
+    all
+}
+
+/// Keeps the chain of a named state about to be replaced, by its sha256.
+fn keep_replaced(chain_dir: &Path, name: &str, old: &Value) -> crate::Result<()> {
+    let Some(sha) = old["state_sha256"].as_str() else { return Ok(()) };
+    let kept = chain_dir.join("replaced").join(format!("{name}-{}.json", &sha[..sha.len().min(12)]));
+    if kept.is_file() {
+        return Ok(());
+    }
+    let mut old = old.clone();
+    old["replaced"] = json!(crate::publish::utc_now());
+    write(&kept, pretty(&old).as_bytes())
 }
 
 /// The chain from power-on to `file`: from the runs' reports, back to power-on
@@ -369,7 +386,27 @@ fn chain_of(ctx: &Ctx, file: &Path, known: &[(String, Value)]) -> crate::Result<
         if media.is_null() {
             media = m;
         }
-        at = parent;
+        let Some((p, noted_sha)) = parent else { break };
+        match noted_sha {
+            // The state it started from has changed since (replaced): its chain
+            // by the sha256 the run noted, or none.
+            Some(n) if sha256(&read(&p)?) != n => {
+                let Some((_, c)) = known.iter().find(|(_, c)| c["state_sha256"] == n.as_str()) else {
+                    return Err(Error::new(
+                        "chain_broken",
+                        format!(
+                            "{} changed since the run that started from it, and no chain names the state it was",
+                            p.display()
+                        ),
+                    ));
+                };
+                let mut before: Vec<Value> = c["steps"].as_array().cloned().unwrap_or_default();
+                before.append(&mut steps);
+                steps = before;
+                break;
+            }
+            _ => at = Some(p),
+        }
     }
     Ok(Chain {
         steps,
@@ -389,7 +426,8 @@ fn save(ctx: &Ctx, file: &Path, name: &str, description: &str, dirs: &Dirs, repl
     if !replace && chain_path.exists() && read_json(&chain_path)?["state_sha256"] != sha {
         return Err(Error::invalid(format!("a state named {name} exists; pass replace to replace it")));
     }
-    let known: Vec<_> = chains(&chain_dir).into_iter().filter(|(n, _)| n != name).collect();
+    // The state being replaced may be the one this one started from.
+    let known = known_chains(&chain_dir);
     let c = chain_of(ctx, file, &known)?;
     let chain = json!({
         "name": name, "description": description,
@@ -398,6 +436,9 @@ fn save(ctx: &Ctx, file: &Path, name: &str, description: &str, dirs: &Dirs, repl
         "steps": c.steps,
         "how": "psx states rebuild replays the steps from power-on, each continuing from the state the one before ended in",
     });
+    if let Some(old) = known.iter().find(|(n, c)| n == name && c["state_sha256"] != sha.as_str()) {
+        keep_replaced(&chain_dir, name, &old.1)?;
+    }
     write(&state_path, &bytes)?;
     write(&chain_path, pretty(&chain).as_bytes())?;
     Ok(json!({"name": name, "state": state_path, "chain": chain_path, "state_sha256": sha,
@@ -659,6 +700,9 @@ fn rebuild(ctx: &Ctx, a: StatesRebuildArgs) -> crate::Result<(bool, Value)> {
                 write(&kept, o)?;
                 r["old_kept"] = json!(kept);
             }
+            if chain["state_sha256"] != new_sha.as_str() {
+                keep_replaced(&chain_dir, &name, &chain)?;
+            }
             write(&state_path, &new)?;
             for (step, (sha, by, emulator)) in chain["steps"].as_array_mut().into_iter().flatten().zip(&new_shas) {
                 step["state_sha256"] = json!(sha);
@@ -706,6 +750,49 @@ mod tests {
         );
         let parsed: crate::replay::Events = serde_json::from_value(e).unwrap();
         assert_eq!(parsed.0.len(), 2);
+    }
+
+    /// A run's directory as run writes it: its state and its report.
+    fn fake_run(dir: &Path, state: &[u8], from: Option<&Path>) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("state.bin"), state).unwrap();
+        let from_sha = from.map(|f| sha256(&std::fs::read(f).unwrap()));
+        let report = json!({"frames": {"requested": 10}, "input": {"events": []},
+            "build": {"version": "0", "id": "t"},
+            "identity": {"from_state": from, "from_state_sha256": from_sha, "cards": {"pad": "digital"},
+                "media": "game.chd", "media_identity": "g", "bios_sha256": "b"}});
+        std::fs::write(dir.join("report.json"), report.to_string()).unwrap();
+    }
+
+    #[test]
+    fn a_run_from_a_replaced_state_keeps_its_chain() {
+        let root = std::env::temp_dir().join(format!("psx-states-replaced-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ctx = Ctx { root: root.clone(), cancel: None };
+        let dirs = Dirs { states: None, chains: None };
+        let named = root.join(".psx/states/title.bin");
+        // title from power-on; a run from it (later), and one further on.
+        fake_run(&root.join("r1"), b"boot", None);
+        save(&ctx, &root.join("r1/state.bin"), "title", "black boot", &dirs, false).unwrap();
+        fake_run(&root.join("r2"), b"menu", Some(&named));
+        fake_run(&root.join("r3"), b"map", Some(&named));
+        // Replacing the ancestor with its descendant.
+        let out = save(&ctx, &root.join("r2/state.bin"), "title", "the title menu", &dirs, true).unwrap();
+        assert_eq!(out["steps"], 2);
+        assert!(root.join(format!("notes/states/replaced/title-{}.json", &sha256(b"boot")[..12])).is_file());
+        // A run from the state title was before: named, with the chain it had.
+        let out = save(&ctx, &root.join("r3/state.bin"), "map", "the world map", &dirs, false).unwrap();
+        assert_eq!(out["steps"], 2);
+        // The replaced chain is not a named state.
+        let names: Vec<String> = chains(&root.join("notes/states")).into_iter().map(|c| c.0).collect();
+        assert_eq!(names, ["map", "title"]);
+        // A state no chain names is still refused.
+        std::fs::write(&named, b"edited").unwrap();
+        fake_run(&root.join("r4"), b"x", Some(&named));
+        std::fs::write(&named, b"edited again").unwrap();
+        let e = save(&ctx, &root.join("r4/state.bin"), "x", "x", &dirs, false).unwrap_err();
+        assert!(e.to_string().contains("no chain names"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
