@@ -163,9 +163,26 @@ Then the second game, as for the timeline.
 
 ## Open questions
 
-- How often the stack loses its place in GT2 and in a game that uses the
-  BIOS's threads (ChangeTh). If often, the trace may need a stack per
-  thread, switched where the BIOS switches them.
+- How often the stack loses its place in GT2 and in a game that switches
+  threads: the BIOS's (ChangeTh: a syscall whose handler leaves by `rfe`
+  to the new thread's saved pc) or its own (a routine called by `jal`
+  that swaps `sp` and `ra` and returns to the other context). If often,
+  the trace parks stacks instead of dropping them, knowing nothing of
+  the BIOS:
+  - An exception that leaves to a pc other than the one it was entered
+    from, or a return to an address the stack does not hold, parks the
+    call stack under where it would resume: the pc the exception was
+    entered from (the word after a syscall) and `sp` then, or the return
+    address on top of the stack and `sp` at that call.
+  - An exception return or `jr` that lands on a parked (address, `sp`)
+    swaps that stack back in.
+  - No match, or more than one, is an unknown frame, as now. `sp` is in
+    the key because threads waiting in the same routine resume at the
+    same address but each has its own stack; it only matches, it never
+    decides a body. Parked stacks are capped; the trace report counts
+    resumes and misses.
+  Ghidra has nothing for this: its analysis is static, and its debugger
+  takes threads from the OS, which a PlayStation does not have.
 - Whether a handler that leaves without `rfe` (one that restarts the
   game, say) needs more than the unknown frame.
 - How large calls.json grows. It is 10.6 MB pretty-printed on GT2's boot
