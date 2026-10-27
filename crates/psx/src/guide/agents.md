@@ -3,7 +3,9 @@ role's agent when it has work, so nobody relays "the bundle is ready" by
 hand. It computes the ledger, picks the next role in turn (investigator,
 reviewer, implementer) whose first item of work does not wait on another
 (wait_for_..., nothing, awaiting_review, hold), and runs that role's
-harness once, headless, in its repository, with a prompt naming the item.
+harness once, headless, in its repository and its sandbox (below), with a
+prompt naming the item. A role with no [agents] entry is the person's to
+run: port run leaves it, and says so when only it has work.
 When the agent exits it computes the ledger again. It stops when no role
 has work (protocol report then says what waits on the person), when a run
 changes nothing (the role's work, its commit and its working tree are as
@@ -22,6 +24,7 @@ port adopt write an example, commented out):
   [agents]
   max_runs = 10             # per port run (default 10)
   timeout_minutes = 120     # a run is stopped after this long (default none)
+  sandbox = true            # each session in bubblewrap (default)
 
   [agents.implementer]
   command = ["claude", "-p", "{prompt}", "--model", "{model}",
@@ -29,14 +32,58 @@ port adopt write an example, commented out):
              "--output-format", "stream-json", "--verbose"]
   model = "claude-sonnet-5-5"
   prompt = "..."            # optional: replaces psx's ({work} is the item)
+  share = ["~/.config/x"]   # optional: from the person's home, writable
+  share_ro = ["~/data"]     # and read-only (the implementer's sandbox)
 
 {prompt} is the prompt, {model} the model, {role} and {repo} the role and
 its repository. Any harness with a headless mode serves (claude -p, codex
 exec, gemini -p, ...); it must edit and run commands without asking, and
 load the repository's MCP server (port init enables it in each
 .claude/settings.json; a harness that does not read .mcp.json needs psx's
-or clean mode's server in its own configuration). Until psx sandboxes the
-sessions, the access rules in .claude/settings.json are their only limits.
+or clean mode's server in its own configuration).
+
+## The sandbox
+
+Each session runs in bubblewrap (Linux), so its limits hold whatever the
+harness is and whatever its own access rules allow:
+- the implementer sees the system's folders, its own repository, the Rust
+  toolchain (cargo's downloads writable), the programs on its PATH from
+  the home folder, the harness's own program, git's identity, a home of
+  its own and what share and share_ro list. The other repositories, the
+  disc, psx's folder and the person's home are not there, and psx is
+  masked wherever the sandbox has it. Its notes/, specs/, .claude/,
+  .mcp.json and git's config and hooks are read-only;
+- the investigator and the reviewer see everything and write their own
+  repository and the person's home (their harness's login and
+  transcripts), never the port's other repositories or psx (its programs,
+  and its source when built from one).
+  Their .claude/, .mcp.json, protocol.toml (whose commands port run runs
+  outside) and git's config and hooks are read-only.
+All three get a fresh /tmp, their own process space and the network,
+which the harness needs for its model's service (the web stays denied by
+the access rules alone).
+
+psx and clean mode need what the sandbox keeps out: publish cross writes
+to the implementer, and clean mode runs the original from the
+investigator's repository. So their servers run outside, started as the
+role's .mcp.json says for each connection, and psx mcp or psx-clean mcp
+inside the sandbox passes its messages through (a socket at
+/tmp/psx-mcp/), whatever harness started it. The servers' errors are in
+.psx/port-run/NAME.mcp.log. psx's own commands run inside the investigator's
+sandbox too, but those that write to the others work only through its
+server. The implementer's message hook (barrier hook) does not run inside,
+where psx is not; port run's prompts are psx's own.
+
+The implementer's home is ~/.local/share/psx/agents/PORT/ (PORT from the
+implementer's folder): its harness's settings, login and transcripts, kept
+from the person's. Log its harness in there once:
+
+  psx port run --shell implementer
+
+opens a shell in the implementer's sandbox, as its sessions have it (its
+server too); run the harness there and log in, or look around. An API key
+in the environment passes through. sandbox = false runs the sessions
+with only the harness's own access rules.
 
 What each run did is in the investigator's .psx/port-run/: NAME.txt as the
 person reads it (the agent's text, its tool calls, how it ended, and the

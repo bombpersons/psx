@@ -43,6 +43,8 @@ mod replay;
 mod roles;
 mod run;
 mod run_native;
+#[cfg(unix)]
+mod sandbox;
 mod stall;
 mod states;
 mod str_cmd;

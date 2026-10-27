@@ -41,6 +41,10 @@ pub struct PortRunArgs {
     #[arg(long)]
     #[serde(default)]
     pub follow: bool,
+    /// A shell in this role's sandbox, as its sessions have it: to log its harness in, or look.
+    #[arg(long, value_enum)]
+    #[serde(default)]
+    pub shell: Option<Role>,
 }
 
 /// The order roles take turns in.
@@ -52,13 +56,24 @@ struct Agent {
     command: Vec<String>,
     model: Option<String>,
     prompt: Option<String>,
+    /// From the person's home into the sandbox, writable and read-only.
+    share: Vec<PathBuf>,
+    share_ro: Vec<PathBuf>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct Agents {
     max_runs: Option<usize>,
     timeout: Option<Duration>,
+    /// Each session in bubblewrap (default).
+    sandbox: bool,
     roles: Vec<(Role, Agent)>,
+}
+
+impl Default for Agents {
+    fn default() -> Self {
+        Agents { max_runs: None, timeout: None, sandbox: true, roles: vec![] }
+    }
 }
 
 fn agents(root: &Path) -> crate::Result<Agents> {
@@ -72,6 +87,10 @@ fn agents(root: &Path) -> crate::Result<Agents> {
         match k.as_str() {
             "max_runs" => out.max_runs = x.as_integer().map(|n| n.max(1) as usize),
             "timeout_minutes" => out.timeout = x.as_integer().map(|n| Duration::from_secs(n.max(1) as u64 * 60)),
+            "sandbox" => {
+                out.sandbox =
+                    x.as_bool().ok_or_else(|| Error::invalid("protocol.toml: [agents] sandbox is not true or false"))?
+            }
             "investigator" | "reviewer" | "implementer" => {
                 let role = ORDER.into_iter().find(|r| r.name() == k).unwrap_or(Role::Investigator);
                 let bad = |what: &str| Error::invalid(format!("protocol.toml: [agents.{k}] {what}"));
@@ -89,7 +108,16 @@ fn agents(root: &Path) -> crate::Result<Agents> {
                         "prompt" => {
                             agent.prompt = Some(y.as_str().ok_or_else(|| bad("prompt is not a string"))?.into())
                         }
-                        other => return Err(bad(&format!("has {other}: write command, model or prompt"))),
+                        "share" | "share_ro" => {
+                            let list: Vec<PathBuf> = y
+                                .as_array()
+                                .and_then(|a| a.iter().map(|s| s.as_str().map(expand)).collect())
+                                .ok_or_else(|| bad(&format!("{f} is not a list of paths")))?;
+                            if f == "share" { agent.share = list } else { agent.share_ro = list }
+                        }
+                        other => {
+                            return Err(bad(&format!("has {other}: write command, model, prompt, share or share_ro")));
+                        }
                     }
                 }
                 if agent.command.is_empty() {
@@ -99,7 +127,7 @@ fn agents(root: &Path) -> crate::Result<Agents> {
             }
             other => {
                 return Err(Error::invalid(format!(
-                    "protocol.toml: [agents] has {other}: write max_runs, timeout_minutes, or [agents.ROLE]"
+                    "protocol.toml: [agents] has {other}: write max_runs, timeout_minutes, sandbox, or [agents.ROLE]"
                 )));
             }
         }
@@ -122,6 +150,85 @@ fn default_prompt(role: Role) -> &'static str {
             "You are the implementer in this clean-room port; AGENTS.md is your role. psx port run started this session and starts a fresh one for the next item, so what you leave in your files is all the next session knows. Start with clean mode's next and notes/NEXT.md, and do the first item of work, as AGENTS.md says: {work}. Do that one item. Before you stop, add to questions/LOOP.md and commit. Then stop."
         }
     }
+}
+
+/// A path protocol.toml names: ~/ is the home folder.
+fn expand(p: &str) -> PathBuf {
+    match (p.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(h)) => PathBuf::from(h).join(rest),
+        _ => PathBuf::from(p),
+    }
+}
+
+/// The implementer's home in its sandbox: its harness's settings and
+/// transcripts, kept apart from the person's (one per port).
+#[cfg(unix)]
+fn implementer_home(implementer: &Path) -> Option<PathBuf> {
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+    Some(data.join("psx/agents").join(crate::roles::host_key(implementer)))
+}
+
+/// The servers a sandboxed session reaches outside it, kept until it ends.
+#[cfg(unix)]
+type Held = crate::sandbox::Servers;
+#[cfg(not(unix))]
+type Held = ();
+
+/// The session's command line: in its sandbox, with psx's servers outside
+/// it started (none for a dry run), or as it is.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+fn sandboxed(
+    sandbox: bool,
+    role: Role,
+    agent: &Agent,
+    repo: &Path,
+    others: &[PathBuf],
+    cmd: Vec<String>,
+    log: Option<&Path>,
+    interactive: bool,
+) -> crate::Result<(Vec<std::ffi::OsString>, Option<Held>)> {
+    if !sandbox {
+        return Ok((cmd.into_iter().map(Into::into).collect(), None));
+    }
+    let servers = match log {
+        Some(l) => crate::sandbox::Servers::start(repo, l)?,
+        None => crate::sandbox::Servers::none(),
+    };
+    let implementer = if role == Role::Implementer { Some(repo) } else { None };
+    let home = implementer.and_then(implementer_home);
+    let policy = crate::sandbox::Policy {
+        role,
+        repo,
+        others,
+        share: &agent.share,
+        share_ro: &agent.share_ro,
+        home: home.as_deref(),
+        interactive,
+    };
+    Ok((crate::sandbox::wrap(&policy, &cmd, &servers)?, Some(servers)))
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::too_many_arguments)]
+fn sandboxed(
+    sandbox: bool,
+    _: Role,
+    _: &Agent,
+    _: &Path,
+    _: &[PathBuf],
+    cmd: Vec<String>,
+    _: Option<&Path>,
+    _: bool,
+) -> crate::Result<(Vec<std::ffi::OsString>, Option<Held>)> {
+    if sandbox {
+        return Err(Error::invalid(
+            "port run's sandbox is bubblewrap's, on Linux: write sandbox = false under [agents] to run the sessions with only the harness's own access rules",
+        ));
+    }
+    Ok((cmd.into_iter().map(Into::into).collect(), None))
 }
 
 /// The command line with its placeholders filled.
@@ -362,7 +469,7 @@ impl Shown {
 /// the raw log and, readably, to the terminal. Returns its exit code (None
 /// when killed or not started) and whether it ran out of time.
 fn session(
-    cmd: &[String],
+    cmd: &[std::ffi::OsString],
     repo: &Path,
     raw: &Path,
     shown: &Arc<Shown>,
@@ -378,7 +485,7 @@ fn session(
     {
         Ok(c) => c,
         Err(e) => {
-            shown.line(&format!("  ! could not start {}: {e}", cmd[0]));
+            shown.line(&format!("  ! could not start {}: {e}", cmd[0].to_string_lossy()));
             return Ok((None, false));
         }
     };
@@ -459,32 +566,53 @@ impl PortRunArgs {
             return follow(ctx);
         }
         let cfg = agents(&ctx.root)?;
+        if let Some(role) = self.shell {
+            return shell(ctx, &cfg, role);
+        }
         let max = self.max_runs.or(cfg.max_runs).unwrap_or(10).max(1);
         let dir = dir(ctx);
         let _lock = if self.dry_run { None } else { Some(Lock::take(&dir)?) };
+        #[cfg(unix)]
+        if cfg.sandbox && !crate::sandbox::available() {
+            return Err(Error::invalid(
+                "port run runs each session in bubblewrap's sandbox, and bwrap does not run here: install bubblewrap, or write sandbox = false under [agents] to run the sessions with only the harness's own access rules",
+            ));
+        }
         let mut runs = Vec::new();
         let mut turn = 0;
         let stopped = loop {
             let lists = crate::protocol::work_lists(ctx)?;
-            let Some(k) = (0..ORDER.len())
-                .map(|i| (turn + i) % ORDER.len())
-                .find(|&k| !crate::protocol::waits(lists[k].2.first()))
+            let busy = |k: &usize| !crate::protocol::waits(lists[*k].2.first());
+            let agent_of = |k: usize| cfg.roles.iter().find(|a| a.0 == lists[k].0).map(|a| &a.1);
+            // A role with no [agents] entry is the person's to run.
+            let by_hand: Vec<&str> =
+                (0..ORDER.len()).filter(busy).filter(|&k| agent_of(k).is_none()).map(|k| lists[k].0.name()).collect();
+            let Some(k) =
+                (0..ORDER.len()).map(|i| (turn + i) % ORDER.len()).filter(busy).find(|&k| agent_of(k).is_some())
             else {
-                break json!({"why": "no role has work: each waits on another, or on the person (protocol report)", "roles": firsts(&lists)});
+                if cfg.roles.is_empty() && !by_hand.is_empty() {
+                    return Err(Error::invalid(format!(
+                        "the {} has work and protocol.toml has no [agents]: write the command line that runs one headless session in a role's repository under [agents.ROLE], e.g. command = [\"claude\", \"-p\", \"{{prompt}}\", \"--output-format\", \"stream-json\", \"--verbose\"] (guide topic agents)",
+                        by_hand[0]
+                    )));
+                }
+                let why = if by_hand.is_empty() {
+                    "no role has work: each waits on another, or on the person (protocol report)".to_string()
+                } else {
+                    format!(
+                        "only roles with no [agents] entry have work, which the person runs: {}",
+                        by_hand.join(", ")
+                    )
+                };
+                break json!({"why": why, "roles": firsts(&lists)});
             };
             if runs.len() >= max {
                 break json!({"why": format!("{max} runs (max_runs)"), "roles": firsts(&lists)});
             }
             let (role, repo, work) = &lists[k];
+            let others: Vec<PathBuf> = lists.iter().filter(|l| l.0 != *role).map(|l| l.1.clone()).collect();
             let item = &work[0];
-            let Some(agent) = cfg.roles.iter().find(|a| a.0 == *role).map(|a| &a.1) else {
-                return Err(Error::invalid(format!(
-                    "the {} has work ({}) and protocol.toml has no [agents.{}]: write the command line that runs one headless session in its repository, e.g. command = [\"claude\", \"-p\", \"{{prompt}}\", \"--output-format\", \"stream-json\", \"--verbose\"] (guide topic agents)",
-                    role.name(),
-                    item["do"].as_str().unwrap_or_default(),
-                    role.name()
-                )));
-            };
+            let Some(agent) = agent_of(k) else { unreachable!("a role is chosen only with an agent") };
             let prompt = agent
                 .prompt
                 .as_deref()
@@ -493,12 +621,24 @@ impl PortRunArgs {
                 .replace("{role}", role.name());
             let cmd = command_line(*role, agent, repo, &prompt)?;
             if self.dry_run {
+                let (argv, _) = sandboxed(cfg.sandbox, *role, agent, repo, &others, cmd.clone(), None, false)?;
+                let argv: Vec<String> = argv.iter().map(|a| a.to_string_lossy().into_owned()).collect();
                 return Ok(
-                    json!({"would_run": role.name(), "repository": repo, "item": item["do"], "what": item["what"], "command": cmd, "roles": firsts(&lists)}),
+                    json!({"would_run": role.name(), "repository": repo, "item": item["do"], "what": item["what"], "command": cmd, "sandboxed": cfg.sandbox.then_some(argv), "roles": firsts(&lists)}),
                 );
             }
             let before = state(repo, work);
             let name = format!("{}-{}", stamp(), role.name());
+            let (argv, _servers) = sandboxed(
+                cfg.sandbox,
+                *role,
+                agent,
+                repo,
+                &others,
+                cmd.clone(),
+                Some(&dir.join(format!("{name}.mcp.log"))),
+                false,
+            )?;
             let txt = dir.join(format!("{name}.txt"));
             let raw = dir.join(format!("{name}.log"));
             let shown = Arc::new(Shown(Mutex::new(std::fs::File::create(&txt).map_err(|e| Error::io(&txt, e))?)));
@@ -511,7 +651,7 @@ impl PortRunArgs {
                 item["do"].as_str().unwrap_or_default(),
                 repo.display()
             ));
-            let (exit, timed_out) = session(&cmd, repo, &raw, &shown, cfg.timeout)?;
+            let (exit, timed_out) = session(&argv, repo, &raw, &shown, cfg.timeout)?;
             let seconds = start.elapsed().as_secs();
 
             let after_lists = crate::protocol::work_lists(ctx)?;
@@ -542,7 +682,7 @@ impl PortRunArgs {
             ));
             let rec = json!({
                 "started": started, "role": role.name(), "repository": repo, "item": item["do"], "what": item["what"],
-                "command": cmd, "exit": exit, "timed_out": timed_out, "seconds": seconds,
+                "command": cmd, "sandbox": cfg.sandbox, "exit": exit, "timed_out": timed_out, "seconds": seconds,
                 "commits": commits, "uncommitted": changed, "progress": progress,
                 "now": after_work.first().map(|w| w["do"].clone()), "log": raw, "shown": txt,
             });
@@ -561,6 +701,30 @@ impl PortRunArgs {
         }
         Ok(json!({"runs": runs, "stopped": stopped, "log": dir.join("runs.jsonl")}))
     }
+}
+
+/// An interactive shell in a role's sandbox, with its servers.
+fn shell(ctx: &Ctx, cfg: &Agents, role: Role) -> crate::Result<Value> {
+    if !cfg.sandbox {
+        return Err(Error::invalid("protocol.toml's [agents] has sandbox = false: there is no sandbox to open"));
+    }
+    #[cfg(unix)]
+    if !crate::sandbox::available() {
+        return Err(Error::invalid("bwrap does not run here: install bubblewrap"));
+    }
+    let lists = crate::protocol::work_lists(ctx)?;
+    let k = lists.iter().position(|l| l.0 == role).unwrap_or(0);
+    let repo = &lists[k].1;
+    let others: Vec<PathBuf> = lists.iter().filter(|l| l.0 != role).map(|l| l.1.clone()).collect();
+    let agent = cfg.roles.iter().find(|a| a.0 == role).map(|a| a.1.clone()).unwrap_or_default();
+    let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let dir = dir(ctx);
+    std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+    let log = dir.join(format!("{}-{}-shell.mcp.log", stamp(), role.name()));
+    let (argv, _servers) = sandboxed(true, role, &agent, repo, &others, vec![sh], Some(&log), true)?;
+    eprintln!("port run: a shell in the {}'s sandbox ({}); exit to leave", role.name(), repo.display());
+    let status = Command::new(&argv[0]).args(&argv[1..]).status().map_err(|e| Error::invalid(format!("bwrap: {e}")))?;
+    Ok(json!({"shell": role.name(), "repository": repo, "exit": status.code()}))
 }
 
 /// The newest run's summary file.

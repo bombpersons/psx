@@ -51,6 +51,11 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if matches!(cli.command, Command::Mcp) {
+        if let Some(code) = mcp::bridge() {
+            return code;
+        }
+    }
     let clean = match clean::Clean::open(cli.investigator, cli.psx) {
         Ok(c) => c,
         Err(e) => {

@@ -61,6 +61,47 @@ fn fail(out: &mut impl Write, id: &Value, code: i64, message: &str) {
     let _ = out.flush();
 }
 
+/// Inside psx port run's sandbox, where the investigator's repository is
+/// not there, clean mode is served from outside on this socket: the server
+/// passes its messages through, whatever harness started it.
+#[cfg(unix)]
+pub const SANDBOX_SOCKET: &str = "/tmp/psx-mcp/clean.sock";
+
+/// Passes stdio through to the server outside the sandbox, if there is one.
+#[cfg(unix)]
+pub fn bridge() -> Option<ExitCode> {
+    let s = std::os::unix::net::UnixStream::connect(SANDBOX_SOCKET).ok()?;
+    let (mut from, mut to) = (s.try_clone().ok()?, s);
+    std::thread::spawn(move || {
+        pump(&mut std::io::stdin().lock(), &mut to);
+        let _ = to.shutdown(std::net::Shutdown::Write);
+    });
+    pump(&mut from, &mut std::io::stdout().lock());
+    Some(ExitCode::SUCCESS)
+}
+
+/// Copies until the reader ends, as each read comes: io::copy may splice
+/// between a pipe and a socket and hold the messages back.
+#[cfg(unix)]
+fn pump(r: &mut impl std::io::Read, w: &mut impl std::io::Write) {
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match r.read(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => {
+                if w.write_all(&buf[..n]).and_then(|_| w.flush()).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub fn bridge() -> Option<ExitCode> {
+    None
+}
+
 pub fn serve(clean: &Clean) -> ExitCode {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
