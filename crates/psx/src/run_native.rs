@@ -785,10 +785,20 @@ fn trace_outputs(
         executed.extend(word.to_le_bytes());
         executed.extend(n.to_le_bytes());
     }
+    // Each RAM page as it was when code in it ran (code loaded and
+    // replaced between frames included), for inventory.
+    let mut code = b"PSXCODE1".to_vec();
+    for (frame, addr, bytes) in &t.code_pages {
+        code.extend(frame.to_le_bytes());
+        code.extend(addr.to_le_bytes());
+        code.extend((bytes.len() as u32).to_le_bytes());
+        code.extend(&bytes[..]);
+    }
     for (file, bytes) in [
         ("coverage.txt", text.into_bytes()),
         ("calls.json", serde_json::to_vec_pretty(&calls_json).unwrap()),
         ("executed.bin", executed),
+        ("code.bin", code),
     ] {
         let p = dir.join(file);
         std::fs::write(&p, &bytes).map_err(|e| Error::io(&p, e))?;
@@ -817,6 +827,7 @@ fn trace_outputs(
         "coverage": {"runs": coverage.len(), "unique_instructions": coverage.iter().map(|c| c.2 as u64).sum::<u64>()},
         "top_calls": calls_json.iter().take(20).cloned().collect::<Vec<_>>(),
         "distinct_call_targets": calls_json.len(),
+        "code_pages": {"kept": t.code_pages.len(), "dropped": t.code_pages_dropped},
     }))
 }
 

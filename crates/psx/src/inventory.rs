@@ -538,6 +538,9 @@ struct Snap {
     ram: Vec<u8>,
     resident: Vec<(usize, f64)>,
     calls: Vec<(u32, Option<u32>)>,
+    /// For code pages (code.bin): the addresses holding code no other
+    /// snapshot holds; only functions holding some of it are its own.
+    only: Option<BTreeSet<u32>>,
 }
 
 /// Code a traced run executed that neither its RAM at the end nor an
@@ -552,6 +555,70 @@ fn lost_code(ram: &[u8], ran: &[(u32, u32, u64)], exes: &[Exe]) -> Vec<(u32, u32
         })
         .map(|&(a, w, _)| (a, w))
         .collect()
+}
+
+/// A traced run's code pages (code.bin): `(frame, KSEG0 address, bytes)`.
+fn code_pages(run: &Path) -> Vec<(u64, u32, Vec<u8>)> {
+    let Ok(b) = std::fs::read(run.join("code.bin")) else { return Vec::new() };
+    let Some(mut rest) = b.strip_prefix(b"PSXCODE1") else { return Vec::new() };
+    let mut out = Vec::new();
+    while rest.len() >= 16 {
+        let frame = u64::from_le_bytes(rest[0..8].try_into().unwrap());
+        let addr = u32::from_le_bytes(rest[8..12].try_into().unwrap());
+        let n = u32::from_le_bytes(rest[12..16].try_into().unwrap()) as usize;
+        let Some(bytes) = rest.get(16..16 + n) else { break };
+        out.push((frame, addr, bytes.to_vec()));
+        rest = &rest[16 + n..];
+    }
+    out
+}
+
+/// Code a run ran that no snapshot holds, as RAM held it then: the code
+/// pages (code.bin) holding some of `lost` where it ran, each laid over
+/// those before it, a new image each time a page is laid over a copy of
+/// itself that differs (code loaded over code). RAM no such page holds is
+/// 0xFF (no instruction), so no function runs on into it. `(frame of its
+/// last page, RAM, the addresses where it holds lost code)`.
+fn code_as_it_ran(
+    pages: &[(u64, u32, Vec<u8>)],
+    lost: &BTreeSet<(u32, u32)>,
+    size: usize,
+) -> Vec<(u64, Vec<u8>, BTreeSet<u32>)> {
+    let holds = |addr: u32, bytes: &[u8]| -> BTreeSet<u32> {
+        let hi = addr + bytes.len() as u32;
+        lost.range((addr, 0)..(hi, 0))
+            .filter(|&&(a, w)| bytes[(a - addr) as usize..][..4] == w.to_le_bytes())
+            .map(|&(a, _)| a)
+            .collect()
+    };
+    let mut out = Vec::new();
+    let mut now: BTreeMap<u32, (&[u8], BTreeSet<u32>)> = BTreeMap::new();
+    let mut frame = 0;
+    let emit = |now: &BTreeMap<u32, (&[u8], BTreeSet<u32>)>, frame: u64, out: &mut Vec<_>| {
+        let mut ram = vec![0xFF; size];
+        for (&a, (b, _)) in now {
+            let o = (a & 0x1F_FFFF) as usize;
+            if let Some(r) = ram.get_mut(o..o + b.len()) {
+                r.copy_from_slice(b);
+            }
+        }
+        out.push((frame, ram, now.values().flat_map(|(_, l)| l.iter().copied()).collect()));
+    };
+    for (f, addr, bytes) in pages {
+        let held = holds(*addr, bytes);
+        if held.is_empty() {
+            continue;
+        }
+        if now.get(addr).is_some_and(|(b, _)| b != &&bytes[..]) {
+            emit(&now, frame, &mut out);
+        }
+        now.insert(*addr, (bytes, held));
+        frame = *f;
+    }
+    if !now.is_empty() {
+        emit(&now, frame, &mut out);
+    }
+    out
 }
 
 /// Where lost code was loaded from: the disc files holding runs of it, as
@@ -703,6 +770,7 @@ impl InventoryArgs {
         // searched for in the disc's files; each file found is analysed as
         // if a snapshot held it alone, where the run ran it.
         let mut snaps: Vec<Snap> = Vec::new();
+        let mut pages = Vec::new();
         for r in &self.ram {
             let dir = at(r);
             let snap = crate::ram::load(&dir)?;
@@ -743,10 +811,11 @@ impl InventoryArgs {
                         })
                     })
                     .collect();
-                snaps.push(Snap { label, ram, resident: Vec::new(), calls, ran: Vec::new() });
+                snaps.push(Snap { label, ram, resident: Vec::new(), calls, ran: Vec::new(), only: None });
             }
+            pages.push((dir.clone(), code_pages(&dir), calls.clone(), ran.clone().unwrap_or_default()));
             let ran = ran.unwrap_or_default().into_iter().map(|(a, w, _)| (a, w)).collect();
-            snaps.push(Snap { label: dir.display().to_string(), ram: snap.bytes, resident, calls, ran });
+            snaps.push(Snap { label: dir.display().to_string(), ram: snap.bytes, resident, calls, ran, only: None });
         }
 
         // Traced call targets with the instruction run there: a seed in any
@@ -815,10 +884,52 @@ impl InventoryArgs {
         // to tell an image whose code is another's (its data differs) from new code.
         let mut ranges: Vec<Held> = Vec::new();
         let mut variants = 0;
-        for Snap { label, ram, calls, resident, .. } in &snaps {
+        // Every image found, to tell what code pages hold that none does.
+        let mut images: Vec<(u32, Vec<u8>)> = exes.iter().map(|e| (e.lo, e.payload.clone())).collect();
+        let (mut k, mut composed) = (0, false);
+        loop {
+            if k == snaps.len() {
+                if composed {
+                    break;
+                }
+                composed = true;
+                // Code a run ran that no image holds (loaded and replaced
+                // between frames, from no file found on the disc): its run's
+                // code pages hold it as it ran. Only its functions are taken
+                // from them: the rest is in the images already.
+                let size = snaps.last().map_or(0x20_0000, |s| s.ram.len());
+                let word = |b: &[u8], o: usize| b.get(o..o + 4).map(|w| u32::from_le_bytes(w.try_into().unwrap()));
+                for (dir, pages, calls, ran) in &pages {
+                    let lost: BTreeSet<(u32, u32)> = ran
+                        .iter()
+                        .filter(|&&(a, w, _)| {
+                            (0x8001_0000..0x8020_0000).contains(&a)
+                                && !images.iter().any(|(lo, b)| a >= *lo && word(b, (a - lo) as usize) == Some(w))
+                        })
+                        .map(|&(a, w, _)| (a, w))
+                        .collect();
+                    if lost.is_empty() {
+                        continue;
+                    }
+                    for (frame, ram, only) in code_as_it_ran(pages, &lost, size) {
+                        let label = format!("{} (code as it ran, by frame {frame})", dir.display());
+                        let calls = calls
+                            .iter()
+                            .copied()
+                            .filter(|&(t, w)| w.is_some_and(|w| word(&ram, (t & 0x1F_FFFF) as usize) == Some(w)))
+                            .collect();
+                        snaps.push(Snap { label, ram, resident: Vec::new(), calls, ran: Vec::new(), only: Some(only) });
+                    }
+                }
+                continue;
+            }
+            k += 1;
+            let Snap { label, ram, calls, resident, only, .. } = &snaps[k - 1];
             let code = Code { base: 0x8000_0000, bytes: ram.clone(), origin: label.clone(), gp: None, exe: None };
             let mut theirs = vec![false; ram.len() / 4];
-            for e in &exes {
+            // Code pages hold only code no executable holds (some of it
+            // starting as the executable's code it was loaded over).
+            for e in exes.iter().filter(|_| only.is_none()) {
                 let o = (e.lo & 0x1F_FFFF) as usize;
                 for (k, w) in e.payload.as_chunks::<4>().0.iter().enumerate() {
                     if ram.get(o + 4 * k..o + 4 * k + 4) == Some(&w[..]) {
@@ -860,6 +971,16 @@ impl InventoryArgs {
             // Each overlay is searched on its own. Its extent is the disc file
             // RAM holds there, when one matches; else its cluster of functions.
             let ram_words = words(ram, 0x8000_0000);
+            // A code page's executed words are its lost code: what ran
+            // beside it there was other code, so a stretch of it is whole.
+            let lost_ran: BTreeSet<(u32, u32)>;
+            let ran_here = match only {
+                Some(o) => {
+                    lost_ran = o.iter().filter_map(|&x| Some((x, code.word(x)?))).collect();
+                    &lost_ran
+                }
+                None => &ran_words,
+            };
             let mut regions: Vec<(u32, u32, Option<Value>)> = Vec::new();
             for _ in 0..4 {
                 let before = a.functions.len();
@@ -876,7 +997,7 @@ impl InventoryArgs {
                     a.region = Some((lo, hi));
                     while a.pointers(&ram_words) > 0 {}
                     a.prologues();
-                    a.executed(&ran_words);
+                    a.executed(ran_here);
                 }
                 if a.functions.len() == before {
                     break;
@@ -915,8 +1036,25 @@ impl InventoryArgs {
                 regions.push((rlo, rhi, found.map(|f| f.0), true));
             }
             regions.sort_by_key(|r| r.0);
+            // A code page's own functions: those holding code no other snapshot holds.
+            let own = |s: u32| only.as_ref().is_none_or(|o| o.range(s..a.functions[&s].end).next().is_some());
             for (lo, hi, file, over) in regions {
-                let (functions, rest) = a.report_in(lo, hi, &|s| foreign.contains(&s) == over);
+                let mine = |s: u32| foreign.contains(&s) == over && own(s);
+                // A code page's extent is its own functions'.
+                let (lo, hi) = match only {
+                    None => (lo, hi),
+                    Some(_) => {
+                        let fs: Vec<(u32, u32)> = a
+                            .functions
+                            .range(lo..hi)
+                            .filter(|(s, _)| mine(**s))
+                            .map(|(_, f)| (f.start, f.end))
+                            .collect();
+                        let Some(l) = fs.iter().map(|f| f.0).min() else { continue };
+                        (l, fs.iter().map(|f| f.1).max().unwrap_or(l))
+                    }
+                };
+                let (functions, rest) = a.report_in(lo, hi, &mine);
                 if functions.is_empty() {
                     continue;
                 }
@@ -945,6 +1083,7 @@ impl InventoryArgs {
                         std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
                     }
                     std::fs::write(&keep, &ram[o.clone()]).map_err(|e| Error::io(&keep, e))?;
+                    images.push((lo, ram[o.clone()].to_vec()));
                     bios_code.push(
                         json!({"start": hex(lo), "end": hex(hi), "sha256": sha, "file": file, "snapshots": [label]}),
                     );
@@ -961,13 +1100,8 @@ impl InventoryArgs {
                     continue;
                 }
                 let bytes = ram[o.clone()].to_vec();
-                let starts: BTreeSet<u32> = a
-                    .functions
-                    .range(lo..hi)
-                    .map(|(_, f)| f)
-                    .filter(|f| foreign.contains(&f.start) == over)
-                    .map(|f| f.start)
-                    .collect();
+                let starts: BTreeSet<u32> =
+                    a.functions.range(lo..hi).map(|(_, f)| f).filter(|f| mine(f.start)).map(|f| f.start).collect();
                 let code: BTreeSet<u32> = starts.iter().flat_map(|s| (*s..a.functions[s].end).step_by(4)).collect();
                 // The same extent and file as an overlay before it.
                 let path = file.as_ref().map(|f| f["path"].clone());
@@ -985,6 +1119,7 @@ impl InventoryArgs {
                         if let Some(list) = list {
                             seen.insert(sha.clone(), (k, Some(list.len())));
                             list.push(json!({"sha256": sha, "words_differ": words_differ, "snapshots": [label]}));
+                            images.push((lo, bytes.clone()));
                         }
                         variants += 1;
                         continue;
@@ -999,6 +1134,7 @@ impl InventoryArgs {
                     std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
                 }
                 std::fs::write(&keep, &ram[o.clone()]).map_err(|e| Error::io(&keep, e))?;
+                images.push((lo, ram[o.clone()].to_vec()));
                 seen.insert(sha.clone(), (overlays.len(), None));
                 ranges.push(Held { lo, hi, path, bytes, code, starts, overlay: overlays.len() });
                 let mut entry = json!({
@@ -1225,6 +1361,30 @@ mod tests {
         a.seed(0x8001_0000, "entry");
         a.drain();
         assert_eq!((a.functions[&0x8001_0000].end, a.functions[&0x8001_0000].ends), (0x8001_0004, "invalid"));
+    }
+
+    #[test]
+    fn code_pages_give_lost_code_as_it_ran() {
+        let page = |fill: u8, at: usize, w: u32| {
+            let mut b = vec![fill; 0x1000];
+            b[at..at + 4].copy_from_slice(&w.to_le_bytes());
+            b
+        };
+        let pages = vec![
+            (10, 0x8010_0000, page(1, 8, 0xAAAA)),
+            (12, 0x8010_1000, page(2, 0, 0x5555)), // nothing lost
+            (20, 0x8010_0000, page(3, 8, 0xBBBB)), // loaded over the first
+            (30, 0x8010_0000, page(4, 8, 0xBBBB)), // holds it too
+        ];
+        let lost = BTreeSet::from([(0x8010_0008, 0xAAAA), (0x8010_0008, 0xBBBB)]);
+        let images = code_as_it_ran(&pages, &lost, 0x20_0000);
+        let at = |r: &Vec<u8>, o: usize| r[o..o + 4].to_vec();
+        assert_eq!(images.len(), 3, "a new image each time the page is laid over itself");
+        assert_eq!((images[0].0, at(&images[0].1, 0x10_0008)), (10, 0xAAAAu32.to_le_bytes().to_vec()));
+        assert_eq!(images[0].2, BTreeSet::from([0x8010_0008]));
+        assert_eq!(images[1].0, 20);
+        assert_eq!(images[2].1[0x10_0000], 4);
+        assert_eq!(images[2].1[0x10_1000], 0xFF, "a page with nothing lost is left out");
     }
 
     #[test]

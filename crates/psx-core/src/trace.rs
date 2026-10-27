@@ -21,6 +21,10 @@ use crate::disasm::{disasm, reg};
 
 const RAM_WORDS: usize = 0x20_0000 / 4;
 const BIOS_WORDS: usize = 0x8_0000 / 4;
+/// RAM a code page holds, in bytes.
+pub const CODE_PAGE: usize = 0x1000;
+/// Most code pages a trace keeps (16 MiB).
+pub const MAX_CODE_PAGES: usize = 4096;
 
 /// Names a code address given the current main RAM (for residency checks).
 pub type Namer = Box<dyn Fn(u32, &[u8]) -> Option<String>>;
@@ -68,6 +72,15 @@ pub struct Tracer {
     /// for the other words executed there later (code loaded over code).
     ram_word: Vec<u32>,
     ram_other: BTreeMap<(u32, u32), u64>,
+    /// RAM pages as they were when code in them ran: `(frame, KSEG0
+    /// address, bytes)`, kept when a word ran as an instruction the page's
+    /// last copy does not hold, so code loaded and replaced between
+    /// frames is kept as it ran.
+    pub code_pages: Vec<(u64, u32, Box<[u8]>)>,
+    /// Per page, its latest copy in `code_pages`.
+    page_copy: Vec<Option<u32>>,
+    /// Copies not kept past `MAX_CODE_PAGES`.
+    pub code_pages_dropped: u64,
     bios_cover: Vec<u32>,
     pub calls: BTreeMap<u32, CallStat>,
     /// Steps until the callee's first instruction, and the call site.
@@ -141,6 +154,9 @@ impl Tracer {
             ram_cover: vec![0; RAM_WORDS],
             ram_word: vec![0; RAM_WORDS],
             ram_other: BTreeMap::new(),
+            code_pages: Vec::new(),
+            page_copy: vec![None; 0x20_0000 / CODE_PAGE],
+            code_pages_dropped: 0,
             bios_cover: vec![0; BIOS_WORDS],
             calls: BTreeMap::new(),
             pending_call: None,
@@ -226,10 +242,14 @@ impl Tracer {
             0..=0x7F_FFFF => {
                 let k = (phys as usize & 0x1F_FFFF) / 4;
                 let i = info.instruction;
-                if self.ram_cover[k] == 0 {
+                let first = self.ram_cover[k] == 0;
+                if first {
                     self.ram_word[k] = i;
                 } else if self.ram_word[k] != i {
                     *self.ram_other.entry((k as u32, i)).or_default() += 1;
+                }
+                if first || self.ram_word[k] != i {
+                    self.keep_page(k, i, bus);
                 }
                 self.ram_cover[k] = self.ram_cover[k].saturating_add(1);
             }
@@ -278,6 +298,31 @@ impl Tracer {
             self.stopped = Some((bus.frames, bus.time()));
         }
         self.state = Window::Done;
+    }
+
+    /// Keeps word `k`'s page as RAM holds it now, unless its last copy
+    /// already holds instruction `i` there.
+    fn keep_page(&mut self, k: usize, i: u32, bus: &Bus) {
+        let p = 4 * k / CODE_PAGE;
+        let o = 4 * k % CODE_PAGE;
+        if let Some(c) = self.page_copy[p] {
+            let b = &self.code_pages[c as usize].2;
+            if u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) == i {
+                return;
+            }
+        }
+        // RAM no longer holding what ran (the instruction cache still
+        // did) has nothing to keep.
+        if bus.ram.get(4 * k..4 * k + 4).is_none_or(|w| u32::from_le_bytes(w.try_into().unwrap()) != i) {
+            return;
+        }
+        if self.code_pages.len() >= MAX_CODE_PAGES {
+            self.code_pages_dropped += 1;
+            return;
+        }
+        let bytes: Box<[u8]> = bus.ram[p * CODE_PAGE..(p + 1) * CODE_PAGE].into();
+        self.page_copy[p] = Some(self.code_pages.len() as u32);
+        self.code_pages.push((bus.frames, 0x8000_0000 + (p * CODE_PAGE) as u32, bytes));
     }
 
     /// Flush the trace; returns the first write error, if any.
@@ -339,6 +384,24 @@ impl Tracer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_code_page_is_kept_when_code_new_to_it_runs() {
+        let mut bus = Bus::new(vec![]);
+        let mut t = Tracer::new(TraceConfig::default(), Box::new(std::io::sink()), None);
+        let k = 0x1_0000 / 4 + 3;
+        bus.ram[4 * k..4 * k + 4].copy_from_slice(&7u32.to_le_bytes());
+        t.keep_page(k, 7, &bus);
+        t.keep_page(k, 7, &bus);
+        assert_eq!(t.code_pages.len(), 1);
+        assert_eq!(t.code_pages[0].1, 0x8001_0000);
+        // RAM holding other than what ran (the cache's) has nothing to keep.
+        t.keep_page(k, 8, &bus);
+        assert_eq!(t.code_pages.len(), 1);
+        bus.ram[4 * k..4 * k + 4].copy_from_slice(&8u32.to_le_bytes());
+        t.keep_page(k, 8, &bus);
+        assert_eq!(t.code_pages.len(), 2);
+    }
 
     #[test]
     fn destinations() {

@@ -223,7 +223,9 @@ fn hex(a: u32) -> String {
 /// other code shares nops and returns with what it replaced, so an image is
 /// credited a word only when it holds a stretch of what ran there: four
 /// consecutive executed words, the whole run of consecutive executed words
-/// around it, or whole basic blocks of one of its functions. Of several, the one with a function there, then the
+/// around it, or whole basic blocks of one of its functions; or a shorter
+/// stretch where the words run beside it are other images' (code loaded
+/// over it ran there). Of several, the one with a function there, then the
 /// longest stretch, then the one the run otherwise ran.
 fn credit(images: &mut [Image], run: usize, words: &[(u32, u32, u64)]) -> (Vec<(u32, u32)>, Vec<u64>) {
     let words: Vec<(u32, u32, u64)> = words.iter().copied().filter(|r| r.0 >= GAME_RAM).collect();
@@ -257,8 +259,26 @@ fn credit(images: &mut [Image], run: usize, words: &[(u32, u32, u64)]) -> (Vec<(
         }
     }
     let mut credited = vec![0u64; images.len()];
-    let mut missing = Vec::new();
-    for (j, &(a, w, n)) in words.iter().enumerate() {
+    let mut pending = Vec::new();
+    // Credits word j to the best of images h: the one with a function
+    // there, then the longest stretch, then the one the run otherwise ran.
+    let give = |images: &mut [Image], credited: &mut [u64], h: &[usize], j: usize| {
+        let (a, _, n) = words[j];
+        let len = |i: usize| held[i].get(&a).map_or(1, |(s, e)| ((e - s) / 4) as u64);
+        let key = |i: usize| (images[i].function(a).is_some(), len(i), unique[i]);
+        let best = h.iter().map(|&i| key(i)).max();
+        let chosen: Vec<usize> = h.iter().copied().filter(|&i| Some(key(i)) == best).collect();
+        for i in chosen {
+            let img = &mut images[i];
+            let at = ((a - img.base) / 4) as usize;
+            img.count[at] += n;
+            if let Some(f) = img.function(a) {
+                img.runs[f].insert(run);
+            }
+            credited[i] += 1;
+        }
+    };
+    for (j, &(a, _, _)) in words.iter().enumerate() {
         let (es, ee) = executed[&a];
         let span = |i: usize| held[i].get(&a).copied().unwrap_or((a, a));
         let len = |i: usize| ((span(i).1 - span(i).0) / 4) as u64;
@@ -271,21 +291,30 @@ fn credit(images: &mut [Image], run: usize, words: &[(u32, u32, u64)]) -> (Vec<(
         };
         let h: Vec<usize> =
             holders[j].iter().copied().filter(|&i| len(i) >= 4 || span(i) == (es, ee) || blocks(i)).collect();
-        let key = |i: usize| (images[i].function(a).is_some(), len(i), unique[i]);
-        let best = h.iter().map(|&i| key(i)).max();
-        let chosen: Vec<usize> = h.iter().copied().filter(|&i| Some(key(i)) == best).collect();
-        if chosen.is_empty() {
-            missing.push((a, w));
+        if h.is_empty() {
+            pending.push(j);
         }
-        for i in chosen {
-            let img = &mut images[i];
-            let at = ((a - img.base) / 4) as usize;
-            img.count[at] += n;
-            if let Some(f) = img.function(a) {
-                img.runs[f].insert(run);
-            }
-            credited[i] += 1;
+        give(images, &mut credited, &h, j);
+    }
+    // A shorter stretch one image holds, where the words run beside it are
+    // other images' (code loaded over it ran there): that image's.
+    let unexplained: BTreeSet<u32> = pending.iter().map(|&j| words[j].0).collect();
+    let mut missing = Vec::new();
+    for j in pending {
+        let a = words[j].0;
+        let beside = |x: u32| !executed.contains_key(&x) || !unexplained.contains(&x);
+        let h: Vec<usize> = holders[j]
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let (s, e) = held[i].get(&a).copied().unwrap_or((a, a + 4));
+                beside(s.wrapping_sub(4)) && beside(e)
+            })
+            .collect();
+        if h.is_empty() {
+            missing.push((a, words[j].1));
         }
+        give(images, &mut credited, &h, j);
     }
     (missing, credited)
 }
@@ -610,6 +639,25 @@ mod tests {
         assert_eq!((t.exercised, t.complete), (1, 0));
         let (_, _, t) = report(&images[0]);
         assert_eq!(t.exercised, 0);
+    }
+
+    #[test]
+    fn a_short_stretch_between_other_code_is_its_holders() {
+        // Code (a BIOS's shell, no functions) ran two words, `jr ra; nop`,
+        // where the game's overlay later ran its own code around them.
+        let base = 0x8010_0000;
+        let f = vec![Function { entry: base, end: base + 16, blocks: vec![base] }];
+        let mut images =
+            vec![img("game", base, vec![1, 2, 3, 4], f), img("shell", base + 4, vec![0x03E0_0008, 0, 0x1234], vec![])];
+        let words = [(base, 1, 9), (base + 4, 2, 9), (base + 4, 0x03E0_0008, 1), (base + 8, 0, 1), (base + 8, 3, 9)];
+        let (missing, credited) = credit(&mut images, 0, &words);
+        assert!(missing.is_empty(), "{missing:?}");
+        assert_eq!(credited, vec![3, 2]);
+        // Beside a word no image holds, it stays unexplained.
+        let mut images = vec![img("shell", base + 4, vec![0x03E0_0008, 0], vec![])];
+        let words = [(base, 7, 1), (base + 4, 0x03E0_0008, 1), (base + 8, 0, 1), (base + 12, 5, 1)];
+        let (missing, _) = credit(&mut images, 0, &words);
+        assert_eq!(missing.len(), 4);
     }
 
     #[test]
