@@ -67,7 +67,10 @@ goes (a level, a menu, a cutscene): a snapshot adds the tables filled at
 runtime, and code no executable holds is an overlay, matched to the disc
 file it came from. A traced run (run --trace) adds its call targets and
 the code it executed, where the code at hand is what ran there. Code the BIOS copies into RAM at power-on (its shell) is
-listed apart under bios_code. Each executable and overlay lists its gaps,
+listed apart under bios_code. An image at an overlay's place whose code
+words are the overlay's (only its data differs) is one of its variants,
+counted once; one whose code differs notes same_range_as, with how many
+words and code words differ. Each executable and overlay lists its gaps,
 what no function covers, with how many words decode as code: classify
 them, or record the game reaching them. Take an inventory again whenever
 the corpus reaches somewhere new.
