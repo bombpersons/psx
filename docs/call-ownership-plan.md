@@ -120,7 +120,11 @@ What did not run is read from bytes, as now, and is a guess:
 - the code between words that ran, read straight through as an extent
   is (a switch's cases are reached by a table, not by branches);
 - the blocks of a function its runs skipped, reached by its branches;
-- its tail after the last word that ran, to its return;
+- its tail after the last word that ran, to its return or a `jr` on
+  another register (a stub into the BIOS, a switch's dispatch): what
+  follows that is listed as its own function where it starts like one,
+  not hidden in the code before (`jr zero`, the integer 8 in data, is
+  no end);
 - functions no run reached: calls read from bytes in live functions,
   pointers, prologues.
 A guess never takes a word that ran, and never starts on or takes a word
@@ -219,8 +223,9 @@ Each is committed and reviewed on its own, with its check.
      came from a call piece 2 read in a half-loaded moment: at frame 3661
      the overlay's 0x800319A8 was read on into the next page, which still
      held the shell, and the shell's `jal`s there were followed. Without
-     that call they are read as the tail of the stub before (after its
-     `jr t2`, as piece 2's extent reads too).
+     that call they were read as the tail of the stub before (after its
+     `jr t2`, as piece 2's extent reads too), until code stopped at a
+     `jr` on any register (below).
    - The other differences in overlays and the shell are guesses moved by
      the bodies beside them: bodies end where they ran or where their
      bytes say, not where a guess carried from another moment started,
@@ -230,6 +235,18 @@ Each is committed and reviewed on its own, with its check.
      loaded again, 0x80015FF8 among them), or a guess now in a body. An
      image is named by the first function found in it, so four more are
      named differently.
+   Then code stops at a `jr` on a register other than ra too: 1754
+   functions (1102 executable, 652 in 43 overlay images) and 723 in the
+   BIOS shell, the same checks met. 31 BIOS shell stubs (the four above
+   among them) and 6 executable stubs are their own functions again; 7
+   switch dispatchers end at their `jr v0`, 5 of them in no function
+   before; 2 functions are data that decodes as `jr a0` (0x8009A538,
+   0x8009A67C). Of the 356 words no longer in a function, all but 8 are
+   data or padding read on past a `jr`: a table of 137 pointers at
+   0x8005AC40 (the shell's switch cases, now functions) and its copy in
+   the image at frame 96 (gone: it held only that). The 8 are the cases
+   of a switch in guessed code (0x80011750 in the image at frame 2951),
+   whose bounds check branches past them but beyond the next function.
    Coverage of functions of more than one chunk waits for piece 3.
 3. **Coverage and ledger by chunk.** Check: coverage's totals on GT2 match
    the inventory's; the ledger's tests with a function of two chunks.

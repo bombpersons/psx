@@ -100,6 +100,16 @@ fn ends_block(i: u32) -> bool {
     branch_target(0, i).is_some() || i >> 26 == 0x02 || (i >> 26 == 0 && i & 0x3F == 0x08)
 }
 
+/// `jr` on any register: the code does not go on past its delay slot.
+/// On another register than ra it is a jump to code the bytes do not say
+/// (a stub into the BIOS, a switch's cases), taken as the end of the code
+/// there: a function after it is listed on its own, where reading on would
+/// hide it in the code before (a guess either way). Not `jr zero`: no
+/// code jumps to address 0, and it is the integer 8, common in data.
+fn is_jr(i: u32) -> bool {
+    i & 0xFC1F_FFFF == 0x0000_0008 && i >> 21 != 0
+}
+
 fn is_prologue(i: u32) -> bool {
     i >> 16 == 0x27BD && (i & 0x8000) != 0
 }
@@ -112,8 +122,8 @@ struct Function {
     end: u32,
     chunks: Vec<(u32, u32)>,
     found_by: BTreeSet<&'static str>,
-    /// How the extent ended: return, tail_jump, next_function, invalid,
-    /// limit; `ran` for a body of what ran.
+    /// How the extent ended: return, register_jump, tail_jump,
+    /// next_function, invalid, limit; `ran` for a body of what ran.
     ends: &'static str,
     /// Its start is the trace's: a call it saw, or the entry.
     fact: bool,
@@ -508,7 +518,7 @@ impl<'a> Analysis<'a> {
             return vec![pc + 4];
         };
         let at = pc - 4;
-        if j == JR_RA {
+        if is_jr(j) {
             return vec![];
         }
         if let Some(t) = branch_target(at, j) {
@@ -520,11 +530,11 @@ impl<'a> Analysis<'a> {
             let inside = t > pc && !self.functions.contains_key(&t) && t.wrapping_sub(start) < 4 * MAX_FUNCTION;
             return if inside { vec![t] } else { vec![] };
         }
-        // jal, jalr, and jr on another register (a switch: its cases follow).
+        // jal and jalr return.
         vec![pc + 4]
     }
 
-    /// The function's extent from `start`: forward until a `jr ra` or tail
+    /// The function's extent from `start`: forward until a `jr` or tail
     /// `j` that no branch jumps past and the trace saw nothing continue,
     /// the next known function, an invalid word or the limit.
     fn extent(&self, start: u32) -> (u32, &'static str) {
@@ -568,11 +578,18 @@ impl<'a> Analysis<'a> {
                 }
             }
             // The trace saw the code after it continue it: not its end.
-            if (i == JR_RA || tail) && reach <= pc + 4 && !self.continues.contains(&(pc + 8)) {
+            if (is_jr(i) || tail) && reach <= pc + 4 && !self.continues.contains(&(pc + 8)) {
                 if !self.code.word(pc + 4).is_some_and(sensible) {
                     return (pc, "invalid");
                 }
-                return (pc + 8, if tail { "tail_jump" } else { "return" });
+                let ends = if tail {
+                    "tail_jump"
+                } else if i == JR_RA {
+                    "return"
+                } else {
+                    "register_jump"
+                };
+                return (pc + 8, ends);
             }
             pc += 4;
         }
@@ -693,7 +710,7 @@ impl<'a> Analysis<'a> {
         // A tail jump lands on a function already known: tables of data
         // decode as jumps to anywhere.
         match self.extent(t) {
-            (_, "return") => true,
+            (_, "return" | "register_jump") => true,
             (end, "tail_jump") => {
                 let w = self.code.word(end - 8).unwrap_or(0);
                 self.functions.contains_key(&jump_target(end - 8, w))
@@ -703,7 +720,7 @@ impl<'a> Analysis<'a> {
     }
 
     /// `t` follows the end of a function: back over zero padding to a
-    /// delay slot whose jump (`jr ra` or a tail `j`) ends that function.
+    /// delay slot whose jump (`jr` or a tail `j`) ends that function.
     fn after_end(&self, t: u32) -> bool {
         let mut a = t.wrapping_sub(4);
         let mut padding = 0;
@@ -711,9 +728,8 @@ impl<'a> Analysis<'a> {
             a = a.wrapping_sub(4);
             padding += 1;
         }
-        // `a` is the jump, unless its delay slot was not a nop. A `jr` on
-        // another register is a switch, whose cases follow it.
-        let ends = |w: u32| w >> 26 == 0x02 || w == JR_RA;
+        // `a` is the jump, unless its delay slot was not a nop.
+        let ends = |w: u32| w >> 26 == 0x02 || is_jr(w);
         match (self.code.word(a), self.code.word(a.wrapping_sub(4))) {
             (Some(w), _) if padding > 0 && ends(w) => true,
             (_, Some(w)) => ends(w) && self.code.word(t.wrapping_sub(4)).is_some_and(|d| !ends(d)),
@@ -2662,6 +2678,33 @@ mod tests {
             live: true,
         }]);
         assert_eq!(a.functions[&x(0)].chunks, [(x(0), x(0x28))]);
+    }
+
+    #[test]
+    fn stubs_jumping_through_a_register_are_each_a_function() {
+        // Three stubs into the BIOS (`addiu t2, zero, 0xA0; jr t2; addiu
+        // t1, zero, n; nop`); only the first ran.
+        let stub = |n: u32| [0x240A_00A0, 0x0140_0008, 0x2409_0000 | n, NOP];
+        let c = code(&[stub(1), stub(2), stub(3)].concat());
+        let x = |o: u32| 0x8001_0000 + o;
+        let mut a = Analysis::new(&c, None, Box::new(|_| true));
+        a.place(&[Fact {
+            entry: x(0),
+            how: "trace_call",
+            words: [0, 4, 8].iter().map(|&w| x(w)).collect(),
+            landed: 0,
+            jumps: BTreeMap::new(),
+            shared_by: BTreeSet::new(),
+            live: true,
+        }]);
+        a.guesses();
+        a.region = Some((x(0), x(0x30)));
+        a.prologues();
+        let got: Vec<(u32, u32, &str)> = a.functions.values().map(|f| (f.start, f.end, f.ends)).collect();
+        assert_eq!(
+            got,
+            [(x(0), x(0xC), "ran"), (x(0x10), x(0x1C), "register_jump"), (x(0x20), x(0x2C), "register_jump")]
+        );
     }
 
     #[test]
