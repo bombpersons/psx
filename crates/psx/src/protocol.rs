@@ -519,19 +519,51 @@ fn code_units(inv: &Value, cov: Option<&Value>) -> Vec<Unit> {
 
 /// Overlays no file holds, read only around the code found in them: their
 /// functions no run went near are not counted. None when there are none.
-fn partly_read(inv: Option<&Value>) -> Value {
-    let list: Vec<Value> = inv
+fn partly_read(inv: Option<&Value>, explained: &Value) -> Value {
+    let hex = |v: &Value| v.as_str().and_then(|t| u32::from_str_radix(t.trim_start_matches("0x"), 16).ok());
+    let mut overlays: Vec<(u32, u32, u64)> = inv
         .and_then(|i| i["overlays"].as_array())
         .into_iter()
         .flatten()
         .filter(|o| o["bounded_by"] == "found_code")
-        .map(|o| json!({"name": o["name"], "functions": o["totals"]["functions"]}))
+        .filter_map(|o| Some((hex(&o["start"])?, hex(&o["end"])?, o["totals"]["functions"].as_u64().unwrap_or(0))))
         .collect();
-    if list.is_empty() {
+    if overlays.is_empty() {
         return Value::Null;
     }
-    json!({"overlays": list,
-        "why": "no file holds their code, so the inventory read only around the code found in them and coverage over them reads high; decompressed code is read whole by passing it to inventory --unpacked (guide protocol)"})
+    // Overlays that overlap or touch share a stretch of RAM: what wrote one
+    // there likely wrote the others, so each stretch is one piece of work.
+    overlays.sort();
+    let mut regions: Vec<(u32, u32, usize, u64)> = Vec::new();
+    for (start, end, functions) in overlays {
+        match regions.last_mut() {
+            Some(r) if start <= r.1 => {
+                r.1 = r.1.max(end);
+                r.2 += 1;
+                r.3 += functions;
+            }
+            _ => regions.push((start, end, 1, functions)),
+        }
+    }
+    // notes/overlays.json: {"regions": [{"start", "end", "why"}]}, for code
+    // no disc file holds (built at runtime, say); it settles each region it covers.
+    let why: Vec<(u32, u32, &str)> = explained["regions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| Some((hex(&e["start"])?, hex(&e["end"])?, e["why"].as_str().filter(|w| !w.trim().is_empty())?)))
+        .collect();
+    let list: Vec<Value> = regions
+        .iter()
+        .map(|&(start, end, overlays, functions)| {
+            let w = why.iter().find(|w| w.0 <= start && end <= w.1).map(|w| w.2);
+            json!({"start": format!("{start:08X}"), "end": format!("{end:08X}"), "overlays": overlays,
+                "functions": functions, "explained": w})
+        })
+        .collect();
+    let open = list.iter().filter(|r| r["explained"].is_null()).count();
+    json!({"regions": list, "unsettled": open,
+        "why": "no file holds the code in these stretches of RAM, so the inventory read only around the code found there and counts too few functions; decompressed code is read whole by passing it to inventory --unpacked, and code no disc file holds is explained in notes/overlays.json (guide code)"})
 }
 
 /// The image's file name, for matching a name given in provenance or a
@@ -1084,6 +1116,16 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         )),
         _ => {}
     }
+    let partly_read_overlays = partly_read(inv.as_ref(), &read_json(&notes.join("overlays.json")).unwrap_or(json!({})));
+    if let Some(n) = partly_read_overlays["unsettled"].as_u64().filter(|&n| n > 0) {
+        let open: Vec<&Value> =
+            partly_read_overlays["regions"].as_array().into_iter().flatten().filter(|r| r["explained"].is_null()).collect();
+        inv_work.push(work(
+            "unpack_overlays",
+            format!("{n} stretches of RAM hold code no file holds, so the inventory read only around the code found there: for each, find what wrote it and from what (guide code, Decompressed code); decompress what it read from the disc and take the inventory again with --unpacked, or, when no disc file holds the code (built at runtime), say so in notes/overlays.json with the writer and what it read"),
+            json!({"regions": open}),
+        ));
+    }
     if inv.is_none() {
         inv_work.push(work(
             "inventory",
@@ -1389,7 +1431,7 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         "audits": {"due": audit_due, "unaudited_bundles": unaudited, "loop_ended": loop_ended,
             "last": last_audit.as_ref().map(|a| json!({"time": a["time"], "mechanical": a["mechanical"], "judgment": a["judgment"], "bundles": a["bundles"].as_array().map_or(0, Vec::len)}))},
         "inventory_gaps": inventory_gaps,
-        "partly_read_overlays": partly_read(inv.as_ref()),
+        "partly_read_overlays": partly_read_overlays,
         "emulator_changes": {"states": stale_chains, "cases": stale_cases.len(), "differing": differing},
         "inputs": {"inventory": inv.as_ref().map(|_| &inv_path), "coverage": cov.as_ref().map(|_| &cov_path), "results": set.results},
     });
@@ -1836,15 +1878,24 @@ impl Op for ProtocolNextArgs {
 mod tests {
 
     #[test]
-    fn overlays_read_only_around_their_found_code_are_listed() {
+    fn overlays_read_only_around_their_found_code_are_work_by_stretch_of_ram() {
         let inv = json!({"overlays": [
-            {"name": "80100000 /OVL.BIN", "bounded_by": "file", "totals": {"functions": 3}},
-            {"name": "code at 80040000, frame 9", "bounded_by": "found_code", "totals": {"functions": 5}}]});
-        let p = partly_read(Some(&inv));
-        assert_eq!(p["overlays"].as_array().map(Vec::len), Some(1));
-        assert_eq!(p["overlays"][0]["functions"], 5);
-        assert!(partly_read(Some(&json!({"overlays": []}))).is_null());
-        assert!(partly_read(None).is_null());
+            {"name": "80100000 /OVL.BIN", "bounded_by": "file", "start": "80100000", "end": "80104000", "totals": {"functions": 3}},
+            {"name": "code at 80040000, frame 9", "bounded_by": "found_code", "start": "80040000", "end": "80041000", "totals": {"functions": 5}},
+            {"name": "code at 80040800, frame 20", "bounded_by": "found_code", "start": "80040800", "end": "80041800", "totals": {"functions": 1}},
+            {"name": "code at 80041800, frame 30", "bounded_by": "found_code", "start": "80041800", "end": "80042000", "totals": {"functions": 1}},
+            {"name": "code at 80060000, frame 9", "bounded_by": "found_code", "start": "80060000", "end": "80060100", "totals": {"functions": 1}}]});
+        let p = partly_read(Some(&inv), &json!({}));
+        assert_eq!(p["unsettled"], 2);
+        assert_eq!(p["regions"][0], json!({"start": "80040000", "end": "80042000", "overlays": 3, "functions": 7, "explained": null}));
+        // An explanation settles each stretch it covers, and only with a reason.
+        let why = json!({"regions": [{"start": "80060000", "end": "80061000", "why": "built at runtime by 80012340"},
+            {"start": "80040000", "end": "80042000", "why": " "}]});
+        let p = partly_read(Some(&inv), &why);
+        assert_eq!(p["unsettled"], 1);
+        assert_eq!(p["regions"][1]["explained"], "built at runtime by 80012340");
+        assert!(partly_read(Some(&json!({"overlays": []})), &json!({})).is_null());
+        assert!(partly_read(None, &json!({})).is_null());
     }
     use super::*;
 

@@ -73,3 +73,12 @@ from the disc, give inventory the decompressed bytes to read it whole:
    (in_ram, and the overlays it names). One that did not was decompressed
    wrongly, holds no code, or no run loaded it: only bytes RAM held are
    read, so a wrong decompressor adds nothing.
+The ledger's partly_read_overlays groups such overlays by stretch of RAM
+(those that overlap or touch), and protocol next gives the investigator each
+stretch not yet settled (unpack_overlays), before coverage. A stretch is
+settled when the inventory reads its code whole, or when notes/overlays.json
+explains why no disc file holds it (built at runtime, say):
+  {"regions": [{"start": "80010000", "end": "8002EE98",
+                "why": "written by 80012340 from a table it builds"}]}
+An entry settles each stretch inside start..end. Name the writer and what
+it read: the why is a claim, checked like any other.
