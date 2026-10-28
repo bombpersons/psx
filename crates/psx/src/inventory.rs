@@ -2047,7 +2047,9 @@ pub(crate) fn default_out(ctx: &Ctx) -> PathBuf {
 pub(crate) fn protocol_media(root: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(root.join("protocol.toml")).ok()?;
     let v: toml::Value = toml::from_str(&text).ok()?;
-    Some(PathBuf::from(v.get("disc")?.get("media")?.as_str()?))
+    // Relative to the repository (psx port init writes ../disc.chd).
+    let p = crate::moved::find(root, Path::new(v.get("disc")?.get("media")?.as_str()?));
+    p.is_file().then_some(p)
 }
 
 impl InventoryArgs {

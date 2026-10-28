@@ -1,5 +1,6 @@
-Call context with an image path, or from_state for a checkpoint. Read build,
-project_root, resolved, capabilities and warnings.
+Call context with an image path, or from_state for a checkpoint; without one it
+uses the saved defaults, else protocol.toml's disc (resolved.media_from says
+which). Read build, project_root, resolved, capabilities and warnings.
 guide itself only returns documentation; it does not validate the installation.
 
 All relative input and output paths resolve against the server's project root:
