@@ -32,7 +32,9 @@ Observations (native):
   (counted as skipped).
 - trace writes trace.txt (windowed by trace_from_frame / trace_range),
   coverage.txt, code.bin (each RAM page's history: a copy when code first
-  runs in it, and another whenever code runs in it after it changed),
+  runs in it, another whenever code runs in it after it changed, and one
+  as another page is copied when RAM changed it with no code run there,
+  code_pages.refreshed: so each copy is RAM's code at its moment),
   executed.bin (each executed word with the copy it ran from, the
   instruction it ran as, the moment it first ran: the number of the latest
   copy then, and whether it ever continued the code before it: ran

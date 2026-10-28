@@ -191,6 +191,10 @@ pub struct CodeCopy {
     /// The page's KSEG0 address.
     pub addr: u32,
     pub data: CopyData,
+    /// Taken because RAM no longer held the page's copy before as another
+    /// page was copied, not because code ran in it: RAM's code at each
+    /// moment is each page's latest copy.
+    pub refresh: bool,
 }
 
 /// A page's first copy is whole; each later one holds the words that
@@ -694,11 +698,46 @@ impl Tracer {
         self.take_copy(p, bus)
     }
 
-    /// Copies page `p` as RAM holds it now, keeping only the words that
-    /// changed when the page has a copy already.
+    /// Copies page `p` as RAM holds it now, a new moment, keeping only the
+    /// words that changed when the page has a copy already. First, every
+    /// other page whose latest copy RAM no longer holds (written over with
+    /// no code run there since: a load, or data beside code) is copied
+    /// again, so each page's latest copy is RAM at the moment.
     fn take_copy(&mut self, p: usize, bus: &Bus) -> Option<u32> {
+        let stale: Vec<usize> = (0..self.page_copy.len())
+            .filter(|&q| q != p)
+            .filter(|&q| {
+                self.page_copy[q]
+                    .as_ref()
+                    .is_some_and(|(_, b, ..)| b[..] != bus.ram[q * CODE_PAGE..(q + 1) * CODE_PAGE])
+            })
+            .collect();
+        // Kept or dropped together: the moment is the page's own copy.
+        let group: Vec<(usize, CopyData)> = stale.into_iter().chain([p]).map(|q| (q, self.copy_data(q, bus))).collect();
+        let size: usize = group
+            .iter()
+            .map(|(_, d)| match d {
+                CopyData::Whole(b) => b.len(),
+                CopyData::Changed(_, w) => 6 * w.len(),
+            })
+            .sum();
+        if self.code_bytes + size > MAX_CODE_BYTES {
+            self.code_pages_dropped += group.len() as u64;
+            return None;
+        }
+        self.code_bytes += size;
+        let mut c = 0;
+        for (q, data) in group {
+            c = self.push_copy(q, bus, data, q != p);
+        }
+        Some(c)
+    }
+
+    /// Page `p` as RAM holds it now: whole, or the words changed since its
+    /// copy before.
+    fn copy_data(&self, p: usize, bus: &Bus) -> CopyData {
         let now = &bus.ram[p * CODE_PAGE..(p + 1) * CODE_PAGE];
-        let data = match &self.page_copy[p] {
+        match &self.page_copy[p] {
             None => CopyData::Whole(now.into()),
             Some((c, b, ..)) => CopyData::Changed(
                 *c,
@@ -707,23 +746,20 @@ impl Tracer {
                     .map(|j| (j as u16, u32::from_le_bytes(now[4 * j..4 * j + 4].try_into().unwrap())))
                     .collect(),
             ),
-        };
-        let size = match &data {
-            CopyData::Whole(b) => b.len(),
-            CopyData::Changed(_, w) => 6 * w.len(),
-        };
-        if self.code_bytes + size > MAX_CODE_BYTES {
-            self.code_pages_dropped += 1;
-            return None;
         }
-        self.code_bytes += size;
+    }
+
+    fn push_copy(&mut self, p: usize, bus: &Bus, data: CopyData, refresh: bool) -> u32 {
+        let now = &bus.ram[p * CODE_PAGE..(p + 1) * CODE_PAGE];
         let c = self.code_pages.len() as u32;
-        self.code_pages.push(CodeCopy { frame: bus.frames, addr: 0x8000_0000 + (p * CODE_PAGE) as u32, data });
+        self.code_pages.push(CodeCopy { frame: bus.frames, addr: 0x8000_0000 + (p * CODE_PAGE) as u32, data, refresh });
         // The calls not yet returned from run on into the new moment.
-        for f in &self.returns {
-            if let Some(Owner::Call(copy, addr)) = f.owner.map(|o| self.owners[o as usize]) {
-                if let Some(call) = self.calls.get_mut(&(copy, addr)) {
-                    at(&mut call.moments, c);
+        if !refresh {
+            for f in &self.returns {
+                if let Some(Owner::Call(copy, addr)) = f.owner.map(|o| self.owners[o as usize]) {
+                    if let Some(call) = self.calls.get_mut(&(copy, addr)) {
+                        at(&mut call.moments, c);
+                    }
                 }
             }
         }
@@ -734,7 +770,7 @@ impl Tracer {
                 self.counts.entry((old, k0 + j as u32)).or_default().add(*r);
             }
         }
-        Some(c)
+        c
     }
 
     /// The word at byte `o` of copy `c`.
@@ -879,6 +915,33 @@ mod tests {
     }
 
     const JAL: u32 = 0x0C00_4000; // jal 80010000
+
+    #[test]
+    fn a_page_ram_changed_with_no_code_run_there_is_copied_again_at_the_next_moment() {
+        let mut bus = Bus::new(vec![]);
+        bus.page_writes = vec![0; 0x20_0000 / CODE_PAGE];
+        let cpu = Cpu::new();
+        let mut t = Tracer::new(TraceConfig::default(), Box::new(std::io::sink()), None);
+        let (a, b, c) = (0x8001_0000, 0x8002_0000, 0x8003_0000);
+        put(&mut bus, a, 1);
+        ran(&mut t, &cpu, &bus, a, 1);
+        put(&mut bus, b, 3);
+        ran(&mut t, &cpu, &bus, b, 3);
+        // A written over with no code run there: copied again as C is.
+        put(&mut bus, a, 2);
+        put(&mut bus, c, 4);
+        ran(&mut t, &cpu, &bus, c, 4);
+        // And again when it changes back.
+        put(&mut bus, a, 1);
+        put(&mut bus, c + 4, 5);
+        ran(&mut t, &cpu, &bus, c, 4);
+        // Code run in A runs from that copy: RAM holds it.
+        ran(&mut t, &cpu, &bus, a, 1);
+        let got: Vec<(u32, bool)> = t.code_pages.iter().map(|p| (p.addr, p.refresh)).collect();
+        assert_eq!(got, [(a, false), (b, false), (a, true), (c, false), (a, true), (c, false)]);
+        assert_eq!((t.copy_word(2, 0), t.copy_word(4, 0)), (2, 1));
+        assert!(t.executed().iter().any(|e| e.0 == 4 && e.1 == a));
+    }
 
     #[test]
     fn code_loaded_over_code_runs_from_a_copy_of_its_own() {

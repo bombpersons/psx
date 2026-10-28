@@ -1304,6 +1304,10 @@ struct Timeline {
     groups: Vec<Group>,
     /// Per copy: the words run in it inside a group.
     owned: Vec<BTreeSet<u32>>,
+    /// Per copy: taken because RAM no longer held the page's copy before,
+    /// with no code run there (not a moment of its own); None for a run
+    /// recorded before those were taken.
+    refresh: Option<Vec<bool>>,
 }
 
 /// A call (or exception) of the trace, by its entry and the copy its entry
@@ -1385,7 +1389,7 @@ fn timeline(run: &Path) -> crate::Result<Option<Timeline>> {
         ))
     };
     let body = e.strip_prefix(b"PSXEXEC4").ok_or_else(again)?;
-    let copies = code_pages(run).ok_or_else(again)?;
+    let (copies, refresh) = code_pages(run).ok_or_else(again)?;
     let mut ran = vec![Vec::new(); copies.len()];
     for r in body.as_chunks::<28>().0 {
         let u = |a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
@@ -1413,7 +1417,9 @@ fn timeline(run: &Path) -> crate::Result<Option<Timeline>> {
     }
     let text = std::fs::read_to_string(run.join("owners.json")).map_err(|_| again())?;
     let owners: Value = serde_json::from_str(&text).map_err(|_| again())?;
-    Ok(Some(Timeline::new(copies, ran, calls, &owner_rows(&owners))))
+    let mut t = Timeline::new(copies, ran, calls, &owner_rows(&owners));
+    t.refresh = refresh;
+    Ok(Some(t))
 }
 
 impl Timeline {
@@ -1438,7 +1444,7 @@ impl Timeline {
             };
             ver.push(v);
         }
-        let mut t = Timeline { copies, ran, calls, ver, groups: Vec::new(), owned: Vec::new() };
+        let mut t = Timeline { copies, ran, calls, ver, groups: Vec::new(), owned: Vec::new(), refresh: None };
         t.owned = vec![BTreeSet::new(); t.copies.len()];
         // Calls and exceptions first, then landings guessed to be theirs.
         let mut key: BTreeMap<(&'static str, u32, u32), usize> = BTreeMap::new();
@@ -1601,12 +1607,21 @@ fn holds(word: impl Fn(u32) -> Option<u32>, x: u32, seen: &[Option<u32>; 3]) -> 
 }
 
 /// A traced run's code page copies (code.bin), each whole: `(frame, KSEG0
-/// page, bytes)`. None for a code.bin from before page history.
-fn code_pages(run: &Path) -> Option<Vec<(u64, u32, Vec<u8>)>> {
+/// page, bytes)`, and per copy whether it was taken because RAM no longer
+/// held the page's copy before, with no code run there: None for a
+/// code.bin from before those were taken. None for one from before page
+/// history.
+type CodePages = (Vec<(u64, u32, Vec<u8>)>, Option<Vec<bool>>);
+
+fn code_pages(run: &Path) -> Option<CodePages> {
     let b = std::fs::read(run.join("code.bin")).ok()?;
-    let mut rest = b.strip_prefix(b"PSXCODE2")?;
+    let (mut rest, kept) = match b.strip_prefix(b"PSXCODE3") {
+        Some(r) => (r, true),
+        None => (b.strip_prefix(b"PSXCODE2")?, false),
+    };
     let u = |r: &[u8], a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
     let mut out: Vec<(u64, u32, Vec<u8>)> = Vec::new();
+    let mut refresh: Vec<bool> = Vec::new();
     // A later copy of a page is the words changed since the copy before.
     while rest.len() >= 20 {
         let frame = u64::from_le_bytes(rest[0..8].try_into().unwrap());
@@ -1625,8 +1640,12 @@ fn code_pages(run: &Path) -> Option<Vec<(u64, u32, Vec<u8>)>> {
         };
         out.push((frame, addr, bytes));
         rest = &rest[20 + n..];
+        if kept {
+            refresh.push(u(rest.get(..4)?, 0) & 1 != 0);
+            rest = &rest[4..];
+        }
     }
-    Some(out)
+    Some((out, kept.then_some(refresh)))
 }
 
 const PAGE: u32 = 0x1000;
@@ -2146,6 +2165,11 @@ fn take_timeline(f: &mut Finder, t: &Timeline, run: usize) {
                 }
             }
         }
+        // A copy taken because RAM changed where no code ran is RAM at the
+        // moment of the copy after it, not a moment of its own.
+        if t.refresh.as_ref().is_some_and(|r| r[c]) {
+            continue;
+        }
         // The calls running at this moment ran with RAM as it is now, and
         // only theirs are followed here: other code a copy holds may run
         // with other code beside it, in other moments. What ran from a copy
@@ -2325,7 +2349,13 @@ impl InventoryArgs {
             let mut ram = crate::ram::load(&dir)?.bytes;
             ram.resize(0x20_0000, 0);
             let executed = std::fs::read(dir.join("executed.bin")).ok().map(|b| crate::publish::sha256(&b));
-            inputs.push(json!({"run": dir, "executed_sha256": executed}));
+            let mut input = json!({"run": dir, "executed_sha256": executed});
+            // A trace from before overwritten pages were kept reads code
+            // beside a page RAM no longer held as if it still did.
+            if let Some(t) = &tl {
+                input["overwritten_pages_kept"] = json!(t.refresh.is_some());
+            }
+            inputs.push(input);
             runs.push((dir, tl, ram));
         }
         // The executable each copy holds.
@@ -2701,7 +2731,7 @@ impl InventoryArgs {
         let inventory = json!({
             "inventory": 2, "made": crate::publish::utc_now(), "psx": crate::context::version(),
             "media": media, "boot": boot, "totals": summary,
-            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); code no executable holds is found in each moment of each traced run's code pages (RAM's code as it was then, seeded by what ran and was called in that moment, with calls followed only from code that ran in it) and in each run's RAM at its end; a function is its start and the sha256 of its bytes, listed once however many moments held it; overlays group them by the file their bytes are loaded from, a disc file or one decompressed from it (unpacked), analysed over the extent RAM held of it (bounded_by file), else (one no file's cluster named, when exactly one file seen loaded holds its bytes there, is that file's) by the code they were first found in, read only around the code found (bounded_by found_code: functions far from it are not listed); code from the BIOS ROM, the shell, is listed under bios_code instead; gaps are what no executable's function covers, with how many words decode as instructions",
+            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); code no executable holds is found in each moment of each traced run's code pages (RAM's code as it was then: each page's latest copy, taken again where RAM was written over with no code run there, seeded by what ran and was called in that moment, with calls followed only from code that ran in it) and in each run's RAM at its end; a function is its start and the sha256 of its bytes, listed once however many moments held it; overlays group them by the file their bytes are loaded from, a disc file or one decompressed from it (unpacked), analysed over the extent RAM held of it (bounded_by file), else (one no file's cluster named, when exactly one file seen loaded holds its bytes there, is that file's) by the code they were first found in, read only around the code found (bounded_by found_code: functions far from it are not listed); code from the BIOS ROM, the shell, is listed under bios_code instead; gaps are what no executable's function covers, with how many words decode as instructions",
             "executables": executables, "overlays": overlays, "bios_code": bios_code, "disc": {"files": files},
             "unpacked": unpacked_report, "ram": inputs,
         });
@@ -2726,6 +2756,14 @@ impl InventoryArgs {
             list.iter().map(|x| json!({key: x[key].clone(), "file": x.get("file").cloned().unwrap_or(Value::Null), "bounded_by": x["bounded_by"], "totals": x["totals"]})).collect()
         };
         let found_code = overlays.iter().filter(|o| o["bounded_by"] == "found_code").count();
+        let old_traces: Vec<Value> =
+            inputs.iter().filter(|i| i["overwritten_pages_kept"] == false).map(|i| i["run"].clone()).collect();
+        let mut next = String::from(
+            "artifact_read the inventory for functions and gaps; keep it in the investigator's notes so the ledger can count against it",
+        );
+        if !old_traces.is_empty() {
+            next += "; the runs in traced_before_overwritten_pages_were_kept were traced before run --trace kept the pages RAM stopped holding, so code beside one may be read on into code no longer there: record them again with run --trace (the same recipe) and take the inventory again";
+        }
         Ok(json!({
             "out": out, "history": history, "totals": summary, "previous": previous,
             "executables": executables.iter().map(|x| json!({"path": x["path"], "boot": x["boot"], "totals": x["totals"]})).collect::<Vec<_>>(),
@@ -2734,9 +2772,10 @@ impl InventoryArgs {
             // Functions the bytes of more than one placed file: left with the
             // code they were found in rather than given to one.
             "found_code_in_several_files": ambiguous,
+            "traced_before_overwritten_pages_were_kept": old_traces,
             "unpacked": inventory["unpacked"],
             "bios_code": bios_code.iter().map(|b| json!({"start": b["start"], "end": b["end"], "file": b["file"]["path"]})).collect::<Vec<_>>(),
-            "next": "artifact_read the inventory for functions and gaps; keep it in the investigator's notes so the ledger can count against it",
+            "next": next,
         }))
     }
 }
@@ -2968,6 +3007,26 @@ mod tests {
         assert_eq!((t.copies[2].2[0x100], &t.copies[2].2[8..12]), (7, &0xBBBBu32.to_le_bytes()[..]));
         assert_eq!(t.ran, [vec![(0x8010_0008, 0, 0, false)], vec![], vec![(0x8010_0008, 0xBBBB, 2, true)]]);
         assert_eq!(t.calls, [vec![], vec![(0x8010_0008, vec![(2, 2)])], vec![]]);
+        assert_eq!(t.refresh, None, "a run from before pages were copied again where no code ran");
+        // The same history with, after each copy, its flags (1: copied
+        // again where no code ran).
+        let mut code = b"PSXCODE3".to_vec();
+        for (k, (frame, before, body)) in
+            [(10u64, u32::MAX, vec![0u8; 0x1000]), (11, 0, changed(0x100, 7)), (12, 1, changed(8, 0xBBBB))]
+                .into_iter()
+                .enumerate()
+        {
+            code.extend(frame.to_le_bytes());
+            code.extend(0x8010_0000u32.to_le_bytes());
+            code.extend(before.to_le_bytes());
+            code.extend((body.len() as u32).to_le_bytes());
+            code.extend(&body);
+            code.extend(((k == 1) as u32).to_le_bytes());
+        }
+        std::fs::write(dir.join("code.bin"), code).unwrap();
+        let t = timeline(&dir).unwrap().unwrap();
+        assert_eq!((t.copies[2].2[0x100], &t.copies[2].2[8..12]), (7, &0xBBBBu32.to_le_bytes()[..]));
+        assert_eq!(t.refresh, Some(vec![false, true, false]));
         std::fs::write(dir.join("code.bin"), b"PSXCODE1").unwrap();
         let old = timeline(&dir).err().map(|e| e.to_string()).unwrap_or_default();
         assert!(old.contains("record it again"), "{old}");
@@ -3063,6 +3122,55 @@ mod tests {
         let got: Vec<(u32, u32)> =
             f.found.values().map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]))).collect();
         assert_eq!(got, [(a + 0xFF8, b + 0xC)], "no function starts at the second page");
+    }
+
+    #[test]
+    fn a_page_copied_again_where_no_code_ran_is_ram_at_the_next_moment_and_no_moment_of_its_own() {
+        // A function runs at the end of one page, on into the next, whose
+        // copy was taken again (RAM changed there with no code run) just
+        // before: the function is read on into that copy.
+        let (a, b) = (0x8010_0000u32, 0x8010_1000u32);
+        let mut page_a = vec![0xFFu8; 0x1000];
+        page_a[0xFF8..0xFFC].copy_from_slice(&PROLOGUE.to_le_bytes());
+        page_a[0xFFC..].copy_from_slice(&NOP.to_le_bytes());
+        let words = |ws: &[u32]| {
+            let mut p = vec![0u8; 0x1000];
+            for (k, w) in ws.iter().enumerate() {
+                p[4 * k..4 * k + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            p
+        };
+        let mut t = timeline_of(Tl {
+            copies: vec![(10, b, words(&[NOP, JR_RA, NOP])), (15, b, words(&[NOP, NOP, JR_RA, NOP])), (20, a, page_a)],
+            ran: vec![
+                vec![(b, NOP, 0, false), (b + 4, JR_RA, 0, true), (b + 8, NOP, 0, true)],
+                vec![],
+                vec![(a + 0xFF8, PROLOGUE, 2, false), (a + 0xFFC, NOP, 2, true)],
+            ],
+            calls: vec![vec![], vec![], vec![(a + 0xFF8, vec![(2, 2)])]],
+        });
+        t.refresh = Some(vec![false, true, false]);
+        let mut f = Finder {
+            exes: &[],
+            files: &[],
+            exe_functions: Vec::new(),
+            exe_keys: BTreeSet::new(),
+            found: BTreeMap::new(),
+            named: BTreeMap::new(),
+            known: Vec::new(),
+            switches: BTreeMap::new(),
+            memo: BTreeMap::new(),
+        };
+        take_timeline(&mut f, &t, 0);
+        let got: Vec<(u32, u32)> = f
+            .found
+            .values()
+            .filter(|x| parse_hex(&x.row["entry"]) == a + 0xFF8)
+            .map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"])))
+            .collect();
+        assert_eq!(got, [(a + 0xFF8, b + 0x10)]);
+        assert!(f.found.values().all(|x| !x.first.ends_with("frame 15")), "the copy taken again is no moment");
+        assert!(f.memo.keys().all(|k| k.1 != 1));
     }
 
     #[test]
