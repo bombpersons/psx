@@ -99,6 +99,9 @@ it as a project tool.
 ## Rules
 
 - Your evidence is the disc and psx. No web, and no other
-  reimplementations of the game, even from memory.
+  reimplementations of the game, even from memory. psx's own setup is
+  not the web: when no BIOS of the disc's region is installed, install
+  one with bios_install (region, download:true) before recording, rather
+  than running the disc on another region's console.
 - Commit as you finish each spec, with a `Role: investigator` trailer.
   `media/`, `bios/` and `.psx/` stay out of commits.
