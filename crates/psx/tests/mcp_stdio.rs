@@ -1901,6 +1901,40 @@ fn bios_download_rejects_unverified_bytes_and_never_replaces_existing_installs()
 }
 
 #[test]
+fn a_bios_from_another_region_than_the_disc_is_warned_with_the_fix() {
+    let root = std::env::temp_dir().join(format!("psx-bios-mismatch-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("bios")).unwrap();
+    let mut exe = tiny_exe();
+    exe[0x4c..0x4c + 6].copy_from_slice(b"Europe");
+    std::fs::write(root.join("game.exe"), exe).unwrap();
+    let bios = |letter: u8| {
+        let mut b = vec![0; 524288];
+        let version = [b"System ROM Version TEST ".as_slice(), &[letter, 0]].concat();
+        b[0x7ff32..0x7ff32 + version.len()].copy_from_slice(&version);
+        b
+    };
+    std::fs::write(root.join("ntsc.bin"), bios(b'A')).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (none, error, _) = rpc.tool("context", json!({"image":"game.exe","bios":"ntsc.bin"}));
+    assert!(!error && none["status"] == "ready", "{none}");
+    assert!(
+        none["warnings"][0].as_str().unwrap().contains("The disc is PAL and the selected BIOS is NTSC-U"),
+        "{none}"
+    );
+    assert_eq!(none["next_calls"][0]["tool"], "bios_install");
+    assert_eq!(none["next_calls"][0]["arguments"], json!({"region":"pal","download":true}));
+    std::fs::write(root.join("bios/pal.bin"), bios(b'E')).unwrap();
+    let (installed, error, _) = rpc.tool("context", json!({"image":"game.exe","bios":"ntsc.bin"}));
+    assert!(!error, "{installed}");
+    assert_eq!(installed["next_calls"][0]["tool"], "context");
+    assert!(installed["next_calls"][0]["arguments"]["bios"].as_str().unwrap().ends_with("pal.bin"), "{installed}");
+    let (matched, error, _) = rpc.tool("context", json!({"image":"game.exe"}));
+    assert!(!error && matched["warnings"] == json!([]), "{matched}");
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn regional_bios_discovery_requires_a_unique_compatible_image() {
     let root = std::env::temp_dir().join(format!("psx-bios-region-{}", std::process::id()));
     std::fs::create_dir_all(root.join("bios")).unwrap();
