@@ -1825,6 +1825,39 @@ impl Found {
     }
 }
 
+/// Names the functions no cluster's file held by their own bytes: a
+/// function whose cluster was named by another file (one loaded over part
+/// of it, or a page of an earlier load beside it) is the file's whose
+/// bytes it is where that file was seen loaded, when exactly one such
+/// placement holds it. Gives how many more than one held.
+fn place_unnamed(found: &mut BTreeMap<Key, Found>, contents: &[(String, Vec<u8>)]) -> u64 {
+    let placements: BTreeSet<(String, u32)> =
+        found.values().filter_map(|f| f.file.as_ref().map(|(p, at, ..)| (p.clone(), *at))).collect();
+    let mut ambiguous = 0;
+    for f in found.values_mut().filter(|f| f.file.is_none()) {
+        let chunks = row_chunks(&f.row);
+        let holds = |(path, at): &(String, u32)| {
+            let bytes = &contents.iter().find(|c| c.0 == *path)?.1;
+            let mut b = Vec::new();
+            for &(x, y) in &chunks {
+                let k = x.checked_sub(*at)? as usize;
+                b.extend_from_slice(bytes.get(k..k + (y - x) as usize)?);
+            }
+            (b == f.bytes).then_some(())
+        };
+        let held: Vec<&(String, u32)> = placements.iter().filter(|p| holds(p).is_some()).collect();
+        match held[..] {
+            [(path, at)] => {
+                let (lo, hi) = (chunks.iter().map(|c| c.0).min(), chunks.iter().map(|c| c.1).max());
+                f.file = Some((path.clone(), *at, lo.unwrap_or(*at), hi.unwrap_or(*at)));
+            }
+            [] => {}
+            _ => ambiguous += 1,
+        }
+    }
+    ambiguous
+}
+
 /// A body of what ran found before, placed whole: its chunks' words.
 fn carried(start: u32, chunks: &[(u32, u32)], how: &'static str) -> Fact {
     Fact {
@@ -2543,6 +2576,7 @@ impl InventoryArgs {
         for k in cut {
             found.remove(&k);
         }
+        let ambiguous = place_unnamed(&mut found, &contents);
 
         // Each file code was loaded from is analysed over the extent RAM
         // held of it, for the functions no run reached.
@@ -2667,7 +2701,7 @@ impl InventoryArgs {
         let inventory = json!({
             "inventory": 2, "made": crate::publish::utc_now(), "psx": crate::context::version(),
             "media": media, "boot": boot, "totals": summary,
-            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); code no executable holds is found in each moment of each traced run's code pages (RAM's code as it was then, seeded by what ran and was called in that moment, with calls followed only from code that ran in it) and in each run's RAM at its end; a function is its start and the sha256 of its bytes, listed once however many moments held it; overlays group them by the file their bytes are loaded from, a disc file or one decompressed from it (unpacked), analysed over the extent RAM held of it (bounded_by file), else by the code they were first found in, read only around the code found (bounded_by found_code: functions far from it are not listed); code from the BIOS ROM, the shell, is listed under bios_code instead; gaps are what no executable's function covers, with how many words decode as instructions",
+            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); code no executable holds is found in each moment of each traced run's code pages (RAM's code as it was then, seeded by what ran and was called in that moment, with calls followed only from code that ran in it) and in each run's RAM at its end; a function is its start and the sha256 of its bytes, listed once however many moments held it; overlays group them by the file their bytes are loaded from, a disc file or one decompressed from it (unpacked), analysed over the extent RAM held of it (bounded_by file), else (one no file's cluster named, when exactly one file seen loaded holds its bytes there, is that file's) by the code they were first found in, read only around the code found (bounded_by found_code: functions far from it are not listed); code from the BIOS ROM, the shell, is listed under bios_code instead; gaps are what no executable's function covers, with how many words decode as instructions",
             "executables": executables, "overlays": overlays, "bios_code": bios_code, "disc": {"files": files},
             "unpacked": unpacked_report, "ram": inputs,
         });
@@ -2697,6 +2731,9 @@ impl InventoryArgs {
             "executables": executables.iter().map(|x| json!({"path": x["path"], "boot": x["boot"], "totals": x["totals"]})).collect::<Vec<_>>(),
             "overlays": per(&overlays, "start"),
             "overlays_bounded_by_found_code": found_code,
+            // Functions the bytes of more than one placed file: left with the
+            // code they were found in rather than given to one.
+            "found_code_in_several_files": ambiguous,
             "unpacked": inventory["unpacked"],
             "bios_code": bios_code.iter().map(|b| json!({"start": b["start"], "end": b["end"], "file": b["file"]["path"]})).collect::<Vec<_>>(),
             "next": "artifact_read the inventory for functions and gaps; keep it in the investigator's notes so the ledger can count against it",
@@ -3555,5 +3592,37 @@ mod tests {
             .map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]), x.row["chunks"].clone()))
             .collect();
         assert_eq!(got, [(p, p + 0x20, Value::Null)]);
+    }
+    #[test]
+    fn a_function_beside_another_file_s_code_is_the_file_s_whose_bytes_it_is() {
+        // Two files loaded at one address; RAM's cluster was named by a,
+        // but this function's bytes are b's (a page of b's load beside it).
+        let a: Vec<u8> = (0..0x100u32).flat_map(|w| (w | 0x1000).to_le_bytes()).collect();
+        let b: Vec<u8> = (0..0x100u32).flat_map(|w| (w | 0x2000).to_le_bytes()).collect();
+        let c: Vec<u8> = b.clone(); // the same bytes in a third file
+        let contents = vec![("a".to_string(), a.clone()), ("b".to_string(), b.clone()), ("c".to_string(), c)];
+        let found_at = |file: Option<&str>, s: u32, bytes: &[u8]| Found {
+            row: json!({"entry": hex(s), "end": hex(s + bytes.len() as u32)}),
+            bytes: bytes.to_vec(),
+            file: file.map(|p| (p.to_string(), 0x8010_0000, 0x8010_0000, 0x8010_0400)),
+            first: "code".into(),
+        };
+        let mut found: BTreeMap<Key, Found> = BTreeMap::new();
+        found.insert((0x8010_0000, "a".into()), found_at(Some("a"), 0x8010_0000, &a[..0x10]));
+        // b seen loaded at the same address in another moment.
+        found.insert((0x8010_0100, "b0".into()), found_at(Some("b"), 0x8010_0100, &b[0x100..0x110]));
+        found.insert((0x8010_0200, "b".into()), found_at(None, 0x8010_0200, &b[0x200..0x220]));
+        found.insert((0x8010_0300, "x".into()), found_at(None, 0x8010_0300, &[0xFF; 0x10]));
+        assert_eq!(place_unnamed(&mut found, &contents), 0);
+        let file = |found: &BTreeMap<Key, Found>, s: u32, h: &str| found[&(s, h.to_string())].file.clone();
+        assert_eq!(file(&found, 0x8010_0200, "b"), Some(("b".into(), 0x8010_0000, 0x8010_0200, 0x8010_0220)));
+        assert_eq!(file(&found, 0x8010_0300, "x"), None);
+        // With c seen loaded there too, holding the same bytes, neither is chosen.
+        found.get_mut(&(0x8010_0200, "b".to_string())).unwrap().file = None;
+        let mut c_fn = found_at(Some("c"), 0x8010_0010, &[]);
+        c_fn.file = Some(("c".into(), 0x8010_0000, 0x8010_0010, 0x8010_0010));
+        found.insert((0x8010_0010, "c".into()), c_fn);
+        assert_eq!(place_unnamed(&mut found, &contents), 1);
+        assert_eq!(file(&found, 0x8010_0200, "b"), None);
     }
 }
