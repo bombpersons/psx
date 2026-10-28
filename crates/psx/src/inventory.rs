@@ -33,6 +33,50 @@ pub struct InventoryArgs {
     #[arg(long)]
     #[serde(default)]
     pub out: Option<PathBuf>,
+    /// Directory of decompressed disc data, with unpacked.json (guide protocol).
+    #[arg(long)]
+    #[serde(default)]
+    pub unpacked: Option<PathBuf>,
+}
+
+/// A file decompressed from part of a disc file: the name code from it is
+/// grouped under, its bytes, and where it was read from.
+struct Unpacked {
+    name: String,
+    bytes: Vec<u8>,
+    info: Value,
+}
+
+/// The files `dir`'s unpacked.json lists: `{"files": [{"file", "source",
+/// "offset", "length"}]}`, each the bytes decompressed from `length` bytes
+/// of disc file `source` at `offset`. `size` gives a disc file's size.
+fn read_unpacked(dir: &Path, size: impl Fn(&str) -> Option<u64>) -> crate::Result<Vec<Unpacked>> {
+    let manifest = dir.join("unpacked.json");
+    let text = std::fs::read_to_string(&manifest).map_err(|e| Error::io(&manifest, e))?;
+    let v: Value = serde_json::from_str(&text).map_err(|e| Error::invalid(format!("{}: {e}", manifest.display())))?;
+    let bad = |what: String| Error::invalid(format!("{}: {what}", manifest.display()));
+    let mut out: Vec<Unpacked> = Vec::new();
+    for (i, f) in v["files"].as_array().ok_or_else(|| bad("no files list".into()))?.iter().enumerate() {
+        let (Some(file), Some(source), Some(offset), Some(length)) =
+            (f["file"].as_str(), f["source"].as_str(), f["offset"].as_u64(), f["length"].as_u64())
+        else {
+            return Err(bad(format!("files[{i}] needs file, source, offset and length (numbers, in bytes)")));
+        };
+        let disc = size(source).ok_or_else(|| bad(format!("files[{i}]: {source} is not a file on the disc")))?;
+        if length == 0 || offset + length > disc {
+            return Err(bad(format!("files[{i}]: {length} bytes at {offset} are not inside {source} ({disc} bytes)")));
+        }
+        let path = dir.join(file);
+        let bytes = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
+        let name = format!("{source} @ {offset:X} (unpacked)");
+        if out.iter().any(|u| u.name == name) {
+            return Err(bad(format!("files[{i}]: {source} at {offset} is listed twice")));
+        }
+        let info = json!({"file": path, "source": source, "offset": offset, "length": length,
+            "bytes": bytes.len(), "sha256": crate::publish::sha256(&bytes)});
+        out.push(Unpacked { name, bytes, info });
+    }
+    Ok(out)
 }
 
 const JR_RA: u32 = 0x03E0_0008;
@@ -2070,6 +2114,15 @@ impl InventoryArgs {
             }
         }
 
+        // Code decompressed from disc files: named like a disc file when RAM
+        // holds it, after the disc's own files (one that holds the same
+        // bytes names them).
+        let unpacked = match &self.unpacked {
+            Some(d) => read_unpacked(&at(d), |p| fs.find(p).map(|e| e.size as u64))?,
+            None => Vec::new(),
+        };
+        contents.extend(unpacked.iter().map(|u| (u.name.clone(), u.bytes.clone())));
+
         // The runs: each traced run's timeline, and each run's RAM at its end.
         // The runs read, for protocol to tell a corpus run the inventory has
         // not seen (or that was recorded again) from one it has.
@@ -2400,10 +2453,18 @@ impl InventoryArgs {
             let end = keys.iter().map(|k| parse_hex(&found[k].row["end"])).max().unwrap_or(start);
             let t = json!({"functions": functions.len(), "instructions": instructions, "blocks": blocks,
                 "found_only_through_pointers": pointers});
+            let file_json = file.as_ref().map(|(p, at, lo, hi)| {
+                let mut f = json!({"path": p, "loads_at": hex(*at), "in_ram": {"start": hex(*lo), "end": hex(*hi)}});
+                if let Some(u) = unpacked.iter().find(|u| u.name == *p) {
+                    f["unpacked"] = u.info.clone();
+                }
+                f
+            });
+            // Code no file holds is read only around the code found in it:
+            // a function far from all of it is not listed.
+            let bounded_by = if file.is_some() { "file" } else { "found_code" };
             let entry = json!({
-                "name": name, "start": hex(start), "end": hex(end),
-                "file": file.as_ref().map(|(p, at, lo, hi)| json!({"path": p, "loads_at": hex(*at),
-                    "in_ram": {"start": hex(*lo), "end": hex(*hi)}})),
+                "name": name, "start": hex(start), "end": hex(end), "file": file_json, "bounded_by": bounded_by,
                 "totals": t, "functions": functions,
             });
             if file.as_ref().is_some_and(|f| f.0.starts_with(BIOS)) {
@@ -2415,6 +2476,7 @@ impl InventoryArgs {
         }
         overlays.sort_by_key(|o| parse_hex(&o["start"]));
         bios_code.sort_by_key(|o| parse_hex(&o["start"]));
+        let unpacked_report = unpacked_report(&unpacked, &overlays);
 
         let out = self.out.as_ref().map(|p| at(p)).unwrap_or_else(|| default_out(ctx));
         let summary = json!({
@@ -2429,9 +2491,9 @@ impl InventoryArgs {
         let inventory = json!({
             "inventory": 2, "made": crate::publish::utc_now(), "psx": crate::context::version(),
             "media": media, "boot": boot, "totals": summary,
-            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); code no executable holds is found in each moment of each traced run's code pages (RAM's code as it was then, seeded by what ran and was called in that moment, with calls followed only from code that ran in it) and in each run's RAM at its end; a function is its start and the sha256 of its bytes, listed once however many moments held it; overlays group them by the file their bytes are loaded from (analysed over the extent RAM held of it), else by the code they were first found in; code from the BIOS ROM, the shell, is listed under bios_code instead; gaps are what no executable's function covers, with how many words decode as instructions",
+            "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); code no executable holds is found in each moment of each traced run's code pages (RAM's code as it was then, seeded by what ran and was called in that moment, with calls followed only from code that ran in it) and in each run's RAM at its end; a function is its start and the sha256 of its bytes, listed once however many moments held it; overlays group them by the file their bytes are loaded from, a disc file or one decompressed from it (unpacked), analysed over the extent RAM held of it (bounded_by file), else by the code they were first found in, read only around the code found (bounded_by found_code: functions far from it are not listed); code from the BIOS ROM, the shell, is listed under bios_code instead; gaps are what no executable's function covers, with how many words decode as instructions",
             "executables": executables, "overlays": overlays, "bios_code": bios_code, "disc": {"files": files},
-            "ram": inputs,
+            "unpacked": unpacked_report, "ram": inputs,
         });
         if let Some(d) = out.parent() {
             std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
@@ -2451,16 +2513,37 @@ impl InventoryArgs {
             .map_err(|e| Error::io(&history, e))?;
 
         let per = |list: &[Value], key: &str| -> Vec<Value> {
-            list.iter().map(|x| json!({key: x[key].clone(), "file": x.get("file").cloned().unwrap_or(Value::Null), "totals": x["totals"]})).collect()
+            list.iter().map(|x| json!({key: x[key].clone(), "file": x.get("file").cloned().unwrap_or(Value::Null), "bounded_by": x["bounded_by"], "totals": x["totals"]})).collect()
         };
+        let found_code = overlays.iter().filter(|o| o["bounded_by"] == "found_code").count();
         Ok(json!({
             "out": out, "history": history, "totals": summary, "previous": previous,
             "executables": executables.iter().map(|x| json!({"path": x["path"], "boot": x["boot"], "totals": x["totals"]})).collect::<Vec<_>>(),
             "overlays": per(&overlays, "start"),
+            "overlays_bounded_by_found_code": found_code,
+            "unpacked": inventory["unpacked"],
             "bios_code": bios_code.iter().map(|b| json!({"start": b["start"], "end": b["end"], "file": b["file"]["path"]})).collect::<Vec<_>>(),
             "next": "artifact_read the inventory for functions and gaps; keep it in the investigator's notes so the ledger can count against it",
         }))
     }
+}
+
+/// Each unpacked file and the overlays whose code is its bytes: one no
+/// code found in RAM is from was decompressed wrongly, holds no code, or
+/// was loaded by no run.
+fn unpacked_report(unpacked: &[Unpacked], overlays: &[Value]) -> Vec<Value> {
+    unpacked
+        .iter()
+        .map(|u| {
+            let names: Vec<&Value> =
+                overlays.iter().filter(|o| o["file"]["path"].as_str() == Some(&u.name)).map(|o| &o["name"]).collect();
+            let mut r = u.info.clone();
+            r["name"] = json!(u.name);
+            r["in_ram"] = json!(!names.is_empty());
+            r["overlays"] = json!(names);
+            r
+        })
+        .collect()
 }
 
 fn add(t: &mut (u64, u64, u64), v: &Value) {
@@ -2566,6 +2649,43 @@ mod tests {
         assert_eq!((f["path"].as_str(), f["loads_at"].as_str()), (Some("/OVL.BIN"), Some("80100000")));
         assert_eq!((lo, hi), (0x8010_0000, 0x8010_2000));
         assert!(loaded_from(&ram, 0x8018_0000, 0x8018_0100, &files).is_none());
+    }
+
+    #[test]
+    fn decompressed_code_is_named_by_the_part_of_the_disc_file_it_came_from() {
+        let dir = std::env::temp_dir().join(format!("psx-unpacked-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let code: Vec<u8> = (0..8 * 1024u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+        std::fs::write(dir.join("ovl.bin"), &code).unwrap();
+        let manifest = |files: Value| std::fs::write(dir.join("unpacked.json"), json!({"files": files}).to_string());
+        let size = |p: &str| (p == "/DATA.VOL").then_some(100_000u64);
+
+        manifest(json!([{"file": "ovl.bin", "source": "/DATA.VOL", "offset": 4096, "length": 3000}])).unwrap();
+        let u = read_unpacked(&dir, size).unwrap();
+        assert_eq!(u[0].name, "/DATA.VOL @ 1000 (unpacked)");
+        assert_eq!((u[0].info["offset"].as_u64(), u[0].info["bytes"].as_u64()), (Some(4096), Some(8192)));
+
+        // RAM holds it at 0x80100000: it names the code there, over the
+        // disc file holding none of it.
+        let mut ram = vec![0u8; 0x20_0000];
+        ram[0x10_0000..0x10_0000 + code.len()].copy_from_slice(&code);
+        let files = vec![("/DATA.VOL".to_string(), vec![7u8; 100_000]), (u[0].name.clone(), u[0].bytes.clone())];
+        let (f, lo, hi) = loaded_from(&ram, 0x8010_0400, 0x8010_0800, &files).unwrap();
+        assert_eq!(f["path"].as_str(), Some("/DATA.VOL @ 1000 (unpacked)"));
+        assert_eq!((lo, hi), (0x8010_0000, 0x8010_2000));
+        let overlays = vec![json!({"name": "80100000 x", "file": {"path": u[0].name}})];
+        let r = unpacked_report(&u, &overlays);
+        assert_eq!((r[0]["in_ram"].as_bool(), r[0]["overlays"][0].as_str()), (Some(true), Some("80100000 x")));
+        assert_eq!(unpacked_report(&u, &[])[0]["in_ram"], false);
+
+        // A source outside the disc file, or not on the disc, is refused.
+        manifest(json!([{"file": "ovl.bin", "source": "/DATA.VOL", "offset": 99_000, "length": 3000}])).unwrap();
+        assert!(read_unpacked(&dir, size).is_err());
+        manifest(json!([{"file": "ovl.bin", "source": "/NONE.BIN", "offset": 0, "length": 3000}])).unwrap();
+        assert!(read_unpacked(&dir, size).is_err());
+        manifest(json!([{"file": "ovl.bin", "source": "/DATA.VOL"}])).unwrap();
+        assert!(read_unpacked(&dir, size).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

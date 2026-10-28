@@ -74,7 +74,8 @@ runs is listed once, and other code loaded at its address is another.
 Overlays group them by the disc file their bytes are loaded from (that
 file is analysed over the extent RAM held of it, for the functions no run
 reached), else by the code they were first found in ("code at 80030000,
-frame 3661"). Code the BIOS copies into RAM at power-on (its shell) is
+frame 3661"), read only around it (bounded_by found_code; see guide
+code). Code the BIOS copies into RAM at power-on (its shell) is
 listed apart under bios_code. A run recorded by an older psx is refused:
 record it again with run --trace. Each executable lists its gaps, what no
 function covers, with how many words decode as code: classify them, or

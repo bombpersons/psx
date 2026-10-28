@@ -517,6 +517,23 @@ fn code_units(inv: &Value, cov: Option<&Value>) -> Vec<Unit> {
     out
 }
 
+/// Overlays no file holds, read only around the code found in them: their
+/// functions no run went near are not counted. None when there are none.
+fn partly_read(inv: Option<&Value>) -> Value {
+    let list: Vec<Value> = inv
+        .and_then(|i| i["overlays"].as_array())
+        .into_iter()
+        .flatten()
+        .filter(|o| o["bounded_by"] == "found_code")
+        .map(|o| json!({"name": o["name"], "functions": o["totals"]["functions"]}))
+        .collect();
+    if list.is_empty() {
+        return Value::Null;
+    }
+    json!({"overlays": list,
+        "why": "no file holds their code, so the inventory read only around the code found in them and coverage over them reads high; decompressed code is read whole by passing it to inventory --unpacked (guide protocol)"})
+}
+
 /// The image's file name, for matching a name given in provenance or a
 /// classification.
 fn image_file(image: &str) -> &str {
@@ -1372,6 +1389,7 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         "audits": {"due": audit_due, "unaudited_bundles": unaudited, "loop_ended": loop_ended,
             "last": last_audit.as_ref().map(|a| json!({"time": a["time"], "mechanical": a["mechanical"], "judgment": a["judgment"], "bundles": a["bundles"].as_array().map_or(0, Vec::len)}))},
         "inventory_gaps": inventory_gaps,
+        "partly_read_overlays": partly_read(inv.as_ref()),
         "emulator_changes": {"states": stale_chains, "cases": stale_cases.len(), "differing": differing},
         "inputs": {"inventory": inv.as_ref().map(|_| &inv_path), "coverage": cov.as_ref().map(|_| &cov_path), "results": set.results},
     });
@@ -1816,6 +1834,18 @@ impl Op for ProtocolNextArgs {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn overlays_read_only_around_their_found_code_are_listed() {
+        let inv = json!({"overlays": [
+            {"name": "80100000 /OVL.BIN", "bounded_by": "file", "totals": {"functions": 3}},
+            {"name": "code at 80040000, frame 9", "bounded_by": "found_code", "totals": {"functions": 5}}]});
+        let p = partly_read(Some(&inv));
+        assert_eq!(p["overlays"].as_array().map(Vec::len), Some(1));
+        assert_eq!(p["overlays"][0]["functions"], 5);
+        assert!(partly_read(Some(&json!({"overlays": []}))).is_null());
+        assert!(partly_read(None).is_null());
+    }
     use super::*;
 
     #[test]

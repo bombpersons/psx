@@ -482,8 +482,16 @@ impl CoverageArgs {
         let out_images: Vec<Value> = groups
             .into_iter()
             .map(|(img, functions, outside, t)| {
+                // An overlay read only around the code found in it: its
+                // functions no run reached may not all be listed.
+                let bounded_by = inv["overlays"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|o| img.kind == "overlay" && o["name"].as_str() == Some(&img.name))
+                    .map(|o| o["bounded_by"].clone());
                 json!({
-                    "kind": img.kind, "name": img.name, "start": hex(img.base),
+                    "kind": img.kind, "name": img.name, "start": hex(img.base), "bounded_by": bounded_by,
                     "totals": t.json(), "executed_outside_functions": outside, "functions": functions,
                 })
             })
@@ -532,7 +540,7 @@ impl CoverageArgs {
         std::fs::write(&out, text).map_err(|e| Error::io(&out, e))?;
         Ok(json!({
             "out": out, "totals": summary["totals"], "words_in_no_image": summary["words_in_no_image"],
-            "images": doc["images"].as_array().into_iter().flatten().map(|i| json!({"name": i["name"], "totals": i["totals"]})).collect::<Vec<_>>(),
+            "images": doc["images"].as_array().into_iter().flatten().map(|i| json!({"name": i["name"], "bounded_by": i["bounded_by"], "totals": i["totals"]})).collect::<Vec<_>>(),
             "runs": runs.iter().map(|r| json!({"run": r["run"], "words_executed": r["words_executed"], "words_in_no_image": r["words_in_no_image"], "no_recipe": r["no_recipe"]})).collect::<Vec<_>>(),
             "next": "artifact_read the coverage for each function's unexecuted blocks: classify them, or record the corpus reaching them; executed_outside_functions and in_no_image mean the inventory missed code (take it again with these runs as ram)",
         }))
