@@ -334,7 +334,11 @@ fn guide_is_self_contained_read_only_and_matches_the_cli_for_every_topic() {
         assert_eq!(result["topic"], topic["topic"]);
         assert!(!result["text"].as_str().unwrap().is_empty());
         assert!(result.to_string().len() < 16 * 1024, "guide responses should stay inline and bounded");
-        for next in result["next_calls"].as_array().unwrap() {
+        // A topic is its text alone; the index and the next calls are the overview's.
+        if name != "overview" {
+            assert!(result.get("topics").is_none() && result.get("build").is_none(), "{name}");
+        }
+        for next in result["next_calls"].as_array().into_iter().flatten() {
             assert!(tools.iter().any(|t| t["name"] == next["tool"]), "unknown next tool: {next}");
         }
     }

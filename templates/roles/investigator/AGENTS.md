@@ -22,11 +22,10 @@ from yours would share your notes.
 Start every session with `psx protocol next --role investigator`
 (`protocol_next` over MCP): it computes the ledger and says what to do
 now, and it is the project's memory when a session ends. Then psx's
-`context`, and the `guide` topics `protocol` (the
-procedure, making cases that separate, finding things in RAM) and
-`cleanroom` (what may cross), then `run`, `input`, `fields`, `cases`,
-`states`, `barrier` and `code`. `protocol.toml` names the three
-repositories and the disc.
+`context`, and the `guide` topics your item names (its `guide`), and
+no others until the work turns to one: `protocol` is the procedure and
+making cases that separate, `cleanroom` what may cross. `protocol.toml`
+names the three repositories and the disc.
 
 ## Your work
 

@@ -156,7 +156,8 @@ took it, which credited code differently); answering questions and choices
 specs/answers/CHOICES.md; answered once crossed); thin specs (a
 verified spec whose kept-back cases fail); recording missing cases; staging; then a few units to specify, formats first, unless
 [protocol] specs_ahead crossed specs wait for the implementer; and
-classifying what no run reaches.
+classifying what no run reaches. An item's guide names the topics it
+needs: read those, not every topic.
 
 ## The report
 

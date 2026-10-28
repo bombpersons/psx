@@ -35,7 +35,7 @@ port adopt write an example, commented out):
              "--permission-mode", "bypassPermissions",
              "--output-format", "stream-json", "--verbose"]
   model = "claude-sonnet-5-5"
-  prompt = "..."            # optional: replaces psx's ({work} is the item)
+  prompt = "..."            # optional: replaces psx's ({work} is the item and its guide topics)
   share = ["~/.config/x"]   # optional: from the person's home, writable
   share_ro = ["~/data"]     # and read-only (the implementer's sandbox)
 

@@ -30,9 +30,10 @@ You never write specs, and you never start another role's session.
 
 Start every session with `psx protocol next --role reviewer`
 (`protocol_next` over MCP): the bundles waiting for a verdict and the
-audits due. Then psx's `guide` topics `review` (this role in full),
-`cleanroom` (what may cross) and `protocol` (the investigator's
-procedure, and what makes a case separate rules).
+audits due. Then psx's `guide` topics your item names (its `guide`):
+`review` is this role in full, `cleanroom` what may cross. Read
+`protocol` (the investigator's procedure, and what makes a case
+separate rules) when a bundle's cases turn on it.
 
 ## Reviewing a bundle
 

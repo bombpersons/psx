@@ -155,6 +155,18 @@ fn default_prompt(role: Role) -> &'static str {
     }
 }
 
+/// The item as a prompt names it: what to do, and the guide topics it
+/// needs (read those, not every topic).
+fn item_text(item: &Value) -> String {
+    let what = item["what"].as_str().unwrap_or_default();
+    let topics: Vec<&str> = item["guide"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if topics.is_empty() {
+        what.to_string()
+    } else {
+        format!("{what} (guide topics for it: {}; read only those unless the work turns to another)", topics.join(", "))
+    }
+}
+
 /// A path protocol.toml names: ~/ is the home folder.
 fn expand(p: &str) -> PathBuf {
     match (p.strip_prefix("~/"), std::env::var_os("HOME")) {
@@ -724,7 +736,7 @@ impl PortRunArgs {
                 .prompt
                 .as_deref()
                 .unwrap_or(default_prompt(*role))
-                .replace("{work}", item["what"].as_str().unwrap_or_default())
+                .replace("{work}", &item_text(item))
                 .replace("{role}", role.name());
             let left = uncommitted(repo);
             let failed_before = last_failed(&jl, *role);
@@ -1011,6 +1023,15 @@ mod tests {
         assert!(note.contains("item specify: specify the names (its harness exited with 1); started"), "{note}");
         assert!(note.contains("M notes/f29.md and 2 more") && !note.contains("f30"), "{note}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_prompt_names_the_item_and_its_guide_topics() {
+        assert_eq!(item_text(&json!({"what": "wait"})), "wait");
+        assert_eq!(
+            item_text(&json!({"what": "cross it", "guide": ["barrier"]})),
+            "cross it (guide topics for it: barrier; read only those unless the work turns to another)"
+        );
     }
 
     #[test]

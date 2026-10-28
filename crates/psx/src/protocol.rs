@@ -781,8 +781,34 @@ fn runs_without_kept_pages(inv: &Value) -> Vec<String> {
         .collect()
 }
 
+/// The guide topics an item of work needs, so a session reads those and
+/// not every topic; waiting items, and the implementer's (clean mode has
+/// no guide), need none.
+fn guide_topics(what: &str) -> &'static [&'static str] {
+    match what {
+        "rebuild_states" => &["states"],
+        "check_cases" | "triage_cases" => &["cases", "states"],
+        "audit_findings" | "revise" | "stage" => &["barrier", "cleanroom"],
+        "cross" => &["barrier"],
+        "record_again" => &["run", "code"],
+        "unpack_overlays" => &["code"],
+        "inventory" | "coverage" | "classify" => &["protocol", "code"],
+        "corpus" => &["protocol", "run", "input"],
+        "answer_questions" | "answer_choices" => &["cleanroom", "cases", "barrier"],
+        "thin_specs" => &["protocol", "cases"],
+        "record_cases" => &["cases", "fields", "states", "input"],
+        "specify_formats" => &["protocol", "cleanroom", "cases"],
+        "specify" => &["protocol", "cleanroom", "fields", "cases", "states", "input", "run", "code"],
+        "review" | "audit" => &["review", "cleanroom"],
+        _ => &[],
+    }
+}
+
 fn work(what: &str, text: String, details: Value) -> Value {
     let mut v = json!({"do": what, "what": text});
+    if !guide_topics(what).is_empty() {
+        v["guide"] = json!(guide_topics(what));
+    }
     if let (Some(m), Some(d)) = (v.as_object_mut(), details.as_object()) {
         m.extend(d.clone());
     }
@@ -2114,6 +2140,41 @@ mod tests {
         assert_eq!(runs_without_kept_pages(&inv), vec![old.clone()]);
         assert!(runs_without_kept_pages(&json!({})).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn items_name_the_guide_topics_they_need() {
+        assert_eq!(work("cross", "x".into(), json!({}))["guide"], json!(["barrier"]));
+        assert!(work("hold", "x".into(), json!({})).get("guide").is_none());
+        // Every topic named is one the guide has.
+        for k in [
+            "rebuild_states",
+            "check_cases",
+            "triage_cases",
+            "audit_findings",
+            "revise",
+            "stage",
+            "cross",
+            "record_again",
+            "unpack_overlays",
+            "inventory",
+            "coverage",
+            "classify",
+            "corpus",
+            "answer_questions",
+            "answer_choices",
+            "thin_specs",
+            "record_cases",
+            "specify_formats",
+            "specify",
+            "review",
+            "audit",
+        ] {
+            assert!(!guide_topics(k).is_empty(), "{k}");
+            for t in guide_topics(k) {
+                assert!(serde_json::from_value::<crate::guide::Topic>(json!(t)).is_ok(), "{k}: {t}");
+            }
+        }
     }
 
     #[test]

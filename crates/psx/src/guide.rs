@@ -103,10 +103,16 @@ pub struct GuideArgs {
 
 impl Op for GuideArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
+        let (topic, title, text) = (self.topic, self.topic.title(), self.topic.text().trim());
+        // A topic is its text: the index, the project and the build come
+        // with the overview, which a session reads once if at all.
+        if !matches!(topic, Topic::Overview) {
+            return Outcome::ok(json!({"topic": topic, "title": title, "text": text}));
+        }
         Outcome::ok(json!({
-            "topic": self.topic,
-            "title": self.topic.title(),
-            "text": self.topic.text().trim(),
+            "topic": topic,
+            "title": title,
+            "text": text,
             "project_root": ctx.root,
             "build": crate::context::build(),
             "topics": Topic::ALL.into_iter().map(|topic| json!({
