@@ -147,14 +147,16 @@ impl Resolved {
             }
             _ => json!({"tool":"bios_list","arguments":{}}),
         };
-        Error::new(
-            "bios_required",
-            "No BIOS selected. Use bios_list, install one, or pass bios. See candidates and next_action.",
-        )
-        .with("candidates", &self.candidates)
-        .with("selection", self.bios_reason)
-        .with("required_sha256", self.state.as_ref().map(|s| &s.bios_sha256))
-        .with("next_action", next_action)
+        let message = if self.region.is_none() && self.state.is_none() {
+            "No BIOS selected. Pass the disc (image) so its region picks the BIOS, or pass bios. See candidates and next_action."
+        } else {
+            "No BIOS selected. Use bios_list, install one (bios_install with download:true for the disc's region), or pass bios. See candidates and next_action."
+        };
+        Error::new("bios_required", message)
+            .with("candidates", &self.candidates)
+            .with("selection", self.bios_reason)
+            .with("required_sha256", self.state.as_ref().map(|s| &s.bios_sha256))
+            .with("next_action", next_action)
     }
 }
 /// Explicit BIOS wins (including intentional identity-mismatch diagnostics).
@@ -258,8 +260,20 @@ impl Op for ArgsContext {
 
 impl ArgsContext {
     fn run(self, ctx: &Ctx) -> crate::Result<Value> {
-        let r = resolve(&ctx.root, self.image, self.bios, self.from_state.as_deref(), true)?;
+        let mut r = resolve(&ctx.root, self.image, self.bios, self.from_state.as_deref(), true)?;
         let selected_info = r.bios.as_ref().map(|p| bios::inspect(&absolute(&ctx.root, p))).transpose()?;
+        // The BIOS makes the console: another region's runs the disc on that
+        // region's console (its GPU clock and BIOS), not the one it was made for.
+        let mut fix_region = None;
+        if let (Some(disc), Some(have), None) = (r.region, selected_info.as_ref().and_then(|c| c.region), &r.state) {
+            if disc != have {
+                r.warnings.push(format!(
+                    "The disc is {} and the selected BIOS is {}: runs use a {} console (its GPU clock and BIOS), not the disc's. Select a {} BIOS; if none is installed, bios_install(region:{}, download:true).",
+                    disc.hint(), have.hint(), have.hint(), disc.hint(), serde_json::to_string(&disc).unwrap()
+                ));
+                fix_region = Some(disc);
+            }
+        }
         let profile = ctx.root.join(".psx/project.json");
         let (signatures, sigs_selection) = crate::symbols_io::sigs_default();
         let signatures = absolute(&ctx.root, &signatures);
@@ -289,6 +303,15 @@ impl ArgsContext {
             });
         }
         let mut next_calls = vec![template];
+        if let Some(disc) = fix_region {
+            match r.candidates.iter().find(|c| c.region == Some(disc) && c.bytes == 524288) {
+                Some(c) => next_calls.insert(0, json!({"tool":"context","arguments":{"image":r.media,"bios":c.path,"save":true}})),
+                None => next_calls.insert(
+                    0,
+                    json!({"tool":"bios_install","arguments":{"region":disc,"download":true},"explicit_setup_action":true}),
+                ),
+            }
+        }
         if setup.is_none() {
             next_calls.push(json!({"tool":"run","arguments":{"media":r.media,"bios":r.bios,"frames":60,"save_state":true,"brief":true,"return_screen":true}}));
         }
