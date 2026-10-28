@@ -1698,19 +1698,56 @@ fn moment_functions(
     held: Option<&BTreeMap<u32, u32>>,
     switches: &mut Switches,
 ) -> Vec<(u32, u32, Vec<Value>)> {
-    let code = Code { base: 0x8000_0000, bytes: m.ram.clone(), origin: String::new(), gp: None, exe: None };
-    let mut a = Analysis::new(&code, None, Box::new(|x| m.allowed(exes, x)));
+    moment_analysis(m, exes, facts, seeds, ran, held, switches).0
+}
+
+/// A moment's own switches (those its code holds whole, see
+/// `Analysis::with_switches`).
+type OwnSwitches = BTreeMap<u32, (u32, Vec<u32>)>;
+
+/// The switches found in other moments that a moment's own lack and its
+/// code holds, in the order they are added to its own.
+fn borrowed_switches(code: &Code, m: &Moment, exes: &[Exe], own: &OwnSwitches, switches: &Switches) -> Vec<Borrowed> {
+    let mut have: BTreeSet<u32> = own.keys().copied().collect();
+    let mut out = Vec::new();
     for ((at, words), (table, cases)) in switches.iter() {
-        if !a.switches.contains_key(at)
-            && dispatch_words(&code, *at) == *words
+        if !have.contains(at)
+            && dispatch_words(code, *at) == *words
             && cases.iter().all(|&t| m.allowed(exes, t) && code.word(t).is_some_and(sensible))
         {
-            a.leaders.extend(cases);
-            a.switches.insert(*at, (*table, cases.clone()));
+            have.insert(*at);
+            out.push((*at, (*table, cases.clone())));
         }
     }
-    for (&at, s) in &a.switches {
-        switches.entry((at, dispatch_words(&code, at))).or_insert_with(|| s.clone());
+    out
+}
+
+/// What `moment_functions` finds, with the moment's own switches, those
+/// it borrowed and those it adds to `switches`.
+type MomentAnalysis = (Vec<(u32, u32, Vec<Value>)>, OwnSwitches, Vec<Borrowed>, Vec<SwitchEntry>);
+type SwitchEntry = ((u32, Vec<Option<u32>>), (u32, Vec<u32>));
+
+fn moment_analysis(
+    m: &Moment,
+    exes: &[Exe],
+    facts: &[Fact],
+    seeds: &[(u32, &'static str)],
+    ran: &BTreeSet<(u32, u32)>,
+    held: Option<&BTreeMap<u32, u32>>,
+    switches: &mut Switches,
+) -> MomentAnalysis {
+    let code = Code { base: 0x8000_0000, bytes: m.ram.clone(), origin: String::new(), gp: None, exe: None };
+    let mut a = Analysis::new(&code, None, Box::new(|x| m.allowed(exes, x)));
+    let own = a.switches.clone();
+    let borrowed = borrowed_switches(&code, m, exes, &own, switches);
+    for (at, (table, cases)) in &borrowed {
+        a.leaders.extend(cases);
+        a.switches.insert(*at, (*table, cases.clone()));
+    }
+    let added: Vec<SwitchEntry> =
+        a.switches.iter().map(|(&at, s)| ((at, dispatch_words(&code, at)), s.clone())).collect();
+    for (k, s) in &added {
+        switches.entry(k.clone()).or_insert_with(|| s.clone());
     }
     a.continues = m.continues.clone();
     a.fresh = m.fresh.clone();
@@ -1740,13 +1777,14 @@ fn moment_functions(
             break;
         }
     }
-    clusters(&a)
+    let rows = clusters(&a)
         .into_iter()
         .map(|(lo, hi)| {
             let (rows, _) = a.report_in(lo, hi, &|_| true);
             (lo, hi, rows)
         })
-        .collect()
+        .collect();
+    (rows, own, borrowed, added)
 }
 
 /// A function: its start and the sha256 of its bytes.
@@ -1836,6 +1874,28 @@ struct Finder<'a> {
     known: Vec<Known>,
     /// Switches found before (see `Switches`).
     switches: Switches,
+    /// Per moment (a run's copy, or its end), its own switches and its
+    /// last analysis, with what it was given beyond the moment itself
+    /// (see `Memo`).
+    memo: BTreeMap<(usize, u32), Memo>,
+}
+
+/// A function found before that a moment's RAM holds: its start, chunks
+/// and how a body of what ran is known.
+type Given = (u32, Vec<(u32, u32)>, Option<&'static str>);
+/// A switch a moment borrows: its `jr`, table and cases.
+type Borrowed = (u32, (u32, Vec<u32>));
+
+/// A moment is the same in every pass over the runs, and so is what it
+/// is given from them; only the functions found before that its RAM holds
+/// and the switches it borrows from other moments change. Given the same
+/// of those, its analysis finds the same.
+#[derive(Default)]
+struct Memo {
+    own: OwnSwitches,
+    given: Option<(Vec<Given>, Vec<Borrowed>)>,
+    rows: Vec<(u32, u32, Vec<Value>)>,
+    added: Vec<SwitchEntry>,
 }
 
 impl Finder<'_> {
@@ -1856,21 +1916,32 @@ impl Finder<'_> {
     /// code no file holds. `held` is the words that ran inside a call as
     /// the moment holds them (see `Analysis::ran`). With `carry` (the RAM
     /// of a run without a trace), the bodies of what ran found before whose
-    /// bytes the moment holds are placed.
+    /// bytes the moment holds are placed. `id` names the moment, for
+    /// `Finder::memo`.
     #[allow(clippy::too_many_arguments)]
     fn take(
         &mut self,
-        m: &Moment,
-        facts: &[Fact],
+        id: Option<(usize, u32)>,
+        m: &mut Moment,
         seeds: &[(u32, &'static str)],
-        ran: &BTreeSet<(u32, u32)>,
+        inputs: impl FnOnce(&mut Moment) -> (Vec<Fact>, BTreeSet<(u32, u32)>),
         when: &str,
         held: Option<&BTreeMap<u32, u32>>,
         carry: bool,
     ) {
-        let (mut seeds, mut facts) = (seeds.to_vec(), facts.to_vec());
-        let ram = |s: u32, e: u32| m.ram.get((s & 0x1F_FFFF) as usize..(e & 0x1F_FFFF) as usize).map(<[u8]>::to_vec);
+        let (mut seeds, mut extra) = (seeds.to_vec(), Vec::new());
+        // The facts and what ran, for a moment found again: built only
+        // when the moment's analysis is not the one before (see `Memo`).
+        let mut inputs = Some(inputs);
+        let mut analyse = |m: &mut Moment, extra: &[Fact]| {
+            let (mut facts, ran) = (inputs.take().unwrap())(m);
+            facts.extend_from_slice(extra);
+            (facts, ran)
+        };
+        let mut given = Vec::new();
         for (s, chunks, b, how) in &self.known {
+            let ram =
+                |s: u32, e: u32| m.ram.get((s & 0x1F_FFFF) as usize..(e & 0x1F_FFFF) as usize).map(<[u8]>::to_vec);
             let holds = chunks.iter().all(|&(x, y)| ram(x, y).is_some())
                 && chunk_bytes(chunks, |x, y| ram(x, y).unwrap_or_default()) == *b;
             if !holds || !m.allowed(self.exes, *s) {
@@ -1878,11 +1949,38 @@ impl Finder<'_> {
             }
             match how {
                 None => seeds.push((*s, "same_code")),
-                Some(how) if carry => facts.push(carried(*s, chunks, how)),
-                _ => {}
+                Some(how) if carry => extra.push(carried(*s, chunks, how)),
+                _ => continue,
             }
+            given.push((*s, chunks.clone(), *how));
         }
-        for (lo, hi, rows) in moment_functions(m, self.exes, &facts, &seeds, ran, held, &mut self.switches) {
+        let found = match id {
+            Some(id) => {
+                let code = Code { base: 0x8000_0000, bytes: m.ram.clone(), origin: String::new(), gp: None, exe: None };
+                let memo = self.memo.entry(id).or_default();
+                let borrowed = borrowed_switches(&code, m, self.exes, &memo.own, &self.switches);
+                if memo.given.as_ref().is_some_and(|g| g.0 == given && g.1 == borrowed) {
+                    for (k, s) in &memo.added {
+                        self.switches.entry(k.clone()).or_insert_with(|| s.clone());
+                    }
+                    memo.rows.clone()
+                } else {
+                    let (facts, ran) = analyse(m, &extra);
+                    let (rows, own, borrowed, added) =
+                        moment_analysis(m, self.exes, &facts, &seeds, &ran, held, &mut self.switches);
+                    *self.memo.get_mut(&id).unwrap() =
+                        Memo { own, given: Some((given, borrowed)), rows: rows.clone(), added };
+                    rows
+                }
+            }
+            None => {
+                let (facts, ran) = analyse(m, &extra);
+                moment_functions(m, self.exes, &facts, &seeds, &ran, held, &mut self.switches)
+            }
+        };
+        let m = &*m;
+        let ram = |s: u32, e: u32| m.ram.get((s & 0x1F_FFFF) as usize..(e & 0x1F_FFFF) as usize).map(<[u8]>::to_vec);
+        for (lo, hi, rows) in found {
             let mut file = None;
             for row in rows {
                 let s = parse_hex(&row["entry"]);
@@ -1932,24 +2030,89 @@ impl Finder<'_> {
 /// copy): the bodies of what ran inside the calls whose code it holds as
 /// it ran, then seeded by the calls into the copies it holds and the code
 /// run from them inside no known call at that moment.
-fn take_timeline(f: &mut Finder, t: &Timeline) {
+fn take_timeline(f: &mut Finder, t: &Timeline, run: usize) {
     let owner: Vec<Option<usize>> = t.copies.iter().map(|(_, p, b)| resident(f.exes, *p, b)).collect();
-    let continuing = t.continuing();
+    // Code seen to continue the code before it, once each, and per page
+    // the ones whose words are read there: only a page's new copy changes
+    // whether RAM holds them as seen.
+    let mut continuing = t.continuing();
+    continuing.sort_unstable();
+    continuing.dedup();
+    let page_of = |a: u32| ((a & 0x1F_FFFF) / PAGE) as usize;
+    let mut reads: Vec<Vec<usize>> = vec![Vec::new(); 0x200];
+    for (e, &(x, _)) in continuing.iter().enumerate() {
+        let mut pages = [x.wrapping_sub(8), x.wrapping_sub(4), x].map(page_of);
+        pages.sort_unstable();
+        for (i, &p) in pages.iter().enumerate() {
+            if i == 0 || pages[i - 1] != p {
+                reads[p].push(e);
+            }
+        }
+    }
+    let mut seen_now = vec![false; continuing.len()];
+    let mut continues_at: BTreeMap<u32, u32> = BTreeMap::new();
+    // Per copy, what ran from it inside no group; per moment, the words
+    // first run then, by copy.
+    let outside: Vec<Vec<(u32, u32)>> = t
+        .ran
+        .iter()
+        .zip(&t.owned)
+        .map(|(ran, owned)| ran.iter().filter(|r| !owned.contains(&r.0)).map(|r| (r.0, r.1)).collect())
+        .collect();
+    let mut first: BTreeMap<u32, Vec<(usize, u32)>> = BTreeMap::new();
+    for (k, ran) in t.ran.iter().enumerate() {
+        for r in ran {
+            first.entry(r.2).or_default().push((k, r.0));
+        }
+    }
     let mut now: BTreeMap<u32, usize> = BTreeMap::new();
     let mut holding = Holding::new(t);
-    for (c, (frame, page, _)) in t.copies.iter().enumerate() {
+    // RAM as the pages' copies hold it, and what ran from those copies
+    // inside no group, with how many of them each ran in: kept as each
+    // copy replaces the one before.
+    let mut m = Moment {
+        ram: vec![0xFF; 0x20_0000],
+        known: vec![false; 0x200],
+        owner: vec![None; 0x200],
+        continues: BTreeSet::new(),
+        fresh: None,
+        live: None,
+    };
+    let mut ran_in: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    for (c, (frame, page, bytes)) in t.copies.iter().enumerate() {
         let old = now.insert(*page, c);
         holding.change(t, *page, old, c, |k| owner[k].is_some());
-        let mut m = Moment {
-            ram: vec![0xFF; 0x20_0000],
-            known: vec![false; 0x200],
-            owner: vec![None; 0x200],
-            continues: BTreeSet::new(),
-            fresh: Some(BTreeSet::new()),
-            live: Some(BTreeSet::new()),
-        };
-        let mut called = BTreeSet::new();
-        let (mut ran, mut seeds) = (BTreeSet::new(), Vec::new());
+        for &r in old.map(|o| &outside[o][..]).unwrap_or_default() {
+            let n = ran_in.get_mut(&r).unwrap();
+            *n -= 1;
+            if *n == 0 {
+                ran_in.remove(&r);
+            }
+        }
+        for &r in &outside[c] {
+            *ran_in.entry(r).or_default() += 1;
+        }
+        let o = (page & 0x1F_FFFF) as usize;
+        m.ram[o..o + PAGE as usize].copy_from_slice(bytes);
+        m.known[o / PAGE as usize] = true;
+        m.owner[o / PAGE as usize] = owner[c];
+        for &e in &reads[o / PAGE as usize] {
+            let (x, seen) = &continuing[e];
+            let known = |x: u32| m.known.get(page_of(x)) == Some(&true);
+            let now_holds = known(*x) && holds(|y| known(y).then(|| m.word(y)).flatten(), *x, seen);
+            if now_holds != seen_now[e] {
+                seen_now[e] = now_holds;
+                if now_holds {
+                    *continues_at.entry(*x).or_default() += 1;
+                } else {
+                    let n = continues_at.get_mut(x).unwrap();
+                    *n -= 1;
+                    if *n == 0 {
+                        continues_at.remove(x);
+                    }
+                }
+            }
+        }
         // The calls running at this moment ran with RAM as it is now, and
         // only theirs are followed here: other code a copy holds may run
         // with other code beside it, in other moments. What ran from a copy
@@ -1959,47 +2122,40 @@ fn take_timeline(f: &mut Finder, t: &Timeline) {
         // ran with: the moment it first ran. A word run inside a known call
         // is that call's, below.
         let c = c as u32;
-        for &k in now.values() {
-            let o = (t.copies[k].1 & 0x1F_FFFF) as usize;
-            m.ram[o..o + PAGE as usize].copy_from_slice(&t.copies[k].2);
-            m.known[o / PAGE as usize] = true;
-            m.owner[o / PAGE as usize] = owner[k];
-            ran.extend(t.ran[k].iter().filter(|r| !t.owned[k].contains(&r.0)).map(|r| (r.0, r.1)));
-            m.fresh.get_or_insert_default().extend(t.ran[k].iter().filter(|r| r.2 == c).map(|r| r.0));
-            called.extend(t.calls[k].iter().filter(|r| during(&r.1, c)).map(|r| r.0));
-        }
+        let called: BTreeSet<u32> =
+            now.values().flat_map(|&k| t.calls[k].iter().filter(|r| during(&r.1, c)).map(|r| r.0)).collect();
         m.live = Some(called.clone());
-        let known = |x: u32| m.known.get(((x & 0x1F_FFFF) / PAGE) as usize) == Some(&true);
-        let continues = continuing
-            .iter()
-            .filter(|(x, seen)| known(*x) && holds(|y| known(y).then(|| m.word(y)).flatten(), *x, seen))
-            .map(|(x, _)| *x)
-            .collect();
-        m.continues = continues;
-        seeds.extend(called.iter().map(|&x| (x, "trace_call")));
-        m.continues.retain(|x| !called.contains(x));
+        m.continues = BTreeSet::new();
+        m.fresh = Some(BTreeSet::new());
+        let mut seeds: Vec<(u32, &'static str)> = called.iter().map(|&x| (x, "trace_call")).collect();
         seeds.extend(f.exe_calls(&m));
-        // What ran inside each call (and exception) whose words this moment
-        // holds all as they ran: in this moment's code, outside the
-        // executables.
-        let bodies: Vec<Body> = holding
-            .whole()
-            .map(|g| {
-                let x = &t.groups[g];
-                Body {
-                    entry: x.entry,
-                    here: m.allowed(f.exes, x.entry),
-                    how: x.how,
-                    words: x.words.iter().map(|w| w.1).filter(|&w| m.allowed(f.exes, w)).collect(),
-                    landed: x.landed.iter().map(|w| w.1).collect(),
-                    jumps: x.jumps.iter().map(|(w, &h)| (w.1, h)).collect(),
-                    live: called.contains(&x.entry),
-                }
-            })
-            .filter(|b| !b.words.is_empty())
-            .collect();
-        let facts = facts(&bodies);
-        f.take(&m, &facts, &seeds, &ran, &format!("frame {frame}"), Some(&holding.present), false);
+        let exes = f.exes;
+        let inputs = |m: &mut Moment| {
+            let fresh = first.get(&c).into_iter().flatten();
+            m.fresh = Some(fresh.filter(|&&(k, _)| now.get(&t.copies[k].1) == Some(&k)).map(|r| r.1).collect());
+            m.continues = continues_at.keys().copied().filter(|x| !called.contains(x)).collect();
+            // What ran inside each call (and exception) whose words this
+            // moment holds all as they ran: in this moment's code, outside
+            // the executables.
+            let bodies: Vec<Body> = holding
+                .whole()
+                .map(|g| {
+                    let x = &t.groups[g];
+                    Body {
+                        entry: x.entry,
+                        here: m.allowed(exes, x.entry),
+                        how: x.how,
+                        words: x.words.iter().map(|w| w.1).filter(|&w| m.allowed(exes, w)).collect(),
+                        landed: x.landed.iter().map(|w| w.1).collect(),
+                        jumps: x.jumps.iter().map(|(w, &h)| (w.1, h)).collect(),
+                        live: called.contains(&x.entry),
+                    }
+                })
+                .filter(|b| !b.words.is_empty())
+                .collect();
+            (facts(&bodies), ran_in.keys().copied().collect())
+        };
+        f.take(Some((run, c)), &mut m, &seeds, inputs, &format!("frame {frame}"), Some(&holding.present), false);
     }
 }
 
@@ -2264,6 +2420,7 @@ impl InventoryArgs {
             named: BTreeMap::new(),
             known: Vec::new(),
             switches: BTreeMap::new(),
+            memo: BTreeMap::new(),
         };
         // Again until nothing changes, each time with every start found for
         // the code each moment holds, in whichever moment (a call there may
@@ -2277,12 +2434,12 @@ impl InventoryArgs {
             before = Some(now);
             finder.known = finder.found.iter().map(|((s, _), f)| f.known(*s)).collect();
             finder.found.clear();
-            for (_, tl, _) in &runs {
+            for (run, (_, tl, _)) in runs.iter().enumerate() {
                 if let Some(tl) = tl {
-                    take_timeline(&mut finder, tl);
+                    take_timeline(&mut finder, tl, run);
                 }
             }
-            for (dir, tl, ram) in &runs {
+            for (run, (dir, tl, ram)) in runs.iter().enumerate() {
                 let pages = ram.len() / PAGE as usize;
                 // A traced run's RAM at its end holds its last moment's code,
                 // and the calls running then.
@@ -2302,7 +2459,7 @@ impl InventoryArgs {
                 let owner = (0..pages)
                     .map(|p| resident(&exes, 0x8000_0000 + p as u32 * PAGE, &ram[p * PAGE as usize..][..PAGE as usize]))
                     .collect();
-                let m = Moment {
+                let mut m = Moment {
                     ram: ram.clone(),
                     known: vec![true; pages],
                     owner,
@@ -2319,7 +2476,15 @@ impl InventoryArgs {
                     let mut more: Vec<Known> = finder.found.iter().map(|((s, _), f)| f.known(*s)).collect();
                     more.retain(|x| !finder.known.contains(x));
                     finder.known.extend(more);
-                    finder.take(&m, &[], &seeds, &BTreeSet::new(), &when, None, true);
+                    finder.take(
+                        Some((run, u32::MAX)),
+                        &mut m,
+                        &seeds,
+                        |_| (Vec::new(), BTreeSet::new()),
+                        &when,
+                        None,
+                        true,
+                    );
                     continue;
                 };
                 // A traced run's end is one more moment: what ran inside each
@@ -2350,7 +2515,16 @@ impl InventoryArgs {
                     }
                 }
                 bodies.retain(|b| !b.words.is_empty());
-                finder.take(&m, &facts(&bodies), &seeds, &BTreeSet::new(), &when, Some(&held), false);
+                let facts = facts(&bodies);
+                finder.take(
+                    Some((run, u32::MAX)),
+                    &mut m,
+                    &seeds,
+                    |_| (facts, BTreeSet::new()),
+                    &when,
+                    Some(&held),
+                    false,
+                );
             }
         }
         let Finder { mut found, exe_keys, .. } = finder;
@@ -2802,8 +2976,9 @@ mod tests {
             named: BTreeMap::new(),
             known: Vec::new(),
             switches: BTreeMap::new(),
+            memo: BTreeMap::new(),
         };
-        take_timeline(&mut f, &t);
+        take_timeline(&mut f, &t, 0);
         let got: Vec<(u32, u32, String)> =
             f.found.values().map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]), x.first.clone())).collect();
         assert_eq!(
@@ -2845,8 +3020,9 @@ mod tests {
             named: BTreeMap::new(),
             known: Vec::new(),
             switches: BTreeMap::new(),
+            memo: BTreeMap::new(),
         };
-        take_timeline(&mut f, &t);
+        take_timeline(&mut f, &t, 0);
         let got: Vec<(u32, u32)> =
             f.found.values().map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]))).collect();
         assert_eq!(got, [(a + 0xFF8, b + 0xC)], "no function starts at the second page");
@@ -2889,8 +3065,9 @@ mod tests {
             named: BTreeMap::new(),
             known: Vec::new(),
             switches: BTreeMap::new(),
+            memo: BTreeMap::new(),
         };
-        take_timeline(&mut f, &t);
+        take_timeline(&mut f, &t, 0);
         let got: Vec<(u32, u32)> =
             f.found.values().map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]))).collect();
         assert_eq!(got, [(a + 0xFF8, b + 0xC)]);
@@ -2935,8 +3112,9 @@ mod tests {
             named: BTreeMap::new(),
             known: Vec::new(),
             switches: BTreeMap::new(),
+            memo: BTreeMap::new(),
         };
-        take_timeline(&mut f, &t);
+        take_timeline(&mut f, &t, 0);
         let got = |f: &Finder| -> BTreeSet<(u32, u32, bool)> {
             f.found.values().map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]), x.fact())).collect()
         };
@@ -2981,8 +3159,9 @@ mod tests {
             named: BTreeMap::new(),
             known: Vec::new(),
             switches: BTreeMap::new(),
+            memo: BTreeMap::new(),
         };
-        take_timeline(&mut f, &t);
+        take_timeline(&mut f, &t, 0);
         let got: BTreeSet<(u32, u32)> =
             f.found.values().map(|x| (parse_hex(&x.row["entry"]), parse_hex(&x.row["end"]))).collect();
         assert_eq!(got, BTreeSet::from([(a, a + 0x10), (b, b + 0x14)]));
@@ -3302,8 +3481,9 @@ mod tests {
             named: BTreeMap::new(),
             known: Vec::new(),
             switches: BTreeMap::new(),
+            memo: BTreeMap::new(),
         };
-        take_timeline(&mut f, &t);
+        take_timeline(&mut f, &t, 0);
         let got: Vec<(u32, u32, Value)> = f
             .found
             .values()
@@ -3366,8 +3546,9 @@ mod tests {
             named: BTreeMap::new(),
             known: Vec::new(),
             switches: BTreeMap::new(),
+            memo: BTreeMap::new(),
         };
-        take_timeline(&mut f, &t);
+        take_timeline(&mut f, &t, 0);
         let got: Vec<(u32, u32, Value)> = f
             .found
             .values()
