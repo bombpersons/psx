@@ -482,10 +482,16 @@ pub(crate) fn brief(v: &Value) -> Value {
     }
     if v["trace"].is_object() {
         let t = &v["trace"];
-        b["trace"] =
-            json!({"instructions": t["instructions"], "lines": t["lines"], "lines_dropped": t["lines_dropped"]});
+        b["trace"] = trace_counts(t);
     }
     b
+}
+
+/// trace.txt's lines are capped (max_events); code.bin, executed.bin and
+/// calls.json are whole unless the code pages or call frames dropped say not.
+fn trace_counts(t: &Value) -> Value {
+    json!({"instructions": t["instructions"], "lines": t["lines"], "lines_dropped": t["lines_dropped"],
+        "code_pages_dropped": t["code_pages"]["dropped"], "call_frames_dropped": t["owners"]["frames_dropped"]})
 }
 
 /// `--summary`: paths and counts only. Each observation appears when it was requested.
@@ -508,7 +514,10 @@ pub(crate) fn summary(v: &Value) -> Value {
     if v["watch"]["enabled"] == true {
         s["watch"] = pick(&v["watch"], &["hits", "recorded", "complete", "file"]);
     }
-    let sections: [(&str, &[&str]); 11] = [
+    if v["trace"].is_object() {
+        s["trace"] = trace_counts(&v["trace"]);
+    }
+    let sections: [(&str, &[&str]); 10] = [
         ("until", &["met", "run_frame", "values"]),
         ("tick_finder", &["file", "fields", "pairs"]),
         ("profile", &["file", "cycles", "functions", "top"]),
@@ -516,7 +525,6 @@ pub(crate) fn summary(v: &Value) -> Value {
         ("samples", &["file", "rows"]),
         ("spu", &["file", "events", "recorded", "complete"]),
         ("audio", &["file", "seconds", "peak"]),
-        ("trace", &["instructions", "lines", "lines_dropped"]),
         ("gpu_frame", &["status", "reason", "frame", "run_frame", "draw_commands"]),
         ("screens", &["dir", "count"]),
         ("states", &[]),
@@ -536,4 +544,19 @@ pub(crate) fn summary(v: &Value) -> Value {
         s["input"] = pick(&v["input"]["application"], &["scheduled_events", "applied_events", "pending_events"]);
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_summary_says_whether_the_trace_files_are_whole() {
+        let v = json!({"trace": {"instructions": 9, "lines": 5, "lines_dropped": 4,
+            "code_pages": {"kept": 3, "dropped": 0}, "owners": {"frames_dropped": 2}}});
+        let t = &summary(&v)["trace"];
+        assert_eq!(t["lines_dropped"], 4);
+        assert_eq!(t["code_pages_dropped"], 0);
+        assert_eq!(t["call_frames_dropped"], 2);
+    }
 }
