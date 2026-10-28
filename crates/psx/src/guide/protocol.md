@@ -95,7 +95,7 @@ unexecuted blocks of exercised functions, and the functions no run
 reached, are the list to classify (dead, debug only, unreachable on this
 disc) or to record. Each executed word is credited to the executable or
 overlay whose code ran there, so code loaded over other code is told
-apart. Two lists say the inventory is short: executed_outside_functions
+apart; code two of its functions hold counts for both. Two lists say the inventory is short: executed_outside_functions
 (code the analysis missed in an executable) and in_no_image (code no
 function the inventory found holds). Take the inventory again with the
 corpus runs as ram (a run recorded by an older psx, record again). What

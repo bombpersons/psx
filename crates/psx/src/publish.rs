@@ -201,7 +201,7 @@ fn bundle_hash(files: &[(String, String, Option<String>)], removed: &[(String, S
 /// The implementer's log of crossings, read back: the state it adds up to,
 /// with any break in its chain.
 pub(crate) struct Log {
-    path: PathBuf,
+    pub(crate) path: PathBuf,
     pub(crate) entries: Vec<Value>,
     pub(crate) state: BTreeMap<String, String>,
     breaks: Vec<String>,
@@ -648,7 +648,7 @@ fn load_bundle(dir: &Path) -> crate::Result<(String, Changes)> {
 }
 
 impl PublishCrossArgs {
-    fn run(&self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
+    pub(crate) fn run(&self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
         let (to, reviews) = sides(ctx, &self.to, &self.reviews)?;
         require_reviews(&reviews)?;
         let dir = find_bundle(ctx, &self.bundle)?;
