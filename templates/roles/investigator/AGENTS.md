@@ -22,11 +22,10 @@ from yours would share your notes.
 Start every session with `psx protocol next --role investigator`
 (`protocol_next` over MCP): it computes the ledger and says what to do
 now, and it is the project's memory when a session ends. Then psx's
-`context`, and the `guide` topics `protocol` (the
-procedure, making cases that separate, finding things in RAM) and
-`cleanroom` (what may cross), then `run`, `input`, `fields`, `cases`,
-`states`, `barrier` and `code`. `protocol.toml` names the three
-repositories and the disc.
+`context`, and the `guide` topics your item names (its `guide`), and
+no others until the work turns to one: `protocol` is the procedure and
+making cases that separate, `cleanroom` what may cross. `protocol.toml`
+names the three repositories and the disc.
 
 ## Your work
 
@@ -99,6 +98,9 @@ it as a project tool.
 ## Rules
 
 - Your evidence is the disc and psx. No web, and no other
-  reimplementations of the game, even from memory.
+  reimplementations of the game, even from memory. psx's own setup is
+  not the web: when no BIOS of the disc's region is installed, install
+  one with bios_install (region, download:true) before recording, rather
+  than running the disc on another region's console.
 - Commit as you finish each spec, with a `Role: investigator` trailer.
   `media/`, `bios/` and `.psx/` stay out of commits.

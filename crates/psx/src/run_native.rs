@@ -785,6 +785,62 @@ fn trace_outputs(
             })
         })
         .collect();
+    // What each word ran inside: a call (by its target, as in calls.json),
+    // an exception (by its handler's first word), no call yet ("top"), or a
+    // landing: a `jr ra` to an address the stack did not hold, by where it
+    // landed. Its body is `[copy, first, end]` ranges of words run inside
+    // it; its jumps the words a jump entered, `[copy, address, how]` (1:
+    // `sp` back to its value at the owner's first word, 2: not, 3: both
+    // seen). A landing adds what the run says of where it landed: the
+    // owners (indices in this list) it ran inside after a call two words
+    // before returned there through the stack, in returned_copy (the
+    // landing's copy or the nearest before it with such returns), `sp`
+    // then, and `sp` at each landing (each up to 16 values; seen_more when
+    // there were more).
+    use psx_core::trace::Owner;
+    let bodies = t.bodies();
+    let mut owners = String::from("[\n");
+    let (mut top_words, mut landings) = (0u64, 0u64);
+    let (mut landed_words, mut landed_words_one_owner, mut landed_words_same_sp) = (0u64, 0u64, 0u64);
+    for (k, (o, body, jumps)) in bodies.iter().enumerate() {
+        let words: u64 = body.iter().map(|r| (r.2 - r.1) as u64 / 4).sum();
+        let (kind, at) = match *o {
+            Owner::Top => {
+                top_words = words;
+                ("top", None)
+            }
+            Owner::Landed(c, a) => ("landed", Some((c, a))),
+            Owner::Call(c, a) => ("call", Some((c, a))),
+            Owner::Exception(c, a) => ("exception", Some((c, a))),
+        };
+        let mut v = json!({
+            "owner": kind,
+            "address": at.map(|a| a.1), "address_hex": at.map(|a| format!("0x{:08X}", a.1)), "copy": at.and_then(|a| copy(a.0)),
+            "body": body.iter().map(|r| json!([copy(r.0), r.1, r.2])).collect::<Vec<_>>(),
+            "jumps": jumps.iter().map(|j| json!([copy(j.0), j.1, j.2])).collect::<Vec<_>>(),
+        });
+        if let Some(l) = t.landing(k as u32) {
+            landings += 1;
+            landed_words += words;
+            // R ran inside one owner after returns through the stack; and
+            // every landing's `sp` was one seen then (the same frame).
+            let all = !(l.returned_inside.more || l.returned_sp.more || l.landed_sp.more);
+            if all && l.returned_inside.values.len() == 1 {
+                landed_words_one_owner += words;
+                if l.landed_sp.values.iter().all(|sp| l.returned_sp.values.contains(sp)) {
+                    landed_words_same_sp += words;
+                }
+            }
+            v["returned_copy"] = json!(l.returned_copy.and_then(copy));
+            v["returned_inside"] = json!(l.returned_inside.values);
+            v["returned_sp"] = json!(l.returned_sp.values);
+            v["landed_sp"] = json!(l.landed_sp.values);
+            v["seen_more"] = json!(!all);
+        }
+        owners += &v.to_string();
+        owners += if k + 1 < bodies.len() { ",\n" } else { "\n" };
+    }
+    owners += "]\n";
     // Each executed RAM word with the code page copy it ran from (code.bin's
     // index, all ones for none), the instruction it executed as, the moment
     // it first ran (the latest copy then: RAM's code was each page's latest
@@ -803,8 +859,11 @@ fn trace_outputs(
     // Each code page's history: a copy whenever code ran in it changed,
     // numbered by its order here. A page's first copy is whole (the copy
     // before it all ones), a later one the words changed since the copy
-    // before it, as (byte offset, word).
-    let mut code = b"PSXCODE2".to_vec();
+    // before it, as (byte offset, word). After each, its flags: 1 when it
+    // was taken because RAM no longer held the page's copy before as
+    // another page was copied, not because code ran in it (RAM's code at
+    // each moment is each page's latest copy).
+    let mut code = b"PSXCODE3".to_vec();
     for c in &t.code_pages {
         code.extend(c.frame.to_le_bytes());
         code.extend(c.addr.to_le_bytes());
@@ -823,10 +882,12 @@ fn trace_outputs(
                 }
             }
         }
+        code.extend((c.refresh as u32).to_le_bytes());
     }
     for (file, bytes) in [
         ("coverage.txt", text.into_bytes()),
         ("calls.json", serde_json::to_vec_pretty(&calls_json).unwrap()),
+        ("owners.json", owners.into_bytes()),
         ("executed.bin", executed),
         ("code.bin", code),
     ] {
@@ -857,7 +918,14 @@ fn trace_outputs(
         "coverage": {"runs": coverage.len(), "unique_instructions": coverage.iter().map(|c| c.2 as u64).sum::<u64>()},
         "top_calls": calls_json.iter().take(20).cloned().collect::<Vec<_>>(),
         "distinct_call_targets": calls_json.len(),
-        "code_pages": {"kept": t.code_pages.len(), "dropped": t.code_pages_dropped, "ran_from_cache": t.ran_from_cache},
+        "code_pages": {"kept": t.code_pages.len(), "refreshed": t.code_pages.iter().filter(|c| c.refresh).count(), "dropped": t.code_pages_dropped, "ran_from_cache": t.ran_from_cache},
+        "owners": {
+            "top_level_words": top_words, "landings": landings, "landed_words": landed_words,
+            "landed_words_one_owner": landed_words_one_owner, "landed_words_same_sp": landed_words_same_sp,
+            "returns_not_held": t.stack.returns_not_held, "frames_dropped": t.stack.frames_dropped,
+            "exceptions_left_elsewhere": t.stack.exceptions_left_elsewhere,
+            "rfe_without_exception": t.stack.rfe_without_exception,
+        },
     }))
 }
 

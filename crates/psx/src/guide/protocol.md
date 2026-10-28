@@ -74,7 +74,8 @@ runs is listed once, and other code loaded at its address is another.
 Overlays group them by the disc file their bytes are loaded from (that
 file is analysed over the extent RAM held of it, for the functions no run
 reached), else by the code they were first found in ("code at 80030000,
-frame 3661"). Code the BIOS copies into RAM at power-on (its shell) is
+frame 3661"), read only around it (bounded_by found_code; see guide
+code). Code the BIOS copies into RAM at power-on (its shell) is
 listed apart under bios_code. A run recorded by an older psx is refused:
 record it again with run --trace. Each executable lists its gaps, what no
 function covers, with how many words decode as code: classify them, or
@@ -94,7 +95,7 @@ unexecuted blocks of exercised functions, and the functions no run
 reached, are the list to classify (dead, debug only, unreachable on this
 disc) or to record. Each executed word is credited to the executable or
 overlay whose code ran there, so code loaded over other code is told
-apart. Two lists say the inventory is short: executed_outside_functions
+apart; code two of its functions hold counts for both. Two lists say the inventory is short: executed_outside_functions
 (code the analysis missed in an executable) and in_no_image (code no
 function the inventory found holds). Take the inventory again with the
 corpus runs as ram (a run recorded by an older psx, record again). What
@@ -149,12 +150,14 @@ the emulator changed (until then they are not evidence); waiting while an
 audit is due (every few implemented specs, [protocol] audit_every, and at
 a loop's end, until audit records one: guide topic review); the findings
 of a failed audit; revising a rejected bundle and crossing an approved one;
-taking the inventory and coverage again; answering questions and choices
+taking the inventory and coverage again (coverage also when an older psx
+took it, which credited code differently); answering questions and choices
 (specs/answers/Q-NNNN.md, a choice under its number in
 specs/answers/CHOICES.md; answered once crossed); thin specs (a
 verified spec whose kept-back cases fail); recording missing cases; staging; then a few units to specify, formats first, unless
 [protocol] specs_ahead crossed specs wait for the implementer; and
-classifying what no run reaches.
+classifying what no run reaches. An item's guide names the topics it
+needs: read those, not every topic.
 
 ## The report
 

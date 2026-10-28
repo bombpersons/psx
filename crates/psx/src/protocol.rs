@@ -134,6 +134,14 @@ fn front_matter(text: &str) -> Option<BTreeMap<String, Fm>> {
     None
 }
 
+/// A spec's id and title from its front matter (port run's commit of a
+/// crossing names them).
+pub(crate) fn spec_heading(text: &str) -> Option<(String, String)> {
+    let fm = front_matter(text)?;
+    let id = fm.get("id").map(|v| v.str().to_string()).filter(|s| !s.is_empty())?;
+    Some((id, fm.get("title").map(|v| v.str().to_string()).unwrap_or_default()))
+}
+
 /// A spec of the investigator's.
 #[derive(Debug, Clone)]
 struct Spec {
@@ -517,6 +525,80 @@ fn code_units(inv: &Value, cov: Option<&Value>) -> Vec<Unit> {
     out
 }
 
+/// Overlays no file holds, read only around the code found in them: their
+/// functions no run went near are not counted. None when there are none.
+fn partly_read(inv: Option<&Value>, explained: &Value) -> Value {
+    let hex = |v: &Value| v.as_str().and_then(|t| u32::from_str_radix(t.trim_start_matches("0x"), 16).ok());
+    // Each overlay's span, function count and functions as (entry, sha256).
+    type Overlay<'a> = (u32, u32, u64, Vec<(&'a str, &'a str)>);
+    let mut overlays: Vec<Overlay> = inv
+        .and_then(|i| i["overlays"].as_array())
+        .into_iter()
+        .flatten()
+        .filter(|o| o["bounded_by"] == "found_code")
+        .filter_map(|o| {
+            let functions = o["functions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|f| Some((f["entry"].as_str()?, f["sha256"].as_str()?)))
+                .collect();
+            Some((hex(&o["start"])?, hex(&o["end"])?, o["totals"]["functions"].as_u64().unwrap_or(0), functions))
+        })
+        .collect();
+    if overlays.is_empty() {
+        return Value::Null;
+    }
+    // Overlays that overlap or touch share a stretch of RAM: what wrote one
+    // there likely wrote the others, so each stretch is one piece of work.
+    overlays.sort_by_key(|o| (o.0, o.1));
+    let mut regions: Vec<(Overlay, usize)> = Vec::new();
+    for (start, end, functions, list) in overlays {
+        match regions.last_mut() {
+            Some((r, n)) if start <= r.1 => {
+                r.1 = r.1.max(end);
+                r.2 += functions;
+                r.3.extend(list);
+                *n += 1;
+            }
+            _ => regions.push(((start, end, functions, list), 1)),
+        }
+    }
+    // notes/overlays.json: {"regions": [{"start", "end", "code_sha256",
+    // "why"}]}, for code no disc file holds (built at runtime, say); it
+    // settles each stretch it covers whose code is the code it explains
+    // (code_sha256: of the stretch's functions, as listed here).
+    let why: Vec<(u32, u32, Option<&str>, &str)> = explained["regions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let why = e["why"].as_str().filter(|w| !w.trim().is_empty())?;
+            Some((hex(&e["start"])?, hex(&e["end"])?, e["code_sha256"].as_str(), why))
+        })
+        .collect();
+    let list: Vec<Value> = regions
+        .iter()
+        .map(|((start, end, functions, list), overlays)| {
+            let mut list = list.clone();
+            list.sort();
+            let code =
+                crate::publish::sha256(list.iter().map(|(e, h)| format!("{e} {h}\n")).collect::<String>().as_bytes());
+            let covering: Vec<_> = why.iter().filter(|w| w.0 <= *start && *end <= w.1).collect();
+            let w = covering.iter().find(|w| w.2 == Some(code.as_str())).map(|w| w.3);
+            let mut r = json!({"start": format!("{start:08X}"), "end": format!("{end:08X}"), "overlays": overlays,
+                "functions": functions, "code_sha256": code, "explained": w});
+            if w.is_none() && !covering.is_empty() {
+                r["explained_for_other_code"] = json!(true);
+            }
+            r
+        })
+        .collect();
+    let open = list.iter().filter(|r| r["explained"].is_null()).count();
+    json!({"regions": list, "unsettled": open,
+        "why": "no file holds the code in these stretches of RAM, so the inventory read only around the code found there and counts too few functions; decompressed code is read whole by passing it to inventory --unpacked, and code no disc file holds is explained in notes/overlays.json (guide code)"})
+}
+
 /// The image's file name, for matching a name given in provenance or a
 /// classification.
 fn image_file(image: &str) -> &str {
@@ -687,8 +769,54 @@ fn unseen_runs(inv: &Value, cov: &Value) -> (Vec<String>, Vec<String>) {
     (unread, without_code)
 }
 
+/// The inventory's runs recorded before run --trace copied a page again
+/// where RAM was written over with no code run there (code.bin PSXCODE2):
+/// their old copies stand in for code that was gone, so functions read
+/// from them can join code of different loads.
+fn runs_without_kept_pages(inv: &Value) -> Vec<String> {
+    inv["ram"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["run"].as_str())
+        .filter(|run| {
+            let mut magic = [0u8; 8];
+            std::fs::File::open(Path::new(run).join("code.bin"))
+                .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+                .is_ok_and(|_| &magic == b"PSXCODE2")
+        })
+        .map(String::from)
+        .collect()
+}
+
+/// The guide topics an item of work needs, so a session reads those and
+/// not every topic; waiting items, and the implementer's (clean mode has
+/// no guide), need none.
+fn guide_topics(what: &str) -> &'static [&'static str] {
+    match what {
+        "rebuild_states" => &["states"],
+        "check_cases" | "triage_cases" => &["cases", "states"],
+        "audit_findings" | "revise" | "stage" => &["barrier", "cleanroom"],
+        "cross" => &["barrier"],
+        "record_again" => &["run", "code"],
+        "unpack_overlays" => &["code"],
+        "inventory" | "coverage" | "classify" => &["protocol", "code"],
+        "corpus" => &["protocol", "run", "input"],
+        "answer_questions" | "answer_choices" => &["cleanroom", "cases", "barrier"],
+        "thin_specs" => &["protocol", "cases"],
+        "record_cases" => &["cases", "fields", "states", "input"],
+        "specify_formats" => &["protocol", "cleanroom", "cases"],
+        "specify" => &["protocol", "cleanroom", "fields", "cases", "states", "input", "run", "code"],
+        "review" | "audit" => &["review", "cleanroom"],
+        _ => &[],
+    }
+}
+
 fn work(what: &str, text: String, details: Value) -> Value {
     let mut v = json!({"do": what, "what": text});
+    if !guide_topics(what).is_empty() {
+        v["guide"] = json!(guide_topics(what));
+    }
     if let (Some(m), Some(d)) = (v.as_object_mut(), details.as_object()) {
         m.extend(d.clone());
     }
@@ -1067,6 +1195,28 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         )),
         _ => {}
     }
+    let partly_read_overlays = partly_read(inv.as_ref(), &read_json(&notes.join("overlays.json")).unwrap_or(json!({})));
+    let old_traces = inv.as_ref().map(runs_without_kept_pages).unwrap_or_default();
+    if !old_traces.is_empty() {
+        let runs: Vec<&String> = old_traces.iter().collect();
+        inv_work.push(work(
+            "record_again",
+            format!("{} of the inventory's runs were recorded before run --trace copied a page again where RAM was written over with no code run there, so the inventory read code that was already gone and can join code of different loads: record them again with run --trace (the same start, input and trace window: its report), then take the inventory again with the new runs; the stretches it reads only partly can change, so explain them after", old_traces.len()),
+            few("runs", &runs),
+        ));
+    } else if let Some(n) = partly_read_overlays["unsettled"].as_u64().filter(|&n| n > 0) {
+        let open: Vec<&Value> = partly_read_overlays["regions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r["explained"].is_null())
+            .collect();
+        inv_work.push(work(
+            "unpack_overlays",
+            format!("{n} stretches of RAM hold code no file holds, so the inventory read only around the code found there: for each, find what wrote it and from what (guide code, Decompressed code); decompress what it read from the disc and take the inventory again with --unpacked, or, when no disc file holds the code (built at runtime), say so in notes/overlays.json with the writer, what it read and the stretch's code_sha256 (an explanation whose code_sha256 is not the stretch's, explained_for_other_code, was for code the inventory no longer lists there: check the stretch again)"),
+            json!({"regions": open}),
+        ));
+    }
     if inv.is_none() {
         inv_work.push(work(
             "inventory",
@@ -1077,6 +1227,12 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         inv_work.push(work(
             "coverage",
             "no corpus coverage: record play-throughs with run --trace and run coverage over them".into(),
+            json!({}),
+        ));
+    } else if cov.as_ref().is_some_and(|c| c["coverage"].as_u64() < Some(crate::coverage::FORMAT)) {
+        inv_work.push(work(
+            "coverage",
+            "coverage was taken by an older psx, which credited code differently: run coverage again over the same runs (its runs[].run)".into(),
             json!({}),
         ));
     } else if let (Some(i), Some(c)) = (&inv, &cov) {
@@ -1372,6 +1528,7 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         "audits": {"due": audit_due, "unaudited_bundles": unaudited, "loop_ended": loop_ended,
             "last": last_audit.as_ref().map(|a| json!({"time": a["time"], "mechanical": a["mechanical"], "judgment": a["judgment"], "bundles": a["bundles"].as_array().map_or(0, Vec::len)}))},
         "inventory_gaps": inventory_gaps,
+        "partly_read_overlays": partly_read_overlays,
         "emulator_changes": {"states": stale_chains, "cases": stale_cases.len(), "differing": differing},
         "inputs": {"inventory": inv.as_ref().map(|_| &inv_path), "coverage": cov.as_ref().map(|_| &cov_path), "results": set.results},
     });
@@ -1465,6 +1622,18 @@ pub(crate) fn write(p: &Path, bytes: &[u8]) -> crate::Result<()> {
     std::fs::write(p, bytes).map_err(|e| Error::io(p, e))
 }
 
+/// A ledger that says what the last one said keeps its made, so asking
+/// again leaves the file as it was (and the repository clean).
+fn keep_made(last: Option<Value>, new: &mut Value) {
+    let Some(mut last) = last else { return };
+    let made = last["made"].take();
+    let mut now = new.clone();
+    now["made"] = Value::Null;
+    if last == now {
+        new["made"] = made;
+    }
+}
+
 /// Computes the ledger and writes it: ledger.json beside the inventory, its
 /// totals to ledger_history.jsonl when they change, and the implementer's
 /// notes/NEXT.md.
@@ -1483,8 +1652,9 @@ fn refresh(ctx: &Ctx) -> crate::Result<(Repos, Ledger, PathBuf)> {
         }
     }
     let r = Repos { investigator: ctx.root.clone(), implementer, reviewer };
-    let l = ledger(ctx, &r)?;
+    let mut l = ledger(ctx, &r)?;
     let out = crate::inventory::default_out(ctx).with_file_name("ledger.json");
+    keep_made(read_json(&out), &mut l.value);
     write(&out, format!("{}\n", serde_json::to_string_pretty(&l.value).unwrap_or_default()).as_bytes())?;
     // Totals over time, for the estimate: a line whenever they change.
     let history = out.with_file_name("ledger_history.jsonl");
@@ -1816,6 +1986,49 @@ impl Op for ProtocolNextArgs {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn overlays_read_only_around_their_found_code_are_work_by_stretch_of_ram() {
+        let inv = json!({"overlays": [
+            {"name": "80100000 /OVL.BIN", "bounded_by": "file", "start": "80100000", "end": "80104000", "totals": {"functions": 3}},
+            {"name": "code at 80040000, frame 9", "bounded_by": "found_code", "start": "80040000", "end": "80041000", "totals": {"functions": 5},
+                "functions": [{"entry": "80040000", "sha256": "aa"}]},
+            {"name": "code at 80040800, frame 20", "bounded_by": "found_code", "start": "80040800", "end": "80041800", "totals": {"functions": 1},
+                "functions": [{"entry": "80040800", "sha256": "bb"}]},
+            {"name": "code at 80041800, frame 30", "bounded_by": "found_code", "start": "80041800", "end": "80042000", "totals": {"functions": 1},
+                "functions": [{"entry": "80041800", "sha256": "cc"}]},
+            {"name": "code at 80060000, frame 9", "bounded_by": "found_code", "start": "80060000", "end": "80060100", "totals": {"functions": 1},
+                "functions": [{"entry": "80060000", "sha256": "dd"}]}]});
+        let p = partly_read(Some(&inv), &json!({}));
+        assert_eq!(p["unsettled"], 2);
+        let code = |fs: &[(&str, &str)]| {
+            crate::publish::sha256(fs.iter().map(|(e, h)| format!("{e} {h}\n")).collect::<String>().as_bytes())
+        };
+        let first = code(&[("80040000", "aa"), ("80040800", "bb"), ("80041800", "cc")]);
+        assert_eq!(
+            p["regions"][0],
+            json!({"start": "80040000", "end": "80042000", "overlays": 3, "functions": 7, "code_sha256": first, "explained": null})
+        );
+        // An explanation settles each stretch it covers whose code it is,
+        // and only with a reason.
+        let second = code(&[("80060000", "dd")]);
+        let why = json!({"regions": [{"start": "80060000", "end": "80061000", "code_sha256": second, "why": "built at runtime by 80012340"},
+            {"start": "80040000", "end": "80042000", "code_sha256": first, "why": " "}]});
+        let p = partly_read(Some(&inv), &why);
+        assert_eq!(p["unsettled"], 1);
+        assert_eq!(p["regions"][1]["explained"], "built at runtime by 80012340");
+        // One for other code (or none named) settles nothing.
+        for c in [json!("ee"), Value::Null] {
+            let why = json!({"regions": [{"start": "80060000", "end": "80061000", "code_sha256": c, "why": "built at runtime"}]});
+            let p = partly_read(Some(&inv), &why);
+            assert_eq!(
+                (p["unsettled"].as_u64(), &p["regions"][1]["explained_for_other_code"]),
+                (Some(2), &json!(true))
+            );
+        }
+        assert!(partly_read(Some(&json!({"overlays": []})), &json!({})).is_null());
+        assert!(partly_read(None, &json!({})).is_null());
+    }
     use super::*;
 
     #[test]
@@ -1929,6 +2142,92 @@ mod tests {
         assert_eq!(unseen_runs(&inv, &cov), (vec![c.clone()], vec![b.clone()]));
         assert_eq!(unseen_runs(&json!({}), &cov), (vec![a.clone(), b.clone(), c.clone()], vec![b.clone()]));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn runs_traced_before_pages_were_copied_again_are_recorded_again() {
+        let dir = std::env::temp_dir().join(format!("psx-old-code-{}", std::process::id()));
+        let run = |name: &str, code: Option<&[u8]>| {
+            let r = dir.join(name);
+            std::fs::create_dir_all(&r).unwrap();
+            if let Some(c) = code {
+                std::fs::write(r.join("code.bin"), c).unwrap();
+            }
+            r.display().to_string()
+        };
+        let (old, new, none) =
+            (run("old", Some(b"PSXCODE2....")), run("new", Some(b"PSXCODE3....")), run("none", None));
+        let inv = json!({"ram": [{"run": old}, {"run": new}, {"run": none}]});
+        assert_eq!(runs_without_kept_pages(&inv), vec![old.clone()]);
+        assert!(runs_without_kept_pages(&json!({})).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_ledger_that_says_the_same_keeps_its_made() {
+        let last = json!({"made": "2026-10-28T18:08:08Z", "complete": {"all": 0.03}});
+        let mut same = json!({"made": "2026-10-28T18:09:29Z", "complete": {"all": 0.03}});
+        keep_made(Some(last.clone()), &mut same);
+        assert_eq!(same["made"], "2026-10-28T18:08:08Z");
+        let mut moved = json!({"made": "2026-10-28T18:09:29Z", "complete": {"all": 0.04}});
+        keep_made(Some(last), &mut moved);
+        assert_eq!(moved["made"], "2026-10-28T18:09:29Z");
+        let mut first = json!({"made": "2026-10-28T18:09:29Z"});
+        keep_made(None, &mut first);
+        assert_eq!(first["made"], "2026-10-28T18:09:29Z");
+    }
+
+    #[test]
+    fn items_name_the_guide_topics_they_need() {
+        assert_eq!(work("cross", "x".into(), json!({}))["guide"], json!(["barrier"]));
+        assert!(work("hold", "x".into(), json!({})).get("guide").is_none());
+        // Every topic named is one the guide has.
+        for k in [
+            "rebuild_states",
+            "check_cases",
+            "triage_cases",
+            "audit_findings",
+            "revise",
+            "stage",
+            "cross",
+            "record_again",
+            "unpack_overlays",
+            "inventory",
+            "coverage",
+            "classify",
+            "corpus",
+            "answer_questions",
+            "answer_choices",
+            "thin_specs",
+            "record_cases",
+            "specify_formats",
+            "specify",
+            "review",
+            "audit",
+        ] {
+            assert!(!guide_topics(k).is_empty(), "{k}");
+            for t in guide_topics(k) {
+                assert!(serde_json::from_value::<crate::guide::Topic>(json!(t)).is_ok(), "{k}: {t}");
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_taken_by_an_older_psx_is_taken_again() {
+        let w = std::env::temp_dir().join(format!("psx-old-coverage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&w);
+        let put = |rel: &str, text: &str| write(&w.join(rel), text.as_bytes()).unwrap();
+        put("inv/protocol.toml", "");
+        put("inv/notes/inventory.json", r#"{"inventory": 2, "made": "t"}"#);
+        let ctx = Ctx { root: w.join("inv"), cancel: None };
+        let r = Repos { investigator: w.join("inv"), implementer: w.join("imp"), reviewer: w.join("rev") };
+        let asks = |format: u64| {
+            put("inv/notes/coverage.json", &json!({"coverage": format, "inventory": {"made": "t"}}).to_string());
+            ledger(&ctx, &r).unwrap().investigator.iter().any(|w| w["do"] == "coverage")
+        };
+        assert!(asks(crate::coverage::FORMAT - 1));
+        assert!(!asks(crate::coverage::FORMAT));
+        let _ = std::fs::remove_dir_all(&w);
     }
 
     #[test]

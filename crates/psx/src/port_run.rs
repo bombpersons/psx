@@ -7,7 +7,15 @@
 //! prompt naming the item. Each run starts fresh: what a role knows is in
 //! its files. When the agent exits the ledger is computed again, and so on,
 //! until no role has work, a run changes nothing (the role's work and its
-//! repository are as before), or `max_runs` is reached.
+//! repository are as before), a run fails (its harness exited with an
+//! error, ran out of time, or its stream has no successful end), or
+//! `max_runs` sessions have run. A role's next session is told what its failed
+//! one left uncommitted.
+//!
+//! An approved bundle port run crosses itself (publish cross) and commits
+//! in the implementer's repository with the investigator's ledger; one
+//! publish refuses goes to the investigator's session. Crossings the
+//! implementer's repository holds in no commit are committed too.
 //!
 //! The harness is a command line per role in protocol.toml's `[agents]`,
 //! so any agent harness with a headless mode serves. Each run's output goes
@@ -149,6 +157,18 @@ fn default_prompt(role: Role) -> &'static str {
         Role::Implementer => {
             "You are the implementer in this clean-room port; AGENTS.md is your role. psx port run started this session and starts a fresh one for the next item, so what you leave in your files is all the next session knows. Start with clean mode's next and notes/NEXT.md, and do the first item of work, as AGENTS.md says: {work}. Do that one item. Before you stop, add to questions/LOOP.md and commit. Then stop."
         }
+    }
+}
+
+/// The item as a prompt names it: what to do, and the guide topics it
+/// needs (read those, not every topic).
+fn item_text(item: &Value) -> String {
+    let what = item["what"].as_str().unwrap_or_default();
+    let topics: Vec<&str> = item["guide"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if topics.is_empty() {
+        what.to_string()
+    } else {
+        format!("{what} (guide topics for it: {}; read only those unless the work turns to another)", topics.join(", "))
     }
 }
 
@@ -546,6 +566,306 @@ fn session(
     Ok((status.and_then(|s| s.code()), timed_out.load(Ordering::Relaxed)))
 }
 
+/// How a session's stream ended: Some(true) with a successful final
+/// result, Some(false) with a failed one or none, None when the stream is
+/// no harness's we know (only its exit code tells).
+fn ended(raw: &Path) -> Option<bool> {
+    let text = std::fs::read_to_string(raw).ok()?;
+    let (mut known, mut end) = (false, None);
+    for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+        match v["type"].as_str().unwrap_or_default() {
+            // Claude
+            "result" if v.get("num_turns").is_some() => end = Some(v["is_error"] != true),
+            // Gemini
+            "result" if v.get("status").is_some() => end = Some(v["status"] == "success"),
+            // Codex: each turn ends completed or failed.
+            "turn.completed" => end = Some(true),
+            "turn.failed" => end = Some(false),
+            "system" | "assistant" | "user" | "init" | "message" | "tool_use" | "tool_result" | "thread.started"
+            | "turn.started" | "item.started" | "item.completed" => known = true,
+            _ => {}
+        }
+    }
+    end.or(known.then_some(false))
+}
+
+/// The tokens a session used, in its harness's own terms: Codex's
+/// turn.completed usage summed over its turns, Claude Code's result usage
+/// (and cost). None when the stream says nothing we read (Gemini's, or
+/// output that is no stream).
+fn usage(raw: &Path) -> Option<Value> {
+    let text = std::fs::read_to_string(raw).ok()?;
+    let mut sum = serde_json::Map::new();
+    for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+        match v["type"].as_str().unwrap_or_default() {
+            "turn.completed" => {
+                for (k, n) in v["usage"].as_object().into_iter().flatten() {
+                    if let Some(n) = n.as_u64() {
+                        let had = sum.get(k).and_then(Value::as_u64).unwrap_or(0);
+                        sum.insert(k.clone(), json!(had + n));
+                    }
+                }
+            }
+            "result" if v.get("num_turns").is_some() => {
+                let mut u = v["usage"].as_object().cloned().unwrap_or_default();
+                if let Some(c) = v.get("total_cost_usd") {
+                    u.insert("total_cost_usd".into(), c.clone());
+                }
+                return Some(u.into());
+            }
+            _ => {}
+        }
+    }
+    (!sum.is_empty()).then(|| sum.into())
+}
+
+/// A session's usage on one line: its counts, key=value.
+fn usage_line(u: &Value) -> String {
+    u.as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, n)| n.is_number())
+        .map(|(k, n)| format!("{k}={n}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Why a session failed, or None when it did not.
+fn failure(exit: Option<i32>, timed_out: bool, ended: Option<bool>) -> Option<String> {
+    if timed_out {
+        Some("it ran out of time (timeout_minutes)".into())
+    } else if exit != Some(0) {
+        Some(exit.map_or("it was killed or did not start".into(), |c| format!("its harness exited with {c}")))
+    } else if ended == Some(false) {
+        Some("its stream has no successful end".into())
+    } else {
+        None
+    }
+}
+
+/// The role's failed runs in runs.jsonl since its last run that did not
+/// fail, oldest first: each record and why it failed.
+fn last_failed(jl: &Path, role: Role) -> Vec<(Value, String)> {
+    let text = std::fs::read_to_string(jl).unwrap_or_default();
+    let mut out: Vec<(Value, String)> = text
+        .lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        // port run's own steps (a crossing) are no session of the role's.
+        .filter(|r| r["role"] == role.name() && r["by"] != "port run")
+        .map_while(|rec| {
+            // Records before failed was kept have only the exit and the timeout.
+            let why = match rec.get("failed") {
+                Some(f) => f.as_str().map(str::to_string),
+                None => failure(rec["exit"].as_i64().map(|c| c as i32), rec["timed_out"] == true, None),
+            }?;
+            Some((rec, why))
+        })
+        .collect();
+    out.reverse();
+    out
+}
+
+/// What a session is told before its item when the role's last sessions
+/// failed and its repository has uncommitted changes.
+fn left_note(failed: &[(Value, String)], uncommitted: &[String]) -> String {
+    const SHOWN: usize = 30;
+    let mut files = uncommitted.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+    if uncommitted.len() > SHOWN {
+        files += &format!(" and {} more", uncommitted.len() - SHOWN);
+    }
+    let sessions: Vec<String> = failed
+        .iter()
+        .map(|(rec, why)| {
+            format!(
+                "started {}, item {}: {} ({why})",
+                rec["started"].as_str().unwrap_or_default(),
+                rec["item"].as_str().unwrap_or_default(),
+                rec["what"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    let which = if failed.len() == 1 {
+        "This role's last session stopped before it finished".to_string()
+    } else {
+        format!("This role's last {} sessions stopped before they finished", failed.len())
+    };
+    format!(
+        "{which}: {}. Its repository has uncommitted changes (git status): {files}. Before your item, look at them: finish and commit what those sessions left, or set right what is half done.",
+        sessions.join("; ")
+    )
+}
+
+/// The commits a run made, from HEAD before it to HEAD after; a
+/// repository with no commit before the run has all of them new.
+fn commits(repo: &Path, before: &str, after: &str) -> Vec<String> {
+    if after.is_empty() || before == after {
+        return vec![];
+    }
+    let range = if before.is_empty() { after.to_string() } else { format!("{before}..{after}") };
+    git(repo, &["log", "--format=%h %s", &range]).lines().map(str::to_string).collect()
+}
+
+fn uncommitted(repo: &Path) -> Vec<String> {
+    git(repo, &["status", "--porcelain", "--", ".", ":!.psx"]).lines().map(|l| l.trim().to_string()).collect()
+}
+
+/// git, with what it said when it failed.
+fn git_or(repo: &Path, args: &[&str]) -> Result<String, String> {
+    let o = Command::new("git").arg("-C").arg(repo).args(args).output().map_err(|e| format!("git: {e}"))?;
+    if o.status.success() {
+        Ok(String::from_utf8_lossy(&o.stdout).trim_end().to_string())
+    } else {
+        Err(format!("git {}: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&o.stderr).trim()))
+    }
+}
+
+/// Commits these paths and only these (what else is staged stays staged),
+/// when any differs from HEAD; the new commit, or None.
+fn commit_paths(repo: &Path, paths: &[String], message: &str) -> Result<Option<String>, String> {
+    // A path neither on disk nor tracked (crossed, then removed by a later
+    // bundle before either was committed) has nothing to commit.
+    let paths: Vec<&str> = paths
+        .iter()
+        .filter(|p| repo.join(p).exists() || !git(repo, &["ls-files", "--", p]).is_empty())
+        .map(String::as_str)
+        .collect();
+    if paths.is_empty() || git(repo, &[&["status", "--porcelain", "--"][..], &paths].concat()).is_empty() {
+        return Ok(None);
+    }
+    git_or(repo, &[&["add", "-A", "--"][..], &paths].concat())?;
+    git_or(repo, &[&["commit", "-q", "-m", message, "--"][..], &paths].concat())?;
+    Ok(Some(git(repo, &["log", "-1", "--format=%h %s"])))
+}
+
+/// The commit message for crossings: each bundle's specs by id and title
+/// (new or changed), its other files by count and what it removed. All of
+/// it is text that crossed, or hashes.
+fn crossing_message(to: &Path, entries: &[Value], from: usize) -> String {
+    let short = |e: &Value| e["bundle"].as_str().unwrap_or_default().chars().take(12).collect::<String>();
+    let paths = |e: &Value, k: &str| -> Vec<String> {
+        e[k].as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f["path"].as_str().or(f.as_str()).map(str::to_string))
+            .collect()
+    };
+    let mut had: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let (mut ids, mut body) = (Vec::new(), String::new());
+    for (i, e) in entries.iter().enumerate() {
+        let files = paths(e, "files");
+        let removed = paths(e, "removed");
+        if i >= from {
+            let (mut specs, mut new, mut changed) = (Vec::new(), 0, 0);
+            for p in &files {
+                let how = if had.contains(p) { "changed" } else { "new" };
+                match std::fs::read_to_string(to.join("specs").join(p))
+                    .ok()
+                    .and_then(|t| crate::protocol::spec_heading(&t))
+                {
+                    Some((id, title)) => {
+                        specs.push(format!("  {id} {title} ({how})"));
+                        ids.push(id);
+                    }
+                    None if had.contains(p) => changed += 1,
+                    None => new += 1,
+                }
+            }
+            body += &format!(
+                "Bundle {} crossed {}:\n",
+                e["bundle"].as_str().unwrap_or_default(),
+                e["time"].as_str().unwrap_or_default()
+            );
+            for s in &specs {
+                body += &format!("{s}\n");
+            }
+            body += &format!("  other files: {new} new, {changed} changed\n");
+            if !removed.is_empty() {
+                body += &format!("  removed: {}\n", removed.join(", "));
+            }
+            body += &format!("  changes: notes/changes/{}.md\n\n", e["bundle"].as_str().unwrap_or_default());
+        }
+        had.extend(files);
+        for p in &removed {
+            had.remove(p);
+        }
+    }
+    let new = &entries[from..];
+    let subject = if new.len() == 1 {
+        let what = if ids.is_empty() {
+            format!("{} files", paths(&new[0], "files").len())
+        } else if ids.len() > 6 {
+            format!("{} and {} more", ids[..6].join(", "), ids.len() - 6)
+        } else {
+            ids.join(", ")
+        };
+        format!("[cross] bundle {}: {what}", short(&new[0]))
+    } else {
+        format!("[cross] {} bundles: {}", new.len(), new.iter().map(short).collect::<Vec<_>>().join(", "))
+    };
+    let trailers: Vec<String> =
+        new.iter().map(|e| format!("Bundle: {}", e["bundle"].as_str().unwrap_or_default())).collect();
+    format!("{subject}\n\n{body}Role: investigator\n{}\n", trailers.join("\n"))
+}
+
+/// Commits in the implementer's repository what crossed and is not
+/// committed yet: the publishing log's entries past those HEAD holds, with
+/// the files they wrote or removed under specs/ and their change notes, in
+/// one commit (a file two of them wrote has only its last version on
+/// disk). Only when the publishing invariant holds. None when there is
+/// nothing to commit or the repository is not git's.
+fn commit_crossings(to: &Path, reviews: &Path) -> Result<Option<Value>, String> {
+    if git(to, &["rev-parse", "--is-inside-work-tree"]) != "true" {
+        return Ok(None);
+    }
+    let log = crate::publish::read_log(to).map_err(|e| e.to_string())?;
+    let text = std::fs::read_to_string(&log.path).unwrap_or_default();
+    let held = git(to, &["show", "HEAD:notes/published.jsonl"]);
+    let held = if held.is_empty() { String::new() } else { format!("{held}\n") };
+    if !text.starts_with(&held) {
+        return Err(format!(
+            "{} is not what its last commit holds with lines added after: crossings are only ever appended",
+            log.path.display()
+        ));
+    }
+    let from = held.lines().filter(|l| !l.trim().is_empty()).count();
+    if from >= log.entries.len() {
+        return Ok(None);
+    }
+    let inv = crate::publish::invariant(to, reviews, &log).map_err(|e| e.to_string())?;
+    if inv["holds"] != json!(true) {
+        return Err(format!(
+            "the implementer's specs/ is not what the approved bundles add up to, so its crossings are not committed (publish check): {inv}"
+        ));
+    }
+    let new = &log.entries[from..];
+    let mut paths = vec!["notes/published.jsonl".to_string()];
+    for e in new {
+        let bundle = e["bundle"].as_str().unwrap_or_default();
+        paths.push(format!("notes/changes/{bundle}.md"));
+        for p in e["files"].as_array().into_iter().flatten().filter_map(|f| f["path"].as_str()) {
+            paths.push(format!("specs/{p}"));
+        }
+        for p in e["removed"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            paths.push(format!("specs/{p}"));
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    let message = crossing_message(to, &log.entries, from);
+    let commit = commit_paths(to, &paths, &message)?;
+    Ok(commit.map(|c| {
+        json!({"repository": to, "bundles": new.iter().map(|e| e["bundle"].clone()).collect::<Vec<_>>(), "commit": c})
+    }))
+}
+
+/// A record onto runs.jsonl.
+fn append(jl: &Path, rec: &Value) -> crate::Result<()> {
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(jl).map_err(|e| Error::io(jl, e))?;
+    let _ = writeln!(f, "{}", serde_json::to_string(rec).unwrap_or_default());
+    Ok(())
+}
+
 fn stamp() -> String {
     crate::publish::utc_now().replace([':', '-'], "")
 }
@@ -581,8 +901,86 @@ impl PortRunArgs {
         }
         let mut runs = Vec::new();
         let mut turn = 0;
+        let jl = dir.join("runs.jsonl");
+        // Bundles port run crossed or tried to, with what publish said.
+        let mut tried: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
         let stopped = loop {
             let lists = crate::protocol::work_lists(ctx)?;
+            let (inv_repo, reviews, port) = (&lists[0].1, lists[1].1.join("reviews"), &lists[2].1);
+            // What crossed and the implementer's repository does not hold in
+            // a commit yet (crossed before port run committed crossings, or
+            // by hand).
+            if !self.dry_run {
+                match commit_crossings(port, &reviews) {
+                    Ok(None) => {}
+                    Ok(Some(c)) => {
+                        eprintln!(
+                            "== port run: committed crossings in {}: {}",
+                            port.display(),
+                            c["commit"].as_str().unwrap_or_default()
+                        );
+                        let rec = json!({"started": crate::publish::utc_now(), "role": "investigator", "by": "port run",
+                            "item": "commit_crossings", "failed": null, "commits": [c], "progress": true});
+                        append(&jl, &rec)?;
+                        runs.push(rec);
+                        continue;
+                    }
+                    Err(why) => {
+                        break json!({"why": format!("port run did not commit the crossings: {why}"), "roles": firsts(&lists)});
+                    }
+                }
+            }
+            // An approved bundle crosses as publish cross does: nothing in it
+            // waits on a session's judgment. A refusal goes to a session.
+            let bundle = lists[0].2.iter().find(|w| w["do"] == "cross").and_then(|w| w["bundle"].as_str());
+            if let Some(b) = bundle.filter(|b| !tried.contains_key(*b)).map(str::to_string) {
+                if self.dry_run {
+                    return Ok(json!({"would_cross": b, "to": port, "roles": firsts(&lists)}));
+                }
+                let started = crate::publish::utc_now();
+                let (ok, v) = crate::publish::PublishCrossArgs { bundle: b.clone(), to: None, reviews: None }
+                    .run(ctx)
+                    .unwrap_or_else(|e| (false, json!({"status": "error", "error": e.to_string()})));
+                tried.insert(b.clone(), v.clone());
+                let crossed = ok && v["status"] == "crossed";
+                eprintln!(
+                    "== port run: publish cross {}: {}",
+                    &b[..12.min(b.len())],
+                    v["status"].as_str().unwrap_or_default()
+                );
+                let mut rec = json!({"started": started, "role": "investigator", "by": "port run", "item": "cross",
+                    "bundle": b, "status": v["status"], "failed": null, "progress": crossed});
+                if !crossed {
+                    rec["result"] = v;
+                    append(&jl, &rec)?;
+                    runs.push(rec);
+                    continue;
+                }
+                let mut commits = Vec::new();
+                let mut why = None;
+                match commit_crossings(port, &reviews) {
+                    Ok(c) => commits.extend(c),
+                    Err(w) => why = Some(w),
+                }
+                // The ledger now counts the crossing.
+                crate::protocol::work_lists(ctx)?;
+                let ledger = crate::inventory::default_out(ctx).with_file_name("ledger.json");
+                let notes = [ledger.clone(), ledger.with_file_name("ledger_history.jsonl")]
+                    .map(|p| crate::publish::relative(inv_repo, &p));
+                let message = format!("Ledger after bundle {} crossed\n\nRole: investigator\n", &b[..12.min(b.len())]);
+                match commit_paths(inv_repo, &notes, &message) {
+                    Ok(c) => commits.extend(c.map(|c| json!({"repository": inv_repo, "commit": c}))),
+                    Err(w) => why = why.or(Some(w)),
+                }
+                rec["commits"] = json!(commits);
+                rec["failed"] = json!(why);
+                append(&jl, &rec)?;
+                runs.push(rec);
+                if let Some(w) = why {
+                    break json!({"why": format!("bundle {b} crossed and port run did not commit it: {w}"), "roles": firsts(&crate::protocol::work_lists(ctx)?)});
+                }
+                continue;
+            }
             let busy = |k: &usize| !crate::protocol::waits(lists[*k].2.first());
             let agent_of = |k: usize| cfg.roles.iter().find(|a| a.0 == lists[k].0).map(|a| &a.1);
             // A role with no [agents] entry is the person's to run.
@@ -607,19 +1005,30 @@ impl PortRunArgs {
                 };
                 break json!({"why": why, "roles": firsts(&lists)});
             };
-            if runs.len() >= max {
+            if runs.iter().filter(|r| r["by"] != "port run").count() >= max {
                 break json!({"why": format!("{max} runs (max_runs)"), "roles": firsts(&lists)});
             }
             let (role, repo, work) = &lists[k];
             let others: Vec<PathBuf> = lists.iter().filter(|l| l.0 != *role).map(|l| l.1.clone()).collect();
             let item = &work[0];
             let Some(agent) = agent_of(k) else { unreachable!("a role is chosen only with an agent") };
-            let prompt = agent
+            let mut prompt = agent
                 .prompt
                 .as_deref()
                 .unwrap_or(default_prompt(*role))
-                .replace("{work}", item["what"].as_str().unwrap_or_default())
+                .replace("{work}", &item_text(item))
                 .replace("{role}", role.name());
+            if let Some(v) = item["bundle"].as_str().and_then(|b| tried.get(b)).filter(|_| item["do"] == "cross") {
+                prompt = format!(
+                    "port run ran publish cross on this bundle and it did not cross: {}. {prompt}",
+                    serde_json::to_string(v).unwrap_or_default()
+                );
+            }
+            let left = uncommitted(repo);
+            let failed_before = last_failed(&jl, *role);
+            if !failed_before.is_empty() && !left.is_empty() {
+                prompt = format!("{} {prompt}", left_note(&failed_before, &left));
+            }
             let cmd = command_line(*role, agent, repo, &prompt)?;
             if self.dry_run {
                 let (argv, _) = sandboxed(cfg.sandbox, *role, agent, repo, &others, cmd.clone(), None, false)?;
@@ -658,40 +1067,45 @@ impl PortRunArgs {
             let after_lists = crate::protocol::work_lists(ctx)?;
             let after_work = &after_lists[k].2;
             let after = state(repo, after_work);
-            let commits: Vec<String> = if before.1.is_empty() || before.1 == after.1 {
-                vec![]
-            } else {
-                git(repo, &["log", "--format=%h %s", &format!("{}..{}", before.1, after.1)])
-                    .lines()
-                    .map(str::to_string)
-                    .collect()
-            };
-            let changed: Vec<String> = git(repo, &["status", "--porcelain", "--", ".", ":!.psx"])
-                .lines()
-                .map(|l| l.trim().to_string())
-                .collect();
+            let commits = commits(repo, &before.1, &after.1);
+            let changed = uncommitted(repo);
             let progress = before != after;
+            let failed = failure(exit, timed_out, ended(&raw));
+            let used = usage(&raw);
             shown.line(&format!(
-                "== {} {} s, exit {}{}; {} commits, {} files uncommitted; now: {}",
+                "== {} {} s, exit {}{}{}; {} commits, {} files uncommitted; now: {}",
                 role.name(),
                 seconds,
                 exit.map_or("none".into(), |c| c.to_string()),
                 if timed_out { " (timed out)" } else { "" },
+                failed.as_deref().map(|f| format!(" (failed: {f})")).unwrap_or_default(),
                 commits.len(),
                 changed.len(),
                 after_work.first().and_then(|w| w["what"].as_str()).unwrap_or("nothing")
             ));
+            if let Some(u) = &used {
+                shown.line(&format!("== tokens: {}", usage_line(u)));
+            }
             let rec = json!({
                 "started": started, "role": role.name(), "repository": repo, "item": item["do"], "what": item["what"],
-                "command": cmd, "sandbox": cfg.sandbox, "exit": exit, "timed_out": timed_out, "seconds": seconds,
+                "command": cmd, "sandbox": cfg.sandbox, "exit": exit, "timed_out": timed_out, "failed": failed, "usage": used, "seconds": seconds,
                 "commits": commits, "uncommitted": changed, "progress": progress,
                 "now": after_work.first().map(|w| w["do"].clone()), "log": raw, "shown": txt,
             });
-            let jl = dir.join("runs.jsonl");
-            let mut f =
-                std::fs::OpenOptions::new().create(true).append(true).open(&jl).map_err(|e| Error::io(&jl, e))?;
-            let _ = writeln!(f, "{}", serde_json::to_string(&rec).unwrap_or_default());
+            append(&jl, &rec)?;
             runs.push(rec);
+            if let Some(f) = &failed {
+                let left = if changed.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; it left {} files uncommitted, which the {}'s next session is told about",
+                        changed.len(),
+                        role.name()
+                    )
+                };
+                break json!({"why": format!("the {}'s run failed: {f}{left}. Read its log, {}, and start port run again when the harness can run", role.name(), raw.display()), "roles": firsts(&after_lists)});
+            }
             if !progress {
                 break json!({"why": format!("the {}'s run changed nothing (its work and its repository are as before): read its log, {}", role.name(), raw.display()), "roles": firsts(&after_lists)});
             }
@@ -824,6 +1238,200 @@ mod tests {
         assert!(agents(&d).unwrap_err().to_string().contains("cmd"));
         w("[agents]\nmaxruns = 3\n");
         assert!(agents(&d).unwrap_err().to_string().contains("maxruns"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_session_fails_by_its_exit_its_time_or_its_stream_end() {
+        let d = std::env::temp_dir().join(format!("psx-ended-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let end = |name: &str, lines: &[&str]| {
+            let p = d.join(name);
+            std::fs::write(&p, lines.join("\n")).unwrap();
+            ended(&p)
+        };
+        let codex = [r#"{"type":"thread.started","thread_id":"t"}"#, r#"{"type":"turn.started"}"#];
+        assert_eq!(end("ok", &[codex[0], codex[1], r#"{"type":"turn.completed","usage":{}}"#]), Some(true));
+        assert_eq!(
+            end(
+                "limit",
+                &[codex[0], codex[1], r#"{"type":"error","message":"usage"}"#, r#"{"type":"turn.failed","error":{}}"#]
+            ),
+            Some(false)
+        );
+        // A known stream cut off before its end failed.
+        assert_eq!(end("cut", &codex), Some(false));
+        assert_eq!(
+            end("claude", &[r#"{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":3}"#]),
+            Some(false)
+        );
+        assert_eq!(end("gemini", &[r#"{"type":"result","status":"success"}"#]), Some(true));
+        assert_eq!(end("plain", &["done", "bye"]), None);
+        let _ = std::fs::remove_dir_all(&d);
+
+        assert_eq!(failure(Some(0), false, Some(true)), None);
+        assert_eq!(failure(Some(0), false, None), None);
+        assert!(failure(Some(0), false, Some(false)).is_some());
+        assert!(failure(Some(1), false, Some(true)).unwrap().contains("exited with 1"));
+        assert!(failure(None, true, None).unwrap().contains("time"));
+    }
+
+    #[test]
+    fn the_next_session_is_told_what_a_failed_one_left() {
+        let d = std::env::temp_dir().join(format!("psx-left-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let jl = d.join("runs.jsonl");
+        let rec = |role: &str, extra: Value| {
+            let mut r = json!({"started": "2026-10-28T18:43:28Z", "role": role, "item": "specify", "what": "specify the names"});
+            r.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            r.to_string()
+        };
+        // Older records have only exit and timed_out; the failures since the
+        // role's last run that did not fail count, oldest first.
+        let lines = [
+            rec("investigator", json!({"item": "first", "exit": 1, "timed_out": false})),
+            rec("investigator", json!({"item": "fine", "exit": 0, "timed_out": false})),
+            rec("investigator", json!({"item": "specify", "exit": 1, "timed_out": false})),
+            rec("reviewer", json!({"exit": 0, "timed_out": false, "failed": null})),
+            rec(
+                "investigator",
+                json!({"item": "cross", "exit": 0, "timed_out": false, "failed": "its stream has no successful end"}),
+            ),
+        ];
+        std::fs::write(&jl, lines.join("\n")).unwrap();
+        let failed = last_failed(&jl, Role::Investigator);
+        let items: Vec<&str> = failed.iter().map(|f| f.0["item"].as_str().unwrap()).collect();
+        assert_eq!(items, ["specify", "cross"]);
+        assert_eq!(failed[0].1, "its harness exited with 1");
+        assert!(last_failed(&jl, Role::Reviewer).is_empty());
+        assert!(last_failed(&jl, Role::Implementer).is_empty());
+        let files: Vec<String> = (0..32).map(|i| format!("M notes/f{i}.md")).collect();
+        let note = left_note(&failed, &files);
+        assert!(note.starts_with("This role's last 2 sessions"), "{note}");
+        assert!(note.contains("item specify: specify the names (its harness exited with 1); started"), "{note}");
+        assert!(note.contains("M notes/f29.md and 2 more") && !note.contains("f30"), "{note}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_session_s_usage_is_read_from_its_stream() {
+        let d = std::env::temp_dir().join(format!("psx-usage-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let used = |name: &str, lines: &[&str]| {
+            let p = d.join(name);
+            std::fs::write(&p, lines.join("\n")).unwrap();
+            usage(&p)
+        };
+        // Codex: each turn's usage, summed.
+        let turn =
+            r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":7}}"#;
+        let u = used("codex", &[r#"{"type":"thread.started"}"#, turn, turn]).unwrap();
+        assert_eq!(u, json!({"input_tokens": 200, "cached_input_tokens": 160, "output_tokens": 14}));
+        assert_eq!(usage_line(&u), "cached_input_tokens=160 input_tokens=200 output_tokens=14");
+        // Claude Code: the result's usage and cost.
+        let claude = r#"{"type":"result","subtype":"success","num_turns":4,"total_cost_usd":0.5,"usage":{"input_tokens":9,"output_tokens":3}}"#;
+        assert_eq!(
+            used("claude", &[claude]),
+            Some(json!({"input_tokens": 9, "output_tokens": 3, "total_cost_usd": 0.5}))
+        );
+        // A session that ran out before a turn ended used nothing we can read.
+        assert_eq!(used("cut", &[r#"{"type":"thread.started"}"#, r#"{"type":"turn.failed"}"#]), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_prompt_names_the_item_and_its_guide_topics() {
+        assert_eq!(item_text(&json!({"what": "wait"})), "wait");
+        assert_eq!(
+            item_text(&json!({"what": "cross it", "guide": ["barrier"]})),
+            "cross it (guide topics for it: barrier; read only those unless the work turns to another)"
+        );
+    }
+
+    #[test]
+    fn a_first_commit_in_an_empty_repository_counts() {
+        let d = std::env::temp_dir().join(format!("psx-first-commit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let g = |args: &[&str]| {
+            Command::new("git").arg("-C").arg(&d).args(args).output().unwrap();
+        };
+        g(&["init", "-q"]);
+        let before = git(&d, &["rev-parse", "HEAD"]);
+        std::fs::write(d.join("a"), "a").unwrap();
+        g(&["add", "a"]);
+        g(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "first"]);
+        let after = git(&d, &["rev-parse", "HEAD"]);
+        assert_eq!(before, "");
+        let c = commits(&d, &before, &after);
+        assert!(c.len() == 1 && c[0].ends_with(" first"), "{c:?}");
+        assert!(commits(&d, &after, &after).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn crossings_are_committed_in_the_port_with_their_specs_named() {
+        use crate::publish::sha256;
+        let d = std::env::temp_dir().join(format!("psx-cross-commit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (port, reviews) = (d.join("port"), d.join("reviews"));
+        std::fs::create_dir_all(port.join("specs")).unwrap();
+        std::fs::create_dir_all(port.join("notes/changes")).unwrap();
+        std::fs::create_dir_all(&reviews).unwrap();
+        let g = |args: &[&str]| git_or(&port, args).unwrap();
+        g(&["init", "-q"]);
+        g(&["config", "user.name", "t"]);
+        g(&["config", "user.email", "t@t"]);
+        // A crossing as publish cross writes it: the files, the change note
+        // and a log line chained to the one before, with its review.
+        let mut prev: Option<String> = None;
+        let mut cross = |hash: &str, files: &[(&str, &str)], removed: &[&str]| {
+            let review = format!("{{\"bundle\": \"{hash}\", \"verdict\": \"approve\"}}");
+            std::fs::write(reviews.join(format!("{hash}.json")), &review).unwrap();
+            for (p, text) in files {
+                std::fs::write(port.join("specs").join(p), text).unwrap();
+            }
+            for p in removed {
+                std::fs::remove_file(port.join("specs").join(p)).unwrap();
+            }
+            std::fs::write(port.join(format!("notes/changes/{hash}.md")), "changes\n").unwrap();
+            let entry = json!({"time": "2026-10-28T00:00:00Z", "bundle": hash, "review_sha256": sha256(review.as_bytes()),
+                "files": files.iter().map(|(p, t)| json!({"path": p, "sha256": sha256(t.as_bytes())})).collect::<Vec<_>>(),
+                "removed": removed, "prev": prev});
+            let line = serde_json::to_string(&entry).unwrap();
+            prev = Some(sha256(line.as_bytes()));
+            let log = port.join("notes/published.jsonl");
+            let mut text = std::fs::read_to_string(&log).unwrap_or_default();
+            text += &format!("{line}\n");
+            std::fs::write(&log, text).unwrap();
+        };
+        cross("aaaa", &[("A-1.md", "---\nid: A-1\ntitle: First rule\n---\n"), ("x.json", "{}")], &[]);
+        cross("bbbb", &[("B-1.md", "---\nid: B-1\ntitle: Second rule\n---\n")], &[]);
+        // Two crossings no commit holds go in one.
+        let c = commit_crossings(&port, &reviews).unwrap().unwrap();
+        assert_eq!(c["bundles"], json!(["aaaa", "bbbb"]));
+        let msg = g(&["log", "-1", "--format=%B"]);
+        assert!(msg.starts_with("[cross] 2 bundles: aaaa, bbbb\n"), "{msg}");
+        assert!(msg.contains("  A-1 First rule (new)\n  other files: 1 new, 0 changed\n"), "{msg}");
+        assert!(msg.contains("Role: investigator\nBundle: aaaa\nBundle: bbbb"), "{msg}");
+        assert!(commit_crossings(&port, &reviews).unwrap().is_none());
+        // The implementer's own work, staged or not, stays out.
+        std::fs::write(port.join("main.rs"), "fn main() {}").unwrap();
+        g(&["add", "main.rs"]);
+        cross("cccc", &[("A-1.md", "---\nid: A-1\ntitle: First rule, revised\n---\n")], &["x.json"]);
+        commit_crossings(&port, &reviews).unwrap().unwrap();
+        let msg = g(&["log", "-1", "--format=%B"]);
+        assert!(msg.starts_with("[cross] bundle cccc: A-1\n"), "{msg}");
+        assert!(msg.contains("A-1 First rule, revised (changed)") && msg.contains("removed: x.json"), "{msg}");
+        assert_eq!(
+            g(&["show", "--name-status", "--format=", "HEAD"]),
+            "A\tnotes/changes/cccc.md\nM\tnotes/published.jsonl\nM\tspecs/A-1.md\nD\tspecs/x.json"
+        );
+        assert_eq!(g(&["status", "--porcelain"]), "A  main.rs");
+        // A spec changed after it crossed is not committed as crossed.
+        cross("dddd", &[("C-1.md", "---\nid: C-1\ntitle: Third\n---\n")], &[]);
+        std::fs::write(port.join("specs/B-1.md"), "edited").unwrap();
+        assert!(commit_crossings(&port, &reviews).unwrap_err().contains("publish check"));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

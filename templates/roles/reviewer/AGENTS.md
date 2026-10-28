@@ -30,9 +30,10 @@ You never write specs, and you never start another role's session.
 
 Start every session with `psx protocol next --role reviewer`
 (`protocol_next` over MCP): the bundles waiting for a verdict and the
-audits due. Then psx's `guide` topics `review` (this role in full),
-`cleanroom` (what may cross) and `protocol` (the investigator's
-procedure, and what makes a case separate rules).
+audits due. Then psx's `guide` topics your item names (its `guide`):
+`review` is this role in full, `cleanroom` what may cross. Read
+`protocol` (the investigator's procedure, and what makes a case
+separate rules) when a bundle's cases turn on it.
 
 ## Reviewing a bundle
 
@@ -82,6 +83,7 @@ the corrected spec. Guide topic `review` has the checks in full.
 
 ## Rules
 
-- No web, and no other reimplementations of the game.
+- No web, and no other reimplementations of the game. psx's own setup
+  (bios_install with download:true for the disc's region) is not the web.
 - Never write into the other repositories.
 - Commit each verdict and audit with a `Role: reviewer` trailer.

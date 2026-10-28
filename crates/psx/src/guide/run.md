@@ -32,7 +32,9 @@ Observations (native):
   (counted as skipped).
 - trace writes trace.txt (windowed by trace_from_frame / trace_range),
   coverage.txt, code.bin (each RAM page's history: a copy when code first
-  runs in it, and another whenever code runs in it after it changed),
+  runs in it, another whenever code runs in it after it changed, and one
+  as another page is copied when RAM changed it with no code run there,
+  code_pages.refreshed: so each copy is RAM's code at its moment),
   executed.bin (each executed word with the copy it ran from, the
   instruction it ran as, the moment it first ran: the number of the latest
   copy then, and whether it ever continued the code before it: ran
@@ -40,6 +42,11 @@ Observations (native):
   branch's, taken or not), or was returned to by a call two words before) and calls.json (each call target and
   call site with the copy each ran from, and the moments a call to it ran
   in, from the call until it returned); max_events caps every event log.
+  It caps trace.txt's lines (lines_dropped), not code.bin, executed.bin or
+  calls.json: those are whole unless code_pages_dropped (pages past the
+  copy cap) or call_frames_dropped (calls nested past the return stack)
+  is above 0, which the run's summary also reports. The inventory and
+  coverage read only those files.
 - trace_cd logs CD transfers for loads; trace_bios logs BIOS calls.
 - trace_spu logs voice key on/off (settings, storing PC, sample_sha256),
   each keyed voice's first END and sound RAM uploads to spu.jsonl. spu.samples

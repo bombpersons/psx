@@ -120,6 +120,8 @@ fn region(media: Option<&Path>) -> crate::Result<Option<bios::Region>> {
 
 pub struct Resolved {
     pub media: Option<PathBuf>,
+    /// Where media came from: argument, state, project or protocol.
+    pub media_from: Option<&'static str>,
     pub bios: Option<PathBuf>,
     pub region: Option<bios::Region>,
     pub bios_reason: &'static str,
@@ -143,18 +145,20 @@ impl Resolved {
     pub fn bios_error(&self) -> Error {
         let next_action = match self.region {
             Some(r) if self.state.is_none() => {
-                json!({"tool":"bios_install","arguments":{"region":r,"download":true},"explicit_setup_action":true})
+                json!({"tool":"bios_install","arguments":{"region":r,"download":true}})
             }
             _ => json!({"tool":"bios_list","arguments":{}}),
         };
-        Error::new(
-            "bios_required",
-            "No BIOS selected. Use bios_list, install one, or pass bios. See candidates and next_action.",
-        )
-        .with("candidates", &self.candidates)
-        .with("selection", self.bios_reason)
-        .with("required_sha256", self.state.as_ref().map(|s| &s.bios_sha256))
-        .with("next_action", next_action)
+        let message = if self.region.is_none() && self.state.is_none() {
+            "No BIOS selected. Pass the disc (image) so its region picks the BIOS, or pass bios. See candidates and next_action."
+        } else {
+            "No BIOS selected. Use bios_list, install one (bios_install with download:true for the disc's region), or pass bios. See candidates and next_action."
+        };
+        Error::new("bios_required", message)
+            .with("candidates", &self.candidates)
+            .with("selection", self.bios_reason)
+            .with("required_sha256", self.state.as_ref().map(|s| &s.bios_sha256))
+            .with("next_action", next_action)
     }
 }
 /// Explicit BIOS wins (including intentional identity-mismatch diagnostics).
@@ -169,16 +173,19 @@ pub fn resolve(
     let cfg = config(root)?;
     let state = from_state.map(native_header).transpose()?.flatten();
     let report = from_state.and_then(state_report);
-    let media = media.or_else(|| {
-        if state.as_ref().is_some_and(|s| s.media.is_none()) {
-            None
-        } else {
-            report
-                .as_ref()
-                .and_then(|r| report_path(root, r, "media"))
-                .or(cfg.media.map(|p| crate::moved::find(root, &p)))
-        }
-    });
+    let (media, media_from) = match media {
+        Some(m) => (Some(m), Some("argument")),
+        None if state.as_ref().is_some_and(|s| s.media.is_none()) => (None, None),
+        None => [
+            ("state", report.as_ref().and_then(|r| report_path(root, r, "media"))),
+            ("project", cfg.media.map(|p| crate::moved::find(root, &p))),
+            // A port's repository names its disc in protocol.toml (psx port init).
+            ("protocol", crate::inventory::protocol_media(root)),
+        ]
+        .into_iter()
+        .find_map(|(from, p)| p.map(|p| (Some(p), Some(from))))
+        .unwrap_or((None, None)),
+    };
     // An explicit BIOS requires no inventory or media inspection before validation.
     let region = if discover || bios_path.is_none() { region(media.as_deref())? } else { None };
     let mut candidates = if discover || bios_path.is_none() { bios::inventory(root)? } else { vec![] };
@@ -231,12 +238,22 @@ pub fn resolve(
     } else {
         (None, "no_region_or_preference")
     };
-    Ok(Resolved { media, bios: selected, region, bios_reason: reason, candidates, state, media_required, warnings })
+    Ok(Resolved {
+        media,
+        media_from,
+        bios: selected,
+        region,
+        bios_reason: reason,
+        candidates,
+        state,
+        media_required,
+        warnings,
+    })
 }
 
 #[derive(Args, Deserialize, JsonSchema)]
 pub struct ArgsContext {
-    /// Disc/EXE to inspect; defaults to saved project media. Discovery never downloads.
+    /// Disc/EXE to inspect; defaults to saved project media, then protocol.toml's. Discovery never downloads.
     #[arg(long)]
     pub image: Option<PathBuf>,
     /// Explicit BIOS preference; context --save stores it for later calls.
@@ -258,8 +275,20 @@ impl Op for ArgsContext {
 
 impl ArgsContext {
     fn run(self, ctx: &Ctx) -> crate::Result<Value> {
-        let r = resolve(&ctx.root, self.image, self.bios, self.from_state.as_deref(), true)?;
+        let mut r = resolve(&ctx.root, self.image, self.bios, self.from_state.as_deref(), true)?;
         let selected_info = r.bios.as_ref().map(|p| bios::inspect(&absolute(&ctx.root, p))).transpose()?;
+        // The BIOS makes the console: another region's runs the disc on that
+        // region's console (its GPU clock and BIOS), not the one it was made for.
+        let mut fix_region = None;
+        if let (Some(disc), Some(have), None) = (r.region, selected_info.as_ref().and_then(|c| c.region), &r.state) {
+            if disc != have {
+                r.warnings.push(format!(
+                    "The disc is {} and the selected BIOS is {}: runs use a {} console (its GPU clock and BIOS), not the disc's. Select a {} BIOS; if none is installed, install it with bios_install(region:{}, download:true) before recording.",
+                    disc.hint(), have.hint(), have.hint(), disc.hint(), serde_json::to_string(&disc).unwrap()
+                ));
+                fix_region = Some(disc);
+            }
+        }
         let profile = ctx.root.join(".psx/project.json");
         let (signatures, sigs_selection) = crate::symbols_io::sigs_default();
         let signatures = absolute(&ctx.root, &signatures);
@@ -289,6 +318,15 @@ impl ArgsContext {
             });
         }
         let mut next_calls = vec![template];
+        if let Some(disc) = fix_region {
+            match r.candidates.iter().find(|c| c.region == Some(disc) && c.bytes == 524288) {
+                Some(c) => next_calls
+                    .insert(0, json!({"tool":"context","arguments":{"image":r.media,"bios":c.path,"save":true}})),
+                None => {
+                    next_calls.insert(0, json!({"tool":"bios_install","arguments":{"region":disc,"download":true}}))
+                }
+            }
+        }
         if setup.is_none() {
             next_calls.push(json!({"tool":"run","arguments":{"media":r.media,"bios":r.bios,"frames":60,"save_state":true,"brief":true,"return_screen":true}}));
         }
@@ -297,8 +335,33 @@ impl ArgsContext {
             "signatures":{"path":signatures,"available":signatures.is_dir(),
                 "selection":sigs_selection,
                 "layout":"<version>/<LIB>.json","override":"symbols.sigs / --sigs; shared default: PSX_SIGS_DIR (use an absolute path)"},
-            "resolved":{"media":r.media,"bios":r.bios,"bios_selection":r.bios_reason,"disc_region_hint":r.region.map(|r|r.hint())},
+            "resolved":{"media":r.media,"media_from":r.media_from,"bios":r.bios,"bios_selection":r.bios_reason,"disc_region_hint":r.region.map(|r|r.hint())},
             "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),"state":r.state,"setup":setup,"capabilities":capabilities(),"warnings":r.warnings,
             "next_calls":next_calls}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_port_repository_s_disc_is_the_default_media() {
+        let d = std::env::temp_dir().join(format!("psx-context-{}", std::process::id()));
+        let repo = d.join("investigate");
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(d.join("game.chd"), b"").unwrap();
+        fs::write(repo.join("protocol.toml"), "[disc]\nmedia = \"../game.chd\"\n").unwrap();
+        let bios = Some(d.join("bios.bin"));
+        let r = resolve(&repo, None, bios.clone(), None, false).unwrap();
+        assert_eq!(r.media, Some(repo.join("../game.chd")));
+        assert_eq!(r.media_from, Some("protocol"));
+        // Saved defaults win over it.
+        fs::create_dir_all(repo.join(".psx")).unwrap();
+        fs::write(d.join("other.chd"), b"").unwrap();
+        fs::write(repo.join(".psx/project.json"), r#"{"format":1,"media":"../other.chd"}"#).unwrap();
+        let r = resolve(&repo, None, bios, None, false).unwrap();
+        assert_eq!(r.media_from, Some("project"));
+        fs::remove_dir_all(&d).unwrap();
     }
 }
