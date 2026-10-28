@@ -45,9 +45,22 @@ const GAME_RAM: u32 = 0x8001_0000;
 struct Function {
     entry: u32,
     end: u32,
+    /// The stretches of RAM it is, in order: [entry, end) unless other
+    /// code lies between its parts.
+    chunks: Vec<(u32, u32)>,
     blocks: Vec<u32>,
     /// The sha256 of its bytes, for code no executable holds.
     sha: Option<String>,
+}
+
+impl Function {
+    fn chunk(&self, addr: u32) -> Option<(u32, u32)> {
+        self.chunks.iter().copied().find(|&(s, e)| addr >= s && addr < e)
+    }
+
+    fn words(&self) -> impl Iterator<Item = u32> + '_ {
+        self.chunks.iter().flat_map(|&(s, e)| (s..e).step_by(4))
+    }
 }
 
 /// An executable or overlay: its code at its address and its functions.
@@ -55,8 +68,11 @@ struct Image {
     kind: &'static str,
     name: String,
     base: u32,
-    words: Vec<u32>,
+    /// Its code from base, word by word: None between a function's chunks.
+    words: Vec<Option<u32>>,
     functions: Vec<Function>,
+    /// Every function's chunks, by start: (start, end, function).
+    chunks: Vec<(u32, u32, usize)>,
     /// Executions of each word, over the corpus.
     count: Vec<u64>,
     /// The runs that executed each function.
@@ -66,12 +82,13 @@ struct Image {
 impl Image {
     fn word(&self, addr: u32) -> Option<u32> {
         let k = addr.checked_sub(self.base)? as usize / 4;
-        self.words.get(k).copied()
+        self.words.get(k).copied().flatten()
     }
 
     fn function(&self, addr: u32) -> Option<usize> {
-        let i = self.functions.partition_point(|f| f.entry <= addr).checked_sub(1)?;
-        (addr < self.functions[i].end).then_some(i)
+        let i = self.chunks.partition_point(|c| c.0 <= addr).checked_sub(1)?;
+        let (_, end, f) = self.chunks[i];
+        (addr < end).then_some(f)
     }
 }
 
@@ -92,7 +109,15 @@ fn functions(v: &Value) -> crate::Result<Vec<Function>> {
             ));
         }
         blocks.sort_unstable();
-        out.push(Function { entry, end, blocks, sha: f["sha256"].as_str().map(String::from) });
+        let chunks = match f["chunks"].as_array() {
+            Some(cs) => cs
+                .iter()
+                .map(|c| parse_hex(&c[0]).zip(parse_hex(&c[1])))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| Error::malformed("inventory function chunk without start and end"))?,
+            None => vec![(entry, end)],
+        };
+        out.push(Function { entry, end, chunks, blocks, sha: f["sha256"].as_str().map(String::from) });
     }
     out.sort_by_key(|f| f.entry);
     Ok(out)
@@ -100,6 +125,19 @@ fn functions(v: &Value) -> crate::Result<Vec<Function>> {
 
 fn to_words(bytes: &[u8]) -> Vec<u32> {
     bytes.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect()
+}
+
+/// A function's code from its entry, from the bytes the inventory kept:
+/// its chunks' bytes in order, placed each at its own address. None when
+/// they are not as long as its chunks.
+fn placed(f: &Function, bytes: &[u8]) -> Option<Vec<Option<u32>>> {
+    let words = to_words(bytes);
+    let mut out = vec![None; ((f.end - f.entry) / 4) as usize];
+    let mut next = words.iter();
+    for a in f.words() {
+        *out.get_mut(((a - f.entry) / 4) as usize)? = Some(*next.next()?);
+    }
+    next.next().is_none().then_some(out)
 }
 
 /// The inventory's executables, read again from its disc, and each function
@@ -112,10 +150,13 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
     use psx_media::disc::Disc;
     use psx_media::iso9660::FileSystem;
     let mut out = Vec::new();
-    let image = |kind, name: String, base, words: Vec<u32>, functions: Vec<Function>| {
+    let image = |kind, name: String, base, words: Vec<Option<u32>>, functions: Vec<Function>| {
         let n = words.len();
         let f = functions.len();
-        Image { kind, name, base, words, functions, count: vec![0; n], runs: vec![BTreeSet::new(); f] }
+        let mut chunks: Vec<(u32, u32, usize)> =
+            functions.iter().enumerate().flat_map(|(i, f)| f.chunks.iter().map(move |&(s, e)| (s, e, i))).collect();
+        chunks.sort_unstable();
+        Image { kind, name, base, words, functions, chunks, count: vec![0; n], runs: vec![BTreeSet::new(); f] }
     };
     let exes = inv["executables"].as_array().cloned().unwrap_or_default();
     if !exes.is_empty() {
@@ -132,7 +173,7 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
                 "executable",
                 path.into(),
                 base,
-                to_words(exe.payload(&bytes)),
+                to_words(exe.payload(&bytes)).into_iter().map(Some).collect(),
                 functions(&e["functions"])?,
             ));
         }
@@ -143,16 +184,17 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
         let name = o["name"].as_str().unwrap_or_default();
         for f in functions(&o["functions"])? {
             let sha = f.sha.clone().unwrap_or_default();
-            let bytes = std::fs::read(crate::inventory::overlay_bytes(root, &sha))
+            let words = std::fs::read(crate::inventory::overlay_bytes(root, &sha))
                 .ok()
                 .filter(|b| crate::publish::sha256(b) == sha)
+                .and_then(|b| placed(&f, &b))
                 .ok_or_else(|| {
                     Error::invalid(format!(
                         "{name}: the bytes of its function at {:08X} are not in .psx/overlays; take the inventory again",
                         f.entry
                     ))
                 })?;
-            out.push(image(kind, name.into(), f.entry, to_words(&bytes), vec![f]));
+            out.push(image(kind, name.into(), f.entry, words, vec![f]));
         }
     }
     Ok(out)
@@ -287,7 +329,8 @@ fn credit(images: &mut [Image], run: usize, words: &[(u32, u32, u64)]) -> (Vec<(
             let (s, e) = span(i);
             images[i].function(a).is_some_and(|f| {
                 let f = &images[i].functions[f];
-                f.blocks.binary_search(&s).is_ok() && (e == f.end || f.blocks.binary_search(&e).is_ok())
+                f.blocks.binary_search(&s).is_ok()
+                    && (f.chunks.iter().any(|c| c.1 == e) || f.blocks.binary_search(&e).is_ok())
             })
         };
         let h: Vec<usize> =
@@ -364,7 +407,7 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
     for (fi, f) in img.functions.iter().enumerate() {
         let k = |a: u32| ((a - img.base) / 4) as usize;
         let ran = |a: u32| img.count.get(k(a)).is_some_and(|&n| n > 0);
-        for a in (f.entry..f.end).step_by(4) {
+        for a in f.words() {
             if let Some(x) = in_function.get_mut(k(a)) {
                 *x = true;
             }
@@ -372,15 +415,17 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
         let mut unexecuted = Vec::new();
         let mut blocks_executed = 0u64;
         for (bi, &s) in f.blocks.iter().enumerate() {
-            let e = f.blocks.get(bi + 1).copied().unwrap_or(f.end);
+            // A block ends at the next, or at the end of its chunk.
+            let chunk_end = f.chunk(s).map_or(f.end, |c| c.1);
+            let e = f.blocks.get(bi + 1).copied().unwrap_or(f.end).min(chunk_end);
             if (s..e).step_by(4).any(ran) {
                 blocks_executed += 1;
             } else {
                 unexecuted.push(json!([hex(s), hex(e)]));
             }
         }
-        let instructions = ((f.end - f.entry) / 4) as u64;
-        let executed = (f.entry..f.end).step_by(4).filter(|&a| ran(a)).count() as u64;
+        let instructions = f.words().count() as u64;
+        let executed = f.words().filter(|&a| ran(a)).count() as u64;
         t.functions += 1;
         t.exercised += (blocks_executed > 0) as u64;
         t.complete += (unexecuted.is_empty()) as u64;
@@ -634,12 +679,16 @@ mod tests {
 
     fn img(name: &str, base: u32, words: Vec<u32>, functions: Vec<Function>) -> Image {
         let (n, f) = (words.len(), functions.len());
+        let mut chunks: Vec<(u32, u32, usize)> =
+            functions.iter().enumerate().flat_map(|(i, f)| f.chunks.iter().map(move |&(s, e)| (s, e, i))).collect();
+        chunks.sort_unstable();
         Image {
             kind: "overlay",
             name: name.into(),
             base,
-            words,
+            words: words.into_iter().map(Some).collect(),
             functions,
+            chunks,
             count: vec![0; n],
             runs: vec![BTreeSet::new(); f],
         }
@@ -649,7 +698,15 @@ mod tests {
     fn code_loaded_over_code_is_credited_to_the_image_that_holds_it() {
         // Two overlays at one address share their first word (a prologue).
         let base = 0x8010_0000;
-        let f = || vec![Function { entry: base, end: base + 16, blocks: vec![base, base + 8], sha: None }];
+        let f = || {
+            vec![Function {
+                entry: base,
+                end: base + 16,
+                chunks: vec![(base, base + 16)],
+                blocks: vec![base, base + 8],
+                sha: None,
+            }]
+        };
         let mut images =
             vec![img("a", base, vec![0x27BD_FFE8, 1, 2, 3], f()), img("b", base, vec![0x27BD_FFE8, 5, 6, 7], f())];
         // The run ran b's first block only, and a word neither holds.
@@ -672,7 +729,13 @@ mod tests {
         // Code (a BIOS's shell, no functions) ran two words, `jr ra; nop`,
         // where the game's overlay later ran its own code around them.
         let base = 0x8010_0000;
-        let f = vec![Function { entry: base, end: base + 16, blocks: vec![base], sha: None }];
+        let f = vec![Function {
+            entry: base,
+            end: base + 16,
+            chunks: vec![(base, base + 16)],
+            blocks: vec![base],
+            sha: None,
+        }];
         let mut images =
             vec![img("game", base, vec![1, 2, 3, 4], f), img("shell", base + 4, vec![0x03E0_0008, 0, 0x1234], vec![])];
         let words = [(base, 1, 9), (base + 4, 2, 9), (base + 4, 0x03E0_0008, 1), (base + 8, 0, 1), (base + 8, 3, 9)];
@@ -693,11 +756,44 @@ mod tests {
             "a",
             base,
             vec![1, 2, 3, 4],
-            vec![Function { entry: base, end: base + 8, blocks: vec![base], sha: None }],
+            vec![Function {
+                entry: base,
+                end: base + 8,
+                chunks: vec![(base, base + 8)],
+                blocks: vec![base],
+                sha: None,
+            }],
         )];
         credit(&mut images, 0, &[(base, 1, 1), (base + 8, 3, 1), (base + 12, 4, 1)]);
         let (_, outside, t) = report(&images[0]);
         assert_eq!(outside, vec![json!({"start": "80100008", "end": "80100010", "words": 2})]);
         assert_eq!((t.complete, t.outside_functions), (1, 2));
+    }
+
+    #[test]
+    fn a_function_in_chunks_is_its_chunks_bytes_each_at_its_own_address() {
+        let base = 0x8010_0000;
+        // Two chunks around a word of other code: the inventory keeps the
+        // chunks' bytes back to back.
+        let f = || Function {
+            entry: base,
+            end: base + 20,
+            chunks: vec![(base, base + 8), (base + 12, base + 20)],
+            blocks: vec![base, base + 12],
+            sha: None,
+        };
+        let kept: Vec<u8> = [1u32, 2, 4, 5].iter().flat_map(|w| w.to_le_bytes()).collect();
+        let words = placed(&f(), &kept).unwrap();
+        assert_eq!(words, vec![Some(1), Some(2), None, Some(4), Some(5)]);
+        assert_eq!(placed(&f(), &kept[..12]), None);
+        let mut images = vec![img("a", base, vec![], vec![f()])];
+        images[0].words = words;
+        images[0].count = vec![0; 5];
+        let (miss, _) = credit(&mut images, 0, &[(base + 8, 9, 1), (base + 12, 4, 1), (base + 16, 5, 1)]);
+        // The second chunk ran; the word between the chunks is no code of it.
+        assert_eq!(miss, vec![(base + 8, 9)]);
+        let (rows, _, t) = report(&images[0]);
+        assert_eq!((t.instructions, t.instructions_executed, t.blocks_executed), (4, 2, 1));
+        assert_eq!(rows[0]["unexecuted"], json!([["80100000", "80100008"]]));
     }
 }
