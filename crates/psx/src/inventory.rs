@@ -110,6 +110,121 @@ fn is_jr(i: u32) -> bool {
     i & 0xFC1F_FFFF == 0x0000_0008 && i >> 21 != 0
 }
 
+/// A value the words before a `jr` give a register: a constant, an index
+/// (the register and its write it was read from) times 4 plus a constant,
+/// the word loaded from a table at such an address, or a test of an index
+/// against a bound (`sltiu`).
+#[derive(Clone, Copy, PartialEq)]
+enum Val {
+    Unknown,
+    Const(u32),
+    Scaled((u32, u32), u32),
+    Case((u32, u32), u32),
+    Test((u32, u32), u32),
+}
+
+/// The register an instruction writes, if any.
+fn written(i: u32) -> Option<u32> {
+    let (op, rs, rt, rd) = (i >> 26, (i >> 21) & 31, (i >> 16) & 31, (i >> 11) & 31);
+    let r = match op {
+        0x00 => match i & 0x3F {
+            0x08 | 0x0C | 0x0D | 0x11 | 0x13 | 0x18..=0x1B => return None,
+            _ => rd,
+        },
+        0x03 => 31,
+        0x08..=0x0F | 0x20..=0x26 => rt,
+        0x10 | 0x12 if rs == 0 || rs == 2 => rt,
+        _ => return None,
+    };
+    (r != 0).then_some(r)
+}
+
+/// How many words before a `jr` its dispatch is read from.
+const DISPATCH: u32 = 24;
+
+/// The table a switch's `jr` at `at` jumps through and how many cases it
+/// has, when the words before it say both, as compilers emit a switch:
+/// an index tested against a bound (`sltiu`, then a branch on the test),
+/// times 4, plus the table's address (`lui`, `addiu` or `ori`, or a `lw`
+/// offset), loaded, jumped to. Read straight on, as if the code before ran
+/// into it; a call or jump before clears what is known. Anything else is
+/// not claimed.
+fn dispatch(code: &Code, at: u32) -> Option<(u32, u32)> {
+    let i = code.word(at)?;
+    if !is_jr(i) || i == JR_RA {
+        return None;
+    }
+    let mut regs = [Val::Unknown; 32];
+    let mut writes = [0u32; 32];
+    let mut bounds: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    let mut pc = at.wrapping_sub(4 * DISPATCH);
+    while pc != at {
+        let Some(w) = code.word(pc) else {
+            regs = [Val::Unknown; 32];
+            pc = pc.wrapping_add(4);
+            continue;
+        };
+        // After a call's or jump's delay slot: no way here straight on.
+        if code
+            .word(pc.wrapping_sub(8))
+            .is_some_and(|j| matches!(j >> 26, 0x02 | 0x03) || j >> 26 == 0 && matches!(j & 0x3F, 0x08 | 0x09))
+        {
+            regs = [Val::Unknown; 32];
+        }
+        let (op, rs, rt) = (w >> 26, (w >> 21) & 31, (w >> 16) & 31);
+        let imm = w & 0xFFFF;
+        let simm = imm as i16 as i32 as u32;
+        let src = |r: u32| (r, writes[r as usize]);
+        let (a, b) = (regs[rs as usize], regs[rt as usize]);
+        if matches!(op, 0x04 | 0x05) && rt == 0 {
+            if let Val::Test(x, n) = a {
+                bounds.insert(x, n);
+            }
+        }
+        let v = match op {
+            0x0F => Val::Const(imm << 16),
+            0x09 => match a {
+                Val::Const(c) => Val::Const(c.wrapping_add(simm)),
+                Val::Scaled(x, c) => Val::Scaled(x, c.wrapping_add(simm)),
+                _ => Val::Unknown,
+            },
+            0x0D => match a {
+                Val::Const(c) => Val::Const(c | imm),
+                _ => Val::Unknown,
+            },
+            0x0B if imm < 0x8000 => Val::Test(src(rs), imm),
+            0x23 => match a {
+                Val::Scaled(x, c) => Val::Case(x, c.wrapping_add(simm)),
+                _ => Val::Unknown,
+            },
+            0x00 => match w & 0x3F {
+                0x00 if (w >> 6) & 31 == 2 => Val::Scaled(src(rt), 0),
+                0x21 => match (a, b) {
+                    (Val::Scaled(x, c), Val::Const(d)) | (Val::Const(d), Val::Scaled(x, c)) => {
+                        Val::Scaled(x, c.wrapping_add(d))
+                    }
+                    _ => Val::Unknown,
+                },
+                0x2B => match b {
+                    Val::Const(n) => Val::Test(src(rs), n),
+                    _ => Val::Unknown,
+                },
+                _ => Val::Unknown,
+            },
+            _ => Val::Unknown,
+        };
+        if let Some(d) = written(w) {
+            writes[d as usize] += 1;
+            regs[d as usize] = v;
+        }
+        pc = pc.wrapping_add(4);
+    }
+    match regs[((i >> 21) & 31) as usize] {
+        Val::Case(x, table) => bounds.get(&x).filter(|&&n| (1..=1024).contains(&n)).map(|&n| (table, n)),
+        _ => None,
+    }
+}
+
 fn is_prologue(i: u32) -> bool {
     i >> 16 == 0x27BD && (i & 0x8000) != 0
 }
@@ -347,6 +462,11 @@ struct Analysis<'a> {
     /// guess starts on them or takes them (the call is found where it is
     /// whole).
     ran: Option<&'a BTreeMap<u32, u32>>,
+    /// Switches (see `dispatch`): each `jr`'s table and the cases it
+    /// holds, where the code goes on after the `jr`.
+    switches: BTreeMap<u32, (u32, Vec<u32>)>,
+    /// The words of those tables: not pointers to functions.
+    tables: BTreeSet<u32>,
 }
 
 impl<'a> Analysis<'a> {
@@ -365,7 +485,35 @@ impl<'a> Analysis<'a> {
             live: None,
             leaders: BTreeSet::new(),
             ran: None,
+            switches: BTreeMap::new(),
+            tables: BTreeSet::new(),
         }
+        .with_switches()
+    }
+
+    /// Each switch in the code whose cases are all code near it.
+    fn with_switches(mut self) -> Self {
+        for at in (self.code.base..self.code.end()).step_by(4) {
+            let Some((table, n)) = dispatch(self.code, at) else { continue };
+            let cases: Option<Vec<u32>> = (0..n)
+                .map(|k| {
+                    self.code.word(table.wrapping_add(4 * k)).filter(|&t| {
+                        t.is_multiple_of(4)
+                            && t.abs_diff(at) < 4 * MAX_FUNCTION
+                            && (self.allowed)(t)
+                            && self.code.word(t).is_some_and(sensible)
+                    })
+                })
+                .collect();
+            if let Some(mut cases) = cases {
+                self.tables.extend((0..n).map(|k| table.wrapping_add(4 * k)));
+                self.leaders.extend(&cases);
+                cases.sort_unstable();
+                cases.dedup();
+                self.switches.insert(at, (table, cases));
+            }
+        }
+        self
     }
 
     fn ran(&self, at: u32) -> bool {
@@ -519,7 +667,7 @@ impl<'a> Analysis<'a> {
         };
         let at = pc - 4;
         if is_jr(j) {
-            return vec![];
+            return self.switches.get(&at).map(|s| s.1.clone()).unwrap_or_default();
         }
         if let Some(t) = branch_target(at, j) {
             // beq zero, zero is a plain branch.
@@ -564,6 +712,11 @@ impl<'a> Analysis<'a> {
                     reach = t;
                 }
             }
+            for &t in self.switches.get(&pc).map(|s| &s.1[..]).unwrap_or_default() {
+                if t > reach && t < next {
+                    reach = t;
+                }
+            }
             let mut tail = false;
             if i >> 26 == 0x02 {
                 let t = jump_target(pc, i);
@@ -578,7 +731,10 @@ impl<'a> Analysis<'a> {
                 }
             }
             // The trace saw the code after it continue it: not its end.
-            if (is_jr(i) || tail) && reach <= pc + 4 && !self.continues.contains(&(pc + 8)) {
+            if (is_jr(i) && !self.switches.contains_key(&pc) || tail)
+                && reach <= pc + 4
+                && !self.continues.contains(&(pc + 8))
+            {
                 if !self.code.word(pc + 4).is_some_and(sensible) {
                     return (pc, "invalid");
                 }
@@ -681,8 +837,11 @@ impl<'a> Analysis<'a> {
     fn pointers(&mut self, words: &[(u32, u32)]) -> usize {
         let Some((lo, hi)) = self.search() else { return 0 };
         let before = self.functions.len();
-        let targets: BTreeSet<u32> =
-            words.iter().map(|&(_, w)| w).filter(|&w| w % 4 == 0 && w >= lo && w < hi).collect();
+        let targets: BTreeSet<u32> = words
+            .iter()
+            .filter(|&&(a, w)| w % 4 == 0 && w >= lo && w < hi && !self.tables.contains(&a))
+            .map(|&(_, w)| w)
+            .collect();
         for t in targets {
             if !(self.allowed)(t) {
                 continue;
@@ -728,11 +887,13 @@ impl<'a> Analysis<'a> {
             a = a.wrapping_sub(4);
             padding += 1;
         }
-        // `a` is the jump, unless its delay slot was not a nop.
-        let ends = |w: u32| w >> 26 == 0x02 || is_jr(w);
+        // `a` is the jump, unless its delay slot was not a nop. A switch's
+        // cases follow its `jr`.
+        let ends = |a: u32, w: u32| w >> 26 == 0x02 || is_jr(w) && !self.switches.contains_key(&a);
+        let d = t.wrapping_sub(4);
         match (self.code.word(a), self.code.word(a.wrapping_sub(4))) {
-            (Some(w), _) if padding > 0 && ends(w) => true,
-            (_, Some(w)) => ends(w) && self.code.word(t.wrapping_sub(4)).is_some_and(|d| !ends(d)),
+            (Some(w), _) if padding > 0 && ends(a, w) => true,
+            (_, Some(w)) => ends(a.wrapping_sub(4), w) && self.code.word(d).is_some_and(|x| !ends(d, x)),
             _ => false,
         }
     }
@@ -858,6 +1019,15 @@ impl<'a> Analysis<'a> {
             }
             if f.landed > 0 {
                 row["landed_words"] = json!(f.landed);
+            }
+            let switches: Vec<Value> = f
+                .chunks
+                .iter()
+                .flat_map(|&(s, e)| self.switches.range(s..e))
+                .map(|(&at, (table, cases))| json!({"jr": hex(at), "table": hex(*table), "cases": cases.len()}))
+                .collect();
+            if !switches.is_empty() {
+                row["switches"] = json!(switches);
             }
             rows.push(row);
         }
@@ -1398,9 +1568,22 @@ fn moment_functions(
     seeds: &[(u32, &'static str)],
     ran: &BTreeSet<(u32, u32)>,
     held: Option<&BTreeMap<u32, u32>>,
+    switches: &mut Switches,
 ) -> Vec<(u32, u32, Vec<Value>)> {
     let code = Code { base: 0x8000_0000, bytes: m.ram.clone(), origin: String::new(), gp: None, exe: None };
     let mut a = Analysis::new(&code, None, Box::new(|x| m.allowed(exes, x)));
+    for ((at, words), (table, cases)) in switches.iter() {
+        if !a.switches.contains_key(at)
+            && dispatch_words(&code, *at) == *words
+            && cases.iter().all(|&t| m.allowed(exes, t) && code.word(t).is_some_and(sensible))
+        {
+            a.leaders.extend(cases);
+            a.switches.insert(*at, (*table, cases.clone()));
+        }
+    }
+    for (&at, s) in &a.switches {
+        switches.entry((at, dispatch_words(&code, at))).or_insert_with(|| s.clone());
+    }
     a.continues = m.continues.clone();
     a.fresh = m.fresh.clone();
     a.live = m.live.clone();
@@ -1489,6 +1672,16 @@ fn carried(start: u32, chunks: &[(u32, u32)], how: &'static str) -> Fact {
     }
 }
 
+/// Switches found in any moment, by their `jr` and the words their
+/// dispatch is read from (`DISPATCH` before it, and it): their table and
+/// cases. A moment holding the same words there has the same switch,
+/// though it may not hold the page its table is in.
+type Switches = BTreeMap<(u32, Vec<Option<u32>>), (u32, Vec<u32>)>;
+
+fn dispatch_words(code: &Code, at: u32) -> Vec<Option<u32>> {
+    (0..=DISPATCH).map(|k| code.word(at.wrapping_sub(4 * DISPATCH).wrapping_add(4 * k))).collect()
+}
+
 /// An executable's function: its chunks and the calls in it.
 type ExeFunction = (Vec<(u32, u32)>, Vec<u32>);
 
@@ -1513,6 +1706,8 @@ struct Finder<'a> {
     /// same way whichever moment it is found in; a body of what ran is
     /// carried only into the RAM of a run without a trace.
     known: Vec<Known>,
+    /// Switches found before (see `Switches`).
+    switches: Switches,
 }
 
 impl Finder<'_> {
@@ -1559,7 +1754,7 @@ impl Finder<'_> {
                 _ => {}
             }
         }
-        for (lo, hi, rows) in moment_functions(m, self.exes, &facts, &seeds, ran, held) {
+        for (lo, hi, rows) in moment_functions(m, self.exes, &facts, &seeds, ran, held, &mut self.switches) {
             let mut file = None;
             for row in rows {
                 let s = parse_hex(&row["entry"]);
@@ -1929,6 +2124,7 @@ impl InventoryArgs {
             found: BTreeMap::new(),
             named: BTreeMap::new(),
             known: Vec::new(),
+            switches: BTreeMap::new(),
         };
         // Again until nothing changes, each time with every start found for
         // the code each moment holds, in whichever moment (a call there may
@@ -2399,6 +2595,7 @@ mod tests {
             found: BTreeMap::new(),
             named: BTreeMap::new(),
             known: Vec::new(),
+            switches: BTreeMap::new(),
         };
         take_timeline(&mut f, &t);
         let got: Vec<(u32, u32, String)> =
@@ -2441,6 +2638,7 @@ mod tests {
             found: BTreeMap::new(),
             named: BTreeMap::new(),
             known: Vec::new(),
+            switches: BTreeMap::new(),
         };
         take_timeline(&mut f, &t);
         let got: Vec<(u32, u32)> =
@@ -2484,6 +2682,7 @@ mod tests {
             found: BTreeMap::new(),
             named: BTreeMap::new(),
             known: Vec::new(),
+            switches: BTreeMap::new(),
         };
         take_timeline(&mut f, &t);
         let got: Vec<(u32, u32)> =
@@ -2529,6 +2728,7 @@ mod tests {
             found: BTreeMap::new(),
             named: BTreeMap::new(),
             known: Vec::new(),
+            switches: BTreeMap::new(),
         };
         take_timeline(&mut f, &t);
         let got = |f: &Finder| -> BTreeSet<(u32, u32, bool)> {
@@ -2574,6 +2774,7 @@ mod tests {
             found: BTreeMap::new(),
             named: BTreeMap::new(),
             known: Vec::new(),
+            switches: BTreeMap::new(),
         };
         take_timeline(&mut f, &t);
         let got: BTreeSet<(u32, u32)> =
@@ -2681,6 +2882,101 @@ mod tests {
     }
 
     #[test]
+    fn a_switch_is_one_function_with_its_cases_and_its_table_seeds_nothing() {
+        let x = |o: u32| 0x8001_0000 + o;
+        let mut w = vec![
+            PROLOGUE,
+            0x2CA2_0003, // sltiu v0, a1, 3
+            0x1040_000E, // beq v0, zero, 0x44 (the default)
+            0x3C02_8001, // lui v0, 0x8001
+            0x2442_0050, // addiu v0, v0, 0x50 (the table)
+            0x0005_1880, // sll v1, a1, 2
+            0x0062_1821, // addu v1, v1, v0
+            0x8C62_0000, // lw v0, 0(v1)
+            NOP,
+            0x0040_0008, // jr v0
+            NOP,
+        ];
+        w.extend([JR_RA, NOP, JR_RA, NOP, JR_RA, NOP, JR_RA, NOP, NOP]);
+        w.extend([x(0x2C), x(0x34), x(0x3C), x(0x2C)]);
+        let c = code(&w);
+        assert_eq!(dispatch(&c, x(0x24)), Some((x(0x50), 3)));
+        let mut a = Analysis::new(&c, Some((x(0), x(0x60))), Box::new(|_| true));
+        let table: Vec<(u32, u32)> = (0..4).map(|k| (x(0x50 + 4 * k), w[0x14 + k as usize])).collect();
+        a.guessing = true;
+        while a.pointers(&table) > 0 {}
+        a.prologues();
+        let got: Vec<(u32, u32, &str)> = a.functions.values().map(|f| (f.start, f.end, f.ends)).collect();
+        assert_eq!(got, [(x(0), x(0x4C), "return")]);
+        let (rows, _) = a.report();
+        assert_eq!(rows[0]["switches"], json!([{"jr": "80010024", "table": "80010050", "cases": 3}]));
+        // Without its bound, the table's length is not known: no switch.
+        let mut w = w.clone();
+        w[1] = NOP;
+        assert_eq!(dispatch(&code(&w), x(0x24)), None);
+    }
+
+    #[test]
+    fn a_switch_is_known_in_a_moment_without_its_table_by_its_bytes() {
+        // Its default is past the next function: only the table says the
+        // cases after its `jr` are its own.
+        let x = |o: u32| 0x8010_0000 + o;
+        let w = [
+            PROLOGUE,
+            0x2CA2_0003, // sltiu v0, a1, 3
+            0x1040_0010, // beq v0, zero, 0x4C (the default)
+            0x3C02_8010, // lui v0, 0x8010
+            0x2442_1000, // addiu v0, v0, 0x1000 (the table, in the next page)
+            0x0005_1880, // sll v1, a1, 2
+            0x0062_1821, // addu v1, v1, v0
+            0x8C62_0000, // lw v0, 0(v1)
+            NOP,
+            0x0040_0008, // jr v0
+            NOP,
+            JR_RA,
+            NOP,
+            JR_RA,
+            NOP,
+            JR_RA,
+            NOP,
+            JR_RA, // 0x44: another function
+            NOP,
+            JR_RA, // 0x4C: the default
+            NOP,
+        ];
+        let moment = |table: bool| {
+            let mut m = Moment {
+                ram: vec![0xFF; 0x20_0000],
+                known: vec![false; 0x200],
+                owner: vec![None; 0x200],
+                continues: BTreeSet::new(),
+                fresh: None,
+                live: None,
+            };
+            for (k, v) in w.iter().enumerate() {
+                m.ram[0x10_0000 + 4 * k..][..4].copy_from_slice(&v.to_le_bytes());
+            }
+            m.known[0x100] = true;
+            if table {
+                for (k, v) in [x(0x2C), x(0x34), x(0x3C)].iter().enumerate() {
+                    m.ram[0x10_1000 + 4 * k..][..4].copy_from_slice(&v.to_le_bytes());
+                }
+                m.known[0x101] = true;
+            }
+            m
+        };
+        let end = |m: &Moment, switches: &mut Switches| {
+            let seeds = [(x(0), "call"), (x(0x44), "call")];
+            let rows = moment_functions(m, &[], &[], &seeds, &BTreeSet::new(), None, switches);
+            rows.iter().flat_map(|c| &c.2).find(|r| r["entry"] == "80100000").map(|r| parse_hex(&r["end"]))
+        };
+        assert_eq!(end(&moment(false), &mut Switches::new()), Some(x(0x2C)));
+        let mut switches = Switches::new();
+        assert_eq!(end(&moment(true), &mut switches), Some(x(0x44)));
+        assert_eq!(end(&moment(false), &mut switches), Some(x(0x44)));
+    }
+
+    #[test]
     fn stubs_jumping_through_a_register_are_each_a_function() {
         // Three stubs into the BIOS (`addiu t2, zero, 0xA0; jr t2; addiu
         // t1, zero, n; nop`); only the first ran.
@@ -2765,6 +3061,7 @@ mod tests {
             found: BTreeMap::new(),
             named: BTreeMap::new(),
             known: Vec::new(),
+            switches: BTreeMap::new(),
         };
         take_timeline(&mut f, &t);
         let got: Vec<(u32, u32, Value)> = f
@@ -2828,6 +3125,7 @@ mod tests {
             found: BTreeMap::new(),
             named: BTreeMap::new(),
             known: Vec::new(),
+            switches: BTreeMap::new(),
         };
         take_timeline(&mut f, &t);
         let got: Vec<(u32, u32, Value)> = f

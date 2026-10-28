@@ -121,10 +121,16 @@ What did not run is read from bytes, as now, and is a guess:
   is (a switch's cases are reached by a table, not by branches);
 - the blocks of a function its runs skipped, reached by its branches;
 - its tail after the last word that ran, to its return or a `jr` on
-  another register (a stub into the BIOS, a switch's dispatch): what
-  follows that is listed as its own function where it starts like one,
-  not hidden in the code before (`jr zero`, the integer 8 in data, is
-  no end);
+  another register (a stub into the BIOS): what follows that is listed
+  as its own function where it starts like one, not hidden in the code
+  before (`jr zero`, the integer 8 in data, is no end);
+- a switch's cases: a `jr` whose dispatch the words before it say as a
+  compiler emits it (an index tested against a bound by `sltiu` and a
+  branch, times 4, plus a table's address from `lui` and `addiu`, `ori`
+  or a `lw` offset, loaded) goes on to the cases its table holds, each
+  code near it. The table's words are not pointers to functions. A
+  moment that does not hold the table's page has the switch of any
+  moment holding the same words before the `jr`;
 - functions no run reached: calls read from bytes in live functions,
   pointers, prologues.
 A guess never takes a word that ran, and never starts on or takes a word
@@ -247,6 +253,19 @@ Each is committed and reviewed on its own, with its check.
    the image at frame 96 (gone: it held only that). The 8 are the cases
    of a switch in guessed code (0x80011750 in the image at frame 2951),
    whose bounds check branches past them but beyond the next function.
+   Then switches are read from their tables: 1715 functions (1070
+   executable, 648 in 43 overlay images) and 718 in the BIOS shell, the
+   same checks met. 32 switches in the executable, 10 of whose `jr` ran;
+   all 10 dispatchers are whole with their cases, and the 32 functions
+   guessed on cases from their tables (pointers, 0x8005EB0C, the 24 at
+   0x8005EE74 to 0x8005F02C) are gone; so are 5 in the BIOS shell and 4
+   in overlays, and 0x80011704's cases are its own. Checked against what
+   ran: in every executable function where a `jr` on another register
+   ran, each word run that nothing else enters (not straight on, a
+   branch or jump target, a return point or the entry) is a case of a
+   recognised switch. Not recognised: the 21 stubs, and 2 switches whose
+   table is in a saved register set before a call (`fp` at 0x800772C4,
+   `s3` at 0x8007774C); their cases that ran are in their bodies.
    Coverage of functions of more than one chunk waits for piece 3.
 3. **Coverage and ledger by chunk.** Check: coverage's totals on GT2 match
    the inventory's; the ledger's tests with a function of two chunks.
@@ -259,6 +278,12 @@ Each is committed and reviewed on its own, with its check.
 Then the second game, as for the timeline.
 
 ## Open questions
+
+- Switches whose table is in a saved register set earlier in the
+  function, across a call (GT2: 0x800772C4, 0x8007774C): the dispatch
+  is read straight on and forgets everything at a call. Keeping `s0` to
+  `s8` across calls (they are callee-saved in compiled code) and reading
+  from the function's start would find them; how often in other games.
 
 - How often the stack loses its place in GT2 and in a game that switches
   threads: the BIOS's (ChangeTh: a syscall whose handler leaves by `rfe`
