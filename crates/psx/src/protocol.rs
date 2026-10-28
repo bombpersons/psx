@@ -1118,8 +1118,12 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
     }
     let partly_read_overlays = partly_read(inv.as_ref(), &read_json(&notes.join("overlays.json")).unwrap_or(json!({})));
     if let Some(n) = partly_read_overlays["unsettled"].as_u64().filter(|&n| n > 0) {
-        let open: Vec<&Value> =
-            partly_read_overlays["regions"].as_array().into_iter().flatten().filter(|r| r["explained"].is_null()).collect();
+        let open: Vec<&Value> = partly_read_overlays["regions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r["explained"].is_null())
+            .collect();
         inv_work.push(work(
             "unpack_overlays",
             format!("{n} stretches of RAM hold code no file holds, so the inventory read only around the code found there: for each, find what wrote it and from what (guide code, Decompressed code); decompress what it read from the disc and take the inventory again with --unpacked, or, when no disc file holds the code (built at runtime), say so in notes/overlays.json with the writer and what it read"),
@@ -1887,7 +1891,10 @@ mod tests {
             {"name": "code at 80060000, frame 9", "bounded_by": "found_code", "start": "80060000", "end": "80060100", "totals": {"functions": 1}}]});
         let p = partly_read(Some(&inv), &json!({}));
         assert_eq!(p["unsettled"], 2);
-        assert_eq!(p["regions"][0], json!({"start": "80040000", "end": "80042000", "overlays": 3, "functions": 7, "explained": null}));
+        assert_eq!(
+            p["regions"][0],
+            json!({"start": "80040000", "end": "80042000", "overlays": 3, "functions": 7, "explained": null})
+        );
         // An explanation settles each stretch it covers, and only with a reason.
         let why = json!({"regions": [{"start": "80060000", "end": "80061000", "why": "built at runtime by 80012340"},
             {"start": "80040000", "end": "80042000", "why": " "}]});
