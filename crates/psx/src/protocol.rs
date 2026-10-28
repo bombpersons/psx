@@ -1614,6 +1614,18 @@ pub(crate) fn write(p: &Path, bytes: &[u8]) -> crate::Result<()> {
     std::fs::write(p, bytes).map_err(|e| Error::io(p, e))
 }
 
+/// A ledger that says what the last one said keeps its made, so asking
+/// again leaves the file as it was (and the repository clean).
+fn keep_made(last: Option<Value>, new: &mut Value) {
+    let Some(mut last) = last else { return };
+    let made = last["made"].take();
+    let mut now = new.clone();
+    now["made"] = Value::Null;
+    if last == now {
+        new["made"] = made;
+    }
+}
+
 /// Computes the ledger and writes it: ledger.json beside the inventory, its
 /// totals to ledger_history.jsonl when they change, and the implementer's
 /// notes/NEXT.md.
@@ -1632,8 +1644,9 @@ fn refresh(ctx: &Ctx) -> crate::Result<(Repos, Ledger, PathBuf)> {
         }
     }
     let r = Repos { investigator: ctx.root.clone(), implementer, reviewer };
-    let l = ledger(ctx, &r)?;
+    let mut l = ledger(ctx, &r)?;
     let out = crate::inventory::default_out(ctx).with_file_name("ledger.json");
+    keep_made(read_json(&out), &mut l.value);
     write(&out, format!("{}\n", serde_json::to_string_pretty(&l.value).unwrap_or_default()).as_bytes())?;
     // Totals over time, for the estimate: a line whenever they change.
     let history = out.with_file_name("ledger_history.jsonl");
@@ -2140,6 +2153,20 @@ mod tests {
         assert_eq!(runs_without_kept_pages(&inv), vec![old.clone()]);
         assert!(runs_without_kept_pages(&json!({})).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_ledger_that_says_the_same_keeps_its_made() {
+        let last = json!({"made": "2026-10-28T18:08:08Z", "complete": {"all": 0.03}});
+        let mut same = json!({"made": "2026-10-28T18:09:29Z", "complete": {"all": 0.03}});
+        keep_made(Some(last.clone()), &mut same);
+        assert_eq!(same["made"], "2026-10-28T18:08:08Z");
+        let mut moved = json!({"made": "2026-10-28T18:09:29Z", "complete": {"all": 0.04}});
+        keep_made(Some(last), &mut moved);
+        assert_eq!(moved["made"], "2026-10-28T18:09:29Z");
+        let mut first = json!({"made": "2026-10-28T18:09:29Z"});
+        keep_made(None, &mut first);
+        assert_eq!(first["made"], "2026-10-28T18:09:29Z");
     }
 
     #[test]
