@@ -8,10 +8,11 @@
 //! the instruction it executed as. A word is credited to the executable or
 //! overlay whose code holds that instruction there, so code loaded over
 //! other code is told apart; where several hold it, to the one holding most
-//! of the run of consecutive words it was executed in. Executed words no
-//! image holds (code changed at runtime, an overlay no snapshot held) and
-//! executed words in no function (a function the inventory missed) are
-//! listed. The BIOS shell's code in RAM (the inventory's bios_code) is
+//! of the run of consecutive words it was executed in. Code two functions
+//! hold (one's chunk is another's body) is credited to both, and a run
+//! reaches each. Executed words no image holds (code changed at runtime, an
+//! overlay no snapshot held) and executed words in no function (a function
+//! the inventory missed) are listed. The BIOS shell's code in RAM (the inventory's bios_code) is
 //! credited but counted apart.
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
@@ -73,6 +74,8 @@ struct Image {
     functions: Vec<Function>,
     /// Every function's chunks, by start: (start, end, function).
     chunks: Vec<(u32, u32, usize)>,
+    /// The longest chunk's length.
+    longest: u32,
     /// Executions of each word, over the corpus.
     count: Vec<u64>,
     /// The runs that executed each function.
@@ -89,6 +92,22 @@ impl Image {
         let i = self.chunks.partition_point(|c| c.0 <= addr).checked_sub(1)?;
         let (_, end, f) = self.chunks[i];
         (addr < end).then_some(f)
+    }
+
+    /// Every function with a chunk holding addr: one's chunk can hold
+    /// another's code.
+    fn functions_at(&self, addr: u32) -> Vec<usize> {
+        let i = self.chunks.partition_point(|c| c.0 <= addr);
+        let mut out: Vec<usize> = self.chunks[..i]
+            .iter()
+            .rev()
+            .take_while(|c| c.0.saturating_add(self.longest) > addr)
+            .filter(|c| addr < c.1)
+            .map(|c| c.2)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 }
 
@@ -140,9 +159,10 @@ fn placed(f: &Function, bytes: &[u8]) -> Option<Vec<Option<u32>>> {
     next.next().is_none().then_some(out)
 }
 
-/// coverage.json's format: 2 reads a function in chunks at its chunks'
-/// addresses (1 read the bytes of all its chunks as one stretch from its entry).
-pub const FORMAT: u64 = 2;
+/// coverage.json's format: 3 credits code two functions of an overlay hold
+/// to both; 2 read a function in chunks at its chunks' addresses (1 read
+/// the bytes of all its chunks as one stretch from its entry).
+pub const FORMAT: u64 = 3;
 
 /// The inventory's executables, read again from its disc, and each function
 /// of its overlays and of the BIOS's code in RAM, from the bytes inventory
@@ -160,7 +180,8 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
         let mut chunks: Vec<(u32, u32, usize)> =
             functions.iter().enumerate().flat_map(|(i, f)| f.chunks.iter().map(move |&(s, e)| (s, e, i))).collect();
         chunks.sort_unstable();
-        Image { kind, name, base, words, functions, chunks, count: vec![0; n], runs: vec![BTreeSet::new(); f] }
+        let longest = chunks.iter().map(|c| c.1 - c.0).max().unwrap_or(0);
+        Image { kind, name, base, words, functions, chunks, longest, count: vec![0; n], runs: vec![BTreeSet::new(); f] }
     };
     let exes = inv["executables"].as_array().cloned().unwrap_or_default();
     if !exes.is_empty() {
@@ -265,8 +286,13 @@ fn hex(a: u32) -> String {
     format!("{a:08X}")
 }
 
+/// What credit gives: the words no image holds, per image the words
+/// credited, and per executable or overlay (by name) the words.
+type Credit = (Vec<(u32, u32)>, Vec<u64>, BTreeMap<String, u64>);
+
 /// Credits one run's executed words to images; returns the words no image
-/// holds, and per image how many words were credited. Code loaded over
+/// holds, per image how many words were credited, and per executable or
+/// overlay (by name) how many words. Code loaded over
 /// other code shares nops and returns with what it replaced, so an image is
 /// credited a word only when it holds a stretch of what ran there: four
 /// consecutive executed words, the whole run of consecutive executed words
@@ -274,7 +300,7 @@ fn hex(a: u32) -> String {
 /// stretch where the words run beside it are other images' (code loaded
 /// over it ran there). Of several, the one with a function there, then the
 /// longest stretch, then the one the run otherwise ran.
-fn credit(images: &mut [Image], run: usize, words: &[(u32, u32, u64)]) -> (Vec<(u32, u32)>, Vec<u64>) {
+fn credit(images: &mut [Image], run: usize, words: &[(u32, u32, u64)]) -> Credit {
     let words: Vec<(u32, u32, u64)> = words.iter().copied().filter(|r| r.0 >= GAME_RAM).collect();
     let holders: Vec<Vec<usize>> =
         words.iter().map(|&(a, w, _)| (0..images.len()).filter(|&i| images[i].word(a) == Some(w)).collect()).collect();
@@ -306,25 +332,44 @@ fn credit(images: &mut [Image], run: usize, words: &[(u32, u32, u64)]) -> (Vec<(
         }
     }
     let mut credited = vec![0u64; images.len()];
+    let mut by_name: BTreeMap<String, u64> = BTreeMap::new();
     let mut pending = Vec::new();
     // Credits word j to the best of images h: the one with a function
     // there, then the longest stretch, then the one the run otherwise ran.
-    let give = |images: &mut [Image], credited: &mut [u64], h: &[usize], j: usize| {
-        let (a, _, n) = words[j];
-        let len = |i: usize| held[i].get(&a).map_or(1, |(s, e)| ((e - s) / 4) as u64);
-        let key = |i: usize| (images[i].function(a).is_some(), len(i), unique[i]);
-        let best = h.iter().map(|&i| key(i)).max();
-        let chosen: Vec<usize> = h.iter().copied().filter(|&i| Some(key(i)) == best).collect();
-        for i in chosen {
-            let img = &mut images[i];
-            let at = ((a - img.base) / 4) as usize;
-            img.count[at] += n;
-            if let Some(f) = img.function(a) {
-                img.runs[f].insert(run);
+    // An overlay's functions are an image each, and two of them can hold the
+    // same code (one function's chunk is another's body): the word is the
+    // overlay's, so each of its images holding it is credited.
+    let give =
+        |images: &mut [Image], credited: &mut [u64], by_name: &mut BTreeMap<String, u64>, h: &[usize], j: usize| {
+            let (a, _, n) = words[j];
+            let len = |i: usize| held[i].get(&a).map_or(1, |(s, e)| ((e - s) / 4) as u64);
+            let key = |i: usize| (images[i].function(a).is_some(), len(i), unique[i]);
+            let best = h.iter().map(|&i| key(i)).max();
+            let mut chosen: Vec<usize> = h.iter().copied().filter(|&i| Some(key(i)) == best).collect();
+            let same = |i: usize, c: usize| images[i].kind == images[c].kind && images[i].name == images[c].name;
+            let more: Vec<usize> = holders[j]
+                .iter()
+                .copied()
+                .filter(|&i| !chosen.contains(&i) && chosen.iter().any(|&c| same(i, c)))
+                .collect();
+            chosen.extend(more);
+            let mut names: BTreeSet<&str> = BTreeSet::new();
+            for &i in &chosen {
+                let img = &mut images[i];
+                let at = ((a - img.base) / 4) as usize;
+                img.count[at] += n;
+                for f in img.functions_at(a) {
+                    img.runs[f].insert(run);
+                }
+                credited[i] += 1;
             }
-            credited[i] += 1;
-        }
-    };
+            for &i in &chosen {
+                names.insert(&images[i].name);
+            }
+            for name in names {
+                *by_name.entry(name.to_string()).or_default() += 1;
+            }
+        };
     for (j, &(a, _, _)) in words.iter().enumerate() {
         let (es, ee) = executed[&a];
         let span = |i: usize| held[i].get(&a).copied().unwrap_or((a, a));
@@ -342,7 +387,7 @@ fn credit(images: &mut [Image], run: usize, words: &[(u32, u32, u64)]) -> (Vec<(
         if h.is_empty() {
             pending.push(j);
         }
-        give(images, &mut credited, &h, j);
+        give(images, &mut credited, &mut by_name, &h, j);
     }
     // A shorter stretch one image holds, where the words run beside it are
     // other images' (code loaded over it ran there): that image's.
@@ -362,9 +407,9 @@ fn credit(images: &mut [Image], run: usize, words: &[(u32, u32, u64)]) -> (Vec<(
         if h.is_empty() {
             missing.push((a, words[j].1));
         }
-        give(images, &mut credited, &h, j);
+        give(images, &mut credited, &mut by_name, &h, j);
     }
-    (missing, credited)
+    (missing, credited, by_name)
 }
 
 #[derive(Default, Clone, Copy)]
@@ -486,17 +531,11 @@ impl CoverageArgs {
         for (r, dir) in self.runs.iter().map(|d| at(d)).enumerate() {
             let words = executed(&dir)?;
             calls.push(run_calls(&dir));
-            let (miss, credited) = credit(&mut images, r, &words);
+            let (miss, _, per) = credit(&mut images, r, &words);
             let game = words.iter().filter(|w| w.0 >= GAME_RAM).count();
             for m in &miss {
                 missing.entry(*m).or_default().insert(r);
             }
-            let per: serde_json::Map<String, Value> = images
-                .iter()
-                .zip(&credited)
-                .filter(|(_, &n)| n > 0)
-                .map(|(img, &n)| (img.name.clone(), json!(n)))
-                .collect();
             // How to make it again, kept with the coverage (run directories are not).
             let (recipe, no_recipe) = match crate::states::recipe_of(ctx, &dir) {
                 Ok(r) => (r, Value::Null),
@@ -692,6 +731,7 @@ mod tests {
             base,
             words: words.into_iter().map(Some).collect(),
             functions,
+            longest: chunks.iter().map(|c| c.1 - c.0).max().unwrap_or(0),
             chunks,
             count: vec![0; n],
             runs: vec![BTreeSet::new(); f],
@@ -715,7 +755,7 @@ mod tests {
             vec![img("a", base, vec![0x27BD_FFE8, 1, 2, 3], f()), img("b", base, vec![0x27BD_FFE8, 5, 6, 7], f())];
         // The run ran b's first block only, and a word neither holds.
         let words = [(base, 0x27BD_FFE8, 3), (base + 4, 5, 3), (base + 8, 9, 1)];
-        let (missing, credited) = credit(&mut images, 0, &words);
+        let (missing, credited, _) = credit(&mut images, 0, &words);
         assert_eq!(missing, vec![(base + 8, 9)]);
         assert_eq!(credited, vec![0, 2]);
         let (rows, outside, t) = report(&images[1]);
@@ -743,13 +783,13 @@ mod tests {
         let mut images =
             vec![img("game", base, vec![1, 2, 3, 4], f), img("shell", base + 4, vec![0x03E0_0008, 0, 0x1234], vec![])];
         let words = [(base, 1, 9), (base + 4, 2, 9), (base + 4, 0x03E0_0008, 1), (base + 8, 0, 1), (base + 8, 3, 9)];
-        let (missing, credited) = credit(&mut images, 0, &words);
+        let (missing, credited, _) = credit(&mut images, 0, &words);
         assert!(missing.is_empty(), "{missing:?}");
         assert_eq!(credited, vec![3, 2]);
         // Beside a word no image holds, it stays unexplained.
         let mut images = vec![img("shell", base + 4, vec![0x03E0_0008, 0], vec![])];
         let words = [(base, 7, 1), (base + 4, 0x03E0_0008, 1), (base + 8, 0, 1), (base + 12, 5, 1)];
-        let (missing, _) = credit(&mut images, 0, &words);
+        let (missing, _, _) = credit(&mut images, 0, &words);
         assert_eq!(missing.len(), 4);
     }
 
@@ -793,11 +833,66 @@ mod tests {
         let mut images = vec![img("a", base, vec![], vec![f()])];
         images[0].words = words;
         images[0].count = vec![0; 5];
-        let (miss, _) = credit(&mut images, 0, &[(base + 8, 9, 1), (base + 12, 4, 1), (base + 16, 5, 1)]);
+        let (miss, _, _) = credit(&mut images, 0, &[(base + 8, 9, 1), (base + 12, 4, 1), (base + 16, 5, 1)]);
         // The second chunk ran; the word between the chunks is no code of it.
         assert_eq!(miss, vec![(base + 8, 9)]);
         let (rows, _, t) = report(&images[0]);
         assert_eq!((t.instructions, t.instructions_executed, t.blocks_executed), (4, 2, 1));
         assert_eq!(rows[0]["unexecuted"], json!([["80100000", "80100008"]]));
+    }
+
+    #[test]
+    fn code_two_functions_of_an_overlay_hold_is_credited_to_both() {
+        // As in a game's overlay: a's second chunk is b's body, after a word
+        // (b's first) a does not hold. Each function is an image.
+        let base = 0x8010_0000;
+        let f = |entry: u32, chunks: Vec<(u32, u32)>| Function {
+            entry,
+            end: base + 32,
+            blocks: vec![chunks[0].0],
+            chunks,
+            sha: None,
+        };
+        let code: Vec<u32> = (1..=8).collect();
+        let a = f(base, vec![(base, base + 16), (base + 20, base + 32)]);
+        let b = f(base + 16, vec![(base + 16, base + 32)]);
+        let mut images =
+            vec![img("ov", base, code.clone(), vec![a]), img("ov", base + 16, code[4..].to_vec(), vec![b])];
+        images[0].words[4] = None;
+        // The run ran b, all of it: a holds only three of its words.
+        let words: Vec<(u32, u32, u64)> = (4..8).map(|k| (base + 4 * k, k + 1, 2)).collect();
+        let (missing, credited, by_name) = credit(&mut images, 0, &words);
+        assert!(missing.is_empty());
+        assert_eq!(credited, vec![3, 4]);
+        // The overlay ran four words, not seven.
+        assert_eq!(by_name, BTreeMap::from([("ov".to_string(), 4)]));
+        let (rows, _, _) = report(&images[0]);
+        assert_eq!((rows[0]["executed"].clone(), rows[0]["runs"].clone()), (json!(3), json!([0])));
+        let (rows, _, _) = report(&images[1]);
+        assert_eq!((rows[0]["executed"].clone(), rows[0]["runs"].clone()), (json!(4), json!([0])));
+    }
+
+    #[test]
+    fn a_run_reaches_every_function_whose_chunk_it_ran() {
+        // In one executable: x's second chunk is y's code.
+        let base = 0x8010_0000;
+        let x = Function {
+            entry: base,
+            end: base + 20,
+            chunks: vec![(base, base + 8), (base + 12, base + 20)],
+            blocks: vec![base, base + 12],
+            sha: None,
+        };
+        let y = Function {
+            entry: base + 8,
+            end: base + 20,
+            chunks: vec![(base + 8, base + 20)],
+            blocks: vec![base + 8],
+            sha: None,
+        };
+        let mut images = vec![img("exe", base, vec![1, 2, 3, 4, 5], vec![x, y])];
+        credit(&mut images, 0, &[(base + 12, 4, 1), (base + 16, 5, 1)]);
+        let (rows, _, _) = report(&images[0]);
+        assert_eq!((rows[0]["runs"].clone(), rows[1]["runs"].clone()), (json!([0]), json!([0])));
     }
 }
