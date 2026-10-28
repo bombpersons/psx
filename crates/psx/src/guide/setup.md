@@ -23,13 +23,15 @@ relative; context save does the same for the defaults. A chain checks each
 state's hash, so a state found wrongly stops it (chain_broken) rather than
 passing.
 
-bios_list inventories installed images. bios_install can import a local dump;
-download:true is an explicit setup action, never an automatic part of inspection
-or running. Use a BIOS of the disc's region (context reports disc_region_hint):
-the BIOS makes the console, so a PAL disc on an NTSC BIOS boots but runs on an
-NTSC console (its GPU clock and BIOS), not the one the game was made for. If
-bios_list has none of that region, bios_install(region, download:true) fetches
-a pinned image for it; context warns when the selected BIOS's region differs.
+bios_list inventories installed images. bios_install can import a local dump,
+or with download:true fetch the pinned image for a region (psx never downloads
+on its own: call it yourself). Use a BIOS of the disc's region (context reports
+disc_region_hint): the BIOS makes the console, so a PAL disc on an NTSC BIOS
+boots but runs on an NTSC console (its GPU clock and BIOS), not the one the
+game was made for. When none of that region is installed, install it with
+bios_install(region, download:true) before recording anything; do not record
+on another region's BIOS instead. context warns when the selected BIOS's
+region differs.
 Native checkpoints require the exact BIOS/media identity they saved.
 sha256 identifies the BIOS file; native_sha256 identifies the 512 KiB ROM image
 used by the native core, so they can differ for padded/truncated inputs.

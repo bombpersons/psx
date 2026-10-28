@@ -82,6 +82,7 @@ the corrected spec. Guide topic `review` has the checks in full.
 
 ## Rules
 
-- No web, and no other reimplementations of the game.
+- No web, and no other reimplementations of the game. psx's own setup
+  (bios_install with download:true for the disc's region) is not the web.
 - Never write into the other repositories.
 - Commit each verdict and audit with a `Role: reviewer` trailer.

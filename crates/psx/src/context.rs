@@ -143,7 +143,7 @@ impl Resolved {
     pub fn bios_error(&self) -> Error {
         let next_action = match self.region {
             Some(r) if self.state.is_none() => {
-                json!({"tool":"bios_install","arguments":{"region":r,"download":true},"explicit_setup_action":true})
+                json!({"tool":"bios_install","arguments":{"region":r,"download":true}})
             }
             _ => json!({"tool":"bios_list","arguments":{}}),
         };
@@ -268,7 +268,7 @@ impl ArgsContext {
         if let (Some(disc), Some(have), None) = (r.region, selected_info.as_ref().and_then(|c| c.region), &r.state) {
             if disc != have {
                 r.warnings.push(format!(
-                    "The disc is {} and the selected BIOS is {}: runs use a {} console (its GPU clock and BIOS), not the disc's. Select a {} BIOS; if none is installed, bios_install(region:{}, download:true).",
+                    "The disc is {} and the selected BIOS is {}: runs use a {} console (its GPU clock and BIOS), not the disc's. Select a {} BIOS; if none is installed, install it with bios_install(region:{}, download:true) before recording.",
                     disc.hint(), have.hint(), have.hint(), disc.hint(), serde_json::to_string(&disc).unwrap()
                 ));
                 fix_region = Some(disc);
@@ -305,11 +305,11 @@ impl ArgsContext {
         let mut next_calls = vec![template];
         if let Some(disc) = fix_region {
             match r.candidates.iter().find(|c| c.region == Some(disc) && c.bytes == 524288) {
-                Some(c) => next_calls.insert(0, json!({"tool":"context","arguments":{"image":r.media,"bios":c.path,"save":true}})),
-                None => next_calls.insert(
-                    0,
-                    json!({"tool":"bios_install","arguments":{"region":disc,"download":true},"explicit_setup_action":true}),
-                ),
+                Some(c) => next_calls
+                    .insert(0, json!({"tool":"context","arguments":{"image":r.media,"bios":c.path,"save":true}})),
+                None => {
+                    next_calls.insert(0, json!({"tool":"bios_install","arguments":{"region":disc,"download":true}}))
+                }
             }
         }
         if setup.is_none() {
