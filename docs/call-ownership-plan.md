@@ -127,8 +127,10 @@ What did not run is read from bytes, as now, and is a guess:
 - a switch's cases: a `jr` whose dispatch the words before it say as a
   compiler emits it (an index tested against a bound by `sltiu` and a
   branch, times 4, plus a table's address from `lui` and `addiu`, `ori`
-  or a `lw` offset, loaded) goes on to the cases its table holds, each
-  code near it. The table's words are not pointers to functions. A
+  or a `lw` offset, or a saved register the function sets once to it
+  and only restores after, as compiled code keeps a table's address
+  across calls and other switches' cases, loaded) goes on to the cases
+  its table holds, each code near it. The table's words are not pointers to functions. A
   moment that does not hold the table's page has the switch of any
   moment holding the same words before the `jr`;
 - functions no run reached: calls read from bytes in live functions,
@@ -263,9 +265,11 @@ Each is committed and reviewed on its own, with its check.
    ran: in every executable function where a `jr` on another register
    ran, each word run that nothing else enters (not straight on, a
    branch or jump target, a return point or the entry) is a case of a
-   recognised switch. Not recognised: the 21 stubs, and 2 switches whose
-   table is in a saved register set before a call (`fp` at 0x800772C4,
-   `s3` at 0x8007774C); their cases that ran are in their bodies.
+   recognised switch. Switches whose table's address is kept in a saved
+   register are read too (`fp` at 0x800772C4, `s3` at 0x8007774C, and
+   0x800798A0, which did not run): 35 in the executable, 12 run, every
+   register `jr` that ran a switch but the 21 stubs. The function list
+   is unchanged by them (their cases were already in their functions).
    Coverage of functions of more than one chunk waits for piece 3.
 3. **Coverage and ledger by chunk.** Check: coverage's totals on GT2 match
    the inventory's; the ledger's tests with a function of two chunks.
@@ -279,11 +283,9 @@ Then the second game, as for the timeline.
 
 ## Open questions
 
-- Switches whose table is in a saved register set earlier in the
-  function, across a call (GT2: 0x800772C4, 0x8007774C): the dispatch
-  is read straight on and forgets everything at a call. Keeping `s0` to
-  `s8` across calls (they are callee-saved in compiled code) and reading
-  from the function's start would find them; how often in other games.
+- Switches in other shapes (a table address from `gp`, no bound, a
+  hand-written dispatch): none in GT2's executable; check the second
+  game with the same trace check.
 
 - How often the stack loses its place in GT2 and in a game that switches
   threads: the BIOS's (ChangeTh: a syscall whose handler leaves by `rfe`

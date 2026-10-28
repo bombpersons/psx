@@ -142,43 +142,36 @@ fn written(i: u32) -> Option<u32> {
 /// How many words before a `jr` its dispatch is read from.
 const DISPATCH: u32 = 24;
 
-/// The table a switch's `jr` at `at` jumps through and how many cases it
-/// has, when the words before it say both, as compilers emit a switch:
-/// an index tested against a bound (`sltiu`, then a branch on the test),
-/// times 4, plus the table's address (`lui`, `addiu` or `ori`, or a `lw`
-/// offset), loaded, jumped to. Read straight on, as if the code before ran
-/// into it; a call or jump before clears what is known. Anything else is
-/// not claimed.
-fn dispatch(code: &Code, at: u32) -> Option<(u32, u32)> {
-    let i = code.word(at)?;
-    if !is_jr(i) || i == JR_RA {
-        return None;
+/// How far a function's start and return are looked for from a `jr`.
+const FRAME: u32 = 1024;
+
+/// The registers a call keeps (`s0` to `s8`, as compiled code saves them).
+fn saved(r: usize) -> bool {
+    matches!(r, 16..=23 | 30)
+}
+
+/// What the dispatch reader knows: each register's value, how many times
+/// each was written, and the bounds tests and branches gave indices.
+struct Regs {
+    vals: [Val; 32],
+    writes: [u32; 32],
+    bounds: BTreeMap<(u32, u32), u32>,
+}
+
+impl Regs {
+    fn new(vals: [Val; 32]) -> Self {
+        Regs { vals, writes: [0; 32], bounds: BTreeMap::new() }
     }
-    let mut regs = [Val::Unknown; 32];
-    let mut writes = [0u32; 32];
-    let mut bounds: BTreeMap<(u32, u32), u32> = BTreeMap::new();
-    let mut pc = at.wrapping_sub(4 * DISPATCH);
-    while pc != at {
-        let Some(w) = code.word(pc) else {
-            regs = [Val::Unknown; 32];
-            pc = pc.wrapping_add(4);
-            continue;
-        };
-        // After a call's or jump's delay slot: no way here straight on.
-        if code
-            .word(pc.wrapping_sub(8))
-            .is_some_and(|j| matches!(j >> 26, 0x02 | 0x03) || j >> 26 == 0 && matches!(j & 0x3F, 0x08 | 0x09))
-        {
-            regs = [Val::Unknown; 32];
-        }
+
+    fn step(&mut self, w: u32) {
         let (op, rs, rt) = (w >> 26, (w >> 21) & 31, (w >> 16) & 31);
         let imm = w & 0xFFFF;
         let simm = imm as i16 as i32 as u32;
-        let src = |r: u32| (r, writes[r as usize]);
-        let (a, b) = (regs[rs as usize], regs[rt as usize]);
+        let src = |r: u32| (r, self.writes[r as usize]);
+        let (a, b) = (self.vals[rs as usize], self.vals[rt as usize]);
         if matches!(op, 0x04 | 0x05) && rt == 0 {
             if let Val::Test(x, n) = a {
-                bounds.insert(x, n);
+                self.bounds.insert(x, n);
             }
         }
         let v = match op {
@@ -214,13 +207,104 @@ fn dispatch(code: &Code, at: u32) -> Option<(u32, u32)> {
             _ => Val::Unknown,
         };
         if let Some(d) = written(w) {
-            writes[d as usize] += 1;
-            regs[d as usize] = v;
+            self.writes[d as usize] += 1;
+            self.vals[d as usize] = v;
+        }
+    }
+
+    /// Reads `[from, to)` straight on. After a call's delay slot only the
+    /// registers it keeps are known; after a jump's, only `init`.
+    fn read(&mut self, code: &Code, from: u32, to: u32, init: &[Val; 32]) {
+        let mut pc = from;
+        while pc != to {
+            let Some(w) = code.word(pc) else {
+                self.vals = *init;
+                pc = pc.wrapping_add(4);
+                continue;
+            };
+            match code.word(pc.wrapping_sub(8)) {
+                Some(j) if j >> 26 == 0x03 || j >> 26 == 0 && j & 0x3F == 0x09 => {
+                    for r in (0..32).filter(|&r| !saved(r)) {
+                        self.vals[r] = init[r];
+                    }
+                }
+                Some(j) if j >> 26 == 0x02 || j >> 26 == 0 && j & 0x3F == 0x08 => self.vals = *init,
+                _ => {}
+            }
+            self.step(w);
+            pc = pc.wrapping_add(4);
+        }
+    }
+}
+
+/// The saved registers that hold one constant at `at` in the function
+/// around it: from its start (the nearest stack prologue before, with no
+/// return between) to `at` written once, to a constant, and from `at` to
+/// its return written only to restore them from the stack. Compiled code
+/// keeps a table's address so across calls and the cases of other
+/// switches.
+fn frame_constants(code: &Code, at: u32) -> [Val; 32] {
+    let mut out = [Val::Unknown; 32];
+    let Some(start) = (1..FRAME)
+        .map(|k| at.wrapping_sub(4 * k))
+        .take_while(|&p| code.word(p).is_some_and(|w| w != JR_RA))
+        .find(|&p| code.word(p).is_some_and(is_prologue))
+    else {
+        return out;
+    };
+    let mut r = Regs::new([Val::Unknown; 32]);
+    let mut once = [Val::Unknown; 32];
+    let mut pc = start;
+    while pc != at {
+        let w = code.word(pc).unwrap_or(0);
+        r.step(w);
+        if let Some(d) = written(w).map(|d| d as usize).filter(|&d| saved(d)) {
+            once[d] = if r.writes[d] == 1 { r.vals[d] } else { Val::Unknown };
         }
         pc = pc.wrapping_add(4);
     }
-    match regs[((i >> 21) & 31) as usize] {
-        Val::Case(x, table) => bounds.get(&x).filter(|&&n| (1..=1024).contains(&n)).map(|&n| (table, n)),
+    let mut kept = [true; 32];
+    for k in 1..FRAME {
+        let Some(w) = code.word(at.wrapping_add(4 * k)) else { break };
+        if let Some(d) = written(w).map(|d| d as usize) {
+            kept[d] &= w >> 26 == 0x23 && (w >> 21) & 31 == 29;
+        }
+        if w == JR_RA {
+            break;
+        }
+    }
+    for d in (0..32).filter(|&d| saved(d) && kept[d]) {
+        if let Val::Const(_) = once[d] {
+            out[d] = once[d];
+        }
+    }
+    out
+}
+
+/// The table a switch's `jr` at `at` jumps through and how many cases it
+/// has, when the words before it say both, as compilers emit a switch:
+/// an index tested against a bound (`sltiu`, then a branch on the test),
+/// times 4, plus the table's address (`lui`, `addiu` or `ori`, or a `lw`
+/// offset), loaded, jumped to. Read straight on, as if the code before ran
+/// into it, knowing at first only the function's constants (see
+/// `frame_constants`) when the words before do not say the table's
+/// address. Anything else is not claimed.
+fn dispatch(code: &Code, at: u32) -> Option<(u32, u32)> {
+    let i = code.word(at)?;
+    if !is_jr(i) || i == JR_RA {
+        return None;
+    }
+    let reg = ((i >> 21) & 31) as usize;
+    let from = at.wrapping_sub(4 * DISPATCH);
+    let mut r = Regs::new([Val::Unknown; 32]);
+    r.read(code, from, at, &[Val::Unknown; 32]);
+    if r.vals[reg] == Val::Unknown {
+        let init = frame_constants(code, at);
+        r = Regs::new(init);
+        r.read(code, from, at, &init);
+    }
+    match r.vals[reg] {
+        Val::Case(x, table) => r.bounds.get(&x).filter(|&&n| (1..=1024).contains(&n)).map(|&n| (table, n)),
         _ => None,
     }
 }
@@ -2914,6 +2998,40 @@ mod tests {
         let mut w = w.clone();
         w[1] = NOP;
         assert_eq!(dispatch(&code(&w), x(0x24)), None);
+    }
+
+    #[test]
+    fn a_switch_whose_table_is_in_a_saved_register_is_read_from_its_function() {
+        let x = |o: u32| 0x8001_0000 + o;
+        let w = |s3_again: bool| {
+            let mut w = vec![
+                PROLOGUE,
+                0x3C02_8001, // lui v0, 0x8001
+                0x2453_0100, // addiu s3, v0, 0x100 (the table)
+                jal(x(0x200)),
+                NOP,
+                0x0800_4008, // j 0x20, as a switch's case goes on
+                NOP,
+                if s3_again { 0x2413_0005 } else { NOP }, // li s3, 5
+                0x2CA2_0002,                              // 0x20: sltiu v0, a1, 2
+                0x1040_0008,                              // beq v0, zero, (the default)
+                0x0005_1080,                              // sll v0, a1, 2
+                0x0053_1021,                              // addu v0, v0, s3
+                0x8C42_0000,                              // lw v0, 0(v0)
+                NOP,
+                0x0040_0008, // 0x38: jr v0
+                NOP,
+                JR_RA,
+                NOP,
+                JR_RA,
+                NOP,
+            ];
+            w.resize(0x40, NOP);
+            w.extend([x(0x40), x(0x48)]);
+            code(&w)
+        };
+        assert_eq!(dispatch(&w(false), x(0x38)), Some((x(0x100), 2)));
+        assert_eq!(dispatch(&w(true), x(0x38)), None);
     }
 
     #[test]
