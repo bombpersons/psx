@@ -140,6 +140,10 @@ fn placed(f: &Function, bytes: &[u8]) -> Option<Vec<Option<u32>>> {
     next.next().is_none().then_some(out)
 }
 
+/// coverage.json's format: 2 reads a function in chunks at its chunks'
+/// addresses (1 read the bytes of all its chunks as one stretch from its entry).
+pub const FORMAT: u64 = 2;
+
 /// The inventory's executables, read again from its disc, and each function
 /// of its overlays and of the BIOS's code in RAM, from the bytes inventory
 /// kept.
@@ -573,7 +577,7 @@ impl CoverageArgs {
         });
         let out = self.out.as_ref().map(|p| at(p)).unwrap_or_else(|| inv_path.with_file_name("coverage.json"));
         let doc = json!({
-            "coverage": 1, "made": crate::publish::utc_now(), "psx": crate::context::version(),
+            "coverage": FORMAT, "made": crate::publish::utc_now(), "psx": crate::context::version(),
             "inventory": {"path": inv_path, "made": inv["made"]},
         "how": "each run's executed words, credited to the executable or overlay whose code holds that instruction at that address; a block is executed when any of its words is; runs are indices into runs; each run's recipe (the named state it started from, its arguments, its executed.bin's sha256) is what coverage check runs again",
             "runs": runs, "totals": summary["totals"], "in_no_image": no_image, "images": out_images,

@@ -1195,6 +1195,12 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
             "no corpus coverage: record play-throughs with run --trace and run coverage over them".into(),
             json!({}),
         ));
+    } else if cov.as_ref().is_some_and(|c| c["coverage"].as_u64() < Some(crate::coverage::FORMAT)) {
+        inv_work.push(work(
+            "coverage",
+            "coverage was taken by an older psx, which credited code differently: run coverage again over the same runs (its runs[].run)".into(),
+            json!({}),
+        ));
     } else if let (Some(i), Some(c)) = (&inv, &cov) {
         if c["inventory"]["made"] != i["made"] {
             inv_work.push(work(
@@ -2108,6 +2114,24 @@ mod tests {
         assert_eq!(runs_without_kept_pages(&inv), vec![old.clone()]);
         assert!(runs_without_kept_pages(&json!({})).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn coverage_taken_by_an_older_psx_is_taken_again() {
+        let w = std::env::temp_dir().join(format!("psx-old-coverage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&w);
+        let put = |rel: &str, text: &str| write(&w.join(rel), text.as_bytes()).unwrap();
+        put("inv/protocol.toml", "");
+        put("inv/notes/inventory.json", r#"{"inventory": 2, "made": "t"}"#);
+        let ctx = Ctx { root: w.join("inv"), cancel: None };
+        let r = Repos { investigator: w.join("inv"), implementer: w.join("imp"), reviewer: w.join("rev") };
+        let asks = |format: u64| {
+            put("inv/notes/coverage.json", &json!({"coverage": format, "inventory": {"made": "t"}}).to_string());
+            ledger(&ctx, &r).unwrap().investigator.iter().any(|w| w["do"] == "coverage")
+        };
+        assert!(asks(crate::coverage::FORMAT - 1));
+        assert!(!asks(crate::coverage::FORMAT));
+        let _ = std::fs::remove_dir_all(&w);
     }
 
     #[test]

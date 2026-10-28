@@ -150,7 +150,8 @@ the emulator changed (until then they are not evidence); waiting while an
 audit is due (every few implemented specs, [protocol] audit_every, and at
 a loop's end, until audit records one: guide topic review); the findings
 of a failed audit; revising a rejected bundle and crossing an approved one;
-taking the inventory and coverage again; answering questions and choices
+taking the inventory and coverage again (coverage also when an older psx
+took it, which credited code differently); answering questions and choices
 (specs/answers/Q-NNNN.md, a choice under its number in
 specs/answers/CHOICES.md; answered once crossed); thin specs (a
 verified spec whose kept-back cases fail); recording missing cases; staging; then a few units to specify, formats first, unless
