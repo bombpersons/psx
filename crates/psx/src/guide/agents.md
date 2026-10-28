@@ -92,7 +92,8 @@ with only the harness's own access rules.
 What each run did is in the investigator's .psx/port-run/: NAME.txt as the
 person reads it (the agent's text, its tool calls, how it ended, and the
 commits it made), NAME.log the harness's raw output, and runs.jsonl a
-record per run (role, item, command, exit, why it failed, seconds, commits, uncommitted
+record per run (role, item, command, exit, why it failed, the tokens it
+used as its harness counts them, seconds, commits, uncommitted
 files, whether it made progress, the item after). Claude Code's
 stream-json, Codex's exec --json and Gemini's stream-json are read into
 lines; other output is shown as it is. The harness keeps the session's own

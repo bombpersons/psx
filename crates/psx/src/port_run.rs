@@ -584,6 +584,47 @@ fn ended(raw: &Path) -> Option<bool> {
     end.or(known.then_some(false))
 }
 
+/// The tokens a session used, in its harness's own terms: Codex's
+/// turn.completed usage summed over its turns, Claude Code's result usage
+/// (and cost). None when the stream says nothing we read (Gemini's, or
+/// output that is no stream).
+fn usage(raw: &Path) -> Option<Value> {
+    let text = std::fs::read_to_string(raw).ok()?;
+    let mut sum = serde_json::Map::new();
+    for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+        match v["type"].as_str().unwrap_or_default() {
+            "turn.completed" => {
+                for (k, n) in v["usage"].as_object().into_iter().flatten() {
+                    if let Some(n) = n.as_u64() {
+                        let had = sum.get(k).and_then(Value::as_u64).unwrap_or(0);
+                        sum.insert(k.clone(), json!(had + n));
+                    }
+                }
+            }
+            "result" if v.get("num_turns").is_some() => {
+                let mut u = v["usage"].as_object().cloned().unwrap_or_default();
+                if let Some(c) = v.get("total_cost_usd") {
+                    u.insert("total_cost_usd".into(), c.clone());
+                }
+                return Some(u.into());
+            }
+            _ => {}
+        }
+    }
+    (!sum.is_empty()).then(|| sum.into())
+}
+
+/// A session's usage on one line: its counts, key=value.
+fn usage_line(u: &Value) -> String {
+    u.as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, n)| n.is_number())
+        .map(|(k, n)| format!("{k}={n}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Why a session failed, or None when it did not.
 fn failure(exit: Option<i32>, timed_out: bool, ended: Option<bool>) -> Option<String> {
     if timed_out {
@@ -785,6 +826,7 @@ impl PortRunArgs {
             let changed = uncommitted(repo);
             let progress = before != after;
             let failed = failure(exit, timed_out, ended(&raw));
+            let used = usage(&raw);
             shown.line(&format!(
                 "== {} {} s, exit {}{}{}; {} commits, {} files uncommitted; now: {}",
                 role.name(),
@@ -796,9 +838,12 @@ impl PortRunArgs {
                 changed.len(),
                 after_work.first().and_then(|w| w["what"].as_str()).unwrap_or("nothing")
             ));
+            if let Some(u) = &used {
+                shown.line(&format!("== tokens: {}", usage_line(u)));
+            }
             let rec = json!({
                 "started": started, "role": role.name(), "repository": repo, "item": item["do"], "what": item["what"],
-                "command": cmd, "sandbox": cfg.sandbox, "exit": exit, "timed_out": timed_out, "failed": failed, "seconds": seconds,
+                "command": cmd, "sandbox": cfg.sandbox, "exit": exit, "timed_out": timed_out, "failed": failed, "usage": used, "seconds": seconds,
                 "commits": commits, "uncommitted": changed, "progress": progress,
                 "now": after_work.first().map(|w| w["do"].clone()), "log": raw, "shown": txt,
             });
@@ -1022,6 +1067,32 @@ mod tests {
         assert!(note.starts_with("This role's last 2 sessions"), "{note}");
         assert!(note.contains("item specify: specify the names (its harness exited with 1); started"), "{note}");
         assert!(note.contains("M notes/f29.md and 2 more") && !note.contains("f30"), "{note}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_session_s_usage_is_read_from_its_stream() {
+        let d = std::env::temp_dir().join(format!("psx-usage-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let used = |name: &str, lines: &[&str]| {
+            let p = d.join(name);
+            std::fs::write(&p, lines.join("\n")).unwrap();
+            usage(&p)
+        };
+        // Codex: each turn's usage, summed.
+        let turn =
+            r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":7}}"#;
+        let u = used("codex", &[r#"{"type":"thread.started"}"#, turn, turn]).unwrap();
+        assert_eq!(u, json!({"input_tokens": 200, "cached_input_tokens": 160, "output_tokens": 14}));
+        assert_eq!(usage_line(&u), "cached_input_tokens=160 input_tokens=200 output_tokens=14");
+        // Claude Code: the result's usage and cost.
+        let claude = r#"{"type":"result","subtype":"success","num_turns":4,"total_cost_usd":0.5,"usage":{"input_tokens":9,"output_tokens":3}}"#;
+        assert_eq!(
+            used("claude", &[claude]),
+            Some(json!({"input_tokens": 9, "output_tokens": 3, "total_cost_usd": 0.5}))
+        );
+        // A session that ran out before a turn ended used nothing we can read.
+        assert_eq!(used("cut", &[r#"{"type":"thread.started"}"#, r#"{"type":"turn.failed"}"#]), None);
         let _ = std::fs::remove_dir_all(&d);
     }
 
