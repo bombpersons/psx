@@ -134,6 +134,14 @@ fn front_matter(text: &str) -> Option<BTreeMap<String, Fm>> {
     None
 }
 
+/// A spec's id and title from its front matter (port run's commit of a
+/// crossing names them).
+pub(crate) fn spec_heading(text: &str) -> Option<(String, String)> {
+    let fm = front_matter(text)?;
+    let id = fm.get("id").map(|v| v.str().to_string()).filter(|s| !s.is_empty())?;
+    Some((id, fm.get("title").map(|v| v.str().to_string()).unwrap_or_default()))
+}
+
 /// A spec of the investigator's.
 #[derive(Debug, Clone)]
 struct Spec {
