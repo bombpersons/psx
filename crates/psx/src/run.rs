@@ -205,8 +205,8 @@ pub struct RunArgs {
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ObserveArgs {
     /// Sample a RAM/scratchpad value at every frame boundary (vblank) into samples.csv:
-    /// `ADDR:FMT[:NAME]`, FMT one of u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F (fx16.16, fx4.12)
-    /// or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Repeatable. With a field map (--map), a name
+    /// `ADDR:FMT[:NAME]`, FMT one of u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F (fx16.16, fx4.12),
+    /// a byte string strN (str32) or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Repeatable. With a field map (--map), a name
     /// from it instead: `GLOBAL`, `SUBJECT` (all its fields), `SUBJECT.FIELD`,
     /// `SUBJECT[N]` or `SUBJECT[N].FIELD`.
     #[arg(long = "sample")]

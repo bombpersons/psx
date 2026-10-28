@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 
 use crate::fieldmap::FieldMap;
-use crate::ram::{Fmt, Sample, signed};
+use crate::ram::{Fmt, Sample, Val, signed};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -48,14 +48,14 @@ pub struct Until {
     pub text: String,
     pub col: Sample,
     op: Op,
-    want: i64,
+    want: Val,
 }
 
-/// A value in the order its format reads: signed and fixed point as signed.
+/// A number in the order its format reads: signed and fixed point as signed.
 fn ordered(fmt: Fmt, raw: u32) -> i64 {
     match fmt {
         Fmt::Signed(w) | Fmt::Fixed(w, _) => signed(raw, w as usize),
-        Fmt::Unsigned(_) | Fmt::Hex(_) | Fmt::Bits(..) => raw as i64,
+        Fmt::Unsigned(_) | Fmt::Hex(_) | Fmt::Bits(..) | Fmt::Str(_) => raw as i64,
     }
 }
 
@@ -68,15 +68,22 @@ pub fn parse(s: &str, map: Option<&FieldMap>) -> Result<Until, String> {
         return Err(format!("--until {s:?}: {sel} names {} fields; name one (SUBJECT.FIELD)", cols.len()));
     }
     let col = cols.remove(0);
-    let raw =
-        col.fmt.encode(value).ok_or_else(|| format!("--until {s:?}: {value:?} is not a {} value", col.fmt.name()))?;
-    Ok(Until { text: s.trim().to_string(), want: ordered(col.fmt, raw), col, op })
+    let want =
+        col.fmt.given(value).ok_or_else(|| format!("--until {s:?}: {value:?} is not a {} value", col.fmt.name()))?;
+    if matches!(want, Val::Bytes(_)) && !matches!(op, Op::Eq | Op::Ne) {
+        return Err(format!("--until {s:?}: a byte string is equal or not (= or !=)"));
+    }
+    Ok(Until { text: s.trim().to_string(), want, col, op })
 }
 
 impl Until {
     /// Never while a pointer leads outside memory.
     pub fn holds(&self, ram: &[u8], scratch: &[u8]) -> bool {
-        self.col.read(ram, scratch).is_some_and(|v| self.op.test(ordered(self.col.fmt, v), self.want))
+        self.col.read(ram, scratch).is_some_and(|v| match (&v, &self.want) {
+            (&Val::Num(v), &Val::Num(w)) => self.op.test(ordered(self.col.fmt, v), ordered(self.col.fmt, w)),
+            // A byte string: = or != only (parse refuses the others).
+            (v, w) => (v == w) == (self.op == Op::Eq),
+        })
     }
 }
 
@@ -141,5 +148,10 @@ mod tests {
         assert!(err("menu").contains("NAME=VALUE"));
         assert!(err("menu=1.5").contains("not a u8"));
         assert!(err("nothing=1").contains("nothing"));
+        let map = FieldMap::parse("[globals]\nname = \"80010020:str8\"\n", "samples.toml".into()).unwrap();
+        ram[0x10020..0x10025].copy_from_slice(b"a=b\0\x01");
+        let holds = |s: &str| parse(s, Some(&map)).unwrap().holds(&ram, &scratch);
+        assert!(holds(r"name=a=b\x00\x01") && !holds("name=a=b") && holds("name!=a=b"));
+        assert!(parse("name<a", Some(&map)).unwrap_err().contains("= or !="));
     }
 }

@@ -69,6 +69,8 @@ pub struct Case {
     header: Vec<String>,
     /// Every observed row (one per field); NaN for a cell that is not a number.
     rows: Vec<Vec<f64>>,
+    /// The rows' cells as text, for byte strings ([`Case::bytes`]).
+    cells: Vec<Vec<String>>,
     /// The rows as recorded, before any [`Case::truncate`].
     recorded: usize,
 }
@@ -105,7 +107,10 @@ impl fmt::Display for Claim {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Written {
     pub column: String,
+    /// The number written; NaN for a byte string.
     pub value: f64,
+    /// A byte string's bytes ([`Case::bytes`]); `None` for a number.
+    pub bytes: Option<Vec<u8>>,
     pub from: u64,
     pub to: Option<u64>,
 }
@@ -148,19 +153,20 @@ impl Case {
         }
         let mut lines = csv.lines().filter(|l| !l.trim().is_empty());
         let header: Vec<String> = lines.next().ok_or("empty observations")?.split(',').map(String::from).collect();
-        let mut rows = Vec::new();
+        let (mut rows, mut cells) = (Vec::new(), Vec::new());
         for (i, line) in lines.enumerate() {
-            let row: Vec<f64> = line.split(',').map(|c| number(c).unwrap_or(f64::NAN)).collect();
-            if row.len() != header.len() {
-                return Err(format!("observation row {i}: {} cells for {} columns", row.len(), header.len()));
+            let text: Vec<String> = line.split(',').map(String::from).collect();
+            if text.len() != header.len() {
+                return Err(format!("observation row {i}: {} cells for {} columns", text.len(), header.len()));
             }
-            rows.push(row);
+            rows.push(text.iter().map(|c| number(c).unwrap_or(f64::NAN)).collect());
+            cells.push(text);
         }
         if rows.is_empty() {
             return Err("no observation rows".into());
         }
         let recorded = rows.len();
-        let case = Self { name: name.into(), json, header, rows, recorded };
+        let case = Self { name: name.into(), json, header, rows, cells, recorded };
         for (column, _) in case.compared()? {
             if !case.has(&column) {
                 return Err(format!("compare names {column:?}, which the observations do not have"));
@@ -228,9 +234,14 @@ impl Case {
         };
         list.iter()
             .map(|w| {
+                let (value, bytes) = match &w["value"] {
+                    Value::String(s) => (f64::NAN, Some(bytes(s).ok_or_else(|| bad(w))?)),
+                    v => (v.as_f64().ok_or_else(|| bad(w))?, None),
+                };
                 Ok(Written {
                     column: w["column"].as_str().ok_or_else(|| bad(w))?.to_string(),
-                    value: w["value"].as_f64().ok_or_else(|| bad(w))?,
+                    value,
+                    bytes,
                     from: w["fields"]["from"].as_u64().ok_or_else(|| bad(w))?,
                     to: w["fields"]["to"].as_u64(),
                 })
@@ -273,6 +284,15 @@ impl Case {
         })
     }
 
+    /// A byte string's cell as its bytes: `psx case record` writes a field
+    /// map `strN` field as text, printable ASCII as itself and any other byte
+    /// as `\xNN`. Trailing zero bytes are left off the text (the original
+    /// held N bytes). `None` where the cell is not such text.
+    pub fn bytes(&self, row: usize, column: &str) -> Option<Vec<u8>> {
+        let i = self.header.iter().position(|c| c == column)?;
+        bytes(self.cells.get(row)?.get(i)?)
+    }
+
     /// Row 0's value: the subject's starting state.
     #[track_caller]
     pub fn first(&self, column: &str) -> f64 {
@@ -283,6 +303,7 @@ impl Case {
     /// with no coverage to say so. Claims are cut to fit.
     pub fn truncate(&mut self, rows: usize) {
         self.rows.truncate(rows.max(1));
+        self.cells.truncate(rows.max(1));
     }
 
     /// Ticks completed by each row: the `tick` column, or steady play from
@@ -388,7 +409,7 @@ impl Case {
 
     /// The case's runner: [`CaseRun::run`] replays it in an app.
     pub fn runner(&self) -> CaseRun<'_> {
-        CaseRun { case: self, implementing: None, before: None, write: None }
+        CaseRun { case: self, implementing: None, before: None, write: None, write_bytes: None }
     }
 }
 
@@ -401,8 +422,31 @@ fn number(cell: &str) -> Option<f64> {
     }
 }
 
+/// A byte string's text as its bytes: `\xNN` for a byte, printable ASCII as
+/// itself.
+fn bytes(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut it = text.bytes();
+    while let Some(c) = it.next() {
+        out.push(match c {
+            b'\\' => {
+                let (x, h, l) = (it.next()?, it.next()?, it.next()?);
+                let hex = |d: u8| (d as char).to_digit(16);
+                if x != b'x' {
+                    return None;
+                }
+                (hex(h)? * 16 + hex(l)?) as u8
+            }
+            b' '..=b'~' => c,
+            _ => return None,
+        });
+    }
+    Some(out)
+}
+
 type BeforeTick<'a> = Box<dyn FnMut(&mut App, usize) + 'a>;
 type WriteField<'a> = Box<dyn FnMut(&mut App, &str, f64) + 'a>;
+type WriteBytes<'a> = Box<dyn FnMut(&mut App, &str, &[u8]) + 'a>;
 
 /// How to replay a case: which specs the rebuild implements, and what to do
 /// before each tick.
@@ -411,6 +455,7 @@ pub struct CaseRun<'a> {
     implementing: Option<Vec<String>>,
     before: Option<BeforeTick<'a>>,
     write: Option<WriteField<'a>>,
+    write_bytes: Option<WriteBytes<'a>>,
 }
 
 impl<'a> CaseRun<'a> {
@@ -422,8 +467,8 @@ impl<'a> CaseRun<'a> {
     }
 
     /// Called before each tick with the row the tick ends on, for input that
-    /// is not the pad: `case.value(row, column)` for each of
-    /// [`Case::activation`]'s columns.
+    /// is not the pad: `case.value(row, column)` (or `case.bytes` for a byte
+    /// string) for each of [`Case::activation`]'s columns.
     pub fn before_tick(mut self, f: impl FnMut(&mut App, usize) + 'a) -> Self {
         self.before = Some(Box::new(f));
         self
@@ -435,6 +480,14 @@ impl<'a> CaseRun<'a> {
     /// a case with writes.
     pub fn write(mut self, f: impl FnMut(&mut App, &str, f64) + 'a) -> Self {
         self.write = Some(Box::new(f));
+        self
+    }
+
+    /// As [`CaseRun::write`], for a byte string the recording wrote: its
+    /// bytes, trailing zeros left off ([`Case::bytes`]). Needed for a case
+    /// that writes one.
+    pub fn write_bytes(mut self, f: impl FnMut(&mut App, &str, &[u8]) + 'a) -> Self {
+        self.write_bytes = Some(Box::new(f));
         self
     }
 
@@ -460,12 +513,17 @@ impl<'a> CaseRun<'a> {
         let schedule = case.schedule().unwrap_or_else(|e| panic!("{e}"));
         let replay = case.input().unwrap_or_else(|e| panic!("{e}"));
         let writes = case.writes().unwrap_or_else(|e| panic!("{e}"));
-        if !writes.is_empty() && self.write.is_none() {
-            let columns: Vec<&str> = writes.iter().map(|w| w.column.as_str()).collect();
-            panic!("{}: the recording wrote {columns:?}: give them to the rebuild with CaseRun::write", case.name);
+        for (strings, given, how) in
+            [(false, self.write.is_some(), "write"), (true, self.write_bytes.is_some(), "write_bytes")]
+        {
+            let columns: Vec<&str> =
+                writes.iter().filter(|w| w.bytes.is_some() == strings).map(|w| w.column.as_str()).collect();
+            if !columns.is_empty() && !given {
+                panic!("{}: the recording wrote {columns:?}: give them to the rebuild with CaseRun::{how}", case.name);
+            }
         }
         // Written since the last tick, by column (the latest value wins).
-        let mut pending: Vec<(&str, f64)> = Vec::new();
+        let mut pending: Vec<&Written> = Vec::new();
 
         let read_row = |world: &World, read: &mut dyn FnMut(&World, &str) -> Option<f64>| -> Vec<f64> {
             columns
@@ -489,15 +547,17 @@ impl<'a> CaseRun<'a> {
         for row in 1..=last.unwrap_or(0) {
             let mut done = RowTicks { ticks: 0, reads_field: None };
             for w in writes.iter().filter(|w| w.due(row as u64 - 1)) {
-                pending.retain(|(c, _)| *c != w.column);
-                pending.push((&w.column, w.value));
+                pending.retain(|p| p.column != w.column);
+                pending.push(w);
             }
             for _ in 0..schedule[row].ticks {
                 // The ticks before row r ran during field r - 1 and read its pad.
                 let field = row as u64 - 1;
-                if let Some(write) = self.write.as_mut() {
-                    for (column, value) in pending.drain(..) {
-                        write(app, column, value);
+                for w in pending.drain(..) {
+                    match (&w.bytes, self.write.as_mut(), self.write_bytes.as_mut()) {
+                        (Some(b), _, Some(write)) => write(app, &w.column, b),
+                        (None, Some(write), _) => write(app, &w.column, w.value),
+                        _ => {}
                     }
                 }
                 if let Some(before) = self.before.as_mut() {
@@ -753,7 +813,10 @@ mod tests {
         let writes = r#", "writes": [{"column": "x", "value": 7, "fields": {"from": 2, "to": 2}},
             {"column": "y", "value": 1, "fields": {"from": 4, "to": null}}]"#;
         let case = case(writes);
-        assert_eq!(case.writes().unwrap()[1], Written { column: "y".into(), value: 1.0, from: 4, to: None });
+        assert_eq!(
+            case.writes().unwrap()[1],
+            Written { column: "y".into(), value: 1.0, bytes: None, from: 4, to: None }
+        );
         let mut app = headless_app(TickRate::every_field(Region::Ntsc));
         app.add_systems(FixedUpdate, count.in_set(GameSystems::Game));
         let e = app.world_mut().spawn(Count(case.first("x"))).id();
@@ -770,6 +833,35 @@ mod tests {
             });
         // x was 2 when field 2's write reached the tick of row 4; y once, before row 5's.
         assert_eq!(given.into_inner(), [("x".to_string(), 7.0, 2.0), ("y".to_string(), 1.0, 3.0)], "{report}");
+    }
+
+    #[test]
+    fn gives_the_rebuild_a_byte_string_as_its_bytes() {
+        let csv = "run_frame,frame,tick,x,name\n0,50,0,0,ab\n1,51,1,1,car\\x00\\x12\n";
+        let json = r#"{"id": "c", "role": "heldout", "input": [{"frame": 0, "buttons": ["RIGHT"]}],
+            "observations": "c.csv", "compare": {"x": 0}, "activation": ["name"],
+            "writes": [{"column": "name", "value": "car\\x00\\x12", "fields": {"from": 0, "to": 0}}]}"#;
+        let case = Case::parse("c", json, csv).unwrap();
+        assert_eq!(case.bytes(1, "name"), Some(b"car\0\x12".to_vec()));
+        assert_eq!(case.bytes(0, "name"), Some(b"ab".to_vec()));
+        assert!(case.value(1, "name").is_nan());
+        let mut app = headless_app(TickRate::every_field(Region::Ntsc));
+        app.add_systems(FixedUpdate, count.in_set(GameSystems::Game));
+        let e = app.world_mut().spawn(Count(0.0)).id();
+        let given = std::cell::RefCell::new(Vec::new());
+        let report = case
+            .runner()
+            .write_bytes(|_, column, b| given.borrow_mut().push((column.to_string(), b.to_vec())))
+            .run(&mut app, |w, c| (c == "x").then(|| w.get::<Count>(e).map(|c| c.0)).flatten());
+        assert!(report.passed(), "{report}");
+        assert_eq!(given.into_inner(), [("name".to_string(), b"car\0\x12".to_vec())]);
+    }
+
+    #[test]
+    #[should_panic(expected = "give them to the rebuild with CaseRun::write_bytes")]
+    fn a_case_writing_a_byte_string_needs_a_byte_writer() {
+        let case = case(r#", "writes": [{"column": "y", "value": "car", "fields": {"from": 4, "to": null}}]"#);
+        run(&case, None, 9.0);
     }
 
     #[test]

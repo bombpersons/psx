@@ -398,13 +398,13 @@ stride = "4C"
         assert_eq!((x.read(&ram, &scratch), yaw.read(&ram, &scratch)), (None, None));
         put(&mut ram, 0xA0000, 0x8010_0000);
         put(&mut ram, 0x10_0034, 7);
-        assert_eq!(x.read(&ram, &scratch), Some(7));
+        assert_eq!(x.read(&ram, &scratch), Some(crate::ram::Val::Num(7)));
         put(&mut ram, 0xA0000, 0x8011_0000);
         put(&mut ram, 0x11_0034, 9);
-        assert_eq!(x.read(&ram, &scratch), Some(9));
+        assert_eq!(x.read(&ram, &scratch), Some(crate::ram::Val::Num(9)));
         put(&mut ram, 0xA0004, 0x8012_0000);
         ram[0x12_0000 + 0x10 + 2 * 0x4C + 0x42] = 5;
-        assert_eq!(yaw.read(&ram, &scratch), Some(5));
+        assert_eq!(yaw.read(&ram, &scratch), Some(crate::ram::Val::Num(5)));
         // A row: the absent value is an empty cell.
         put(&mut ram, 0xA0000, 0);
         let mut s = crate::ram::Sampler::new(vec![x, yaw], 1, false);
@@ -420,7 +420,7 @@ stride = "4C"
         let mut scratch = vec![0u8; crate::ram::SCRATCH_SIZE];
         // A field in its format: fixed, signed and through a pointer.
         let mut p = parse_poke("player.yaw=-2@1..", Some(&m)).unwrap();
-        assert_eq!((p.width(), p.value, p.from, p.to), (2, 0xFFFE, 1, None));
+        assert_eq!((p.width(), p.value.clone(), p.from, p.to), (2, crate::ram::Val::Num(0xFFFE), 1, None));
         p.apply(1, &mut ram, &mut scratch);
         assert_eq!(&ram[0x17_C8BE..0x17_C8C0], &[0xFE, 0xFF]);
         assert_eq!((p.report()["name"].clone(), p.report().get("address").is_none()), ("player.yaw".into(), true));
@@ -433,7 +433,11 @@ stride = "4C"
         assert_eq!(p.report()["skipped"], 1);
         // Hex is still an address; a name the map has wins.
         assert!(!parse_poke("8008B258=1", Some(&m)).unwrap().at.mapped);
-        assert_eq!(parse_poke("camera_x=-1", Some(&m)).unwrap().value, u32::MAX);
+        assert_eq!(parse_poke("camera_x=-1", Some(&m)).unwrap().value, crate::ram::Val::Num(u32::MAX));
+        // A byte string's text may hold a colon (not a format).
+        let names = FieldMap::parse("[globals]\nname = \"80010000:str8\"\n", "samples.toml".into()).unwrap();
+        let p = parse_poke("name=a:b@3", Some(&names)).unwrap();
+        assert_eq!((p.value, p.from), (crate::ram::Val::Bytes(b"a:b\0\0\0\0\0".to_vec()), 3));
         for (spec, says) in [
             ("player=1", "names 2 fields"),
             ("player.x=1:2", "format comes from the map"),

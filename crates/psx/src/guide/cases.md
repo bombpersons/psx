@@ -29,6 +29,8 @@ field by its map name, as run's poke does, at the start of run frame FRAME
 (default 0): row FRAME is before it and the write shows from row FRAME+1, so
 the tick ending on that row is the first to see it. Each written field is a
 column and an activation, never an address: case record refuses ADDR=VALUE.
+A name or other text is one strN field (guide topic fields), poked as text
+(query=car); case record refuses to compare one.
 A row shows a field after the tick, so a field the tick also writes never
 shows the value given: the case's writes say it (column, value in the
 column's format, fields from and to, to null for to the end), and the
