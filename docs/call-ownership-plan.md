@@ -93,9 +93,12 @@ At each moment, for each call running or run then:
 1. Its words that ran in this moment's copies, inside this image, are its
    body. These are facts.
 2. Words that ran inside calls to more than one target are shared: each
-   stretch of them is its own function, entered where the CPU jumped into
-   it (its words that do not continue the code before them). The calls
-   that reached it are its callers, by jump. GT2's 0x8007EAAC, run inside
+   stretch of them is split where a call's entry is; a piece starting at
+   one is that call's, any other is its own function, entered at its
+   first word (the word before it is not in it, so each call that ran it
+   came in there or by a jump; branches are not recorded as jumps, so
+   which word a jump entered cannot pick the entry). The calls that
+   reached it are its callers, by jump. GT2's 0x8007EAAC, run inside
    calls to 0x8007EA78 and 0x8007EA98, is one.
 3. Code a call reached by a jump that ran inside no other call stays its
    chunk, labelled entered by a jump (and frame torn down, if so): a
@@ -106,14 +109,28 @@ At each moment, for each call running or run then:
    image, entered by a jump. The BIOS's A0/B0/C0 functions, reached by
    `jr t2` from game stubs, are BIOS functions, not chunks of the stubs.
 
+A call's body is built in a moment only when the moment holds every word
+it ran with the bytes it ran: the same code loaded again at the same
+place (a later copy with the same bytes, after other code was there) is
+the same code, so what ran in either load is the body in both, and a load
+nothing ran in gets it too. A call with any of its words changed is not
+built there.
+
 What did not run is read from bytes, as now, and is a guess:
+- the code between words that ran, read straight through as an extent
+  is (a switch's cases are reached by a table, not by branches);
 - the blocks of a function its runs skipped, reached by its branches;
 - its tail after the last word that ran, to its return;
 - functions no run reached: calls read from bytes in live functions,
   pointers, prologues.
-A guess never takes a word that ran. A guessed start on one (a `jal` read
-from bytes landing inside code that ran) is kept as a candidate entry of
-the function that owns it.
+A guess never takes a word that ran, and never starts on or takes a word
+the moment holds as it ran inside a call that is not built there (the
+call is found where it is whole). A guessed start on a word that ran in
+a body (a `jal` read from bytes landing inside code that ran) is kept as
+a candidate entry of it; one on a word the body did not run starts a
+function there, and the body is read up to it. Between a body's own words
+that ran, words that ran inside another call are the body's: this code
+ran on both sides of them (a `nop` of other code once loaded there).
 
 Words run under a landing whose R ran inside one owner X after returns
 through the stack are guessed to be X's (`setjmp` returns twice, as
@@ -173,6 +190,47 @@ Each is committed and reviewed on its own, with its check.
    0x80015FF8 whole, 0x8007EAAC its own function, the 9 BIOS call stubs
    and 5 pointer stubs still found. The function list is compared with
    piece 2's and every difference explained.
+   Done. A traced run's end is one more moment: its bodies are the calls
+   whose words RAM holds as they ran, as in every moment (carrying
+   bodies found in moments into it, as before, fed its own guesses back
+   in as facts). Bodies are carried only into a run without a trace.
+   GT2's boot run: 1749 functions (1096 executable, 653 in 44 overlay
+   images) and 692 in the BIOS shell; 0 words in no image, 0 executed
+   outside functions; 7 functions of more than one chunk, 5 of shared
+   code, 3 with words run under a landing, 4 with candidate entries.
+   0x80015FF8 is one body (0x80015FF8 to 0x80016270), 0x8007EAAC is its
+   own, shared by 0x8007EA78 and 0x8007EA98, and every executable
+   function piece 2 found is still found. Two entries have two extents,
+   both other code at the same entry: 0x80016F88 at frame 3021, when the
+   overlay's next page was not loaded yet (other code from frame 1761
+   holds 0x80017000), and 0x80030D64 in the BIOS shell, read to the end
+   of its page as in piece 2.
+   Against piece 2 (1092 executable, 696 overlay rows, 722 in the shell):
+   - The executable gains 4 shared code functions (0x80011B08,
+     0x80011B28, 0x80068364, 0x8007C32C) and 5 bodies change with them;
+     0x8007C310's ends where it ran: 0x8007C318 is the next rung of a
+     ladder of entries (`b; li a0, n`) no call reached, now in no
+     function.
+   - 50 functions piece 2 guessed (carried by matching bytes, or seeded
+     where executed code started) are inside a body of what ran: 28
+     start on a word that ran inside that body's call, 3 on a word that
+     ran inside another call, 19 in code the body did not run. Of those,
+     4 BIOS shell stubs (0x8005A9A0, 0x8005A9B0, 0x8005A9D0, 0x8005A9E0)
+     came from a call piece 2 read in a half-loaded moment: at frame 3661
+     the overlay's 0x800319A8 was read on into the next page, which still
+     held the shell, and the shell's `jal`s there were followed. Without
+     that call they are read as the tail of the stub before (after its
+     `jr t2`, as piece 2's extent reads too).
+   - The other differences in overlays and the shell are guesses moved by
+     the bodies beside them: bodies end where they ran or where their
+     bytes say, not where a guess carried from another moment started,
+     so the guesses after them start, end or are carried differently.
+   - 44 overlay images, not 47: piece 2's images at frames 5597, 5640
+     and 5721 held only second extents of functions now found once (code
+     loaded again, 0x80015FF8 among them), or a guess now in a body. An
+     image is named by the first function found in it, so four more are
+     named differently.
+   Coverage of functions of more than one chunk waits for piece 3.
 3. **Coverage and ledger by chunk.** Check: coverage's totals on GT2 match
    the inventory's; the ledger's tests with a function of two chunks.
 4. **Guides.** run (calls.json's body), protocol (what a function is,
