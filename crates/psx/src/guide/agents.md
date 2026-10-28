@@ -9,7 +9,11 @@ run: port run leaves it, and says so when only it has work.
 When the agent exits it computes the ledger again. It stops when no role
 has work (protocol report then says what waits on the person), when a run
 changes nothing (the role's work, its commit and its working tree are as
-before: a stuck agent is not started again), or after max_runs runs. One
+before: a stuck agent is not started again), when a run fails (its
+harness exited with an error or was killed, it ran out of time, or its
+stream has no successful end: usage ran out, say), or after max_runs runs.
+The role's next session, in this port run or a later one, is told what a
+failed one left uncommitted, ahead of its item. One
 port run at a time; --dry-run says what it would run; --follow, from
 another terminal, shows the current run as it goes.
 
@@ -88,7 +92,7 @@ with only the harness's own access rules.
 What each run did is in the investigator's .psx/port-run/: NAME.txt as the
 person reads it (the agent's text, its tool calls, how it ended, and the
 commits it made), NAME.log the harness's raw output, and runs.jsonl a
-record per run (role, item, command, exit, seconds, commits, uncommitted
+record per run (role, item, command, exit, why it failed, seconds, commits, uncommitted
 files, whether it made progress, the item after). Claude Code's
 stream-json, Codex's exec --json and Gemini's stream-json are read into
 lines; other output is shown as it is. The harness keeps the session's own

@@ -7,7 +7,10 @@
 //! prompt naming the item. Each run starts fresh: what a role knows is in
 //! its files. When the agent exits the ledger is computed again, and so on,
 //! until no role has work, a run changes nothing (the role's work and its
-//! repository are as before), or `max_runs` is reached.
+//! repository are as before), a run fails (its harness exited with an
+//! error, ran out of time, or its stream has no successful end), or
+//! `max_runs` is reached. A role's next session is told what its failed
+//! one left uncommitted.
 //!
 //! The harness is a command line per role in protocol.toml's `[agents]`,
 //! so any agent harness with a headless mode serves. Each run's output goes
@@ -546,6 +549,86 @@ fn session(
     Ok((status.and_then(|s| s.code()), timed_out.load(Ordering::Relaxed)))
 }
 
+/// How a session's stream ended: Some(true) with a successful final
+/// result, Some(false) with a failed one or none, None when the stream is
+/// no harness's we know (only its exit code tells).
+fn ended(raw: &Path) -> Option<bool> {
+    let text = std::fs::read_to_string(raw).ok()?;
+    let (mut known, mut end) = (false, None);
+    for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+        match v["type"].as_str().unwrap_or_default() {
+            // Claude
+            "result" if v.get("num_turns").is_some() => end = Some(v["is_error"] != true),
+            // Gemini
+            "result" if v.get("status").is_some() => end = Some(v["status"] == "success"),
+            // Codex: each turn ends completed or failed.
+            "turn.completed" => end = Some(true),
+            "turn.failed" => end = Some(false),
+            "system" | "assistant" | "user" | "init" | "message" | "tool_use" | "tool_result" | "thread.started"
+            | "turn.started" | "item.started" | "item.completed" => known = true,
+            _ => {}
+        }
+    }
+    end.or(known.then_some(false))
+}
+
+/// Why a session failed, or None when it did not.
+fn failure(exit: Option<i32>, timed_out: bool, ended: Option<bool>) -> Option<String> {
+    if timed_out {
+        Some("it ran out of time (timeout_minutes)".into())
+    } else if exit != Some(0) {
+        Some(exit.map_or("it was killed or did not start".into(), |c| format!("its harness exited with {c}")))
+    } else if ended == Some(false) {
+        Some("its stream has no successful end".into())
+    } else {
+        None
+    }
+}
+
+/// The role's last run in runs.jsonl, when it failed: its record and why.
+fn last_failed(jl: &Path, role: Role) -> Option<(Value, String)> {
+    let text = std::fs::read_to_string(jl).ok()?;
+    let rec =
+        text.lines().rev().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|r| r["role"] == role.name())?;
+    // Records before failed was kept have only the exit and the timeout.
+    let why = match rec.get("failed") {
+        Some(f) => f.as_str().map(str::to_string),
+        None => failure(rec["exit"].as_i64().map(|c| c as i32), rec["timed_out"] == true, None),
+    }?;
+    Some((rec, why))
+}
+
+/// What a session is told before its item when the role's last session
+/// failed and its repository has uncommitted changes.
+fn left_note(last: &(Value, String), uncommitted: &[String]) -> String {
+    const SHOWN: usize = 30;
+    let (rec, why) = last;
+    let mut files = uncommitted.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+    if uncommitted.len() > SHOWN {
+        files += &format!(" and {} more", uncommitted.len() - SHOWN);
+    }
+    format!(
+        "This role's last session (started {}, item {}: {}) stopped before it finished ({why}) and left uncommitted changes (git status): {files}. Before your item, look at them: finish and commit what that session left, or set right what is half done.",
+        rec["started"].as_str().unwrap_or_default(),
+        rec["item"].as_str().unwrap_or_default(),
+        rec["what"].as_str().unwrap_or_default(),
+    )
+}
+
+/// The commits a run made, from HEAD before it to HEAD after; a
+/// repository with no commit before the run has all of them new.
+fn commits(repo: &Path, before: &str, after: &str) -> Vec<String> {
+    if after.is_empty() || before == after {
+        return vec![];
+    }
+    let range = if before.is_empty() { after.to_string() } else { format!("{before}..{after}") };
+    git(repo, &["log", "--format=%h %s", &range]).lines().map(str::to_string).collect()
+}
+
+fn uncommitted(repo: &Path) -> Vec<String> {
+    git(repo, &["status", "--porcelain", "--", ".", ":!.psx"]).lines().map(|l| l.trim().to_string()).collect()
+}
+
 fn stamp() -> String {
     crate::publish::utc_now().replace([':', '-'], "")
 }
@@ -614,12 +697,17 @@ impl PortRunArgs {
             let others: Vec<PathBuf> = lists.iter().filter(|l| l.0 != *role).map(|l| l.1.clone()).collect();
             let item = &work[0];
             let Some(agent) = agent_of(k) else { unreachable!("a role is chosen only with an agent") };
-            let prompt = agent
+            let jl = dir.join("runs.jsonl");
+            let mut prompt = agent
                 .prompt
                 .as_deref()
                 .unwrap_or(default_prompt(*role))
                 .replace("{work}", item["what"].as_str().unwrap_or_default())
                 .replace("{role}", role.name());
+            let left = uncommitted(repo);
+            if let Some(last) = last_failed(&jl, *role).filter(|_| !left.is_empty()) {
+                prompt = format!("{} {prompt}", left_note(&last, &left));
+            }
             let cmd = command_line(*role, agent, repo, &prompt)?;
             if self.dry_run {
                 let (argv, _) = sandboxed(cfg.sandbox, *role, agent, repo, &others, cmd.clone(), None, false)?;
@@ -658,40 +746,43 @@ impl PortRunArgs {
             let after_lists = crate::protocol::work_lists(ctx)?;
             let after_work = &after_lists[k].2;
             let after = state(repo, after_work);
-            let commits: Vec<String> = if before.1.is_empty() || before.1 == after.1 {
-                vec![]
-            } else {
-                git(repo, &["log", "--format=%h %s", &format!("{}..{}", before.1, after.1)])
-                    .lines()
-                    .map(str::to_string)
-                    .collect()
-            };
-            let changed: Vec<String> = git(repo, &["status", "--porcelain", "--", ".", ":!.psx"])
-                .lines()
-                .map(|l| l.trim().to_string())
-                .collect();
+            let commits = commits(repo, &before.1, &after.1);
+            let changed = uncommitted(repo);
             let progress = before != after;
+            let failed = failure(exit, timed_out, ended(&raw));
             shown.line(&format!(
-                "== {} {} s, exit {}{}; {} commits, {} files uncommitted; now: {}",
+                "== {} {} s, exit {}{}{}; {} commits, {} files uncommitted; now: {}",
                 role.name(),
                 seconds,
                 exit.map_or("none".into(), |c| c.to_string()),
                 if timed_out { " (timed out)" } else { "" },
+                failed.as_deref().map(|f| format!(" (failed: {f})")).unwrap_or_default(),
                 commits.len(),
                 changed.len(),
                 after_work.first().and_then(|w| w["what"].as_str()).unwrap_or("nothing")
             ));
             let rec = json!({
                 "started": started, "role": role.name(), "repository": repo, "item": item["do"], "what": item["what"],
-                "command": cmd, "sandbox": cfg.sandbox, "exit": exit, "timed_out": timed_out, "seconds": seconds,
+                "command": cmd, "sandbox": cfg.sandbox, "exit": exit, "timed_out": timed_out, "failed": failed, "seconds": seconds,
                 "commits": commits, "uncommitted": changed, "progress": progress,
                 "now": after_work.first().map(|w| w["do"].clone()), "log": raw, "shown": txt,
             });
-            let jl = dir.join("runs.jsonl");
             let mut f =
                 std::fs::OpenOptions::new().create(true).append(true).open(&jl).map_err(|e| Error::io(&jl, e))?;
             let _ = writeln!(f, "{}", serde_json::to_string(&rec).unwrap_or_default());
             runs.push(rec);
+            if let Some(f) = &failed {
+                let left = if changed.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; it left {} files uncommitted, which the {}'s next session is told about",
+                        changed.len(),
+                        role.name()
+                    )
+                };
+                break json!({"why": format!("the {}'s run failed: {f}{left}. Read its log, {}, and start port run again when the harness can run", role.name(), raw.display()), "roles": firsts(&after_lists)});
+            }
             if !progress {
                 break json!({"why": format!("the {}'s run changed nothing (its work and its repository are as before): read its log, {}", role.name(), raw.display()), "roles": firsts(&after_lists)});
             }
@@ -824,6 +915,90 @@ mod tests {
         assert!(agents(&d).unwrap_err().to_string().contains("cmd"));
         w("[agents]\nmaxruns = 3\n");
         assert!(agents(&d).unwrap_err().to_string().contains("maxruns"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_session_fails_by_its_exit_its_time_or_its_stream_end() {
+        let d = std::env::temp_dir().join(format!("psx-ended-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let end = |name: &str, lines: &[&str]| {
+            let p = d.join(name);
+            std::fs::write(&p, lines.join("\n")).unwrap();
+            ended(&p)
+        };
+        let codex = [r#"{"type":"thread.started","thread_id":"t"}"#, r#"{"type":"turn.started"}"#];
+        assert_eq!(end("ok", &[codex[0], codex[1], r#"{"type":"turn.completed","usage":{}}"#]), Some(true));
+        assert_eq!(
+            end(
+                "limit",
+                &[codex[0], codex[1], r#"{"type":"error","message":"usage"}"#, r#"{"type":"turn.failed","error":{}}"#]
+            ),
+            Some(false)
+        );
+        // A known stream cut off before its end failed.
+        assert_eq!(end("cut", &codex), Some(false));
+        assert_eq!(
+            end("claude", &[r#"{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":3}"#]),
+            Some(false)
+        );
+        assert_eq!(end("gemini", &[r#"{"type":"result","status":"success"}"#]), Some(true));
+        assert_eq!(end("plain", &["done", "bye"]), None);
+        let _ = std::fs::remove_dir_all(&d);
+
+        assert_eq!(failure(Some(0), false, Some(true)), None);
+        assert_eq!(failure(Some(0), false, None), None);
+        assert!(failure(Some(0), false, Some(false)).is_some());
+        assert!(failure(Some(1), false, Some(true)).unwrap().contains("exited with 1"));
+        assert!(failure(None, true, None).unwrap().contains("time"));
+    }
+
+    #[test]
+    fn the_next_session_is_told_what_a_failed_one_left() {
+        let d = std::env::temp_dir().join(format!("psx-left-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let jl = d.join("runs.jsonl");
+        let rec = |role: &str, extra: Value| {
+            let mut r = json!({"started": "2026-10-28T18:43:28Z", "role": role, "item": "specify", "what": "specify the names"});
+            r.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            r.to_string()
+        };
+        // An older record has only exit and timed_out; the newest of the role counts.
+        let lines = [
+            rec("investigator", json!({"exit": 0, "timed_out": false})),
+            rec("investigator", json!({"exit": 1, "timed_out": false})),
+            rec("reviewer", json!({"exit": 0, "timed_out": false, "failed": null})),
+        ];
+        std::fs::write(&jl, lines.join("\n")).unwrap();
+        let last = last_failed(&jl, Role::Investigator).unwrap();
+        assert_eq!(last.1, "its harness exited with 1");
+        assert!(last_failed(&jl, Role::Reviewer).is_none());
+        assert!(last_failed(&jl, Role::Implementer).is_none());
+        let files: Vec<String> = (0..32).map(|i| format!("M notes/f{i}.md")).collect();
+        let note = left_note(&last, &files);
+        assert!(note.contains("item specify: specify the names") && note.contains("exited with 1"), "{note}");
+        assert!(note.contains("M notes/f29.md and 2 more") && !note.contains("f30"), "{note}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_first_commit_in_an_empty_repository_counts() {
+        let d = std::env::temp_dir().join(format!("psx-first-commit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let g = |args: &[&str]| {
+            Command::new("git").arg("-C").arg(&d).args(args).output().unwrap();
+        };
+        g(&["init", "-q"]);
+        let before = git(&d, &["rev-parse", "HEAD"]);
+        std::fs::write(d.join("a"), "a").unwrap();
+        g(&["add", "a"]);
+        g(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "first"]);
+        let after = git(&d, &["rev-parse", "HEAD"]);
+        assert_eq!(before, "");
+        let c = commits(&d, &before, &after);
+        assert!(c.len() == 1 && c[0].ends_with(" first"), "{c:?}");
+        assert!(commits(&d, &after, &after).is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 }
