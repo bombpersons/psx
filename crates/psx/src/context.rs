@@ -238,7 +238,17 @@ pub fn resolve(
     } else {
         (None, "no_region_or_preference")
     };
-    Ok(Resolved { media, media_from, bios: selected, region, bios_reason: reason, candidates, state, media_required, warnings })
+    Ok(Resolved {
+        media,
+        media_from,
+        bios: selected,
+        region,
+        bios_reason: reason,
+        candidates,
+        state,
+        media_required,
+        warnings,
+    })
 }
 
 #[derive(Args, Deserialize, JsonSchema)]
