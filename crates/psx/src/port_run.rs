@@ -585,33 +585,55 @@ fn failure(exit: Option<i32>, timed_out: bool, ended: Option<bool>) -> Option<St
     }
 }
 
-/// The role's last run in runs.jsonl, when it failed: its record and why.
-fn last_failed(jl: &Path, role: Role) -> Option<(Value, String)> {
-    let text = std::fs::read_to_string(jl).ok()?;
-    let rec =
-        text.lines().rev().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|r| r["role"] == role.name())?;
-    // Records before failed was kept have only the exit and the timeout.
-    let why = match rec.get("failed") {
-        Some(f) => f.as_str().map(str::to_string),
-        None => failure(rec["exit"].as_i64().map(|c| c as i32), rec["timed_out"] == true, None),
-    }?;
-    Some((rec, why))
+/// The role's failed runs in runs.jsonl since its last run that did not
+/// fail, oldest first: each record and why it failed.
+fn last_failed(jl: &Path, role: Role) -> Vec<(Value, String)> {
+    let text = std::fs::read_to_string(jl).unwrap_or_default();
+    let mut out: Vec<(Value, String)> = text
+        .lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|r| r["role"] == role.name())
+        .map_while(|rec| {
+            // Records before failed was kept have only the exit and the timeout.
+            let why = match rec.get("failed") {
+                Some(f) => f.as_str().map(str::to_string),
+                None => failure(rec["exit"].as_i64().map(|c| c as i32), rec["timed_out"] == true, None),
+            }?;
+            Some((rec, why))
+        })
+        .collect();
+    out.reverse();
+    out
 }
 
-/// What a session is told before its item when the role's last session
+/// What a session is told before its item when the role's last sessions
 /// failed and its repository has uncommitted changes.
-fn left_note(last: &(Value, String), uncommitted: &[String]) -> String {
+fn left_note(failed: &[(Value, String)], uncommitted: &[String]) -> String {
     const SHOWN: usize = 30;
-    let (rec, why) = last;
     let mut files = uncommitted.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
     if uncommitted.len() > SHOWN {
         files += &format!(" and {} more", uncommitted.len() - SHOWN);
     }
+    let sessions: Vec<String> = failed
+        .iter()
+        .map(|(rec, why)| {
+            format!(
+                "started {}, item {}: {} ({why})",
+                rec["started"].as_str().unwrap_or_default(),
+                rec["item"].as_str().unwrap_or_default(),
+                rec["what"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    let which = if failed.len() == 1 {
+        "This role's last session stopped before it finished".to_string()
+    } else {
+        format!("This role's last {} sessions stopped before they finished", failed.len())
+    };
     format!(
-        "This role's last session (started {}, item {}: {}) stopped before it finished ({why}) and left uncommitted changes (git status): {files}. Before your item, look at them: finish and commit what that session left, or set right what is half done.",
-        rec["started"].as_str().unwrap_or_default(),
-        rec["item"].as_str().unwrap_or_default(),
-        rec["what"].as_str().unwrap_or_default(),
+        "{which}: {}. Its repository has uncommitted changes (git status): {files}. Before your item, look at them: finish and commit what those sessions left, or set right what is half done.",
+        sessions.join("; ")
     )
 }
 
@@ -705,8 +727,9 @@ impl PortRunArgs {
                 .replace("{work}", item["what"].as_str().unwrap_or_default())
                 .replace("{role}", role.name());
             let left = uncommitted(repo);
-            if let Some(last) = last_failed(&jl, *role).filter(|_| !left.is_empty()) {
-                prompt = format!("{} {prompt}", left_note(&last, &left));
+            let failed_before = last_failed(&jl, *role);
+            if !failed_before.is_empty() && !left.is_empty() {
+                prompt = format!("{} {prompt}", left_note(&failed_before, &left));
             }
             let cmd = command_line(*role, agent, repo, &prompt)?;
             if self.dry_run {
@@ -963,20 +986,29 @@ mod tests {
             r.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
             r.to_string()
         };
-        // An older record has only exit and timed_out; the newest of the role counts.
+        // Older records have only exit and timed_out; the failures since the
+        // role's last run that did not fail count, oldest first.
         let lines = [
-            rec("investigator", json!({"exit": 0, "timed_out": false})),
-            rec("investigator", json!({"exit": 1, "timed_out": false})),
+            rec("investigator", json!({"item": "first", "exit": 1, "timed_out": false})),
+            rec("investigator", json!({"item": "fine", "exit": 0, "timed_out": false})),
+            rec("investigator", json!({"item": "specify", "exit": 1, "timed_out": false})),
             rec("reviewer", json!({"exit": 0, "timed_out": false, "failed": null})),
+            rec(
+                "investigator",
+                json!({"item": "cross", "exit": 0, "timed_out": false, "failed": "its stream has no successful end"}),
+            ),
         ];
         std::fs::write(&jl, lines.join("\n")).unwrap();
-        let last = last_failed(&jl, Role::Investigator).unwrap();
-        assert_eq!(last.1, "its harness exited with 1");
-        assert!(last_failed(&jl, Role::Reviewer).is_none());
-        assert!(last_failed(&jl, Role::Implementer).is_none());
+        let failed = last_failed(&jl, Role::Investigator);
+        let items: Vec<&str> = failed.iter().map(|f| f.0["item"].as_str().unwrap()).collect();
+        assert_eq!(items, ["specify", "cross"]);
+        assert_eq!(failed[0].1, "its harness exited with 1");
+        assert!(last_failed(&jl, Role::Reviewer).is_empty());
+        assert!(last_failed(&jl, Role::Implementer).is_empty());
         let files: Vec<String> = (0..32).map(|i| format!("M notes/f{i}.md")).collect();
-        let note = left_note(&last, &files);
-        assert!(note.contains("item specify: specify the names") && note.contains("exited with 1"), "{note}");
+        let note = left_note(&failed, &files);
+        assert!(note.starts_with("This role's last 2 sessions"), "{note}");
+        assert!(note.contains("item specify: specify the names (its harness exited with 1); started"), "{note}");
         assert!(note.contains("M notes/f29.md and 2 more") && !note.contains("f30"), "{note}");
         let _ = std::fs::remove_dir_all(&d);
     }
