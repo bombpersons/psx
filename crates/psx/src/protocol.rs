@@ -761,6 +761,26 @@ fn unseen_runs(inv: &Value, cov: &Value) -> (Vec<String>, Vec<String>) {
     (unread, without_code)
 }
 
+/// The inventory's runs recorded before run --trace copied a page again
+/// where RAM was written over with no code run there (code.bin PSXCODE2):
+/// their old copies stand in for code that was gone, so functions read
+/// from them can join code of different loads.
+fn runs_without_kept_pages(inv: &Value) -> Vec<String> {
+    inv["ram"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["run"].as_str())
+        .filter(|run| {
+            let mut magic = [0u8; 8];
+            std::fs::File::open(Path::new(run).join("code.bin"))
+                .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+                .is_ok_and(|_| &magic == b"PSXCODE2")
+        })
+        .map(String::from)
+        .collect()
+}
+
 fn work(what: &str, text: String, details: Value) -> Value {
     let mut v = json!({"do": what, "what": text});
     if let (Some(m), Some(d)) = (v.as_object_mut(), details.as_object()) {
@@ -1142,7 +1162,15 @@ fn ledger(ctx: &Ctx, r: &Repos) -> crate::Result<Ledger> {
         _ => {}
     }
     let partly_read_overlays = partly_read(inv.as_ref(), &read_json(&notes.join("overlays.json")).unwrap_or(json!({})));
-    if let Some(n) = partly_read_overlays["unsettled"].as_u64().filter(|&n| n > 0) {
+    let old_traces = inv.as_ref().map(runs_without_kept_pages).unwrap_or_default();
+    if !old_traces.is_empty() {
+        let runs: Vec<&String> = old_traces.iter().collect();
+        inv_work.push(work(
+            "record_again",
+            format!("{} of the inventory's runs were recorded before run --trace copied a page again where RAM was written over with no code run there, so the inventory read code that was already gone and can join code of different loads: record them again with run --trace (the same start, input and trace window: its report), then take the inventory again with the new runs; the stretches it reads only partly can change, so explain them after", old_traces.len()),
+            few("runs", &runs),
+        ));
+    } else if let Some(n) = partly_read_overlays["unsettled"].as_u64().filter(|&n| n > 0) {
         let open: Vec<&Value> = partly_read_overlays["regions"]
             .as_array()
             .into_iter()
@@ -2060,6 +2088,25 @@ mod tests {
         // c was recorded again since; b has no code pages.
         assert_eq!(unseen_runs(&inv, &cov), (vec![c.clone()], vec![b.clone()]));
         assert_eq!(unseen_runs(&json!({}), &cov), (vec![a.clone(), b.clone(), c.clone()], vec![b.clone()]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn runs_traced_before_pages_were_copied_again_are_recorded_again() {
+        let dir = std::env::temp_dir().join(format!("psx-old-code-{}", std::process::id()));
+        let run = |name: &str, code: Option<&[u8]>| {
+            let r = dir.join(name);
+            std::fs::create_dir_all(&r).unwrap();
+            if let Some(c) = code {
+                std::fs::write(r.join("code.bin"), c).unwrap();
+            }
+            r.display().to_string()
+        };
+        let (old, new, none) =
+            (run("old", Some(b"PSXCODE2....")), run("new", Some(b"PSXCODE3....")), run("none", None));
+        let inv = json!({"ram": [{"run": old}, {"run": new}, {"run": none}]});
+        assert_eq!(runs_without_kept_pages(&inv), vec![old.clone()]);
+        assert!(runs_without_kept_pages(&json!({})).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
