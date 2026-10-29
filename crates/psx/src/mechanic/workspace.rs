@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use psx_mechanics::trace::Header;
 use psx_mechanics::{Interface, Mechanic, Trace};
 use serde_json::Value;
 
@@ -102,8 +103,11 @@ pub fn load(root: &Path, id: &str) -> crate::Result<Loaded> {
     Ok(Loaded { dir, mechanic, binding, interfaces, problems })
 }
 
-/// The traces in `mechanics/<id>/traces/`, each with its problems.
-pub fn traces(l: &Loaded) -> crate::Result<Vec<(String, Vec<String>)>> {
+/// A trace's name, its problems and, when it parses, its header.
+pub type Checked = (String, Vec<String>, Option<Header>);
+
+/// The traces in `mechanics/<id>/traces/`.
+pub fn traces(l: &Loaded) -> crate::Result<Vec<Checked>> {
     let dir = l.dir.join("traces");
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
     paths.sort();
@@ -112,11 +116,11 @@ pub fn traces(l: &Loaded) -> crate::Result<Vec<(String, Vec<String>)>> {
         let Some(name) = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".trace.jsonl")) else {
             continue;
         };
-        let problems = match Trace::parse(&read(&p)?) {
-            Err(e) => vec![e],
-            Ok(t) => t.check(&l.mechanic, &l.interfaces),
+        let (problems, header) = match Trace::parse(&read(&p)?) {
+            Err(e) => (vec![e], None),
+            Ok(t) => (t.check(&l.mechanic, &l.interfaces), Some(t.header)),
         };
-        out.push((name.to_string(), problems));
+        out.push((name.to_string(), problems, header));
     }
     Ok(out)
 }

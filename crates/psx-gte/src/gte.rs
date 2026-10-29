@@ -56,6 +56,23 @@ pub mod op {
     pub const GPL: u32 = 0x3E;
     pub const NCCT: u32 = 0x3F;
 
+    /// The command a command word runs: unassigned opcodes alias the
+    /// nearest command, or name none (they only clear FLAG).
+    pub const fn alias(cmd: u32) -> u32 {
+        match cmd & 0x3F {
+            0x00 | 0x01 => RTPS,
+            0x04 | 0x06 => NCLIP,
+            0x15 | 0x16 => NCDT,
+            0x18 | 0x19 | 0x1B => NCCS,
+            0x1D | 0x1E => NCS,
+            0x1F | 0x20 => NCT,
+            0x21 | 0x23..=0x28 => SQR,
+            0x1A | 0x29 => DCPL,
+            0x2B..=0x2D => AVSZ3,
+            o => o,
+        }
+    }
+
     /// Command word: `sf` = bit 19 (shift MAC by 12), `lm` = bit 10 (clamp
     /// IR1-3 to 0..). Bits 20-24 (ignored by hardware) are left zero.
     pub const fn encode(opcode: u32, sf: bool, lm: bool) -> u32 {
@@ -337,18 +354,7 @@ impl Gte {
     /// the one the issuing instruction takes.
     pub fn execute(&mut self, cmd: u32) -> u32 {
         let m = Mode { sf: cmd >> 19 & 1 != 0, lm: cmd >> 10 & 1 != 0 };
-        let opcode = match cmd & 0x3F {
-            0x00 | 0x01 => op::RTPS,
-            0x04 | 0x06 => op::NCLIP,
-            0x15 | 0x16 => op::NCDT,
-            0x18 | 0x19 | 0x1B => op::NCCS,
-            0x1D | 0x1E => op::NCS,
-            0x1F | 0x20 => op::NCT,
-            0x21 | 0x23..=0x28 => op::SQR,
-            0x1A | 0x29 => op::DCPL,
-            0x2B..=0x2D => op::AVSZ3,
-            o => o,
-        };
+        let opcode = op::alias(cmd);
         let cycles = match opcode {
             op::RTPS => 15,
             op::NCLIP => 8,

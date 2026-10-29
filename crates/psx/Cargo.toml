@@ -11,6 +11,7 @@ psx-media = { workspace = true }
 psx-mechanics = { workspace = true }
 psx-assets = { workspace = true }
 psx-core = { workspace = true }
+psx-gte = { workspace = true }
 psx-gpu = { workspace = true }
 psx-symbols = { workspace = true }
 png = "0.18"

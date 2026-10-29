@@ -284,9 +284,9 @@ so every trace carries the values of the run it came from.
   - `"next_begin"`: it ends at the next begin;
   - `"frame"`: it ends at the next vblank.
 - **`explained`**: reads the step makes that the binding deliberately leaves
-  out, each with `at` (an address, or base and offset), `bytes`, and `why`.
-  Capture's read audit lists every other read the binding does not account
-  for.
+  out, each with `at` (an address, base and offset, register or GTE
+  register), `bytes`, and `why`. Capture's read audit lists every other read
+  the binding does not account for, and drafts these entries.
 
 ### Capturing on the PlayStation
 
@@ -311,6 +311,36 @@ when the check finds nothing, and when the media is the binding's image.
   recorded.
 - **An inline read** is recorded when its PC runs inside a step, outside a
   call, and loads.
+- **The read audit** (the header's `audit`) lists what the step's own
+  instructions read that the binding does not account for, grouped by
+  reading PC. Instructions of a world call or of an exception handler are
+  not the step's.
+  - **Memory**: a load from bytes the step did not write, outside the
+    state, inputs, params, calls and `explained`. It counts once the step
+    uses what it loaded (reads the register, stores it, or passes it to the
+    world), so an epilogue restoring the caller's registers reads nothing.
+    Bytes a call wrote outside its response are named as the call's.
+  - **CPU registers** read before the step wrote them, other than the
+    bases, filters, register inputs and params, and `explained`. zero, gp,
+    sp and ra are the ABI's and never listed. A register saved to the
+    step's stack frame and restored is not used. A register a call wrote,
+    outside its response, is named as the call's.
+  - **GTE registers** read before the step wrote them, by moves and by
+    commands (RTPS reads the rotation matrix), other than GTE inputs,
+    params and `explained`.
+  - The result drafts `explained` from the list: base and offset for
+    small offsets or moving addresses, else the address, and the range read
+    for a table. The agent binds what the result depends on and gives the
+    rest a `why`.
+- **External changes** are counted per state field in the result: code
+  outside the step changed the field between steps. The trace keeps them
+  as `state_before`.
+- **Branch coverage** (the header's `coverage`) counts each conditional
+  branch's two ways. The branches are those of the step's code: walked from
+  the begin PC and from every register jump the step took, through its
+  calls (not the world's, nor the kernel's below 0x80010000), to returns
+  and the end PC, in RAM as at the first step. `missed` names each branch
+  with a way not taken: "never taken", "never fell through" or "never ran".
 - **Refusals** stop the trace from being written, and are listed with step
   and field:
   - a value that is not of the field's type;

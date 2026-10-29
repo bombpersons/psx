@@ -5,8 +5,10 @@
 //! Every instruction is stepped singly. Before an instruction at a PC the
 //! binding names runs, the reads it calls for are taken; they count only if
 //! the instruction then runs (an interrupt taken there runs it again later).
+//! While a step is open, every instruction also goes to the read audit and
+//! branch coverage (`audit`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -14,12 +16,13 @@ use psx_core::Machine;
 use psx_core::cpu::MemAccess;
 use psx_mechanics::binding::{CallBinding, Encoding, Param, Read};
 use psx_mechanics::interface::CallKind;
-use psx_mechanics::trace::{Call, Full, Header, Producer, Source, SourceKind};
+use psx_mechanics::trace::{Audit, Call, Coverage, Full, Header, Producer, Source, SourceKind};
 use psx_mechanics::{Interface, Mechanic, Trace, Type, Value, Values};
 use serde_json::{Value as Json, json};
 
+use super::audit::{Accounts, Tracker};
 use super::workspace::{self, Loaded, Resident};
-use super::{Binding, CallSite, End, EndMode, Load, Location, Psx, in_memory};
+use super::{Binding, CallSite, End, EndMode, Load, Location, Psx, Reg, in_memory};
 use crate::Error;
 use psx_mechanics::Platform;
 
@@ -78,9 +81,9 @@ fn d_timeout() -> u64 {
 }
 
 /// CPU registers as `Reg` numbers them: r0-r31, hi, lo.
-type Regs = [u32; 34];
+pub type Regs = [u32; 34];
 
-fn regs(m: &Machine) -> Regs {
+pub fn regs(m: &Machine) -> Regs {
     let mut r = [0; 34];
     r[..32].copy_from_slice(&m.cpu.regs);
     r[32] = m.cpu.hi;
@@ -279,7 +282,8 @@ pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool,
 
     let plan = Plan::new(&mechanic, &b, &interfaces, &residents);
     let deadline = std::time::Duration::from_secs(a.timeout);
-    let Recorded { steps, params, refusals, timed_out, summary } = record(&mut m, &plan, a.frames, &events, deadline)?;
+    let Recorded { steps, params, refusals, timed_out, summary, audit, coverage, analysis } =
+        record(&mut m, &plan, a.frames, &events, deadline)?;
     let unobserved = plan.unobserved.clone();
     if timed_out {
         return Ok((false, json!({"status": "timeout", "capture": summary, "written": false})));
@@ -326,8 +330,8 @@ pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool,
         params,
         initial_state: steps[0].before.clone(),
         unobserved,
-        audit: None,
-        coverage: None,
+        audit: Some(audit),
+        coverage: Some(coverage),
         description: a.description.clone(),
     };
     let trace = Trace::encode(header, &steps);
@@ -339,7 +343,11 @@ pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool,
         std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
     }
     std::fs::write(&out, trace.to_jsonl()).map_err(|e| Error::io(&out, e))?;
-    Ok((true, json!({"status": "captured", "trace": rel(root, &out), "capture": summary, "written": true})))
+    Ok((
+        true,
+        json!({"status": "captured", "trace": rel(root, &out), "capture": summary, "written": true,
+               "audit": analysis["audit"], "coverage": analysis["coverage"]}),
+    ))
 }
 
 /// What capture reads and where, from the checked files.
@@ -356,6 +364,14 @@ pub(crate) struct Plan<'a> {
     /// Register filters on begin: (register number, value).
     filters: Vec<(usize, u32)>,
     end: &'a End,
+    /// What the read audit takes as accounted for.
+    accounts: Accounts<'a>,
+    begin: u32,
+}
+
+/// Each part's location and size.
+fn parts<'a>(f: &Fields<'a>) -> Vec<(&'a Location, u32)> {
+    f.iter().flat_map(|(_, r, _)| r.parts.iter().map(|p| (&p.at, p.bytes))).collect()
 }
 
 impl<'a> Plan<'a> {
@@ -418,7 +434,73 @@ impl<'a> Plan<'a> {
         }
         let filters: Vec<(usize, u32)> =
             b.capture.begin.filters.iter().map(|(r, v)| (super::reg_name(r).expect("checked") as usize, *v)).collect();
-        Plan { state, unobserved, inputs, params, param_reads, specs, sites, filters, end: &b.capture.end }
+
+        // The read audit: what the binding reads or explains is accounted for.
+        let explained: Vec<(&Location, u32)> = b.capture.explained.iter().map(|x| (&x.at, x.bytes)).collect();
+        let begin_reads: Vec<(&Location, u32)> = [&inputs, &param_reads].into_iter().flat_map(parts).collect();
+        let mut all: Vec<(&Location, u32)> =
+            [&state, &inputs, &param_reads].into_iter().flat_map(parts).chain(explained.iter().copied()).collect();
+        for s in &specs {
+            all.extend(parts(&s.request));
+            all.extend(parts(&s.response));
+        }
+        let mut bases: Vec<Reg> = Vec::new();
+        for (at, _) in &all {
+            if let Location::Base { base, .. } = at {
+                if !bases.contains(base) {
+                    bases.push(*base);
+                }
+            }
+        }
+        let mut registers: u64 = filters.iter().map(|(r, _)| 1u64 << r).sum::<u64>();
+        registers |= bases.iter().map(|r| 1u64 << *r as u32).sum::<u64>();
+        let mut gte: u64 = 0;
+        for (at, _) in begin_reads.iter().chain(&explained) {
+            match at {
+                Location::Register { register } => registers |= 1 << *register as u32,
+                Location::Gte { gte: g } => gte |= 1 << g,
+                _ => {}
+            }
+        }
+        // Stack locals read as sp + offset.
+        if !bases.contains(&Reg::Sp) {
+            bases.push(Reg::Sp);
+        }
+        let entries: HashSet<u32> = specs
+            .iter()
+            .filter_map(|s| match s.on {
+                CallSite::Entry { entry } => Some(entry.pc),
+                CallSite::Read { .. } => None,
+            })
+            .collect();
+        let accounts = Accounts {
+            memory: all
+                .into_iter()
+                .filter(|(at, _)| matches!(at, Location::Address { .. } | Location::Base { .. }))
+                .collect(),
+            registers,
+            gte,
+            bases,
+            calls: specs.iter().map(|s| s.field("")).collect(),
+            entries,
+            end: match &b.capture.end {
+                End::At(p) => Some(p.pc),
+                End::Mode(_) => None,
+            },
+        };
+        Plan {
+            state,
+            unobserved,
+            inputs,
+            params,
+            param_reads,
+            specs,
+            sites,
+            filters,
+            end: &b.capture.end,
+            accounts,
+            begin: b.capture.begin.pc,
+        }
     }
 }
 
@@ -429,6 +511,10 @@ pub(crate) struct Recorded {
     refusals: Refusals,
     timed_out: bool,
     summary: Json,
+    audit: Audit,
+    coverage: Coverage,
+    /// The audit's and coverage's report, with the draft of `explained`.
+    analysis: Json,
 }
 
 /// Runs `m` for `frames` with `events`, recording each step `plan` brackets.
@@ -453,6 +539,7 @@ pub(crate) fn record(
     let mut instructions: u64 = 0;
     let mut timed_out = false;
     let none: Regs = [0; 34];
+    let mut tracker = Tracker::new(&plan.accounts, plan.begin);
 
     while m.bus.frames < target {
         if m.bus.frames != last_frame {
@@ -463,7 +550,7 @@ pub(crate) fn record(
                 let now = regs(m);
                 let view = View { m, now: &now, latched: &o.latched, load: None };
                 let after = read_all(state, &view, "state", "end", steps.len() as u64, &mut refusals);
-                close_with(o, after, &mut steps, specs, &mut refusals);
+                close_with(o, after, &mut steps, specs, &mut refusals, &mut tracker);
             }
             while next_event < events.len() && events[next_event].frame <= rel {
                 crate::replay::apply(m, &events[next_event]);
@@ -503,6 +590,9 @@ pub(crate) fn record(
                         );
                     }
                 }
+            }
+            if let Some(o) = &open {
+                tracker.observe(m, &info, o.pending.as_ref().map(|p| p.spec), false);
             }
             continue;
         }
@@ -567,11 +657,20 @@ pub(crate) fn record(
             let request = read_all(&specs[i].request, &view, &specs[i].field("request"), "entry", n, &mut tentative);
             Pending { spec: i, request, ret: now[31], sp: now[29] }
         });
+        // The world call this instruction belongs to, if any.
+        let world = entering
+            .as_ref()
+            .map(|p| p.spec)
+            .or_else(|| open.as_ref().and_then(|o| o.pending.as_ref()).filter(|_| pending).map(|p| p.spec));
+        let inline = here.iter().any(|s| matches!(s, Site::Call(i) if matches!(specs[*i].on, CallSite::Read { .. })));
 
         let info = m.step();
         instructions += 1;
         if info.exception.is_some() || info.pc != pc {
             // Interrupted before it ran: it runs again, and is read again then.
+            if open.is_some() {
+                tracker.observe(m, &info, world, inline);
+            }
             continue;
         }
         refusals.count += tentative.count;
@@ -580,6 +679,7 @@ pub(crate) fn record(
             let o = open.as_mut().unwrap();
             let p = o.pending.take().unwrap();
             let s = &specs[p.spec];
+            tracker.returned(&parts(&s.response));
             o.calls.push(Call {
                 interface: s.interface.clone(),
                 call: s.call.clone(),
@@ -589,7 +689,7 @@ pub(crate) fn record(
         }
         if let Some(after) = after {
             // The state as read before the instruction at the end PC ran.
-            close_with(open.take().unwrap(), after, &mut steps, specs, &mut refusals);
+            close_with(open.take().unwrap(), after, &mut steps, specs, &mut refusals, &mut tracker);
         }
         if let Some((p, i, s, bytes)) = opening {
             if let Some(o) = open.take() {
@@ -601,7 +701,7 @@ pub(crate) fn record(
                     .with("pc", json!(format!("{pc:#010x}"))));
                 }
                 // Next begin: the step ends where the next one begins.
-                close_with(o, s.clone(), &mut steps, specs, &mut refusals);
+                close_with(o, s.clone(), &mut steps, specs, &mut refusals, &mut tracker);
             }
             if let Some(p) = p {
                 params.extend(p);
@@ -615,9 +715,14 @@ pub(crate) fn record(
                 pending: None,
                 state_bytes: bytes,
             });
+            tracker.open(m, &now);
         }
         if let (Some(p), Some(o)) = (entering, open.as_mut()) {
+            tracker.entry(pc, p.spec, &parts(&specs[p.spec].request), now[29]);
             o.pending = Some(p);
+        }
+        if open.is_some() {
+            tracker.observe(m, &info, world, inline);
         }
         // Inline reads, from the load the instruction made.
         for s in &here {
@@ -641,18 +746,41 @@ pub(crate) fn record(
             });
         }
     }
+    // External changes: which fields code outside the step changed, in how many steps.
+    let mut fields: BTreeMap<&String, u64> = BTreeMap::new();
+    for w in steps.windows(2) {
+        for (name, v) in &w[1].before {
+            if w[0].after.get(name) != Some(v) {
+                *fields.entry(name).or_default() += 1;
+            }
+        }
+    }
+    let first: Vec<usize> = steps.iter().enumerate().filter(|(_, s)| s.external).map(|(k, _)| k).take(10).collect();
     let summary = json!({
         "steps": steps.len(), "frames": m.bus.frames - start_frame, "instructions": instructions,
         "begins_filtered_out": begins_filtered,
         "open_step_dropped": open.is_some(),
-        "external_changes": steps.iter().filter(|s| s.external).count(),
+        "external_changes": {
+            "steps": steps.iter().filter(|s| s.external).count(),
+            "fields": fields,
+            "first_steps": first,
+        },
         "wall_ms": started.elapsed().as_millis() as u64,
     });
-    Ok(Recorded { steps, params, refusals, timed_out, summary })
+    let (audit, coverage, analysis) = tracker.finish();
+    Ok(Recorded { steps, params, refusals, timed_out, summary, audit, coverage, analysis })
 }
 
 /// Ends a step with `after` as its state.
-fn close_with(o: Open, after: Values, steps: &mut Vec<Full>, specs: &[CallSpec], refusals: &mut Refusals) {
+fn close_with(
+    o: Open,
+    after: Values,
+    steps: &mut Vec<Full>,
+    specs: &[CallSpec],
+    refusals: &mut Refusals,
+    tracker: &mut Tracker,
+) {
+    tracker.close();
     let n = steps.len() as u64;
     if let Some(p) = &o.pending {
         let s = &specs[p.spec];
@@ -764,10 +892,20 @@ end = { pc = 0x8001012C }
     }
 
     fn run(binding: &str, world: &[u32]) -> crate::Result<Recorded> {
+        run_patched(binding, world, &[])
+    }
+
+    /// With the step's words at these addresses replaced.
+    fn run_patched(binding: &str, world: &[u32], patches: &[(u32, u32)]) -> crate::Result<Recorded> {
         let (mechanic, b, interfaces) = files(binding);
         let residents = vec![];
         let plan = Plan::new(&mechanic, &b, &interfaces, &residents);
-        record(&mut machine(world), &plan, 1, &[], std::time::Duration::from_secs(60))
+        let mut m = machine(world);
+        for (at, w) in patches {
+            let o = (at & 0x1F_FFFF) as usize;
+            m.bus.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        record(&mut m, &plan, 1, &[], std::time::Duration::from_secs(60))
     }
 
     fn int(n: i128) -> Value {
@@ -846,5 +984,61 @@ end = { pc = 0x8001012C }
             r.refusals.listed[0],
             json!({"step": 0, "when": "end", "field": "state.last", "problem": "stored value 101: 101 is outside -64..=63"})
         );
+    }
+
+    #[test]
+    fn the_audit_lists_what_the_binding_leaves_out() {
+        let r = run(BINDING, &ADD).unwrap();
+        assert_eq!(r.audit.unaccounted, vec![], "the stack, ra and sp, a0 and the response are accounted for");
+        // lw t1, 8(a0) in the load's delay slot, never used: not a read.
+        let r = run_patched(BINDING, &ADD, &[(0x8001_010C, 0x8C89_0008)]).unwrap();
+        assert_eq!(r.audit.unaccounted, vec![]);
+        // Used: addu a1, t1, s0 in the call's delay slot.
+        let patches = [(0x8001_010C, 0x8C89_0008), (0x8001_0118, 0x0130_2821)];
+        let r = run_patched(BINDING, &ADD, &patches).unwrap();
+        let n = r.steps.len();
+        let found: Vec<Json> = r.audit.unaccounted.iter().map(|f| json!(f)).collect();
+        assert_eq!(
+            found,
+            vec![
+                json!({"at": {"pc": "0x8001010c", "address": "0x80020008", "base": "a0", "offset": "0x8"},
+                       "note": format!("4 bytes, {n} of {n} steps")}),
+                json!({"at": {"pc": "0x80010118", "register": "s0"},
+                       "note": format!("read before the step wrote it, {n} of {n} steps")}),
+            ]
+        );
+        assert_eq!(
+            r.analysis["audit"]["draft"],
+            "explained = [\n  { at = { base = \"a0\", offset = 0x8 }, bytes = 4, why = \"\" },  # read at 0x8001010c\n  { at = { register = \"s0\" }, bytes = 4, why = \"\" },  # read at 0x80010118\n]\n"
+        );
+        let explained = BINDING.replace(
+            "end = { pc = 0x8001012C }",
+            "end = { pc = 0x8001012C }\nexplained = [{ at = { base = \"a0\", offset = 8 }, bytes = 4, why = \"t\" }, { at = { register = \"s0\" }, bytes = 4, why = \"t\" }]",
+        );
+        let r = run_patched(&explained, &ADD, &patches).unwrap();
+        assert_eq!(r.audit.unaccounted, vec![]);
+    }
+
+    #[test]
+    fn a_register_the_call_changed_outside_its_response_is_listed() {
+        // world: addiu v0, a1, 100; addiu v1, zero, 7; jr ra; nop. The step stores v1.
+        let r =
+            run_patched(BINDING, &[0x24A2_0064, 0x2403_0007, 0x03E0_0008, 0], &[(0x8001_011C, 0xAC83_0004)]).unwrap();
+        let n = r.steps.len();
+        assert_eq!(
+            json!(r.audit.unaccounted),
+            json!([{"at": {"pc": "0x8001011c", "register": "v1"},
+                    "note": format!("{n} of {n} steps, changed by the call world.add@1.add (not in its response)")}])
+        );
+    }
+
+    #[test]
+    fn coverage_counts_each_way_of_each_branch() {
+        let r = run(BINDING, &ADD).unwrap();
+        assert_eq!((r.coverage.reached, r.coverage.total), (0, 0));
+        // bne a0, zero, +3 in the load's delay slot: always taken, past the call.
+        let r = run_patched(BINDING, &ADD, &[(0x8001_010C, 0x1480_0003)]).unwrap();
+        assert_eq!((r.coverage.reached, r.coverage.total), (1, 2));
+        assert_eq!(json!(r.coverage.missed), json!([{"at": {"pc": "0x8001010c"}, "note": "never fell through"}]));
     }
 }

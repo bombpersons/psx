@@ -12,6 +12,7 @@ use serde_json::json;
 
 use crate::commands::{Ctx, Op, Outcome};
 
+mod audit;
 pub mod capture;
 pub mod workspace;
 
@@ -206,8 +207,8 @@ impl Platform for Psx {
             }
         }
         for (i, x) in c.explained.iter().enumerate() {
-            if !matches!(x.at, Location::Address { .. } | Location::Base { .. }) {
-                problems.push(format!("capture.explained[{i}]: an address or base + offset"));
+            if matches!(x.at, Location::Load { .. }) {
+                problems.push(format!("capture.explained[{i}]: an address, base + offset, register or gte"));
             } else if let Err(e) = Psx::check_location(&x.at, Role::Input) {
                 problems.push(format!("capture.explained[{i}]: {e}"));
             }
@@ -239,9 +240,20 @@ impl Op for MechanicCheckArgs {
                 let traces = workspace::traces(&l)?;
                 let problems: Vec<String> =
                     l.problems.iter().filter(|p| !p.starts_with("interfaces/")).cloned().collect();
-                ok &= problems.is_empty() && traces.iter().all(|(_, p)| p.is_empty());
-                let traces: Vec<_> =
-                    traces.into_iter().map(|(name, problems)| json!({"name": name, "problems": problems})).collect();
+                ok &= problems.is_empty() && traces.iter().all(|(_, p, _)| p.is_empty());
+                let traces: Vec<_> = traces
+                    .into_iter()
+                    .map(|(name, problems, h)| {
+                        let mut t = json!({"name": name, "problems": problems});
+                        if let Some(a) = h.as_ref().and_then(|h| h.audit.as_ref()) {
+                            t["audit"] = json!({"clear": a.unaccounted.is_empty(), "unaccounted": a.unaccounted.len()});
+                        }
+                        if let Some(c) = h.as_ref().and_then(|h| h.coverage.as_ref()) {
+                            t["coverage"] = json!({"reached": c.reached, "total": c.total});
+                        }
+                        t
+                    })
+                    .collect();
                 mechanics.push(json!({"id": id, "problems": problems, "traces": traces}));
             }
             Ok((ok, json!({"ok": ok, "interfaces": {"problems": interface_problems}, "mechanics": mechanics})))

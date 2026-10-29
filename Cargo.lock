@@ -1315,6 +1315,7 @@ dependencies = [
  "psx-assets",
  "psx-core",
  "psx-gpu",
+ "psx-gte",
  "psx-mechanics",
  "psx-media",
  "psx-symbols",
