@@ -609,7 +609,15 @@ impl<'a> Tracker<'a> {
             at.insert("pc".into(), json!(hex(*b)));
             missed.push(Finding { at, note: Some(note.into()) });
         }
-        let coverage = Coverage { reached, total: 2 * branches.len() as u64, missed };
+        let all = branches
+            .keys()
+            .map(|b| {
+                let mut at = serde_json::Map::new();
+                at.insert("pc".into(), json!(hex(*b)));
+                at
+            })
+            .collect();
+        let coverage = Coverage { reached, total: 2 * branches.len() as u64, missed, branches: all };
 
         let report = json!({
             "audit": {

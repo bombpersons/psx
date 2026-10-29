@@ -93,6 +93,11 @@ pub struct Coverage {
     /// The branches not reached.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missed: Vec<Finding>,
+    /// Every branch inside the bracket, as the producer's location. With
+    /// `missed` it says which ways the recording took, so the traces of a
+    /// mechanic can be combined.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// One place in the original, in the producer's words.

@@ -29,7 +29,7 @@ its verdicts and the problems; plain=true is text for the person.
 - Capture: a feature's mechanics are not named or not captured (each
   reason listed): the catalogue entry lists them under mechanics, each
   mechanics/<id>/ checks clean (psx mechanic check), a captured trace has a
-  clear read audit, and NOTES.md names each missed branch's PC
+  clear read audit, and NOTES.md names each branch no trace took both ways
   (docs/mechanics.md). Every feature has mechanics; Capture comes before
   Scenario and Implement.
 - Scenario: a feature's scenarios are not ready. It lists one, each has a

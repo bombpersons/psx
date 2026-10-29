@@ -397,7 +397,9 @@ fills the steps back in.
   - `audit.unaccounted` lists reads the binding neither binds nor explains.
     The audit is clear when it is empty.
   - `coverage` counts the branches inside the bracket that the recording
-    took (`reached`) out of all of them (`total`). `missed` lists the rest.
+    took (`reached`) out of all of them (`total`). `missed` lists the rest,
+    and `branches` every branch, so the traces of a mechanic can be
+    combined.
 
 ### Steps
 
@@ -469,7 +471,8 @@ A mechanic counts as **captured** (stage 2 of its feature) when:
 - `psx mechanic check` finds no problem in its files;
 - it has at least one captured trace;
 - every captured trace's read audit is clear;
-- `NOTES.md` names the PC of every branch a captured trace missed, as the
+- `NOTES.md` names the PC of every branch that no captured trace took both
+  ways (taken in one trace and fallen through in another counts), as the
   coverage writes it (`0x800432a8`, in any case).
 
 ## 7. Changes from the knowledge base's draft

@@ -19,6 +19,14 @@
     "Coverage": {
       "additionalProperties": false,
       "properties": {
+        "branches": {
+          "description": "Every branch inside the bracket, as the producer's location. With\n`missed` it says which ways the recording took, so the traces of a\nmechanic can be combined.",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
         "missed": {
           "description": "The branches not reached.",
           "items": {

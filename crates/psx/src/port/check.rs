@@ -19,8 +19,8 @@ use crate::mechanic::workspace;
 
 /// What stops the mechanic from counting as captured, one line each; empty
 /// when it is: its files check clean, it has a captured trace, every
-/// captured trace's read audit is clear, and NOTES.md names each branch a
-/// captured trace missed by its PC.
+/// captured trace's read audit is clear, and NOTES.md names by its PC each
+/// branch that no captured trace took both ways.
 pub fn uncaptured(root: &Path, id: &str) -> Vec<String> {
     let l = match workspace::load(root, id) {
         Ok(l) => l,
@@ -33,6 +33,7 @@ pub fn uncaptured(root: &Path, id: &str) -> Vec<String> {
     };
     let notes = std::fs::read_to_string(l.dir.join("NOTES.md")).unwrap_or_default().to_ascii_lowercase();
     let mut captured = 0;
+    let mut ways: BTreeMap<String, (bool, bool)> = BTreeMap::new();
     for (name, problems, header) in &traces {
         let file = format!("mechanics/{id}/traces/{name}.trace.jsonl");
         out.extend(problems.iter().map(|p| format!("{file}: {p}")));
@@ -48,11 +49,37 @@ pub fn uncaptured(root: &Path, id: &str) -> Vec<String> {
             )),
             Some(_) => {}
         }
-        for m in h.coverage.iter().flat_map(|c| &c.missed) {
-            let pc = m.at.get("pc").and_then(Value::as_str).unwrap_or_default();
-            if !pc.is_empty() && !notes.contains(&pc.to_ascii_lowercase()) {
-                out.push(format!("mechanics/{id}/NOTES.md: does not list the branch at {pc} that {name} missed"));
+        if let Some(c) = &h.coverage {
+            // The ways this trace took each branch of its walk: both, unless
+            // missed says otherwise. A trace from before `branches` gives
+            // only what it missed.
+            let pc = |at: &serde_json::Map<String, Value>| {
+                at.get("pc").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase()
+            };
+            let mut took: BTreeMap<String, (bool, bool)> = c.branches.iter().map(|b| (pc(b), (true, true))).collect();
+            for m in &c.missed {
+                let ways = match m.note.as_deref() {
+                    Some("never fell through") => (true, false),
+                    Some("never taken") => (false, true),
+                    _ => (false, false),
+                };
+                took.insert(pc(&m.at), ways);
             }
+            for (p, (t, n)) in took {
+                let w = ways.entry(p).or_insert((false, false));
+                *w = (w.0 || t, w.1 || n);
+            }
+        }
+    }
+    for (pc, (t, n)) in &ways {
+        let missed = match (t, n) {
+            (true, true) => continue,
+            (false, false) => "no trace ran",
+            (true, false) => "no trace fell through",
+            (false, true) => "no trace took",
+        };
+        if !pc.is_empty() && !notes.contains(pc.as_str()) {
+            out.push(format!("mechanics/{id}/NOTES.md: does not list the branch at {pc}, which {missed}"));
         }
     }
     if captured == 0 {
@@ -356,7 +383,7 @@ mod tests {
 
     fn trace(audit: &str, missed: &str) -> String {
         format!(
-            "{{\"format\":\"mechanic-trace\",\"format_version\":1,\"mechanic\":\"demo.walk\",\"mechanic_version\":1,\"source\":{{\"kind\":\"captured\",\"platform\":\"psx\",\"image_sha256\":\"00\"}},\"producer\":{{\"name\":\"psx\",\"version\":\"0\"}},\"params\":{{}},\"initial_state\":{{\"speed\":0}}{audit},\"coverage\":{{\"reached\":3,\"total\":4,\"missed\":[{missed}]}}}}\n{{\"step\":0,\"state\":{{\"speed\":1}}}}\n"
+            "{{\"format\":\"mechanic-trace\",\"format_version\":1,\"mechanic\":\"demo.walk\",\"mechanic_version\":1,\"source\":{{\"kind\":\"captured\",\"platform\":\"psx\",\"image_sha256\":\"00\"}},\"producer\":{{\"name\":\"psx\",\"version\":\"0\"}},\"params\":{{}},\"initial_state\":{{\"speed\":0}}{audit},\"coverage\":{{\"reached\":3,\"total\":4,\"missed\":[{missed}],\"branches\":[{{\"pc\":\"0x800432a8\"}},{{\"pc\":\"0x800432c0\"}}]}}}}\n{{\"step\":0,\"state\":{{\"speed\":1}}}}\n"
         )
     }
 
@@ -385,12 +412,18 @@ mod tests {
         assert!(u.contains(&"mechanics/demo.walk/traces/a.trace.jsonl: the read audit lists 1 reads the binding neither binds nor explains".to_string()), "{u:?}");
         assert!(
             u.contains(
-                &"mechanics/demo.walk/NOTES.md: does not list the branch at 0x800432a8 that a missed".to_string()
+                &"mechanics/demo.walk/NOTES.md: does not list the branch at 0x800432a8, which no trace took"
+                    .to_string()
             ),
             "{u:?}"
         );
         std::fs::write(m.join("traces/a.trace.jsonl"), trace(",\"audit\":{\"unaccounted\":[]}", missed)).unwrap();
         std::fs::write(m.join("NOTES.md"), "Never taken: 0x800432A8, the slope branch.\n").unwrap();
+        assert_eq!(uncaptured(&d.0, "demo.walk"), ["mechanics/demo.walk/binding.toml: not written yet"]);
+        // A branch counts once some trace took each way of it.
+        std::fs::write(m.join("NOTES.md"), "").unwrap();
+        let other = "{\"at\":{\"pc\":\"0x800432a8\"},\"note\":\"never fell through\"}";
+        std::fs::write(m.join("traces/b.trace.jsonl"), trace(",\"audit\":{\"unaccounted\":[]}", other)).unwrap();
         assert_eq!(uncaptured(&d.0, "demo.walk"), ["mechanics/demo.walk/binding.toml: not written yet"]);
     }
 

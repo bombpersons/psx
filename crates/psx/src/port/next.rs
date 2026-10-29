@@ -218,8 +218,8 @@ impl Facts {
                 "Capture",
                 Some(&f.id),
                 format!("its mechanics are not captured: {}", lines.join("; ")),
-                "it names its mechanics, each checks clean and has a captured trace with a clear read audit, and NOTES.md names every branch the traces missed",
-                "name the steps the original runs for it under the catalogue entry's mechanics, write mechanics/<id>/ for each (mechanic.toml, binding.toml), run psx mechanic capture, bind or explain each read the audit lists, and list each missed branch's PC in NOTES.md (docs/mechanics.md)",
+                "it names its mechanics, each checks clean and has a captured trace with a clear read audit, and NOTES.md names every branch no trace took both ways",
+                "name the steps the original runs for it under the catalogue entry's mechanics, write mechanics/<id>/ for each (mechanic.toml, binding.toml), run psx mechanic capture, bind or explain each read the audit lists, and list in NOTES.md the PC of each branch no trace took both ways (docs/mechanics.md)",
             );
         }
         if let Some(f) = order(&|f| stage(f, &[Stage::Catalogued])) {
