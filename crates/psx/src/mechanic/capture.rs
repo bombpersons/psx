@@ -450,7 +450,9 @@ impl<'a> Plan<'a> {
             b.capture.begin.filters.iter().map(|(r, v)| (super::reg_name(r).expect("checked") as usize, *v)).collect();
 
         // The read audit: what the binding reads or explains is accounted for.
-        let explained: Vec<(&Location, u32)> = b.capture.explained.iter().map(|x| (&x.at, x.bytes)).collect();
+        let explained: Vec<(&Location, u32)> =
+            b.capture.explained.iter().filter_map(|x| Some((x.at.as_ref()?, x.bytes?))).collect();
+        let explained_pcs: HashSet<u32> = b.capture.explained.iter().filter_map(|x| Some(x.by.as_ref()?.pc)).collect();
         let begin_reads: Vec<(&Location, u32)> = [&inputs, &param_reads].into_iter().flat_map(parts).collect();
         let mut all: Vec<(&Location, u32)> =
             [&state, &inputs, &param_reads].into_iter().flat_map(parts).chain(explained.iter().copied()).collect();
@@ -492,6 +494,7 @@ impl<'a> Plan<'a> {
                 .into_iter()
                 .filter(|(at, _)| matches!(at, Location::Address { .. } | Location::Base { .. }))
                 .collect(),
+            readers: explained_pcs,
             registers,
             gte,
             bases,
@@ -1030,6 +1033,13 @@ end = { pc = 0x8001012C }
             "end = { pc = 0x8001012C }\nexplained = [{ at = { base = \"a0\", offset = 8 }, bytes = 4, why = \"t\" }, { at = { register = \"s0\" }, bytes = 4, why = \"t\" }]",
         );
         let r = run_patched(&explained, &ADD, &patches).unwrap();
+        assert_eq!(r.audit.unaccounted, vec![]);
+        // Or by the reading instruction, wherever it reads.
+        let by = BINDING.replace(
+            "end = { pc = 0x8001012C }",
+            "end = { pc = 0x8001012C }\nexplained = [{ by = { pc = 0x8001010C }, why = \"t\" }, { at = { register = \"s0\" }, bytes = 4, why = \"t\" }]",
+        );
+        let r = run_patched(&by, &ADD, &patches).unwrap();
         assert_eq!(r.audit.unaccounted, vec![]);
     }
 

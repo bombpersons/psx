@@ -127,8 +127,15 @@ pub enum EndMode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Explained {
-    pub at: Location,
-    pub bytes: u32,
+    /// Where: `bytes` from this location.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Location>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u32>,
+    /// Or by whom: every load this instruction makes, wherever it reads
+    /// (level data whose address changes from level to level).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Pc>,
     pub why: String,
 }
 
@@ -250,19 +257,25 @@ impl Platform for Psx {
         for (i, x) in c.explained.iter().enumerate() {
             // Any address: a hardware register or the BIOS ROM is read but
             // never bound, so explaining it is the only way to account for it.
-            match &x.at {
-                Location::Load { .. } => {
+            match (&x.at, x.bytes, &x.by) {
+                (Some(Location::Load { .. }), _, None) => {
                     problems.push(format!("capture.explained[{i}]: an address, base + offset, register or gte"))
                 }
-                Location::Address { .. } => {}
-                at => {
+                (Some(Location::Address { .. }), Some(1..), None) => {}
+                (Some(at), Some(1..), None) => {
                     if let Err(e) = Psx::check_location(at, Role::Input) {
                         problems.push(format!("capture.explained[{i}]: {e}"));
                     }
                 }
+                (None, None, Some(p)) => {
+                    if let Err(e) = check_pc(p.pc, &p.overlay) {
+                        problems.push(format!("capture.explained[{i}].by: {e}"));
+                    }
+                }
+                _ => problems.push(format!("capture.explained[{i}]: at and bytes, or by (a reading PC)")),
             }
-            if x.bytes == 0 || x.why.trim().is_empty() {
-                problems.push(format!("capture.explained[{i}]: bytes and why"));
+            if x.why.trim().is_empty() {
+                problems.push(format!("capture.explained[{i}]: why"));
             }
         }
     }
@@ -398,7 +411,8 @@ explained = [{ at = { base = "a0", offset = 0x80 }, bytes = 0x20, why = "the ani
             .replace("{ address = 0x800A5C10 }", "{ address = 0x80200000 }")
             .replace("{ load = \"value\" }", "{ load = \"address\" }")
             .replace("a0 = 0x801F0000", "a9 = 1")
-            .replace("on = { read =", "on = { entry =");
+            .replace("on = { read =", "on = { entry =")
+            .replace("bytes = 0x20, why", "bytes = 0x20, by = { pc = 0x80043234 }, why");
         assert_eq!(
             check(&bad),
             vec![
@@ -407,6 +421,7 @@ explained = [{ at = { base = "a0", offset = 0x80 }, bytes = 0x20, why = "the ani
                 "interfaces.\"world.floor-height@1\".height.request.x: parts[0]: load is for an inline read's request (address) and response (value)",
                 "interfaces.\"world.floor-height@1\".height.response.y: parts[0]: load is for an inline read's request (address) and response (value)",
                 "capture.begin.a9: not a register (filters are a0 = 0x801F0000)",
+                "capture.explained[0]: at and bytes, or by (a reading PC)",
             ]
         );
         assert!(toml::from_str::<Binding>(&BINDING.replace("offset = 0x40", "offset = 0x40, extra = 1")).is_err());

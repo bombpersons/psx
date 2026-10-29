@@ -46,6 +46,8 @@ pub struct Accounts<'a> {
     /// Memory parts, read with the step's latched registers: the state,
     /// inputs, params, explained reads, and the calls' requests and responses.
     pub memory: Vec<(&'a Location, u32)>,
+    /// PCs whose loads are explained wherever they read.
+    pub readers: HashSet<u32>,
     /// Registers whose value from before the step is accounted for: bases,
     /// filters, register inputs and params, explained registers.
     pub registers: u64,
@@ -302,6 +304,9 @@ impl<'a> Tracker<'a> {
 
     /// What a load reads that the binding does not account for.
     fn unaccounted(&self, pc: u32, addr: u32, width: u32) -> Vec<Pend> {
+        if self.acc.readers.contains(&pc) {
+            return Vec::new();
+        }
         let p = fold(addr);
         // Main RAM through any of its mirrors, as the address it mirrors.
         let addr = if p < 0x20_0000 { 0x8000_0000 | p } else { addr };

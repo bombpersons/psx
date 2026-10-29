@@ -205,7 +205,10 @@ request.x = { parts = [{ at = { register = "a0" }, bytes = 4 }] }
 [capture]
 begin = { pc = 0x80043234, a0 = 0x801F0000 }
 end = "next_begin"
-explained = [{ at = { base = "a0", offset = 0x80 }, bytes = 0x20, why = "the animation, another mechanic" }]
+explained = [
+  { at = { base = "a0", offset = 0x80 }, bytes = 0x20, why = "the animation, another mechanic" },
+  { by = { pc = 0x80043A30 }, why = "finding the floor polygon: level data, wherever the level put it" },
+]
 ```
 
 (Addresses here are placeholders.)
@@ -286,7 +289,9 @@ so every trace carries the values of the run it came from.
   - `"frame"`: it ends at the next vblank.
 - **`explained`**: reads the step makes that the binding deliberately leaves
   out, each with `at` (an address, base and offset, register or GTE
-  register), `bytes`, and `why`. Capture's read audit lists every other read
+  register), `bytes`, and `why`. Or `by` (a PC) in place of `at` and
+  `bytes`: every load that instruction makes, wherever it reads, for data
+  whose address changes from level to level. Capture's read audit lists every other read
   the binding does not account for, and drafts these entries.
 - **Hardware reads** (a hardware register or the BIOS ROM) are never state,
   inputs or params: the port has no such registers. When the step's result

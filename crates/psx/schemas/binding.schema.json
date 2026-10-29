@@ -145,20 +145,40 @@
       "additionalProperties": false,
       "properties": {
         "at": {
-          "$ref": "#/$defs/Location"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Location"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where: `bytes` from this location."
+        },
+        "by": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pc"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Or by whom: every load this instruction makes, wherever it reads\n(level data whose address changes from level to level)."
         },
         "bytes": {
           "format": "uint32",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "why": {
           "type": "string"
         }
       },
       "required": [
-        "at",
-        "bytes",
         "why"
       ],
       "type": "object"
