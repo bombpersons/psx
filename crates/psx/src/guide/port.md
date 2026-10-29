@@ -26,10 +26,12 @@ its verdicts and the problems; plain=true is text for the person.
   Until it is, only investigate and catalogue.
 - Fix: a verdict at HEAD fails; its failures name the mechanic, step and
   field, or the scenario, tick and quantity.
-- Capture: a feature's mechanics are not captured (each reason listed):
+- Capture: a feature's mechanics are not named or not captured (each
+  reason listed): the catalogue entry lists them under mechanics, each
   mechanics/<id>/ checks clean (psx mechanic check), a captured trace has a
   clear read audit, and NOTES.md names each missed branch's PC
-  (docs/mechanics.md). A feature with no mechanics has nothing to capture.
+  (docs/mechanics.md). Every feature has mechanics; Capture comes before
+  Scenario and Implement.
 - Scenario: a feature's scenarios are not ready. It lists one, each has a
   captured recording (scenario_record) and passes scenario_check, the
   determinism check (docs/scenarios.md). glossary.toml's tick is the game's

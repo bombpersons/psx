@@ -218,8 +218,8 @@ impl Facts {
                 "Capture",
                 Some(&f.id),
                 format!("its mechanics are not captured: {}", lines.join("; ")),
-                "each of its mechanics checks clean and has a captured trace with a clear read audit, and NOTES.md names every branch the traces missed",
-                "write mechanics/<id>/ (mechanic.toml, binding.toml), run psx mechanic capture, bind or explain each read the audit lists, and list each missed branch's PC in NOTES.md (docs/mechanics.md)",
+                "it names its mechanics, each checks clean and has a captured trace with a clear read audit, and NOTES.md names every branch the traces missed",
+                "name the steps the original runs for it under the catalogue entry's mechanics, write mechanics/<id>/ for each (mechanic.toml, binding.toml), run psx mechanic capture, bind or explain each read the audit lists, and list each missed branch's PC in NOTES.md (docs/mechanics.md)",
             );
         }
         if let Some(f) = order(&|f| stage(f, &[Stage::Catalogued])) {
@@ -513,15 +513,14 @@ mod tests {
         assert_eq!((item.item, item.feature.as_deref()), ("Capture", Some("F-0001")));
         assert_eq!(item.why, "its mechanics are not captured: mechanics/demo.walk/mechanic.toml: no such file");
         assert_eq!(f.stage("F-0001"), Some(Stage::Catalogued));
-        // A feature with no mechanics has nothing to capture, but every
-        // feature has a scenario.
+        // A feature that names no mechanics is asked for them.
         std::fs::write(d.0.join("catalogue/F-0001.md"), feature("F-0001", "")).unwrap();
         let f = Facts::gather(&d.0).unwrap();
         let item = f.next();
-        assert_eq!((item.item, item.feature.as_deref()), ("Scenario", Some("F-0001")));
+        assert_eq!((item.item, item.feature.as_deref()), ("Capture", Some("F-0001")));
         assert_eq!(
             item.why,
-            "its scenarios are not ready: catalogue/F-0001.md: lists no scenarios (write scenarios/<id>.toml and list its id under scenarios)"
+            "its mechanics are not captured: catalogue/F-0001.md: names no mechanics (find the steps the original runs for it and list their ids under mechanics)"
         );
         assert_eq!(f.stage("F-0002"), Some(Stage::Catalogued));
     }

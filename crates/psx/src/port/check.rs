@@ -64,8 +64,15 @@ pub fn uncaptured(root: &Path, id: &str) -> Vec<String> {
 }
 
 /// What stops the feature's mechanics from counting as captured, each line
-/// naming its mechanic; empty when they all are, or it has none.
+/// naming its mechanic; empty when they all are. A feature that names no
+/// mechanics is not captured: every feature runs code of the original's.
 pub fn feature_uncaptured(root: &Path, e: &Entry) -> Vec<String> {
+    if e.mechanics.is_empty() {
+        return vec![format!(
+            "{}: names no mechanics (find the steps the original runs for it and list their ids under mechanics)",
+            e.file
+        )];
+    }
     e.mechanics.iter().flat_map(|m| uncaptured(root, m)).collect()
 }
 

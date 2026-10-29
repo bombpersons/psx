@@ -559,7 +559,7 @@ pick it up, and the person can redirect at any point. Items, in order:
 | **Fix** | a fresh verdict fails | a fresh verdict passes |
 | **Review findings** | the feature reviewer left open findings | none open |
 | **Catalogue** | the gap list in the goal's areas is not empty, or no goal is confirmed | every gap region is a feature or classified |
-| **Capture** | a goal feature's mechanic is not captured | captured, as stage 2 |
+| **Capture** | a goal feature names no mechanics, or one is not captured | named and captured, as stage 2 |
 | **Scenario** | a feature has no deterministic scenario | the determinism check passes |
 | **Implement** | a captured feature has no passing verdicts | verified |
 | **Signals** | a feature has unanswered structure signals | each changed or justified |

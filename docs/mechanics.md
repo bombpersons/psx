@@ -439,7 +439,8 @@ writes each feature's replay verdict:
 
 - **A feature passes** when each mechanic its catalogue entry lists has an
   adapter, replays every trace in `traces/` without a divergence, and has at
-  least one captured trace. A feature with no mechanics passes.
+  least one captured trace. A feature with no mechanics does not get this
+  far: `port next` asks for them first (Capture).
 - **Exact** mechanics run in `Exact` through every step. Every field of
   every step and every request must be equal.
 - **Faithful** mechanics start every step from the recorded state. Each
