@@ -437,6 +437,15 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
             return Err(Error::invalid(format!("two columns are named {h:?}: name one differently in the map")));
         }
     }
+    // Byte strings are input (activation, pokes): a runner compares numbers.
+    let strings: Vec<String> = samples["columns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["format"].as_str().is_some_and(|f| f.starts_with("str")))
+        .filter_map(|c| c["name"].as_str())
+        .map(|n| n.strip_prefix(&prefix).unwrap_or(n).to_string())
+        .collect();
     let fixed = ["run_frame", "frame", "tick"];
     let known = |c: &str| t.column(c).is_some() && !fixed.contains(&c);
     let columns: Vec<&String> = t.header.iter().filter(|h| !fixed.contains(&h.as_str())).collect();
@@ -462,6 +471,11 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
         if !known(col) {
             return Err(Error::invalid(format!("compare {col:?} is not a column ({})", list())));
         }
+        if strings.iter().any(|s| s == col) {
+            return Err(Error::invalid(format!(
+                "compare {col:?}: a byte string is input (activation, poke), not compared: a runner compares numbers"
+            )));
+        }
         let tol: Value = match (tol.parse::<i64>(), tol.parse::<f64>()) {
             (Ok(n), _) => json!(n),
             (_, Ok(x)) => json!(x),
@@ -469,12 +483,22 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
         };
         compare.insert(col.to_string(), tol);
     }
+    let mut warnings = Vec::new();
     if a.compare.is_empty() {
         for c in columns.iter().filter(|c| !activation.contains(c)) {
-            compare.insert(c.to_string(), json!(0));
+            if !strings.contains(c) {
+                compare.insert(c.to_string(), json!(0));
+            }
+        }
+        let skipped: Vec<&str> =
+            strings.iter().map(String::as_str).filter(|s| !activation.iter().any(|a| a == s)).collect();
+        if !skipped.is_empty() {
+            warnings.push(format!(
+                "{} are byte strings, not compared (a runner compares numbers): give them as activation if they are input",
+                skipped.join(", ")
+            ));
         }
     }
-    let mut warnings = Vec::new();
     if !wrong_map.is_null() {
         warnings.push(format!(
             "the field map's [map] holds fail on {} rows, from run frame {}: its names may read other memory there",
@@ -569,10 +593,14 @@ fn record(ctx: &Ctx, a: &CaseRecordArgs) -> crate::Result<Recorded> {
         .map(|p| {
             let name = p["name"].as_str().unwrap_or_default();
             let fmt = p["format"].as_str().and_then(crate::ram::Fmt::parse);
-            let raw = p["value"].as_u64().unwrap_or_default() as u32;
+            // A byte string's value is its text already.
+            let value = match p["value"].as_u64() {
+                Some(raw) => fmt.map_or(json!(raw), |f| f.json(raw as u32)),
+                None => p["value"].clone(),
+            };
             json!({
                 "column": name.strip_prefix(&prefix).unwrap_or(name),
-                "value": fmt.map_or(json!(raw), |f| f.json(raw)),
+                "value": value,
                 "fields": p["run_frames"],
             })
         })

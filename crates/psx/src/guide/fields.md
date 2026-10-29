@@ -44,6 +44,18 @@ until compares the bits' value.
   flags = "28:x16"
   active = "28:u16[14]"
 
+A name, a filename, any text: strN reads N bytes as one field, so a case
+holds the name, not N byte columns. Its cell is text: printable ASCII as
+itself, any other byte as \xNN (as are \ , " @ & and a space at either end),
+trailing zero bytes left off. Bytes after a terminator are kept, so a
+string the game reads only up to its first zero still shows what follows
+(car\x00\x12). A poke writes all N bytes (zeros after the text); until
+takes = and != only. A case gives a byte string as input (activation, a
+poke), never compared: a runner compares numbers.
+
+  [structs.request]
+  query = "10:str32"
+
 sample then takes:
 - camera_x, a global, as the column camera_x;
 - player, every field, as player.x, player.yaw, ...;
