@@ -257,6 +257,7 @@ so every trace carries the values of the run it came from.
 | `{ register = "v0" }` | a CPU register: at begin for inputs and params, at a call's entry for a request, at its return for a response |
 | `{ gte = 32 }` | a GTE register: data 0 to 31 as `mfc2` numbers them, control 32 to 63 (`cfc2` n is 32 + n) |
 | `{ load = "address" }`, `{ load = "value" }` | an inline read's request (the address loaded from) and response (the value loaded) |
+| `{ pointer = 0x800A1234, offset = 0x34 }` | glossary quantities only ([scenarios.md](scenarios.md)): the address held at `pointer`, plus `offset` |
 
 - **Register names** are the conventional ones: `zero at v0 v1 a0`–`a3`
   `t0`–`t9` `s0`–`s7` `k0 k1 gp sp fp ra`, plus `hi` and `lo`.

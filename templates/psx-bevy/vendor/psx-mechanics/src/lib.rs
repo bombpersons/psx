@@ -1,5 +1,6 @@
 //! The formats for porting by mechanics: `mechanic.toml`, interfaces,
-//! `binding.toml` and traces, with their checks and JSON Schemas.
+//! `binding.toml` and traces, and for scenarios: `glossary.toml`, scenario
+//! files and their recordings, with their checks and JSON Schemas.
 //!
 //! This is the platform-free side. A producer (psx for the PlayStation)
 //! supplies the binding's vocabulary through [`binding::Platform`]. The
@@ -8,12 +9,14 @@
 pub mod binding;
 pub mod interface;
 pub mod mechanic;
+pub mod scenario;
 pub mod trace;
 pub mod value;
 
 pub use binding::{Binding, BindingFor, Platform};
 pub use interface::Interface;
 pub use mechanic::Mechanic;
+pub use scenario::{Glossary, GlossaryFor, Recording, Scenario};
 pub use trace::Trace;
 pub use value::{Field, Type, Value, Values};
 
@@ -24,6 +27,9 @@ pub fn schemas() -> Vec<(&'static str, serde_json::Value)> {
         ("interface.schema.json", schema::<Interface>("interfaces/<id>.toml")),
         ("trace-header.schema.json", schema::<trace::Header>("the first line of a *.trace.jsonl")),
         ("trace-step.schema.json", schema::<trace::Step>("each later line of a *.trace.jsonl")),
+        ("scenario.schema.json", schema::<Scenario>("scenarios/<id>.toml")),
+        ("recording-header.schema.json", schema::<scenario::Header>("the first line of a scenarios/<id>/<name>.jsonl")),
+        ("recording-row.schema.json", schema::<scenario::Row>("each later line of a scenarios/<id>/<name>.jsonl")),
     ]
 }
 

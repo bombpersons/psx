@@ -126,7 +126,7 @@ pub fn variant(v: &Value) -> Result<&str, String> {
     }
 }
 
-fn describe(v: &Value) -> String {
+pub(crate) fn describe(v: &Value) -> String {
     serde_json::to_string(v).unwrap_or_default()
 }
 
@@ -276,7 +276,7 @@ impl Record {
 }
 
 /// How a port's value compares with the trace's.
-enum Diff {
+pub(crate) enum Diff {
     Equal,
     /// Numbers, this far apart in raw units.
     Off(f64),
@@ -284,7 +284,7 @@ enum Diff {
     Other,
 }
 
-fn diff(port: &Raw, trace: &Value) -> Diff {
+pub(crate) fn diff(port: &Raw, trace: &Value) -> Diff {
     match (port, trace) {
         (Raw::Exact(a), b) if a == b => Diff::Equal,
         (Raw::Exact(Value::Int(a)), Value::Int(b)) => Diff::Off((a - b).unsigned_abs() as f64),
@@ -302,7 +302,7 @@ fn diff(port: &Raw, trace: &Value) -> Diff {
     }
 }
 
-fn show(r: &Raw) -> String {
+pub(crate) fn show(r: &Raw) -> String {
     match r {
         Raw::Exact(v) => describe(v),
         Raw::Approx(x) => format!("{x}"),

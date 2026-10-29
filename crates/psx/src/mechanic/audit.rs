@@ -379,7 +379,7 @@ impl<'a> Tracker<'a> {
                     self.gte_reads(pc, vec![(*gte, from)], "the call's request");
                 }
             }
-            Location::Load { .. } => {}
+            Location::Load { .. } | Location::Pointer { .. } => {}
         }
     }
 

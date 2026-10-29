@@ -40,6 +40,9 @@ pub enum Location {
     /// An inline read's (`on = { read }`) address (request) or loaded value
     /// (response).
     Load { load: Load },
+    /// Glossary quantities: the address held at `pointer`, plus `offset`,
+    /// read anew each time (an object found through a pointer).
+    Pointer { pointer: u32, offset: i32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -158,16 +161,40 @@ fn reg_name(name: &str) -> Option<Reg> {
     serde_json::from_value(serde_json::Value::from(name)).ok()
 }
 
+/// What ends one tick of the game's logic: a store to `at`, of `bytes`
+/// bytes, made by the instruction at `pc` when one is given.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Tick {
+    pub at: u32,
+    pub bytes: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pc: Option<u32>,
+}
+
 impl Platform for Psx {
     type Location = Location;
     type CallSite = CallSite;
     type Capture = Capture;
+    type Tick = Tick;
     const NAME: &'static str = "psx";
     const ENDIAN: Endian = Endian::Little;
 
     fn check_location(at: &Location, role: Role<'_, CallSite>) -> Result<(), String> {
         let inline = matches!(role, Role::Request(CallSite::Read { .. }) | Role::Response(CallSite::Read { .. }));
+        let quantity = matches!(role, Role::Quantity);
         match at {
+            Location::Pointer { pointer, .. } if quantity && !in_memory(*pointer) => {
+                Err(format!("pointer {pointer:#010x}: main RAM or the scratchpad"))
+            }
+            Location::Pointer { .. } if !quantity => Err("pointer is for glossary quantities".into()),
+            Location::Address { .. } | Location::Pointer { .. } if quantity => match at {
+                Location::Address { address } if !in_memory(*address) => {
+                    Err(format!("address {address:#010x}: main RAM or the scratchpad"))
+                }
+                _ => Ok(()),
+            },
+            _ if quantity => Err("a quantity is read from memory: an address, or a pointer and offset".into()),
             Location::Address { address } if !in_memory(*address) => {
                 Err(format!("address {address:#010x}: main RAM or the scratchpad"))
             }
@@ -189,6 +216,20 @@ impl Platform for Psx {
     fn check_call_site(on: &CallSite) -> Result<(), String> {
         match on {
             CallSite::Entry { entry: p } | CallSite::Read { read: p } => check_pc(p.pc, &p.overlay),
+        }
+    }
+
+    fn check_tick(t: &Tick, problems: &mut Vec<String>) {
+        if !in_memory(t.at) {
+            problems.push(format!("tick.at {:#010x}: main RAM or the scratchpad", t.at));
+        }
+        if ![1, 2, 4].contains(&t.bytes) || !t.at.is_multiple_of(t.bytes) {
+            problems.push("tick.bytes: 1, 2 or 4, with at aligned to it".into());
+        }
+        if let Some(pc) = t.pc {
+            if let Err(e) = check_pc(pc, &None) {
+                problems.push(format!("tick.{e}"));
+            }
         }
     }
 
@@ -386,7 +427,10 @@ explained = [{ at = { base = "a0", offset = 0x80 }, bytes = 0x20, why = "the ani
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schemas");
         let stale = psx_mechanics::sync_schemas(
             &dir,
-            &[("binding.schema.json", psx_mechanics::schema::<Binding>("binding.toml"))],
+            &[
+                ("binding.schema.json", psx_mechanics::schema::<Binding>("binding.toml")),
+                ("glossary.schema.json", psx_mechanics::schema::<crate::scenario::Glossary>("glossary.toml")),
+            ],
         );
         assert!(stale.is_empty(), "stale schemas {stale:?}: run with PSX_UPDATE_SCHEMAS=1");
     }

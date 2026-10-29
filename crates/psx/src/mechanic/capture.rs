@@ -93,11 +93,11 @@ pub fn regs(m: &Machine) -> Regs {
 
 /// Where reads are taken at one moment: memory and the GTE now, registers
 /// now and as latched at the step's begin, and an inline read's load.
-struct View<'a> {
-    m: &'a Machine,
-    now: &'a Regs,
-    latched: &'a Regs,
-    load: Option<MemAccess>,
+pub(crate) struct View<'a> {
+    pub m: &'a Machine,
+    pub now: &'a Regs,
+    pub latched: &'a Regs,
+    pub load: Option<MemAccess>,
 }
 
 impl View<'_> {
@@ -130,6 +130,11 @@ impl View<'_> {
                 self.memory(b.wrapping_add(*o as u32).wrapping_add(offset), n)
                     .map_err(|e| format!("{} = {b:#010x}: {e}", base.name()))
             }
+            Location::Pointer { pointer, offset: o } => {
+                let b = u32::from_le_bytes(self.memory(*pointer, 4)?.try_into().unwrap());
+                self.memory(b.wrapping_add(*o as u32).wrapping_add(offset), n)
+                    .map_err(|e| format!("the pointer at {pointer:#010x} holds {b:#010x}: {e}"))
+            }
             Location::Register { register } => word(self.now[*register as usize], "a register"),
             Location::Gte { gte } => {
                 let g = &self.m.cpu.gte;
@@ -147,7 +152,7 @@ impl View<'_> {
         }
     }
 
-    fn read(&self, r: &Read<Location>, ty: &Type) -> Result<Value, String> {
+    pub(crate) fn read(&self, r: &Read<Location>, ty: &Type) -> Result<Value, String> {
         r.decode(ty, Psx::ENDIAN, &mut |at, offset, n| self.fetch(at, offset, n))
     }
 }

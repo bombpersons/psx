@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "Value": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "pattern": "^-?[0-9]+$",
+          "type": "string"
+        },
+        {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/Value"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; or a table's elements."
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`scenarios/<id>.toml`.",
+  "properties": {
+    "chain": {
+      "description": "How the original gets there: the producer's state chain, relative to\nthe workspace (for psx, `notes/states/<name>.json`).",
+      "type": "string"
+    },
+    "compare": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Value"
+      },
+      "description": "The glossary quantities compared, each with its tolerance in raw\nunits (0: exactly; bool and enum quantities only exactly).",
+      "type": "object"
+    },
+    "feature": {
+      "description": "The feature whose integration test it is.",
+      "type": "string"
+    },
+    "idle": {
+      "description": "The determinism check's idle fields, added before the chain's last\nrun (60 when left out).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "kind": {
+      "description": "The port's launcher for it, registered by the feature's plugin.",
+      "type": "string"
+    },
+    "moment": {
+      "description": "The moment it starts at, in game terms.",
+      "type": "string"
+    },
+    "parameters": {
+      "additionalProperties": true,
+      "default": {},
+      "description": "How the port gets there: what its launcher builds the world from.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "feature",
+    "moment",
+    "chain",
+    "kind",
+    "compare"
+  ],
+  "title": "scenarios/<id>.toml",
+  "type": "object"
+}

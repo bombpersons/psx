@@ -21,8 +21,8 @@ format. psx writes `.psx/verdicts/`; never edit them.
 ```
 game/          the port: one plugin per feature, its assets/ and tests/ (game/AGENTS.md)
 tools/import/  importers: the player's disc -> the port's asset formats
-psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte), step replay and launcher; yours to change (psx-bevy/AGENTS.md)
-vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-mechanics (trace formats); don't edit (fix upstream in psx)
+psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte), step replay, scenarios and launcher; yours to change (psx-bevy/AGENTS.md)
+vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-mechanics (trace and scenario formats); don't edit (fix upstream in psx)
 docs/          template.md: your changes to psx-bevy/
 ```
 
@@ -44,6 +44,13 @@ docs/          template.md: your changes to psx-bevy/
   example) that moves trace fields to the port's types and answers the
   world's calls from the trace. `psx port check` runs it for the verdicts;
   `cargo test -p <game> --test mechanics` while working.
+- **Scenarios are the integration test.** A feature's plugin registers a
+  launcher for each of its scenario kinds, which builds the world from the
+  scenario's parameters with the port's own loading, and a getter for each
+  glossary quantity it keeps, in the original's raw units
+  (`psx_bevy::scenario`). `game/tests/scenarios.rs` replays each recording
+  of the original (`scenarios/<id>/`) tick by tick with its pad; add each
+  feature's logic plugin to its `app`.
 - **States are enums** with each state's data in its variant; transitions
   are assignments. No state bytes, function tables, or a CPU-like main loop.
 - **Rules apart from content.** Tuning, setup and content are assets with a

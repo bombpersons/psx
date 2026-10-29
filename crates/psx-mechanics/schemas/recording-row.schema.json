@@ -1,0 +1,69 @@
+{
+  "$defs": {
+    "Value": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "pattern": "^-?[0-9]+$",
+          "type": "string"
+        },
+        {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/Value"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; or a table's elements."
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One tick line.",
+  "properties": {
+    "field": {
+      "description": "The field the tick ended in, counted from the recording's start.\nTwo ticks in one field, or a field with none, is the original\nfalling behind.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "pad": {
+      "description": "The buttons held during that field, when they differ from the\nprevious tick's (none are held at the initial moment).",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "tick": {
+      "description": "Ticks since the initial moment: 1, 2, ... with no gaps.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "values": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Value"
+      },
+      "description": "The quantities that changed, with their values at the tick's end.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "tick",
+    "field"
+  ],
+  "title": "each later line of a scenarios/<id>/<name>.jsonl",
+  "type": "object"
+}

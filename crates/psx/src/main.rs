@@ -40,6 +40,7 @@ mod ram;
 mod replay;
 mod run;
 mod run_native;
+mod scenario;
 mod stall;
 mod stamp;
 mod states;
@@ -144,6 +145,11 @@ enum Command {
         #[command(subcommand)]
         action: MechanicAction,
     },
+    /// Scenarios: record the original's quantities in them, and check they are deterministic.
+    Scenario {
+        #[command(subcommand)]
+        action: ScenarioAction,
+    },
     /// Every function of every executable on the disc and of the overlays in RAM snapshots, with instruction counts and basic blocks, and the disc's file list.
     Inventory(inventory::InventoryArgs),
     /// What traced runs executed, per function of the inventory: blocks executed and not, and the runs reaching each.
@@ -234,6 +240,16 @@ enum MechanicAction {
     /// Run the game from a state with input, bracket the mechanic's step as its binding
     /// says, and write traces/<NAME>.trace.jsonl: one line per step.
     Capture(Box<mechanic::MechanicCaptureArgs>),
+}
+
+#[derive(clap::Subcommand)]
+enum ScenarioAction {
+    /// Run the game from the scenario's state with input and write scenarios/<ID>/<NAME>.jsonl:
+    /// the compared glossary quantities at the end of every tick.
+    Record(Box<scenario::ScenarioRecordArgs>),
+    /// The determinism check: reach each scenario again with idle fields added before its
+    /// chain's last run, record its recordings again from there, and compare.
+    Check(scenario::ScenarioCheckArgs),
 }
 
 #[derive(clap::Subcommand)]
@@ -330,6 +346,10 @@ fn main() -> ExitCode {
         Command::Mechanic { action } => match action {
             MechanicAction::Check(a) => a.exec(&ctx),
             MechanicAction::Capture(a) => a.exec(&ctx),
+        },
+        Command::Scenario { action } => match action {
+            ScenarioAction::Record(a) => a.exec(&ctx),
+            ScenarioAction::Check(a) => a.exec(&ctx),
         },
         Command::Port { action } => match action {
             PortAction::Init(a) => a.exec(&ctx),

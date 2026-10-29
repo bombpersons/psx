@@ -202,7 +202,7 @@ impl Replay {
     }
 }
 
-fn button(name: &str) -> Option<Button> {
+pub(crate) fn button(name: &str) -> Option<Button> {
     // Variant names are the psx names (`CROSS`, `L1`) in another case.
     Button::ALL.into_iter().find(|b| format!("{b:?}").eq_ignore_ascii_case(name))
 }

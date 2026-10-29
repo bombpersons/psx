@@ -30,6 +30,11 @@ its verdicts and the problems; plain=true is text for the person.
   mechanics/<id>/ checks clean (psx mechanic check), a captured trace has a
   clear read audit, and NOTES.md names each missed branch's PC
   (docs/mechanics.md). A feature with no mechanics has nothing to capture.
+- Scenario: a feature's scenarios are not ready. It lists one, each has a
+  captured recording (scenario_record) and passes scenario_check, the
+  determinism check (docs/scenarios.md). glossary.toml's tick is the game's
+  logic step, not its render loop, and the chain's last run ends at a game
+  moment (until), not a count of fields.
 - Implement, Extract: the feature's next stage.
 - Unavailable (person): the next items need commands psx does not have yet.
 - Stuck (person): the same item three times with nothing changed. Stop and
@@ -43,8 +48,12 @@ feature) runs the game's tests/mechanics.rs, where each mechanic has an
 adapter (psx_bevy::replay, AGENTS.md), and writes the replay verdicts: a
 feature passes when each of its mechanics replays every trace exactly
 (faithful: within its tolerances). It also reports each exact mechanic's
-f32 drift, which port_status shows. While working, cargo test -p <game>
---test mechanics gives the same result without a verdict.
+f32 drift, which port_status shows. It runs tests/scenarios.rs too, where
+the features' plugins register scenario launchers and quantity getters
+(psx_bevy::scenario), and writes the scenario verdicts: each recording
+replayed tick by tick with its pad, every quantity within the scenario's
+tolerance. While working, cargo test -p <game> --test mechanics (or
+--test scenarios) gives the same result without a verdict.
 
 How to write the port (the shape of the code, numbers, evidence, the
 self-review before calling a feature done, and the choices a goal can make:

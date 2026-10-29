@@ -346,6 +346,71 @@ pub(crate) fn state_file(ctx: &Ctx, name: &str) -> PathBuf {
     Dirs { states: None, chains: None }.get(ctx).0.join(format!("{name}.bin"))
 }
 
+/// The state a chain file (`notes/states/NAME.json`) names, as `psx states`
+/// keeps it, and the chain; an error when the file is not the state the
+/// chain made.
+pub(crate) fn chain_state(ctx: &Ctx, chain_file: &Path) -> crate::Result<(PathBuf, Value)> {
+    let chain = read_json(chain_file)?;
+    let name = chain_file.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    let state = state_file(ctx, name);
+    let sha = std::fs::read(&state).ok().map(|b| sha256(&b));
+    if sha.is_none() || chain["state_sha256"].as_str() != sha.as_deref() {
+        return Err(Error::invalid(format!(
+            "{}: {} the state its chain {} made; psx states rebuild {name} --replace puts it back",
+            noted(ctx, &state),
+            if sha.is_none() { "missing," } else { "not" },
+            noted(ctx, chain_file)
+        )));
+    }
+    Ok((state, chain))
+}
+
+/// The state a chain ends in, reached again from power-on with `idle`
+/// fields of no input added before its last run: the determinism check's
+/// second route. The runs before the last are cached as rebuild's are.
+pub(crate) fn reach_idling(ctx: &Ctx, chain_file: &Path, idle: u32) -> crate::Result<PathBuf> {
+    let chain = read_json(chain_file)?;
+    let steps = chain["steps"].as_array().cloned().unwrap_or_default();
+    let Some((last, before)) = steps.split_last() else {
+        return Err(Error::invalid(format!("{}: no steps", noted(ctx, chain_file))));
+    };
+    let work = ctx.root.join(".psx/rebuild").join(crate::context::version());
+    let (mut key, mut parent) = (String::new(), None::<PathBuf>);
+    let cached = |key: &str, step: &Value, parent: Option<&Path>| -> crate::Result<PathBuf> {
+        let out = work.join(&key[..16]);
+        let file = match step["state"].as_u64() {
+            Some(n) => out.join(format!("state_f{n:06}.bin")),
+            None => out.join("state.bin"),
+        };
+        if !(file.is_file() && out.join("report.json").is_file()) {
+            let _ = std::fs::remove_dir_all(&out);
+            run_step(ctx, &chain["media"], step, parent, &out)?;
+        }
+        Ok(file)
+    };
+    for step in before {
+        key = sha256(format!("{key}\n{}\n{}\n{}", chain["media_identity"], step["run"], step["state"]).as_bytes());
+        parent = Some(cached(&key, step, parent.as_deref())?);
+    }
+    // From power-on, the pad and cards go with the first run: the idle one.
+    let (mut idle_run, mut last_run) = (json!({"frames": idle, "input": []}), last["run"].clone());
+    if parent.is_none() {
+        for k in ["pad", "memcard1", "memcard2"] {
+            if let Some(v) = last_run.as_object_mut().and_then(|o| o.remove(k)) {
+                idle_run[k] = v;
+            }
+        }
+    }
+    let idle_step = json!({"run": idle_run, "state": "end"});
+    key =
+        sha256(format!("{key}\n{}\n{}\n{}", chain["media_identity"], idle_step["run"], idle_step["state"]).as_bytes());
+    let idled = cached(&key, &idle_step, parent.as_deref())?;
+    let last_step = json!({"run": last_run, "state": last["state"]});
+    key =
+        sha256(format!("{key}\n{}\n{}\n{}", chain["media_identity"], last_step["run"], last_step["state"]).as_bytes());
+    cached(&key, &last_step, Some(&idled))
+}
+
 fn finish_step(
     ctx: &Ctx,
     report: &Value,

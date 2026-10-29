@@ -1,7 +1,8 @@
 //! A feature's mechanics as the port's stages see them: whether each is
 //! captured (stage 2), and `port check`, which replays them against the
-//! port (the game's `tests/mechanics.rs`, `psx_bevy::replay`) and writes
-//! the features' replay verdicts.
+//! port (the game's `tests/mechanics.rs`, `psx_bevy::replay`), runs its
+//! scenarios (`tests/scenarios.rs`, `psx_bevy::scenario`) and writes the
+//! features' replay and scenario verdicts.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -96,6 +97,91 @@ pub struct TraceReport {
     pub failure: Option<String>,
 }
 
+/// `psx_bevy::scenario::Report`, as the harness writes it.
+#[derive(Debug, Default, Deserialize)]
+pub struct ScenarioReport {
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    #[serde(default)]
+    pub quantities: Vec<String>,
+    #[serde(default)]
+    pub scenarios: Vec<ScenarioRun>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ScenarioRun {
+    pub id: String,
+    #[serde(default)]
+    pub problems: Vec<String>,
+    #[serde(default)]
+    pub recordings: Vec<RecordingRun>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct RecordingRun {
+    pub name: String,
+    #[serde(default)]
+    pub captured: bool,
+    #[serde(default)]
+    pub failures: Vec<String>,
+}
+
+/// The scenario run's failures for one feature: no scenarios, what the
+/// report says of each, and recordings on disk it did not run.
+fn scenario_failures(root: &Path, e: &Entry, report: &ScenarioReport) -> Vec<String> {
+    if e.scenarios.is_empty() {
+        return vec![format!("{}: lists no scenarios", e.file)];
+    }
+    let mut out = Vec::new();
+    for id in &e.scenarios {
+        let Some(s) = report.scenarios.iter().find(|s| &s.id == id) else {
+            out.push(format!("{id}: not run (no scenarios/{id}.toml)"));
+            continue;
+        };
+        out.extend(s.problems.iter().map(|p| format!("{id}: {p}")));
+        for r in &s.recordings {
+            out.extend(r.failures.iter().map(|f| format!("{id} {}: {f}", r.name)));
+        }
+        let on_disk = crate::scenario::Loaded::load(root, id).recordings;
+        for (name, _, _) in &on_disk {
+            if !s.recordings.iter().any(|r| &r.name == name) {
+                out.push(format!("{id} {name}: not run"));
+            }
+        }
+        if !s.recordings.iter().any(|r| r.captured) && s.problems.is_empty() {
+            out.push(format!("{id}: no captured recording run"));
+        }
+    }
+    out
+}
+
+/// What the feature's plugins have not registered, by the last check when
+/// it ran at `head`: a launcher for each of its scenarios' kinds and a
+/// getter for each quantity they compare. Empty when every one is.
+pub fn unimplemented(root: &Path, e: &Entry, head: Option<&str>) -> Vec<String> {
+    let last = std::fs::read(root.join(LAST)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let Some(last) = last.filter(|l| head.is_some() && l["commit"].as_str() == head) else {
+        return vec!["no psx port check at HEAD".into()];
+    };
+    let Ok(report) = serde_json::from_value::<ScenarioReport>(last["scenarios"].clone()) else {
+        return vec!["the last psx port check ran no scenarios".into()];
+    };
+    let mut out = Vec::new();
+    for id in &e.scenarios {
+        let Some(s) = crate::scenario::Loaded::load(root, id).scenario else {
+            out.push(format!("{id}: no scenario file"));
+            continue;
+        };
+        if !report.kinds.contains(&s.kind) {
+            out.push(format!("{id}: no launcher for scenario kind {}", s.kind));
+        }
+        for q in s.compare.keys().filter(|q| !report.quantities.contains(q)) {
+            out.push(format!("{id}: no getter for quantity {q}"));
+        }
+    }
+    out
+}
+
 /// The replay's failures for one mechanic: what the report says, and the
 /// traces on disk it did not replay.
 fn mechanic_failures(root: &Path, id: &str, report: &Report) -> Vec<String> {
@@ -155,30 +241,34 @@ pub struct PortCheckArgs {
     pub feature: Option<String>,
 }
 
-/// The replay test: `cargo test --locked --test mechanics` in the game,
-/// with the report written to `report`. Its output's error lines when it
-/// wrote none.
-fn run_replay(root: &Path, report: &Path) -> crate::Result<Result<Report, String>> {
-    let _ = std::fs::remove_file(report);
+/// A test's report, or why the test wrote none.
+type Ran<T> = Result<T, String>;
+
+/// The game's replay and scenario tests: `cargo test --locked --test
+/// mechanics --test scenarios`, with their reports written to `replay` and
+/// `scenarios`. A test that wrote none gets the output's error lines.
+fn run_tests(root: &Path, replay: &Path, scenarios: &Path) -> crate::Result<(Ran<Report>, Ran<ScenarioReport>)> {
+    let _ = std::fs::remove_file(replay);
+    let _ = std::fs::remove_file(scenarios);
     let out = std::process::Command::new("cargo")
-        .args(["test", "--locked", "--manifest-path", "game/Cargo.toml", "--test", "mechanics"])
-        .env("PSX_REPLAY_REPORT", report)
+        .args(["test", "--locked", "--no-fail-fast", "--manifest-path", "game/Cargo.toml"])
+        .args(["--test", "mechanics", "--test", "scenarios"])
+        .env("PSX_REPLAY_REPORT", replay)
+        .env("PSX_SCENARIO_REPORT", scenarios)
         .current_dir(root)
         .output()
         .map_err(|e| Error::invalid(format!("cargo: {e}")))?;
-    match std::fs::read(report) {
-        Ok(b) => serde_json::from_slice(&b).map(Ok).map_err(|e| Error::invalid(format!("{}: {e}", report.display()))),
-        Err(_) => {
-            let text = String::from_utf8_lossy(&out.stderr);
-            let errors: Vec<&str> = text.lines().filter(|l| l.starts_with("error")).take(5).collect();
-            let why = if errors.is_empty() {
-                text.lines().last().unwrap_or("no output").to_string()
-            } else {
-                errors.join("; ")
-            };
-            Ok(Err(format!("the replay test did not run: {why}")))
+    let text = String::from_utf8_lossy(&out.stderr);
+    let errors: Vec<&str> = text.lines().filter(|l| l.starts_with("error")).take(5).collect();
+    let why =
+        if errors.is_empty() { text.lines().last().unwrap_or("no output").to_string() } else { errors.join("; ") };
+    fn read<T: serde::de::DeserializeOwned>(p: &Path, test: &str, why: &str) -> crate::Result<Ran<T>> {
+        match std::fs::read(p) {
+            Ok(b) => serde_json::from_slice(&b).map(Ok).map_err(|e| Error::invalid(format!("{}: {e}", p.display()))),
+            Err(_) => Ok(Err(format!("the {test} test did not run: {why}"))),
         }
     }
+    Ok((read(replay, "replay", &why)?, read(scenarios, "scenario", &why)?))
 }
 
 impl PortCheckArgs {
@@ -195,46 +285,50 @@ impl PortCheckArgs {
             None => port.closure().iter().filter_map(|id| port.entries.get(id)).collect(),
         };
         let report_path = root.join(".psx/replay/report.json");
+        let scenarios_path = root.join(".psx/replay/scenarios.json");
         std::fs::create_dir_all(report_path.parent().unwrap()).map_err(|e| Error::io(&report_path, e))?;
-        let replayed =
-            if features.iter().any(|e| !e.mechanics.is_empty()) { Some(run_replay(root, &report_path)?) } else { None };
+        let (replayed, ran) = run_tests(root, &report_path, &scenarios_path)?;
         let after = Git::read(root);
         if after.head != git.head || !after.clean {
             return Err(Error::invalid(
                 "the workspace changed while the check ran (cargo may have updated Cargo.lock): commit and check again",
             ));
         }
-        if let Some(Ok(_)) = &replayed {
-            let report: Value =
-                serde_json::from_slice(&std::fs::read(&report_path).unwrap_or_default()).unwrap_or_default();
-            let last = json!({"commit": head, "at": crate::stamp::utc_now(), "report": report});
-            let p = root.join(LAST);
-            crate::write_atomic(&p, &serde_json::to_vec_pretty(&last).unwrap_or_default())
-                .map_err(|e| Error::io(&p, e))?;
-        }
+        let kept =
+            |p: &Path| serde_json::from_slice::<Value>(&std::fs::read(p).unwrap_or_default()).unwrap_or_default();
+        let last = json!({"commit": head, "at": crate::stamp::utc_now(),
+                          "report": if replayed.is_ok() { kept(&report_path) } else { Value::Null },
+                          "scenarios": if ran.is_ok() { kept(&scenarios_path) } else { Value::Null }});
+        let p = root.join(LAST);
+        crate::write_atomic(&p, &serde_json::to_vec_pretty(&last).unwrap_or_default()).map_err(|e| Error::io(&p, e))?;
         let mut verdicts = Vec::new();
         for e in features {
-            let failures: Vec<String> = match &replayed {
+            let replay: Vec<String> = match &replayed {
                 _ if e.mechanics.is_empty() => Vec::new(),
-                Some(Ok(r)) => e.mechanics.iter().flat_map(|m| mechanic_failures(root, m, r)).collect(),
-                Some(Err(why)) => vec![why.clone()],
-                None => unreachable!("features with mechanics run the replay"),
+                Ok(r) => e.mechanics.iter().flat_map(|m| mechanic_failures(root, m, r)).collect(),
+                Err(why) => vec![why.clone()],
             };
-            let v = Verdict {
-                feature: e.id.clone(),
-                kind: Kind::Replay.name().into(),
-                commit: head.clone(),
-                clean: true,
-                at: crate::stamp::utc_now(),
-                passed: failures.is_empty(),
-                failures,
+            let scenario: Vec<String> = match &ran {
+                Ok(r) => scenario_failures(root, e, r),
+                Err(why) => vec![why.clone()],
             };
-            let p = verdict::path(root, &e.id, Kind::Replay);
-            std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| Error::io(&p, e))?;
-            crate::write_atomic(&p, &serde_json::to_vec_pretty(&v).unwrap_or_default())
-                .map_err(|e| Error::io(&p, e))?;
-            verdicts.push(json!({"feature": v.feature, "kind": v.kind, "passed": v.passed,
-                                 "mechanics": e.mechanics, "failures": v.failures}));
+            for (kind, failures) in [(Kind::Replay, replay), (Kind::Scenario, scenario)] {
+                let v = Verdict {
+                    feature: e.id.clone(),
+                    kind: kind.name().into(),
+                    commit: head.clone(),
+                    clean: true,
+                    at: crate::stamp::utc_now(),
+                    passed: failures.is_empty(),
+                    failures,
+                };
+                let p = verdict::path(root, &e.id, kind);
+                std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| Error::io(&p, e))?;
+                crate::write_atomic(&p, &serde_json::to_vec_pretty(&v).unwrap_or_default())
+                    .map_err(|e| Error::io(&p, e))?;
+                verdicts.push(json!({"feature": v.feature, "kind": v.kind, "passed": v.passed,
+                                     "failures": v.failures}));
+            }
         }
         Ok(json!({"commit": head, "verdicts": verdicts, "drift": drift(root, Some(&head))["mechanics"]}))
     }

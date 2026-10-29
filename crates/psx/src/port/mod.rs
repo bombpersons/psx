@@ -406,7 +406,7 @@ impl Port {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn workspace(goal: &str, entries: &[(&str, &str)]) -> (tempdir::Dir, Port) {

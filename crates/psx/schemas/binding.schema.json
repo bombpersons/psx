@@ -246,6 +246,26 @@
             "load"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Glossary quantities: the address held at `pointer`, plus `offset`,\nread anew each time (an object found through a pointer).",
+          "properties": {
+            "offset": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "pointer": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pointer",
+            "offset"
+          ],
+          "type": "object"
         }
       ],
       "description": "Where a value is."

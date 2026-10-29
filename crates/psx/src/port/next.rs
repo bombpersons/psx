@@ -54,7 +54,13 @@ pub struct Feature {
     pub captured: bool,
     /// What stops its mechanics from counting as captured.
     pub capture: Vec<String>,
+    /// What stops its scenarios from counting: none listed, a problem, no
+    /// passing determinism check.
+    pub scenarios: Vec<String>,
     pub implemented: bool,
+    /// The launchers and quantity getters its plugin has not registered, by
+    /// the last check at HEAD.
+    pub unimplemented: Vec<String>,
     pub reviewed: bool,
     pub verdicts: BTreeMap<Kind, State>,
 }
@@ -92,6 +98,15 @@ impl Feature {
     }
 }
 
+/// Up to three lines, and how many more there are.
+fn first_lines(lines: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = lines.iter().take(3).cloned().collect();
+    if lines.len() > 3 {
+        out.push(format!("and {} more", lines.len() - 3));
+    }
+    out
+}
+
 /// Everything the items are decided on.
 pub struct Facts {
     pub port: Port,
@@ -113,14 +128,18 @@ impl Facts {
             .map(|id| {
                 let verdicts =
                     Kind::ALL.into_iter().map(|k| (k, verdict::state(root, &id, k, git.head.as_deref()))).collect();
-                // Scenarios join the capture check with them (B5).
-                let capture = port.entries.get(&id).map(|e| check::feature_uncaptured(root, e)).unwrap_or_default();
+                let e = port.entries.get(&id);
+                let capture = e.map(|e| check::feature_uncaptured(root, e)).unwrap_or_default();
+                let scenarios = e.map(|e| crate::scenario::feature_unready(root, e)).unwrap_or_default();
+                let unimplemented = e.map(|e| check::unimplemented(root, e, git.head.as_deref())).unwrap_or_default();
                 Feature {
                     in_goal: goal.contains(&id),
-                    catalogued: port.entries.contains_key(&id),
-                    captured: port.entries.contains_key(&id) && capture.is_empty(),
+                    catalogued: e.is_some(),
+                    captured: e.is_some() && capture.is_empty() && scenarios.is_empty(),
                     capture,
-                    implemented: false,
+                    scenarios,
+                    implemented: e.is_some() && unimplemented.is_empty(),
+                    unimplemented,
                     reviewed: false,
                     verdicts,
                     id,
@@ -193,12 +212,8 @@ impl Facts {
             );
         }
         let stage = |f: &Feature, s: &[Stage]| f.stage().is_some_and(|x| s.contains(&x));
-        if let Some(f) = order(&|f| stage(f, &[Stage::Catalogued])) {
-            let n = f.capture.len();
-            let mut lines: Vec<String> = f.capture.iter().take(3).cloned().collect();
-            if n > 3 {
-                lines.push(format!("and {} more", n - 3));
-            }
+        if let Some(f) = order(&|f| stage(f, &[Stage::Catalogued]) && !f.capture.is_empty()) {
+            let lines = first_lines(&f.capture);
             return Item::agent(
                 "Capture",
                 Some(&f.id),
@@ -207,17 +222,29 @@ impl Facts {
                 "write mechanics/<id>/ (mechanic.toml, binding.toml), run psx mechanic capture, bind or explain each read the audit lists, and list each missed branch's PC in NOTES.md (docs/mechanics.md)",
             );
         }
+        if let Some(f) = order(&|f| stage(f, &[Stage::Catalogued])) {
+            return Item::agent(
+                "Scenario",
+                Some(&f.id),
+                format!("its scenarios are not ready: {}", first_lines(&f.scenarios).join("; ")),
+                "it lists a scenario, and each it lists has a captured recording and passes psx scenario check",
+                "bind glossary.toml's tick (the logic step) and quantities, write scenarios/<id>.toml from a psx states chain whose last run ends at a game moment (until), list it in the catalogue entry, run psx scenario record, then psx scenario check (docs/scenarios.md)",
+            );
+        }
         if let Some(f) = order(&|f| stage(f, &[Stage::Captured, Stage::Implemented])) {
-            let states: Vec<String> = [Kind::Replay, Kind::Scenario]
+            let mut states: Vec<String> = [Kind::Replay, Kind::Scenario]
                 .iter()
                 .map(|k| format!("{} {}", k.name(), f.verdicts.get(k).map(State::name).unwrap_or("missing")))
                 .collect();
+            if !f.unimplemented.is_empty() {
+                states.push(first_lines(&f.unimplemented).join("; "));
+            }
             return Item::agent(
                 "Implement",
                 Some(&f.id),
                 format!("captured, not verified ({})", states.join(", ")),
                 "its replay and scenario verdicts pass at HEAD",
-                "write the feature's plugin from its mechanics and scenarios, commit, and run psx port check on it",
+                "write the feature's plugin from its mechanics, register its scenario launchers and quantities (psx_bevy::scenario), commit, and run psx port check on it",
             );
         }
         if let Some(f) = order(&|f| stage(f, &[Stage::Reviewed])) {
@@ -275,6 +302,7 @@ impl Facts {
                 "id": f.id, "title": e.map(|e| e.title.as_str()), "stage": stage, "in_goal": f.in_goal,
                 "depends": e.map(|e| &e.depends), "verdicts": verdicts,
                 "mechanics": e.map(|e| &e.mechanics), "capture": f.capture,
+                "scenarios": e.map(|e| &e.scenarios), "scenario": f.scenarios, "unimplemented": f.unimplemented,
             }));
         }
         json!({
@@ -485,8 +513,17 @@ mod tests {
         assert_eq!((item.item, item.feature.as_deref()), ("Capture", Some("F-0001")));
         assert_eq!(item.why, "its mechanics are not captured: mechanics/demo.walk/mechanic.toml: no such file");
         assert_eq!(f.stage("F-0001"), Some(Stage::Catalogued));
-        // A feature with no mechanics has nothing to capture.
-        assert_eq!(f.stage("F-0002"), Some(Stage::Captured));
+        // A feature with no mechanics has nothing to capture, but every
+        // feature has a scenario.
+        std::fs::write(d.0.join("catalogue/F-0001.md"), feature("F-0001", "")).unwrap();
+        let f = Facts::gather(&d.0).unwrap();
+        let item = f.next();
+        assert_eq!((item.item, item.feature.as_deref()), ("Scenario", Some("F-0001")));
+        assert_eq!(
+            item.why,
+            "its scenarios are not ready: catalogue/F-0001.md: lists no scenarios (write scenarios/<id>.toml and list its id under scenarios)"
+        );
+        assert_eq!(f.stage("F-0002"), Some(Stage::Catalogued));
     }
 
     fn with(f: &mut Facts, id: &str, stage: Stage, verdicts: &[(Kind, State)]) {
@@ -501,6 +538,7 @@ mod tests {
     fn items_follow_the_stages() {
         let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
         with(&mut f, "F-0001", Stage::Captured, &[]);
+        with(&mut f, "F-0002", Stage::Captured, &[]);
         assert_eq!((f.next().item, f.next().feature.as_deref()), ("Implement", Some("F-0001")));
         let pass = [(Kind::Replay, State::Pass), (Kind::Scenario, State::Pass)];
         with(&mut f, "F-0001", Stage::Implemented, &pass);

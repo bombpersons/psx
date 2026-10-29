@@ -52,6 +52,17 @@ pub struct Source {
     pub image_sha256: String,
 }
 
+impl Source {
+    pub(crate) fn check(&self, platform: &str, p: &mut Vec<String>) {
+        if self.platform != platform {
+            p.push(format!("source.platform {:?}: this producer is {platform:?}", self.platform));
+        }
+        if self.image_sha256.len() != 64 || !self.image_sha256.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
+            p.push("source.image_sha256: 64 lowercase hex digits".into());
+        }
+    }
+}
+
 /// A state field's encoding, or why it cannot be read.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
@@ -143,6 +154,8 @@ pub enum Role<'a, S> {
     Param,
     Request(&'a S),
     Response(&'a S),
+    /// A glossary quantity, read whenever a tick ends.
+    Quantity,
 }
 
 impl<S> Clone for Role<'_, S> {
@@ -157,6 +170,8 @@ pub trait Platform {
     type Location;
     type CallSite;
     type Capture;
+    /// What ends one tick of the game's logic, for the glossary.
+    type Tick;
     /// `source.platform`.
     const NAME: &'static str;
     /// The byte order parts are read in when `endian` is left out.
@@ -164,6 +179,7 @@ pub trait Platform {
     fn check_location(at: &Self::Location, role: Role<'_, Self::CallSite>) -> Result<(), String>;
     fn check_call_site(on: &Self::CallSite) -> Result<(), String>;
     fn check_capture(capture: &Self::Capture, problems: &mut Vec<String>);
+    fn check_tick(tick: &Self::Tick, problems: &mut Vec<String>);
 }
 
 /// The binding type of a platform.
@@ -182,14 +198,7 @@ impl<L, S, C> Binding<L, S, C> {
                 self.mechanic, self.mechanic_version, mechanic.id, mechanic.version
             ));
         }
-        if self.source.platform != P::NAME {
-            p.push(format!("source.platform {:?}: this producer is {:?}", self.source.platform, P::NAME));
-        }
-        if self.source.image_sha256.len() != 64
-            || !self.source.image_sha256.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
-        {
-            p.push("source.image_sha256: 64 lowercase hex digits".into());
-        }
+        self.source.check(P::NAME, &mut p);
         let types = mechanic.types(&mut Vec::new());
         let unknown = |what: &str, names: Vec<&String>, declared: &BTreeMap<String, Type>, p: &mut Vec<String>| {
             for n in names.into_iter().filter(|n| !declared.contains_key(*n)) {
@@ -367,7 +376,7 @@ impl<L> Read<L> {
     }
 }
 
-fn check_read<P: Platform>(
+pub(crate) fn check_read<P: Platform>(
     at: &str,
     r: &Read<P::Location>,
     ty: &Type,
@@ -455,6 +464,7 @@ pub(crate) mod tests {
         type Location = Addr;
         type CallSite = Entry;
         type Capture = Bracket;
+        type Tick = Addr;
         const NAME: &'static str = "flat";
         const ENDIAN: Endian = Endian::Little;
         fn check_location(at: &Addr, _: Role<'_, Entry>) -> Result<(), String> {
@@ -464,6 +474,7 @@ pub(crate) mod tests {
             Ok(())
         }
         fn check_capture(_: &Bracket, _: &mut Vec<String>) {}
+        fn check_tick(_: &Addr, _: &mut Vec<String>) {}
     }
 
     const BINDING: &str = r#"

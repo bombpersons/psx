@@ -1,0 +1,323 @@
+{
+  "$defs": {
+    "Field": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "int"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "bits",
+              "signed"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "fixed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "signed",
+              "int_bits",
+              "frac_bits"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "enum"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "variants"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "float"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "bits"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "table"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "of",
+              "len"
+            ]
+          }
+        }
+      ],
+      "description": "A field's declared type, as written in `mechanic.toml` and interfaces.\nWhich keys apply depends on `type`; [`Field::ty`] checks them.",
+      "properties": {
+        "bits": {
+          "description": "`int`: width in bits (1 to 64). `float`: 32, 64 or 80.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "frac_bits": {
+          "description": "`fixed`: fraction bits; the raw value is the real value × 2^frac_bits.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "int_bits": {
+          "description": "`fixed`: integer bits, the sign bit included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "len": {
+          "description": "`table`: the number of elements.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "of": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`table`: the element type (not itself a table)."
+        },
+        "signed": {
+          "description": "`int`, `fixed`: whether the value is two's complement.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/Kind"
+        },
+        "unit": {
+          "description": "Documentation only: `\"units\"`, `\"units/tick\"`, `\"angle/4096\"`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "variants": {
+          "description": "`enum`: the variants' names.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "Kind": {
+      "oneOf": [
+        {
+          "enum": [
+            "bool",
+            "int",
+            "fixed",
+            "enum",
+            "float"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "table",
+          "description": "Params only: a fixed-length list of one element type.",
+          "type": "string"
+        }
+      ]
+    },
+    "Producer": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "additionalProperties": true,
+          "description": "The producer's own: how to make the recording again.",
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "properties": {
+        "image_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/SourceKind",
+          "description": "`captured` (from the original: evidence) or `synthetic` (written by\nhand or by code: examples and tests only)."
+        },
+        "platform": {
+          "description": "Captured: the producer's platform and the image's identity.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "SourceKind": {
+      "enum": [
+        "captured",
+        "synthetic"
+      ],
+      "type": "string"
+    },
+    "Value": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "pattern": "^-?[0-9]+$",
+          "type": "string"
+        },
+        {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/Value"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; or a table's elements."
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A recording's first line.",
+  "properties": {
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "format": {
+      "description": "`scenario-recording`.",
+      "type": "string"
+    },
+    "format_version": {
+      "description": "1.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "initial": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Value"
+      },
+      "description": "Their values at the end of the recording's first tick: the moment the\nport's launcher builds.",
+      "type": "object"
+    },
+    "producer": {
+      "$ref": "#/$defs/Producer"
+    },
+    "quantities": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Field"
+      },
+      "description": "The compared quantities' declarations, so the recording stands alone.",
+      "type": "object"
+    },
+    "scenario": {
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/Source"
+    }
+  },
+  "required": [
+    "format",
+    "format_version",
+    "scenario",
+    "source",
+    "producer",
+    "quantities",
+    "initial"
+  ],
+  "title": "the first line of a scenarios/<id>/<name>.jsonl",
+  "type": "object"
+}
