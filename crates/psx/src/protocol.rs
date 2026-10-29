@@ -15,6 +15,7 @@
 //! only), and says what the role asked for does now.
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
+use crate::front_matter::{Fm, front_matter};
 use crate::roles::Role;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,109 +31,6 @@ pub struct ProtocolNextArgs {
 const STAGES: [&str; 7] =
     ["discovered", "exercised", "specified", "evidenced", "implemented", "verified", "integrated"];
 const CREDIT: [f64; 7] = [0.0, 0.05, 0.25, 0.40, 0.65, 0.85, 1.0];
-
-/// One value of a spec's front matter.
-#[derive(Debug, Clone, PartialEq)]
-enum Fm {
-    Str(String),
-    List(Vec<String>),
-    Map(Vec<(String, String)>),
-}
-
-impl Fm {
-    fn str(&self) -> &str {
-        match self {
-            Fm::Str(s) => s,
-            _ => "",
-        }
-    }
-    fn list(&self) -> Vec<String> {
-        match self {
-            Fm::Str(s) if s.is_empty() => Vec::new(),
-            Fm::Str(s) => vec![s.clone()],
-            Fm::List(l) => l.clone(),
-            Fm::Map(m) => m.iter().map(|(k, _)| k.clone()).collect(),
-        }
-    }
-}
-
-fn unquote(s: &str) -> String {
-    let s = s.trim();
-    let q = s.len() >= 2 && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')));
-    if q { s[1..s.len() - 1].to_string() } else { s.to_string() }
-}
-
-/// Items of a flow list or map body, split on top-level commas.
-fn items(body: &str) -> Vec<String> {
-    let (mut out, mut cur, mut depth, mut quote) = (Vec::new(), String::new(), 0i32, None);
-    for c in body.chars() {
-        match (c, quote) {
-            ('"' | '\'', None) => quote = Some(c),
-            (c, Some(q)) if c == q => quote = None,
-            ('(' | '[' | '{', None) => depth += 1,
-            (')' | ']' | '}', None) => depth -= 1,
-            (',', None) if depth == 0 => {
-                out.push(std::mem::take(&mut cur));
-                continue;
-            }
-            _ => {}
-        }
-        cur.push(c);
-    }
-    out.push(cur);
-    out.into_iter().map(|s| unquote(&s)).filter(|s| !s.is_empty()).collect()
-}
-
-/// A spec's front matter: scalars, flow lists (`[a, b]`, over several lines)
-/// and flow maps (`{a: 1, b: 2}`).
-fn front_matter(text: &str) -> Option<BTreeMap<String, Fm>> {
-    let mut lines = text.lines();
-    if lines.next()?.trim() != "---" {
-        return None;
-    }
-    let mut out = BTreeMap::new();
-    let mut open: Option<(String, String)> = None;
-    for line in lines {
-        if line.trim() == "---" {
-            return Some(out);
-        }
-        if let Some((key, mut body)) = open.take() {
-            body.push(' ');
-            body.push_str(line.trim());
-            open = Some((key, body));
-        } else {
-            match line.split_once(':') {
-                Some((k, v)) if !k.starts_with(' ') && !k.trim().is_empty() => {
-                    open = Some((k.trim().to_string(), v.trim().to_string()));
-                }
-                _ => continue,
-            }
-        }
-        let Some((key, body)) = open.take() else { continue };
-        let closes = |a: char, b: char| body.starts_with(a) && !body.ends_with(b);
-        if closes('[', ']') || closes('{', '}') {
-            open = Some((key, body));
-            continue;
-        }
-        let v = if let Some(b) = body.strip_prefix('[').and_then(|b| b.strip_suffix(']')) {
-            Fm::List(items(b))
-        } else if let Some(b) = body.strip_prefix('{').and_then(|b| b.strip_suffix('}')) {
-            Fm::Map(
-                items(b)
-                    .iter()
-                    .map(|i| match i.split_once(':') {
-                        Some((k, v)) => (unquote(k), unquote(v)),
-                        None => (i.clone(), String::new()),
-                    })
-                    .collect(),
-            )
-        } else {
-            Fm::Str(unquote(&body))
-        };
-        out.insert(key, v);
-    }
-    None
-}
 
 /// A spec's id and title from its front matter (port run's commit of a
 /// crossing names them).

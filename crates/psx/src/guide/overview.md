@@ -2,7 +2,13 @@ Use psx to gather evidence from a PlayStation game, then implement the recovered
 rules and assets as ordinary game code. Choose the tools needed for the current
 question; a full port is not a prerequisite for a useful investigation.
 
-In a port's repositories (port_init), start every session with
+A port's workspace (port_init) holds goal.toml, the features the person
+wants, and catalogue/, the game's features with their dependencies. The
+agent proposes the catalogue; the person confirms the goal's list with
+psx port confirm --yes (psx port confirm shows the list, its closure and
+any problems first).
+
+In a clean-room port's repositories, start every session with
 protocol_next({"role": "investigator"}) (or reviewer): it computes the
 ledger and says what that role does now (guide topic protocol).
 
@@ -22,8 +28,8 @@ Typical routes:
   recorded trajectories and rendered output against the original evidence.
 - Whole port: engine model from evidence -> template_create (engine + game
   workspace) -> importers -> feature by feature, with an editor alongside.
-- Clean-room port: port_init writes the investigator's, implementer's and
-  reviewer's repositories; the investigator records cases and writes specs,
+- Clean-room port (being removed): template_create with a role writes the
+  investigator's, implementer's and reviewer's repositories; the investigator records cases and writes specs,
   the reviewer approves each bundle, publish carries it across. Read the
   protocol topic first, then cleanroom; the reviewer reads review. In a
   role's repository, its AGENTS.md says where to start.

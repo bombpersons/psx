@@ -22,6 +22,7 @@ mod context;
 mod coverage;
 mod error;
 mod fieldmap;
+mod front_matter;
 mod ghidra;
 mod guide;
 mod handoff;
@@ -34,6 +35,7 @@ mod native;
 mod page;
 mod parser;
 mod parser_template;
+mod port;
 mod port_run;
 mod protocol;
 mod provenance;
@@ -143,7 +145,7 @@ enum Command {
         #[command(subcommand)]
         action: BarrierAction,
     },
-    /// A clean-room port: the investigator's, implementer's and reviewer's repositories.
+    /// A port: its workspace, goal and catalogue.
     Port {
         #[command(subcommand)]
         action: PortAction,
@@ -236,9 +238,12 @@ enum BarrierAction {
 
 #[derive(clap::Subcommand)]
 enum PortAction {
-    /// Write the three repositories side by side with their instructions and access rules,
-    /// the disc for the investigator and its data files (not the executable) for the implementer.
-    Init(roles::PortInitArgs),
+    /// Write a port's workspace: the Bevy template, the goal, the catalogue, the disc and
+    /// BIOS linked in, and psx's MCP server for the agent working there.
+    Init(port::PortInitArgs),
+    /// Show the goal's features, their closure and any problems; with --yes, record the
+    /// person's confirmation of the list in goal.toml.
+    Confirm(port::PortConfirmArgs),
     /// Add the protocol's files to repositories that already exist (a port begun before them, or
     /// moved under the protocol): missing files written, settings extended, nothing overwritten,
     /// and a list of what only a person settles. --legacy names a port the implementer never reads.
@@ -371,6 +376,7 @@ fn main() -> ExitCode {
         },
         Command::Port { action } => match action {
             PortAction::Init(a) => a.exec(&ctx),
+            PortAction::Confirm(a) => a.exec(&ctx),
             PortAction::Adopt(a) => a.exec(&ctx),
             PortAction::Run(a) => a.exec(&ctx),
         },

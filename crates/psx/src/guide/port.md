@@ -3,8 +3,8 @@ cleanroom), the people who read the original's code never write the port's:
 what follows is then the investigator's model of the original (how it cuts
 engine from game, what it runs per type, what it reads from tables), the
 understanding it writes specs and cases from, and the implementer gets the
-architecture from its own repository's AGENTS.md. psx port init sets that
-up. Without the protocol, one agent reads the original and writes the port,
+architecture from its own repository's AGENTS.md. psx template create --role sets
+that up. Without the protocol, one agent reads the original and writes the port,
 and the port is derived from the original's code: say so to the person
 before starting, and point them to guide topic protocol.
 

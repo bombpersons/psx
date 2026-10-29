@@ -1,13 +1,12 @@
-//! The clean-room roles: `template create --role` and `port init`.
+//! The clean-room roles: `template create --role` and `port adopt`.
 //!
 //! A port under the protocol has three repositories side by side, each its
 //! own agent's: the investigator's (the disc, psx, specs and notes), the
 //! implementer's (psx's Bevy template with its own instructions, the disc's
 //! data files without the executable, access rules that keep everything
 //! else out, and the message check) and the reviewer's (verdicts and
-//! audits). `template create --role` writes one of them; `port init` writes
-//! all three with the real paths, and the investigator's `protocol.toml`
-//! that `publish` and the barrier read.
+//! audits). `template create --role` writes one of them, and `port adopt`
+//! adds them to repositories that already exist.
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
-use crate::template::{TemplateOptions, TemplateRegion};
+use crate::template::TemplateOptions;
 
 /// A role in the clean room.
 #[derive(
@@ -181,7 +180,7 @@ pub struct Setting {
     pub legacy: Vec<PathBuf>,
 }
 
-fn absolute(p: &Path) -> PathBuf {
+pub(crate) fn absolute(p: &Path) -> PathBuf {
     let p = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
     p.canonicalize().unwrap_or(p)
 }
@@ -204,7 +203,7 @@ fn uid() -> Option<u32> {
     }
 }
 
-fn psx_exe() -> String {
+pub(crate) fn psx_exe() -> String {
     std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "psx".into())
 }
 
@@ -546,31 +545,6 @@ pub fn create_role(
     Ok(v)
 }
 
-#[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PortInitArgs {
-    /// Folder for the three repositories: investigate/, clean/ and review/.
-    pub dest: PathBuf,
-    /// The disc image (.cue, .chd, .iso or .bin).
-    #[arg(long)]
-    pub media: PathBuf,
-    /// The game's name in the roles' instructions (default: the disc image's name).
-    #[arg(long)]
-    #[serde(default)]
-    pub game: Option<String>,
-    /// The port's package name (default from the game's name).
-    #[arg(long)]
-    #[serde(default)]
-    pub name: Option<String>,
-    /// The original's video region. Default ntsc.
-    #[arg(long, value_enum)]
-    #[serde(default)]
-    pub region: Option<TemplateRegion>,
-    /// Video fields per logic tick. Default 1.
-    #[arg(long)]
-    #[serde(default)]
-    pub fields_per_tick: Option<u32>,
-}
-
 const CAUTIONS: [&str; 2] = [
     "This is not legal advice, and a clean room lowers a risk rather than removing it.",
     "An LLM implementer may have seen other reimplementations of the game in training, which no tool restriction prevents.",
@@ -591,14 +565,14 @@ pub(crate) fn boot_path(boot: &str) -> String {
 /// after it: `Tomb Raider II - Starring Lara Croft (USA) (Rev 3).cue` is
 /// `Tomb Raider II - Starring Lara Croft`. (The volume id is often the
 /// disc's serial, which the barrier refuses.)
-fn game_name(media: &Path) -> String {
+pub(crate) fn game_name(media: &Path) -> String {
     let stem = media.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let cut = stem.find([' ', '_']).and_then(|_| stem.find(" (").or_else(|| stem.find(" ["))).unwrap_or(stem.len());
     let name = stem[..cut].trim();
     if name.is_empty() { "the game".into() } else { name.to_string() }
 }
 
-fn link_or_copy(from: &Path, to: &Path) -> crate::Result<()> {
+pub(crate) fn link_or_copy(from: &Path, to: &Path) -> crate::Result<()> {
     if let Some(d) = to.parent() {
         std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
     }
@@ -614,13 +588,8 @@ fn link_or_copy(from: &Path, to: &Path) -> crate::Result<()> {
 struct DiscFiles {
     /// The executables' names, refused at the barrier.
     executables: Vec<String>,
-    /// The executables' and SYSTEM.CNF's paths.
-    excluded: Vec<String>,
     /// (path, read raw, bytes)
     data: Vec<(String, bool, Vec<u8>)>,
-    failed: Vec<Value>,
-    /// The image's own files (the cue and its tracks).
-    sources: Vec<PathBuf>,
 }
 
 fn disc_files(media: &Path) -> crate::Result<DiscFiles> {
@@ -636,21 +605,15 @@ fn disc_files(media: &Path) -> crate::Result<DiscFiles> {
         .and_then(|c| c.boot)
         .unwrap_or_else(|| psx_media::system_cnf::DEFAULT_BOOT.into());
     let boot = boot_path(&boot);
-    let (mut data, mut excluded, mut failed) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut data, mut excluded) = (Vec::new(), Vec::new());
     for e in fs.entries.iter().filter(|e| !e.is_dir) {
         let (bytes, raw) = match fs.read_file(&disc, e) {
             Ok(b) => (b, false),
             Err(psx_media::MediaError::Unsupported(_)) => match fs.read_file_raw(&disc, e) {
                 Ok(b) => (b, true),
-                Err(err) => {
-                    failed.push(json!({"path": e.path, "error": err.to_string()}));
-                    continue;
-                }
+                Err(_) => continue,
             },
-            Err(err) => {
-                failed.push(json!({"path": e.path, "error": err.to_string()}));
-                continue;
-            }
+            Err(_) => continue,
         };
         let upper = e.path.to_ascii_uppercase();
         if upper == boot || upper == "/SYSTEM.CNF" || is_executable(&bytes) {
@@ -665,11 +628,7 @@ fn disc_files(media: &Path) -> crate::Result<DiscFiles> {
         .map(|p| p.trim_start_matches('/').rsplit('/').next().unwrap_or(p).to_string())
         .collect();
     executables.dedup();
-    let mut sources = vec![disc.source.clone()];
-    sources.extend(disc.files.iter().map(|f| f.path.clone()));
-    sources.sort();
-    sources.dedup();
-    Ok(DiscFiles { executables, excluded, data, failed, sources })
+    Ok(DiscFiles { executables, data })
 }
 
 /// The data files into the implementer's data/, with the disc's paths;
@@ -687,97 +646,6 @@ fn write_data(implementer: &Path, data: &[(String, bool, Vec<u8>)]) -> crate::Re
         bytes += b.len();
     }
     Ok(bytes)
-}
-
-impl PortInitArgs {
-    fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
-        let media = absolute(&ctx.root.join(&self.media));
-        let game = self.game.clone().unwrap_or_else(|| game_name(&media));
-        let dest = absolute(&ctx.root.join(&self.dest));
-        let repos = Repos {
-            investigator: dest.join("investigate"),
-            implementer: dest.join("clean"),
-            reviewer: dest.join("review"),
-        };
-        for p in [&repos.investigator, &repos.implementer, &repos.reviewer] {
-            if std::fs::read_dir(p).map(|mut d| d.next().is_some()).unwrap_or(false) {
-                return Err(Error::invalid(format!("{} is not empty; port init writes new repositories", p.display())));
-            }
-        }
-        // The data files, read first so a disc that cannot be read writes nothing.
-        let DiscFiles { executables, excluded, data, failed, sources: linked } = disc_files(&media)?;
-        let s = Setting {
-            media: Some(media.clone()),
-            executables: executables.clone(),
-            psx_root: Some(absolute(&ctx.root)),
-            legacy: Vec::new(),
-        };
-        let options = TemplateOptions {
-            region: self.region.unwrap_or_default(),
-            fields_per_tick: self.fields_per_tick.unwrap_or(1),
-        };
-        let name = self.name.clone().unwrap_or_else(|| {
-            let n: String =
-                game.to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-            let n = n.trim_matches('-').to_string();
-            if n.starts_with(|c: char| c.is_ascii_lowercase()) { n } else { format!("game-{n}") }
-        });
-        for p in [&repos.investigator, &repos.implementer, &repos.reviewer] {
-            std::fs::create_dir_all(p).map_err(|e| Error::io(p, e))?;
-        }
-        let inv = create(&repos.investigator, Role::Investigator, &game, &repos, &s, None, options)?;
-        let imp = create(&repos.implementer, Role::Implementer, &game, &repos, &s, Some(&name), options)?;
-        let rev = create(&repos.reviewer, Role::Reviewer, &game, &repos, &s, None, options)?;
-        // The investigator's disc and BIOS, linked from where they are.
-        for f in &linked {
-            let to = repos.investigator.join("media").join(f.file_name().unwrap_or_default());
-            if !to.exists() {
-                link_or_copy(&absolute(f), &to)?;
-            }
-        }
-        let mut bios = Vec::new();
-        for e in std::fs::read_dir(ctx.root.join("bios")).into_iter().flatten().flatten() {
-            if e.path().is_file() {
-                link_or_copy(&absolute(&e.path()), &repos.investigator.join("bios").join(e.file_name()))?;
-                bios.push(e.file_name().to_string_lossy().into_owned());
-            }
-        }
-        // The implementer's data files.
-        let bytes = write_data(&repos.implementer, &data)?;
-        let mut git = Vec::new();
-        for p in [&repos.investigator, &repos.implementer, &repos.reviewer] {
-            let ok = std::process::Command::new("git")
-                .args(["init", "-q"])
-                .current_dir(p)
-                .status()
-                .is_ok_and(|s| s.success());
-            git.push(json!({"repository": p, "git_init": ok}));
-        }
-        let mcp = |v: &Value| v["written"].as_array().map(|w| w.len()).unwrap_or(0);
-        Ok(json!({
-            "game": game, "package": name,
-            "repositories": {"investigator": repos.investigator, "implementer": repos.implementer, "reviewer": repos.reviewer},
-            "investigator": {"written": mcp(&inv), "media_files": linked.len(), "bios_files": bios.len()},
-            "implementer": {"written": mcp(&imp), "template": imp["template"]["owned_files"], "data_files": data.len(), "data_bytes": bytes,
-                            "data_raw": data.iter().filter(|d| d.1).map(|d| &d.0).collect::<Vec<_>>(),
-                            "warnings": imp["warnings"]},
-            "reviewer": {"written": mcp(&rev)},
-            "left_out": excluded, "unreadable": failed, "git": git,
-            "cautions": CAUTIONS,
-            "note": "data/ holds every disc file but the executables; a data file may still hold code (overlays), which the implementer only reads as far as an FMT spec describes it",
-            "next": [
-                format!("the person starts the investigator's session in {}", repos.investigator.display()),
-                "the investigator never starts the implementer's or the reviewer's session: the person starts each in its own folder".to_string(),
-                "BIOS: psx bios install in the investigator's repository if bios/ is empty".to_string(),
-            ],
-        }))
-    }
-}
-
-impl Op for PortInitArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::result(self.run(ctx))
-    }
 }
 
 /// `port adopt`: the protocol's files added to repositories that already

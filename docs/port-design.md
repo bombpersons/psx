@@ -104,7 +104,7 @@ the person takes on knowingly. psx makes nothing about this automatic.
 # goal.toml
 description = "Car handling on tarmac, for an open-world racer"
 features = ["F-0003", "F-0007"]          # or features = "all"
-confirmed = "2026-11-02T10:14:00Z"      # written by `psx port confirm`
+confirmed = { at = "2026-11-02T10:14:00Z", features = ["F-0003", "F-0007"] }   # written by `psx port confirm --yes`
 ```
 
 ```yaml
@@ -121,8 +121,10 @@ The flow:
 
 1. The person states the goal in their own words.
 2. The agent catalogues the features it implies and proposes the list.
-3. The person confirms it (`psx port confirm`, which records the time and
-   a hash of the list). psx adds the dependency closure.
+3. The person confirms it (`psx port confirm` shows the list, its closure
+   and any problems; `--yes` records the time and the list itself, so a
+   later list can be checked for having grown or shrunk). psx adds the
+   dependency closure.
 
 Until a goal is confirmed, the agent only investigates and catalogues. A
 confirmed list grows freely and never shrinks without the person.

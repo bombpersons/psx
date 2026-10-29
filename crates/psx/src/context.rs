@@ -105,7 +105,7 @@ fn report_path(root: &Path, report: &Value, key: &str) -> Option<PathBuf> {
     let p = crate::moved::find(root, Path::new(report["identity"][key].as_str()?));
     p.is_file().then_some(p)
 }
-fn region(media: Option<&Path>) -> crate::Result<Option<bios::Region>> {
+pub(crate) fn region(media: Option<&Path>) -> crate::Result<Option<bios::Region>> {
     let Some(p) = media else { return Ok(None) };
     let exe = psx_media::exe::is_exe_path(p);
     let hint = if exe {

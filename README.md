@@ -82,8 +82,8 @@ the ones who write the new game:
   the original's, and run its tests on cases the investigator kept back, seeing only pass or
   fail.
 
-`psx port init` sets up the three repositories with their instructions and access rules;
-`psx port adopt` brings repositories you already have under the protocol, including a port
+`psx template create --role` writes each of the three repositories with its instructions and
+access rules; `psx port adopt` brings repositories you already have under the protocol, including a port
 written before it, which the implementer is then denied. Everything that crosses is
 checked for addresses, code and copied notes, and every message to the implementer is
 logged. `psx protocol next` tells each role what to do now, and `psx protocol report` how far
