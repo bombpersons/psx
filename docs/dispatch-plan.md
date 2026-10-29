@@ -1,5 +1,9 @@
 # Plan: how `protocol next` and `port run` decide who works
 
+> **Superseded** by [port-design.md](port-design.md), which drops the
+> clean-room roles this plan dispatches between. Its facts, typed items,
+> done-when checks and loop guard carry over to `port next`.
+
 `psx port run` starts one agent session at a time, for the role whose
 first item of work does not wait on another role. The items come from
 `protocol next`'s ledger (`protocol.rs`, `ledger()`). This plan
