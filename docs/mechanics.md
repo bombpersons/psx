@@ -229,8 +229,9 @@ Each field is read from its `parts`, as follows:
 2. Join the parts into one unsigned integer, the first part most
    significant (16 bytes at most).
 3. Apply `mask`, then `shift` (a right shift).
-4. With `stored_signed = true`, sign-extend from the read width: the mask's,
-   or the parts'.
+4. With `stored_signed = true`, sign-extend from the read width: the bits
+   left after the mask (up to its highest set bit) and the shift, or the
+   parts' bits less the shift.
 5. For a `fixed` field whose stored fraction differs from the mechanic's,
    `stored_frac_bits` gives the stored one. Capture refuses a rescale that
    would lose bits.
@@ -286,6 +287,37 @@ so every trace carries the values of the run it came from.
   out, each with `at` (an address, or base and offset), `bytes`, and `why`.
   Capture's read audit lists every other read the binding does not account
   for.
+
+### Capturing on the PlayStation
+
+`psx mechanic check [ID]` checks `interfaces/`, and each mechanic's
+`mechanic.toml`, `binding.toml` and traces. `psx mechanic capture ID --name
+NAME --from-state STATE --frames N [--input|--replay]` runs the game on
+psx's native core and writes `traces/NAME.trace.jsonl`. It captures only
+when the check finds nothing, and when the media is the binding's image.
+
+- **Reads at a PC** are taken just before the instruction there runs, with
+  the registers as that instruction reads them. If an interrupt is taken
+  there instead, they are taken again when it runs.
+- **A step** begins at `begin` with every filter matching, reading the
+  params (first step only), the inputs and the state, and latching the
+  registers for `base` locations. It ends at `end` with the state read
+  again. With `next_begin`, the last step, which never ended, is dropped. A
+  begin while a step is open is an error with an end PC or `frame`: the
+  bracket is wrong.
+- **An entry call** is recorded when its PC runs inside a step. Its
+  response is read when the PC reaches the return address with the stack
+  pointer as at entry. Calls the world makes while answering are not
+  recorded.
+- **An inline read** is recorded when its PC runs inside a step, outside a
+  call, and loads.
+- **Refusals** stop the trace from being written, and are listed with step
+  and field:
+  - a value that is not of the field's type;
+  - a lossy rescale;
+  - a stored integer the map does not name;
+  - a store to the state while a call is under way;
+  - a step that ends before its call returns.
 
 ## 6. Traces: `traces/<name>.trace.jsonl`
 

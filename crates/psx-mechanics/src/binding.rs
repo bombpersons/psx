@@ -287,6 +287,86 @@ impl<L, S, C> Binding<L, S, C> {
     }
 }
 
+/// Gives the bytes at a location plus an offset, in the order they are
+/// stored: `fetch(at, offset, bytes)` (see [`Read::decode`]).
+pub type Fetch<'f, L> = dyn FnMut(&L, u32, u32) -> Result<Vec<u8>, String> + 'f;
+
+impl<L> Read<L> {
+    /// The parts' size in bytes.
+    pub fn bytes(&self) -> u32 {
+        self.parts.iter().map(|p| p.bytes).sum()
+    }
+
+    /// The field's value, read as "Reading a field" in docs/mechanics.md
+    /// says. `fetch(at, offset, bytes)` gives the bytes at a location plus
+    /// `offset` in the order they are stored (`offset` is a table element's,
+    /// 0 otherwise). An error is a refusal: a value that does not fit `ty`,
+    /// a lossy rescale, or a stored integer the map does not name.
+    pub fn decode(&self, ty: &Type, endian: Endian, fetch: &mut Fetch<'_, L>) -> Result<Value, String> {
+        match ty {
+            Type::Table { of, len } => {
+                let stride = self.stride.unwrap_or(self.bytes());
+                let items = (0..*len)
+                    .map(|i| self.decode_at(of, endian, i * stride, fetch).map_err(|e| format!("[{i}]: {e}")))
+                    .collect::<Result<_, _>>()?;
+                Ok(Value::List(items))
+            }
+            t => self.decode_at(t, endian, 0, fetch),
+        }
+    }
+
+    fn decode_at(&self, ty: &Type, endian: Endian, offset: u32, fetch: &mut Fetch<'_, L>) -> Result<Value, String> {
+        let mut raw: u128 = 0;
+        for p in &self.parts {
+            let mut b = fetch(&p.at, offset, p.bytes)?;
+            if b.len() != p.bytes as usize {
+                return Err(format!("read {} bytes of {}", b.len(), p.bytes));
+            }
+            if self.endian.unwrap_or(endian) == Endian::Little {
+                b.reverse();
+            }
+            for x in b {
+                raw = raw << 8 | x as u128;
+            }
+        }
+        let mut width = self.bytes() * 8;
+        if let Some(Value::Int(m)) = self.mask {
+            raw &= m as u128;
+            width = 128 - (m as u128).leading_zeros();
+        }
+        let shift = self.shift.unwrap_or(0);
+        raw >>= shift;
+        width = width.saturating_sub(shift);
+        let mut n = if self.stored_signed && width > 0 && width < 128 && raw >> (width - 1) & 1 == 1 {
+            raw as i128 - (1i128 << width)
+        } else {
+            i128::try_from(raw).map_err(|_| format!("stored value {raw} does not fit"))?
+        };
+        if let (Type::Fixed { frac_bits, .. }, Some(stored)) = (ty, self.stored_frac_bits) {
+            if stored > *frac_bits {
+                let d = stored - frac_bits;
+                if n & ((1i128 << d) - 1) != 0 {
+                    return Err(format!(
+                        "{n} with {stored} fraction bits loses bits as {frac_bits} (stored_frac_bits)"
+                    ));
+                }
+                n >>= d;
+            } else {
+                n = n.checked_shl(frac_bits - stored).ok_or_else(|| format!("{n} does not fit"))?;
+            }
+        }
+        let v = match (&self.map, ty) {
+            (Some(map), _) => {
+                map.get(&n.to_string()).cloned().ok_or_else(|| format!("stored value {n} is not in the map"))?
+            }
+            (None, Type::Bool) => Value::Bool(n != 0),
+            (None, _) => Value::Int(n),
+        };
+        ty.check(&v).map_err(|e| format!("stored value {n}: {e}"))?;
+        Ok(v)
+    }
+}
+
 fn check_read<P: Platform>(
     at: &str,
     r: &Read<P::Location>,
@@ -465,5 +545,85 @@ request.x = { parts = [{ at = { address = 0x70 }, bytes = 4 }] }
             "[state.mode]\nunobserved = true\nreason = \"kept in a register\"",
         );
         assert_eq!(parse(&unobserved).check::<Flat>(&m, &i), Vec::<String>::new());
+    }
+
+    /// Reads `mem` (byte i at address i).
+    fn decode(r: &str, ty: &Type, mem: &[u8]) -> Result<Value, String> {
+        let r: Read<Addr> = toml::from_str(r).unwrap();
+        r.decode(ty, Endian::Little, &mut |at: &Addr, off, n| {
+            let a = (at.address + off) as usize;
+            mem.get(a..a + n as usize).map(<[u8]>::to_vec).ok_or("out of memory".into())
+        })
+    }
+
+    #[test]
+    fn fields_are_decoded_step_by_step() {
+        let mem = [0x34, 0x12, 0xF0, 0xFF, 0x02, 0x00, 0x80, 0x01, 0x03, 0x00];
+        let int = |bits, signed| Type::Int { bits, signed };
+        // Little-endian by default; big when asked; parts join first-most-significant.
+        assert_eq!(
+            decode("parts = [{ at = { address = 0 }, bytes = 2 }]", &int(16, false), &mem),
+            Ok(Value::Int(0x1234))
+        );
+        assert_eq!(
+            decode("parts = [{ at = { address = 0 }, bytes = 2 }]\nendian = \"big\"", &int(16, false), &mem),
+            Ok(Value::Int(0x3412))
+        );
+        assert_eq!(
+            decode(
+                "parts = [{ at = { address = 4 }, bytes = 1 }, { at = { address = 0 }, bytes = 1 }]",
+                &int(16, false),
+                &mem
+            ),
+            Ok(Value::Int(0x0234))
+        );
+        // Sign extension from the parts' width, or the mask's after the shift.
+        assert_eq!(
+            decode("parts = [{ at = { address = 2 }, bytes = 2 }]\nstored_signed = true", &int(16, true), &mem),
+            Ok(Value::Int(-16))
+        );
+        assert_eq!(
+            decode(
+                "parts = [{ at = { address = 2 }, bytes = 2 }]\nmask = 0xF0\nshift = 4\nstored_signed = true",
+                &int(4, true),
+                &mem
+            ),
+            Ok(Value::Int(-1))
+        );
+        // A value that does not fit is refused.
+        assert_eq!(
+            decode("parts = [{ at = { address = 2 }, bytes = 2 }]", &int(8, false), &mem),
+            Err("stored value 65520: 65520 is outside 0..=255".into())
+        );
+        // Rescales: up is exact, down refuses lost bits.
+        let fx = Type::Fixed { signed: false, int_bits: 4, frac_bits: 4 };
+        assert_eq!(
+            decode("parts = [{ at = { address = 4 }, bytes = 1 }]\nstored_frac_bits = 1", &fx, &mem),
+            Ok(Value::Int(16))
+        );
+        assert_eq!(
+            decode("parts = [{ at = { address = 4 }, bytes = 1 }]\nstored_frac_bits = 5", &fx, &mem),
+            Ok(Value::Int(1))
+        );
+        assert_eq!(
+            decode("parts = [{ at = { address = 8 }, bytes = 1 }]\nstored_frac_bits = 5", &fx, &mem),
+            Err("3 with 5 fraction bits loses bits as 4 (stored_frac_bits)".into())
+        );
+        // Maps name stored integers; bools are otherwise nonzero.
+        let mode = Type::Enum(vec!["idle".into(), "walk".into()]);
+        let map = "parts = [{ at = { address = 7 }, bytes = 1 }]\nmap = { \"0\" = \"idle\", \"1\" = \"walk\" }";
+        assert_eq!(decode(map, &mode, &mem), Ok(Value::Variant("walk".into())));
+        assert_eq!(decode(&map.replace("= 7", "= 8"), &mode, &mem), Err("stored value 3 is not in the map".into()));
+        assert_eq!(decode("parts = [{ at = { address = 6 }, bytes = 1 }]", &Type::Bool, &mem), Ok(Value::Bool(true)));
+        // Tables step by the stride, or the parts' size.
+        let table = Type::Table { of: Box::new(int(8, false)), len: 3 };
+        assert_eq!(
+            decode("parts = [{ at = { address = 4 }, bytes = 1 }]\nstride = 2", &table, &mem),
+            Ok(Value::List(vec![Value::Int(2), Value::Int(0x80), Value::Int(3)]))
+        );
+        assert_eq!(
+            decode("parts = [{ at = { address = 8 }, bytes = 1 }]", &table, &mem),
+            Err("[2]: out of memory".into())
+        );
     }
 }

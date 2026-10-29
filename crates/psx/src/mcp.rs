@@ -215,6 +215,8 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::port::PortInitArgs>("port_init", "Write a port's workspace in dest: the Bevy template, goal.toml, the catalogue, the disc and BIOS linked in, and this MCP server for the agent working there. See guide topic port."),
         def::<crate::port::PortStatusArgs>("port_status", "In a port's workspace: the goal's features by area and stage, their verdicts, problems in the goal or catalogue, and the item due now. plain=true: text for the person. See guide topic port.").read_only(),
         def::<crate::port::PortNextArgs>("port_next", "In a port's workspace: the one item due now (what, which feature, why, and the fact that shows it done). Start every session with it, and call it again after each item. See guide topic port."),
+        def::<crate::mechanic::MechanicCheckArgs>("mechanic_check", "In a port's workspace: check interfaces/ and a mechanic's (or every mechanic's) mechanic.toml, binding.toml and traces. See docs/mechanics.md.").read_only(),
+        def::<crate::mechanic::MechanicCaptureArgs>("mechanic_capture", "In a port's workspace: run from from_state with input for frames, bracket the mechanic's step as binding.toml says, and write traces/<name>.trace.jsonl. Refusals name reads that gave no value of the field's type.").heavy(),
         def::<crate::template::TemplateUpdateArgs>("template_update", "Update the project's psx-bevy/ and vendor/ files to this build; edited files get a .psx-new copy. See guide topic port."),
         def::<crate::vram_diff::GpuReplayArgs>("gpu_replay", "Replay a recorded GP0 command stream into a fresh software GPU and write the resulting VRAM to out (and optionally a PNG). Pair with vram_diff."),
         def::<crate::vram_diff::VramDiffArgs>("vram_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
@@ -737,8 +739,9 @@ mod tests {
             .map(|t| t.name.len() + t.description.len() + serde_json::to_string(&t.input_schema()).unwrap().len())
             .sum();
         // 50K on 2026-10-17, grown with each tool since; 65.7K from 2026-10-29, after the
-        // clean-room tools went and port_status and port_next came.
-        assert!(size <= 65_700, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // clean-room tools went and port_status and port_next came; 68.5K from
+        // 2026-10-29 with mechanic_check and mechanic_capture.
+        assert!(size <= 68_500, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,

@@ -1,15 +1,21 @@
-//! The PlayStation's binding vocabulary: R3000 locations, overlay-qualified
-//! PCs and the capture bracket of `binding.toml` (docs/mechanics.md). The
-//! rest of the mechanic formats are platform-free, in psx-mechanics.
-
-// Capture (B1) and step replay (B4) use these; until then only the tests do.
-#![allow(dead_code)]
+//! Mechanics (docs/mechanics.md): the PlayStation's binding vocabulary
+//! (R3000 locations, overlay-qualified PCs and the capture bracket of
+//! `binding.toml`), `psx mechanic check` and `psx mechanic capture`. The rest
+//! of the mechanic formats are platform-free, in psx-mechanics.
 
 use std::collections::BTreeMap;
 
 use psx_mechanics::binding::{Endian, Platform, Role};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::commands::{Ctx, Op, Outcome};
+
+pub mod capture;
+pub mod workspace;
+
+pub use capture::MechanicCaptureArgs;
 
 /// The PlayStation producer.
 pub struct Psx;
@@ -140,6 +146,13 @@ fn check_pc(pc: u32, overlay: &Option<String>) -> Result<(), String> {
     Ok(())
 }
 
+impl Reg {
+    /// Its conventional name: `a0`.
+    pub fn name(self) -> String {
+        serde_json::to_value(self).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()
+    }
+}
+
 fn reg_name(name: &str) -> Option<Reg> {
     serde_json::from_value(serde_json::Value::from(name)).ok()
 }
@@ -202,6 +215,43 @@ impl Platform for Psx {
                 problems.push(format!("capture.explained[{i}]: bytes and why"));
             }
         }
+    }
+}
+
+#[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MechanicCheckArgs {
+    /// The mechanic (`mechanics/<ID>/`); default every one.
+    pub id: Option<String>,
+}
+
+impl Op for MechanicCheckArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::report((|| {
+            let ids = match self.id {
+                Some(id) => vec![id],
+                None => workspace::ids(&ctx.root),
+            };
+            let (_, interface_problems) = workspace::interfaces(&ctx.root)?;
+            let mut ok = interface_problems.is_empty();
+            let mut mechanics = Vec::new();
+            for id in ids {
+                let l = workspace::load(&ctx.root, &id)?;
+                let traces = workspace::traces(&l)?;
+                let problems: Vec<String> =
+                    l.problems.iter().filter(|p| !p.starts_with("interfaces/")).cloned().collect();
+                ok &= problems.is_empty() && traces.iter().all(|(_, p)| p.is_empty());
+                let traces: Vec<_> =
+                    traces.into_iter().map(|(name, problems)| json!({"name": name, "problems": problems})).collect();
+                mechanics.push(json!({"id": id, "problems": problems, "traces": traces}));
+            }
+            Ok((ok, json!({"ok": ok, "interfaces": {"problems": interface_problems}, "mechanics": mechanics})))
+        })())
+    }
+}
+
+impl Op for MechanicCaptureArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::report(capture::capture(ctx, self))
     }
 }
 
@@ -303,7 +353,7 @@ explained = [{ at = { base = "a0", offset = 0x80 }, bytes = 0x20, why = "the ani
 
     #[test]
     fn the_documented_examples_check() {
-        let doc = include_str!("../../../docs/mechanics.md");
+        let doc = include_str!("../../../../docs/mechanics.md");
         let blocks: Vec<&str> = doc.split("```toml\n").skip(1).map(|b| b.split("```").next().unwrap()).collect();
         let (m, i) = (Mechanic::parse(blocks[0]).unwrap(), [Interface::parse(blocks[1]).unwrap()]);
         assert_eq!((m.check(&i), i[0].check()), (vec![], vec![]));

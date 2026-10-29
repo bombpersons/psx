@@ -85,6 +85,8 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | `psx template adopt DIR [--name N] [--region R] [--fields-per-tick N]` | Start tracking a template workspace that has no `.psx-template.toml` |
 | `psx port init DEST --media DISC [--name PKG] [--region R] [--fields-per-tick N]` | A port's workspace: the template, `goal.toml`, `catalogue/`, the disc and BIOS linked in, `.mcp.json` for psx, git. See [Ports](#ports) |
 | `psx port confirm [--yes]` / `port status [--plain]` / `port next` | The goal's list and its closure (with `--yes`, the person's confirmation); every feature by stage; the one item due now |
+| `psx mechanic check [ID]` | Check `interfaces/` and each mechanic's `mechanic.toml`, `binding.toml` and traces ([docs/mechanics.md](docs/mechanics.md)) |
+| `psx mechanic capture ID --name N --from-state S --frames F [--input/--replay]` | Run on the native core, bracket the mechanic's step as its binding says, write `mechanics/ID/traces/N.trace.jsonl`; refusals name reads that are not of the field's type |
 | `psx mcp [--jobs N]` | Every command above as an MCP tool over stdio (see below) |
 
 Input images can be `.cue`, a raw `.bin` (single data track), a cooked `.iso` or a CD `.chd`
@@ -492,6 +494,8 @@ terms). The person confirms the goal's list with `psx port confirm --yes`. `port
 the one item due now, and `port status` every feature of the goal by stage. Verdicts from
 psx's checks live in `.psx/verdicts/` and count only for the commit they judged. The design
 is [docs/port-design.md](docs/port-design.md); `guide` topic `port` holds the procedure.
+Mechanics are captured with `psx mechanic capture` on the native core, and their files are
+defined in [docs/mechanics.md](docs/mechanics.md).
 
 ## Local data (never committed)
 

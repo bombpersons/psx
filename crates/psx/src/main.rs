@@ -139,6 +139,11 @@ enum Command {
         #[command(subcommand)]
         action: PortAction,
     },
+    /// Mechanics: check their files, and capture traces of their steps from the game.
+    Mechanic {
+        #[command(subcommand)]
+        action: MechanicAction,
+    },
     /// Every function of every executable on the disc and of the overlays in RAM snapshots, with instruction counts and basic blocks, and the disc's file list.
     Inventory(inventory::InventoryArgs),
     /// What traced runs executed, per function of the inventory: blocks executed and not, and the runs reaching each.
@@ -216,6 +221,16 @@ enum PortAction {
     /// The one item due now: what, for which feature, why, and the fact that will show it done.
     /// An agent item handed out three times with nothing changed is reported as stuck instead.
     Next(port::PortNextArgs),
+}
+
+#[derive(clap::Subcommand)]
+enum MechanicAction {
+    /// Check the interfaces, and a mechanic's (or every mechanic's) mechanic.toml,
+    /// binding.toml and traces.
+    Check(mechanic::MechanicCheckArgs),
+    /// Run the game from a state with input, bracket the mechanic's step as its binding
+    /// says, and write traces/<NAME>.trace.jsonl: one line per step.
+    Capture(Box<mechanic::MechanicCaptureArgs>),
 }
 
 #[derive(clap::Subcommand)]
@@ -308,6 +323,10 @@ fn main() -> ExitCode {
         Command::Case { action } => match action {
             CaseAction::Record(a) => a.exec(&ctx),
             CaseAction::Check(a) => a.exec(&ctx),
+        },
+        Command::Mechanic { action } => match action {
+            MechanicAction::Check(a) => a.exec(&ctx),
+            MechanicAction::Capture(a) => a.exec(&ctx),
         },
         Command::Port { action } => match action {
             PortAction::Init(a) => a.exec(&ctx),

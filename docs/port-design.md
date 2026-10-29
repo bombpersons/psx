@@ -258,11 +258,14 @@ the same mechanic, the code entangles them: they are one feature, or one
 depends on the other. Interfaces, commands included, are where features
 meet.
 
-**Where capture runs.** On psx-oracle (Mednafen), the ground truth. Its
-harness already has a per-instruction step hook, write watches and CPU and
-GTE register reads. Capture adds a data-read hook to the harness. Register
-and GTE reads before writes are found by decoding each instruction in the
-step hook.
+**Where capture runs.** On psx's native core, in process, like every
+other run. The core reports each instruction's data access, and the CPU's
+and GTE's registers are readable between instructions. Register and GTE
+reads before writes are found by decoding each instruction as it steps.
+Mednafen (psx-oracle) stays what it is: the reference the core is
+calibrated against, never linked or run by psx. The core runs the lockstep
+suite cycle for cycle with it, so a capture is Mednafen's behaviour; a
+difference found later is fixed in the core.
 
 ### Scenarios
 
@@ -586,8 +589,7 @@ person) can come later on the same items. It is not part of this design.
    locations, overlay-qualified PCs, register filters, the end modes,
    interface calls (by entry PC, and inline reads), external changes,
    branch coverage, and the read audit with CPU and GTE register reads,
-   drafted by reading PC. It runs on psx-oracle, whose harness gains a
-   data-read hook.
+   drafted by reading PC. It runs on the native core.
 4. Scenarios and the determinism check.
 5. The glossary, recordings that store changes only, and `case summary`.
 6. The screen-item and sound channels.
@@ -639,8 +641,8 @@ six. The pilot decides whether Phases C and D go ahead as written.
 | Step | Size | What |
 |---|---|---|
 | B0 | S | The mechanic, binding and trace formats (Decision 4): their definition in psx's documentation and their schemas. |
-| B1 | L | The oracle harness's data-read hook. `mechanic capture` core: `mechanic.toml` and `binding.toml` with the R3000 vocabulary and overlays, brackets, end modes, register filters, refusals, the trace writer. |
-| B2 | L | Capture's analysis: the read audit (memory, CPU and GTE registers) drafted by reading PC, external changes, branch coverage, interface calls by entry PC and inline reads. |
+| B1 | L | `mechanic capture` core on the native core: `mechanic.toml` and `binding.toml` with the R3000 vocabulary and overlays, brackets, end modes, register filters, interface calls (entry PC and inline reads), refusals, the trace writer. |
+| B2 | L | Capture's analysis: the read audit (memory, CPU and GTE registers) drafted by reading PC, external changes, branch coverage. |
 | B3 | M | Template numbers: `Scalar`, `Fixed`, vectors, `Angle`, the named operations for both types, real-number asset fields; psx-bevy's `gte` module from `psx-gte`. |
 | B4 | M | Step replay: the trace adapter, world-call checks, the drift report; the Capture item in `port next`. |
 | B5 | M | What the pilot needs from scenarios: scenario files, port launchers, the determinism check, the quantity registry and comparison. |
@@ -747,7 +749,7 @@ real units in assets, and keeping the `f32` instantiation available.
    mechanics, with the read audit and external changes making sure the
    state is complete, and scenarios checking how mechanics combine.
    **Limit:** exactness is relative to Mednafen, which is ground truth by
-   choice, and only as wide as the traces' branch coverage. The uncovered
+   choice (the native core that captures runs cycle for cycle with it), and only as wide as the traces' branch coverage. The uncovered
    branches are listed, not hidden.
 4. **Modern, idiomatic code.** The structure review judges the code as
    Rust and Bevy, not by its distance from the original. **Risk:** the
