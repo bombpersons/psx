@@ -255,6 +255,64 @@ pub enum Fmt {
     /// Unsigned bits of a word: bytes read, lowest bit, bits (`u16[14]` =
     /// (2, 14, 1), `u8[4..7]` = (1, 4, 4)). The value is the bits alone.
     Bits(u8, u8, u8),
+    /// A byte string of this many bytes (`str32`), as text ([`escape`]).
+    Str(u8),
+}
+
+/// A value as a format reads it: a number at its width (a bit field's bits
+/// alone), or a byte string's bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Val {
+    Num(u32),
+    Bytes(Vec<u8>),
+}
+
+/// A byte string as text, one CSV cell and one poke or until value: printable
+/// ASCII as itself and any other byte as `\xNN`, as are `\` `,` `"` `@` `&`,
+/// and a space at either end. Trailing zero bytes are left off: the format's
+/// width says how many bytes there are.
+pub fn escape(bytes: &[u8]) -> String {
+    let b = &bytes[..bytes.iter().rposition(|&c| c != 0).map_or(0, |i| i + 1)];
+    let mut s = String::new();
+    for (i, &c) in b.iter().enumerate() {
+        let plain = match c {
+            b' ' => i != 0 && i + 1 != b.len(),
+            b'\\' | b',' | b'"' | b'@' | b'&' => false,
+            _ => c.is_ascii_graphic(),
+        };
+        if plain {
+            s.push(c as char);
+        } else {
+            s += &format!("\\x{c:02X}");
+        }
+    }
+    s
+}
+
+/// [`escape`]'s text back to `width` bytes, zeros after the text; none where
+/// it is longer, holds a character that is not printable ASCII, or a `\`
+/// that is not `\xNN`.
+pub fn unescape(s: &str, width: usize) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(width);
+    let mut it = s.bytes();
+    while let Some(c) = it.next() {
+        out.push(match c {
+            b'\\' => {
+                let (x, h, l) = (it.next()?, it.next()?, it.next()?);
+                let hex = |d: u8| (d as char).to_digit(16);
+                if x != b'x' {
+                    return None;
+                }
+                (hex(h)? * 16 + hex(l)?) as u8
+            }
+            b' '..=b'~' => c,
+            _ => return None,
+        });
+    }
+    (out.len() <= width).then(|| {
+        out.resize(width, 0);
+        out
+    })
 }
 
 impl Fmt {
@@ -266,6 +324,9 @@ impl Fmt {
             "32" => Some(4),
             _ => None,
         };
+        if let Some(n) = s.strip_prefix("str") {
+            return n.parse::<u8>().ok().filter(|&n| n > 0).map(Fmt::Str);
+        }
         if let Some(rest) = s.strip_prefix("fx") {
             let (i, f) = rest.split_once('.')?;
             let (i, f): (u8, u8) = (i.parse().ok()?, f.parse().ok()?);
@@ -299,7 +360,9 @@ impl Fmt {
 
     pub fn width(self) -> usize {
         match self {
-            Fmt::Unsigned(w) | Fmt::Signed(w) | Fmt::Hex(w) | Fmt::Fixed(w, _) | Fmt::Bits(w, ..) => w as usize,
+            Fmt::Unsigned(w) | Fmt::Signed(w) | Fmt::Hex(w) | Fmt::Fixed(w, _) | Fmt::Bits(w, ..) | Fmt::Str(w) => {
+                w as usize
+            }
         }
     }
 
@@ -308,6 +371,7 @@ impl Fmt {
     pub fn mask(self) -> u32 {
         match self {
             Fmt::Bits(_, lo, n) => (u32::MAX >> (32 - n)) << lo,
+            Fmt::Str(_) => u32::MAX,
             _ => u32::MAX >> (32 - 8 * self.width()),
         }
     }
@@ -337,13 +401,39 @@ impl Fmt {
             Fmt::Fixed(w, f) => format!("fx{}.{f}", w * 8 - f),
             Fmt::Bits(w, lo, 1) => format!("u{}[{lo}]", w * 8),
             Fmt::Bits(w, lo, n) => format!("u{}[{lo}..{}]", w * 8, lo + n - 1),
+            Fmt::Str(n) => format!("str{n}"),
+        }
+    }
+
+    /// A value's text (a CSV cell): a byte string [`escape`]d.
+    pub fn cell(self, v: &Val) -> String {
+        match v {
+            Val::Num(raw) => self.render(*raw),
+            Val::Bytes(b) => escape(b),
+        }
+    }
+
+    /// A value as JSON: a byte string as its text.
+    pub fn value(self, v: &Val) -> Value {
+        match v {
+            Val::Num(raw) => self.json(*raw),
+            Val::Bytes(b) => json!(escape(b)),
+        }
+    }
+
+    /// A value written in this format: a byte string's text ([`unescape`]),
+    /// or a number as [`Fmt::encode`] takes it.
+    pub fn given(self, s: &str) -> Option<Val> {
+        match self {
+            Fmt::Str(n) => unescape(s, n as usize).map(Val::Bytes),
+            _ => self.encode(s).map(Val::Num),
         }
     }
 
     /// Text form (CSV cells, tables), of a value as `take` gives it.
     pub fn render(self, raw: u32) -> String {
         match self {
-            Fmt::Unsigned(_) | Fmt::Bits(..) => raw.to_string(),
+            Fmt::Unsigned(_) | Fmt::Bits(..) | Fmt::Str(_) => raw.to_string(),
             Fmt::Signed(w) => signed(raw, w as usize).to_string(),
             Fmt::Hex(w) => format!("0x{raw:0width$X}", width = w as usize * 2),
             Fmt::Fixed(w, f) => {
@@ -360,7 +450,7 @@ impl Fmt {
 
     pub fn json(self, raw: u32) -> Value {
         match self {
-            Fmt::Unsigned(_) | Fmt::Bits(..) => json!(raw),
+            Fmt::Unsigned(_) | Fmt::Bits(..) | Fmt::Str(_) => json!(raw),
             Fmt::Signed(w) => json!(signed(raw, w as usize)),
             Fmt::Hex(_) => json!(self.render(raw)),
             Fmt::Fixed(w, f) => json!(signed(raw, w as usize) as f64 / (1u64 << f) as f64),
@@ -418,13 +508,17 @@ impl Sample {
 
     /// The value now (a bit field's bits alone), or none where a pointer
     /// leads outside memory.
-    pub fn read(&self, ram: &[u8], scratch: &[u8]) -> Option<u32> {
-        self.place(ram, scratch).map(|m| self.fmt.take(read_mem(ram, scratch, m, self.fmt.width())))
+    pub fn read(&self, ram: &[u8], scratch: &[u8]) -> Option<Val> {
+        let m = self.place(ram, scratch)?;
+        Some(match self.fmt {
+            Fmt::Str(n) => Val::Bytes(mem_bytes(ram, scratch, m, n as usize).to_vec()),
+            f => Val::Num(f.take(read_mem(ram, scratch, m, f.width()))),
+        })
     }
 
     /// As JSON: null where the value is absent.
     pub fn json(&self, ram: &[u8], scratch: &[u8]) -> Value {
-        self.read(ram, scratch).map_or(Value::Null, |v| self.fmt.json(v))
+        self.read(ram, scratch).map_or(Value::Null, |v| self.fmt.value(&v))
     }
 }
 
@@ -447,7 +541,7 @@ pub fn sample_at(addr: u32, f: &str, name: Option<&str>, label: &str) -> Result<
         "1" => Fmt::Unsigned(1),
         "2" => Fmt::Unsigned(2),
         "4" => Fmt::Unsigned(4),
-        f => Fmt::parse(f).ok_or_else(|| format!("{label}: unknown format {f:?} (u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F, e.g. fx16.16 or fx4.12, bits of a word as u16[14] or u8[4..7], or a width 1/2/4)"))?,
+        f => Fmt::parse(f).ok_or_else(|| format!("{label}: unknown format {f:?} (u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F, e.g. fx16.16 or fx4.12, bits of a word as u16[14] or u8[4..7], a byte string as strN, e.g. str32, or a width 1/2/4)"))?,
     };
     let mem =
         locate(addr, fmt.width()).ok_or_else(|| format!("{label}: 0x{addr:08X} is not main RAM or scratchpad"))?;
@@ -535,6 +629,14 @@ pub fn read_mem(ram: &[u8], scratch: &[u8], mem: Mem, width: usize) -> u32 {
     }
 }
 
+/// `n` bytes at `mem`.
+pub fn mem_bytes<'a>(ram: &'a [u8], scratch: &'a [u8], mem: Mem, n: usize) -> &'a [u8] {
+    match mem {
+        Mem::Ram(o) => &ram[o..o + n],
+        Mem::Scratch(o) => &scratch[o..o + n],
+    }
+}
+
 /// Per-frame samples, written as CSV: `run_frame,frame[,tick],<columns...>`.
 pub struct Sampler {
     pub columns: Vec<Sample>,
@@ -546,7 +648,7 @@ pub struct Sampler {
     last: Option<u64>,
     /// The last row's tick and raw values, and per column the rows that
     /// changed without a tick (run frames, the first few).
-    prev: Option<(u64, Vec<Option<u32>>)>,
+    prev: Option<(u64, Vec<Option<Val>>)>,
     pub untimed: Vec<(u64, Vec<u64>)>,
 }
 
@@ -573,11 +675,11 @@ impl Sampler {
         if self.tick {
             self.out += &format!(",{tick}");
         }
-        let raw: Vec<Option<u32>> = self.columns.iter().map(|c| c.read(ram, scratch)).collect();
-        for (c, &v) in self.columns.iter().zip(&raw) {
+        let raw: Vec<Option<Val>> = self.columns.iter().map(|c| c.read(ram, scratch)).collect();
+        for (c, v) in self.columns.iter().zip(&raw) {
             self.out.push(',');
             if let Some(v) = v {
-                self.out += &c.fmt.render(v);
+                self.out += &c.fmt.cell(v);
             }
         }
         self.out.push('\n');
@@ -604,7 +706,7 @@ pub struct Poke {
     /// Where it writes, as a sample would read it: an address, or a map name
     /// (through a pointer, followed anew at each write).
     pub at: Sample,
-    pub value: u32,
+    pub value: Val,
     pub from: u64,
     /// Last run frame (inclusive) to apply at; `None` = open-ended.
     pub to: Option<u64>,
@@ -625,10 +727,16 @@ impl Poke {
     pub fn apply(&mut self, run_frame: u64, ram: &mut [u8], scratch: &mut [u8]) {
         // A bit field keeps the word's other bits as they are now.
         let Some(m) = self.at.place(ram, scratch) else { return self.skipped.push(run_frame) };
-        let word = self.at.fmt.put(read_mem(ram, scratch, m, self.width()), self.value);
-        match m {
-            Mem::Ram(o) => write_le(ram, o, self.width(), word),
-            Mem::Scratch(o) => write_le(scratch, o, self.width(), word),
+        let (mem, o) = match m {
+            Mem::Ram(o) => (ram, o),
+            Mem::Scratch(o) => (scratch, o),
+        };
+        match &self.value {
+            Val::Bytes(b) => mem[o..o + b.len()].copy_from_slice(b),
+            &Val::Num(v) => {
+                let word = self.at.fmt.put(read_le(mem, o, self.width()), v);
+                write_le(mem, o, self.width(), word)
+            }
         }
         self.applied.push(run_frame);
     }
@@ -638,12 +746,16 @@ impl Poke {
         let w = self.width();
         let mut v = json!({
             "spec": self.spec,
-            "width": w, "value": self.value, "value_hex": format!("0x{:0w$X}", self.value, w = w * 2),
-            "value_signed": signed(self.value, w),
+            "width": w, "value": self.at.fmt.value(&self.value),
             "run_frames": {"from": self.from, "to": self.to},
             "applied": n,
             "first_run_frame": self.applied.first(), "last_run_frame": self.applied.last(),
         });
+        if let Val::Num(n) = self.value {
+            v["value"] = json!(n);
+            v["value_hex"] = json!(format!("0x{n:0w$X}", w = w * 2));
+            v["value_signed"] = json!(signed(n, w));
+        }
         // A map name reports the name only, as samples do.
         if self.at.mapped {
             v["name"] = json!(self.at.name);
@@ -676,17 +788,18 @@ pub fn parse_poke(s: &str, map: Option<&crate::fieldmap::FieldMap>) -> Result<Po
         let map = map.ok_or_else(|| {
             format!("--poke {s:?}: {a:?} is not a hex address, and names come from a field map (samples.toml or --map)")
         })?;
-        if rest.contains(':') {
-            return Err(format!("--poke {s:?}: a name's format comes from the map; write NAME=VALUE"));
-        }
         let mut cols = map.resolve(a.trim()).map_err(|e| format!("--poke {e}"))?;
         if cols.len() != 1 {
             return Err(format!("--poke {s:?}: {a:?} names {} fields; poke one (SUBJECT.FIELD)", cols.len()));
         }
+        // A byte string's text may hold a colon.
+        if rest.contains(':') && !matches!(cols[0].fmt, Fmt::Str(_)) {
+            return Err(format!("--poke {s:?}: a name's format comes from the map; write NAME=VALUE"));
+        }
         (cols.remove(0), rest)
     } else {
         let addr = parse_hex(a).ok_or_else(|| format!("--poke {s:?}: bad hex address {a:?}"))?;
-        let (val, ty) = match rest.split_once(':') {
+        let (val, ty) = match rest.rsplit_once(':') {
             Some((v, t)) => (v, t),
             None => (rest, "4"),
         };
@@ -701,8 +814,13 @@ pub fn parse_poke(s: &str, map: Option<&crate::fieldmap::FieldMap>) -> Result<Po
             .ok_or_else(|| format!("--poke {s:?}: 0x{addr:08X} is not main RAM or scratchpad"))?;
         (Sample { addr, fmt, name: a.trim().to_string(), mem, mapped: false, via: None }, val)
     };
-    let value = at.fmt.encode(val).ok_or_else(|| {
-        format!("--poke {s:?}: bad value {val:?} (decimal, -decimal, 0xHEX, or a decimal fraction for fx formats)")
+    let value = at.fmt.given(val).ok_or_else(|| match at.fmt {
+        Fmt::Str(n) => format!(
+            "--poke {s:?}: bad value {val:?} (a byte string of at most {n} bytes: printable ASCII, \\xNN for any byte)"
+        ),
+        _ => {
+            format!("--poke {s:?}: bad value {val:?} (decimal, -decimal, 0xHEX, or a decimal fraction for fx formats)")
+        }
     })?;
     let frame = |t: &str| t.trim().parse::<u64>().map_err(|_| format!("--poke {s:?}: bad frame {t:?}"));
     let (from, to) = match when {
@@ -1043,7 +1161,7 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
 /// A memory window from one or more snapshots side by side, marking units that differ.
 pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str) -> crate::Result<(Value, String)> {
     let fmt = Fmt::parse(fmt)
-        .filter(|f| !matches!(f, Fmt::Bits(..)))
+        .filter(|f| !matches!(f, Fmt::Bits(..) | Fmt::Str(_)))
         .ok_or_else(|| Error::invalid(format!("unknown format {fmt:?}")))?;
     let w = fmt.width();
     let snaps = paths.iter().map(|p| load(p)).collect::<crate::Result<Vec<_>>>()?;
@@ -1139,11 +1257,47 @@ mod tests {
         assert_eq!(parse_sample("8015E8A8:4").unwrap().fmt, Fmt::Unsigned(4), "watch widths read unsigned");
         assert_eq!(parse_sample("8015E8A8:2").unwrap().name, "0x8015E8A8:u16");
         let p = parse_poke("0x8015E926=1:1@10", None).unwrap();
-        assert_eq!((p.width(), p.value, p.from, p.to), (1, 1, 10, Some(10)));
+        assert_eq!((p.width(), p.value, p.from, p.to), (1, Val::Num(1), 10, Some(10)));
         let p = parse_poke("8015E8AC=300.5:fx16.16@3..", None).unwrap();
-        assert_eq!((p.width(), p.value, p.from, p.to), (4, 0x012C_8000, 3, None));
+        assert_eq!((p.width(), p.value, p.from, p.to), (4, Val::Num(0x012C_8000), 3, None));
         let p = parse_poke("8015E8AC=-2:2", None).unwrap();
-        assert_eq!((p.width(), p.value, p.from, p.to), (2, 0xFFFE, 0, Some(0)));
+        assert_eq!((p.width(), p.value, p.from, p.to), (2, Val::Num(0xFFFE), 0, Some(0)));
+    }
+
+    #[test]
+    fn a_byte_string_is_one_cell_of_text_and_pokes_back_whole() {
+        assert_eq!(Fmt::parse("str32"), Some(Fmt::Str(32)));
+        assert_eq!((Fmt::parse("str0"), Fmt::parse("str256")), (None, None));
+        // Trailing zeros are left off; zeros inside, and what follows them, are kept.
+        assert_eq!(escape(b"car\0\0\0"), "car");
+        assert_eq!(escape(b"car\0\x12\0"), r"car\x00\x12");
+        // One CSV cell, one poke or until value: no , " \ @ &, no space at an end.
+        assert_eq!(escape(b" a,b\"c\\d@e&f g "), r"\x20a\x2Cb\x22c\x5Cd\x40e\x26f g\x20");
+        assert_eq!(escape(&[0x82, 0xA0]), r"\x82\xA0");
+        for b in [&b"car\0\x12"[..], b" a,b\"c\\d@e&f g ", &[0x82, 0xA0, 0, 7]] {
+            let mut want = b.to_vec();
+            want.resize(16, 0);
+            assert_eq!(unescape(&escape(b), 16), Some(want), "{b:?}");
+        }
+        assert_eq!(unescape("car", 2), None, "longer than the width");
+        assert_eq!(unescape(r"a\q", 8), None);
+        assert_eq!(unescape(r"a\x4", 8), None);
+        assert_eq!(unescape("caf\u{e9}", 8), None, "not ASCII: write the bytes");
+
+        let mut ram = vec![0u8; RAM_SIZE];
+        let mut scratch = vec![0u8; SCRATCH_SIZE];
+        ram[0x10010..0x10019].copy_from_slice(b"old name!");
+        let mut p = parse_poke(r"80010010=car\x00\x12:str8@2", None).unwrap();
+        assert_eq!((p.width(), p.from, p.to), (8, 2, Some(2)));
+        p.apply(2, &mut ram, &mut scratch);
+        assert_eq!(&ram[0x10010..0x10019], b"car\0\x12\0\0\0!", "every byte of the width, and no more");
+        assert_eq!(p.report()["value"], json!(r"car\x00\x12"));
+        let col = parse_sample("80010010:str8:name").unwrap();
+        assert_eq!(col.read(&ram, &scratch), Some(Val::Bytes(b"car\0\x12\0\0\0".to_vec())));
+        let mut s = Sampler::new(vec![col], 1, false);
+        s.row(0, 0, 0, &ram, &scratch, true);
+        assert_eq!(s.out, "run_frame,frame,name\n0,0,car\\x00\\x12\n");
+        assert!(parse_poke("80010010=a name too long:str8", None).unwrap_err().contains("at most 8 bytes"));
         assert!(parse_poke("8015E8AC=1@5..2", None).is_err());
         assert!(parse_poke("1F000000=1", None).is_err());
         assert!(parse_poke("lara.x=1", None).unwrap_err().contains("field map"));
