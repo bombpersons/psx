@@ -7,7 +7,6 @@ use serde_json::{Value, json};
 use super::{GOAL, GOAL_TOML};
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
-use crate::roles::{absolute, game_name, link_or_copy, psx_exe};
 use crate::template::{TemplateOptions, TemplateRegion};
 
 const CATALOGUE_README: &str = include_str!("../../../../templates/port/catalogue/README.md");
@@ -154,6 +153,36 @@ impl Op for PortInitArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::result(self.run(ctx))
     }
+}
+
+fn absolute(p: &Path) -> PathBuf {
+    let p = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    p.canonicalize().unwrap_or(p)
+}
+
+fn psx_exe() -> String {
+    std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "psx".into())
+}
+
+/// The game's name from its disc image's file name, without the tags
+/// after it: `Tomb Raider II - Starring Lara Croft (USA) (Rev 3).cue` is
+/// `Tomb Raider II - Starring Lara Croft`.
+fn game_name(media: &Path) -> String {
+    let stem = media.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let cut = stem.find([' ', '_']).and_then(|_| stem.find(" (").or_else(|| stem.find(" ["))).unwrap_or(stem.len());
+    let name = stem[..cut].trim();
+    if name.is_empty() { "the game".into() } else { name.to_string() }
+}
+
+fn link_or_copy(from: &Path, to: &Path) -> crate::Result<()> {
+    if let Some(d) = to.parent() {
+        std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+    }
+    #[cfg(unix)]
+    let r = std::os::unix::fs::symlink(from, to);
+    #[cfg(not(unix))]
+    let r = std::fs::copy(from, to).map(|_| ());
+    r.map_err(|e| Error::io(to, e))
 }
 
 #[cfg(test)]

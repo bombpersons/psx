@@ -772,7 +772,7 @@ impl Op for CaseCheckArgs {
                         d["case_keys_to_add"] = json!(added);
                     }
                     // When and on which emulator it was last checked, and whether
-                    // it held (psx protocol next reads this).
+                    // it held.
                     let mut recipe = recipe;
                     // Paths in the project, written back relative to it.
                     for k in ["from_state", "map", "media"] {
@@ -788,7 +788,7 @@ impl Op for CaseCheckArgs {
                             *c = json!(t.split(',').map(str::trim).collect::<Vec<_>>().join(","));
                         }
                     }
-                    recipe["checked"] = json!({"emulator": crate::context::emulator(), "time": crate::publish::utc_now(),
+                    recipe["checked"] = json!({"emulator": crate::context::emulator(), "time": crate::stamp::utc_now(),
                         "same": d["same"] == true});
                     write(&recipes.join(format!("{name}.json")), pretty(&recipe).as_bytes())?;
                     if self.write && d["same"] != true {

@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/psx",
-    "crates/psx-clean",
     "crates/psx-core",
     "crates/psx-gpu",
     "crates/psx-assets",

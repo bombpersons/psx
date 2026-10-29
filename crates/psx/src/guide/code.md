@@ -73,17 +73,3 @@ from the disc, give inventory the decompressed bytes to read it whole:
    (in_ram, and the overlays it names). One that did not was decompressed
    wrongly, holds no code, or no run loaded it: only bytes RAM held are
    read, so a wrong decompressor adds nothing.
-The ledger's partly_read_overlays groups such overlays by stretch of RAM
-(those that overlap or touch), and protocol next gives the investigator each
-stretch not yet settled (unpack_overlays), before coverage. Runs traced
-before run --trace copied a page again where RAM was written over with no
-code run there (code.bin PSXCODE2) come first (record_again): their stale
-copies can make stretches that recording again removes. A stretch is
-settled when the inventory reads its code whole, or when notes/overlays.json
-explains why no disc file holds it (built at runtime, say):
-  {"regions": [{"start": "80010000", "end": "8002EE98", "code_sha256": "…",
-                "why": "written by 80012340 from a table it builds"}]}
-An entry settles each stretch inside start..end whose code_sha256 (the
-ledger's, of the stretch's functions) it gives: when the inventory later
-lists other code there, the stretch is open again (explained_for_other_code).
-Name the writer and what it read: the why is a claim, checked like any other.

@@ -22,18 +22,18 @@ use std::path::{Path, PathBuf};
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct InventoryArgs {
-    /// Disc image (default protocol.toml's).
+    /// Disc image (default the project's media).
     #[serde(default)]
     pub media: Option<PathBuf>,
     /// Run directory whose RAM (and trace) adds runtime tables and overlays. Repeatable.
     #[arg(long = "ram")]
     #[serde(default)]
     pub ram: Vec<PathBuf>,
-    /// Output (default notes/inventory.json beside protocol.toml, else .psx/).
+    /// Output (default .psx/inventory.json).
     #[arg(long)]
     #[serde(default)]
     pub out: Option<PathBuf>,
-    /// Directory of decompressed disc data, with unpacked.json (guide protocol).
+    /// Directory of decompressed disc data, with unpacked.json (guide code).
     #[arg(long)]
     #[serde(default)]
     pub unpacked: Option<PathBuf>,
@@ -73,7 +73,7 @@ fn read_unpacked(dir: &Path, size: impl Fn(&str) -> Option<u64>) -> crate::Resul
             return Err(bad(format!("files[{i}]: {source} at {offset} is listed twice")));
         }
         let info = json!({"file": path, "source": source, "offset": offset, "length": length,
-            "bytes": bytes.len(), "sha256": crate::publish::sha256(&bytes)});
+            "bytes": bytes.len(), "sha256": crate::stamp::sha256(&bytes)});
         out.push(Unpacked { name, bytes, info });
     }
     Ok(out)
@@ -2037,7 +2037,7 @@ impl Finder<'_> {
             for row in rows {
                 let s = parse_hex(&row["entry"]);
                 let bytes = chunk_bytes(&row_chunks(&row), |x, y| ram(x, y).unwrap_or_default());
-                let key = (s, crate::publish::sha256(&bytes));
+                let key = (s, crate::stamp::sha256(&bytes));
                 if self.exe_keys.contains(&key) {
                     continue;
                 }
@@ -2250,19 +2250,7 @@ pub(crate) fn overlay_bytes(root: &Path, sha: &str) -> PathBuf {
 }
 
 pub(crate) fn default_out(ctx: &Ctx) -> PathBuf {
-    if ctx.root.join("protocol.toml").is_file() {
-        ctx.root.join("notes/inventory.json")
-    } else {
-        ctx.root.join(".psx/inventory.json")
-    }
-}
-
-pub(crate) fn protocol_media(root: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(root.join("protocol.toml")).ok()?;
-    let v: toml::Value = toml::from_str(&text).ok()?;
-    // Relative to the repository (psx port init writes ../disc.chd).
-    let p = crate::moved::find(root, Path::new(v.get("disc")?.get("media")?.as_str()?));
-    p.is_file().then_some(p)
+    ctx.root.join(".psx/inventory.json")
 }
 
 impl InventoryArgs {
@@ -2272,9 +2260,8 @@ impl InventoryArgs {
         let at = |p: &Path| if p.is_absolute() { p.to_path_buf() } else { ctx.root.join(p) };
         let media = match &self.media {
             Some(m) => at(m),
-            None => protocol_media(&ctx.root).ok_or_else(|| {
-                Error::invalid("give a disc image, or run in a repository whose protocol.toml names one")
-            })?,
+            None => crate::context::project_media(&ctx.root)?
+                .ok_or_else(|| Error::invalid("give a disc image, or run in a project with saved media"))?,
         };
         let disc = Disc::open(&media)?;
         let fs = FileSystem::read(&disc)?;
@@ -2284,7 +2271,7 @@ impl InventoryArgs {
             .map(psx_media::system_cnf::SystemCnf::parse)
             .and_then(|c| c.boot)
             .unwrap_or_else(|| psx_media::system_cnf::DEFAULT_BOOT.into());
-        let boot = crate::roles::boot_path(&boot);
+        let boot = boot_path(&boot);
 
         // The disc's files, and its executables.
         let mut files = Vec::new();
@@ -2348,7 +2335,7 @@ impl InventoryArgs {
             let tl = timeline(&dir)?;
             let mut ram = crate::ram::load(&dir)?.bytes;
             ram.resize(0x20_0000, 0);
-            let executed = std::fs::read(dir.join("executed.bin")).ok().map(|b| crate::publish::sha256(&b));
+            let executed = std::fs::read(dir.join("executed.bin")).ok().map(|b| crate::stamp::sha256(&b));
             let mut input = json!({"run": dir, "executed_sha256": executed});
             // A trace from before overwritten pages were kept reads code
             // beside a page RAM no longer held as if it still did.
@@ -2457,7 +2444,7 @@ impl InventoryArgs {
             );
             exe_keys.extend(a.functions.values().map(|f| {
                 let bytes = chunk_bytes(&f.chunks, |s, e| exe.payload[(s - lo) as usize..(e - lo) as usize].to_vec());
-                (f.start, crate::publish::sha256(&bytes))
+                (f.start, crate::stamp::sha256(&bytes))
             }));
             executables.push(json!({
                 "path": exe.path, "boot": exe.boot, "loads_at": hex(exe.lo), "end": hex(exe.hi()),
@@ -2657,7 +2644,7 @@ impl InventoryArgs {
                 }
                 let b =
                     chunk_bytes(&row_chunks(&row), |x, y| code.bytes[(x - lo) as usize..(y - lo) as usize].to_vec());
-                let key = (s, crate::publish::sha256(&b));
+                let key = (s, crate::stamp::sha256(&b));
                 if found.contains_key(&key) || exe_keys.contains(&key) {
                     continue;
                 }
@@ -2729,7 +2716,7 @@ impl InventoryArgs {
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
             .map(|v| v["totals"].clone());
         let inventory = json!({
-            "inventory": 2, "made": crate::publish::utc_now(), "psx": crate::context::version(),
+            "inventory": 2, "made": crate::stamp::utc_now(), "psx": crate::context::version(),
             "media": media, "boot": boot, "totals": summary,
             "how": "functions from each executable's entry, calls in functions found, traced call targets and pointers into code (in the executable and in snapshots holding it); code no executable holds is found in each moment of each traced run's code pages (RAM's code as it was then: each page's latest copy, taken again where RAM was written over with no code run there, seeded by what ran and was called in that moment, with calls followed only from code that ran in it) and in each run's RAM at its end; a function is its start and the sha256 of its bytes, listed once however many moments held it; overlays group them by the file their bytes are loaded from, a disc file or one decompressed from it (unpacked), analysed over the extent RAM held of it (bounded_by file), else (one no file's cluster named, when exactly one file seen loaded holds its bytes there, is that file's) by the code they were first found in, read only around the code found (bounded_by found_code: functions far from it are not listed); code from the BIOS ROM, the shell, is listed under bios_code instead; gaps are what no executable's function covers, with how many words decode as instructions",
             "executables": executables, "overlays": overlays, "bios_code": bios_code, "disc": {"files": files},
@@ -2758,9 +2745,7 @@ impl InventoryArgs {
         let found_code = overlays.iter().filter(|o| o["bounded_by"] == "found_code").count();
         let old_traces: Vec<Value> =
             inputs.iter().filter(|i| i["overwritten_pages_kept"] == false).map(|i| i["run"].clone()).collect();
-        let mut next = String::from(
-            "artifact_read the inventory for functions and gaps; keep it in the investigator's notes so the ledger can count against it",
-        );
+        let mut next = String::from("artifact_read the inventory for functions and gaps");
         if !old_traces.is_empty() {
             next += "; the runs in traced_before_overwritten_pages_were_kept were traced before run --trace kept the pages RAM stopped holding, so code beside one may be read on into code no longer there: record them again with run --trace (the same recipe) and take the inventory again";
         }
@@ -2810,9 +2795,23 @@ impl Op for InventoryArgs {
     }
 }
 
+/// The boot path in SYSTEM.CNF as an ISO path (`cdrom:\SLUS_005.67;1` is `/SLUS_005.67`).
+fn boot_path(boot: &str) -> String {
+    let p = boot.trim_start_matches("cdrom:").trim_start_matches("cdrom0:");
+    let p = p.split(';').next().unwrap_or(p).replace('\\', "/");
+    format!("/{}", p.trim_start_matches('/')).to_ascii_uppercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boot_paths() {
+        assert_eq!(boot_path("cdrom:\\SLUS_005.67;1"), "/SLUS_005.67");
+        assert_eq!(boot_path("cdrom:PSX.EXE;1"), "/PSX.EXE");
+        assert_eq!(boot_path("cdrom0:\\EXE\\MAIN.EXE;1"), "/EXE/MAIN.EXE");
+    }
 
     fn code(words: &[u32]) -> Code {
         Code {

@@ -211,7 +211,7 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
             let sha = f.sha.clone().unwrap_or_default();
             let words = std::fs::read(crate::inventory::overlay_bytes(root, &sha))
                 .ok()
-                .filter(|b| crate::publish::sha256(b) == sha)
+                .filter(|b| crate::stamp::sha256(b) == sha)
                 .and_then(|b| placed(&f, &b))
                 .ok_or_else(|| {
                     Error::invalid(format!(
@@ -616,7 +616,7 @@ impl CoverageArgs {
         });
         let out = self.out.as_ref().map(|p| at(p)).unwrap_or_else(|| inv_path.with_file_name("coverage.json"));
         let doc = json!({
-            "coverage": FORMAT, "made": crate::publish::utc_now(), "psx": crate::context::version(),
+            "coverage": FORMAT, "made": crate::stamp::utc_now(), "psx": crate::context::version(),
             "inventory": {"path": inv_path, "made": inv["made"]},
         "how": "each run's executed words, credited to the executable or overlay whose code holds that instruction at that address; a block is executed when any of its words is; runs are indices into runs; each run's recipe (the named state it started from, its arguments, its executed.bin's sha256) is what coverage check runs again",
             "runs": runs, "totals": summary["totals"], "in_no_image": no_image, "images": out_images,
@@ -663,7 +663,7 @@ impl CoverageArgs {
             let mut run = recipe["run"].clone();
             if let Some(name) = recipe["from"].as_str() {
                 let state = crate::states::state_file(ctx, name);
-                let sha = std::fs::read(&state).ok().map(|b| crate::publish::sha256(&b));
+                let sha = std::fs::read(&state).ok().map(|b| crate::stamp::sha256(&b));
                 if sha.as_deref() != recipe["from_state_sha256"].as_str() {
                     all_same = false;
                     results.push(json!({"run": r["run"], "from": name, "status": "state_changed",
@@ -681,7 +681,7 @@ impl CoverageArgs {
             let args: crate::run::RunCmdArgs =
                 serde_json::from_value(run).map_err(|e| Error::malformed(format!("a corpus recipe's run: {e}")))?;
             let (complete, report) = args.run(ctx)?;
-            let executed = std::fs::read(out.join("executed.bin")).ok().map(|b| crate::publish::sha256(&b));
+            let executed = std::fs::read(out.join("executed.bin")).ok().map(|b| crate::stamp::sha256(&b));
             let status = if !complete {
                 "incomplete"
             } else if executed.as_deref() == recipe["executed_sha256"].as_str() {

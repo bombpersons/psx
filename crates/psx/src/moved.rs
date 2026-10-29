@@ -60,35 +60,9 @@ pub fn relocate(root: &Path, v: &mut serde_json::Value) {
     }
 }
 
-/// `p` from `base`: `../clean` for a sibling, with `..` as far up as they
-/// share a folder; absolute when they share none but the filesystem's root.
-pub fn relative(base: &Path, p: &Path) -> PathBuf {
-    let (b, q): (Vec<Component>, Vec<Component>) = (base.components().collect(), p.components().collect());
-    let shared = b.iter().zip(&q).take_while(|(x, y)| x == y).count();
-    if shared <= 1 || !p.is_absolute() {
-        return p.to_path_buf();
-    }
-    let mut out: PathBuf = b[shared..].iter().map(|_| Component::ParentDir).collect();
-    out.extend(&q[shared..]);
-    if out.as_os_str().is_empty() { PathBuf::from(".") } else { out }
-}
-
-/// A repository or folder kept beside `base` (a port's other repositories,
-/// a legacy port): as kept while it exists, else the folder of the same
-/// name beside `base` (the port moved as a whole), else as kept.
-pub fn sibling(base: &Path, p: &Path) -> PathBuf {
-    if p.exists() {
-        return p.to_path_buf();
-    }
-    match (base.parent(), p.file_name()) {
-        (Some(d), Some(n)) if d.join(n).is_dir() => d.join(n),
-        _ => p.to_path_buf(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{find, relative, relocate, sibling, store};
+    use super::{find, relocate, store};
     use std::path::Path;
 
     #[test]
@@ -126,22 +100,6 @@ mod tests {
         // A missing file stays as kept.
         assert_eq!(find(&root, Path::new("/old/a.bin")), Path::new("/old/a.bin"));
         assert_eq!(find(&root, Path::new("/old/place/nothing/here.bin")), Path::new("/old/place/nothing/here.bin"));
-        std::fs::remove_dir_all(&tmp).unwrap();
-    }
-
-    #[test]
-    fn repositories_beside_each_other_are_kept_relative() {
-        let p = |s: &str| Path::new(s).to_path_buf();
-        assert_eq!(relative(&p("/a/tr2/inv"), &p("/a/tr2/clean")), p("../clean"));
-        assert_eq!(relative(&p("/a/tr2/inv"), &p("/a/rom/x.cue")), p("../../rom/x.cue"));
-        assert_eq!(relative(&p("/a/tr2/inv"), &p("/a/tr2/inv/rom/x.cue")), p("rom/x.cue"));
-        assert_eq!(relative(&p("/a/tr2/inv"), &p("/a/tr2/inv")), p("."));
-        assert_eq!(relative(&p("/a/inv"), &p("/b/clean")), p("/b/clean"), "only the root in common");
-        let tmp = std::env::temp_dir().join(format!("psx-sibling-{}", std::process::id()));
-        std::fs::create_dir_all(tmp.join("tr2/clean")).unwrap();
-        let inv = tmp.join("tr2/inv");
-        assert_eq!(sibling(&inv, &p("/old/clean")), tmp.join("tr2/clean"));
-        assert_eq!(sibling(&inv, &p("/old/gone")), p("/old/gone"));
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 }

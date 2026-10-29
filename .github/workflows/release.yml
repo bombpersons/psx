@@ -83,18 +83,18 @@ jobs:
       # Gamepads (gilrs) and sound (cpal) in the handoff window link libudev and ALSA on Linux.
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libudev-dev libasound2-dev pkg-config
-      - run: cargo build --profile dist --locked -p psx -p psx-clean --target ${{ matrix.target }}
+      - run: cargo build --profile dist --locked -p psx --target ${{ matrix.target }}
       - name: Package
         run: |
           name=psx-${{ matrix.target }}
           mkdir -p dist/stage
           cp README.md LICENSE-MIT LICENSE-APACHE dist/stage/
           if [ "${{ runner.os }}" = Windows ]; then
-            cp target/${{ matrix.target }}/dist/psx.exe target/${{ matrix.target }}/dist/psx-clean.exe dist/stage/
+            cp target/${{ matrix.target }}/dist/psx.exe dist/stage/
             asset=$name.zip
             (cd dist/stage && 7z a -tzip "../$asset" . > /dev/null)
           else
-            cp target/${{ matrix.target }}/dist/psx target/${{ matrix.target }}/dist/psx-clean dist/stage/
+            cp target/${{ matrix.target }}/dist/psx dist/stage/
             asset=$name.tar.gz
             tar -czf "dist/$asset" -C dist/stage .
           fi

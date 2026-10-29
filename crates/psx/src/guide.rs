@@ -15,20 +15,15 @@ pub enum Topic {
     Fields,
     Cases,
     States,
-    Barrier,
     Code,
     Assets,
     Bevy,
     Port,
-    Protocol,
-    Cleanroom,
-    Review,
-    Agents,
     Troubleshooting,
 }
 
 impl Topic {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 12] = [
         Self::Overview,
         Self::Setup,
         Self::Input,
@@ -36,15 +31,10 @@ impl Topic {
         Self::Fields,
         Self::Cases,
         Self::States,
-        Self::Barrier,
         Self::Code,
         Self::Assets,
         Self::Bevy,
         Self::Port,
-        Self::Protocol,
-        Self::Cleanroom,
-        Self::Review,
-        Self::Agents,
         Self::Troubleshooting,
     ];
 
@@ -57,15 +47,10 @@ impl Topic {
             Self::Fields => "Name the game's memory and find its tick",
             Self::Cases => "Record cases and check them again",
             Self::States => "Keep start states that rebuild from power-on",
-            Self::Barrier => "Check and publish what crosses to the implementer",
             Self::Code => "Follow runtime evidence into code",
             Self::Assets => "Find, decode and validate assets",
             Self::Bevy => "Rebuild the game in Bevy",
-            Self::Port => "Port a whole game as an engine and a game",
-            Self::Protocol => "Follow the porting protocol to a complete port",
-            Self::Cleanroom => "Keep the roles apart in a clean-room port",
-            Self::Review => "Review bundles and audit the port",
-            Self::Agents => "Start each role's agent when it has work (port run)",
+            Self::Port => "Port a game by goals and features",
             Self::Troubleshooting => "Diagnose incomplete or unexpected results",
         }
     }
@@ -79,15 +64,10 @@ impl Topic {
             Self::Fields => include_str!("guide/fields.md"),
             Self::Cases => include_str!("guide/cases.md"),
             Self::States => include_str!("guide/states.md"),
-            Self::Barrier => include_str!("guide/barrier.md"),
             Self::Code => include_str!("guide/code.md"),
             Self::Assets => include_str!("guide/assets.md"),
             Self::Bevy => include_str!("guide/bevy.md"),
             Self::Port => include_str!("guide/port.md"),
-            Self::Protocol => include_str!("guide/protocol.md"),
-            Self::Cleanroom => include_str!("guide/cleanroom.md"),
-            Self::Review => include_str!("guide/review.md"),
-            Self::Agents => include_str!("guide/agents.md"),
             Self::Troubleshooting => include_str!("guide/troubleshooting.md"),
         }
     }

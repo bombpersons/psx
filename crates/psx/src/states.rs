@@ -408,7 +408,7 @@ fn keep_replaced(chain_dir: &Path, name: &str, old: &Value) -> crate::Result<()>
         return Ok(());
     }
     let mut old = old.clone();
-    old["replaced"] = json!(crate::publish::utc_now());
+    old["replaced"] = json!(crate::stamp::utc_now());
     write(&kept, pretty(&old).as_bytes())
 }
 

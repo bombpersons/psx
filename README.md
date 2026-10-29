@@ -62,40 +62,22 @@ The full story is in the [write-up](research/case-study-megaman8.md).
 - **A Bevy game template** with the PS1 look: vertex wobble, affine textures, 15-bit colour,
   dithering and PS1 blend modes, while game code stays plain Bevy. Includes trajectory tests
   against the original, controller rebinding and its own developer MCP for stepping, querying
-  and screenshotting the game headless. Ports start split into a reusable engine (with a tiny
-  sandbox game that proves it) and the game on top, and take template updates in place.
-- **A clean-room porting protocol.** Separate investigator, reviewer and implementer
-  repositories, a barrier that stops the original's code crossing between them, and a ledger
-  that says how complete the port is, measured against the disc. See below.
+  and screenshotting the game headless, and takes template updates in place.
+- **Porting by goals and features.** You say which features of the game you want; psx keeps
+  the port's state on disk and tells the agent the one thing due next. See below.
 
-## Porting under a clean room
+## Porting a game
 
-For a whole port, psx can keep the people (or agents) who read the original's code apart from
-the ones who write the new game:
-
-- **The investigator** reads the original with psx and writes specs in game terms, plus
-  cases: recordings of the original from named start states that rebuild from power-on.
-- **The reviewer** approves what crosses and audits the port.
-- **The implementer** builds the game in the Bevy template from the approved specs and cases,
-  and never touches psx or the original's code. Its one window on the original is clean mode
-  (`psx-clean`): it can record new cases from published start states, compare its runs with
-  the original's, and run its tests on cases the investigator kept back, seeing only pass or
-  fail.
-
-`psx template create --role` writes each of the three repositories with its instructions and
-access rules; `psx port adopt` brings repositories you already have under the protocol, including a port
-written before it, which the implementer is then denied. Everything that crosses is
-checked for addresses, code and copied notes, and every message to the implementer is
-logged. `psx protocol next` tells each role what to do now, and `psx protocol report` how far
-along the port is, with an estimated date once the inventory stops growing. `psx port run`
-starts each role's agent when it has work, one fresh headless session per item, in whichever
-agent harness `protocol.toml` names, and logs what each run did. On Linux each session runs in a
-bubblewrap sandbox, so the implementer sees only its own repository whatever the harness allows.
-
-This lowers the legal risk of a port; it doesn't remove it, and it isn't legal advice. An AI
-implementer may also have seen other reimplementations of the game in training, which no
-access rule prevents. The procedure is in [docs/protocol-plan.md](docs/protocol-plan.md)
-and the `guide` topics `protocol` and `cleanroom`.
+`psx port init DEST --media GAME.cue` writes a port's workspace: the Bevy template, a
+`goal.toml` for the features you want, a `catalogue/` of the game's features with their
+dependencies, the disc and BIOS linked in, and psx's MCP server for the agent working there.
+The agent proposes the catalogue; you confirm the goal's list with `psx port confirm --yes`.
+From then on, an ordinary interactive session (Claude Code, Codex) in the workspace starts with
+`port_next`: the one item due now, for which feature, and the fact that will show it done.
+`psx port status --plain` shows every feature of the goal by stage. One agent investigates
+and ports, with full access to psx and the original's code; correctness is checked
+mechanically against recordings of the original. The design is in
+[docs/port-design.md](docs/port-design.md).
 
 ## See it in action
 
@@ -133,8 +115,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/bom
 The installer checks the download's SHA-256, puts `psx` in `~/.local/bin` (Windows:
 `%LOCALAPPDATA%\psx\bin`, added to your PATH) and fetches the PsyQ signatures `psx symbols`
 uses. Run it again to update. Building from source needs Rust 1.89+:
-`cargo install --locked --git https://github.com/bombpersons/psx psx psx-clean` (psx-clean is
-clean mode, which a clean-room port's implementer uses). Porting with the Bevy
+`cargo install --locked --git https://github.com/bombpersons/psx psx`. Porting with the Bevy
 template needs Rust 1.97.1+ either way.
 
 Then add a BIOS, either your own dump or a checksum-verified download of a known image (pick the
@@ -181,9 +162,9 @@ Custom formats need a parser. Every finding is evidence to check, not a guarante
 ## More
 
 - [README_FOR_AGENTS.md](README_FOR_AGENTS.md): every command and flag.
-- [docs/protocol-plan.md](docs/protocol-plan.md): the clean-room porting protocol and what each part does.
+- [docs/port-design.md](docs/port-design.md): porting by goals, features and mechanics.
 - [docs/agent-workflow.md](docs/agent-workflow.md): evidence, input and project isolation.
-- [templates/psx-bevy](templates/psx-bevy/README.md): the game template (engine + game workspace).
+- [templates/psx-bevy](templates/psx-bevy/README.md): the game template.
 - [docs/ghidra-integration.md](docs/ghidra-integration.md): Ghidra analysis and symbol export.
 - [docs/compatibility.md](docs/compatibility.md): how far each game gets on the native core, and known emulation issues.
 - [research/](research/): emulator, format and case-study notes.

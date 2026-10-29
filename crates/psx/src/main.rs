@@ -12,7 +12,6 @@ use commands::{Ctx, Op};
 
 mod artifact;
 mod assets_cmd;
-mod audit;
 mod bios;
 mod bound_symbols;
 mod case;
@@ -27,7 +26,6 @@ mod ghidra;
 mod guide;
 mod handoff;
 mod inventory;
-mod leak;
 mod mcp;
 mod media_cmd;
 mod moved;
@@ -36,18 +34,13 @@ mod page;
 mod parser;
 mod parser_template;
 mod port;
-mod port_run;
-mod protocol;
 mod provenance;
-mod publish;
 mod ram;
 mod replay;
-mod roles;
 mod run;
 mod run_native;
-#[cfg(unix)]
-mod sandbox;
 mod stall;
+mod stamp;
 mod states;
 mod str_cmd;
 mod symbols_io;
@@ -140,32 +133,15 @@ enum Command {
         #[command(subcommand)]
         action: CaseAction,
     },
-    /// The barrier between investigator and implementer: check text for leaks.
-    Barrier {
-        #[command(subcommand)]
-        action: BarrierAction,
-    },
     /// A port: its workspace, goal and catalogue.
     Port {
         #[command(subcommand)]
         action: PortAction,
     },
-    /// Carry specs and cases to the implementer, only as the reviewer approved them.
-    Publish {
-        #[command(subcommand)]
-        action: PublishAction,
-    },
-    /// Every function of every executable on the disc and of the overlays in RAM snapshots, with instruction counts and basic blocks, and the disc's file list: the porting protocol's inventory.
+    /// Every function of every executable on the disc and of the overlays in RAM snapshots, with instruction counts and basic blocks, and the disc's file list.
     Inventory(inventory::InventoryArgs),
     /// What traced runs executed, per function of the inventory: blocks executed and not, and the runs reaching each.
     Coverage(coverage::CoverageArgs),
-    /// The mechanical audit of a clean-room port: approved specs only, every number in the port's code accounted for, no addresses, symbols or copied notes, crossings followed by questions, logs intact, no refused tool calls. With --judgment, records it.
-    Audit(audit::AuditArgs),
-    /// The porting protocol's ledger, and what each role does now.
-    Protocol {
-        #[command(subcommand)]
-        action: ProtocolAction,
-    },
     /// Named start states, each with its chain of runs from power-on.
     States {
         #[command(subcommand)]
@@ -227,16 +203,6 @@ enum StatesAction {
 }
 
 #[derive(clap::Subcommand)]
-enum BarrierAction {
-    /// Check files or text for what would carry the original's code across: addresses,
-    /// hex, code-shaped text, tool and symbol names, text copied from the notes.
-    Check(leak::BarrierCheckArgs),
-    /// The check on each message to the implementer, as its UserPromptSubmit hook: the event
-    /// on stdin, settings in .claude/barrier.json, every message logged to notes/guidance.jsonl.
-    Hook(leak::BarrierHookArgs),
-}
-
-#[derive(clap::Subcommand)]
 enum PortAction {
     /// Write a port's workspace: the Bevy template, the goal, the catalogue, the disc and
     /// BIOS linked in, and psx's MCP server for the agent working there.
@@ -249,38 +215,13 @@ enum PortAction {
     /// The one item due now: what, for which feature, why, and the fact that will show it done.
     /// An agent item handed out three times with nothing changed is reported as stuck instead.
     Next(port::PortNextArgs),
-    /// Add the protocol's files to repositories that already exist (a port begun before them, or
-    /// moved under the protocol): missing files written, settings extended, nothing overwritten,
-    /// and a list of what only a person settles. --legacy names a port the implementer never reads.
-    Adopt(roles::PortAdoptArgs),
-    /// Start each role's agent when the ledger gives it work, one at a time, headless, with
-    /// the harness protocol.toml's [agents] names, until no role has work or a run changes nothing.
-    Run(port_run::PortRunArgs),
-}
-
-#[derive(clap::Subcommand)]
-enum ProtocolAction {
-    /// Compute the ledger (units, stages, completion) and say what a role does now.
-    Next(protocol::ProtocolNextArgs),
-    /// Completion by kind and stage, and the estimate with its range (or why there is none); --plain for the person.
-    Report(protocol::ProtocolReportArgs),
-}
-
-#[derive(clap::Subcommand)]
-enum PublishAction {
-    /// Check what changed in specs since the last crossing and write it as a bundle with its hash.
-    Stage(publish::PublishStageArgs),
-    /// Copy a bundle into the implementer's specs, only if reviews/HASH.json approves it.
-    Cross(publish::PublishCrossArgs),
-    /// Check that the implementer's specs are exactly the approved bundles that crossed.
-    Check(publish::PublishCheckArgs),
 }
 
 #[derive(clap::Subcommand)]
 enum CaseAction {
     /// Record a case: the subject's fields every field from a start state with input.
     Record(Box<case::CaseRecordArgs>),
-    /// Record cases again from their recipes and compare with the published CSVs.
+    /// Record cases again from their recipes and compare with their CSVs.
     Check(case::CaseCheckArgs),
 }
 
@@ -334,14 +275,6 @@ fn main() -> ExitCode {
         }
     }
     let ctx = Ctx { root: std::env::current_dir().unwrap_or_default(), cancel: None };
-    if let Command::Barrier { action: BarrierAction::Hook(a) } = &cli.command {
-        let mut stdin = String::new();
-        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin);
-        let out = a.run(&stdin);
-        print!("{}", out.stdout);
-        eprint!("{}", out.stderr);
-        return ExitCode::from(out.exit);
-    }
     let out = match cli.command {
         Command::McpCall => mcp::project::worker(&ctx),
         Command::HandoffChild { run_dir } => handoff::child(&run_dir),
@@ -375,28 +308,14 @@ fn main() -> ExitCode {
             CaseAction::Record(a) => a.exec(&ctx),
             CaseAction::Check(a) => a.exec(&ctx),
         },
-        Command::Barrier { action } => match action {
-            BarrierAction::Check(a) => a.exec(&ctx),
-            BarrierAction::Hook(_) => unreachable!("handled above"),
-        },
         Command::Port { action } => match action {
             PortAction::Init(a) => a.exec(&ctx),
             PortAction::Confirm(a) => a.exec(&ctx),
             PortAction::Status(a) => a.exec(&ctx),
             PortAction::Next(a) => a.exec(&ctx),
-            PortAction::Adopt(a) => a.exec(&ctx),
-            PortAction::Run(a) => a.exec(&ctx),
-        },
-        Command::Publish { action } => match action {
-            PublishAction::Stage(a) => a.exec(&ctx),
-            PublishAction::Cross(a) => a.exec(&ctx),
-            PublishAction::Check(a) => a.exec(&ctx),
         },
         Command::Inventory(a) => a.exec(&ctx),
         Command::Coverage(a) => a.exec(&ctx),
-        Command::Protocol { action: ProtocolAction::Next(a) } => a.exec(&ctx),
-        Command::Protocol { action: ProtocolAction::Report(a) } => a.exec(&ctx),
-        Command::Audit(a) => a.exec(&ctx),
         Command::States { action } => match action {
             StatesAction::Make(a) => a.exec(&ctx),
             StatesAction::Save(a) => a.exec(&ctx),

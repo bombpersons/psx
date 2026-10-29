@@ -15,8 +15,7 @@ fields) and writes three files:
   the timing vectors and, when given, coverage (below).
 - notes/recordings/NAME.json, the recipe: the arguments, the start state's
   and map's hashes, the media and BIOS identity and the psx version. It
-  names no addresses either, but it is the investigator's: keep it on that
-  side. cases and recipes take other folders, never the same one: a case
+  names no addresses either. cases and recipes take other folders, never the same one: a case
   and its recipe are both NAME.json.
 
   case record NAME --from-state S --frames 120 --subject lara \
@@ -76,7 +75,7 @@ came from; a compared column no spec claims is a warning.
       --coverage 'SPEC-0003:yaw' ...
 
 case check [NAME...] records cases again from their recipes (all of them
-by default) and compares each with its published CSV cell by cell, by
+by default) and compares each with its CSV cell by cell, by
 column name, and the case's fields_per_tick, first_tick, input, writes,
 subject, timing and coverage (an until's rows resolved again). It prints a
 line per case to stderr as it goes (psx case check: 3/280 NAME same).
@@ -88,8 +87,7 @@ at the end of the case's JSON and leaves the rest of its files as they
 were. Writing a case that differs keeps keys added to it by hand.
 A case record over an existing case needs replace=true. Each recipe notes
 the emulator it was recorded on and, after a check, the emulator it was
-checked on and whether it held: protocol next counts a case as evidence
-only on the current emulator.
+checked on and whether it held.
 
 Start states: take them where the behaviour starts (a handoff's mark, a
 run's save_state, or run until a named state holds) and name them with

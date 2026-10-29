@@ -73,7 +73,7 @@ impl PortConfirmArgs {
         if port.goal_ids().is_empty() {
             return Err(Error::invalid("the goal names no features, and no feature is catalogued"));
         }
-        let c = Confirmed { at: crate::publish::utc_now(), features: port.goal.features.clone() };
+        let c = Confirmed { at: crate::stamp::utc_now(), features: port.goal.features.clone() };
         let path = ctx.root.join(GOAL);
         let text = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, e))?;
         let new = with_confirmation(&text, &c);

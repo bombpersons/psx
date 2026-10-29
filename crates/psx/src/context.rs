@@ -24,6 +24,11 @@ struct Config {
     #[serde(default, rename = "backend", skip_serializing)]
     _backend: Option<serde::de::IgnoredAny>,
 }
+/// The project's saved media (`.psx/project.json`), if any.
+pub(crate) fn project_media(root: &Path) -> crate::Result<Option<PathBuf>> {
+    Ok(config(root)?.media.map(|p| crate::moved::find(root, &p)))
+}
+
 fn config(root: &Path) -> crate::Result<Config> {
     let p = root.join(".psx/project.json");
     match fs::read(&p) {
@@ -120,7 +125,7 @@ pub(crate) fn region(media: Option<&Path>) -> crate::Result<Option<bios::Region>
 
 pub struct Resolved {
     pub media: Option<PathBuf>,
-    /// Where media came from: argument, state, project or protocol.
+    /// Where media came from: argument, state or project.
     pub media_from: Option<&'static str>,
     pub bios: Option<PathBuf>,
     pub region: Option<bios::Region>,
@@ -179,8 +184,6 @@ pub fn resolve(
         None => [
             ("state", report.as_ref().and_then(|r| report_path(root, r, "media"))),
             ("project", cfg.media.map(|p| crate::moved::find(root, &p))),
-            // A port's repository names its disc in protocol.toml (psx port init).
-            ("protocol", crate::inventory::protocol_media(root)),
         ]
         .into_iter()
         .find_map(|(from, p)| p.map(|p| (Some(p), Some(from))))
@@ -253,7 +256,7 @@ pub fn resolve(
 
 #[derive(Args, Deserialize, JsonSchema)]
 pub struct ArgsContext {
-    /// Disc/EXE to inspect; defaults to saved project media, then protocol.toml's. Discovery never downloads.
+    /// Disc/EXE to inspect; defaults to saved project media. Discovery never downloads.
     #[arg(long)]
     pub image: Option<PathBuf>,
     /// Explicit BIOS preference; context --save stores it for later calls.
@@ -346,22 +349,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_port_repository_s_disc_is_the_default_media() {
+    fn saved_project_media_is_the_default() {
         let d = std::env::temp_dir().join(format!("psx-context-{}", std::process::id()));
-        let repo = d.join("investigate");
-        fs::create_dir_all(&repo).unwrap();
-        fs::write(d.join("game.chd"), b"").unwrap();
-        fs::write(repo.join("protocol.toml"), "[disc]\nmedia = \"../game.chd\"\n").unwrap();
-        let bios = Some(d.join("bios.bin"));
-        let r = resolve(&repo, None, bios.clone(), None, false).unwrap();
-        assert_eq!(r.media, Some(repo.join("../game.chd")));
-        assert_eq!(r.media_from, Some("protocol"));
-        // Saved defaults win over it.
+        let repo = d.join("port");
         fs::create_dir_all(repo.join(".psx")).unwrap();
-        fs::write(d.join("other.chd"), b"").unwrap();
-        fs::write(repo.join(".psx/project.json"), r#"{"format":1,"media":"../other.chd"}"#).unwrap();
-        let r = resolve(&repo, None, bios, None, false).unwrap();
+        fs::write(d.join("game.chd"), b"").unwrap();
+        fs::write(repo.join(".psx/project.json"), r#"{"format":1,"media":"../game.chd"}"#).unwrap();
+        let r = resolve(&repo, None, Some(d.join("bios.bin")), None, false).unwrap();
         assert_eq!(r.media_from, Some("project"));
+        assert_eq!(project_media(&repo).unwrap(), r.media);
         fs::remove_dir_all(&d).unwrap();
     }
 }

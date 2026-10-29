@@ -194,18 +194,11 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::run::RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames on the native core. Drive it with input/replay; observe with sample, watch, watch_reads, poke, trace, trace_cd, trace_spu or gpu_frame; save_state makes checkpoints. Returns run_dir and the report; brief or summary shorten it. See guide topics run and input.").heavy().screen(),
         ToolDef { call: call_handoff, schema: handoff_schema, ..def::<crate::handoff::HandoffArgs>("handoff", "Ask the person to play to a point you cannot easily reach: opens a window on this machine with the game and your request, and returns a ticket at once. Poll handoff_status; the result has state.bin to continue from, input.json (their input as a replay), their note, and the moments they marked with F6 (state, RAM and screen each, with RAM diffs between them).") },
         def::<crate::case::CaseRecordArgs>("case_record", "Record a case for a spec from a start state, input and a field map subject: the case JSON, its CSV with the tick column, and a recipe. See guide topic cases.").heavy(),
-        def::<crate::case::CaseCheckArgs>("case_check", "Record cases again from their recipes and compare them with the published CSVs, cell by cell. See guide topic cases.").heavy(),
+        def::<crate::case::CaseCheckArgs>("case_check", "Record cases again from their recipes and compare them with their CSVs, cell by cell. See guide topic cases.").heavy(),
         def::<crate::states::StatesMakeArgs>("states_make", "Run from a named start state (or power-on) and name the state it ends in: .psx/states/NAME.bin, and its chain of runs from power-on in notes/states/NAME.json. See guide topic states.").heavy(),
         def::<crate::states::StatesSaveArgs>("states_save", "Name a state an earlier run or handoff made; its chain from power-on comes from the runs' reports. See guide topic states."),
-        def::<crate::leak::BarrierCheckArgs>("barrier_check", "Check files or text for leaks of the original's code before they cross to the implementer. See guide topic barrier.").read_only(),
-        def::<crate::publish::PublishStageArgs>("publish_stage", "Leak-check what changed in specs since the last crossing and write it as a bundle for the reviewer. See guide topic barrier."),
-        def::<crate::publish::PublishCrossArgs>("publish_cross", "Copy a staged bundle to the implementer's specs if reviews/HASH.json approves that hash."),
-        def::<crate::publish::PublishCheckArgs>("publish_check", "Check the implementer's specs are exactly the approved bundles that crossed, and the publishing log and reviews unchanged.").read_only(),
-        def::<crate::inventory::InventoryArgs>("inventory", "Every function of the disc's executables and of overlays in ram snapshots, with instructions and blocks, and the disc's files. See guide topic protocol.").heavy(),
-        def::<crate::protocol::ProtocolNextArgs>("protocol_next", "The ledger, and what a role does now. Start every session with it. See guide topic protocol."),
-        def::<crate::protocol::ProtocolReportArgs>("protocol_report", "Completion by kind and stage, and the estimate or why there is none. plain=true: text for the person."),
-        def::<crate::audit::AuditArgs>("audit", "The mechanical audit of the port, when protocol_next says one is due. judgment records it. See guide topic review."),
-        def::<crate::coverage::CoverageArgs>("coverage", "Traced runs' executed blocks per inventory function, and the blocks never executed. See guide topic protocol.").heavy(),
+        def::<crate::inventory::InventoryArgs>("inventory", "Every function of the disc's executables and of overlays in ram snapshots, with instructions and blocks, and the disc's files. See guide topic code.").heavy(),
+        def::<crate::coverage::CoverageArgs>("coverage", "Traced runs' executed blocks per inventory function, and the blocks never executed. See guide topic code.").heavy(),
         def::<crate::states::StatesListArgs>("states_list", "The named start states: description, steps from power-on, and whether each is present.").read_only(),
         def::<crate::states::StatesRebuildArgs>("states_rebuild", "Replay start states' chains from power-on on this psx and compare: which step first differs, and named values old and new. replace puts rebuilt states in place. See guide topic states.").heavy(),
         def::<crate::handoff::HandoffStatusArgs>("handoff_status", "A handoff's progress or result: waiting, done, declined (read the note), closed or abandoned.").read_only().screen(),
@@ -699,51 +692,7 @@ async fn serve(root: std::path::PathBuf, pinned: bool, a: McpArgs) -> Result<(),
     Ok(())
 }
 
-/// `pinned`: the root came from `--root`/`PSX_ROOT`, so client roots are ignored.
-/// Inside psx port run's sandbox psx is served from outside, where it can
-/// write to the other repositories (publish cross), on this socket.
-#[cfg(unix)]
-pub const SANDBOX_SOCKET: &str = "/tmp/psx-mcp/psx.sock";
-
-/// Passes stdio through to the server outside the sandbox, if there is one.
-#[cfg(unix)]
-fn bridge() -> Option<ExitCode> {
-    let s = std::os::unix::net::UnixStream::connect(SANDBOX_SOCKET).ok()?;
-    let (mut from, mut to) = (s.try_clone().ok()?, s);
-    std::thread::spawn(move || {
-        pump(&mut std::io::stdin().lock(), &mut to);
-        let _ = to.shutdown(std::net::Shutdown::Write);
-    });
-    pump(&mut from, &mut std::io::stdout().lock());
-    Some(ExitCode::SUCCESS)
-}
-
-/// Copies until the reader ends, as each read comes: io::copy may splice
-/// between a pipe and a socket and hold the messages back.
-#[cfg(unix)]
-fn pump(r: &mut impl std::io::Read, w: &mut impl std::io::Write) {
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        match r.read(&mut buf) {
-            Ok(0) | Err(_) => return,
-            Ok(n) => {
-                if w.write_all(&buf[..n]).and_then(|_| w.flush()).is_err() {
-                    return;
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn bridge() -> Option<ExitCode> {
-    None
-}
-
 pub fn main(ctx: Ctx, a: McpArgs, pinned: bool) -> ExitCode {
-    if let Some(code) = bridge() {
-        return code;
-    }
     if !(1..=8).contains(&a.jobs) {
         println!("{}", Error::invalid("--jobs must be 1..=8").to_value());
         return ExitCode::from(1);
@@ -787,17 +736,9 @@ mod tests {
             .iter()
             .map(|t| t.name.len() + t.description.len() + serde_json::to_string(&t.input_schema()).unwrap().len())
             .sum();
-        // 50K on 2026-10-17; 52K from 2026-10-20 for handoff and handoff_status; 56K from
-        // 2026-10-25 for case_record and case_check; 61.5K from 2026-10-25 for the four
-        // states tools; 63K from 2026-10-26 for barrier_check; 65K from 2026-10-26 for the
-        // three publish tools; 67.5K from 2026-10-26 for port_init and template_create's roles;
-        // 68.5K from 2026-10-26 for inventory; 69K from 2026-10-26 for coverage; 69.6K from
-        // 2026-10-26 for protocol_next; 70.5K from 2026-10-26 for protocol_report and audit;
-        // 70.7K from 2026-10-26 for case_record's poke; 71K from 2026-10-26 for xrefs' kind
-        // and bits; 71.2K from 2026-10-27 for coverage's check; 71.4K from 2026-10-28 for
-        // inventory's unpacked; 72.2K from 2026-10-29 for port_status and port_next (the
-        // clean-room tools' removal will bring it down).
-        assert!(size <= 72_200, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // 50K on 2026-10-17, grown with each tool since; 65.7K from 2026-10-29, after the
+        // clean-room tools went and port_status and port_next came.
+        assert!(size <= 65_700, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,
