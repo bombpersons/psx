@@ -440,9 +440,14 @@ Tests run in three layers:
    decided: if the error stays bounded, faithful is enough; if it grows,
    the mechanic is exact.
 
-Verdicts record the time and the hashes of what they judged (traces,
-scenario recording, the code's last commit). A verdict counts only while
-those are unchanged.
+Verdicts are written only by psx, which runs the check itself (`psx port
+check`), never by the agent. Each records the time and the commit it
+judged, and counts only while that commit is HEAD and the check ran with
+no uncommitted changes. The checks need no emulator on the port's side
+(the original's recordings are kept), so re-running them after any commit
+is cheap, and no per-feature file tracking is needed. Verdicts live in
+`.psx/verdicts/`, outside the commit, so recording one does not make it
+stale.
 
 ## 7. Structure review
 
@@ -559,7 +564,10 @@ pick it up, and the person can redirect at any point. Items, in order:
 | **Assets** | an imported asset type has no contract or round trip | both exist and pass |
 | **Extract** | a reviewed feature has no sandbox verdict | the sandbox verdict passes |
 
-Features are taken in dependency order, formats first. A loop guard
+Until the person confirms the goal, only Catalogue and Confirm are handed
+out: Catalogue while the goal or catalogue has problems, then Confirm. A
+confirmation covers the list while every confirmed feature is still in the
+goal's closure. Features are taken in dependency order, formats first. A loop guard
 reports an item that comes back unchanged three times instead of handing
 it out again. The facts are gathered once per call, and each item's
 done-when is a fact the work leaves behind, never a session's say-so.

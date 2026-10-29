@@ -244,6 +244,11 @@ enum PortAction {
     /// Show the goal's features, their closure and any problems; with --yes, record the
     /// person's confirmation of the list in goal.toml.
     Confirm(port::PortConfirmArgs),
+    /// The goal's features by stage and area, their verdicts, problems, and the item due now.
+    Status(port::PortStatusArgs),
+    /// The one item due now: what, for which feature, why, and the fact that will show it done.
+    /// An agent item handed out three times with nothing changed is reported as stuck instead.
+    Next(port::PortNextArgs),
     /// Add the protocol's files to repositories that already exist (a port begun before them, or
     /// moved under the protocol): missing files written, settings extended, nothing overwritten,
     /// and a list of what only a person settles. --legacy names a port the implementer never reads.
@@ -377,6 +382,8 @@ fn main() -> ExitCode {
         Command::Port { action } => match action {
             PortAction::Init(a) => a.exec(&ctx),
             PortAction::Confirm(a) => a.exec(&ctx),
+            PortAction::Status(a) => a.exec(&ctx),
+            PortAction::Next(a) => a.exec(&ctx),
             PortAction::Adopt(a) => a.exec(&ctx),
             PortAction::Run(a) => a.exec(&ctx),
         },

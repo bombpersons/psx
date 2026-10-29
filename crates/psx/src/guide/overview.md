@@ -6,7 +6,9 @@ A port's workspace (port_init) holds goal.toml, the features the person
 wants, and catalogue/, the game's features with their dependencies. The
 agent proposes the catalogue; the person confirms the goal's list with
 psx port confirm --yes (psx port confirm shows the list, its closure and
-any problems first).
+any problems first). In the workspace, start every session with port_next:
+the one item due now, why, and the fact that will show it done.
+port_status shows every feature of the goal by stage.
 
 In a clean-room port's repositories, start every session with
 protocol_next({"role": "investigator"}) (or reviewer): it computes the

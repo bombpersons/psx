@@ -7,21 +7,27 @@
 //! depend on are its closure; each has a stage.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::Error;
-use crate::commands::{Ctx, Op, Outcome};
 use crate::front_matter::{Fm, front_matter};
-use crate::roles::{absolute, game_name, link_or_copy, psx_exe};
-use crate::template::{TemplateOptions, TemplateRegion};
+
+mod confirm;
+mod init;
+pub mod next;
+pub mod verdict;
+
+pub use confirm::PortConfirmArgs;
+pub use init::PortInitArgs;
+pub use next::{PortNextArgs, PortStatusArgs};
 
 pub const GOAL: &str = "goal.toml";
 pub const CATALOGUE: &str = "catalogue";
 
-const GOAL_TOML: &str = "\
+pub(crate) const GOAL_TOML: &str = "\
 # What the person wants from this port. The agent proposes the features
 # (catalogue/F-NNNN.md) and lists them here; the person confirms the list
 # with `psx port confirm --yes`, which writes `confirmed`. The list may grow
@@ -29,8 +35,6 @@ const GOAL_TOML: &str = "\
 description = \"\"
 features = []   # feature ids, or \"all\"
 ";
-
-const CATALOGUE_README: &str = include_str!("../../../templates/port/catalogue/README.md");
 
 /// The features a goal names: a list, or every catalogued feature.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -65,13 +69,13 @@ impl Default for Features {
 }
 
 impl Features {
-    fn to_json(&self) -> Value {
+    pub(crate) fn to_json(&self) -> Value {
         match self {
             Features::All => json!("all"),
             Features::List(l) => json!(l),
         }
     }
-    fn to_toml(&self) -> String {
+    pub(crate) fn to_toml(&self) -> String {
         match self {
             Features::All => "\"all\"".into(),
             Features::List(l) => toml::Value::from(l.clone()).to_string(),
@@ -149,7 +153,7 @@ pub enum Confirmation {
     Missing,
     /// Every confirmed feature is still in the goal.
     Covers { at: String },
-    /// Features the person confirmed are no longer in the goal.
+    /// Features the person confirmed are no longer in the goal's closure.
     Shrunk { at: String, missing: Vec<String> },
 }
 
@@ -343,14 +347,6 @@ impl Port {
         out
     }
 
-    /// A feature's stage: the last whose check holds, None when it has no
-    /// catalogue entry. Only the first stage's check exists so far; the
-    /// others come with the files they read (mechanics, plugins, verdicts,
-    /// reviews, sandboxes).
-    pub fn stage(&self, id: &str) -> Option<Stage> {
-        self.entries.contains_key(id).then_some(Stage::Catalogued)
-    }
-
     pub fn confirmation(&self) -> Confirmation {
         let Some(c) = &self.goal.confirmed else { return Confirmation::Missing };
         let at = c.at.clone();
@@ -358,15 +354,17 @@ impl Port {
             (Features::All, Features::All) => Vec::new(),
             (Features::All, Features::List(_)) => vec!["all".into()],
             (Features::List(was), _) => {
-                let now = self.goal_ids();
+                // Still needed by another goal feature counts as still wanted.
+                let now: BTreeSet<String> = self.closure().into_iter().collect();
                 was.iter().filter(|id| !now.contains(*id)).cloned().collect()
             }
         };
         if missing.is_empty() { Confirmation::Covers { at } } else { Confirmation::Shrunk { at, missing } }
     }
 
-    /// The closure as the person reads it before confirming.
-    pub fn closure_json(&self) -> Value {
+    /// The closure as the person reads it before confirming, with each
+    /// feature's stage.
+    pub fn closure_json(&self, stage: &dyn Fn(&str) -> Option<Stage>) -> Value {
         let goal = self.goal_ids();
         let closure = self.closure();
         let wanted: BTreeSet<&String> = closure.iter().collect();
@@ -384,7 +382,7 @@ impl Port {
                     "id": id,
                     "title": e.map(|e| e.title.as_str()),
                     "area": e.map(|e| e.area.as_str()),
-                    "stage": self.stage(id).map(Stage::name),
+                    "stage": stage(id).map(Stage::name),
                     "in_goal": goal.contains(id),
                     "depends": e.map(|e| &e.depends),
                     "mechanics": e.map(|e| &e.mechanics),
@@ -396,7 +394,7 @@ impl Port {
         json!(rows)
     }
 
-    fn confirmation_json(&self) -> Value {
+    pub(crate) fn confirmation_json(&self) -> Value {
         match self.confirmation() {
             Confirmation::Missing => json!({"state": "missing"}),
             Confirmation::Covers { at } => json!({"state": "covers", "at": at}),
@@ -405,243 +403,11 @@ impl Port {
     }
 }
 
-/// `goal.toml`'s text with `confirmed` set to `c`: an earlier confirmation
-/// (a line, or a `[confirmed]` table) replaced, everything else kept.
-fn with_confirmation(text: &str, c: &Confirmed) -> String {
-    let mut lines: Vec<&str> = Vec::new();
-    let mut in_table = false;
-    for line in text.lines() {
-        let t = line.trim_start();
-        if t.starts_with('[') {
-            in_table = t.starts_with("[confirmed]");
-            if in_table {
-                continue;
-            }
-        }
-        let key = t.split(['=', ' ', '\t']).next().unwrap_or("");
-        if in_table || key == "confirmed" {
-            continue;
-        }
-        lines.push(line);
-    }
-    let line = format!("confirmed = {{ at = \"{}\", features = {} }}", c.at, c.features.to_toml());
-    // A top-level key goes before the first table.
-    let at = lines.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(lines.len());
-    lines.insert(at, &line);
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
-}
-
-#[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PortConfirmArgs {
-    /// Record the confirmation. Without it, show the goal's features, the
-    /// closure and any problems: what would be confirmed.
-    #[arg(long)]
-    #[serde(default)]
-    pub yes: bool,
-}
-
-impl PortConfirmArgs {
-    fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
-        let port = Port::load(&ctx.root)?;
-        let mut out = json!({
-            "description": port.goal.description,
-            "features": port.goal.features.to_json(),
-            "closure": port.closure_json(),
-            "problems": port.problems,
-            "stages": Stage::ALL.map(Stage::name),
-            "confirmation": port.confirmation_json(),
-        });
-        if !self.yes {
-            out["next"] = json!(if port.problems.is_empty() {
-                "if this is the list the person wants: psx port confirm --yes (the person runs it)"
-            } else {
-                "the agent fixes the problems first"
-            });
-            return Ok(out);
-        }
-        if !port.problems.is_empty() {
-            return Err(Error::invalid(format!(
-                "the goal or catalogue has {} problems; run psx port confirm without --yes to see them",
-                port.problems.len()
-            )));
-        }
-        if port.goal_ids().is_empty() {
-            return Err(Error::invalid("the goal names no features, and no feature is catalogued"));
-        }
-        let c = Confirmed { at: crate::publish::utc_now(), features: port.goal.features.clone() };
-        let path = ctx.root.join(GOAL);
-        let text = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, e))?;
-        let new = with_confirmation(&text, &c);
-        // What was written must read back as this confirmation.
-        let check: Goal = toml::from_str(&new)
-            .map_err(|e| Error::invalid(format!("{GOAL} rewritten unreadably: {}", e.message())))?;
-        if check.confirmed.as_ref().map(|k| (&k.at, &k.features)) != Some((&c.at, &c.features)) {
-            return Err(Error::invalid(format!("{GOAL} rewritten without the confirmation; nothing written")));
-        }
-        crate::write_atomic(&path, new.as_bytes()).map_err(|e| Error::io(&path, e))?;
-        out["confirmation"] = json!({"state": "covers", "at": c.at});
-        out["confirmed"] = json!({"at": c.at, "features": c.features.to_json()});
-        Ok(out)
-    }
-}
-
-impl Op for PortConfirmArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::result(self.run(ctx))
-    }
-}
-
-#[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PortInitArgs {
-    /// The port's workspace: a new folder, or one holding nothing the
-    /// template writes.
-    pub dest: PathBuf,
-    /// The disc image (.cue, .chd, .iso or .bin), linked into the
-    /// workspace's media/.
-    #[arg(long)]
-    pub media: PathBuf,
-    /// The port's package name (default from the disc image's name).
-    #[arg(long)]
-    #[serde(default)]
-    pub name: Option<String>,
-    /// The original's video region. Default: the boot executable's region, else ntsc.
-    #[arg(long, value_enum)]
-    #[serde(default)]
-    pub region: Option<TemplateRegion>,
-    /// Video fields per logic tick. Default 1.
-    #[arg(long)]
-    #[serde(default)]
-    pub fields_per_tick: Option<u32>,
-}
-
-/// A package name from a game's name: lower case, words joined by `-`.
-fn package_from(game: &str) -> String {
-    let n: String =
-        game.to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-    let mut n = n.trim_matches('-').to_string();
-    while n.contains("--") {
-        n = n.replace("--", "-");
-    }
-    if n.starts_with(|c: char| c.is_ascii_lowercase()) { n } else { format!("game-{n}") }
-}
-
-fn write_new(dest: &Path, rel: &str, text: &str, written: &mut Vec<String>) -> crate::Result<()> {
-    let p = dest.join(rel);
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
-    }
-    std::fs::write(&p, text).map_err(|e| Error::io(&p, e))?;
-    written.push(rel.to_string());
-    Ok(())
-}
-
-impl PortInitArgs {
-    fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
-        let media = absolute(&ctx.root.join(&self.media));
-        let dest = absolute(&ctx.root.join(&self.dest));
-        let ours = [GOAL, "catalogue/README.md", ".mcp.json", ".psx/project.json"];
-        let clashes: Vec<&str> = ours.into_iter().filter(|r| dest.join(r).exists()).collect();
-        if !clashes.is_empty() {
-            return Err(Error::invalid(format!(
-                "{} already has {}; port init writes a new workspace",
-                dest.display(),
-                clashes.join(", ")
-            )));
-        }
-        // The disc first, so one that cannot be read writes nothing.
-        let disc = psx_media::disc::Disc::open(&media)?;
-        let mut sources = vec![disc.source.clone()];
-        sources.extend(disc.files.iter().map(|f| f.path.clone()));
-        sources.sort();
-        sources.dedup();
-        let game = game_name(&media);
-        let name = self.name.clone().unwrap_or_else(|| package_from(&game));
-        let (region, region_from) = match self.region {
-            Some(r) => (r, "argument"),
-            None => match crate::context::region(Some(&media))? {
-                Some(crate::bios::Region::Pal) => (TemplateRegion::Pal, "disc"),
-                Some(_) => (TemplateRegion::Ntsc, "disc"),
-                None => (TemplateRegion::Ntsc, "default"),
-            },
-        };
-        let options = TemplateOptions { region, fields_per_tick: self.fields_per_tick.unwrap_or(1) };
-        std::fs::create_dir_all(&dest).map_err(|e| Error::io(&dest, e))?;
-        let template = crate::template::create(&dest, Some(&name), options)?;
-        let mut written = Vec::new();
-        write_new(&dest, GOAL, GOAL_TOML, &mut written)?;
-        write_new(&dest, "catalogue/README.md", CATALOGUE_README, &mut written)?;
-        let mcp = json!({"mcpServers": {"psx": {"command": psx_exe(), "args": ["--root", dest, "mcp"]}}});
-        write_new(
-            &dest,
-            ".mcp.json",
-            &format!("{}\n", serde_json::to_string_pretty(&mcp).unwrap_or_default()),
-            &mut written,
-        )?;
-        // The disc and the BIOS, linked from where they are and never committed.
-        let ignore = "# Linked by psx port init from where they are: never commit them.\n*\n";
-        write_new(&dest, "media/.gitignore", ignore, &mut written)?;
-        write_new(&dest, "bios/.gitignore", ignore, &mut written)?;
-        let mut linked = Vec::new();
-        for f in &sources {
-            let to = dest.join("media").join(f.file_name().unwrap_or_default());
-            if !to.exists() {
-                link_or_copy(&absolute(f), &to)?;
-                linked.push(format!("media/{}", f.file_name().unwrap_or_default().to_string_lossy()));
-            }
-        }
-        let mut bios = Vec::new();
-        for e in std::fs::read_dir(ctx.root.join("bios")).into_iter().flatten().flatten() {
-            let to = dest.join("bios").join(e.file_name());
-            if e.path().is_file() && e.file_name() != ".gitignore" && !to.exists() {
-                link_or_copy(&absolute(&e.path()), &to)?;
-                bios.push(format!("bios/{}", e.file_name().to_string_lossy()));
-            }
-        }
-        // The disc as the workspace's default media, for every psx command run in it.
-        let disc_rel = format!("media/{}", media.file_name().unwrap_or_default().to_string_lossy());
-        let project = json!({"format": 1, "media": disc_rel});
-        write_new(
-            &dest,
-            ".psx/project.json",
-            &serde_json::to_string_pretty(&project).unwrap_or_default(),
-            &mut written,
-        )?;
-        let git = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&dest)
-            .status()
-            .is_ok_and(|s| s.success());
-        let mut next = vec![
-            format!("the person starts a session (Claude Code or Codex) in {}", dest.display()),
-            "the person states the goal; the agent catalogues the features it needs and lists them in goal.toml".into(),
-            "the person reads the list (psx port confirm) and confirms it (psx port confirm --yes)".into(),
-        ];
-        if bios.is_empty() {
-            next.push("no BIOS was linked: psx bios install in the workspace".into());
-        }
-        Ok(json!({
-            "game": game, "package": name, "workspace": dest,
-            "template": {"owned_files": template["owned_files"], "seeded_files": template["seeded_files"],
-                         "region": template["region"], "region_from": region_from, "tick_hz": template["tick_hz"]},
-            "written": written, "media": linked, "bios": bios, "git_init": git,
-            "next": next,
-        }))
-    }
-}
-
-impl Op for PortInitArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::result(self.run(ctx))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn workspace(goal: &str, entries: &[(&str, &str)]) -> (tempdir::Dir, Port) {
+    pub(crate) fn workspace(goal: &str, entries: &[(&str, &str)]) -> (tempdir::Dir, Port) {
         let dir = tempdir::Dir::new();
         std::fs::write(dir.0.join(GOAL), goal).unwrap();
         std::fs::create_dir_all(dir.0.join(CATALOGUE)).unwrap();
@@ -652,7 +418,7 @@ mod tests {
         (dir, port)
     }
 
-    mod tempdir {
+    pub(crate) mod tempdir {
         pub struct Dir(pub std::path::PathBuf);
         impl Dir {
             pub fn new() -> Self {
@@ -668,7 +434,7 @@ mod tests {
         }
     }
 
-    fn feature(id: &str, depends: &str) -> String {
+    pub(crate) fn feature(id: &str, depends: &str) -> String {
         format!("---\nid: {id}\ntitle: Feature {id}\narea: driving\ndepends: [{depends}]\n---\nWhat it does.\n")
     }
 
@@ -692,9 +458,7 @@ mod tests {
         );
         assert_eq!(port.problems, []);
         assert_eq!(port.closure(), ["F-0001", "F-0002", "F-0003"]);
-        assert_eq!(port.stage("F-0002"), Some(Stage::Catalogued));
-        assert_eq!(port.stage("F-0009"), None);
-        let rows = port.closure_json();
+        let rows = port.closure_json(&|id| port.entries.contains_key(id).then_some(Stage::Catalogued));
         assert_eq!(rows[0]["required_by"], json!(["F-0002", "F-0003"]));
         assert_eq!(rows[2]["in_goal"], json!(true));
         assert_eq!(rows[1]["in_goal"], json!(false));
@@ -744,6 +508,14 @@ mod tests {
     }
 
     #[test]
+    fn a_confirmed_feature_still_needed_by_the_goal_has_not_left_it() {
+        let (a, b) = (feature("F-0001", ""), feature("F-0002", "F-0001"));
+        let goal = "features = [\"F-0002\"]\nconfirmed = { at = \"t\", features = [\"F-0001\", \"F-0002\"] }\n";
+        let (_d, port) = workspace(goal, &[("F-0001.md", &a), ("F-0002.md", &b)]);
+        assert_eq!(port.confirmation(), Confirmation::Covers { at: "t".into() });
+    }
+
+    #[test]
     fn a_confirmation_covers_a_list_that_grew_but_not_one_that_shrank() {
         let entries: Vec<(String, String)> =
             (1..=3).map(|i| (format!("F-000{i}.md"), feature(&format!("F-000{i}"), ""))).collect();
@@ -766,34 +538,10 @@ mod tests {
     }
 
     #[test]
-    fn confirming_rewrites_only_the_confirmation() {
-        let c = Confirmed { at: "2026-10-29T10:00:00Z".into(), features: Features::List(vec!["F-0001".into()]) };
-        let text = "# The goal.\ndescription = \"x\"\nfeatures = [\"F-0001\"]   # one\nconfirmed = { at = \"old\", features = [] }\n";
-        assert_eq!(
-            with_confirmation(text, &c),
-            "# The goal.\ndescription = \"x\"\nfeatures = [\"F-0001\"]   # one\nconfirmed = { at = \"2026-10-29T10:00:00Z\", features = [\"F-0001\"] }\n"
-        );
-        let table = "features = \"all\"\n\n[confirmed]\nat = \"old\"\nfeatures = []\n";
-        let all = Confirmed { at: "t".into(), features: Features::All };
-        assert_eq!(
-            with_confirmation(table, &all),
-            "features = \"all\"\n\nconfirmed = { at = \"t\", features = \"all\" }\n"
-        );
-        let goal: Goal = toml::from_str(&with_confirmation(GOAL_TOML, &c)).unwrap();
-        assert_eq!(goal.confirmed.unwrap().features, c.features);
-    }
-
-    #[test]
     fn a_goal_reads_all_or_a_list_and_nothing_else() {
         assert_eq!(toml::from_str::<Goal>("features = \"all\"").unwrap().features, Features::All);
         assert!(toml::from_str::<Goal>("features = \"some\"").is_err());
         assert!(toml::from_str::<Goal>("feature = []").is_err());
         assert_eq!(toml::from_str::<Goal>(GOAL_TOML).unwrap().features, Features::List(vec![]));
-    }
-
-    #[test]
-    fn package_names_come_from_the_game() {
-        assert_eq!(package_from("Croc - Legend of the Gobbos"), "croc-legend-of-the-gobbos");
-        assert_eq!(package_from("1943"), "game-1943");
     }
 }

@@ -220,6 +220,8 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::parser_template::ParserTemplateArgs>("template_parser_create", "Create an executable Python 3 external parser starter (kind archive, model, asset or video) with a sample input and protocol notes in dest, for assets_scan, assets_extract or str."),
         def::<crate::template::TemplateCreateArgs>("template_create", "Create a Bevy port workspace (psx-bevy, engine, game, importers) with the PS1 look in dest, e.g. the game folder. Set region and fields_per_tick from the original. See guide topics port, bevy."),
         def::<crate::port::PortInitArgs>("port_init", "Write a port's workspace in dest: the Bevy template, goal.toml, the catalogue, the disc and BIOS linked in, and this MCP server for the agent working there. See guide topic port."),
+        def::<crate::port::PortStatusArgs>("port_status", "In a port's workspace: the goal's features by area and stage, their verdicts, problems in the goal or catalogue, and the item due now. plain=true: text for the person. See guide topic port.").read_only(),
+        def::<crate::port::PortNextArgs>("port_next", "In a port's workspace: the one item due now (what, which feature, why, and the fact that shows it done). Start every session with it, and call it again after each item. See guide topic port."),
         def::<crate::template::TemplateUpdateArgs>("template_update", "Update the project's psx-bevy/ and vendor/ files to this build; edited files get a .psx-new copy. See guide topic port."),
         def::<crate::vram_diff::GpuReplayArgs>("gpu_replay", "Replay a recorded GP0 command stream into a fresh software GPU and write the resulting VRAM to out (and optionally a PNG). Pair with vram_diff."),
         def::<crate::vram_diff::VramDiffArgs>("vram_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
@@ -793,8 +795,9 @@ mod tests {
         // 2026-10-26 for protocol_next; 70.5K from 2026-10-26 for protocol_report and audit;
         // 70.7K from 2026-10-26 for case_record's poke; 71K from 2026-10-26 for xrefs' kind
         // and bits; 71.2K from 2026-10-27 for coverage's check; 71.4K from 2026-10-28 for
-        // inventory's unpacked.
-        assert!(size <= 71_400, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // inventory's unpacked; 72.2K from 2026-10-29 for port_status and port_next (the
+        // clean-room tools' removal will bring it down).
+        assert!(size <= 72_200, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,
