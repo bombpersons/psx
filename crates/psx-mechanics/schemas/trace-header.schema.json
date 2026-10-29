@@ -1,0 +1,245 @@
+{
+  "$defs": {
+    "Audit": {
+      "additionalProperties": false,
+      "properties": {
+        "unaccounted": {
+          "description": "Reads the binding neither binds nor explains. The audit is clear when\nthis is empty.",
+          "items": {
+            "$ref": "#/$defs/Finding"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "unaccounted"
+      ],
+      "type": "object"
+    },
+    "Coverage": {
+      "additionalProperties": false,
+      "properties": {
+        "missed": {
+          "description": "The branches not reached.",
+          "items": {
+            "$ref": "#/$defs/Finding"
+          },
+          "type": "array"
+        },
+        "reached": {
+          "description": "Branches inside the bracket the recording took.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "description": "Branches inside the bracket.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reached",
+        "total"
+      ],
+      "type": "object"
+    },
+    "Finding": {
+      "additionalProperties": false,
+      "description": "One place in the original, in the producer's words.",
+      "properties": {
+        "at": {
+          "additionalProperties": true,
+          "description": "The producer's location (for psx: pc and overlay, or an address).",
+          "type": "object"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "at"
+      ],
+      "type": "object"
+    },
+    "Producer": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "additionalProperties": true,
+          "description": "The producer's own: how to make the recording again.",
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "properties": {
+        "image_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/SourceKind",
+          "description": "`captured` (from the original: evidence) or `synthetic` (written by\nhand or by code: examples and tests only)."
+        },
+        "platform": {
+          "description": "Captured: the producer's platform and the image's identity.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "SourceKind": {
+      "enum": [
+        "captured",
+        "synthetic"
+      ],
+      "type": "string"
+    },
+    "Value": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "pattern": "^-?[0-9]+$",
+          "type": "string"
+        },
+        {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/Value"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; or a table's elements."
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "audit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Audit"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "What the step read that the binding does not account for."
+    },
+    "coverage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Coverage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Which of the step's branches the recording reached."
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "format": {
+      "description": "`mechanic-trace`.",
+      "type": "string"
+    },
+    "format_version": {
+      "description": "1.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "initial_state": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Value"
+      },
+      "description": "The state at the first step's start: every field but the unobserved.",
+      "type": "object"
+    },
+    "mechanic": {
+      "type": "string"
+    },
+    "mechanic_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "params": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Value"
+      },
+      "description": "Every param's value, so the trace stands alone.",
+      "type": "object"
+    },
+    "producer": {
+      "$ref": "#/$defs/Producer"
+    },
+    "scenario": {
+      "description": "The scenario the recording was made in, when there is one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source": {
+      "$ref": "#/$defs/Source"
+    },
+    "unobserved": {
+      "description": "State fields the binding marks unobserved; never compared.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "format",
+    "format_version",
+    "mechanic",
+    "mechanic_version",
+    "source",
+    "producer",
+    "params",
+    "initial_state"
+  ],
+  "title": "the first line of a *.trace.jsonl",
+  "type": "object"
+}

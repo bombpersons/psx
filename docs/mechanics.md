@@ -1,0 +1,381 @@
+# Mechanic formats
+
+A **mechanic** is one step the original runs, captured from the game step by
+step so the port's version can be replayed against it without an emulator
+(`docs/port-design.md`, section 4). This document defines its files. They are
+psx's own, adapted from the mechanics knowledge base's draft (version 0).
+
+The formats are platform-free except for the binding's locations, call sites
+and capture bracket, which are the producer's (psx's R3000 vocabulary is in
+section 5). The code that reads and checks them is in two places:
+
+- `crates/psx-mechanics`: the mechanic, interface and trace formats, the
+  binding's shape, and their checks. Its JSON Schemas are in
+  `crates/psx-mechanics/schemas/`.
+- `crates/psx/src/mechanic.rs`: the PlayStation binding vocabulary. Its
+  schema is `crates/psx/schemas/binding.schema.json`.
+
+The schemas describe the TOML files after conversion to JSON, and the trace's
+lines as written. Tests regenerate the schemas from the types and fail when a
+committed one is stale; `PSX_UPDATE_SCHEMAS=1 cargo test` rewrites them. The
+checks catch more than the schemas can, such as a binding that misses a field
+or a value too wide for its type.
+
+## 1. Files
+
+```
+interfaces/<interface-id>.toml       the calls mechanics make to the world
+mechanics/<mechanic-id>/
+  mechanic.toml                      typed state, inputs, params; rate; interfaces it requires
+  binding.toml                       where this release keeps them, and the capture bracket
+  traces/<name>.trace.jsonl          captured steps
+  NOTES.md                           a few lines: what it does, quirks, what traces miss
+```
+
+- **Ids.** A mechanic id is `<game>.<name>` (`croc.walk`, `gt2.drivetrain`), and
+  is also the directory's name. An interface id runs broad to narrow
+  (`world.floor-height`, `rng`) and is also the file's name.
+- **Segments** are lowercase letters and digits joined by single hyphens,
+  separated by dots.
+- **Names** of fields, calls and enum variants are `[a-z][a-z0-9_]*`.
+- **References.** A mechanic requires an interface as `<id>@<version>`; the
+  workspace holds one version of each interface.
+
+## 2. Value types
+
+Every state field, input, param and interface field declares a type:
+
+| `type` | Keys | Raw value |
+|---|---|---|
+| `bool` | | `true` / `false` |
+| `int` | `bits` (1 to 64), `signed` | the integer |
+| `fixed` | `signed`, `int_bits` (sign included), `frac_bits` | the underlying integer: the real value × 2^`frac_bits` |
+| `enum` | `variants` (names) | the variant's name |
+| `float` | `bits` (32, 64 or 80) | its bit pattern, as an unsigned integer |
+| `table` | `of` (an element type, not a table), `len` | a list of `len` raw values; params only |
+
+Any type may add `unit` (`"units/tick"`, `"angle/4096"`) and `description`;
+both are documentation only.
+
+**Raw values** are always exact. In JSON, an integer outside ±2^53 is written
+as a decimal string (`"1152921504606846976"`). A JSON string is read as a
+variant name when it is a name, and as an integer otherwise. Fractional
+numbers are refused. Arithmetic wraps at the declared width unless the
+mechanic's notes say otherwise.
+
+## 3. `mechanic.toml`
+
+```toml
+id = "croc.walk"
+version = 1                  # bump on any change to fields or requires
+title = "Walking"
+summary = "Speed closes a quarter of the gap to four times the target each tick."
+exactness = "exact"          # the default; or "faithful"
+rate = { per = "tick", hz = 25 }
+requires = ["world.floor-height@1"]
+
+[state.speed]
+type = "fixed"
+signed = true
+int_bits = 20
+frac_bits = 12
+unit = "units/tick"
+
+[state.anim_timer]
+type = "int"
+bits = 8
+signed = false
+
+[inputs.forward]
+type = "bool"
+description = "Forward is held, as the step sees it."
+
+[params.target]
+type = "int"
+bits = 16
+signed = false
+
+[params.curve]
+type = "table"
+len = 8
+of = { type = "fixed", signed = false, int_bits = 4, frac_bits = 12 }
+```
+
+- **The three kinds of field.**
+  - `state` is what the step owns and carries from one step to the next.
+  - `inputs` are what it reads each step but does not own, as the step sees
+    them: after the game's own input handling, or a frame counter's parity.
+  - `params` are constant for the length of a trace; the binding gives their
+    values.
+- **`rate`** is how often the original runs the step, so another game can run
+  it at its native rate:
+  - `per = "tick"`: once per game tick;
+  - `per = "vblank"`: once per display refresh;
+  - `per = "event"`: when something happens.
+
+  `hz` is the nominal number of steps per second. `tick` and `vblank` need it;
+  `event` has none.
+- **`exactness`.**
+  - `exact`: the port's step reproduces every field of every step, with
+    tolerance 0.
+  - `faithful`: each step starts from the trace's recorded state and is
+    compared within `[tolerance]`. That table gives the largest difference
+    allowed per int or fixed state field, in raw units:
+    `tolerance = { speed = 16 }`.
+- **`requires`** lists the interfaces the step calls.
+
+## 4. Interfaces: `interfaces/<id>.toml`
+
+```toml
+id = "world.floor-height"
+version = 1
+title = "Height of the floor under a point"
+description = "What the original's routine asks, as low-level as it really is."
+
+[calls.height]
+kind = "query"
+request.x = { type = "int", bits = 32, signed = true }
+request.z = { type = "int", bits = 32, signed = true }
+response.y = { type = "int", bits = 32, signed = true }
+
+[calls.splash]
+kind = "command"
+request.x = { type = "int", bits = 32, signed = true }
+```
+
+- **Two kinds of call.**
+  - A `query` asks the world something and gets a response.
+  - A `command` acts on the world and has no response: damage the object in
+    this box, play the swipe sound.
+- **Order.** Both kinds are recorded and replayed in order. The port's step
+  takes the world as a trait with one method per call.
+- **Random numbers** are a query, such as `rng@1` with a call `next`, so a
+  replay gets the original's numbers and the port can use its own generator.
+- **Field types.** Request and response fields use the value types, without
+  `table`.
+
+## 5. `binding.toml`
+
+The binding says where one release of the game keeps the mechanic's fields,
+and how its step is bracketed. Its shape is the same for every platform. Its
+locations, call sites and `[capture]` are the producer's vocabulary; psx's are
+below.
+
+```toml
+mechanic = "croc.walk"
+mechanic_version = 1
+
+[source]
+platform = "psx"
+title = "Croc (Europe) SLES-00593"
+image_sha256 = "…"           # the media identity psx context reports
+
+[state.speed]
+parts = [{ at = { base = "a0", offset = 0x40 }, bytes = 4 }]
+
+[state.anim_timer]
+unobserved = true
+reason = "kept in s3 across the step and never stored"
+
+[inputs.forward]
+parts = [{ at = { address = 0x800A5C10 }, bytes = 2 }]
+mask = 0x1000
+
+[params]
+target = 35                  # a value
+
+[params.curve]               # or a location, read once at the first step's start
+parts = [{ at = { base = "a0", offset = 0x1C }, bytes = 2 }]
+stride = 2
+
+[params_provenance]
+target = "immediate operand at 0x800437F8"
+curve = "the object's record, from LEVEL.BIN"
+
+[interfaces."world.floor-height@1".height]
+on = { entry = { pc = 0x80051A00 } }
+request.x = { parts = [{ at = { register = "a0" }, bytes = 4 }] }
+request.z = { parts = [{ at = { register = "a1" }, bytes = 4 }] }
+response.y = { parts = [{ at = { register = "v0" }, bytes = 4 }] }
+
+[interfaces."world.floor-height@1".splash]
+on = { entry = { pc = 0x80051B40 } }
+request.x = { parts = [{ at = { register = "a0" }, bytes = 4 }] }
+
+[capture]
+begin = { pc = 0x80043234, a0 = 0x801F0000 }
+end = "next_begin"
+explained = [{ at = { base = "a0", offset = 0x80 }, bytes = 0x20, why = "the animation, another mechanic" }]
+```
+
+(Addresses here are placeholders.)
+
+The binding must cover the mechanic completely:
+
+- every state field and input, and every call of every required interface,
+  with each request and response field;
+- every param, as a value or as a location.
+
+A state field the producer cannot read is `{ unobserved = true, reason }`:
+traces leave it out and replay does not compare it. Inputs are never
+unobserved.
+
+### Reading a field
+
+Each field is read from its `parts`, as follows:
+
+1. Read each part (`at`, `bytes`) in the part's byte order: `endian` (`"big"`
+   or `"little"`), defaulting to the platform's. The PlayStation's is little.
+2. Join the parts into one unsigned integer, the first part most
+   significant (16 bytes at most).
+3. Apply `mask`, then `shift` (a right shift).
+4. With `stored_signed = true`, sign-extend from the read width: the mask's,
+   or the parts'.
+5. For a `fixed` field whose stored fraction differs from the mechanic's,
+   `stored_frac_bits` gives the stored one. Capture refuses a rescale that
+   would lose bits.
+6. `map` turns the stored integer (a decimal key) into the value. An `enum`
+   needs it; a `bool` may use it, and is otherwise true when nonzero.
+7. A `float` is read whole, with no mask, shift or sign extension.
+
+**A param** is either a raw value or a read. Capture reads it once, at the
+first step's start, and the trace's header holds the values either way. For a
+table param, `parts` reads the first element, and the others follow every
+`stride` bytes (by default, the size of the parts). Constants in the code go
+in as values; values the game loads, such as a car's gear ratios, are read,
+so every trace carries the values of the run it came from.
+
+### PlayStation vocabulary
+
+**Locations** (`at`):
+
+| Form | Where |
+|---|---|
+| `{ address = 0x800A5C10 }` | main RAM in any segment, or the scratchpad (`0x1F800000` to `0x1F8003FF`) |
+| `{ base = "a0", offset = 0x40 }` | relative to a register's value, latched when the step begins |
+| `{ register = "v0" }` | a CPU register: at begin for inputs and params, at a call's entry for a request, at its return for a response |
+| `{ gte = 32 }` | a GTE register: data 0 to 31 as `mfc2` numbers them, control 32 to 63 (`cfc2` n is 32 + n) |
+| `{ load = "address" }`, `{ load = "value" }` | an inline read's request (the address loaded from) and response (the value loaded) |
+
+- **Register names** are the conventional ones: `zero at v0 v1 a0`–`a3`
+  `t0`–`t9` `s0`–`s7` `k0 k1 gp sp fp ra`, plus `hi` and `lo`.
+- **State is always in memory.** Registers are clobbered between steps, so
+  state bound to a register is refused; such state is unobserved.
+
+**PCs** are `{ pc, overlay }`.
+- `pc` is a word-aligned address in main RAM.
+- `overlay` names the overlay the PC is in, exactly as `psx inventory` names
+  it, since the same address runs different code as overlays change.
+- Leave `overlay` out for resident code.
+
+**Call sites** (`on`):
+- `{ entry = PC }` is a routine entered at that PC. The request is read at
+  entry, and the response when it returns to its caller.
+- `{ read = PC }` is a load at that PC that asks the world inline, such as a
+  table lookup.
+
+**`[capture]`**:
+- **`begin`**: `{ pc, overlay }` plus register filters (`a0 = 0x801F0000`). A
+  step begins when the PC runs with every filter matching. A filter picks the
+  player's object when others run the same routine.
+- **`end`**:
+  - a PC: the step ends when it runs;
+  - `"next_begin"`: it ends at the next begin;
+  - `"frame"`: it ends at the next vblank.
+- **`explained`**: reads the step makes that the binding deliberately leaves
+  out, each with `at` (an address, or base and offset), `bytes`, and `why`.
+  Capture's read audit lists every other read the binding does not account
+  for.
+
+## 6. Traces: `traces/<name>.trace.jsonl`
+
+UTF-8 JSON Lines. The first line is the header and each later line is one
+step. Lines hold only what changed, so a trace stays small; `Trace::expand`
+fills the steps back in.
+
+### Header
+
+```json
+{"format": "mechanic-trace", "format_version": 1,
+ "mechanic": "croc.walk", "mechanic_version": 1,
+ "source": {"kind": "captured", "platform": "psx", "image_sha256": "…"},
+ "producer": {"name": "psx", "version": "0.8.0", "details": {"from_state": "…"}},
+ "scenario": "walk_forward",
+ "params": {"target": 35, "curve": [4096, 4096, 3072, 2048, 1024, 512, 256, 0]},
+ "initial_state": {"speed": 0},
+ "unobserved": ["anim_timer"],
+ "audit": {"unaccounted": [{"at": {"pc": "0x80043260", "address": "0x800A6000"}, "note": "4 bytes, every step"}]},
+ "coverage": {"reached": 11, "total": 14, "missed": [{"at": {"pc": "0x800432A8"}}]},
+ "description": "Walk forward from standstill, then let go."}
+```
+
+- **`source.kind`**: `captured` means recorded from the original, and only a
+  captured trace counts as evidence. It names its `platform` and
+  `image_sha256`. `synthetic` is for examples and tests.
+- **`producer.details`** is the producer's own: how to make the recording
+  again.
+- **`scenario`** is the scenario the recording was made in, when there is one.
+- **`params`** holds every param's value, so the trace stands alone.
+- **`initial_state`** is the state at the first step's start: every field but
+  the `unobserved` ones.
+- **`audit`** and **`coverage`** are standard sections, so stage checks can
+  read them. Their `at` is the producer's location, opaque to everything else.
+  - `audit.unaccounted` lists reads the binding neither binds nor explains.
+    The audit is clear when it is empty.
+  - `coverage` counts the branches inside the bracket that the recording
+    took (`reached`) out of all of them (`total`). `missed` lists the rest.
+
+### Steps
+
+```json
+{"step": 0, "inputs": {"forward": true}, "calls": [{"interface": "world.floor-height@1", "call": "height", "request": {"x": 0, "z": 0}, "response": {"y": -5}}], "state": {"speed": 35}}
+{"step": 1, "state": {"speed": 61}}
+{"step": 2, "inputs": {"forward": false}, "state_before": {"speed": 0}}
+```
+
+- **`step`** counts from 0, with no gaps.
+- **`inputs`** are those that differ from the previous step's. Step 0 has all
+  of them.
+- **`calls`** are the world calls the step made, in order. A query has a
+  `response`; a command has none.
+- **`state_before`** holds the state fields that code outside the step
+  changed since the previous step's end (an external change), with their
+  values at this step's start. It is there only when something did.
+- **`state`** holds the fields the step changed, with their values at its
+  end.
+- **`source_frame`** (the producer's field number) and **`note`** are
+  optional.
+
+### Conformance
+
+A port's step conforms to a trace when it is given the header's `params`,
+starts from `initial_state`, and takes each step's `state_before` wherever
+there is one. Fed each step's inputs and recorded responses, it must:
+
+1. make exactly the recorded calls, with equal requests, in order;
+2. produce exactly the recorded state after every step. A faithful mechanic
+   starts every step from the recorded state and is compared within its
+   tolerances.
+
+The first divergence (step, field, expected, actual) is the result of a
+failed check.
+
+## 7. Changes from the knowledge base's draft
+
+- **Layout.** One workspace is one game. A mechanic has one `binding.toml`
+  (no `bindings/<release>.toml`), and there is no `game.toml`. Interfaces
+  are `interfaces/<id>.toml`. `step.md` becomes `NOTES.md`: the port's code
+  is the step, proven by the traces.
+- **New types.** `float` carried as its bit pattern, and `table` for params.
+- **Params.** A param is a value or a location read at the first step's
+  start, with `stride` for tables.
+- **Calls** are of kind `query` or `command`. Random numbers are a query
+  interface.
+- **The mechanic** declares `rate` and `exactness`. A faithful mechanic has
+  `tolerance`.
+- **Byte order** defaults to the platform's.
+- **The trace header** gains `scenario`, `audit` and `coverage`, and its
+  format is `mechanic-trace` version 1.
+- **Step lines** record only what changed: inputs, state, and `state_before`.
+- **The binding** names `mechanic_version` and the release under `source`.
+  There is no binding `id`.

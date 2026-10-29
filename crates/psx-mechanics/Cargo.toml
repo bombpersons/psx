@@ -1,0 +1,16 @@
+[package]
+name = "psx-mechanics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Mechanic, interface, binding and trace formats: the platform-free side of porting by mechanics"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+toml = "1"
+
+[lints.rust]
+unsafe_code = "forbid"

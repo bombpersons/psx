@@ -1,0 +1,125 @@
+{
+  "$defs": {
+    "Call": {
+      "additionalProperties": false,
+      "properties": {
+        "call": {
+          "type": "string"
+        },
+        "interface": {
+          "description": "`<id>@<version>`.",
+          "type": "string"
+        },
+        "request": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Value"
+          },
+          "type": "object"
+        },
+        "response": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Value"
+          },
+          "description": "Queries only.",
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "interface",
+        "call",
+        "request"
+      ],
+      "type": "object"
+    },
+    "Value": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "pattern": "^-?[0-9]+$",
+          "type": "string"
+        },
+        {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/Value"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; or a table's elements."
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One step line.",
+  "properties": {
+    "calls": {
+      "description": "The world calls the step made, in order.",
+      "items": {
+        "$ref": "#/$defs/Call"
+      },
+      "type": "array"
+    },
+    "inputs": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Value"
+      },
+      "description": "Inputs that differ from the previous step's (all of them at step 0).",
+      "type": "object"
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_frame": {
+      "description": "The producer's frame or field number.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "state": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Value"
+      },
+      "description": "State fields the step changed, with their values at its end.",
+      "type": "object"
+    },
+    "state_before": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Value"
+      },
+      "description": "State fields changed by code outside the step since the previous\nstep's end (an external change), with their values at this step's\nstart.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "step": {
+      "description": "From 0, with no gaps.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "step"
+  ],
+  "title": "each later line of a *.trace.jsonl",
+  "type": "object"
+}

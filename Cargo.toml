@@ -7,6 +7,7 @@ members = [
     "crates/psx-assets",
     "crates/psx-gte",
     "crates/psx-media",
+    "crates/psx-mechanics",
     "crates/psx-oracle",
     "crates/psx-symbols",
 ]
@@ -26,6 +27,7 @@ psx-assets = { path = "crates/psx-assets" }
 psx-gpu = { path = "crates/psx-gpu" }
 psx-gte = { path = "crates/psx-gte" }
 psx-media = { path = "crates/psx-media" }
+psx-mechanics = { path = "crates/psx-mechanics" }
 psx-symbols = { path = "crates/psx-symbols" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -194,6 +194,9 @@ Other crates:
   rules, and logs GP0 commands. It is meant for replaying and diffing captured
   draw streams and decoding VRAM, not for game code.
 - **`psx-gte`:** a register-accurate GTE (COP2) with typed helpers and libgte-style math.
+- **`psx-mechanics`:** the platform-free mechanic, interface, binding and trace formats, their
+  checks and JSON Schemas (`docs/mechanics.md`); psx's R3000 binding vocabulary is
+  `crates/psx/src/mechanic.rs`.
 - **`psx-assets`:** TIM/TMD/VAB/VAG parsing, SPU-ADPCM (shared with the native core's SPU),
   the signature scanner and TMD → glTF. `tim.rs`/`tmd.rs` are copied verbatim into the template.
 

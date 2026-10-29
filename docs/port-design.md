@@ -148,7 +148,7 @@ can be replayed against it without an emulator. Mechanics are how a
 feature's exactness is proven and how its completion is tracked; the
 feature is what the person gets. The file formats are psx's own, adapted
 from the mechanics knowledge base's draft (Decision 4), and defined in
-psx's documentation.
+`docs/mechanics.md`.
 
 ```
 mechanics/gt2.drivetrain/

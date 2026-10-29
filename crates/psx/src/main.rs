@@ -27,6 +27,7 @@ mod guide;
 mod handoff;
 mod inventory;
 mod mcp;
+mod mechanic;
 mod media_cmd;
 mod moved;
 mod native;

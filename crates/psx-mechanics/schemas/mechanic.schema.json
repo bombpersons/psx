@@ -1,0 +1,328 @@
+{
+  "$defs": {
+    "Exactness": {
+      "enum": [
+        "exact",
+        "faithful"
+      ],
+      "type": "string"
+    },
+    "Field": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "int"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "bits",
+              "signed"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "fixed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "signed",
+              "int_bits",
+              "frac_bits"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "enum"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "variants"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "float"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "bits"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "table"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "of",
+              "len"
+            ]
+          }
+        }
+      ],
+      "description": "A field's declared type, as written in `mechanic.toml` and interfaces.\nWhich keys apply depends on `type`; [`Field::ty`] checks them.",
+      "properties": {
+        "bits": {
+          "description": "`int`: width in bits (1 to 64). `float`: 32, 64 or 80.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "frac_bits": {
+          "description": "`fixed`: fraction bits; the raw value is the real value × 2^frac_bits.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "int_bits": {
+          "description": "`fixed`: integer bits, the sign bit included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "len": {
+          "description": "`table`: the number of elements.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "of": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`table`: the element type (not itself a table)."
+        },
+        "signed": {
+          "description": "`int`, `fixed`: whether the value is two's complement.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/Kind"
+        },
+        "unit": {
+          "description": "Documentation only: `\"units\"`, `\"units/tick\"`, `\"angle/4096\"`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "variants": {
+          "description": "`enum`: the variants' names.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "Kind": {
+      "oneOf": [
+        {
+          "enum": [
+            "bool",
+            "int",
+            "fixed",
+            "enum",
+            "float"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "table",
+          "description": "Params only: a fixed-length list of one element type.",
+          "type": "string"
+        }
+      ]
+    },
+    "Per": {
+      "enum": [
+        "tick",
+        "vblank",
+        "event"
+      ],
+      "type": "string"
+    },
+    "Rate": {
+      "additionalProperties": false,
+      "properties": {
+        "hz": {
+          "description": "Nominal steps per second (`tick` and `vblank`): 25 for a PAL game\nthat ticks every second field.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "per": {
+          "$ref": "#/$defs/Per",
+          "description": "`tick`: once per game tick; `vblank`: once per display refresh;\n`event`: when something happens (a button press, a hit)."
+        }
+      },
+      "required": [
+        "per"
+      ],
+      "type": "object"
+    },
+    "Value": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "pattern": "^-?[0-9]+$",
+          "type": "string"
+        },
+        {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/Value"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; or a table's elements."
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "exactness": {
+      "$ref": "#/$defs/Exactness",
+      "default": "exact",
+      "description": "`exact` (the default): the port's step reproduces every field of every\nstep. `faithful`: each step starts from the trace's state and is\ncompared within `tolerance`."
+    },
+    "id": {
+      "description": "`<game>.<name>`, also the directory's name: `croc.walk`.",
+      "type": "string"
+    },
+    "inputs": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Field"
+      },
+      "default": {},
+      "description": "What the step reads each step but does not own, as the step sees it.",
+      "type": "object"
+    },
+    "params": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Field"
+      },
+      "default": {},
+      "description": "Constants for the length of a trace; the binding gives their values.",
+      "type": "object"
+    },
+    "rate": {
+      "$ref": "#/$defs/Rate",
+      "description": "How often the original runs the step."
+    },
+    "requires": {
+      "default": [],
+      "description": "Interfaces the step calls, as `<id>@<version>`.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "state": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Field"
+      },
+      "default": {},
+      "description": "What the step owns and carries from one step to the next.",
+      "type": "object"
+    },
+    "summary": {
+      "description": "One line, for listings.",
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "tolerance": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Value"
+      },
+      "description": "`faithful` only: the largest difference allowed per state field, in\nraw units (int and fixed fields).",
+      "type": "object"
+    },
+    "version": {
+      "description": "Bumped on any change to the fields or `requires`; bindings and traces\nname the version they were made for.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "version",
+    "title",
+    "summary",
+    "rate"
+  ],
+  "title": "mechanic.toml",
+  "type": "object"
+}
