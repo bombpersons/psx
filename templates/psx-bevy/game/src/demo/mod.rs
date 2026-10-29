@@ -1,21 +1,19 @@
-//! Example game: replace this module with your game's own plugins (and
-//! `crate::GamePlugins`' list of them).
+//! Example game: replace this module with your game's own feature plugins
+//! (and `crate::GamePlugins`' list of them).
 //!
 //! Shows the intended shape:
-//! - one plugin per feature, each usable on its own: [`player::PlayerPlugin`]
-//!   and [`SpinnerPlugin`] are rules (they run headless), [`DemoPlugin`] is
-//!   the scene, HUD and presentation. A mod can drop `DemoPlugin` and keep
-//!   the rest (see `mods/example`);
-//! - level content is data (`assets/demo/level.ron`, the engine's format),
-//!   spawned through the engine's object type registry;
-//! - each object type is code registered by id: the player's controller
-//!   ([`player`], no rendering, tested headless in `tests/player.rs`) and a
-//!   spinner; presentation dresses spawned objects separately;
-//! - a trigger in the level runs a registered action (flash the gem);
+//! - one plugin per feature, each usable with only the plugins it depends
+//!   on: [`player::PlayerPlugin`] and [`spinner::SpinnerPlugin`] are rules
+//!   (logic in `FixedUpdate`, no rendering, tested headless), [`DemoPlugin`]
+//!   is the scene, HUD and presentation, which dresses what the rules spawn;
+//! - content is data (`assets/demo/level.ron`, `assets/demo/player.ron`),
+//!   never constants in code;
 //! - ordinary Bevy entities with `PsxMaterial` meshes, normal lights and fog,
 //!   and a 2D HUD of sprites over 3D.
 pub mod player;
+pub mod spinner;
 
+use crate::config::load_ron;
 use crate::disc::GameData;
 use bevy::{
     asset::RenderAssetUsages,
@@ -25,70 +23,63 @@ use bevy::{
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
-use engine::config::load_ron;
-use engine::controller::Button;
-use engine::prelude::*;
-use engine::psx::{PsxAnchor, PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxSprite, PsxStp, PsxView};
-use engine::psx::{font, psx_indices, psx_palette, rgb15};
 use player::Player;
-
-/// The spinner object type and anything with [`Spin`]: rules only.
-pub struct SpinnerPlugin;
-
-impl Plugin for SpinnerPlugin {
-    fn build(&self, app: &mut App) {
-        app.register_object_type(SPINNER_TYPE, ObjectTypeInfo::new("Spinner", spawn_spinner))
-            .add_systems(FixedUpdate, spin.in_set(EngineSet::Objects));
-    }
-}
-
-/// The spinner's spawn hook: `params: [speed in mrad/s, colour 0|1]`.
-pub fn spawn_spinner(entity: &mut EntityWorldMut, placement: &Placement) {
-    let param = |i: usize| placement.params.get(i).copied().unwrap_or(0);
-    entity.insert((Spin(param(0) as f32 / 1000.0), Spinner { colour: param(1) }));
-}
+use psx_bevy::controller::Button;
+use psx_bevy::prelude::*;
+use psx_bevy::psx::{PsxAnchor, PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxSprite, PsxStp, PsxView};
+use psx_bevy::psx::{font, psx_indices, psx_palette, rgb15};
+use serde::Deserialize;
+use spinner::{Spin, Spinner};
 
 /// The demo's scene: cameras, floor, the level, the HUD and the look of the
 /// player and spinners. Needs the renderer. The glow panel turns only with
-/// [`SpinnerPlugin`], which runs everything with [`Spin`].
+/// [`spinner::SpinnerPlugin`], which runs everything with [`Spin`].
 pub struct DemoPlugin;
 
 impl Plugin for DemoPlugin {
     fn build(&self, app: &mut App) {
-        app.register_action(FLASH_ACTION, "flash", flash)
-            .init_resource::<Flash>()
-            // World setup waits for the game's data (imported from the disc).
-            .add_systems(OnEnter(GameData::Ready), (setup, setup_2d, show_disc))
+        // World setup waits for the game's data (imported from the disc).
+        app.add_systems(OnEnter(GameData::Ready), (setup, setup_2d, show_disc))
             .add_systems(FixedUpdate, (toggle_look, cycle_palette, flash_gem).in_set(GameSystems::Game))
             .add_systems(FixedUpdate, update_hud.in_set(GameSystems::Finish))
             .add_systems(Update, (dress_player, dress_spinners, follow_camera));
     }
 }
 
-/// A spinning sphere: `params: [speed in mrad/s, colour 0|1]`.
-pub const SPINNER_TYPE: ObjectTypeId = ObjectTypeId(2);
-/// Flashes the HUD gem: `args: [ticks]`.
-pub const FLASH_ACTION: ActionId = ActionId(1);
+/// `assets/demo/level.ron`: what the level places, for the rules plugins.
+#[derive(Deserialize, Debug, Clone)]
+pub struct DemoLevel {
+    /// The player's start.
+    pub player: Vec3,
+    pub spinners: Vec<SpinnerPlacement>,
+}
 
-/// Turning speed, rad/s.
-#[derive(Component, Reflect)]
-#[reflect(Component)]
-pub struct Spin(pub f32);
-
-#[derive(Component, Reflect)]
-#[reflect(Component)]
-pub struct Spinner {
+#[derive(Deserialize, Debug, Clone)]
+pub struct SpinnerPlacement {
+    pub position: Vec3,
+    /// rad/s.
+    pub speed: f32,
+    /// 0 or 1.
     pub colour: i32,
 }
 
-/// Ticks left of a triggered gem flash.
-#[derive(Resource, Default, Reflect)]
-#[reflect(Resource)]
-pub struct Flash(pub u32);
+impl DemoLevel {
+    pub const PATH: &str = "demo/level.ron";
 
-fn flash(In(call): In<ActionCall>, mut flash: ResMut<Flash>) {
-    flash.0 = call.args.first().copied().unwrap_or(1).max(0) as u32;
+    /// Spawns the level's rules entities, without their look.
+    pub fn spawn(&self, commands: &mut Commands) {
+        commands.spawn((Name::new("Player"), Player, Transform::from_translation(self.player)));
+        for s in &self.spinners {
+            commands.spawn((
+                Name::new("Spinner"),
+                Spinner { colour: s.colour },
+                Spin(s.speed),
+                Transform::from_translation(s.position),
+            ));
+        }
+    }
 }
+
 #[derive(Component)]
 struct Indicator(Button);
 
@@ -156,9 +147,9 @@ fn setup(
         MeshMaterial3d(materials.add(PsxMaterial::textured(checker(&mut images, [90, 140, 70], [60, 100, 50], true)))),
     ));
 
-    // Everything the level places comes from data, through the registry.
-    let level: LevelData = load_ron("demo/level.ron").unwrap_or_else(|e| panic!("demo level: {e}"));
-    commands.queue(SpawnLevel(level));
+    // Everything the level places comes from data.
+    let level: DemoLevel = load_ron(DemoLevel::PATH).unwrap_or_else(|e| panic!("demo level: {e}"));
+    level.spawn(&mut commands);
     // Additive "glow" panel: PS1 semi-transparency mode B+F.
     commands.spawn((
         Mesh3d(meshes.add(Rectangle::new(1.5, 1.5))),
@@ -284,16 +275,13 @@ fn cycle_palette(clock: Res<GameClock>, palette: Res<GemPalette>, mut images: Re
     }
 }
 
-/// Circle, or the level's trigger, swaps the gem to its flash palette (a
-/// CLUT swap: one field).
+/// Circle swaps the gem to its flash palette (a CLUT swap: one field).
 fn flash_gem(
     pad: Res<ControllerState>,
-    mut flash: ResMut<Flash>,
     gems: Query<&SpriteMaterial<PsxSprite>>,
     mut sprites: ResMut<Assets<PsxSprite>>,
 ) {
-    let row = u32::from(pad.held(Button::Circle) || flash.0 > 0);
-    flash.0 = flash.0.saturating_sub(1);
+    let row = u32::from(pad.held(Button::Circle));
     for gem in &gems {
         if sprites.get(&gem.0).is_some_and(|s| s.palette_row != row)
             && let Some(mut sprite) = sprites.get_mut(&gem.0)
@@ -332,12 +320,6 @@ fn dress_spinners(
             Mesh3d(meshes.add(Sphere::new(0.6).mesh().ico(1).unwrap())),
             MeshMaterial3d(materials.add(PsxMaterial::color(Color::srgb(0.3 + 0.5 * i, 0.4, 0.9 - 0.5 * i)))),
         ));
-    }
-}
-
-fn spin(time: Res<Time>, mut q: Query<(&Spin, &mut Transform)>) {
-    for (spin, mut t) in &mut q {
-        t.rotate_y(spin.0 * time.delta_secs());
     }
 }
 

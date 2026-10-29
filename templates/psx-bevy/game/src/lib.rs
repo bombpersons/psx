@@ -1,19 +1,15 @@
-//! This game, as a library: `src/main.rs` launches it; tests in `tests/`
-//! drive the same plugins headless (`engine::testing`).
+//! The port, as a library: `src/main.rs` launches it; tests in `tests/`
+//! drive the same plugins headless (`psx_bevy::testing`).
 //!
-//! Layout: one plugin per game feature (player, stage, enemies, HUD...),
-//! listed in [`GamePlugins`]. Per-type controllers register with the engine's
-//! object type registry; rules plugins stay free of rendering so they run in
-//! tests. Reusable machinery belongs in `engine/` (see its AGENTS.md).
-//!
-//! Mods are crates built on this library (see `mods/example`): keep what a
-//! mod would reuse `pub`, and each feature plugin usable on its own.
+//! Layout: one plugin per catalogue feature, named after it and listed in
+//! [`GamePlugins`]. Logic stays free of rendering so it runs in tests.
+pub mod config;
 pub mod demo;
 pub mod disc;
 
 use bevy::app::PluginGroupBuilder;
 use bevy::prelude::*;
-use engine::prelude::*;
+use psx_bevy::prelude::*;
 
 /// Window title.
 pub const TITLE: &str = "PSX game template — arrows, Z/X/C/S, Q/E, Enter";
@@ -36,18 +32,16 @@ pub fn tick_rate(region: Region) -> TickRate {
     TickRate::every_nth_field(region, FIELDS_PER_TICK)
 }
 
-/// The whole game: the engine, then each feature's plugin. A group, so a
-/// crate built on the game can drop or swap one feature:
-/// `GamePlugins.build().disable::<demo::DemoPlugin>()`.
+/// The whole game: each feature's plugin. A group, so a test or sandbox can
+/// drop or swap one feature: `GamePlugins.build().disable::<demo::DemoPlugin>()`.
 pub struct GamePlugins;
 
 impl PluginGroup for GamePlugins {
     fn build(self) -> PluginGroupBuilder {
         PluginGroupBuilder::start::<Self>()
-            .add(EnginePlugin)
             .add(disc::GameDataPlugin::default())
             .add(demo::player::PlayerPlugin)
-            .add(demo::SpinnerPlugin)
+            .add(demo::spinner::SpinnerPlugin)
             .add(demo::DemoPlugin)
     }
 }

@@ -1,4 +1,4 @@
-//! Case files replayed headless (`engine::testing::case`): one runner per
+//! Case files replayed headless (`psx_bevy::testing::case`): one runner per
 //! subject, which spawns it from the case's start and reads each compared
 //! column back in the case's units, then one line per case.
 //!
@@ -18,9 +18,8 @@
 //! exploratory cases (`notes/oracle/`) replay unchanged through the same
 //! runners.
 use bevy::prelude::*;
-use engine::EnginePlugin;
-use engine::testing::{Case, CaseReport, Start, headless_app};
 use game::demo::player::{Hop, Player, PlayerPlugin};
+use psx_bevy::testing::{Case, CaseReport, Start, headless_app};
 use std::path::Path;
 
 /// The specs the rules implement. A case's claims for any other spec are
@@ -35,7 +34,7 @@ fn load(name: &str) -> Case {
 fn player(case: &Case) -> CaseReport {
     assert_eq!(case.start().unwrap(), Start::FirstRow);
     let mut app = headless_app(game::tick_rate(game::REGION));
-    app.add_plugins((EnginePlugin, PlayerPlugin));
+    app.add_plugins(PlayerPlugin);
     let at = |c: &str| case.first(c) as f32;
     let player = app.world_mut().spawn((Player, Transform::from_xyz(at("x"), at("y"), at("z")))).id();
     case.runner()

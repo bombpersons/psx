@@ -2,14 +2,13 @@
 //! buttons. For your game, compare rules against recordings of the original
 //! with the case runner (`tests/cases.rs`).
 use bevy::prelude::*;
-use engine::EnginePlugin;
-use engine::controller::Button;
-use engine::testing::{TickApp, headless_app};
 use game::demo::player::{GROUND_Y, Hop, Player, PlayerPlugin, PlayerTuning};
+use psx_bevy::controller::Button;
+use psx_bevy::testing::{TickApp, headless_app};
 
 fn app() -> (App, Entity) {
     let mut app = headless_app(game::tick_rate(game::REGION));
-    app.add_plugins((EnginePlugin, PlayerPlugin));
+    app.add_plugins(PlayerPlugin);
     let player = app.world_mut().spawn(Player).id();
     (app, player)
 }
@@ -66,17 +65,15 @@ fn holding_cross_does_not_hop_again() {
 }
 
 #[test]
-fn the_demo_level_spawns_through_the_registry() {
-    use engine::level::{LevelData, SpawnLevel};
-    use engine::objects::UnknownObjectTypes;
+fn the_demo_level_spawns_its_rules_entities() {
+    use game::demo::DemoLevel;
+    use game::demo::spinner::Spinner;
     let mut app = headless_app(game::tick_rate(game::REGION));
-    app.add_plugins((EnginePlugin, PlayerPlugin));
-    let level: LevelData = engine::config::load_ron("demo/level.ron").unwrap();
-    app.world_mut().commands().queue(SpawnLevel(level));
+    app.add_plugins(PlayerPlugin);
+    let level: DemoLevel = game::config::load_ron(DemoLevel::PATH).unwrap();
+    level.spawn(&mut app.world_mut().commands());
     app.run_tick(&[]);
     let players = app.world_mut().query_filtered::<&Transform, With<Player>>().iter(app.world()).count();
-    assert_eq!(players, 1);
-    // The spinners' type is registered by SpinnerPlugin, not added here;
-    // without it they are reported, not dropped silently.
-    assert_eq!(app.world().resource::<UnknownObjectTypes>().0.get(&2), Some(&2));
+    let spinners = app.world_mut().query::<&Spinner>().iter(app.world()).count();
+    assert_eq!((players, spinners), (1, level.spinners.len()));
 }

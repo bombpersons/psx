@@ -1,8 +1,8 @@
 //! The disc import protocol, headless: a tiny generated ISO stands in for the
 //! player's disc. Keep these when replacing the demo; adjust the disc to one
 //! `import::SERIALS` accepts once the list is filled in.
-use engine::testing::headless_app;
 use game::disc::{GameData, GameDataPlugin, ImportStamp, STAMP_FILE, read_stamp};
+use psx_bevy::testing::headless_app;
 use std::path::{Path, PathBuf};
 
 fn scratch(name: &str) -> PathBuf {

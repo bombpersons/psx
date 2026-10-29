@@ -11,7 +11,7 @@
 //! Relative roots resolve against the same base Bevy uses for `assets/`
 //! (`BEVY_ASSET_ROOT`, else the running crate, else the executable's
 //! folder). The launcher installs the layers as Bevy's default asset source
-//! ([`register`]); synchronous loads such as `engine::config::load_ron` use
+//! ([`register`]); synchronous loads such as `game::config::load_ron` use
 //! [`find`]. With no added roots nothing changes.
 use bevy::asset::io::file::FileAssetReader;
 use bevy::asset::io::{AssetReader, AssetReaderError, AssetSourceBuilder, AssetSourceId, PathStream, Reader};

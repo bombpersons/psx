@@ -1,19 +1,18 @@
-//! The demo's player rules: a per-type controller registered with the
-//! engine's object type registry, with its design numbers in a tuning file
-//! (`assets/demo/player.ron`). No rendering, so it runs in headless tests
-//! (`tests/player.rs`).
+//! The demo's player rules, one feature as one plugin: walking and hopping,
+//! with its design numbers in a tuning file (`assets/demo/player.ron`). No
+//! rendering, so it runs in headless tests (`tests/player.rs`).
 //!
 //! Tuning is in natural units (metres, seconds, radians) and systems scale it
 //! by the tick length, so it reads the same at any `TickRate`. A port would
 //! cite where each value came from; see AGENTS.md, "From evidence to
 //! idiomatic code".
 use bevy::prelude::*;
-use engine::controller::Button;
-use engine::prelude::*;
+use psx_bevy::controller::Button;
+use psx_bevy::prelude::*;
 use serde::Deserialize;
 
-/// The player's type id in level data.
-pub const PLAYER_TYPE: ObjectTypeId = ObjectTypeId(1);
+use crate::config::TuningPlugin;
+
 /// Height of the crate's centre when it rests on the floor.
 pub const GROUND_Y: f32 = 0.5;
 /// Half the size of the walkable square, m.
@@ -39,7 +38,7 @@ impl PlayerTuning {
 
 #[derive(Component, Reflect, Default)]
 #[reflect(Component)]
-#[require(Hop, TriggerActivator, Transform = Transform::from_xyz(0.0, GROUND_Y, 0.0))]
+#[require(Hop, Transform = Transform::from_xyz(0.0, GROUND_Y, 0.0))]
 pub struct Player;
 
 /// Vertical movement as a small state machine: one enum, transitions in one
@@ -58,14 +57,7 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(TuningPlugin::<PlayerTuning>::new(PlayerTuning::PATH))
-            .register_object_type(
-                PLAYER_TYPE,
-                ObjectTypeInfo::new("Player", |entity, _| {
-                    entity.insert(Player);
-                })
-                .with_tuning::<PlayerTuning>(),
-            )
-            .add_systems(FixedUpdate, (walk, hop).chain().in_set(EngineSet::Control));
+            .add_systems(FixedUpdate, (walk, hop).chain().in_set(GameSystems::Game));
     }
 }
 

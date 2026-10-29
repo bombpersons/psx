@@ -1,11 +1,11 @@
-//! Importers: the player's disc -> engine-native assets under
+//! Importers: the player's disc -> the port's assets under
 //! `game/assets/imported/`. The game runs [`import`] itself on first start
 //! when it finds the disc (`game/src/disc.rs`); `cargo run -p import -- DISC`
 //! runs the same code by hand.
 //!
 //! The original's raw formats (fixed-point units, packed bitfields, offsets
 //! into word arrays, CLUT/VRAM layouts) live only here. Each importer converts
-//! exactly into the engine's format and records where every output came from
+//! exactly into the port's format and records where every output came from
 //! with [`Provenance`], so a reader can check an asset against the disc file.
 //! Validate structurally: every byte of the source accounted for, every
 //! reference in range. Decoders for standard PS1 formats (TIM, TMD, VAB/VAG)

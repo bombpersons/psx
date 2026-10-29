@@ -10,7 +10,7 @@
 //!
 //! Game code that needs imported files starts on `OnEnter(GameData::Ready)`;
 //! [`GameSystems::Game`] only runs once the data is ready. The plugin's
-//! default (tests, mods built from hand-made assets) imports nothing and
+//! default (tests and sandboxes, built from hand-made assets) imports nothing and
 //! starts ready; `src/main.rs` turns importing on with [`GameDataPlugin::from_args`].
 //!
 //! Where the disc is looked for: `--disc PATH` (a file or folder), then the
@@ -24,9 +24,9 @@
 use bevy::asset::io::file::FileAssetReader;
 use bevy::prelude::*;
 use bevy::state::app::StatesPlugin;
-use engine::launcher::Args;
-use engine::prelude::*;
 use import::{DiscReader, ImportProgress};
+use psx_bevy::launcher::Args;
+use psx_bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -50,7 +50,7 @@ pub enum GameData {
 /// Imports the game's data from the player's disc when needed.
 #[derive(Default)]
 pub struct GameDataPlugin {
-    /// Import from a disc on start. Off by default (tests, mods).
+    /// Import from a disc on start. Off by default (tests, sandboxes).
     pub import: bool,
     /// `--disc PATH`: where to look first.
     pub disc: Option<PathBuf>,
@@ -112,7 +112,7 @@ pub struct ImportStamp {
 pub const STAMP_FILE: &str = "import.json";
 
 /// `assets/imported/`: where imported files go. Loads name them
-/// `imported/...`, and mods layered on the game's assets find them too.
+/// `imported/...`, and crates layered on the game's assets find them too.
 pub fn imported_dir() -> PathBuf {
     FileAssetReader::get_base_path().join("assets/imported")
 }
@@ -292,7 +292,7 @@ fn retry(
 /// The screens shown until the data is ready, over the (still empty) game.
 mod screens {
     use super::*;
-    use engine::psx::SCREEN_PASS_ORDER;
+    use psx_bevy::psx::SCREEN_PASS_ORDER;
 
     #[derive(Component)]
     struct Root;

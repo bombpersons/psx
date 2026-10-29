@@ -2,8 +2,8 @@
 //! with a software adapter. Replace with checks of your own game.
 #![cfg(feature = "dev-mcp")]
 
-use engine::testing::mcp::Client;
 use game::demo::player::PlayerTuning;
+use psx_bevy::testing::mcp::Client;
 use serde_json::{Value, json};
 use std::process::Command;
 
@@ -57,7 +57,7 @@ fn headless_render_edit_step_and_query() {
     assert_eq!(stepped["frame"], 12);
     let state = player(&mut client);
     let x = state["components"]["Transform"]["translation"][0].as_f64().unwrap();
-    let tuning: PlayerTuning = engine::config::load_ron(PlayerTuning::PATH).unwrap();
+    let tuning: PlayerTuning = game::config::load_ron(PlayerTuning::PATH).unwrap();
     let expected = (2.0 - 12.0 * f64::from(tuning.walk_speed) / game::tick_rate(game::REGION).hz)
         .clamp(-f64::from(game::demo::player::ARENA_HALF_SIZE), f64::from(game::demo::player::ARENA_HALF_SIZE));
     assert!((x - expected).abs() < 0.0001, "exactly twelve movement ticks: {state}");

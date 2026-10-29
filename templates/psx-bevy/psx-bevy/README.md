@@ -305,7 +305,7 @@ launcher::run(Game { /* ... */ });
 The launcher then reads every load from the first folder that has the path,
 so the mod finds the game's files and replaces any of them by shipping one at
 the same path. Synchronous loads use `assets::find` (the psx template's
-`engine::config::load_ron` does). Without added roots, Bevy's own reader is used unchanged.
+`game::config::load_ron` does). Without added roots, Bevy's own reader is used unchanged.
 
 ## Simulation and input
 

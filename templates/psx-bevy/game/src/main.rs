@@ -1,8 +1,8 @@
-//! The executable. Window, renderer and command line come from the engine's
-//! launcher (`engine::launcher`, see its docs for the flags); the game itself
-//! is the library in `src/lib.rs` (crate `game`).
+//! The executable. Window, renderer and command line come from psx-bevy's
+//! launcher (`psx_bevy::launcher`, see its docs for the flags); the game
+//! itself is the library in `src/lib.rs` (crate `game`).
 use bevy::app::PluginGroup;
-use engine::launcher::{self, Game};
+use psx_bevy::launcher::{self, Game};
 
 fn main() {
     launcher::run(Game {

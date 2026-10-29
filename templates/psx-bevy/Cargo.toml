@@ -1,20 +1,18 @@
 # One workspace, one target directory, one lockfile:
 #
 #   psx-bevy/      the PS1 look, ticks, input, menus, testing and launcher:
-#                  the base the engine builds on, yours to change for the game
-#   engine/        this game's engine family: no names, numbers or assets from
-#                  this game
-#   game/          this title: controllers, rules, HUD, menus, baked assets
-#   tools/import/  offline importers: extracted disc data -> engine formats
-#   mods/example/  a mod: a small game built on game/ from hand-made assets
+#                  the base the game builds on, yours to change for the game
+#   game/          the port: one plugin per feature, its assets and tests
+#   tools/import/  importers: the player's disc -> the port's asset formats
 #   vendor/        psx-media and psx-assets, vendored by the template
-#   editor/        the editor for the engine's formats (egui, depends on
-#                  engine/ only)
+#
+# An engine/game split, mod crates and an editor are choices a goal can make
+# (AGENTS.md), added as members when it does.
 #
 # Standalone: copying the template does not require the psx workspace.
 [workspace]
 resolver = "3"
-members = ["psx-bevy", "engine", "game", "tools/import", "mods/example", "editor"]
+members = ["psx-bevy", "game", "tools/import"]
 default-members = ["game"]
 # Template-owned copies of psx crates: dependencies, not members (their tests
 # run in the psx repository).
@@ -30,13 +28,9 @@ publish = false
 # Each member's default feature `dynamic` links Bevy as one shared library
 # (`bevy/dynamic_linking`, turned on in psx-bevy/Cargo.toml): a change then
 # relinks each binary and test in seconds instead of copying all of Bevy into
-# every one. These three leave it to the member being built, so
+# every one. This leaves it to the member being built, so
 # `--no-default-features` (the release build) links Bevy in statically.
 psx-bevy = { path = "psx-bevy", default-features = false }
-engine = { path = "engine", default-features = false }
-# The game as a library, for mods (crates built on it). `package` is the
-# game's package name; the code calls it `game`.
-game = { path = "game", package = "psx-game", default-features = false }
 # The importers (tools/import), a library the game runs on first start.
 import = { path = "tools/import" }
 bevy = { version = "=0.20.0", default-features = false, features = [
@@ -49,11 +43,6 @@ bevy = { version = "=0.20.0", default-features = false, features = [
   # developer MCP's `game_query` can read them without `register_type` calls.
   "reflect_auto_register",
 ] }
-# The editor's UI. engine/ depends on it too, so the game's build turns on
-# the same Bevy and font-crate features as the editor's: switching between
-# `cargo run` and `cargo run -p editor` reuses one Bevy build instead of
-# recompiling it (see editor/AGENTS.md, "One Bevy build").
-bevy_egui = { version = "=0.43.1", default-features = false, features = ["render", "default_fonts"] }
 # Disc images (CUE/BIN, ISO, CHD), ISO9660 and PS1 asset formats: the psx
 # toolkit's crates, vendored by the template (vendor/README.md). The game
 # imports from the player's disc itself (game/src/disc.rs, tools/import), so
@@ -66,13 +55,9 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["alloc"] }
 # Hand-editable tables and tuning (the version Bevy already uses).
 ron = "0.12"
-# MCP servers: psx-bevy's game MCP (stdio, `dev-mcp`) and the editor's (stdio
-# and HTTP, editor/src/mcp). engine/ depends on all of them so every build
-# resolves the same features (editor/AGENTS.md, "One Bevy build").
-rmcp = { version = "=3.5.1", features = ["transport-io", "transport-streamable-http-server"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-std", "net"] }
-tokio-util = "0.7"
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+# psx-bevy's game MCP (stdio, `dev-mcp`).
+rmcp = { version = "=3.5.1", features = ["transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-std"] }
 
 # Iteration builds: your code at opt-level 1 (fast to rebuild), dependencies
 # (Bevy) at 3, so `cargo run` plays at close to release speed. Line tables

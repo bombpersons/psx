@@ -1,10 +1,10 @@
 //! `psx template create|update|adopt`: the Bevy game workspace.
 //!
-//! The template is a workspace whose engine is built on `psx-bevy/`, a copy
+//! The template is a workspace whose game is built on `psx-bevy/`, a copy
 //! of the PS1 look, ticks, input, menus and launcher that the project is
 //! expected to change. `psx-bevy/` and `vendor/` are tracked: `update`
 //! replaces the files the project hasn't changed and writes `<file>.psx-new`
-//! beside the ones it has. Everything else (`engine/`, `game/`, `tools/`,
+//! beside the ones it has. Everything else (`game/`, `tools/`,
 //! docs, root manifests) is seeded once and belongs to the project.
 //! `.psx-template.toml` records the version and, per file, the template
 //! version the project's copy is based on, so `update` can tell untouched
@@ -131,39 +131,16 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "Cargo.toml",
     "README.md",
     "rustfmt.toml",
-    "docs/engine-model.md",
     "docs/evidence.md",
     "docs/template.md",
-    "editor/AGENTS.md",
-    "editor/Cargo.toml",
-    "editor/src/document.rs",
-    "editor/src/files.rs",
-    "editor/src/lib.rs",
-    "editor/src/main.rs",
-    "editor/src/mcp/agents.rs",
-    "editor/src/mcp/edit.rs",
-    "editor/src/mcp/input.rs",
-    "editor/src/mcp/mod.rs",
-    "editor/src/panels.rs",
-    "editor/tests/document.rs",
-    "editor/tests/mcp.rs",
-    "engine/AGENTS.md",
-    "engine/Cargo.toml",
-    "engine/assets/sandbox/room.ron",
-    "engine/assets/sandbox/walker.ron",
-    "engine/examples/sandbox.rs",
-    "engine/src/config.rs",
-    "engine/src/level.rs",
-    "engine/src/lib.rs",
-    "engine/src/objects.rs",
-    "engine/src/schedule.rs",
-    "engine/src/triggers.rs",
     "game/AGENTS.md",
     "game/Cargo.toml",
     "game/assets/demo/level.ron",
     "game/assets/demo/player.ron",
+    "game/src/config.rs",
     "game/src/demo/mod.rs",
     "game/src/demo/player.rs",
+    "game/src/demo/spinner.rs",
     "game/src/disc.rs",
     "game/src/lib.rs",
     "game/src/main.rs",
@@ -173,13 +150,6 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "game/tests/dev_mcp.rs",
     "game/tests/disc.rs",
     "game/tests/player.rs",
-    "mods/example/Cargo.toml",
-    "mods/example/assets/demo/player.ron",
-    "mods/example/assets/example_mod/level.ron",
-    "mods/example/src/lib.rs",
-    "mods/example/src/main.rs",
-    "mods/example/tests/dev_mcp.rs",
-    "mods/example/tests/rules.rs",
     "psx-bevy/AGENTS.md",
     "psx-bevy/Cargo.toml",
     "psx-bevy/LICENSE-APACHE",
@@ -256,7 +226,7 @@ pub(crate) const FILES: &[(&str, &str)] = files![
 
 /// Files under these prefixes are tracked; `update` replaces the untouched ones.
 /// `vendor/` holds copies of the toolkit's psx-media and psx-assets (not to
-/// be edited); `psx-bevy/` is the base the engine builds on (edited freely).
+/// be edited); `psx-bevy/` is the base the game builds on (edited freely).
 const VENDOR_PREFIX: &str = "vendor/";
 const PSX_BEVY_PREFIX: &str = "psx-bevy/";
 /// Seeded files `create` skips (and reports) when the destination already has them.
@@ -482,12 +452,8 @@ fn render(name: &str, options: TemplateOptions, clean: Option<&str>) -> crate::R
                 "game/Cargo.toml" => {
                     contents.replacen(&format!("name = \"{TEMPLATE_PACKAGE}\""), &format!("name = \"{name}\""), 1)
                 }
-                // The package's own entry and every dependency on it (mods).
+                // The package's own entry and every dependency on it.
                 "Cargo.lock" => contents.replace(&format!("\"{TEMPLATE_PACKAGE}\""), &format!("\"{name}\"")),
-                // The workspace's `game` dependency names the package.
-                "Cargo.toml" => {
-                    contents.replacen(&format!("package = \"{TEMPLATE_PACKAGE}\""), &format!("package = \"{name}\""), 1)
-                }
                 "game/src/lib.rs" => configure_lib(contents, options)?,
                 _ => contents.to_string(),
             };
@@ -504,14 +470,14 @@ fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
         && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-        && !matches!(name, "engine" | "psx-bevy" | "import" | "example-mod")
+        && !matches!(name, "psx-bevy" | "import")
 }
 
 fn check_options(name: &str, options: TemplateOptions) -> crate::Result<()> {
     if !valid_name(name) {
         return Err(Error::invalid(format!(
-            "package name {name:?} must start with a-z, contain only a-z, 0-9, '-' or '_', and not be engine, \
-             psx-bevy, import or example-mod; pass --name"
+            "package name {name:?} must start with a-z, contain only a-z, 0-9, '-' or '_', and not be \
+             psx-bevy or import; pass --name"
         )));
     }
     if !(1..=60).contains(&options.fields_per_tick) {
@@ -611,14 +577,13 @@ pub fn create_for(
     manifest.write(dest)?;
     let mut next = vec![
         "cargo run".to_string(),
-        "cargo run -p engine --example sandbox".to_string(),
         "cargo test --workspace --all-features".to_string(),
         "cargo run --features dev-mcp -- --mcp --headless --software".to_string(),
     ];
     if skipped.contains(&"AGENTS.md") {
-        next.push("your AGENTS.md was kept: read engine/AGENTS.md and game/AGENTS.md, and point it at them".into());
+        next.push("your AGENTS.md was kept: read game/AGENTS.md and point it at it".into());
     } else {
-        next.push("read AGENTS.md, engine/AGENTS.md and game/AGENTS.md".into());
+        next.push("read AGENTS.md and game/AGENTS.md".into());
     }
     Ok(json!({
         "template": "psx-bevy",
@@ -834,20 +799,18 @@ mod tests {
         let lock = std::fs::read_to_string(game.join("Cargo.lock")).unwrap();
         assert!(lock.contains("name = \"my-game\"") && !lock.contains(TEMPLATE_PACKAGE));
         let workspace = std::fs::read_to_string(game.join("Cargo.toml")).unwrap();
-        assert!(workspace.contains("package = \"my-game\""));
         assert!(workspace.contains(r#"psx-bevy = { path = "psx-bevy", default-features = false }"#));
         assert!(game.join("psx-bevy/src/lib.rs").exists());
-        assert!(game.join("engine/examples/sandbox.rs").exists());
         let lib = std::fs::read_to_string(game.join("game/src/lib.rs")).unwrap();
         assert!(lib.contains(REGION_LINE) && lib.contains(FIELDS_PER_TICK_LINE));
         let manifest = Manifest::read(&game).unwrap();
         assert_eq!(manifest.package, "my-game");
         assert!(manifest.owned.keys().all(|k| is_owned(k)));
-        assert!(manifest.seeded.contains_key("engine/src/objects.rs"));
+        assert!(manifest.seeded.contains_key("game/src/demo/player.rs"));
         assert_eq!(manifest.owned.len() + manifest.seeded.len(), FILES.len());
         assert!(create(&game, None, TemplateOptions::default()).is_err());
         assert!(create(&dir.join("Bad Name!"), None, TemplateOptions::default()).is_err());
-        assert!(create(&dir.join("engine"), None, TemplateOptions::default()).is_err());
+        assert!(create(&dir.join("import"), None, TemplateOptions::default()).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -860,7 +823,7 @@ mod tests {
         let out = create(&dir, Some("port"), TemplateOptions::default()).unwrap();
         assert_eq!(out["skipped"], json!(["AGENTS.md"]));
         assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), "my prompt");
-        assert!(dir.join("engine/AGENTS.md").exists() && dir.join("Game.cue").exists());
+        assert!(dir.join("game/AGENTS.md").exists() && dir.join("Game.cue").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -900,14 +863,14 @@ mod tests {
             std::fs::write(dir.join(rel), old).unwrap();
             manifest.owned.insert(rel.into(), sha256(old));
         }
-        manifest.seeded.insert("engine/src/objects.rs".into(), sha256(old));
+        manifest.seeded.insert("game/src/demo/spinner.rs".into(), sha256(old));
         manifest.owned.insert("vendor/psx-media/src/retired.rs".into(), sha256(old));
         std::fs::write(dir.join("vendor/psx-media/src/retired.rs"), old).unwrap();
         manifest.write(&dir).unwrap();
         // ...and the project edited one of them, plus deleted another owned file.
         std::fs::write(dir.join(tim), "// local edit\n").unwrap();
         std::fs::remove_file(dir.join("vendor/README.md")).unwrap();
-        std::fs::write(dir.join("engine/src/objects.rs"), "// the project's own engine\n").unwrap();
+        std::fs::write(dir.join("game/src/demo/spinner.rs"), "// the project's own spinner\n").unwrap();
 
         let dry = update(&dir, true).unwrap();
         assert_eq!(dry["updated"], json!([cue]));
@@ -918,15 +881,15 @@ mod tests {
         assert_eq!(out["added"], json!(["vendor/README.md"]));
         assert_eq!(out["removed"], json!(["vendor/psx-media/src/retired.rs"]));
         assert_eq!(out["conflicts"][0]["path"], tim);
-        assert_eq!(out["seeded_changes"][0]["path"], "engine/src/objects.rs");
+        assert_eq!(out["seeded_changes"][0]["path"], "game/src/demo/spinner.rs");
         assert_eq!(std::fs::read_to_string(dir.join(tim)).unwrap(), "// local edit\n");
         assert!(dir.join(format!("{tim}.psx-new")).exists());
         assert_eq!(
-            std::fs::read_to_string(dir.join("engine/src/objects.rs")).unwrap(),
-            "// the project's own engine\n",
+            std::fs::read_to_string(dir.join("game/src/demo/spinner.rs")).unwrap(),
+            "// the project's own spinner\n",
             "seeded files are never touched"
         );
-        assert!(dir.join(".psx/template-update/engine/src/objects.rs").exists());
+        assert!(dir.join(".psx/template-update/game/src/demo/spinner.rs").exists());
         assert!(!dir.join("vendor/psx-media/src/retired.rs").exists());
 
         // The edit stays a conflict until resolved; everything else is settled.
@@ -1059,19 +1022,6 @@ mod tests {
                 "templates/psx-bevy/{VENDOR_PREFIX}{krate}/Cargo.toml: set version to {}",
                 env!("CARGO_PKG_VERSION")
             );
-        }
-    }
-
-    /// The engine and the editor must never depend on the game.
-    #[test]
-    fn engine_and_editor_do_not_depend_on_the_game() {
-        for (rel, contents) in FILES {
-            if matches!(*rel, "engine/Cargo.toml" | "editor/Cargo.toml") {
-                assert!(!contents.contains("psx-game") && !contents.contains("game."), "{rel} depends on the game");
-            }
-            if (rel.starts_with("engine/") || rel.starts_with("editor/")) && rel.ends_with(".rs") {
-                assert!(!contents.contains("game::"), "{rel} uses the game crate");
-            }
         }
     }
 }

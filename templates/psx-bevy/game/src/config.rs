@@ -1,5 +1,5 @@
 //! Hand-editable data: RON files under the running crate's `assets/` (or a
-//! layered asset folder, see [`crate::assets`]).
+//! layered asset folder, see [`psx_bevy::assets`]).
 //!
 //! Design numbers inside a controller (speeds, damage, timers) live in a
 //! per-type tuning file, so they can be modded without code changes; the
@@ -17,9 +17,9 @@ use std::path::PathBuf;
 /// `assets/<relative>` from the same folders Bevy's asset server reads: the
 /// running crate's `assets/` (under `BEVY_ASSET_ROOT`, else the crate being
 /// run, else the executable's folder), then any folders added with
-/// [`crate::assets::add_root`] (a mod's base game).
+/// [`psx_bevy::assets::add_root`] (a mod's base game).
 pub fn asset_path(relative: &str) -> PathBuf {
-    crate::assets::find(relative)
+    psx_bevy::assets::find(relative)
 }
 
 /// Reads and parses `assets/<relative>` as RON.
