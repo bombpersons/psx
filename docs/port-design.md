@@ -607,10 +607,11 @@ six. The pilot decides whether Phases C and D go ahead as written.
 | A3 | M | The guide and `AGENTS.md` for one agent, short. The template's layout reset: the engine/game split, editor and mods become per-goal suggestions. |
 | A4 | M | Remove the clean-room commands, their guide topics, role templates and crates (Decision 1). |
 
-### Phase B: mechanics (about 16 to 20 sessions)
+### Phase B: mechanics (about 18 to 23 sessions)
 
 | Step | Size | What |
 |---|---|---|
+| B0 | M | The knowledge base's format version 1 (Decision 4): spec, schemas, the Rust crate's generated types and conformance, mdx's capture updated to write it. |
 | B1 | L | The oracle harness's data-read hook. `mechanic capture` core: `mechanic.toml` and `binding.toml` with the R3000 vocabulary and overlays, brackets, end modes, register filters, refusals, the trace writer. |
 | B2 | L | Capture's analysis: the read audit (memory, CPU and GTE registers) drafted by reading PC, external changes, branch coverage, interface calls by entry PC and inline reads. |
 | B3 | M | Template numbers: `Scalar`, `Fixed`, vectors, `Angle`, the named operations for both types, real-number asset fields; psx-bevy's `gte` module from `psx-gte`. |
@@ -646,7 +647,7 @@ to extracted on a fresh workspace, with the person reviewing the result.
 | D2 | S | Quirk settings. |
 | D3 | S | The whole-game view. |
 
-In all, about 50 to 65 sessions. A calendar estimate is better made after
+In all, about 52 to 68 sessions. A calendar estimate is better made after
 Phase A, from the pace it actually took.
 
 ## 12. The platform boundary
@@ -759,7 +760,17 @@ real units in assets, and keeping the `f32` instantiation available.
    jumping, collision, attacking and the rest of the player's controls),
    on a fresh workspace. Croc's existing repositories are evidence and are
    not edited.
-4. **The trace format.**
-   - **Proposed:** the mechanics knowledge base's format, so mdx and psx
-     produce the same kind of trace and a mechanic can be shared later.
-   - **Alternative:** a psx-only format, free to differ.
+4. ~~**The trace format.**~~ Settled: the mechanics knowledge base's
+   format, so mdx and psx produce the same traces, moved to its format
+   version 1 with these changes:
+   - a `table` type for params (element type and length, values in the
+     binding or in an imported asset);
+   - interface calls of kind `query` (request and response) or `command`
+     (request only, still checked in order), for acting on the world;
+   - random numbers as a query interface (`rng.next`);
+   - standard `audit` and `coverage` sections in the trace header, with
+     producer-opaque locations, so stage checks can read them;
+   - the default byte order taken from the platform;
+   - step lines that record only the fields that changed;
+   - a `scenario` field in the header;
+   - a `float` type carried as its bit pattern (32, 64 and 80 bits).
