@@ -16,7 +16,7 @@
 use crate::types::{Matrix, Vec3i16, Vec3i32};
 
 /// Quarter-wave sine table: `round(4096 * sin(i * π/2 / 1024))`, i in 0..=1024.
-const SIN_QUARTER: [i16; 1025] = {
+pub const SIN_QUARTER: [i16; 1025] = {
     const HALF_PI: f64 = core::f64::consts::FRAC_PI_2;
     let mut t = [0i16; 1025];
     let mut i = 0;

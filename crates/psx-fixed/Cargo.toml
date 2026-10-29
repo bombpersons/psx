@@ -1,0 +1,19 @@
+[package]
+name = "psx-fixed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Numbers for exact ports: fixed point with the original's width and rounding, or f32, from one generic mechanic"
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+# The R3000 the exact arithmetic is checked against, and libgte's sine table.
+psx-core = { workspace = true }
+psx-gte = { workspace = true }
+serde_json = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

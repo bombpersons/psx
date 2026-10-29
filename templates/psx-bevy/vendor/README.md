@@ -1,11 +1,16 @@
 # Vendored psx crates
 
-Copies of two crates from the [psx toolkit](https://github.com/bombpersons/psx),
-so the game can import from the player's disc (`tools/import`,
-`game/src/disc.rs`) without the toolkit or any download:
+Copies of crates from the [psx toolkit](https://github.com/bombpersons/psx),
+so the game needs neither the toolkit nor any download:
 
-- `psx-media`: CUE/BIN, ISO and CHD disc images, ISO9660, `SYSTEM.CNF`, PS-X EXE.
+- `psx-media`: CUE/BIN, ISO and CHD disc images, ISO9660, `SYSTEM.CNF`, PS-X
+  EXE, for importing from the player's disc (`tools/import`,
+  `game/src/disc.rs`).
 - `psx-assets`: TIM, TMD, VAB/VAG and SPU-ADPCM decoding.
+- `psx-fixed`: numbers for exact mechanics, `Fixed` with the original's
+  width and rounding or `f32` from one generic mechanic (`psx_bevy::num`).
+- `psx-gte`: the GTE's operations, flags and rounding as psx emulates them
+  (`psx_bevy::gte`).
 
 They belong to the template: `psx template update` replaces them. Unlike
 `psx-bevy/`, they are not for changing here: if one needs a fix, fix it in

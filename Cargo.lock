@@ -1355,6 +1355,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "psx-fixed"
+version = "0.8.0"
+dependencies = [
+ "psx-core",
+ "psx-gte",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "psx-gpu"
 version = "0.8.0"
 dependencies = [

@@ -5,6 +5,7 @@ members = [
     "crates/psx-core",
     "crates/psx-gpu",
     "crates/psx-assets",
+    "crates/psx-fixed",
     "crates/psx-gte",
     "crates/psx-media",
     "crates/psx-mechanics",
@@ -25,6 +26,7 @@ license = "MIT OR Apache-2.0"
 psx-core = { path = "crates/psx-core" }
 psx-assets = { path = "crates/psx-assets" }
 psx-gpu = { path = "crates/psx-gpu" }
+psx-fixed = { path = "crates/psx-fixed" }
 psx-gte = { path = "crates/psx-gte" }
 psx-media = { path = "crates/psx-media" }
 psx-mechanics = { path = "crates/psx-mechanics" }

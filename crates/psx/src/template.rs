@@ -137,6 +137,7 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "psx-bevy/src/display/mod.rs",
     "psx-bevy/src/display/tests.rs",
     "psx-bevy/src/display/view.rs",
+    "psx-bevy/src/gte.rs",
     "psx-bevy/src/launcher.rs",
     "psx-bevy/src/lib.rs",
     "psx-bevy/src/pointer.rs",
@@ -176,6 +177,21 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "vendor/psx-assets/src/tmd.rs",
     "vendor/psx-assets/src/upload.rs",
     "vendor/psx-assets/src/vab.rs",
+    "vendor/psx-fixed/Cargo.toml",
+    "vendor/psx-fixed/src/angle.rs",
+    "vendor/psx-fixed/src/lib.rs",
+    "vendor/psx-fixed/src/mode.rs",
+    "vendor/psx-fixed/src/num.rs",
+    "vendor/psx-fixed/src/tests.rs",
+    "vendor/psx-fixed/src/vec.rs",
+    "vendor/psx-fixed/src/word.rs",
+    "vendor/psx-gte/Cargo.toml",
+    "vendor/psx-gte/src/gte.rs",
+    "vendor/psx-gte/src/lib.rs",
+    "vendor/psx-gte/src/math.rs",
+    "vendor/psx-gte/src/tests.rs",
+    "vendor/psx-gte/src/types.rs",
+    "vendor/psx-gte/src/unr.rs",
     "vendor/psx-media/Cargo.toml",
     "vendor/psx-media/src/chd.rs",
     "vendor/psx-media/src/cue.rs",
@@ -193,8 +209,9 @@ pub(crate) const FILES: &[(&str, &str)] = files![
 ];
 
 /// Files under these prefixes are tracked; `update` replaces the untouched ones.
-/// `vendor/` holds copies of the toolkit's psx-media and psx-assets (not to
-/// be edited); `psx-bevy/` is the base the game builds on (edited freely).
+/// `vendor/` holds copies of the toolkit's psx-media, psx-assets, psx-fixed
+/// and psx-gte (not to be edited); `psx-bevy/` is the base the game builds on
+/// (edited freely).
 const VENDOR_PREFIX: &str = "vendor/";
 const PSX_BEVY_PREFIX: &str = "psx-bevy/";
 /// Seeded files `create` skips (and reports) when the destination already has them.
@@ -935,12 +952,12 @@ mod tests {
         assert!(missing.is_empty(), "template files not in FILES: {missing:?}");
     }
 
-    /// The template's vendored psx-media and psx-assets must be exact copies
+    /// The template's vendored crates must be exact copies
     /// of crates/, at this psx version.
     #[test]
     fn vendored_crates_match_crates() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for krate in ["psx-media", "psx-assets"] {
+        for krate in ["psx-media", "psx-assets", "psx-fixed", "psx-gte"] {
             let src = repo.join("crates").join(krate).join("src");
             let mut names: Vec<String> = std::fs::read_dir(&src)
                 .unwrap()

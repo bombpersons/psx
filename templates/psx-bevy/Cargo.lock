@@ -4258,10 +4258,19 @@ dependencies = [
  "futures",
  "futures-sink",
  "image",
+ "psx-fixed",
+ "psx-gte",
  "rmcp",
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "psx-fixed"
+version = "0.8.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4274,6 +4283,13 @@ dependencies = [
  "ron",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "psx-gte"
+version = "0.8.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

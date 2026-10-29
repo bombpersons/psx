@@ -1,0 +1,17 @@
+# Owned by the psx template (`psx template update` replaces it): a copy of the
+# psx toolkit's crates/psx-gte, the GTE exactly as psx emulates it. Fix bugs
+# upstream, not here. See ../README.md.
+[package]
+name = "psx-gte"
+version = "0.8.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+description = "Fixed-point PlayStation Geometry Transformation Engine (COP2)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[lints.rust]
+unsafe_code = "forbid"

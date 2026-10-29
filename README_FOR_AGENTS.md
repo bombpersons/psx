@@ -196,6 +196,11 @@ Other crates:
   rules, and logs GP0 commands. It is meant for replaying and diffing captured
   draw streams and decoding VRAM, not for game code.
 - **`psx-gte`:** a register-accurate GTE (COP2) with typed helpers and libgte-style math.
+  The template vendors it as `psx_bevy::gte`.
+- **`psx-fixed`:** numbers for ports. A mechanic is written once, generic over a `Mode`:
+  `Fixed<W, F>` computes as the original's compiled C does (checked against the native
+  core's R3000), `f32` from the same code. It has angles, vectors, the named integer
+  operations and real-number asset fields. The template vendors it as `psx_bevy::num`.
 - **`psx-mechanics`:** the platform-free mechanic, interface, binding and trace formats, their
   checks and JSON Schemas (`docs/mechanics.md`); psx's R3000 binding vocabulary is
   `crates/psx/src/mechanic.rs`.
