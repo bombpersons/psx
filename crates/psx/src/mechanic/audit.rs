@@ -324,7 +324,13 @@ impl<'a> Tracker<'a> {
                 bytes.push((k, self.by_call.get(&b).map_or(From::Before, |&c| From::Call(c))));
             }
         } else {
-            bytes = (0..width).map(|k| (k, From::Before)).collect();
+            // Hardware gives a new value each read: only `explained` covers it.
+            for k in 0..width {
+                let b = fold(addr.wrapping_add(k));
+                if !self.accounted.iter().any(|&(s, e)| (s..e).contains(&b)) {
+                    bytes.push((k, From::Before));
+                }
+            }
         }
         let froms: BTreeSet<From> = bytes.iter().map(|b| b.1).collect();
         froms
@@ -647,8 +653,15 @@ impl<'a> Tracker<'a> {
                     Some(n) => format!("{n} bytes"),
                     None => "bytes of varying width".into(),
                 };
-                let region = if s.region.is_empty() { String::new() } else { format!(", {}", s.region) };
-                if s.region.is_empty() {
+                let region = if s.region.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {}: bind it as an inline read if the result depends on it, else explain it", s.region)
+                };
+                if !s.region.is_empty() {
+                    let (a, n) = s.addr.one().map_or((s.lo, s.hi - s.lo + 1), |a| (a, s.bytes.one().unwrap_or(4)));
+                    draft.add(format!("{{ address = {} }}", hex(a)), n, *pc, HARDWARE);
+                } else {
                     let width = s.bytes.one().unwrap_or(s.hi - s.lo + 1);
                     let loc = match (base, s.addr.one()) {
                         (Some((b, o)), _) => Some(format!("{{ base = \"{}\", offset = {} }}", b.name(), toml_int(o))),
@@ -710,6 +723,9 @@ fn signed_hex(v: i64) -> String {
 fn toml_int(v: i64) -> String {
     if v < 0 { v.to_string() } else { format!("{v:#x}") }
 }
+
+/// The draft's note for a read outside memory.
+const HARDWARE: &str = "; or bind it as an inline read if the result depends on it";
 
 /// A draft of `capture.explained`, one entry per place.
 #[derive(Default)]

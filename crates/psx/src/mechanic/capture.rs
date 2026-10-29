@@ -1033,6 +1033,46 @@ end = { pc = 0x8001012C }
     }
 
     #[test]
+    fn a_hardware_read_is_explained_or_bound_as_an_inline_read() {
+        // lui t1, 0x1F80; lw t2, 0x1108(t1) (timer 0's target); addu a1, t2, t0.
+        let patches = [(0x8001_010C, 0x3C09_1F80), (0x8001_0110, 0x8D2A_1108), (0x8001_0118, 0x0148_2821)];
+        let r = run_patched(BINDING, &ADD, &patches).unwrap();
+        let n = r.steps.len();
+        assert_eq!(
+            json!(r.audit.unaccounted),
+            json!([{"at": {"pc": "0x80010110", "address": "0x1f801108"},
+                    "note": format!("4 bytes, {n} of {n} steps, a hardware register: bind it as an inline read if the result depends on it, else explain it")}])
+        );
+        assert_eq!(
+            r.analysis["audit"]["draft"],
+            "explained = [\n  { at = { address = 0x1f801108 }, bytes = 4, why = \"\" },  # read at 0x80010110; or bind it as an inline read if the result depends on it\n]\n"
+        );
+        let explained = BINDING.replace(
+            "end = { pc = 0x8001012C }",
+            "end = { pc = 0x8001012C }\nexplained = [{ at = { address = 0x1F801108 }, bytes = 4, why = \"t\" }]",
+        );
+        let r = run_patched(&explained, &ADD, &patches).unwrap();
+        assert_eq!(r.audit.unaccounted, vec![]);
+
+        // Bound as the inline read peek: the trace holds what the hardware gave.
+        let inline = BINDING.replace("read = { pc = 0x80010108 }", "read = { pc = 0x80010110 }");
+        let (mechanic, b, interfaces) = files(&inline);
+        let plan = Plan::new(&mechanic, &b, &interfaces, &[]);
+        let mut m = machine(&ADD);
+        for (at, w) in patches {
+            let o = (at & 0x1F_FFFF) as usize;
+            m.bus.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        m.bus.write(0x1F80_1108, psx_core::Width::Word, 0x1234).unwrap();
+        let r = record(&mut m, &plan, 1, &[], std::time::Duration::from_secs(60)).unwrap();
+        assert_eq!((r.refusals.count, r.audit.unaccounted.len()), (0, 0));
+        let peek = &r.steps[0].calls[0];
+        assert_eq!(peek.call, "peek");
+        assert_eq!(peek.request, [("at".into(), int(0x1F80_1108))].into());
+        assert_eq!(peek.response, Some([("v".into(), int(0x1234))].into()));
+    }
+
+    #[test]
     fn coverage_counts_each_way_of_each_branch() {
         let r = run(BINDING, &ADD).unwrap();
         assert_eq!((r.coverage.reached, r.coverage.total), (0, 0));

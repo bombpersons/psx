@@ -207,10 +207,18 @@ impl Platform for Psx {
             }
         }
         for (i, x) in c.explained.iter().enumerate() {
-            if matches!(x.at, Location::Load { .. }) {
-                problems.push(format!("capture.explained[{i}]: an address, base + offset, register or gte"));
-            } else if let Err(e) = Psx::check_location(&x.at, Role::Input) {
-                problems.push(format!("capture.explained[{i}]: {e}"));
+            // Any address: a hardware register or the BIOS ROM is read but
+            // never bound, so explaining it is the only way to account for it.
+            match &x.at {
+                Location::Load { .. } => {
+                    problems.push(format!("capture.explained[{i}]: an address, base + offset, register or gte"))
+                }
+                Location::Address { .. } => {}
+                at => {
+                    if let Err(e) = Psx::check_location(at, Role::Input) {
+                        problems.push(format!("capture.explained[{i}]: {e}"));
+                    }
+                }
             }
             if x.bytes == 0 || x.why.trim().is_empty() {
                 problems.push(format!("capture.explained[{i}]: bytes and why"));

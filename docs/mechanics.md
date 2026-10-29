@@ -252,7 +252,7 @@ so every trace carries the values of the run it came from.
 
 | Form | Where |
 |---|---|
-| `{ address = 0x800A5C10 }` | main RAM in any segment, or the scratchpad (`0x1F800000` to `0x1F8003FF`) |
+| `{ address = 0x800A5C10 }` | main RAM in any segment, or the scratchpad (`0x1F800000` to `0x1F8003FF`); in `explained`, any address |
 | `{ base = "a0", offset = 0x40 }` | relative to a register's value, latched when the step begins |
 | `{ register = "v0" }` | a CPU register: at begin for inputs and params, at a call's entry for a request, at its return for a response |
 | `{ gte = 32 }` | a GTE register: data 0 to 31 as `mfc2` numbers them, control 32 to 63 (`cfc2` n is 32 + n) |
@@ -287,6 +287,12 @@ so every trace carries the values of the run it came from.
   out, each with `at` (an address, base and offset, register or GTE
   register), `bytes`, and `why`. Capture's read audit lists every other read
   the binding does not account for, and drafts these entries.
+- **Hardware reads** (a hardware register or the BIOS ROM) are never state,
+  inputs or params: the port has no such registers. When the step's result
+  depends on the value (a timer as a seed, the pad read from the serial
+  port), bind the load as an inline read of an interface call, and the
+  trace records what the hardware gave each step. When it does not (waiting
+  for the GPU, acknowledging an interrupt), explain it by its address.
 
 ### Capturing on the PlayStation
 
