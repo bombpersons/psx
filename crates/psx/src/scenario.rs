@@ -142,11 +142,16 @@ impl Loaded {
             Err(e) => return vec![format!("{at}: {e}")],
         };
         let mut p: Vec<String> = r.check(&self.id).into_iter().map(|p| format!("{at}: {p}")).collect();
+        // Only the types count: a unit or description edited in the glossary
+        // leaves the recorded values as they were.
+        let typed = |f: &psx_mechanics::Field| psx_mechanics::Field { unit: None, description: None, ..f.clone() };
         let declared: std::collections::BTreeMap<String, psx_mechanics::Field> =
-            self.compared().into_iter().map(|(n, f, _, _)| (n, f.clone())).collect();
-        if self.scenario.is_some() && self.glossary.is_some() && r.header.quantities != declared {
+            self.compared().into_iter().map(|(n, f, _, _)| (n, typed(f))).collect();
+        let recorded: std::collections::BTreeMap<String, psx_mechanics::Field> =
+            r.header.quantities.iter().map(|(n, f)| (n.clone(), typed(f))).collect();
+        if self.scenario.is_some() && self.glossary.is_some() && recorded != declared {
             p.push(format!(
-                "{at}: recorded for other quantities than the scenario compares, or as the glossary declared them before; record it again"
+                "{at}: recorded for other quantities than the scenario compares, or with other types than the glossary declares; record it again"
             ));
         }
         p
@@ -201,19 +206,33 @@ fn record(
     deadline: Duration,
 ) -> Recorded {
     let started = Instant::now();
-    let start = m.bus.frames;
-    let target = start + frames as u64;
+    // The pad is released until the first tick ends: `initial` is the moment
+    // the port's launcher builds, before any input. The recording's fields
+    // (and the input's frames) count from the field after that tick.
+    crate::replay::apply(m, &crate::replay::Input { frame: 0, buttons: 0, sticks: [128; 4] });
+    let mut start: Option<u64> = None;
+    let mut target = u64::MAX;
     let (lo, hi) = (crate::run::fold(tick.at), crate::run::fold(tick.at) + tick.bytes);
     let mut out =
         Recorded { initial: None, ticks: Vec::new(), refusals: Vec::new(), refusal_count: 0, timed_out: false };
-    let (mut next_event, mut last_frame) = (0, u64::MAX);
+    let (mut next_event, mut last_frame) = (0, m.bus.frames);
+    let lead_limit = m.bus.frames + frames as u64;
     while m.bus.frames < target {
         if m.bus.frames != last_frame {
             last_frame = m.bus.frames;
-            let field = m.bus.frames - start;
-            while next_event < events.len() && events[next_event].frame <= field {
-                crate::replay::apply(m, &events[next_event]);
-                next_event += 1;
+            if out.initial.is_some() && start.is_none() {
+                start = Some(m.bus.frames);
+                target = m.bus.frames + frames as u64;
+            }
+            if let Some(start) = start {
+                let field = m.bus.frames - start;
+                while next_event < events.len() && events[next_event].frame <= field {
+                    crate::replay::apply(m, &events[next_event]);
+                    next_event += 1;
+                }
+            } else if m.bus.frames >= lead_limit {
+                // No tick within the recording's length: unrecorded() says so.
+                break;
             }
             if started.elapsed() > deadline {
                 out.timed_out = true;
@@ -247,12 +266,10 @@ fn record(
         if out.initial.is_none() {
             out.initial = Some(values);
         } else {
-            out.ticks.push(Full {
-                tick: n,
-                field: m.bus.frames - start,
-                pad: crate::replay::button_names(m.bus.sio0.buttons),
-                values,
-            });
+            // A second tick in the first tick's field belongs to the lead-in
+            // field, which the recording counts as field 0.
+            let field = start.map_or(0, |s| m.bus.frames - s);
+            out.ticks.push(Full { tick: n, field, pad: crate::replay::button_names(m.bus.sio0.buttons), values });
         }
     }
     out
@@ -283,10 +300,10 @@ pub struct ScenarioRecordArgs {
     /// The recording's name: it is written to `scenarios/<ID>/<NAME>.jsonl`.
     #[arg(long)]
     pub name: String,
-    /// Fields (vblanks) to run from the scenario's state.
+    /// Fields (vblanks) to record after the first tick, which runs with the pad released.
     #[arg(long)]
     pub frames: u32,
-    /// Pad input, as run's (frames from the recording's start).
+    /// Pad input, as run's (frames from the field after the first tick).
     #[arg(long, conflicts_with = "replay")]
     #[serde(default)]
     pub input: Option<crate::replay::Events>,
@@ -689,12 +706,19 @@ parts = [{ at = { address = 0x80010020 }, bytes = 1 }]
             unready(root, "walk", "F-0001"),
             ["walk: changed since its determinism check (psx scenario check walk)"]
         );
-        // A recording made before the glossary changed is recorded again.
+        // A unit or description is documentation: the recording still stands.
         std::fs::write(root.join("scenarios/walk/a.jsonl"), recording(1).replace(",\"unit\":\"units\"", "")).unwrap();
         assert_eq!(
             unready(root, "walk", "F-0001"),
+            ["walk: changed since its determinism check (psx scenario check walk)"]
+        );
+        // A recording of a type the glossary no longer declares is recorded again.
+        std::fs::write(root.join("scenarios/walk/a.jsonl"), recording(1).replace("\"bits\":32", "\"bits\":16"))
+            .unwrap();
+        assert_eq!(
+            unready(root, "walk", "F-0001"),
             [
-                "scenarios/walk/a.jsonl: recorded for other quantities than the scenario compares, or as the glossary declared them before; record it again"
+                "scenarios/walk/a.jsonl: recorded for other quantities than the scenario compares, or with other types than the glossary declares; record it again"
             ]
         );
     }

@@ -27,8 +27,8 @@ them.
 
 ```toml
 source = { platform = "psx", title = "Croc (Europe) SLES-00593", image_sha256 = "…" }
-# The logic step: a store the game makes once at the end of each step.
-tick = { at = 0x80153EFC, bytes = 4, pc = 0x80026088 }
+# The logic step: the main loop's `accumulator -= 256` at the end of each step.
+tick = { at = 0x80075240, bytes = 4, pc = 0x80013CA8 }
 
 [quantities.croc_x]
 type = "int"
@@ -37,8 +37,9 @@ signed = true
 unit = "world units"
 description = "Croc's position across the level"
 
-[bindings.croc_x]
-parts = [{ at = { address = 0x8006BAE4 }, bytes = 4 }]
+[bindings.croc_x]   # the player object, through the pointer at 0x8007528C
+parts = [{ at = { pointer = 0x8007528C, offset = 0x370 }, bytes = 4 }]
+stored_signed = true
 ```
 
 - **`source`** is the release, as in a binding. Recording refuses media with
@@ -101,9 +102,10 @@ level = "1-1"
 ## 3. Recordings: `scenarios/<id>/<name>.jsonl`
 
 `psx scenario record ID --name NAME --frames N [--input|--replay]` runs the
-game on psx's native core. It starts from the scenario's state and holds the
-pad as given. It stops at each tick store and reads the compared
-quantities. Analog sticks are refused: the port's runner has digital
+game on psx's native core. It starts from the scenario's state with the pad
+released until the first tick ends, then records N more fields holding the
+pad as given (the input's frames count from the field after that tick). It
+stops at each tick store and reads the compared quantities. Analog sticks are refused: the port's runner has digital
 buttons only.
 
 ```json
@@ -111,23 +113,25 @@ buttons only.
  "source": {"kind": "captured", "platform": "psx", "image_sha256": "…"},
  "producer": {"name": "psx", "version": "0.8.0", "details": {"chain": "…", "frames": 100, "input": {…}}},
  "quantities": {"croc_x": {"type": "int", "bits": 32, "signed": true}},
- "initial": {"croc_x": 12070},
+ "initial": {"croc_x": 12288},
  "description": "Walk right for two seconds, then stand"}
-{"tick": 1, "field": 2}
-{"tick": 5, "field": 11, "pad": ["RIGHT"], "values": {"croc_x": 12066}}
+{"tick": 1, "field": 1, "pad": ["UP"], "values": {"croc_x": 12293}}
+{"tick": 2, "field": 3, "values": {"croc_x": 12301}}
 ```
 
 - **`initial`** holds the quantities at the end of the recording's first
-  tick. That is the moment the port's launcher builds.
+  tick, which runs with the pad released. That is the moment the port's
+  launcher builds.
 - **Each later line is one tick.**
-  - `field` is the field the tick ended in, counted from the recording's
-    start: the original's schedule. Two ticks in one field, or a field with
+  - `field` is the field the tick ended in, counted from the field after
+    the first tick (field 0, the input's frame 0): the original's schedule. Two ticks in one field, or a field with
     none, is the original falling behind.
   - `pad` holds the buttons held during that field, when they changed.
   - `values` holds the quantities that changed.
 - **The header carries the quantities' declarations**, so the recording
-  stands alone. A recording made before the glossary or the scenario's
-  `compare` changed must be recorded again: the facts say so.
+  stands alone. A recording made before the scenario's `compare` or a
+  compared quantity's type changed must be recorded again: the facts say
+  so. A changed unit or description does not count.
 
 ## 4. The determinism check: `psx scenario check [ID…]`
 
