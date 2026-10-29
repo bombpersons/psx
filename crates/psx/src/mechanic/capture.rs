@@ -374,9 +374,18 @@ pub(crate) struct Plan<'a> {
     begin: u32,
 }
 
-/// Each part's location and size.
+/// Each part's location and size; a table's parts reach over every
+/// element.
 fn parts<'a>(f: &Fields<'a>) -> Vec<(&'a Location, u32)> {
-    f.iter().flat_map(|(_, r, _)| r.parts.iter().map(|p| (&p.at, p.bytes))).collect()
+    f.iter()
+        .flat_map(|(_, r, ty)| {
+            let more = match ty {
+                Type::Table { len, .. } => len.saturating_sub(1) * r.stride.unwrap_or(r.bytes()),
+                _ => 0,
+            };
+            r.parts.iter().map(move |p| (&p.at, p.bytes + more))
+        })
+        .collect()
 }
 
 impl<'a> Plan<'a> {
@@ -1022,6 +1031,34 @@ end = { pc = 0x8001012C }
         );
         let r = run_patched(&explained, &ADD, &patches).unwrap();
         assert_eq!(r.audit.unaccounted, vec![]);
+    }
+
+    #[test]
+    fn a_table_param_accounts_for_every_element() {
+        // The step reads 8(a0) and uses it; a table of three words at a0 holds it.
+        let patches: [(u32, u32); 2] = [(0x8001_010C, 0x8C89_0008), (0x8001_0118, 0x0130_2821)];
+        let mechanic = format!(
+            "{MECHANIC}params.t = {{ type = \"table\", len = 3, of = {{ type = \"int\", bits = 32, signed = true }} }}\n"
+        );
+        let binding = BINDING.replacen(
+            "\n[interfaces.",
+            "params.t = { parts = [{ at = { base = \"a0\", offset = 0 }, bytes = 4 }], stored_signed = true }\n\n[interfaces.",
+            1,
+        );
+        let (m, i) = (Mechanic::parse(&mechanic).unwrap(), vec![Interface::parse(WORLD).unwrap()]);
+        let b: Binding = toml::from_str(&binding).unwrap();
+        assert_eq!(b.check::<Psx>(&m, &i), Vec::<String>::new());
+        let residents = vec![];
+        let plan = Plan::new(&m, &b, &i, &residents);
+        let mut machine = machine(&ADD);
+        for (at, w) in patches {
+            let o = (at & 0x1F_FFFF) as usize;
+            machine.bus.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        let r = record(&mut machine, &plan, 1, &[], std::time::Duration::from_secs(60)).unwrap();
+        let found: Vec<Json> = r.audit.unaccounted.iter().map(|f| json!(f)).collect();
+        assert_eq!(found.len(), 1, "only s0 is left: {found:?}");
+        assert_eq!(found[0]["at"]["register"], "s0");
     }
 
     #[test]
