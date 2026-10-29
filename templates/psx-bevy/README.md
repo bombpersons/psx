@@ -18,11 +18,7 @@ cargo run -- --controls                  # open the controls menu (F1 also opens
 cargo run -- --display                   # open the display menu (F2 also opens it)
 cargo run -- --fullscreen                # borderless fullscreen (F11 toggles)
 cargo run -- --aspect window             # screen width follows the window's shape
-cargo run -p engine --example sandbox    # the engine's own tiny game
-cargo run -p example-mod                 # a mod: a tiny game built on game/
-cargo run -p editor                      # the editor for the engine's formats (Tools > Agents lets agents in)
-cargo run -p editor -- --mcp --headless --software  # the editor's MCP on stdio, offscreen
-cargo test --workspace                   # headless tests: engine, game, mod, importers
+cargo test --workspace                   # headless tests: game, psx-bevy, importers
 cargo run --features dev-mcp -- --mcp --headless --software  # developer MCP, offscreen
 cargo test --workspace --all-features    # routine agent check (dev-mcp everywhere)
 cargo build --release --no-default-features  # shipping build: Bevy linked in, developer MCP excluded
@@ -32,20 +28,18 @@ cargo build --release --no-default-features  # shipping build: Bevy linked in, d
 
 | Path | Owner | Contents |
 |---|---|---|
-| `psx-bevy/` | this project, updated by the template | The base the engine builds on: the PS1 look, ticks and input, controls and display menus, testing, viewers, developer MCP, launcher. Change it to suit the game and list changes in `docs/template.md`; `psx template update` refreshes the files you haven't changed ([AGENTS.md](psx-bevy/AGENTS.md), [README](psx-bevy/README.md)) |
-| `engine/` | this project | This game's engine family: object type and action registries, update-order sets, level and tuning formats, `examples/sandbox.rs`. No names, numbers or assets from this game ([AGENTS.md](engine/AGENTS.md)) |
-| `game/` | this project | This title: per-type controllers, action handlers, HUD, menus, baked assets in `game/assets/`, trajectory tests ([AGENTS.md](game/AGENTS.md)) |
-| `mods/example/` | this project | An example mod: a small game built on `game` from hand-made assets, proving the game can be extended without editing it ([game/AGENTS.md](game/AGENTS.md), "Mods are crates") |
-| `editor/` | this project | The editor for the engine's formats: an egui desktop tool with File/Edit/View menus, outline, view, inspector and status bar, starting with level files, and an MCP server (stdio and HTTP) so agents can build levels with you and test the editor. Depends on `engine` only; shares the game's Bevy build (`engine` depends on the editor's UI and MCP crates for that) ([AGENTS.md](editor/AGENTS.md)) |
-| `tools/import/` | this project | Importers: the player's disc → engine formats, with provenance. A library the game runs on first start (no Bevy), plus `cargo run -p import -- DISC` |
+| `psx-bevy/` | this project, updated by the template | The base the game builds on: the PS1 look, ticks and input, controls and display menus, testing, viewers, developer MCP, launcher. Change it to suit the game and list changes in `docs/template.md`; `psx template update` refreshes the files you haven't changed ([AGENTS.md](psx-bevy/AGENTS.md), [README](psx-bevy/README.md)) |
+| `game/` | this project | The port: one plugin per feature, its assets in `game/assets/`, headless tests ([AGENTS.md](game/AGENTS.md)) |
+| `tools/import/` | this project | Importers: the player's disc → the port's formats, with provenance. A library the game runs on first start (no Bevy), plus `cargo run -p import -- DISC` |
 | `vendor/` | psx template | `psx-media` (CUE/BIN, ISO, CHD, ISO9660) and `psx-assets` (TIM, TMD, VAB/VAG): copies of the toolkit's crates for the importers. Replaced by `psx template update` ([README](vendor/README.md)) |
-| `docs/` | this project | `engine-model.md` (what the original treats as data vs code), `evidence.md`, `template.md` (changes to `psx-bevy/`) |
+| `docs/` | this project | `template.md` (changes to `psx-bevy/`) |
 | `.psx-template.toml` | psx template | Which template version this is and which files it owns |
 
-The demo in `game/src/demo/` shows the intended shape: level content is data
-(`game/assets/demo/level.ron`) spawned through the engine's type registry, each
-object type is code registered by id, design numbers are in a tuning file, and
-a trigger in the level runs a registered action. Replace it with your game.
+The demo in `game/src/demo/` shows the intended shape: one plugin per
+feature, rules (player, spinner) apart from the scene that dresses them, and
+level and tuning in RON files (`game/assets/demo/`). Replace it with your
+game. An engine/game split, mod crates and an editor are choices a goal can
+make ([AGENTS.md](AGENTS.md)).
 
 ## Game data from the disc
 
@@ -62,7 +56,7 @@ it on start:
 3. No disc: show "Put your disc next to the game" and look again every second.
 
 Game code that needs imported files starts on `OnEnter(GameData::Ready)`.
-Tests and mods use `GamePlugins` as is, which imports nothing and starts
+Tests and sandboxes use `GamePlugins` as is, which imports nothing and starts
 ready. `assets/imported/` is git-ignored.
 
 ## Template updates

@@ -9,9 +9,6 @@ blending quirks) makes them here.
 Before changing it, check whether the change belongs somewhere else:
 
 - Something only this title needs (its rules, numbers, assets): `game/`.
-- Machinery for this engine family that sits on top of psx-bevy (new object
-  kinds, level formats, render helpers built from psx-bevy's pieces):
-  `engine/`, wrapping or re-exporting what is here.
 - A launcher flag or setup step: plugins in the `add` closure of
   `launcher::Game`, or build the app with `launcher::app` and adjust it
   before `run()`.

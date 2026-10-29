@@ -2,8 +2,8 @@
 //! subject, which spawns it from the case's start and reads each compared
 //! column back in the case's units, then one line per case.
 //!
-//! A port's cases are recordings of the original (in a clean room,
-//! `specs/cases/`): point `load` at them. The demo's case in `tests/cases/` was
+//! A port's cases are recordings of the original (`psx case record`): point
+//! `load` at them. The demo's case in `tests/cases/` was
 //! recorded from the demo itself, to show the form: a tap of Cross and a
 //! walk to the right, with a tick that caught up (row 10 follows two ticks)
 //! and a row without one (row 11), and coverage that splits its columns
@@ -12,11 +12,6 @@
 //! Each run is also written in the case's form to the target's temporary
 //! folder (`write_run`), to compare with the original outside the tests,
 //! with its verdict per spec: the record of which specs the port passes.
-//!
-//! `cases_from_folder` runs every case in a folder by its subject's runner:
-//! clean mode's heldout runs the cases kept back with it, and clean mode's
-//! exploratory cases (`notes/oracle/`) replay unchanged through the same
-//! runners.
 use bevy::prelude::*;
 use game::demo::player::{Hop, Player, PlayerPlugin};
 use psx_bevy::testing::{Case, CaseReport, Start, headless_app};
@@ -89,26 +84,3 @@ macro_rules! cases {
 
 // DEMO-0001 (the hop), DEMO-0002 (walking)
 cases!(demo_hop_walk);
-
-/// Every case in the folder PSX_CASES names, each by its subject's runner,
-/// its run and verdict written to PSX_RESULTS; nothing without them. A case
-/// no runner takes, or whose runner panics, leaves no verdict. psx clean
-/// heldout runs this, in a sandbox, on cases the port never sees: keep it
-/// taking every subject the port has a runner for.
-#[test]
-fn cases_from_folder() {
-    let (Some(cases), Some(results)) = (std::env::var_os("PSX_CASES"), std::env::var_os("PSX_RESULTS")) else {
-        return;
-    };
-    for entry in std::fs::read_dir(cases).unwrap().flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|e| e != "json") {
-            continue;
-        }
-        let Ok(case) = Case::load(&path) else { continue };
-        let Some(run) = runner(&case) else { continue };
-        if let Ok(report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&case))) {
-            let _ = report.write_run(&results);
-        }
-    }
-}

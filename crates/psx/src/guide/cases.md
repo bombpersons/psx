@@ -33,7 +33,7 @@ A name or other text is one strN field (guide topic fields), poked as text
 A row shows a field after the tick, so a field the tick also writes never
 shows the value given: the case's writes say it (column, value in the
 column's format, fields from and to, to null for to the end), and the
-runner sets it before the first tick that sees it (engine::testing's
+runner sets it before the first tick that sees it (psx_bevy::testing's
 CaseRun::write). The recipe keeps the pokes, so case check writes them
 again.
 
@@ -56,7 +56,7 @@ ticks ran in and read the pad of (r-1 for row r; null with no tick). Tick
 0, 2, 2, 2, 3 gives ticks_run 0, 2, 0, 0, 1 and reads_field null, 0, null,
 null, 3.
 
-A psx-bevy workspace replays cases with engine::testing::Case
+A psx-bevy workspace replays cases with psx_bevy::testing::Case
 (game/tests/cases.rs): one runner per subject, one line per case. It runs
 each row's ticks with the pad of the field before, checks them against
 timing first, and compares only what the specs it implements claim.

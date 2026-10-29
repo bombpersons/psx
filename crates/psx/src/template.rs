@@ -100,7 +100,6 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "Cargo.toml",
     "README.md",
     "rustfmt.toml",
-    "docs/evidence.md",
     "docs/template.md",
     "game/AGENTS.md",
     "game/Cargo.toml",

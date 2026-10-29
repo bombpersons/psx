@@ -13,8 +13,7 @@ suit the game (`AGENTS.md` here). `psx template update` brings in newer
 versions of the files you haven't changed. Bevy is pinned at 0.20 in the
 workspace `Cargo.toml`, so every crate builds against one Bevy.
 
-Game code reaches this crate through `engine::` (the engine re-exports these
-modules).
+Game code uses it as `psx_bevy::`.
 
 | Module | Contents |
 |---|---|
@@ -105,7 +104,7 @@ the scene spawns, or build meshes from the game's own model data.
 
 Original files (TIM textures, TMD models, a game's archives) are not loaded
 directly: a port converts them in its importer into ordinary formats (PNG,
-glTF, or the engine's own) that load like any Bevy asset. `psx textures` and
+glTF, RON) that load like any Bevy asset. `psx textures` and
 `psx assets extract` (psx toolkit) convert TIM/TMD to PNG/glTF for a quick
 look.
 
@@ -377,9 +376,8 @@ explain the field/tick alignment; `game/AGENTS.md` has the full recipe.
 
 The demo moves the crate with the D-pad or stick, turns it with L1/R1 and
 hops on Cross. Triangle toggles the PS1 effects so you can compare. Replace
-`game/src/demo/`; it shows the wiring (level data through the engine's type
-registry, a rules plugin plus presentation), not a game architecture to copy
-wholesale.
+`game/src/demo/`; it shows the wiring (rules plugins, a scene plugin that
+dresses what they spawn, level and tuning in RON), not a game to copy.
 
 ### Rebinding and the example controls menu
 

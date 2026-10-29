@@ -20,4 +20,4 @@ the change listed below), then delete the `.psx-new`.
 
 | File | Change | Why |
 |---|---|---|
-| _example: `psx-bevy/src/psx/material.rs`_ | _adds a `foo` field to `PsxMaterial`_ | _the original's X needs it (`docs/evidence.md`)_ |
+| _example: `psx-bevy/src/psx/material.rs`_ | _adds a `foo` field to `PsxMaterial`_ | _the original's X needs it (a recording of it)_ |

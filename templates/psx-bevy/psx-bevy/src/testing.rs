@@ -30,7 +30,7 @@
 //! makes them testable.
 //!
 //! To check rules against the original game, replay a case file (`psx case
-//! record`, or a clean room's `specs/cases/`) with [`Case::runner`] (see
+//! record`) with [`Case::runner`] (see
 //! [`case`]), or a bare psx recording's input with [`compare`] (see
 //! [`trajectory`]).
 use crate::controller::Button;
