@@ -142,10 +142,11 @@ that depends on it.
 
 A mechanic is the unit of exactness inside a feature: one routine's step,
 captured from the game with its inputs and results so the port's version
-can be replayed against it without an emulator. The format follows the
-mechanics knowledge base that mdx produces traces for
-(`reverse_engineering/mechanics`), so a mechanic from a PS1 port can go
-there later. The port does not depend on the knowledge base.
+can be replayed against it without an emulator. Mechanics are how a
+feature's exactness is proven and how its completion is tracked; the
+feature is what the person gets. The file formats are psx's own, adapted
+from the mechanics knowledge base's draft (Decision 4), and defined in
+psx's documentation.
 
 ```
 mechanics/gt2.drivetrain/
@@ -231,13 +232,20 @@ do with the answer stays in the mechanic, where traces prove it.
 A mechanic is captured once the read audit is clear, the traces cover what
 the feature's scenarios exercise, and the uncovered branches are listed.
 
-**Size.** A mechanic is the smallest piece that brackets cleanly: one
-start and one end, state that other code leaves alone between steps (few
-external changes), and a clear audit. That is often one routine, but it can
-be part of a routine (end at the instruction before a world query) or
-several. When one large routine mixes several concerns that cannot be
-bracketed apart, it is one mechanic, and the port may still split its step
-into well-named functions inside.
+**Size.** Any piece that brackets cleanly will do: one start and one end,
+state that other code leaves alone between steps (few external changes),
+and a clear audit. That may be part of a routine (ending at the
+instruction before a world query), one routine, or a whole per-tick update
+covering several behaviours. The size is a practical choice, not a rule.
+Smaller mechanics make a failure point at a smaller piece of code; larger
+ones need fewer bindings. Player-named behaviours (walk, jump) are the
+port's structure, not the evidence's: the port splits a large mechanic's
+step into states and systems, and the traces still replay the whole.
+
+Each mechanic belongs to exactly one feature. If two features would need
+the same mechanic, the code entangles them: they are one feature, or one
+depends on the other. Interfaces, commands included, are where features
+meet.
 
 **Where capture runs.** On psx-oracle (Mednafen), the ground truth. Its
 harness already has a per-instruction step hook, write watches and CPU and
@@ -607,11 +615,11 @@ six. The pilot decides whether Phases C and D go ahead as written.
 | A3 | M | The guide and `AGENTS.md` for one agent, short. The template's layout reset: the engine/game split, editor and mods become per-goal suggestions. |
 | A4 | M | Remove the clean-room commands, their guide topics, role templates and crates (Decision 1). |
 
-### Phase B: mechanics (about 18 to 23 sessions)
+### Phase B: mechanics (about 17 to 21 sessions)
 
 | Step | Size | What |
 |---|---|---|
-| B0 | M | The knowledge base's format version 1 (Decision 4): spec, schemas, the Rust crate's generated types and conformance, mdx's capture updated to write it. |
+| B0 | S | The mechanic, binding and trace formats (Decision 4): their definition in psx's documentation and their schemas. |
 | B1 | L | The oracle harness's data-read hook. `mechanic capture` core: `mechanic.toml` and `binding.toml` with the R3000 vocabulary and overlays, brackets, end modes, register filters, refusals, the trace writer. |
 | B2 | L | Capture's analysis: the read audit (memory, CPU and GTE registers) drafted by reading PC, external changes, branch coverage, interface calls by entry PC and inline reads. |
 | B3 | M | Template numbers: `Scalar`, `Fixed`, vectors, `Angle`, the named operations for both types, real-number asset fields; psx-bevy's `gte` module from `psx-gte`. |
@@ -647,7 +655,7 @@ to extracted on a fresh workspace, with the person reviewing the result.
 | D2 | S | Quirk settings. |
 | D3 | S | The whole-game view. |
 
-In all, about 52 to 68 sessions. A calendar estimate is better made after
+In all, about 51 to 66 sessions. A calendar estimate is better made after
 Phase A, from the pace it actually took.
 
 ## 12. The platform boundary
@@ -741,7 +749,7 @@ real units in assets, and keeping the `f32` instantiation available.
    loop guard, columnar recordings with summaries, and step replay with no
    emulator. **Known cost:** capturing a mechanic costs more than porting
    it untested (mdx's Ren & Stimpy measurement: about 3.8 times the input).
-   Most of that was the knowledge base's own format and writing the read
+   Most of that was the knowledge base's own files and writing the read
    audit by hand, which this design avoids. The rest bought correctness
    that the untested port lacked.
 
@@ -760,9 +768,10 @@ real units in assets, and keeping the `f32` instantiation available.
    jumping, collision, attacking and the rest of the player's controls),
    on a fresh workspace. Croc's existing repositories are evidence and are
    not edited.
-4. ~~**The trace format.**~~ Settled: the mechanics knowledge base's
-   format, so mdx and psx produce the same traces, moved to its format
-   version 1 with these changes:
+4. ~~**The trace format.**~~ Settled: psx's own formats for mechanics,
+   bindings and traces, adapted from the mechanics knowledge base's draft
+   (version 0). The knowledge base itself is not used, and mdx is left as
+   it is until psx's method is proven. Changes from the draft:
    - a `table` type for params (element type and length, values in the
      binding or in an imported asset);
    - interface calls of kind `query` (request and response) or `command`
