@@ -229,6 +229,15 @@ their own world. A good interface asks what the original's routine
 actually asks, as low-level as it really is. The decision about what to
 do with the answer stays in the mechanic, where traces prove it.
 
+Calls are of two kinds. A **query** asks the world something and gets a
+response. A **command** acts on the world with no response: damage the
+object in this box, play the swipe sound, spawn a particle. Both are
+recorded and checked in order. Random numbers are a query
+(`rng.next`), so a replay gets the original's numbers and the port can
+use its own generator. Commands are usually where one feature ends and
+another begins: Croc's swipe is his, and how an enemy takes the hit is on
+the far side of the command.
+
 A mechanic is captured once the read audit is clear, the traces cover what
 the feature's scenarios exercise, and the uncovered branches are listed.
 
