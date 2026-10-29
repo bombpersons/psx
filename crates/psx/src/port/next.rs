@@ -9,6 +9,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use super::check;
 use super::verdict::{self, Kind, State};
 use super::{Confirmation, Port, Stage};
 use crate::Error;
@@ -51,6 +52,8 @@ pub struct Feature {
     /// capture, plugins and scenario launchers, the structure review) read
     /// false until psx can make them.
     pub captured: bool,
+    /// What stops its mechanics from counting as captured.
+    pub capture: Vec<String>,
     pub implemented: bool,
     pub reviewed: bool,
     pub verdicts: BTreeMap<Kind, State>,
@@ -95,6 +98,8 @@ pub struct Facts {
     pub git: Git,
     /// The closure in dependency order.
     pub features: Vec<Feature>,
+    /// The f32 drift of each exact mechanic, from the last `port check`.
+    pub drift: Value,
 }
 
 impl Facts {
@@ -108,10 +113,13 @@ impl Facts {
             .map(|id| {
                 let verdicts =
                     Kind::ALL.into_iter().map(|k| (k, verdict::state(root, &id, k, git.head.as_deref()))).collect();
+                // Scenarios join the capture check with them (B5).
+                let capture = port.entries.get(&id).map(|e| check::feature_uncaptured(root, e)).unwrap_or_default();
                 Feature {
                     in_goal: goal.contains(&id),
                     catalogued: port.entries.contains_key(&id),
-                    captured: false,
+                    captured: port.entries.contains_key(&id) && capture.is_empty(),
+                    capture,
                     implemented: false,
                     reviewed: false,
                     verdicts,
@@ -119,7 +127,8 @@ impl Facts {
                 }
             })
             .collect();
-        Ok(Facts { port, git, features })
+        let drift = check::drift(root, git.head.as_deref());
+        Ok(Facts { port, git, features, drift })
     }
 
     pub fn stage(&self, id: &str) -> Option<Stage> {
@@ -184,6 +193,20 @@ impl Facts {
             );
         }
         let stage = |f: &Feature, s: &[Stage]| f.stage().is_some_and(|x| s.contains(&x));
+        if let Some(f) = order(&|f| stage(f, &[Stage::Catalogued])) {
+            let n = f.capture.len();
+            let mut lines: Vec<String> = f.capture.iter().take(3).cloned().collect();
+            if n > 3 {
+                lines.push(format!("and {} more", n - 3));
+            }
+            return Item::agent(
+                "Capture",
+                Some(&f.id),
+                format!("its mechanics are not captured: {}", lines.join("; ")),
+                "each of its mechanics checks clean and has a captured trace with a clear read audit, and NOTES.md names every branch the traces missed",
+                "write mechanics/<id>/ (mechanic.toml, binding.toml), run psx mechanic capture, bind or explain each read the audit lists, and list each missed branch's PC in NOTES.md (docs/mechanics.md)",
+            );
+        }
         if let Some(f) = order(&|f| stage(f, &[Stage::Captured, Stage::Implemented])) {
             let states: Vec<String> = [Kind::Replay, Kind::Scenario]
                 .iter()
@@ -223,7 +246,6 @@ impl Facts {
             .iter()
             .filter_map(|f| {
                 let (stage, item) = match f.stage()? {
-                    Stage::Catalogued => ("catalogued", "Capture"),
                     Stage::Verified => ("verified", "Review"),
                     _ => return None,
                 };
@@ -252,6 +274,7 @@ impl Facts {
             areas.entry(e.map(|e| e.area.clone()).unwrap_or_default()).or_default().push(json!({
                 "id": f.id, "title": e.map(|e| e.title.as_str()), "stage": stage, "in_goal": f.in_goal,
                 "depends": e.map(|e| &e.depends), "verdicts": verdicts,
+                "mechanics": e.map(|e| &e.mechanics), "capture": f.capture,
             }));
         }
         json!({
@@ -263,7 +286,8 @@ impl Facts {
             "areas": areas,
             "complete": self.complete(),
             "git": {"head": self.git.head, "clean": self.git.clean},
-            "not_measured_yet": ["code accounted for", "gap list", "f32 drift"],
+            "drift": self.drift,
+            "not_measured_yet": ["code accounted for", "gap list"],
         })
     }
 
@@ -452,12 +476,17 @@ mod tests {
     }
 
     #[test]
-    fn a_confirmed_catalogue_waits_for_capture() {
-        let (_d, f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+    fn a_confirmed_catalogue_asks_for_capture() {
+        let (d, _) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        let walk = feature("F-0001", "").replace("depends: []", "depends: []\nmechanics: [demo.walk]");
+        std::fs::write(d.0.join("catalogue/F-0001.md"), walk).unwrap();
+        let f = Facts::gather(&d.0).unwrap();
         let item = f.next();
-        assert_eq!(item.item, "Unavailable");
-        assert_eq!(item.why, "F-0001 is catalogued, needing Capture; F-0002 is catalogued, needing Capture");
+        assert_eq!((item.item, item.feature.as_deref()), ("Capture", Some("F-0001")));
+        assert_eq!(item.why, "its mechanics are not captured: mechanics/demo.walk/mechanic.toml: no such file");
         assert_eq!(f.stage("F-0001"), Some(Stage::Catalogued));
+        // A feature with no mechanics has nothing to capture.
+        assert_eq!(f.stage("F-0002"), Some(Stage::Captured));
     }
 
     fn with(f: &mut Facts, id: &str, stage: Stage, verdicts: &[(Kind, State)]) {

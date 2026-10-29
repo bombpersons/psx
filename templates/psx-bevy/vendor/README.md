@@ -11,6 +11,8 @@ so the game needs neither the toolkit nor any download:
   width and rounding or `f32` from one generic mechanic (`psx_bevy::num`).
 - `psx-gte`: the GTE's operations, flags and rounding as psx emulates them
   (`psx_bevy::gte`).
+- `psx-mechanics`: the mechanic, interface and trace formats, read by step
+  replay (`psx_bevy::replay`).
 
 They belong to the template: `psx template update` replaces them. Unlike
 `psx-bevy/`, they are not for changing here: if one needs a fix, fix it in

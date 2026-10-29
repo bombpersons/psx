@@ -203,7 +203,7 @@ Other crates:
   operations and real-number asset fields. The template vendors it as `psx_bevy::num`.
 - **`psx-mechanics`:** the platform-free mechanic, interface, binding and trace formats, their
   checks and JSON Schemas (`docs/mechanics.md`); psx's R3000 binding vocabulary is
-  `crates/psx/src/mechanic.rs`.
+  `crates/psx/src/mechanic.rs`. The template vendors it for step replay (`psx_bevy::replay`).
 - **`psx-assets`:** TIM/TMD/VAB/VAG parsing, SPU-ADPCM (shared with the native core's SPU),
   the signature scanner and TMD → glTF. `tim.rs`/`tmd.rs` are copied verbatim into the template.
 

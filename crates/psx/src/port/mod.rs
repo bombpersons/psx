@@ -15,11 +15,13 @@ use serde_json::{Value, json};
 use crate::Error;
 use crate::front_matter::{Fm, front_matter};
 
+pub mod check;
 mod confirm;
 mod init;
 pub mod next;
 pub mod verdict;
 
+pub use check::PortCheckArgs;
 pub use confirm::PortConfirmArgs;
 pub use init::PortInitArgs;
 pub use next::{PortNextArgs, PortStatusArgs};

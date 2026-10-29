@@ -221,6 +221,9 @@ enum PortAction {
     /// The one item due now: what, for which feature, why, and the fact that will show it done.
     /// An agent item handed out three times with nothing changed is reported as stuck instead.
     Next(port::PortNextArgs),
+    /// Replay the features' mechanics against the port (the game's tests/mechanics.rs) and
+    /// write their replay verdicts for HEAD, which must have no uncommitted changes.
+    Check(port::PortCheckArgs),
 }
 
 #[derive(clap::Subcommand)]
@@ -333,6 +336,7 @@ fn main() -> ExitCode {
             PortAction::Confirm(a) => a.exec(&ctx),
             PortAction::Status(a) => a.exec(&ctx),
             PortAction::Next(a) => a.exec(&ctx),
+            PortAction::Check(a) => a.exec(&ctx),
         },
         Command::Inventory(a) => a.exec(&ctx),
         Command::Coverage(a) => a.exec(&ctx),

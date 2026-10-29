@@ -26,6 +26,10 @@ its verdicts and the problems; plain=true is text for the person.
   Until it is, only investigate and catalogue.
 - Fix: a verdict at HEAD fails; its failures name the mechanic, step and
   field, or the scenario, tick and quantity.
+- Capture: a feature's mechanics are not captured (each reason listed):
+  mechanics/<id>/ checks clean (psx mechanic check), a captured trace has a
+  clear read audit, and NOTES.md names each missed branch's PC
+  (docs/mechanics.md). A feature with no mechanics has nothing to capture.
 - Implement, Extract: the feature's next stage.
 - Unavailable (person): the next items need commands psx does not have yet.
 - Stuck (person): the same item three times with nothing changed. Stop and
@@ -34,7 +38,13 @@ its verdicts and the problems; plain=true is text for the person.
 
 Verdicts are psx's: it runs the checks and writes .psx/verdicts/F-NNNN/,
 never the agent. A verdict counts only for the commit it judged, with no
-uncommitted changes, so commit before checking.
+uncommitted changes, so commit before checking. port_check (optionally one
+feature) runs the game's tests/mechanics.rs, where each mechanic has an
+adapter (psx_bevy::replay, AGENTS.md), and writes the replay verdicts: a
+feature passes when each of its mechanics replays every trace exactly
+(faithful: within its tolerances). It also reports each exact mechanic's
+f32 drift, which port_status shows. While working, cargo test -p <game>
+--test mechanics gives the same result without a verdict.
 
 How to write the port (the shape of the code, numbers, evidence, the
 self-review before calling a feature done, and the choices a goal can make:

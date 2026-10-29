@@ -24,6 +24,7 @@ pub mod launcher;
 pub use psx_fixed as num;
 pub mod pointer;
 pub mod psx;
+pub mod replay;
 pub mod settings;
 pub mod shell;
 pub mod testing;

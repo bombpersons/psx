@@ -21,8 +21,8 @@ format. psx writes `.psx/verdicts/`; never edit them.
 ```
 game/          the port: one plugin per feature, its assets/ and tests/ (game/AGENTS.md)
 tools/import/  importers: the player's disc -> the port's asset formats
-psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte) and launcher; yours to change (psx-bevy/AGENTS.md)
-vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE); don't edit (fix upstream in psx)
+psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte), step replay and launcher; yours to change (psx-bevy/AGENTS.md)
+vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-mechanics (trace formats); don't edit (fix upstream in psx)
 docs/          template.md: your changes to psx-bevy/
 ```
 
@@ -38,7 +38,12 @@ docs/          template.md: your changes to psx-bevy/
   what is shown and `PsxAnchor` anchors the HUD.
 - **Mechanics are pure steps:** a function of the state, inputs, params and
   world, called from a system that adapts components to it. The world is a
-  trait the feature implements over the port's resources.
+  trait the feature implements over the port's resources. The same function
+  replays the original's traces (`mechanics/<id>/traces/`): each mechanic has
+  an adapter in `game/tests/mechanics.rs` (`psx_bevy::replay` has an
+  example) that moves trace fields to the port's types and answers the
+  world's calls from the trace. `psx port check` runs it for the verdicts;
+  `cargo test -p <game> --test mechanics` while working.
 - **States are enums** with each state's data in its variant; transitions
   are assignments. No state bytes, function tables, or a CPU-like main loop.
 - **Rules apart from content.** Tuning, setup and content are assets with a

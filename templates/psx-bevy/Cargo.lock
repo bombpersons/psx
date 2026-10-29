@@ -4260,6 +4260,7 @@ dependencies = [
  "image",
  "psx-fixed",
  "psx-gte",
+ "psx-mechanics",
  "rmcp",
  "serde",
  "serde_json",
@@ -4290,6 +4291,16 @@ name = "psx-gte"
 version = "0.8.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "psx-mechanics"
+version = "0.8.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

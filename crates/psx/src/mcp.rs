@@ -215,6 +215,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::port::PortInitArgs>("port_init", "Write a port's workspace in dest: the Bevy template, goal.toml, the catalogue, the disc and BIOS linked in, and this MCP server for the agent working there. See guide topic port."),
         def::<crate::port::PortStatusArgs>("port_status", "In a port's workspace: the goal's features by area and stage, their verdicts, problems in the goal or catalogue, and the item due now. plain=true: text for the person. See guide topic port.").read_only(),
         def::<crate::port::PortNextArgs>("port_next", "In a port's workspace: the one item due now (what, which feature, why, and the fact that shows it done). Start every session with it, and call it again after each item. See guide topic port."),
+        def::<crate::port::PortCheckArgs>("port_check", "In a port's workspace, at a clean commit: replay the features' mechanics against the port and write their replay verdicts and f32 drift. See guide topic port.").heavy(),
         def::<crate::mechanic::MechanicCheckArgs>("mechanic_check", "In a port's workspace: check interfaces/ and a mechanic's (or every mechanic's) mechanic.toml, binding.toml and traces. See docs/mechanics.md.").read_only(),
         def::<crate::mechanic::MechanicCaptureArgs>("mechanic_capture", "In a port's workspace: run from from_state with input for frames, bracket the mechanic's step as binding.toml says, and write traces/<name>.trace.jsonl. Reports the read audit (drafting explained), external changes, branch coverage and refusals.").heavy(),
         def::<crate::template::TemplateUpdateArgs>("template_update", "Update the project's psx-bevy/ and vendor/ files to this build; edited files get a .psx-new copy. See guide topic port."),
@@ -740,8 +741,8 @@ mod tests {
             .sum();
         // 50K on 2026-10-17, grown with each tool since; 65.7K from 2026-10-29, after the
         // clean-room tools went and port_status and port_next came; 68.5K from
-        // 2026-10-29 with mechanic_check and mechanic_capture.
-        assert!(size <= 68_500, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // 2026-10-29 with mechanic_check and mechanic_capture; 69K with port_check.
+        assert!(size <= 69_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,

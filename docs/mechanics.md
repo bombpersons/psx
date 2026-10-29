@@ -428,6 +428,43 @@ there is one. Fed each step's inputs and recorded responses, it must:
 The first divergence (step, field, expected, actual) is the result of a
 failed check.
 
+### Replay in a psx port
+
+The template's `psx_bevy::replay` checks conformance with no emulator. The
+game's `tests/mechanics.rs` registers one adapter per mechanic, which moves
+trace fields to the port's types and back and answers the world's calls from
+the trace. `psx port check` runs that test with `cargo test --locked` and
+writes each feature's replay verdict:
+
+- **A feature passes** when each mechanic its catalogue entry lists has an
+  adapter, replays every trace in `traces/` without a divergence, and has at
+  least one captured trace. A feature with no mechanics passes.
+- **Exact** mechanics run in `Exact` through every step. Every field of
+  every step and every request must be equal.
+- **Faithful** mechanics start every step from the recorded state. Each
+  state field is compared within its `tolerance` (0 when none is given), in
+  raw units. Requests must still be equal: an `f32` value equals the
+  recorded one only when it is that integer.
+- **The adapter is checked.** It must read every param, input and observed
+  state field, and record every observed state field.
+- **The `f32` drift report** runs each exact mechanic in `Float` as well:
+  - Each run starts from the recorded state and restarts every K steps. K is
+    the mechanic's `hz` rounded (`tick`, `vblank`), or 60 for `event`.
+  - It reports each state and request field's worst error in raw units,
+    overall and after 1, K/4, K/2 and K steps.
+  - A run diverges when a bool, a variant or the calls differ. Diverged runs
+    are counted and restart at the next step.
+  - Drift never fails a verdict. `psx port status` shows the last check's
+    drift while that check's commit is HEAD.
+
+A mechanic counts as **captured** (stage 2 of its feature) when:
+
+- `psx mechanic check` finds no problem in its files;
+- it has at least one captured trace;
+- every captured trace's read audit is clear;
+- `NOTES.md` names the PC of every branch a captured trace missed, as the
+  coverage writes it (`0x800432a8`, in any case).
+
 ## 7. Changes from the knowledge base's draft
 
 - **Layout.** One workspace is one game. A mechanic has one `binding.toml`

@@ -4,7 +4,7 @@
 #                  the base the game builds on, yours to change for the game
 #   game/          the port: one plugin per feature, its assets and tests
 #   tools/import/  importers: the player's disc -> the port's asset formats
-#   vendor/        psx-media, psx-assets, psx-fixed and psx-gte, vendored by the template
+#   vendor/        psx-media, psx-assets, psx-fixed, psx-gte and psx-mechanics, vendored
 #
 # An engine/game split, mod crates and an editor are choices a goal can make
 # (AGENTS.md), added as members when it does.
@@ -54,6 +54,8 @@ psx-assets = { path = "vendor/psx-assets" }
 # the same way (psx-bevy re-exports them as `num` and `gte`).
 psx-fixed = { path = "vendor/psx-fixed" }
 psx-gte = { path = "vendor/psx-gte" }
+# The mechanic, interface and trace formats, for step replay (psx_bevy::replay).
+psx-mechanics = { path = "vendor/psx-mechanics" }
 # `rc` and `alloc` match what psx-bevy's `dev-mcp` turns on, so the feature
 # doesn't change how serde builds (psx-bevy/Cargo.toml, "Feature alignment").
 serde = { version = "1", features = ["derive", "rc"] }

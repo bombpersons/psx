@@ -116,6 +116,7 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "game/tests/cases/demo_hop_walk.csv",
     "game/tests/cases/demo_hop_walk.json",
     "game/tests/dev_mcp.rs",
+    "game/tests/mechanics.rs",
     "game/tests/disc.rs",
     "game/tests/player.rs",
     "psx-bevy/AGENTS.md",
@@ -151,6 +152,7 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "psx-bevy/src/psx/shaders/psx_material2d.wesl",
     "psx-bevy/src/psx/shaders/psx_screen.wesl",
     "psx-bevy/src/psx/shaders/psx_sprite.wesl",
+    "psx-bevy/src/replay.rs",
     "psx-bevy/src/settings.rs",
     "psx-bevy/src/shell.rs",
     "psx-bevy/src/testing.rs",
@@ -191,6 +193,13 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "vendor/psx-gte/src/math.rs",
     "vendor/psx-gte/src/tests.rs",
     "vendor/psx-gte/src/types.rs",
+    "vendor/psx-mechanics/Cargo.toml",
+    "vendor/psx-mechanics/src/binding.rs",
+    "vendor/psx-mechanics/src/interface.rs",
+    "vendor/psx-mechanics/src/lib.rs",
+    "vendor/psx-mechanics/src/mechanic.rs",
+    "vendor/psx-mechanics/src/trace.rs",
+    "vendor/psx-mechanics/src/value.rs",
     "vendor/psx-gte/src/unr.rs",
     "vendor/psx-media/Cargo.toml",
     "vendor/psx-media/src/chd.rs",
@@ -957,7 +966,7 @@ mod tests {
     #[test]
     fn vendored_crates_match_crates() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for krate in ["psx-media", "psx-assets", "psx-fixed", "psx-gte"] {
+        for krate in ["psx-media", "psx-assets", "psx-fixed", "psx-gte", "psx-mechanics"] {
             let src = repo.join("crates").join(krate).join("src");
             let mut names: Vec<String> = std::fs::read_dir(&src)
                 .unwrap()
