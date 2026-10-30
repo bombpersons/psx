@@ -191,6 +191,13 @@
         "null"
       ]
     },
+    "fingerprint": {
+      "description": "[`Mechanic::fingerprint`] when the trace was captured: a trace whose\nmechanic changed its fields without a new version is refused.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "format": {
       "description": "`mechanic-trace`.",
       "type": "string"

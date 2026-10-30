@@ -4297,9 +4297,13 @@ dependencies = [
 name = "psx-mechanics"
 version = "0.8.0"
 dependencies = [
+ "proc-macro2",
+ "quote",
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
+ "syn 2.0.119",
  "toml",
 ]
 

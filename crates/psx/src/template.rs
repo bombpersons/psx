@@ -200,6 +200,7 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "vendor/psx-mechanics/src/interface.rs",
     "vendor/psx-mechanics/src/lib.rs",
     "vendor/psx-mechanics/src/mechanic.rs",
+    "vendor/psx-mechanics/src/rust.rs",
     "vendor/psx-mechanics/src/scenario.rs",
     "vendor/psx-mechanics/src/trace.rs",
     "vendor/psx-mechanics/src/value.rs",

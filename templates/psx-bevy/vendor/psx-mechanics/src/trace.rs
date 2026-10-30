@@ -23,6 +23,10 @@ pub struct Header {
     pub format_version: u32,
     pub mechanic: String,
     pub mechanic_version: u32,
+    /// [`Mechanic::fingerprint`] when the trace was captured: a trace whose
+    /// mechanic changed its fields without a new version is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
     pub source: Source,
     pub producer: Producer,
     /// The scenario the recording was made in, when there is one.
@@ -253,6 +257,14 @@ impl Trace {
                 h.mechanic, h.mechanic_version, mechanic.id, mechanic.version
             ));
         }
+        if let Some(f) =
+            h.fingerprint.as_ref().filter(|f| h.mechanic_version == mechanic.version && **f != mechanic.fingerprint())
+        {
+            p.push(format!(
+                "header: captured from {}@{} with fields {f}; they are {} now under the same version: a change to fields, requires or uses needs a new version",
+                h.mechanic, h.mechanic_version, mechanic.fingerprint()
+            ));
+        }
         if h.source.kind == SourceKind::Captured && (h.source.platform.is_none() || h.source.image_sha256.is_none()) {
             p.push("header: a captured trace names its platform and image_sha256".into());
         }
@@ -350,5 +362,24 @@ mod tests {
             ]
         );
         assert!(Trace::parse("{\"format\":1}").unwrap_err().starts_with("line 1 (header)"));
+    }
+
+    #[test]
+    fn a_fields_change_under_the_same_version_is_refused() {
+        let (m, i) = (Mechanic::parse(WALK).unwrap(), [Interface::parse(FLOOR).unwrap()]);
+        let with = |f: &str| {
+            TRACE.replacen(r#""mechanic_version":1,"#, &format!(r#""mechanic_version":1,"fingerprint":"{f}","#), 1)
+        };
+        assert_eq!(Trace::parse(&with(&m.fingerprint())).unwrap().check(&m, &i), Vec::<String>::new());
+        // Rewording a unit or a title changes nothing that is fingerprinted.
+        let reworded =
+            Mechanic::parse(&WALK.replace("units/tick", "units per tick").replace("Walking", "Walk")).unwrap();
+        assert_ne!(reworded, m);
+        assert_eq!(reworded.fingerprint(), m.fingerprint());
+        let widened = Mechanic::parse(&WALK.replacen("int_bits = 20", "int_bits = 21", 1)).unwrap();
+        assert_ne!(widened.fingerprint(), m.fingerprint());
+        let p = Trace::parse(&with("0000000000000000")).unwrap().check(&m, &i);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].contains("needs a new version"), "{p:?}");
     }
 }

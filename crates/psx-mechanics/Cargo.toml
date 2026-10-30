@@ -11,6 +11,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
 toml = "1"
+sha2 = { workspace = true }
+# Mechanics written as Rust, read from source without building them.
+syn = { version = "2", features = ["full", "visit"] }
+quote = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
 
 [lints.rust]
 unsafe_code = "forbid"

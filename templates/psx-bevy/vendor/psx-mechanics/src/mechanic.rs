@@ -134,7 +134,7 @@ impl Mechanic {
             _ => {}
         }
         for (what, refs, file) in
-            [("requires", &self.requires, "interfaces/{id}.toml"), ("uses", &self.uses, "mechanics/{id}/mechanic.toml")]
+            [("requires", &self.requires, "interfaces/{id}.toml"), ("uses", &self.uses, "mechanics/{id}/")]
         {
             for (i, r) in refs.iter().enumerate() {
                 if refs[..i].contains(r) {
@@ -176,6 +176,36 @@ impl Mechanic {
             }
         }
         p
+    }
+
+    /// A hash of what its version covers: the id, each field's type, and
+    /// `requires` and `uses`. Titles, summaries, units and descriptions are
+    /// left out, so rewording them needs no new version. A trace records the
+    /// fingerprint it was captured with.
+    pub fn fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        fn bare(f: &Field) -> Field {
+            Field {
+                unit: None,
+                description: None,
+                of: f.of.as_deref().map(|o| Box::new(bare(o))),
+                fields: f.fields.as_ref().map(|fs| fs.iter().map(|(k, v)| (k.clone(), bare(v))).collect()),
+                ..f.clone()
+            }
+        }
+        let fields = |m: &BTreeMap<String, Field>| -> BTreeMap<String, Field> {
+            m.iter().map(|(k, v)| (k.clone(), bare(v))).collect()
+        };
+        let covered = serde_json::json!({
+            "id": self.id,
+            "state": fields(&self.state),
+            "inputs": fields(&self.inputs),
+            "params": fields(&self.params),
+            "requires": self.requires,
+            "uses": self.uses,
+        });
+        let hash = Sha256::digest(covered.to_string().as_bytes());
+        hash[..8].iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// The interfaces this mechanic requires, found among `interfaces`.
@@ -277,7 +307,7 @@ of = { type = "int", bits = 8, signed = false }
         assert_eq!(
             tick.check(&all),
             vec![
-                "uses: croc.walk@2: mechanics/croc.walk/mechanic.toml is version 1",
+                "uses: croc.walk@2: mechanics/croc.walk/ is version 1",
                 "uses: croc.tick@1: a mechanic cannot use itself",
                 "uses: \"walk\" is not <mechanic-id>@<version>",
             ]

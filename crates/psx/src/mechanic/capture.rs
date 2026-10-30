@@ -355,6 +355,7 @@ pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool,
         format_version: psx_mechanics::trace::FORMAT_VERSION,
         mechanic: mechanic.id.clone(),
         mechanic_version: mechanic.version,
+        fingerprint: Some(mechanic.fingerprint()),
         source: Source {
             kind: SourceKind::Captured,
             platform: Some(Psx::NAME.into()),

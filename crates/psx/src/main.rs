@@ -234,8 +234,8 @@ enum PortAction {
 
 #[derive(clap::Subcommand)]
 enum MechanicAction {
-    /// Check the interfaces, and a mechanic's (or every mechanic's) mechanic.toml,
-    /// binding.toml and traces.
+    /// Check the interfaces, and a mechanic's (or every mechanic's) mechanic
+    /// (mechanic.toml or its Rust crate), binding.toml and traces.
     Check(mechanic::MechanicCheckArgs),
     /// Run the game from a state with input, bracket the mechanic's step as its binding
     /// says, and write traces/<NAME>.trace.jsonl: one line per step.

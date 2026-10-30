@@ -40,6 +40,9 @@ mechanics/<mechanic-id>/
 - **Names** of fields, calls and enum variants are `[a-z][a-z0-9_]*`.
 - **References.** A mechanic requires an interface, or uses another
   mechanic, as `<id>@<version>`; the workspace holds one version of each.
+- **A mechanic written as Rust.** In place of `mechanic.toml`, the directory
+  may hold a crate (section 3a). Mechanics are moving to that form
+  (`docs/rust-mechanics-plan.md`); a directory holds one or the other.
 
 ## 2. Value types
 
@@ -144,6 +147,74 @@ of = { type = "record", fields = { heading = { type = "int", bits = 16, signed =
     traces pin down what happens in between.
   - A name is a state field or an input, not both, so a step's request has
     one value per name.
+
+## 3a. A mechanic written as Rust
+
+```
+mechanics/croc.turn/
+  Cargo.toml        # package croc-turn: the id with dots as hyphens
+  src/lib.rs        # header constants, documentation, State, Inputs, Params
+```
+
+The crate is plain Rust that any language can be translated from. psx reads
+it from source, without building it, into the same mechanic `mechanic.toml`
+gives:
+
+```rust
+//! Croc's turning
+//!
+//! LEFT and RIGHT ease Croc's turn speed toward a target that depends on
+//! whether he is on the ground and moving, and it turns his heading.
+
+pub const ID: &str = "croc.turn";
+pub const VERSION: u32 = 1;
+pub const RATE: &str = "tick";          // or "vblank", "event"
+pub const RATE_HZ: u32 = 25;            // tick and vblank
+pub const EXACTNESS: &str = "exact";    // the default; or "faithful"
+// pub const TOLERANCE: &[(&str, u64)] = &[("speed", 16)];   faithful only
+// pub const REQUIRES: &[&str] = &["world.floor-slope@1"];
+// pub const USES: &[&str] = &["croc.ground-move@1"];
+
+/// Fixed point: 16 integer bits, 16 fraction bits.
+pub type Fx16_16 = i32;
+
+pub struct State {
+    /// Unit: 1/4096 turn
+    pub heading: u16,
+    /// Unit: 1/4096 turn per tick
+    pub turn_speed: Fx16_16,
+}
+
+pub struct Inputs {
+    /// Bit 1: on the ground
+    pub contact: u32,
+}
+```
+
+- **Title and summary** are the crate documentation's first two
+  paragraphs (a trailing full stop is dropped from the title).
+- **`State`, `Inputs` and `Params`** are each optional. A field's doc
+  comment is its description, except a line `Unit: …`, which is its unit.
+- **Types:** `bool`; `u8` to `u64` and `i8` to `i64`; `f32` and `f64`; an
+  alias `Fx<int>_<frac>` (signed) or `UFx<int>_<frac>` (unsigned) for fixed
+  point, whose widths add up to the integer it aliases; other aliases;
+  enums of unit variants (`BackingUp` is the variant `backing_up`);
+  structs with named fields (records); `[T; N]`, with `N` a literal or a
+  `const` of the file (tables); `Vec<T>` (lists). Types are declared in
+  `src/lib.rs`.
+- **The portable subset.** psx refuses, in every file under `src/`:
+  - dependencies other than the workspace's mechanics (`path = "../<id>"`)
+    and interfaces (`path = "../../interfaces/<id>"`), a build script, and
+    `use` of anything else;
+  - `unsafe`, foreign functions, `static mut`;
+  - macro definitions, and macros other than `assert!` and its kin,
+    `matches!`, `panic!`, `unreachable!` and `vec!`;
+  - derives other than the standard library's;
+  - generic parameters (lifetimes on functions excepted; `impl Trait`
+    arguments are fine), trait objects;
+  - `HashMap`, `HashSet`, `BTreeMap`, `BTreeSet`, `VecDeque`, `BinaryHeap`,
+    `LinkedList`, `Rc`, `Arc`, `Cell`, `RefCell`, `Mutex`, `RwLock`;
+  - floats in an exact mechanic whose fields are all integers.
 
 ## 4. Interfaces: `interfaces/<id>.toml`
 
@@ -436,7 +507,7 @@ fills the steps back in.
 
 ```json
 {"format": "mechanic-trace", "format_version": 1,
- "mechanic": "croc.walk", "mechanic_version": 1,
+ "mechanic": "croc.walk", "mechanic_version": 1, "fingerprint": "3f9a0c21d4e87b56",
  "source": {"kind": "captured", "platform": "psx", "image_sha256": "…"},
  "producer": {"name": "psx", "version": "0.8.0", "details": {"from_state": "…"}},
  "scenario": "walk_forward",
@@ -448,6 +519,11 @@ fills the steps back in.
  "description": "Walk forward from standstill, then let go."}
 ```
 
+- **`fingerprint`** is a hash of what the mechanic's version covers when
+  the trace was captured: its id, its fields' types, `requires` and `uses`
+  (not titles, units or descriptions). A trace whose mechanic has changed
+  them under the same version is refused: bump the version and capture
+  again.
 - **`source.kind`**: `captured` means recorded from the original, and only a
   captured trace counts as evidence. It names its `platform` and
   `image_sha256`. `synthetic` is for examples and tests.

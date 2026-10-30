@@ -511,7 +511,10 @@ mod tests {
         let f = Facts::gather(&d.0).unwrap();
         let item = f.next();
         assert_eq!((item.item, item.feature.as_deref()), ("Capture", Some("F-0001")));
-        assert_eq!(item.why, "its mechanics are not captured: mechanics/demo.walk/mechanic.toml: no such file");
+        assert_eq!(
+            item.why,
+            "its mechanics are not captured: mechanics/demo.walk: no mechanic here (a Rust crate with src/lib.rs, or mechanic.toml)"
+        );
         assert_eq!(f.stage("F-0001"), Some(Stage::Catalogued));
         // A feature that names no mechanics is asked for them.
         std::fs::write(d.0.join("catalogue/F-0001.md"), feature("F-0001", "")).unwrap();

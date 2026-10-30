@@ -1,0 +1,884 @@
+//! Mechanics written as Rust (docs/rust-mechanics-plan.md, section 3): a
+//! crate of plain, dependency-free Rust whose header constants, crate
+//! documentation and `State`, `Inputs` and `Params` structs declare what
+//! `mechanic.toml` declares. It is read from source, without building it,
+//! into the same [`Mechanic`], and held to a portable subset of Rust.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use syn::spanned::Spanned;
+use syn::visit::Visit;
+
+use crate::mechanic::{Exactness, Mechanic, Per, Rate};
+use crate::value::{Field, Kind, Value, is_id};
+
+/// The crate's root file, relative to the crate.
+pub const LIB: &str = "src/lib.rs";
+
+/// Macros a mechanic may call: the standard library's checks and `vec!`.
+const MACROS: &[&str] = &[
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "debug_assert",
+    "debug_assert_eq",
+    "debug_assert_ne",
+    "matches",
+    "panic",
+    "unreachable",
+    "vec",
+];
+
+/// Derives a mechanic may use: the standard library's own.
+const DERIVES: &[&str] = &["Clone", "Copy", "Debug", "Default", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash"];
+
+/// Types a mechanic may not use: maps and sets with an order of their own,
+/// and shared or interior mutability.
+const TYPES: &[&str] = &[
+    "HashMap",
+    "HashSet",
+    "BTreeMap",
+    "BTreeSet",
+    "VecDeque",
+    "BinaryHeap",
+    "LinkedList",
+    "Rc",
+    "Arc",
+    "RefCell",
+    "Cell",
+    "Mutex",
+    "RwLock",
+];
+
+/// The header's constants.
+const HEADER: &[&str] = &["ID", "VERSION", "RATE", "RATE_HZ", "EXACTNESS", "TOLERANCE", "REQUIRES", "USES"];
+
+/// A mechanic crate's files: `Cargo.toml`, and each `.rs` file under `src/`
+/// by its path relative to the crate (`src/lib.rs` among them).
+pub struct Crate<'a> {
+    pub cargo_toml: &'a str,
+    pub files: &'a [(String, String)],
+}
+
+/// The mechanic the crate declares, and what is wrong with it (`<file>:<line>:
+/// <problem>`, files relative to the crate). `Err` when no mechanic can be
+/// read at all: a file that does not parse, or no `ID` or `VERSION`.
+pub fn mechanic(c: &Crate) -> Result<(Mechanic, Vec<String>), Vec<String>> {
+    let mut problems = Vec::new();
+    let deps = manifest(c.cargo_toml, &mut problems);
+    let mut parsed = Vec::new();
+    for (path, text) in c.files {
+        match syn::parse_file(text) {
+            Ok(f) => parsed.push((path.as_str(), f)),
+            Err(e) => problems.push(format!("{path}:{}: {e}", e.span().start().line)),
+        }
+    }
+    if parsed.len() != c.files.len() {
+        return Err(problems);
+    }
+    let Some((_, lib)) = parsed.iter().find(|(p, _)| *p == LIB) else {
+        problems.push(format!("{LIB}: no such file"));
+        return Err(problems);
+    };
+    let items = Items::of(lib);
+    let mut p = Problems { file: LIB, out: &mut problems };
+    let consts = header(&items, &mut p);
+    let (Some(id), Some(version)) = (consts.id.clone(), consts.version) else {
+        if consts.id.is_none() {
+            p.at(0, "no `pub const ID: &str` (the mechanic's id, `<game>.<name>`)");
+        }
+        if consts.version.is_none() {
+            p.at(0, "no `pub const VERSION: u32`");
+        }
+        return Err(problems);
+    };
+    let (title, summary) = crate_docs(lib, &mut p);
+    let mut m = Mechanic {
+        id,
+        version,
+        title,
+        summary,
+        exactness: consts.exactness,
+        rate: consts.rate,
+        requires: consts.requires,
+        uses: consts.uses,
+        state: BTreeMap::new(),
+        inputs: BTreeMap::new(),
+        params: BTreeMap::new(),
+        tolerance: consts.tolerance,
+    };
+    for (name, into) in [("State", &mut m.state), ("Inputs", &mut m.inputs), ("Params", &mut m.params)] {
+        let Some(s) = items.structs.get(name) else { continue };
+        if !matches!(s.vis, syn::Visibility::Public(_)) {
+            p.at(line(s), &format!("`{name}` is pub, for the port and the replay"));
+        }
+        let syn::Fields::Named(fields) = &s.fields else {
+            p.at(line(s), &format!("`{name}` has named fields"));
+            continue;
+        };
+        for f in &fields.named {
+            let n = f.ident.as_ref().unwrap().to_string();
+            match items.field(&f.ty, &f.attrs, 0) {
+                Ok(field) => {
+                    into.insert(n, field);
+                }
+                Err(e) => p.at(line(f), &format!("{name}.{n}: {e}")),
+            }
+        }
+    }
+    let floats_declared = [&m.state, &m.inputs, &m.params].iter().any(|fs| fs.values().any(has_float));
+    for (path, file) in &parsed {
+        let mut v = Subset { deps: &deps, problems: Vec::new(), floats: Vec::new() };
+        v.visit_file(file);
+        problems.extend(v.problems.into_iter().map(|(l, e)| format!("{path}:{l}: {e}")));
+        if m.exactness == Exactness::Exact && !floats_declared {
+            problems.extend(v.floats.into_iter().map(|l| {
+                format!("{path}:{l}: a float in an exact mechanic whose fields are all integers: compute as the original does")
+            }));
+        }
+    }
+    Ok((m, problems))
+}
+
+fn has_float(f: &Field) -> bool {
+    f.kind == Kind::Float
+        || f.of.as_deref().is_some_and(has_float)
+        || f.fields.as_ref().is_some_and(|fs| fs.values().any(has_float))
+}
+
+struct Problems<'a> {
+    file: &'a str,
+    out: &'a mut Vec<String>,
+}
+
+impl Problems<'_> {
+    fn at(&mut self, line: usize, what: &str) {
+        self.out.push(format!("{}:{line}: {what}", self.file));
+    }
+}
+
+fn line<T: Spanned>(t: &T) -> usize {
+    t.span().start().line
+}
+
+/// The crate's dependencies, checked: each a workspace mechanic
+/// (`path = "../<id>"`) or interface (`path = "../../interfaces/<id>"`).
+/// Returns their crate names as `use` sees them.
+fn manifest(text: &str, p: &mut Vec<String>) -> BTreeSet<String> {
+    let mut deps = BTreeSet::new();
+    let toml: toml::Table = match toml::from_str(text) {
+        Ok(t) => t,
+        Err(e) => {
+            p.push(format!("Cargo.toml: {}", e.message()));
+            return deps;
+        }
+    };
+    let package = toml.get("package").and_then(|v| v.as_table());
+    if package.is_some_and(|t| t.contains_key("build")) {
+        p.push("Cargo.toml: a mechanic has no build script".into());
+    }
+    if toml.get("lib").and_then(|l| l.get("proc-macro")).is_some() {
+        p.push("Cargo.toml: a mechanic is not a procedural macro crate".into());
+    }
+    for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        for (name, d) in toml.get(key).and_then(|v| v.as_table()).into_iter().flatten() {
+            let path = d.get("path").and_then(|v| v.as_str());
+            let ok = path.is_some_and(|path| {
+                let id = path.strip_prefix("../../interfaces/").or_else(|| path.strip_prefix("../"));
+                id.is_some_and(|id| {
+                    is_id(id) && d.as_table().is_some_and(|t| t.keys().all(|k| k == "path" || k == "package"))
+                })
+            });
+            if ok {
+                deps.insert(name.replace('-', "_"));
+            } else {
+                p.push(format!(
+                    "Cargo.toml: {key}.{name}: a mechanic depends only on the workspace's mechanics (path = \"../<id>\") and interfaces (path = \"../../interfaces/<id>\")"
+                ));
+            }
+        }
+    }
+    for key in toml.keys().filter(|k| k.starts_with("target")) {
+        p.push(format!("Cargo.toml: {key}: a mechanic has no platform-specific dependencies"));
+    }
+    deps
+}
+
+/// The items of `src/lib.rs` that declare types, by name.
+struct Items<'f> {
+    structs: BTreeMap<String, &'f syn::ItemStruct>,
+    enums: BTreeMap<String, &'f syn::ItemEnum>,
+    aliases: BTreeMap<String, &'f syn::ItemType>,
+    consts: BTreeMap<String, &'f syn::ItemConst>,
+}
+
+impl<'f> Items<'f> {
+    fn of(file: &'f syn::File) -> Items<'f> {
+        let mut i = Items {
+            structs: BTreeMap::new(),
+            enums: BTreeMap::new(),
+            aliases: BTreeMap::new(),
+            consts: BTreeMap::new(),
+        };
+        for item in &file.items {
+            match item {
+                syn::Item::Struct(s) => {
+                    i.structs.insert(s.ident.to_string(), s);
+                }
+                syn::Item::Enum(e) => {
+                    i.enums.insert(e.ident.to_string(), e);
+                }
+                syn::Item::Type(t) => {
+                    i.aliases.insert(t.ident.to_string(), t);
+                }
+                syn::Item::Const(c) => {
+                    i.consts.insert(c.ident.to_string(), c);
+                }
+                _ => {}
+            }
+        }
+        i
+    }
+
+    /// The field a Rust type declares, with its documentation.
+    fn field(&self, ty: &syn::Type, attrs: &[syn::Attribute], depth: u32) -> Result<Field, String> {
+        let (description, unit) = field_docs(attrs);
+        let mut f = self.ty(ty, depth)?;
+        f.description = description;
+        f.unit = unit;
+        Ok(f)
+    }
+
+    fn ty(&self, ty: &syn::Type, depth: u32) -> Result<Field, String> {
+        if depth > 16 {
+            return Err("types nest more than 16 deep (a type that holds itself?)".into());
+        }
+        let shown = quote::ToTokens::to_token_stream(ty).to_string();
+        let unsupported = || {
+            format!(
+                "`{shown}` is not a type a trace can hold: bool, u8 to u64, i8 to i64, f32, f64, a fixed-point alias (`type Fx16_16 = i32;`), an enum, a struct, `[T; N]` or `Vec<T>`"
+            )
+        };
+        match ty {
+            syn::Type::Array(a) => {
+                let len = self.len(&a.len).ok_or_else(|| {
+                    format!("`{shown}`: the length is an integer or a `const` of this file holding one")
+                })?;
+                let of = self.ty(&a.elem, depth + 1)?;
+                Ok(Field { len: Some(len), of: Some(Box::new(of)), ..blank(Kind::Table) })
+            }
+            syn::Type::Paren(p) => self.ty(&p.elem, depth),
+            syn::Type::Path(p) if p.qself.is_none() && p.path.segments.len() == 1 => {
+                let seg = &p.path.segments[0];
+                let name = seg.ident.to_string();
+                if name == "Vec" {
+                    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else { return Err(unsupported()) };
+                    let Some(syn::GenericArgument::Type(of)) = args.args.first().filter(|_| args.args.len() == 1)
+                    else {
+                        return Err(unsupported());
+                    };
+                    let of = self.ty(of, depth + 1)?;
+                    return Ok(Field { of: Some(Box::new(of)), ..blank(Kind::List) });
+                }
+                if !seg.arguments.is_none() {
+                    return Err(unsupported());
+                }
+                if let Some(f) = primitive(&name) {
+                    return Ok(f);
+                }
+                if let Some(a) = self.aliases.get(&name) {
+                    if let Some((signed, int_bits, frac_bits)) = fixed_name(&name) {
+                        let target = quote::ToTokens::to_token_stream(&a.ty).to_string();
+                        return match primitive(&target) {
+                            Some(Field { kind: Kind::Int, bits: Some(bits), signed: Some(s), .. })
+                                if s == signed && bits == int_bits + frac_bits =>
+                            {
+                                Ok(Field {
+                                    signed: Some(signed),
+                                    int_bits: Some(int_bits),
+                                    frac_bits: Some(frac_bits),
+                                    ..blank(Kind::Fixed)
+                                })
+                            }
+                            _ => Err(format!(
+                                "`{name}` is {int_bits}.{frac_bits} fixed point, {}: alias {}{}",
+                                if signed { "signed" } else { "unsigned" },
+                                if signed { "i" } else { "u" },
+                                int_bits + frac_bits
+                            )),
+                        };
+                    }
+                    return self.ty(&a.ty, depth + 1);
+                }
+                if let Some(e) = self.enums.get(&name) {
+                    let mut variants = Vec::new();
+                    for v in &e.variants {
+                        if !matches!(v.fields, syn::Fields::Unit) {
+                            return Err(format!(
+                                "enum `{name}`: variant {} carries data; a field's enum has unit variants only",
+                                v.ident
+                            ));
+                        }
+                        variants.push(snake(&v.ident.to_string()));
+                    }
+                    return Ok(Field { variants: Some(variants), ..blank(Kind::Enum) });
+                }
+                if let Some(s) = self.structs.get(&name) {
+                    let syn::Fields::Named(named) = &s.fields else {
+                        return Err(format!("struct `{name}` has named fields to be a record"));
+                    };
+                    let mut fields = BTreeMap::new();
+                    for f in &named.named {
+                        let n = f.ident.as_ref().unwrap().to_string();
+                        let field = self.field(&f.ty, &f.attrs, depth + 1).map_err(|e| format!("{name}.{n}: {e}"))?;
+                        fields.insert(n, field);
+                    }
+                    return Ok(Field { fields: Some(fields), ..blank(Kind::Record) });
+                }
+                Err(unsupported())
+            }
+            _ => Err(unsupported()),
+        }
+    }
+
+    /// An array length: a literal, or a `const` of this file holding one.
+    fn len(&self, e: &syn::Expr) -> Option<u32> {
+        match e {
+            syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => i.base10_parse().ok(),
+            syn::Expr::Path(p) => {
+                let c = self.consts.get(&p.path.get_ident()?.to_string())?;
+                self.len(&c.expr)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn blank(kind: Kind) -> Field {
+    Field {
+        kind,
+        bits: None,
+        signed: None,
+        int_bits: None,
+        frac_bits: None,
+        variants: None,
+        of: None,
+        len: None,
+        fields: None,
+        unit: None,
+        description: None,
+    }
+}
+
+fn primitive(name: &str) -> Option<Field> {
+    let int = |bits, signed| Field { bits: Some(bits), signed: Some(signed), ..blank(Kind::Int) };
+    Some(match name {
+        "bool" => blank(Kind::Bool),
+        "u8" => int(8, false),
+        "u16" => int(16, false),
+        "u32" => int(32, false),
+        "u64" => int(64, false),
+        "i8" => int(8, true),
+        "i16" => int(16, true),
+        "i32" => int(32, true),
+        "i64" => int(64, true),
+        "f32" => Field { bits: Some(32), ..blank(Kind::Float) },
+        "f64" => Field { bits: Some(64), ..blank(Kind::Float) },
+        _ => return None,
+    })
+}
+
+/// `Fx<int>_<frac>` (signed) or `UFx<int>_<frac>` (unsigned): whether the
+/// value is signed, its integer bits and its fraction bits.
+fn fixed_name(name: &str) -> Option<(bool, u32, u32)> {
+    let (signed, rest) = match name.strip_prefix("UFx") {
+        Some(r) => (false, r),
+        None => (true, name.strip_prefix("Fx")?),
+    };
+    let (i, f) = rest.split_once('_')?;
+    let digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    (digits(i) && digits(f)).then_some(())?;
+    Some((signed, i.parse().ok()?, f.parse().ok()?))
+}
+
+/// `BackingUp` → `backing_up`.
+fn snake(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The text of `///` or `//!` comments, one entry per line.
+fn doc_lines(attrs: &[syn::Attribute]) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in attrs.iter().filter(|a| a.path().is_ident("doc")) {
+        let syn::Meta::NameValue(nv) = &a.meta else { continue };
+        let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value else { continue };
+        let text = s.value();
+        // An empty `//!` line is an empty string: it still ends a paragraph.
+        out.extend(text.split('\n').map(|l| l.strip_prefix(' ').unwrap_or(l).trim_end().to_string()));
+    }
+    out
+}
+
+/// A field's description, and its unit from a line `Unit: …`.
+fn field_docs(attrs: &[syn::Attribute]) -> (Option<String>, Option<String>) {
+    let mut unit = None;
+    let mut text = Vec::new();
+    for l in doc_lines(attrs) {
+        match l.strip_prefix("Unit:") {
+            Some(u) => unit = Some(u.trim().to_string()),
+            None if !l.is_empty() => text.push(l),
+            None => {}
+        }
+    }
+    ((!text.is_empty()).then(|| text.join(" ")), unit)
+}
+
+/// The title (the crate documentation's first paragraph) and summary (its
+/// second).
+fn crate_docs(file: &syn::File, p: &mut Problems) -> (String, String) {
+    let mut paragraphs: Vec<Vec<String>> = vec![Vec::new()];
+    for l in doc_lines(&file.attrs) {
+        if l.is_empty() {
+            paragraphs.push(Vec::new());
+        } else {
+            paragraphs.last_mut().unwrap().push(l);
+        }
+    }
+    let mut paragraphs = paragraphs.into_iter().filter(|p| !p.is_empty()).map(|p| p.join(" "));
+    let title = paragraphs.next().unwrap_or_default();
+    let summary = paragraphs.next().unwrap_or_default();
+    if title.is_empty() {
+        p.at(1, "the crate's documentation (`//!`) starts with the mechanic's title");
+    }
+    if summary.is_empty() {
+        p.at(1, "the crate's documentation's second paragraph is the mechanic's summary");
+    }
+    (title.trim_end_matches('.').to_string(), summary)
+}
+
+struct Header {
+    id: Option<String>,
+    version: Option<u32>,
+    rate: Rate,
+    exactness: Exactness,
+    requires: Vec<String>,
+    uses: Vec<String>,
+    tolerance: BTreeMap<String, Value>,
+}
+
+fn header(items: &Items, p: &mut Problems) -> Header {
+    let mut h = Header {
+        id: None,
+        version: None,
+        rate: Rate { per: Per::Tick, hz: None },
+        exactness: Exactness::Exact,
+        requires: Vec::new(),
+        uses: Vec::new(),
+        tolerance: BTreeMap::new(),
+    };
+    for name in HEADER {
+        let Some(c) = items.consts.get(*name) else { continue };
+        let at = line(*c);
+        if !matches!(c.vis, syn::Visibility::Public(_)) {
+            p.at(at, &format!("`{name}` is pub"));
+        }
+        let e = &*c.expr;
+        let bad = |p: &mut Problems, what: &str| p.at(at, &format!("`{name}` is {what}"));
+        match *name {
+            "ID" => match string(e) {
+                Some(s) => h.id = Some(s),
+                None => bad(p, "a string literal"),
+            },
+            "VERSION" => match int(e) {
+                Some(v) => h.version = Some(v as u32),
+                None => bad(p, "an integer literal"),
+            },
+            "RATE" => match string(e).as_deref() {
+                Some("tick") => h.rate.per = Per::Tick,
+                Some("vblank") => h.rate.per = Per::Vblank,
+                Some("event") => h.rate.per = Per::Event,
+                _ => bad(p, "\"tick\", \"vblank\" or \"event\""),
+            },
+            "RATE_HZ" => match e {
+                syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Float(f), .. }) => h.rate.hz = f.base10_parse().ok(),
+                _ => match int(e) {
+                    Some(n) => h.rate.hz = Some(n as f64),
+                    None => bad(p, "a number"),
+                },
+            },
+            "EXACTNESS" => match string(e).as_deref() {
+                Some("exact") => h.exactness = Exactness::Exact,
+                Some("faithful") => h.exactness = Exactness::Faithful,
+                _ => bad(p, "\"exact\" or \"faithful\""),
+            },
+            "REQUIRES" | "USES" => match list(e).and_then(|l| l.iter().map(string).collect::<Option<Vec<_>>>()) {
+                Some(l) if *name == "REQUIRES" => h.requires = l,
+                Some(l) => h.uses = l,
+                None => bad(p, "a list of strings, `&[\"<id>@<version>\"]`"),
+            },
+            "TOLERANCE" => {
+                let pairs = list(e).and_then(|l| {
+                    l.iter()
+                        .map(|t| match t {
+                            syn::Expr::Tuple(t) if t.elems.len() == 2 => {
+                                Some((string(&t.elems[0])?, int(&t.elems[1])?))
+                            }
+                            _ => None,
+                        })
+                        .collect::<Option<Vec<_>>>()
+                });
+                match pairs {
+                    Some(l) => h.tolerance = l.into_iter().map(|(k, v)| (k, Value::Int(v as i128))).collect(),
+                    None => bad(p, "a list of field names and raw differences, `&[(\"speed\", 16)]`"),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+    h
+}
+
+fn string(e: &syn::Expr) -> Option<String> {
+    match e {
+        syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) => Some(s.value()),
+        _ => None,
+    }
+}
+
+fn int(e: &syn::Expr) -> Option<u64> {
+    match e {
+        syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => i.base10_parse().ok(),
+        _ => None,
+    }
+}
+
+/// `&[a, b]` or `[a, b]`.
+fn list(e: &syn::Expr) -> Option<Vec<syn::Expr>> {
+    match e {
+        syn::Expr::Reference(r) => list(&r.expr),
+        syn::Expr::Array(a) => Some(a.elems.iter().cloned().collect()),
+        _ => None,
+    }
+}
+
+/// The portable subset: what a mechanic's code may not use, so it can be
+/// read on its own and translated into any language.
+struct Subset<'d> {
+    deps: &'d BTreeSet<String>,
+    problems: Vec<(usize, String)>,
+    /// Lines where a float type or literal appears.
+    floats: Vec<usize>,
+}
+
+impl Subset<'_> {
+    fn no(&mut self, at: usize, what: &str) {
+        self.problems.push((at, what.to_string()));
+    }
+
+    fn generics(&mut self, g: &syn::Generics, what: &str, lifetimes: bool) {
+        for param in &g.params {
+            match param {
+                syn::GenericParam::Lifetime(_) if lifetimes => {}
+                _ => self.no(line(param), &format!("{what}: no generic parameters (write the type out)")),
+            }
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for Subset<'_> {
+    fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+        if f.sig.unsafety.is_some() {
+            self.no(line(&f.sig), "no unsafe code");
+        }
+        self.generics(&f.sig.generics, &format!("fn {}", f.sig.ident), true);
+        syn::visit::visit_item_fn(self, f);
+    }
+
+    fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+        if f.sig.unsafety.is_some() {
+            self.no(line(&f.sig), "no unsafe code");
+        }
+        self.generics(&f.sig.generics, &format!("fn {}", f.sig.ident), true);
+        syn::visit::visit_impl_item_fn(self, f);
+    }
+
+    fn visit_item_struct(&mut self, s: &'ast syn::ItemStruct) {
+        self.generics(&s.generics, &format!("struct {}", s.ident), false);
+        syn::visit::visit_item_struct(self, s);
+    }
+
+    fn visit_item_enum(&mut self, e: &'ast syn::ItemEnum) {
+        self.generics(&e.generics, &format!("enum {}", e.ident), false);
+        syn::visit::visit_item_enum(self, e);
+    }
+
+    fn visit_item_trait(&mut self, t: &'ast syn::ItemTrait) {
+        if t.unsafety.is_some() {
+            self.no(line(t), "no unsafe code");
+        }
+        self.generics(&t.generics, &format!("trait {}", t.ident), false);
+        syn::visit::visit_item_trait(self, t);
+    }
+
+    fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
+        if i.unsafety.is_some() {
+            self.no(line(i), "no unsafe code");
+        }
+        self.generics(&i.generics, "impl", false);
+        syn::visit::visit_item_impl(self, i);
+    }
+
+    fn visit_expr_unsafe(&mut self, e: &'ast syn::ExprUnsafe) {
+        self.no(line(e), "no unsafe code");
+        syn::visit::visit_expr_unsafe(self, e);
+    }
+
+    fn visit_item_foreign_mod(&mut self, i: &'ast syn::ItemForeignMod) {
+        self.no(line(i), "no foreign functions");
+    }
+
+    fn visit_item_extern_crate(&mut self, i: &'ast syn::ItemExternCrate) {
+        self.no(line(i), "no extern crate: a mechanic depends only on the workspace's mechanics and interfaces");
+    }
+
+    fn visit_item_static(&mut self, s: &'ast syn::ItemStatic) {
+        if !matches!(s.mutability, syn::StaticMutability::None) {
+            self.no(line(s), "no static mut: a mechanic's step has no globals (use const for tables)");
+        }
+        syn::visit::visit_item_static(self, s);
+    }
+
+    fn visit_item_macro(&mut self, m: &'ast syn::ItemMacro) {
+        let name = m.mac.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+        self.no(line(m), &format!("no macro definitions or item macros ({name}!): write the code out"));
+    }
+
+    fn visit_macro(&mut self, m: &'ast syn::Macro) {
+        let name = m.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+        if !MACROS.contains(&name.as_str()) {
+            self.no(line(m), &format!("{name}!: a mechanic calls only {}", MACROS.join("!, ") + "!"));
+        }
+    }
+
+    fn visit_attribute(&mut self, a: &'ast syn::Attribute) {
+        if a.path().is_ident("derive") {
+            let _ = a.parse_nested_meta(|meta| {
+                let name = meta.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+                if !DERIVES.contains(&name.as_str()) {
+                    self.no(
+                        line(&meta.path),
+                        &format!("derive({name}): a mechanic derives only {}", DERIVES.join(", ")),
+                    );
+                }
+                Ok(())
+            });
+        }
+    }
+
+    fn visit_type_trait_object(&mut self, t: &'ast syn::TypeTraitObject) {
+        self.no(line(t), "no trait objects (dyn): call the type itself");
+        syn::visit::visit_type_trait_object(self, t);
+    }
+
+    fn visit_path_segment(&mut self, s: &'ast syn::PathSegment) {
+        let name = s.ident.to_string();
+        if TYPES.contains(&name.as_str()) {
+            self.no(line(s), &format!("{name}: a mechanic keeps to Vec, arrays and its own structs"));
+        }
+        if name == "f32" || name == "f64" {
+            self.floats.push(line(s));
+        }
+        syn::visit::visit_path_segment(self, s);
+    }
+
+    fn visit_lit_float(&mut self, l: &'ast syn::LitFloat) {
+        self.floats.push(line(l));
+    }
+
+    fn visit_lit_int(&mut self, l: &'ast syn::LitInt) {
+        if matches!(l.suffix(), "f32" | "f64") {
+            self.floats.push(line(l));
+        }
+    }
+
+    fn visit_item_use(&mut self, u: &'ast syn::ItemUse) {
+        let mut roots = Vec::new();
+        use_roots(&u.tree, &mut roots);
+        for (at, root) in roots {
+            let ok = ["std", "core", "alloc", "crate", "self", "super"].contains(&root.as_str())
+                || self.deps.contains(&root);
+            if !ok {
+                self.no(
+                    at,
+                    &format!("use {root}: not the standard library, this crate, or a dependency in Cargo.toml"),
+                );
+            }
+        }
+        syn::visit::visit_item_use(self, u);
+    }
+}
+
+fn use_roots(t: &syn::UseTree, out: &mut Vec<(usize, String)>) {
+    match t {
+        syn::UseTree::Path(p) => out.push((line(&p.ident), p.ident.to_string())),
+        syn::UseTree::Name(n) => out.push((line(&n.ident), n.ident.to_string())),
+        syn::UseTree::Rename(r) => out.push((line(&r.ident), r.ident.to_string())),
+        syn::UseTree::Group(g) => g.items.iter().for_each(|t| use_roots(t, out)),
+        syn::UseTree::Glob(g) => out.push((line(g), "*".into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::value::Type;
+
+    const CARGO: &str = r#"
+[package]
+name = "croc-walk"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+world-floor-height = { path = "../../interfaces/world.floor-height" }
+"#;
+
+    const WALK: &str = r#"
+//! Walking.
+//!
+//! Speed closes a quarter of the gap to four times the target each tick.
+//!
+//! Notes for readers are not part of the summary.
+
+use world_floor_height::FloorHeight;
+
+pub const ID: &str = "croc.walk";
+pub const VERSION: u32 = 1;
+pub const RATE: &str = "tick";
+pub const RATE_HZ: u32 = 25;
+pub const REQUIRES: &[&str] = &["world.floor-height@1"];
+
+/// Fixed point: 20 integer bits, 12 fraction bits.
+pub type Fx20_12 = i32;
+pub type Angle = u16;
+pub const CURVE_LEN: usize = 8;
+
+pub struct State {
+    /// How fast Croc walks.
+    /// Unit: units/tick
+    pub speed: Fx20_12,
+    pub heading: Angle,
+    pub mode: Mode,
+}
+
+pub enum Mode { Still, Walking, BackingUp }
+
+pub struct Inputs {
+    /// Forward is held, as the step sees it.
+    pub forward: bool,
+}
+
+pub struct Piece { pub heading: u16, pub x: i32 }
+
+pub struct Params {
+    pub curve: [UFx4_12; CURVE_LEN],
+    pub pieces: Vec<Piece>,
+}
+
+pub type UFx4_12 = u16;
+
+pub fn step(state: &mut State, inputs: &Inputs, params: &Params, world: &mut impl FloorHeight) {
+    if inputs.forward {
+        state.speed = state.speed.wrapping_add((params.curve[0] as i32) >> 2);
+    }
+    debug_assert!(state.speed >= 0);
+}
+"#;
+
+    fn read(cargo: &str, lib: &str) -> Result<(Mechanic, Vec<String>), Vec<String>> {
+        mechanic(&Crate { cargo_toml: cargo, files: &[(LIB.into(), lib.into())] })
+    }
+
+    #[test]
+    fn a_rust_mechanic_reads_into_the_same_model() {
+        let (m, problems) = read(CARGO, WALK).unwrap();
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!((m.id.as_str(), m.version, m.title.as_str()), ("croc.walk", 1, "Walking"));
+        assert_eq!(m.summary, "Speed closes a quarter of the gap to four times the target each tick.");
+        assert_eq!(m.rate, Rate { per: Per::Tick, hz: Some(25.0) });
+        assert_eq!(m.requires, ["world.floor-height@1"]);
+        let types = m.types(&mut Vec::new());
+        assert_eq!(types.state["speed"], Type::Fixed { signed: true, int_bits: 20, frac_bits: 12 });
+        assert_eq!(types.state["heading"], Type::Int { bits: 16, signed: false });
+        assert_eq!(types.state["mode"], Type::Enum(vec!["still".into(), "walking".into(), "backing_up".into()]));
+        assert_eq!(types.inputs["forward"], Type::Bool);
+        assert_eq!(
+            types.params["curve"],
+            Type::Table { of: Box::new(Type::Fixed { signed: false, int_bits: 4, frac_bits: 12 }), len: 8 }
+        );
+        assert!(matches!(&types.params["pieces"], Type::List { of } if matches!(**of, Type::Record(_))));
+        assert_eq!(m.state["speed"].unit.as_deref(), Some("units/tick"));
+        assert_eq!(m.state["speed"].description.as_deref(), Some("How fast Croc walks."));
+        assert_eq!(m.inputs["forward"].description.as_deref(), Some("Forward is held, as the step sees it."));
+    }
+
+    #[test]
+    fn the_portable_subset_is_held() {
+        let lib = WALK.to_string()
+            + r#"
+use serde::Serialize;
+static mut COUNT: u32 = 0;
+macro_rules! twice { ($e:expr) => { $e * 2 } }
+pub struct Bag<T> { pub items: Vec<T> }
+#[derive(Clone, Serialize)]
+pub struct Cache { pub seen: std::collections::HashMap<u32, u32> }
+pub fn pick(x: &dyn Fn() -> u32) -> u32 { let y = format!("{}", 1); unsafe { 0 } }
+pub fn half(x: i32) -> f32 { x as f32 * 0.5 }
+"#;
+        let cargo = CARGO.to_string() + "serde = \"1\"\n";
+        let (_, problems) = read(&cargo, &lib).unwrap();
+        let has = |s: &str| problems.iter().any(|p| p.contains(s));
+        assert!(has("dependencies.serde: a mechanic depends only on"), "{problems:#?}");
+        assert!(has("use serde: not the standard library"), "{problems:#?}");
+        assert!(has("no static mut"), "{problems:#?}");
+        assert!(has("no macro definitions"), "{problems:#?}");
+        assert!(has("struct Bag: no generic parameters"), "{problems:#?}");
+        assert!(has("derive(Serialize)"), "{problems:#?}");
+        assert!(has("HashMap: a mechanic keeps to Vec"), "{problems:#?}");
+        assert!(has("no trait objects"), "{problems:#?}");
+        assert!(has("format!: a mechanic calls only"), "{problems:#?}");
+        assert!(has("no unsafe code"), "{problems:#?}");
+        assert!(has("a float in an exact mechanic"), "{problems:#?}");
+        assert!(problems.iter().all(|p| p.starts_with("src/lib.rs:") || p.starts_with("Cargo.toml:")), "{problems:#?}");
+    }
+
+    #[test]
+    fn fields_it_cannot_record_and_a_missing_header_are_named() {
+        let lib = WALK.replace("pub forward: bool,", "pub forward: bool,\n    pub name: String,\n    pub odd: Fx8_8,")
+            + "pub type Fx8_8 = i32;\n";
+        let (_, problems) = read(CARGO, &lib).unwrap();
+        assert!(
+            problems.iter().any(|p| p.contains("Inputs.name: `String` is not a type a trace can hold")),
+            "{problems:#?}"
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("Inputs.odd: `Fx8_8` is 8.8 fixed point, signed: alias i16")),
+            "{problems:#?}"
+        );
+        let problems = read(CARGO, &WALK.replace("pub const VERSION: u32 = 1;", "")).unwrap_err();
+        assert!(problems.iter().any(|p| p.contains("no `pub const VERSION: u32`")), "{problems:#?}");
+        let problems = read(CARGO, "pub fn (").unwrap_err();
+        assert!(problems[0].starts_with("src/lib.rs:1: "), "{problems:#?}");
+    }
+}
