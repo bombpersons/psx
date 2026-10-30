@@ -1,7 +1,7 @@
 # PlayStation-style native Bevy game
 
 A standalone Rust / **Bevy 0.20.0** workspace for a native port of a
-PlayStation game, created by `psx template create`. It doesn't need an
+PlayStation game, created by `psx port init`. It doesn't need an
 emulator or the psx toolkit at runtime: on first start the game imports its
 data from the player's own disc image placed next to it, and asks for one if
 there is none (see "Game data from the disc"). Requires Rust 1.97.1+ and a
@@ -61,8 +61,8 @@ ready. `assets/imported/` is git-ignored.
 ## Template updates
 
 ```sh
-psx template update --dry-run   # what would change
-psx template update             # replace unmodified psx-bevy/ and vendor/ files
+psx port update --dry-run   # what would change
+psx port update             # replace unmodified psx-bevy/ and vendor/ files
 ```
 
 Files under `psx-bevy/` or `vendor/` that you haven't changed are replaced
@@ -74,7 +74,7 @@ template version changed, the update copies it under `.psx/template-update/`
 for you to compare.
 
 In clean mode, where the implementer may not run `psx`, the clean server's
-`template_update` does the same: it touches only the template's own code.
+MCP `port_update` does the same: it touches only the template's own code.
 
 After an update:
 

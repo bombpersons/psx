@@ -45,7 +45,9 @@ Observations (native):
   copy cap) or call_frames_dropped (calls nested past the return stack)
   is above 0, which the run's summary also reports. The inventory and
   coverage read only those files.
-- trace_cd logs CD transfers for loads; trace_bios logs BIOS calls.
+- trace_cd logs CD transfers and, with a disc, decodes them into loads.json:
+  each transfer's file and offset, where in RAM it went, and whether the final
+  RAM still holds it (symbols names the reading code). trace_bios logs BIOS calls.
 - trace_spu logs voice key on/off (settings, storing PC, sample_sha256),
   each keyed voice's first END and sound RAM uploads to spu.jsonl. spu.samples
   groups key ons by sample; sample_sha256 equals assets_extract adpcm_sha256,
@@ -69,10 +71,11 @@ or since the checkpoint's own origin).
 Results: the full report is always saved as report.json in run_dir. brief
 returns a short summary with artifact descriptors; summary returns only
 status, frames, paths and counts for the observations you asked for. Read any
-file with artifact_read. status partial with termination timeout means the
+file with read. status partial with termination timeout means the
 wall-clock budget ran out: check frames.reached. Watch metadata distinguishes
 disabled, empty and capped logs (complete / truncated). input.jsonl records
 when the scheduler applied each event, not that the game read it.
 
-native is an emulator diagnostic (boot from power-on, report PC, CD history,
-SPU state, unhandled I/O and hot PCs). It is not needed for game investigation.
+diagnose is an emulator diagnostic for psx development (boot from power-on,
+report PC, CD history, SPU state, unhandled I/O and hot PCs; break, tail and
+max_steps go with it). It is not needed for game investigation.

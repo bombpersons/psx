@@ -25,7 +25,8 @@ checkout or network; it does not run an investigation or change project settings
 
 Start with MCP `context({})` or `psx context --image 'media/Game.cue'` to discover
 the running build, workspace, BIOS candidates and backend capabilities. One-time
-setup uses `bios_list` / `bios_install`, or `psx bios list` / `psx bios install`.
+setup uses `bios_install`, or `psx bios install`; `context` lists the installed images
+and the download catalog.
 Import a local dump with `--from PATH`, or explicitly request a checksum-verified
 download with `--download --region pal|ntsc-u|ntsc-j`. `context --save` persists
 resolved media/BIOS/backend defaults. Runs default to native, discover local BIOSes
@@ -35,33 +36,30 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | Command | What it gives you |
 |---|---|
 | `psx guide [--topic TOPIC]` | Embedded workflow guidance, topic navigation, build identity and the current path-resolution root; MCP `guide` exposes the same documentation |
-| `psx artifact-read PATH [--pointer /rows --offset N --limit N]` | Read artifact directories, JSON, logs, samples, text, raw bytes or PNGs. MCP `artifact_read` attaches PNGs automatically. Stream filters and cursors keep evidence bounded |
-| `psx disc <image.cue> [--hash]` | Tracks, volume, file counts, SYSTEM.CNF and boot EXE header; `--hash` adds file hashes and `track_sha256`, per-track hashes of the sectors as read, which match across image formats |
-| `psx ls <image> [--filter NAME --offset N --limit N]` | Paginated ISO9660 entries: LBA, size, CD-XA attributes, streamed flag; full totals and index coverage |
-| `psx extract <image> <path>\|--all -o DIR` | Files as Form 1 data. Form 2/interleaved files are written as raw `.raw` 2352-byte sectors |
-| `psx exe <file>\|<image.cue>::/PATH` | PS-X EXE header, load range, region marker and hashes |
-| `psx xa <image> <path> [--channel N -o out.wav]` | List a stream's XA-ADPCM channels, or decode one channel to a 44.1 kHz WAV |
-| `psx str <image>::/PATH -o DIR [--frames A..B --channel N --y4m]` | Decode an STR movie offline (MDEC bitstream v1/v2/v3, FF7's prefixed frames): `frame_NNNNN.png`, `audio.wav` (same decoder as `psx xa`), `contact.png`, `frames.json` and a JSON summary (size, frame count, fps, BS versions, XA channels). Polygon streams, iki, v0, EA and encrypted variants are detected and refused. Pixels come from the native core's MDEC model and match the emulator bit for bit; see [research/str-movies.md](research/str-movies.md) |
-| `psx textures <run_dir> [--page X,Y,DEPTH --clut X,Y] [--vram FILE]` | Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT pair a `--gpu-frame` capture used, full and cropped to the UVs sampled, or one page by hand. A capture is decoded from `gpu_frame_vram.bin`, the VRAM at the end of the captured frame (games that stream sprite frames into VRAM every tick need this), falling back to the run's final `vram.bin` |
-| Frame → Bevy | `psx textures` also writes `textures/scene.psxscene`; the template's `PsxSceneRoot` (and `cargo run -- --scene ...`) spawns it as sprites and meshes. Mirrored quads become flipped sprites with their texture rect moved one texel, as the PS1 samples them |
-| `psx vram-diff a.bin b.bin` | Diff two VRAM dumps per pixel (per-cell counts, channel deltas, diff PNG). `tools/probes/gpu/compare.sh` diffs `psx-gpu` against Mednafen on the GPU probe EXE |
+| `psx read PATH [--pointer /rows --offset N --limit N]` | Read artifact directories, JSON, logs, samples, text, raw bytes or PNGs. MCP `read` attaches PNGs automatically. Stream filters and cursors keep evidence bounded |
+| `psx disc info <image.cue> [--hash]` | Tracks, volume, file counts, SYSTEM.CNF and boot EXE header; `--hash` adds file hashes and `track_sha256`, per-track hashes of the sectors as read, which match across image formats |
+| `psx disc ls <image> [--filter NAME --offset N --limit N]` | Paginated ISO9660 entries: LBA, size, CD-XA attributes, streamed flag; full totals and index coverage |
+| `psx disc extract <image> <path>\|--all -o DIR` | Files as Form 1 data. Form 2/interleaved files are written as raw `.raw` 2352-byte sectors |
+| `psx disc exe <file>\|<image.cue>::/PATH` | PS-X EXE header, load range, region marker and hashes |
+| `psx assets extract <image>::/PATH -o DIR [--frames A..B --channel N --y4m]` (an XA or STR file) | XA audio: one 44.1 kHz WAV per channel (`--channel` keeps one). STR movies, decoded offline (MDEC bitstream v1/v2/v3, FF7's prefixed frames): `frame_NNNNN.png`, `audio.wav`, `contact.png`, `frames.json` and a JSON summary (size, frame count, fps, BS versions, XA channels). Polygon streams, iki, v0, EA and encrypted variants are detected and refused. Pixels come from the native core's MDEC model and match the emulator bit for bit; see [research/str-movies.md](research/str-movies.md) |
+| `psx assets textures <run_dir> [--page X,Y,DEPTH --clut X,Y] [--vram FILE]` | Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT pair a `--gpu-frame` capture used, full and cropped to the UVs sampled, or one page by hand. A capture is decoded from `gpu_frame_vram.bin`, the VRAM at the end of the captured frame (games that stream sprite frames into VRAM every tick need this), falling back to the run's final `vram.bin` |
+| Frame → Bevy | `psx assets textures` also writes `textures/scene.psxscene`; the template's `PsxSceneRoot` (and `cargo run -- --scene ...`) spawns it as sprites and meshes. Mirrored quads become flipped sprites with their texture rect moved one texel, as the PS1 samples them |
+| `psx assets diff a.bin b.bin` | Diff two VRAM dumps per pixel (per-cell counts, channel deltas, diff PNG). `tools/probes/gpu/compare.sh` diffs `psx-gpu` against Mednafen on the GPU probe EXE |
 | `psx assets scan <image.cue>[::/PATH] \| <file-or-directory> [--json]` | Find standard TIM/TMD/VAB/VAG assets by signature + full validation. A bare disc scans every file; `::/DIR/` selects an ISO directory. Host directories expand recursively in sorted order without following symlinks, retaining sibling `.DIR`/`.VB` lookup; `ram.bin` maps relocated TMDs at 0x80000000. DOT-T and Croc `.DIR` archives expose all entries, including empty entries and archives without known assets; hits carry entry indices, names where available and byte provenance. See [archive support](research/archive-support.md) |
 | `psx assets extract <source> -o DIR [--kind K] [--offset HEX] [--textures SRC]` | TIM → PNG per CLUT, TMD → glTF (texture pages decoded from the TIMs in the same file or `--textures` sources, through a virtual VRAM), VAB/VAG → WAV per waveform (+ programs/tones JSON); the original bytes are written next to each. See [research/assets.md](research/assets.md) |
 | `psx assets extract <source> --entry N -o DIR` | Extract one zero-based archive entry as raw bytes, including sector padding or an empty entry. Requires one source file; excludes `--kind`, `--offset` and `--textures`. Both asset commands accept `--archive dot-t` for explicit validation or `--archive none` for a flat scan |
-| `psx memcard <image.mcd>` | List the saves on a memory card image: product code, blocks, title, icon frames |
-| LibCrypt discs | Put the redump `.sbi`/`.lsd` beside the `.cue` or `.chd`; `psx disc` reports it and the native core's GetlocP honours it |
-| `psx sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |
-| `psx addr 0x80010000` | Segment, memory region and folded offset |
-| `psx run [disc\|exe] [--bios B] --frames N [...]` | Bounded run on the native core, which gives exact observations, native save states, `--trace` for windowed instruction traces with coverage and call summaries, `--memcard1/2 PATH|new` for memory cards (written cards are saved to the run directory, never to your file), `--gpu-frame N` to decode one frame's GPU commands (primitives, texture pages, CLUTs, VRAM at the end of that frame, its drawing area, before/after/wireframe PNGs), and `--pad dualshock` for analog games (replay events take `"sticks": [lx, ly, rx, ry]`). Captures RAM, VRAM, screen, registers and an optional state. `--watch ADDR[:W]` reports CPU/DMA writers with PC and value; `--trace-cd` and `--trace-bios` log CD and BIOS activity; `--trace-spu` logs sound voice key on/off with pitch, volume, ADSR, storing PC and a sample hash that matches `assets extract`'s per-waveform `adpcm_sha256`, plus sound RAM uploads (`spu.jsonl`; the report groups key ons by sample); `--audio` records the mixed sound output (voices, reverb, CD/XA audio) to `audio.wav`; `--profile` writes CPU cycles by function to `profile.json` (with `--symbols` for names); `--replay`, `--from-state`/`--save-state`. The full report is always written to `<run_dir>/report.json`; `--brief` prints a summary with artifact descriptors, `--summary` only status, paths and counts for the requested observations |
-| `psx handoff [disc] --request TEXT [--from-state S] [--detach]` / `psx handoff-status DIR [--wait N]` | Ask the person at the machine to play to a point: a window shows the game with the request in a side panel (never over the game); keyboard and gamepad with a rebinding menu (F1 or Start+Select), sound, rewind (F2), quick save/load, start over, marks (F6: state, RAM and screen of a moment, labelled, with RAM diffs between marks in the report), and hand back with a note. Writes `state.bin`, `ram.bin`, `input.json` (their input as a `--replay` from the handoff start), `screen.png`, `marks/<n>/` and `report.json`. MCP `handoff` always detaches; poll `handoff_status`. See `guide --topic input` |
-| `psx handoff ... --expect ADDR:FMT=VALUE` | The end state asked for, in `--until`'s syntax; the result says whether the person's state meets it |
-| `psx states make NAME --frames N --description TEXT [--from STATE] [--input ...\|--replay R] [--until ...]` | Run from a named state (or power-on) and name the state it ends in. Each state (`.psx/states/NAME.bin`) has a chain of runs from power-on in `notes/states/NAME.json` |
-| `psx states save SOURCE NAME --description TEXT` / `psx states list` | Name a state an earlier run or handoff wrote (its chain comes from the runs' reports); list the named states and whether each is present |
+| `psx assets memcard <image.mcd>` | List the saves on a memory card image: product code, blocks, title, icon frames |
+| LibCrypt discs | Put the redump `.sbi`/`.lsd` beside the `.cue` or `.chd`; `psx disc info` reports it and the native core's GetlocP honours it |
+| `psx disc sector <image> <lba> [--count N]` | Sector form, XA subheader, owning file, hex preview |
+| `psx run [disc\|exe] [--bios B] --frames N [...]` | Bounded run on the native core, which gives exact observations, native save states, `--trace` for windowed instruction traces with coverage and call summaries, `--memcard1/2 PATH|new` for memory cards (written cards are saved to the run directory, never to your file), `--gpu-frame N` to decode one frame's GPU commands (primitives, texture pages, CLUTs, VRAM at the end of that frame, its drawing area, before/after/wireframe PNGs), and `--pad dualshock` for analog games (replay events take `"sticks": [lx, ly, rx, ry]`). Captures RAM, VRAM, screen, registers and an optional state. `--watch ADDR[:W]` reports CPU/DMA writers with PC and value; `--trace-cd` logs CD activity and, with a disc, decodes it into `loads.json` (disc file → RAM spans, verified by content); `--trace-bios` logs BIOS calls; `--trace-spu` logs sound voice key on/off with pitch, volume, ADSR, storing PC and a sample hash that matches `assets extract`'s per-waveform `adpcm_sha256`, plus sound RAM uploads (`spu.jsonl`; the report groups key ons by sample); `--audio` records the mixed sound output (voices, reverb, CD/XA audio) to `audio.wav`; `--profile` writes CPU cycles by function to `profile.json` (with `--symbols` for names); `--replay`, `--from-state` (a file or a named state)/`--save-state`, `--save-as NAME --description TEXT` (name the end state, with its chain). The full report is always written to `<run_dir>/report.json`; `--brief` prints a summary with artifact descriptors, `--summary` only status, paths and counts for the requested observations |
+| `psx scenario play [disc] --request TEXT [--from-state S] [--detach]` / `psx scenario play --status DIR [--wait N]` | Ask the person at the machine to play to a point: a window shows the game with the request in a side panel (never over the game); keyboard and gamepad with a rebinding menu (F1 or Start+Select), sound, rewind (F2), quick save/load, start over, marks (F6: state, RAM and screen of a moment, labelled, with RAM diffs between marks in the report), and hand back with a note. Writes `state.bin`, `ram.bin`, `input.json` (their input as a `--replay` from the play's start), `screen.png`, `marks/<n>/` and `report.json`. MCP `scenario_play` always detaches; poll it with `status`. See `guide --topic input` |
+| `psx scenario play ... --expect ADDR:FMT=VALUE` | The end state asked for, in `--until`'s syntax; the result says whether the person's state meets it |
+| `psx states save SOURCE NAME --description TEXT` / `psx states list` | Name a state an earlier run or play wrote (its chain comes from the runs' reports); list the named states and whether each is present. Each state (`.psx/states/NAME.bin`) has a chain of runs from power-on in `notes/states/NAME.json`; `run --save-as` makes one |
 | `psx states rebuild [NAMES...]` | Replay each chain from power-on on this build and compare the state it makes; run after updating psx. See `guide --topic states` |
-| `psx inventory [MEDIA] [--ram RUN]...` | Every function of every PS-X EXE on the disc and of the overlays RAM snapshots hold, with instructions, basic blocks and how each was found, the gaps no function covers, and the disc's file list. Written to `.psx/inventory.json`, each run's totals to `inventory_history.jsonl` |
-| `psx coverage RUN... [--inventory F]` | What traced runs (`run --trace`) executed, per inventory function: blocks executed and not, calls, and the runs reaching it, in `coverage.json` beside the inventory |
+| `psx code inventory [MEDIA] [--ram RUN]...` | Every function of every PS-X EXE on the disc and of the overlays RAM snapshots hold, with instructions, basic blocks and how each was found, the gaps no function covers, and the disc's file list. Written to `.psx/inventory.json`, each run's totals to `inventory_history.jsonl` |
+| `psx code coverage RUN... [--inventory F]` | What traced runs (`run --trace`) executed, per inventory function: blocks executed and not, calls, and the runs reaching it, in `coverage.json` beside the inventory |
 | `psx run --gpu-next-draw [--gpu-frame F --gpu-search-frames N]` | Capture the first completed frame with draw commands, starting at F (default 0), searching at most N frames (default 60, range 1..=600) within `--frames`. Reports selected relative and absolute frame numbers, or an explicit miss. See below |
-| `psx run --find-tick` | Every CPU store to main RAM counted by PC and address and grouped by the fields it happens in: the candidates for the store that ends one game tick, for the map's `[tick]` |
+| `psx run --find-tick` | Every CPU store to main RAM counted by PC and address and grouped by the fields it happens in: the candidates for the store that ends one game tick, for the glossary binding's tick |
 | `psx run --until ADDR:FMT=VALUE` | Stop at the first vblank where samples hold (also `!=`, `<`, `<=`, `>`, `>=`; repeatable, all must hold). `--frames` caps the wait; `until.met` says whether it came |
 | `psx run --sample ADDR:FMT[:NAME]` | Per-frame values: `samples.csv` with `run_frame,frame,<columns>`, one row per vblank (`--sample-every N`), read byte-exact from RAM/scratchpad as `u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F` (e.g. `fx16.16`) or a watch-style width `1/2/4` (unsigned). MCP also takes typed `{"addr", "format", "name"}` entries. Row N is memory after N frames of the run |
 | `psx run --poke ADDR=VALUE[:W\|:FMT][@F\|@A..B\|@A..]` | Write memory at the start of run frame F (or every frame of a range) to test a hypothesis; listed under `pokes` in the report |
@@ -70,16 +68,13 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | `psx ram diff A B [--width 1\|2\|4 --range LO-HI --min-delta N --signed]` | Units that differ between two `ram.bin` snapshots (run directories or files), with deltas and clusters of nearby changes |
 | `psx ram search RUN... --pred increased [--values 441,*,376 --between LO..HI --save F --candidates F]` | Cheat-finder search over ordered snapshots: `changed`, `unchanged`, `increased`, `decreased`, `delta=N`, `any` per consecutive pair; narrow over rounds with `--save`/`--candidates` |
 | `psx ram view RUN... --addr X --len N --as fx16.16 [--text]` | A struct from several snapshots side by side, differing rows marked |
-| `psx disasm <exe\|--ram RUN> [--addr X --count N \| --function X] [--text]` | MIPS disassembly from an EXE or run RAM. Raw listings default to 32 instructions. `--function` emits its discovered extent; `--function-budget` bounds heuristic search (default 4096). Function metadata includes boundary evidence, stop reason and truncation; an explicit `--count` caps only the listing and supplies `listing.next_addr`. Warnings also appear in `--text` assembler listings with labels and resolved `lui`/`gp` addresses. Use Ghidra for analyzed function bodies |
-| `psx xrefs ADDR\|LO-HI [--source exe] [--ram RUN] [--gp X]` | Every static reference: jal/j/branch targets, `lui`+`addiu/ori/load/store` pairs, `gp`-relative accesses and pointer words, grouped by enclosing function |
-| `psx loads <run_dir> --disc <cue>` | Turns a `--trace-cd` run into disc file → RAM spans, verified by content |
-| `psx symbols <exe\|disc::/PATH>` | Name PsyQ library functions by signature (needs a local `external/psx_psyq_signatures`); Ghidra and `.sym` output. Pass the `.symbols.json` to `run`/`loads --symbols` to name PCs, checked against RAM residency |
-| `psx ghidra decompile --source <exe\|disc::/PATH> --addr HEX` | One-call Ghidra pseudocode for the enclosing function, with body ranges, callers/callees and diagnostics. Automatically extracts, imports, analyses and caches; returns an `analysis` manifest for follow-up queries. Optional `--symbols FILE` seeds names. See below |
-| `psx ghidra functions\|xrefs --analysis MANIFEST [...]` | Filter/paginate the function index (`--filter`, `--offset`, `--limit`) or references to/from `--addr`, without starting Ghidra again. `--source` also works and analyses automatically |
-| `psx template create DIR [--name N] [--region ntsc\|pal] [--fields-per-tick N]` | Native Bevy port workspace: `psx-bevy`, `game`, `tools/import` (see below) |
-| `psx template update [--dry-run]` | Replace the project's untouched `psx-bevy/` and `vendor/` files with this build's; `.psx-new` beside edited ones; report changed seeded files |
-| `psx template adopt DIR [--name N] [--region R] [--fields-per-tick N]` | Start tracking a template workspace that has no `.psx-template.toml` |
-| `psx port init DEST --media DISC [--name PKG] [--region R] [--fields-per-tick N]` | A port's workspace: the template, `goal.toml`, `catalogue/`, the disc and BIOS linked in, `.mcp.json` for psx, git. See [Ports](#ports) |
+| `psx code disasm <exe\|--ram RUN> [--addr X --count N \| --function X] [--text]` | MIPS disassembly from an EXE or run RAM. Raw listings default to 32 instructions. `--function` emits its discovered extent; `--function-budget` bounds heuristic search (default 4096). Function metadata includes boundary evidence, stop reason and truncation; an explicit `--count` caps only the listing and supplies `listing.next_addr`. Warnings also appear in `--text` assembler listings with labels and resolved `lui`/`gp` addresses. Use Ghidra for analyzed function bodies |
+| `psx code xrefs ADDR\|LO-HI [--source exe] [--ram RUN] [--gp X]` | Every static reference: jal/j/branch targets, `lui`+`addiu/ori/load/store` pairs, `gp`-relative accesses and pointer words, grouped by enclosing function |
+| `psx code symbols <exe\|disc::/PATH>` | Name PsyQ library functions by signature (needs a local `external/psx_psyq_signatures`); Ghidra and `.sym` output. Pass the `.symbols.json` to `run --symbols` to name PCs, checked against RAM residency |
+| `psx code decompile --source <exe\|disc::/PATH> --addr HEX` | One-call Ghidra pseudocode for the enclosing function, with body ranges, callers/callees and diagnostics. Automatically extracts, imports, analyses and caches; returns an `analysis` manifest for follow-up queries. Optional `--symbols FILE` seeds names. See below |
+| `psx code functions --analysis MANIFEST [...]` | Filter/paginate the function index (`--filter`, `--offset`, `--limit`) without starting Ghidra again. `--source` also works and analyses automatically |
+| `psx port init DEST --media DISC [--name PKG] [--region R] [--fields-per-tick N]` | A port's workspace: the template (`psx-bevy`, `game`, `tools/import`, `glossary`), `goal.toml`, `catalogue/`, the disc and BIOS linked in, `.mcp.json` for psx, git. `--existing` adds them to a template workspace made earlier. See [Ports](#ports) |
+| `psx port update [--dry-run]` | Replace the project's untouched `psx-bevy/` and `vendor/` files with this build's; `.psx-new` beside edited ones; report changed seeded files |
 | `psx port confirm [--yes]` / `port status [--plain]` / `port next` | The goal's list and its closure (with `--yes`, the person's confirmation); every feature by stage; the one item due now |
 | `psx scenario record ID --name N --frames F [--input/--replay]` | Run on the native core from the scenario's state and write `scenarios/ID/N.jsonl`: the compared glossary quantities at the end of each logic tick ([docs/scenarios.md](docs/scenarios.md)) |
 | `psx scenario check [ID...]` | The determinism check: reach each scenario again with idle fields before its chain's last run, record its recordings again and compare values per tick (a different tick schedule is a note) |
@@ -88,12 +83,12 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 
 Input images can be `.cue`, a raw `.bin` (single data track), a cooked `.iso` or a CD `.chd`
 (MAME compressed hunks, as made by `chdman createcd`). A `.chd` reads back the same sectors as the
-`.cue`/`.bin` it was made from, so `disc --hash` track hashes and native save states carry over between
+`.cue`/`.bin` it was made from, so `disc info --hash` track hashes and native save states carry over between
 them.
 
-`psx native` is an emulator diagnostic (how far the core boots, missing hardware, a profile of the
-last frames). For game work use `psx run`, which has everything `native` does for
-captures plus states, watches, traces, samples and pokes.
+`psx run --diagnose` is an emulator diagnostic for psx development (how far the core boots,
+missing hardware, a profile of the last frames; `--break`, `--tail`, `--max-steps`). Game work
+never needs it.
 
 ### Project root
 
@@ -122,10 +117,10 @@ retain the selection. The server's default and concurrent calls are unaffected.
 `[{"frame":0,"buttons":["CROSS"],"until":5}]`; CLI `--input '[...]'`.
 `until` releases at its exclusive end; empty buttons release all; frames are
 strictly increasing within the run budget. Replay files use the same validated
-contract. Runs return artifact descriptors for `artifact_read`, which can filter
+contract. Runs return artifact descriptors for `read`, which can filter
 CSV/JSONL by frame/PC and project columns, or follow JSON pointers and cursors.
 
-`ls`, asset scans, xrefs, RAM queries, loads and Ghidra indexes expose shared page
+`disc ls`, asset scans, `code xrefs`, RAM queries and Ghidra indexes expose shared page
 metadata: total, offset, returned, limit, truncation/completeness and next offset.
 Coverage describes the inspected scope independently. Streaming artifact totals
 can be unknown until the entire source is inspected. Ghidra requests for the same
@@ -140,7 +135,7 @@ A run's own frame numbers count from the run start: power-on, or the restored st
 since power-on, as the core counts them. The report gives `frames.start`, and `frame = run_frame + frames.start`.
 Native logs also carry `address_hex`/`pc_hex`/`value_hex` next to the numbers, and `value_signed`/`old_signed` by store width.
 
-`native`'s `cdrom.command_history` records command-time absolute `frame` and
+`run --diagnose`'s `cdrom.command_history` records command-time absolute `frame` and
 `cycle`, plus `last_frame`/`last_cycle` for aggregated repeats. A missing frame is
 unknown; it is never estimated by dividing past cycles by the current video mode.
 `video.region_at_capture` describes the final GPU mode, which can differ from the
@@ -164,7 +159,7 @@ than detecting visible changes. Without `--gpu-next-draw`, `--gpu-frame F` retai
 capture, including empty frames.
 
 The search never extends `--frames`, and selection does not stop the run. The selected
-frame's VRAM, display settings and GTE observations are frozen for `textures`, even if
+frame's VRAM, display settings and GTE observations are frozen for `assets textures`, even if
 later frames draw again. Its report, including `--brief`, gives `status: "captured"`,
 `run_frame`, `absolute_frame`, `complete`, `draw_commands` and `search.frames_inspected`.
 For compatibility, GPU capture's legacy `frame` field remains an alias of `run_frame`.
@@ -182,7 +177,7 @@ A miss returns `gpu_frame.status: "not_found"`, an `error` message and `reason` 
 `search_limit`, `run_end` or `timeout`. Only completed frames count as inspected, so a
 partially drawn frame at timeout is never selected by next-draw mode. The overall
 run status still describes emulation completion; inspect `gpu_frame.status` separately.
-With MCP, set `backend: "native"`, `gpu_next_draw: true` and optionally `gpu_frame`
+With MCP, set `gpu_next_draw: true` and optionally `gpu_frame`
 and `gpu_search_frames` on the existing `run` tool. No extra tool call is required.
 
 Other crates:
@@ -214,7 +209,7 @@ to disable indexing. Other families in the survey describe prospective coverage.
 Prefer explicit external parsers for game-specific formats. Both asset commands
 accept `--archive-parser EXEC` for an index of unchanged source spans,
 `--model-parser EXEC` for validated JSON geometry, or `--asset-parser EXEC` for
-one standard TIM/TMD/VAB/VAG payload after unpacking a wrapper. `str` accepts
+one standard TIM/TMD/VAB/VAG payload after unpacking a wrapper. `assets extract` of an STR file accepts
 `--frame-parser EXEC` for a normalized BS frame. Repeated `--*-parser-arg=VALUE`
 passes literal arguments; `--parser-timeout` defaults to 30 seconds per call.
 For raw VRAM streams, asset parsers can return ordered rectangle/word uploads.
@@ -275,16 +270,14 @@ signatures are not in either default location.)
 `psx mcp --require-project-root` rejects any call without `project_root`, for
 clients that work across several studies and must not fall back to a default.
 
-Tools: `guide`, `context`, `bios_list`, `bios_install`, `artifact_read`,
-`disc`, `ls`, `extract`, `exe`, `sector`, `addr`, `xa`, `str`, `assets_scan`,
-`assets_extract`, `memcard`, `textures`,
-`run`, `handoff`, `handoff_status`, `native`, `loads`, `symbols`, `disasm`, `xrefs`,
-`ram_diff`, `ram_search`, `ram_view`, `template_create`, `template_update`,
-`vram_diff`,
-`ghidra_decompile`, `ghidra_functions`, `ghidra_xrefs`, `ghidra_analyze`, `ghidra_doctor`,
-`ghidra_annotate`, `ghidra_export_symbols`,
-`states_make`, `states_save`, `states_list`, `states_rebuild`, `scenario_record`, `scenario_check`,
-`inventory`, `coverage`, `port_init`, `port_status`, `port_next`. (`port confirm` is
+Tools are named `command_subcommand`: `context`, `bios_install`, `guide`, `read`;
+`disc_info`, `disc_ls`, `disc_extract`, `disc_sector`, `disc_exe`; `assets_scan`,
+`assets_extract`, `assets_textures`, `assets_diff`, `assets_memcard`; `code_disasm`,
+`code_xrefs`, `code_decompile`, `code_functions`, `code_annotate`, `code_symbols`,
+`code_inventory`, `code_coverage`; `ram_diff`, `ram_search`, `ram_view`; `run`;
+`states_save`, `states_list`, `states_rebuild`; `scenario_record`, `scenario_check`,
+`scenario_play`; `port_init`, `port_update`, `port_status`, `port_next`,
+`port_check`. (`port confirm` is
 command line only: confirming the goal is the person's.)
 
 - Tool descriptions and parameter descriptions are deliberately short (parameters keep
@@ -306,29 +299,28 @@ command line only: confirming the goal is the person's.)
   (with `path`), `not_found`, `unsupported_format` (CLI exit code 2), `parser_failed`
   (an external parser), `bios_required` and `media_required` (with next steps),
   `timeout` and `cancelled`. A partial run is a result, not an error.
-  The one exception is `text: true` (`disasm`, `xrefs`, `ram_view`): the CLI prints only
+  The one exception is `text: true` (`code_disasm`, `code_xrefs`, `ram_view`): the CLI prints only
   the listing, while the tool returns text plus metadata. Disassembly/xref text
   responses omit duplicate instruction/reference arrays. Asset scans without
   `json: true` similarly return a compact summary and coverage.
 - Emulation tools return paths (`run_dir`, `files`) rather than RAM, VRAM or traces.
-  Any result over 256 KiB (e.g. `ls` of a large disc) is written to `.psx/mcp/` and
+  Any result over 256 KiB (e.g. `disc_ls` of a large disc) is written to `.psx/mcp/` and
   replaced by `result_file`, an artifact descriptor, a summary and an
-  `artifact_read` next call. The artifact reader supports JSON pointers and pages
+  `read` next call. The artifact reader supports JSON pointers and pages
   and does not recursively spill its own results.
-- `run` and `native` take `return_screen: true` to attach the final screen PNG as
-  image content. `artifact_read` of a PNG attaches image content automatically.
-- Timeouts: `run` keeps its `timeout` (default 120 s). Over MCP, `native`
-  defaults to `timeout: 300` and stop with status `timeout`. Each call also
+- `run` and `scenario_play` (with `status`) take `return_screen: true` to attach the final screen PNG as
+  image content. `read` of a PNG attaches image content automatically.
+- Timeouts: `run` keeps its `timeout` (default 120 s). Each call also
   has a hard cap (its `timeout` + 60 s, otherwise 15 min). A call that overruns the
   cap, or is cancelled, returns an error. Ghidra workers and their decompiler
   children are stopped; other tools' worker threads are left to finish. Emulation,
-  `symbols`, `loads` and Ghidra queries share `--jobs` slots (default 2).
+  `code_symbols` and Ghidra queries share `--jobs` slots (default 2).
 - Logs go to stderr; stdout carries only the protocol.
 
 ## Ghidra: one call from a writer PC to pseudocode
 
-Call `ghidra_decompile` with just an executable source and an address inside the
-function. No preliminary `ghidra_analyze`, GUI session or custom scripts are needed:
+Call `code_decompile` with just an executable source and an address inside the
+function. No preliminary analysis step, GUI session or custom scripts are needed:
 
 ```json
 {"source":"media/Croc - Legend of the Gobbos.cue::/CROC.EXE","addr":"0x800286B0"}
@@ -337,15 +329,14 @@ function. No preliminary `ghidra_analyze`, GUI session or custom scripts are nee
 Equivalent CLI:
 
 ```sh
-psx ghidra decompile --source 'media/Croc - Legend of the Gobbos.cue::/CROC.EXE' --addr 800286B0
+psx code decompile --source 'media/Croc - Legend of the Gobbos.cue::/CROC.EXE' --addr 800286B0
 ```
 
 The result includes `pseudocode`, `function` (entry, name, signature, body ranges),
 paginated `callers`/`callees`, `diagnostic`, `warnings`, a cached JSON `artifact`,
 and an `analysis` manifest path. Use `analysis` instead of `source` on later calls.
-`ghidra_functions` accepts `filter`, `offset`, `limit`; `ghidra_xrefs` accepts
-`addr`, `offset`, `limit`. Both read exported indexes without launching a JVM.
-`ghidra_analyze` is optional prewarming. `ghidra_doctor` diagnoses installation/Java.
+`code_functions` accepts `filter`, `offset`, `limit` and reads the exported index
+without launching a JVM. `context` reports whether Ghidra and Java are found.
 
 The first call imports/analyzes and can take minutes; `timeout` defaults to 300 s,
 and `decompile_timeout` defaults to 30 s per function. Completed queries are cached;
@@ -372,7 +363,7 @@ Runtime code is also supported. Give `--ram` a run directory or exactly 2 MiB
 main-RAM image, with explicit candidate code ranges and function entry seeds:
 
 ```sh
-psx ghidra decompile --ram RUN --range 80106E2C-80106E4C --entry 80106E2C --addr 80106E40
+psx code decompile --ram RUN --range 80106E2C-80106E4C --entry 80106E2C --addr 80106E40
 ```
 
 Ranges are end-exclusive; `--range` and `--entry` are repeatable. In MCP these
@@ -398,12 +389,10 @@ Rename a function and add its evidence comment with a JSON patch:
 ```
 
 ```sh
-psx ghidra annotate ANALYSIS --file patch.json
-psx ghidra export-symbols ANALYSIS
+psx code annotate ANALYSIS --file patch.json
 ```
 
-MCP: `ghidra_annotate` takes `analysis` and `file`; `ghidra_export_symbols` takes
-`analysis` and optional `out`. Patch addresses must be function entries, names
+MCP: `code_annotate` takes `analysis`, `file` and optional `symbols_out`. Patch addresses must be function entries, names
 ASCII identifiers of at most 128 characters, comments at most 16 KiB. Either
 field is optional; an empty comment clears it. User names take precedence over
 generated names, with displacements reported. Colliding user/imported names fail
@@ -414,8 +403,9 @@ projects and portable patch history, re-exports indexes and invalidates cached C
 Failure, timeout or cancellation leaves the published revision intact. GUI edits
 still require explicit reanalysis; types and GUI annotation refresh remain future work.
 
-Export returns a `.symbols.json` path for `run`, `loads`, `disasm` and `xrefs`.
-Optional `--out FILE.symbols.json` chooses a destination; existing different
+Annotation also exports the new revision's names: `symbols` in its result is a
+`.symbols.json` path for `run`, `code disasm` and `code xrefs`.
+Optional `--symbols-out FILE.symbols.json` chooses a destination; existing different
 content is never overwritten. The default export is revision-specific and reusable.
 Format 2 binds every name to an immutable input copy, input hash, mapping, and
 hashed function body ranges. Keep that input copy with the export; moving the
@@ -423,7 +413,7 @@ bundle requires updating `input` to its new path. Names appear only within actua
 bodies and only when **all body bytes** match the tool's current code image.
 Native trace call labels and watch/read event names check live RAM (`body_match`);
 replacement code at the same address receives no old name. Historical aggregates,
-`loads` has only final RAM: they expose a `candidate_name`
+`run --trace-cd`'s loads have only final RAM: they expose a `candidate_name`
 with `check: "final_ram_only"`, never assert earlier snapshot residency.
 Plain `.sym` files remain unverified; legacy EXE symbol reports retain their
 local-byte checks and now reject changed source hashes when supplied. When used
@@ -445,21 +435,20 @@ fog for that material; `None` preserves ordinary `DistanceFog`. See the template
 [validation/example](research/template-depth-cue.md).
 
 ```bash
-psx template create ../my-game   # standalone Bevy 0.20 workspace
-psx template create . --region pal --fields-per-tick 2   # into the game folder; 25 Hz logic, like Croc PAL
-psx template update --dry-run    # in a project: what a newer psx would change
+psx port init ../croc-port --media 'media/Croc - Legend of the Gobbos.cue' --fields-per-tick 2   # 25 Hz logic, like Croc PAL
+psx port init . --existing --media GAME.cue   # add a goal and catalogue to a template workspace made earlier
+psx port update --dry-run    # in a port: what a newer psx would change
 ```
 
 The [workspace](templates/psx-bevy/README.md) is built on `psx-bevy/`, the
 PS1 look, ticks, input, menus and launcher. It is the project's copy, meant
 to be changed to suit the game (a port that needs the original's rendering
 tricks makes them there), with each change listed in `docs/template.md`.
-`template update` replaces its untouched files and writes `.psx-new` beside
-edited ones. `game/` is the port (a demo to replace: one plugin per
-feature, rules apart from presentation, level and tuning in RON files) and
-`tools/import/` holds the importers. `template create` can write into the
-game folder: it never overwrites files and keeps an existing `AGENTS.md`.
-For a whole port, `psx port init` writes the workspace (see [Ports](#ports)).
+`port update` replaces its untouched files and writes `.psx-new` beside
+edited ones. `game/` is the port (a demo to replace: logic that runs
+headless apart from presentation, level and tuning in RON files) and
+`tools/import/` holds the importers. `port init` never overwrites files and
+keeps an existing `AGENTS.md` (see [Ports](#ports)).
 
 [`psx-bevy`](templates/psx-bevy/psx-bevy/README.md) is idiomatic Bevy with a
 PS1 look: `PsxMaterial` gives vertex snapping, affine textures, Gouraud
@@ -519,7 +508,7 @@ else links it. Run it from the project root:
 
 - `cargo run --release -p psx-oracle -- run [disc|exe] --bios B --frames N [--out DIR] [--watch ADDR[:W]]
   [--replay R] [--dualshock]` writes `ram.bin`, `scratch.bin`, `vram.bin`, `spu.bin`, `screen.png` and
-  `vram.png` for `psx ram-diff` / `psx vram-diff` against a native run with the same BIOS and replay.
+  `vram.png` for `psx ram diff` / `psx assets diff` against a native run with the same BIOS and replay.
   Frames are vblanks, as in `psx run`. The console region is the BIOS's. A `.chd` is unpacked once to
   CUE/BIN under `.psx/cache/discs/`. Without media it boots the BIOS with an empty drive.
 - `cargo run --release -p psx-oracle -- lockstep --bios B [--steps N] [--cycles] [--fast] [--dump PREFIX]` runs

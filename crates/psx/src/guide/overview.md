@@ -16,20 +16,20 @@ against that root, which may differ from the client harness's working
 directory.
 
 Typical routes:
-- Setup: context -> disc -> ls / exe -> a bounded run with checkpoints.
+- Setup: context -> disc_info -> disc_ls / disc_exe -> a bounded run with checkpoints.
 - Gameplay: from_state + input variations -> ram_diff / ram_search -> sample /
-  watch -> disasm / Ghidra -> poke to test a hypothesis. Name what a port
+  watch -> code_disasm / code_decompile -> poke to test a hypothesis. Name what a port
   compares in the glossary, with the game's tick (docs/scenarios.md).
 - Assets: filtered assets_scan -> assets_extract; use an external parser for
   custom formats. GPU captures and textures provide visual reference.
-- Rebuild: template_create -> decoded assets and idiomatic Bevy rules -> compare
+- Rebuild: port_init -> decoded assets and idiomatic Bevy rules -> compare
   recorded trajectories and rendered output against the original evidence.
 - Whole port: port_init -> catalogue and goal -> port_next, item by item
   (guide topic port).
 
 Tool descriptions are brief; guide topics hold the details. Use the run, input,
 fields, states, code, assets, bevy and port topics for the relevant
-route, and troubleshooting for unexpected results. Inspect returned files with artifact_read:
+route, and troubleshooting for unexpected results. Inspect returned files with read:
 JSON by RFC 6901 pointer, JSONL/CSV/text by rows (frame_from/frame_to with
 frame_field, hex pc, contains, columns), hex for raw bytes and PNG as an image.
 Continue with page.next_cursor, reusing the filters; totals stay null until a

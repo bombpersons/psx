@@ -54,8 +54,10 @@ mechanic code are worth keeping, so they move out first.
    Ghidra. *Done when* `psx --help` lists the twelve and `mcp` serves only
    their subcommands.
 8. **Hex everywhere**: every PC and address psx prints, `writes.jsonl`
-   included. *Done when* no output field holds an address in decimal
-   (fields that need a number for sorting keep it beside the hex).
+   included, with its region (main RAM, scratchpad, I/O, BIOS) beside it
+   where that is not obvious, now that `addr` is gone. *Done when* no
+   output field holds an address in decimal (fields that need a number for
+   sorting keep it beside the hex).
 
 ## Phase C: the new pieces
 

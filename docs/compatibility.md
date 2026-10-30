@@ -2,11 +2,11 @@
 
 How far each game gets on `psx-core`, and the emulation problems seen in it.
 Add a row or an issue whenever a game is tried, including problems found in
-passing (a handoff note, a screenshot that looks wrong). Fix details and
+passing (a play's note, a screenshot that looks wrong). Fix details and
 debugging trails belong in [research/native-core.md](../research/native-core.md);
 link to them from here.
 
-**Status:** *playable* means a person has played it in a handoff window.
+**Status:** *playable* means a person has played it in a `scenario play` window.
 *Gameplay* means scripted input reached in-game play. *Boots* means it gets
 past the logos but no further.
 

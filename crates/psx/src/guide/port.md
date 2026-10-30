@@ -54,7 +54,7 @@ Evidence: the disc and psx are the only sources. Record the original as
 scenario recordings from named start states (guide topic states), and cite
 the address, writer or recording beside each constant and rule.
 
-Template updates: template_update replaces untouched psx-bevy/ and vendor/
+Template updates: port_update replaces untouched psx-bevy/ and vendor/
 files, writes <file>.psx-new beside edited ones (merge it, keeping the
 change listed in docs/template.md, then delete the .psx-new) and copies
 changed seeded files under .psx/template-update/ to merge; a seeded file

@@ -1,12 +1,13 @@
 # BIOS setup
 
-BIOS setup is a one-time operation shared by projects. `context`, `bios list` and
-ordinary emulation calls only inspect local files. Downloads happen only through
+BIOS setup is a one-time operation shared by projects. `context` (which lists the
+installed images and the download catalog) and ordinary emulation calls only inspect
+local files. Downloads happen only through
 an explicit `bios install --download` / MCP `bios_install({download:true,...})` call.
 No firmware is bundled with psx.
 
 ```bash
-psx bios list
+psx context
 psx bios install --from /path/to/bios.bin
 # Or explicitly fetch a pinned regional image:
 psx bios install --download --region pal

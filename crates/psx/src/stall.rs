@@ -100,7 +100,7 @@ fn cd_retry_loop(m: &Machine, since: u64) -> Option<Value> {
         "period_frames": (last - first) / (setlocs as u64 - 1).max(1),
         "commands_in_loop": commands,
         "error_responses": errors,
-        "note": "From the controller's last 64 distinct commands; see cdrom.command_history (psx native) or --trace-cd for the full sequence.",
+        "note": "From the controller's last 64 distinct commands; see cdrom.command_history (psx run --diagnose) or --trace-cd for the full sequence.",
     }))
 }
 

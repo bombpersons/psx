@@ -14,10 +14,10 @@ Most of what's here exists because an agent tried to use it and got stuck somewh
 |---|---|
 | *Which byte is the player's X position?* | Run the same moment holding LEFT, nothing, RIGHT; `ram_search` keeps what moved the right way. |
 | *What code writes it?* | `watch` the address: every store, with the instruction that made it. |
-| *What does that code do?* | `ghidra_decompile` the writer's PC. Import, analysis and caching are automatic. |
+| *What does that code do?* | `code_decompile` the writer's PC. Import, analysis and caching are automatic. |
 | *How high is the jump, frame by frame?* | `sample` the value into a CSV while replaying the input. |
 | *Is my theory right?* | `poke` a value at a chosen frame and compare against an untouched run. |
-| *Where did this texture, model or sound come from?* | `gpu_frame`, `assets_scan`, `trace_spu` and `loads` connect screen and speaker back to RAM and the disc file. |
+| *Where did this texture, model or sound come from?* | `gpu_frame`, `assets_scan`, `trace_spu` and `trace_cd` connect screen and speaker back to RAM and the disc file. |
 | *Does my rebuild play the same?* | Replay the same input in the Bevy template and `compare` every tick. |
 
 ## One loop, start to finish
@@ -42,7 +42,7 @@ The full story is in the [write-up](research/case-study-megaman8.md).
 - **Cheap experiments.** Save a checkpoint once, then branch short runs from it with different
   buttons, all inline in one call.
 - **Small replies.** Evidence lands in files; calls return paths and counts (`summary`), and
-  `artifact_read` pages through the rest. All the tool definitions fit in about 18K tokens, and the
+  `read` pages through the rest. All the tool definitions fit in about 18K tokens, and the
   `guide` tool serves recipes when they're needed.
 - **One server, many games.** Each Claude Code session works in the game folder it was opened in.
 - **Same thing on the command line.** Every tool is a `psx` command printing the same JSON.
@@ -113,7 +113,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/bom
 ```
 
 The installer checks the download's SHA-256, puts `psx` in `~/.local/bin` (Windows:
-`%LOCALAPPDATA%\psx\bin`, added to your PATH) and fetches the PsyQ signatures `psx symbols`
+`%LOCALAPPDATA%\psx\bin`, added to your PATH) and fetches the PsyQ signatures `psx code symbols`
 uses. Run it again to update. Building from source needs Rust 1.89+:
 `cargo install --locked --git https://github.com/bombpersons/psx psx`. Porting with the Bevy
 template needs Rust 1.97.1+ either way.
@@ -126,7 +126,7 @@ psx bios install --from /path/to/bios.bin
 psx bios install --download --region pal    # or ntsc-u, ntsc-j
 ```
 
-Nothing ever downloads on its own; `psx bios list` shows what is installed and the download
+Nothing ever downloads on its own; `psx context` shows what is installed and the download
 catalog. See [BIOS setup](docs/bios-setup.md).
 
 Hook it into Claude Code once, for every project:
@@ -144,13 +144,14 @@ psx run --frames 300 --save-state --summary
 psx guide --topic run
 ```
 
-Start a port from the template (pick region and tick rate from the original). It is a workspace
-with the template's own crate, an engine with a sandbox game, the game itself and importers;
-`psx template update` brings in later template fixes:
+Start a port from the template (pick the tick rate from the original's main loop; the region
+comes from the disc). It is a workspace with the template's own crate, the game itself, the
+importers and the glossary, plus the port's goal and catalogue; `psx port update` brings in
+later template fixes:
 
 ```bash
-psx template create ../my-game --region pal
-cd ../my-game && cargo run
+psx port init ../my-port --media "media/Some Game.cue" --fields-per-tick 2
+cd ../my-port && cargo run
 ```
 
 ## Honest limits

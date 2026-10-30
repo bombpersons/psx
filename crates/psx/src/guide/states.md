@@ -1,4 +1,4 @@
-A start state is where recordings begin: a case's row 0, a handoff's start,
+A start state is where recordings begin: a scenario's start, a play's start,
 a probe's starting point. A state file holds the console's whole memory (the
 game's own code and data), so it stays out of git and can be lost or go
 stale when psx changes. Keep each one with its chain instead: every run from
@@ -11,23 +11,23 @@ power-on that led to it, small enough to commit.
   which state it ended in (its end or a checkpoint) and that state's sha256
   and psx build.
 
-states make NAME runs one step and names the state it ends in. from is a
-named state, a state file, or power-on when left out; input, replay, until,
-map and poke are run's; pad and memcards only from power-on:
+run --save-as NAME --description TEXT runs one step and names the state it
+ends in. from_state is a named state, a state file, or power-on when left
+out; pad and memcards only from power-on:
 
-  states make title --frames 1500 --description "the title screen"
-  states make level1 --from title --frames 900 \
+  run --frames 1500 --save-as title --description "the title screen"
+  run --from-state title --frames 900 \
       --input '[{"frame":10,"buttons":["START"],"until":14}]' \
-      --until lara.room=16 --description "Lara stands at the level start"
+      --until 800A1F2C:u16=16 --save-as level1 --description "Lara stands at the level start"
 
-states save SOURCE NAME names a state an earlier run or handoff made
-(state.bin, a checkpoint state_fN.bin, a handoff mark's state.bin, or the
+states save SOURCE NAME names a state an earlier run or play made
+(state.bin, a checkpoint state_fN.bin, a play mark's state.bin, or the
 run directory). Its chain comes from the runs' reports, back to power-on or
 to a state a chain already names (by sha256), so a run from a named state,
-or a handoff from one, saves with the whole chain. A state with no report
-and no chain cannot be saved: make it again with states make.
+or a play from one, saves with the whole chain. A state with no report
+and no chain cannot be saved: make it again with run --save-as.
 
-replace=true (save, make, rebuild) keeps the chain of the state it replaces
+replace=true (run --save-as, states save and rebuild) keeps the chain of the state it replaces
 in notes/states/replaced/NAME-SHA.json, so a run from the state as it was
 still saves with its chain, and a state can be replaced by one that started
 from it.

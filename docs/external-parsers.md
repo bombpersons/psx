@@ -8,7 +8,7 @@ Keep standard PS1 formats and reusable exporters in the toolkit. For a game-spec
 psx assets scan archive.bin --archive-parser ./archive.py --model-parser ./model.py --json
 psx assets extract archive.bin --archive-parser ./archive.py --model-parser ./model.py -o converted
 psx assets extract packed-bank.bin --asset-parser ./unpack-bank -o sound
-psx str disc.cue::/MOVIE.STR --frame-parser ./unwrap-frame -o movie
+psx assets extract disc.cue::/MOVIE.STR --frame-parser ./unwrap-frame -o movie
 ```
 
 Pass arguments with repeated `--archive-parser-arg=VALUE`, `--model-parser-arg=VALUE`, `--asset-parser-arg=VALUE` or `--frame-parser-arg=VALUE`. The executable is launched directly; arguments are literal, with no shell expansion. Use `./parser.py` or an absolute path for an executable outside PATH. A parser is explicitly selected; there is no automatic execution based on file contents. It runs with the caller's permissions. Supervision is not a sandbox.

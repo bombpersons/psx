@@ -17,7 +17,7 @@ Change psx-bevy itself when the change is to how the PS1 look, ticks, input,
 menus or testing work: a different pipeline, a new material option, the
 original's way of drawing something.
 
-- List each change in `docs/template.md` with why. `psx template update`
+- List each change in `docs/template.md` with why. `psx port update`
   replaces the files you haven't changed and writes the new version beside
   each one you have, as `<file>.psx-new`; the list makes those merges easy.
 - To merge a `.psx-new`: bring the template's changes into your file while

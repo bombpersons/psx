@@ -15,16 +15,15 @@ deliberately, since other clients sharing the root see those defaults too.
 
 Moving a project: the files psx keeps (saved defaults, state chains, case
 recipes) name what lies inside the project relative to its root, so the
-folder can move. Files written by an older psx, and run and handoff
+folder can move. Files written by an older psx, and run and play
 reports, keep absolute paths; one that no longer exists is found again by
 its trailing components under the root (.psx/states/a.bin, notes/states/a.json),
 or beside it (rom/game.cue for a disc kept next to the project). states
-rebuild and case check write a chain's disc and a recipe's paths back
-relative; context save does the same for the defaults. A chain checks each
+rebuild writes a chain's paths back relative; context save does the same for the defaults. A chain checks each
 state's hash, so a state found wrongly stops it (chain_broken) rather than
 passing.
 
-bios_list inventories installed images. bios_install can import a local dump,
+context lists the installed images and the download catalog. bios_install can import a local dump,
 or with download:true fetch the pinned image for a region (psx never downloads
 on its own: call it yourself). Use a BIOS of the disc's region (context reports
 disc_region_hint): the BIOS makes the console, so a PAL disc on an NTSC BIOS
@@ -47,11 +46,11 @@ default path and directory presence without loading or downloading the index.
 
 Disc images can be .cue (with its .bin files), a bare raw .bin, a cooked .iso
 or a CD .chd; a .chd and the .cue it was made from give the same sectors,
-track_sha256 (disc --hash) and save-state identity.
-disc inspects the disc and boot EXE; ls filters/pages its ISO entries.
+track_sha256 (disc_info hash) and save-state identity.
+disc_info inspects the disc and boot EXE; disc_ls filters/pages its ISO entries.
 LibCrypt-protected discs need the redump .sbi/.lsd beside the image (same base
-name); disc reports subchannel.source and the native core honours it. exe,
-disasm and asset tools accept disc.cue::/PATH where documented. run accepts a
+name); disc_info reports subchannel.source and the native core honours it. disc_exe,
+code_disasm and asset tools accept disc.cue::/PATH where documented. run accepts a
 disc or host EXE path; do not assume every tool accepts the disc-member syntax.
 
 Boot and menu duration vary by game; use snapshot_every and save_state to locate a

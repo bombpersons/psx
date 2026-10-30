@@ -25,9 +25,9 @@ validation inputs; this work does not implement any game mechanics.
 
 ## Starting point
 
-- `psx symbols` already exports PsyQ matches to `.symbols.json`, `.sym` and
+- `psx code symbols` already exports PsyQ matches to `.symbols.json`, `.sym` and
   Ghidra's text symbol-import format. See [research/symbols.md](../research/symbols.md).
-- `psx disasm` and `psx xrefs` already read EXEs or runtime RAM, accept symbols,
+- `psx code disasm` and `psx code xrefs` already read EXEs or runtime RAM, accept symbols,
   resolve addresses and estimate function bounds. Keep these available without Ghidra.
 - Runtime naming checks executable bytes against RAM. Plain `.sym` files are
   explicitly unverified; the current verified-symbol loader assumes PS-X EXE input.
@@ -71,25 +71,23 @@ remain proposed in G3. All operations retain the existing CLI/MCP JSON contract.
 
 | CLI | MCP | Purpose |
 |---|---|---|
-| `psx ghidra doctor` | `ghidra_doctor` | Find Ghidra/Java and report supported configuration |
-| `psx ghidra analyze --source SOURCE` | `ghidra_analyze` | Import an EXE and create or reuse its analysis |
-| `psx ghidra analyze --ram RUN --range LO-HI --entry ADDR` | same | Analyse a selected runtime code region, with RAM data context |
-| `psx ghidra functions --source SOURCE` | `ghidra_functions` | Ensure analysis, then return a filtered, paginated function index |
-| `psx ghidra decompile --source SOURCE --addr ADDR` | `ghidra_decompile` | Ensure analysis, then return the enclosing function, pseudocode, callers, body ranges and diagnostics |
-| `psx ghidra xrefs --source SOURCE --addr ADDR` | `ghidra_xrefs` | Ensure analysis, then return analysis-derived references, callers and callees |
-| `psx ghidra annotate ANALYSIS --file PATCH.json` | `ghidra_annotate` | Apply explicit names/comments and later types |
-| `psx ghidra export-symbols ANALYSIS` | `ghidra_export_symbols` | Feed source-bound function names back to psx |
+| `psx context` | `context` | Report whether Ghidra and Java are found |
+| `psx code functions --source SOURCE` (or `--ram RUN --range LO-HI --entry ADDR`) | `code_functions` | Ensure analysis, then return a filtered, paginated function index |
+| `psx code decompile --source SOURCE --addr ADDR` | `code_decompile` | Ensure analysis, then return the enclosing function, pseudocode, callers, body ranges and diagnostics |
+| `psx code annotate ANALYSIS --file PATCH.json` | `code_annotate` | Apply explicit names/comments, then export the new revision's source-bound names to psx |
+
+Analysis is automatic on the first query; Ghidra's own references are not served
+(`code xrefs` is psx's static scanner).
 
 `SOURCE` uses existing EXE-file and `disc.cue::/PATH` syntax. Query tools accept
 exactly one input selector: `source`, `analysis`, or `ram`. `analysis`
 is an explicit manifest path returned by an earlier call; `ram` can be a run
-directory or 2 MiB dump, with required explicit ranges/entry seeds and optional GP. `analyze`
-is an optional prewarm/advanced operation, never a prerequisite tool call.
+directory or 2 MiB dump, with required explicit ranges/entry seeds and optional GP.
 Addresses accept existing hex conventions. Add filters, limits and batch address
 selection so an agent does not need to export every function's C before asking
 one question.
 
-Example proposed MCP arguments to `ghidra_decompile`:
+Example MCP arguments to `code_decompile`:
 
 ```json
 {"source":"media/Croc - Legend of the Gobbos.cue::/CROC.EXE","addr":"0x800286B0"}
@@ -171,7 +169,7 @@ the acceptance criteria.
   files continue to work. Bound name lookup by actual bodies where available.
 - Add rename/comment patches, deterministic collision handling and symbol export.
   User names take precedence over generated names; conflicts are reported.
-  Exported verified names work with `run`, `loads`, `disasm` and `xrefs`.
+  Exported verified names work with `run`, `code disasm` and `code xrefs`.
 
 **Gate:** two snapshots with different code at the same address remain separate;
 names from one cannot silently label the other. Rename a studied writer, export

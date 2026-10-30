@@ -4,7 +4,7 @@ relative paths are interpreted against the server root, not the client shell.
 Use project_root per call or absolute paths; check saved project defaults before
 assuming another game's media or BIOS was selected incorrectly.
 
-For large results, use filter/offset/limit and page continuation. artifact_read
+For large results, use filter/offset/limit and page continuation. read
 reads returned files: JSON pointer selects a section; JSONL/CSV support frame/PC
 filters and columns. Continue next_cursor with the same query and omit offset.
 An empty page can still have a cursor when its scan budget was reached.
@@ -30,7 +30,7 @@ whether the game is polling that button. A checkpoint preserves controller/card
 configuration. Unknown input keys and out-of-budget events should fail validation.
 
 PNG responses require a vision-capable client/model. Without vision, leave
-return_screen false and inspect JSON/logs; artifact_read on a PNG automatically
+return_screen false and inspect JSON/logs; read on a PNG automatically
 attaches the image too. Hashes, dimensions, RAM/samples and command counts provide
 limited evidence, not visual fidelity. Report that limitation instead of claiming
 to have inspected the picture. Preserve raw artifacts and precise errors for a retest.

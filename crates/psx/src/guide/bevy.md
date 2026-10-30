@@ -1,4 +1,4 @@
-template_create writes a standalone Rust/Bevy workspace: psx-bevy/ (the PS1
+port_init writes a standalone Rust/Bevy workspace: psx-bevy/ (the PS1
 look, ticks, input, menus and launcher; the project's copy, changed to suit
 the game and listed in docs/template.md), game/ (the port, with a demo to
 replace) and tools/import/ (the importers). It can be created in the game

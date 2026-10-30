@@ -1,4 +1,4 @@
-Use ls with filter/offset/limit to orient yourself, then assets_scan on a narrow
+Use disc_ls with filter/offset/limit to orient yourself, then assets_scan on a narrow
 source or filename filter. Scan totals cover the selected scope; page and coverage
 describe returned rows and what was actually inspected. No standard TIM/TMD/VAB/VAG
 hits does not prove that a game has no textures, models or audio.
@@ -9,7 +9,7 @@ same source syntax for extraction and additional texture sources.
 assets_extract converts validated hits to PNG, glTF or WAV and retains source
 bytes/provenance. Select kinds, an offset or an archive entry when appropriate.
 Extraction returns paged results (limit/report_offset), or brief:true summary
-counts. The complete content-bound manifest and next_call let artifact_read
+counts. The complete content-bound manifest and next_call let read
 continue without repeating conversion. Nested output lists are bounded too;
 inspect the manifest with a JSON pointer for omitted rows. Narrow source/kinds
 to avoid converting unnecessary assets; originals and provenance are retained.
@@ -53,12 +53,18 @@ require gpu_next_draw and remain within its search/run budget.
 search.effective_max_frames shows the window available within frames, and
 search.truncated_by_run_budget identifies a shorter run. A frames:1 run can
 inspect only one completed frame even when gpu_search_frames defaults to 60.
-textures decodes the captured frame's resident VRAM and creates a .psxscene for
+assets_textures decodes the captured frame's resident VRAM and creates a .psxscene for
 reference. That capture is screen-space drawing evidence, not recovered world
-geometry or a complete level. Raw streamed-file extraction is marked raw_2352;
-do not interpret sector framing as ordinary file payload.
+geometry or a complete level. Raw streamed-file extraction (disc_extract) is
+marked raw_2352; do not interpret sector framing as ordinary file payload.
 
-Bytes at a known file offset: extract path offset:0x597aa length:0x40 reads only
+Streamed files (XA audio, STR movies): assets_scan lists them under
+coverage.skipped_files with what their sectors hold. assets_extract on one
+(IMAGE::/PATH) decodes it: STR to frame PNGs, audio.wav, a contact sheet and
+summary.json (frames A..B, channel, no_audio, y4m, frame_parser for custom
+frame wrappers); XA to one WAV per channel (channel keeps one).
+
+Bytes at a known file offset: disc_extract path offset:0x597aa length:0x40 reads only
 the sectors that window covers (no need to extract a large volume file) and
 returns the bytes inline as hex up to 0x100. start.image.offset is where the
 first byte sits in the raw .bin: file offset O is user-data byte O%2048 of the

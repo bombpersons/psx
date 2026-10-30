@@ -7,8 +7,8 @@ rendering tricks or a different input or tick model makes them there
 easy to merge.
 
 ```sh
-psx template update --dry-run
-psx template update
+psx port update --dry-run
+psx port update
 ```
 
 The update replaces the `psx-bevy/` files you haven't changed. Each file you

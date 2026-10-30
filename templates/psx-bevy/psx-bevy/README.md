@@ -8,8 +8,8 @@ display menus (`controls`, `display`), headless and trajectory testing
 1.97.1+; a desktop GPU driver (or Mesa lavapipe with `--software`).
 
 It comes with the game template of the [psx toolkit](https://github.com/bombpersons/psx)
-(`psx template create`), and this copy belongs to the project: change it to
-suit the game (`AGENTS.md` here). `psx template update` brings in newer
+(`psx port init`), and this copy belongs to the project: change it to
+suit the game (`AGENTS.md` here). `psx port update` brings in newer
 versions of the files you haven't changed. Bevy is pinned at 0.20 in the
 workspace `Cargo.toml`, so every crate builds against one Bevy.
 
@@ -104,7 +104,7 @@ the scene spawns, or build meshes from the game's own model data.
 
 Original files (TIM textures, TMD models, a game's archives) are not loaded
 directly: a port converts them in its importer into ordinary formats (PNG,
-glTF, RON) that load like any Bevy asset. `psx textures` and
+glTF, RON) that load like any Bevy asset. `psx assets textures` and
 `psx assets extract` (psx toolkit) convert TIM/TMD to PNG/glTF for a quick
 look.
 
@@ -213,7 +213,7 @@ team colours), or cycle by rotating entries in the palette `Image`'s data.
 Index images must stay raw: build them with `psx_indices` or load grayscale
 PNGs with `load_indices` (a plain `load` decodes them as sRGB colour).
 `psx_palette` builds a palette from 15-bit PS1 colours (`rgb15`, bit 15 =
-STP, 0000h transparent). `psx textures` writes captured pages this way too:
+STP, 0000h transparent). `psx assets textures` writes captured pages this way too:
 `page_*_index.png` plus `clut_X_Y_N.png`.
 
 ```rust
@@ -237,7 +237,7 @@ this template:
 
 ```sh
 psx run --bios BIOS GAME.cue --frames N+1 --gpu-frame N --out run/
-psx textures run/            # texture pages as PNGs + run/textures/scene.psxscene
+psx assets textures run/     # texture pages as PNGs + run/textures/scene.psxscene
 ```
 
 Copy `run/textures/` under `game/assets/` and view it with
@@ -253,7 +253,7 @@ blend equation (`PsxSprite`, `PsxMaterial2d`, `PsxMaterial`) and, in format 2
 scenes, blend only their STP texels like the GPU; `Subtract` elements with
 STP texels spawn twice (subtracting and opaque texels). The scene is not
 clipped to the original draw area. The loader reads formats 1 and 2; format
-1 scenes (older `psx textures`) blend every texel of semi-transparent
+1 scenes (older `psx assets textures`) blend every texel of semi-transparent
 elements. The viewer's `--no-dither` / `--no-quantize` switch `PsxLook`
 effects off, e.g. for games that disable the GPU's dither (captures record
 it per polygon; scenes from older captures assume it is on).
@@ -314,7 +314,7 @@ the same path. Synchronous loads use `assets::find` (the psx template's
   `TickRate::every_nth_field(REGION, FIELDS_PER_TICK)`. Many PS1 games run their
   logic every second field (Croc PAL: 25 Hz); Mega Man 8 PAL runs every field
   (50 Hz). Changing the `TickRate` resource at run time retunes `Time<Fixed>`.
-  `GameClock.frame` counts ticks. `psx template create --region pal
+  `GameClock.frame` counts ticks. `psx port init --region pal
   --fields-per-tick 2` writes both constants when creating a project.
 - `Res<Time>` in `FixedUpdate` is one tick long, so speeds can be written per
   second (`speed * time.delta_secs()`) or, when the original's per-tick values
@@ -607,5 +607,5 @@ Give every project its own target directory (the default `target/` at the
 workspace root). Two projects with the same game package name must not share
 a `CARGO_TARGET_DIR`: they build the same `game` library under the same name
 and overwrite each other's, so tests and binaries can link the other copy's
-game code. Rename the package (`psx template create --name`) or keep separate
+game code. Rename the package (`psx port init --name`) or keep separate
 targets.
