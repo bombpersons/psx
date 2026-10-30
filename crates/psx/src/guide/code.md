@@ -19,6 +19,15 @@ stores, and bits=MASK keeps the loads whose value is tested with those bits
 (andi, or and with a constant), each with the bits it tests. Loads that
 compare the whole word (any button at all) are not bit tests.
 
+Finding a feature's code: trace runs that do the thing (walking, a jump)
+and runs from the same state that do not (standing still), take
+code_inventory with one of them as ram, then code_coverage_diff runs=[the
+ones doing it] against=[the others]. only lists the functions only they
+executed; further lists, in functions both reached, the blocks and branch
+ways (taken, fell through) only they took. Both are candidates to read with
+code_disasm or code_decompile. More against runs (other actions) leave out
+more shared code. Swap the two sets for what the feature skips.
+
 ram_search keeps addresses whose values satisfy pred between consecutive
 snapshots (one predicate for all pairs or one per pair), exact values per
 snapshot ("441,*,376") or a between range. save writes matches and candidates

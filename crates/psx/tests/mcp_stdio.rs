@@ -1272,6 +1272,7 @@ fn mcp_tools_match_cli() {
         "code_symbols",
         "code_inventory",
         "code_coverage",
+        "code_coverage_diff",
         "ram_diff",
         "ram_search",
         "ram_view",

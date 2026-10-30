@@ -165,8 +165,24 @@ enum CodeAction {
     /// with instruction counts and basic blocks, and the disc's file list.
     Inventory(inventory::InventoryArgs),
     /// What traced runs executed, per function of the inventory: blocks executed and not,
-    /// and the runs reaching each.
-    Coverage(coverage::CoverageArgs),
+    /// and the runs reaching each. `coverage diff`: what some runs reach that others do not.
+    Coverage(CoverageCmd),
+}
+
+#[derive(clap::Args)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+struct CoverageCmd {
+    #[command(subcommand)]
+    action: Option<CoverageAction>,
+    #[command(flatten)]
+    args: coverage::CoverageArgs,
+}
+
+#[derive(Subcommand)]
+enum CoverageAction {
+    /// What traced runs reach that other traced runs (--against) do not: functions only
+    /// they executed, and in functions both reached, the blocks and branch ways only they took.
+    Diff(coverage::CoverageDiffArgs),
 }
 
 #[derive(Subcommand)]
@@ -250,7 +266,8 @@ impl CodeAction {
             Self::Annotate(a) => a.exec(ctx),
             Self::Symbols(a) => a.exec(ctx),
             Self::Inventory(a) => a.exec(ctx),
-            Self::Coverage(a) => a.exec(ctx),
+            Self::Coverage(CoverageCmd { action: Some(CoverageAction::Diff(a)), .. }) => a.exec(ctx),
+            Self::Coverage(c) => c.args.exec(ctx),
         }
     }
 }

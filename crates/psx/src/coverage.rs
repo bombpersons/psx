@@ -44,6 +44,26 @@ pub struct CoverageArgs {
     pub out: Option<PathBuf>,
 }
 
+/// `code coverage diff`: what traced runs reach that other traced runs do
+/// not, by function, block and branch way.
+#[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CoverageDiffArgs {
+    /// Traced runs (run --trace) that do the thing whose code you want.
+    #[arg(required = true)]
+    pub runs: Vec<PathBuf>,
+    /// Traced runs that do not: what they reach is left out. Repeatable, or several after one flag.
+    #[arg(long, required = true, num_args = 1..)]
+    pub against: Vec<PathBuf>,
+    /// Inventory (default inventory's out).
+    #[arg(long)]
+    #[serde(default)]
+    pub inventory: Option<PathBuf>,
+    /// Output (default coverage-diff.json beside the inventory).
+    #[arg(long)]
+    #[serde(default)]
+    pub out: Option<PathBuf>,
+}
+
 /// Below this is the BIOS kernel's.
 const GAME_RAM: u32 = 0x8001_0000;
 
@@ -61,6 +81,15 @@ struct Function {
 impl Function {
     fn chunk(&self, addr: u32) -> Option<(u32, u32)> {
         self.chunks.iter().copied().find(|&(s, e)| addr >= s && addr < e)
+    }
+
+    /// Its blocks as `[start, end)`: a block ends at the next, or at the
+    /// end of its chunk.
+    fn block_spans(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.blocks.iter().enumerate().map(|(bi, &s)| {
+            let chunk_end = self.chunk(s).map_or(self.end, |c| c.1);
+            (s, self.blocks.get(bi + 1).copied().unwrap_or(self.end).min(chunk_end))
+        })
     }
 
     fn words(&self) -> impl Iterator<Item = u32> + '_ {
@@ -536,10 +565,7 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
         }
         let mut unexecuted = Vec::new();
         let mut blocks_executed = 0u64;
-        for (bi, &s) in f.blocks.iter().enumerate() {
-            // A block ends at the next, or at the end of its chunk.
-            let chunk_end = f.chunk(s).map_or(f.end, |c| c.1);
-            let e = f.blocks.get(bi + 1).copied().unwrap_or(f.end).min(chunk_end);
+        for (s, e) in f.block_spans() {
             if (s..e).step_by(4).any(ran) {
                 blocks_executed += 1;
             } else {
@@ -605,52 +631,73 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
     (rows, outside, t)
 }
 
+/// The inventory at `given` (default inventory's out), and its path.
+fn inventory(ctx: &Ctx, given: Option<&Path>) -> crate::Result<(PathBuf, Value)> {
+    let inv_path = given.map(|p| at(ctx, p)).unwrap_or_else(|| crate::inventory::default_out(ctx));
+    let text = std::fs::read_to_string(&inv_path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::invalid(format!("{}: no inventory; take one with inventory first", inv_path.display()))
+        } else {
+            Error::io(&inv_path, e)
+        }
+    })?;
+    let inv: Value =
+        serde_json::from_str(&text).map_err(|e| Error::malformed(format!("{}: {e}", inv_path.display())))?;
+    Ok((inv_path, inv))
+}
+
+fn at(ctx: &Ctx, p: &Path) -> PathBuf {
+    if p.is_absolute() { p.to_path_buf() } else { ctx.root.join(p) }
+}
+
+/// A corpus credited to the inventory's images.
+struct Corpus {
+    images: Vec<Image>,
+    /// Per run: what it executed, and how to make it again.
+    runs: Vec<Value>,
+    /// Each run's call targets, with the run frames they were called first and last.
+    calls: Vec<Vec<(u32, i64, i64)>>,
+    /// Executed words no image holds, with the runs that executed them.
+    missing: BTreeMap<(u32, u32), BTreeSet<usize>>,
+}
+
+/// Credits the traced runs `dirs` to the inventory `inv`'s images.
+fn corpus(ctx: &Ctx, inv: &Value, dirs: &[PathBuf]) -> crate::Result<Corpus> {
+    let mut c =
+        Corpus { images: images(&ctx.root, inv)?, runs: Vec::new(), calls: Vec::new(), missing: BTreeMap::new() };
+    for (r, dir) in dirs.iter().map(|d| at(ctx, d)).enumerate() {
+        let words = executed(&dir)?;
+        c.calls.push(run_calls(&dir));
+        let (miss, _, per) = credit(&mut c.images, r, &words);
+        let branched = match branches(&dir)? {
+            Some(b) => {
+                credit_branches(&mut c.images, r, &b);
+                true
+            }
+            None => false,
+        };
+        let game = words.iter().filter(|w| w.0 >= GAME_RAM).count();
+        for m in &miss {
+            c.missing.entry(*m).or_default().insert(r);
+        }
+        // How to make it again, kept with the coverage (run directories are not).
+        let (recipe, no_recipe) = match crate::states::recipe_of(ctx, &dir) {
+            Ok(r) => (r, Value::Null),
+            Err(why) => (Value::Null, json!(why)),
+        };
+        c.runs.push(json!({
+            "run": dir, "words_executed": game, "words_in_no_image": miss.len(), "words_by_image": per,
+            "branches_recorded": branched,
+            "recipe": recipe, "no_recipe": no_recipe,
+        }));
+    }
+    Ok(c)
+}
+
 impl CoverageArgs {
     fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
-        let at = |p: &Path| if p.is_absolute() { p.to_path_buf() } else { ctx.root.join(p) };
-        let inv_path = self.inventory.as_ref().map(|p| at(p)).unwrap_or_else(|| crate::inventory::default_out(ctx));
-        let text = std::fs::read_to_string(&inv_path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                Error::invalid(format!("{}: no inventory; take one with inventory first", inv_path.display()))
-            } else {
-                Error::io(&inv_path, e)
-            }
-        })?;
-        let inv: Value =
-            serde_json::from_str(&text).map_err(|e| Error::malformed(format!("{}: {e}", inv_path.display())))?;
-        let mut images = images(&ctx.root, &inv)?;
-
-        let mut runs = Vec::new();
-        // Each run's call targets, with the run frames they were called first and last.
-        let mut calls: Vec<Vec<(u32, i64, i64)>> = Vec::new();
-        // Executed words no image holds, with the runs that executed them.
-        let mut missing: BTreeMap<(u32, u32), BTreeSet<usize>> = BTreeMap::new();
-        for (r, dir) in self.runs.iter().map(|d| at(d)).enumerate() {
-            let words = executed(&dir)?;
-            calls.push(run_calls(&dir));
-            let (miss, _, per) = credit(&mut images, r, &words);
-            let branched = match branches(&dir)? {
-                Some(b) => {
-                    credit_branches(&mut images, r, &b);
-                    true
-                }
-                None => false,
-            };
-            let game = words.iter().filter(|w| w.0 >= GAME_RAM).count();
-            for m in &miss {
-                missing.entry(*m).or_default().insert(r);
-            }
-            // How to make it again, kept with the coverage (run directories are not).
-            let (recipe, no_recipe) = match crate::states::recipe_of(ctx, &dir) {
-                Ok(r) => (r, Value::Null),
-                Err(why) => (Value::Null, json!(why)),
-            };
-            runs.push(json!({
-                "run": dir, "words_executed": game, "words_in_no_image": miss.len(), "words_by_image": per,
-                "branches_recorded": branched,
-                "recipe": recipe, "no_recipe": no_recipe,
-            }));
-        }
+        let (inv_path, inv) = inventory(ctx, self.inventory.as_deref())?;
+        let Corpus { images, runs, calls, missing } = corpus(ctx, &inv, &self.runs)?;
 
         // An overlay's functions are an image each: reported together.
         let mut totals = Totals::default();
@@ -719,7 +766,7 @@ impl CoverageArgs {
             "totals": t,
             "words_in_no_image": missing.len(),
         });
-        let out = self.out.as_ref().map(|p| at(p)).unwrap_or_else(|| inv_path.with_file_name("coverage.json"));
+        let out = self.out.as_ref().map(|p| at(ctx, p)).unwrap_or_else(|| inv_path.with_file_name("coverage.json"));
         let doc = json!({
             "coverage": FORMAT, "made": crate::stamp::utc_now(), "psx": crate::context::version(),
             "inventory": {"path": inv_path, "made": inv["made"]},
@@ -817,6 +864,128 @@ impl Op for CoverageArgs {
         if self.check {
             return Outcome::report(self.check(ctx));
         }
+        Outcome::result(self.run(ctx))
+    }
+}
+
+/// A conditional branch's ways in `ways` and not in `not` (1 taken, 2 fell
+/// through), named.
+fn ways_only(ways: u8, not: u8) -> impl Iterator<Item = &'static str> {
+    let only = ways & !not;
+    [(1, "taken"), (2, "fell through")].into_iter().filter(move |(b, _)| only & b != 0).map(|(_, n)| n)
+}
+
+/// The functions of images `a` executed that `b`'s did not (`only`), and
+/// the functions both executed with the blocks and branch ways only `a`'s
+/// took (`further`); with the instructions of `only`, and the blocks and
+/// ways of `further`. `a` and `b` are the same inventory's images.
+fn compare(a: &[Image], b: &[Image]) -> (Vec<Value>, Vec<Value>, [u64; 3]) {
+    let ran = |img: &Image, w: u32| img.count.get(((w - img.base) / 4) as usize).is_some_and(|&n| n > 0);
+    let (mut only, mut further) = (Vec::new(), Vec::new());
+    let (mut only_instructions, mut blocks_only, mut ways_count) = (0u64, 0u64, 0u64);
+    for (ia, ib) in a.iter().zip(b).filter(|(i, _)| i.kind != "bios") {
+        for (fi, f) in ia.functions.iter().enumerate() {
+            let spans: Vec<(u32, u32)> = f.block_spans().collect();
+            let in_a: Vec<bool> = spans.iter().map(|&(s, e)| (s..e).step_by(4).any(|w| ran(ia, w))).collect();
+            if !in_a.contains(&true) {
+                continue;
+            }
+            let in_b: Vec<bool> = spans.iter().map(|&(s, e)| (s..e).step_by(4).any(|w| ran(ib, w))).collect();
+            let runs: Vec<&usize> = ia.runs[fi].iter().collect();
+            let instructions = f.words().count() as u64;
+            if !in_b.contains(&true) {
+                only_instructions += instructions;
+                only.push(json!({
+                    "image": ia.name, "entry": hex(f.entry), "instructions": instructions,
+                    "blocks": spans.len(), "blocks_executed": in_a.iter().filter(|x| **x).count(),
+                    "calls": ia.count.get(((f.entry - ia.base) / 4) as usize).copied().unwrap_or(0),
+                    "runs": runs,
+                }));
+                continue;
+            }
+            // The blocks only the runs executed, adjacent ones joined.
+            let mut joined: Vec<(u32, u32)> = Vec::new();
+            for (&(s, e), _) in spans.iter().zip(in_a.iter().zip(&in_b)).filter(|(_, (x, y))| **x && !**y) {
+                match joined.last_mut() {
+                    Some(last) if last.1 == s => last.1 = e,
+                    _ => joined.push((s, e)),
+                }
+            }
+            let blocks: Vec<Value> = joined.iter().map(|&(s, e)| json!([hex(s), hex(e)])).collect();
+            let mut ways = Vec::new();
+            for w in f.words().filter(|&w| ia.word(w).is_some_and(conditional)) {
+                let k = ((w - ia.base) / 4) as usize;
+                for way in ways_only(ia.ways[k], ib.ways[k]) {
+                    ways.push(json!({"pc": hex(w), "way": way}));
+                }
+            }
+            if blocks.is_empty() && ways.is_empty() {
+                continue;
+            }
+            blocks_only += spans.iter().zip(in_a.iter().zip(&in_b)).filter(|(_, (x, y))| **x && !**y).count() as u64;
+            ways_count += ways.len() as u64;
+            let mut row = json!({"image": ia.name, "entry": hex(f.entry), "runs": runs});
+            if !blocks.is_empty() {
+                row["blocks"] = json!(blocks);
+            }
+            if !ways.is_empty() {
+                row["branch_ways"] = json!(ways);
+            }
+            further.push(row);
+        }
+    }
+    (only, further, [only_instructions, blocks_only, ways_count])
+}
+
+impl CoverageDiffArgs {
+    fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
+        let (inv_path, inv) = inventory(ctx, self.inventory.as_deref())?;
+        let a = corpus(ctx, &inv, &self.runs)?;
+        let b = corpus(ctx, &inv, &self.against)?;
+        let (only, further, [only_instructions, blocks_only, ways_count]) = compare(&a.images, &b.images);
+        // Executed words no image holds that the other runs did not execute.
+        let addrs: BTreeSet<u32> = a.missing.keys().filter(|k| !b.missing.contains_key(k)).map(|k| k.0).collect();
+        let no_image: Vec<Value> = spans(addrs)
+            .into_iter()
+            .map(|(s, e)| json!({"start": hex(s), "end": hex(e), "words": (e - s) / 4}))
+            .collect();
+        let unbranched: Vec<&Value> =
+            a.runs.iter().chain(&b.runs).filter(|r| r["branches_recorded"] == false).map(|r| &r["run"]).collect();
+        let totals = json!({
+            "functions_only": only.len(), "instructions_only": only_instructions,
+            "functions_further": further.len(), "blocks_only": blocks_only, "branch_ways_only": ways_count,
+            "in_no_image": no_image.len(),
+        });
+        let out =
+            self.out.as_ref().map(|p| at(ctx, p)).unwrap_or_else(|| inv_path.with_file_name("coverage-diff.json"));
+        let doc = json!({
+            "coverage_diff": FORMAT, "made": crate::stamp::utc_now(), "psx": crate::context::version(),
+            "inventory": {"path": inv_path, "made": inv["made"]},
+            "how": "both sets of runs credited as coverage credits them; only: functions the runs executed and the against runs did not; further: functions both reached, with the blocks (adjacent ones joined into one range) and branch ways (taken, fell through) only the runs took; in_no_image: executed words no image holds that the against runs did not execute; runs are indices into runs",
+            "runs": a.runs.iter().map(|r| &r["run"]).collect::<Vec<_>>(),
+            "against": b.runs.iter().map(|r| &r["run"]).collect::<Vec<_>>(),
+            "totals": totals, "only": only, "further": further, "in_no_image": no_image,
+        });
+        if let Some(d) = out.parent() {
+            std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+        }
+        let text = serde_json::to_string_pretty(&doc).unwrap_or_default() + "\n";
+        std::fs::write(&out, text).map_err(|e| Error::io(&out, e))?;
+        let mut r = json!({
+            "out": out, "totals": doc["totals"],
+            "only": doc["only"].as_array().into_iter().flatten().take(20).map(|f| json!({"image": f["image"], "entry": f["entry"], "instructions": f["instructions"]})).collect::<Vec<_>>(),
+            "next": "read out for every function, block and branch way: these are the candidates for the feature's code; disassemble or decompile them, and keep what a run without the feature also reaches out of the feature",
+        });
+        if !unbranched.is_empty() {
+            r["branches_not_recorded"] = json!(unbranched);
+            r["note"] = json!("runs traced by an older psx record no branch ways: trace them again for branch_ways");
+        }
+        Ok(r)
+    }
+}
+
+impl Op for CoverageDiffArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::result(self.run(ctx))
     }
 }
@@ -1044,6 +1213,56 @@ mod tests {
         credit(&mut images, 0, &ran);
         credit_branches(&mut images, 0, &[(base + 4, 0x1480_0009, 1, 1)]);
         assert_eq!(report(&images[0]).2.branch_ways_taken, 0);
+    }
+
+    #[test]
+    fn a_diff_lists_what_only_the_runs_reached() {
+        let base = 0x8010_0000;
+        // f: addiu; bne a0, zero, +3; nop; addiu; jr ra; nop. g: jr ra; nop.
+        let code = vec![0x2484_0001, 0x1480_0003, 0, 0x2484_0001, 0x03E0_0008, 0, 0x03E0_0008, 0];
+        let fs = || {
+            vec![
+                Function {
+                    entry: base,
+                    end: base + 24,
+                    chunks: vec![(base, base + 24)],
+                    blocks: vec![base, base + 12, base + 16],
+                    sha: None,
+                },
+                Function {
+                    entry: base + 24,
+                    end: base + 32,
+                    chunks: vec![(base + 24, base + 32)],
+                    blocks: vec![base + 24],
+                    sha: None,
+                },
+            ]
+        };
+        let taken =
+            [(base, code[0], 1), (base + 4, code[1], 1), (base + 8, 0, 1), (base + 16, code[4], 1), (base + 20, 0, 1)];
+        // The against run takes the branch; the run falls through and calls g.
+        let mut b = vec![img("a", base, code.clone(), fs())];
+        credit(&mut b, 0, &taken);
+        credit_branches(&mut b, 0, &[(base + 4, code[1], 1, 0)]);
+        let mut a = vec![img("a", base, code.clone(), fs())];
+        let fell: Vec<(u32, u32, u64)> = (0..8).map(|k| (base + 4 * k, code[k as usize], 1)).collect();
+        credit(&mut a, 0, &fell);
+        credit_branches(&mut a, 0, &[(base + 4, code[1], 0, 1)]);
+        let (only, further, counts) = compare(&a, &b);
+        assert_eq!(only.len(), 1);
+        assert_eq!((&only[0]["entry"], &only[0]["instructions"]), (&json!("0x80100018"), &json!(2)));
+        assert_eq!(
+            further,
+            [json!({"image": "a", "entry": "0x80100000", "runs": [0],
+                    "blocks": [["0x8010000C", "0x80100010"]],
+                    "branch_ways": [{"pc": "0x80100004", "way": "fell through"}]})]
+        );
+        assert_eq!(counts, [2, 1, 1]);
+        // The other way round: b reaches nothing a does not, but took the branch.
+        let (only, further, _) = compare(&b, &a);
+        assert!(only.is_empty());
+        assert_eq!(further[0]["branch_ways"], json!([{"pc": "0x80100004", "way": "taken"}]));
+        assert!(further[0].get("blocks").is_none());
     }
 
     #[test]
