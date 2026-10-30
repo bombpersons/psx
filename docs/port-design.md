@@ -91,7 +91,7 @@ the person takes on knowingly. psx makes nothing about this automatic.
 | **Catalogue** | the game's features in game terms, with dependencies | `catalogue/F-NNNN.md` |
 | **Feature** | one capability a player would name: "car handling on tarmac", "Lara's ledge climbing", "the race HUD" | an entry in the catalogue |
 | **Mechanic** | one step the original runs, with typed state, inputs, params and world queries, captured from the game step by step | `mechanics/<id>/` |
-| **Glossary** | the names quantities, assets and events go by | `glossary.toml` |
+| **Glossary** | the names quantities, assets and events go by | `glossary/` |
 | **Scenario** | a reproducible situation both the original and the port can reach | `scenarios/<id>.toml` |
 | **Format** | a disc file format, read by an importer | `formats/<id>.md` plus importer tests |
 | **Asset contract** | the port's own asset type: schema, units, which feature reads it | `docs/assets/` |
@@ -150,56 +150,67 @@ feature is what the person gets. The file formats are psx's own, adapted
 from the mechanics knowledge base's draft (Decision 4), and defined in
 `docs/mechanics.md`.
 
+A mechanic is plain Rust (`docs/rust-mechanics-plan.md`): its types and
+its `step` are the reference a port is translated from, and the traces are
+the specification it passes.
+
 ```
 mechanics/gt2.drivetrain/
-  mechanic.toml     # typed state, inputs, params; interfaces it requires
-  binding.toml      # where this release keeps them, and the capture bracket
+  Cargo.toml, src/lib.rs   # header, typed state, inputs, params; step
+  binding/                 # where this release keeps them: a plugin psx loads
   traces/*.trace.jsonl
-  NOTES.md          # a few lines: what it does, quirks, what traces miss
+  NOTES.md                 # a few lines: what it does, quirks, what traces miss
 ```
 
-**`mechanic.toml`** declares:
+**The mechanic's crate** declares:
 
-- **state**: what the step owns (rpm, gear);
-- **inputs**: what it reads each step but does not own (throttle, the
+- **`State`**: what the step owns (rpm, gear);
+- **`Inputs`**: what it reads each step but does not own (throttle, the
   frame counter's parity);
-- **params**: constants whose values come from the binding (gear ratios,
-  a torque curve);
-- **requires**: interfaces for world queries (`track.surface-at@1`);
-- **rate**: how often the original runs the step (per tick, per frame,
-  steps per second), so another game can run it at its native rate.
+- **`Params`**: constants whose values the binding reads (gear ratios, a
+  torque curve);
+- **`REQUIRES`**: interfaces for world queries (`track.surface-at@1`), each
+  a trait in a crate of its own;
+- **`RATE`**: how often the original runs the step (per tick, per frame,
+  steps per second), so another game can run it at its native rate;
+- **`step`**: the rule, in plain Rust with no dependencies.
 
-Each field has a type: `int` with bits and sign, `fixed` with integer and
-fraction bits, `bool`, or `enum` with named variants.
+Field types are Rust's: integers of the original's width, fixed point as an
+alias (`type Fx20_12 = i32;`), `bool`, enums, and arrays, `Vec`s and
+structs for tables and data.
 
-**`binding.toml`** says where the values live and how the step is
-bracketed:
+**The binding** (`binding/`) is a small program against `psx-capture`:
+where the step begins and ends, which calls of the routine are the step,
+the world calls it makes, and how to read the fields from the machine.
 
-```toml
-[state.rpm]
-parts = [{ at = { base = "a0", offset = 0x40 }, bytes = 2 }]
-[params]
-final_drive = 0x3800
-[params_provenance]
-final_drive = "car record field 0x1C, read at 0x800A1234"
-[capture]
-begin = { pc = 0x800A1200, overlay = "race", a0 = 0x801F0000 }
-end = { pc = 0x800A13F8 }        # or "next_begin" or "frame"
-explained = [{ at = { base = "a0", offset = 0x80 }, bytes = 0x20, why = "suspension, another mechanic" }]
+```rust
+fn bracket(&self, b: &mut Bracket) {
+    b.begin(Pc::in_overlay("race", 0x800A_1200)).end(Pc::in_overlay("race", 0x800A_13F8));
+    b.explain(At::Base(A0, 0x80), 0x20, "suspension, another mechanic");
+}
+
+fn is_step(&self, m: &Machine) -> bool {
+    m.reg(A0) == m.u32(PLAYER_CAR)        // the player's car, not the AI's
+}
+
+fn state(&self, m: &Machine) -> State {
+    State { rpm: m.u16(m.latched(A0) + 0x40), /* … */ }
+}
 ```
 
 (Addresses here are placeholders.)
 
 R3000 specifics:
 
-- **Locations** are RAM addresses, scratchpad, or `{ base = "<reg>",
-  offset }` relative to a register latched at begin. Register values
-  (`{ register = "v0" }`) bind arguments and returns.
+- **Reads** are of RAM, the scratchpad, CPU registers (now, or latched at
+  the begin) and the GTE. Pointers, counts and parallel arrays are
+  ordinary code.
 - **A begin or end PC names its overlay**, since the same address runs
   different code as overlays change. The overlay is identified the way the
   inventory identifies it.
-- **Register filters** on begin pick one caller or object: the player's
-  car rather than the AI's, when they run the same routine.
+- **`is_step`** picks one caller or object: the player's car rather than
+  the AI's, when they run the same routine, by the game's own pointer to
+  it.
 
 **Capture** (`psx mechanic capture`) runs a recording with the binding and
 writes one trace line per step: the inputs and the state at begin, the
@@ -220,14 +231,14 @@ state at end, and the world calls made in between. It reports:
 - **Branch coverage.** Which of the routine's branches the traces reached,
   from the executed instructions inside the bracket. The rest are listed
   in `NOTES.md` as not covered, or a recording that reaches them is made.
-- **Refusals.** Values that do not fit the declared type, lossy rescales,
-  enum values with no variant, and calls that change the mechanic's state.
+- **Refusals.** Values that do not fit the declared type, reads outside
+  memory, and calls that change the mechanic's state.
 
 **Interfaces** are the seams that make a mechanic portable. A world query
 (the surface under a wheel, the floor height at a point) is an interface
 call recorded with its request and response. The port's step takes the
-world as a trait, so in another game the person implements the trait for
-their own world. A good interface asks what the original's routine
+world as a trait (the interface's crate), so in another game the person
+implements the trait for their own world. A good interface asks what the original's routine
 actually asks, as low-level as it really is. The decision about what to
 do with the answer stays in the mechanic, where traces prove it.
 
@@ -306,14 +317,15 @@ without it.
 ### Glossary and observation channels
 
 Scenario comparisons use named **quantities**: a car's position, speed,
-gear; the lap time; the selected menu item. The glossary gives each a
-kind (`quantity`, `asset`, `event`), units, and the binding that reads it
-in the original. The port registers a getter per quantity. The comparison
-never depends on how the port stores the value.
+gear; the lap time; the selected menu item. The glossary is a Rust struct
+of them with their units (`glossary/`), and its binding reads them in the
+original (`glossary/binding/`). The port fills a generated `Observed`
+struct, one `Option` per quantity, so a misspelt quantity is a compile
+error. The comparison never depends on how the port stores the value.
 
 | Channel | Original side (psx) | Port side (template hook) | Compared |
 |---|---|---|---|
-| **quantities** | glossary bindings, sampled per tick | the quantity registry | per tick, exact or within tolerance |
+| **quantities** | the glossary's binding, sampled per tick | `Observed`, filled by `app.observe` | per tick, exact or within tolerance |
 | **screen items** | per-field GPU capture, kept to primitives that use a named asset group (the HUD font, HUD sprites), each as content hash, rectangle in the original's frame, colour, blend and order | 2D items (sprites, text, UI) in the same reference frame, hashed the same way from the imported asset | as a set per tick, plus the order of overlapping items |
 | **sound events** | SPU key-on/off with the sample's hash (`trace_spu`), pitch, volume, pan; XA and CD audio starts and stops | the sound plugin reports each played sound by its imported asset's hash | as a list per tick |
 | **screens** | snapshots | screenshots in the reference frame | not compared mechanically; for looking |
@@ -360,29 +372,25 @@ Required for every goal; they are what make features reusable.
    ("wakes when on screen", HUD layout) are defined against the original's
    4:3 view. `PsxAspect` widens what is shown and `PsxAnchor` anchors the
    HUD, without changing behaviour.
-4. **Mechanics as pure steps.** Each mechanic is a function of its state,
-   inputs, params and world, called from a system that adapts components
-   to it. The world is the mechanic's interfaces as a trait, implemented by
-   the feature over the port's own resources. The step is the port's own
-   code, not a separate reference: the test harness calls the same
-   function through a small adapter between trace fields and the port's
-   types.
+4. **Mechanics are the reference; the port is a translation.** Each
+   mechanic's `step` is plain Rust that the traces prove. The port neither
+   links the mechanic crates nor adapts to them step by step: an idiomatic
+   Bevy port may split a mechanic into several systems over components,
+   use events where the original sets flags, and keep a field in a
+   component of its own. The world calls become the port's own queries of
+   its resources. Scenarios check the result from outside (section 6).
+   (Linking a mechanic is still allowed, for a quick prototype.)
 5. **Numbers.**
-   - **Generic over a scalar.** Exact mechanics are written once, generic
-     over a `Scalar` trait, which the template implements for
-     `Fixed<W, F>` and for `f32`. The port instantiates the fixed type; a
-     new game can instantiate `f32` with a type change.
+   - **The port chooses its own types**, held to the scenarios'
+     tolerances: the original's fixed point (`psx_bevy::num`) where a
+     feature is exact, `f32` where tolerances allow.
    - **Name the rule, then convert the units.** A constant is written as
      the number it is, with a doc comment giving the raw value and where it
      was read.
-   - **Integer behaviour that carries meaning is a named operation** on
-     `Scalar`, never raw shifts and masks in a system. Examples: angles
-     that wrap (`Angle`), rounding toward minus infinity, a speed that
-     truncates to zero (`settle_to_zero`), keeping only the integer part
-     (`snap_to_unit`), a table-based sine. `Fixed` implements each exactly
-     as the original does it; `f32` implements what it is for (a stop
-     threshold, `rem_euclid`, `f32::sin`).
-   - **Faithful mechanics** may use `f32` directly.
+   - **Integer behaviour that carries meaning is a named operation**, never
+     raw shifts and masks in a system. Examples: angles that wrap
+     (`Angle`), rounding toward minus infinity, a speed that truncates to
+     zero, keeping only the integer part, a table-based sine.
    - Conversion to `f32` for rendering happens once, at the render
      boundary.
 6. **Rules apart from content.** Tuning, setup and content are assets with a
@@ -399,13 +407,12 @@ Required for every goal; they are what make features reusable.
    - Each asset type loads and saves, and a test checks that loading and
      saving an unedited asset gives the same file. Nothing writes the
      original's formats.
-8. **The tick stays fixed.** The game's tick rate is fixed in the port, in
-   both the exact and the `f32` versions. Per-second values are given for
-   reference. Moving to a variable time step would change the integration
+8. **The tick stays fixed.** The game's tick rate is fixed in the port.
+   Per-second values are given for reference. Moving to a variable time step would change the integration
    and the feel, and is out of scope.
-9. **Test hooks** from the template: the quantity registry, scenario
-   launchers, the mechanic trace adapter, the screen-item and sound-event
-   reporters, and the importer test runner.
+9. **Test hooks** from the template: `Observed` and `app.observe`, scenario
+   launchers, the screen-item and sound-event reporters, and the importer
+   test runner.
 10. **A sandbox per feature.** `cargo run --example sandbox_F-0007` builds a
     small scene from hand-made assets only, with the feature and its
     dependencies. psx checks that it builds and runs headless under
@@ -420,28 +427,24 @@ saves, options), an editor.
 
 Each mechanic is **exact** (the default) or **faithful**:
 
-| | Arithmetic | Step replay | Scenario |
+| | The reference's arithmetic | Replay of the reference | Scenario |
 |---|---|---|---|
-| **exact** | `Fixed`, the original's width and rounding | every field, every step, tolerance 0 | compared quantities every tick, tolerance 0 |
-| **faithful** | `f32` allowed | each step starts from the trace's recorded state and is compared within tolerance | within the scenario's tolerances |
+| **exact** | the original's width and rounding | every field, every step, tolerance 0 | compared quantities every tick, tolerance 0 |
+| **faithful** | floats allowed | each step starts from the trace's recorded state and is compared within tolerance | within the scenario's tolerances |
 
-Tests run in three layers:
+Tests run in two layers:
 
-1. **Step replay.** `cargo test`, with no emulator: milliseconds per trace.
-   A mismatch names the mechanic, the step and the field. Calls to the
-   world are checked in order, with the recorded responses.
+1. **Replay of the reference.** `cargo test -p replay`, with no emulator:
+   milliseconds per trace. Each mechanic's own `step` runs against its
+   traces, and a mismatch names the mechanic, the step and the field. This
+   proves the reference: the rules as written reproduce the original. It
+   does not test the port.
 2. **Scenario.** The port runs the scenario from the same inputs and its
    quantities, screen items and sounds are compared with Mednafen's,
    replaying the original's recorded tick schedule (including the ticks it
-   ran unevenly when drawing fell behind). This catches what lies between
-   mechanics: system order, timing, more than one step per tick.
-3. **The `f32` drift report.** For each exact mechanic, psx also runs the
-   `f32` instantiation against its traces, resetting from the recorded
-   state every K steps, and reports the worst error and how it grows.
-   This tells the person what switching would cost before they lift a
-   mechanic into a new game. It is also how a borderline mechanic is
-   decided: if the error stays bounded, faithful is enough; if it grows,
-   the mechanic is exact.
+   ran unevenly when drawing fell behind). This is the port's test: it
+   catches a rule translated wrongly and what lies between mechanics:
+   system order, timing, more than one step per tick.
 
 Verdicts are written only by psx, which runs the check itself (`psx port
 check`), never by the agent. Each records the time and the commit it
@@ -462,7 +465,7 @@ layers.
    - one Rust function per original routine with the same call shape;
    - resources or globals that map one to one onto RAM addresses;
    - hex literals with no named constant and citation;
-   - raw shifts and masks outside `Scalar` operations;
+   - raw shifts and masks in a system, outside a named operation;
    - constants in code that the original read from a table.
 
    A signal is not a failure. The agent either changes the code or writes
@@ -537,7 +540,7 @@ files.
 | 1 catalogued | it has a catalogue entry |
 | 2 captured | its mechanics are captured (read audit clear, uncovered branches listed) and its scenarios are deterministic |
 | 3 implemented | its plugin exists and registers its scenarios' launchers and quantities |
-| 4 verified | step replay and scenario verdicts pass, fresh |
+| 4 verified | the scenario verdict passes, fresh |
 | 5 reviewed | the structure review has no open findings at the current commit |
 | 6 extracted | its sandbox passes and its assets round-trip |
 
@@ -546,8 +549,7 @@ list in the goal's areas is empty.**
 
 `psx port status` shows the goal's features by stage, grouped by area,
 with dependencies; the percentage of the corpus's code accounted for,
-weighted by instructions; the gap list; and the `f32` drift per exact
-mechanic.
+weighted by instructions; and the gap list.
 
 `psx port next` gives the next item. Work lives on disk, so any session can
 pick it up, and the person can redirect at any point. Items, in order:
@@ -604,14 +606,14 @@ person) can come later on the same items. It is not part of this design.
 
 **Template (psx-bevy and the workspace template):**
 
-1. `Scalar`, `Fixed<W, F>`, vectors, `Angle`, the named integer operations
-   for both `Fixed` and `f32`. In psx-bevy, an exact `gte` module (the
-   GTE's operations, flags and rounding) from psx's own `psx-gte` crate,
-   written once for every PS1 port.
-2. The mechanic trace adapter and the step-replay test harness, with the
-   world-call check and the `f32` drift run.
-3. The quantity registry, scenario launchers, and the screen-item and
-   sound-event reporters.
+1. `Fixed<W, F>`, vectors, `Angle` and the named integer operations, for
+   ports that keep the original's arithmetic. In psx-bevy, an exact `gte`
+   module (the GTE's operations, flags and rounding) from psx's own
+   `psx-gte` crate, written once for every PS1 port.
+2. The replay crate, which runs every mechanic's step against its traces
+   (`docs/rust-mechanics-plan.md`).
+3. `Observed` and `app.observe`, scenario launchers, and the screen-item
+   and sound-event reporters.
 4. Feature plugin conventions (dependencies declared and checked) and the
    sandbox per feature.
 5. Asset contracts, real-number asset fields with exact `Fixed` loading,
@@ -626,6 +628,11 @@ person) can come later on the same items. It is not part of this design.
 Each step is one pull request and ends with something that runs. Sizes are
 rough working sessions: **S** about one, **M** two or three, **L** four to
 six. The pilot decides whether Phases C and D go ahead as written.
+
+Phase B was built with TOML formats (`mechanic.toml`, `binding.toml`) and
+a port step replay; the pilot replaced them with mechanics and bindings as
+Rust and scenarios as the port's only check (`docs/rust-mechanics-plan.md`).
+The tables keep the steps as they were done.
 
 ### Phase A: the workspace and the loop (about 9 to 11 sessions)
 
@@ -653,7 +660,7 @@ The pilot is Croc's movement, all of it (Decision 3). It runs from goal
 to extracted on a fresh workspace, with the person reviewing the result.
 
 - **It passes if:** the mechanics replay exactly; the port reads as
-  ordinary Bevy; the drift report is believable; the sandbox works on
+  ordinary Bevy and passes its scenarios; the sandbox works on
   hand-made assets; and `port next` led the work without the person
   steering it item by item.
 - The pilot's findings change this document (S) before Phase C.
@@ -687,15 +694,16 @@ It is proven in psx first and split out only once a second producer
 uses it. Until then, psx keeps the two sides apart in its code.
 
 **Generic (the method):** the workspace, goal, catalogue, stages, `port
-status` and `port next`; `mechanic.toml`, the trace format and step
-replay; `Scalar` and `Fixed`; the drift report; the structure review;
-attribution's arithmetic and the gap list; and the core of the template.
+status` and `port next`; mechanics and interfaces as Rust, the trace
+format and replay of the reference; the glossary's quantities; the
+structure review; attribution's arithmetic and the gap list; and the core
+of the template.
 
 **Per producer (the platform):**
 
 - running the game deterministically from a saved state with replayed
   input;
-- `binding.toml`, whose location vocabulary is the platform's (R3000
+- the binding API (`psx-capture`), whose machine is the platform's (R3000
   registers and overlays, 68000 registers, x86 modules);
 - capture: brackets, interface calls, the read audit, external changes,
   branch coverage;
@@ -713,8 +721,8 @@ regions each recording ran and the platform classification.
 
 **Mixing mechanics** from different games is the combining game's work,
 not the method's. The method makes it possible by making each mechanic
-state its native tick rate and units in `mechanic.toml`, keeping params in
-real units in assets, and keeping the `f32` instantiation available.
+state its native tick rate and units in its crate, and keeping params in
+real units in assets.
 
 ## 13. Existing ports
 
@@ -745,9 +753,10 @@ real units in assets, and keeping the `f32` instantiation available.
 2. **Reusable features.** Plugins with declared dependencies, mechanics
    behind interfaces, rules apart from content, round-tripping assets, and
    the sandbox checked by psx.
-3. **Exact where it matters.** Step replay at tolerance 0 for exact
-   mechanics, with the read audit and external changes making sure the
-   state is complete, and scenarios checking how mechanics combine.
+3. **Exact where it matters.** The reference replayed at tolerance 0 for
+   exact mechanics, with the read audit and external changes making sure
+   the state is complete, and scenarios checking the port and how
+   mechanics combine.
    **Limit:** exactness is relative to Mednafen, which is ground truth by
    choice (the native core that captures runs cycle for cycle with it), and only as wide as the traces' branch coverage. The uncovered
    branches are listed, not hidden.
@@ -757,8 +766,9 @@ real units in assets, and keeping the `f32` instantiation available.
    The signals catch the common forms, and the fresh-context reviewer
    cannot see the original. The pilot tests whether that is enough.
 5. **Not locked to the PS1.** Separate render plugins, the reference view,
-   `PsxAspect`, `PsxAnchor` and `PsxLook`. Mechanics generic over `Scalar`,
-   with the drift report saying what `f32` costs.
+   `PsxAspect`, `PsxAnchor` and `PsxLook`. Mechanics as plain Rust any
+   language can be translated from, and a port free to choose its own
+   number types within the scenarios' tolerances.
 6. **Progress and where to look next.** Feature stages, the accounted
    percentage, and the gap list with moments and screenshots.
 7. **General.** Attribution is per instruction, bindings name overlays and

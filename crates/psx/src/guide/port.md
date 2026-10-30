@@ -24,18 +24,19 @@ its verdicts and the problems; plain=true is text for the person.
 - Catalogue: goal.toml or the catalogue has problems (listed); fix them.
 - Confirm (person): the goal's list is not confirmed, or lost a feature.
   Until it is, only investigate and catalogue.
-- Fix: a verdict at HEAD fails; its failures name the mechanic, step and
-  field, or the scenario, tick and quantity.
+- Fix: a verdict at HEAD fails; its failures name the scenario, tick and
+  quantity.
 - Capture: a feature's mechanics are not named or not captured (each
   reason listed): the catalogue entry lists them under mechanics, each
-  mechanics/<id>/ checks clean (psx mechanic check), a captured trace has a
-  clear read audit, and NOTES.md names each branch no trace took both ways
-  (docs/mechanics.md). Every feature has mechanics; Capture comes before
+  mechanics/<id>/ checks clean (psx mechanic check): the mechanic's crate
+  and its binding/, both Rust; a captured trace has a clear read audit; and
+  NOTES.md names each branch no trace took both ways (docs/mechanics.md).
+  cargo test -p replay runs each mechanic's step against its traces. Every feature has mechanics; Capture comes before
   Scenario and Implement.
 - Scenario: a feature's scenarios are not ready. It lists one, each has a
   captured recording (scenario_record) and passes scenario_check, the
-  determinism check (docs/scenarios.md). glossary.toml's tick is the game's
-  logic step, not its render loop, and the chain's last run ends at a game
+  determinism check (docs/scenarios.md). The glossary binding's tick is the
+  game's logic step, not its render loop, and the chain's last run ends at a game
   moment (until), not a count of fields.
 - Implement, Extract: the feature's next stage.
 - Unavailable (person): the next items need commands psx does not have yet.
@@ -46,16 +47,12 @@ its verdicts and the problems; plain=true is text for the person.
 Verdicts are psx's: it runs the checks and writes .psx/verdicts/F-NNNN/,
 never the agent. A verdict counts only for the commit it judged, with no
 uncommitted changes, so commit before checking. port_check (optionally one
-feature) runs the game's tests/mechanics.rs, where each mechanic has an
-adapter (psx_bevy::replay, AGENTS.md), and writes the replay verdicts: a
-feature passes when each of its mechanics replays every trace exactly
-(faithful: within its tolerances). It also reports each exact mechanic's
-f32 drift, which port_status shows. It runs tests/scenarios.rs too, where
-the features' plugins register scenario launchers and quantity getters
-(psx_bevy::scenario), and writes the scenario verdicts: each recording
-replayed tick by tick with its pad, every quantity within the scenario's
-tolerance. While working, cargo test -p <game> --test mechanics (or
---test scenarios) gives the same result without a verdict.
+feature) runs the game's tests/scenarios.rs, where the features' plugins
+register scenario launchers and observe the glossary's quantities
+(psx_bevy::scenario, AGENTS.md), and writes the scenario verdicts: each
+recording replayed tick by tick with its pad, every quantity within the
+scenario's tolerance. While working, cargo test -p <game> --test scenarios
+gives the same result without a verdict.
 
 How to write the port (the shape of the code, numbers, evidence, the
 self-review before calling a feature done, and the choices a goal can make:
@@ -70,4 +67,5 @@ writer or recording beside each constant and rule.
 Template updates: template_update replaces untouched psx-bevy/ and vendor/
 files, writes <file>.psx-new beside edited ones (merge it, keeping the
 change listed in docs/template.md, then delete the .psx-new) and copies
-changed seeded files under .psx/template-update/ to merge.
+changed seeded files under .psx/template-update/ to merge; a seeded file
+the template dropped is listed with removed_upstream.

@@ -58,7 +58,8 @@ pub struct Feature {
     /// passing determinism check.
     pub scenarios: Vec<String>,
     pub implemented: bool,
-    /// The launchers and quantity getters its plugin has not registered, by
+    /// The launchers its plugin has not registered and the quantities it does
+    /// not observe, by
     /// the last check at HEAD.
     pub unimplemented: Vec<String>,
     pub reviewed: bool,
@@ -76,13 +77,8 @@ impl Feature {
         if !self.catalogued {
             return None;
         }
-        let checks = [
-            self.captured,
-            self.implemented,
-            self.passes(Kind::Replay) && self.passes(Kind::Scenario),
-            self.reviewed,
-            self.passes(Kind::Sandbox),
-        ];
+        let checks =
+            [self.captured, self.implemented, self.passes(Kind::Scenario), self.reviewed, self.passes(Kind::Sandbox)];
         let held = checks.iter().take_while(|c| **c).count();
         Some(Stage::ALL[held])
     }
@@ -113,8 +109,6 @@ pub struct Facts {
     pub git: Git,
     /// The closure in dependency order.
     pub features: Vec<Feature>,
-    /// The f32 drift of each exact mechanic, from the last `port check`.
-    pub drift: Value,
 }
 
 impl Facts {
@@ -146,8 +140,7 @@ impl Facts {
                 }
             })
             .collect();
-        let drift = check::drift(root, git.head.as_deref());
-        Ok(Facts { port, git, features, drift })
+        Ok(Facts { port, git, features })
     }
 
     pub fn stage(&self, id: &str) -> Option<Stage> {
@@ -219,7 +212,7 @@ impl Facts {
                 Some(&f.id),
                 format!("its mechanics are not captured: {}", lines.join("; ")),
                 "it names its mechanics, each checks clean and has a captured trace with a clear read audit, and NOTES.md names every branch no trace took both ways",
-                "name the steps the original runs for it under the catalogue entry's mechanics, write mechanics/<id>/ for each (mechanic.toml, binding.toml), run psx mechanic capture, bind or explain each read the audit lists, and list in NOTES.md the PC of each branch no trace took both ways (docs/mechanics.md)",
+                "name the steps the original runs for it under the catalogue entry's mechanics, write mechanics/<id>/ for each (the mechanic's crate and its binding, binding/), run psx mechanic capture, bind or explain each read the audit lists, and list in NOTES.md the PC of each branch no trace took both ways (docs/mechanics.md)",
             );
         }
         if let Some(f) = order(&|f| stage(f, &[Stage::Catalogued])) {
@@ -228,11 +221,11 @@ impl Facts {
                 Some(&f.id),
                 format!("its scenarios are not ready: {}", first_lines(&f.scenarios).join("; ")),
                 "it lists a scenario, and each it lists has a captured recording and passes psx scenario check",
-                "bind glossary.toml's tick (the logic step) and quantities, write scenarios/<id>.toml from a psx states chain whose last run ends at a game moment (until), list it in the catalogue entry, run psx scenario record, then psx scenario check (docs/scenarios.md)",
+                "declare the quantities in glossary/ and bind them and the tick (the logic step) in glossary/binding/, write scenarios/<id>.toml from a psx states chain whose last run ends at a game moment (until), list it in the catalogue entry, run psx scenario record, then psx scenario check (docs/scenarios.md)",
             );
         }
         if let Some(f) = order(&|f| stage(f, &[Stage::Captured, Stage::Implemented])) {
-            let mut states: Vec<String> = [Kind::Replay, Kind::Scenario]
+            let mut states: Vec<String> = [Kind::Scenario]
                 .iter()
                 .map(|k| format!("{} {}", k.name(), f.verdicts.get(k).map(State::name).unwrap_or("missing")))
                 .collect();
@@ -243,8 +236,8 @@ impl Facts {
                 "Implement",
                 Some(&f.id),
                 format!("captured, not verified ({})", states.join(", ")),
-                "its replay and scenario verdicts pass at HEAD",
-                "write the feature's plugin from its mechanics, register its scenario launchers and quantities (psx_bevy::scenario), commit, and run psx port check on it",
+                "its scenario verdict passes at HEAD",
+                "write the feature's plugin, translating its mechanics' steps, register its scenario launchers and what it observes (psx_bevy::scenario), commit, and run psx port check on it",
             );
         }
         if let Some(f) = order(&|f| stage(f, &[Stage::Reviewed])) {
@@ -314,7 +307,6 @@ impl Facts {
             "areas": areas,
             "complete": self.complete(),
             "git": {"head": self.git.head, "clean": self.git.clean},
-            "drift": self.drift,
             "not_measured_yet": ["code accounted for", "gap list"],
         })
     }
@@ -513,7 +505,7 @@ mod tests {
         assert_eq!((item.item, item.feature.as_deref()), ("Capture", Some("F-0001")));
         assert_eq!(
             item.why,
-            "its mechanics are not captured: mechanics/demo.walk: no mechanic here (a Rust crate with src/lib.rs, or mechanic.toml)"
+            "its mechanics are not captured: mechanics/demo.walk: no mechanic here (a Rust crate with src/lib.rs)"
         );
         assert_eq!(f.stage("F-0001"), Some(Stage::Catalogued));
         // A feature that names no mechanics is asked for them.
@@ -542,19 +534,19 @@ mod tests {
         with(&mut f, "F-0001", Stage::Captured, &[]);
         with(&mut f, "F-0002", Stage::Captured, &[]);
         assert_eq!((f.next().item, f.next().feature.as_deref()), ("Implement", Some("F-0001")));
-        let pass = [(Kind::Replay, State::Pass), (Kind::Scenario, State::Pass)];
+        let pass = [(Kind::Scenario, State::Pass)];
         with(&mut f, "F-0001", Stage::Implemented, &pass);
         assert_eq!(f.stage("F-0001"), Some(Stage::Verified));
         with(
             &mut f,
             "F-0002",
             Stage::Implemented,
-            &[(Kind::Replay, State::Fail { failures: vec!["jump step 4: vy".into()] })],
+            &[(Kind::Scenario, State::Fail { failures: vec!["jump tick 4 croc_y: expected 3, got 2".into()] })],
         );
         let item = f.next();
         assert_eq!((item.item, item.feature.as_deref()), ("Fix", Some("F-0002")));
-        assert_eq!(item.why, "a verdict at HEAD fails: replay: jump step 4: vy");
-        with(&mut f, "F-0002", Stage::Implemented, &[(Kind::Replay, State::Stale { commit: "a".into() })]);
+        assert_eq!(item.why, "a verdict at HEAD fails: scenario: jump tick 4 croc_y: expected 3, got 2");
+        with(&mut f, "F-0002", Stage::Implemented, &[(Kind::Scenario, State::Stale { commit: "a".into() })]);
         assert_eq!(f.next().item, "Implement");
         let mut all = pass.to_vec();
         with(&mut f, "F-0002", Stage::Reviewed, &all);
@@ -572,14 +564,14 @@ mod tests {
         let (d, _) = facts(CONFIRMED, &["F-0001"]);
         let v = |commit: &str, clean, passed| verdict::Verdict {
             feature: "F-0001".into(),
-            kind: "replay".into(),
+            kind: "scenario".into(),
             commit: commit.into(),
             clean,
             at: "t".into(),
             passed,
             failures: vec!["x".into()],
         };
-        let state = || verdict::state(&d.0, "F-0001", Kind::Replay, Some("abc"));
+        let state = || verdict::state(&d.0, "F-0001", Kind::Scenario, Some("abc"));
         assert_eq!(state(), State::Missing);
         verdict::write(&d.0, &v("abc", true, true));
         assert_eq!(state(), State::Pass);
@@ -589,7 +581,7 @@ mod tests {
         assert_eq!(state(), State::Stale { commit: "abc".into() });
         verdict::write(&d.0, &v("old", true, true));
         assert_eq!(state(), State::Stale { commit: "old".into() });
-        assert_eq!(verdict::state(&d.0, "F-0001", Kind::Replay, None), State::Stale { commit: "old".into() });
+        assert_eq!(verdict::state(&d.0, "F-0001", Kind::Scenario, None), State::Stale { commit: "old".into() });
     }
 
     #[test]

@@ -1,9 +1,7 @@
-//! `mechanics/<id>/mechanic.toml`: what one step owns, reads and needs.
+//! A mechanic: what one step owns, reads and needs, as psx reads it from
+//! the mechanic's Rust crate (`mechanics/<id>/`, [`crate::rust::mechanic`]).
 
 use std::collections::BTreeMap;
-
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 use crate::interface::{Call, CallKind, Interface};
 
@@ -11,8 +9,7 @@ use crate::interface::{Call, CallKind, Interface};
 pub const STEP: &str = "step";
 use crate::value::{Field, Type, Value, is_id, is_name, parse_ref};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Mechanic {
     /// `<game>.<name>`, also the directory's name: `croc.walk`.
     pub id: String,
@@ -25,54 +22,43 @@ pub struct Mechanic {
     /// `exact` (the default): the port's step reproduces every field of every
     /// step. `faithful`: each step starts from the trace's state and is
     /// compared within `tolerance`.
-    #[serde(default)]
     pub exactness: Exactness,
     /// How often the original runs the step.
     pub rate: Rate,
     /// Interfaces the step calls, as `<id>@<version>`.
-    #[serde(default)]
     pub requires: Vec<String>,
     /// Mechanics whose steps run inside this one's, as `<id>@<version>`.
     /// Each is recorded as a call of its [`Mechanic::step_interface`].
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<String>,
     /// What the step owns and carries from one step to the next.
-    #[serde(default)]
     pub state: BTreeMap<String, Field>,
     /// What the step reads each step but does not own, as the step sees it.
-    #[serde(default)]
     pub inputs: BTreeMap<String, Field>,
     /// Constants for the length of a trace; the binding gives their values.
-    #[serde(default)]
     pub params: BTreeMap<String, Field>,
     /// `faithful` only: the largest difference allowed per state field, in
     /// raw units (int and fixed fields).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tolerance: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Exactness {
     #[default]
     Exact,
     Faithful,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Rate {
     /// `tick`: once per game tick; `vblank`: once per display refresh;
     /// `event`: when something happens (a button press, a hit).
     pub per: Per,
     /// Nominal steps per second (`tick` and `vblank`): 25 for a PAL game
     /// that ticks every second field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hz: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Per {
     Tick,
     Vblank,
@@ -88,10 +74,6 @@ pub struct Types {
 }
 
 impl Mechanic {
-    pub fn parse(text: &str) -> Result<Mechanic, String> {
-        toml::from_str(text).map_err(|e| e.message().to_string())
-    }
-
     /// The fields' types; problems go to `problems`, and the field is left out.
     pub fn types(&self, problems: &mut Vec<String>) -> Types {
         let mut out = Types::default();
@@ -134,7 +116,7 @@ impl Mechanic {
             _ => {}
         }
         for (what, refs, file) in
-            [("requires", &self.requires, "interfaces/{id}.toml"), ("uses", &self.uses, "mechanics/{id}/")]
+            [("requires", &self.requires, "interfaces/{id}/"), ("uses", &self.uses, "mechanics/{id}/")]
         {
             for (i, r) in refs.iter().enumerate() {
                 if refs[..i].contains(r) {
@@ -248,51 +230,62 @@ pub(crate) mod tests {
     use super::*;
 
     pub(crate) const WALK: &str = r#"
-id = "croc.walk"
-version = 1
-title = "Walking"
-summary = "Croc's speed closes on the stick's target each tick."
-rate = { per = "tick", hz = 25 }
-requires = ["world.floor-height@1"]
+//! Walking
+//!
+//! Croc's speed closes on the stick's target each tick.
 
-[state.speed]
-type = "fixed"
-signed = true
-int_bits = 20
-frac_bits = 12
-unit = "units/tick"
+pub const ID: &str = "croc.walk";
+pub const VERSION: u32 = 1;
+pub const RATE: &str = "tick";
+pub const RATE_HZ: u32 = 25;
+pub const REQUIRES: &[&str] = &["world.floor-height@1"];
 
-[state.mode]
-type = "enum"
-variants = ["idle", "walk"]
+/// Fixed point: 20 integer bits, 12 fraction bits.
+pub type Fx20_12 = i32;
 
-[inputs.forward]
-type = "bool"
+pub enum Mode {
+    Idle,
+    Walk,
+}
 
-[params.target]
-type = "int"
-bits = 16
-signed = false
+pub struct State {
+    /// Unit: units/tick
+    pub speed: Fx20_12,
+    pub mode: Mode,
+}
 
-[params.curve]
-type = "table"
-len = 2
-of = { type = "int", bits = 8, signed = false }
+pub struct Inputs {
+    pub forward: bool,
+}
+
+pub struct Params {
+    pub target: u16,
+    pub curve: [u8; 2],
+}
 "#;
+
+    /// The mechanic `lib` declares.
+    pub(crate) fn read(lib: &str) -> Mechanic {
+        let files = [(crate::rust::LIB.to_string(), lib.to_string())];
+        let c = crate::rust::Crate { cargo_toml: "[package]\nname = \"croc-walk\"\n", files: &files };
+        let (m, problems) = crate::rust::mechanic(&c).unwrap();
+        assert_eq!(problems, Vec::<String>::new());
+        m
+    }
 
     #[test]
     fn a_mechanic_checks_against_its_interfaces() {
-        let m = Mechanic::parse(WALK).unwrap();
-        let floor = Interface::parse(crate::interface::tests::FLOOR).unwrap();
+        let m = read(WALK);
+        let floor = crate::interface::tests::floor();
         assert_eq!(m.check(std::slice::from_ref(&floor)), Vec::<String>::new());
-        assert_eq!(m.check(&[]), vec!["requires: world.floor-height@1: no interfaces/world.floor-height.toml"]);
+        assert_eq!(m.check(&[]), vec!["requires: world.floor-height@1: no interfaces/world.floor-height/"]);
         assert_eq!(m.exactness, Exactness::Exact);
         assert_eq!(m.required(std::slice::from_ref(&floor)).len(), 1);
     }
 
     #[test]
     fn a_used_mechanic_is_called_as_its_step() {
-        let walk = Mechanic::parse(WALK).unwrap();
+        let walk = read(WALK);
         let mut tick = walk.clone();
         tick.id = "croc.tick".into();
         tick.requires.clear();
@@ -319,7 +312,7 @@ of = { type = "int", bits = 8, signed = false }
 
     #[test]
     fn problems_are_named() {
-        let mut m = Mechanic::parse(WALK).unwrap();
+        let mut m = read(WALK);
         m.requires.clear();
         m.rate.hz = None;
         m.inputs.insert("curve".into(), m.params["curve"].clone());
@@ -341,6 +334,5 @@ of = { type = "int", bits = 8, signed = false }
                 "tolerance.mode: a non-negative integer in raw units"
             ]
         );
-        assert!(Mechanic::parse(&WALK.replace("summary", "sumary")).is_err());
     }
 }

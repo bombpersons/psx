@@ -11,60 +11,106 @@ one step per tick.
 The files:
 
 - `crates/psx-mechanics`: the scenario file and recording formats, the
-  glossary's platform-free shape, their checks, and JSON Schemas in
-  `crates/psx-mechanics/schemas/`.
+  glossary read from its crate (`rust.rs`) and the generators for its
+  binding's glue and the port's `Observed`, their checks, and JSON Schemas
+  in `crates/psx-mechanics/schemas/`.
+- `crates/psx-capture`: the `Glossary` trait the glossary's binding
+  implements.
 - `crates/psx/src/scenario.rs`: `psx scenario record`, `psx scenario check`,
-  and the facts `port next` reads. The glossary's schema, with the R3000
-  locations, is `crates/psx/schemas/glossary.schema.json`.
-- The template's `psx_bevy::scenario`: the launcher and quantity registry
+  and the facts `port next` reads.
+- The template's `psx_bevy::scenario`: the launcher and observer registry
   and the runner, used by the game's `tests/scenarios.rs`.
 
-## 1. The glossary: `glossary.toml`
+## 1. The glossary: `glossary/`
 
 The glossary holds the names quantities go by, and where the original keeps
 them. A scenario compares quantities by name, never by how the port stores
-them.
+them. Like a mechanic it is two layers: the quantities, plain Rust in game
+terms, and their binding, a program that knows the PlayStation.
 
-```toml
-source = { platform = "psx", title = "Croc (Europe) SLES-00593", image_sha256 = "…" }
-# The logic step: the main loop's `accumulator -= 256` at the end of each step.
-tick = { at = 0x80075240, bytes = 4, pc = 0x80013CA8 }
-
-[quantities.croc_x]
-type = "int"
-bits = 32
-signed = true
-unit = "world units"
-description = "Croc's position across the level"
-
-[bindings.croc_x]   # the player object, through the pointer at 0x8007528C
-parts = [{ at = { pointer = 0x8007528C, offset = 0x370 }, bytes = 4 }]
-stored_signed = true
+```
+glossary/
+  Cargo.toml        # package glossary; no dependencies
+  src/lib.rs        # Quantities
+  binding/          # package glossary-binding, a cdylib: the tick and where each quantity is
 ```
 
-- **`source`** is the release, as in a binding. Recording refuses media with
-  another identity.
-- **`tick`** is the store that ends one step of the game's logic: a store of
-  `bytes` bytes to `at`, made by the instruction at `pc` when one is given.
-  The quantities are read right after it.
-  - **Bind the logic step, not the render loop.** Many games draw every
-    field but run their logic every second field, or draw as often as they
-    can. The loop's own counter then ticks at the drawing rate, and runs
-    unevenly when drawing falls behind. A logic quantity such as a position
-    changes only on the logic step.
-  - **How to find it.** Run `run --find-tick` while the player moves and
-    the scene is busy. The logic step's group stores at the logic rate even
-    when the drawing rate changes. Check that a compared quantity changes
-    only on that store, and pick a store at the end of the step.
-- **`quantities`** declare each quantity's type as mechanic fields do
-  (`int`, `fixed`, `bool`, `enum`, `float`; no tables, lists or records). They also give its
-  `unit` and a `description` in game terms.
-- **`bindings`** say where each quantity is, as a binding's `Read` does
-  (parts, mask, shift, `stored_signed`, `map`, `stored_frac_bits`). A part's
-  `at` is one of:
-  - `{ address }`: main RAM in any segment, or the scratchpad;
-  - `{ pointer, offset }`: the address held at `pointer`, plus `offset`,
-    read anew at every tick (an object found through a pointer).
+```rust
+//! Croc (Europe) SLES-00593: the quantities scenarios compare.
+
+pub struct Quantities {
+    /// Croc's position across the level
+    /// Unit: world units
+    pub croc_x: i32,
+    /// Croc stands on the ground; false through a jump
+    pub croc_on_ground: bool,
+}
+```
+
+- **`Quantities`** declares each quantity as a field: its type as a
+  mechanic's field's (`bool`, integers, fixed-point aliases, enums, floats;
+  no tables, lists or records), its description and `Unit: …` line in its
+  doc comment. The crate keeps to the mechanics' portable subset, with no
+  dependencies. The template seeds it empty.
+- **The binding**, `glossary/binding/`, is a plugin like a mechanic's
+  (mechanics.md, section 5), with the same `Cargo.toml` shape (it depends on
+  `glossary` and `psx-capture`, and its `build.rs` calls
+  `psx_mechanics::rust::write_glossary_glue("..")`):
+
+  ```rust
+  use glossary::Quantities;
+  use psx_capture::prelude::*;
+
+  mod glue {
+      include!(concat!(env!("OUT_DIR"), "/glue.rs"));
+  }
+
+  /// The player object, the pointer the camera code reads Croc through.
+  const PLAYER: u32 = 0x8007_528C;
+
+  struct Croc;
+
+  impl Glossary for Croc {
+      type Glue = glue::Glossary;
+      const TITLE: &str = "Croc (Europe) SLES-00593";
+      const IMAGE_SHA256: &str = "…";
+
+      /// The logic step: the main loop's `accumulator -= 256` at the end of each step.
+      fn tick(&self, t: &mut Tick) {
+          t.store(0x8007_5240, 4).by(0x8001_3CA8);
+      }
+
+      fn quantities(&self, m: &Machine) -> Quantities {
+          let croc = m.u32(PLAYER);
+          Quantities { croc_x: m.i32(croc + 0x370), croc_on_ground: m.u32(croc + 0x178) & 2 != 0 }
+      }
+  }
+
+  psx_capture::export_glossary!(Croc);
+  ```
+
+  - **`TITLE` and `IMAGE_SHA256`** are the release, as in a binding.
+    Recording refuses media with another identity.
+  - **`tick`** is the store that ends one step of the game's logic: a store
+    of `bytes` bytes to an address, made by the instruction at `by` when it
+    is given. The quantities are read right after it.
+  - **`quantities`** reads every quantity from the machine, anew at every
+    tick, so an object found through a pointer, a list walk or a value that
+    means something only while a flag is set is ordinary code. Only main
+    RAM and the scratchpad can be read; a read refused (a null pointer) is
+    the recording's refusal.
+  - **The glue** carries the glossary's fingerprint; psx refuses a binding
+    built from other quantities.
+- **Bind the logic step, not the render loop.** Many games draw every
+  field but run their logic every second field, or draw as often as they
+  can. The loop's own counter then ticks at the drawing rate, and runs
+  unevenly when drawing falls behind. A logic quantity such as a position
+  changes only on the logic step.
+- **How to find it.** Run `run --find-tick` while the player moves and the
+  scene is busy. The logic step's group stores at the logic rate even when
+  the drawing rate changes. Check that a compared quantity changes only on
+  that store, and pick a store at the end of the step.
+- `glossary.toml`, the earlier format, is no longer read.
 
 ## 2. Scenario files: `scenarios/<id>.toml`
 
@@ -105,8 +151,9 @@ level = "1-1"
 game on psx's native core. It starts from the scenario's state with the pad
 released until the first tick ends, then records N more fields holding the
 pad as given (the input's frames count from the field after that tick). It
-stops at each tick store and reads the compared quantities. Analog sticks are refused: the port's runner has digital
-buttons only.
+builds the glossary's binding, stops at each tick store and keeps the
+compared quantities. Analog sticks are refused: the port's runner has
+digital buttons only.
 
 ```json
 {"format": "scenario-recording", "format_version": 1, "scenario": "level_start",
@@ -156,37 +203,49 @@ recording again with the same input:
   same fields.
 - **Where the result goes.** The result is kept in `.psx/scenarios/<id>.json`
   with the sha256 of everything it judged: the scenario, its chain, the
-  glossary and the recordings. It counts only while those are unchanged.
+  glossary and its binding, and the recordings. It counts only while those
+  are unchanged.
 
 ## 5. In the port
 
-Each feature's plugin registers its launchers and getters
+The game's build generates `Observed` from the glossary (`game/build.rs`
+calls `psx_mechanics::rust::write_observed("../glossary")`; `game::observed`
+includes it): one `Option` per quantity, of its type in the glossary crate,
+in the original's raw units. Each feature's plugin registers its launchers,
+and a function that fills the quantities it keeps
 (`psx_bevy::scenario::ScenarioApp`):
 
 ```rust
+use crate::observed::Observed;
+
 app.register_scenario("level", |app, p| { /* build the level named p["level"] */ Ok(()) })
-    .register_quantity("croc_x", |w| w.query::<&Croc>().iter(w).next().map(|c| c.x));
+    .observe(|w: &mut World| Observed {
+        croc_x: w.query::<&Croc>().iter(w).next().map(|c| c.x),
+        ..Observed::none()
+    });
 ```
 
-A getter returns the quantity in the original's raw units, as a replay
-adapter's field does (`psx_bevy::replay::Field`). `None` means the port has
-no such thing now.
+- A misspelt or removed quantity is a compile error.
+- A quantity left `None` is one the port has no such thing for (yet); a
+  scenario that compares it fails at that tick and says so.
+- Several plugins may each observe their own quantities; one that two
+  observe is a failure.
 
 The game's `tests/scenarios.rs` gives the runner a function that makes a
 fresh headless app with the features' logic plugins. For each recording,
 the runner:
 
 1. makes an app and calls the scenario's launcher;
-2. compares the quantities with `initial`;
+2. compares the observed quantities with `initial`;
 3. runs one tick per line with the line's pad, and compares again.
 
 Each quantity's first tick out of tolerance is reported.
 
-`psx port check` runs that test with the replay test and writes each
-feature's scenario verdict. **A feature passes when:**
+`psx port check` runs that test and writes each feature's scenario verdict.
+**A feature passes when:**
 
 - it lists at least one scenario;
-- each scenario runs (its launcher and getters are registered);
+- each scenario runs (its launcher is registered);
 - each recording on disk runs with no quantity out of tolerance;
 - each scenario ran at least one captured recording.
 
@@ -200,10 +259,9 @@ feature's scenario verdict. **A feature passes when:**
 
   `port next` gives the Scenario item until they do, after Capture.
 - **Stage 3 (implemented)** holds when the last `port check` at HEAD shows a
-  launcher for each of the feature's scenario kinds, and a getter for each
-  quantity they compare.
-- **Stage 4 (verified)** needs the replay and scenario verdicts to pass at
-  HEAD.
+  launcher for each of the feature's scenario kinds, and each quantity they
+  compare observed in a scenario the port launched.
+- **Stage 4 (verified)** needs the scenario verdict to pass at HEAD.
 
 ## 7. Not yet
 

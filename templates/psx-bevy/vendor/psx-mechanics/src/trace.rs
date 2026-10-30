@@ -319,8 +319,8 @@ impl Trace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface::tests::FLOOR;
-    use crate::mechanic::tests::WALK;
+    use crate::interface::tests::floor;
+    use crate::mechanic::tests::{WALK, read};
     use crate::value::Value;
 
     const TRACE: &str = r#"{"format":"mechanic-trace","format_version":1,"mechanic":"croc.walk","mechanic_version":1,"source":{"kind":"captured","platform":"psx","image_sha256":"00"},"producer":{"name":"psx","version":"0.8.0"},"params":{"curve":[1,2],"target":35},"initial_state":{"mode":"idle","speed":0}}
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn a_trace_checks_and_expands() {
         let t = Trace::parse(TRACE).unwrap();
-        let (m, i) = (Mechanic::parse(WALK).unwrap(), [Interface::parse(FLOOR).unwrap()]);
+        let (m, i) = (read(WALK), [floor()]);
         assert_eq!(t.check(&m, &i), Vec::<String>::new());
         let full = t.expand();
         assert_eq!(full[1].inputs["forward"], Value::Bool(true));
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn problems_name_the_step_and_field() {
-        let (m, i) = (Mechanic::parse(WALK).unwrap(), [Interface::parse(FLOOR).unwrap()]);
+        let (m, i) = (read(WALK), [floor()]);
         let bad = TRACE
             .replace(r#"{"step":1,"state":{"speed":61}}"#, r#"{"step":1,"state":{"speed":61,"mood":1}}"#)
             .replace(r#""response":{"y":-5}"#, r#""response":{"y":-5000000000}"#)
@@ -366,17 +366,16 @@ mod tests {
 
     #[test]
     fn a_fields_change_under_the_same_version_is_refused() {
-        let (m, i) = (Mechanic::parse(WALK).unwrap(), [Interface::parse(FLOOR).unwrap()]);
+        let (m, i) = (read(WALK), [floor()]);
         let with = |f: &str| {
             TRACE.replacen(r#""mechanic_version":1,"#, &format!(r#""mechanic_version":1,"fingerprint":"{f}","#), 1)
         };
         assert_eq!(Trace::parse(&with(&m.fingerprint())).unwrap().check(&m, &i), Vec::<String>::new());
         // Rewording a unit or a title changes nothing that is fingerprinted.
-        let reworded =
-            Mechanic::parse(&WALK.replace("units/tick", "units per tick").replace("Walking", "Walk")).unwrap();
+        let reworded = read(&WALK.replace("units/tick", "units per tick").replace("Walking", "Walk"));
         assert_ne!(reworded, m);
         assert_eq!(reworded.fingerprint(), m.fingerprint());
-        let widened = Mechanic::parse(&WALK.replacen("int_bits = 20", "int_bits = 21", 1)).unwrap();
+        let widened = read(&WALK.replace("Fx20_12", "Fx21_11"));
         assert_ne!(widened.fingerprint(), m.fingerprint());
         let p = Trace::parse(&with("0000000000000000")).unwrap().check(&m, &i);
         assert_eq!(p.len(), 1, "{p:?}");

@@ -1,4 +1,6 @@
-//! `interfaces/<id>.toml`: the calls a mechanic makes to the world.
+//! An interface: the calls a mechanic makes to the world, as psx reads them
+//! from the interface's Rust crate (`interfaces/<id>/`,
+//! [`crate::rust::interface`]).
 
 use std::collections::BTreeMap;
 
@@ -7,31 +9,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::value::{Field, Type, is_id, is_name};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Interface {
-    /// Broad to narrow: `world.floor-height`; also the file's name.
+    /// Broad to narrow: `world.floor-height`; also the directory's name.
     pub id: String,
     /// Bumped on any change to the calls; mechanics require `<id>@<version>`.
     pub version: u32,
     pub title: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub calls: BTreeMap<String, Call>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Call {
     /// `query`: asks the world and gets a response. `command`: acts on the
     /// world, no response. Both are checked in order.
     pub kind: CallKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
     pub request: BTreeMap<String, Field>,
     /// Queries only.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub response: BTreeMap<String, Field>,
 }
 
@@ -51,10 +47,6 @@ pub struct CallTypes {
 }
 
 impl Interface {
-    pub fn parse(text: &str) -> Result<Interface, String> {
-        toml::from_str(text).map_err(|e| e.message().to_string())
-    }
-
     /// `<id>@<version>`, as mechanics and traces name it.
     pub fn reference(&self) -> String {
         format!("{}@{}", self.id, self.version)
@@ -116,24 +108,32 @@ pub(crate) mod tests {
     use super::*;
 
     pub(crate) const FLOOR: &str = r#"
-id = "world.floor-height"
-version = 1
-title = "Height of the floor under a point"
+//! Height of the floor under a point
 
-[calls.height]
-kind = "query"
-request.x = { type = "int", bits = 32, signed = true }
-request.z = { type = "int", bits = 32, signed = true }
-response.y = { type = "int", bits = 32, signed = true }
+pub const ID: &str = "world.floor-height";
+pub const VERSION: u32 = 1;
 
-[calls.splash]
-kind = "command"
-request.x = { type = "int", bits = 32, signed = true }
+pub struct Floor {
+    pub y: i32,
+}
+
+pub trait FloorHeight {
+    fn height(&mut self, x: i32, z: i32) -> Floor;
+    fn splash(&mut self, x: i32);
+}
 "#;
+
+    pub(crate) fn floor() -> Interface {
+        let files = [(crate::rust::LIB.to_string(), FLOOR.to_string())];
+        let c = crate::rust::Crate { cargo_toml: "[package]\nname = \"world-floor-height\"\n", files: &files };
+        let (i, problems) = crate::rust::interface(&c).unwrap();
+        assert_eq!(problems, Vec::<String>::new());
+        i
+    }
 
     #[test]
     fn calls_are_queries_or_commands() {
-        let i = Interface::parse(FLOOR).unwrap();
+        let i = floor();
         assert_eq!(i.check(), Vec::<String>::new());
         assert_eq!(i.reference(), "world.floor-height@1");
         let mut bad = i.clone();

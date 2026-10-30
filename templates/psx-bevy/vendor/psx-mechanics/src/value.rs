@@ -11,7 +11,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-/// A field's declared type, as written in `mechanic.toml` and interfaces.
+/// A field's declared type, as read from a mechanic, interface or glossary crate.
 /// Which keys apply depends on `type`; [`Field::ty`] checks them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

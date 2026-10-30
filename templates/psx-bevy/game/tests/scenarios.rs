@@ -6,8 +6,8 @@
 //! feature.
 //!
 //! `app` makes a fresh headless app with each feature's logic plugin: they
-//! register the launchers for their scenario kinds and the getters for
-//! their quantities (`ScenarioApp`).
+//! register the launchers for their scenario kinds and observe their
+//! quantities (`ScenarioApp`).
 use bevy::prelude::*;
 use psx_bevy::scenario::Scenarios;
 use psx_bevy::testing::headless_app;

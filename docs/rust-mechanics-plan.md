@@ -1,6 +1,6 @@
 # Plan: mechanics and bindings as Rust
 
-Status: agreed. R2, R3 and R4 are done (section 11); R5 is next.
+Status: agreed. R2 to R5 are done (section 11); R6 is next.
 
 The mechanic formats (`docs/mechanics.md`) describe a step in TOML: typed
 fields in `mechanic.toml`, and where the PlayStation keeps them in
@@ -540,3 +540,21 @@ interfaces, Croc's fields and script variables, and the port.
    recording a scenario recording and mechanic coverage linked to them
    (section 7). The port does not link or adapt to the mechanics; how it
    merges or splits them is the porter's choice.
+5. ~~**Interfaces as Rust.**~~ Settled (R5): one trait per interface crate.
+   A method's arguments are the request; what it returns is the response,
+   the fields of a struct of the crate or else one field `value`; a method
+   returning nothing is a command. Traces captured under the TOML
+   interfaces keep their shape.
+6. ~~**How a binding reads calls.**~~ Settled (R5): typed, from the glue.
+   The binding's `build.rs` generates a marker per call from the interface
+   (`glue::floor_slope::SlopeX`), and the binding declares it in `bracket`
+   with a site and a function for the request and for the response
+   (`b.query::<SlopeX>(Site::load(pc), |_| (), |m| …)`), so a wrong type
+   is a compile error.
+7. ~~**Used mechanics.**~~ Settled (R5): a used mechanic's step is recorded
+   through that mechanic's own binding (its `is_step` at its begin, its
+   inputs and state as the request, its state on return as the response);
+   the using binding declares nothing for it.
+8. ~~**Steps in R5.**~~ Settled: `croc.ground-move` and `croc.tick` were
+   converted with their types and bindings only; writing their steps, and
+   replaying a step that makes calls, is pilot work after R7.

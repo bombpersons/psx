@@ -117,7 +117,6 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "game/tests/cases/demo_hop_walk.csv",
     "game/tests/cases/demo_hop_walk.json",
     "game/tests/dev_mcp.rs",
-    "game/tests/mechanics.rs",
     "game/tests/scenarios.rs",
     "game/tests/disc.rs",
     "game/tests/player.rs",
@@ -154,7 +153,6 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "psx-bevy/src/psx/shaders/psx_material2d.wesl",
     "psx-bevy/src/psx/shaders/psx_screen.wesl",
     "psx-bevy/src/psx/shaders/psx_sprite.wesl",
-    "psx-bevy/src/replay.rs",
     "psx-bevy/src/scenario.rs",
     "psx-bevy/src/settings.rs",
     "psx-bevy/src/shell.rs",
@@ -205,10 +203,10 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "vendor/psx-capture/src/abi.rs",
     "vendor/psx-capture/src/lib.rs",
     "vendor/psx-mechanics/Cargo.toml",
-    "vendor/psx-mechanics/src/binding.rs",
     "vendor/psx-mechanics/src/interface.rs",
     "vendor/psx-mechanics/src/lib.rs",
     "vendor/psx-mechanics/src/mechanic.rs",
+    "vendor/psx-mechanics/src/release.rs",
     "vendor/psx-mechanics/src/replay.rs",
     "vendor/psx-mechanics/src/rust.rs",
     "vendor/psx-mechanics/src/scenario.rs",
@@ -683,6 +681,17 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
             seeded_changes.push(json!({"path": rel, "template_version": copy}));
         }
     }
+    // Seeded files the template no longer has: the project decides.
+    let dropped: Vec<String> =
+        manifest.seeded.keys().filter(|rel| !files.iter().any(|(r, _)| r == rel)).cloned().collect();
+    for rel in dropped {
+        if dest.join(&rel).exists() {
+            seeded_changes.push(json!({"path": rel, "removed_upstream": true}));
+        }
+        if !dry_run {
+            manifest.seeded.remove(&rel);
+        }
+    }
 
     let from = std::mem::replace(&mut manifest.psx, psx_version());
     if !dry_run {
@@ -705,7 +714,7 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
             json!([
                 "merge each conflict's new_version into its path, keeping the project's changes (docs/template.md lists them), then delete the .psx-new file",
                 "a removed_upstream conflict is a file the template dropped: keep it as the project's or delete it",
-                "compare each seeded change's template_version with your file and apply what applies",
+                "compare each seeded change's template_version with your file and apply what applies; a seeded change with removed_upstream is a file the template no longer seeds: delete it unless the project uses it",
                 "cargo test --workspace --all-features",
             ])
         },
@@ -849,6 +858,8 @@ mod tests {
             manifest.owned.insert(rel.into(), sha256(old));
         }
         manifest.seeded.insert("game/src/demo/spinner.rs".into(), sha256(old));
+        manifest.seeded.insert("game/tests/retired.rs".into(), sha256(old));
+        std::fs::write(dir.join("game/tests/retired.rs"), old).unwrap();
         manifest.owned.insert("vendor/psx-media/src/retired.rs".into(), sha256(old));
         std::fs::write(dir.join("vendor/psx-media/src/retired.rs"), old).unwrap();
         manifest.write(&dir).unwrap();
@@ -867,6 +878,8 @@ mod tests {
         assert_eq!(out["removed"], json!(["vendor/psx-media/src/retired.rs"]));
         assert_eq!(out["conflicts"][0]["path"], tim);
         assert_eq!(out["seeded_changes"][0]["path"], "game/src/demo/spinner.rs");
+        assert_eq!(out["seeded_changes"][1], json!({"path": "game/tests/retired.rs", "removed_upstream": true}));
+        assert!(dir.join("game/tests/retired.rs").exists(), "a seeded file is the project's to delete");
         assert_eq!(std::fs::read_to_string(dir.join(tim)).unwrap(), "// local edit\n");
         assert!(dir.join(format!("{tim}.psx-new")).exists());
         assert_eq!(

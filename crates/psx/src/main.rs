@@ -227,15 +227,15 @@ enum PortAction {
     /// The one item due now: what, for which feature, why, and the fact that will show it done.
     /// An agent item handed out three times with nothing changed is reported as stuck instead.
     Next(port::PortNextArgs),
-    /// Replay the features' mechanics against the port (the game's tests/mechanics.rs) and
-    /// write their replay verdicts for HEAD, which must have no uncommitted changes.
+    /// Run the features' scenarios against the port (the game's tests/scenarios.rs) and
+    /// write their scenario verdicts for HEAD, which must have no uncommitted changes.
     Check(port::PortCheckArgs),
 }
 
 #[derive(clap::Subcommand)]
 enum MechanicAction {
-    /// Check the interfaces, and a mechanic's (or every mechanic's) mechanic
-    /// (mechanic.toml or its Rust crate), binding.toml and traces.
+    /// Check the interfaces, and a mechanic's (or every mechanic's) crate, binding and
+    /// traces.
     Check(mechanic::MechanicCheckArgs),
     /// Run the game from a state with input, bracket the mechanic's step as its binding
     /// says, and write traces/<NAME>.trace.jsonl: one line per step.

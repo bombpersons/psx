@@ -1,23 +1,25 @@
-//! The formats for porting by mechanics: `mechanic.toml`, interfaces,
-//! `binding.toml` and traces, and for scenarios: `glossary.toml`, scenario
-//! files and their recordings, with their checks and JSON Schemas.
+//! The formats for porting by mechanics: mechanics, interfaces and the
+//! glossary written as Rust (read by [`rust`]), traces, scenario files and
+//! their recordings, with their checks and the JSON Schemas of the files
+//! that are not Rust; and the replay of traces through a mechanic's step
+//! ([`replay`]).
 //!
-//! This is the platform-free side. A producer (psx for the PlayStation)
-//! supplies the binding's vocabulary through [`binding::Platform`]. The
-//! formats are defined in psx's `docs/mechanics.md`.
+//! This is the platform-free side: what a binding reads on the PlayStation
+//! is psx's. The formats are defined in psx's `docs/mechanics.md` and
+//! `docs/scenarios.md`.
 
-pub mod binding;
 pub mod interface;
 pub mod mechanic;
+pub mod release;
 pub mod replay;
 pub mod rust;
 pub mod scenario;
 pub mod trace;
 pub mod value;
 
-pub use binding::{Binding, BindingFor, Platform};
 pub use interface::Interface;
 pub use mechanic::Mechanic;
+pub use release::Release;
 pub use scenario::{Glossary, Recording, Scenario};
 pub use trace::Trace;
 pub use value::{Field, Type, Value, Values};
@@ -25,8 +27,6 @@ pub use value::{Field, Type, Value, Values};
 /// The JSON Schemas of the platform-free files, by file name.
 pub fn schemas() -> Vec<(&'static str, serde_json::Value)> {
     vec![
-        ("mechanic.schema.json", schema::<Mechanic>("mechanic.toml")),
-        ("interface.schema.json", schema::<Interface>("interfaces/<id>.toml")),
         ("trace-header.schema.json", schema::<trace::Header>("the first line of a *.trace.jsonl")),
         ("trace-step.schema.json", schema::<trace::Step>("each later line of a *.trace.jsonl")),
         ("scenario.schema.json", schema::<Scenario>("scenarios/<id>.toml")),

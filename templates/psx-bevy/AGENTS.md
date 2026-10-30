@@ -21,9 +21,12 @@ format. psx writes `.psx/verdicts/`; never edit them.
 ```
 game/          the port: one plugin per feature, its assets/ and tests/ (game/AGENTS.md)
 tools/import/  importers: the player's disc -> the port's asset formats
-replay/        step replay of the mechanics written as Rust (mechanics/<id>/) against their traces: cargo test -p replay
-psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte), step replay, scenarios and launcher; yours to change (psx-bevy/AGENTS.md)
-vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-mechanics (trace and scenario formats); don't edit (fix upstream in psx)
+mechanics/     each mechanic of the original: its crate (types and step, plain Rust), binding/ (a plugin psx capture loads) and traces/ (docs/mechanics.md in psx)
+interfaces/    the calls mechanics make to the world: one trait per crate
+replay/        every mechanic's step run against its traces: cargo test -p replay
+glossary/      the quantities scenarios compare, and binding/, where the original keeps them (docs/scenarios.md in psx)
+psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte), scenarios and launcher; yours to change (psx-bevy/AGENTS.md)
+vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-mechanics (the formats, replay and generated glue), psx-capture (the binding API); don't edit (fix upstream in psx)
 docs/          template.md: your changes to psx-bevy/
 ```
 
@@ -37,21 +40,23 @@ docs/          template.md: your changes to psx-bevy/
   reads logic's state. Rules the original ties to the screen ("wakes when on
   screen", HUD layout) are defined against its 4:3 view; `PsxAspect` widens
   what is shown and `PsxAnchor` anchors the HUD.
-- **Mechanics are pure steps:** a function of the state, inputs, params and
-  world, called from a system that adapts components to it. The world is a
-  trait the feature implements over the port's resources. The same function
-  replays the original's traces (`mechanics/<id>/traces/`): each mechanic has
-  an adapter in `game/tests/mechanics.rs` (`psx_bevy::replay` has an
-  example) that moves trace fields to the port's types and answers the
-  world's calls from the trace. `psx port check` runs it for the verdicts;
-  `cargo test -p <game> --test mechanics` while working.
-- **Scenarios are the integration test.** A feature's plugin registers a
+- **Mechanics are the reference; the port is a translation.** Each
+  mechanic's `step` (`mechanics/<id>/src/lib.rs`) is the rule in plain Rust,
+  proven against the original's traces (`cargo test -p replay`). Translate
+  it into the feature's systems over components and resources: split it,
+  use events where the original sets flags, keep a field where it belongs.
+  Its interfaces' calls become the port's own queries of its world. The
+  port does not link the mechanic crates (a quick prototype may).
+- **Scenarios are the port's test.** A feature's plugin registers a
   launcher for each of its scenario kinds, which builds the world from the
-  scenario's parameters with the port's own loading, and a getter for each
-  glossary quantity it keeps, in the original's raw units
-  (`psx_bevy::scenario`). `game/tests/scenarios.rs` replays each recording
-  of the original (`scenarios/<id>/`) tick by tick with its pad; add each
-  feature's logic plugin to its `app`.
+  scenario's parameters with the port's own loading, and observes the
+  glossary quantities it keeps: `app.observe(|w: &mut World| Observed {
+  croc_x: …, ..Observed::none() })`, in the original's raw units
+  (`game::observed`, generated from `glossary/`; `psx_bevy::scenario`).
+  `game/tests/scenarios.rs` replays each recording of the original
+  (`scenarios/<id>/`) tick by tick with its pad; add each feature's logic
+  plugin to its `app`. `psx port check` runs it for the verdicts; `cargo
+  test -p <game> --test scenarios` while working.
 - **States are enums** with each state's data in its variant; transitions
   are assignments. No state bytes, function tables, or a CPU-like main loop.
 - **Rules apart from content.** Tuning, setup and content are assets with a
@@ -68,12 +73,13 @@ sentence and implement that sentence. Croc's walk code (0x80043234) is
 `v = v - (v >> 2) + target` with `target = 35 << 12`: "close a quarter of the
 gap to four times the target each tick", which settles at 140 units/tick.
 
-Exact mechanics are written once, generic over a `Mode` (`psx_bevy::num`).
-`Num<M, W, F>` is a number the original stores in word `W` with `F`
-fraction bits. The port runs the mechanic with `Exact`, where it is
-`Fixed<W, F>` and computes as the original's compiled C does: `a * b` is
-`(a * b) >> F` on the low 32 bits of the product, `a / b` truncates, and
-results wrap at `W`. A new game can run the same code with `Float` (`f32`).
+The port chooses its own number types, held to the scenarios' tolerances.
+Where a feature is exact, keep the original's arithmetic with
+`psx_bevy::num`: `Num<M, W, F>` is a number the original stores in word `W`
+with `F` fraction bits. In `Exact` it is `Fixed<W, F>` and computes as the
+original's compiled C does: `a * b` is `(a * b) >> F` on the low 32 bits of
+the product, `a / b` truncates, and results wrap at `W`. Code generic over
+the `Mode` can also run with `Float` (`f32`).
 
 ```rust
 use psx_bevy::prelude::*;

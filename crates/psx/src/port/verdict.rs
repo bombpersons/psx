@@ -11,8 +11,6 @@ use serde::{Deserialize, Serialize};
 /// What a verdict judged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
-    /// The feature's mechanics replayed against their traces.
-    Replay,
     /// The feature's scenarios compared with the original's.
     Scenario,
     /// The feature's sandbox, run headless on hand-made assets.
@@ -20,11 +18,10 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 3] = [Kind::Replay, Kind::Scenario, Kind::Sandbox];
+    pub const ALL: [Kind; 2] = [Kind::Scenario, Kind::Sandbox];
 
     pub fn name(self) -> &'static str {
         match self {
-            Kind::Replay => "replay",
             Kind::Scenario => "scenario",
             Kind::Sandbox => "sandbox",
         }
@@ -42,8 +39,7 @@ pub struct Verdict {
     pub clean: bool,
     pub at: String,
     pub passed: bool,
-    /// One line per failure: the mechanic, step and field, or the scenario,
-    /// tick and quantity.
+    /// One line per failure: the scenario, tick and quantity.
     #[serde(default)]
     pub failures: Vec<String>,
 }

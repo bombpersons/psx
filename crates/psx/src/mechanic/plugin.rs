@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 
 use psx_capture::abi;
 use psx_core::cpu::MemAccess;
-use psx_mechanics::binding::Source;
+use psx_mechanics::Release;
 use psx_mechanics::{Interface, Mechanic, Type, Values};
 use serde_json::json;
 
@@ -90,7 +90,7 @@ pub struct Described {
     mechanic: String,
     mechanic_version: u32,
     fingerprint: String,
-    source: Source,
+    source: Release,
     capture: Capture,
 }
 
@@ -265,7 +265,7 @@ impl Plugin {
     }
 
     /// The release it binds.
-    pub fn source(&self) -> &Source {
+    pub fn source(&self) -> &Release {
         &self.described.source
     }
 

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use psx_core::Machine;
-use psx_mechanics::binding::Source as Release;
+use psx_mechanics::Release;
 use psx_mechanics::scenario::{self as format, Full, Header, Recording, Scenario};
 use psx_mechanics::trace::{Producer, Source, SourceKind};
 use psx_mechanics::{Glossary, Type, Values};

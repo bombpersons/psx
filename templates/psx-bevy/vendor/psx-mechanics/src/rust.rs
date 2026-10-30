@@ -1,8 +1,10 @@
-//! Mechanics written as Rust (docs/rust-mechanics-plan.md, section 3): a
-//! crate of plain, dependency-free Rust whose header constants, crate
-//! documentation and `State`, `Inputs` and `Params` structs declare what
-//! `mechanic.toml` declares. It is read from source, without building it,
-//! into the same [`Mechanic`], and held to a portable subset of Rust.
+//! Mechanics, interfaces and the glossary written as Rust
+//! (docs/mechanics.md, docs/scenarios.md): crates of plain, dependency-free
+//! Rust whose header constants, crate documentation, structs and traits
+//! declare them. They are read from source, without building them, into
+//! [`Mechanic`], [`Interface`] and [`Glossary`], and held to a portable
+//! subset of Rust. The glue a binding, the replay crate and the port need
+//! is generated from the same source, in their `build.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -769,7 +771,7 @@ pub fn write_replay(workspace: impl AsRef<std::path::Path>) {
             if dir.join("mechanic.toml").is_file() {
                 entries.push(entry(format!(
                     "psx_mechanics::replay::Replayer::Skipped({:?})",
-                    "written as mechanic.toml, which has no step"
+                    "mechanic.toml is no longer read: write the mechanic as Rust"
                 )));
             }
             continue;
