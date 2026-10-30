@@ -73,6 +73,7 @@ the behaviour is the same, however the port implements it.
 | Glossary | named quantities, and the binding that reads them from the original | `glossary/` |
 | Scenario | a place to start (a state) and what is compared there, with tolerances | `scenarios/<id>.toml` |
 | Recording | the original's quantities per tick for one input, scripted or played | `scenarios/<id>/<name>.jsonl` |
+| Review | findings on a feature's code by someone who did not write it, each answered | `reviews/<id>.md` |
 | Verdict | psx's result of the port against one recording: pass, or the first tick and quantity that differ | `.psx/verdicts/` |
 | Format | a disc file's format, read by an importer | `formats/<id>.md`, `tools/import` |
 
@@ -121,11 +122,41 @@ game never loads it).
 | Located | its code is found |
 | Recorded | it has recordings |
 | Matching | every working recording passes |
-| Done | its held-out recordings pass, every branch of its code is covered by a recording or marked won't-reach, and no question is open |
+| Reviewed | matching, every branch of its code covered by a recording or marked won't-reach, no question open, and its code reviewed by someone who did not write it, with every finding answered |
+| Done | reviewed, and its held-out recordings pass |
 
 Coverage is the union of what the original ran across a feature's
 recordings, within the feature's code. "Done" needs every branch resolved,
 not a percentage, so the uncovered ones always say what to record next.
+
+### The review
+
+The recordings check behaviour, not shape: a line-by-line transliteration
+of the assembly passes them as well as a rewrite into rules. The agent
+that wrote a feature, fresh from its disassembly, is the worst judge of
+whether the code reads as rules, so someone who has not seen that work
+reads it: a sub-agent or a new session, given the brief `port next` prints.
+The reviewer reads the feature's catalogue entry, its code and how it sits
+in the rest of the game (duplication with other features, something that
+belongs shared), but not the disassembly, and judges it against the
+workspace's AGENTS.md. Its findings go in `reviews/<id>.md`:
+
+```markdown
+---
+commit: 3f2a91c
+files: [game/src/croc/jump.rs, game/src/croc/mod.rs]
+---
+## Stomp is a bool beside the jump state
+`stomping: bool` lives next to `JumpState`; a stomp is a state of the jump.
+**Answer:** fixed in 7c01d2e: `JumpState::Stomp { hang }`.
+
+## One system per original routine
+...
+```
+
+The writer answers every finding: fixed, or kept and why. The review
+holds while its files are unchanged since its commit; a change to them
+asks for another.
 
 ### `port status`
 
@@ -155,8 +186,11 @@ One item, in this order:
 5. An uncovered branch: a recording that reaches it, phrased as what to do
    ("jump, and let go of CROSS once the rise eases"). The agent records it
    when it can script it; otherwise it is the person's.
-6. A matching feature without held-out recordings: the person's.
-7. Assets: an unknown file, then an importer not yet checked.
+6. A feature whose own work is finished (matching, branches resolved, no
+   question open) without a current review: the review's brief, or the
+   unanswered findings.
+7. A reviewed feature without held-out recordings: the person's.
+8. Assets: an unknown file, then an importer not yet checked.
 
 Items for the person (**Play**, **Confirm**) stop the agent until the
 person answers. When `port next` has nothing left, the goal is done.
@@ -186,5 +220,7 @@ traces, replay, audits, interfaces) and cases go.
    (covered or won't-reach), not at a coverage threshold.
 2. Mechanics are removed from psx. The exact Rust already written for Croc
    stays in that workspace's folders; nothing further is planned for it.
+3. A feature's code is reviewed by someone who did not write it before it
+   is done; its own author's self-review is not enough.
 
 The work to get there is in [recordings-plan.md](recordings-plan.md).

@@ -75,10 +75,13 @@ mechanic code are worth keeping, so they move out first.
 14. **The catalogue entry** (port-design.md, section 3): `code`,
     `recordings.work`/`held_out`, `wont_reach` and `questions`, checked by
     `port confirm`; scenario tolerances per quantity.
-15. **`port status`**: stages, verdicts, branch coverage per feature, open
-    questions, and the asset files by state.
+15. **`port status`**: stages (with Reviewed), verdicts, branch coverage
+    per feature, open questions, reviews, and the asset files by state.
+    A review (`reviews/<id>.md`) holds while its files are unchanged since
+    its commit and every finding has an answer.
 16. **`port next`**: one item in the order of section 5; Play and Confirm
-    items for the person.
+    items for the person; the Review item's brief for a reviewer who has
+    not seen the work.
 17. **The asset inventory**: each disc file unknown, format found,
     imported, checked or unused, from `formats/` and the importers' tests,
     feeding status and next.
