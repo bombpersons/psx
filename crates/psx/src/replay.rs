@@ -92,10 +92,6 @@ pub const INLINE_EVENT_LIMIT: usize = 10_000;
 pub const FILE_EVENT_LIMIT: usize = 1_000_000;
 const FILE_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
 
-pub fn load(path: &std::path::Path) -> Result<Vec<Input>, String> {
-    resolve(Some(path), None, u64::MAX)
-}
-
 pub fn resolve(path: Option<&std::path::Path>, inline: Option<&Events>, frames: u64) -> Result<Vec<Input>, String> {
     if path.is_some() && inline.is_some() {
         return Err("input and replay are mutually exclusive".into());

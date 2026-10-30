@@ -131,9 +131,6 @@ enum Command {
     Xa(xa_cmd::XaArgs),
     /// Decode an STR movie (MDEC BS v1/v2/v3) into PNG frames, audio.wav and summary.json.
     Str(str_cmd::StrArgs),
-    /// Emulator diagnostics: run the native core from power-on for N frames and report
-    /// how far it got and which hardware it is missing. For game RE use `run`.
-    Native(native::NativeArgs),
     /// Serve every command above as an MCP tool over stdin/stdout (start it in the project root).
     Mcp(mcp::McpArgs),
 }
@@ -309,7 +306,6 @@ fn main() -> ExitCode {
         Command::Xa(a) => a.exec(&ctx),
         Command::Str(a) => a.exec(&ctx),
         Command::Run(a) => a.exec(&ctx),
-        Command::Native(a) => a.exec(&ctx),
         Command::Ram { action } => action.exec(&ctx),
         Command::Scenario { action } => match action {
             ScenarioAction::Record(a) => a.exec(&ctx),

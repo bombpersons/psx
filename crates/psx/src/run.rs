@@ -116,6 +116,31 @@ pub struct RunCmdArgs {
     #[command(flatten)]
     #[serde(flatten)]
     pub observe: ObserveArgs,
+    /// psx development: boot the native core from power-on and report how far it got and
+    /// what hardware it is missing (final PC, CD history, SPU state, unhandled I/O, hot PCs,
+    /// speed) instead of a capture. Uses media (a disc), bios, frames, input/replay, pad,
+    /// timeout, out, audio, snapshot_every and one --watch address. Not for game investigation.
+    #[arg(long)]
+    #[serde(default)]
+    pub diagnose: bool,
+    /// With --diagnose: stop when the PC reaches this hex address and report the last --tail
+    /// instructions, the registers and recent DMA.
+    #[arg(long = "break", requires = "diagnose")]
+    #[serde(default, rename = "break")]
+    pub brk: Option<String>,
+    /// With --diagnose --break: instructions of history kept (default 48).
+    #[arg(long, requires = "diagnose")]
+    #[serde(default)]
+    pub tail: Option<usize>,
+    /// With --diagnose: instruction budget.
+    #[arg(long, requires = "diagnose")]
+    #[serde(default)]
+    pub max_steps: Option<u64>,
+    /// With --diagnose and one --watch address: record its changes (the first 32) from this
+    /// frame on, with the instruction that made each.
+    #[arg(long, requires = "diagnose")]
+    #[serde(default)]
+    pub watch_after: Option<u64>,
     /// Print a short summary (status, frames, files, samples, pokes); the full
     /// report is always written to <run_dir>/report.json.
     #[arg(long)]
@@ -157,11 +182,15 @@ impl RunCmdArgs {
             a.save_state = true;
         }
         let save_as = a.save_as.take().map(|n| (n, a.description.take().unwrap_or_default(), a.replace));
-        let resolved = crate::context::resolve(&ctx.root, a.media, a.bios, a.from_state.as_deref(), false)?;
+        let resolved =
+            crate::context::resolve(&ctx.root, a.media.take(), a.bios.take(), a.from_state.as_deref(), false)?;
         if let Some(e) = resolved.setup_error() {
             return Err(e);
         }
         let bios = resolved.bios.unwrap();
+        if a.diagnose {
+            return diagnose(ctx, a, &bios, resolved.media.as_deref());
+        }
         let (short, summarise) = (a.brief, a.summary);
         let loads = a.trace_cd.then(|| (resolved.media.clone(), a.symbols.clone()));
         let (mut complete, mut value) = run(
@@ -471,6 +500,58 @@ pub fn run(root: &Path, a: RunArgs) -> crate::Result<(bool, Value)> {
 }
 
 /// The `--brief` view of a run report.
+/// `--diagnose`: native's report from power-on, in a run directory.
+fn diagnose(ctx: &Ctx, a: RunCmdArgs, bios: &Path, media: Option<&Path>) -> crate::Result<(bool, Value)> {
+    if a.from_state.is_some() {
+        return Err(Error::invalid("diagnose boots from power-on: leave out from_state"));
+    }
+    if let Some(m) = media {
+        psx_media::disc::Disc::open(m)
+            .map_err(|e| Error::invalid(format!("diagnose boots a disc or the BIOS: {e}")))?;
+    }
+    let hex = |s: &str, what: &str| {
+        psx_media::memmap::parse_hex(s).ok_or_else(|| Error::invalid(format!("bad {what} {s:?} (hex)")))
+    };
+    let watch = match a.watches.as_slice() {
+        [] => None,
+        [w] => Some(hex(w.split(':').next().unwrap_or(w), "watch")?),
+        _ => return Err(Error::invalid("diagnose watches one address")),
+    };
+    let brk = a.brk.as_deref().map(|b| hex(b, "break")).transpose()?;
+    let events =
+        crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64).map_err(Error::invalid)?;
+    let dir = a
+        .out
+        .map(|o| ctx.root.join(o))
+        .unwrap_or_else(|| ctx.root.join(".psx/runs").join(format!("{}-diagnose", crate::stamp())));
+    std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+    let dump = dir.join("diagnose");
+    let wav = a.audio.then(|| dir.join("audio.wav"));
+    let (ok, mut v) = crate::native::run(crate::native::Options {
+        bios,
+        disc: media,
+        frames: a.frames as u64,
+        max_steps: a.max_steps.unwrap_or_else(crate::native::d_max_steps),
+        dump: Some(&dump),
+        brk,
+        tail: a.tail.unwrap_or_else(crate::native::d_tail),
+        watch,
+        watch_after: a.watch_after.unwrap_or(0),
+        events,
+        snapshot_every: a.observe.snapshot_every,
+        wav: wav.as_deref(),
+        pad: a.cards.pad.as_deref().unwrap_or("digital"),
+        deadline: Some(std::time::Instant::now() + std::time::Duration::from_secs(a.timeout)),
+    })?;
+    v["run_dir"] = json!(dir);
+    v["screen"] = v["dump"]["screen"].clone();
+    v["build"] = crate::context::build();
+    let report = dir.join("report.json");
+    v["report"] = json!(report);
+    let _ = std::fs::write(&report, serde_json::to_vec_pretty(&v).unwrap_or_default());
+    Ok((ok, v))
+}
+
 /// `--trace-cd`'s loads: each CD transfer as disc file and offset to RAM,
 /// verified against the run's final RAM, in loads.json; counts in the report.
 fn decode_loads(dir: &Path, media: Option<&Path>, symbols: &[PathBuf]) -> Value {

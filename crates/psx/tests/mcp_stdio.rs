@@ -1281,7 +1281,6 @@ fn mcp_tools_match_cli() {
         "ghidra_export_symbols",
         "xa",
         "str",
-        "native",
     ];
     want.sort_unstable();
     assert_eq!(names, want);
@@ -1350,9 +1349,9 @@ fn mcp_tools_match_cli() {
             vec!["assets", "diff", "vram.bin", "vram.bin", "--samples", "2"],
         ),
         (
-            "native",
-            json!({"bios": "no-such-bios.bin", "frames": 1}),
-            vec!["native", "--bios", "no-such-bios.bin", "--frames", "1"],
+            "run",
+            json!({"bios": "no-such-bios.bin", "frames": 1, "diagnose": true}),
+            vec!["run", "--bios", "no-such-bios.bin", "--frames", "1", "--diagnose"],
         ),
         (
             "run",

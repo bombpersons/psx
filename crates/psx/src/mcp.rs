@@ -5,9 +5,8 @@
 //! carries only the protocol; diagnostics go to stderr.
 //!
 //! Differences from the CLI, all MCP-only:
-//! - `return_screen: true` on `run`/`native` attaches the final screen as an
-//!   image content block (`native` then picks a `dump` prefix if none was given).
-//! - `native` gets a default `timeout` (seconds) when none is given.
+//! - `return_screen: true` on `run` (and a few others) attaches the final
+//!   screen as an image content block.
 //! - Every call has a hard wall-clock cap (its `timeout` + 60 s, or 15 minutes).
 //!   A job that overruns it is reported as `timeout` and left to finish in the
 //!   background, except supervised Ghidra workers, which are stopped.
@@ -56,8 +55,6 @@ const ARGS_LIMIT: usize = 1024 * 1024;
 const DEFAULT_CAP: Duration = Duration::from_secs(15 * 60);
 /// Extra time past a tool's own `timeout` before the call is abandoned.
 const GRACE: Duration = Duration::from_secs(60);
-/// Default `timeout` for tools whose CLI default is unlimited.
-const DEFAULT_TIMEOUT_S: u64 = 300;
 /// Largest screen PNG returned inline.
 const IMAGE_LIMIT: u64 = 4 * 1024 * 1024;
 
@@ -70,8 +67,6 @@ pub struct ToolDef {
     heavy: bool,
     /// Only reads its inputs (writes nothing).
     read_only: bool,
-    /// Gets [`DEFAULT_TIMEOUT_S`] when `timeout` is omitted.
-    default_timeout: bool,
     /// Accepts `return_screen`.
     screen: bool,
 }
@@ -119,7 +114,6 @@ const fn def<A: Op>(name: &'static str, description: &'static str) -> ToolDef {
         call: call_op::<A>,
         heavy: false,
         read_only: false,
-        default_timeout: false,
         screen: false,
     }
 }
@@ -131,10 +125,6 @@ impl ToolDef {
     }
     const fn read_only(mut self) -> Self {
         self.read_only = true;
-        self
-    }
-    const fn default_timeout(mut self) -> Self {
-        self.default_timeout = true;
         self
     }
     const fn screen(mut self) -> Self {
@@ -152,13 +142,6 @@ impl ToolDef {
                 "type": "boolean", "default": false,
                 "description": "MCP only: also return the final screen PNG as image content (a few tens of KB).",
             });
-        }
-        if self.default_timeout {
-            if let Some(t) = s["properties"].get_mut("timeout") {
-                t["description"] = json!(format!(
-                    "Wall-clock limit in seconds; the job stops with status \"timeout\". Default over MCP: {DEFAULT_TIMEOUT_S}."
-                ));
-            }
         }
         s
     }
@@ -209,7 +192,6 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::ghidra::ExportArgs>("ghidra_export_symbols", "Export a Ghidra analysis's function names as .symbols.json, bound to the input hash and function bytes, for the symbols argument of run, loads, disasm or xrefs.").heavy(),
         def::<crate::xa_cmd::XaArgs>("xa", "List the XA-ADPCM channels in a streamed file (rate, stereo, duration, sectors); with channel and out, decode one channel to a 44.1 kHz WAV."),
         def::<crate::str_cmd::StrArgs>("str", "Decode an STR/MDEC movie from image.cue::/PATH into out: frame PNGs, audio.wav, a contact sheet and summary. frames limits the PNGs; frame_parser handles custom frame wrappers.").heavy(),
-        def::<crate::native::NativeArgs>("native", "Emulator diagnostic: boot the native core from power-on and report where it got (PC, CD history, SPU state, unhandled I/O, hot PCs, speed). For game investigation use run.").heavy().default_timeout().screen(),
     ]
 }
 
@@ -277,7 +259,7 @@ fn portable_schema(value: &mut Value) {
 
 /// Validate and complete a call's arguments. Returns the arguments for the
 /// command and whether a screen image was requested.
-fn prepare(tool: &ToolDef, args: Map<String, Value>, ctx: &Ctx) -> crate::Result<(Value, bool)> {
+fn prepare(tool: &ToolDef, args: Map<String, Value>) -> crate::Result<(Value, bool)> {
     let mut args = args;
     let screen = match args.remove("return_screen") {
         None => false,
@@ -293,13 +275,6 @@ fn prepare(tool: &ToolDef, args: Map<String, Value>, ctx: &Ctx) -> crate::Result
             "invalid_arguments",
             format!("unknown argument {k:?} for {}; expected one of {}", tool.name, names.join(", ")),
         ));
-    }
-    if tool.default_timeout && args.get("timeout").is_none_or(Value::is_null) {
-        args.insert("timeout".into(), json!(DEFAULT_TIMEOUT_S));
-    }
-    if tool.name == "native" && screen && args.get("dump").is_none_or(Value::is_null) {
-        let dir = ctx.root.join(".psx/native").join(crate::stamp());
-        args.insert("dump".into(), json!(dir.join("native")));
     }
     Ok((Value::Object(args), screen))
 }
@@ -318,7 +293,6 @@ fn screen_path(tool: &str, v: &Value) -> Option<String> {
             return listed.then(|| std::path::Path::new(dir).join("screen.png").to_string_lossy().into_owned());
         }
         "scenario_play" => &v["files"]["screen.png"]["path"],
-        "native" => &v["dump"]["screen"],
         "read" => &v["image"]["path"],
         _ => return None,
     };
@@ -462,7 +436,7 @@ impl PsxServer {
         let from_client = scoped.is_none() && isolated;
         let worker_cancel = cancel.child_token();
         let ctx = Ctx { root, cancel: Some(worker_cancel.clone()) };
-        let (args, want_screen) = match prepare(tool, args, &ctx) {
+        let (args, want_screen) = match prepare(tool, args) {
             Ok(r) => r,
             Err(e) => return respond(e.to_value(), None),
         };

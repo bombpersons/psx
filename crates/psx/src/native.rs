@@ -1,115 +1,19 @@
-//! `psx native`: run the native core on its own (no oracle) and report what
-//! it reached and which hardware it is still missing.
+//! `psx run --diagnose`: run the native core from power-on and report what
+//! it reached and which hardware it is still missing (psx development).
 
 use std::path::Path;
 use std::time::Instant;
 
 use crate::Error;
-use crate::commands::{Ctx, Op, Outcome};
 use psx_core::disasm::disasm;
 use psx_core::{Machine, Width};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::PathBuf;
-use std::time::Duration;
 
-fn deadline(timeout_s: Option<u64>) -> Option<Instant> {
-    timeout_s.map(|s| Instant::now() + Duration::from_secs(s))
-}
-fn d_native_frames() -> u64 {
-    300
-}
-fn d_max_steps() -> u64 {
+pub(crate) fn d_max_steps() -> u64 {
     20_000_000_000
 }
-fn d_tail() -> usize {
+pub(crate) fn d_tail() -> usize {
     48
-}
-fn d_pad() -> String {
-    "digital".into()
-}
-
-#[derive(clap::Args, Deserialize, JsonSchema)]
-pub struct NativeArgs {
-    /// BIOS image, e.g. bios/scph7502.bin.
-    #[arg(long)]
-    pub bios: Option<PathBuf>,
-    /// Disc image to insert (CUE/BIN/ISO/CHD); omit for an empty drive.
-    #[arg(long)]
-    pub disc: Option<PathBuf>,
-    /// Frames to run from power-on.
-    #[arg(long, default_value_t = d_native_frames())]
-    #[serde(default = "d_native_frames")]
-    pub frames: u64,
-    /// Instruction budget.
-    #[arg(long, default_value_t = d_max_steps())]
-    #[serde(default = "d_max_steps")]
-    pub max_steps: u64,
-    /// Write <PREFIX>.screen.png and <PREFIX>.vram.png at the end.
-    #[arg(long)]
-    pub dump: Option<PathBuf>,
-    /// Stop when the PC reaches this hex address and report the tail.
-    #[arg(long = "break")]
-    #[serde(rename = "break")]
-    pub brk: Option<String>,
-    /// Instructions of history kept for --break.
-    #[arg(long, default_value_t = d_tail())]
-    #[serde(default = "d_tail")]
-    pub tail: usize,
-    /// Report every change of this RAM word (hex address) with the responsible instruction.
-    #[arg(long)]
-    pub watch: Option<String>,
-    /// Start recording --watch changes at this frame.
-    #[arg(long, default_value_t = 0)]
-    #[serde(default)]
-    pub watch_after: u64,
-    /// JSON `[{"frame": n, "buttons": ["CROSS"]}]` (frames from power-on).
-    #[arg(long)]
-    pub replay: Option<PathBuf>,
-    /// With --dump: also save the screen every N frames.
-    #[arg(long)]
-    pub snapshot_every: Option<u64>,
-    /// Capture the SPU output to a WAV file.
-    #[arg(long)]
-    pub wav: Option<PathBuf>,
-    /// Controller in port 1: `digital` (default) or `dualshock`.
-    #[arg(long, default_value_t = d_pad())]
-    #[serde(default = "d_pad")]
-    pub pad: String,
-    /// Wall-clock limit in seconds; stops with status "timeout" (default: none).
-    #[arg(long)]
-    pub timeout: Option<u64>,
-}
-
-impl Op for NativeArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        let resolved = match crate::context::resolve(&ctx.root, self.disc, self.bios, None, false) {
-            Ok(r) => r,
-            Err(e) => return e.into(),
-        };
-        if let Some(e) = resolved.setup_error() {
-            return e.into();
-        }
-        let bios = resolved.bios.unwrap();
-        let hex = |b: &Option<String>| b.as_deref().and_then(psx_media::memmap::parse_hex);
-        Outcome::report(run(Options {
-            bios: &bios,
-            disc: resolved.media.as_deref(),
-            frames: self.frames,
-            max_steps: self.max_steps,
-            dump: self.dump.as_deref(),
-            brk: hex(&self.brk),
-            tail: self.tail,
-            watch: hex(&self.watch),
-            watch_after: self.watch_after,
-            replay: self.replay.as_deref(),
-            snapshot_every: self.snapshot_every,
-            wav: self.wav.as_deref(),
-            pad: &self.pad,
-            deadline: deadline(self.timeout),
-        }))
-    }
 }
 
 pub struct Options<'a> {
@@ -124,8 +28,8 @@ pub struct Options<'a> {
     /// Report changes of this RAM word from frame `watch_after` on.
     pub watch: Option<u32>,
     pub watch_after: u64,
-    /// `[{frame, buttons: [names]}]`: held buttons from each frame on (frames from power-on).
-    pub replay: Option<&'a Path>,
+    /// Pad states from each frame on (frames from power-on).
+    pub events: Vec<crate::replay::Input>,
     /// Save the screen every N frames as <dump>.fNNNNN.png.
     pub snapshot_every: Option<u64>,
     /// Capture the SPU mix to a 44.1 kHz stereo WAV.
@@ -250,13 +154,12 @@ pub fn run(o: Options) -> crate::Result<(bool, Value)> {
         tail,
         watch,
         watch_after,
-        replay,
+        events,
         snapshot_every,
         wav,
         pad,
         deadline,
     } = o;
-    let events = replay.map(crate::replay::load).transpose().map_err(Error::invalid)?.unwrap_or_default();
     let bios = std::fs::read(bios_path).map_err(|e| Error::io(bios_path, e))?;
     let mut m = Machine::new(bios);
     m.bus.sio0.pad.kind = psx_core::pad::PadKind::from_name(pad)
