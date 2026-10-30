@@ -1,7 +1,7 @@
 //! Finding a game's tick (`run --find-tick`): the stores of one run grouped by
 //! the fields they fell in. A game's logic stores its variables once a tick,
 //! so the largest group whose stores per field vary (0, 1, 2 ...) is usually
-//! the tick's, and a counter in it is a `[tick]` for the field map.
+//! the tick's, and a store in it is the glossary binding's tick.
 
 use std::collections::HashMap;
 
@@ -99,7 +99,7 @@ pub fn report(c: &Census) -> (Value, Value) {
         where a buffer filled by one loop has many addresses but few PCs); a game's logic \
         stores its variables once a tick, so the tick's group is usually the first whose fields_by_stores \
         varies (a group stored once in every field is the field rate). In that group a counter \
-        (or a steady step) is a [tick] for the field map: write = its write, pc = its pc. \
+        (or a steady step) is the glossary binding's tick: t.store(its write).by(its pc). \
         Check it as guide topic fields says.";
     let mut warnings = Vec::new();
     if fields < 60 {

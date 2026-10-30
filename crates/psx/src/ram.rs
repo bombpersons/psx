@@ -485,31 +485,12 @@ pub struct Sample {
     pub fmt: Fmt,
     pub name: String,
     pub mem: Mem,
-    /// Named by the field map: reports give the name only.
-    pub mapped: bool,
-    /// Found through a pointer (a field map subject with `pointer`): the
-    /// value is at the address held at `mem`, plus `offset`, read anew each
-    /// time, and absent while it is null or not memory.
-    pub via: Option<u32>,
 }
 
 impl Sample {
-    /// Where the value is now, or none where a pointer is null or leads
-    /// outside memory.
-    pub fn place(&self, ram: &[u8], scratch: &[u8]) -> Option<Mem> {
-        match self.via {
-            None => Some(self.mem),
-            Some(offset) => {
-                let base = read_mem(ram, scratch, self.mem, 4);
-                locate(Some(base).filter(|&b| b != 0)?.wrapping_add(offset), self.fmt.width())
-            }
-        }
-    }
-
-    /// The value now (a bit field's bits alone), or none where a pointer
-    /// leads outside memory.
+    /// The value now (a bit field's bits alone).
     pub fn read(&self, ram: &[u8], scratch: &[u8]) -> Option<Val> {
-        let m = self.place(ram, scratch)?;
+        let m = self.mem;
         Some(match self.fmt {
             Fmt::Str(n) => Val::Bytes(mem_bytes(ram, scratch, m, n as usize).to_vec()),
             f => Val::Num(f.take(read_mem(ram, scratch, m, f.width()))),
@@ -550,7 +531,7 @@ pub fn sample_at(addr: u32, f: &str, name: Option<&str>, label: &str) -> Result<
     if name.contains([',', '"', '\n']) {
         return Err(format!("{label}: names cannot contain commas or quotes"));
     }
-    Ok(Sample { addr, fmt, name, mem, mapped: false, via: None })
+    Ok(Sample { addr, fmt, name, mem })
 }
 
 /// A `sample` column as given: `ADDR:FMT[:NAME]` text, or over MCP/JSON a
@@ -637,82 +618,55 @@ pub fn mem_bytes<'a>(ram: &'a [u8], scratch: &'a [u8], mem: Mem, n: usize) -> &'
     }
 }
 
-/// Per-frame samples, written as CSV: `run_frame,frame[,tick],<columns...>`.
+/// Per-frame samples, written as CSV: `run_frame,frame,<columns...>`.
 pub struct Sampler {
     pub columns: Vec<Sample>,
     pub every: u64,
-    /// A `tick` column: the game's ticks completed, given to each row.
-    pub tick: bool,
     pub out: String,
     pub rows: u64,
     last: Option<u64>,
-    /// The last row's tick and raw values, and per column the rows that
-    /// changed without a tick (run frames, the first few).
-    prev: Option<(u64, Vec<Option<Val>>)>,
-    pub untimed: Vec<(u64, Vec<u64>)>,
 }
 
 impl Sampler {
-    pub fn new(columns: Vec<Sample>, every: u64, tick: bool) -> Self {
-        let mut out = String::from(if tick { "run_frame,frame,tick" } else { "run_frame,frame" });
+    pub fn new(columns: Vec<Sample>, every: u64) -> Self {
+        let mut out = String::from("run_frame,frame");
         for c in &columns {
             out.push(',');
             out.push_str(&c.name);
         }
         out.push('\n');
-        let untimed = vec![(0, Vec::new()); columns.len()];
-        Sampler { columns, every: every.max(1), tick, out, rows: 0, last: None, prev: None, untimed }
+        Sampler { columns, every: every.max(1), out, rows: 0, last: None }
     }
 
     /// Record a row for `run_frame` if it is due (every Nth frame, or `force`).
-    pub fn row(&mut self, run_frame: u64, frame: u64, tick: u64, ram: &[u8], scratch: &[u8], force: bool) {
+    pub fn row(&mut self, run_frame: u64, frame: u64, ram: &[u8], scratch: &[u8], force: bool) {
         if self.last == Some(run_frame) || !(force || run_frame.is_multiple_of(self.every)) {
             return;
         }
         self.last = Some(run_frame);
         self.rows += 1;
         self.out += &format!("{run_frame},{frame}");
-        if self.tick {
-            self.out += &format!(",{tick}");
-        }
-        let raw: Vec<Option<Val>> = self.columns.iter().map(|c| c.read(ram, scratch)).collect();
-        for (c, v) in self.columns.iter().zip(&raw) {
+        for c in &self.columns {
             self.out.push(',');
-            if let Some(v) = v {
-                self.out += &c.fmt.cell(v);
+            if let Some(v) = c.read(ram, scratch) {
+                self.out += &c.fmt.cell(&v);
             }
         }
         self.out.push('\n');
-        if let Some((t, before)) = self.prev.as_ref().filter(|_| self.tick) {
-            for (i, (a, b)) in before.iter().zip(&raw).enumerate() {
-                if a != b && *t == tick {
-                    let u = &mut self.untimed[i];
-                    u.0 += 1;
-                    if u.1.len() < 8 {
-                        u.1.push(run_frame);
-                    }
-                }
-            }
-        }
-        self.prev = Some((tick, raw));
     }
 }
 
-/// One `--poke ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`, or `NAME=VALUE[@...]`
-/// with NAME one field of the field map.
+/// One `--poke ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`.
 #[derive(Clone, Debug)]
 pub struct Poke {
     pub spec: String,
-    /// Where it writes, as a sample would read it: an address, or a map name
-    /// (through a pointer, followed anew at each write).
+    /// Where it writes, as a sample would read it.
     pub at: Sample,
     pub value: Val,
     pub from: u64,
     /// Last run frame (inclusive) to apply at; `None` = open-ended.
     pub to: Option<u64>,
     pub applied: Vec<u64>,
-    /// Run frames it was due while its pointer was null or led outside memory.
-    pub skipped: Vec<u64>,
 }
 
 impl Poke {
@@ -726,7 +680,7 @@ impl Poke {
 
     pub fn apply(&mut self, run_frame: u64, ram: &mut [u8], scratch: &mut [u8]) {
         // A bit field keeps the word's other bits as they are now.
-        let Some(m) = self.at.place(ram, scratch) else { return self.skipped.push(run_frame) };
+        let m = self.at.mem;
         let (mem, o) = match m {
             Mem::Ram(o) => (ram, o),
             Mem::Scratch(o) => (scratch, o),
@@ -756,48 +710,20 @@ impl Poke {
             v["value_hex"] = json!(format!("0x{n:0w$X}", w = w * 2));
             v["value_signed"] = json!(signed(n, w));
         }
-        // A map name reports the name only, as samples do.
-        if self.at.mapped {
-            v["name"] = json!(self.at.name);
-            v["format"] = json!(self.at.fmt.name());
-        } else {
-            v["address"] = json!(self.at.addr);
-            v["address_hex"] = json!(format!("0x{:08X}", self.at.addr));
-        }
-        if !self.skipped.is_empty() {
-            v["skipped"] = json!(self.skipped.len());
-            v["first_skipped_run_frame"] = json!(self.skipped[0]);
-            v["skipped_why"] = json!("its pointer was null or led outside memory");
-        }
+        v["address"] = json!(self.at.addr);
+        v["address_hex"] = json!(format!("0x{:08X}", self.at.addr));
         v
     }
 }
 
-/// A poke; NAME (not hex, or a name `map` has) is one field of the map, its
-/// value in the field's format.
-pub fn parse_poke(s: &str, map: Option<&crate::fieldmap::FieldMap>) -> Result<Poke, String> {
+/// A poke: `ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`.
+pub fn parse_poke(s: &str) -> Result<Poke, String> {
     let (body, when) = match s.split_once('@') {
         Some((b, w)) => (b, Some(w)),
         None => (s, None),
     };
-    let (a, rest) = body
-        .split_once('=')
-        .ok_or_else(|| format!("--poke {s:?}: expected ADDR=VALUE[:WIDTH][@FRAME] or NAME=VALUE"))?;
-    let named = map.is_some_and(|m| m.knows(a.trim())) || parse_hex(a).is_none();
-    let (at, val) = if named {
-        let map = map.ok_or_else(|| {
-            format!("--poke {s:?}: {a:?} is not a hex address, and names come from a field map (samples.toml or --map)")
-        })?;
-        let mut cols = map.resolve(a.trim()).map_err(|e| format!("--poke {e}"))?;
-        if cols.len() != 1 {
-            return Err(format!("--poke {s:?}: {a:?} names {} fields; poke one (SUBJECT.FIELD)", cols.len()));
-        }
-        // A byte string's text may hold a colon.
-        if rest.contains(':') && !matches!(cols[0].fmt, Fmt::Str(_)) {
-            return Err(format!("--poke {s:?}: a name's format comes from the map; write NAME=VALUE"));
-        }
-        (cols.remove(0), rest)
-    } else {
+    let (a, rest) = body.split_once('=').ok_or_else(|| format!("--poke {s:?}: expected ADDR=VALUE[:WIDTH][@FRAME]"))?;
+    let (at, val) = {
         let addr = parse_hex(a).ok_or_else(|| format!("--poke {s:?}: bad hex address {a:?}"))?;
         let (val, ty) = match rest.rsplit_once(':') {
             Some((v, t)) => (v, t),
@@ -812,7 +738,7 @@ pub fn parse_poke(s: &str, map: Option<&crate::fieldmap::FieldMap>) -> Result<Po
         };
         let mem = locate(addr, fmt.width())
             .ok_or_else(|| format!("--poke {s:?}: 0x{addr:08X} is not main RAM or scratchpad"))?;
-        (Sample { addr, fmt, name: a.trim().to_string(), mem, mapped: false, via: None }, val)
+        (Sample { addr, fmt, name: a.trim().to_string(), mem }, val)
     };
     let value = at.fmt.given(val).ok_or_else(|| match at.fmt {
         Fmt::Str(n) => format!(
@@ -837,7 +763,7 @@ pub fn parse_poke(s: &str, map: Option<&crate::fieldmap::FieldMap>) -> Result<Po
     if to.is_some_and(|t| t < from) {
         return Err(format!("--poke {s:?}: empty frame range"));
     }
-    Ok(Poke { spec: s.to_string(), at, value, from, to, applied: Vec::new(), skipped: Vec::new() })
+    Ok(Poke { spec: s.to_string(), at, value, from, to, applied: Vec::new() })
 }
 
 // ---------------------------------------------------------------- snapshots
@@ -1256,11 +1182,11 @@ mod tests {
         assert!(parse_sample("8015E8A8:f32").is_err());
         assert_eq!(parse_sample("8015E8A8:4").unwrap().fmt, Fmt::Unsigned(4), "watch widths read unsigned");
         assert_eq!(parse_sample("8015E8A8:2").unwrap().name, "0x8015E8A8:u16");
-        let p = parse_poke("0x8015E926=1:1@10", None).unwrap();
+        let p = parse_poke("0x8015E926=1:1@10").unwrap();
         assert_eq!((p.width(), p.value, p.from, p.to), (1, Val::Num(1), 10, Some(10)));
-        let p = parse_poke("8015E8AC=300.5:fx16.16@3..", None).unwrap();
+        let p = parse_poke("8015E8AC=300.5:fx16.16@3..").unwrap();
         assert_eq!((p.width(), p.value, p.from, p.to), (4, Val::Num(0x012C_8000), 3, None));
-        let p = parse_poke("8015E8AC=-2:2", None).unwrap();
+        let p = parse_poke("8015E8AC=-2:2").unwrap();
         assert_eq!((p.width(), p.value, p.from, p.to), (2, Val::Num(0xFFFE), 0, Some(0)));
     }
 
@@ -1287,20 +1213,20 @@ mod tests {
         let mut ram = vec![0u8; RAM_SIZE];
         let mut scratch = vec![0u8; SCRATCH_SIZE];
         ram[0x10010..0x10019].copy_from_slice(b"old name!");
-        let mut p = parse_poke(r"80010010=car\x00\x12:str8@2", None).unwrap();
+        let mut p = parse_poke(r"80010010=car\x00\x12:str8@2").unwrap();
         assert_eq!((p.width(), p.from, p.to), (8, 2, Some(2)));
         p.apply(2, &mut ram, &mut scratch);
         assert_eq!(&ram[0x10010..0x10019], b"car\0\x12\0\0\0!", "every byte of the width, and no more");
         assert_eq!(p.report()["value"], json!(r"car\x00\x12"));
         let col = parse_sample("80010010:str8:name").unwrap();
         assert_eq!(col.read(&ram, &scratch), Some(Val::Bytes(b"car\0\x12\0\0\0".to_vec())));
-        let mut s = Sampler::new(vec![col], 1, false);
-        s.row(0, 0, 0, &ram, &scratch, true);
+        let mut s = Sampler::new(vec![col], 1);
+        s.row(0, 0, &ram, &scratch, true);
         assert_eq!(s.out, "run_frame,frame,name\n0,0,car\\x00\\x12\n");
-        assert!(parse_poke("80010010=a name too long:str8", None).unwrap_err().contains("at most 8 bytes"));
-        assert!(parse_poke("8015E8AC=1@5..2", None).is_err());
-        assert!(parse_poke("1F000000=1", None).is_err());
-        assert!(parse_poke("lara.x=1", None).unwrap_err().contains("field map"));
+        assert!(parse_poke("80010010=a name too long:str8").unwrap_err().contains("at most 8 bytes"));
+        assert!(parse_poke("8015E8AC=1@5..2").is_err());
+        assert!(parse_poke("1F000000=1").is_err());
+        assert!(parse_poke("lara.x=1").unwrap_err().contains("bad hex address"));
     }
 
     #[test]
@@ -1337,28 +1263,17 @@ mod tests {
     fn sampler_reads_bytes_little_endian() {
         let mut ram = vec![0u8; RAM_SIZE];
         let scratch = [0u8; SCRATCH_SIZE];
-        let mut s = Sampler::new(
-            vec![parse_sample("80000010:fx16.16:y").unwrap(), parse_sample("80000012:i16").unwrap()],
-            2,
-            true,
-        );
+        let mut s =
+            Sampler::new(vec![parse_sample("80000010:fx16.16:y").unwrap(), parse_sample("80000012:i16").unwrap()], 2);
         write_le(&mut ram, 0x10, 4, 0x01B9_8000);
-        s.row(0, 100, 0, &ram, &scratch, false);
-        s.row(1, 101, 1, &ram, &scratch, false); // not due
+        s.row(0, 100, &ram, &scratch, false);
+        s.row(1, 101, &ram, &scratch, false); // not due
         // A halfword store into the high half is seen by the word view.
         write_le(&mut ram, 0x12, 2, 0x01BF);
-        s.row(2, 102, 1, &ram, &scratch, false);
-        s.row(3, 103, 3, &ram, &scratch, true);
-        assert_eq!(
-            s.out,
-            "run_frame,frame,tick,y,0x80000012:i16\n0,100,0,441.5,441\n2,102,1,447.5,447\n3,103,3,447.5,447\n"
-        );
+        s.row(2, 102, &ram, &scratch, false);
+        s.row(3, 103, &ram, &scratch, true);
+        assert_eq!(s.out, "run_frame,frame,y,0x80000012:i16\n0,100,441.5,441\n2,102,447.5,447\n3,103,447.5,447\n");
         assert_eq!(s.rows, 3);
-        // Both columns changed between rows 0 and 2 with a tick, so in time.
-        assert_eq!(s.untimed, vec![(0, vec![]), (0, vec![])]);
-        write_le(&mut ram, 0x10, 2, 0);
-        s.row(4, 104, 3, &ram, &scratch, false);
-        assert_eq!(s.untimed, vec![(1, vec![4]), (0, vec![])]);
     }
 
     fn snap(dir: &Path, name: &str, words: &[(usize, u32)]) -> PathBuf {

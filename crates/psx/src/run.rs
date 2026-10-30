@@ -206,23 +206,16 @@ pub struct RunArgs {
 pub struct ObserveArgs {
     /// Sample a RAM/scratchpad value at every frame boundary (vblank) into samples.csv:
     /// `ADDR:FMT[:NAME]`, FMT one of u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F (fx16.16, fx4.12),
-    /// a byte string strN (str32) or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Repeatable. With a field map (--map), a name
-    /// from it instead: `GLOBAL`, `SUBJECT` (all its fields), `SUBJECT.FIELD`,
-    /// `SUBJECT[N]` or `SUBJECT[N].FIELD`.
+    /// a byte string strN (str32) or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Repeatable.
     #[arg(long = "sample")]
     #[serde(default, rename = "sample")]
     pub samples: Vec<crate::ram::SampleSpec>,
-    /// Field map naming the game's memory and its tick (guide topic fields); default
-    /// samples.toml in the project root when it exists. A map with [tick] adds a `tick`
-    /// column to samples.csv: the game's ticks completed since the run start.
-    #[arg(long)]
-    pub map: Option<PathBuf>,
     /// Group every CPU store by the fields it fell in, to find the game's tick (guide
     /// topic fields). Writes tick_finder.json; run a few hundred frames of play.
     #[arg(long)]
     #[serde(default)]
     pub find_tick: bool,
-    /// Stop at the first vblank where `NAME=VALUE` holds (or != < <= > >=; guide topic
+    /// Stop at the first vblank where `ADDR:FMT=VALUE` holds (or != < <= > >=; guide topic
     /// fields). Repeatable: all must hold.
     #[arg(long)]
     #[serde(default)]
@@ -232,7 +225,7 @@ pub struct ObserveArgs {
     pub sample_every: Option<u64>,
     /// Write memory at the start of a run frame: `ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`
     /// (VALUE decimal, 0xHEX or a fraction for fx; WIDTH 1/2/4, default 4;
-    /// default frame 0; a range re-applies it every frame), or NAME=VALUE for a map field.
+    /// default frame 0; a range re-applies it every frame).
     /// Reported under `pokes`; repeatable.
     #[arg(long = "poke")]
     #[serde(default, rename = "poke")]

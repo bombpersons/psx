@@ -7,7 +7,7 @@ power-on that led to it, small enough to commit.
 - .psx/states/NAME.bin: the state (run from_state takes it).
 - notes/states/NAME.json: the chain: a description in game terms, the media
   and BIOS identity, and the steps, each one run's frames, input, pokes,
-  until conditions (and their field map), the pad and cards at power-on,
+  until conditions, the pad and cards at power-on,
   which state it ended in (its end or a checkpoint) and that state's sha256
   and psx build.
 
@@ -43,9 +43,9 @@ them by default). Steps that chains share run once, and runs are kept in
   the chain notes (null when every step reproduced);
 - status: same, differs (the rebuilt state is not the file), or restored (the
   file was missing and is back);
-- compare, when they differ: values old and new for sample names (field map
-  names, as run's), and how much of main RAM differs. An older psx's state
-  may be unreadable here: then compare by cases.
+- compare, when they differ: values old and new for samples (ADDR:FMT, as
+  run's), and how much of main RAM differs. An older psx's state may be
+  unreadable here: then compare by recordings.
 
 After a psx update: states rebuild, then replace=true puts the rebuilt states
 in place (the old ones move to .psx/old/BUILD/states/) and notes the new

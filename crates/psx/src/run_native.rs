@@ -37,45 +37,17 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     }
     attach_observers(&mut m, &a)?;
     let obs = &a.observe;
-    let map = crate::fieldmap::FieldMap::load(obs.map.as_deref()).map_err(Error::invalid)?;
-    let mut cols = Vec::new();
-    for spec in &obs.samples {
-        match spec {
-            crate::ram::SampleSpec::Text(s) => cols
-                .extend(crate::fieldmap::select(s, map.as_ref()).map_err(|e| Error::invalid(format!("--sample {e}")))?),
-            _ => cols.push(spec.parse().map_err(Error::invalid)?),
-        }
-    }
-    let until = obs.until.iter().map(|s| crate::until::parse(s, map.as_ref())).collect::<Result<Vec<_>, _>>();
+    let cols = obs.samples.iter().map(|spec| spec.parse()).collect::<Result<Vec<_>, _>>().map_err(Error::invalid)?;
+    let until = obs.until.iter().map(|s| crate::until::parse(s)).collect::<Result<Vec<_>, _>>();
     let until = until.map_err(Error::invalid)?;
-    // The game's tick, counted while sampling.
-    let tick = map.as_ref().and_then(|f| f.tick.clone()).filter(|_| !cols.is_empty());
-    let tick_counter = tick.as_ref().map(|t| m.bus.obs.count(t.addr, t.width, t.pc));
-    let ticks = |m: &Machine| tick_counter.map_or(0, |i| m.bus.obs.counters[i].count);
-    let mut per_field: std::collections::BTreeMap<u64, u64> = Default::default();
-    let mut last_ticks = 0;
     if obs.find_tick {
         m.bus.obs.census = Some(Default::default());
     }
-    // The map's [map] holds, tested on each row that samples its names.
-    let holds = map.as_ref().map(|f| f.holds.as_slice()).filter(|_| cols.iter().any(|c| c.mapped)).unwrap_or(&[]);
-    let mut not_holding: Option<(u64, u64, Value)> = None;
-    // Rows where they fail, and the first such row with its values.
-    let mut held = |rel: u64, m: &Machine| {
-        if !holds.iter().all(|u| u.holds(&m.bus.ram, &m.bus.scratch)) {
-            match &mut not_holding {
-                Some(x) => x.0 += 1,
-                None => not_holding = Some((1, rel, crate::until::check(holds, &m.bus.ram, &m.bus.scratch))),
-            }
-        }
+    let mut sampler = (!cols.is_empty()).then(|| crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1)));
+    let mut pokes = match obs.pokes.iter().map(|s| crate::ram::parse_poke(s)).collect::<Result<Vec<_>, _>>() {
+        Ok(p) => p,
+        Err(e) => return Err(Error::invalid(e)),
     };
-    let mut sampler =
-        (!cols.is_empty()).then(|| crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1), tick.is_some()));
-    let mut pokes =
-        match obs.pokes.iter().map(|s| crate::ram::parse_poke(s, map.as_ref())).collect::<Result<Vec<_>, _>>() {
-            Ok(p) => p,
-            Err(e) => return Err(Error::invalid(e)),
-        };
     let read_ranges =
         match obs.watch_reads.iter().map(|s| crate::run::parse_range_spec(s)).collect::<Result<Vec<_>, _>>() {
             Ok(r) => r,
@@ -165,17 +137,8 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             if let Some(c) = m.bus.obs.census.as_mut().filter(|_| rel > 0) {
                 c.end_field();
             }
-            if tick.is_some() && rel > 0 {
-                let t = ticks(&m);
-                *per_field.entry(t - last_ticks).or_default() += 1;
-                last_ticks = t;
-            }
             if let Some(s) = &mut sampler {
-                let rows = s.rows;
-                s.row(rel, m.bus.frames, ticks(&m), &m.bus.ram, &m.bus.scratch, false);
-                if s.rows > rows {
-                    held(rel, &m);
-                }
+                s.row(rel, m.bus.frames, &m.bus.ram, &m.bus.scratch, false);
             }
             if let Err(e) = frame_outputs(&m, rel, obs, &dir, &media_id, &mut screens, &mut states) {
                 boundary_err = Some(e);
@@ -245,15 +208,8 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         if let Some(c) = m.bus.obs.census.as_mut().filter(|_| rel > 0) {
             c.end_field();
         }
-        if tick.is_some() && rel > 0 {
-            *per_field.entry(ticks(&m) - last_ticks).or_default() += 1;
-        }
         if let Some(s) = &mut sampler {
-            let rows = s.rows;
-            s.row(rel, m.bus.frames, ticks(&m), &m.bus.ram, &m.bus.scratch, true);
-            if s.rows > rows {
-                held(rel, &m);
-            }
+            s.row(rel, m.bus.frames, &m.bus.ram, &m.bus.scratch, true);
         }
         frame_outputs(&m, rel, obs, &dir, &media_id, &mut screens, &mut states)?;
     }
@@ -362,26 +318,10 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             put("samples.csv", s.out.as_bytes());
             json!({
                 "file": dir.join("samples.csv"), "rows": s.rows, "every": s.every,
-                "columns": s.columns.iter().map(|c| if c.mapped {
-                    json!({"name": c.name, "format": c.fmt.name()})
-                } else {
+                "columns": s.columns.iter().map(|c| {
                     json!({"name": c.name, "address_hex": format!("0x{:08X}", c.addr), "format": c.fmt.name()})
                 }).collect::<Vec<_>>(),
                 "timing": "row N = memory at the Nth vblank of the run (row 0 = the starting memory), before that frame's replay input and pokes",
-                "map": map.as_ref().map(|f| f.report()),
-                "map_not_holding": not_holding.as_ref().map(|(rows, first, check)| json!({
-                    "rows": rows, "first_run_frame": first, "there": check,
-                    "warning": "the map's [map] holds failed on these rows: its names may read another level's memory there (a map for another level?)",
-                })),
-                "tick": tick.as_ref().map(|_| json!({
-                    "ticks": ticks(&m),
-                    "fields_by_ticks_run": per_field.iter().map(|(k, v)| (k.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),
-                    "column": "tick = the game's ticks completed since the run start, at the row's vblank; ticks between rows r-1 and r ran during field r-1",
-                    "changed_without_tick": s.columns.iter().zip(&s.untimed).filter(|(_, u)| u.0 > 0)
-                        .map(|(c, u)| (c.name.clone(), json!({"rows": u.0, "first": u.1})))
-                        .collect::<serde_json::Map<_, _>>(),
-                    "check": "a column that changes on a row whose tick did not is updated outside the tick (or [tick] is at the wrong point of the game's loop): see guide topic fields",
-                })),
             })
         }
         None => Value::Null,
@@ -505,9 +445,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             "samples": samples_report,
             "tick_finder": tick_report,
             "until": if until.is_empty() { Value::Null } else {
-                let mut v = crate::until::report(&until, met, &m.bus.ram, &m.bus.scratch);
-                v["map"] = json!(map.as_ref().map(|f| std::path::absolute(&f.path).unwrap_or_else(|_| f.path.clone())));
-                v
+                crate::until::report(&until, met, &m.bus.ram, &m.bus.scratch)
             },
             "read_watch": reads_report,
             "spu": spu_report,

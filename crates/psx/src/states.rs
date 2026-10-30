@@ -40,10 +40,6 @@ pub struct StatesMakeArgs {
     #[arg(long)]
     #[serde(default)]
     pub until: Vec<String>,
-    /// Field map for until.
-    #[arg(long)]
-    #[serde(default)]
-    pub map: Option<PathBuf>,
     /// Memory writes (run's poke); repeatable.
     #[arg(long = "poke")]
     #[serde(default, rename = "poke")]
@@ -106,14 +102,10 @@ pub struct StatesRebuildArgs {
     /// States to rebuild; default every chain.
     #[serde(default)]
     pub names: Vec<String>,
-    /// Field map names to compare, old and new; repeatable.
+    /// Samples (ADDR:FMT[:NAME]) to compare, old and new; repeatable.
     #[arg(long = "sample")]
     #[serde(default, rename = "sample")]
     pub samples: Vec<String>,
-    /// Field map for sample.
-    #[arg(long)]
-    #[serde(default)]
-    pub map: Option<PathBuf>,
     /// Put rebuilt states in place of those that differ (old ones kept in .psx/old/).
     #[arg(long)]
     #[serde(default)]
@@ -278,7 +270,6 @@ fn run_from_report(report: &Value, state: &Value) -> Value {
     }
     if let Some(conds) = report["until"]["conditions"].as_array() {
         run["until"] = json!(conds);
-        run["map"] = report["until"]["map"].clone();
     }
     let id = &report["identity"];
     if id["from_state"].is_null() {
@@ -312,9 +303,6 @@ pub(crate) fn recipe_of(ctx: &Ctx, dir: &Path) -> Result<Value, String> {
         "its report does not note the trace window (an older psx): run it again with run --trace for a recipe",
     )?;
     let mut run = run_from_report(&report, &json!("end"));
-    if let Some(m) = run["map"].as_str().map(|m| noted(ctx, Path::new(m))) {
-        run["map"] = json!(m);
-    }
     run["trace"] = json!(true);
     for (k, v) in options {
         if !(v.is_null() || v.as_array().is_some_and(Vec::is_empty) || v == &json!(0)) {
@@ -421,9 +409,6 @@ fn finish_step(
     let id = &report["identity"];
     // The report may be from before the project moved.
     let parent = id["from_state"].as_str().map(|p| crate::moved::find(&ctx.root, Path::new(p)));
-    if let Some(m) = run["map"].as_str().map(|m| noted(ctx, Path::new(m))) {
-        run["map"] = json!(m);
-    }
     if let Some(o) = run.as_object_mut() {
         for k in ["media", "from_state", "replay", "save_state", "out"] {
             o.remove(k);
@@ -576,9 +561,6 @@ fn run_step(
     if let Some(m) = media.as_str() {
         run["media"] = json!(crate::moved::find(&ctx.root, Path::new(m)));
     }
-    if let Some(m) = run["map"].as_str() {
-        run["map"] = json!(crate::moved::find(&ctx.root, Path::new(m)));
-    }
     run["from_state"] = json!(parent);
     run["out"] = json!(out);
     run["summary"] = json!(true);
@@ -631,7 +613,7 @@ fn make(ctx: &Ctx, a: StatesMakeArgs) -> crate::Result<Value> {
         (None, None) => json!([]),
     };
     let mut run = json!({"media": a.media, "from_state": from, "frames": a.frames, "input": input,
-        "until": a.until, "map": a.map, "poke": a.pokes, "save_state": true, "summary": true, "timeout": 7200});
+        "until": a.until, "poke": a.pokes, "save_state": true, "summary": true, "timeout": 7200});
     for (k, v) in [("pad", &a.pad), ("memcard1", &a.memcard1), ("memcard2", &a.memcard2)] {
         if let Some(v) = v {
             run[k] = json!(v);
@@ -726,11 +708,11 @@ fn rebuild(ctx: &Ctx, a: StatesRebuildArgs) -> crate::Result<(bool, Value)> {
             return Err(Error::invalid(format!("no chain named {n} in {}", chain_dir.display())));
         }
     }
-    let map = crate::fieldmap::FieldMap::load(a.map.as_deref()).map_err(Error::invalid)?;
-    let mut cols = Vec::new();
-    for s in &a.samples {
-        cols.extend(crate::fieldmap::select(s, map.as_ref()).map_err(|e| Error::invalid(format!("--sample {e}")))?);
-    }
+    let cols = a
+        .samples
+        .iter()
+        .map(|s| crate::ram::parse_sample(s).map_err(|e| Error::invalid(format!("--sample {e}"))))
+        .collect::<crate::Result<Vec<_>>>()?;
     let version = crate::context::version();
     let work = ctx.root.join(".psx/rebuild").join(&version);
     let mut results = Vec::new();

@@ -544,22 +544,80 @@ fn extraction_pages_and_brief_summaries_keep_the_complete_manifest() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// An external parser (tests/parsers/KIND.py, Python 3's standard library
+/// only) in `dir` as parser.py, with an authored sample.bin it parses.
+fn parser_fixture(dir: &Path, kind: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    let script = match kind {
+        "model" => include_str!("parsers/model.py"),
+        "archive" => include_str!("parsers/archive.py"),
+        "asset" => include_str!("parsers/asset.py"),
+        _ => include_str!("parsers/video.py"),
+    };
+    let parser = dir.join("parser.py");
+    std::fs::write(&parser, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&parser, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(dir.join("sample.bin"), parser_sample(kind)).unwrap();
+}
+
+fn parser_sample(kind: &str) -> Vec<u8> {
+    match kind {
+        "model" => {
+            let mut data = b"TRI1\x03\x00\x01\x00".to_vec();
+            for n in [0i16, 0, 0, 100, 0, 0, 0, 100, 0, 0, 1, 2] {
+                data.extend_from_slice(&n.to_le_bytes());
+            }
+            data
+        }
+        "archive" => {
+            let payload = parser_sample("model");
+            let mut data = b"ARC1\x02\x00\x00\x00".to_vec();
+            for n in [24u32, 0, 24, payload.len() as u32] {
+                data.extend_from_slice(&n.to_le_bytes());
+            }
+            data.extend(payload);
+            data
+        }
+        "asset" => {
+            // A 2x2 16-bit direct-colour TIM, first pixel red.
+            let mut tim = Vec::new();
+            for n in [16u32, 2, 20] {
+                tim.extend_from_slice(&n.to_le_bytes());
+            }
+            tim.extend_from_slice(&[0, 0, 0, 0, 2, 0, 2, 0, 31, 0, 0, 0, 0, 0, 0, 0]);
+            let mut data = b"WRAP".to_vec();
+            data.extend_from_slice(&(tim.len() as u32).to_le_bytes());
+            data.extend(tim);
+            data
+        }
+        _ => {
+            // One neutral-grey 16x16 macroblock, BS v2: six DC=0/EOB blocks
+            // then EOF, MSB first in little-endian halfwords.
+            let bits = "000000000010".repeat(6) + "0111111111";
+            let mut data = b"VBS1\x06\x00\x00\x38\x01\x00\x02\x00".to_vec();
+            for chunk in bits.as_bytes().chunks(16) {
+                let word = chunk.iter().enumerate().fold(0u16, |w, (i, b)| w | (u16::from(*b == b'1') << (15 - i)));
+                data.extend_from_slice(&word.to_le_bytes());
+            }
+            data.extend_from_slice(&[0; 8]);
+            data
+        }
+    }
+}
+
 #[test]
-fn generated_parsers_chain_and_export_through_cli_and_mcp() {
+fn external_parsers_chain_and_export_through_cli_and_mcp() {
     let root = std::env::temp_dir().join(format!("psx-parser-mcp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     for kind in ["archive", "model", "asset", "video"] {
-        let (_, ok) = cli(&root, &["template", "parser", kind, "--kind", kind]);
-        assert!(ok);
+        parser_fixture(&root.join(kind), kind);
     }
     let mut rpc = Rpc::start(&root);
-    let (generated, ok) = cli(&root, &["template", "parser", "mcp-model", "--kind", "model"]);
-    // Regenerate into an empty directory to compare identical CLI/MCP results.
-    std::fs::remove_dir_all(root.join("mcp-model")).unwrap();
-    let (mcp, error, _) = rpc.tool("template_parser_create", json!({"dest":"mcp-model","kind":"model"}));
-    assert!(ok && !error, "{mcp}");
-    assert_eq!(generated, mcp);
     let args = [
         "assets",
         "scan",
@@ -614,7 +672,7 @@ fn generated_parsers_chain_and_export_through_cli_and_mcp() {
     assert_eq!(doc.into_model().unwrap().polygon_count(), 1);
     let gltf: Value = serde_json::from_slice(&role("gltf")).unwrap();
     assert_eq!(gltf["meshes"].as_array().unwrap().len(), 1);
-    // The wrapper starter passes through the real TIM parser and PNG exporter.
+    // The wrapper parser passes through the real TIM parser and PNG exporter.
     let (converted, ok) =
         cli(&root, &["assets", "extract", "asset/sample.bin", "--asset-parser", "./asset/parser.py", "-o", "wrapped"]);
     let (mcp, error, _) = rpc.tool(
@@ -668,7 +726,7 @@ fn generated_parsers_chain_and_export_through_cli_and_mcp() {
     let wav = std::fs::read(root.join(wave["path"].as_str().unwrap())).unwrap();
     assert_eq!(&wav[..4], b"RIFF");
     // Author a small cooked ISO containing a single wrapped STR frame. The
-    // generated video parser must enable the complete STR -> MDEC -> PNG path.
+    // video parser fixture must enable the complete STR -> MDEC -> PNG path.
     let frame = std::fs::read(root.join("video/sample.bin")).unwrap();
     let mut iso = vec![0u8; 24 * 2048];
     let record = |name: &[u8], lba: u32, size: u32, flags: u8| {
@@ -1172,8 +1230,6 @@ fn mcp_tools_match_cli() {
     std::fs::write(root.join("ram_a.bin"), &ram).unwrap();
     ram[0x1000..0x1004].copy_from_slice(&0x0003_0000u32.to_le_bytes());
     std::fs::write(root.join("ram_b.bin"), &ram).unwrap();
-    let stream = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/probes/gpu/gp0_stream.bin");
-    let stream = stream.to_str().unwrap();
 
     let mut rpc = Rpc::start(&root);
 
@@ -1197,7 +1253,6 @@ fn mcp_tools_match_cli() {
         "disasm",
         "native",
         "template_create",
-        "gpu_replay",
         "vram_diff",
         "xrefs",
         "ram_diff",
@@ -1275,7 +1330,6 @@ fn mcp_tools_match_cli() {
         ("exe", json!({"source": "tiny.ps-exe"}), vec!["exe", "tiny.ps-exe"]),
         ("disasm", json!({"source": "tiny.ps-exe", "count": 4}), vec!["disasm", "tiny.ps-exe", "--count", "4"]),
         ("memcard", json!({"image": "blank.mcd"}), vec!["memcard", "blank.mcd"]),
-        ("gpu_replay", json!({"stream": stream, "out": "vram.bin"}), vec!["gpu-replay", stream, "-o", "vram.bin"]),
         (
             "vram_diff",
             json!({"a": "vram.bin", "b": "vram.bin", "samples": 2}),

@@ -18,7 +18,7 @@ loop. Captured .psxscene files are visual reference for the template's
 
 The generated developer MCP supports exact game_step calls, game_query and
 game_screenshot (--mcp --headless --software; screenshot target screen).
-Compare rebuilt behaviour against cases recorded from the original (guide
-topic cases; psx_bevy::testing::Case in game/tests/cases.rs) and look at
+Compare rebuilt behaviour against scenario recordings of the original
+(docs/scenarios.md; game/tests/scenarios.rs) and look at
 rendered output. Keep each project's target directory separate, so one
 game's library is never linked into another.

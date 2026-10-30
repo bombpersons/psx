@@ -29,20 +29,17 @@
 //! the renderer. Keeping rules and presentation in separate plugins is what
 //! makes them testable.
 //!
-//! To check rules against the original game, replay a case file (`psx case
-//! record`) with [`Case::runner`] (see
-//! [`case`]), or a bare psx recording's input with [`compare`] (see
-//! [`trajectory`]).
+//! To check rules against the original game, run its scenario recordings
+//! (`psx_bevy::scenario`), or a bare psx recording's input with [`compare`]
+//! (see [`trajectory`]).
 use crate::controller::Button;
 use crate::shell::{GameClock, InjectedInput, ShellPlugin, TickRate};
 use bevy::{prelude::*, time::TimeUpdateStrategy};
 
-pub mod case;
 #[cfg(feature = "dev-mcp")]
 pub mod mcp;
 pub mod trajectory;
 pub use crate::shell::InjectedMouse;
-pub use case::{Case, CaseReport, CaseRun, Claim, RowTicks, Start, Written, write_result};
 pub use trajectory::{Alignment, Comparison, Replay, Trajectory, compare, compare_from};
 
 /// One tick of injected input: pad buttons and the mouse. `Vec<Button>`

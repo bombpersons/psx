@@ -1,10 +1,9 @@
-//! `run --until NAME=VALUE`: stop the run at the first vblank where named
+//! `run --until ADDR:FMT=VALUE`: stop the run at the first vblank where
 //! samples hold given values, so a route waits on the game's state (a menu
 //! up, a level loaded) rather than a fixed field.
 
 use serde_json::{Value, json};
 
-use crate::fieldmap::FieldMap;
 use crate::ram::{Fmt, Sample, Val, signed};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,7 +31,7 @@ impl Op {
 
 /// `NAME OP VALUE` split into its parts, OP one of = != < <= > >=.
 pub fn split(s: &str) -> Result<(&str, Op, &str), String> {
-    let bad = || format!("--until {s:?}: expected NAME=VALUE (or != < <= > >=)");
+    let bad = || format!("--until {s:?}: expected ADDR:FMT=VALUE (or != < <= > >=)");
     let at = s.find(['=', '!', '<', '>']).ok_or_else(bad)?;
     let (sel, rest) = (s[..at].trim(), &s[at..]);
     let (op, value) = [("!=", Op::Ne), ("<=", Op::Le), (">=", Op::Ge), ("=", Op::Eq), ("<", Op::Lt), (">", Op::Gt)]
@@ -59,15 +58,11 @@ fn ordered(fmt: Fmt, raw: u32) -> i64 {
     }
 }
 
-/// `NAME OP VALUE`, OP one of = != < <= > >=. NAME is one field map column
-/// (a global or SUBJECT.FIELD) or ADDR:FMT; VALUE is written in its format.
-pub fn parse(s: &str, map: Option<&FieldMap>) -> Result<Until, String> {
+/// `ADDR:FMT OP VALUE`, OP one of = != < <= > >=; VALUE is written in the
+/// format.
+pub fn parse(s: &str) -> Result<Until, String> {
     let (sel, op, value) = split(s)?;
-    let mut cols = crate::fieldmap::select(sel, map).map_err(|e| format!("--until {e}"))?;
-    if cols.len() != 1 {
-        return Err(format!("--until {s:?}: {sel} names {} fields; name one (SUBJECT.FIELD)", cols.len()));
-    }
-    let col = cols.remove(0);
+    let col = crate::ram::parse_sample(sel).map_err(|e| format!("--until {e}"))?;
     let want =
         col.fmt.given(value).ok_or_else(|| format!("--until {s:?}: {value:?} is not a {} value", col.fmt.name()))?;
     if matches!(want, Val::Bytes(_)) && !matches!(op, Op::Eq | Op::Ne) {
@@ -121,37 +116,28 @@ pub fn report(conds: &[Until], met: Option<(u64, u64)>, ram: &[u8], scratch: &[u
 #[cfg(test)]
 mod tests {
     use super::parse;
-    use crate::fieldmap::FieldMap;
 
     #[test]
     fn conditions_compare_in_the_columns_format() {
-        let map = FieldMap::parse(
-            "[globals]\nmenu = \"80010000:u8\"\nx = \"80010004:i16\"\n[structs.p]\ny = \"0:fx16.16\"\nz = \"4:i32\"\n[subjects.lara]\nstruct = \"p\"\nat = \"80010008\"\n",
-            "samples.toml".into(),
-        )
-        .unwrap();
         let mut ram = vec![0u8; crate::ram::RAM_SIZE];
         let scratch = vec![0u8; crate::ram::SCRATCH_SIZE];
         ram[0x10000] = 3;
         ram[0x10004..0x10006].copy_from_slice(&(-5i16).to_le_bytes());
         ram[0x10008..0x1000C].copy_from_slice(&(3i32 << 15).to_le_bytes());
-        let holds = |s: &str| parse(s, Some(&map)).unwrap().holds(&ram, &scratch);
-        assert!(holds("menu=3") && holds("menu = 0x3") && !holds("menu!=3"));
-        assert!(holds("x<0") && holds("x<=-5") && !holds("x>-5") && holds("x>=-5"));
-        assert!(holds("lara.y=1.5") && holds("lara.y>1"));
-        assert!(holds("80010000:u8=3") && holds("80010004:u16=0xFFFB"));
-        let conds = vec![parse("menu=3", Some(&map)).unwrap(), parse("x>0", Some(&map)).unwrap()];
+        let holds = |s: &str| parse(s).unwrap().holds(&ram, &scratch);
+        assert!(holds("80010000:u8=3") && holds("80010000:u8 = 0x3") && !holds("80010000:u8!=3"));
+        assert!(holds("80010004:i16<0") && holds("80010004:i16<=-5") && !holds("80010004:i16>-5"));
+        assert!(holds("80010008:fx16.16=1.5") && holds("80010008:fx16.16>1"));
+        assert!(holds("80010004:u16=0xFFFB"));
+        let conds = vec![parse("80010000:u8=3").unwrap(), parse("80010004:i16>0").unwrap()];
         let v = super::check(&conds, &ram, &scratch);
         assert_eq!((v["met"].clone(), v["conditions"][1]["value"].clone()), (false.into(), (-5).into()));
-        let err = |s: &str| parse(s, Some(&map)).unwrap_err();
-        assert!(err("lara=1").contains("names 2 fields"));
-        assert!(err("menu").contains("NAME=VALUE"));
-        assert!(err("menu=1.5").contains("not a u8"));
+        let err = |s: &str| parse(s).unwrap_err();
+        assert!(err("80010000:u8=1.5").contains("not a u8"));
         assert!(err("nothing=1").contains("nothing"));
-        let map = FieldMap::parse("[globals]\nname = \"80010020:str8\"\n", "samples.toml".into()).unwrap();
         ram[0x10020..0x10025].copy_from_slice(b"a=b\0\x01");
-        let holds = |s: &str| parse(s, Some(&map)).unwrap().holds(&ram, &scratch);
-        assert!(holds(r"name=a=b\x00\x01") && !holds("name=a=b") && holds("name!=a=b"));
-        assert!(parse("name<a", Some(&map)).unwrap_err().contains("= or !="));
+        let holds = |s: &str| parse(s).unwrap().holds(&ram, &scratch);
+        assert!(holds(r"80010020:str8=a=b\x00\x01") && !holds("80010020:str8=a=b"));
+        assert!(parse("80010020:str8<a").unwrap_err().contains("= or !="));
     }
 }

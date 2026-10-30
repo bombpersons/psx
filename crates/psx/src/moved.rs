@@ -24,7 +24,7 @@ pub fn store(root: &Path, p: &Path) -> PathBuf {
 
 /// A path a project file kept, now: a relative one under `root`; an absolute
 /// one as it is while it exists, else the file with its longest trailing part
-/// under `root` (samples.toml, .psx/states/a.bin), then, two components at
+/// under `root` (notes/states/a.json, .psx/states/a.bin), then, two components at
 /// least (rom/game.cue), under the folder holding `root`: a disc kept beside
 /// the project. Else as kept.
 pub fn find(root: &Path, p: &Path) -> PathBuf {

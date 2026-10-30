@@ -17,7 +17,7 @@ Moving a project: the files psx keeps (saved defaults, state chains, case
 recipes) name what lies inside the project relative to its root, so the
 folder can move. Files written by an older psx, and run and handoff
 reports, keep absolute paths; one that no longer exists is found again by
-its trailing components under the root (.psx/states/a.bin, samples.toml),
+its trailing components under the root (.psx/states/a.bin, notes/states/a.json),
 or beside it (rom/game.cue for a disc kept next to the project). states
 rebuild and case check write a chain's disc and a recipe's paths back
 relative; context save does the same for the defaults. A chain checks each

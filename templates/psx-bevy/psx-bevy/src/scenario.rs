@@ -59,8 +59,8 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use psx_scenario::Value;
-use psx_scenario::scenario::{Recording, Scenario};
 use psx_scenario::scenario::SourceKind;
+use psx_scenario::scenario::{Recording, Scenario};
 use serde::Serialize;
 
 use crate::testing::TickApp;
@@ -288,28 +288,29 @@ impl Scenarios {
             })
             .collect();
         let mut differed: BTreeMap<String, String> = BTreeMap::new();
-        let mut check = |app: &mut App, at: &str, values: &psx_scenario::Values, differed: &mut BTreeMap<String, String>| {
-            let now = match registry.observe(app.world_mut()) {
-                Ok(now) => now,
-                Err(e) => return Some(format!("{at}: {e}")),
-            };
-            observed.extend(now.keys().map(|q| q.to_string()));
-            for (q, tol) in &compared {
-                if differed.contains_key(q.as_str()) {
-                    continue;
-                }
-                let Some(want) = values.get(*q) else { continue };
-                let line = match now.get(q.as_str()) {
-                    None => Some(format!("{at} {q}: expected {}, the port has none", show(want))),
-                    Some(got) if !differs(got, want, *tol) => None,
-                    Some(got) => Some(format!("{at} {q}: expected {}, got {}", show(want), show(got))),
+        let mut check =
+            |app: &mut App, at: &str, values: &psx_scenario::Values, differed: &mut BTreeMap<String, String>| {
+                let now = match registry.observe(app.world_mut()) {
+                    Ok(now) => now,
+                    Err(e) => return Some(format!("{at}: {e}")),
                 };
-                if let Some(l) = line {
-                    differed.insert((*q).clone(), l);
+                observed.extend(now.keys().map(|q| q.to_string()));
+                for (q, tol) in &compared {
+                    if differed.contains_key(q.as_str()) {
+                        continue;
+                    }
+                    let Some(want) = values.get(*q) else { continue };
+                    let line = match now.get(q.as_str()) {
+                        None => Some(format!("{at} {q}: expected {}, the port has none", show(want))),
+                        Some(got) if !differs(got, want, *tol) => None,
+                        Some(got) => Some(format!("{at} {q}: expected {}, got {}", show(want), show(got))),
+                    };
+                    if let Some(l) = line {
+                        differed.insert((*q).clone(), l);
+                    }
                 }
-            }
-            None
-        };
+                None
+            };
         if let Some(e) = check(&mut app, "initial", &rec.header.initial, &mut differed) {
             out.failures.push(e);
             return out;

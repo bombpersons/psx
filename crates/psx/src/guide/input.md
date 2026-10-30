@@ -39,8 +39,8 @@ waiting. People take minutes.
 
 Write the request as a precise target: the level and spot, which way to face,
 health or items, and whether a cutscene should already have played. With a
-field map, say it in expect too (run's until syntax: level=3, health>500):
-names are checked before the window opens, and the result's expect gives
+known address, say it in expect too (run's until syntax: 8007528C:u8=3):
+conditions are checked before the window opens, and the result's expect gives
 each condition's value at the hand-back, whether it held, a verdict and
 ask_again. Ask again, in game terms, when the person said done but expect
 did not hold. To find

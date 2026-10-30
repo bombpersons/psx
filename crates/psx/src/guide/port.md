@@ -51,10 +51,9 @@ self-review before calling a feature done, and the choices a goal can make:
 an engine/game split, mod crates, the whole front end, an editor) is in the
 workspace's AGENTS.md and game/AGENTS.md.
 
-Evidence: the disc and psx are the only sources. Name what you find in a
-field map (guide topic fields), record the original as cases (guide topic
-cases) from named start states (guide topic states), and cite the address,
-writer or recording beside each constant and rule.
+Evidence: the disc and psx are the only sources. Record the original as
+scenario recordings from named start states (guide topic states), and cite
+the address, writer or recording beside each constant and rule.
 
 Template updates: template_update replaces untouched psx-bevy/ and vendor/
 files, writes <file>.psx-new beside edited ones (merge it, keeping the

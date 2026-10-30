@@ -371,7 +371,7 @@ pub fn compare(original: &Trajectory, rebuild: &Trajectory, tolerances: &[(&str,
     compare_rows(original, rebuild, tolerances, 0, "tick")
 }
 
-/// [`compare`] for rows that are video fields (a case's observations), from
+/// [`compare`] for rows that are video fields (a run's samples), from
 /// row `first` on: the rows before it set up the state but are not judged.
 pub fn compare_from(
     original: &Trajectory,

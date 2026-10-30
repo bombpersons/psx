@@ -24,7 +24,7 @@ tests/                headless tick tests; dev_mcp.rs is the opt-in GPU check
 
 Start the port by deleting `src/demo/` and `assets/demo/`, removing the demo
 from `GamePlugins`, and replacing or removing the tests that use it
-(`tests/player.rs`, `tests/cases.rs`, the player checks in `tests/dev_mcp.rs`).
+(`tests/player.rs`, the player checks in `tests/dev_mcp.rs`).
 `#[ignore]` skips running, not compiling: check with
 `cargo test --workspace --all-features --all-targets --no-run`.
 
@@ -96,10 +96,9 @@ player's disc image next to it (`src/disc.rs`, running `import::import` from
 ## Tests
 
 `psx_bevy::testing` runs rules headless for exact ticks with scripted
-buttons (`tests/player.rs`). A case file from `psx case record` replays a
-recording of the original (`psx_bevy::testing::Case`, `tests/cases.rs`):
-one runner per subject spawns it from row 0 and reads each compared column
-back in the case's units. A failure prints each column's first divergence.
+buttons (`tests/player.rs`). `tests/scenarios.rs` replays each scenario
+recording of the original tick by tick (`psx_bevy::scenario`); a failure
+names each quantity's first tick out of tolerance.
 
 Captures (`psx run --gpu-frame`, `.psxscene`) are for checking the rebuild,
 never for shipping: levels come from the disc's data through the importers.

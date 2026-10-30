@@ -14,23 +14,17 @@ Observations (native):
   string (str32; both guide topic fields) or a watch-style width 1/2/4
   (unsigned), default u32.
   Row N is memory after N run frames, before frame N's input and pokes.
-  sample_every thins rows; the last frame is always sampled. With a field map
-  (samples.toml, or map) sample takes names, and a [tick] adds a tick column:
-  see guide topic fields.
+  sample_every thins rows; the last frame is always sampled.
 - find_tick counts every CPU store to main RAM by PC and address and groups
   them by the fields they fell in (tick_finder.json): finding a game's tick,
   guide topic fields.
-- until NAME=VALUE (also != < <= > >=) stops at the first vblank where a
-  named sample holds: waiting on a menu or a level (guide topic fields).
+- until ADDR:FMT=VALUE (also != < <= > >=) stops at the first vblank where
+  it holds: waiting on a menu or a level (guide topic fields).
 - watch ADDR[:WIDTH] logs every CPU/DMA store into the range to writes.jsonl
   with writer PC, old and new value. watch_changes_only drops same-value stores.
 - watch_reads LO-HI or ADDR[:WIDTH] logs CPU loads to reads.jsonl with PC.
 - poke ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..] writes memory at the start of
-  a run frame to test a hypothesis; keep an unmodified control run. With a
-  field map, NAME=VALUE[@...] writes one field by name (lara.x=100), VALUE in
-  the field's format; through a pointer subject it writes where the pointer
-  leads at that frame, and a frame whose pointer is null writes nothing
-  (counted as skipped).
+  a run frame to test a hypothesis; keep an unmodified control run.
 - trace writes trace.txt (windowed by trace_from_frame / trace_range),
   coverage.txt, code.bin (each RAM page's history: a copy when code first
   runs in it, another whenever code runs in it after it changed, and one

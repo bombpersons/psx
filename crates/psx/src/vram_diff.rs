@@ -1,9 +1,4 @@
-//! `psx gpu-replay` and `psx vram-diff`: replay a recorded GP0 stream into
-//! `psx-gpu`, and compare two VRAM dumps pixel by pixel.
-//!
-//! A stream file is little-endian u32 records `[n, word_1 .. word_n]`, one per
-//! GP0 command, ending at n = 0 or end of file (the format written by
-//! `tools/probes/gpu/gen_stream.py`).
+//! `psx vram-diff`: compare two VRAM dumps pixel by pixel.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -20,24 +15,6 @@ fn d_cell() -> usize {
 }
 fn d_samples() -> usize {
     16
-}
-
-#[derive(clap::Args, Deserialize, JsonSchema)]
-pub struct GpuReplayArgs {
-    /// Recorded GP0 stream of `[n, words..]` u32 records.
-    pub stream: PathBuf,
-    /// Raw VRAM output (1024x512 little-endian halfwords).
-    #[arg(long, short)]
-    pub out: PathBuf,
-    /// Also write the VRAM as a PNG.
-    #[arg(long)]
-    pub png: Option<PathBuf>,
-}
-
-impl Op for GpuReplayArgs {
-    fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::result(replay(&self.stream, &self.out, self.png.as_deref()))
-    }
 }
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
@@ -90,41 +67,6 @@ fn read_vram(path: &Path) -> Result<Vec<u16>> {
         return Err(Error::malformed(format!("{}: {} bytes, expected {}", path.display(), bytes.len(), W * H * 2)));
     }
     Ok(bytes[..W * H * 2].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect())
-}
-
-/// Parse a stream file into commands.
-pub fn read_stream(path: &Path) -> Result<Vec<Vec<u32>>> {
-    let bytes = std::fs::read(path).map_err(|e| Error::io(path, e))?;
-    let words: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
-    let mut cmds = Vec::new();
-    let mut i = 0;
-    while i < words.len() {
-        let n = words[i] as usize;
-        if n == 0 {
-            break;
-        }
-        let end = i + 1 + n;
-        if end > words.len() {
-            return Err(Error::malformed(format!("{}: record at word {i} runs past the end", path.display())));
-        }
-        cmds.push(words[i + 1..end].to_vec());
-        i = end;
-    }
-    Ok(cmds)
-}
-
-pub fn replay(stream: &Path, out: &Path, png: Option<&Path>) -> Result<Value> {
-    let cmds = read_stream(stream)?;
-    let mut gpu = psx_gpu::Gpu::new();
-    for c in &cmds {
-        gpu.gp0_all(c);
-    }
-    std::fs::write(out, gpu.vram.lock().to_bytes()).map_err(|e| Error::io(out, e))?;
-    if let Some(p) = png {
-        crate::run::write_png(p, 1024, 512, &gpu.vram.lock().rgba15(0, 0, 1024, 512), png::ColorType::Rgba)
-            .map_err(|e| Error::io(p, e))?;
-    }
-    Ok(json!({"commands": cmds.len(), "vram": out, "png": png}))
 }
 
 pub struct DiffArgs<'a> {

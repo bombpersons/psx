@@ -36,11 +36,11 @@ assets_extract entry:N writes one complete raw entry without interpreting it
 address mapping for dumps. TMD textures come from this file or extra textures
 sources; texture_parser adapts those sources first.
 
-Custom containers, compression and models need format evidence. Generate a
-working scaffold with template_parser_create: archive parsers index unchanged
+Custom containers, compression and models need format evidence. An external
+parser (docs/external-parsers.md) is any executable: archive parsers index unchanged
 source spans; asset parsers unwrap/decompress standard payloads or raw VRAM
 uploads; model parsers produce validated geometry. Parser flags have separate
-roles; consult the generated protocol rather than copying internal Rust structs
+roles; consult the protocol rather than copying internal Rust structs
 into JSON. Inspect errors and stderr; do not silently fall back after a parser
 failure. Retain original offsets, hashes and parser provenance.
 

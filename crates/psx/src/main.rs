@@ -15,13 +15,11 @@ mod assets_cmd;
 mod binding;
 mod bios;
 mod bound_symbols;
-mod case;
 mod code;
 mod commands;
 mod context;
 mod coverage;
 mod error;
-mod fieldmap;
 mod front_matter;
 mod ghidra;
 mod guide;
@@ -33,7 +31,6 @@ mod moved;
 mod native;
 mod page;
 mod parser;
-mod parser_template;
 mod port;
 mod provenance;
 mod ram;
@@ -113,7 +110,7 @@ enum Command {
     Textures(textures::TexturesArgs),
     /// Describe sectors: form, XA subheader, owning file and a hex preview.
     Sector(media_cmd::SectorArgs),
-    /// Create a native Bevy game starter or an external parser starter.
+    /// Create a native Bevy game starter, or update or adopt one.
     Template {
         #[command(subcommand)]
         action: TemplateAction,
@@ -128,13 +125,6 @@ enum Command {
     Handoff(handoff::HandoffArgs),
     /// Progress or result of a handoff: waiting, done, declined, closed or abandoned.
     HandoffStatus(handoff::HandoffStatusArgs),
-    /// Record a case (start state, input and a field map subject in; the case's JSON,
-    /// observation CSV with the tick column, and a recipe out), or check cases by
-    /// recording them again.
-    Case {
-        #[command(subcommand)]
-        action: CaseAction,
-    },
     /// A port: its workspace, goal and catalogue.
     Port {
         #[command(subcommand)]
@@ -174,9 +164,6 @@ enum Command {
         #[command(subcommand)]
         action: RamAction,
     },
-    /// Replay a recorded GP0 stream (`[n, words..]` u32 records, e.g. tools/probes/gpu/gp0_stream.bin)
-    /// into a fresh psx-gpu and write the resulting VRAM.
-    GpuReplay(vram_diff::GpuReplayArgs),
     /// Compare two raw VRAM dumps (vram.bin) pixel by pixel.
     VramDiff(vram_diff::VramDiffArgs),
     /// Classify a CPU address (segment, region, folded offset).
@@ -193,8 +180,6 @@ enum TemplateAction {
     Update(template::TemplateUpdateArgs),
     /// Start tracking an existing template workspace (writes .psx-template.toml).
     Adopt(template::TemplateAdoptArgs),
-    /// Write a working external parser, authored fixture and protocol docs.
-    Parser(parser_template::ParserTemplateArgs),
 }
 
 #[derive(Subcommand)]
@@ -237,14 +222,6 @@ enum ScenarioAction {
     Check(scenario::ScenarioCheckArgs),
 }
 
-#[derive(clap::Subcommand)]
-enum CaseAction {
-    /// Record a case: the subject's fields every field from a start state with input.
-    Record(Box<case::CaseRecordArgs>),
-    /// Record cases again from their recipes and compare with their CSVs.
-    Check(case::CaseCheckArgs),
-}
-
 #[derive(Subcommand)]
 enum RamAction {
     /// Values that differ between two ram.bin snapshots (run directories or files).
@@ -262,7 +239,6 @@ impl TemplateAction {
             Self::Create(a) => a.exec(ctx),
             Self::Update(a) => a.exec(ctx),
             Self::Adopt(a) => a.exec(ctx),
-            Self::Parser(a) => a.exec(ctx),
         }
     }
 }
@@ -324,10 +300,6 @@ fn main() -> ExitCode {
         Command::Disasm(a) => a.exec(&ctx),
         Command::Xrefs(a) => a.exec(&ctx),
         Command::Ram { action } => action.exec(&ctx),
-        Command::Case { action } => match action {
-            CaseAction::Record(a) => a.exec(&ctx),
-            CaseAction::Check(a) => a.exec(&ctx),
-        },
         Command::Scenario { action } => match action {
             ScenarioAction::Record(a) => a.exec(&ctx),
             ScenarioAction::Check(a) => a.exec(&ctx),
@@ -347,7 +319,6 @@ fn main() -> ExitCode {
             StatesAction::List(a) => a.exec(&ctx),
             StatesAction::Rebuild(a) => a.exec(&ctx),
         },
-        Command::GpuReplay(a) => a.exec(&ctx),
         Command::VramDiff(a) => a.exec(&ctx),
         Command::Addr(a) => a.exec(&ctx),
     };

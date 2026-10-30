@@ -18,8 +18,8 @@ directory.
 Typical routes:
 - Setup: context -> disc -> ls / exe -> a bounded run with checkpoints.
 - Gameplay: from_state + input variations -> ram_diff / ram_search -> sample /
-  watch -> disasm / Ghidra -> poke to test a hypothesis. Name what you find in
-  a field map (samples.toml), with the game's tick, so samples carry names.
+  watch -> disasm / Ghidra -> poke to test a hypothesis. Name what a port
+  compares in the glossary, with the game's tick (docs/scenarios.md).
 - Assets: filtered assets_scan -> assets_extract; use an external parser for
   custom formats. GPU captures and textures provide visual reference.
 - Rebuild: template_create -> decoded assets and idiomatic Bevy rules -> compare

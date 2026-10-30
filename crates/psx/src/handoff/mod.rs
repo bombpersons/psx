@@ -67,34 +67,24 @@ pub struct HandoffArgs {
     #[arg(long)]
     #[serde(default)]
     pub detach: bool,
-    /// The end state asked for, as run's until (`NAME=VALUE`); repeatable. The result says
+    /// The end state asked for, as run's until (`ADDR:FMT=VALUE`); repeatable. The result says
     /// whether each holds and whether to ask again.
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect: Vec<String>,
-    /// Field map (default samples.toml).
-    #[arg(long)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub map: Option<PathBuf>,
 }
 
-/// The expect conditions, and the map they were read from.
-fn expectations(a: &HandoffArgs) -> crate::Result<(Option<PathBuf>, Vec<crate::until::Until>)> {
-    if a.expect.is_empty() {
-        return Ok((None, Vec::new()));
-    }
-    let map = crate::fieldmap::FieldMap::load(a.map.as_deref()).map_err(Error::invalid)?;
-    let conds = a.expect.iter().map(|s| crate::until::parse(s, map.as_ref()));
-    let conds =
-        conds.collect::<Result<Vec<_>, _>>().map_err(|e| Error::invalid(e.replacen("--until", "--expect", 1)))?;
-    Ok((map.map(|m| std::path::absolute(&m.path).unwrap_or(m.path)), conds))
+/// The expect conditions.
+fn expectations(a: &HandoffArgs) -> crate::Result<Vec<crate::until::Until>> {
+    let conds = a.expect.iter().map(|s| crate::until::parse(s));
+    conds.collect::<Result<Vec<_>, _>>().map_err(|e| Error::invalid(e.replacen("--until", "--expect", 1)))
 }
 
 /// Whether the end state is what was asked for, and what to do about it.
 fn expect_report(a: &HandoffArgs, m: &Machine, end: End) -> Value {
     let conds = match expectations(a) {
-        Ok((_, c)) if c.is_empty() => return Value::Null,
-        Ok((_, c)) => c,
+        Ok(c) if c.is_empty() => return Value::Null,
+        Ok(c) => c,
         Err(e) => return e.to_value(),
     };
     let mut v = crate::until::check(&conds, &m.bus.ram, &m.bus.scratch);
@@ -143,7 +133,7 @@ impl HandoffArgs {
         a.bios = resolved.bios.map(|p| std::path::absolute(p).unwrap_or_default());
         a.from_state = a.from_state.map(|p| std::path::absolute(p).unwrap_or_default());
         // A bad condition fails now, not after the person has played.
-        a.map = expectations(&a)?.0;
+        expectations(&a)?;
         can_open_window()?;
         let dir = a.out.clone().unwrap_or_else(|| {
             ctx.root.join(".psx/handoffs").join(format!(
@@ -794,18 +784,12 @@ mod tests {
 
     #[test]
     fn expect_conditions_are_read_before_the_window_opens() {
-        let dir = std::env::temp_dir().join(format!("psx-handoff-expect-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let map = dir.join("samples.toml");
-        std::fs::write(&map, "[globals]\nlevel = \"80010000:u8\"\n").unwrap();
         let args = |expect: &str| -> HandoffArgs {
-            serde_json::from_value(json!({"request": "x", "expect": [expect], "map": map})).unwrap()
+            serde_json::from_value(json!({"request": "x", "expect": [expect]})).unwrap()
         };
-        let (path, conds) = expectations(&args("level=3")).unwrap();
-        assert_eq!((path.unwrap(), conds.len()), (map.clone(), 1));
+        assert_eq!(expectations(&args("80010000:u8=3")).unwrap().len(), 1);
         let e = expectations(&args("stage=3")).unwrap_err();
-        assert!(e.message.starts_with("--expect") && e.message.contains("level"), "{}", e.message);
-        std::fs::remove_dir_all(dir).unwrap();
+        assert!(e.message.starts_with("--expect") && e.message.contains("stage"), "{}", e.message);
     }
 
     #[test]
@@ -842,7 +826,6 @@ mod tests {
             verify: true,
             detach: false,
             expect: vec!["80000000:u32>=0".into(), "80000000:u32<0".into()],
-            map: None,
         };
         let mut s = start(&a).unwrap();
         let cross = psx_core::sio0::button::CROSS;

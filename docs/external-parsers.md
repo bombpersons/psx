@@ -2,31 +2,18 @@
 
 Keep standard PS1 formats and reusable exporters in the toolkit. For a game-specific format, write a small executable implementing one of these contracts; no rebuild or plugin registration is needed. Parsers can be Python scripts, Rust binaries or any other executable. Existing built-in DOT-T/Croc indexes, VAB body handling and FF7 frame prefix handling remain available.
 
-Generate a working Python starter, authored sample and a copy of this document:
+`crates/psx/tests/parsers/` has one small working parser of each kind (Python 3, standard library only), which psx's tests run against authored samples; the sample formats (TRI1, ARC1, WRAP and VBS1) are test fixtures, not claims about real games.
 
 ```sh
-psx template parser parsers/my-model --kind model
-psx template parser parsers/my-archive --kind archive
-psx template parser parsers/my-wrapper --kind asset
-psx template parser parsers/my-frame --kind video
-```
-
-The destination must be new or empty. Python 3 is needed to run these starters. Other languages can use the same protocol. The sample formats (TRI1, ARC1, WRAP and VBS1) are teaching fixtures, not claims about real games. The archive sample contains the model sample and an empty entry, so the two starters can be chained.
-
-```sh
-psx assets scan parsers/my-archive/sample.bin \
-  --archive-parser ./parsers/my-archive/parser.py \
-  --model-parser ./parsers/my-model/parser.py --json
-psx assets extract parsers/my-archive/sample.bin \
-  --archive-parser ./parsers/my-archive/parser.py \
-  --model-parser ./parsers/my-model/parser.py -o converted
+psx assets scan archive.bin --archive-parser ./archive.py --model-parser ./model.py --json
+psx assets extract archive.bin --archive-parser ./archive.py --model-parser ./model.py -o converted
 psx assets extract packed-bank.bin --asset-parser ./unpack-bank -o sound
 psx str disc.cue::/MOVIE.STR --frame-parser ./unwrap-frame -o movie
 ```
 
 Pass arguments with repeated `--archive-parser-arg=VALUE`, `--model-parser-arg=VALUE`, `--asset-parser-arg=VALUE` or `--frame-parser-arg=VALUE`. The executable is launched directly; arguments are literal, with no shell expansion. Use `./parser.py` or an absolute path for an executable outside PATH. A parser is explicitly selected; there is no automatic execution based on file contents. It runs with the caller's permissions. Supervision is not a sandbox.
 
-MCP offers `template_parser_create` with `dest` and `kind`. `assets_scan` / `assets_extract` accept `archive_parser`, `archive_parser_args`, `model_parser`, `model_parser_args`, `asset_parser`, `asset_parser_args`. Extraction also accepts `texture_parser`, `texture_parser_args` for its `textures` sources. `str` accepts `frame_parser`, `frame_parser_args`. Argument lists are arrays of strings. All accept `parser_timeout` (default 30 seconds per invocation, range 1–300).
+Over MCP, `assets_scan` / `assets_extract` accept `archive_parser`, `archive_parser_args`, `model_parser`, `model_parser_args`, `asset_parser`, `asset_parser_args`. Extraction also accepts `texture_parser`, `texture_parser_args` for its `textures` sources. `str` accepts `frame_parser`, `frame_parser_args`. Argument lists are arrays of strings. All accept `parser_timeout` (default 30 seconds per invocation, range 1–300).
 
 ## Transport and supervision
 
