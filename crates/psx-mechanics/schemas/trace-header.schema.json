@@ -149,9 +149,15 @@
             "$ref": "#/$defs/Value"
           },
           "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/Value"
+          },
+          "type": "object"
         }
       ],
-      "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; or a table's elements."
+      "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; a table's or list's elements; or a record's fields."
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

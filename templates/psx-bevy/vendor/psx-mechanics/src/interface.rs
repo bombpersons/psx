@@ -78,7 +78,9 @@ impl Interface {
                         problems.push(format!("{at}.{side}.{f}: not a name ([a-z][a-z0-9_]*)"));
                     }
                     match field.ty() {
-                        Ok(Type::Table { .. }) => problems.push(format!("{at}.{side}.{f}: tables are for params")),
+                        Ok(t) if t.is_data() => {
+                            problems.push(format!("{at}.{side}.{f}: tables, lists and records are for params"))
+                        }
                         Ok(t) => {
                             m.insert(f.clone(), t);
                         }

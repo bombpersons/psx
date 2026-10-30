@@ -44,7 +44,7 @@ impl<L, T> Glossary<L, T> {
     pub fn types(&self) -> BTreeMap<String, Type> {
         self.quantities
             .iter()
-            .filter_map(|(n, f)| f.ty().ok().filter(|t| !matches!(t, Type::Table { .. })).map(|t| (n.clone(), t)))
+            .filter_map(|(n, f)| f.ty().ok().filter(|t| !t.is_data()).map(|t| (n.clone(), t)))
             .collect()
     }
 
@@ -60,7 +60,7 @@ impl<L, T> Glossary<L, T> {
                 p.push(format!("quantities.{n}: not a name ([a-z][a-z0-9_]*)"));
             }
             match f.ty() {
-                Ok(Type::Table { .. }) => p.push(format!("quantities.{n}: tables are for params")),
+                Ok(t) if t.is_data() => p.push(format!("quantities.{n}: tables, lists and records are for params")),
                 Ok(_) => {}
                 Err(e) => p.push(format!("quantities.{n}: {e}")),
             }
@@ -289,7 +289,9 @@ impl Recording {
         let mut types = BTreeMap::new();
         for (n, f) in &h.quantities {
             match f.ty() {
-                Ok(Type::Table { .. }) => p.push(format!("header: quantities.{n}: tables are for params")),
+                Ok(t) if t.is_data() => {
+                    p.push(format!("header: quantities.{n}: tables, lists and records are for params"))
+                }
                 Ok(t) => {
                     types.insert(n.clone(), t);
                 }

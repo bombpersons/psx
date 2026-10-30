@@ -53,9 +53,17 @@ Every state field, input, param and interface field declares a type:
 | `enum` | `variants` (names) | the variant's name |
 | `float` | `bits` (32, 64 or 80) | its bit pattern, as an unsigned integer |
 | `table` | `of` (an element type, not a table), `len` | a list of `len` raw values; params only |
+| `list` | `of` (an element type) | a list of raw values, of any length; params only |
+| `record` | `fields` (names to types) | an object of raw values by name; params only |
 
 Any type may add `unit` (`"units/tick"`, `"angle/4096"`) and `description`;
 both are documentation only.
+
+Lists and records hold data the step reads but never changes, such as a
+level's collision polygons. They describe that data in the game's terms
+(pieces, polygons, edges), not its memory layout. Pointers, counts that
+only say how long a list is, strides and padding belong to the binding.
+Declare only the fields the step reads.
 
 **Raw values** are always exact. In JSON, an integer outside ±2^53 is written
 as a decimal string (`"1152921504606846976"`). A JSON string is read as a
@@ -99,6 +107,10 @@ signed = false
 type = "table"
 len = 8
 of = { type = "fixed", signed = false, int_bits = 4, frac_bits = 12 }
+
+[params.pieces]              # the level's placed pieces, in the game's order
+type = "list"
+of = { type = "record", fields = { heading = { type = "int", bits = 16, signed = false }, x = { type = "int", bits = 32, signed = true }, z = { type = "int", bits = 32, signed = true } } }
 ```
 
 - **The three kinds of field.**
@@ -197,9 +209,22 @@ target = 35                  # a value
 parts = [{ at = { base = "a0", offset = 0x1C }, bytes = 2 }]
 stride = 2
 
+[params.pieces]              # or data: where it starts, and its layout from there
+at = { address = 0x8007515C }
+follow = [0]                 # the header the word there points to
+[params.pieces.layout]
+count = { parts = [{ at = { offset = 0x6C }, bytes = 2 }] }
+follow = [0x54]              # the elements, through the header's word at +0x54
+stride = 0x18
+[params.pieces.layout.of.fields]
+heading = { parts = [{ at = { offset = 2 }, bytes = 2 }] }
+x = { parts = [{ at = { offset = 8 }, bytes = 4 }], stored_signed = true }
+z = { parts = [{ at = { offset = 0x10 }, bytes = 4 }], stored_signed = true }
+
 [params_provenance]
 target = "immediate operand at 0x800437F8"
 curve = "the object's record, from LEVEL.BIN"
+pieces = "MAPS/MP010_00.MAP, as the loader places it"
 
 [interfaces."world.floor-height@1".height]
 on = { entry = { pc = 0x80051A00 } }
@@ -251,12 +276,30 @@ Each field is read from its `parts`, as follows:
    needs it; a `bool` may use it, and is otherwise true when nonzero.
 7. A `float` is read whole, with no mask, shift or sign extension.
 
-**A param** is either a raw value or a read. Capture reads it once, at the
+**A param** is a raw value, a read or data. Capture reads it once, at the
 first step's start, and the trace's header holds the values either way. For a
 table param, `parts` reads the first element, and the others follow every
 `stride` bytes (by default, the size of the parts). Constants in the code go
 in as values; values the game loads, such as a car's gear ratios, are read,
 so every trace carries the values of the run it came from.
+
+**Data** reads a list, a record, or a table of records, laid out in memory:
+
+- `at` is where it starts: an address, or a base and offset. `follow`
+  lists pointers to take first: at each offset in turn, the 4-byte address
+  held there becomes the base.
+- `layout` says where the value lies from that base:
+  - a field: `parts` whose `at` is `{ offset }` from the base, read as
+    above;
+  - a record: `fields`, each laid out from the same base;
+  - a table or list: `stride` and `of` (each element, from its own start).
+    `follow` and `offset` lead from the base to the first element. A list
+    reads its length from `count`, a field from the base; when it is 0,
+    no pointer is followed.
+- The read audit accounts for every byte data reads: the pointers, the
+  counts and the declared fields. A field the step reads but the layout
+  leaves out stays in the audit, so the mechanic declares it.
+- Capture refuses a null pointer, or a count over 65536.
 
 ### PlayStation vocabulary
 
@@ -478,6 +521,9 @@ writes each feature's replay verdict:
   recorded one only when it is that integer.
 - **The adapter is checked.** It must read every param, input and observed
   state field, and record every observed state field.
+- **Lists and records** read into the port's own types: `Vec<T>` for a
+  list, and a struct whose `Field::from_value` takes its fields with
+  `replay::fields(v)`.
 - **A used mechanic** is a call too. The port's step calls the used
   mechanic through a trait. The game's implementation runs the port's
   own step. The adapter's implementation queries `<id>@<version>` `step`
@@ -510,7 +556,8 @@ A mechanic counts as **captured** (stage 2 of its feature) when:
   (no `bindings/<release>.toml`), and there is no `game.toml`. Interfaces
   are `interfaces/<id>.toml`. `step.md` becomes `NOTES.md`: the port's code
   is the step, proven by the traces.
-- **New types.** `float` carried as its bit pattern, and `table` for params.
+- **New types.** `float` carried as its bit pattern, and `table`, `list` and
+  `record` for params.
 - **Params.** A param is a value or a location read at the first step's
   start, with `stride` for tables.
 - **Calls** are of kind `query` or `command`. Random numbers are a query

@@ -57,7 +57,7 @@ stored_signed = true
     when the drawing rate changes. Check that a compared quantity changes
     only on that store, and pick a store at the end of the step.
 - **`quantities`** declare each quantity's type as mechanic fields do
-  (`int`, `fixed`, `bool`, `enum`, `float`; no tables). They also give its
+  (`int`, `fixed`, `bool`, `enum`, `float`; no tables, lists or records). They also give its
   `unit` and a `description` in game terms.
 - **`bindings`** say where each quantity is, as a binding's `Read` does
   (parts, mask, shift, `stored_signed`, `map`, `stored_frac_bits`). A part's

@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use psx_core::Machine;
 use psx_core::cpu::MemAccess;
-use psx_mechanics::binding::{CallBinding, Encoding, Param, Read};
+use psx_mechanics::binding::{CallBinding, Data, DataReader, Encoding, Param, Read};
 use psx_mechanics::interface::CallKind;
 use psx_mechanics::trace::{Audit, Call, Coverage, Full, Header, Producer, Source, SourceKind};
 use psx_mechanics::{Interface, Mechanic, Trace, Type, Value, Values};
@@ -150,6 +150,19 @@ impl View<'_> {
                 }
             }
         }
+    }
+
+    /// A data param's value, and every `(address, bytes)` it read.
+    fn data(&self, d: &Data<Location>, ty: &Type) -> Result<(Value, Vec<(u32, u32)>), String> {
+        let at = match d.at {
+            Location::Address { address } => address,
+            Location::Base { base, offset } => self.latched[base as usize].wrapping_add(offset as u32),
+            _ => return Err("at: an address, or a base and offset".into()),
+        };
+        let mut fetch = |a: u32, n: u32| self.memory(a, n);
+        let mut r = DataReader { endian: Psx::ENDIAN, fetch: &mut fetch, read: Vec::new() };
+        let v = d.decode(ty, at, &mut r)?;
+        Ok((v, r.read))
     }
 
     pub(crate) fn read(&self, r: &Read<Location>, ty: &Type) -> Result<Value, String> {
@@ -392,6 +405,9 @@ pub(crate) struct Plan<'a> {
     /// Params given as values; those read are added at the first step.
     params: Values,
     param_reads: Fields<'a>,
+    /// Data params: read at the first step's start, their bytes accounted
+    /// for in every step.
+    param_data: Vec<(&'a String, &'a Data<Location>, Type)>,
     specs: Vec<CallSpec<'a>>,
     /// PC -> what it stands for, and the code that must be there.
     sites: HashMap<u32, Vec<(Site, Option<&'a Resident>)>>,
@@ -467,12 +483,14 @@ impl<'a> Plan<'a> {
         let inputs: Fields = b.inputs.iter().map(|(n, r)| (n, r, types.inputs[n].clone())).collect();
         let mut params = Values::new();
         let mut param_reads: Fields = Vec::new();
+        let mut param_data = Vec::new();
         for (name, p) in &b.params {
             match p {
                 Param::Value(v) => {
                     params.insert(name.clone(), v.clone());
                 }
                 Param::Read(r) => param_reads.push((name, r, types.params[name].clone())),
+                Param::Data(d) => param_data.push((name, d, types.params[name].clone())),
             }
         }
         let mut specs: Vec<CallSpec> = Vec::new();
@@ -557,6 +575,11 @@ impl<'a> Plan<'a> {
             }
         }
         let mut registers: u64 = filters.iter().map(|(r, _)| 1u64 << r).sum::<u64>();
+        for (_, d, _) in &param_data {
+            if let Location::Base { base, .. } = d.at {
+                registers |= 1 << base as u32;
+            }
+        }
         registers |= bases.iter().map(|r| 1u64 << *r as u32).sum::<u64>();
         let mut gte: u64 = 0;
         for (at, _) in begin_reads.iter().chain(&explained) {
@@ -599,6 +622,7 @@ impl<'a> Plan<'a> {
             inputs,
             params,
             param_reads,
+            param_data,
             specs,
             sites,
             filters,
@@ -630,7 +654,7 @@ pub(crate) fn record(
     events: &[crate::replay::Input],
     deadline: std::time::Duration,
 ) -> crate::Result<Recorded> {
-    let Plan { state, inputs, param_reads, specs, sites, filters, end, .. } = plan;
+    let Plan { state, inputs, param_reads, param_data, specs, sites, filters, end, .. } = plan;
     let mut params = plan.params.clone();
     let started = Instant::now();
     let start_frame = m.bus.frames;
@@ -728,7 +752,20 @@ pub(crate) fn record(
             let view = View { m, now: &now, latched: &now, load: None };
             let k = n + (open.is_some() && !ends) as u64;
             let first = steps.is_empty() && open.is_none();
-            let p = first.then(|| read_all(param_reads, &view, "params", "begin", k, &mut tentative));
+            let p = first.then(|| {
+                let mut ranges = Vec::new();
+                let mut p = read_all(param_reads, &view, "params", "begin", k, &mut tentative);
+                for (name, d, ty) in param_data {
+                    match view.data(d, ty) {
+                        Ok((v, r)) => {
+                            p.insert((*name).clone(), v);
+                            ranges.extend(r);
+                        }
+                        Err(e) => tentative.push(k, "begin", format!("params.{name}"), e),
+                    }
+                }
+                (p, ranges)
+            });
             let i = read_all(inputs, &view, "inputs", "begin", k, &mut tentative);
             let s = read_all(state, &view, "state", "begin", k, &mut tentative);
             let bytes: Vec<(u32, u32, String)> = state
@@ -807,9 +844,10 @@ pub(crate) fn record(
                 // Next begin: the step ends where the next one begins.
                 close_with(o, s.clone(), &mut steps, specs, &mut refusals, &mut tracker);
             }
-            if let Some(p) = p {
+            let data = p.map(|(p, ranges)| {
                 params.extend(p);
-            }
+                ranges
+            });
             open = Some(Open {
                 latched: now,
                 frame: m.bus.frames - start_frame,
@@ -820,6 +858,9 @@ pub(crate) fn record(
                 state_bytes: bytes,
             });
             tracker.open(m, &now);
+            if let Some(ranges) = data {
+                tracker.account(&ranges);
+            }
         }
         if let (Some(p), Some(o)) = (entering, open.as_mut()) {
             // A used mechanic's request is its own binding's to account for;
@@ -1171,6 +1212,38 @@ end = { pc = 0x8001012C }
             machine.bus.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
         }
         let r = record(&mut machine, &plan, 1, &[], std::time::Duration::from_secs(60)).unwrap();
+        let found: Vec<Json> = r.audit.unaccounted.iter().map(|f| json!(f)).collect();
+        assert_eq!(found.len(), 1, "only s0 is left: {found:?}");
+        assert_eq!(found[0]["at"]["register"], "s0");
+    }
+
+    #[test]
+    fn a_data_param_accounts_for_its_pointers_counts_and_fields() {
+        // The step reads 8(a0) and uses it; a list found through the word at
+        // 0x80020100 holds it: its count at +0x10, its one element at +8.
+        let patches: [(u32, u32); 2] = [(0x8001_010C, 0x8C89_0008), (0x8001_0118, 0x0130_2821)];
+        let mechanic = format!(
+            "{MECHANIC}params.d = {{ type = \"list\", of = {{ type = \"record\", fields = {{ v = {{ type = \"int\", bits = 32, signed = true }} }} }} }}\n"
+        );
+        let binding = BINDING.replacen(
+            "\n[interfaces.",
+            "\n[params.d]\nat = { address = 0x80020100 }\nfollow = [0]\nlayout = { count = { parts = [{ at = { offset = 0x10 }, bytes = 1 }] }, offset = 8, stride = 4, of = { fields = { v = { parts = [{ at = { offset = 0 }, bytes = 4 }] } } } }\n\n[interfaces.",
+            1,
+        );
+        let (m, i) = (Mechanic::parse(&mechanic).unwrap(), vec![Interface::parse(WORLD).unwrap()]);
+        let b: Binding = toml::from_str(&binding).unwrap();
+        assert!(matches!(b.params["d"], Param::Data(_)));
+        assert_eq!(b.check::<Psx>(&m, &i), Vec::<String>::new());
+        let residents = vec![];
+        let plan = Plan::new(&m, &b, &i, &[], &residents);
+        let mut machine = machine(&ADD);
+        for (at, w) in patches.into_iter().chain([(0x8002_0008, 5), (0x8002_0010, 1), (0x8002_0100, 0x8002_0000)]) {
+            let o = (at & 0x1F_FFFF) as usize;
+            machine.bus.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        let r = record(&mut machine, &plan, 1, &[], std::time::Duration::from_secs(60)).unwrap();
+        assert_eq!(r.refusals.count, 0, "{:?}", r.refusals.listed);
+        assert_eq!(json!(r.params["d"]), json!([{"v": 5}]));
         let found: Vec<Json> = r.audit.unaccounted.iter().map(|f| json!(f)).collect();
         assert_eq!(found.len(), 1, "only s0 is left: {found:?}");
         assert_eq!(found[0]["at"]["register"], "s0");

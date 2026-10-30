@@ -175,6 +175,9 @@ pub struct Tracker<'a> {
     regs: [From; 34],
     gte: [From; 64],
     accounted: Vec<(u32, u32)>,
+    /// Data params' bytes, pointers and counts included: sorted, disjoint
+    /// `(start, end)` ranges, accounted for in every step.
+    data: Vec<(u32, u32)>,
     written: HashSet<u32>,
     by_call: HashMap<u32, usize>,
     /// Stack words holding a register saved before the step wrote it, or
@@ -213,6 +216,7 @@ impl<'a> Tracker<'a> {
             regs: [From::Before; 34],
             gte: [From::Before; 64],
             accounted: Vec::new(),
+            data: Vec::new(),
             written: HashSet::new(),
             by_call: HashMap::new(),
             saved: HashMap::new(),
@@ -260,6 +264,24 @@ impl<'a> Tracker<'a> {
         if self.code.is_none() {
             self.code = Some(m.bus.ram.to_vec());
         }
+    }
+
+    /// Data params read these `(address, bytes)` ranges.
+    pub fn account(&mut self, ranges: &[(u32, u32)]) {
+        let mut all = std::mem::take(&mut self.data);
+        all.extend(ranges.iter().map(|&(a, n)| (fold(a), fold(a) + n)));
+        all.sort_unstable();
+        for (s, e) in all {
+            match self.data.last_mut() {
+                Some(last) if s <= last.1 => last.1 = last.1.max(e),
+                _ => self.data.push((s, e)),
+            }
+        }
+    }
+
+    fn in_data(&self, b: u32) -> bool {
+        let i = self.data.partition_point(|&(s, _)| s <= b);
+        i > 0 && b < self.data[i - 1].1
     }
 
     /// The step ends: its findings count.
@@ -323,7 +345,10 @@ impl<'a> Tracker<'a> {
         if region.is_empty() {
             for k in 0..width {
                 let b = fold(addr.wrapping_add(k));
-                if self.written.contains(&b) || self.accounted.iter().any(|&(s, e)| (s..e).contains(&b)) {
+                if self.written.contains(&b)
+                    || self.accounted.iter().any(|&(s, e)| (s..e).contains(&b))
+                    || self.in_data(b)
+                {
                     continue;
                 }
                 bytes.push((k, self.by_call.get(&b).map_or(From::Before, |&c| From::Call(c))));

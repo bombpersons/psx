@@ -107,14 +107,25 @@ pub enum Raw {
     Exact(Value),
     /// An `f32` port's number in raw units: the real value × 2^frac_bits.
     Approx(f64),
-    /// A table's elements.
+    /// A table's or list's elements.
     List(Vec<Raw>),
+    /// A record's fields.
+    Record(Record),
 }
 
 impl Raw {
     /// A variant, for an enum's [`Field::to_raw`].
     pub fn variant(name: &str) -> Raw {
         Raw::Exact(Value::Variant(name.into()))
+    }
+}
+
+/// A record's fields, for a record's [`Field::from_value`]:
+/// `let f = fields(v)?; Ok(Piece { x: f.get("x")?, .. })`.
+pub fn fields(v: &Value) -> Result<Fields<'_>, String> {
+    match v {
+        Value::Record(r) => Ok(Fields::new(r)),
+        v => Err(format!("{} is not a record", describe(v))),
     }
 }
 
@@ -291,14 +302,21 @@ pub(crate) fn diff(port: &Raw, trace: &Value) -> Diff {
         (Raw::Approx(a), Value::Int(b)) if *a == *b as f64 => Diff::Equal,
         (Raw::Approx(a), Value::Int(b)) => Diff::Off((a - *b as f64).abs()),
         (Raw::List(a), Value::List(b)) if a.len() == b.len() => {
-            a.iter().zip(b).fold(Diff::Equal, |worst, (x, y)| match (worst, diff(x, y)) {
-                (Diff::Other, _) | (_, Diff::Other) => Diff::Other,
-                (Diff::Off(p), Diff::Off(q)) => Diff::Off(p.max(q)),
-                (Diff::Off(p), Diff::Equal) | (Diff::Equal, Diff::Off(p)) => Diff::Off(p),
-                (Diff::Equal, Diff::Equal) => Diff::Equal,
-            })
+            a.iter().zip(b).fold(Diff::Equal, |worst, (x, y)| worse(worst, diff(x, y)))
+        }
+        (Raw::Record(Record(a)), Value::Record(b)) if a.keys().eq(b.keys()) => {
+            a.iter().zip(b.values()).fold(Diff::Equal, |worst, ((_, x), y)| worse(worst, diff(x, y)))
         }
         _ => Diff::Other,
+    }
+}
+
+fn worse(a: Diff, b: Diff) -> Diff {
+    match (a, b) {
+        (Diff::Other, _) | (_, Diff::Other) => Diff::Other,
+        (Diff::Off(p), Diff::Off(q)) => Diff::Off(p.max(q)),
+        (Diff::Off(p), Diff::Equal) | (Diff::Equal, Diff::Off(p)) => Diff::Off(p),
+        (Diff::Equal, Diff::Equal) => Diff::Equal,
     }
 }
 
@@ -307,6 +325,9 @@ pub(crate) fn show(r: &Raw) -> String {
         Raw::Exact(v) => describe(v),
         Raw::Approx(x) => format!("{x}"),
         Raw::List(l) => format!("[{}]", l.iter().map(show).collect::<Vec<_>>().join(", ")),
+        Raw::Record(Record(r)) => {
+            format!("{{{}}}", r.iter().map(|(k, v)| format!("{k}: {}", show(v))).collect::<Vec<_>>().join(", "))
+        }
     }
 }
 
@@ -949,6 +970,37 @@ kind = "query"
 request.x = { type = "int", bits = 32, signed = true }
 response.y = { type = "int", bits = 32, signed = true }
 "#;
+
+    /// A record param read into the port's own struct.
+    #[derive(Clone, Debug, PartialEq)]
+    struct Piece {
+        x: i32,
+        edges: Vec<u8>,
+    }
+
+    impl Field for Piece {
+        fn from_value(v: &Value) -> Result<Self, String> {
+            let f = fields(v)?;
+            Ok(Piece { x: f.get("x")?, edges: f.get("edges")? })
+        }
+        fn to_raw(&self) -> Raw {
+            let mut r = Record::default();
+            r.put("x", &self.x);
+            r.put("edges", &self.edges);
+            Raw::Record(r)
+        }
+    }
+
+    #[test]
+    fn lists_of_records_read_into_the_ports_structs() {
+        let v: Value = serde_json::from_str(r#"[{"x": -3, "edges": [1, 2]}, {"x": 7, "edges": []}]"#).unwrap();
+        let pieces = Vec::<Piece>::from_value(&v).unwrap();
+        assert_eq!(pieces, vec![Piece { x: -3, edges: vec![1, 2] }, Piece { x: 7, edges: vec![] }]);
+        assert!(matches!(diff(&pieces.to_raw(), &v), Diff::Equal));
+        let bad: Value = serde_json::from_str(r#"[{"x": 1, "edges": [300]}]"#).unwrap();
+        assert_eq!(Vec::<Piece>::from_value(&bad), Err("[0]: edges: [0]: 300 does not fit the port's u8".into()));
+        assert_eq!(show(&pieces[1].to_raw()), "{edges: [], x: 7}");
+    }
 
     #[derive(Clone, Copy, Debug, Default, PartialEq)]
     enum Mode2 {

@@ -104,6 +104,80 @@
       ],
       "type": "object"
     },
+    "Data": {
+      "additionalProperties": false,
+      "description": "A table, list or record param as it lies in memory: where it starts,\nand its layout from there.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Location"
+        },
+        "follow": {
+          "description": "Pointers to follow from `at` first: at each offset in turn, the\naddress held there (a 4-byte word) becomes the base.",
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "layout": {
+          "$ref": "#/$defs/Layout"
+        }
+      },
+      "required": [
+        "at",
+        "layout"
+      ],
+      "type": "object"
+    },
+    "Elements": {
+      "additionalProperties": false,
+      "description": "A table's or list's elements.",
+      "properties": {
+        "count": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Read2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A list's length, read from the base (a table's is its type's)."
+        },
+        "follow": {
+          "description": "Pointers to follow from the base to the elements, as `Data::follow`.",
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "of": {
+          "$ref": "#/$defs/Layout",
+          "description": "Each element, from its own start."
+        },
+        "offset": {
+          "default": 0,
+          "description": "Where the first element starts, after `follow`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stride": {
+          "description": "Bytes from one element to the next.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stride",
+        "of"
+      ],
+      "type": "object"
+    },
     "Encoding": {
       "anyOf": [
         {
@@ -182,6 +256,20 @@
         "why"
       ],
       "type": "object"
+    },
+    "Layout": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Read2"
+        },
+        {
+          "$ref": "#/$defs/Elements"
+        },
+        {
+          "$ref": "#/$defs/RecordLayout"
+        }
+      ],
+      "description": "Where a value lies relative to a base address: a field read at\noffsets, a table or list of elements, or a record of fields."
     },
     "Load": {
       "enum": [
@@ -290,22 +378,58 @@
       ],
       "description": "Where a value is."
     },
+    "Offset": {
+      "additionalProperties": false,
+      "description": "An offset from the base address.",
+      "properties": {
+        "offset": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "offset"
+      ],
+      "type": "object"
+    },
     "Param": {
       "anyOf": [
         {
-          "$ref": "#/$defs/Value"
+          "$ref": "#/$defs/Read"
         },
         {
-          "$ref": "#/$defs/Read"
+          "$ref": "#/$defs/Data"
+        },
+        {
+          "$ref": "#/$defs/Value"
         }
       ],
-      "description": "A param: its value, or where to read it."
+      "description": "A param: where to read it, how its data lies in memory, or its value."
     },
     "Part": {
       "additionalProperties": false,
       "properties": {
         "at": {
           "$ref": "#/$defs/Location"
+        },
+        "bytes": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "at",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "Part2": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Offset"
         },
         "bytes": {
           "format": "uint32",
@@ -425,6 +549,106 @@
       ],
       "type": "object"
     },
+    "Read2": {
+      "additionalProperties": false,
+      "description": "How a field's raw value is read: each part in order, first part most\nsignificant, then `mask`, `shift`, sign extension, rescaling and `map`.",
+      "properties": {
+        "endian": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Endian"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The parts' byte order; the platform's when left out."
+        },
+        "map": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Value"
+          },
+          "description": "`enum` (required) and `bool`: stored integer (decimal) -> value.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "mask": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Value"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Applied to the concatenated parts, before `shift`."
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parts": {
+          "items": {
+            "$ref": "#/$defs/Part2"
+          },
+          "type": "array"
+        },
+        "shift": {
+          "description": "Right shift after `mask`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stored_frac_bits": {
+          "description": "`fixed`: the stored fraction bits, when they differ from the\nmechanic's. Capture refuses a rescale that loses bits.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stored_signed": {
+          "description": "Sign-extend from the read width (the mask's, or the parts').",
+          "type": "boolean"
+        },
+        "stride": {
+          "description": "Table params: bytes from one element to the next; the parts read\nthe first. Defaults to the parts' size.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "parts"
+      ],
+      "type": "object"
+    },
+    "RecordLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Layout"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "fields"
+      ],
+      "type": "object"
+    },
     "Reg": {
       "description": "A CPU register, by its conventional name.",
       "enum": [
@@ -526,9 +750,15 @@
             "$ref": "#/$defs/Value"
           },
           "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/Value"
+          },
+          "type": "object"
         }
       ],
-      "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; or a table's elements."
+      "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; a table's or list's elements; or a record's fields."
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

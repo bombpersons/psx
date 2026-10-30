@@ -105,8 +105,8 @@ impl Mechanic {
                     problems.push(format!("{what}.{name}: not a name ([a-z][a-z0-9_]*)"));
                 }
                 match f.ty() {
-                    Ok(Type::Table { .. }) if what != "params" => {
-                        problems.push(format!("{what}.{name}: tables are for params"))
+                    Ok(t) if t.is_data() && what != "params" => {
+                        problems.push(format!("{what}.{name}: tables, lists and records are for params"))
                     }
                     Ok(t) => {
                         into.insert(name.clone(), t);
@@ -298,7 +298,7 @@ of = { type = "int", bits = 8, signed = false }
             m.check(&[]),
             vec![
                 "rate: hz is needed (nominal steps per second)",
-                "inputs.curve: tables are for params",
+                "inputs.curve: tables, lists and records are for params",
                 "tolerance: an exact mechanic has none (make it faithful)",
             ]
         );

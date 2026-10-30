@@ -34,12 +34,15 @@ pub struct Field {
     /// `enum`: the variants' names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variants: Option<Vec<String>>,
-    /// `table`: the element type (not itself a table).
+    /// `table`, `list`: the element type (a table's is not itself a table).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub of: Option<Box<Field>>,
     /// `table`: the number of elements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub len: Option<u32>,
+    /// `record`: its fields, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<BTreeMap<String, Field>>,
     /// Documentation only: `"units"`, `"units/tick"`, `"angle/4096"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
@@ -57,6 +60,10 @@ pub enum Kind {
     Float,
     /// Params only: a fixed-length list of one element type.
     Table,
+    /// Params only: a list of one element type, of any length.
+    List,
+    /// Params only: named fields, each of its own type.
+    Record,
 }
 
 /// The keys each kind needs, for the schema (the same rules as [`Field::ty`]).
@@ -70,6 +77,8 @@ fn field_rules(schema: &mut Schema) {
             need("enum", &["variants"]),
             need("float", &["bits"]),
             need("table", &["of", "len"]),
+            need("list", &["of"]),
+            need("record", &["fields"]),
         ]),
     );
 }
@@ -96,6 +105,10 @@ pub enum Type {
         of: Box<Type>,
         len: u32,
     },
+    List {
+        of: Box<Type>,
+    },
+    Record(BTreeMap<String, Type>),
 }
 
 impl Field {
@@ -109,6 +122,7 @@ impl Field {
             ("variants", self.variants.is_some()),
             ("of", self.of.is_some()),
             ("len", self.len.is_some()),
+            ("fields", self.fields.is_some()),
         ];
         let allowed: &[&str] = match self.kind {
             Kind::Bool => &[],
@@ -117,6 +131,8 @@ impl Field {
             Kind::Enum => &["variants"],
             Kind::Float => &["bits"],
             Kind::Table => &["of", "len"],
+            Kind::List => &["of"],
+            Kind::Record => &["fields"],
         };
         let kind = format!("{:?}", self.kind).to_lowercase();
         if let Some((k, _)) = given.iter().find(|(k, g)| *g && !allowed.contains(k)) {
@@ -176,11 +192,34 @@ impl Field {
                 }
                 Type::Table { of: Box::new(of), len }
             }
+            Kind::List => {
+                let of = self.of.as_ref().unwrap().ty().map_err(|e| format!("list element: {e}"))?;
+                Type::List { of: Box::new(of) }
+            }
+            Kind::Record => {
+                let fields = self.fields.as_ref().unwrap();
+                if fields.is_empty() {
+                    return Err("a record needs at least one field".into());
+                }
+                let mut out = BTreeMap::new();
+                for (n, f) in fields {
+                    if !is_name(n) {
+                        return Err(format!("record field {n:?} is not a name ([a-z][a-z0-9_]*)"));
+                    }
+                    out.insert(n.clone(), f.ty().map_err(|e| format!("record field {n}: {e}"))?);
+                }
+                Type::Record(out)
+            }
         })
     }
 }
 
 impl Type {
+    /// A table, list or record: for params only.
+    pub fn is_data(&self) -> bool {
+        matches!(self, Type::Table { .. } | Type::List { .. } | Type::Record(_))
+    }
+
     /// Whether `v` is a value of this type, or why not.
     pub fn check(&self, v: &Value) -> Result<(), String> {
         let range = |lo: i128, hi: i128| match v {
@@ -215,19 +254,39 @@ impl Type {
                 Value::List(items) => Err(format!("expected {len} elements, got {}", items.len())),
                 other => Err(format!("expected a list, got {}", other.describe())),
             },
+            Type::List { of } => match v {
+                Value::List(items) => {
+                    items.iter().enumerate().try_for_each(|(i, x)| of.check(x).map_err(|e| format!("[{i}]: {e}")))
+                }
+                other => Err(format!("expected a list, got {}", other.describe())),
+            },
+            Type::Record(fields) => match v {
+                Value::Record(r) => {
+                    if let Some(n) = r.keys().find(|n| !fields.contains_key(*n)) {
+                        return Err(format!("{n} is not a field"));
+                    }
+                    fields.iter().try_for_each(|(n, t)| match r.get(n) {
+                        Some(x) => t.check(x).map_err(|e| format!(".{n}: {e}")),
+                        None => Err(format!("{n} is missing")),
+                    })
+                }
+                other => Err(format!("expected a record, got {}", other.describe())),
+            },
         }
     }
 }
 
 /// A raw value: `true`/`false`; an integer (`int`, a `fixed`'s underlying
 /// integer, a `float`'s bit pattern), written as a decimal string outside
-/// ±2^53 in JSON; a variant's name; or a table's elements.
+/// ±2^53 in JSON; a variant's name; a table's or list's elements; or a
+/// record's fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Value {
     Bool(bool),
     Int(i128),
     Variant(String),
     List(Vec<Value>),
+    Record(BTreeMap<String, Value>),
 }
 
 /// The largest integer JSON readers keep exactly.
@@ -240,6 +299,7 @@ impl Value {
             Value::Int(n) => n.to_string(),
             Value::Variant(n) => format!("{n:?}"),
             Value::List(l) => format!("a list of {}", l.len()),
+            Value::Record(_) => "a record".into(),
         }
     }
 }
@@ -252,6 +312,7 @@ impl Serialize for Value {
             Value::Int(n) => s.serialize_str(&n.to_string()),
             Value::Variant(n) => s.serialize_str(n),
             Value::List(l) => l.serialize(s),
+            Value::Record(r) => r.serialize(s),
         }
     }
 }
@@ -262,7 +323,7 @@ impl<'de> Deserialize<'de> for Value {
         impl<'de> serde::de::Visitor<'de> for V {
             type Value = Value;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("true/false, an integer, a decimal string, a variant name or a list")
+                f.write_str("true/false, an integer, a decimal string, a variant name, a list or a record")
             }
             fn visit_bool<E>(self, b: bool) -> Result<Value, E> {
                 Ok(Value::Bool(b))
@@ -292,6 +353,13 @@ impl<'de> Deserialize<'de> for Value {
                 }
                 Ok(Value::List(l))
             }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut a: A) -> Result<Value, A::Error> {
+                let mut r = BTreeMap::new();
+                while let Some((k, v)) = a.next_entry::<String, Value>()? {
+                    r.insert(k, v);
+                }
+                Ok(Value::Record(r))
+            }
         }
         d.deserialize_any(V)
     }
@@ -303,13 +371,14 @@ impl JsonSchema for Value {
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; or a table's elements.",
+            "description": "A raw value: true/false; an integer (an int, a fixed's underlying integer, a float's bit pattern), as a decimal string outside ±2^53; a variant name; a table's or list's elements; or a record's fields.",
             "anyOf": [
                 {"type": "boolean"},
                 {"type": "integer"},
                 {"type": "string", "pattern": "^-?[0-9]+$"},
                 {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
-                {"type": "array", "items": {"$ref": "#/$defs/Value"}}
+                {"type": "array", "items": {"$ref": "#/$defs/Value"}},
+                {"type": "object", "additionalProperties": {"$ref": "#/$defs/Value"}}
             ]
         })
     }
@@ -399,6 +468,28 @@ mod tests {
                 .is_err()
         );
         assert!(field("type = \"enum\"\nvariants = [\"idle\", \"idle\"]").ty().is_err());
+        let piece = field(
+            "type = \"list\"\nof = { type = \"record\", fields = { x = { type = \"int\", bits = 32, signed = true }, \
+             edges = { type = \"table\", len = 4, of = { type = \"record\", fields = { d = { type = \"int\", bits = 32, signed = true } } } } } }",
+        )
+        .ty()
+        .unwrap();
+        let s32 = Type::Int { bits: 32, signed: true };
+        let edge = Type::Record([("d".to_string(), s32.clone())].into());
+        assert_eq!(
+            piece,
+            Type::List {
+                of: Box::new(Type::Record(
+                    [("edges".to_string(), Type::Table { of: Box::new(edge), len: 4 }), ("x".to_string(), s32)].into()
+                ))
+            }
+        );
+        assert!(piece.is_data());
+        assert_eq!(field("type = \"record\"\nfields = {}").ty(), Err("a record needs at least one field".into()));
+        assert_eq!(
+            field("type = \"list\"\nof = { type = \"bool\" }\nlen = 2").ty(),
+            Err("len does not apply to list".into())
+        );
     }
 
     #[test]
@@ -413,6 +504,19 @@ mod tests {
         assert!(e.check(&Value::Variant("run".into())).is_err());
         let t = Type::Table { of: Box::new(Type::Bool), len: 2 };
         assert_eq!(t.check(&Value::List(vec![Value::Bool(true)])), Err("expected 2 elements, got 1".into()));
+        let r = Type::Record([("x".to_string(), s16.clone())].into());
+        let l = Type::List { of: Box::new(r) };
+        let rec = |x: i128| Value::Record([("x".to_string(), Value::Int(x))].into());
+        assert!(l.check(&Value::List(vec![])).is_ok());
+        assert!(l.check(&Value::List(vec![rec(1), rec(-2)])).is_ok());
+        assert_eq!(
+            l.check(&Value::List(vec![rec(1), rec(40000)])),
+            Err("[1]: .x: 40000 is outside -32768..=32767".into())
+        );
+        assert_eq!(l.check(&Value::List(vec![Value::Record(BTreeMap::new())])), Err("[0]: x is missing".into()));
+        let v: Value = serde_json::from_str(r#"[{"x": 1}]"#).unwrap();
+        assert_eq!(v, Value::List(vec![rec(1)]));
+        assert_eq!(serde_json::to_string(&v).unwrap(), r#"[{"x":1}]"#);
     }
 
     #[test]

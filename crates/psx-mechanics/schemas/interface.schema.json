@@ -116,6 +116,34 @@
               "len"
             ]
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "list"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "of"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "record"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "fields"
+            ]
+          }
         }
       ],
       "description": "A field's declared type, as written in `mechanic.toml` and interfaces.\nWhich keys apply depends on `type`; [`Field::ty`] checks them.",
@@ -132,6 +160,16 @@
         "description": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Field"
+          },
+          "description": "`record`: its fields, by name.",
+          "type": [
+            "object",
             "null"
           ]
         },
@@ -171,7 +209,7 @@
               "type": "null"
             }
           ],
-          "description": "`table`: the element type (not itself a table)."
+          "description": "`table`, `list`: the element type (a table's is not itself a table)."
         },
         "signed": {
           "description": "`int`, `fixed`: whether the value is two's complement.",
@@ -221,6 +259,16 @@
         {
           "const": "table",
           "description": "Params only: a fixed-length list of one element type.",
+          "type": "string"
+        },
+        {
+          "const": "list",
+          "description": "Params only: a list of one element type, of any length.",
+          "type": "string"
+        },
+        {
+          "const": "record",
+          "description": "Params only: named fields, each of its own type.",
           "type": "string"
         }
       ]
