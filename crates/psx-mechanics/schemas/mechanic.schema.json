@@ -309,8 +309,15 @@
       "description": "`faithful` only: the largest difference allowed per state field, in\nraw units (int and fixed fields).",
       "type": "object"
     },
+    "uses": {
+      "description": "Mechanics whose steps run inside this one's, as `<id>@<version>`.\nEach is recorded as a call of its [`Mechanic::step_interface`].",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "version": {
-      "description": "Bumped on any change to the fields or `requires`; bindings and traces\nname the version they were made for.",
+      "description": "Bumped on any change to the fields, `requires` or `uses`; bindings and traces\nname the version they were made for.",
       "format": "uint32",
       "minimum": 0,
       "type": "integer"

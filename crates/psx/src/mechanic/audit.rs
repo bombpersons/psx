@@ -398,7 +398,15 @@ impl<'a> Tracker<'a> {
     }
 
     /// The call returns: the registers it wrote, outside its response, are its.
-    pub fn returned(&mut self, response: &[(&Location, u32)]) {
+    /// `held`: the physical bytes a used mechanic's response holds, which
+    /// the step has from then on.
+    pub fn returned(&mut self, response: &[(&Location, u32)], held: &[(u32, u32)]) {
+        for &(s, e) in held {
+            for b in s..e {
+                self.by_call.remove(&b);
+                self.written.insert(b);
+            }
+        }
         let Some(e) = self.entered.take() else { return };
         for r in 0..34 {
             if e.regs & bit(r as u32) != 0 {

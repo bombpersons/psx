@@ -19,7 +19,7 @@ pub struct Loaded {
     pub dir: PathBuf,
     pub mechanic: Mechanic,
     pub binding: Option<Binding>,
-    /// Every interface in the workspace.
+    /// Every interface in the workspace, and every mechanic's step.
     pub interfaces: Vec<Interface>,
     /// `<file>: <problem>`, files relative to the workspace.
     pub problems: Vec<String>,
@@ -29,7 +29,8 @@ fn read(path: &Path) -> crate::Result<String> {
     std::fs::read_to_string(path).map_err(|e| Error::io(path, e))
 }
 
-/// Every `interfaces/*.toml`, and the problems in them.
+/// Every `interfaces/*.toml` and every mechanic's step (what a mechanic
+/// that uses it calls), and the problems in them.
 pub fn interfaces(root: &Path) -> crate::Result<(Vec<Interface>, Vec<String>)> {
     let (mut out, mut problems) = (Vec::new(), Vec::new());
     let dir = root.join(INTERFACES);
@@ -49,6 +50,16 @@ pub fn interfaces(root: &Path) -> crate::Result<(Vec<Interface>, Vec<String>)> {
                 out.push(i);
             }
         }
+    }
+    // Each mechanic's step, for the mechanics that use it.
+    for id in ids(root) {
+        let file = format!("{MECHANICS}/{id}/mechanic.toml");
+        let Ok(m) = Mechanic::parse(&read(&root.join(&file))?) else { continue };
+        if out.iter().any(|i| i.id == m.id) {
+            problems.push(format!("{file}: id {:?} is also an interface's", m.id));
+            continue;
+        }
+        out.push(m.step_interface());
     }
     Ok((out, problems))
 }

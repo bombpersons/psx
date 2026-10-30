@@ -26,7 +26,7 @@ or a value too wide for its type.
 ```
 interfaces/<interface-id>.toml       the calls mechanics make to the world
 mechanics/<mechanic-id>/
-  mechanic.toml                      typed state, inputs, params; rate; interfaces it requires
+  mechanic.toml                      typed state, inputs, params; rate; interfaces it requires, mechanics it uses
   binding.toml                       where this release keeps them, and the capture bracket
   traces/<name>.trace.jsonl          captured steps
   NOTES.md                           a few lines: what it does, quirks, what traces miss
@@ -38,8 +38,8 @@ mechanics/<mechanic-id>/
 - **Segments** are lowercase letters and digits joined by single hyphens,
   separated by dots.
 - **Names** of fields, calls and enum variants are `[a-z][a-z0-9_]*`.
-- **References.** A mechanic requires an interface as `<id>@<version>`; the
-  workspace holds one version of each interface.
+- **References.** A mechanic requires an interface, or uses another
+  mechanic, as `<id>@<version>`; the workspace holds one version of each.
 
 ## 2. Value types
 
@@ -67,7 +67,7 @@ mechanic's notes say otherwise.
 
 ```toml
 id = "croc.walk"
-version = 1                  # bump on any change to fields or requires
+version = 1                  # bump on any change to fields, requires or uses
 title = "Walking"
 summary = "Speed closes a quarter of the gap to four times the target each tick."
 exactness = "exact"          # the default; or "faithful"
@@ -123,6 +123,15 @@ of = { type = "fixed", signed = false, int_bits = 4, frac_bits = 12 }
     allowed per int or fixed state field, in raw units:
     `tolerance = { speed = 16 }`.
 - **`requires`** lists the interfaces the step calls.
+- **`uses`** lists the mechanics whose steps run inside this one's, such as
+  Croc's ground movement inside the tick of his script:
+  `uses = ["croc.ground-move@1"]`.
+  - A used mechanic's step is recorded as a call: `<id>@<version>`, call
+    `step`, a query. Its request is the used mechanic's inputs and state as
+    its step begins, and its response is its state as it ends. Its own
+    traces pin down what happens in between.
+  - A name is a state field or an input, not both, so a step's request has
+    one value per name.
 
 ## 4. Interfaces: `interfaces/<id>.toml`
 
@@ -353,6 +362,16 @@ when the check finds nothing, and when the media is the binding's image.
   calls (not the world's, nor the kernel's below 0x80010000), to returns
   and the end PC, in RAM as at the first step. `missed` names each branch
   with a way not taken: "never taken", "never fell through" or "never ran".
+- **A used mechanic's step** runs from its binding's `begin` PC, with its
+  filters matching, to the return to its caller, so it begins at a
+  routine's entry. Its own `end` is for its own traces.
+  - It is recorded as a call. Its fields are read through its own binding,
+    with the registers as its step begins.
+  - Its instructions are its own: they are left out of the step's read
+    audit and coverage, as a world call's are. It must have no unobserved
+    state.
+  - It may change the step's state where its response is bound (the same
+    bytes). Those bytes are the step's from then on.
 - **Refusals** stop the trace from being written, and are listed with step
   and field:
   - a value that is not of the field's type;
@@ -412,8 +431,8 @@ fills the steps back in.
 - **`step`** counts from 0, with no gaps.
 - **`inputs`** are those that differ from the previous step's. Step 0 has all
   of them.
-- **`calls`** are the world calls the step made, in order. A query has a
-  `response`; a command has none.
+- **`calls`** are the world calls the step made, in order, with the steps
+  of the mechanics it uses. A query has a `response`; a command has none.
 - **`state_before`** holds the state fields that code outside the step
   changed since the previous step's end (an external change), with their
   values at this step's start. It is there only when something did.
@@ -456,6 +475,13 @@ writes each feature's replay verdict:
   recorded one only when it is that integer.
 - **The adapter is checked.** It must read every param, input and observed
   state field, and record every observed state field.
+- **A used mechanic** is a call too. The port's step calls the used
+  mechanic through a trait. The game's implementation runs the port's
+  own step. The adapter's implementation queries `<id>@<version>` `step`
+  with the used mechanic's inputs and state, and sets its state from the
+  response. So a step's replay checks its own logic, and the used
+  mechanic's replay checks that mechanic. A divergence names the one that
+  differs.
 - **The `f32` drift report** runs each exact mechanic in `Float` as well:
   - Each run starts from the recorded state and restarts every K steps. K is
     the mechanic's `hz` rounded (`tick`, `vblank`), or 60 for `event`.

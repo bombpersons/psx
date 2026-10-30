@@ -269,7 +269,7 @@ impl Trace {
         check_values("header: params", &h.params, &types.params, false, &[], &mut p);
         check_values("header: initial_state", &h.initial_state, &observed, false, &[], &mut p);
         let calls: BTreeMap<String, _> =
-            mechanic.required(interfaces).into_iter().map(|i| (i.reference(), i.types(&mut Vec::new()))).collect();
+            mechanic.called(interfaces).into_iter().map(|i| (i.reference(), i.types(&mut Vec::new()))).collect();
         for (i, s) in self.steps.iter().enumerate() {
             let at = format!("step {i}");
             if s.step != i as u64 {
@@ -283,7 +283,10 @@ impl Trace {
             for (n, c) in s.calls.iter().enumerate() {
                 let at = format!("{at}: calls[{n}]");
                 let Some(ct) = calls.get(&c.interface).and_then(|i| i.get(&c.call)) else {
-                    p.push(format!("{at}: {}.{} is not a call of a required interface", c.interface, c.call));
+                    p.push(format!(
+                        "{at}: {}.{} is not a call of a required interface or used mechanic",
+                        c.interface, c.call
+                    ));
                     continue;
                 };
                 check_values(&format!("{at}: request"), &c.request, &ct.request, false, &[], &mut p);

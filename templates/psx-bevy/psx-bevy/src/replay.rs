@@ -660,14 +660,21 @@ fn read(p: &Path) -> Result<String, String> {
     std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
+/// The workspace's interfaces, and each mechanic's step for the mechanics
+/// that use it.
 fn load_interfaces(root: &Path) -> Result<Vec<Interface>, String> {
     let mut out = Vec::new();
-    let Ok(dir) = std::fs::read_dir(root.join("interfaces")) else { return Ok(out) };
-    let mut paths: Vec<PathBuf> =
-        dir.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
-    paths.sort();
-    for p in paths {
+    let list = |d: &str| -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> =
+            std::fs::read_dir(root.join(d)).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        paths.sort();
+        paths
+    };
+    for p in list("interfaces").into_iter().filter(|p| p.extension().is_some_and(|x| x == "toml")) {
         out.push(Interface::parse(&read(&p)?).map_err(|e| format!("{}: {e}", p.display()))?);
+    }
+    for p in list("mechanics").into_iter().map(|d| d.join("mechanic.toml")).filter(|p| p.is_file()) {
+        out.push(Mechanic::parse(&read(&p)?).map_err(|e| format!("{}: {e}", p.display()))?.step_interface());
     }
     Ok(out)
 }

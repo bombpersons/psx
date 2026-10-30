@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::interface::Interface;
+use crate::interface::{Call, CallKind, Interface};
+
+/// The call a used mechanic's step is recorded as.
+pub const STEP: &str = "step";
 use crate::value::{Field, Type, Value, is_id, is_name, parse_ref};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -13,7 +16,7 @@ use crate::value::{Field, Type, Value, is_id, is_name, parse_ref};
 pub struct Mechanic {
     /// `<game>.<name>`, also the directory's name: `croc.walk`.
     pub id: String,
-    /// Bumped on any change to the fields or `requires`; bindings and traces
+    /// Bumped on any change to the fields, `requires` or `uses`; bindings and traces
     /// name the version they were made for.
     pub version: u32,
     pub title: String,
@@ -29,6 +32,10 @@ pub struct Mechanic {
     /// Interfaces the step calls, as `<id>@<version>`.
     #[serde(default)]
     pub requires: Vec<String>,
+    /// Mechanics whose steps run inside this one's, as `<id>@<version>`.
+    /// Each is recorded as a call of its [`Mechanic::step_interface`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<String>,
     /// What the step owns and carries from one step to the next.
     #[serde(default)]
     pub state: BTreeMap<String, Field>,
@@ -126,22 +133,34 @@ impl Mechanic {
             (_, Some(hz)) if !(hz.is_finite() && hz > 0.0) => p.push(format!("rate: hz {hz} must be positive")),
             _ => {}
         }
-        for (i, r) in self.requires.iter().enumerate() {
-            if self.requires[..i].contains(r) {
-                p.push(format!("requires: {r} is listed twice"));
-            }
-            match parse_ref(r) {
-                None => p.push(format!("requires: {r:?} is not <interface-id>@<version>")),
-                Some((id, v)) => match interfaces.iter().find(|i| i.id == id) {
-                    None => p.push(format!("requires: {r}: no interfaces/{id}.toml")),
-                    Some(i) if i.version != v => {
-                        p.push(format!("requires: {r}: interfaces/{id}.toml is version {}", i.version))
-                    }
+        for (what, refs, file) in
+            [("requires", &self.requires, "interfaces/{id}.toml"), ("uses", &self.uses, "mechanics/{id}/mechanic.toml")]
+        {
+            for (i, r) in refs.iter().enumerate() {
+                if refs[..i].contains(r) {
+                    p.push(format!("{what}: {r} is listed twice"));
+                }
+                let Some((id, v)) = parse_ref(r) else {
+                    let kind = if what == "uses" { "mechanic" } else { "interface" };
+                    p.push(format!("{what}: {r:?} is not <{kind}-id>@<version>"));
+                    continue;
+                };
+                let file = file.replace("{id}", id);
+                if what == "uses" && id == self.id {
+                    p.push(format!("uses: {r}: a mechanic cannot use itself"));
+                    continue;
+                }
+                match interfaces.iter().find(|i| i.id == id) {
+                    None => p.push(format!("{what}: {r}: no {file}")),
+                    Some(i) if i.version != v => p.push(format!("{what}: {r}: {file} is version {}", i.version)),
                     Some(_) => {}
-                },
+                }
             }
         }
         let types = self.types(&mut p);
+        for name in types.inputs.keys().filter(|n| types.state.contains_key(*n)) {
+            p.push(format!("inputs.{name}: also a state field"));
+        }
         for (name, n) in &self.tolerance {
             if self.exactness == Exactness::Exact {
                 p.push("tolerance: an exact mechanic has none (make it faithful)".into());
@@ -163,6 +182,34 @@ impl Mechanic {
     pub fn required<'a>(&self, interfaces: &'a [Interface]) -> Vec<&'a Interface> {
         let refs: Vec<_> = self.requires.iter().filter_map(|r| parse_ref(r)).collect();
         interfaces.iter().filter(|i| refs.contains(&(i.id.as_str(), i.version))).collect()
+    }
+
+    /// Everything its traces may record as calls: the interfaces it
+    /// requires and the steps of the mechanics it uses.
+    pub fn called<'a>(&self, interfaces: &'a [Interface]) -> Vec<&'a Interface> {
+        let refs: Vec<_> = self.requires.iter().chain(&self.uses).filter_map(|r| parse_ref(r)).collect();
+        interfaces.iter().filter(|i| refs.contains(&(i.id.as_str(), i.version))).collect()
+    }
+
+    /// Its step as another mechanic's trace records it: the query `step`,
+    /// whose request is the inputs and state as the step begins, and whose
+    /// response is the state as it ends.
+    pub fn step_interface(&self) -> Interface {
+        let mut request = self.inputs.clone();
+        request.extend(self.state.clone());
+        let call = Call {
+            kind: CallKind::Query,
+            description: Some(format!("a step of {}", self.id)),
+            request,
+            response: self.state.clone(),
+        };
+        Interface {
+            id: self.id.clone(),
+            version: self.version,
+            title: self.title.clone(),
+            description: Some(format!("the step of mechanic {}, for the mechanics that use it", self.id)),
+            calls: [(STEP.to_string(), call)].into(),
+        }
     }
 }
 
@@ -211,6 +258,33 @@ of = { type = "int", bits = 8, signed = false }
         assert_eq!(m.check(&[]), vec!["requires: world.floor-height@1: no interfaces/world.floor-height.toml"]);
         assert_eq!(m.exactness, Exactness::Exact);
         assert_eq!(m.required(std::slice::from_ref(&floor)).len(), 1);
+    }
+
+    #[test]
+    fn a_used_mechanic_is_called_as_its_step() {
+        let walk = Mechanic::parse(WALK).unwrap();
+        let mut tick = walk.clone();
+        tick.id = "croc.tick".into();
+        tick.requires.clear();
+        tick.uses = vec!["croc.walk@1".into(), "croc.walk@2".into(), "croc.tick@1".into(), "walk".into()];
+        let step = walk.step_interface();
+        assert_eq!(step.reference(), "croc.walk@1");
+        assert_eq!(step.check(), Vec::<String>::new());
+        let t = step.types(&mut Vec::new());
+        assert_eq!(t[STEP].request.keys().collect::<Vec<_>>(), ["forward", "mode", "speed"]);
+        assert_eq!(t[STEP].response.keys().collect::<Vec<_>>(), ["mode", "speed"]);
+        let all = [step];
+        assert_eq!(
+            tick.check(&all),
+            vec![
+                "uses: croc.walk@2: mechanics/croc.walk/mechanic.toml is version 1",
+                "uses: croc.tick@1: a mechanic cannot use itself",
+                "uses: \"walk\" is not <mechanic-id>@<version>",
+            ]
+        );
+        assert_eq!((tick.required(&all).len(), tick.called(&all).len()), (0, 1));
+        tick.inputs.insert("speed".into(), walk.state["speed"].clone());
+        assert!(tick.check(&all).contains(&"inputs.speed: also a state field".to_string()));
     }
 
     #[test]

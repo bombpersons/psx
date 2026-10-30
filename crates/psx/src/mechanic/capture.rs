@@ -190,14 +190,19 @@ fn read_all(fields: &Fields, view: &View, what: &str, when: &str, step: u64, ref
     out
 }
 
-/// One interface call the binding sees.
+/// One call the binding sees: an interface's, or a used mechanic's step.
 struct CallSpec<'a> {
     interface: String,
     call: String,
     kind: CallKind,
-    on: &'a CallSite,
+    on: CallSite,
     request: Fields<'a>,
     response: Fields<'a>,
+    /// A used mechanic's step: its begin's register filters. Its fields are
+    /// read with the registers as it begins, its request is its own
+    /// binding's to account for, and it may change the state its response
+    /// holds.
+    step: Option<Vec<(usize, u32)>>,
 }
 
 impl CallSpec<'_> {
@@ -214,6 +219,9 @@ struct Pending {
     request: Values,
     ret: u32,
     sp: u32,
+    /// A used mechanic's step: the registers as it began, and the bytes its
+    /// response holds, physical.
+    step: Option<(Regs, Vec<(u32, u32)>)>,
 }
 
 /// The step under way.
@@ -252,7 +260,27 @@ pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool,
     if out.exists() && !a.replace {
         return Err(Error::invalid(format!("{}: exists; replace=true writes over it", rel(root, &out))));
     }
-    let residents = workspace::residents(root, &b).map_err(Error::invalid)?;
+    let mut residents = workspace::residents(root, &b).map_err(Error::invalid)?;
+    let mut used: Vec<(String, Mechanic, Binding)> = Vec::new();
+    for r in &mechanic.uses {
+        let id = r.split('@').next().unwrap_or_default();
+        let u = workspace::load(root, id)?;
+        let unobserved = u
+            .binding
+            .as_ref()
+            .and_then(|b| b.state.iter().find(|(_, e)| matches!(e, Encoding::Unobserved(_))).map(|(n, _)| n.clone()));
+        let problem = if !u.problems.is_empty() {
+            Some("its files have problems; psx mechanic check lists them".to_string())
+        } else {
+            unobserved.map(|f| format!("its binding leaves state.{f} unobserved, so its step cannot be recorded"))
+        };
+        if let Some(p) = problem {
+            return Err(Error::invalid(format!("uses {r}: {p}")).with("problems", json!(u.problems)));
+        }
+        let ub = u.binding.expect("checked");
+        residents.extend(workspace::residents(root, &ub).map_err(Error::invalid)?);
+        used.push((r.clone(), u.mechanic, ub));
+    }
 
     // The machine, as `run` starts one from a state.
     let resolved = crate::context::resolve(root, a.media.clone(), a.bios.clone(), Some(&a.from_state), false)?;
@@ -285,7 +313,7 @@ pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool,
     let events =
         crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64).map_err(Error::invalid)?;
 
-    let plan = Plan::new(&mechanic, &b, &interfaces, &residents);
+    let plan = Plan::new(&mechanic, &b, &interfaces, &used, &residents);
     let deadline = std::time::Duration::from_secs(a.timeout);
     let Recorded { steps, params, refusals, timed_out, summary, audit, coverage, analysis } =
         record(&mut m, &plan, a.frames, &events, deadline)?;
@@ -374,6 +402,23 @@ pub(crate) struct Plan<'a> {
     begin: u32,
 }
 
+/// The physical bytes the fields' memory parts hold, with `regs` as
+/// latched.
+fn held(f: &Fields, regs: &Regs) -> Vec<(u32, u32)> {
+    parts(f)
+        .into_iter()
+        .filter_map(|(at, n)| {
+            let a = match at {
+                Location::Address { address } => *address,
+                Location::Base { base, offset } => regs[*base as usize].wrapping_add(*offset as u32),
+                _ => return None,
+            };
+            let a = crate::run::fold(a);
+            Some((a, a + n))
+        })
+        .collect()
+}
+
 /// Each part's location and size; a table's parts reach over every
 /// element.
 fn parts<'a>(f: &Fields<'a>) -> Vec<(&'a Location, u32)> {
@@ -393,6 +438,7 @@ impl<'a> Plan<'a> {
         mechanic: &Mechanic,
         b: &'a Binding,
         interfaces: &[Interface],
+        used: &'a [(String, Mechanic, Binding)],
         residents: &'a [(u32, Option<Resident>)],
     ) -> Plan<'a> {
         let types = mechanic.types(&mut Vec::new());
@@ -429,11 +475,38 @@ impl<'a> Plan<'a> {
                     interface: r.clone(),
                     call: name.clone(),
                     kind: ct.kind,
-                    on,
+                    on: on.clone(),
                     request: typed(request, &ct.request),
                     response: typed(response, &ct.response),
+                    step: None,
                 });
             }
+        }
+        // A used mechanic's step: from its begin to the return to its caller.
+        for (r, um, ub) in used {
+            let t = um.types(&mut Vec::new());
+            let state: Fields = ub
+                .state
+                .iter()
+                .filter_map(|(n, e)| match e {
+                    Encoding::Read(r) => Some((n, r, t.state[n].clone())),
+                    Encoding::Unobserved(_) => None,
+                })
+                .collect();
+            let mut request: Fields = ub.inputs.iter().map(|(n, r)| (n, r, t.inputs[n].clone())).collect();
+            request.extend(state.iter().cloned());
+            let begin = &ub.capture.begin;
+            let filters =
+                begin.filters.iter().map(|(r, v)| (super::reg_name(r).expect("checked") as usize, *v)).collect();
+            specs.push(CallSpec {
+                interface: r.clone(),
+                call: psx_mechanics::mechanic::STEP.into(),
+                kind: CallKind::Query,
+                on: CallSite::Entry { entry: super::Pc { pc: begin.pc, overlay: begin.overlay.clone() } },
+                request,
+                response: state,
+                step: Some(filters),
+            });
         }
         // PC -> what it stands for, and the code that must be there.
         let mut sites: HashMap<u32, Vec<(Site, Option<&Resident>)>> = HashMap::new();
@@ -443,7 +516,7 @@ impl<'a> Plan<'a> {
             sites.entry(p.pc).or_default().push((Site::End, resident(p.pc)));
         }
         for (i, s) in specs.iter().enumerate() {
-            let (CallSite::Entry { entry: p } | CallSite::Read { read: p }) = s.on;
+            let (CallSite::Entry { entry: p } | CallSite::Read { read: p }) = &s.on;
             sites.entry(p.pc).or_default().push((Site::Call(i), resident(p.pc)));
         }
         let filters: Vec<(usize, u32)> =
@@ -456,7 +529,8 @@ impl<'a> Plan<'a> {
         let begin_reads: Vec<(&Location, u32)> = [&inputs, &param_reads].into_iter().flat_map(parts).collect();
         let mut all: Vec<(&Location, u32)> =
             [&state, &inputs, &param_reads].into_iter().flat_map(parts).chain(explained.iter().copied()).collect();
-        for s in &specs {
+        // A used mechanic's fields are its binding's, read as it begins.
+        for s in specs.iter().filter(|s| s.step.is_none()) {
             all.extend(parts(&s.request));
             all.extend(parts(&s.response));
         }
@@ -484,7 +558,7 @@ impl<'a> Plan<'a> {
         }
         let entries: HashSet<u32> = specs
             .iter()
-            .filter_map(|s| match s.on {
+            .filter_map(|s| match &s.on {
                 CallSite::Entry { entry } => Some(entry.pc),
                 CallSite::Read { .. } => None,
             })
@@ -588,13 +662,14 @@ pub(crate) fn record(
         if here.is_empty() && !returning {
             let info = m.step();
             instructions += 1;
-            // A store made inside a call to the mechanic's state.
+            // A store made inside a call to the mechanic's state, other than
+            // to what a used mechanic's response holds.
             if let (Some(o), Some(acc)) = (open.as_mut(), info.mem.filter(|a| a.store)) {
                 if let Some(p) = &o.pending {
                     let at = crate::run::fold(acc.addr);
-                    if let Some((_, _, field)) =
-                        o.state_bytes.iter().find(|(s, e, _)| at < *e && at + acc.width as u32 > *s)
-                    {
+                    let end = at + acc.width as u32;
+                    let held = p.step.as_ref().is_some_and(|(_, w)| w.iter().any(|(s, e)| *s <= at && end <= *e));
+                    if let Some((_, _, field)) = o.state_bytes.iter().find(|(s, e, _)| !held && at < *e && end > *s) {
                         let s = &specs[p.spec];
                         refusals.push(
                             steps.len() as u64,
@@ -621,7 +696,8 @@ pub(crate) fn record(
         let response = returning.then(|| {
             let o = open.as_ref().unwrap();
             let p = o.pending.as_ref().unwrap();
-            let view = View { m, now: &now, latched: &o.latched, load: None };
+            let latched = p.step.as_ref().map_or(&o.latched, |(r, _)| r);
+            let view = View { m, now: &now, latched, load: None };
             read_all(&specs[p.spec].response, &view, &specs[p.spec].field("response"), "return", n, &mut tentative)
         });
         let pending = open.as_ref().is_some_and(|o| o.pending.is_some()) && !returning;
@@ -661,18 +737,23 @@ pub(crate) fn record(
         });
         // Entries: a call starts (inline reads are taken after the load).
         let entry = here.iter().find_map(|s| match s {
-            Site::Call(i) if matches!(specs[*i].on, CallSite::Entry { .. }) => Some(*i),
+            Site::Call(i) if matches!(specs[*i].on, CallSite::Entry { .. }) => {
+                let f = specs[*i].step.as_ref();
+                f.is_none_or(|f| f.iter().all(|&(r, v)| now[r] == v)).then_some(*i)
+            }
             _ => None,
         });
         let entering = entry.filter(|_| !pending && (open.is_some() || opening.is_some())).map(|i| {
             let latched = match (&opening, &open) {
+                _ if specs[i].step.is_some() => &now,
                 (Some(_), _) => &now,
                 (None, Some(o)) => &o.latched,
                 _ => &none,
             };
             let view = View { m, now: &now, latched, load: None };
             let request = read_all(&specs[i].request, &view, &specs[i].field("request"), "entry", n, &mut tentative);
-            Pending { spec: i, request, ret: now[31], sp: now[29] }
+            let step = specs[i].step.as_ref().map(|_| (now, held(&specs[i].response, &now)));
+            Pending { spec: i, request, ret: now[31], sp: now[29], step }
         });
         // The world call this instruction belongs to, if any.
         let world = entering
@@ -696,7 +777,7 @@ pub(crate) fn record(
             let o = open.as_mut().unwrap();
             let p = o.pending.take().unwrap();
             let s = &specs[p.spec];
-            tracker.returned(&parts(&s.response));
+            tracker.returned(&parts(&s.response), p.step.as_ref().map_or(&[][..], |(_, w)| w));
             o.calls.push(Call {
                 interface: s.interface.clone(),
                 call: s.call.clone(),
@@ -735,7 +816,9 @@ pub(crate) fn record(
             tracker.open(m, &now);
         }
         if let (Some(p), Some(o)) = (entering, open.as_mut()) {
-            tracker.entry(pc, p.spec, &parts(&specs[p.spec].request), now[29]);
+            // A used mechanic's request is its own binding's to account for.
+            let request = if p.step.is_some() { Vec::new() } else { parts(&specs[p.spec].request) };
+            tracker.entry(pc, p.spec, &request, now[29]);
             o.pending = Some(p);
         }
         if open.is_some() {
@@ -916,7 +999,7 @@ end = { pc = 0x8001012C }
     fn run_patched(binding: &str, world: &[u32], patches: &[(u32, u32)]) -> crate::Result<Recorded> {
         let (mechanic, b, interfaces) = files(binding);
         let residents = vec![];
-        let plan = Plan::new(&mechanic, &b, &interfaces, &residents);
+        let plan = Plan::new(&mechanic, &b, &interfaces, &[], &residents);
         let mut m = machine(world);
         for (at, w) in patches {
             let o = (at & 0x1F_FFFF) as usize;
@@ -995,7 +1078,7 @@ end = { pc = 0x8001012C }
         let (m, i) = (Mechanic::parse(&narrow).unwrap(), vec![Interface::parse(WORLD).unwrap()]);
         let b: Binding = toml::from_str(BINDING).unwrap();
         let residents = vec![];
-        let plan = Plan::new(&m, &b, &i, &residents);
+        let plan = Plan::new(&m, &b, &i, &[], &residents);
         let r = record(&mut machine(&ADD), &plan, 1, &[], std::time::Duration::from_secs(60)).unwrap();
         assert_eq!(
             r.refusals.listed[0],
@@ -1059,7 +1142,7 @@ end = { pc = 0x8001012C }
         let b: Binding = toml::from_str(&binding).unwrap();
         assert_eq!(b.check::<Psx>(&m, &i), Vec::<String>::new());
         let residents = vec![];
-        let plan = Plan::new(&m, &b, &i, &residents);
+        let plan = Plan::new(&m, &b, &i, &[], &residents);
         let mut machine = machine(&ADD);
         for (at, w) in patches {
             let o = (at & 0x1F_FFFF) as usize;
@@ -1109,7 +1192,7 @@ end = { pc = 0x8001012C }
         // Bound as the inline read peek: the trace holds what the hardware gave.
         let inline = BINDING.replace("read = { pc = 0x80010108 }", "read = { pc = 0x80010110 }");
         let (mechanic, b, interfaces) = files(&inline);
-        let plan = Plan::new(&mechanic, &b, &interfaces, &[]);
+        let plan = Plan::new(&mechanic, &b, &interfaces, &[], &[]);
         let mut m = machine(&ADD);
         for (at, w) in patches {
             let o = (at & 0x1F_FFFF) as usize;
@@ -1132,5 +1215,70 @@ end = { pc = 0x8001012C }
         let r = run_patched(BINDING, &ADD, &[(0x8001_010C, 0x1480_0003)]).unwrap();
         assert_eq!((r.coverage.reached, r.coverage.total), (1, 2));
         assert_eq!(json!(r.coverage.missed), json!([{"at": {"pc": "0x8001010c"}, "note": "never fell through"}]));
+    }
+
+    /// The step of `test.count` using `test.bump`, whose step is the world
+    /// routine at 0x80010200: it adds 5 to [a0 + 4].
+    fn run_using(world: &[u32]) -> Recorded {
+        let used = r#"
+id = "test.bump"
+version = 1
+title = "Bump"
+summary = "Adds 5 to last."
+rate = { per = "event" }
+state.last = { type = "int", bits = 32, signed = true }
+"#;
+        let used_binding = r#"
+mechanic = "test.bump"
+mechanic_version = 1
+source = { platform = "psx", title = "test", image_sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+state.last = { parts = [{ at = { base = "a0", offset = 4 }, bytes = 4 }], stored_signed = true }
+capture = { begin = { pc = 0x80010200 }, end = { pc = 0x80010120 } }
+"#;
+        let mechanic =
+            Mechanic::parse(&MECHANIC.replace(r#"requires = ["world.add@1"]"#, r#"uses = ["test.bump@1"]"#)).unwrap();
+        let bump = Mechanic::parse(used).unwrap();
+        let interfaces = vec![bump.step_interface()];
+        assert_eq!(mechanic.check(&interfaces), Vec::<String>::new());
+        let binding = BINDING.split("[interfaces.").next().unwrap().to_string()
+            + "[capture]\nbegin = { pc = 0x80010100, a0 = 0x80020000 }\nend = { pc = 0x8001012C }\n";
+        let b: Binding = toml::from_str(&binding).unwrap();
+        assert_eq!(b.check::<Psx>(&mechanic, &interfaces), Vec::<String>::new());
+        let used = [("test.bump@1".to_string(), bump, toml::from_str(used_binding).unwrap())];
+        let plan = Plan::new(&mechanic, &b, &interfaces, &used, &[]);
+        let mut m = machine(world);
+        m.bus.ram[0x2_0004..0x2_0008].copy_from_slice(&7u32.to_le_bytes());
+        // The step leaves [a0 + 4] to test.bump: sw v0, 4(a0) becomes a nop.
+        m.bus.ram[0x1_011C..0x1_0120].copy_from_slice(&0u32.to_le_bytes());
+        record(&mut m, &plan, 1, &[], std::time::Duration::from_secs(60)).unwrap()
+    }
+
+    #[test]
+    fn a_used_mechanic_is_recorded_as_its_step() {
+        #[rustfmt::skip]
+        let bump = [
+            0x8C89_0004, // lw t1, 4(a0)
+            0x0000_0000, // nop
+            0x2529_0005, // addiu t1, t1, 5
+            0xAC89_0004, // sw t1, 4(a0)
+            0x03E0_0008, // jr ra
+            0x24A2_0064, // addiu v0, a1, 100
+        ];
+        let r = run_using(&bump);
+        assert_eq!(r.refusals.count, 0, "{:?}", r.refusals.listed);
+        let c = &r.steps[0].calls[0];
+        assert_eq!((c.interface.as_str(), c.call.as_str()), ("test.bump@1", "step"));
+        assert_eq!((c.request["last"].clone(), c.response.as_ref().unwrap()["last"].clone()), (int(7), int(12)));
+        // Its own reads are its binding's; the step's are accounted for.
+        assert_eq!(r.audit.unaccounted, vec![]);
+        // A store outside its response is refused.
+        let mut wild = bump;
+        wild[3] = 0xAC89_0000; // sw t1, 0(a0)
+        let r = run_using(&wild);
+        assert_eq!(
+            r.refusals.listed[0],
+            json!({"step": 0, "when": "store", "field": "test.bump@1.step",
+                   "problem": "the call changed state.count (store at 0x8001020c to 0x80020000)"})
+        );
     }
 }
