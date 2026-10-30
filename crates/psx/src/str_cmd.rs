@@ -136,9 +136,18 @@ struct Scan {
     channels: BTreeMap<(u8, u8), (u8, Vec<u32>)>,
 }
 
-/// What a streamed file's sectors hold: STR video sectors, XA audio sectors and
-/// the XA `(file, channel)` pairs, without assembling frames.
-pub fn sector_kinds(disc: &Disc, lba: u32, sectors: u32) -> crate::Result<(u32, u32, Vec<(u8, u8)>)> {
+/// What a streamed file's sectors hold.
+pub struct SectorKinds {
+    /// STR video sectors.
+    pub video: u32,
+    /// XA audio sectors.
+    pub audio: u32,
+    /// The XA `(file, channel)` pairs.
+    pub channels: Vec<(u8, u8)>,
+}
+
+/// Counts a file's sectors by kind, without assembling frames.
+pub fn sector_kinds(disc: &Disc, lba: u32, sectors: u32) -> crate::Result<SectorKinds> {
     let (mut video, mut audio) = (0, 0);
     let mut channels = std::collections::BTreeSet::new();
     for l in lba..lba + sectors {
@@ -150,7 +159,7 @@ pub fn sector_kinds(disc: &Disc, lba: u32, sectors: u32) -> crate::Result<(u32, 
             video += 1;
         }
     }
-    Ok((video, audio, channels.into_iter().collect()))
+    Ok(SectorKinds { video, audio, channels: channels.into_iter().collect() })
 }
 
 fn scan(disc: &Disc, lba: u32, sectors: u32) -> crate::Result<Scan> {

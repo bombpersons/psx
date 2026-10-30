@@ -456,7 +456,9 @@ fn scan_inputs(
             Ok(b) => b,
             Err(error) => {
                 let mut row = json!({"file":e.path,"streamed":e.is_streamed(),"reason":error.to_string()});
-                if let Ok((video, audio, channels)) = crate::str_cmd::sector_kinds(&disc, e.lba, e.sectors()) {
+                if let Ok(crate::str_cmd::SectorKinds { video, audio, channels }) =
+                    crate::str_cmd::sector_kinds(&disc, e.lba, e.sectors())
+                {
                     if video > 0 || audio > 0 {
                         row["stream"] = json!({"format": if video > 0 { "str" } else { "xa" },
                             "video_sectors": video, "xa_sectors": audio,
@@ -679,7 +681,8 @@ fn extract_stream(a: &AssetsExtractArgs, ctx: &Ctx) -> R<Option<Value>> {
     let disc = Disc::open(image)?;
     let fs = FileSystem::read(&disc)?;
     let entry = fs.entry(path)?.clone();
-    let (video, audio, channels) = crate::str_cmd::sector_kinds(&disc, entry.lba, entry.sectors())?;
+    let crate::str_cmd::SectorKinds { video, audio, channels } =
+        crate::str_cmd::sector_kinds(&disc, entry.lba, entry.sectors())?;
     let s = &a.stream;
     if video > 0 {
         let frame_parser = parser::Spec::new(s.frame_parser.as_ref(), &s.frame_parser_args, a.parsers.parser_timeout)?;
