@@ -81,7 +81,11 @@ mechanic code are worth keeping, so they move out first.
     its commit and every finding has an answer.
 16. **`port next`**: one item in the order of section 5; Play and Confirm
     items for the person; the Review item's brief for a reviewer who has
-    not seen the work.
+    not seen the work: read the code as a stranger who must maintain or
+    reuse it; the catalogue entry, the files the feature's commits touched
+    and what that code uses, not the disassembly; judge against AGENTS.md's
+    "The code", not against the original (the recordings do that); write
+    each finding as what is wrong and why, not the fix.
 17. **The asset inventory**: each disc file unknown, format found,
     imported, checked or unused, from `formats/` and the importers' tests,
     feeding status and next.
