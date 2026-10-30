@@ -126,6 +126,9 @@ pub fn mechanic(c: &Crate) -> Result<(Mechanic, Vec<String>), Vec<String>> {
             }
         }
     }
+    if let Err(e) = step_signature(lib) {
+        problems.push(format!("{LIB}:{e}"));
+    }
     let floats_declared = [&m.state, &m.inputs, &m.params].iter().any(|fs| fs.values().any(has_float));
     for (path, file) in &parsed {
         let mut v = Subset { deps: &deps, problems: Vec::new(), floats: Vec::new() };
@@ -353,23 +356,23 @@ impl<'f> Items<'f> {
         }
     }
 
-    /// Code giving the `psx_capture::Value` of `place`, a value of type
-    /// `ty` (as `ty` reads it), in the trace's encoding. Types are named
-    /// through `krate`, the mechanic's crate.
-    fn encode(&self, ty: &syn::Type, place: &str, krate: &str, depth: u32) -> Result<String, String> {
-        const V: &str = "psx_capture::Value";
+    /// Code giving the value of `place`, a value of type `ty` (as `ty`
+    /// reads it), in the trace's encoding, as `out`'s `Value`. Types are
+    /// named through `krate`, the mechanic's crate.
+    fn encode(&self, ty: &syn::Type, place: &str, krate: &str, out: Out, depth: u32) -> Result<String, String> {
+        let v = out.value();
         if depth > 16 {
             return Err("types nest more than 16 deep".into());
         }
         let shown = quote::ToTokens::to_token_stream(ty).to_string();
         let each = |of: &syn::Type| -> Result<String, String> {
             let e = format!("e{depth}");
-            let inner = self.encode(of, &format!("(*{e})"), krate, depth + 1)?;
-            Ok(format!("{V}::List({place}.iter().map(|{e}| {inner}).collect())"))
+            let inner = self.encode(of, &format!("(*{e})"), krate, out, depth + 1)?;
+            Ok(format!("{v}::List({place}.iter().map(|{e}| {inner}).collect())"))
         };
         match ty {
             syn::Type::Array(a) => each(&a.elem),
-            syn::Type::Paren(p) => self.encode(&p.elem, place, krate, depth),
+            syn::Type::Paren(p) => self.encode(&p.elem, place, krate, out, depth),
             syn::Type::Path(p) if p.qself.is_none() && p.path.segments.len() == 1 => {
                 let seg = &p.path.segments[0];
                 let name = seg.ident.to_string();
@@ -382,23 +385,23 @@ impl<'f> Items<'f> {
                     return Err(format!("`{shown}`"));
                 }
                 match primitive(&name).map(|f| f.kind) {
-                    Some(Kind::Bool) => return Ok(format!("{V}::Bool({place})")),
-                    Some(Kind::Float) => return Ok(format!("{V}::Int({place}.to_bits() as i128)")),
-                    Some(_) => return Ok(format!("{V}::Int({place} as i128)")),
+                    Some(Kind::Bool) => return Ok(format!("{v}::Bool({place})")),
+                    Some(Kind::Float) => return Ok(format!("{v}::Int({place}.to_bits() as i128)")),
+                    Some(_) => return Ok(format!("{v}::Int({place} as i128)")),
                     None => {}
                 }
                 if let Some(a) = self.aliases.get(&name) {
                     if fixed_name(&name).is_some() {
-                        return Ok(format!("{V}::Int({place} as i128)"));
+                        return Ok(format!("{v}::Int({place} as i128)"));
                     }
-                    return self.encode(&a.ty, place, krate, depth + 1);
+                    return self.encode(&a.ty, place, krate, out, depth + 1);
                 }
                 if let Some(e) = self.enums.get(&name) {
                     let arms: Vec<String> = e
                         .variants
                         .iter()
                         .map(|v| {
-                            format!("{krate}::{name}::{} => {V}::Variant({:?}),", v.ident, snake(&v.ident.to_string()))
+                            format!("{krate}::{name}::{} => {},", v.ident, out.variant(&snake(&v.ident.to_string())))
                         })
                         .collect();
                     return Ok(format!("match &{place} {{ {} }}", arms.join(" ")));
@@ -410,16 +413,173 @@ impl<'f> Items<'f> {
                         let n = f.ident.as_ref().unwrap().to_string();
                         fields.push(format!(
                             "({n:?}, {})",
-                            self.encode(&f.ty, &format!("{place}.{n}"), krate, depth + 1)?
+                            self.encode(&f.ty, &format!("{place}.{n}"), krate, out, depth + 1)?
                         ));
                     }
-                    return Ok(format!("{V}::Record(vec![{}])", fields.join(", ")));
+                    return Ok(out.record(&fields));
                 }
                 Err(format!("`{shown}`"))
             }
             _ => Err(format!("`{shown}`")),
         }
     }
+
+    /// Code giving a `Result<T, String>` for `ty` read from `place`, a
+    /// `&psx_mechanics::Value` in the trace's encoding, naming the field or
+    /// element at fault. Types are named through `krate`.
+    fn decode(&self, ty: &syn::Type, place: &str, krate: &str, depth: u32) -> Result<String, String> {
+        const R: &str = "psx_mechanics::replay";
+        if depth > 16 {
+            return Err("types nest more than 16 deep".into());
+        }
+        let shown = quote::ToTokens::to_token_stream(ty).to_string();
+        let each = |of: &syn::Type| -> Result<String, String> {
+            let (e, i) = (format!("e{depth}"), format!("i{depth}"));
+            let inner = self.decode(of, &e, krate, depth + 1)?;
+            Ok(format!(
+                "{R}::list({place}).and_then(|l| l.iter().enumerate().map(|({i}, {e})| {inner}.map_err({R}::index({i}))).collect::<Result<Vec<_>, String>>())"
+            ))
+        };
+        match ty {
+            syn::Type::Array(a) => Ok(format!("{}.and_then({R}::array)", each(&a.elem)?)),
+            syn::Type::Paren(p) => self.decode(&p.elem, place, krate, depth),
+            syn::Type::Path(p) if p.qself.is_none() && p.path.segments.len() == 1 => {
+                let seg = &p.path.segments[0];
+                let name = seg.ident.to_string();
+                if name == "Vec" {
+                    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                        if let Some(syn::GenericArgument::Type(of)) = args.args.first() {
+                            return each(of);
+                        }
+                    }
+                    return Err(format!("`{shown}`"));
+                }
+                match primitive(&name) {
+                    Some(f) if f.kind == Kind::Bool => return Ok(format!("{R}::boolean({place})")),
+                    Some(f) if f.kind == Kind::Float => {
+                        let bits = if f.bits == Some(32) { "u32" } else { "u64" };
+                        return Ok(format!("{R}::int::<{bits}>({place}).map({name}::from_bits)"));
+                    }
+                    Some(_) => return Ok(format!("{R}::int::<{name}>({place})")),
+                    None => {}
+                }
+                if let Some(a) = self.aliases.get(&name) {
+                    return self.decode(&a.ty, place, krate, depth + 1);
+                }
+                if let Some(e) = self.enums.get(&name) {
+                    let arms: Vec<String> = e
+                        .variants
+                        .iter()
+                        .map(|v| format!("{:?} => Ok({krate}::{name}::{}),", snake(&v.ident.to_string()), v.ident))
+                        .collect();
+                    return Ok(format!(
+                        "{R}::variant({place}).and_then(|n| match n {{ {} n => {R}::unknown(n) }})",
+                        arms.join(" ")
+                    ));
+                }
+                if self.structs.contains_key(&name) {
+                    let r = format!("r{depth}");
+                    let body = self.decode_struct(&name, &r, krate, depth + 1)?;
+                    return Ok(format!("{R}::record({place}).and_then(|{r}| {body})"));
+                }
+                Err(format!("`{shown}`"))
+            }
+            _ => Err(format!("`{shown}`")),
+        }
+    }
+
+    /// Code giving a `Result` of the struct `name` from `r`, its fields (a
+    /// `&psx_mechanics::Values`).
+    fn decode_struct(&self, name: &str, r: &str, krate: &str, depth: u32) -> Result<String, String> {
+        const R: &str = "psx_mechanics::replay";
+        let s = self.structs[name];
+        let syn::Fields::Named(named) = &s.fields else { return Err(format!("`{name}` has no named fields")) };
+        let (mut names, mut fields) = (Vec::new(), Vec::new());
+        for f in &named.named {
+            let n = f.ident.as_ref().unwrap().to_string();
+            let v = format!("v{depth}");
+            let inner = self.decode(&f.ty, &v, krate, depth + 1)?;
+            names.push(format!("{n:?}"));
+            fields.push(format!("{n}: {{ let {v} = {R}::field({r}, {n:?}); {inner}.map_err({R}::at({n:?}))? }},"));
+        }
+        Ok(format!(
+            "{R}::fields({r}, &[{}]).and_then(|{r}| Ok({krate}::{name} {{ {} }}))",
+            names.join(", "),
+            fields.join(" ")
+        ))
+    }
+}
+
+/// Which `Value` generated code builds: `psx_capture`'s, which a binding
+/// answers psx with, or `psx_mechanics`', which replay compares.
+#[derive(Clone, Copy)]
+enum Out {
+    Capture,
+    Trace,
+}
+
+impl Out {
+    fn value(self) -> &'static str {
+        match self {
+            Out::Capture => "psx_capture::Value",
+            Out::Trace => "psx_mechanics::Value",
+        }
+    }
+
+    fn variant(self, name: &str) -> String {
+        match self {
+            Out::Capture => format!("psx_capture::Value::Variant({name:?})"),
+            Out::Trace => format!("psx_mechanics::Value::Variant({name:?}.into())"),
+        }
+    }
+
+    fn record(self, fields: &[String]) -> String {
+        match self {
+            Out::Capture => format!("psx_capture::Value::Record(vec![{}])", fields.join(", ")),
+            Out::Trace => format!("psx_mechanics::replay::make_record([{}])", fields.join(", ")),
+        }
+    }
+}
+
+/// What `step` takes, in order: `"State"`, `"Inputs"`, `"Params"` or
+/// `"Calls"` (`&mut impl` the trait of its interfaces and used mechanics).
+/// `Ok(None)` when the crate has no `pub fn step`.
+fn step_signature(file: &syn::File) -> Result<Option<Vec<&'static str>>, String> {
+    let Some(f) = file.items.iter().find_map(|i| match i {
+        syn::Item::Fn(f) if f.sig.ident == "step" => Some(f),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    let wrong = || {
+        format!(
+            "{}: `step` takes `&mut State`, then `&Inputs`, `&Params` and `&mut impl` its calls' trait as needed, and returns nothing",
+            line(&f.sig)
+        )
+    };
+    if !matches!(f.vis, syn::Visibility::Public(_)) || !matches!(f.sig.output, syn::ReturnType::Default) {
+        return Err(wrong());
+    }
+    let mut takes = Vec::new();
+    for (i, arg) in f.sig.inputs.iter().enumerate() {
+        let syn::FnArg::Typed(t) = arg else { return Err(wrong()) };
+        let syn::Type::Reference(r) = &*t.ty else { return Err(wrong()) };
+        let name = quote::ToTokens::to_token_stream(&r.elem).to_string();
+        let calls = matches!(&*r.elem, syn::Type::ImplTrait(_));
+        let want = match (i, name.as_str(), r.mutability.is_some()) {
+            _ if takes.contains(&"Calls") => return Err(wrong()),
+            (0, "State", true) => "State",
+            (_, "Inputs", false) if !takes.contains(&"Inputs") && !takes.contains(&"Params") => "Inputs",
+            (_, "Params", false) if !takes.contains(&"Params") => "Params",
+            (1.., _, true) if calls => "Calls",
+            _ => return Err(wrong()),
+        };
+        takes.push(want);
+    }
+    if takes.first() != Some(&"State") {
+        return Err(wrong());
+    }
+    Ok(Some(takes))
 }
 
 /// The glue a binding needs for the mechanic `c` declares: a
@@ -429,11 +589,7 @@ impl<'f> Items<'f> {
 /// (`croc-turn` is `croc_turn`).
 pub fn glue(c: &Crate) -> Result<String, Vec<String>> {
     let (m, _) = mechanic(c)?;
-    let package = toml::from_str::<toml::Table>(c.cargo_toml)
-        .ok()
-        .and_then(|t| t.get("package")?.get("name")?.as_str().map(String::from))
-        .ok_or_else(|| vec!["Cargo.toml: no package name".to_string()])?;
-    let krate = package.replace('-', "_");
+    let krate = package(c.cargo_toml).map_err(|e| vec![e])?.replace('-', "_");
     let lib = c.files.iter().find(|(p, _)| p == LIB).map(|(_, t)| t).expect("read by mechanic");
     let file = syn::parse_file(lib).map_err(|e| vec![format!("{LIB}: {e}")])?;
     let items = Items::of(&file);
@@ -444,7 +600,9 @@ pub fn glue(c: &Crate) -> Result<String, Vec<String>> {
             None => ("()".to_string(), "psx_capture::Value::Record(Vec::new())".to_string()),
             Some(_) => {
                 let path: syn::Type = syn::parse_str(name).unwrap();
-                let body = items.encode(&path, "(*v)", &krate, 0).map_err(|e| vec![format!("{LIB}: {name}: {e}")])?;
+                let body = items
+                    .encode(&path, "(*v)", &krate, Out::Capture, 0)
+                    .map_err(|e| vec![format!("{LIB}: {name}: {e}")])?;
                 (format!("{krate}::{name}"), body)
             }
         };
@@ -472,6 +630,175 @@ pub fn glue(c: &Crate) -> Result<String, Vec<String>> {
 /// the mechanic changes. A mechanic it cannot read fails the build.
 pub fn write_glue(mechanic_dir: impl AsRef<std::path::Path>) {
     let dir = mechanic_dir.as_ref();
+    let (cargo_toml, files) = read_crate(dir);
+    match glue(&Crate { cargo_toml: &cargo_toml, files: &files }) {
+        Ok(code) => write_out("glue.rs", &code),
+        Err(problems) => panic!("the mechanic at {} cannot be read:\n{}", dir.display(), problems.join("\n")),
+    }
+}
+
+/// The replay crate's code for the mechanic `c` declares: a module named
+/// after its crate holding `Mechanic`, a `psx_mechanics::replay::Mechanic`
+/// implementation that converts between its structs and the trace's values
+/// and calls its `step`. Types are named through the crate the package is.
+pub fn replay_glue(c: &Crate) -> Result<String, Vec<String>> {
+    const R: &str = "psx_mechanics::replay";
+    let (m, _) = mechanic(c)?;
+    let krate = package(c.cargo_toml).map_err(|e| vec![e])?.replace('-', "_");
+    let lib = c.files.iter().find(|(p, _)| p == LIB).map(|(_, t)| t).expect("read by mechanic");
+    let file = syn::parse_file(lib).map_err(|e| vec![format!("{LIB}: {e}")])?;
+    let takes = match step_signature(&file) {
+        Ok(Some(t)) => t,
+        Ok(None) => return Err(vec![format!("{LIB}: no `pub fn step(state: &mut State, ...)`")]),
+        Err(e) => return Err(vec![format!("{LIB}:{e}")]),
+    };
+    if takes.contains(&"Calls") {
+        return Err(vec![format!("{LIB}: `step` makes calls, and calls are not replayed yet")]);
+    }
+    let items = Items::of(&file);
+    let path = format!("::{krate}");
+    let mut fns = Vec::new();
+    let mut types = Vec::new();
+    for (name, f) in [("State", "state"), ("Inputs", "inputs"), ("Params", "params")] {
+        let (ty, body) = match items.structs.get(name) {
+            None => ("()".to_string(), format!("{R}::fields(v, &[]).map(|_| ())")),
+            Some(_) => {
+                let body = items.decode_struct(name, "v", &path, 0).map_err(|e| vec![format!("{LIB}: {name}: {e}")])?;
+                (format!("{path}::{name}"), body)
+            }
+        };
+        types.push(format!("    type {name} = {ty};"));
+        fns.push(format!(
+            "    fn {f}(v: &psx_mechanics::Values) -> Result<Self::{name}, String> {{\n        {body}\n    }}"
+        ));
+    }
+    let record = match items.structs.get("State") {
+        None => "psx_mechanics::Values::new()".to_string(),
+        Some(_) => {
+            let ty: syn::Type = syn::parse_str("State").unwrap();
+            let e = items.encode(&ty, "(*v)", &path, Out::Trace, 0).map_err(|e| vec![format!("{LIB}: State: {e}")])?;
+            format!("{R}::fields_of({e})")
+        }
+    };
+    let args: Vec<&str> = takes
+        .iter()
+        .map(|t| match *t {
+            "State" => "state",
+            "Inputs" => "inputs",
+            _ => "params",
+        })
+        .collect();
+    let tolerance = match m.exactness {
+        Exactness::Exact => "None".to_string(),
+        Exactness::Faithful => {
+            let each: Vec<String> = m
+                .tolerance
+                .iter()
+                .filter_map(|(k, v)| match v {
+                    crate::Value::Int(n) => Some(format!("({k:?}, {n})")),
+                    _ => None,
+                })
+                .collect();
+            format!("Some(&[{}])", each.join(", "))
+        }
+    };
+    Ok(format!(
+        "pub mod {krate} {{\n\
+         pub struct Mechanic;\n\n\
+         #[allow(unused_variables, clippy::all)]\n\
+         impl {R}::Mechanic for Mechanic {{\n    \
+         const ID: &'static str = {:?};\n    \
+         const VERSION: u32 = {};\n    \
+         const FINGERPRINT: &'static str = {:?};\n    \
+         const TOLERANCE: Option<&'static [(&'static str, i128)]> = {tolerance};\n\
+         {}\n{}\n    \
+         fn record(v: &Self::State) -> psx_mechanics::Values {{\n        {record}\n    }}\n    \
+         fn step(state: &mut Self::State, inputs: &Self::Inputs, params: &Self::Params) {{\n        {path}::step({});\n    }}\n\
+         }}\n}}\n",
+        m.id,
+        m.version,
+        m.fingerprint(),
+        types.join("\n"),
+        fns.join("\n"),
+        args.join(", "),
+    ))
+}
+
+/// For the replay crate's `build.rs`: writes to `$OUT_DIR/replay.rs` the
+/// [`replay_glue`] of each mechanic written as Rust under
+/// `<workspace>/mechanics/`, and `mechanics()`, their
+/// `psx_mechanics::replay::Entry`s. A mechanic that cannot be replayed (it
+/// does not read, has no step, or is not a dependency of the replay crate)
+/// gets an entry that fails, so the others still replay.
+pub fn write_replay(workspace: impl AsRef<std::path::Path>) {
+    let root = workspace.as_ref().join("mechanics");
+    let manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("run from build.rs"));
+    println!("cargo::rerun-if-changed={}", manifest.join("Cargo.toml").display());
+    println!("cargo::rerun-if-changed={}", root.display());
+    let replay_toml = std::fs::read_to_string(manifest.join("Cargo.toml")).unwrap_or_default();
+    let deps: BTreeSet<String> = toml::from_str::<toml::Table>(&replay_toml)
+        .ok()
+        .and_then(|t| t.get("dependencies")?.as_table().map(|d| d.keys().cloned().collect()))
+        .unwrap_or_default();
+    let mut dirs: Vec<_> = std::fs::read_dir(&root).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    dirs.sort();
+    let (mut modules, mut entries) = (String::new(), Vec::new());
+    for dir in dirs.iter().filter(|d| d.is_dir()) {
+        let name = dir.file_name().unwrap().to_string_lossy().to_string();
+        let at = format!("mechanics/{name}");
+        let entry =
+            |replayer: String| format!("        psx_mechanics::replay::Entry {{ dir: {at:?}, replay: {replayer} }},");
+        let fails = |why: String| entry(format!("psx_mechanics::replay::Replayer::Fails({why:?})"));
+        if !dir.join("Cargo.toml").is_file() {
+            if dir.join("mechanic.toml").is_file() {
+                entries.push(entry(format!(
+                    "psx_mechanics::replay::Replayer::Skipped({:?})",
+                    "written as mechanic.toml, which has no step"
+                )));
+            }
+            continue;
+        }
+        let (cargo_toml, files) = read_crate(dir);
+        let package = match package(&cargo_toml) {
+            Ok(p) => p,
+            Err(e) => {
+                entries.push(fails(e));
+                continue;
+            }
+        };
+        if !deps.contains(&package) {
+            entries.push(fails(format!(
+                "not a dependency of the replay crate: add `{package} = {{ path = \"../mechanics/{name}\" }}` to replay/Cargo.toml"
+            )));
+            continue;
+        }
+        match replay_glue(&Crate { cargo_toml: &cargo_toml, files: &files }) {
+            Ok(code) => {
+                modules.push_str(&code);
+                modules.push('\n');
+                entries.push(entry(format!(
+                    "psx_mechanics::replay::Replayer::Run(psx_mechanics::replay::trace::<{}::Mechanic>)",
+                    package.replace('-', "_")
+                )));
+            }
+            Err(problems) => entries.push(fails(problems.join("; "))),
+        }
+    }
+    write_out(
+        "replay.rs",
+        &format!(
+            "// Generated from the mechanics' source by psx_mechanics::rust::write_replay: not for editing.\n\n\
+             {modules}\
+             /// The workspace's mechanics, as this crate was built.\n\
+             pub fn mechanics() -> Vec<psx_mechanics::replay::Entry> {{\n    vec![\n{}\n    ]\n}}\n",
+            entries.join("\n")
+        ),
+    );
+}
+
+/// The crate at `dir`: its `Cargo.toml` and each `.rs` file under `src/`,
+/// which cargo is told to watch.
+fn read_crate(dir: &std::path::Path) -> (String, Vec<(String, String)>) {
     println!("cargo::rerun-if-changed={}", dir.join("Cargo.toml").display());
     println!("cargo::rerun-if-changed={}", dir.join("src").display());
     let read = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -490,13 +817,21 @@ pub fn write_glue(mechanic_dir: impl AsRef<std::path::Path>) {
         }
     }
     files.sort();
-    match glue(&Crate { cargo_toml: &cargo_toml, files: &files }) {
-        Ok(code) => {
-            let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("run from build.rs")).join("glue.rs");
-            std::fs::write(&out, code).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
-        }
-        Err(problems) => panic!("the mechanic at {} cannot be read:\n{}", dir.display(), problems.join("\n")),
-    }
+    (cargo_toml, files)
+}
+
+/// The package's name.
+fn package(cargo_toml: &str) -> Result<String, String> {
+    toml::from_str::<toml::Table>(cargo_toml)
+        .ok()
+        .and_then(|t| t.get("package")?.get("name")?.as_str().map(String::from))
+        .ok_or_else(|| "Cargo.toml: no package name".to_string())
+}
+
+/// Writes `code` to `$OUT_DIR/<name>`.
+fn write_out(name: &str, code: &str) {
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("run from build.rs")).join(name);
+    std::fs::write(&out, code).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
 }
 
 fn blank(kind: Kind) -> Field {
@@ -971,6 +1306,45 @@ pub fn step(state: &mut State, inputs: &Inputs, params: &Params, world: &mut imp
             "{g}"
         );
         assert!(g.contains("(\"x\", psx_capture::Value::Int((*e1).x as i128))"), "{g}");
+    }
+
+    #[test]
+    fn the_replay_glue_converts_both_ways_and_calls_step() {
+        let lib = WALK.replace(", world: &mut impl FloorHeight", "");
+        let files = [(LIB.to_string(), lib)];
+        let g = replay_glue(&Crate { cargo_toml: CARGO, files: &files }).unwrap();
+        let (m, _) = read(CARGO, WALK).unwrap();
+        assert!(g.starts_with("pub mod croc_walk {"), "{g}");
+        assert!(g.contains(&format!("const FINGERPRINT: &'static str = {:?};", m.fingerprint())), "{g}");
+        assert!(g.contains("const TOLERANCE: Option<&'static [(&'static str, i128)]> = None;"), "{g}");
+        assert!(g.contains("type Params = ::croc_walk::Params;"), "{g}");
+        assert!(g.contains("speed: { let v0 = psx_mechanics::replay::field(v, \"speed\"); psx_mechanics::replay::int::<i32>(v0).map_err(psx_mechanics::replay::at(\"speed\"))? },"), "{g}");
+        assert!(g.contains("\"backing_up\" => Ok(::croc_walk::Mode::BackingUp),"), "{g}");
+        assert!(g.contains(".and_then(psx_mechanics::replay::array)"), "{g}");
+        assert!(
+            g.contains(
+                "psx_mechanics::replay::make_record([(\"speed\", psx_mechanics::Value::Int((*v).speed as i128))"
+            ),
+            "{g}"
+        );
+        assert!(g.contains("::croc_walk::Mode::Still => psx_mechanics::Value::Variant(\"still\".into()),"), "{g}");
+        assert!(g.contains("::croc_walk::step(state, inputs, params);"), "{g}");
+
+        let problems = replay_glue(&Crate { cargo_toml: CARGO, files: &[(LIB.into(), WALK.into())] }).unwrap_err();
+        assert_eq!(problems, ["src/lib.rs: `step` makes calls, and calls are not replayed yet"]);
+        let no_step = WALK.split("pub fn step").next().unwrap().to_string();
+        let problems = replay_glue(&Crate { cargo_toml: CARGO, files: &[(LIB.into(), no_step)] }).unwrap_err();
+        assert_eq!(problems, ["src/lib.rs: no `pub fn step(state: &mut State, ...)`"]);
+    }
+
+    #[test]
+    fn a_step_that_takes_something_else_is_named() {
+        let lib = WALK.replace(
+            "pub fn step(state: &mut State, inputs: &Inputs,",
+            "pub fn step(inputs: &Inputs, state: &mut State,",
+        );
+        let (_, problems) = read(CARGO, &lib).unwrap();
+        assert!(problems.iter().any(|p| p.contains("`step` takes `&mut State`, then")), "{problems:#?}");
     }
 
     #[test]

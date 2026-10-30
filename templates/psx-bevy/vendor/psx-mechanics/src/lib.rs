@@ -9,6 +9,7 @@
 pub mod binding;
 pub mod interface;
 pub mod mechanic;
+pub mod replay;
 pub mod rust;
 pub mod scenario;
 pub mod trace;

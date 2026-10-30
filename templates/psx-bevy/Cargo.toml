@@ -4,6 +4,8 @@
 #                  the base the game builds on, yours to change for the game
 #   game/          the port: one plugin per feature, its assets and tests
 #   tools/import/  importers: the player's disc -> the port's asset formats
+#   replay/        step replay: each mechanic (mechanics/<id>/) run against its
+#                  traces
 #   vendor/        psx-media, psx-assets, psx-fixed, psx-gte, psx-mechanics and
 #                  psx-capture, vendored
 #
@@ -13,7 +15,7 @@
 # Standalone: copying the template does not require the psx workspace.
 [workspace]
 resolver = "3"
-members = ["psx-bevy", "game", "tools/import"]
+members = ["psx-bevy", "game", "tools/import", "replay"]
 default-members = ["game"]
 # Template-owned copies of psx crates: dependencies, not members (their tests
 # run in the psx repository).

@@ -218,6 +218,14 @@ pub struct Inputs {
   - `HashMap`, `HashSet`, `BTreeMap`, `BTreeSet`, `VecDeque`, `BinaryHeap`,
     `LinkedList`, `Rc`, `Arc`, `Cell`, `RefCell`, `Mutex`, `RwLock`;
   - floats in an exact mechanic whose fields are all integers.
+- **`step`** is the rule: `pub fn step(state: &mut State, inputs:
+  &Inputs, params: &Params, calls: &mut impl Calls)`, taking `&Inputs`,
+  `&Params` and the calls only as needed, in that order. It is the
+  reference a port is translated from, so it reads as the rule rather than
+  the original's instructions: names in the game's terms, a comment on each
+  wrap, shift or truncation the result depends on, and helpers and `const`
+  tables of its own where they make it clearer. Replay runs it against the
+  traces (section 6, "Replay of the reference").
 
 ## 4. Interfaces: `interfaces/<id>.toml`
 
@@ -676,6 +684,31 @@ there is one. Fed each step's inputs and recorded responses, it must:
 
 The first divergence (step, field, expected, actual) is the result of a
 failed check.
+
+### Replay of the reference
+
+The workspace's `replay` crate runs every trace of every mechanic written
+as Rust through the mechanic's own `step`, with no emulator, and checks
+conformance as above:
+
+```
+cargo test -p replay
+```
+
+- **Each mechanic is a dependency** of `replay/Cargo.toml`, by path
+  (`croc-turn = { path = "../mechanics/croc.turn" }`). One that is not
+  fails the run, saying so.
+- **The glue is generated.** `replay/build.rs` reads each mechanic's source
+  (`psx_mechanics::rust::write_replay`) and writes the conversions between
+  its structs and the trace's values and the call to its `step`. Nothing
+  generated is committed.
+- **Exact** mechanics run from the initial state through every step;
+  **faithful** ones start every step from the recorded state and compare
+  within `TOLERANCE`. A trace captured with another fingerprint is refused.
+- **A failure** names the trace, the step and the field, with the path into
+  a table or record (`last.heading is 7, the trace has 8`).
+- **Not yet:** a `step` that makes calls, and unobserved state. A mechanic
+  still written as `mechanic.toml` is listed and skipped.
 
 ### Replay in a psx port
 

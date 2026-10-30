@@ -21,6 +21,7 @@ format. psx writes `.psx/verdicts/`; never edit them.
 ```
 game/          the port: one plugin per feature, its assets/ and tests/ (game/AGENTS.md)
 tools/import/  importers: the player's disc -> the port's asset formats
+replay/        step replay of the mechanics written as Rust (mechanics/<id>/) against their traces: cargo test -p replay
 psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte), step replay, scenarios and launcher; yours to change (psx-bevy/AGENTS.md)
 vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-mechanics (trace and scenario formats); don't edit (fix upstream in psx)
 docs/          template.md: your changes to psx-bevy/
