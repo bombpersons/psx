@@ -15,7 +15,7 @@ The files:
 - `crates/psx-capture`: the `Glossary` trait the glossary's binding
   implements.
 - `crates/psx/src/scenario.rs`: `psx scenario record`, `psx scenario check`,
-  and the facts `port next` reads; `crates/psx/src/binding.rs` builds and
+  `psx scenario show` and the facts `port next` reads; `crates/psx/src/binding.rs` builds and
   loads the glossary's binding.
 - The template's `psx_bevy::scenario`: the launcher and observer registry
   and the runner, used by the game's `tests/scenarios.rs`.
@@ -194,6 +194,13 @@ code that ran, or none) is in the record's result: unpack it first
   stands alone. A recording made before the scenario's `compare` or a
   compared quantity's type changed must be recorded again: the facts say
   so. A changed unit or description does not count.
+
+`psx scenario show ID --name NAME` reads a recording back as a table: one
+row per tick from tick 0 (`initial`), with the field, the pad and every
+quantity, and beside each numeric one its change since the tick before
+(a walk's speed, a jump's gravity). A fixed shows as its exact decimal and
+a 32- or 64-bit float as its number; `--raw` shows the integers recorded.
+`--quantities` and `--ticks A..B` narrow it, `--text` aligns it.
 
 ## 4. The determinism check: `psx scenario check [ID…]`
 

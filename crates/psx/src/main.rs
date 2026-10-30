@@ -227,6 +227,9 @@ enum ScenarioAction {
     /// The determinism check: reach each scenario again with idle fields added before its
     /// chain's last run, record its recordings again from there, and compare.
     Check(scenario::ScenarioCheckArgs),
+    /// A recording's quantities per tick, with each numeric one's change since the tick before
+    /// (a fixed as its exact decimal unless --raw); --text for an aligned table.
+    Show(scenario::ScenarioShowArgs),
     /// Ask a person to play: open a window showing the game and REQUEST, let them play with a
     /// keyboard or gamepad, and on F12 write state.bin, their input as a replay, a screenshot
     /// and their note; F6 marks moments on the way (state, RAM and screen each). --detach
@@ -317,6 +320,7 @@ fn main() -> ExitCode {
         Command::Scenario { action } => match action {
             ScenarioAction::Record(a) => a.exec(&ctx),
             ScenarioAction::Check(a) => a.exec(&ctx),
+            ScenarioAction::Show(a) => a.exec(&ctx),
             ScenarioAction::Play(a) => a.exec(&ctx),
         },
         Command::Port { action } => match action {

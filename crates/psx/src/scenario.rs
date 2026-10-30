@@ -677,6 +677,222 @@ impl Op for ScenarioCheckArgs {
     }
 }
 
+#[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ScenarioShowArgs {
+    /// The scenario: `scenarios/<ID>.toml`.
+    pub id: String,
+    /// The recording: `scenarios/<ID>/<NAME>.jsonl`.
+    #[arg(long)]
+    pub name: String,
+    /// Quantities to show, comma-separated; default every one recorded.
+    #[arg(long, value_delimiter = ',')]
+    #[serde(default)]
+    pub quantities: Vec<String>,
+    /// Ticks to show, inclusive: `A..B`, `A..`, `..B` or `N` (0 is the initial moment).
+    #[arg(long)]
+    #[serde(default)]
+    pub ticks: Option<String>,
+    /// Values as recorded (a fixed's integer, a float's bits) instead of as numbers.
+    #[arg(long)]
+    #[serde(default)]
+    pub raw: bool,
+    /// Plain-text table instead of JSON.
+    #[arg(long)]
+    #[serde(default)]
+    pub text: bool,
+}
+
+/// `A..B`, `A..`, `..B` or `N`, inclusive.
+fn tick_range(s: &str) -> crate::Result<(u64, u64)> {
+    let bad = || Error::invalid(format!("--ticks {s:?}: expected A..B, A.., ..B or N"));
+    let num = |t: &str, d: u64| if t.is_empty() { Ok(d) } else { t.parse::<u64>().map_err(|_| bad()) };
+    let (a, b) = match s.split_once("..") {
+        Some((a, b)) => (num(a, 0)?, num(b, u64::MAX)?),
+        None => {
+            let n = num(s, 0)?;
+            (n, n)
+        }
+    };
+    if b < a {
+        return Err(bad());
+    }
+    Ok((a, b))
+}
+
+/// A fixed's raw integer as its exact decimal: `raw / 2^frac`.
+fn fixed_decimal(raw: i128, frac: u32) -> String {
+    if frac == 0 {
+        return raw.to_string();
+    }
+    // frac × 5^frac < 10^frac fits a u128 up to 38 fraction digits.
+    if frac > 38 {
+        return format!("{}", raw as f64 / 2f64.powi(frac as i32));
+    }
+    let abs = raw.unsigned_abs();
+    let (int, part) = (abs >> frac, abs & ((1u128 << frac) - 1));
+    let digits = format!("{:0w$}", part * 5u128.pow(frac), w = frac as usize);
+    let digits = digits.trim_end_matches('0');
+    let sign = if raw < 0 { "-" } else { "" };
+    if digits.is_empty() { format!("{sign}{int}") } else { format!("{sign}{int}.{digits}") }
+}
+
+/// A float's bit pattern as its number (80-bit ones stay bits).
+fn float_number(bits: u32, raw: i128) -> Option<f64> {
+    match bits {
+        32 => Some(f32::from_bits(raw as u32) as f64),
+        64 => Some(f64::from_bits(raw as u64)),
+        _ => None,
+    }
+}
+
+/// A recorded value as shown: a number in the quantity's own units, or as
+/// recorded with `raw`.
+fn shown(t: &Type, v: &psx_scenario::Value, raw: bool) -> Json {
+    use psx_scenario::Value as V;
+    match (t, v) {
+        (_, V::Bool(b)) => json!(b),
+        (_, V::Variant(n)) => json!(n),
+        (Type::Fixed { frac_bits, .. }, V::Int(n)) if !raw => json!(fixed_decimal(*n, *frac_bits)),
+        (Type::Float { bits }, V::Int(n)) if !raw => match float_number(*bits, *n) {
+            Some(f) => json!(f),
+            None => json!(n.to_string()),
+        },
+        (_, V::Int(n)) => i64::try_from(*n).map(|n| json!(n)).unwrap_or_else(|_| json!(n.to_string())),
+        (_, v) => json!(v),
+    }
+}
+
+/// Whether a quantity gets a delta: an int, a fixed, or a float shown as a number.
+fn moves(t: &Type, raw: bool) -> bool {
+    matches!(t, Type::Int { .. } | Type::Fixed { .. }) || matches!(t, Type::Float { bits: 32 | 64 } if !raw)
+}
+
+/// How a numeric quantity moved from `prev` to `v`, shown as its values are.
+fn delta(t: &Type, prev: &psx_scenario::Value, v: &psx_scenario::Value, raw: bool) -> Option<Json> {
+    use psx_scenario::Value as V;
+    let (V::Int(a), V::Int(b)) = (prev, v) else { return None };
+    match t {
+        Type::Int { .. } | Type::Fixed { .. } => Some(shown(t, &V::Int(b - a), raw)),
+        Type::Float { bits } if !raw => Some(json!(float_number(*bits, *b)? - float_number(*bits, *a)?)),
+        _ => None,
+    }
+}
+
+fn show_cmd(ctx: &Ctx, a: &ScenarioShowArgs) -> crate::Result<Json> {
+    check_name("id", &a.id)?;
+    check_name("name", &a.name)?;
+    let path = recording_path(&ctx.root, &a.id, &a.name);
+    let text = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, e))?;
+    let rec = Recording::parse(&text).map_err(|e| Error::malformed(format!("{}: {e}", rel(&ctx.root, &path))))?;
+    let mut types = BTreeMap::new();
+    for (n, f) in &rec.header.quantities {
+        let t = f.ty().map_err(|e| Error::malformed(format!("{}: quantities.{n}: {e}", rel(&ctx.root, &path))))?;
+        types.insert(n.clone(), t);
+    }
+    let names: Vec<String> =
+        if a.quantities.is_empty() { types.keys().cloned().collect() } else { a.quantities.clone() };
+    if let Some(n) = names.iter().find(|n| !types.contains_key(*n)) {
+        let have: Vec<&str> = types.keys().map(String::as_str).collect();
+        return Err(Error::invalid(format!("{n} is not recorded here; the recording holds {}", have.join(", "))));
+    }
+    let (lo, hi) = a.ticks.as_deref().map(tick_range).transpose()?.unwrap_or((0, u64::MAX));
+
+    let initial = Full { tick: 0, field: 0, pad: vec![], values: rec.header.initial.clone() };
+    let full = rec.expand();
+    let ticks = full.len() as u64;
+    let mut columns = vec![json!("tick"), json!("field"), json!("pad")];
+    for n in &names {
+        columns.push(json!(n));
+        if moves(&types[n], a.raw) {
+            columns.push(json!(format!("Δ{n}")));
+        }
+    }
+    let mut rows = Vec::new();
+    let mut prev = &initial;
+    for f in std::iter::once(&initial).chain(&full) {
+        if (lo..=hi).contains(&f.tick) {
+            let mut row =
+                vec![json!(f.tick), if f.tick == 0 { Json::Null } else { json!(f.field) }, json!(f.pad.join("+"))];
+            for n in &names {
+                let t = &types[n];
+                let v = f.values.get(n);
+                row.push(v.map(|v| shown(t, v, a.raw)).unwrap_or(Json::Null));
+                if moves(t, a.raw) {
+                    let d = match (prev.values.get(n), v) {
+                        (Some(p), Some(v)) if f.tick > 0 => delta(t, p, v, a.raw),
+                        _ => None,
+                    };
+                    row.push(d.unwrap_or(Json::Null));
+                }
+            }
+            rows.push(Json::Array(row));
+        }
+        prev = f;
+    }
+    let units: serde_json::Map<String, Json> =
+        names.iter().filter_map(|n| Some((n.clone(), json!(rec.header.quantities[n].unit.clone()?)))).collect();
+    let mut out = json!({
+        "recording": rel(&ctx.root, &path),
+        "scenario": rec.header.scenario,
+        "ticks": ticks,
+        "shown": rows.len(),
+        "values": if a.raw { "as recorded: a fixed's integer, a float's bits" }
+                  else { "in the quantity's units: a fixed as its exact decimal (raw: as recorded)" },
+        "deltas": "Δ is the change since the tick before; tick 0 is the initial moment, the end of the first tick, with the pad released",
+        "columns": columns,
+        "rows": rows,
+    });
+    if let Some(d) = &rec.header.description {
+        out["description"] = json!(d);
+    }
+    if !units.is_empty() {
+        out["units"] = Json::Object(units);
+    }
+    if a.text {
+        out["text"] = json!(table(&out));
+    }
+    Ok(out)
+}
+
+/// `show`'s columns and rows as aligned text.
+fn table(out: &Json) -> String {
+    let cell = |v: &Json| match v {
+        Json::Null => "-".to_string(),
+        Json::String(s) if s.is_empty() => "-".to_string(),
+        Json::String(s) => s.clone(),
+        v => v.to_string(),
+    };
+    let head: Vec<String> = out["columns"].as_array().into_iter().flatten().map(cell).collect();
+    let body: Vec<Vec<String>> = out["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| r.as_array().into_iter().flatten().map(cell).collect())
+        .collect();
+    let width: Vec<usize> = (0..head.len())
+        .map(|i| std::iter::once(&head).chain(&body).map(|r| r[i].chars().count()).max().unwrap_or(0))
+        .collect();
+    let mut text = format!(
+        "; {}: {} ticks; {}\n",
+        out["recording"].as_str().unwrap_or(""),
+        out["ticks"],
+        out["values"].as_str().unwrap_or("")
+    );
+    for r in std::iter::once(&head).chain(&body) {
+        let line: Vec<String> = r.iter().zip(&width).map(|(c, w)| format!("{c:>w$}")).collect();
+        text += line.join("  ").trim_end();
+        text += "\n";
+    }
+    text
+}
+
+impl Op for ScenarioShowArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        let text = self.text;
+        Outcome::result_text(show_cmd(ctx, &self), text)
+    }
+}
+
 /// What stops one scenario from counting toward its feature's stage 2:
 /// problems in its files, no captured recording, or no passing determinism
 /// check of the files as they are.
@@ -943,6 +1159,46 @@ pub struct Quantities {
                 "scenarios/walk/a.jsonl: recorded for other quantities than the scenario compares, or with other types than the glossary declares; record it again"
             ]
         );
+    }
+
+    #[test]
+    fn show_lists_each_tick_with_its_deltas() {
+        let d = crate::port::tests::tempdir::Dir::new();
+        let root = d.0.as_path();
+        std::fs::create_dir_all(root.join("scenarios/walk")).unwrap();
+        let header = r#"{"format":"scenario-recording","format_version":1,"scenario":"walk","source":{"kind":"captured","platform":"psx","image_sha256":"00"},"producer":{"name":"psx","version":"0"},"quantities":{"x":{"type":"fixed","signed":true,"int_bits":20,"frac_bits":12,"unit":"units"},"n":{"type":"int","bits":8,"signed":false},"m":{"type":"enum","variants":["idle","walk"]}},"initial":{"x":-6144,"n":3,"m":"idle"}}"#;
+        let rows = [
+            r#"{"tick":1,"field":2,"pad":["right"],"values":{"x":-4096,"m":"walk"}}"#,
+            r#"{"tick":2,"field":4,"values":{"x":-1}}"#,
+        ];
+        std::fs::write(root.join("scenarios/walk/w.jsonl"), format!("{header}\n{}\n", rows.join("\n"))).unwrap();
+        let ctx = Ctx { root: root.to_path_buf(), cancel: None };
+        let args = |ticks: Option<&str>, raw| ScenarioShowArgs {
+            id: "walk".into(),
+            name: "w".into(),
+            quantities: vec![],
+            ticks: ticks.map(Into::into),
+            raw,
+            text: true,
+        };
+        let out = show_cmd(&ctx, &args(None, false)).unwrap();
+        assert_eq!(out["columns"], json!(["tick", "field", "pad", "m", "n", "Δn", "x", "Δx"]));
+        assert_eq!(
+            out["rows"],
+            json!([
+                [0, null, "", "idle", 3, null, "-1.5", null],
+                [1, 2, "right", "walk", 3, 0, "-1", "0.5"],
+                [2, 4, "right", "walk", 3, 0, "-0.000244140625", "0.999755859375"],
+            ])
+        );
+        assert_eq!(
+            out["text"].as_str().unwrap().lines().nth(2).unwrap(),
+            "   0      -      -  idle  3   -             -1.5               -"
+        );
+        let out = show_cmd(&ctx, &args(Some("2.."), true)).unwrap();
+        assert_eq!(out["rows"], json!([[2, 4, "right", "walk", 3, 0, -1, 4095]]));
+        let bad = ScenarioShowArgs { quantities: vec!["y".into()], ..args(None, false) };
+        assert!(show_cmd(&ctx, &bad).unwrap_err().to_string().contains("the recording holds m, n, x"));
     }
 
     #[test]
