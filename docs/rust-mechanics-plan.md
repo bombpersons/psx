@@ -31,10 +31,11 @@ access, account for what was read, and check the results.
 |---|---|---|
 | The mechanic's fields and types | `mechanic.toml` | Rust structs in the mechanic's crate |
 | Its header (id, version, rate, exactness) | `mechanic.toml` | constants and the crate's doc comment |
-| Its behaviour | the port's code | the mechanic's `step` function |
+| Its behaviour | the port's code | the mechanic's `step` function, the reference the port is translated from |
 | Interfaces | `interfaces/<id>.toml` | traits in a crate per interface |
 | Where the PlayStation keeps things | `binding.toml` | a Rust binding crate using `psx_capture` |
-| Traces | JSON lines | unchanged, plus a fingerprint of the mechanic's types |
+| Traces | JSON lines, captured from a state and input | unchanged, plus a fingerprint of the mechanic's types; captured from scenario recordings only |
+| Checking the port | step replay through an adapter, and scenarios | scenarios only, with mechanic coverage linked to them |
 | `NOTES.md` | quirks and uncovered branches | unchanged |
 | Capture, the read audit, coverage, external changes | psx | psx, unchanged in what they report |
 
@@ -238,42 +239,112 @@ fn main() { psx_capture::run(Binding) }
 arguments; the binding links psx's native core through `psx_capture`, and
 the capture runs in that process. The trace format is unchanged.
 
-## 6. Replay and the glue
+## 6. Replay of the reference
 
-Replay needs to turn trace values into the mechanic's structs and back,
-and to answer `Calls` from the trace. The mechanic has no derives, so the
-glue is generated: a `build.rs` in the workspace's replay crate parses each
+Replay turns trace values into the mechanic's structs and back, and answers
+`Calls` from the trace. The mechanic has no derives, so the glue is
+generated: a `build.rs` in the workspace's replay crate parses each
 mechanic with psx's `syn` front end and writes the conversions and a
 `Calls` implementation that answers from the trace and checks calls in
 order. Nothing generated is committed.
 
-- `cargo test -p replay` replays every trace of every mechanic with no
-  emulator, as the template's harness does today.
-- `psx port check` runs it and records the verdict.
-- The port depends on the mechanic crates and calls their `step` from its
-  systems; it does not reimplement them. Its own tests cover the wiring
-  (`port check`'s scenarios).
-- The template's `replay.rs` moves into this shared runtime.
+- `cargo test -p replay` replays every trace of every mechanic against the
+  mechanic's own `step`, with no emulator. This proves the reference: that
+  the rules as written reproduce the original.
+- The template's `replay.rs` moves into this crate.
+- The port is not replayed step by step (section 7).
 
-## 7. What it means for the port design
+## 7. Checking the port
 
-`docs/port-design.md` changes in three places:
+The mechanics prove that the original is understood: followed properly,
+they give a game that behaves as the PlayStation's does. How the port
+merges or splits them is the porter's choice. An idiomatic Bevy port may
+split Croc's tick into several systems over components, use events where
+the original sets flags, and keep heading in a component of its own. So
+the port neither links the mechanic crates nor adapts to them step by
+step: it is a translation, like one into any other language. (Linking a
+mechanic is still allowed, for a quick prototype; the check is the same.)
 
-- **Section 5.4.** "The step is the port's own code" becomes: the step is
-  the mechanic's code, and the port calls it.
+**The port is checked from outside, by scenarios** (`docs/scenarios.md`).
+This is how the Tomb Raider II port checks itself: a recorded route of the
+original, the port started where the original was, the same input each
+tick, and the observable quantities compared every tick, with routes
+recorded after the port was written held out to catch fitting. psx already
+has this: scenario files, recordings of glossary quantities, the port's
+launchers and getters, and `port check`'s scenario verdict. The port owes
+only:
+
+- a launcher for each scenario kind, building the scenario's start;
+- a getter for each compared quantity, in the original's raw units;
+- input from the recording, and interfaces such as `rng` answered from it.
+
+**Every recording is a scenario recording.** Mechanic capture runs over a
+scenario's recording, not over an arbitrary state and input:
+
+- `psx mechanic capture ID --scenario SCENARIO --recording NAME` replays
+  the recording's input from the scenario's state, and the trace's header
+  names both. One run can capture every mechanic bound in the workspace.
+- A scenario starts where the port's launcher can build it: a level start,
+  just after loading, when the game's hidden state is at its defaults, or
+  a point the launcher sets up from glossary quantities alone (where Croc
+  first stands still). A savestate in the middle of a jump does not work,
+  because the port would have to rebuild hidden state, timers or the floor
+  cache, that it may not model the same way.
+
+**Coverage links the two layers.** Each trace records which way every
+branch went at each step. For each mechanic:
+
+- the reference's coverage is the union of branch outcomes over its
+  traces;
+- the port's coverage is that union over the traces whose scenario
+  recordings the port passes.
+
+Because every trace comes from a scenario recording, a port that passes
+every recording covers every outcome the reference does. One that fails a
+recording leaves exactly that recording's outcomes unconfirmed. `port
+status` reports it per mechanic: "croc.collide: 41 of 44 branch outcomes
+confirmed in the port; the other 3 appear only in `slope_jump`, which
+fails at tick 812".
+
+**Diagnosis.** When a recording fails at a tick, the traces captured from
+the same recording show which mechanics stepped in that tick, their inputs
+and state, and what the reference's `step` gives. That points at the rule
+the port got wrong without the port having a matching seam.
+
+**What is left unchecked.** A branch outcome exercised in a recording may
+not reach a compared quantity before the recording ends, so a port that
+took the other side could still pass. The remedy for now is the one TR2
+uses: compare more quantities (a mechanic's state fields that are glossary
+quantities show a difference at once), record longer routes, and hold
+routes out. A stronger check is possible later if that proves not to be
+enough: psx re-runs a recording on the native core with one branch forced
+the other way at one step, and reports outcomes whose forcing changes no
+compared quantity, meaning that recording does not really test them. It
+is not part of this plan.
+
+## 8. What it means for the port design
+
+`docs/port-design.md` changes in four places:
+
+- **Section 5.4.** "The step is the port's own code" stays true, but the
+  port no longer has a trace adapter per mechanic. The mechanic's `step`
+  is the reference the port is translated from.
 - **Section 5.5 and section 6, numbers.** The template's `Scalar` trait,
   generic over `Fixed` and `f32`, was never built (B3). Mechanics written
   generically would hide the original's arithmetic behind a library and
   need a dependency, against both rules above. This plan drops it: exact
-  mechanics are plain integers, and a new game that wants `f32` translates
-  the mechanic as it would into any language, then replays the traces as
-  a faithful mechanic. The `f32` drift report goes with it. **This is a
-  decision for the person** (section 10).
+  mechanics are plain integers, and the port chooses its own types, held
+  to the scenarios' tolerances. The `f32` drift report goes with it.
+  **This is a decision for the person** (section 11).
+- **Section 6, tests.** Layer 1 (step replay) proves the reference, not
+  the port. Layer 2 (scenarios) is the port's test, with the coverage
+  link above.
 - **Section 4, Mechanics, and section 10.** The formats and the capture
-  items are described in Rust terms; the read audit, external changes,
-  coverage and refusals are unchanged.
+  items are described in Rust terms; capture runs over scenario
+  recordings; the read audit, external changes, coverage and refusals are
+  unchanged.
 
-## 8. Level data
+## 9. Level data
 
 Data params are read from RAM by the binding and written into the trace,
 so a trace replays on its own: checking a mechanic never needs the disc.
@@ -284,7 +355,7 @@ frees models the level does not use. An extractor reading the disc must
 reproduce that, and each captured level is its test: extract level 1-1 and
 compare with the params in its traces.
 
-## 9. The order of work
+## 10. The order of work
 
 Each step ends with something that runs, and is committed.
 
@@ -295,12 +366,13 @@ Each step ends with something that runs, and is committed.
 | R3 | L | `psx_capture`: `Machine` with tracked reads, `Bracket` and hooks, `is_step`, params, explained reads; `psx mechanic capture` builds and runs a binding. `croc.turn` bound in Rust. **Its traces must equal the TOML binding's for the same recordings**, which checks the new capture against the old. |
 | R4 | M | The replay crate and its generated glue; `croc.turn`'s `step` written and replaying exactly. |
 | R5 | M | `croc.ground-move` and `croc.tick` converted the same way, traces compared with the old ones. The TOML formats, their schemas and the TOML binding vocabulary removed; `docs/mechanics.md`, the guide and the template rewritten. |
-| R6 | L | Collision: the map reader (pieces with their models), the floor cache as array state, the objects interface, the probe points. Captured with a clear audit and replayed. |
+| R6 | M | Capture over scenario recordings: `--scenario` and `--recording`, every bound mechanic in one run, the trace header naming both. Croc's scenarios start at level starts; his traces are captured again from their recordings. `port status` reports each mechanic's branch outcomes confirmed in the port, and a failing recording's tick points at the traces of that tick. |
+| R7 | L | Collision: the map reader (pieces with their models), the floor cache as array state, the objects interface, the probe points. Captured from scenario recordings with a clear audit and replayed. |
 
 Then the pilot continues where it stopped: `croc.tick`'s sound and rng
 interfaces, Croc's fields and script variables, and the port.
 
-## 10. Decisions for the person
+## 11. Decisions for the person
 
 1. **How the binding runs.** Recommended: it links `psx_capture`, and
    with it psx's native core, as a normal Rust dependency pinned by `port
@@ -312,6 +384,10 @@ interfaces, Croc's fields and script variables, and the port.
    in its own process asking psx for reads (decoupled, but slow for
    bindings that read thousands of bytes per step).
 2. **Numbers.** Drop `Scalar`, `Fixed`, the `f32` instantiation and the
-   drift report (section 7). Recommended.
+   drift report (section 8). Recommended.
 3. **TOML alongside Rust.** Recommended: no. One format; the TOML formats
    are removed once Croc's mechanics are converted (R5).
+4. ~~**How the port is checked.**~~ Settled: by scenarios only, with every
+   recording a scenario recording and mechanic coverage linked to them
+   (section 7). The port does not link or adapt to the mechanics; how it
+   merges or splits them is the porter's choice.
