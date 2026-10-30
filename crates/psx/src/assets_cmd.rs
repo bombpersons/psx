@@ -558,6 +558,13 @@ pub enum AssetsAction {
     /// Original bytes are written next to each conversion. --entry extracts a
     /// complete raw archive entry without interpreting its payload.
     Extract(AssetsExtractArgs),
+    /// Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT
+    /// pair a `--gpu-frame` capture used (with the UV bounds sampled), or one page.
+    Textures(crate::textures::TexturesArgs),
+    /// Compare two raw VRAM dumps (vram.bin) pixel by pixel.
+    Diff(crate::vram_diff::VramDiffArgs),
+    /// List the saves on a raw 128 KiB memory card image (.mcd/.mcr).
+    Memcard(crate::media_cmd::MemcardArgs),
 }
 
 impl AssetsAction {
@@ -565,6 +572,9 @@ impl AssetsAction {
         match self {
             Self::Scan(a) => a.exec(ctx),
             Self::Extract(a) => a.exec(ctx),
+            Self::Textures(a) => a.exec(ctx),
+            Self::Diff(a) => a.exec(ctx),
+            Self::Memcard(a) => a.exec(ctx),
         }
     }
 }
@@ -696,7 +706,8 @@ fn extraction_response(mut full: Value, out: &Path, brief: bool, offset: usize, 
     }
     response["manifest"] = crate::artifact::descriptor(&manifest).map_err(|e| Error::io(&manifest, e))?;
     let list = if response["entries_page"]["total"].as_u64().unwrap_or(0) > 0 { "entries" } else { "assets" };
-    response["next_call"] = json!({"tool":"artifact_read","arguments":{"path":manifest,"pointer":format!("/{list}"),"offset":offset,"limit":limit}});
+    response["next_call"] =
+        json!({"tool":"read","arguments":{"path":manifest,"pointer":format!("/{list}"),"offset":offset,"limit":limit}});
     response["brief"] = json!(brief);
     Ok(response)
 }

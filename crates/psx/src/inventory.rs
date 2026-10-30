@@ -1,4 +1,4 @@
-//! `psx inventory`: every function of every executable on the disc and of
+//! `psx code inventory`: every function of every executable on the disc and of
 //! the code traced runs held in RAM, with instruction counts and basic
 //! blocks, and the disc's file list. The ledger's denominator.
 //!
@@ -2745,7 +2745,7 @@ impl InventoryArgs {
         let found_code = overlays.iter().filter(|o| o["bounded_by"] == "found_code").count();
         let old_traces: Vec<Value> =
             inputs.iter().filter(|i| i["overwritten_pages_kept"] == false).map(|i| i["run"].clone()).collect();
-        let mut next = String::from("artifact_read the inventory for functions and gaps");
+        let mut next = String::from("read the inventory for functions and gaps");
         if !old_traces.is_empty() {
             next += "; the runs in traced_before_overwritten_pages_were_kept were traced before run --trace kept the pages RAM stopped holding, so code beside one may be read on into code no longer there: record them again with run --trace (the same recipe) and take the inventory again";
         }

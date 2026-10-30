@@ -1,4 +1,4 @@
-//! Static code reading for `psx disasm` and `psx xrefs`: code from a PS-X EXE
+//! Static code reading for `psx code disasm` and `psx code xrefs`: code from a PS-X EXE
 //! or from a run's RAM (overlays, code loaded at run time), function bounds
 //! by heuristics, address resolution of `lui`+`addiu/ori/load/store` pairs
 //! and `gp`-relative accesses, and cross-references.
@@ -774,7 +774,7 @@ pub fn xref_report(
     (v, header + &out)
 }
 
-/// `psx disasm`: a listing from an address, an EXE entry point or a discovered function.
+/// `psx code disasm`: a listing from an address, an EXE entry point or a discovered function.
 pub(crate) fn disasm_cmd(a: DisasmArgs) -> crate::Result<Value> {
     let DisasmArgs { source, addr, count, function_budget, symbols, text, function, ram, gp } = a;
     if !(1..=262144).contains(&function_budget) || count.is_some_and(|n| !(1..=262144).contains(&n)) {

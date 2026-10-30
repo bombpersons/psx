@@ -1,4 +1,4 @@
-//! `psx coverage`: what a corpus of traced runs executed, per function of the
+//! `psx code coverage`: what a corpus of traced runs executed, per function of the
 //! inventory: its blocks executed and not, and the runs that reached it. So
 //! "exercised" is a query, and the blocks never executed are a list to
 //! classify (dead, debug only, unreachable on this disc, or needing a
@@ -737,7 +737,7 @@ impl CoverageArgs {
             "out": out, "totals": summary["totals"], "words_in_no_image": summary["words_in_no_image"],
             "images": doc["images"].as_array().into_iter().flatten().map(|i| json!({"name": i["name"], "bounded_by": i["bounded_by"], "totals": i["totals"]})).collect::<Vec<_>>(),
             "runs": runs.iter().map(|r| json!({"run": r["run"], "words_executed": r["words_executed"], "words_in_no_image": r["words_in_no_image"], "branches_recorded": r["branches_recorded"], "no_recipe": r["no_recipe"]})).collect::<Vec<_>>(),
-            "next": "artifact_read the coverage for each function's unexecuted blocks and branch_ways_missed: classify them, or record the corpus reaching them; runs without branches_recorded were traced by an older psx (trace them again for their branch ways); executed_outside_functions and in_no_image mean the inventory missed code (take it again with these runs as ram)",
+            "next": "read the coverage for each function's unexecuted blocks and branch_ways_missed: classify them, or record the corpus reaching them; runs without branches_recorded were traced by an older psx (trace them again for their branch ways); executed_outside_functions and in_no_image mean the inventory missed code (take it again with these runs as ram)",
         }))
     }
 }

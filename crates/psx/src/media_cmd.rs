@@ -6,7 +6,6 @@ use std::path::Path;
 use crate::commands::{Ctx, Op, Outcome};
 use psx_media::disc::{sha256_bytes, sha256_file};
 use psx_media::iso9660::{Entry, FileSystem};
-use psx_media::memmap;
 use psx_media::system_cnf::{DEFAULT_BOOT, SystemCnf};
 use psx_media::{Disc, PsxExe};
 use schemars::JsonSchema;
@@ -173,23 +172,6 @@ pub struct SectorArgs {
 impl Op for SectorArgs {
     fn exec(self, _: &Ctx) -> Outcome {
         Outcome::result(sectors(&self.image, self.lba, self.count, self.preview))
-    }
-}
-
-#[derive(clap::Args, Deserialize, JsonSchema)]
-pub struct AddrArgs {
-    /// Hex address, e.g. 0x80010000.
-    pub address: String,
-}
-
-impl Op for AddrArgs {
-    fn exec(self, _: &Ctx) -> Outcome {
-        let address = self.address;
-        Outcome::result(
-            psx_media::memmap::parse_hex(&address)
-                .ok_or_else(|| Error::invalid(format!("bad hex address {address}")))
-                .map(|a| serde_json::to_value(memmap::resolve(a)).unwrap()),
-        )
     }
 }
 

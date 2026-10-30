@@ -69,117 +69,118 @@ enum Command {
     McpCall,
     #[command(name = "__handoff-child", hide = true)]
     HandoffChild { run_dir: PathBuf },
-    /// Read built-in investigation workflows and tool-usage guidance.
-    Guide(guide::GuideArgs),
     /// Discover build, project defaults, BIOS candidates and capabilities.
     Context(context::ArgsContext),
-    /// Inspect artifacts: directory inventory, paginated JSON/logs/CSV, text, hex or PNG.
-    ArtifactRead(artifact::ReadArgs),
     /// List local BIOSes or explicitly install/download a verified image.
     Bios {
         #[command(subcommand)]
         action: bios::Action,
     },
-    /// Ghidra analysis and decompilation; queries automatically import their source.
-    Ghidra {
+    /// Read built-in investigation workflows and tool-usage guidance.
+    Guide(guide::GuideArgs),
+    /// Inspect artifacts: directory inventory, paginated JSON/logs/CSV, text, hex or PNG.
+    Read(artifact::ReadArgs),
+    /// A disc image: its tracks and boot executable, files, sectors and executables.
+    Disc {
         #[command(subcommand)]
-        action: ghidra::Action,
+        action: DiscAction,
     },
-    /// Tracks, volume, SYSTEM.CNF and boot executable of a disc image.
-    Disc(media_cmd::DiscArgs),
-    /// List ISO9660 entries with LBA, size, CD-XA attributes, filtering and pagination.
-    Ls(media_cmd::LsArgs),
-    /// Extract one file, or every file with --all, into a directory.
-    /// Form 2 / interleaved files are written as raw 2352-byte sectors with a `.raw` suffix.
-    Extract(media_cmd::ExtractArgs),
-    /// Parse a PS-X EXE from a file, or from a disc with `image.cue::/PATH`.
-    Exe(media_cmd::ExeArgs),
-    /// List a file's XA-ADPCM audio channels (STR/XA streams), or decode one to a 44.1 kHz WAV.
-    Xa(xa_cmd::XaArgs),
-    /// Find and convert TIM textures, TMD models and VAB/VAG sound banks in disc files, archives or RAM dumps.
+    /// The game's data: find and convert TIM, TMD and VAB/VAG, VRAM textures,
+    /// VRAM comparison and memory cards.
     Assets {
         #[command(subcommand)]
         action: assets_cmd::AssetsAction,
     },
-    /// Decode an STR movie (MDEC BS v1/v2/v3) into PNG frames, audio.wav and summary.json.
-    Str(str_cmd::StrArgs),
-    /// List the saves on a raw 128 KiB memory card image (.mcd/.mcr).
-    Memcard(media_cmd::MemcardArgs),
-    /// Decode VRAM texture pages through their CLUTs into PNGs: every page/CLUT
-    /// pair a `--gpu-frame` capture used (with the UV bounds sampled), or one page.
-    Textures(textures::TexturesArgs),
-    /// Describe sectors: form, XA subheader, owning file and a hex preview.
-    Sector(media_cmd::SectorArgs),
-    /// Create a native Bevy game starter, or update or adopt one.
-    Template {
+    /// The game's code: disassembly, references, Ghidra decompilation, library
+    /// signatures, the function inventory and what runs covered.
+    Code {
         #[command(subcommand)]
-        action: TemplateAction,
+        action: CodeAction,
+    },
+    /// RAM snapshot analysis across runs: diff, cheat-finder search, side-by-side view.
+    Ram {
+        #[command(subcommand)]
+        action: RamAction,
     },
     /// Run a disc, EXE or state for N frames on the native core and capture RAM, VRAM,
     /// screen and registers, with watches, traces, GPU captures, samples and states.
     /// Input can be inline or replayed.
     Run(run::RunCmdArgs),
-    /// Ask a person to play: open a window showing the game and REQUEST, let them play with a
-    /// keyboard or gamepad, and on F12 write state.bin, their input as a replay, a screenshot
-    /// and their note; F6 marks moments on the way (state, RAM and screen each). --detach returns at once; poll with handoff-status.
-    Handoff(handoff::HandoffArgs),
-    /// Progress or result of a handoff: waiting, done, declined, closed or abandoned.
-    HandoffStatus(handoff::HandoffStatusArgs),
-    /// A port: its workspace, goal and catalogue.
-    Port {
-        #[command(subcommand)]
-        action: PortAction,
-    },
-    /// Scenarios: record the original's quantities in them, and check they are deterministic.
-    Scenario {
-        #[command(subcommand)]
-        action: ScenarioAction,
-    },
-    /// Every function of every executable on the disc and of the overlays in RAM snapshots, with instruction counts and basic blocks, and the disc's file list.
-    Inventory(inventory::InventoryArgs),
-    /// What traced runs executed, per function of the inventory: blocks executed and not, and the runs reaching each.
-    Coverage(coverage::CoverageArgs),
     /// Named start states, each with its chain of runs from power-on.
     States {
         #[command(subcommand)]
         action: StatesAction,
     },
+    /// Scenarios: record the original's quantities in them, check they are
+    /// deterministic, and have a person play.
+    Scenario {
+        #[command(subcommand)]
+        action: ScenarioAction,
+    },
+    /// A port: its workspace, goal and catalogue.
+    Port {
+        #[command(subcommand)]
+        action: PortAction,
+    },
+    /// Ghidra's installation check, analysis, export.
+    Ghidra {
+        #[command(subcommand)]
+        action: ghidra::Action,
+    },
+    /// List a file's XA-ADPCM audio channels (STR/XA streams), or decode one to a 44.1 kHz WAV.
+    Xa(xa_cmd::XaArgs),
+    /// Decode an STR movie (MDEC BS v1/v2/v3) into PNG frames, audio.wav and summary.json.
+    Str(str_cmd::StrArgs),
     /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
     /// and verified against the run's final RAM.
     Loads(provenance::LoadsArgs),
-    /// Name library functions in a PS-X EXE by PsyQ signature matching.
-    /// Writes <out>.symbols.json, <out>.ghidra.txt (ImportSymbolsScript.py) and <out>.sym.
-    Symbols(symbols_io::SymbolsArgs),
     /// Emulator diagnostics: run the native core from power-on for N frames and report
     /// how far it got and which hardware it is missing. For game RE use `run`.
     Native(native::NativeArgs),
+    /// Serve every command above as an MCP tool over stdin/stdout (start it in the project root).
+    Mcp(mcp::McpArgs),
+}
+
+#[derive(Subcommand)]
+enum DiscAction {
+    /// Tracks, volume, SYSTEM.CNF and boot executable of a disc image.
+    Info(media_cmd::DiscArgs),
+    /// List ISO9660 entries with LBA, size, CD-XA attributes, filtering and pagination.
+    Ls(media_cmd::LsArgs),
+    /// Extract one file, or every file with --all, into a directory.
+    /// Form 2 / interleaved files are written as raw 2352-byte sectors with a `.raw` suffix.
+    Extract(media_cmd::ExtractArgs),
+    /// Describe sectors: form, XA subheader, owning file and a hex preview.
+    Sector(media_cmd::SectorArgs),
+    /// Parse a PS-X EXE from a file, or from a disc with `image.cue::/PATH`.
+    Exe(media_cmd::ExeArgs),
+}
+
+#[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once per process
+enum CodeAction {
     /// Disassemble MIPS code from a PS-X EXE (file or `image.cue::/PATH`) or a run's RAM:
     /// an address range, or a whole function; JSON lines or `--text`.
     Disasm(code::DisasmArgs),
     /// Cross-references to an address or range: jal/j/branch targets, lui+addiu/ori/load/store
     /// pairs, gp-relative accesses and pointer words, in an EXE or a run's RAM.
     Xrefs(code::XrefsArgs),
-    /// RAM snapshot analysis across runs: diff, cheat-finder search, side-by-side view.
-    Ram {
-        #[command(subcommand)]
-        action: RamAction,
-    },
-    /// Compare two raw VRAM dumps (vram.bin) pixel by pixel.
-    VramDiff(vram_diff::VramDiffArgs),
-    /// Classify a CPU address (segment, region, folded offset).
-    Addr(media_cmd::AddrArgs),
-    /// Serve every command above as an MCP tool over stdin/stdout (start it in the project root).
-    Mcp(mcp::McpArgs),
-}
-
-#[derive(Subcommand)]
-enum TemplateAction {
-    /// Write the Bevy game workspace (psx-bevy, game, tools, glossary) into a new or game directory.
-    Create(template::TemplateCreateArgs),
-    /// Replace untouched psx-bevy/ and vendor/ files with this build's; report edits and seeded changes.
-    Update(template::TemplateUpdateArgs),
-    /// Start tracking an existing template workspace (writes .psx-template.toml).
-    Adopt(template::TemplateAdoptArgs),
+    /// A function's pseudocode and callers from Ghidra, importing and analysing its source
+    /// on first use.
+    Decompile(ghidra::DecompileArgs),
+    /// Ghidra's functions, with optional name filtering and pagination.
+    Functions(ghidra::FunctionsArgs),
+    /// Apply function renames and comments from a JSON patch to a Ghidra analysis.
+    Annotate(ghidra::AnnotateArgs),
+    /// Name library functions in a PS-X EXE by PsyQ signature matching.
+    /// Writes <out>.symbols.json, <out>.ghidra.txt (ImportSymbolsScript.py) and <out>.sym.
+    Symbols(symbols_io::SymbolsArgs),
+    /// Every function of every executable on the disc and of the overlays in RAM snapshots,
+    /// with instruction counts and basic blocks, and the disc's file list.
+    Inventory(inventory::InventoryArgs),
+    /// What traced runs executed, per function of the inventory: blocks executed and not,
+    /// and the runs reaching each.
+    Coverage(coverage::CoverageArgs),
 }
 
 #[derive(Subcommand)]
@@ -197,8 +198,12 @@ enum StatesAction {
 #[derive(clap::Subcommand)]
 enum PortAction {
     /// Write a port's workspace: the Bevy template, the goal, the catalogue, the disc and
-    /// BIOS linked in, and psx's MCP server for the agent working there.
+    /// BIOS linked in, and psx's MCP server for the agent working there. --existing adds
+    /// them to a template workspace made earlier.
     Init(port::PortInitArgs),
+    /// Replace untouched psx-bevy/ and vendor/ files with this build's; report edits and
+    /// seeded changes.
+    Update(template::TemplateUpdateArgs),
     /// Show the goal's features, their closure and any problems; with --yes, record the
     /// person's confirmation of the list in goal.toml.
     Confirm(port::PortConfirmArgs),
@@ -213,6 +218,7 @@ enum PortAction {
 }
 
 #[derive(clap::Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once per process
 enum ScenarioAction {
     /// Run the game from the scenario's state with input and write scenarios/<ID>/<NAME>.jsonl:
     /// the compared glossary quantities at the end of every tick.
@@ -220,6 +226,11 @@ enum ScenarioAction {
     /// The determinism check: reach each scenario again with idle fields added before its
     /// chain's last run, record its recordings again from there, and compare.
     Check(scenario::ScenarioCheckArgs),
+    /// Ask a person to play: open a window showing the game and REQUEST, let them play with a
+    /// keyboard or gamepad, and on F12 write state.bin, their input as a replay, a screenshot
+    /// and their note; F6 marks moments on the way (state, RAM and screen each). --detach
+    /// returns at once; --status RUN_DIR reports a play's progress or result.
+    Play(handoff::HandoffArgs),
 }
 
 #[derive(Subcommand)]
@@ -233,12 +244,29 @@ enum RamAction {
     View(ram::RamViewArgs),
 }
 
-impl TemplateAction {
+impl DiscAction {
     fn exec(self, ctx: &Ctx) -> commands::Outcome {
         match self {
-            Self::Create(a) => a.exec(ctx),
-            Self::Update(a) => a.exec(ctx),
-            Self::Adopt(a) => a.exec(ctx),
+            Self::Info(a) => a.exec(ctx),
+            Self::Ls(a) => a.exec(ctx),
+            Self::Extract(a) => a.exec(ctx),
+            Self::Sector(a) => a.exec(ctx),
+            Self::Exe(a) => a.exec(ctx),
+        }
+    }
+}
+
+impl CodeAction {
+    fn exec(self, ctx: &Ctx) -> commands::Outcome {
+        match self {
+            Self::Disasm(a) => a.exec(ctx),
+            Self::Xrefs(a) => a.exec(ctx),
+            Self::Decompile(a) => a.exec(ctx),
+            Self::Functions(a) => a.exec(ctx),
+            Self::Annotate(a) => a.exec(ctx),
+            Self::Symbols(a) => a.exec(ctx),
+            Self::Inventory(a) => a.exec(ctx),
+            Self::Coverage(a) => a.exec(ctx),
         }
     }
 }
@@ -274,53 +302,40 @@ fn main() -> ExitCode {
     let out = match cli.command {
         Command::McpCall => mcp::project::worker(&ctx),
         Command::HandoffChild { run_dir } => handoff::child(&run_dir),
-        Command::Handoff(a) => a.exec(&ctx),
-        Command::HandoffStatus(a) => a.exec(&ctx),
         Command::Guide(a) => a.exec(&ctx),
         Command::Context(a) => a.exec(&ctx),
-        Command::ArtifactRead(a) => a.exec(&ctx),
+        Command::Read(a) => a.exec(&ctx),
         Command::Bios { action } => action.exec(&ctx),
         Command::Ghidra { action } => action.exec(&ctx),
         Command::Mcp(a) => return mcp::main(ctx, a, pinned),
-        Command::Disc(a) => a.exec(&ctx),
-        Command::Ls(a) => a.exec(&ctx),
-        Command::Extract(a) => a.exec(&ctx),
-        Command::Exe(a) => a.exec(&ctx),
-        Command::Xa(a) => a.exec(&ctx),
+        Command::Disc { action } => action.exec(&ctx),
         Command::Assets { action } => action.exec(&ctx),
+        Command::Code { action } => action.exec(&ctx),
+        Command::Xa(a) => a.exec(&ctx),
         Command::Str(a) => a.exec(&ctx),
-        Command::Memcard(a) => a.exec(&ctx),
-        Command::Textures(a) => a.exec(&ctx),
-        Command::Sector(a) => a.exec(&ctx),
-        Command::Template { action } => action.exec(&ctx),
         Command::Run(a) => a.exec(&ctx),
         Command::Loads(a) => a.exec(&ctx),
-        Command::Symbols(a) => a.exec(&ctx),
         Command::Native(a) => a.exec(&ctx),
-        Command::Disasm(a) => a.exec(&ctx),
-        Command::Xrefs(a) => a.exec(&ctx),
         Command::Ram { action } => action.exec(&ctx),
         Command::Scenario { action } => match action {
             ScenarioAction::Record(a) => a.exec(&ctx),
             ScenarioAction::Check(a) => a.exec(&ctx),
+            ScenarioAction::Play(a) => a.exec(&ctx),
         },
         Command::Port { action } => match action {
             PortAction::Init(a) => a.exec(&ctx),
+            PortAction::Update(a) => a.exec(&ctx),
             PortAction::Confirm(a) => a.exec(&ctx),
             PortAction::Status(a) => a.exec(&ctx),
             PortAction::Next(a) => a.exec(&ctx),
             PortAction::Check(a) => a.exec(&ctx),
         },
-        Command::Inventory(a) => a.exec(&ctx),
-        Command::Coverage(a) => a.exec(&ctx),
         Command::States { action } => match action {
             StatesAction::Make(a) => a.exec(&ctx),
             StatesAction::Save(a) => a.exec(&ctx),
             StatesAction::List(a) => a.exec(&ctx),
             StatesAction::Rebuild(a) => a.exec(&ctx),
         },
-        Command::VramDiff(a) => a.exec(&ctx),
-        Command::Addr(a) => a.exec(&ctx),
     };
     let out = out.with_path_context(&ctx);
     println!("{}", out.render());

@@ -1,4 +1,4 @@
-//! `psx vram-diff`: compare two VRAM dumps pixel by pixel.
+//! `psx assets diff`: compare two VRAM dumps pixel by pixel.
 
 use std::collections::BTreeMap;
 use std::path::Path;

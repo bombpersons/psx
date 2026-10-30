@@ -69,7 +69,7 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
         scale_mode: ScaleMode::AspectRatioStretch,
         ..WindowOptions::default()
     };
-    let mut win = Window::new(&format!("psx handoff: {title}"), W, H, opts)
+    let mut win = Window::new(&format!("psx scenario play: {title}"), W, H, opts)
         .map_err(|e| format!("could not open a window: {e}"))?;
     // Pacing is ours (the console's field rate), not minifb's.
     win.set_target_fps(0);

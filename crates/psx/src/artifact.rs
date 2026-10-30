@@ -96,7 +96,7 @@ pub fn descriptor(path: &Path) -> std::io::Result<Value> {
     let m = fs::metadata(path)?;
     let format = detected(path);
     Ok(json!({"path":path,"bytes":m.len(),"directory":m.is_dir(),"format":format,
-        "read":{"tool":"artifact_read","arguments":{"path":path}}}))
+        "read":{"tool":"read","arguments":{"path":path}}}))
 }
 
 #[derive(Serialize, Deserialize)]

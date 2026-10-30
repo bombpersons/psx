@@ -41,7 +41,7 @@ pub struct LoadsArgs {
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub offset: usize,
-    /// `.symbols.json` (verified against RAM) or `.sym` files from `psx symbols`; repeatable.
+    /// `.symbols.json` (verified against RAM) or `.sym` files from `psx code symbols`; repeatable.
     #[arg(long = "symbols")]
     #[serde(default)]
     pub symbols: Vec<PathBuf>,

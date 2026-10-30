@@ -32,6 +32,12 @@ pub struct PortInitArgs {
     #[arg(long)]
     #[serde(default)]
     pub fields_per_tick: Option<u32>,
+    /// dest already holds a template workspace (made by an earlier psx, or by
+    /// hand from the template): track it instead of writing the template. Its
+    /// package name, region and fields per tick are given as they are there.
+    #[arg(long)]
+    #[serde(default)]
+    pub existing: bool,
 }
 
 /// A package name from a game's name: lower case, words joined by `-`.
@@ -75,7 +81,11 @@ impl PortInitArgs {
         sources.sort();
         sources.dedup();
         let game = game_name(&media);
-        let name = self.name.clone().unwrap_or_else(|| package_from(&game));
+        let name = match (&self.name, self.existing) {
+            (Some(n), _) => n.clone(),
+            (None, true) => crate::template::package_name(&dest, None),
+            (None, false) => package_from(&game),
+        };
         let (region, region_from) = match self.region {
             Some(r) => (r, "argument"),
             None => match crate::context::region(Some(&media))? {
@@ -86,7 +96,14 @@ impl PortInitArgs {
         };
         let options = TemplateOptions { region, fields_per_tick: self.fields_per_tick.unwrap_or(1) };
         std::fs::create_dir_all(&dest).map_err(|e| Error::io(&dest, e))?;
-        let template = crate::template::create(&dest, Some(&name), options)?;
+        let template = if !self.existing {
+            crate::template::create(&dest, Some(&name), options)?
+        } else {
+            if !dest.join(crate::template::MANIFEST).exists() {
+                crate::template::adopt(&dest, Some(&name), options)?;
+            }
+            crate::template::tracked(&dest)?
+        };
         let mut written = Vec::new();
         write_new(&dest, GOAL, GOAL_TOML, &mut written)?;
         write_new(&dest, "catalogue/README.md", CATALOGUE_README, &mut written)?;
@@ -142,7 +159,7 @@ impl PortInitArgs {
         Ok(json!({
             "game": game, "package": name, "workspace": dest,
             "template": {"owned_files": template["owned_files"], "seeded_files": template["seeded_files"],
-                         "region": template["region"], "region_from": region_from, "tick_hz": template["tick_hz"]},
+                         "region": template["region"], "region_from": if self.existing { "workspace" } else { region_from }, "tick_hz": template["tick_hz"]},
             "written": written, "media": linked, "bios": bios, "git_init": git,
             "next": next,
         }))

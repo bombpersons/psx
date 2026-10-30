@@ -356,7 +356,7 @@ pub struct TraceArgs {
     pub trace_ranges: Vec<String>,
     /// Capture every GPU command of run frame N. Writes gpu_frame.json (decoded
     /// primitives, texture pages, CLUTs), gpu_frame_vram.bin (VRAM at the end of that
-    /// frame, which `psx textures` decodes), gpu_frame_screen.png (its drawing area) and
+    /// frame, which `psx assets textures` decodes), gpu_frame_screen.png (its drawing area) and
     /// VRAM before/after/wireframe PNGs.
     #[arg(long)]
     pub gpu_frame: Option<u64>,
@@ -496,7 +496,7 @@ pub(crate) fn summary(v: &Value) -> Value {
         "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "report": v["report"],
         "frames": pick(&v["frames"], &["requested", "reached", "start"]),
         "screen": v["files"]["screen.png"]["path"],
-        "next_call": {"tool": "artifact_read", "arguments": {"path": v["run_dir"]}},
+        "next_call": {"tool": "read", "arguments": {"path": v["run_dir"]}},
     });
     if let Some(state) = v["files"]["state.bin"]["path"].as_str() {
         s["state"] = json!(state);

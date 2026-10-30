@@ -192,7 +192,7 @@ pub(crate) fn final_name(scopes: &[ScopedSymbols], pc: u32, ram: Option<&[u8]>) 
     }
 }
 
-/// `psx symbols`: name PsyQ library functions in an EXE by signature matching.
+/// `psx code symbols`: name PsyQ library functions in an EXE by signature matching.
 pub(crate) fn symbols_cmd(
     source: &str,
     sigs_dir: &Path,

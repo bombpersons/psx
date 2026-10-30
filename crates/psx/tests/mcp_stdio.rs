@@ -159,10 +159,10 @@ fn shared_signature_default_is_discoverable_and_explicit_override_wins() {
     assert_eq!(context["signatures"]["path"], json!(root.join("signatures")));
     assert_eq!(context["signatures"]["selection"], "PSX_SIGS_DIR");
     assert_eq!(context["signatures"]["available"], true);
-    let (symbols, ok) = run(&["symbols", "test.exe"]);
+    let (symbols, ok) = run(&["code", "symbols", "test.exe"]);
     assert!(ok, "{symbols}"); // An empty installed index is valid, with zero matches.
     assert_eq!(symbols["signatures_loaded"], 0);
-    let (missing, ok) = run(&["symbols", "test.exe", "--sigs", "missing"]);
+    let (missing, ok) = run(&["code", "symbols", "test.exe", "--sigs", "missing"]);
     assert!(!ok, "{missing}");
     assert!(missing["error"]["message"].as_str().unwrap().contains("missing"));
     std::fs::remove_dir_all(root).unwrap();
@@ -361,7 +361,7 @@ fn client_roots_select_the_default_project_unless_pinned_ambiguous_or_required()
     }
     let (server, a, b) = (root.join("server"), root.join("a"), root.join("b"));
     let note = |rpc: &mut Rpc, args: Value| {
-        let (read, error, _) = rpc.tool("artifact_read", args);
+        let (read, error, _) = rpc.tool("read", args);
         assert!(!error, "{read}");
         read["items"][0].as_str().unwrap().to_owned()
     };
@@ -397,7 +397,7 @@ fn client_roots_select_the_default_project_unless_pinned_ambiguous_or_required()
     drop(pinned);
 
     let mut strict = Rpc::launch(&server, &[], &["--require-project-root"], Some(vec![a.clone()]));
-    let (refused, error, _) = strict.tool("artifact_read", json!({"path":"note.txt"}));
+    let (refused, error, _) = strict.tool("read", json!({"path":"note.txt"}));
     assert!(error && refused["error"]["message"].as_str().unwrap().contains("--require-project-root"), "{refused}");
     assert_eq!(note(&mut strict, json!({"path":"note.txt","project_root":b})), "b");
     drop(strict);
@@ -442,7 +442,7 @@ fn scoped_projects_keep_paths_defaults_continuations_and_screens_isolated() {
         let config: Value = serde_json::from_slice(&std::fs::read(project.join(".psx/project.json")).unwrap()).unwrap();
         // Inside the project: relative, so the project can move.
         assert_eq!(config["bios"], json!("bios.bin"));
-        let (read, error, _) = rpc.tool("artifact_read", json!({"project_root":project,"path":"note.txt"}));
+        let (read, error, _) = rpc.tool("read", json!({"project_root":project,"path":"note.txt"}));
         assert!(!error && read["items"] == json!([name]), "{read}");
     }
     assert!(!server.join(".psx/project.json").exists());
@@ -463,7 +463,7 @@ fn scoped_projects_keep_paths_defaults_continuations_and_screens_isolated() {
     arguments["limit"] = json!(2);
     let (_, error, _) = rpc.tool(next["tool"].as_str().unwrap(), arguments);
     assert!(!error);
-    let (missing, error, _) = rpc.tool("disc", json!({"project_root":"../b","image":"missing.cue"}));
+    let (missing, error, _) = rpc.tool("disc_info", json!({"project_root":"../b","image":"missing.cue"}));
     assert!(error, "{missing}");
     assert_eq!(missing["error"]["path"], json!(root.join("b/missing.cue")));
     assert_eq!(missing["error"]["project_root"], json!(root.join("b")));
@@ -1077,7 +1077,7 @@ fn spu_trace_links_key_ons_to_sample_hashes_and_uploads_through_cli_and_mcp() {
     );
     assert!(!error, "{summary}");
     assert_eq!(summary["spu"]["events"], spu["events"]);
-    assert_eq!(summary["next_call"]["tool"], "artifact_read");
+    assert_eq!(summary["next_call"]["tool"], "read");
     assert!(summary.get("artifacts").is_none() && summary.get("watch").is_none(), "{summary}");
     assert!(summary.to_string().len() < 2048, "{summary}");
     assert!(blocks.iter().any(|b| b["type"] == "image"), "summary must still attach the requested screen");
@@ -1236,42 +1236,57 @@ fn mcp_tools_match_cli() {
     let list = rpc.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    for want in [
-        "guide",
-        "disc",
-        "ls",
-        "extract",
-        "exe",
-        "sector",
-        "addr",
-        "xa",
-        "memcard",
-        "textures",
-        "run",
-        "loads",
-        "symbols",
-        "disasm",
-        "native",
-        "template_create",
-        "vram_diff",
-        "xrefs",
-        "ram_diff",
-        "ram_search",
-        "ram_view",
-        "ghidra_doctor",
-        "ghidra_analyze",
-        "ghidra_decompile",
-        "ghidra_functions",
-        "ghidra_xrefs",
-        "ghidra_annotate",
-        "ghidra_export_symbols",
+    let mut names = names.clone();
+    names.sort_unstable();
+    let mut want = vec![
         "context",
         "bios_list",
         "bios_install",
-        "artifact_read",
-    ] {
-        assert!(names.contains(&want), "missing tool {want}: {names:?}");
-    }
+        "guide",
+        "read",
+        "disc_info",
+        "disc_ls",
+        "disc_extract",
+        "disc_sector",
+        "disc_exe",
+        "assets_scan",
+        "assets_extract",
+        "assets_textures",
+        "assets_diff",
+        "assets_memcard",
+        "code_disasm",
+        "code_xrefs",
+        "code_decompile",
+        "code_functions",
+        "code_annotate",
+        "code_symbols",
+        "code_inventory",
+        "code_coverage",
+        "ram_diff",
+        "ram_search",
+        "ram_view",
+        "run",
+        "states_make",
+        "states_save",
+        "states_list",
+        "states_rebuild",
+        "scenario_record",
+        "scenario_check",
+        "scenario_play",
+        "port_init",
+        "port_update",
+        "port_status",
+        "port_next",
+        "port_check",
+        "ghidra_doctor",
+        "ghidra_export_symbols",
+        "xa",
+        "str",
+        "loads",
+        "native",
+    ];
+    want.sort_unstable();
+    assert_eq!(names, want);
     for t in tools {
         assert_eq!(t["inputSchema"]["type"], "object", "{}", t["name"]);
         assert_eq!(t["inputSchema"]["additionalProperties"], false, "{}", t["name"]);
@@ -1307,33 +1322,34 @@ fn mcp_tools_match_cli() {
     // (tool, MCP arguments, equivalent CLI arguments)
     let cases: Vec<(&str, Value, Vec<&str>)> = vec![
         (
-            "ghidra_decompile",
+            "code_decompile",
             json!({"source":"tiny.ps-exe","addr":"bad-address"}),
-            vec!["ghidra", "decompile", "--source", "tiny.ps-exe", "--addr", "bad-address"],
+            vec!["code", "decompile", "--source", "tiny.ps-exe", "--addr", "bad-address"],
         ),
         (
-            "ghidra_decompile",
+            "code_decompile",
             json!({"source":"tiny.ps-exe","addr":"80010000","ghidra_home":"no-ghidra"}),
-            vec!["ghidra", "decompile", "--source", "tiny.ps-exe", "--addr", "80010000", "--ghidra-home", "no-ghidra"],
+            vec!["code", "decompile", "--source", "tiny.ps-exe", "--addr", "80010000", "--ghidra-home", "no-ghidra"],
         ),
         ("ghidra_doctor", json!({"ghidra_home":"no-ghidra"}), vec!["ghidra", "doctor", "--ghidra-home", "no-ghidra"]),
         (
-            "ghidra_functions",
+            "code_functions",
             json!({"source":"tiny.ps-exe","limit":0}),
-            vec!["ghidra", "functions", "--source", "tiny.ps-exe", "--limit", "0"],
+            vec!["code", "functions", "--source", "tiny.ps-exe", "--limit", "0"],
         ),
-        ("addr", json!({"address": "0x80010000"}), vec!["addr", "0x80010000"]),
-        ("addr", json!({"address": "1F801810"}), vec!["addr", "1F801810"]),
-        ("addr", json!({"address": "zz"}), vec!["addr", "zz"]),
-        ("disc", json!({"image": "missing.cue"}), vec!["disc", "missing.cue"]),
-        ("ls", json!({"image": "missing.cue"}), vec!["ls", "missing.cue"]),
-        ("exe", json!({"source": "tiny.ps-exe"}), vec!["exe", "tiny.ps-exe"]),
-        ("disasm", json!({"source": "tiny.ps-exe", "count": 4}), vec!["disasm", "tiny.ps-exe", "--count", "4"]),
-        ("memcard", json!({"image": "blank.mcd"}), vec!["memcard", "blank.mcd"]),
+        ("disc_info", json!({"image": "missing.cue"}), vec!["disc", "info", "missing.cue"]),
+        ("disc_ls", json!({"image": "missing.cue"}), vec!["disc", "ls", "missing.cue"]),
+        ("disc_exe", json!({"source": "tiny.ps-exe"}), vec!["disc", "exe", "tiny.ps-exe"]),
         (
-            "vram_diff",
+            "code_disasm",
+            json!({"source": "tiny.ps-exe", "count": 4}),
+            vec!["code", "disasm", "tiny.ps-exe", "--count", "4"],
+        ),
+        ("assets_memcard", json!({"image": "blank.mcd"}), vec!["assets", "memcard", "blank.mcd"]),
+        (
+            "assets_diff",
             json!({"a": "vram.bin", "b": "vram.bin", "samples": 2}),
-            vec!["vram-diff", "vram.bin", "vram.bin", "--samples", "2"],
+            vec!["assets", "diff", "vram.bin", "vram.bin", "--samples", "2"],
         ),
         (
             "native",
@@ -1367,21 +1383,25 @@ fn mcp_tools_match_cli() {
             vec!["run", "--bios", "b.bin", "--gpu-next-draw", "--gpu-frame", "18446744073709551615"],
         ),
         (
-            "disasm",
+            "code_disasm",
             json!({"source": "tiny.ps-exe", "function": "80010004"}),
-            vec!["disasm", "tiny.ps-exe", "--function", "80010004"],
+            vec!["code", "disasm", "tiny.ps-exe", "--function", "80010004"],
         ),
         (
-            "disasm",
+            "code_disasm",
             json!({"ram": "ram_a.bin", "addr": "80010000", "count": 2}),
-            vec!["disasm", "--ram", "ram_a.bin", "--addr", "80010000", "--count", "2"],
+            vec!["code", "disasm", "--ram", "ram_a.bin", "--addr", "80010000", "--count", "2"],
         ),
         (
-            "xrefs",
+            "code_xrefs",
             json!({"target": "80010004", "source": "tiny.ps-exe"}),
-            vec!["xrefs", "80010004", "--source", "tiny.ps-exe"],
+            vec!["code", "xrefs", "80010004", "--source", "tiny.ps-exe"],
         ),
-        ("xrefs", json!({"target": "zz", "source": "tiny.ps-exe"}), vec!["xrefs", "zz", "--source", "tiny.ps-exe"]),
+        (
+            "code_xrefs",
+            json!({"target": "zz", "source": "tiny.ps-exe"}),
+            vec!["code", "xrefs", "zz", "--source", "tiny.ps-exe"],
+        ),
         (
             "ram_diff",
             json!({"a": "ram_a.bin", "b": "ram_b.bin", "signed": true}),
@@ -1416,7 +1436,7 @@ fn mcp_tools_match_cli() {
         rpc.tool("ram_search", json!({"snapshots": ["ram_a.bin", "ram_b.bin"], "width": 4, "pred": ["increased"]}));
     assert_eq!(v["candidates"], 1, "{v}");
     assert_eq!(v["matches"][0]["fx16_16"], json!([1.5, 3.0]), "{v}");
-    let (v, _, _) = rpc.tool("disasm", json!({"source": "tiny.ps-exe", "function": "80010004"}));
+    let (v, _, _) = rpc.tool("code_disasm", json!({"source": "tiny.ps-exe", "function": "80010004"}));
     assert_eq!(
         (v["function"]["start"].as_str(), v["function"]["end"].as_str()),
         (Some("0x80010000"), Some("0x8001000C")),
@@ -1424,32 +1444,37 @@ fn mcp_tools_match_cli() {
     );
 
     // Text mode: the CLI prints the `text` field as is; MCP returns the whole JSON.
-    let (v, is_error, _) = rpc.tool("disasm", json!({"source": "tiny.ps-exe", "count": 2, "text": true}));
+    let (v, is_error, _) = rpc.tool("code_disasm", json!({"source": "tiny.ps-exe", "count": 2, "text": true}));
     assert!(!is_error, "{v}");
-    let out = psx().args(["disasm", "tiny.ps-exe", "--count", "2", "--text"]).current_dir(&root).output().unwrap();
+    let out =
+        psx().args(["code", "disasm", "tiny.ps-exe", "--count", "2", "--text"]).current_dir(&root).output().unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
     assert_eq!(text.trim_end(), v["text"].as_str().unwrap().trim_end());
     assert!(text.contains("80010000  24080001  li      t0, 1"), "{text}");
 
     // --root: the same command from another directory.
     let elsewhere = std::env::temp_dir();
-    let out =
-        psx().args(["--root", root.to_str().unwrap(), "exe", "tiny.ps-exe"]).current_dir(&elsewhere).output().unwrap();
+    let out = psx()
+        .args(["--root", root.to_str().unwrap(), "disc", "exe", "tiny.ps-exe"])
+        .current_dir(&elsewhere)
+        .output()
+        .unwrap();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v, cli(&root, &["exe", "tiny.ps-exe"]).0);
-    let out = psx().args(["exe", "tiny.ps-exe"]).env("PSX_ROOT", &root).current_dir(&elsewhere).output().unwrap();
+    assert_eq!(v, cli(&root, &["disc", "exe", "tiny.ps-exe"]).0);
+    let out =
+        psx().args(["disc", "exe", "tiny.ps-exe"]).env("PSX_ROOT", &root).current_dir(&elsewhere).output().unwrap();
     assert!(out.status.success(), "PSX_ROOT");
 
     // MCP-only argument checks.
-    let (v, is_error, _) = rpc.tool("addr", json!({"address": "0", "adress": "1"}));
+    let (v, is_error, _) = rpc.tool("disc_exe", json!({"source": "tiny.ps-exe", "sorce": "1"}));
     assert!(is_error);
     assert_eq!(v["error"]["code"], "invalid_arguments", "{v}");
-    let (v, is_error, _) = rpc.tool("addr", json!({"address": "0", "return_screen": true}));
+    let (v, is_error, _) = rpc.tool("disc_exe", json!({"source": "tiny.ps-exe", "return_screen": true}));
     assert!(is_error, "{v}");
-    let (v, is_error, _) = rpc.tool("addr", json!({}));
-    assert!(is_error && v["error"]["message"].as_str().unwrap().contains("address"), "{v}");
+    let (v, is_error, _) = rpc.tool("disc_exe", json!({}));
+    assert!(is_error && v["error"]["message"].as_str().unwrap().contains("source"), "{v}");
     let (v, is_error, _) =
-        rpc.tool("ghidra_decompile", json!({"addr":"80010000","source":"tiny.ps-exe","analysis":"analysis.json"}));
+        rpc.tool("code_decompile", json!({"addr":"80010000","source":"tiny.ps-exe","analysis":"analysis.json"}));
     assert!(is_error && v["error"]["code"] == "invalid_arguments", "{v}");
 
     let unknown = rpc.request("tools/call", json!({"name": "no_such_tool", "arguments": {}}));
@@ -1558,7 +1583,9 @@ fn ghidra_mcp_cancellation_stops_worker() {
         if scoped {
             args["project_root"] = json!(root);
         }
-        rpc.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"ghidra_decompile","arguments":args}}));
+        rpc.send(
+            json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"code_decompile","arguments":args}}),
+        );
         let pid_file = install.join("support/child.pid");
         for _ in 0..300 {
             if pid_file.exists() {
@@ -1604,7 +1631,7 @@ fn ghidra_single_call_and_cached_cli_mcp_parity() {
     let id = rpc.next_id;
     rpc.next_id += 2;
     for (i, addr) in [(id, "80010048"), (id + 1, "80010000")] {
-        rpc.send(json!({"jsonrpc":"2.0","id":i,"method":"tools/call","params":{"name":"ghidra_decompile","arguments":{"source":"probe.ps-exe","addr":addr}}}));
+        rpc.send(json!({"jsonrpc":"2.0","id":i,"method":"tools/call","params":{"name":"code_decompile","arguments":{"source":"probe.ps-exe","addr":addr}}}));
     }
     let mut results = std::collections::BTreeMap::new();
     while results.len() < 2 {
@@ -1627,48 +1654,48 @@ fn ghidra_single_call_and_cached_cli_mcp_parity() {
     let manifest = first["analysis"].as_str().unwrap();
     let artifact = first["artifact"].as_str().unwrap();
     let before = std::fs::metadata(artifact).unwrap().modified().unwrap();
-    let (second, ok) = cli(&root, &["ghidra", "decompile", "--source", "probe.ps-exe", "--addr", "80010048"]);
+    let (second, ok) = cli(&root, &["code", "decompile", "--source", "probe.ps-exe", "--addr", "80010048"]);
     assert!(ok, "{second}");
     assert_eq!(first, second, "cached CLI/MCP result");
     assert_eq!(before, std::fs::metadata(artifact).unwrap().modified().unwrap(), "cache must not re-decompile");
-    let (functions, error, _) = rpc.tool("ghidra_functions", json!({"analysis":manifest,"limit":1}));
+    let (functions, error, _) = rpc.tool("code_functions", json!({"analysis":manifest,"limit":1}));
     assert!(!error && functions["functions"]["total"] == 3, "{functions}");
     assert_eq!(functions["functions"]["next_offset"], 1);
-    let (refs, error, _) = rpc.tool("ghidra_xrefs", json!({"analysis":manifest,"addr":"800100c0"}));
-    assert!(!error && refs["references_to"]["items"][0]["from"] == "0x80010040", "{refs}");
+    let (refs, error, _) = rpc.tool("code_xrefs", json!({"target":"800100c0","source":"probe.ps-exe"}));
+    assert!(!error && refs.to_string().to_ascii_lowercase().contains("80010040"), "{refs}");
     // The next function requires processing the saved program in a new JVM.
-    let (cop2, error, _) = rpc.tool("ghidra_decompile", json!({"analysis":manifest,"addr":"A0010080"}));
+    let (cop2, error, _) = rpc.tool("code_decompile", json!({"analysis":manifest,"addr":"A0010080"}));
     assert!(!error && cop2["function"]["entry"] == "0x80010080", "{cop2}");
     assert!(cop2["warnings"].to_string().contains("COP2"), "{cop2}");
-    let (again, error, _) = rpc.tool("ghidra_decompile", json!({"analysis":manifest,"addr":"80010048"}));
+    let (again, error, _) = rpc.tool("code_decompile", json!({"analysis":manifest,"addr":"80010048"}));
     assert!(!error && again["pseudocode"] == first["pseudocode"], "{again}");
-    let (missing, error, _) = rpc.tool("ghidra_decompile", json!({"analysis":manifest,"addr":"800100c0"}));
+    let (missing, error, _) = rpc.tool("code_decompile", json!({"analysis":manifest,"addr":"800100c0"}));
     assert!(
         !error && missing["status"] == "partial" && missing["decompile_status"] == "function_not_found",
         "{missing}"
     );
     assert_eq!(missing["analysis"], manifest);
-    let (exe, ok) = cli(&root, &["exe", "probe.ps-exe"]);
+    let (exe, ok) = cli(&root, &["disc", "exe", "probe.ps-exe"]);
     assert!(ok);
     std::fs::write(root.join("probe.symbols.json"),serde_json::to_vec(&json!({
         "source":root.join("probe.ps-exe"),"exe_sha256":exe["sha256"],
         "report":{"symbols":[{"address":0x80010040u32,"name":"measured_helper","kind":"function"},{"address":0x80010048u32,"name":"inside_helper","kind":"local"}]}
     })).unwrap()).unwrap();
-    let (named, error, _) = rpc
-        .tool("ghidra_decompile", json!({"source":"probe.ps-exe","addr":"80010048","symbols":["probe.symbols.json"]}));
+    let (named, error, _) =
+        rpc.tool("code_decompile", json!({"source":"probe.ps-exe","addr":"80010048","symbols":["probe.symbols.json"]}));
     assert!(!error && named["function"]["name"] == "measured_helper", "{named}");
     // Respect both our project lock and externally modified Ghidra databases.
     let lock = Path::new(manifest).parent().unwrap().join("psx.lock");
     std::fs::write(&lock, "other owner").unwrap();
-    let (busy, error, _) = rpc.tool("ghidra_functions", json!({"analysis":manifest}));
+    let (busy, error, _) = rpc.tool("code_functions", json!({"analysis":manifest}));
     assert!(error && busy["error"]["code"] == "analysis_busy", "{busy}");
     std::fs::remove_file(lock).unwrap();
     let project = Path::new(first["project"].as_str().unwrap()).parent().unwrap();
     std::fs::write(project.join("external-edit"), "changed by GUI").unwrap();
-    let (stale, error, _) = rpc.tool("ghidra_functions", json!({"analysis":manifest}));
+    let (stale, error, _) = rpc.tool("code_functions", json!({"analysis":manifest}));
     assert!(error && stale["error"]["code"] == "stale_analysis", "{stale}");
     let (fresh, error, _) =
-        rpc.tool("ghidra_decompile", json!({"source":"probe.ps-exe","addr":"80010048","reanalyze":true}));
+        rpc.tool("code_decompile", json!({"source":"probe.ps-exe","addr":"80010048","reanalyze":true}));
     assert!(!error && fresh["status"] == "complete" && fresh["project"] != first["project"], "{fresh}");
     assert!(project.join("external-edit").exists(), "reanalyze must preserve edited projects");
     drop(rpc);
@@ -1701,7 +1728,7 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
     let mut rpc = Rpc::start(&root);
     rpc.response_timeout = Duration::from_secs(310);
     let args = json!({"ram":"ram.bin","ranges":["80010000-80010098"],"entries":["a0010000"],"gp":"800100c0","addr":"a061004c"});
-    let (first, error, _) = rpc.tool("ghidra_decompile", args.clone());
+    let (first, error, _) = rpc.tool("code_decompile", args.clone());
     assert!(!error && first["status"] == "complete", "{first}");
     assert_eq!(first["addr"], "0x8001004C");
     assert_eq!(first["requested_addr"], "a061004c");
@@ -1729,28 +1756,28 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
     std::fs::write(root.join("renamed.bin"), &machine.bus.ram).unwrap();
     let mut alias = args.clone();
     alias["ram"] = json!("renamed.bin");
-    let (same, error, _) = rpc.tool("ghidra_decompile", alias);
+    let (same, error, _) = rpc.tool("code_decompile", alias);
     assert!(!error);
     assert_eq!(same["analysis"], first["analysis"], "input filenames must not control identity");
     let collision = json!({"functions":[{"addr":"80010000","name":first["function"]["name"]}]});
     std::fs::write(root.join("generated-conflict.json"), serde_json::to_vec(&collision).unwrap()).unwrap();
     let (displaced, error, _) =
-        rpc.tool("ghidra_annotate", json!({"analysis":manifest,"file":"generated-conflict.json"}));
+        rpc.tool("code_annotate", json!({"analysis":manifest,"file":"generated-conflict.json"}));
     assert!(!error && displaced["conflicts"].as_array().unwrap().len() == 1, "{displaced}");
     let patch = json!({"functions":[{"addr":"a0010040","name":"studied_writer","comment":"Authored GP-relative counter writer."}]});
     std::fs::write(root.join("patch.json"), serde_json::to_vec(&patch).unwrap()).unwrap();
-    let (annotated, error, _) = rpc.tool("ghidra_annotate", json!({"analysis":manifest,"file":"patch.json"}));
+    let (annotated, error, _) = rpc.tool("code_annotate", json!({"analysis":manifest,"file":"patch.json"}));
     assert!(!error && annotated["revision"] == 2, "{annotated}");
     assert_ne!(annotated["project"], first["project"]);
     assert!(!Path::new(first["project"].as_str().unwrap()).exists(), "annotating removes the project it supersedes");
-    let (named, error, _) = rpc.tool("ghidra_decompile", json!({"analysis":manifest,"addr":"8001004c"}));
+    let (named, error, _) = rpc.tool("code_decompile", json!({"analysis":manifest,"addr":"8001004c"}));
     assert!(!error && named["function"]["name"] == "studied_writer", "{named}");
     assert!(named["pseudocode"].as_str().unwrap().contains("studied_writer"));
     assert_eq!(named["function"]["comment"], patch["functions"][0]["comment"]);
     assert_ne!(first["artifact"], named["artifact"], "annotation revision invalidates cached pseudocode");
     std::fs::write(root.join("user-conflict.json"), br#"{"functions":[{"addr":"80010000","name":"studied_writer"}]}"#)
         .unwrap();
-    let (conflict, error, _) = rpc.tool("ghidra_annotate", json!({"analysis":manifest,"file":"user-conflict.json"}));
+    let (conflict, error, _) = rpc.tool("code_annotate", json!({"analysis":manifest,"file":"user-conflict.json"}));
     assert!(error && conflict["error"]["code"] == "symbol_conflict", "{conflict}");
     let (export, error, _) = rpc.tool("ghidra_export_symbols", json!({"analysis":manifest}));
     assert!(!error, "{export}");
@@ -1784,22 +1811,24 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
     let writes = std::fs::read_to_string(root.join("trace-a/writes.jsonl")).unwrap();
     assert!(writes.contains("studied_writer") && writes.contains("body_match"), "{writes}");
     let (dis, ok) =
-        cli(&root, &["disasm", "--ram", "ram.bin", "--addr", "80010040", "--count", "6", "--symbols", symbols]);
+        cli(&root, &["code", "disasm", "--ram", "ram.bin", "--addr", "80010040", "--count", "6", "--symbols", symbols]);
     assert!(ok && dis.to_string().contains("studied_writer"), "{dis}");
-    let (refs, ok) = cli(&root, &["xrefs", "800100c0", "--ram", "ram.bin", "--gp", "800100c0", "--symbols", symbols]);
+    let (refs, ok) =
+        cli(&root, &["code", "xrefs", "800100c0", "--ram", "ram.bin", "--gp", "800100c0", "--symbols", symbols]);
     assert!(ok && refs.to_string().contains("studied_writer"), "{refs}");
     // The same address now contains a different function; no name from snapshot A may label it.
     machine.bus.ram[0x10048..0x1004c].copy_from_slice(&0x24420004u32.to_le_bytes());
     std::fs::write(root.join("ram.bin"), &machine.bus.ram).unwrap();
     std::fs::write(root.join("changed.bin"), machine.save_state(None)).unwrap();
-    let (second, error, _) = rpc.tool("ghidra_decompile", args);
+    let (second, error, _) = rpc.tool("code_decompile", args);
     assert!(!error && second["status"] == "complete", "{second}");
     assert_ne!(first["analysis"], second["analysis"]);
     assert_ne!(first["project"], second["project"]);
     let (dis, ok) =
-        cli(&root, &["disasm", "--ram", "ram.bin", "--addr", "80010040", "--count", "6", "--symbols", symbols]);
+        cli(&root, &["code", "disasm", "--ram", "ram.bin", "--addr", "80010040", "--count", "6", "--symbols", symbols]);
     assert!(ok && !dis.to_string().contains("studied_writer"), "{dis}");
-    let (refs, ok) = cli(&root, &["xrefs", "800100c0", "--ram", "ram.bin", "--gp", "800100c0", "--symbols", symbols]);
+    let (refs, ok) =
+        cli(&root, &["code", "xrefs", "800100c0", "--ram", "ram.bin", "--gp", "800100c0", "--symbols", symbols]);
     assert!(ok && !refs.to_string().contains("studied_writer"), "{refs}");
     let mut changed_args = trace_args;
     let state = changed_args.iter().position(|a| *a == "start.bin").unwrap();
@@ -1810,7 +1839,7 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
     assert!(!std::fs::read_to_string(root.join("trace-b/trace.txt")).unwrap().contains("studied_writer"));
     assert!(!std::fs::read_to_string(root.join("trace-b/writes.jsonl")).unwrap().contains("studied_writer"));
     // Re-importing snapshot A still retains its annotations and cached analysis.
-    let (old, error, _) = rpc.tool("ghidra_decompile", json!({"analysis":manifest,"addr":"8001004c"}));
+    let (old, error, _) = rpc.tool("code_decompile", json!({"analysis":manifest,"addr":"8001004c"}));
     assert!(!error && old["function"]["name"] == "studied_writer", "{old}");
     drop(rpc);
     std::fs::remove_dir_all(root).unwrap();
@@ -1894,25 +1923,25 @@ fn disassembly_exposes_search_and_listing_limits_instead_of_claiming_complete_fu
     exe[0x990..0x994].copy_from_slice(&0x03e00008u32.to_le_bytes());
     std::fs::write(root.join("long.exe"), exe).unwrap();
     let mut rpc = Rpc::start(&root);
-    let (whole, error, _) = rpc.tool("disasm", json!({"source":"long.exe","function":"80010000"}));
+    let (whole, error, _) = rpc.tool("code_disasm", json!({"source":"long.exe","function":"80010000"}));
     assert!(!error && whole["lines"].as_array().unwrap().len() == 102, "{whole}");
     assert_eq!(whole["function"]["stop_reason"], "return");
     assert_eq!(whole["function"]["truncated"], false);
-    let (cli_whole, ok) = cli(&root, &["disasm", "long.exe", "--function", "80010000"]);
+    let (cli_whole, ok) = cli(&root, &["code", "disasm", "long.exe", "--function", "80010000"]);
     assert!(ok);
     assert_eq!(whole, cli_whole);
-    let (limited, error, _) = rpc.tool("disasm", json!({"source":"long.exe","function":"80010000","count":16}));
+    let (limited, error, _) = rpc.tool("code_disasm", json!({"source":"long.exe","function":"80010000","count":16}));
     assert!(!error && limited["lines"].as_array().unwrap().len() == 16);
     assert_eq!(limited["function"]["end"], whole["function"]["end"]);
     assert_eq!(limited["function"]["listing_truncated"], true);
     assert_eq!(limited["listing"]["next_addr"], "0x80010040");
     let (partial, error, _) =
-        rpc.tool("disasm", json!({"source":"long.exe","function":"80010000","function_budget":32}));
+        rpc.tool("code_disasm", json!({"source":"long.exe","function":"80010000","function_budget":32}));
     assert!(!error && partial["function"]["truncated"] == true, "{partial}");
     assert_eq!(partial["function"]["stop_reason"], "search_limit");
     assert!(!partial["warnings"].as_array().unwrap().is_empty());
     let text = psx()
-        .args(["disasm", "long.exe", "--function", "80010000", "--function-budget", "32", "--text"])
+        .args(["code", "disasm", "long.exe", "--function", "80010000", "--function-budget", "32", "--text"])
         .current_dir(&root)
         .output()
         .unwrap();
@@ -2002,7 +2031,7 @@ fn regional_bios_discovery_requires_a_unique_compatible_image() {
     let mut rpc = Rpc::start(&root);
     let (missing, error, _) = rpc.tool("context", json!({"image":"game.exe"}));
     assert!(!error && missing["status"] == "needs_setup", "{missing}");
-    assert_eq!(missing["next_calls"][0]["arguments"]["region"], "pal");
+    assert_eq!(missing["next_calls"][0]["tool"], "port_init", "{missing}");
     assert!(missing["next_calls"][0]["arguments"].get("fields_per_tick").is_none());
     assert_eq!(missing["setup"]["next_action"]["arguments"], json!({"download":true,"region":"pal"}));
     let mut pal = vec![0; 524288];
@@ -2044,36 +2073,35 @@ fn artifacts_support_bounded_navigation_filters_projection_and_png_delivery() {
         .collect::<String>();
     std::fs::write(root.join("writes.jsonl"), logs).unwrap();
     let mut rpc = Rpc::start(&root);
-    let (first, error, _) = rpc.tool("artifact_read", json!({"path":"report.json","pointer":"/rows","limit":1}));
+    let (first, error, _) = rpc.tool("read", json!({"path":"report.json","pointer":"/rows","limit":1}));
     assert!(!error && first["items"] == json!([{"value":1}]), "{first}");
-    let (same, ok) = cli(&root, &["artifact-read", "report.json", "--pointer", "/rows", "--limit", "1"]);
+    let (same, ok) = cli(&root, &["read", "report.json", "--pointer", "/rows", "--limit", "1"]);
     assert!(ok);
     assert_eq!(same, first);
     assert_eq!(first["page"]["total"], 3);
     assert_eq!(first["page"]["truncated"], true);
     let cursor = first["page"]["next_cursor"].as_str().unwrap();
     let (second, error, _) =
-        rpc.tool("artifact_read", json!({"path":"report.json","pointer":"/rows","limit":1,"cursor":cursor}));
+        rpc.tool("read", json!({"path":"report.json","pointer":"/rows","limit":1,"cursor":cursor}));
     assert!(!error && second["items"] == json!([{"value":2}]));
-    let (changed, error, _) =
-        rpc.tool("artifact_read", json!({"path":"report.json","pointer":"/rows/0","cursor":cursor}));
+    let (changed, error, _) = rpc.tool("read", json!({"path":"report.json","pointer":"/rows/0","cursor":cursor}));
     assert!(error && changed["error"]["code"] == "stale_cursor", "{changed}");
     std::fs::write(root.join("report.json"), br#"{"rows":[0]}"#).unwrap();
-    let (stale, error, _) = rpc.tool("artifact_read", json!({"path":"report.json","pointer":"/rows","cursor":cursor}));
+    let (stale, error, _) = rpc.tool("read", json!({"path":"report.json","pointer":"/rows","cursor":cursor}));
     assert!(error && stale["error"]["code"] == "stale_cursor", "{stale}");
     let args =
         json!({"path":"samples.csv","frame_from":1,"frame_to":2,"pc":"80010000","columns":["frame","note"],"limit":1});
-    let (csv, error, _) = rpc.tool("artifact_read", args.clone());
+    let (csv, error, _) = rpc.tool("read", args.clone());
     assert!(!error && csv["items"] == json!([{"frame":"1","note":"comma, and \"quote\""}]), "{csv}");
     let mut follow = args.clone();
     follow["cursor"] = csv["page"]["next_cursor"].clone();
-    let (csv, error, _) = rpc.tool("artifact_read", follow);
+    let (csv, error, _) = rpc.tool("read", follow);
     assert!(!error && csv["items"] == json!([{"frame":"2","note":"two\nlines"}]), "{csv}");
     assert_eq!(csv["page"]["truncated"], false);
     let mut args = json!({"path":"writes.jsonl","frame_from":3,"frame_to":19,"pc":"0x80010000","columns":["frame","value"],"limit":4});
     let mut frames = Vec::new();
     loop {
-        let (page, error, _) = rpc.tool("artifact_read", args.clone());
+        let (page, error, _) = rpc.tool("read", args.clone());
         assert!(!error, "{page}");
         frames.extend(page["items"].as_array().unwrap().iter().map(|v| v["frame"].as_i64().unwrap()));
         if page["page"]["truncated"] != true {
@@ -2088,7 +2116,7 @@ fn artifacts_support_bounded_navigation_filters_projection_and_png_delivery() {
     enc.set_color(png::ColorType::Rgb);
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header().unwrap().write_image_data(&[255, 0, 0]).unwrap();
-    let (image, error, blocks) = rpc.tool("artifact_read", json!({"path":"screen.png"}));
+    let (image, error, blocks) = rpc.tool("read", json!({"path":"screen.png"}));
     assert!(!error && image["image"]["width"] == 1, "{image}");
     use base64::Engine;
     let data = blocks.iter().find(|b| b["type"] == "image").unwrap()["data"].as_str().unwrap();
@@ -2096,30 +2124,30 @@ fn artifacts_support_bounded_navigation_filters_projection_and_png_delivery() {
         base64::engine::general_purpose::STANDARD.decode(data).unwrap(),
         std::fs::read(root.join("screen.png")).unwrap()
     );
-    let (dir, error, _) = rpc.tool("artifact_read", json!({"path":".","limit":1}));
+    let (dir, error, _) = rpc.tool("read", json!({"path":".","limit":1}));
     assert!(!error && dir["format"] == "directory" && dir["page"]["truncated"] == true, "{dir}");
-    assert_eq!(dir["items"][0]["read"]["tool"], "artifact_read");
+    assert_eq!(dir["items"][0]["read"]["tool"], "read");
     std::fs::write(root.join("raw.bin"), [0, 1, 255, 7]).unwrap();
-    let (hex, error, _) = rpc.tool("artifact_read", json!({"path":"raw.bin","offset":1,"limit":2}));
+    let (hex, error, _) = rpc.tool("read", json!({"path":"raw.bin","offset":1,"limit":2}));
     assert!(!error && hex["hex"] == "01 FF" && hex["page"]["next_offset"] == 3, "{hex}");
     std::fs::write(root.join("huge.jsonl"), "x".repeat(65537)).unwrap();
-    let (large, error, _) = rpc.tool("artifact_read", json!({"path":"huge.jsonl"}));
+    let (large, error, _) = rpc.tool("read", json!({"path":"huge.jsonl"}));
     assert!(error && large["error"]["code"] == "limit_exceeded", "{large}");
     let text = "x".repeat(127) + "\n";
     std::fs::write(root.join("large.txt"), text.repeat(40000) + "needle\n").unwrap();
-    let (bounded, error, _) = rpc.tool("artifact_read", json!({"path":"large.txt","contains":"needle"}));
+    let (bounded, error, _) = rpc.tool("read", json!({"path":"large.txt","contains":"needle"}));
     assert!(!error && bounded["items"] == json!([]) && bounded["page"]["truncated"] == true, "{bounded}");
     assert!(bounded["coverage"]["bytes_inspected"].as_u64().unwrap() <= 4 * 1024 * 1024 + 65536);
-    let (last, error, _) = rpc
-        .tool("artifact_read", json!({"path":"large.txt","contains":"needle","cursor":bounded["page"]["next_cursor"]}));
+    let (last, error, _) =
+        rpc.tool("read", json!({"path":"large.txt","contains":"needle","cursor":bounded["page"]["next_cursor"]}));
     assert!(!error && last["items"] == json!(["needle"]), "{last}");
-    let (skip, error, _) = rpc.tool("artifact_read", json!({"path":"large.txt","offset":39999,"limit":3}));
+    let (skip, error, _) = rpc.tool("read", json!({"path":"large.txt","offset":39999,"limit":3}));
     assert!(
         !error && skip["items"] == json!([]) && skip["page"]["truncated"] == true,
         "large initial offsets must remain bounded: {skip}"
     );
     let (after_skip, error, _) =
-        rpc.tool("artifact_read", json!({"path":"large.txt","limit":3,"cursor":skip["page"]["next_cursor"]}));
+        rpc.tool("read", json!({"path":"large.txt","limit":3,"cursor":skip["page"]["next_cursor"]}));
     assert!(
         !error && after_skip["items"] == json!(["x".repeat(127), "needle"]),
         "continuation must retain an initial skip beyond the scan budget: {after_skip}"
@@ -2292,13 +2320,13 @@ fn query_pages_preserve_totals_and_explain_scan_coverage() {
     }
     std::fs::write(root.join("files.iso"), iso).unwrap();
     let mut rpc = Rpc::start(&root);
-    let (ls, error, _) = rpc.tool("ls", json!({"image":"files.iso","offset":2,"limit":2}));
+    let (ls, error, _) = rpc.tool("disc_ls", json!({"image":"files.iso","offset":2,"limit":2}));
     assert!(!error && ls["entries"].as_array().unwrap().len() == 2, "{ls}");
     assert_eq!(
         ls["page"],
         json!({"total":7,"offset":2,"returned":2,"limit":2,"truncated":true,"complete":false,"next_offset":4})
     );
-    let (same, ok) = cli(&root, &["ls", "files.iso", "--offset", "2", "--limit", "2"]);
+    let (same, ok) = cli(&root, &["disc", "ls", "files.iso", "--offset", "2", "--limit", "2"]);
     assert!(ok);
     assert_eq!(same, ls);
     let (scan, error, _) =
@@ -2358,15 +2386,16 @@ fn query_pages_preserve_totals_and_explain_scan_coverage() {
     }
     exe[0x840..0x844].copy_from_slice(&0x03e00008u32.to_le_bytes());
     std::fs::write(root.join("refs.exe"), exe).unwrap();
-    let (refs, error, _) = rpc.tool("xrefs", json!({"source":"refs.exe","target":"80010040","limit":1,"offset":1}));
+    let (refs, error, _) =
+        rpc.tool("code_xrefs", json!({"source":"refs.exe","target":"80010040","limit":1,"offset":1}));
     assert!(!error && refs["page"]["total"] == 3 && refs["refs"][0]["pc_hex"] == "0x80010004", "{refs}");
-    let (text, error, _) = rpc.tool("xrefs", json!({"source":"refs.exe","target":"80010040","text":true}));
+    let (text, error, _) = rpc.tool("code_xrefs", json!({"source":"refs.exe","target":"80010040","text":true}));
     assert!(!error && text["text"].is_string() && text.get("refs").is_none());
-    let (text, error, _) = rpc.tool("disasm", json!({"source":"refs.exe","addr":"80010000","text":true}));
+    let (text, error, _) = rpc.tool("code_disasm", json!({"source":"refs.exe","addr":"80010000","text":true}));
     assert!(!error && text["text"].is_string() && text.get("lines").is_none());
-    let (spill, error, _) = rpc.tool("disasm", json!({"ram":"a.bin","addr":"80000000","count":4096}));
-    assert!(!error && spill["result_file"].is_string() && spill["next_call"]["tool"] == "artifact_read", "{spill}");
-    let (read, error, _) = rpc.tool("artifact_read", json!({"path":spill["result_file"],"pointer":"/lines","limit":3}));
+    let (spill, error, _) = rpc.tool("code_disasm", json!({"ram":"a.bin","addr":"80000000","count":4096}));
+    assert!(!error && spill["result_file"].is_string() && spill["next_call"]["tool"] == "read", "{spill}");
+    let (read, error, _) = rpc.tool("read", json!({"path":spill["result_file"],"pointer":"/lines","limit":3}));
     assert!(
         !error && read["items"].as_array().unwrap().len() == 3 && read["page"]["total"] == 4096,
         "spilled results must be navigable directly: {read}"

@@ -1,4 +1,4 @@
-//! `psx handoff`: an agent asks a person to play the game to a point it cannot
+//! `psx scenario play`: an agent asks a person to play the game to a point it cannot
 //! easily reach itself. A window shows the game and the agent's request; the
 //! person plays with a keyboard or gamepad and presses F12 when it is done.
 //! The run directory then holds what the agent continues from:
@@ -13,7 +13,7 @@
 //!   the report diffs each one's RAM against the mark before it on its route.
 //!
 //! The window runs in the calling process, or with `--detach` (always over MCP)
-//! in a child process: the call returns a ticket at once and `handoff_status`
+//! in a child process: the call returns a ticket at once and `scenario play --status`
 //! reports progress (`live.json`) and the result.
 
 use std::path::{Path, PathBuf};
@@ -41,8 +41,17 @@ mod window;
 #[serde(deny_unknown_fields)]
 pub struct HandoffArgs {
     /// What to do, shown in the window; be specific (where, facing what, holding what).
-    #[arg(long)]
+    #[arg(long, required_unless_present = "status", default_value = "")]
+    #[serde(default)]
     pub request: String,
+    /// A play's run_dir (the ticket's): report its progress or result instead of starting one.
+    #[arg(long, conflicts_with_all = ["request", "media", "bios", "from_state", "out", "verify", "detach", "expect"])]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<PathBuf>,
+    /// With --status: seconds to wait for the person to finish (max 600).
+    #[arg(long, default_value_t = 0, requires = "status")]
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub wait: u64,
     /// Disc image or PS-X EXE, as for run.
     pub media: Option<PathBuf>,
     /// BIOS override, as for run.
@@ -63,7 +72,7 @@ pub struct HandoffArgs {
     #[serde(default)]
     pub verify: bool,
     /// Return a ticket at once and run the window in its own process; poll with
-    /// `handoff-status`. Over MCP a handoff always detaches.
+    /// `--status`. Over MCP a play always detaches.
     #[arg(long)]
     #[serde(default)]
     pub detach: bool,
@@ -115,8 +124,21 @@ pub struct HandoffStatusArgs {
 /// Seconds without a `live.json` update after which a handoff counts as abandoned.
 const STALE_S: u128 = 20;
 
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 impl Op for HandoffArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
+        if let Some(run_dir) = self.status {
+            if !self.request.is_empty() {
+                return Error::invalid("status reports a play: give it alone, without request").into();
+            }
+            return HandoffStatusArgs { run_dir, wait: self.wait }.exec(ctx);
+        }
+        if self.request.trim().is_empty() {
+            return Error::invalid("request is required: what the person should do").into();
+        }
         Outcome::report(self.start(ctx))
     }
 }
@@ -203,8 +225,8 @@ fn detach(ctx: &Ctx, dir: &Path) -> crate::Result<(bool, Value)> {
             true,
             json!({
                 "status": "waiting", "run_dir": dir, "pid": c.id(),
-                "note": "A window is open for the person. Poll handoff_status (wait up to 600 s per call) until status is no longer waiting; the person may take several minutes.",
-                "next_call": {"tool": "handoff_status", "arguments": {"run_dir": dir, "wait": 300}},
+                "note": "A window is open for the person. Poll scenario_play with status (wait up to 600 s per call) until status is no longer waiting; the person may take several minutes.",
+                "next_call": {"tool": "scenario_play", "arguments": {"status": dir, "wait": 300}},
             }),
         )),
         Err(e) => Err(Error::new("io_error", format!("could not start the handoff window: {e}"))),
@@ -272,7 +294,7 @@ fn status(dir: &Path, wait: u64) -> crate::Result<(bool, Value)> {
             return Ok((
                 true,
                 json!({"status": "waiting", "run_dir": dir, "live": live,
-                "next_call": {"tool": "handoff_status", "arguments": {"run_dir": dir, "wait": 300}}}),
+                "next_call": {"tool": "scenario_play", "arguments": {"status": dir, "wait": 300}}}),
             ));
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -456,7 +478,7 @@ impl Session {
         crate::run::write_png(p, w, h, &rgba, png::ColorType::Rgba)
     }
 
-    /// Progress for `handoff_status`.
+    /// Progress for `scenario play --status`.
     pub fn write_live(&self, dir: &Path, state: &str) {
         let v = json!({"status": state, "run_frame": self.rel(), "frame": self.m.bus.frames,
             "input_events": self.events.len(), "marks": self.marks.iter().map(Mark::json).collect::<Vec<_>>(),
@@ -517,11 +539,11 @@ fn start(a: &HandoffArgs) -> crate::Result<Session> {
 }
 
 /// The handoff's report, also written to report.json; a failure is recorded
-/// there as an error so `handoff_status` can return it.
+/// there as an error so `scenario play --status` can return it.
 fn run(a: HandoffArgs, dir: &Path) -> (bool, Value) {
     let result = start(&a).and_then(|mut s| {
         let (end, note) = play(&mut s, &a, dir).map_err(|e| Error::new("window_failed", e))?;
-        // The person is done; keep handoff_status from calling this abandoned while
+        // The person is done; keep the status from calling this abandoned while
         // the files are written (and verify replays, which can take minutes).
         s.write_live(dir, "finishing");
         finish(&a, s, end, note, dir)
@@ -530,7 +552,7 @@ fn run(a: HandoffArgs, dir: &Path) -> (bool, Value) {
         Ok(v) => (true, v),
         Err(e) => (false, e.with("run_dir", dir).to_value()),
     };
-    // report.json is what handoff_status returns and what `run --from-state` reads identity from.
+    // report.json is what the status returns and what `run --from-state` reads identity from.
     let _ = std::fs::write(dir.join("report.json"), serde_json::to_vec_pretty(&v).unwrap());
     (ok, v)
 }
@@ -716,7 +738,7 @@ fn marks_report(s: &Session, a: &HandoffArgs, frames: u64, dir: &Path) -> Value 
 }
 
 /// Replay the recording headless from the same start and compare the end state.
-/// Keeps `live.json` in `dir` fresh ("verifying") so handoff_status keeps waiting.
+/// Keeps `live.json` in `dir` fresh ("verifying") so the status keeps waiting.
 fn verify(a: &HandoffArgs, events: &[Input], frames: u64, expected: &[u8], dir: &Path) -> Value {
     let started = std::time::Instant::now();
     let mut s = match start(a) {
@@ -826,6 +848,8 @@ mod tests {
             verify: true,
             detach: false,
             expect: vec!["80000000:u32>=0".into(), "80000000:u32<0".into()],
+            status: None,
+            wait: 0,
         };
         let mut s = start(&a).unwrap();
         let cross = psx_core::sio0::button::CROSS;

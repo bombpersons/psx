@@ -99,7 +99,7 @@ fn binding(root: &Path, g: &Glossary) -> crate::Result<Plugin<Described>> {
     let d = p.described();
     let mut problems = Vec::new();
     if d.glossary != g.fingerprint() {
-        problems.push("its glue reads other quantities than glossary/ declares: psx template update brings vendor/psx-scenario to this psx's".to_string());
+        problems.push("its glue reads other quantities than glossary/ declares: psx port update brings vendor/psx-scenario to this psx's".to_string());
     }
     d.source.check(binding::PLATFORM, &mut problems);
     d.tick.check(&mut problems);

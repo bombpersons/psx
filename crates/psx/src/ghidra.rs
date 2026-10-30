@@ -36,16 +36,6 @@ fn limit() -> usize {
 pub enum Action {
     /// Check the optional Ghidra installation and Java runtime.
     Doctor(DoctorArgs),
-    /// Create/reuse an analysis (optional: query commands do this automatically).
-    Analyze(Input),
-    /// List analysed functions, with optional name filtering and pagination.
-    Functions(FunctionsArgs),
-    /// Return a function's pseudocode and callers, automatically importing its source.
-    Decompile(DecompileArgs),
-    /// Query Ghidra's references to/from an address (code or data).
-    Xrefs(XrefsArgs),
-    /// Apply explicit function renames and comments from a JSON patch.
-    Annotate(AnnotateArgs),
     /// Export byte-bound function names for runtime and static tools.
     ExportSymbols(ExportArgs),
 }
@@ -53,11 +43,6 @@ impl Action {
     pub fn exec(self, ctx: &Ctx) -> Outcome {
         match self {
             Self::Doctor(a) => a.exec(ctx),
-            Self::Analyze(a) => a.exec(ctx),
-            Self::Functions(a) => a.exec(ctx),
-            Self::Decompile(a) => a.exec(ctx),
-            Self::Xrefs(a) => a.exec(ctx),
-            Self::Annotate(a) => a.exec(ctx),
             Self::ExportSymbols(a) => a.exec(ctx),
         }
     }
@@ -139,23 +124,6 @@ pub struct FunctionsArgs {
     #[serde(default = "limit")]
     pub limit: usize,
 }
-#[derive(Args, Deserialize, JsonSchema)]
-pub struct XrefsArgs {
-    #[command(flatten)]
-    #[serde(flatten)]
-    pub input: Input,
-    /// Hex address, including a RAM data address.
-    #[arg(long)]
-    pub addr: String,
-    #[arg(long, default_value_t = 0)]
-    #[serde(default)]
-    pub offset: usize,
-    /// Maximum rows in each reference direction (1..=1000).
-    #[arg(long, default_value_t = limit())]
-    #[serde(default = "limit")]
-    pub limit: usize,
-}
-
 #[derive(Args, Deserialize, JsonSchema)]
 pub struct AnnotateArgs {
     /// Existing analysis manifest.
@@ -1068,15 +1036,6 @@ impl Op for DoctorArgs {
         })())
     }
 }
-impl Op for Input {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        outcome((|| {
-            let deadline = budget(&self)?;
-            let a = prepare(&self, None, function_timeout(), deadline, ctx)?;
-            Ok(summary(&a))
-        })())
-    }
-}
 impl Op for FunctionsArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         outcome((|| {
@@ -1093,32 +1052,6 @@ impl Op for FunctionsArgs {
                 .collect();
             let mut out = summary(&a);
             out["functions"] = page(&rows, self.offset, self.limit);
-            Ok(out)
-        })())
-    }
-}
-impl Op for XrefsArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        outcome((|| {
-            valid_limit(self.limit)?;
-            let deadline = budget(&self.input)?;
-            let addr = hex(&self.addr)?;
-            let canonical = ram_address(addr).unwrap_or(addr);
-            let a = prepare(&self.input, None, function_timeout(), deadline, ctx)?;
-            let target = format!("0x{canonical:08X}");
-            let to: Vec<Value> = references(&a)
-                .iter()
-                .filter(|r| same_address(&r["to"], canonical) && r["to_space"] == "ram")
-                .cloned()
-                .collect();
-            let from: Vec<Value> =
-                references(&a).iter().filter(|r| same_address(&r["from"], canonical)).cloned().collect();
-            let mut out = summary(&a);
-            out["requested_addr"] = json!(self.addr);
-            out["addr"] = json!(target);
-            out["references_to"] = page(&to, self.offset, self.limit);
-            out["references_from"] = page(&from, self.offset, self.limit);
-            out["references_truncated"] = a.index["references_truncated"].clone();
             Ok(out)
         })())
     }
@@ -1471,6 +1404,7 @@ mod tests {
     #[test]
     fn input_validation_precedes_worker_launch() {
         let ctx = context();
+        let input = |source| FunctionsArgs { input: input(source), filter: None, offset: 0, limit: limit() };
         let missing = input(None).exec(&ctx);
         assert_eq!(missing.value["error"]["code"], "invalid_arguments");
         fs::write(ctx.root.join("short.exe"), b"PS-X EXE").unwrap();

@@ -67,7 +67,7 @@ pub fn capabilities() -> Value {
     json!({
         "emulator":{"available":true,"run":true,"checkpoints":true,"write_watches":true,"read_watches":true,"instruction_trace":true,"gpu_capture":true,"samples":true,"pokes":true,"screenshots":true},
     "ghidra":{"optional":true,"runtime_snapshots":true,"rename_comments":true,"verified_symbol_export":true,"same_analysis_queue":true},
-    "agent_interface":{"artifact_read":true,"inline_input":true,"explicit_release_boundary":true,"query_pagination":true,"coverage_metadata":true,
+    "agent_interface":{"read":true,"inline_input":true,"explicit_release_boundary":true,"query_pagination":true,"coverage_metadata":true,
         "per_call_project_root":true,"extraction_manifests":true,"native_input_application_log":true,"gpu_draw_filters":true},
         "setup":{"bios_list":true,"bios_install_local":true,"bios_download_explicit":true,"automatic_downloads":false},
         "handoff":crate::handoff::capability(),
@@ -313,14 +313,9 @@ impl ArgsContext {
                 .map_err(|e| Error::io(&profile, e))?;
         }
         let setup = r.setup_error().map(|e| e.to_value()["error"].take());
-        let mut template = json!({"tool":"template_create","arguments":{"dest":"game"}});
-        if let Some(region) = r.region {
-            template["arguments"]["region"] = json!(match region {
-                bios::Region::Pal => "pal",
-                bios::Region::NtscU | bios::Region::NtscJ => "ntsc",
-            });
-        }
-        let mut next_calls = vec![template];
+        // port init takes the region from the disc.
+        let mut next_calls: Vec<Value> =
+            r.media.iter().map(|m| json!({"tool":"port_init","arguments":{"dest":"port","media":m}})).collect();
         if let Some(disc) = fix_region {
             match r.candidates.iter().find(|c| c.region == Some(disc) && c.bytes == 524288) {
                 Some(c) => next_calls

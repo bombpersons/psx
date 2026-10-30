@@ -169,54 +169,49 @@ pub fn tools() -> Vec<ToolDef> {
     vec![
         def::<crate::guide::GuideArgs>("guide", "Built-in workflow guidance. Omit topic for an overview. Tool descriptions are brief: argument rules and output details live in its topics.").read_only(),
         def::<crate::context::ArgsContext>("context", "Start here: the running build, project root, saved defaults (media, BIOS), local BIOS candidates and capabilities. image or from_state explains region or checkpoint identity; save=true stores the resolved defaults. Never downloads."),
-        def::<crate::artifact::ReadArgs>("artifact_read", "Read a returned artifact or run directory in bounded pages: JSON by pointer, JSONL/CSV/text by rows with frame/pc/contains filters and column projection, hex bytes, PNG as an image. Continue with page.next_cursor.").read_only(),
+        def::<crate::artifact::ReadArgs>("read", "Read a returned artifact or run directory in bounded pages: JSON by pointer, JSONL/CSV/text by rows with frame/pc/contains filters and column projection, hex bytes, PNG as an image. Continue with page.next_cursor.").read_only(),
         def::<crate::bios::ListArgs>("bios_list", "List BIOS images in the project's bios/ and the shared BIOS store, with hashes, regions and the download catalog. Read-only; context shows which one is selected and why.").read_only(),
         def::<crate::bios::InstallArgs>("bios_install", "One-time BIOS setup: import a local file (from), or download=true with region pal|ntsc-u|ntsc-j for a pinned, hash-checked image. Installs into the shared store (PSX_BIOS_DIR); never replaces existing images.").heavy(),
-        def::<crate::ghidra::AnnotateArgs>("ghidra_annotate", "Apply function renames and comments from a JSON file (functions:[{addr,name,comment}]) to a Ghidra analysis as a new revision. User-name collisions fail; generated names yield.").heavy(),
-        def::<crate::ghidra::ExportArgs>("ghidra_export_symbols", "Export a Ghidra analysis's function names as .symbols.json, bound to the input hash and function bytes, for the symbols argument of run, loads, disasm or xrefs.").heavy(),
-        def::<crate::ghidra::DoctorArgs>("ghidra_doctor", "Check that Ghidra and Java are discoverable. Usually unnecessary: query tools import and analyse automatically. Set PSX_GHIDRA_HOME or ghidra_home if discovery fails."),
-        def::<crate::ghidra::Input>("ghidra_analyze", "Optional: prewarm a reusable Ghidra analysis from source (EXE or disc.cue::/PATH) or a RAM snapshot (with ranges and entries). Returns an analysis handle; query tools analyse automatically anyway.").heavy(),
-        def::<crate::ghidra::DecompileArgs>("ghidra_decompile", "Pseudocode, body ranges and callers/callees for the function containing addr (hex, e.g. a writer PC). Give source (EXE or disc.cue::/PATH), ram with ranges and entries, or an analysis handle. The first call imports and analyses (minutes); needs local Ghidra. See guide topic code.").heavy(),
-        def::<crate::ghidra::FunctionsArgs>("ghidra_functions", "List a Ghidra analysis's functions (entries, names, signatures, body ranges) from source, ram or an analysis handle; filter by name, page with offset/limit.").heavy(),
-        def::<crate::ghidra::XrefsArgs>("ghidra_xrefs", "References to and from addr (hex code or data) in a Ghidra analysis, with type, call status and containing function; paged. Indirect references are incomplete.").heavy(),
-        def::<crate::media_cmd::DiscArgs>("disc", "First look at a disc image (.cue preferred): tracks, volume, SYSTEM.CNF boot line, boot EXE header and LibCrypt subchannel status. hash=true hashes the image files (slow).").read_only(),
-        def::<crate::media_cmd::LsArgs>("ls", "List ISO9660 entries (path, LBA, size, XA attributes, streamed flag) with filter/offset/limit, to map a disc's layout or find which file an LBA belongs to.").read_only(),
-        def::<crate::media_cmd::ExtractArgs>("extract", "Extract one disc file (path) or every file (all=true) into out. Form 2/streamed files (XA, STR) are written as raw 2352-byte sectors (.raw). offset/length (hex) read just a byte window of one file, returned inline as hex when small, with its LBA and raw-image byte offset. Returns sizes and SHA-256."),
-        def::<crate::media_cmd::ExeArgs>("exe", "Parse a PS-X EXE header (entry pc, gp, load ranges, stack, region marker, hashes) from a file or image.cue::/PATH, e.g. the BOOT path from disc.").read_only(),
-        def::<crate::media_cmd::SectorArgs>("sector", "Describe raw disc sectors from lba (count up to 256): track, owning file, mode/form, XA subheader and a hex preview, for streamed data the filesystem cannot read.").read_only(),
-        def::<crate::media_cmd::AddrArgs>("addr", "Classify a CPU address (hex): segment, physical address, region (main RAM with mirrors, scratchpad, I/O, BIOS, expansion) and offset within it.").read_only(),
-        def::<crate::xa_cmd::XaArgs>("xa", "List the XA-ADPCM channels in a streamed file (rate, stereo, duration, sectors); with channel and out, decode one channel to a 44.1 kHz WAV."),
-        def::<crate::str_cmd::StrArgs>("str", "Decode an STR/MDEC movie from image.cue::/PATH into out: frame PNGs, audio.wav, a contact sheet and summary. frames limits the PNGs; frame_parser handles custom frame wrappers.").heavy(),
+        def::<crate::media_cmd::DiscArgs>("disc_info", "First look at a disc image (.cue preferred): tracks, volume, SYSTEM.CNF boot line, boot EXE header and LibCrypt subchannel status. hash=true hashes the image files (slow).").read_only(),
+        def::<crate::media_cmd::LsArgs>("disc_ls", "List ISO9660 entries (path, LBA, size, XA attributes, streamed flag) with filter/offset/limit, to map a disc's layout or find which file an LBA belongs to.").read_only(),
+        def::<crate::media_cmd::ExtractArgs>("disc_extract", "Extract one disc file (path) or every file (all=true) into out. Form 2/streamed files (XA, STR) are written as raw 2352-byte sectors (.raw). offset/length (hex) read just a byte window of one file, returned inline as hex when small, with its LBA and raw-image byte offset. Returns sizes and SHA-256."),
+        def::<crate::media_cmd::SectorArgs>("disc_sector", "Describe raw disc sectors from lba (count up to 256): track, owning file, mode/form, XA subheader and a hex preview, for streamed data the filesystem cannot read.").read_only(),
+        def::<crate::media_cmd::ExeArgs>("disc_exe", "Parse a PS-X EXE header (entry pc, gp, load ranges, stack, region marker, hashes) from a file or image.cue::/PATH, e.g. the BOOT path from disc.").read_only(),
         def::<crate::assets_cmd::AssetsScanArgs>("assets_scan", "Find TIM/TMD/VAB/VAG assets by validated signatures in disc files (image.cue::/PATH, /DIR/), disc images, host files or directories, and RAM dumps; archives and external parsers extend it. Paged; no hit does not prove absence. See guide topic assets.").heavy(),
         def::<crate::assets_cmd::AssetsExtractArgs>("assets_extract", "Convert scanned assets into out: TIM to PNG, TMD to glTF, VAB/VAG to WAV with adpcm_sha256 per waveform, keeping original bytes and provenance. entry extracts one raw archive entry; brief=true returns counts. See guide topic assets.").heavy(),
-        def::<crate::media_cmd::MemcardArgs>("memcard", "List the saves on a raw 128 KiB memory card image (.mcd/.mcr): product code, blocks used, title, icon frames and free blocks.").read_only(),
-        def::<crate::textures::TexturesArgs>("textures", "Decode VRAM texture pages to PNGs: every page/CLUT a gpu_frame run used (plus textures/scene.psxscene for the Bevy template), or one page and clut by hand from any vram.bin."),
-        def::<crate::run::RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames on the native core. Drive it with input/replay; observe with sample, watch, watch_reads, poke, trace, trace_cd, trace_spu or gpu_frame; save_state makes checkpoints. Returns run_dir and the report; brief or summary shorten it. See guide topics run and input.").heavy().screen(),
-        ToolDef { call: call_handoff, schema: handoff_schema, ..def::<crate::handoff::HandoffArgs>("handoff", "Ask the person to play to a point you cannot easily reach: opens a window on this machine with the game and your request, and returns a ticket at once. Poll handoff_status; the result has state.bin to continue from, input.json (their input as a replay), their note, and the moments they marked with F6 (state, RAM and screen each, with RAM diffs between them).") },
-        def::<crate::states::StatesMakeArgs>("states_make", "Run from a named start state (or power-on) and name the state it ends in: .psx/states/NAME.bin, and its chain of runs from power-on in notes/states/NAME.json. See guide topic states.").heavy(),
-        def::<crate::states::StatesSaveArgs>("states_save", "Name a state an earlier run or handoff made; its chain from power-on comes from the runs' reports. See guide topic states."),
-        def::<crate::inventory::InventoryArgs>("inventory", "Every function of the disc's executables and of overlays in ram snapshots, with instructions and blocks, and the disc's files. See guide topic code.").heavy(),
-        def::<crate::coverage::CoverageArgs>("coverage", "Traced runs' executed blocks and branch ways per inventory function, and those no run reached. See guide topic code.").heavy(),
-        def::<crate::states::StatesListArgs>("states_list", "The named start states: description, steps from power-on, and whether each is present.").read_only(),
-        def::<crate::states::StatesRebuildArgs>("states_rebuild", "Replay start states' chains from power-on on this psx and compare: which step first differs, and named values old and new. replace puts rebuilt states in place. See guide topic states.").heavy(),
-        def::<crate::handoff::HandoffStatusArgs>("handoff_status", "A handoff's progress or result: waiting, done, declined (read the note), closed or abandoned.").read_only().screen(),
-        def::<crate::native::NativeArgs>("native", "Emulator diagnostic: boot the native core from power-on and report where it got (PC, CD history, SPU state, unhandled I/O, hot PCs, speed). For game investigation use run.").heavy().default_timeout().screen(),
-        def::<crate::provenance::LoadsArgs>("loads", "Turn a run recorded with trace_cd into disc-to-RAM provenance: which file and offset each CD transfer copied where, verified against the run's final RAM. Paged; symbols names the reading code.").heavy(),
-        def::<crate::symbols_io::SymbolsArgs>("symbols", "Name PsyQ library functions in an EXE by signature matching (signatures from sigs or PSX_SIGS_DIR). Writes .symbols.json for run, loads, disasm and xrefs, plus Ghidra and .sym files. Library code only.").heavy(),
-        def::<crate::code::DisasmArgs>("disasm", "Disassemble MIPS from an EXE (source) or run RAM (ram) at addr, or the heuristic function containing function. Resolves lui pairs and gp-relative references; text=true gives a listing. See guide topic code.").read_only(),
-        def::<crate::code::XrefsArgs>("xrefs", "Static references to a hex address or LO-HI range in an EXE or run RAM: calls, jumps, branches, lui pairs, gp-relative accesses and data pointers, grouped by function. text=true gives a listing.").read_only(),
+        def::<crate::textures::TexturesArgs>("assets_textures", "Decode VRAM texture pages to PNGs: every page/CLUT a gpu_frame run used (plus textures/scene.psxscene for the Bevy template), or one page and clut by hand from any vram.bin."),
+        def::<crate::vram_diff::VramDiffArgs>("assets_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
+        def::<crate::media_cmd::MemcardArgs>("assets_memcard", "List the saves on a raw 128 KiB memory card image (.mcd/.mcr): product code, blocks used, title, icon frames and free blocks.").read_only(),
+        def::<crate::code::DisasmArgs>("code_disasm", "Disassemble MIPS from an EXE (source) or run RAM (ram) at addr, or the heuristic function containing function. Resolves lui pairs and gp-relative references; text=true gives a listing. See guide topic code.").read_only(),
+        def::<crate::code::XrefsArgs>("code_xrefs", "Static references to a hex address or LO-HI range in an EXE or run RAM: calls, jumps, branches, lui pairs, gp-relative accesses and data pointers, grouped by function. text=true gives a listing.").read_only(),
+        def::<crate::ghidra::DecompileArgs>("code_decompile", "Pseudocode, body ranges and callers/callees for the function containing addr (hex, e.g. a writer PC). Give source (EXE or disc.cue::/PATH), ram with ranges and entries, or an analysis handle. The first call imports and analyses (minutes); needs local Ghidra. See guide topic code.").heavy(),
+        def::<crate::ghidra::FunctionsArgs>("code_functions", "List a Ghidra analysis's functions (entries, names, signatures, body ranges) from source, ram or an analysis handle; filter by name, page with offset/limit.").heavy(),
+        def::<crate::ghidra::AnnotateArgs>("code_annotate", "Apply function renames and comments from a JSON file (functions:[{addr,name,comment}]) to a Ghidra analysis as a new revision. User-name collisions fail; generated names yield.").heavy(),
+        def::<crate::symbols_io::SymbolsArgs>("code_symbols", "Name PsyQ library functions in an EXE by signature matching (signatures from sigs or PSX_SIGS_DIR). Writes .symbols.json for run, loads, disasm and xrefs, plus Ghidra and .sym files. Library code only.").heavy(),
+        def::<crate::inventory::InventoryArgs>("code_inventory", "Every function of the disc's executables and of overlays in ram snapshots, with instructions and blocks, and the disc's files. See guide topic code.").heavy(),
+        def::<crate::coverage::CoverageArgs>("code_coverage", "Traced runs' executed blocks and branch ways per inventory function, and those no run reached. See guide topic code.").heavy(),
         def::<crate::ram::RamDiffArgs>("ram_diff", "Compare two RAM snapshots (run directories or ram.bin) by 1/2/4-byte unit within a range: differing units, deltas and clusters of nearby changes.").read_only(),
         def::<crate::ram::RamSearchArgs>("ram_search", "Cheat-finder over ordered RAM snapshots: keep addresses matching pred (changed, increased, delta=N...), exact values or a between range; save and candidates narrow the search over rounds.").read_only(),
         def::<crate::ram::RamViewArgs>("ram_view", "Show a RAM window (addr, len) from one or more snapshots side by side, decoded as u8..x32 or fxI.F, marking units that differ.").read_only(),
-        def::<crate::template::TemplateCreateArgs>("template_create", "Create a Bevy port workspace (psx-bevy, engine, game, importers) with the PS1 look in dest, e.g. the game folder. Set region and fields_per_tick from the original. See guide topics port, bevy."),
+        def::<crate::run::RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames on the native core. Drive it with input/replay; observe with sample, watch, watch_reads, poke, trace, trace_cd, trace_spu or gpu_frame; save_state makes checkpoints. Returns run_dir and the report; brief or summary shorten it. See guide topics run and input.").heavy().screen(),
+        def::<crate::states::StatesMakeArgs>("states_make", "Run from a named start state (or power-on) and name the state it ends in: .psx/states/NAME.bin, and its chain of runs from power-on in notes/states/NAME.json. See guide topic states.").heavy(),
+        def::<crate::states::StatesSaveArgs>("states_save", "Name a state an earlier run or handoff made; its chain from power-on comes from the runs' reports. See guide topic states."),
+        def::<crate::states::StatesListArgs>("states_list", "The named start states: description, steps from power-on, and whether each is present.").read_only(),
+        def::<crate::states::StatesRebuildArgs>("states_rebuild", "Replay start states' chains from power-on on this psx and compare: which step first differs, and named values old and new. replace puts rebuilt states in place. See guide topic states.").heavy(),
+        def::<crate::scenario::ScenarioRecordArgs>("scenario_record", "In a port's workspace: run from the scenario's state with input for frames and write scenarios/<id>/<name>.jsonl, the compared glossary quantities at each tick's end. See docs/scenarios.md.").heavy(),
+        def::<crate::scenario::ScenarioCheckArgs>("scenario_check", "In a port's workspace: the determinism check. Reach each scenario again with idle fields before its chain's last run, record its recordings again, compare per tick.").heavy(),
+        ToolDef { call: call_handoff, schema: handoff_schema, ..def::<crate::handoff::HandoffArgs>("scenario_play", "Ask the person to play to a point you cannot easily reach: opens a window on this machine with the game and your request, and returns a ticket at once. Poll with status (the ticket's run_dir) and wait; the result has state.bin to continue from, input.json (their input as a replay), their note, and the moments they marked with F6 (state, RAM and screen each, with RAM diffs between them).").screen() },
         def::<crate::port::PortInitArgs>("port_init", "Write a port's workspace in dest: the Bevy template, goal.toml, the catalogue, the disc and BIOS linked in, and this MCP server for the agent working there. See guide topic port."),
+        def::<crate::template::TemplateUpdateArgs>("port_update", "Update the project's psx-bevy/ and vendor/ files to this build; edited files get a .psx-new copy. See guide topic port."),
         def::<crate::port::PortStatusArgs>("port_status", "In a port's workspace: the goal's features by area and stage, their verdicts, problems in the goal or catalogue, and the item due now. plain=true: text for the person. See guide topic port.").read_only(),
         def::<crate::port::PortNextArgs>("port_next", "In a port's workspace: the one item due now (what, which feature, why, and the fact that shows it done). Start every session with it, and call it again after each item. See guide topic port."),
         def::<crate::port::PortCheckArgs>("port_check", "In a port's workspace, at a clean commit: run the features' scenarios against the port and write their scenario verdicts. See guide topic port.").heavy(),
-        def::<crate::scenario::ScenarioRecordArgs>("scenario_record", "In a port's workspace: run from the scenario's state with input for frames and write scenarios/<id>/<name>.jsonl, the compared glossary quantities at each tick's end. See docs/scenarios.md.").heavy(),
-        def::<crate::scenario::ScenarioCheckArgs>("scenario_check", "In a port's workspace: the determinism check. Reach each scenario again with idle fields before its chain's last run, record its recordings again, compare per tick.").heavy(),
-        def::<crate::template::TemplateUpdateArgs>("template_update", "Update the project's psx-bevy/ and vendor/ files to this build; edited files get a .psx-new copy. See guide topic port."),
-        def::<crate::vram_diff::VramDiffArgs>("vram_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
+        def::<crate::ghidra::DoctorArgs>("ghidra_doctor", "Check that Ghidra and Java are discoverable. Usually unnecessary: query tools import and analyse automatically. Set PSX_GHIDRA_HOME or ghidra_home if discovery fails."),
+        def::<crate::ghidra::ExportArgs>("ghidra_export_symbols", "Export a Ghidra analysis's function names as .symbols.json, bound to the input hash and function bytes, for the symbols argument of run, loads, disasm or xrefs.").heavy(),
+        def::<crate::xa_cmd::XaArgs>("xa", "List the XA-ADPCM channels in a streamed file (rate, stereo, duration, sectors); with channel and out, decode one channel to a 44.1 kHz WAV."),
+        def::<crate::str_cmd::StrArgs>("str", "Decode an STR/MDEC movie from image.cue::/PATH into out: frame PNGs, audio.wav, a contact sheet and summary. frames limits the PNGs; frame_parser handles custom frame wrappers.").heavy(),
+        def::<crate::provenance::LoadsArgs>("loads", "Turn a run recorded with trace_cd into disc-to-RAM provenance: which file and offset each CD transfer copied where, verified against the run's final RAM. Paged; symbols names the reading code.").heavy(),
+        def::<crate::native::NativeArgs>("native", "Emulator diagnostic: boot the native core from power-on and report where it got (PC, CD history, SPU state, unhandled I/O, hot PCs, speed). For game investigation use run.").heavy().default_timeout().screen(),
     ]
 }
 
@@ -324,9 +319,9 @@ fn screen_path(tool: &str, v: &Value) -> Option<String> {
             let dir = v["run_dir"].as_str()?;
             return listed.then(|| std::path::Path::new(dir).join("screen.png").to_string_lossy().into_owned());
         }
-        "handoff_status" => &v["files"]["screen.png"]["path"],
+        "scenario_play" => &v["files"]["screen.png"]["path"],
         "native" => &v["dump"]["screen"],
-        "artifact_read" => &v["image"]["path"],
+        "read" => &v["image"]["path"],
         _ => return None,
     };
     p.as_str().map(str::to_string)
@@ -368,10 +363,10 @@ fn spill(tool: &str, value: Value, ctx: &Ctx) -> Value {
     json!({
         "result_file": path,
         "result_bytes": text.len(),
-        "note": "The full structured result exceeded the MCP inline limit and was written to result_file as pretty JSON. Use artifact_read with a JSON pointer and pagination. Large fields are summarised below.",
+        "note": "The full structured result exceeded the MCP inline limit and was written to result_file as pretty JSON. Use read with a JSON pointer and pagination. Large fields are summarised below.",
         "summary": summary,
         "artifact": crate::artifact::descriptor(&path).ok(),
-        "next_call": {"tool":"artifact_read","arguments":{"path":path,"project_root":ctx.root}},
+        "next_call": {"tool":"read","arguments":{"path":path,"project_root":ctx.root}},
     })
 }
 
@@ -509,7 +504,7 @@ impl PsxServer {
             if from_client && tool_name == "context" && out.is_object() {
                 out["project_root_source"] = json!("client_roots");
             }
-            let attach = want_screen || (tool_name == "artifact_read" && out["image"]["path"].is_string());
+            let attach = want_screen || (tool_name == "read" && out["image"]["path"].is_string());
             let shot = attach.then(|| {
                 screen_path(tool_name, &out).and_then(|p| {
                     let path = ctx.root.join(p);
@@ -568,7 +563,7 @@ impl ServerHandler for PsxServer {
                 "PlayStation (PS1) reverse-engineering toolkit. Each tool is one `psx` CLI command and returns the JSON the CLI prints. \
                  {default} bios/, media/, external/ and .psx/ outputs live in the project root; relative paths resolve against it. project_root on any call selects another existing project for that call only. \
                  Start with context, then guide (overview, or a topic: setup, input, run, code, assets, bevy, port, troubleshooting): tool descriptions are brief and the guide holds argument rules and recipes. \
-                 Emulation outputs are files in the returned run_dir; read them with artifact_read. run summary=true returns only paths and counts. Results over 256 KiB come back as a result_file path.",
+                 Emulation outputs are files in the returned run_dir; read them with read. run summary=true returns only paths and counts. Results over 256 KiB come back as a result_file path.",
                 default = self.default_note()
             ))
     }

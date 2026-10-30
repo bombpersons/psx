@@ -1,4 +1,4 @@
-//! `psx textures`: decode VRAM texture pages through their CLUTs into PNGs,
+//! `psx assets textures`: decode VRAM texture pages through their CLUTs into PNGs,
 //! either every page/CLUT pair a captured frame used (`gpu_frame.json`) or
 //! one page given by hand.
 //!

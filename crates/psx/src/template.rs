@@ -1,4 +1,5 @@
-//! `psx template create|update|adopt`: the Bevy game workspace.
+//! The Bevy game workspace: written by `psx port init`, tracked by `port init
+//! --existing`, brought up to date by `psx port update`.
 //!
 //! The template is a workspace whose game is built on `psx-bevy/`, a copy
 //! of the PS1 look, ticks, input, menus and launcher that the project is
@@ -19,32 +20,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
-
-#[derive(clap::Args, Deserialize, JsonSchema)]
-pub struct TemplateCreateArgs {
-    /// Destination: new, empty or the game folder; never overwrites files.
-    pub dest: PathBuf,
-    /// Game package name (default: the folder's name).
-    #[arg(long)]
-    pub name: Option<String>,
-    /// The original's video region: display and tick rate. Default ntsc.
-    #[arg(long, value_enum)]
-    pub region: Option<TemplateRegion>,
-    /// Video fields per logic tick: 2 when the original waits two vblanks per frame (Croc PAL). Default 1.
-    #[arg(long)]
-    pub fields_per_tick: Option<u32>,
-}
-
-impl Op for TemplateCreateArgs {
-    fn exec(self, _: &Ctx) -> Outcome {
-        let options = TemplateOptions {
-            region: self.region.unwrap_or_default(),
-            fields_per_tick: self.fields_per_tick.unwrap_or(1),
-        };
-        Outcome::result(create(&self.dest, self.name.as_deref(), options))
-    }
-}
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct TemplateUpdateArgs {
@@ -58,31 +33,6 @@ impl Op for TemplateUpdateArgs {
     /// Updates the project at the project root (`--root`, or the MCP project).
     fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::result(update(&ctx.root, self.dry_run))
-    }
-}
-
-#[derive(clap::Args, Deserialize, JsonSchema)]
-pub struct TemplateAdoptArgs {
-    /// Existing template workspace (root Cargo.toml) with no .psx-template.toml.
-    pub dest: PathBuf,
-    /// The game's Cargo package name (defaults to the directory name).
-    #[arg(long)]
-    pub name: Option<String>,
-    /// The project's region, as in game/src/lib.rs. Default ntsc.
-    #[arg(long, value_enum)]
-    pub region: Option<TemplateRegion>,
-    /// The project's fields per tick, as in game/src/lib.rs. Default 1.
-    #[arg(long)]
-    pub fields_per_tick: Option<u32>,
-}
-
-impl Op for TemplateAdoptArgs {
-    fn exec(self, _: &Ctx) -> Outcome {
-        let options = TemplateOptions {
-            region: self.region.unwrap_or_default(),
-            fields_per_tick: self.fields_per_tick.unwrap_or(1),
-        };
-        Outcome::result(adopt(&self.dest, self.name.as_deref(), options))
     }
 }
 
@@ -226,7 +176,7 @@ const VENDOR_PREFIX: &str = "vendor/";
 const PSX_BEVY_PREFIX: &str = "psx-bevy/";
 /// Seeded files `create` skips (and reports) when the destination already has them.
 const KEEP_EXISTING: &[&str] = &["AGENTS.md", "README.md", ".gitignore"];
-const MANIFEST: &str = ".psx-template.toml";
+pub const MANIFEST: &str = ".psx-template.toml";
 /// Where `update` writes new versions of seeded files for the project to merge.
 const SEEDED_UPDATES: &str = ".psx/template-update";
 
@@ -304,7 +254,7 @@ impl Manifest {
     }
 
     fn write(&self, dest: &Path) -> crate::Result<()> {
-        let header = "# Written by `psx template create|update|adopt`. `update` compares these hashes\n\
+        let header = "# Written by `psx port init` and `psx port update`. `update` compares these hashes\n\
                       # with the files to tell untouched template files from edited ones.\n";
         let body = toml_like(self);
         let path = dest.join(MANIFEST);
@@ -315,7 +265,7 @@ impl Manifest {
         let path = dest.join(MANIFEST);
         let text = std::fs::read_to_string(&path).map_err(|e| {
             Error::malformed(format!(
-                "{}: {e}; projects created before the workspace template need `psx template adopt`",
+                "{}: {e}; projects created before the workspace template need `psx port init --existing`",
                 path.display()
             ))
         })?;
@@ -420,7 +370,7 @@ fn configure_lib(contents: &str, options: TemplateOptions) -> crate::Result<Stri
     if !contents.contains(REGION_LINE) || !contents.contains(FIELDS_PER_TICK_LINE) {
         return Err(Error::new(
             "internal",
-            "template game/src/lib.rs no longer has the REGION / FIELDS_PER_TICK lines template create rewrites",
+            "template game/src/lib.rs no longer has the REGION / FIELDS_PER_TICK lines psx port init rewrites",
         ));
     }
     Ok(contents.replacen(REGION_LINE, &format!("pub const REGION: Region = {};", options.region.rust()), 1).replacen(
@@ -483,7 +433,7 @@ fn write_file(dest: &Path, rel: &str, contents: &[u8]) -> crate::Result<()> {
 }
 
 /// `name` from `--name`, else the destination folder's name.
-fn package_name(dest: &Path, name: Option<&str>) -> String {
+pub fn package_name(dest: &Path, name: Option<&str>) -> String {
     match name {
         Some(n) => n.to_string(),
         None => dest
@@ -519,7 +469,7 @@ pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crat
     }
     if !clashes.is_empty() {
         return Err(Error::invalid(format!(
-            "{} already has {}; template create only adds files (use template update for an existing project)",
+            "{} already has {}; port init only adds files (psx port init --existing tracks an existing project)",
             dest.display(),
             clashes.join(", ")
         )));
@@ -570,6 +520,22 @@ pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crat
         "skipped": skipped,
         "manifest": MANIFEST,
         "next": next,
+    }))
+}
+
+/// What the manifest of a tracked workspace records, as `create` reports it.
+pub fn tracked(dest: &Path) -> crate::Result<Value> {
+    let m = Manifest::read(dest)?;
+    Ok(json!({
+        "template": "psx-bevy",
+        "package": m.package,
+        "dest": dest,
+        "region": m.region.name(),
+        "fields_per_tick": m.fields_per_tick,
+        "tick_hz": m.region.hz() / f64::from(m.fields_per_tick),
+        "owned_files": m.owned.len(),
+        "seeded_files": m.seeded.len(),
+        "manifest": MANIFEST,
     }))
 }
 
@@ -717,11 +683,11 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
 /// the new version beside it instead of replacing it.
 pub fn adopt(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crate::Result<Value> {
     if dest.join(MANIFEST).exists() {
-        return Err(Error::invalid(format!("{} already has {MANIFEST}; use template update", dest.display())));
+        return Err(Error::invalid(format!("{} already has {MANIFEST}; use psx port update", dest.display())));
     }
     if !dest.join("Cargo.toml").is_file() {
         return Err(Error::invalid(format!(
-            "{} has no Cargo.toml: adopt tracks an existing template workspace (template create makes a new one)",
+            "{} has no Cargo.toml: adopt tracks an existing template workspace (psx port init makes a new one)",
             dest.display()
         )));
     }
@@ -756,7 +722,7 @@ pub fn adopt(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crate
         "package": manifest.package,
         "owned_tracked": manifest.owned.len(),
         "owned_missing": missing,
-        "next": ["psx template update --dry-run", "psx template update", "cargo test --workspace --all-features"],
+        "next": ["psx port update --dry-run", "psx port update", "cargo test --workspace --all-features"],
     }))
 }
 
@@ -952,7 +918,7 @@ mod tests {
     }
 
     /// Every file under templates/psx-bevy (except build output) must be
-    /// embedded, or `template create` silently drops it.
+    /// embedded, or `psx port init` silently drops it.
     #[test]
     fn embeds_every_template_file() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates/psx-bevy");

@@ -251,7 +251,7 @@ impl<D: serde::de::DeserializeOwned> Plugin<D> {
         };
         if version != psx_capture::ABI_VERSION {
             return Err(Error::invalid(format!(
-                "the binding was built against psx-capture's boundary version {version}, this psx has {}: psx template update brings vendor/psx-capture to this psx's",
+                "the binding was built against psx-capture's boundary version {version}, this psx has {}: psx port update brings vendor/psx-capture to this psx's",
                 psx_capture::ABI_VERSION
             )));
         }
