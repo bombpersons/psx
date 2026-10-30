@@ -11,6 +11,7 @@ use syn::visit::Visit;
 
 use crate::interface::{Call, CallKind, Interface};
 use crate::mechanic::{Exactness, Mechanic, Per, Rate};
+use crate::scenario::Glossary;
 use crate::value::{Field, Kind, Value, is_id};
 
 /// The crate's root file, relative to the crate.
@@ -1219,6 +1220,144 @@ fn call_glue(c: &Crate) -> Result<(Interface, String), Vec<String>> {
         markers.join("\n")
     );
     Ok((i, code))
+}
+
+/// The glossary the `glossary` crate declares (docs/scenarios.md): the
+/// crate documentation's first paragraph as its title, and the quantities,
+/// the fields of `pub struct Quantities`, documented as a mechanic's
+/// fields are. The crate has no dependencies and keeps to the portable
+/// subset.
+pub fn glossary(c: &Crate) -> Result<(Glossary, Vec<String>), Vec<String>> {
+    let mut problems = Vec::new();
+    if !manifest(c.cargo_toml, &mut problems).is_empty() {
+        problems.push("Cargo.toml: the glossary depends on nothing".into());
+    }
+    let parsed = parse(c, &mut problems)?;
+    let lib = &parsed.iter().find(|(p, _)| *p == LIB).expect("parse found it").1;
+    let items = Items::of(lib);
+    let mut p = Problems { file: LIB, out: &mut problems };
+    let (title, _) = interface_docs(lib, &mut p);
+    let mut quantities = BTreeMap::new();
+    match items.structs.get("Quantities") {
+        None => p.at(0, "no `pub struct Quantities`, whose fields are the quantities"),
+        Some(s) => {
+            if !matches!(s.vis, syn::Visibility::Public(_)) {
+                p.at(line(*s), "`Quantities` is pub, for the port");
+            }
+            match &s.fields {
+                syn::Fields::Named(fields) => {
+                    for f in &fields.named {
+                        let n = f.ident.as_ref().unwrap().to_string();
+                        match items.field(&f.ty, &f.attrs, 0) {
+                            Ok(field) => {
+                                quantities.insert(n, field);
+                            }
+                            Err(e) => p.at(line(f), &format!("Quantities.{n}: {e}")),
+                        }
+                    }
+                }
+                _ => p.at(line(*s), "`Quantities` has named fields"),
+            }
+        }
+    }
+    for (path, file) in &parsed {
+        let mut v = Subset { deps: &BTreeSet::new(), problems: Vec::new(), floats: Vec::new() };
+        v.visit_file(file);
+        problems.extend(v.problems.into_iter().map(|(l, e)| format!("{path}:{l}: {e}")));
+    }
+    let g = Glossary { title, quantities };
+    problems.extend(g.check().into_iter().map(|e| format!("{LIB}: {e}")));
+    Ok((g, problems))
+}
+
+/// The glossary crate's `Quantities` and its package name, checked.
+fn glossary_items(c: &Crate) -> Result<(Glossary, String, syn::File), Vec<String>> {
+    let (g, problems) = glossary(c)?;
+    if !problems.is_empty() {
+        return Err(problems);
+    }
+    let krate = package(c.cargo_toml).map_err(|e| vec![e])?.replace('-', "_");
+    let lib = c.files.iter().find(|(p, _)| p == LIB).map(|(_, t)| t).expect("read by glossary");
+    let file = syn::parse_file(lib).map_err(|e| vec![format!("{LIB}: {e}")])?;
+    Ok((g, krate, file))
+}
+
+/// The glue the glossary's binding needs: `Glossary`, a
+/// `psx_capture::Quantities` implementation giving the glossary's
+/// fingerprint and its `Quantities` in the recording's encoding.
+pub fn glossary_glue(c: &Crate) -> Result<String, Vec<String>> {
+    let (g, krate, file) = glossary_items(c)?;
+    let items = Items::of(&file);
+    let ty: syn::Type = syn::parse_str("Quantities").unwrap();
+    let body = items.encode(&ty, "(*v)", &krate, Out::Capture, 0).map_err(|e| vec![format!("{LIB}: {e}")])?;
+    Ok(format!(
+        "// Generated from the glossary's source by psx_mechanics::rust::write_glossary_glue: not for editing.\n\
+         pub struct Glossary;\n\n\
+         #[allow(unused_variables, clippy::all)]\n\
+         impl psx_capture::Quantities for Glossary {{\n    \
+         const FINGERPRINT: &'static str = {:?};\n    \
+         type Quantities = {krate}::Quantities;\n    \
+         fn quantities(v: &Self::Quantities) -> psx_capture::Value {{\n        {body}\n    }}\n}}\n",
+        g.fingerprint(),
+    ))
+}
+
+/// For the glossary binding's `build.rs`: writes the [`glossary_glue`] for
+/// the glossary crate at `glossary_dir` to `$OUT_DIR/glue.rs`.
+pub fn write_glossary_glue(glossary_dir: impl AsRef<std::path::Path>) {
+    let dir = glossary_dir.as_ref();
+    let (cargo_toml, files) = read_crate(dir);
+    match glossary_glue(&Crate { cargo_toml: &cargo_toml, files: &files }) {
+        Ok(code) => write_out("glue.rs", &code),
+        Err(problems) => panic!("the glossary at {} cannot be read:\n{}", dir.display(), problems.join("\n")),
+    }
+}
+
+/// The port's view of the glossary (docs/scenarios.md): `Observed`, each
+/// quantity as an `Option` of its type in the glossary crate, `None` where
+/// the port has no such thing, with `Observed::none()` and its values in
+/// the recording's encoding for `psx_bevy::scenario`.
+pub fn observed(c: &Crate) -> Result<String, Vec<String>> {
+    let (_, krate, file) = glossary_items(c)?;
+    let items = Items::of(&file);
+    let s = items.structs["Quantities"];
+    let syn::Fields::Named(named) = &s.fields else { unreachable!("checked by glossary") };
+    let (mut fields, mut nones, mut values) = (Vec::new(), Vec::new(), Vec::new());
+    for f in &named.named {
+        let n = f.ident.as_ref().unwrap().to_string();
+        let docs: String = doc_lines(&f.attrs).iter().map(|l| format!("    /// {l}\n")).collect();
+        fields.push(format!("{docs}    pub {n}: Option<{}>,", qualified(&f.ty, &items, &krate)));
+        nones.push(format!("            {n}: None,"));
+        let e = items.encode(&f.ty, "(*v)", &krate, Out::Trace, 0).map_err(|e| vec![format!("{LIB}: {n}: {e}")])?;
+        values.push(format!("            ({n:?}, self.{n}.as_ref().map(|v| {e})),"));
+    }
+    Ok(format!(
+        "// Generated from the glossary's source by psx_mechanics::rust::write_observed: not for editing.\n\n\
+         /// The glossary's quantities as the port has them, in the original's\n\
+         /// raw units: `None` where the port has no such thing (yet).\n\
+         #[derive(Default)]\n\
+         pub struct Observed {{\n{}\n}}\n\n\
+         impl Observed {{\n    \
+         /// Nothing observed: the start of `Observed {{ croc_x: …, ..Observed::none() }}`.\n    \
+         pub fn none() -> Observed {{\n        Observed {{\n{}\n        }}\n    }}\n}}\n\n\
+         #[allow(unused_variables, unused_parens, clippy::all)]\n\
+         impl psx_bevy::scenario::Observation for Observed {{\n    \
+         fn values(&self) -> Vec<(&'static str, Option<psx_mechanics::Value>)> {{\n        vec![\n{}\n        ]\n    }}\n}}\n",
+        fields.join("\n"),
+        nones.join("\n"),
+        values.join("\n"),
+    ))
+}
+
+/// For the port's `build.rs`: writes [`observed`] for the glossary crate at
+/// `glossary_dir` to `$OUT_DIR/observed.rs`.
+pub fn write_observed(glossary_dir: impl AsRef<std::path::Path>) {
+    let dir = glossary_dir.as_ref();
+    let (cargo_toml, files) = read_crate(dir);
+    match observed(&Crate { cargo_toml: &cargo_toml, files: &files }) {
+        Ok(code) => write_out("observed.rs", &code),
+        Err(problems) => panic!("the glossary at {} cannot be read:\n{}", dir.display(), problems.join("\n")),
+    }
 }
 
 /// `ty` as code outside its crate: the crate's own types through `krate`.

@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::{Binding, Bracket, Machine, Mechanic, string};
+use crate::{Binding, Bracket, Glossary, Machine, Mechanic, Quantities, Tick, string};
 
 /// psx's side, valid for one call.
 #[repr(C)]
@@ -44,6 +44,10 @@ pub const PARAMS: u32 = 4;
 /// in the order `bracket` declares them).
 pub const REQUEST: u32 = 5;
 pub const RESPONSE: u32 = 6;
+/// `what`, of the glossary's binding: the quantities (a JSON object).
+/// Its `DESCRIBE` answers `glossary` (the fingerprint), `source` and
+/// `tick`.
+pub const QUANTITIES: u32 = 7;
 
 /// Returned: the answer was written.
 pub const OK: i32 = 0;
@@ -66,6 +70,78 @@ thread_local! {
 /// # Safety
 /// `host` is psx's, valid for the call.
 pub unsafe fn call<B: Binding>(binding: &B, what: u32, which: u32, host: *const Host) -> i32 {
+    // SAFETY: the caller's.
+    unsafe {
+        answer(host, |m, out| match what {
+            DESCRIBE => {
+                *out = describe(binding);
+                true
+            }
+            IS_STEP => {
+                out.push_str(if binding.is_step(m) { "true" } else { "false" });
+                true
+            }
+            STATE => {
+                B::Mechanic::state(&binding.state(m)).json(out);
+                true
+            }
+            INPUTS => {
+                B::Mechanic::inputs(&binding.inputs(m)).json(out);
+                true
+            }
+            PARAMS => {
+                B::Mechanic::params(&binding.params(m)).json(out);
+                true
+            }
+            REQUEST | RESPONSE => {
+                let mut b = Bracket::default();
+                binding.bracket(&mut b);
+                b.read_call(which, what == RESPONSE, m, out)
+            }
+            _ => false,
+        })
+    }
+}
+
+/// Answers psx's question `what` for the glossary's binding.
+///
+/// # Safety
+/// `host` is psx's, valid for the call.
+pub unsafe fn call_glossary<G: Glossary>(glossary: &G, what: u32, host: *const Host) -> i32 {
+    // SAFETY: the caller's.
+    unsafe {
+        answer(host, |m, out| match what {
+            DESCRIBE => {
+                let mut t = Tick::default();
+                glossary.tick(&mut t);
+                let tick = match t.json() {
+                    Ok(t) => t,
+                    Err(e) => panic!("{e}"),
+                };
+                *out = format!(
+                    "{{\"glossary\":{},\"source\":{{\"platform\":\"psx\",\"title\":{},\"image_sha256\":{}}},\"tick\":{tick}}}",
+                    string(G::Glue::FINGERPRINT),
+                    string(G::TITLE),
+                    string(G::IMAGE_SHA256),
+                );
+                true
+            }
+            QUANTITIES => {
+                G::Glue::quantities(&glossary.quantities(m)).json(out);
+                true
+            }
+            _ => false,
+        })
+    }
+}
+
+/// Runs `f` with the machine behind `host`, catching a panic, and writes
+/// its answer (or the panic's message) through `host`. `f` returns false
+/// for a question it does not know.
+///
+/// # Safety
+/// `host` is psx's, valid for the call.
+unsafe fn answer(host: *const Host, f: impl FnOnce(&Machine, &mut String) -> bool) -> i32 {
     // A panic is the capture's error, reported by psx: keep its message and
     // where it was, and print nothing.
     static HOOK: std::sync::Once = std::sync::Once::new();
@@ -81,22 +157,7 @@ pub unsafe fn call<B: Binding>(binding: &B, what: u32, which: u32, host: *const 
     let m = Machine { host };
     let answer = catch_unwind(AssertUnwindSafe(|| {
         let mut out = String::new();
-        match what {
-            DESCRIBE => out = describe(binding),
-            IS_STEP => out.push_str(if binding.is_step(&m) { "true" } else { "false" }),
-            STATE => B::Mechanic::state(&binding.state(&m)).json(&mut out),
-            INPUTS => B::Mechanic::inputs(&binding.inputs(&m)).json(&mut out),
-            PARAMS => B::Mechanic::params(&binding.params(&m)).json(&mut out),
-            REQUEST | RESPONSE => {
-                let mut b = Bracket::default();
-                binding.bracket(&mut b);
-                if !b.read_call(which, what == RESPONSE, &m, &mut out) {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-        Some(out)
+        f(&m, &mut out).then_some(out)
     }));
     let (code, text) = match answer {
         Ok(Some(out)) => (OK, out),

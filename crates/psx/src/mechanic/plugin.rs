@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 use psx_capture::abi;
 use psx_core::cpu::MemAccess;
 use psx_mechanics::binding::Source;
-use psx_mechanics::{Interface, Mechanic, Platform, Type, Values};
+use psx_mechanics::{Interface, Mechanic, Type, Values};
 use serde_json::json;
 
 use super::capture::{View, memory};
@@ -74,18 +74,19 @@ fn rel(root: &Path, p: &Path) -> String {
 /// `psx_capture_call`.
 pub type Call = unsafe extern "C" fn(u32, u32, *const abi::Host) -> i32;
 
-/// A loaded binding.
-pub struct Plugin {
+/// A loaded binding, a mechanic's or (with its own description `D`) the
+/// glossary's.
+pub struct Plugin<D = Described> {
     call: Call,
     /// Keeps `call` loaded (none for a binding linked into psx, in tests).
     _lib: Option<libloading::Library>,
-    described: Described,
+    described: D,
 }
 
-/// The binding's answer to `DESCRIBE`.
+/// A mechanic's binding's answer to `DESCRIBE`.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Described {
+pub struct Described {
     mechanic: String,
     mechanic_version: u32,
     fingerprint: String,
@@ -205,11 +206,11 @@ unsafe extern "C" fn host_out(ctx: *mut c_void, data: *const u8, len: usize) {
     c.out.extend_from_slice(unsafe { std::slice::from_raw_parts(data, len) });
 }
 
-impl Plugin {
+impl<D: serde::de::DeserializeOwned> Plugin<D> {
     /// Loads the library cargo built at `lib` and asks it to describe
     /// itself. The library is loaded from a copy named by its contents, so
     /// a rebuilt binding is never taken for one loaded before.
-    pub fn load(lib: &Path) -> crate::Result<Plugin> {
+    pub fn load(lib: &Path) -> crate::Result<Plugin<D>> {
         let bytes = std::fs::read(lib).map_err(|e| Error::io(lib, e))?;
         let sha = crate::stamp::sha256(&bytes);
         let copy = lib.with_file_name(format!("psx-load-{}.{}", &sha[..16], std::env::consts::DLL_EXTENSION));
@@ -239,7 +240,7 @@ impl Plugin {
 
     /// The binding whose `psx_capture_call` is `call`, asked to describe
     /// itself.
-    pub fn new(call: Call, lib: Option<libloading::Library>) -> crate::Result<Plugin> {
+    pub fn new(call: Call, lib: Option<libloading::Library>) -> crate::Result<Plugin<D>> {
         let text = invoke(call, abi::DESCRIBE, 0, None).0.map_err(Error::invalid)?;
         let described = serde_json::from_str(&text)
             .map_err(|e| Error::invalid(format!("the binding's description: {e}")).with("description", json!(text)))?;
@@ -251,6 +252,13 @@ impl Plugin {
         invoke(self.call, what, which, Some(view))
     }
 
+    /// What the binding says of itself.
+    pub fn described(&self) -> &D {
+        &self.described
+    }
+}
+
+impl Plugin {
     /// Where the binding says the step is.
     pub fn capture(&self) -> &Capture {
         &self.described.capture

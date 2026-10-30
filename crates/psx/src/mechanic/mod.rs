@@ -3,7 +3,6 @@
 //! describes), `psx mechanic check` and `psx mechanic capture`. The rest of
 //! the mechanic formats are platform-free, in psx-mechanics.
 
-use psx_mechanics::binding::{Endian, Platform, Role};
 use psx_mechanics::interface::CallKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -35,9 +34,6 @@ pub enum Location {
     /// A GTE register: data 0 to 31 as `mfc2` numbers them, control 32 to 63
     /// (`cfc2` n is 32 + n).
     Gte { gte: u8 },
-    /// Glossary quantities: the address held at `pointer`, plus `offset`,
-    /// read anew each time (an object found through a pointer).
-    Pointer { pointer: u32, offset: i32 },
 }
 
 /// A CPU register, by its conventional name.
@@ -175,49 +171,28 @@ pub struct Tick {
     pub pc: Option<u32>,
 }
 
-impl Platform for Psx {
-    type Location = Location;
-    type CallSite = CallSite;
-    type Capture = Capture;
-    type Tick = Tick;
-    const NAME: &'static str = "psx";
-    const ENDIAN: Endian = Endian::Little;
+impl Psx {
+    /// `source.platform`.
+    pub const NAME: &'static str = "psx";
 
-    fn check_location(at: &Location, role: Role<'_, CallSite>) -> Result<(), String> {
-        let quantity = matches!(role, Role::Quantity);
+    /// What is wrong with an explained read's location.
+    fn check_explained(at: &Location) -> Result<(), String> {
         match at {
-            Location::Pointer { pointer, .. } if quantity && !in_memory(*pointer) => {
-                Err(format!("pointer {pointer:#010x}: main RAM or the scratchpad"))
-            }
-            Location::Pointer { .. } if !quantity => Err("pointer is for glossary quantities".into()),
-            Location::Address { .. } | Location::Pointer { .. } if quantity => match at {
-                Location::Address { address } if !in_memory(*address) => {
-                    Err(format!("address {address:#010x}: main RAM or the scratchpad"))
-                }
-                _ => Ok(()),
-            },
-            _ if quantity => Err("a quantity is read from memory: an address, or a pointer and offset".into()),
-            Location::Address { address } if !in_memory(*address) => {
-                Err(format!("address {address:#010x}: main RAM or the scratchpad"))
-            }
             Location::Base { base: Reg::Zero, .. } | Location::Register { register: Reg::Zero } => {
-                Err("zero is always 0: bind an address instead".into())
-            }
-            Location::Register { .. } | Location::Gte { .. } if matches!(role, Role::State) => {
-                Err("state lives in memory: registers are clobbered between steps (mark it unobserved if it is not in memory)".into())
+                Err("zero is always 0: explain an address instead".into())
             }
             Location::Gte { gte } if *gte > 63 => Err(format!("gte {gte}: 0 to 63")),
             _ => Ok(()),
         }
     }
 
-    fn check_call_site(on: &CallSite) -> Result<(), String> {
+    pub fn check_call_site(on: &CallSite) -> Result<(), String> {
         match on {
             CallSite::Entry { entry: p } | CallSite::Read { read: p } => check_pc(p.pc, &p.overlay),
         }
     }
 
-    fn check_tick(t: &Tick, problems: &mut Vec<String>) {
+    pub fn check_tick(t: &Tick, problems: &mut Vec<String>) {
         if !in_memory(t.at) {
             problems.push(format!("tick.at {:#010x}: main RAM or the scratchpad", t.at));
         }
@@ -231,7 +206,7 @@ impl Platform for Psx {
         }
     }
 
-    fn check_capture(c: &Capture, problems: &mut Vec<String>) {
+    pub fn check_capture(c: &Capture, problems: &mut Vec<String>) {
         if let Err(e) = check_pc(c.begin.pc, &c.begin.overlay) {
             problems.push(format!("begin: {e}"));
         }
@@ -246,7 +221,7 @@ impl Platform for Psx {
             match (&x.at, x.bytes, &x.by) {
                 (Some(Location::Address { .. }), Some(1..), None) => {}
                 (Some(at), Some(1..), None) => {
-                    if let Err(e) = Psx::check_location(at, Role::Input) {
+                    if let Err(e) = Psx::check_explained(at) {
                         problems.push(format!("explained[{i}]: {e}"));
                     }
                 }
@@ -314,18 +289,5 @@ impl Op for MechanicCheckArgs {
 impl Op for MechanicCaptureArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::report(capture::capture(ctx, self))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn the_glossary_schema_is_current() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schemas");
-        let stale = psx_mechanics::sync_schemas(
-            &dir,
-            &[("glossary.schema.json", psx_mechanics::schema::<crate::scenario::Glossary>("glossary.toml"))],
-        );
-        assert!(stale.is_empty(), "stale schemas {stale:?}: run with PSX_UPDATE_SCHEMAS=1");
     }
 }

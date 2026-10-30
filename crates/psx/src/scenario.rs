@@ -1,27 +1,29 @@
-//! Scenarios (docs/scenarios.md): `glossary.toml` with the PlayStation's
-//! locations, `psx scenario record` (the original's quantities tick by tick,
+//! Scenarios (docs/scenarios.md): the glossary (`glossary/`, its quantities,
+//! and `glossary/binding/`, where the PlayStation keeps them and what ends
+//! a tick), `psx scenario record` (the original's quantities tick by tick,
 //! from the scenario's state), `psx scenario check` (the determinism check)
 //! and the facts `port next` reads.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use psx_core::Machine;
-use psx_mechanics::binding::Read;
+use psx_mechanics::binding::Source as Release;
 use psx_mechanics::scenario::{self as format, Full, Header, Recording, Scenario};
 use psx_mechanics::trace::{Producer, Source, SourceKind};
-use psx_mechanics::{Platform, Type, Values};
+use psx_mechanics::{Glossary, Type, Values};
 use serde_json::{Value as Json, json};
 
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 use crate::mechanic::capture::{View, regs};
-use crate::mechanic::{Location, Psx};
+use crate::mechanic::plugin::{self, Plugin};
+use crate::mechanic::{Psx, Tick, workspace};
 use crate::port::Entry;
 
-pub type Glossary = psx_mechanics::GlossaryFor<Psx>;
-
-pub const GLOSSARY: &str = "glossary.toml";
+/// The glossary crate, `glossary/`; its binding is `glossary/binding/`.
+pub const GLOSSARY: &str = "glossary";
 const SCENARIOS: &str = "scenarios";
 /// Each scenario's last determinism check: `<id>.json`.
 const CHECKS: &str = ".psx/scenarios";
@@ -41,11 +43,73 @@ fn check_name(what: &str, name: &str) -> crate::Result<()> {
 
 /// The glossary, or what is wrong with it.
 pub fn glossary(root: &Path) -> Result<Glossary, Vec<String>> {
-    let p = root.join(GLOSSARY);
-    let text = std::fs::read_to_string(&p).map_err(|_| vec![format!("{GLOSSARY}: not written yet")])?;
-    let g: Glossary = toml::from_str(&text).map_err(|e| vec![format!("{GLOSSARY}: {}", e.message())])?;
-    let problems: Vec<String> = g.check::<Psx>().into_iter().map(|p| format!("{GLOSSARY}: {p}")).collect();
+    let mut problems = Vec::new();
+    if root.join("glossary.toml").is_file() {
+        problems.push(
+            "glossary.toml: no longer read: the glossary is Rust, glossary/ and glossary/binding/ (docs/scenarios.md)"
+                .to_string(),
+        );
+    }
+    let dir = root.join(GLOSSARY);
+    if !workspace::is_crate(&dir) {
+        problems.push(format!("{GLOSSARY}/: not written yet (a crate whose src/lib.rs declares Quantities)"));
+        return Err(problems);
+    }
+    let at = |e: String| format!("{GLOSSARY}/{e}");
+    let read = || -> crate::Result<(String, Vec<(String, String)>)> {
+        let p = dir.join("Cargo.toml");
+        Ok((std::fs::read_to_string(&p).map_err(|e| Error::io(&p, e))?, workspace::sources(&dir)?))
+    };
+    let (cargo_toml, files) = read().map_err(|e| vec![e.to_string()])?;
+    let g = match psx_mechanics::rust::glossary(&psx_mechanics::rust::Crate { cargo_toml: &cargo_toml, files: &files })
+    {
+        Ok((g, p)) => {
+            problems.extend(p.into_iter().map(at));
+            g
+        }
+        Err(p) => {
+            problems.extend(p.into_iter().map(at));
+            return Err(problems);
+        }
+    };
+    if psx_mechanics::rust::package_name(&cargo_toml).as_deref() != Some(GLOSSARY) {
+        problems.push(at("Cargo.toml: the package is named \"glossary\"".into()));
+    }
+    let binding = dir.join("binding/Cargo.toml");
+    match std::fs::read_to_string(&binding) {
+        Err(_) => problems.push(format!("{GLOSSARY}/binding: not written yet")),
+        Ok(t) if psx_mechanics::rust::package_name(&t).as_deref() != Some("glossary-binding") => {
+            problems.push(at("binding/Cargo.toml: the package is named \"glossary-binding\"".into()))
+        }
+        Ok(_) => {}
+    }
     if problems.is_empty() { Ok(g) } else { Err(problems) }
+}
+
+/// The glossary binding's answer to `DESCRIBE`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Described {
+    /// The fingerprint of the glossary its glue was generated from.
+    glossary: String,
+    source: Release,
+    tick: Tick,
+}
+
+/// The glossary's binding, built, loaded and checked against `g`.
+fn binding(root: &Path, g: &Glossary) -> crate::Result<Plugin<Described>> {
+    let p: Plugin<Described> = Plugin::load(&plugin::build(root, &root.join(GLOSSARY).join("binding"), GLOSSARY)?)?;
+    let d = p.described();
+    let mut problems = Vec::new();
+    if d.glossary != g.fingerprint() {
+        problems.push("its glue reads other quantities than glossary/ declares: psx template update brings vendor/psx-mechanics to this psx's".to_string());
+    }
+    d.source.check(Psx::NAME, &mut problems);
+    Psx::check_tick(&d.tick, &mut problems);
+    if !problems.is_empty() {
+        return Err(Error::invalid("the glossary's binding has problems").with("problems", json!(problems)));
+    }
+    Ok(p)
 }
 
 /// The scenarios on disk, by id.
@@ -123,14 +187,10 @@ impl Loaded {
         l
     }
 
-    /// The compared quantities' glossary declarations and bindings.
-    fn compared(&self) -> Vec<(String, &psx_mechanics::Field, &Read<Location>, Type)> {
-        let (Some(s), Some(g)) = (&self.scenario, &self.glossary) else { return Vec::new() };
-        let types = g.types();
-        s.compare
-            .keys()
-            .filter_map(|n| Some((n.clone(), g.quantities.get(n)?, g.bindings.get(n)?, types.get(n)?.clone())))
-            .collect()
+    /// The compared quantities' glossary declarations.
+    fn compared(&self) -> BTreeMap<String, psx_mechanics::Field> {
+        let (Some(s), Some(g)) = (&self.scenario, &self.glossary) else { return BTreeMap::new() };
+        s.compare.keys().filter_map(|n| Some((n.clone(), g.quantities.get(n)?.clone()))).collect()
     }
 
     /// What is wrong with a recording as this scenario and glossary stand:
@@ -145,9 +205,9 @@ impl Loaded {
         // Only the types count: a unit or description edited in the glossary
         // leaves the recorded values as they were.
         let typed = |f: &psx_mechanics::Field| psx_mechanics::Field { unit: None, description: None, ..f.clone() };
-        let declared: std::collections::BTreeMap<String, psx_mechanics::Field> =
-            self.compared().into_iter().map(|(n, f, _, _)| (n, typed(f))).collect();
-        let recorded: std::collections::BTreeMap<String, psx_mechanics::Field> =
+        let declared: BTreeMap<String, psx_mechanics::Field> =
+            self.compared().iter().map(|(n, f)| (n.clone(), typed(f))).collect();
+        let recorded: BTreeMap<String, psx_mechanics::Field> =
             r.header.quantities.iter().map(|(n, f)| (n.clone(), typed(f))).collect();
         if self.scenario.is_some() && self.glossary.is_some() && recorded != declared {
             p.push(format!(
@@ -164,7 +224,7 @@ fn recording_path(root: &Path, id: &str, name: &str) -> PathBuf {
 }
 
 /// The machine at a state, on the chain's medium, with its identity.
-fn machine(ctx: &Ctx, chain: &Json, state: &Path, g: &Glossary) -> crate::Result<Machine> {
+fn machine(ctx: &Ctx, chain: &Json, state: &Path, source: &Release) -> crate::Result<Machine> {
     let media = chain["media"].as_str().map(|m| crate::moved::find(&ctx.root, Path::new(m)));
     let resolved = crate::context::resolve(&ctx.root, media, None, Some(state), false)?;
     if let Some(e) = resolved.setup_error() {
@@ -176,12 +236,12 @@ fn machine(ctx: &Ctx, chain: &Json, state: &Path, g: &Glossary) -> crate::Result
     let Some(id) = medium.id.clone() else {
         return Err(Error::invalid("a scenario is recorded on the game's disc: the chain names no media"));
     };
-    if id.sha256 != g.source.image_sha256 {
+    if id.sha256 != source.image_sha256 {
         return Err(Error::new(
             "identity_mismatch",
             format!(
-                "the glossary is for image {}, the chain's media is {} (source.image_sha256 is the media identity psx context reports)",
-                g.source.image_sha256, id.sha256
+                "the glossary's binding is for image {}, the chain's media is {} (its IMAGE_SHA256 is the media identity psx context reports)",
+                source.image_sha256, id.sha256
             ),
         ));
     }
@@ -197,10 +257,18 @@ struct Recorded {
     timed_out: bool,
 }
 
+/// What the glossary's binding is asked, and which quantities are kept.
+struct Quantities<'a> {
+    binding: &'a Plugin<Described>,
+    /// Every quantity's type, which the binding's answers are checked against.
+    types: BTreeMap<String, Type>,
+    /// The quantities the recording keeps: the scenario's compared ones.
+    kept: Vec<String>,
+}
+
 fn record(
     m: &mut Machine,
-    tick: &crate::mechanic::Tick,
-    quantities: &[(String, &psx_mechanics::Field, &Read<Location>, Type)],
+    q: &Quantities,
     frames: u32,
     events: &[crate::replay::Input],
     deadline: Duration,
@@ -212,6 +280,7 @@ fn record(
     crate::replay::apply(m, &crate::replay::Input { frame: 0, buttons: 0, sticks: [128; 4] });
     let mut start: Option<u64> = None;
     let mut target = u64::MAX;
+    let tick = &q.binding.described().tick;
     let (lo, hi) = (crate::run::fold(tick.at), crate::run::fold(tick.at) + tick.bytes);
     let mut out =
         Recorded { initial: None, ticks: Vec::new(), refusals: Vec::new(), refusal_count: 0, timed_out: false };
@@ -250,18 +319,22 @@ fn record(
         let view = View { m, now: &now, latched: &now, load: None };
         let n = out.ticks.len() as u64 + out.initial.is_some() as u64;
         let mut values = Values::new();
-        for (name, _, r, ty) in quantities {
-            match view.read(r, ty) {
-                Ok(v) => {
-                    values.insert(name.clone(), v);
-                }
-                Err(e) => {
-                    out.refusal_count += 1;
-                    if out.refusals.len() < MAX_REFUSALS {
-                        out.refusals.push(json!({"tick": n, "quantity": name, "problem": e}));
-                    }
+        let mut refuse = |quantity: &str, problem: String| {
+            out.refusal_count += 1;
+            if out.refusals.len() < MAX_REFUSALS {
+                out.refusals.push(json!({"tick": n, "quantity": quantity, "problem": problem}));
+            }
+        };
+        match q.binding.call(psx_capture::abi::QUANTITIES, 0, &view).0.map(|t| plugin::values(&t, &q.types)) {
+            Ok(Ok(all)) => {
+                values = all.into_iter().filter(|(name, _)| q.kept.contains(name)).collect();
+            }
+            Ok(Err(problems)) => {
+                for (name, e) in problems {
+                    refuse(&name, e);
                 }
             }
+            Err(e) => refuse("", e),
         }
         if out.initial.is_none() {
             out.initial = Some(values);
@@ -283,12 +356,12 @@ fn unrecorded(r: &Recorded) -> Option<Json> {
     if r.refusal_count > 0 {
         return Some(
             json!({"status": "refused", "written": false, "refusals": r.refusals, "refusal_count": r.refusal_count,
-            "how": "a quantity's read gave no value of its type: fix its binding in glossary.toml (a pointer that is null at that tick, a map, a mask) or its type"}),
+            "how": "the glossary's binding gave no value of a quantity's type, or a read was refused (a pointer that is null at that tick): fix glossary/binding/ or the quantity's type"}),
         );
     }
     if r.initial.is_none() {
         return Some(json!({"status": "no_ticks", "written": false,
-            "how": "glossary.toml's tick store never ran: check tick.at, tick.bytes and tick.pc, and that the recording reaches the game's logic"}));
+            "how": "the glossary binding's tick store never ran: check its address, bytes and pc, and that the recording reaches the game's logic"}));
     }
     None
 }
@@ -349,9 +422,11 @@ fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
     if crate::replay::uses_sticks(&events) {
         return Err(Error::invalid("the port's scenario runner has digital buttons only: record without the sticks"));
     }
-    let mut m = machine(ctx, &chain, &state, g)?;
-    let quantities = l.compared();
-    let r = record(&mut m, &g.tick, &quantities, a.frames, &events, Duration::from_secs(a.timeout));
+    let b = binding(root, g)?;
+    let mut m = machine(ctx, &chain, &state, &b.described().source)?;
+    let compared = l.compared();
+    let q = Quantities { binding: &b, types: g.types(), kept: compared.keys().cloned().collect() };
+    let r = record(&mut m, &q, a.frames, &events, Duration::from_secs(a.timeout));
     if let Some(why) = unrecorded(&r) {
         return Ok((false, why));
     }
@@ -362,7 +437,7 @@ fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
         source: Source {
             kind: SourceKind::Captured,
             platform: Some(Psx::NAME.into()),
-            image_sha256: Some(g.source.image_sha256.clone()),
+            image_sha256: Some(b.described().source.image_sha256.clone()),
         },
         producer: Producer {
             name: "psx".into(),
@@ -378,7 +453,7 @@ fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
             .cloned()
             .unwrap_or_default(),
         },
-        quantities: quantities.iter().map(|(n, f, _, _)| (n.clone(), (*f).clone())).collect(),
+        quantities: compared,
         initial: r.initial.unwrap(),
         description: a.description.clone(),
     };
@@ -457,7 +532,12 @@ fn key(root: &Path, l: &Loaded) -> String {
     if let Some(s) = &l.scenario {
         all.extend(read(&root.join(&s.chain)));
     }
-    all.extend(read(&root.join(GLOSSARY)));
+    for dir in [root.join(GLOSSARY), root.join(GLOSSARY).join("binding")] {
+        all.extend(read(&dir.join("Cargo.toml")));
+        for (path, text) in workspace::sources(&dir).unwrap_or_default() {
+            all.extend(format!("\n{path}\n{text}").bytes());
+        }
+    }
     for (name, f, _) in &l.recordings {
         all.extend(format!("\n{name}\n").bytes());
         all.extend(read(f));
@@ -491,7 +571,8 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
     let chain_file = root.join(&s.chain);
     let (_, chain) = crate::states::chain_state(ctx, &chain_file)?;
     let second = crate::states::reach_idling(ctx, &chain_file, s.idle())?;
-    let quantities = l.compared();
+    let b = binding(root, g)?;
+    let q = Quantities { binding: &b, types: g.types(), kept: l.compared().keys().cloned().collect() };
     let mut recordings = Vec::new();
     let mut same = true;
     for (name, rec) in captured {
@@ -500,8 +581,8 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
         let events: crate::replay::Events = serde_json::from_value(d["input"]["events"].clone())
             .map_err(|e| Error::malformed(format!("{name}: producer.details.input: {e}")))?;
         let events = crate::replay::resolve(None, Some(&events), frames as u64).map_err(Error::invalid)?;
-        let mut m = machine(ctx, &chain, &second, g)?;
-        let r = record(&mut m, &g.tick, &quantities, frames, &events, timeout);
+        let mut m = machine(ctx, &chain, &second, &b.described().source)?;
+        let r = record(&mut m, &q, frames, &events, timeout);
         let (diffs, schedule) = match unrecorded(&r) {
             Some(why) => (
                 vec![format!("the second route gave no recording: {}", why["status"].as_str().unwrap_or(""))],
@@ -553,7 +634,7 @@ fn check_cmd(ctx: &Ctx, a: ScenarioCheckArgs) -> crate::Result<(bool, Json)> {
         crate::write_atomic(&p, &serde_json::to_vec_pretty(&kept).unwrap_or_default()).map_err(|e| Error::io(&p, e))?;
         if r["status"] == "differs" {
             r["how"] = json!(
-                "the second route gave other values: check that the chain's last run ends at a game moment (until on the game's own state, not a count of fields) and that glossary.toml's tick is the game's logic step, not its render loop; what still differs is state no parameter holds (a seed taken from the time since power-on): make it one, then record again"
+                "the second route gave other values: check that the chain's last run ends at a game moment (until on the game's own state, not a count of fields) and that the glossary binding's tick is the game's logic step, not its render loop; what still differs is state no parameter holds (a seed taken from the time since power-on): make it one, then record again"
             );
         }
         results.push(r);
@@ -630,28 +711,22 @@ pub fn feature_unready(root: &Path, e: &Entry) -> Vec<String> {
 mod tests {
     use super::*;
 
-    const GLOSSARY_TOML: &str = r#"
-source = { platform = "psx", title = "Demo", image_sha256 = "…" }
-tick = { at = 0x80010000, bytes = 4 }
+    const QUANTITIES: &str = r#"
+//! Demo: the quantities scenarios compare.
 
-[quantities.x]
-type = "int"
-bits = 32
-signed = true
-unit = "units"
-
-[quantities.dead]
-type = "bool"
-
-[bindings.x]
-parts = [{ at = { pointer = 0x80010010, offset = 0x34 }, bytes = 4 }]
-
-[bindings.dead]
-parts = [{ at = { address = 0x80010020 }, bytes = 1 }]
+pub struct Quantities {
+    /// Unit: units
+    pub x: i32,
+    pub dead: bool,
+}
 "#;
 
     pub(crate) fn write_scenario(root: &Path) {
-        std::fs::write(root.join(GLOSSARY), GLOSSARY_TOML.replace('…', &"0".repeat(64))).unwrap();
+        std::fs::create_dir_all(root.join("glossary/src")).unwrap();
+        std::fs::create_dir_all(root.join("glossary/binding")).unwrap();
+        std::fs::write(root.join("glossary/Cargo.toml"), "[package]\nname = \"glossary\"\n").unwrap();
+        std::fs::write(root.join("glossary/src/lib.rs"), QUANTITIES).unwrap();
+        std::fs::write(root.join("glossary/binding/Cargo.toml"), "[package]\nname = \"glossary-binding\"\n").unwrap();
         std::fs::create_dir_all(root.join("scenarios/walk")).unwrap();
         std::fs::create_dir_all(root.join("notes/states")).unwrap();
         std::fs::write(root.join("notes/states/start.json"), "{}").unwrap();
@@ -669,21 +744,96 @@ parts = [{ at = { address = 0x80010020 }, bytes = 1 }]
     }
 
     #[test]
-    fn the_glossary_takes_memory_locations_only() {
-        let g: Glossary = toml::from_str(&GLOSSARY_TOML.replace('…', &"0".repeat(64))).unwrap();
-        assert_eq!(g.check::<Psx>(), Vec::<String>::new());
-        let bad = GLOSSARY_TOML
-            .replace('…', &"0".repeat(64))
-            .replace("{ address = 0x80010020 }", "{ register = \"a0\" }")
-            .replace("bytes = 4 }\n\n[quantities.x]", "bytes = 3 }\n\n[quantities.x]");
-        let g: Glossary = toml::from_str(&bad).unwrap();
+    fn the_glossary_is_its_crate_and_binding() {
+        let d = crate::port::tests::tempdir::Dir::new();
+        let root = d.0.as_path();
         assert_eq!(
-            g.check::<Psx>(),
+            glossary(root).unwrap_err(),
+            ["glossary/: not written yet (a crate whose src/lib.rs declares Quantities)"]
+        );
+        write_scenario(root);
+        let g = glossary(root).unwrap();
+        assert_eq!((g.title.as_str(), g.types().len()), ("Demo: the quantities scenarios compare", 2));
+        std::fs::write(root.join("glossary.toml"), "").unwrap();
+        std::fs::remove_file(root.join("glossary/binding/Cargo.toml")).unwrap();
+        assert_eq!(
+            glossary(root).unwrap_err(),
             [
-                "tick.bytes: 1, 2 or 4, with at aligned to it",
-                "bindings.dead: parts[0]: a quantity is read from memory: an address, or a pointer and offset"
+                "glossary.toml: no longer read: the glossary is Rust, glossary/ and glossary/binding/ (docs/scenarios.md)",
+                "glossary/binding: not written yet"
             ]
         );
+    }
+
+    struct Q {
+        x: i32,
+        dead: bool,
+    }
+
+    struct Glue;
+
+    impl psx_capture::Quantities for Glue {
+        const FINGERPRINT: &'static str = "";
+        type Quantities = Q;
+        fn quantities(q: &Q) -> psx_capture::Value {
+            psx_capture::Value::Record(vec![
+                ("x", psx_capture::Value::Int(q.x as i128)),
+                ("dead", psx_capture::Value::Bool(q.dead)),
+            ])
+        }
+    }
+
+    /// Ticks end at the store to 0x80020010 by 0x80010010; x is at
+    /// 0x80020000.
+    struct Demo;
+
+    impl psx_capture::Glossary for Demo {
+        type Glue = Glue;
+        const TITLE: &'static str = "Demo";
+        const IMAGE_SHA256: &'static str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        fn tick(&self, t: &mut psx_capture::Tick) {
+            t.store(0x8002_0010, 4).by(0x8001_0010);
+        }
+
+        fn quantities(&self, m: &psx_capture::Machine) -> Q {
+            Q { x: m.i32(0x8002_0000), dead: m.u8(0x8002_0020) != 0 }
+        }
+    }
+
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn demo_call(what: u32, _: u32, host: *const psx_capture::abi::Host) -> i32 {
+        // SAFETY: the caller's.
+        unsafe { psx_capture::abi::call_glossary(&Demo, what, host) }
+    }
+
+    #[test]
+    fn a_recording_holds_the_kept_quantities_at_each_tick() {
+        let b: Plugin<Described> = Plugin::new(demo_call, None).unwrap();
+        assert_eq!((b.described().tick.at, b.described().tick.pc), (0x8002_0010, Some(0x8001_0010)));
+        let mut m = Machine::new(vec![0; 0x8_0000]);
+        #[rustfmt::skip]
+        let loop_ = [
+            0x3C09_8002, // lui t1, 0x8002
+            0x8D28_0000, // lw t0, 0(t1)
+            0x2508_0001, // addiu t0, t0, 1
+            0xAD28_0000, // sw t0, 0(t1): x
+            0xAD28_0010, // sw t0, 0x10(t1): the tick ends
+            0x0800_4000, // j 0x80010000
+            0x0000_0000, // nop
+        ];
+        for (i, w) in loop_.iter().enumerate() {
+            m.bus.ram[0x1_0000 + 4 * i..][..4].copy_from_slice(&u32::to_le_bytes(*w));
+        }
+        m.cpu.set_pc(0x8001_0000);
+        let types: BTreeMap<String, Type> =
+            [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
+        let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
+        let r = record(&mut m, &q, 1, &[], Duration::from_secs(60));
+        assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
+        assert_eq!(r.initial, Some([("x".to_string(), psx_mechanics::Value::Int(1))].into()));
+        assert_eq!(r.ticks[0].values, [("x".to_string(), psx_mechanics::Value::Int(2))].into());
+        assert!(r.ticks.len() > 10, "{} ticks", r.ticks.len());
     }
 
     #[test]

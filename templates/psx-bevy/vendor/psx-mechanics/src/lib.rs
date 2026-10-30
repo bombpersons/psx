@@ -18,7 +18,7 @@ pub mod value;
 pub use binding::{Binding, BindingFor, Platform};
 pub use interface::Interface;
 pub use mechanic::Mechanic;
-pub use scenario::{Glossary, GlossaryFor, Recording, Scenario};
+pub use scenario::{Glossary, Recording, Scenario};
 pub use trace::Trace;
 pub use value::{Field, Type, Value, Values};
 

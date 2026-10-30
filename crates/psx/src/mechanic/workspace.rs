@@ -102,7 +102,7 @@ pub fn interfaces(root: &Path) -> crate::Result<(Vec<Interface>, Vec<String>)> {
 }
 
 /// Whether `dir` holds a mechanic written as Rust: a crate with `src/lib.rs`.
-fn is_crate(dir: &Path) -> bool {
+pub fn is_crate(dir: &Path) -> bool {
     dir.join("Cargo.toml").is_file() && dir.join(psx_mechanics::rust::LIB).is_file()
 }
 
@@ -120,7 +120,7 @@ pub fn ids(root: &Path) -> Vec<String> {
 }
 
 /// The `.rs` files under `dir/src`, by path relative to `dir`, sorted.
-fn sources(dir: &Path) -> crate::Result<Vec<(String, String)>> {
+pub fn sources(dir: &Path) -> crate::Result<Vec<(String, String)>> {
     let mut out = Vec::new();
     let mut todo = vec![dir.join("src")];
     while let Some(d) = todo.pop() {

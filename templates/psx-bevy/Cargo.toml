@@ -6,6 +6,11 @@
 #   tools/import/  importers: the player's disc -> the port's asset formats
 #   replay/        step replay: each mechanic (mechanics/<id>/) run against its
 #                  traces
+#   glossary/      the quantities scenarios compare; glossary/binding/, where
+#                  the original keeps them, is added once written
+#   interfaces/*/  the calls mechanics make to the world: one trait each
+#   mechanics/*/   mechanics written as Rust: plain, dependency-free crates, and
+#                  their bindings (binding/), plugins psx mechanic capture loads
 #   vendor/        psx-media, psx-assets, psx-fixed, psx-gte, psx-mechanics and
 #                  psx-capture, vendored
 #
@@ -15,7 +20,7 @@
 # Standalone: copying the template does not require the psx workspace.
 [workspace]
 resolver = "3"
-members = ["psx-bevy", "game", "tools/import", "replay"]
+members = ["psx-bevy", "game", "tools/import", "replay", "glossary"]
 default-members = ["game"]
 # Template-owned copies of psx crates: dependencies, not members (their tests
 # run in the psx repository).

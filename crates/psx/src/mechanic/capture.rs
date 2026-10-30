@@ -16,11 +16,10 @@ use std::time::Instant;
 use psx_capture::abi;
 use psx_core::Machine;
 use psx_core::cpu::MemAccess;
-use psx_mechanics::binding::Read;
 use psx_mechanics::interface::CallKind;
 use psx_mechanics::mechanic::Types;
 use psx_mechanics::trace::{Audit, Call, Coverage, Full, Header, Producer, Source, SourceKind};
-use psx_mechanics::{Interface, Mechanic, Trace, Type, Value, Values};
+use psx_mechanics::{Interface, Mechanic, Trace, Type, Values};
 use serde_json::{Value as Json, json};
 
 use super::audit::{Accounts, Tracker};
@@ -28,7 +27,6 @@ use super::plugin::{self, Plugin, Reads};
 use super::workspace::{self, Loaded, Resident};
 use super::{CallSite, End, EndMode, Location, Psx, Reg, in_memory};
 use crate::Error;
-use psx_mechanics::Platform;
 
 /// Refusals listed in the result; the rest are counted.
 const MAX_REFUSALS: usize = 20;
@@ -118,45 +116,6 @@ pub(crate) struct View<'a> {
     pub now: &'a Regs,
     pub latched: &'a Regs,
     pub load: Option<MemAccess>,
-}
-
-impl View<'_> {
-    fn memory(&self, a: u32, n: u32) -> Result<Vec<u8>, String> {
-        memory(self.m, a, n)
-    }
-
-    fn fetch(&self, at: &Location, offset: u32, n: u32) -> Result<Vec<u8>, String> {
-        let word = |v: u32, what: &str| {
-            if offset != 0 || n > 4 {
-                Err(format!("{what} holds 4 bytes"))
-            } else {
-                Ok(v.to_le_bytes()[..n as usize].to_vec())
-            }
-        };
-        match at {
-            Location::Address { address } => self.memory(address.wrapping_add(offset), n),
-            Location::Base { base, offset: o } => {
-                let b = self.latched[*base as usize];
-                self.memory(b.wrapping_add(*o as u32).wrapping_add(offset), n)
-                    .map_err(|e| format!("{} = {b:#010x}: {e}", base.name()))
-            }
-            Location::Pointer { pointer, offset: o } => {
-                let b = u32::from_le_bytes(self.memory(*pointer, 4)?.try_into().unwrap());
-                self.memory(b.wrapping_add(*o as u32).wrapping_add(offset), n)
-                    .map_err(|e| format!("the pointer at {pointer:#010x} holds {b:#010x}: {e}"))
-            }
-            Location::Register { register } => word(self.now[*register as usize], "a register"),
-            Location::Gte { gte } => {
-                let g = &self.m.cpu.gte;
-                let v = if *gte < 32 { g.read_data(*gte as usize) } else { g.read_ctrl(*gte as usize - 32) };
-                word(v, "a GTE register")
-            }
-        }
-    }
-
-    pub(crate) fn read(&self, r: &Read<Location>, ty: &Type) -> Result<Value, String> {
-        r.decode(ty, Psx::ENDIAN, &mut |at, offset, n| self.fetch(at, offset, n))
-    }
 }
 
 /// Reads that did not give a value of the field's type.
@@ -911,6 +870,7 @@ mod tests {
 
     use psx_capture::reg::{A0, A1, S0, V0};
     use psx_capture::{At, Bracket, Machine as Host, Query, Site as At_};
+    use psx_mechanics::Value;
     use psx_mechanics::rust::{Crate, LIB};
 
     use super::*;

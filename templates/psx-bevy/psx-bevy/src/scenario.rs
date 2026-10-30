@@ -4,24 +4,26 @@
 //!
 //! A feature's plugin registers a launcher for each scenario kind it owns
 //! (`kind` in `scenarios/<id>.toml`), which builds the world from the
-//! scenario's parameters with the port's own loading, and a getter for each
-//! glossary quantity it keeps, in raw units ([`Field`]):
+//! scenario's parameters with the port's own loading, and a function that
+//! observes the glossary's quantities it keeps: it fills `Observed`, which
+//! the game's build generates from `glossary/` (one `Option` per quantity,
+//! in the original's raw units, `None` where the port has no such thing):
 //!
-//! ```
+//! ```ignore
 //! use bevy::prelude::*;
-//! use psx_bevy::prelude::*;
 //! use psx_bevy::scenario::{Parameters, ScenarioApp};
+//! use crate::observed::Observed;
 //!
 //! #[derive(Component)]
 //! struct Croc {
-//!     x: Num<Exact, i32, 12>,
+//!     x: i32,
 //! }
 //!
 //! fn level(app: &mut App, p: &Parameters) -> Result<(), String> {
 //!     let level = p.get("level").and_then(|l| l.as_str()).ok_or("level: a name")?;
 //!     // In a game: load the level by name, then place Croc at its start.
 //!     let _ = level;
-//!     app.world_mut().spawn(Croc { x: Num::from_raw(4096) });
+//!     app.world_mut().spawn(Croc { x: 4096 });
 //!     Ok(())
 //! }
 //!
@@ -29,15 +31,19 @@
 //!
 //! impl Plugin for CrocPlugin {
 //!     fn build(&self, app: &mut App) {
-//!         app.register_scenario("level", level).register_quantity("croc_x", |w| {
-//!             let mut q = w.query::<&Croc>();
-//!             q.iter(w).next().map(|c| c.x)
+//!         app.register_scenario("level", level).observe(|w: &mut World| Observed {
+//!             croc_x: w.query::<&Croc>().iter(w).next().map(|c| c.x),
+//!             ..Observed::none()
 //!         });
 //!     }
 //! }
 //!
 //! // #[test] fn scenarios() { Scenarios::new(root, || { /* a headless app with CrocPlugin */ }).run(); }
 //! ```
+//!
+//! A misspelt or removed quantity is a compile error. Several plugins may
+//! each observe their own quantities; a quantity two of them observe is a
+//! failure.
 //!
 //! For each recording (`scenarios/<id>/<name>.jsonl`, made by `psx scenario
 //! record`) the runner makes a fresh app, launches the scenario, compares
@@ -52,24 +58,31 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use psx_mechanics::Value;
 use psx_mechanics::scenario::{Recording, Scenario};
 use psx_mechanics::trace::SourceKind;
 use serde::Serialize;
 
-use crate::replay::{Diff, Field, Raw, describe, diff, show};
 use crate::testing::TickApp;
 
 /// A scenario's `[parameters]`: what its launcher builds the world from.
 pub type Parameters = serde_json::Map<String, serde_json::Value>;
 
-type Launcher = Arc<dyn Fn(&mut App, &Parameters) -> Result<(), String> + Send + Sync>;
-type Getter = Arc<dyn Fn(&mut World) -> Option<Raw> + Send + Sync>;
+/// The glossary's quantities as the port has them: `Observed`, generated
+/// from `glossary/` by the game's build (`psx_mechanics::rust::write_observed`).
+pub trait Observation: Send + Sync + 'static {
+    /// Each quantity by name, in the recording's encoding, or `None`.
+    fn values(&self) -> Vec<(&'static str, Option<Value>)>;
+}
 
-/// The launchers and quantity getters the app's plugins registered.
+type Launcher = Arc<dyn Fn(&mut App, &Parameters) -> Result<(), String> + Send + Sync>;
+type Observer = Arc<dyn Fn(&mut World) -> Vec<(&'static str, Option<Value>)> + Send + Sync>;
+
+/// The launchers and observers the app's plugins registered.
 #[derive(Resource, Default, Clone)]
 pub struct ScenarioRegistry {
     launchers: BTreeMap<String, Launcher>,
-    quantities: BTreeMap<String, Getter>,
+    observers: Vec<Observer>,
 }
 
 impl ScenarioRegistry {
@@ -77,12 +90,22 @@ impl ScenarioRegistry {
         self.launchers.keys().cloned().collect()
     }
 
-    pub fn quantities(&self) -> Vec<String> {
-        self.quantities.keys().cloned().collect()
+    /// Every quantity some observer has now: by name, or why not.
+    fn observe(&self, w: &mut World) -> Result<BTreeMap<&'static str, Value>, String> {
+        let mut out = BTreeMap::new();
+        for o in &self.observers {
+            for (name, v) in o(w) {
+                let Some(v) = v else { continue };
+                if out.insert(name, v).is_some() {
+                    return Err(format!("{name} is observed by two functions: one feature's plugin observes it"));
+                }
+            }
+        }
+        Ok(out)
     }
 }
 
-/// Registering a feature's scenario launchers and quantities.
+/// Registering a feature's scenario launchers and what it observes.
 pub trait ScenarioApp {
     /// The launcher for scenarios of `kind`: it builds the world from the
     /// scenario's parameters, at the moment the scenario starts.
@@ -92,13 +115,9 @@ pub trait ScenarioApp {
         launch: impl Fn(&mut App, &Parameters) -> Result<(), String> + Send + Sync + 'static,
     ) -> &mut Self;
 
-    /// The getter for a glossary quantity: its value now, in the original's
-    /// raw units, or `None` when the port has no such thing now.
-    fn register_quantity<T: Field>(
-        &mut self,
-        name: &str,
-        get: impl Fn(&mut World) -> Option<T> + Send + Sync + 'static,
-    ) -> &mut Self;
+    /// A function giving the glossary's quantities the feature keeps, now,
+    /// as `Observed { …, ..Observed::none() }`.
+    fn observe<O: Observation>(&mut self, observe: impl Fn(&mut World) -> O + Send + Sync + 'static) -> &mut Self;
 }
 
 impl ScenarioApp for App {
@@ -113,14 +132,9 @@ impl ScenarioApp for App {
         self
     }
 
-    fn register_quantity<T: Field>(
-        &mut self,
-        name: &str,
-        get: impl Fn(&mut World) -> Option<T> + Send + Sync + 'static,
-    ) -> &mut Self {
+    fn observe<O: Observation>(&mut self, observe: impl Fn(&mut World) -> O + Send + Sync + 'static) -> &mut Self {
         let mut r = self.world_mut().get_resource_or_insert_with(ScenarioRegistry::default);
-        assert!(!r.quantities.contains_key(name), "quantity {name} registered twice");
-        r.quantities.insert(name.into(), Arc::new(move |w| get(w).map(|v| v.to_raw())));
+        r.observers.push(Arc::new(move |w| observe(w).values()));
         self
     }
 }
@@ -128,8 +142,9 @@ impl ScenarioApp for App {
 /// The scenarios' results, written to `$PSX_SCENARIO_REPORT` for psx.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
-    /// What the app's plugins registered: the scenario kinds and quantities.
+    /// The scenario kinds the app's plugins registered launchers for.
     pub kinds: Vec<String>,
+    /// The quantities the port observed in any scenario it launched.
     pub quantities: Vec<String>,
     pub scenarios: Vec<ScenarioReport>,
 }
@@ -169,7 +184,7 @@ pub struct Scenarios {
 impl Scenarios {
     /// `root` is the workspace (it has `scenarios/`); `app` makes a fresh
     /// headless app with the plugins that register the launchers and
-    /// quantities ([`crate::testing::headless_app`] and the features' logic
+    /// observers ([`crate::testing::headless_app`] and the features' logic
     /// plugins).
     pub fn new(root: impl Into<PathBuf>, app: impl Fn() -> App + 'static) -> Scenarios {
         Scenarios { root: root.into(), app: Box::new(app) }
@@ -177,7 +192,7 @@ impl Scenarios {
 
     pub fn report(&self) -> Report {
         let registry = registry(&mut (self.app)());
-        let mut report = Report { kinds: registry.kinds(), quantities: registry.quantities(), scenarios: Vec::new() };
+        let mut report = Report { kinds: registry.kinds(), quantities: Vec::new(), scenarios: Vec::new() };
         let dir = self.root.join("scenarios");
         let mut ids: Vec<String> = std::fs::read_dir(&dir)
             .into_iter()
@@ -186,13 +201,21 @@ impl Scenarios {
             .filter_map(|e| e.file_name().to_str()?.strip_suffix(".toml").map(String::from))
             .collect();
         ids.sort();
+        let mut observed = std::collections::BTreeSet::new();
         for id in ids {
-            report.scenarios.push(self.scenario(&dir, &id, &registry));
+            report.scenarios.push(self.scenario(&dir, &id, &registry, &mut observed));
         }
+        report.quantities = observed.into_iter().collect();
         report
     }
 
-    fn scenario(&self, dir: &Path, id: &str, registry: &ScenarioRegistry) -> ScenarioReport {
+    fn scenario(
+        &self,
+        dir: &Path,
+        id: &str,
+        registry: &ScenarioRegistry,
+        observed: &mut std::collections::BTreeSet<String>,
+    ) -> ScenarioReport {
         let mut r = ScenarioReport { id: id.into(), ..default() };
         let s = match read(&dir.join(format!("{id}.toml"))).and_then(|t| Scenario::parse(&t)) {
             Ok(s) => s,
@@ -204,9 +227,6 @@ impl Scenarios {
         (r.feature, r.kind) = (s.feature.clone(), s.kind.clone());
         if !registry.launchers.contains_key(&s.kind) {
             r.problems.push(format!("no launcher registered for scenario kind {}", s.kind));
-        }
-        for q in s.compare.keys().filter(|q| !registry.quantities.contains_key(*q)) {
-            r.problems.push(format!("no getter registered for quantity {q}"));
         }
         let mut files: Vec<PathBuf> = std::fs::read_dir(dir.join(id))
             .into_iter()
@@ -223,7 +243,7 @@ impl Scenarios {
                 if p.is_empty() { Ok(rec) } else { Err(p.join("; ")) }
             });
             r.recordings.push(match rec {
-                Ok(rec) if r.problems.is_empty() => self.recording(&name, &s, &rec),
+                Ok(rec) if r.problems.is_empty() => self.recording(&name, &s, &rec, observed),
                 Ok(rec) => RecordingReport {
                     name,
                     captured: rec.header.source.kind == SourceKind::Captured,
@@ -236,7 +256,13 @@ impl Scenarios {
         r
     }
 
-    fn recording(&self, name: &str, s: &Scenario, rec: &Recording) -> RecordingReport {
+    fn recording(
+        &self,
+        name: &str,
+        s: &Scenario,
+        rec: &Recording,
+        observed: &mut std::collections::BTreeSet<String>,
+    ) -> RecordingReport {
         let mut out = RecordingReport {
             name: name.into(),
             captured: rec.header.source.kind == SourceKind::Captured,
@@ -249,40 +275,45 @@ impl Scenarios {
             out.failures.push(format!("the launcher failed: {e}"));
             return out;
         }
-        let compared: Vec<(&String, &Getter, f64)> = rec
+        let compared: Vec<(&String, i128)> = rec
             .header
             .quantities
             .keys()
             .filter_map(|q| {
                 let tol = match s.compare.get(q)? {
-                    psx_mechanics::Value::Int(t) => *t as f64,
-                    _ => 0.0,
+                    Value::Int(t) => *t,
+                    _ => 0,
                 };
-                Some((q, &registry.quantities[q], tol))
+                Some((q, tol))
             })
             .collect();
         let mut differed: BTreeMap<String, String> = BTreeMap::new();
-        let check =
-            |app: &mut App, at: &str, values: &psx_mechanics::Values, differed: &mut BTreeMap<String, String>| {
-                for (q, get, tol) in &compared {
-                    if differed.contains_key(q.as_str()) {
-                        continue;
-                    }
-                    let Some(want) = values.get(*q) else { continue };
-                    let line = match get(app.world_mut()) {
-                        None => Some(format!("{at} {q}: expected {}, the port has none", describe(want))),
-                        Some(got) => match diff(&got, want) {
-                            Diff::Equal => None,
-                            Diff::Off(d) if d <= *tol => None,
-                            _ => Some(format!("{at} {q}: expected {}, got {}", describe(want), show(&got))),
-                        },
-                    };
-                    if let Some(l) = line {
-                        differed.insert((*q).clone(), l);
-                    }
-                }
+        let mut check = |app: &mut App, at: &str, values: &psx_mechanics::Values, differed: &mut BTreeMap<String, String>| {
+            let now = match registry.observe(app.world_mut()) {
+                Ok(now) => now,
+                Err(e) => return Some(format!("{at}: {e}")),
             };
-        check(&mut app, "initial", &rec.header.initial, &mut differed);
+            observed.extend(now.keys().map(|q| q.to_string()));
+            for (q, tol) in &compared {
+                if differed.contains_key(q.as_str()) {
+                    continue;
+                }
+                let Some(want) = values.get(*q) else { continue };
+                let line = match now.get(q.as_str()) {
+                    None => Some(format!("{at} {q}: expected {}, the port has none", show(want))),
+                    Some(got) if !differs(got, want, *tol) => None,
+                    Some(got) => Some(format!("{at} {q}: expected {}, got {}", show(want), show(got))),
+                };
+                if let Some(l) = line {
+                    differed.insert((*q).clone(), l);
+                }
+            }
+            None
+        };
+        if let Some(e) = check(&mut app, "initial", &rec.header.initial, &mut differed) {
+            out.failures.push(e);
+            return out;
+        }
         for t in rec.expand() {
             if differed.len() == compared.len() {
                 break;
@@ -299,7 +330,10 @@ impl Scenarios {
                     return out;
                 }
             }
-            check(&mut app, &format!("tick {}", t.tick), &t.values, &mut differed);
+            if let Some(e) = check(&mut app, &format!("tick {}", t.tick), &t.values, &mut differed) {
+                out.failures.push(e);
+                return out;
+            }
         }
         // In the order they first differed.
         let mut lines: Vec<String> = differed.into_values().collect();
@@ -339,6 +373,19 @@ fn registry(app: &mut App) -> ScenarioRegistry {
     app.world_mut().get_resource_or_insert_with(ScenarioRegistry::default).clone()
 }
 
+/// Whether `got` is further from `want` than `tolerance` (raw units, for
+/// numbers; anything else is compared exactly).
+fn differs(got: &Value, want: &Value, tolerance: i128) -> bool {
+    match (got, want) {
+        (Value::Int(a), Value::Int(b)) => (a - b).abs() > tolerance,
+        _ => got != want,
+    }
+}
+
+fn show(v: &Value) -> String {
+    serde_json::to_string(v).unwrap_or_default()
+}
+
 /// A failure line's tick: 0 for `initial`.
 fn tick_of(line: &str) -> u64 {
     line.strip_prefix("tick ").and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or(0)
@@ -358,6 +405,17 @@ mod tests {
     #[derive(Component)]
     struct Walker(i32);
 
+    /// What the game's build generates from a glossary with one quantity, x.
+    struct Observed {
+        x: Option<i32>,
+    }
+
+    impl Observation for Observed {
+        fn values(&self) -> Vec<(&'static str, Option<Value>)> {
+            vec![("x", self.x.map(|v| Value::Int(v as i128)))]
+        }
+    }
+
     fn walk(pad: Res<ControllerState>, mut q: Query<&mut Walker>) {
         for mut w in &mut q {
             if pad.held(Button::Right) {
@@ -374,7 +432,7 @@ mod tests {
             app.world_mut().spawn(Walker(x as i32));
             Ok(())
         })
-        .register_quantity("x", |w| w.query::<&Walker>().iter(w).next().map(|c| c.0));
+        .observe(|w: &mut World| Observed { x: w.query::<&Walker>().iter(w).next().map(|c| c.0) });
         app
     }
 
@@ -422,7 +480,19 @@ mod tests {
         let root3 = workspace(&missing, RECORDING);
         let r = Scenarios::new(&root3, app).report();
         assert_eq!(r.scenarios[0].problems, ["no launcher registered for scenario kind race"]);
-        for d in [root, root2, root3] {
+        // Two plugins observing the same quantity.
+        let root4 = workspace(SCENARIO, RECORDING);
+        let twice = || {
+            let mut a = app();
+            a.observe(|_: &mut World| Observed { x: Some(1) });
+            a
+        };
+        let r = Scenarios::new(&root4, twice).report();
+        assert_eq!(
+            r.scenarios[0].recordings[0].failures,
+            ["initial: x is observed by two functions: one feature's plugin observes it"]
+        );
+        for d in [root, root2, root3, root4] {
             let _ = std::fs::remove_dir_all(d);
         }
     }

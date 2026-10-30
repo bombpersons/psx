@@ -26,3 +26,10 @@ serde_json.workspace = true
 ron.workspace = true
 # The importers and disc reader (tools/import), run in the game on first start.
 import.workspace = true
+# The glossary's quantities (glossary/), which the port observes for the
+# scenarios as `Observed` (src/lib.rs, build.rs).
+glossary = { path = "../glossary" }
+psx-mechanics.workspace = true
+
+[build-dependencies]
+psx-mechanics.workspace = true

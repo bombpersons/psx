@@ -1,0 +1,12 @@
+[package]
+name = "glossary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The glossary (psx docs/scenarios.md): the quantities scenarios compare,
+# plain Rust with no dependencies. psx reads src/lib.rs from source; the
+# port's build generates `Observed` from it (game/build.rs), and its binding,
+# glossary/binding/ (a plugin psx scenario record loads), reads them from
+# the original.

@@ -1,14 +1,14 @@
-//! Scenarios: `glossary.toml` (the names quantities go by, and where the
-//! original keeps them), `scenarios/<id>.toml` (a situation both the
-//! original and the port can reach) and the scenario's recordings,
-//! `scenarios/<id>/<name>.jsonl` (the original's quantities, tick by tick).
+//! Scenarios: the glossary (the names quantities go by, the `glossary`
+//! crate's `Quantities`, read by [`crate::rust::glossary`]),
+//! `scenarios/<id>.toml` (a situation both the original and the port can
+//! reach) and the scenario's recordings, `scenarios/<id>/<name>.jsonl` (the
+//! original's quantities, tick by tick).
 
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::binding::{Platform, Read, Role, Source, check_read};
 use crate::trace::{Producer, SourceKind};
 use crate::value::{Field, Type, Value, Values, check_values, is_name};
 
@@ -18,27 +18,16 @@ pub const RECORDING_FORMAT_VERSION: u32 = 1;
 /// The fields the determinism check idles for when a scenario gives none.
 pub const IDLE: u32 = 60;
 
-/// `glossary.toml`, generic over the platform's location (`L`) and tick
-/// (`T`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields, bound(deserialize = "L: Deserialize<'de>, T: Deserialize<'de>"))]
-pub struct Glossary<L, T> {
-    /// The release the bindings are for.
-    pub source: Source,
-    /// What ends one tick of the game's logic: quantities are read there.
-    pub tick: T,
-    /// Each quantity's type, unit and meaning, in game terms.
-    #[serde(default)]
+/// The glossary: the quantities scenarios compare, each with its type,
+/// unit and meaning in game terms.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Glossary {
+    /// The crate documentation's first paragraph: the release, in words.
+    pub title: String,
     pub quantities: BTreeMap<String, Field>,
-    /// Where the original keeps each quantity.
-    #[serde(default)]
-    pub bindings: BTreeMap<String, Read<L>>,
 }
 
-/// The glossary of a platform.
-pub type GlossaryFor<P> = Glossary<<P as Platform>::Location, <P as Platform>::Tick>;
-
-impl<L, T> Glossary<L, T> {
+impl Glossary {
     /// Each quantity's checked type; a quantity whose type has a problem is
     /// left out.
     pub fn types(&self) -> BTreeMap<String, Type> {
@@ -48,35 +37,31 @@ impl<L, T> Glossary<L, T> {
             .collect()
     }
 
-    pub fn check<P>(&self) -> Vec<String>
-    where
-        P: Platform<Location = L, Tick = T>,
-    {
+    pub fn check(&self) -> Vec<String> {
         let mut p = Vec::new();
-        self.source.check(P::NAME, &mut p);
-        P::check_tick(&self.tick, &mut p);
         for (n, f) in &self.quantities {
             if !is_name(n) {
-                p.push(format!("quantities.{n}: not a name ([a-z][a-z0-9_]*)"));
+                p.push(format!("Quantities.{n}: not a name ([a-z][a-z0-9_]*)"));
             }
             match f.ty() {
-                Ok(t) if t.is_data() => p.push(format!("quantities.{n}: tables, lists and records are for params")),
+                Ok(t) if t.is_data() => p.push(format!(
+                    "Quantities.{n}: a quantity is a number, a bool or an enum, not a table, list or record"
+                )),
                 Ok(_) => {}
-                Err(e) => p.push(format!("quantities.{n}: {e}")),
-            }
-            if !self.bindings.contains_key(n) {
-                p.push(format!("quantities.{n}: not bound"));
-            }
-        }
-        let types = self.types();
-        for (n, r) in &self.bindings {
-            match types.get(n) {
-                Some(ty) => check_read::<P>(&format!("bindings.{n}"), r, ty, Role::Quantity, &mut p),
-                None if !self.quantities.contains_key(n) => p.push(format!("bindings.{n}: no such quantity")),
-                None => {}
+                Err(e) => p.push(format!("Quantities.{n}: {e}")),
             }
         }
         p
+    }
+
+    /// A hash of the quantities' names and types (not their documentation):
+    /// the glossary's binding was generated from the same ones.
+    pub fn fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let bare: BTreeMap<&String, Field> =
+            self.quantities.iter().map(|(k, f)| (k, Field { unit: None, description: None, ..f.clone() })).collect();
+        let hash = Sha256::digest(serde_json::json!({"quantities": bare}).to_string().as_bytes());
+        hash[..8].iter().map(|b| format!("{b:02x}")).collect()
     }
 }
 
@@ -318,30 +303,25 @@ impl Recording {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::binding::tests::Flat;
+    use crate::rust::{Crate, LIB};
 
-    const GLOSSARY: &str = r#"
-source = { platform = "flat", title = "Croc (Europe)", image_sha256 = "…" }
-tick = { address = 0x80087AA4 }
+    pub(crate) const GLOSSARY: &str = r#"
+//! Croc (Europe) SLES-00593: the quantities scenarios compare.
 
-[quantities.croc_x]
-type = "fixed"
-signed = true
-int_bits = 20
-frac_bits = 12
-unit = "world units"
-description = "Croc's position across the level"
+/// Fixed point: 20 integer bits, 12 fraction bits.
+pub type Fx20_12 = i32;
 
-[quantities.croc_mode]
-type = "enum"
-variants = ["idle", "walk"]
+pub enum Mode {
+    Idle,
+    Walk,
+}
 
-[bindings.croc_x]
-parts = [{ at = { address = 0x8017C8B0 }, bytes = 4 }]
-
-[bindings.croc_mode]
-parts = [{ at = { address = 0x8017C8C0 }, bytes = 1 }]
-map = { 0 = "idle", 1 = "walk" }
+pub struct Quantities {
+    /// Croc's position across the level
+    /// Unit: world units
+    pub croc_x: Fx20_12,
+    pub croc_mode: Mode,
+}
 "#;
 
     const SCENARIO: &str = r#"
@@ -362,14 +342,19 @@ level = { asset = "level/1-1" }
 {"tick":3,"field":4,"pad":[]}
 "#;
 
-    fn glossary() -> GlossaryFor<Flat> {
-        toml::from_str(&GLOSSARY.replace('…', &"0".repeat(64))).unwrap()
+    fn glossary() -> Glossary {
+        let files = [(LIB.to_string(), GLOSSARY.to_string())];
+        let (g, problems) =
+            crate::rust::glossary(&Crate { cargo_toml: "[package]\nname = \"glossary\"\n", files: &files }).unwrap();
+        assert_eq!(problems, Vec::<String>::new());
+        g
     }
 
     #[test]
     fn a_glossary_and_scenario_check() {
         let g = glossary();
-        assert_eq!(g.check::<Flat>(), Vec::<String>::new());
+        assert_eq!(g.title, "Croc (Europe) SLES-00593: the quantities scenarios compare");
+        assert_eq!(g.quantities["croc_x"].unit.as_deref(), Some("world units"));
         let s = Scenario::parse(SCENARIO).unwrap();
         assert_eq!(s.check(&g.types()), Vec::<String>::new());
         assert_eq!((s.idle(), s.parameters["level"]["asset"].as_str()), (60, Some("level/1-1")));
@@ -377,10 +362,16 @@ level = { asset = "level/1-1" }
 
     #[test]
     fn glossary_and_scenario_mistakes_are_named() {
-        let mut g = glossary();
-        g.bindings.remove("croc_mode");
-        g.bindings.insert("speed".into(), g.bindings["croc_x"].clone());
-        assert_eq!(g.check::<Flat>(), vec!["quantities.croc_mode: not bound", "bindings.speed: no such quantity"]);
+        let files = [(
+            LIB.to_string(),
+            GLOSSARY.replace("pub croc_mode: Mode,", "pub croc_mode: Mode,\n    pub path: Vec<i32>,"),
+        )];
+        let (_, problems) =
+            crate::rust::glossary(&Crate { cargo_toml: "[package]\nname = \"glossary\"\n", files: &files }).unwrap();
+        assert_eq!(
+            problems,
+            ["src/lib.rs: Quantities.path: a quantity is a number, a bool or an enum, not a table, list or record"]
+        );
         let s = Scenario::parse(
             &SCENARIO.replace("croc_mode = 0", "croc_mode = 1\nspeed = 0").replace("croc_x = 0", "croc_x = -1"),
         )

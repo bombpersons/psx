@@ -7,6 +7,13 @@ pub mod config;
 pub mod demo;
 pub mod disc;
 
+/// `Observed`: the glossary's quantities as the port has them, which each
+/// feature's plugin fills for the scenarios (`psx_bevy::scenario`).
+/// Generated from `glossary/src/lib.rs` by `build.rs`.
+pub mod observed {
+    include!(concat!(env!("OUT_DIR"), "/observed.rs"));
+}
+
 use bevy::app::PluginGroupBuilder;
 use bevy::prelude::*;
 use psx_bevy::prelude::*;

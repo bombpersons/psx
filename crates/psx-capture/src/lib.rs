@@ -47,7 +47,7 @@ pub const ABI_VERSION: u32 = 2;
 
 pub mod prelude {
     pub use crate::reg::*;
-    pub use crate::{At, Binding, Bracket, Load, Machine, Pc, Site};
+    pub use crate::{At, Binding, Bracket, Glossary, Load, Machine, Pc, Site, Tick};
 }
 
 /// A CPU register, numbered as the R3000 numbers them; `HI` and `LO` are 32
@@ -555,6 +555,63 @@ pub trait Binding {
     fn params(&self, m: &Machine) -> <Self::Mechanic as Mechanic>::Params;
 }
 
+/// The glossary's quantities (docs/scenarios.md): their fingerprint and
+/// `Quantities` struct in the recording's encoding. Its implementation is
+/// generated from the glossary's source by its binding's `build.rs`
+/// (`psx_mechanics::rust::write_glossary_glue`).
+pub trait Quantities {
+    /// The glossary's fingerprint, of the source the glue was generated from.
+    const FINGERPRINT: &'static str;
+    type Quantities;
+    fn quantities(q: &Self::Quantities) -> Value;
+}
+
+/// What ends one tick of the game's logic: a store of `bytes` bytes to an
+/// address, made by one instruction when it is given.
+#[derive(Default)]
+pub struct Tick {
+    store: Option<(u32, u32)>,
+    pc: Option<u32>,
+}
+
+impl Tick {
+    /// A tick ends when the game stores `bytes` (1, 2 or 4) at `address`.
+    pub fn store(&mut self, address: u32, bytes: u32) -> &mut Self {
+        self.store = Some((address, bytes));
+        self
+    }
+
+    /// Only the store the instruction at `pc` makes.
+    pub fn by(&mut self, pc: u32) -> &mut Self {
+        self.pc = Some(pc);
+        self
+    }
+
+    fn json(&self) -> Result<String, &'static str> {
+        let (at, bytes) = self.store.ok_or("the tick has no store: call t.store(address, bytes)")?;
+        Ok(match self.pc {
+            Some(pc) => format!("{{\"at\":{at},\"bytes\":{bytes},\"pc\":{pc}}}"),
+            None => format!("{{\"at\":{at},\"bytes\":{bytes}}}"),
+        })
+    }
+}
+
+/// The glossary's binding on the PlayStation: what ends a tick of the
+/// game's logic, and where each quantity is. The type is a unit struct,
+/// exported with [`export_glossary!`].
+pub trait Glossary {
+    type Glue: Quantities;
+    /// The release, in words.
+    const TITLE: &'static str;
+    /// The image's identity, as `psx context` reports the media.
+    const IMAGE_SHA256: &'static str;
+
+    fn tick(&self, t: &mut Tick);
+
+    /// The quantities, read when a tick ends.
+    fn quantities(&self, m: &Machine) -> <Self::Glue as Quantities>::Quantities;
+}
+
 /// Exports a binding, a unit struct implementing [`Binding`], as the C
 /// functions psx calls.
 #[macro_export]
@@ -571,6 +628,26 @@ macro_rules! export {
         pub unsafe extern "C" fn psx_capture_call(what: u32, which: u32, host: *const $crate::abi::Host) -> i32 {
             // SAFETY: the caller's.
             unsafe { $crate::abi::call(&$binding, what, which, host) }
+        }
+    };
+}
+
+/// Exports the glossary's binding, a unit struct implementing
+/// [`Glossary`], as the C functions psx calls.
+#[macro_export]
+macro_rules! export_glossary {
+    ($glossary:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn psx_capture_abi_version() -> u32 {
+            $crate::ABI_VERSION
+        }
+
+        /// # Safety
+        /// `host` is psx's, valid for the call.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn psx_capture_call(what: u32, _which: u32, host: *const $crate::abi::Host) -> i32 {
+            // SAFETY: the caller's.
+            unsafe { $crate::abi::call_glossary(&$glossary, what, host) }
         }
     };
 }

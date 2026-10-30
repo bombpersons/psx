@@ -210,7 +210,7 @@ pub fn unimplemented(root: &Path, e: &Entry, head: Option<&str>) -> Vec<String> 
             out.push(format!("{id}: no launcher for scenario kind {}", s.kind));
         }
         for q in s.compare.keys().filter(|q| !report.quantities.contains(q)) {
-            out.push(format!("{id}: no getter for quantity {q}"));
+            out.push(format!("{id}: the port observes no {q} (a feature plugin's app.observe)"));
         }
     }
     out
