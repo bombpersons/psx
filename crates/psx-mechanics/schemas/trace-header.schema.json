@@ -212,7 +212,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/Value"
       },
-      "description": "The state at the first step's start: every field but the unobserved.",
+      "description": "The state at the first step's start.",
       "type": "object"
     },
     "mechanic": {
@@ -242,13 +242,6 @@
     },
     "source": {
       "$ref": "#/$defs/Source"
-    },
-    "unobserved": {
-      "description": "State fields the binding marks unobserved; never compared.",
-      "items": {
-        "type": "string"
-      },
-      "type": "array"
     }
   },
   "required": [

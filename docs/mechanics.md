@@ -383,8 +383,9 @@ psx_capture::export!(Walk);
   inline call's load (`load`). Only main RAM and the scratchpad can be
   read: any other address stops the binding and is the capture's refusal.
   Registers are named as `A0`, `V0`, `SP`, …, `HI` and `LO`.
-- **State is in memory.** Registers are clobbered between steps, so state is
-  read from memory.
+- **State is read where it is**, at the begin and again at the return:
+  usually memory, but a value the game keeps in a register from one step to
+  the next is read with `reg` like any other.
 - **A used mechanic** needs nothing in the using mechanic's binding: its
   own binding records its step (section 5, "Capturing").
 - **The glue** (`build.rs`) is generated from the mechanic's source and the
@@ -398,8 +399,6 @@ psx_capture::export!(Walk);
   functions, so it loads into a psx built by another compiler. psx refuses
   one built against another `psx-capture`, naming `psx template update`. A
   panic in the binding is caught and reported as the capture's error.
-- **Not yet:** state the binding cannot read (kept in a register across the
-  step and never stored).
 
 ### Explained reads and hardware
 
@@ -527,8 +526,6 @@ fills the steps back in.
 - **`scenario`** is the scenario the recording was made in, when there is one.
 - **`params`** holds every param's value, so the trace stands alone.
 - **`initial_state`** is the state at the first step's start.
-- **`unobserved`** lists state fields the trace leaves out; captures with a
-  Rust binding have none.
 - **`audit`** and **`coverage`** are standard sections, so stage checks can
   read them. Their `at` is the producer's location, opaque to everything else.
   - `audit.unaccounted` lists reads the binding neither reads nor explains.

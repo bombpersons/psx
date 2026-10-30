@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::interface::{CallKind, Interface};
 use crate::mechanic::Mechanic;
-use crate::value::{Type, Values, check_values};
+use crate::value::{Values, check_values};
 
 pub const FORMAT: &str = "mechanic-trace";
 pub const FORMAT_VERSION: u32 = 1;
@@ -34,11 +34,8 @@ pub struct Header {
     pub scenario: Option<String>,
     /// Every param's value, so the trace stands alone.
     pub params: Values,
-    /// The state at the first step's start: every field but the unobserved.
+    /// The state at the first step's start.
     pub initial_state: Values,
-    /// State fields the binding marks unobserved; never compared.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub unobserved: Vec<String>,
     /// What the step read that the binding does not account for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit: Option<Audit>,
@@ -269,17 +266,8 @@ impl Trace {
             p.push("header: a captured trace names its platform and image_sha256".into());
         }
         let types = mechanic.types(&mut Vec::new());
-        for u in h.unobserved.iter().filter(|u| !types.state.contains_key(*u)) {
-            p.push(format!("header: unobserved {u} is not a state field"));
-        }
-        let observed: BTreeMap<String, Type> = types
-            .state
-            .iter()
-            .filter(|(k, _)| !h.unobserved.contains(k))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
         check_values("header: params", &h.params, &types.params, false, &[], &mut p);
-        check_values("header: initial_state", &h.initial_state, &observed, false, &[], &mut p);
+        check_values("header: initial_state", &h.initial_state, &types.state, false, &[], &mut p);
         let calls: BTreeMap<String, _> =
             mechanic.called(interfaces).into_iter().map(|i| (i.reference(), i.types(&mut Vec::new()))).collect();
         for (i, s) in self.steps.iter().enumerate() {
@@ -289,9 +277,9 @@ impl Trace {
             }
             check_values(&format!("{at}: inputs"), &s.inputs, &types.inputs, i > 0, &[], &mut p);
             if let Some(b) = &s.state_before {
-                check_values(&format!("{at}: state_before"), b, &observed, true, &[], &mut p);
+                check_values(&format!("{at}: state_before"), b, &types.state, true, &[], &mut p);
             }
-            check_values(&format!("{at}: state"), &s.state, &observed, true, &[], &mut p);
+            check_values(&format!("{at}: state"), &s.state, &types.state, true, &[], &mut p);
             for (n, c) in s.calls.iter().enumerate() {
                 let at = format!("{at}: calls[{n}]");
                 let Some(ct) = calls.get(&c.interface).and_then(|i| i.get(&c.call)) else {

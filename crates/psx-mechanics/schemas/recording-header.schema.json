@@ -106,7 +106,7 @@
           }
         }
       ],
-      "description": "A field's declared type, as written in `mechanic.toml` and interfaces.\nWhich keys apply depends on `type`; [`Field::ty`] checks them.",
+      "description": "A field's declared type, as read from a mechanic, interface or glossary crate.\nWhich keys apply depends on `type`; [`Field::ty`] checks them.",
       "properties": {
         "bits": {
           "description": "`int`: width in bits (1 to 64). `float`: 32, 64 or 80.",

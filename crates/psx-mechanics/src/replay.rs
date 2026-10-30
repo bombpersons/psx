@@ -116,9 +116,6 @@ pub fn trace<M: Mechanic>(t: &Trace) -> Result<(), String> {
             ));
         }
     }
-    if !h.unobserved.is_empty() {
-        return Err("unobserved state is not replayed yet".into());
-    }
     let params = M::params(&h.params).map_err(|e| format!("params: {e}"))?;
     let mut state = M::state(&h.initial_state).map_err(|e| format!("initial_state: {e}"))?;
     for (i, f) in t.expand().iter().enumerate() {
