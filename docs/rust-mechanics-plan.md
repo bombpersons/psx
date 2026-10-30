@@ -1,6 +1,6 @@
 # Plan: mechanics and bindings as Rust
 
-Status: proposed, for the person to review. Nothing here is built yet.
+Status: agreed; nothing built yet. Work starts at R2 (section 11).
 
 The mechanic formats (`docs/mechanics.md`) describe a step in TOML: typed
 fields in `mechanic.toml`, and where the PlayStation keeps them in
@@ -236,7 +236,17 @@ psx_capture::export!(Binding);
   checks that every field is bound.
 - **Hooks are declared up front** in `bracket`, so psx knows which PCs to
   stop at: begin and end, overlays, call sites by entry PC or inline load.
-- **`is_step`** replaces register filters, so a filter may read memory.
+- **`is_step`** picks out which calls of the routine are the mechanic's
+  step. A begin PC is often reached for many things: Croc's collision
+  routine, 0x8002D410, runs from the object loop for every object with
+  collision, enemies and platforms included. psx calls `is_step` each time
+  the begin PC is reached; on `false` it records nothing and the routine
+  runs on. It replaces register filters, which compare with constants:
+  `a0 = 0x800D8A1C` is where Croc's object sits in level 1-1 and matches
+  nothing on another level, while `is_step` can compare with the game's
+  own pointer to the player, or check a mode (play, not the attract
+  demo). Its reads are recorded as reads that choose the step, not as the
+  step's inputs.
 - **Params** are read once, at the first step, by ordinary code: follow a
   pointer, read a count, look up a model by the index in a parallel array.
   Every case in the list at the top is a few lines here.
@@ -244,9 +254,30 @@ psx_capture::export!(Binding);
   the next step reads at its begin (external changes), the read audit,
   branch coverage, and that each value fits the mechanic's type.
 
-**How a binding runs.** psx is used as a release binary, without its
-source, so the emulator and the capture engine stay inside psx and the
-binding is loaded into it:
+**How a binding runs: a plugin API.** psx is used as a release binary,
+without its source, so the emulator and the capture engine stay inside psx
+and the binding is a plugin loaded into it. psx is the host: it runs the
+game and judges the capture. The plugin answers its questions ("is this
+the step?", "what is the state?"), reading memory through psx.
+
+The boundary between them is a few functions with only integers and
+pointers to bytes as arguments, because the binding may be compiled by a
+different Rust compiler from psx's, and only the C calling convention is
+the same for both. The binding exports, roughly:
+
+| Function | psx calls it to |
+|---|---|
+| `abi_version() -> u32` | check the binding was built against a matching `psx-capture` |
+| `describe(out)` | get the hooks (begin and end, call sites) as bytes |
+| `is_step(machine) -> bool` | ask at a begin whether this call is the step |
+| `read(what, machine, out)` | get the state, inputs or params as bytes, in the trace's encoding |
+
+psx passes the binding a table of its own functions in return: read bytes
+at an address, read a register, read a register latched at begin. Nobody
+writes these by hand: the agent writes the `Binding` trait's methods in
+ordinary Rust, and `export!` generates the functions around them.
+
+The parts:
 
 - `psx-capture` is a small crate the template vendors, as it vendors
   `psx-mechanics` today. It holds the API (`Machine`, `Bracket`, `Site`,
@@ -485,10 +516,11 @@ interfaces, Croc's fields and script variables, and the port.
 
 ## 12. Decisions for the person
 
-1. **How the binding runs.** Recommended: a `cdylib` against a small
-   vendored `psx-capture` crate, built by psx with cargo and loaded into
-   psx, which keeps the emulator and the capture engine (section 5). It
-   works with a release binary of psx and no psx source. The alternatives:
+1. ~~**How the binding runs.**~~ Settled: a plugin, a `cdylib` against a
+   small vendored `psx-capture` crate, built by psx with cargo and loaded
+   into psx, which keeps the emulator and the capture engine (section 5).
+   It works with a release binary of psx and no psx source. The
+   alternatives, not taken:
    - the binding links psx's emulator and capture engine as a vendored
      crate and runs as its own program: no FFI, but the workspace compiles
      the emulator, and the engine that judges captures becomes code the
