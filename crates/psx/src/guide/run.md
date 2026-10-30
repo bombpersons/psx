@@ -40,11 +40,14 @@ Observations (native):
   instruction it ran as, the moment it first ran: the number of the latest
   copy then, and whether it ever continued the code before it: ran
   straight on from the word before, outside a jump's delay slot (after a
-  branch's, taken or not), or was returned to by a call two words before) and calls.json (each call target and
+  branch's, taken or not), or was returned to by a call two words before),
+  branches.bin (each conditional branch run with the times it was taken and
+  fell through: coverage lists each function's branch ways no run took,
+  branch_ways_missed) and calls.json (each call target and
   call site with the copy each ran from, and the moments a call to it ran
   in, from the call until it returned); max_events caps every event log.
-  It caps trace.txt's lines (lines_dropped), not code.bin, executed.bin or
-  calls.json: those are whole unless code_pages_dropped (pages past the
+  It caps trace.txt's lines (lines_dropped), not code.bin, executed.bin,
+  branches.bin or calls.json: those are whole unless code_pages_dropped (pages past the
   copy cap) or call_frames_dropped (calls nested past the return stack)
   is above 0, which the run's summary also reports. The inventory and
   coverage read only those files.

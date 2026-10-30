@@ -198,7 +198,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::states::StatesMakeArgs>("states_make", "Run from a named start state (or power-on) and name the state it ends in: .psx/states/NAME.bin, and its chain of runs from power-on in notes/states/NAME.json. See guide topic states.").heavy(),
         def::<crate::states::StatesSaveArgs>("states_save", "Name a state an earlier run or handoff made; its chain from power-on comes from the runs' reports. See guide topic states."),
         def::<crate::inventory::InventoryArgs>("inventory", "Every function of the disc's executables and of overlays in ram snapshots, with instructions and blocks, and the disc's files. See guide topic code.").heavy(),
-        def::<crate::coverage::CoverageArgs>("coverage", "Traced runs' executed blocks per inventory function, and the blocks never executed. See guide topic code.").heavy(),
+        def::<crate::coverage::CoverageArgs>("coverage", "Traced runs' executed blocks and branch ways per inventory function, and those no run reached. See guide topic code.").heavy(),
         def::<crate::states::StatesListArgs>("states_list", "The named start states: description, steps from power-on, and whether each is present.").read_only(),
         def::<crate::states::StatesRebuildArgs>("states_rebuild", "Replay start states' chains from power-on on this psx and compare: which step first differs, and named values old and new. replace puts rebuilt states in place. See guide topic states.").heavy(),
         def::<crate::handoff::HandoffStatusArgs>("handoff_status", "A handoff's progress or result: waiting, done, declined (read the note), closed or abandoned.").read_only().screen(),

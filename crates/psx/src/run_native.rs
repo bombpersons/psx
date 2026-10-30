@@ -856,6 +856,15 @@ fn trace_outputs(
         executed.extend((r.continues as u32).to_le_bytes());
         executed.extend(r.count.to_le_bytes());
     }
+    // Each conditional branch run in RAM: its address, its instruction, and
+    // the times it was taken and fell through.
+    let mut branches = b"PSXBRAN1".to_vec();
+    for (addr, word, taken, fell) in t.branches() {
+        branches.extend(addr.to_le_bytes());
+        branches.extend(word.to_le_bytes());
+        branches.extend(taken.to_le_bytes());
+        branches.extend(fell.to_le_bytes());
+    }
     // Each code page's history: a copy whenever code ran in it changed,
     // numbered by its order here. A page's first copy is whole (the copy
     // before it all ones), a later one the words changed since the copy
@@ -889,6 +898,7 @@ fn trace_outputs(
         ("calls.json", serde_json::to_vec_pretty(&calls_json).unwrap()),
         ("owners.json", owners.into_bytes()),
         ("executed.bin", executed),
+        ("branches.bin", branches),
         ("code.bin", code),
     ] {
         let p = dir.join(file);

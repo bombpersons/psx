@@ -14,6 +14,10 @@
 //! overlay no snapshot held) and executed words in no function (a function
 //! the inventory missed) are listed. The BIOS shell's code in RAM (the inventory's bios_code) is
 //! credited but counted apart.
+//!
+//! Each run's branches.bin gives how often each conditional branch was taken
+//! and fell through; a branch's ways are credited where its word was, so
+//! each function lists the ways of its branches no run took.
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 use serde_json::{Value, json};
@@ -78,6 +82,12 @@ struct Image {
     longest: u32,
     /// Executions of each word, over the corpus.
     count: Vec<u64>,
+    /// The run (plus one) that a word was last credited in, so a branch
+    /// that run took is credited where its word was.
+    credited_in: Vec<u32>,
+    /// Each conditional branch's ways over the corpus: 1 taken, 2 fell
+    /// through.
+    ways: Vec<u8>,
     /// The runs that executed each function.
     runs: Vec<BTreeSet<usize>>,
 }
@@ -159,10 +169,10 @@ fn placed(f: &Function, bytes: &[u8]) -> Option<Vec<Option<u32>>> {
     next.next().is_none().then_some(out)
 }
 
-/// coverage.json's format: 3 credits code two functions of an overlay hold
+/// coverage.json's format: 4 adds each function's branch ways; 3 credits code two functions of an overlay hold
 /// to both; 2 read a function in chunks at its chunks' addresses (1 read
 /// the bytes of all its chunks as one stretch from its entry).
-pub const FORMAT: u64 = 3;
+pub const FORMAT: u64 = 4;
 
 /// The inventory's executables, read again from its disc, and each function
 /// of its overlays and of the BIOS's code in RAM, from the bytes inventory
@@ -181,7 +191,19 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
             functions.iter().enumerate().flat_map(|(i, f)| f.chunks.iter().map(move |&(s, e)| (s, e, i))).collect();
         chunks.sort_unstable();
         let longest = chunks.iter().map(|c| c.1 - c.0).max().unwrap_or(0);
-        Image { kind, name, base, words, functions, chunks, longest, count: vec![0; n], runs: vec![BTreeSet::new(); f] }
+        Image {
+            kind,
+            name,
+            base,
+            words,
+            functions,
+            chunks,
+            longest,
+            count: vec![0; n],
+            credited_in: vec![0; n],
+            ways: vec![0; n],
+            runs: vec![BTreeSet::new(); f],
+        }
     };
     let exes = inv["executables"].as_array().cloned().unwrap_or_default();
     if !exes.is_empty() {
@@ -253,6 +275,53 @@ pub(crate) fn executed(run: &Path) -> crate::Result<Vec<(u32, u32, u64)>> {
         *words.entry((u(r, 4), u(r, 8))).or_default() += n(r, size - 8);
     }
     Ok(words.into_iter().map(|((a, w), c)| (a, w, c)).collect())
+}
+
+/// A conditional branch a run ran: `(address, instruction, taken, fell
+/// through)`.
+type Branch = (u32, u32, u64, u64);
+
+/// A run's branches.bin; None for a run traced before psx recorded
+/// branches.
+fn branches(run: &Path) -> crate::Result<Option<Vec<Branch>>> {
+    let path = run.join("branches.bin");
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Error::io(&path, e)),
+    };
+    let Some(body) = bytes.strip_prefix(b"PSXBRAN1") else {
+        return Err(Error::malformed(format!("{}: not a branches.bin", path.display())));
+    };
+    let u = |r: &[u8], a: usize| u32::from_le_bytes(r[a..a + 4].try_into().unwrap());
+    let n = |r: &[u8], a: usize| u64::from_le_bytes(r[a..a + 8].try_into().unwrap());
+    Ok(Some(body.as_chunks::<24>().0.iter().map(|r| (u(r, 0), u(r, 4), n(r, 8), n(r, 16))).collect()))
+}
+
+/// Whether `i` is a conditional branch: one that can both be taken and fall
+/// through (`beq zero, zero` always jumps, `bne zero, zero` never does).
+fn conditional(i: u32) -> bool {
+    let (rs, rt) = ((i >> 21) & 31, (i >> 16) & 31);
+    match i >> 26 {
+        0x01 => rs != 0 && matches!(rt, 0x00 | 0x01 | 0x10 | 0x11),
+        0x04 | 0x05 => rs != rt,
+        0x06 | 0x07 => rs != 0,
+        _ => false,
+    }
+}
+
+/// Credits one run's branch ways to the images its executed words were
+/// credited to (`credit` for the same run first).
+fn credit_branches(images: &mut [Image], run: usize, branches: &[Branch]) {
+    for &(a, i, taken, fell) in branches.iter().filter(|b| b.0 >= GAME_RAM && conditional(b.1)) {
+        let ways = (taken > 0) as u8 | ((fell > 0) as u8) << 1;
+        for img in images.iter_mut().filter(|img| img.word(a) == Some(i)) {
+            let at = ((a - img.base) / 4) as usize;
+            if img.credited_in[at] == run as u32 + 1 {
+                img.ways[at] |= ways;
+            }
+        }
+    }
 }
 
 /// A traced run's call targets (calls.json), with the run frames of the
@@ -358,6 +427,7 @@ fn credit(images: &mut [Image], run: usize, words: &[(u32, u32, u64)]) -> Credit
                 let img = &mut images[i];
                 let at = ((a - img.base) / 4) as usize;
                 img.count[at] += n;
+                img.credited_in[at] = run as u32 + 1;
                 for f in img.functions_at(a) {
                     img.runs[f].insert(run);
                 }
@@ -422,6 +492,8 @@ struct Totals {
     instructions: u64,
     instructions_executed: u64,
     outside_functions: u64,
+    branches: u64,
+    branch_ways_taken: u64,
 }
 
 impl Totals {
@@ -434,6 +506,8 @@ impl Totals {
         self.instructions += o.instructions;
         self.instructions_executed += o.instructions_executed;
         self.outside_functions += o.outside_functions;
+        self.branches += o.branches;
+        self.branch_ways_taken += o.branch_ways_taken;
     }
 
     fn json(&self) -> Value {
@@ -444,6 +518,7 @@ impl Totals {
             "instructions": self.instructions, "instructions_executed": self.instructions_executed,
             "executed_outside_functions": self.outside_functions,
             "block_share": share(self.blocks_executed, self.blocks),
+            "branches": self.branches, "branch_ways": 2 * self.branches, "branch_ways_taken": self.branch_ways_taken,
         })
     }
 }
@@ -473,6 +548,26 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
                 unexecuted.push(json!([hex(s), hex(e)]));
             }
         }
+        // Each conditional branch's two ways: the ones no run took.
+        let mut ways_missed = Vec::new();
+        let (mut branches, mut ways_taken) = (0u64, 0u64);
+        for a in f.words() {
+            if !img.word(a).is_some_and(conditional) {
+                continue;
+            }
+            let w = img.ways.get(k(a)).copied().unwrap_or(0);
+            branches += 1;
+            ways_taken += (w & 1) as u64 + (w >> 1) as u64;
+            let never = match w {
+                3 => continue,
+                0 => "ran",
+                1 => "fell through",
+                _ => "taken",
+            };
+            ways_missed.push(json!({"pc": hex(a), "never": never}));
+        }
+        t.branches += branches;
+        t.branch_ways_taken += ways_taken;
         let instructions = f.words().count() as u64;
         let executed = f.words().filter(|&a| ran(a)).count() as u64;
         t.functions += 1;
@@ -485,11 +580,15 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
         let mut row = json!({
             "entry": hex(f.entry), "instructions": instructions, "executed": executed,
             "blocks": f.blocks.len(), "blocks_executed": blocks_executed,
+            "branches": branches, "branch_ways_taken": ways_taken,
             "calls": img.count.get(k(f.entry)).copied().unwrap_or(0),
             "runs": img.runs[fi].iter().collect::<Vec<_>>(),
         });
         if blocks_executed > 0 && !unexecuted.is_empty() {
             row["unexecuted"] = json!(unexecuted);
+        }
+        if blocks_executed > 0 && !ways_missed.is_empty() {
+            row["branch_ways_missed"] = json!(ways_missed);
         }
         if let Some(sha) = &f.sha {
             row["sha256"] = json!(sha);
@@ -532,6 +631,13 @@ impl CoverageArgs {
             let words = executed(&dir)?;
             calls.push(run_calls(&dir));
             let (miss, _, per) = credit(&mut images, r, &words);
+            let branched = match branches(&dir)? {
+                Some(b) => {
+                    credit_branches(&mut images, r, &b);
+                    true
+                }
+                None => false,
+            };
             let game = words.iter().filter(|w| w.0 >= GAME_RAM).count();
             for m in &miss {
                 missing.entry(*m).or_default().insert(r);
@@ -543,6 +649,7 @@ impl CoverageArgs {
             };
             runs.push(json!({
                 "run": dir, "words_executed": game, "words_in_no_image": miss.len(), "words_by_image": per,
+                "branches_recorded": branched,
                 "recipe": recipe, "no_recipe": no_recipe,
             }));
         }
@@ -618,7 +725,7 @@ impl CoverageArgs {
         let doc = json!({
             "coverage": FORMAT, "made": crate::stamp::utc_now(), "psx": crate::context::version(),
             "inventory": {"path": inv_path, "made": inv["made"]},
-        "how": "each run's executed words, credited to the executable or overlay whose code holds that instruction at that address; a block is executed when any of its words is; runs are indices into runs; each run's recipe (the named state it started from, its arguments, its executed.bin's sha256) is what coverage check runs again",
+        "how": "each run's executed words, credited to the executable or overlay whose code holds that instruction at that address; a block is executed when any of its words is; a conditional branch's ways (taken, fell through) are the ones a run took where its word was credited, and branch_ways_missed lists each branch with a way no run took (never ran, never taken, never fell through); runs are indices into runs; each run's recipe (the named state it started from, its arguments, its executed.bin's sha256) is what coverage check runs again",
             "runs": runs, "totals": summary["totals"], "in_no_image": no_image, "images": out_images,
         });
         if let Some(d) = out.parent() {
@@ -629,8 +736,8 @@ impl CoverageArgs {
         Ok(json!({
             "out": out, "totals": summary["totals"], "words_in_no_image": summary["words_in_no_image"],
             "images": doc["images"].as_array().into_iter().flatten().map(|i| json!({"name": i["name"], "bounded_by": i["bounded_by"], "totals": i["totals"]})).collect::<Vec<_>>(),
-            "runs": runs.iter().map(|r| json!({"run": r["run"], "words_executed": r["words_executed"], "words_in_no_image": r["words_in_no_image"], "no_recipe": r["no_recipe"]})).collect::<Vec<_>>(),
-            "next": "artifact_read the coverage for each function's unexecuted blocks: classify them, or record the corpus reaching them; executed_outside_functions and in_no_image mean the inventory missed code (take it again with these runs as ram)",
+            "runs": runs.iter().map(|r| json!({"run": r["run"], "words_executed": r["words_executed"], "words_in_no_image": r["words_in_no_image"], "branches_recorded": r["branches_recorded"], "no_recipe": r["no_recipe"]})).collect::<Vec<_>>(),
+            "next": "artifact_read the coverage for each function's unexecuted blocks and branch_ways_missed: classify them, or record the corpus reaching them; runs without branches_recorded were traced by an older psx (trace them again for their branch ways); executed_outside_functions and in_no_image mean the inventory missed code (take it again with these runs as ram)",
         }))
     }
 }
@@ -734,6 +841,8 @@ mod tests {
             longest: chunks.iter().map(|c| c.1 - c.0).max().unwrap_or(0),
             chunks,
             count: vec![0; n],
+            credited_in: vec![0; n],
+            ways: vec![0; n],
             runs: vec![BTreeSet::new(); f],
         }
     }
@@ -832,7 +941,7 @@ mod tests {
         assert_eq!(placed(&f(), &kept[..12]), None);
         let mut images = vec![img("a", base, vec![], vec![f()])];
         images[0].words = words;
-        images[0].count = vec![0; 5];
+        (images[0].count, images[0].credited_in, images[0].ways) = (vec![0; 5], vec![0; 5], vec![0; 5]);
         let (miss, _, _) = credit(&mut images, 0, &[(base + 8, 9, 1), (base + 12, 4, 1), (base + 16, 5, 1)]);
         // The second chunk ran; the word between the chunks is no code of it.
         assert_eq!(miss, vec![(base + 8, 9)]);
@@ -894,5 +1003,60 @@ mod tests {
         credit(&mut images, 0, &[(base + 12, 4, 1), (base + 16, 5, 1)]);
         let (rows, _, _) = report(&images[0]);
         assert_eq!((rows[0]["runs"].clone(), rows[1]["runs"].clone()), (json!([0]), json!([0])));
+    }
+
+    #[test]
+    fn each_way_of_each_branch_no_run_took_is_listed() {
+        let base = 0x8010_0000;
+        // addiu; bne a0, zero, +3; nop; addiu; jr ra; nop.
+        let code = vec![0x2484_0001, 0x1480_0003, 0, 0x2484_0001, 0x03E0_0008, 0];
+        let f = || {
+            vec![Function {
+                entry: base,
+                end: base + 24,
+                chunks: vec![(base, base + 24)],
+                blocks: vec![base, base + 12, base + 16],
+                sha: None,
+            }]
+        };
+        let ran =
+            [(base, code[0], 1), (base + 4, code[1], 1), (base + 8, 0, 1), (base + 16, code[4], 1), (base + 20, 0, 1)];
+        // No branch data: the branch is listed as never run.
+        let mut images = vec![img("a", base, code.clone(), f())];
+        credit(&mut images, 0, &ran);
+        let (rows, _, t) = report(&images[0]);
+        assert_eq!((t.branches, t.branch_ways_taken), (1, 0));
+        assert_eq!(rows[0]["branch_ways_missed"], json!([{"pc": "80100004", "never": "ran"}]));
+        // Always taken, past the addiu: it never fell through.
+        let mut images = vec![img("a", base, code.clone(), f())];
+        credit(&mut images, 0, &ran);
+        credit_branches(&mut images, 0, &[(base + 4, code[1], 1, 0)]);
+        let (rows, _, t) = report(&images[0]);
+        assert_eq!((t.branches, t.branch_ways_taken), (1, 1));
+        assert_eq!(rows[0]["branch_ways_missed"], json!([{"pc": "80100004", "never": "fell through"}]));
+        // A second run falls through: both ways, nothing listed.
+        let fell = [(base + 4, code[1], 1), (base + 8, 0, 1), (base + 12, code[3], 1)];
+        credit(&mut images, 1, &fell);
+        credit_branches(&mut images, 1, &[(base + 4, code[1], 0, 1)]);
+        let (rows, _, t) = report(&images[0]);
+        assert_eq!((t.branches, t.branch_ways_taken), (1, 2));
+        assert!(rows[0].get("branch_ways_missed").is_none());
+        // A branch another image holds at that address is not credited here.
+        let mut images = vec![img("a", base, code.clone(), f())];
+        credit(&mut images, 0, &ran);
+        credit_branches(&mut images, 0, &[(base + 4, 0x1480_0009, 1, 1)]);
+        assert_eq!(report(&images[0]).2.branch_ways_taken, 0);
+    }
+
+    #[test]
+    fn only_branches_that_can_go_both_ways_count() {
+        assert!(conditional(0x1480_0003)); // bne a0, zero
+        assert!(!conditional(0x1000_0003)); // b (beq zero, zero)
+        assert!(!conditional(0x1400_0003)); // bne zero, zero
+        assert!(conditional(0x0480_0003)); // bltz a0
+        assert!(!conditional(0x0411_0003)); // bal
+        assert!(conditional(0x1880_0003)); // blez a0
+        assert!(!conditional(0x1800_0003)); // blez zero: always
+        assert!(!conditional(0x0800_4000)); // j
     }
 }

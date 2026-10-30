@@ -242,6 +242,9 @@ pub struct Tracer {
     /// Executions no copy holds, and the moment each first ran: `(word
     /// index, instruction)`.
     uncopied: BTreeMap<(u32, u32), Ran>,
+    /// Each conditional branch run in RAM, by `(KSEG0 address,
+    /// instruction)`: how often it was taken and how often it fell through.
+    branches: BTreeMap<(u32, u32), [u64; 2]>,
     bios_cover: Vec<u32>,
     /// Call targets keyed by the copy the callee's first instruction ran
     /// from (`NO_COPY` outside RAM or when none holds it) and its address.
@@ -383,6 +386,7 @@ impl Tracer {
             code_pages_dropped: 0,
             ran_from_cache: 0,
             uncopied: BTreeMap::new(),
+            branches: BTreeMap::new(),
             bios_cover: vec![0; BIOS_WORDS],
             calls: BTreeMap::new(),
             pending_call: None,
@@ -562,6 +566,16 @@ impl Tracer {
                     Some(t) if on_landing => *t = f,
                     _ => self.push(f),
                 }
+            }
+        }
+        // The branch whose delay slot ran last went this way.
+        if let Some((l, Some(b), _)) = self.last.filter(|(l, _, _)| *l < 0x80_0000) {
+            if is_branch(b) {
+                let at = word_addr(l.wrapping_sub(4));
+                let target = l.wrapping_add(((b & 0xFFFF) as i16 as i32 as u32) << 2);
+                let e = self.branches.entry((at, b)).or_default();
+                e[0] += (phys == target) as u64;
+                e[1] += (phys == l.wrapping_add(4)) as u64;
             }
         }
         let slot = self.last.and_then(|(l, _, i)| (after(l) && has_delay_slot(i)).then_some(i));
@@ -883,6 +897,12 @@ impl Tracer {
         }
     }
 
+    /// Each conditional branch run in RAM as `(KSEG0 address, instruction,
+    /// times taken, times fallen through)`, in address order.
+    pub fn branches(&self) -> Vec<(u32, u32, u64, u64)> {
+        self.branches.iter().map(|(&(a, i), &[t, f])| (a, i, t, f)).collect()
+    }
+
     /// Executed RAM words as `(copy, KSEG0 address, instruction word, how
     /// it ran)`, in copy then address order, then the words no copy holds
     /// (`NO_COPY`).
@@ -1010,6 +1030,24 @@ mod tests {
             t.executed(),
             [(0, 0x8001_0000, 7, r(2, 0)), (2, 0x8001_0000, 9, r(1, 2)), (NO_COPY, 0x8001_0000, 5, r(1, 2))]
         );
+    }
+
+    #[test]
+    fn each_way_of_each_conditional_branch_is_counted() {
+        let bus = Bus::new(vec![]);
+        let cpu = Cpu::new();
+        let mut t = Tracer::new(TraceConfig::default(), Box::new(std::io::sink()), None);
+        const BNE: u32 = 0x1420_0003; // bne at,zero,+3 (to 80010010)
+        const BEQ_NEXT: u32 = 0x1020_0001; // beq at,zero,+1: either way to 80010028
+        // Taken, then not, then the one whose ways meet.
+        for pc in [0x8001_0000, 0x8001_0004, 0x8001_0010, 0x8001_0000, 0x8001_0004, 0x8001_0008] {
+            let i = if pc == 0x8001_0000 { BNE } else { 0 };
+            ran(&mut t, &cpu, &bus, pc, i);
+        }
+        for (pc, i) in [(0x8001_0020, BEQ_NEXT), (0x8001_0024, 0), (0x8001_0028, 0)] {
+            ran(&mut t, &cpu, &bus, pc, i);
+        }
+        assert_eq!(t.branches(), [(0x8001_0000, BNE, 1, 1), (0x8001_0020, BEQ_NEXT, 1, 1)]);
     }
 
     #[test]
