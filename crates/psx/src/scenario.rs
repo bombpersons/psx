@@ -88,8 +88,16 @@ pub fn glossary(root: &Path) -> Result<Glossary, Vec<String>> {
 pub struct Described {
     /// The fingerprint of the glossary its glue was generated from.
     glossary: String,
-    source: Release,
-    tick: Tick,
+    pub source: Release,
+    pub tick: Tick,
+}
+
+/// The glossary's quantities by type, and its binding, built and loaded:
+/// what `run --sample` reads glossary names and ticks with.
+pub fn glossary_binding(root: &Path) -> crate::Result<(BTreeMap<String, Type>, Plugin<Described>)> {
+    let g = glossary(root).map_err(|p| Error::invalid("the glossary has problems").with("problems", json!(p)))?;
+    let b = binding(root, &g)?;
+    Ok((g.types(), b))
 }
 
 /// The glossary's binding, built, loaded and checked against `g`.
@@ -280,7 +288,6 @@ fn record(
     let mut start: Option<u64> = None;
     let mut target = u64::MAX;
     let tick = &q.binding.described().tick;
-    let (lo, hi) = (crate::run::fold(tick.at), crate::run::fold(tick.at) + tick.bytes);
     let mut out =
         Recorded { initial: None, ticks: Vec::new(), refusals: Vec::new(), refusal_count: 0, timed_out: false };
     let (mut next_event, mut last_frame) = (0, m.bus.frames);
@@ -307,10 +314,7 @@ fn record(
                 break;
             }
         }
-        let info = m.step();
-        let Some(acc) = info.mem.filter(|a| a.store) else { continue };
-        let a = crate::run::fold(acc.addr);
-        if a >= hi || a + acc.width as u32 <= lo || tick.pc.is_some_and(|pc| pc != info.pc) {
+        if !tick.ended_by(&m.step()) {
             continue;
         }
         // A tick ended: its quantities, as the store left them.
@@ -827,6 +831,42 @@ pub struct Quantities {
         assert_eq!(r.initial, Some([("x".to_string(), psx_scenario::Value::Int(1))].into()));
         assert_eq!(r.ticks[0].values, [("x".to_string(), psx_scenario::Value::Int(2))].into());
         assert!(r.ticks.len() > 10, "{} ticks", r.ticks.len());
+    }
+
+    #[test]
+    fn run_samples_glossary_quantities_once_per_tick() {
+        use crate::ram::{Column, Quantities, SamplePer, Sampler};
+        let binding: Plugin<Described> = Plugin::new(demo_call, None).unwrap();
+        let tick = binding.described().tick.clone();
+        let types: BTreeMap<String, Type> =
+            [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
+        let q = Quantities { binding, types, refusals: Vec::new(), refusal_count: 0 };
+        let mut m = Machine::new(vec![0; 0x8_0000]);
+        #[rustfmt::skip]
+        let loop_ = [
+            0x3C09_8002, // lui t1, 0x8002
+            0x8D28_0000, // lw t0, 0(t1)
+            0x2508_0001, // addiu t0, t0, 1
+            0xAD28_0000, // sw t0, 0(t1): x
+            0xAD28_0010, // sw t0, 0x10(t1): the tick ends
+            0x0800_4000, // j 0x80010000
+            0x0000_0000, // nop
+        ];
+        for (i, w) in loop_.iter().enumerate() {
+            m.bus.ram[0x1_0000 + 4 * i..][..4].copy_from_slice(&u32::to_le_bytes(*w));
+        }
+        m.cpu.set_pc(0x8001_0000);
+        let x = crate::ram::parse_sample("80020000:i32:x_in_ram").unwrap();
+        let cols = vec![Column::Quantity("x".into()), Column::Memory(x), Column::Quantity("dead".into())];
+        let mut s = Sampler::new(cols, 2, SamplePer::Tick, Some(q));
+        while s.ticks < 6 {
+            if tick.ended_by(&m.step()) {
+                s.tick(0, &m);
+            }
+            s.field(0, &m, true); // rows are per tick: no row here
+        }
+        assert_eq!(s.out, "run_frame,frame,tick,x,x_in_ram,dead\n0,0,2,2,2,false\n0,0,4,4,4,false\n0,0,6,6,6,false\n");
+        assert_eq!(s.quantities.unwrap().refusal_count, 0);
     }
 
     #[test]

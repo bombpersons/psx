@@ -21,6 +21,29 @@ fn sha256(bytes: &[u8]) -> String {
     psx_media::disc::sha256_bytes(bytes)
 }
 
+/// The glossary's binding, for the quantities `named` and its tick: built,
+/// loaded and checked against the run's media.
+fn glossary_quantities(root: &Path, named: &[&str], media: &Option<MediaId>) -> crate::Result<crate::ram::Quantities> {
+    let (types, binding) = crate::scenario::glossary_binding(root)?;
+    if let Some(n) = named.iter().find(|n| !types.contains_key(**n)) {
+        let known: Vec<&String> = types.keys().collect();
+        return Err(
+            Error::invalid(format!("--sample {n}: the glossary has no such quantity")).with("quantities", json!(known))
+        );
+    }
+    let image = &binding.described().source.image_sha256;
+    if media.as_ref().map(|m| &m.sha256) != Some(image) {
+        return Err(Error::new(
+            "identity_mismatch",
+            format!(
+                "the glossary's binding is for image {image}, the run's media is {}: glossary quantities and ticks are read from the game the binding is for",
+                media.as_ref().map_or("none", |m| m.sha256.as_str())
+            ),
+        ));
+    }
+    Ok(crate::ram::Quantities { binding, types, refusals: Vec::new(), refusal_count: 0 })
+}
+
 pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate::Result<(bool, Value)> {
     let bios = match std::fs::read(&a.bios) {
         Ok(b) => b,
@@ -45,7 +68,26 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     if obs.find_tick {
         m.bus.obs.census = Some(Default::default());
     }
-    let mut sampler = (!cols.is_empty()).then(|| crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1)));
+    let per = obs.sample_per.unwrap_or_default();
+    if per == crate::ram::SamplePer::Tick && cols.is_empty() {
+        return Err(Error::invalid("--sample-per tick: give the values to sample with --sample"));
+    }
+    let named: Vec<&str> = cols
+        .iter()
+        .filter_map(|c| match c {
+            crate::ram::Column::Quantity(n) => Some(n.as_str()),
+            crate::ram::Column::Memory(_) => None,
+        })
+        .collect();
+    let quantities = if per == crate::ram::SamplePer::Tick || !named.is_empty() {
+        Some(glossary_quantities(root, &named, &media_id)?)
+    } else {
+        None
+    };
+    let tick =
+        quantities.as_ref().filter(|_| per == crate::ram::SamplePer::Tick).map(|q| q.binding.described().tick.clone());
+    let mut sampler =
+        (!cols.is_empty()).then(|| crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1), per, quantities));
     let mut pokes = match obs.pokes.iter().map(|s| crate::ram::parse_poke(s)).collect::<Result<Vec<_>, _>>() {
         Ok(p) => p,
         Err(e) => return Err(Error::invalid(e)),
@@ -140,7 +182,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
                 c.end_field();
             }
             if let Some(s) = &mut sampler {
-                s.row(rel, m.bus.frames, &m.bus.ram, &m.bus.scratch, false);
+                s.field(rel, &m, false);
             }
             if let Err(e) = frame_outputs(&m, rel, obs, &dir, &media_id, &mut screens, &mut states) {
                 boundary_err = Some(e);
@@ -156,8 +198,13 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         // Everything above acts only when the frame counter changes, so without
         // per-instruction observers (tracer, read watches) the machine can run the
         // rest of the frame in one call (stopping at the next timeout check).
-        if tracer.is_some() || !read_ranges.is_empty() || bound_watches || profiler.is_some() {
+        if tracer.is_some() || !read_ranges.is_empty() || bound_watches || profiler.is_some() || tick.is_some() {
             let info = m.step();
+            if let (Some(t), Some(s)) = (&tick, &mut sampler) {
+                if t.ended_by(&info) {
+                    s.tick(m.bus.frames - start_frame, &m);
+                }
+            }
             if let Some(p) = &mut profiler {
                 p.after_step(&info, m.cpu.cycles);
             }
@@ -211,7 +258,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             c.end_field();
         }
         if let Some(s) = &mut sampler {
-            s.row(rel, m.bus.frames, &m.bus.ram, &m.bus.scratch, true);
+            s.field(rel, &m, true);
         }
         frame_outputs(&m, rel, obs, &dir, &media_id, &mut screens, &mut states)?;
     }
@@ -318,13 +365,40 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     let samples_report = match &sampler {
         Some(s) => {
             put("samples.csv", s.out.as_bytes());
-            json!({
+            let tick = s.per == crate::ram::SamplePer::Tick;
+            let mut r = json!({
                 "file": dir.join("samples.csv"), "rows": s.rows, "every": s.every,
-                "columns": s.columns.iter().map(|c| {
-                    json!({"name": c.name, "address": hex(c.addr), "region": region(c.addr), "format": c.fmt.name()})
+                "per": if tick { "tick" } else { "field" },
+                "columns": s.columns.iter().map(|c| match c {
+                    crate::ram::Column::Memory(c) => json!({"name": c.name, "address": hex(c.addr), "region": region(c.addr), "format": c.fmt.name()}),
+                    crate::ram::Column::Quantity(n) => json!({"name": n, "source": "glossary"}),
                 }).collect::<Vec<_>>(),
-                "timing": "row N = memory at the Nth vblank of the run (row 0 = the starting memory), before that frame's replay input and pokes",
-            })
+                "timing": if tick {
+                    "a row at the end of every tick of the game's logic (the glossary binding's tick store), as that store left memory; tick counts the ticks ended since the run start"
+                } else {
+                    "row N = memory at the Nth vblank of the run (row 0 = the starting memory), before that frame's replay input and pokes"
+                },
+            });
+            if tick {
+                r["ticks"] = json!(s.ticks);
+                if s.ticks == 0 {
+                    r["note"] = json!(
+                        "the glossary binding's tick store never ran: check its address, bytes and pc, and that the run reaches the game's logic"
+                    );
+                }
+            }
+            if let Some(q) = &s.quantities {
+                if s.columns.iter().any(|c| matches!(c, crate::ram::Column::Quantity(_))) {
+                    r["quantities"] = json!(
+                        "raw, as recordings hold them: a fixed's underlying integer, a float's bit pattern; an empty cell where the binding refused"
+                    );
+                }
+                if q.refusal_count > 0 {
+                    r["refusal_count"] = json!(q.refusal_count);
+                    r["refusals"] = json!(q.refusals);
+                }
+            }
+            r
         }
         None => Value::Null,
     };

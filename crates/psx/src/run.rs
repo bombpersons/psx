@@ -296,7 +296,8 @@ pub struct RunArgs {
 /// Per-frame observation and intervention.
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ObserveArgs {
-    /// Sample a RAM/scratchpad value at every frame boundary (vblank) into samples.csv:
+    /// Sample a value into samples.csv at every frame boundary (vblank), or every tick
+    /// (--sample-per): a glossary quantity by name (croc_x), or RAM/scratchpad as
     /// `ADDR:FMT[:NAME]`, FMT one of u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F (fx16.16, fx4.12),
     /// a byte string strN (str32) or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Repeatable.
     #[arg(long = "sample")]
@@ -312,9 +313,14 @@ pub struct ObserveArgs {
     #[arg(long)]
     #[serde(default)]
     pub until: Vec<String>,
-    /// Sample every Nth frame only (the last frame is always sampled).
+    /// Sample every Nth frame only (the last frame is always sampled), or every Nth tick.
     #[arg(long)]
     pub sample_every: Option<u64>,
+    /// When samples.csv takes a row: field (every vblank, the default) or tick (where the
+    /// glossary binding's tick ends, with a tick column).
+    #[arg(long, value_enum)]
+    #[serde(default)]
+    pub sample_per: Option<crate::ram::SamplePer>,
     /// Write memory at the start of a run frame: `ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`
     /// (VALUE decimal, 0xHEX or a fraction for fx; WIDTH 1/2/4, default 4;
     /// default frame 0; a range re-applies it every frame).

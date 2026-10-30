@@ -8,13 +8,19 @@ state_fNNNNNN.bin at the start of chosen run frames. Continue with from_state.
 Input: input (inline array) or replay (file); see guide topic input.
 
 Observations (native):
-- sample writes samples.csv, one row per vblank. Each entry is ADDR:FMT[:NAME]
-  text or {"addr", "format", "name"}; FMT is u8 i8 x8 u16 i16 x16 u32 i32 x32,
+- sample writes samples.csv, one row per vblank. Each entry is a glossary
+  quantity by name (croc_x), ADDR:FMT[:NAME] text or {"addr", "format",
+  "name"}; FMT is u8 i8 x8 u16 i16 x16 u32 i32 x32,
   fxI.F (fx16.16, fx4.12), bits of a word (u16[14], u8[4..7]) or a byte
   string (str32; both guide topic fields) or a watch-style width 1/2/4
-  (unsigned), default u32.
+  (unsigned), default u32. A name that is also hex (face) is an address.
   Row N is memory after N run frames, before frame N's input and pokes.
   sample_every thins rows; the last frame is always sampled.
+  sample_per tick takes a row where the glossary binding's tick ends
+  instead, as that store left memory, with a tick column (ticks since the
+  run start); sample_every then counts ticks. Glossary names and ticks
+  build the workspace's glossary/binding and need the media it is for.
+  Quantities are raw, as recordings hold them (a fixed's integer).
 - find_tick counts every CPU store to main RAM by PC and address and groups
   them by the fields they fell in (tick_finder.json): finding a game's tick,
   guide topic fields.

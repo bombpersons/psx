@@ -589,8 +589,38 @@ impl std::str::FromStr for SampleSpec {
     }
 }
 
+/// A `samples.csv` column: memory, or a quantity of the glossary, read
+/// through its binding.
+#[derive(Clone, Debug)]
+pub enum Column {
+    Memory(Sample),
+    Quantity(String),
+}
+
+impl Column {
+    pub fn name(&self) -> &str {
+        match self {
+            Column::Memory(s) => &s.name,
+            Column::Quantity(n) => n,
+        }
+    }
+}
+
+/// Whether a `--sample` entry names a glossary quantity: a name
+/// (`[a-z][a-z0-9_]*`) that is not also a hex address.
+fn is_quantity(s: &str) -> bool {
+    psx_scenario::value::is_name(s) && !s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 impl SampleSpec {
-    pub fn parse(&self) -> Result<Sample, String> {
+    pub fn parse(&self) -> Result<Column, String> {
+        match self {
+            SampleSpec::Text(s) if is_quantity(s) => Ok(Column::Quantity(s.clone())),
+            _ => self.memory().map(Column::Memory),
+        }
+    }
+
+    fn memory(&self) -> Result<Sample, String> {
         match self {
             SampleSpec::Text(s) => parse_sample(s).map_err(|e| format!("--sample {e}")),
             SampleSpec::Typed(t) => sample(
@@ -618,41 +648,118 @@ pub fn mem_bytes<'a>(ram: &'a [u8], scratch: &'a [u8], mem: Mem, n: usize) -> &'
     }
 }
 
-/// Per-frame samples, written as CSV: `run_frame,frame,<columns...>`.
+/// When `samples.csv` takes a row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, clap::ValueEnum, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SamplePer {
+    /// At every vblank.
+    #[default]
+    Field,
+    /// At the end of every tick of the game's logic, as the glossary's
+    /// binding says one ends.
+    Tick,
+}
+
+/// The glossary's binding, which reads the quantity columns.
+pub struct Quantities {
+    pub binding: crate::binding::Plugin<crate::scenario::Described>,
+    pub types: std::collections::BTreeMap<String, psx_scenario::Type>,
+    pub refusals: Vec<Value>,
+    pub refusal_count: u64,
+}
+
+/// The refusals a run's report lists.
+const MAX_REFUSALS: usize = 20;
+
+/// Samples, written as CSV: `run_frame,frame[,tick],<columns...>`.
 pub struct Sampler {
-    pub columns: Vec<Sample>,
+    pub columns: Vec<Column>,
     pub every: u64,
+    pub per: SamplePer,
+    pub quantities: Option<Quantities>,
     pub out: String,
     pub rows: u64,
+    /// Ticks ended since the run started.
+    pub ticks: u64,
     last: Option<u64>,
 }
 
 impl Sampler {
-    pub fn new(columns: Vec<Sample>, every: u64) -> Self {
-        let mut out = String::from("run_frame,frame");
+    pub fn new(columns: Vec<Column>, every: u64, per: SamplePer, quantities: Option<Quantities>) -> Self {
+        let mut out = String::from(if per == SamplePer::Tick { "run_frame,frame,tick" } else { "run_frame,frame" });
         for c in &columns {
             out.push(',');
-            out.push_str(&c.name);
+            out.push_str(c.name());
         }
         out.push('\n');
-        Sampler { columns, every: every.max(1), out, rows: 0, last: None }
+        Sampler { columns, every: every.max(1), per, quantities, out, rows: 0, ticks: 0, last: None }
     }
 
-    /// Record a row for `run_frame` if it is due (every Nth frame, or `force`).
-    pub fn row(&mut self, run_frame: u64, frame: u64, ram: &[u8], scratch: &[u8], force: bool) {
-        if self.last == Some(run_frame) || !(force || run_frame.is_multiple_of(self.every)) {
+    /// At a vblank: a row for `run_frame` if rows are per field and it is
+    /// due (every Nth frame, or `force`).
+    pub fn field(&mut self, run_frame: u64, m: &psx_core::Machine, force: bool) {
+        if self.per != SamplePer::Field
+            || self.last == Some(run_frame)
+            || !(force || run_frame.is_multiple_of(self.every))
+        {
             return;
         }
         self.last = Some(run_frame);
+        self.row(format!("{run_frame},{}", m.bus.frames), m);
+    }
+
+    /// At the end of a tick: a row if rows are per tick and it is due
+    /// (every Nth tick).
+    pub fn tick(&mut self, run_frame: u64, m: &psx_core::Machine) {
+        self.ticks += 1;
+        if self.per == SamplePer::Tick && self.ticks.is_multiple_of(self.every) {
+            self.row(format!("{run_frame},{},{}", m.bus.frames, self.ticks), m);
+        }
+    }
+
+    fn row(&mut self, mut line: String, m: &psx_core::Machine) {
         self.rows += 1;
-        self.out += &format!("{run_frame},{frame}");
+        let values = self.quantities.as_mut().filter(|_| self.columns.iter().any(|c| matches!(c, Column::Quantity(_))));
+        let values = values.and_then(|q| q.read(m, self.rows));
         for c in &self.columns {
-            self.out.push(',');
-            if let Some(v) = c.read(ram, scratch) {
-                self.out += &c.fmt.cell(&v);
+            line.push(',');
+            match c {
+                Column::Memory(c) => {
+                    if let Some(v) = c.read(&m.bus.ram, &m.bus.scratch) {
+                        line += &c.fmt.cell(&v);
+                    }
+                }
+                Column::Quantity(n) => match values.as_ref().and_then(|v| v.get(n)) {
+                    Some(psx_scenario::Value::Bool(b)) => line += &b.to_string(),
+                    Some(psx_scenario::Value::Int(i)) => line += &i.to_string(),
+                    Some(psx_scenario::Value::Variant(v)) => line += v,
+                    // Tables, lists and records are not quantities.
+                    Some(_) | None => {}
+                },
             }
         }
+        self.out += &line;
         self.out.push('\n');
+    }
+}
+
+impl Quantities {
+    /// The quantities now, or none when the binding refused (row `row`).
+    fn read(&mut self, m: &psx_core::Machine, row: u64) -> Option<psx_scenario::Values> {
+        let problems = match self.binding.call(psx_capture::abi::QUANTITIES, m) {
+            Ok(text) => match crate::binding::values(&text, &self.types) {
+                Ok(v) => return Some(v),
+                Err(p) => p,
+            },
+            Err(e) => vec![(String::new(), e)],
+        };
+        for (quantity, problem) in problems {
+            self.refusal_count += 1;
+            if self.refusals.len() < MAX_REFUSALS {
+                self.refusals.push(json!({"row": row, "quantity": quantity, "problem": problem}));
+            }
+        }
+        None
     }
 }
 
@@ -1220,8 +1327,10 @@ mod tests {
         assert_eq!(p.report()["value"], json!(r"car\x00\x12"));
         let col = parse_sample("80010010:str8:name").unwrap();
         assert_eq!(col.read(&ram, &scratch), Some(Val::Bytes(b"car\0\x12\0\0\0".to_vec())));
-        let mut s = Sampler::new(vec![col], 1);
-        s.row(0, 0, &ram, &scratch, true);
+        let mut m = psx_core::Machine::new(vec![0; 0x8_0000]);
+        m.bus.ram[..RAM_SIZE].copy_from_slice(&ram);
+        let mut s = Sampler::new(vec![Column::Memory(col)], 1, SamplePer::Field, None);
+        s.field(0, &m, true);
         assert_eq!(s.out, "run_frame,frame,name\n0,0,car\\x00\\x12\n");
         assert!(parse_poke("80010010=a name too long:str8").unwrap_err().contains("at most 8 bytes"));
         assert!(parse_poke("8015E8AC=1@5..2").is_err());
@@ -1231,7 +1340,7 @@ mod tests {
 
     #[test]
     fn typed_samples_match_text() {
-        let spec = |v: Value| serde_json::from_value::<SampleSpec>(v).map(|s| s.parse());
+        let spec = |v: Value| serde_json::from_value::<SampleSpec>(v).map(|s| s.memory());
         let t = spec(json!({"addr": "8015E8A8", "format": "fx16.16", "name": "x"})).unwrap().unwrap();
         let s = spec(json!("8015E8A8:fx16.16:x")).unwrap().unwrap();
         assert_eq!((t.addr, t.fmt, t.mem, t.name), (s.addr, s.fmt, s.mem, s.name));
@@ -1249,6 +1358,16 @@ mod tests {
     }
 
     #[test]
+    fn a_sample_that_is_a_name_is_a_glossary_quantity() {
+        let col = |s: &str| SampleSpec::Text(s.into()).parse().unwrap();
+        assert!(matches!(col("croc_x"), Column::Quantity(n) if n == "croc_x"));
+        // A name that is also a hex address is the address.
+        assert!(matches!(col("a0010000"), Column::Memory(c) if c.addr == 0xA001_0000));
+        assert!(matches!(col("8015e8a8:i16"), Column::Memory(_)));
+        assert!(SampleSpec::Text("Croc_x".into()).parse().unwrap_err().contains("bad hex address"));
+    }
+
+    #[test]
     fn read_watch_ranges_fold_mirrors() {
         use crate::run::{fold, parse_range_spec};
         assert_eq!(parse_range_spec("800751CC:4"), Ok((0x751CC, 0x751D0)));
@@ -1261,17 +1380,20 @@ mod tests {
 
     #[test]
     fn sampler_reads_bytes_little_endian() {
-        let mut ram = vec![0u8; RAM_SIZE];
-        let scratch = [0u8; SCRATCH_SIZE];
-        let mut s =
-            Sampler::new(vec![parse_sample("80000010:fx16.16:y").unwrap(), parse_sample("80000012:i16").unwrap()], 2);
-        write_le(&mut ram, 0x10, 4, 0x01B9_8000);
-        s.row(0, 100, &ram, &scratch, false);
-        s.row(1, 101, &ram, &scratch, false); // not due
+        let mut m = psx_core::Machine::new(vec![0; 0x8_0000]);
+        let cols = ["80000010:fx16.16:y", "80000012:i16"].map(|c| Column::Memory(parse_sample(c).unwrap()));
+        let mut s = Sampler::new(cols.to_vec(), 2, SamplePer::Field, None);
+        write_le(&mut m.bus.ram, 0x10, 4, 0x01B9_8000);
+        let at = |s: &mut Sampler, m: &mut psx_core::Machine, n: u64, force| {
+            m.bus.frames = 100 + n;
+            s.field(n, m, force);
+        };
+        at(&mut s, &mut m, 0, false);
+        at(&mut s, &mut m, 1, false); // not due
         // A halfword store into the high half is seen by the word view.
-        write_le(&mut ram, 0x12, 2, 0x01BF);
-        s.row(2, 102, &ram, &scratch, false);
-        s.row(3, 103, &ram, &scratch, true);
+        write_le(&mut m.bus.ram, 0x12, 2, 0x01BF);
+        at(&mut s, &mut m, 2, false);
+        at(&mut s, &mut m, 3, true);
         assert_eq!(s.out, "run_frame,frame,y,0x80000012:i16\n0,100,441.5,441\n2,102,447.5,447\n3,103,447.5,447\n");
         assert_eq!(s.rows, 3);
     }

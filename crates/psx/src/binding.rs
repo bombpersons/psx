@@ -42,6 +42,13 @@ pub struct Tick {
 }
 
 impl Tick {
+    /// Whether the instruction `info` ran ended a tick.
+    pub fn ended_by(&self, info: &psx_core::cpu::StepInfo) -> bool {
+        let Some(acc) = info.mem.filter(|a| a.store) else { return false };
+        let (lo, a) = (crate::run::fold(self.at), crate::run::fold(acc.addr));
+        a < lo + self.bytes && a + acc.width as u32 > lo && self.pc.is_none_or(|pc| pc == info.pc)
+    }
+
     pub fn check(&self, problems: &mut Vec<String>) {
         if !in_memory(self.at) {
             problems.push(format!("tick.at {:#010x}: main RAM or the scratchpad", self.at));
