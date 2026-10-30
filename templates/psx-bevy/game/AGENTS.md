@@ -1,7 +1,7 @@
 # Working in the game
 
-`game/` is the port: one plugin per feature, its assets in `assets/` and its
-tests in `tests/`, built on `psx-bevy/` (the project's copy of the PS1 look,
+`game/` is the port: its code, its assets in `assets/` and its tests in
+`tests/`, built on `psx-bevy/` (the project's copy of the PS1 look,
 ticks, input and menus; change it when the original works differently, see
 `psx-bevy/AGENTS.md`). The root `AGENTS.md` has the rules for the code's
 shape, numbers and evidence; this file has the Bevy specifics.
@@ -12,11 +12,10 @@ The game is a library (crate `game`, `src/lib.rs`); `src/main.rs` only calls
 psx-bevy's launcher, so tests and sandboxes can use every module.
 
 ```
-src/lib.rs            REGION, FIELDS_PER_TICK, SCREEN, TITLE, GamePlugins (the feature plugins)
+src/lib.rs            REGION, FIELDS_PER_TICK, SCREEN, TITLE, GamePlugins (the game's plugins)
 src/main.rs           psx_bevy::launcher::run(...): window, renderer, --flags; turns on the disc import
 src/config.rs         load_ron and TuningPlugin: hand-editable RON under assets/
 src/disc.rs           GameData state: import from the player's disc on first start
-src/<feature>/        one plugin per feature: rules (no rendering) apart from presentation
 assets/               hand-made content (tuning, setup)
 assets/imported/      imported from the player's disc on first start (git-ignored)
 tests/                headless tick tests; dev_mcp.rs is the opt-in GPU check
@@ -30,11 +29,11 @@ from `GamePlugins`, and replacing or removing the tests that use it
 
 ## Bevy
 
-- Idiomatic Bevy 0.20: entities and components, one plugin per feature,
-  assets through `AssetServer`, queries instead of global state.
-- Split each feature into rules (state, physics, decisions; no meshes,
-  sprites or `AssetServer`) and presentation, which dresses what the rules
-  spawn in `Update` (the demo's `dress_player`). Rules then run headless.
+- Idiomatic Bevy 0.20: entities, components, systems and plugins, assets
+  through `AssetServer`, queries instead of global state.
+- Keep logic (state, physics, decisions; no meshes, sprites or
+  `AssetServer`) apart from presentation, which dresses what logic spawns
+  in `Update` (the demo's `dress_player`). Logic then runs headless.
 - 3D: `Mesh3d` + `MeshMaterial3d<PsxMaterial>`; cameras need `PsxView`. Use
   normal Bevy lights and `DistanceFog`; opt into per-vertex cueing with
   `PsxMaterial::depth_cue` when the original does it.

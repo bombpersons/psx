@@ -29,7 +29,7 @@ cargo build --release --no-default-features  # shipping build: Bevy linked in, d
 | Path | Owner | Contents |
 |---|---|---|
 | `psx-bevy/` | this project, updated by the template | The base the game builds on: the PS1 look, ticks and input, controls and display menus, testing, viewers, developer MCP, launcher. Change it to suit the game and list changes in `docs/template.md`; `psx template update` refreshes the files you haven't changed ([AGENTS.md](psx-bevy/AGENTS.md), [README](psx-bevy/README.md)) |
-| `game/` | this project | The port: one plugin per feature, its assets in `game/assets/`, headless tests ([AGENTS.md](game/AGENTS.md)) |
+| `game/` | this project | The port, its assets in `game/assets/`, headless tests ([AGENTS.md](game/AGENTS.md)) |
 | `tools/import/` | this project | Importers: the player's disc → the port's formats, with provenance. A library the game runs on first start (no Bevy), plus `cargo run -p import -- DISC` |
 | `vendor/` | psx template | `psx-media` (CUE/BIN, ISO, CHD, ISO9660) and `psx-assets` (TIM, TMD, VAB/VAG): copies of the toolkit's crates for the importers. Replaced by `psx template update` ([README](vendor/README.md)) |
 | `docs/` | this project | `template.md` (changes to `psx-bevy/`) |

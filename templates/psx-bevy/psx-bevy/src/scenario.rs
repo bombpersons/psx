@@ -2,7 +2,7 @@
 //! tick by tick. psx's `docs/scenarios.md` defines the files; `psx port
 //! check` runs the game's `tests/scenarios.rs` and records the verdicts.
 //!
-//! A feature's plugin registers a launcher for each scenario kind it owns
+//! The port registers a launcher for each scenario kind
 //! (`kind` in `scenarios/<id>.toml`), which builds the world from the
 //! scenario's parameters with the port's own loading, and a function that
 //! observes the glossary's quantities it keeps: it fills `Observed`, which
@@ -97,7 +97,7 @@ impl ScenarioRegistry {
             for (name, v) in o(w) {
                 let Some(v) = v else { continue };
                 if out.insert(name, v).is_some() {
-                    return Err(format!("{name} is observed by two functions: one feature's plugin observes it"));
+                    return Err(format!("{name} is observed by two functions: observe each in one place"));
                 }
             }
         }
@@ -491,7 +491,7 @@ mod tests {
         let r = Scenarios::new(&root4, twice).report();
         assert_eq!(
             r.scenarios[0].recordings[0].failures,
-            ["initial: x is observed by two functions: one feature's plugin observes it"]
+            ["initial: x is observed by two functions: observe each in one place"]
         );
         for d in [root, root2, root3, root4] {
             let _ = std::fs::remove_dir_all(d);

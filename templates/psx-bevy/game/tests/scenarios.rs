@@ -5,9 +5,9 @@
 //! records the verdicts; it is also the quick check while working on a
 //! feature.
 //!
-//! `app` makes a fresh headless app with each feature's logic plugin: they
-//! register the launchers for their scenario kinds and observe their
-//! quantities (`ScenarioApp`).
+//! `app` makes a fresh headless app with the game's logic: it registers the
+//! launchers for the scenario kinds and observes the quantities
+//! (`ScenarioApp`).
 use bevy::prelude::*;
 use psx_bevy::scenario::Scenarios;
 use psx_bevy::testing::headless_app;

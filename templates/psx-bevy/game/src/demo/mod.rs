@@ -1,15 +1,12 @@
-//! Example game: replace this module with your game's own feature plugins
-//! (and `crate::GamePlugins`' list of them).
+//! Example game: replace this module with your game's own code (and
+//! `crate::GamePlugins`' list of plugins).
 //!
-//! Shows the intended shape:
-//! - one plugin per feature, each usable with only the plugins it depends
-//!   on: [`player::PlayerPlugin`] and [`spinner::SpinnerPlugin`] are rules
-//!   (logic in `FixedUpdate`, no rendering, tested headless), [`DemoPlugin`]
-//!   is the scene, HUD and presentation, which dresses what the rules spawn;
-//! - content is data (`assets/demo/level.ron`, `assets/demo/player.ron`),
-//!   never constants in code;
-//! - ordinary Bevy entities with `PsxMaterial` meshes, normal lights and fog,
-//!   and a 2D HUD of sprites over 3D.
+//! Shows the pieces working together: [`player::PlayerPlugin`] and
+//! [`spinner::SpinnerPlugin`] are logic (`FixedUpdate`, no rendering, tested
+//! headless), [`DemoPlugin`] is the scene, HUD and presentation, which
+//! dresses what the logic spawns; the level and tuning are RON files
+//! (`assets/demo/`); ordinary Bevy entities with `PsxMaterial` meshes,
+//! normal lights and fog, and a 2D HUD of sprites over 3D.
 pub mod player;
 pub mod spinner;
 

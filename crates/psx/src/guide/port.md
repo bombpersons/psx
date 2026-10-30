@@ -39,8 +39,8 @@ its verdicts and the problems; plain=true is text for the person.
 Verdicts are psx's: it runs the checks and writes .psx/verdicts/F-NNNN/,
 never the agent. A verdict counts only for the commit it judged, with no
 uncommitted changes, so commit before checking. port_check (optionally one
-feature) runs the game's tests/scenarios.rs, where the features' plugins
-register scenario launchers and observe the glossary's quantities
+feature) runs the game's tests/scenarios.rs, where the port registers
+scenario launchers and observe the glossary's quantities
 (psx_bevy::scenario, AGENTS.md), and writes the scenario verdicts: each
 recording replayed tick by tick with its pad, every quantity within the
 scenario's tolerance. While working, cargo test -p <game> --test scenarios

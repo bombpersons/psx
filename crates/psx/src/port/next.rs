@@ -223,7 +223,7 @@ impl Facts {
                 Some(&f.id),
                 format!("captured, not verified ({})", states.join(", ")),
                 "its scenario verdict passes at HEAD",
-                "write the feature's plugin from the original's code, register its scenario launchers and what it observes (psx_bevy::scenario), commit, and run psx port check on it",
+                "write the feature from the original's code, register its scenario launchers and what it observes (psx_bevy::scenario), commit, and run psx port check on it",
             );
         }
         if let Some(f) = order(&|f| stage(f, &[Stage::Reviewed])) {

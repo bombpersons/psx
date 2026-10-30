@@ -2,7 +2,7 @@
 #
 #   psx-bevy/      the PS1 look, ticks, input, menus, testing and launcher:
 #                  the base the game builds on, yours to change for the game
-#   game/          the port: one plugin per feature, its assets and tests
+#   game/          the port, its assets and tests
 #   tools/import/  importers: the player's disc -> the port's asset formats
 #   glossary/      the quantities scenarios compare; glossary/binding/, where
 #                  the original keeps them, is added once written

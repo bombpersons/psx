@@ -75,7 +75,7 @@ pub struct Scenario {
     /// How the original gets there: the producer's state chain, relative to
     /// the workspace (for psx, `notes/states/<name>.json`).
     pub chain: String,
-    /// The port's launcher for it, registered by the feature's plugin.
+    /// The port's launcher for it.
     pub kind: String,
     /// The determinism check's idle fields, added before the chain's last
     /// run (60 when left out).

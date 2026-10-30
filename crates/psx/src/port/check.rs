@@ -71,7 +71,7 @@ fn scenario_failures(root: &Path, e: &Entry, report: &ScenarioReport) -> Vec<Str
     out
 }
 
-/// What the feature's plugins have not registered, by the last check when
+/// What the port has not registered for the feature, by the last check when
 /// it ran at `head`: a launcher for each of its scenarios' kinds, and each
 /// quantity they compare observed. Empty when every one is.
 pub fn unimplemented(root: &Path, e: &Entry, head: Option<&str>) -> Vec<String> {
@@ -89,7 +89,7 @@ pub fn unimplemented(root: &Path, e: &Entry, head: Option<&str>) -> Vec<String> 
             out.push(format!("{id}: no launcher for scenario kind {}", s.kind));
         }
         for q in s.compare.keys().filter(|q| !report.quantities.contains(q)) {
-            out.push(format!("{id}: the port observes no {q} (a feature plugin's app.observe)"));
+            out.push(format!("{id}: the port observes no {q} (app.observe)"));
         }
     }
     out

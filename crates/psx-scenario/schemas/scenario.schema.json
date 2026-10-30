@@ -61,7 +61,7 @@
       ]
     },
     "kind": {
-      "description": "The port's launcher for it, registered by the feature's plugin.",
+      "description": "The port's launcher for it.",
       "type": "string"
     },
     "moment": {

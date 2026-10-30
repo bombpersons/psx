@@ -7,8 +7,8 @@ pub mod config;
 pub mod demo;
 pub mod disc;
 
-/// `Observed`: the glossary's quantities as the port has them, which each
-/// feature's plugin fills for the scenarios (`psx_bevy::scenario`).
+/// `Observed`: the glossary's quantities as the port has them, which the
+/// port fills for the scenarios (`psx_bevy::scenario`).
 /// Generated from `glossary/src/lib.rs` by `build.rs`.
 pub mod observed {
     include!(concat!(env!("OUT_DIR"), "/observed.rs"));
@@ -39,8 +39,8 @@ pub fn tick_rate(region: Region) -> TickRate {
     TickRate::every_nth_field(region, FIELDS_PER_TICK)
 }
 
-/// The whole game: each feature's plugin. A group, so a test or sandbox can
-/// drop or swap one feature: `GamePlugins.build().disable::<demo::DemoPlugin>()`.
+/// The whole game's plugins. A group, so a test or sandbox can drop or swap
+/// one: `GamePlugins.build().disable::<demo::DemoPlugin>()`.
 pub struct GamePlugins;
 
 impl PluginGroup for GamePlugins {

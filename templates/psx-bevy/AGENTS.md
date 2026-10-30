@@ -19,7 +19,7 @@ format. psx writes `.psx/verdicts/`; never edit them.
 ## Layout
 
 ```
-game/          the port: one plugin per feature, its assets/ and tests/ (game/AGENTS.md)
+game/          the port, its assets/ and tests/ (game/AGENTS.md)
 tools/import/  importers: the player's disc -> the port's asset formats
 glossary/      the quantities scenarios compare, and binding/, where the original keeps them (docs/scenarios.md in psx)
 psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte), scenarios and launcher; yours to change (psx-bevy/AGENTS.md)
@@ -34,8 +34,6 @@ translation of the original: clean, idiomatic Rust and Bevy, reusable in
 another game with its own content, with little duplication. How to get
 there is yours to decide. What the tools rely on:
 
-- **One plugin per feature**, named after its catalogue entry, adding only
-  the plugins its `depends` lists.
 - **Logic apart from rendering.** Logic runs in `FixedUpdate`
   (`GameSystems::Game`) at the game's tick rate, reads `ControllerState`, and
   never reads the window, the camera's pixels or the frame rate, so it runs
@@ -44,15 +42,15 @@ there is yours to decide. What the tools rely on:
   shown and `PsxAnchor` anchors the HUD.
 - **The tick stays fixed** at the original's rate (`REGION`,
   `FIELDS_PER_TICK` in `game/src/lib.rs`).
-- **Scenarios are the port's test.** A feature's plugin registers a
-  launcher for each of its scenario kinds, which builds the world from the
+- **Scenarios are the port's test.** The port registers a launcher for
+  each scenario kind, which builds the world from the
   scenario's parameters with the port's own loading, and observes the
   glossary quantities it keeps: `app.observe(|w: &mut World| Observed {
   croc_x: …, ..Observed::none() })`, in the original's raw units
   (`game::observed`, generated from `glossary/`; `psx_bevy::scenario`).
   `game/tests/scenarios.rs` replays each recording of the original
-  (`scenarios/<id>/`) tick by tick with its pad; add each feature's logic
-  plugin to its `app`. `psx port check` runs it for the verdicts; `cargo
+  (`scenarios/<id>/`) tick by tick with its pad, in a headless `app` with
+  the game's logic. `psx port check` runs it for the verdicts; `cargo
   test -p <game> --test scenarios` while working.
 - **Only importers read the original's formats** (`tools/import`); the
   game reads the port's own (RON, glTF, PNG, WAV/OGG).
