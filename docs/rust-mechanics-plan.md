@@ -1,6 +1,6 @@
 # Plan: mechanics and bindings as Rust
 
-Status: agreed. R2 to R7 are done (section 11); R8 is proposed (decision 13).
+Status: agreed. R2 to R8 are done (section 11).
 
 The mechanic formats (`docs/mechanics.md`) describe a step in TOML: typed
 fields in `mechanic.toml`, and where the PlayStation keeps them in
@@ -507,7 +507,7 @@ Each step ends with something that runs, and is committed.
 | R6 | M | Capture over scenario recordings: `--scenario` and `--recording`, the glossary and every bound mechanic in one run, the trace header naming both. Croc's scenarios start at level starts; his traces are captured again from their recordings. `port status` reports each mechanic's branch outcomes confirmed in the port, and a failing recording's tick points at the traces of that tick. |
 | R7 | L | Collision: the map reader (pieces with their models), the floor cache as array state, the objects interface, the probe points. Captured from scenario recordings with a clear audit and replayed. It brought the write audit, commands at stores, and replay of a step's calls (decisions 11 and 12). |
 
-| R8 | M | Mechanics that use mechanics (decision 13): the front end allows a used mechanic's params as a field; capture records a used step's world calls inside its entry and fills its params from its binding; replay runs the used `step` and answers its calls; check compares a used step's entry with its own trace. Proved on 0x8002D410 using `croc.collide`. |
+| R8 | M | Mechanics that use mechanics (decision 13): the front end allows a used mechanic's params as a field; capture records a used step's world calls inside its entry and fills its params from its binding; replay runs the used `step` and answers its calls; check compares a used step's entry with its own trace. Proved on 0x8002D410 using `croc.collide`: `croc.ride`, captured from all 22 recordings with clear audits, replays exactly and its entries agree with collide's own traces. No recording has Croc standing on an object, so the carrying code is not exercised yet, and flag 0x8000's collision (0x80031BD0) is not ported: the step panics if it is ever set. `croc.tick` captured again, its ground-move entries agreeing with ground-move's traces. |
 
 Then the pilot continues where it stopped: `croc.tick` as Croc's script,
 its sound and rng interfaces, Croc's fields and script variables, and the

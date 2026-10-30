@@ -167,6 +167,16 @@ mechanics it names (`world-floor-height = { path =
     traces pin down what happens in between.
   - A name is a state field or an input, not both, so a step's request has
     one value per name.
+  - The using step calls the used mechanic's `step` itself, so the
+    reference shows how the original composes them. It builds the used
+    step's `State` and `Inputs` from its own fields and writes the result
+    back: a field both share (Croc's x and z) is the using mechanic's,
+    once. It passes its world on, so its `&mut impl` names the used
+    mechanic's interfaces' traits too; `REQUIRES` lists only the
+    interfaces it calls itself.
+  - A used mechanic's params are a field of the using mechanic's
+    `Params`, typed by its crate (`pub collide: croc_collide::Params`).
+    The used mechanic's binding gives them.
 - **`step`** is the rule: `pub fn step(state: &mut State, inputs: &Inputs,
   params: &Params, calls: &mut impl Calls)`, taking `&Inputs`, `&Params`
   and the calls only as needed, in that order. It is the reference a port
@@ -402,7 +412,10 @@ psx_capture::export!(Walk);
   reads its bytes, so the audits account for them, and the mechanic writes
   0 there too. Every reader of the value must be checked to ignore it.
 - **A used mechanic** needs nothing in the using mechanic's binding: its
-  own binding records its step (section 5, "Capturing").
+  own binding records its step, the calls it makes and its params (section
+  5, "Capturing"). The using binding gives only its own params: with a
+  used mechanic's params among them, the glue declares `Params` without
+  those fields, and `params` returns it (or `()` when nothing is left).
 - **The glue** (`build.rs`) is generated from the mechanic's source and the
   interfaces it depends on: its id, version and fingerprint, its structs in
   the trace's encoding, and a module per interface (`FloorHeight` is
@@ -482,6 +495,10 @@ every mechanic with a binding. Each is written to
   - It is recorded as a call: its binding reads its inputs and state as
     the request, and its state on return as the response, with the
     registers as its step begins.
+  - The calls its step makes are recorded by its own binding, in its
+    entry's `calls`, in order.
+  - Its params are read by its binding as its step is first entered, into
+    the using mechanic's params field for them.
   - Its instructions are its own: they are left out of the step's read
     audit and coverage, as a world call's are.
 - **The read audit** (the header's `audit`) lists what the step's own
@@ -600,6 +617,7 @@ fills the steps back in.
   of them.
 - **`calls`** are the world calls the step made, in order, with the steps
   of the mechanics it uses. A query has a `response`; a command has none.
+  A used mechanic's step has `calls` of its own: the world calls it made.
 - **`state_before`** holds the state fields that code outside the step
   changed since the previous step's end (an external change), with their
   values at this step's start. It is there only when something did.
@@ -653,7 +671,19 @@ cargo test -p replay
   a table or record (`last.heading is 7, the trace has 8`), or the call
   (`call 2 (world.floor-height@1.height) request.x is 5, the trace has 6`;
   `the step made 1 calls, the trace has 2`).
-- **Not yet:** a `step` that uses other mechanics.
+- **A used mechanic's step** runs as the using step calls it. Replay does
+  not see it as a call: the world calls it makes are answered from its
+  entry's, in order, and a failure inside it names the entry (`call 0
+  (croc.collide@1.step): call 3 (world.objects@1.surfaces) request.x is 5,
+  the trace has 6`). Its entry's request and response are not compared
+  here: `psx mechanic check` compares each entry with the used mechanic's
+  own trace of the same recording (the same steps at each tick, with the
+  same calls, and the same params), and replay proves that trace; a
+  recording where the used step never runs needs no trace of it. So a
+  mistake in what the using step gives the used one also shows inside
+  the entry, at the first call it changes: the used mechanic's own traces
+  replaying exactly is what puts it in the using step. A used mechanic
+  that uses mechanics itself is not replayed yet.
 
 The port is not replayed step by step: it is a translation, checked from
 outside by scenarios (`docs/scenarios.md`).

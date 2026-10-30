@@ -97,8 +97,10 @@ pub fn mechanic(c: &Crate) -> Result<(Mechanic, Vec<String>), Vec<String>> {
         state: BTreeMap::new(),
         inputs: BTreeMap::new(),
         params: BTreeMap::new(),
+        used_params: BTreeMap::new(),
         tolerance: consts.tolerance,
     };
+    let used = used_crates(c.cargo_toml);
     for (name, into) in [("State", &mut m.state), ("Inputs", &mut m.inputs), ("Params", &mut m.params)] {
         let Some(s) = items.structs.get(name) else { continue };
         if !matches!(s.vis, syn::Visibility::Public(_)) {
@@ -110,6 +112,21 @@ pub fn mechanic(c: &Crate) -> Result<(Mechanic, Vec<String>), Vec<String>> {
         };
         for f in &fields.named {
             let n = f.ident.as_ref().unwrap().to_string();
+            if name == "Params" {
+                if let Some(krate) = used_params_type(&f.ty) {
+                    let id = used.get(&krate);
+                    match id.and_then(|id| m.uses.iter().find(|r| r.split('@').next() == Some(id.as_str()))) {
+                        Some(r) => {
+                            m.used_params.insert(n, r.clone());
+                        }
+                        None => p.at(
+                            line(f),
+                            &format!("Params.{n}: `{krate}::Params` is the params of a mechanic it does not use (USES, and a dependency on it)"),
+                        ),
+                    }
+                    continue;
+                }
+            }
             match items.field(&f.ty, &f.attrs, 0) {
                 Ok(field) => {
                     into.insert(n, field);
@@ -197,6 +214,28 @@ fn manifest(text: &str, p: &mut Vec<String>) -> BTreeSet<String> {
         p.push(format!("Cargo.toml: {key}: a mechanic has no platform-specific dependencies"));
     }
     deps
+}
+
+/// The mechanics a crate depends on (`path = "../<id>"`): their ids, by
+/// their crate names as `use` sees them.
+fn used_crates(cargo_toml: &str) -> BTreeMap<String, String> {
+    let toml: toml::Table = toml::from_str(cargo_toml).unwrap_or_default();
+    let deps = toml.get("dependencies").and_then(|v| v.as_table());
+    deps.into_iter()
+        .flatten()
+        .filter_map(|(name, d)| {
+            let id = d.get("path")?.as_str()?.strip_prefix("../")?;
+            (!id.contains('/')).then(|| (name.replace('-', "_"), id.to_string()))
+        })
+        .collect()
+}
+
+/// `<crate>::Params`, a used mechanic's params: the crate.
+fn used_params_type(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(p) = ty else { return None };
+    let s = &p.path.segments;
+    (p.qself.is_none() && s.len() == 2 && s[1].ident == "Params" && s.iter().all(|s| s.arguments.is_none()))
+        .then(|| s[0].ident.to_string())
 }
 
 /// The items of `src/lib.rs` that declare types, by name.
@@ -483,6 +522,19 @@ impl<'f> Items<'f> {
     /// Code giving a `Result` of the struct `name` from `r`, its fields (a
     /// `&psx_mechanics::Values`).
     fn decode_struct(&self, name: &str, r: &str, krate: &str, depth: u32) -> Result<String, String> {
+        self.decode_struct_using(name, r, krate, depth, &BTreeMap::new())
+    }
+
+    /// The same, with the fields in `used` a used mechanic's params, decoded
+    /// by its replay module (named after its crate).
+    fn decode_struct_using(
+        &self,
+        name: &str,
+        r: &str,
+        krate: &str,
+        depth: u32,
+        used: &BTreeMap<String, String>,
+    ) -> Result<String, String> {
         const R: &str = "psx_mechanics::replay";
         let s = self.structs[name];
         let syn::Fields::Named(named) = &s.fields else { return Err(format!("`{name}` has no named fields")) };
@@ -490,7 +542,10 @@ impl<'f> Items<'f> {
         for f in &named.named {
             let n = f.ident.as_ref().unwrap().to_string();
             let v = format!("v{depth}");
-            let inner = self.decode(&f.ty, &v, krate, depth + 1)?;
+            let inner = match used.get(&n) {
+                Some(k) => format!("{R}::record({v}).and_then(|r| <super::{k}::Mechanic as {R}::Mechanic>::params(r))"),
+                None => self.decode(&f.ty, &v, krate, depth + 1)?,
+            };
             names.push(format!("{n:?}"));
             fields.push(format!("{n}: {{ let {v} = {R}::field({r}, {n:?}); {inner}.map_err({R}::at({n:?}))? }},"));
         }
@@ -557,7 +612,11 @@ fn step_signature(file: &syn::File) -> Result<Option<Vec<&'static str>>, String>
         let syn::FnArg::Typed(t) = arg else { return Err(wrong()) };
         let syn::Type::Reference(r) = &*t.ty else { return Err(wrong()) };
         let name = quote::ToTokens::to_token_stream(&r.elem).to_string();
-        let calls = matches!(&*r.elem, syn::Type::ImplTrait(_));
+        let elem = match &*r.elem {
+            syn::Type::Paren(p) => &*p.elem,
+            e => e,
+        };
+        let calls = matches!(elem, syn::Type::ImplTrait(_));
         let want = match (i, name.as_str(), r.mutability.is_some()) {
             _ if takes.contains(&"Calls") => return Err(wrong()),
             (0, "State", true) => "State",
@@ -608,9 +667,36 @@ pub fn glue(c: &Crate, interfaces: &[Crate]) -> Result<String, Vec<String>> {
     let items = Items::of(&file);
     let mut types = Vec::new();
     let mut fns = Vec::new();
+    let mut own_params = String::new();
     for (name, f) in [("State", "state"), ("Inputs", "inputs"), ("Params", "params")] {
         let (ty, body) = match items.structs.get(name) {
             None => ("()".to_string(), "psx_capture::Value::Record(Vec::new())".to_string()),
+            // The binding gives its own params; a used mechanic's binding gives
+            // that mechanic's.
+            Some(s) if name == "Params" && !m.used_params.is_empty() => {
+                let syn::Fields::Named(named) = &s.fields else { unreachable!("read by mechanic") };
+                let (mut decl, mut fields) = (Vec::new(), Vec::new());
+                for f in
+                    named.named.iter().filter(|f| !m.used_params.contains_key(&f.ident.as_ref().unwrap().to_string()))
+                {
+                    let n = f.ident.as_ref().unwrap().to_string();
+                    decl.push(format!("    pub {n}: {},", qualified(&f.ty, &items, &krate)));
+                    let e = items
+                        .encode(&f.ty, &format!("(*v).{n}"), &krate, Out::Capture, 1)
+                        .map_err(|e| vec![format!("{LIB}: Params.{n}: {e}")])?;
+                    fields.push(format!("({n:?}, {e})"));
+                }
+                if decl.is_empty() {
+                    ("()".to_string(), "psx_capture::Value::Record(Vec::new())".to_string())
+                } else {
+                    own_params = format!(
+                        "/// The mechanic's params less those of the mechanics it uses: what this binding gives.\n\
+                         pub struct Params {{\n{}\n}}\n\n",
+                        decl.join("\n")
+                    );
+                    ("Params".to_string(), Out::Capture.record(&fields))
+                }
+            }
             Some(_) => {
                 let path: syn::Type = syn::parse_str(name).unwrap();
                 let body = items
@@ -624,7 +710,7 @@ pub fn glue(c: &Crate, interfaces: &[Crate]) -> Result<String, Vec<String>> {
     }
     Ok(format!(
         "// Generated from the mechanic's source by psx_mechanics::rust::write_glue: not for editing.\n\
-         pub struct Mechanic;\n\n\
+         {own_params}pub struct Mechanic;\n\n\
          #[allow(unused_variables)]\n\
          impl psx_capture::Mechanic for Mechanic {{\n    \
          const ID: &'static str = {:?};\n    \
@@ -659,9 +745,10 @@ pub fn write_glue(mechanic_dir: impl AsRef<std::path::Path>) {
 /// implementation that converts between its structs and the trace's values
 /// and calls its `step`, and `World`, which implements the trait of each
 /// interface it requires (among `interfaces`, the crates it depends on) by
-/// answering from the trace's calls. Types are named through the crate the
-/// package is.
-pub fn replay_glue(c: &Crate, interfaces: &[Crate]) -> Result<String, Vec<String>> {
+/// answering from the trace's calls, and those its used mechanics (`used`,
+/// their crates) require, which its step passes its world on to. Types are
+/// named through the crate the package is.
+pub fn replay_glue(c: &Crate, interfaces: &[Crate], used: &[Crate]) -> Result<String, Vec<String>> {
     const R: &str = "psx_mechanics::replay";
     let (m, _) = mechanic(c)?;
     let krate = package(c.cargo_toml).map_err(|e| vec![e])?.replace('-', "_");
@@ -672,15 +759,38 @@ pub fn replay_glue(c: &Crate, interfaces: &[Crate]) -> Result<String, Vec<String
         Ok(None) => return Err(vec![format!("{LIB}: no `pub fn step(state: &mut State, ...)`")]),
         Err(e) => return Err(vec![format!("{LIB}:{e}")]),
     };
-    if takes.contains(&"Calls") && !m.uses.is_empty() {
-        return Err(vec![format!("{LIB}: `step` uses other mechanics, and their steps are not replayed yet")]);
+    // The world implements what the step calls, and what the mechanics it
+    // uses call.
+    let mut wanted = m.requires.clone();
+    for u in used {
+        let (um, _) = mechanic(u)?;
+        if !m.uses.iter().any(|r| *r == format!("{}@{}", um.id, um.version)) {
+            continue;
+        }
+        if !um.uses.is_empty() {
+            return Err(vec![format!("uses {}, which uses mechanics itself: not replayed yet", um.id)]);
+        }
+        wanted.extend(um.requires.into_iter().filter(|r| !m.requires.contains(r)));
     }
     let mut world = String::new();
+    let mut found = Vec::new();
     for i in interfaces {
         let (iface, code) = world_glue(i)?;
-        if m.requires.contains(&iface.reference()) {
+        if wanted.contains(&iface.reference()) && !found.contains(&iface.reference()) {
+            found.push(iface.reference());
             world.push_str(&code);
         }
+    }
+    if let Some(r) = wanted.iter().find(|r| !found.contains(r) && !m.requires.contains(r)) {
+        return Err(vec![format!(
+            "Cargo.toml: no dependency on interface {r}, which the step's world implements for a mechanic it uses"
+        )]);
+    }
+    let used_krates: BTreeMap<String, String> = used_crates(c.cargo_toml).into_iter().map(|(k, id)| (id, k)).collect();
+    let mut used_params = BTreeMap::new();
+    for (field, r) in &m.used_params {
+        let id = r.split('@').next().unwrap_or_default();
+        used_params.insert(field.clone(), used_krates[id].clone());
     }
     let items = Items::of(&file);
     let path = format!("::{krate}");
@@ -690,7 +800,10 @@ pub fn replay_glue(c: &Crate, interfaces: &[Crate]) -> Result<String, Vec<String
         let (ty, body) = match items.structs.get(name) {
             None => ("()".to_string(), format!("{R}::fields(v, &[]).map(|_| ())")),
             Some(_) => {
-                let body = items.decode_struct(name, "v", &path, 0).map_err(|e| vec![format!("{LIB}: {name}: {e}")])?;
+                let used = if name == "Params" { &used_params } else { &BTreeMap::new() };
+                let body = items
+                    .decode_struct_using(name, "v", &path, 0, used)
+                    .map_err(|e| vec![format!("{LIB}: {name}: {e}")])?;
                 (format!("{path}::{name}"), body)
             }
         };
@@ -738,7 +851,8 @@ pub fn replay_glue(c: &Crate, interfaces: &[Crate]) -> Result<String, Vec<String
          const ID: &'static str = {:?};\n    \
          const VERSION: u32 = {};\n    \
          const FINGERPRINT: &'static str = {:?};\n    \
-         const TOLERANCE: Option<&'static [(&'static str, i128)]> = {tolerance};\n\
+         const TOLERANCE: Option<&'static [(&'static str, i128)]> = {tolerance};\n    \
+         const USES: &'static [&'static str] = &{:?};\n\
          {}\n{}\n    \
          fn record(v: &Self::State) -> psx_mechanics::Values {{\n        {record}\n    }}\n    \
          fn step(state: &mut Self::State, inputs: &Self::Inputs, params: &Self::Params, calls: &mut {R}::Calls) {{\n        {path}::step({});\n    }}\n\
@@ -749,6 +863,7 @@ pub fn replay_glue(c: &Crate, interfaces: &[Crate]) -> Result<String, Vec<String
         m.id,
         m.version,
         m.fingerprint(),
+        m.uses,
         types.join("\n"),
         fns.join("\n"),
         args.join(", "),
@@ -828,7 +943,10 @@ pub fn write_replay(workspace: impl AsRef<std::path::Path>) {
             continue;
         }
         let interfaces: Vec<Crate> = interfaces.iter().map(|(c, f)| Crate { cargo_toml: c, files: f }).collect();
-        match replay_glue(&Crate { cargo_toml: &cargo_toml, files: &files }, &interfaces) {
+        let used: Vec<(String, Vec<(String, String)>)> =
+            used_crates(&cargo_toml).values().map(|id| read_crate(&root.join(id))).collect();
+        let used: Vec<Crate> = used.iter().map(|(c, f)| Crate { cargo_toml: c, files: f }).collect();
+        match replay_glue(&Crate { cargo_toml: &cargo_toml, files: &files }, &interfaces, &used) {
             Ok(code) => {
                 modules.push_str(&code);
                 modules.push('\n');
@@ -885,11 +1003,7 @@ fn world_glue(c: &Crate) -> Result<(Interface, String), Vec<String>> {
             params.push(format!("{n}: {}", qualified(&t.ty, &items, &krate)));
             fields.push(format!("({n:?}, {})", items.encode(&t.ty, &n, &krate, Out::Trace, 0).map_err(wrong)?));
         }
-        let ask = format!(
-            "self.0.call({:?}, {name:?}, {R}::fields_of({}))",
-            i.reference(),
-            Out::Trace.record(&fields)
-        );
+        let ask = format!("self.0.call({:?}, {name:?}, {R}::fields_of({}))", i.reference(), Out::Trace.record(&fields));
         let body = match &f.sig.output {
             syn::ReturnType::Type(_, ty) => {
                 let decoded = match struct_name(ty, &items) {
@@ -1937,10 +2051,57 @@ pub trait FloorHeight {
     }
 
     #[test]
+    fn a_used_mechanics_params_are_a_field_of_the_params() {
+        let cargo = format!("{CARGO}croc-walk = {{ path = \"../croc.walk\" }}\n")
+            .replace("croc-walk\"\nversion", "croc-tick\"\nversion");
+        let tick = r#"
+//! Ticking.
+//!
+//! Walks.
+
+pub const ID: &str = "croc.tick";
+pub const VERSION: u32 = 1;
+pub const RATE: &str = "tick";
+pub const RATE_HZ: u32 = 25;
+pub const USES: &[&str] = &["croc.walk@1"];
+
+pub struct State { pub speed: i32 }
+
+pub struct Params {
+    pub limit: u16,
+    pub walk: croc_walk::Params,
+}
+
+pub fn step(state: &mut State, params: &Params) {}
+"#;
+        let (m, problems) = read(&cargo, tick).unwrap();
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(m.used_params, [("walk".to_string(), "croc.walk@1".to_string())].into());
+        assert_eq!(m.params.keys().collect::<Vec<_>>(), ["limit"]);
+        // The binding gives its own params; croc.walk's binding gives walk.
+        let g = glue(&Crate { cargo_toml: &cargo, files: &[(LIB.into(), tick.into())] }, &[]).unwrap();
+        assert!(g.contains("pub struct Params {\n    pub limit: u16,\n}"), "{g}");
+        assert!(g.contains("type Params = Params;"), "{g}");
+        // Replay decodes walk through croc.walk's own module.
+        let g = replay_glue(&Crate { cargo_toml: &cargo, files: &[(LIB.into(), tick.into())] }, &[], &[]).unwrap();
+        assert!(g.contains("<super::croc_walk::Mechanic as psx_mechanics::replay::Mechanic>::params(r)"), "{g}");
+        assert!(g.contains("const USES: &'static [&'static str] = &[\"croc.walk@1\"];"), "{g}");
+        // Params of a mechanic it does not use.
+        let other = tick.replace("croc_walk::Params", "croc_turn::Params");
+        let (_, problems) = read(&cargo, &other).unwrap();
+        assert_eq!(
+            problems,
+            [
+                "src/lib.rs:16: Params.walk: `croc_turn::Params` is the params of a mechanic it does not use (USES, and a dependency on it)"
+            ]
+        );
+    }
+
+    #[test]
     fn the_replay_glue_converts_both_ways_and_calls_step() {
         let lib = WALK.replace(", world: &mut impl FloorHeight", "");
         let files = [(LIB.to_string(), lib)];
-        let g = replay_glue(&Crate { cargo_toml: CARGO, files: &files }, &[]).unwrap();
+        let g = replay_glue(&Crate { cargo_toml: CARGO, files: &files }, &[], &[]).unwrap();
         let (m, _) = read(CARGO, WALK).unwrap();
         assert!(g.starts_with("pub mod croc_walk {"), "{g}");
         assert!(g.contains(&format!("const FINGERPRINT: &'static str = {:?};", m.fingerprint())), "{g}");
@@ -1959,7 +2120,8 @@ pub trait FloorHeight {
         assert!(g.contains("::croc_walk::step(state, inputs, params);"), "{g}");
 
         let no_step = WALK.split("pub fn step").next().unwrap().to_string();
-        let problems = replay_glue(&Crate { cargo_toml: CARGO, files: &[(LIB.into(), no_step)] }, &[]).unwrap_err();
+        let problems =
+            replay_glue(&Crate { cargo_toml: CARGO, files: &[(LIB.into(), no_step)] }, &[], &[]).unwrap_err();
         assert_eq!(problems, ["src/lib.rs: no `pub fn step(state: &mut State, ...)`"]);
     }
 
@@ -1967,7 +2129,7 @@ pub trait FloorHeight {
     fn the_replay_glue_answers_the_steps_calls_from_the_trace() {
         let floor = [(LIB.to_string(), FLOOR.to_string())];
         let floor = Crate { cargo_toml: "[package]\nname = \"world-floor-height\"\n", files: &floor };
-        let g = replay_glue(&Crate { cargo_toml: CARGO, files: &[(LIB.into(), WALK.into())] }, &[floor]).unwrap();
+        let g = replay_glue(&Crate { cargo_toml: CARGO, files: &[(LIB.into(), WALK.into())] }, &[floor], &[]).unwrap();
         assert!(g.contains("::croc_walk::step(state, inputs, params, &mut World(calls));"), "{g}");
         assert!(g.contains("impl ::world_floor_height::FloorHeight for World<'_, '_> {"), "{g}");
         assert!(
@@ -1988,6 +2150,14 @@ pub trait FloorHeight {
         );
         let (_, problems) = read(CARGO, &lib).unwrap();
         assert!(problems.iter().any(|p| p.contains("`step` takes `&mut State`, then")), "{problems:#?}");
+    }
+
+    #[test]
+    fn a_step_may_take_its_calls_as_several_traits() {
+        let lib = WALK.replace("world: &mut impl FloorHeight)", "world: &mut (impl FloorHeight + Sized))");
+        assert_ne!(lib, WALK);
+        let (_, problems) = read(CARGO, &lib).unwrap();
+        assert_eq!(problems, Vec::<String>::new());
     }
 
     #[test]

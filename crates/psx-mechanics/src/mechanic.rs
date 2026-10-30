@@ -36,6 +36,9 @@ pub struct Mechanic {
     pub inputs: BTreeMap<String, Field>,
     /// Constants for the length of a trace; the binding gives their values.
     pub params: BTreeMap<String, Field>,
+    /// Params fields holding a used mechanic's params, each by the
+    /// `<id>@<version>` it uses: that mechanic's binding gives their values.
+    pub used_params: BTreeMap<String, String>,
     /// `faithful` only: the largest difference allowed per state field, in
     /// raw units (int and fixed fields).
     pub tolerance: BTreeMap<String, Value>,
@@ -136,6 +139,14 @@ impl Mechanic {
                 }
             }
         }
+        for (name, r) in &self.used_params {
+            if !self.uses.contains(r) {
+                p.push(format!("params.{name}: {r}'s params, which it does not use"));
+            }
+            if self.params.contains_key(name) {
+                p.push(format!("params.{name}: declared twice"));
+            }
+        }
         let types = self.types(&mut p);
         for name in types.inputs.keys().filter(|n| types.state.contains_key(*n)) {
             p.push(format!("inputs.{name}: also a state field"));
@@ -175,7 +186,7 @@ impl Mechanic {
         let fields = |m: &BTreeMap<String, Field>| -> BTreeMap<String, Field> {
             m.iter().map(|(k, v)| (k.clone(), bare(v))).collect()
         };
-        let covered = serde_json::json!({
+        let mut covered = serde_json::json!({
             "id": self.id,
             "state": fields(&self.state),
             "inputs": fields(&self.inputs),
@@ -183,6 +194,11 @@ impl Mechanic {
             "requires": self.requires,
             "uses": self.uses,
         });
+        // Only when there are some, so a mechanic using none keeps the
+        // fingerprint it had before used params were covered.
+        if !self.used_params.is_empty() {
+            covered["used_params"] = serde_json::json!(self.used_params);
+        }
         let hash = Sha256::digest(covered.to_string().as_bytes());
         hash[..8].iter().map(|b| format!("{b:02x}")).collect()
     }

@@ -110,22 +110,28 @@ impl Refusals {
     }
 }
 
-/// One call the step makes: an interface's, or a used mechanic's step.
+/// One call the step makes: an interface's, or a used mechanic's step; or
+/// one a used mechanic's step makes.
 struct CallSpec<'a> {
     interface: String,
     call: String,
     kind: CallKind,
     on: CallSite,
     by: By<'a>,
+    /// The used mechanic's step (its spec) this is a call of; `None` for the
+    /// step's own calls.
+    within: Option<usize>,
 }
 
 /// Who reads a call's request and response.
 enum By<'a> {
-    /// The binding: its call `which`, with the interface's types.
-    Binding { which: u32, request: BTreeMap<String, Type>, response: BTreeMap<String, Type> },
+    /// A binding (the step's, or a used mechanic's for the calls its step
+    /// makes): its call `which`, with the interface's types.
+    Binding { plugin: &'a Plugin, which: u32, request: BTreeMap<String, Type>, response: BTreeMap<String, Type> },
     /// A used mechanic's own binding: its inputs and state as its step
-    /// begins, its state as the call returns.
-    Used { plugin: &'a Plugin, types: Types },
+    /// begins, its state as the call returns, and its params (`params`, the
+    /// field of the step's params holding them).
+    Used { plugin: &'a Plugin, types: Types, params: Option<String> },
 }
 
 impl CallSpec<'_> {
@@ -140,6 +146,8 @@ impl CallSpec<'_> {
 struct Pending {
     spec: usize,
     request: Values,
+    /// A used mechanic's step: the calls it made so far.
+    calls: Vec<Call>,
     ret: u32,
     sp: u32,
     /// The registers as the call was entered, which its response is read with.
@@ -157,7 +165,9 @@ struct Open {
     inputs: Values,
     before: Values,
     calls: Vec<Call>,
-    pending: Option<Pending>,
+    /// The calls entered and not yet returned, outermost first: a call of
+    /// the step, and inside a used mechanic's step, one of its calls.
+    pending: Vec<Pending>,
     /// The memory the binding read the state from, physical, for stores
     /// made inside a call.
     state_bytes: Vec<(u32, u32)>,
@@ -384,28 +394,49 @@ impl<'a> Plan<'a> {
         residents: &'a [(u32, Option<Resident>)],
     ) -> Plan<'a> {
         let capture = plugin.capture();
-        let call_types: BTreeMap<String, _> =
-            mechanic.required(interfaces).into_iter().map(|i| (i.reference(), i.types(&mut Vec::new()))).collect();
-        let mut specs: Vec<CallSpec> = Vec::new();
-        for (which, c) in capture.calls.iter().enumerate() {
-            let t = &call_types[&c.interface][&c.call];
-            specs.push(CallSpec {
-                interface: c.interface.clone(),
-                call: c.call.clone(),
-                kind: c.kind,
-                on: c.on.clone(),
-                by: By::Binding { which: which as u32, request: t.request.clone(), response: t.response.clone() },
-            });
-        }
+        let binding = |plugin: &'a Plugin, m: &Mechanic, within: Option<usize>| -> Vec<CallSpec<'a>> {
+            let call_types: BTreeMap<String, _> =
+                m.required(interfaces).into_iter().map(|i| (i.reference(), i.types(&mut Vec::new()))).collect();
+            let calls = &plugin.capture().calls;
+            calls
+                .iter()
+                .enumerate()
+                .map(|(which, c)| {
+                    let t = &call_types[&c.interface][&c.call];
+                    CallSpec {
+                        interface: c.interface.clone(),
+                        call: c.call.clone(),
+                        kind: c.kind,
+                        on: c.on.clone(),
+                        by: By::Binding {
+                            plugin,
+                            which: which as u32,
+                            request: t.request.clone(),
+                            response: t.response.clone(),
+                        },
+                        within,
+                    }
+                })
+                .collect()
+        };
+        let mut specs: Vec<CallSpec> = binding(plugin, mechanic, None);
         // A used mechanic's step: from its begin to the return to its caller.
+        let first_used = specs.len();
         for (r, um, up) in used {
+            let params = mechanic.used_params.iter().find(|(_, u)| *u == r).map(|(f, _)| f.clone());
             specs.push(CallSpec {
                 interface: r.clone(),
                 call: psx_mechanics::mechanic::STEP.into(),
                 kind: CallKind::Query,
                 on: CallSite::Entry { entry: up.capture().begin.clone() },
-                by: By::Used { plugin: up, types: um.types(&mut Vec::new()) },
+                by: By::Used { plugin: up, types: um.types(&mut Vec::new()), params },
+                within: None,
             });
+        }
+        // The calls each used step makes, after the step's own (the read
+        // audit sees a used step as one call).
+        for (k, (_, um, up)) in used.iter().enumerate() {
+            specs.extend(binding(up, um, Some(first_used + k)));
         }
         let mut sites: HashMap<u32, Vec<(Site, Option<&Resident>)>> = HashMap::new();
         let resident = |pc: u32| residents.iter().find(|(p, _)| *p == pc).and_then(|(_, r)| r.as_ref());
@@ -441,9 +472,10 @@ impl<'a> Plan<'a> {
             // Stack locals read as sp + offset; the binding's own bases are
             // added from what it reads at the first step.
             bases: vec![Reg::Sp],
-            calls: specs.iter().map(|s| s.field("")).collect(),
+            calls: specs.iter().filter(|s| s.within.is_none()).map(|s| s.field("")).collect(),
             entries: specs
                 .iter()
+                .filter(|s| s.within.is_none())
                 .filter_map(|s| match &s.on {
                     CallSite::Entry { entry } => Some(entry.pc),
                     CallSite::Read { .. } | CallSite::Write { .. } => None,
@@ -505,10 +537,10 @@ impl<'a> Plan<'a> {
         let s = &self.specs[i];
         let label = s.field("request");
         match &s.by {
-            By::Binding { which, request, .. } => {
-                ask(self.plugin, abi::REQUEST, *which, request, view, &label, when, step, refusals)
+            By::Binding { plugin, which, request, .. } => {
+                ask(plugin, abi::REQUEST, *which, request, view, &label, when, step, refusals)
             }
-            By::Used { plugin, types } => {
+            By::Used { plugin, types, .. } => {
                 let (mut v, mut r) = ask(plugin, abi::INPUTS, 0, &types.inputs, view, &label, when, step, refusals);
                 let (state, rs) = ask(plugin, abi::STATE, 0, &types.state, view, &label, when, step, refusals);
                 v.extend(state);
@@ -523,11 +555,22 @@ impl<'a> Plan<'a> {
         let s = &self.specs[i];
         let label = s.field("response");
         match &s.by {
-            By::Binding { which, response, .. } => {
-                ask(self.plugin, abi::RESPONSE, *which, response, view, &label, when, step, refusals)
+            By::Binding { plugin, which, response, .. } => {
+                ask(plugin, abi::RESPONSE, *which, response, view, &label, when, step, refusals)
             }
-            By::Used { plugin, types } => ask(plugin, abi::STATE, 0, &types.state, view, &label, when, step, refusals),
+            By::Used { plugin, types, .. } => {
+                ask(plugin, abi::STATE, 0, &types.state, view, &label, when, step, refusals)
+            }
         }
+    }
+
+    /// Call `i`'s params, when it is a used mechanic's step with params: the
+    /// field of the step's params they are, and their values.
+    fn used_params(&self, i: usize, view: &View, step: u64, refusals: &mut Refusals) -> Option<(String, Values)> {
+        let By::Used { plugin, types, params: Some(field) } = &self.specs[i].by else { return None };
+        let label = format!("params.{field}");
+        let (v, _) = ask(plugin, abi::PARAMS, 0, &types.params, view, &label, "entry", step, refusals);
+        Some((field.clone(), v))
     }
 }
 
@@ -608,6 +651,9 @@ pub(crate) struct Before {
     /// A call entered: what the step passes it, and what the call's
     /// request reads.
     entering: Option<(Pending, (Reads, Reads))>,
+    /// A used mechanic's params, read as its step is first entered: the
+    /// field of the step's params they are, and their values.
+    used_params: Option<(String, Values)>,
     world: Option<usize>,
     inline: bool,
 }
@@ -667,8 +713,8 @@ impl<'a> Recorder<'a> {
             None => Vec::new(),
         };
         let open = &self.open;
-        let returning =
-            open.as_ref().and_then(|o| o.pending.as_ref()).is_some_and(|p| p.ret == pc && m.cpu.regs[29] == p.sp);
+        let stack: &[Pending] = open.as_ref().map_or(&[], |o| &o.pending);
+        let returning = stack.last().is_some_and(|p| p.ret == pc && m.cpu.regs[29] == p.sp);
         if here.is_empty() && !returning {
             return None;
         }
@@ -676,11 +722,13 @@ impl<'a> Recorder<'a> {
         let n = self.steps.len() as u64;
         let mut tentative = Refusals::default();
         let response = returning.then(|| {
-            let p = open.as_ref().unwrap().pending.as_ref().unwrap();
+            let p = stack.last().unwrap();
             let view = View { m, now: &now, latched: &p.latched, load: None };
             plan.response(p.spec, &view, "return", n, &mut tentative)
         });
-        let pending = open.as_ref().is_some_and(|o| o.pending.is_some()) && !returning;
+        // The innermost call under way once a return here is taken.
+        let inside = stack[..stack.len() - returning as usize].last();
+        let pending = inside.is_some();
         let ends = here.iter().any(|s| matches!(s, Site::End)) && open.is_some() && !pending;
         let begins = here.iter().any(|s| matches!(s, Site::Begin)) && !pending;
         // The binding chooses the step, with the registers as they are now.
@@ -724,7 +772,17 @@ impl<'a> Recorder<'a> {
             }
             _ => None,
         });
-        let entering = entry.filter(|_| !pending && (open.is_some() || opening.is_some())).map(|i| {
+        let within = inside.map(|p| p.spec);
+        let entry = entry.filter(|i| specs[*i].within == within && (open.is_some() || opening.is_some()));
+        let used_params = entry.filter(|i| match &specs[*i].by {
+            By::Used { params: Some(f), .. } => !self.params.contains_key(f),
+            _ => false,
+        });
+        let used_params = used_params.and_then(|i| {
+            let view = View { m, now: &now, latched: &now, load: None };
+            plan.used_params(i, &view, n, &mut tentative)
+        });
+        let entering = entry.map(|i| {
             let view = View { m, now: &now, latched: &now, load: None };
             let (request, reads) = plan.request(i, &view, "entry", n, &mut tentative);
             // A used mechanic's request is its own binding's to account for
@@ -735,15 +793,25 @@ impl<'a> Recorder<'a> {
             } else {
                 (reads.clone(), reads)
             };
-            (Pending { spec: i, request, ret: now[31], sp: now[29], latched: now, stores: Vec::new() }, reads)
+            let p = Pending {
+                spec: i,
+                request,
+                calls: Vec::new(),
+                ret: now[31],
+                sp: now[29],
+                latched: now,
+                stores: Vec::new(),
+            };
+            (p, reads)
         });
-        // The world call this instruction belongs to, if any.
-        let world = entering
-            .as_ref()
-            .map(|(p, _)| p.spec)
-            .or_else(|| open.as_ref().and_then(|o| o.pending.as_ref()).filter(|_| pending).map(|p| p.spec));
-        let inline = here.iter().any(|s| matches!(s, Site::Call(i) if matches!(specs[*i].on, CallSite::Read { .. })));
-        Some(Before { pc, now, tentative, here, response, after, opening, entering, world, inline })
+        // The step's call this instruction belongs to, if any (inside a used
+        // step, that step's).
+        let world =
+            stack.first().filter(|_| pending).map(|p| p.spec).or_else(|| entering.as_ref().map(|(p, _)| p.spec));
+        let inline = here.iter().any(|s| {
+            matches!(s, Site::Call(i) if matches!(specs[*i].on, CallSite::Read { .. }) && specs[*i].within.is_none())
+        });
+        Some(Before { pc, now, tentative, here, response, after, opening, entering, used_params, world, inline })
     }
 
     /// The instruction ran (`info`), with what `before` read for it.
@@ -754,7 +822,8 @@ impl<'a> Recorder<'a> {
         self.instructions += 1;
         let plan = self.plan;
         let specs = &plan.specs;
-        let Some(Before { pc, now, tentative, here, response, after, opening, entering, world, inline }) = before
+        let Some(Before { pc, now, tentative, here, response, after, opening, entering, used_params, world, inline }) =
+            before
         else {
             if self.open.is_none() {
                 self.tracker.outside(info);
@@ -765,12 +834,12 @@ impl<'a> Recorder<'a> {
                 let at = crate::run::fold(acc.addr);
                 let end = at + acc.width as u32;
                 let hit = o.state_bytes.iter().any(|&(s, e)| at < e && end > s);
-                if let Some(p) = o.pending.as_mut().filter(|_| hit) {
+                if let Some(p) = o.pending.last_mut().filter(|_| hit) {
                     p.stores.push((info.pc, acc.addr, acc.width as u32));
                 }
             }
             if let Some(o) = &self.open {
-                self.tracker.observe(m, info, o.pending.as_ref().map(|p| p.spec), false);
+                self.tracker.observe(m, info, o.pending.first().map(|p| p.spec), false);
             }
             return;
         };
@@ -787,7 +856,7 @@ impl<'a> Recorder<'a> {
         refusals.listed.extend(tentative.listed.into_iter().take(MAX_REFUSALS.saturating_sub(refusals.listed.len())));
         if let Some((r, reads)) = response {
             let o = self.open.as_mut().unwrap();
-            let p = o.pending.take().unwrap();
+            let p = o.pending.pop().unwrap();
             let s = &specs[p.spec];
             for (spc, addr, bytes) in p.stores {
                 let at = crate::run::fold(addr);
@@ -800,13 +869,21 @@ impl<'a> Recorder<'a> {
                     );
                 }
             }
-            self.tracker.returned(&reads);
-            o.calls.push(Call {
+            let call = Call {
                 interface: s.interface.clone(),
                 call: s.call.clone(),
                 request: p.request,
                 response: (s.kind == CallKind::Query).then_some(r),
-            });
+                calls: p.calls,
+            };
+            match o.pending.last_mut() {
+                // A call a used step made: its entry holds it.
+                Some(used) => used.calls.push(call),
+                None => {
+                    self.tracker.returned(&reads);
+                    o.calls.push(call);
+                }
+            }
         }
         if let Some(after) = after {
             // The state as read before the instruction at the end PC ran.
@@ -839,7 +916,7 @@ impl<'a> Recorder<'a> {
                 inputs: i,
                 before: s,
                 calls: Vec::new(),
-                pending: None,
+                pending: Vec::new(),
                 state_bytes: bytes,
             });
             self.tracker.open(m, &now);
@@ -849,9 +926,15 @@ impl<'a> Recorder<'a> {
             }
         }
         if let (Some((p, (reads, passed))), Some(o)) = (entering, self.open.as_mut()) {
-            self.tracker.entry(pc, p.spec, &reads, now[29]);
-            self.tracker.passed(&passed);
-            o.pending = Some(p);
+            // A call inside a used step is that step's, to the read audit.
+            if o.pending.is_empty() {
+                self.tracker.entry(pc, p.spec, &reads, now[29]);
+                self.tracker.passed(&passed);
+            }
+            o.pending.push(p);
+        }
+        if let Some((field, v)) = used_params {
+            self.params.insert(field, psx_mechanics::Value::Record(v));
         }
         if self.open.is_some() {
             self.tracker.observe(m, info, world, inline);
@@ -864,30 +947,49 @@ impl<'a> Recorder<'a> {
                 CallSite::Write { .. } => true,
                 CallSite::Entry { .. } => continue,
             };
-            let Some(o) = self.open.as_mut().filter(|o| o.pending.is_none()) else { continue };
+            let within = specs[i].within;
+            let Some(o) = self.open.as_mut().filter(|o| o.pending.last().map(|p| p.spec) == within) else { continue };
             let n = self.steps.len() as u64;
             let Some(acc) = info.mem.filter(|a| a.store == store) else {
                 let what = if store { "store" } else { "load" };
                 self.refusals.push(n, what, specs[i].field(""), format!("the {what} PC made no {what}"));
                 continue;
             };
-            if store {
+            // Inside a used step, the read audit sees only that step.
+            let own = within.is_none();
+            if store && own {
                 // What the command says is accounted for.
                 let at = crate::run::fold(acc.addr);
                 self.tracker.passed(&Reads { memory: vec![(at, at + acc.width as u32)], ..Reads::default() });
             }
             let after_regs = regs(m);
-            let view = View { m, now: &after_regs, latched: &o.latched, load: Some(acc) };
+            // A used step's binding reads with the registers its step began with.
+            let latched = o.pending.last().map_or(&o.latched, |p| &p.latched);
+            let view = View { m, now: &after_regs, latched, load: Some(acc) };
             let when = if store { "store" } else { "load" };
             let (request, read_request) = plan.request(i, &view, when, n, &mut self.refusals);
-            self.tracker.binding_reads(&read_request);
-            self.tracker.passed(&read_request);
+            if own {
+                self.tracker.binding_reads(&read_request);
+                self.tracker.passed(&read_request);
+            }
             let response = (specs[i].kind == CallKind::Query).then(|| {
                 let (response, read_response) = plan.response(i, &view, when, n, &mut self.refusals);
-                self.tracker.binding_reads(&read_response);
+                if own {
+                    self.tracker.binding_reads(&read_response);
+                }
                 response
             });
-            o.calls.push(Call { interface: specs[i].interface.clone(), call: specs[i].call.clone(), request, response });
+            let call = Call {
+                interface: specs[i].interface.clone(),
+                call: specs[i].call.clone(),
+                request,
+                response,
+                calls: Vec::new(),
+            };
+            match o.pending.last_mut() {
+                Some(used) => used.calls.push(call),
+                None => o.calls.push(call),
+            }
         }
     }
 
@@ -960,7 +1062,7 @@ fn close_with(
 ) {
     tracker.close(&read);
     let n = steps.len() as u64;
-    if let Some(p) = &o.pending {
+    if let Some(p) = o.pending.first() {
         let s = &specs[p.spec];
         refusals.push(n, "end", s.field(""), "the step ended before the call returned".into());
     }
@@ -1043,9 +1145,12 @@ pub struct State {
 "#;
 
     fn mechanic(lib: &str) -> Mechanic {
+        mechanic_in("[package]\nname = \"t\"\n", lib)
+    }
+
+    fn mechanic_in(cargo_toml: &str, lib: &str) -> Mechanic {
         let files = [(LIB.to_string(), lib.to_string())];
-        let (m, problems) =
-            psx_mechanics::rust::mechanic(&Crate { cargo_toml: "[package]\nname = \"t\"\n", files: &files }).unwrap();
+        let (m, problems) = psx_mechanics::rust::mechanic(&Crate { cargo_toml, files: &files }).unwrap();
         assert_eq!(problems, Vec::<String>::new());
         m
     }
@@ -1073,6 +1178,8 @@ pub struct State {
         /// The bits the binding says `last` has: a stale glue when it is
         /// wider than the mechanic's.
         last_bits: u32,
+        /// test.bump's binding peeks at what its step loads first.
+        bump_peeks: bool,
     }
 
     impl Default for Conf {
@@ -1088,6 +1195,7 @@ pub struct State {
                 mark: 0x8001_0300,
                 table: false,
                 last_bits: 32,
+                bump_peeks: false,
             }
         }
     }
@@ -1237,15 +1345,15 @@ pub struct State {
         const FINGERPRINT: &'static str = "";
         type State = i32;
         type Inputs = ();
-        type Params = ();
+        type Params = i32;
         fn state(s: &i32) -> psx_capture::Value {
             psx_capture::Value::Record(vec![("last", psx_capture::Value::Int(*s as i128))])
         }
         fn inputs(_: &()) -> psx_capture::Value {
             psx_capture::Value::Record(Vec::new())
         }
-        fn params(_: &()) -> psx_capture::Value {
-            psx_capture::Value::Record(Vec::new())
+        fn params(p: &i32) -> psx_capture::Value {
+            psx_capture::Value::Record(vec![("by", psx_capture::Value::Int(*p as i128))])
         }
     }
 
@@ -1259,6 +1367,9 @@ pub struct State {
 
         fn bracket(&self, b: &mut Bracket) {
             b.begin(0x8001_0200u32).end(0x8001_0120u32);
+            if conf().bump_peeks {
+                b.query::<Peek>(At_::load(0x8001_0200u32), |m| m.load().address, |m| m.load().value as i32);
+            }
         }
 
         fn state(&self, m: &Host) -> i32 {
@@ -1267,7 +1378,9 @@ pub struct State {
 
         fn inputs(&self, _: &Host) {}
 
-        fn params(&self, _: &Host) {}
+        fn params(&self, _: &Host) -> i32 {
+            5
+        }
     }
 
     #[allow(unsafe_code)]
@@ -1363,12 +1476,14 @@ pub struct State {
                 call: "peek".into(),
                 request: [("at".into(), int(0x8002_0000))].into(),
                 response: Some([("v".into(), int(k))].into()),
+                calls: Vec::new(),
             };
             let add = Call {
                 interface: "world.add@1".into(),
                 call: "add".into(),
                 request: [("n".into(), int(k + 1))].into(),
                 response: Some([("m".into(), int(k + 101))].into()),
+                calls: Vec::new(),
             };
             assert_eq!(s.calls, vec![peek, add]);
             assert!(!s.external);
@@ -1520,6 +1635,7 @@ pub struct State {
             call: "mark".into(),
             request: [("at".into(), int(0x8002_0008))].into(),
             response: None,
+            calls: Vec::new(),
         };
         assert_eq!(r.steps[0].calls[1], mark);
         // At a PC that loads, it is refused.
@@ -1673,5 +1789,51 @@ pub struct State {
             json!({"step": 0, "when": "store", "field": "test.bump@1.step",
                    "problem": "the call changed the step's state outside its response (store at 0x8001020c to 0x80020000)"})
         );
+    }
+
+    #[test]
+    fn a_used_steps_calls_and_params_are_its_own() {
+        CONF.with(|x| *x.borrow_mut() = Conf { calls: false, bump_peeks: true, ..Conf::default() });
+        let cargo = "[package]\nname = \"test-count\"\n[dependencies]\ntest-bump = { path = \"../test.bump\" }\n";
+        let lib = COUNT.replace(
+            r#"pub const REQUIRES: &[&str] = &["world.add@1"];"#,
+            r#"pub const USES: &[&str] = &["test.bump@1"];"#,
+        ) + "\npub struct Params {\n    pub bump: test_bump::Params,\n}\n";
+        let counting = mechanic_in(cargo, &lib);
+        let bump = BUMP.replace(
+            r#"pub const RATE: &str = "event";"#,
+            "pub const RATE: &str = \"event\";\npub const REQUIRES: &[&str] = &[\"world.add@1\"];",
+        ) + "\npub struct Params {\n    pub by: i32,\n}\n";
+        let bump = mechanic(&bump);
+        let interfaces = vec![bump.step_interface(), world_add()];
+        let p = Plugin::new(count_call, None).unwrap();
+        let used = [("test.bump@1".to_string(), bump, Plugin::new(bump_call, None).unwrap())];
+        let plan = Plan::new(&counting, &p, &interfaces, &used, &[]);
+        #[rustfmt::skip]
+        let mut m = machine(&[
+            0x8C89_0004, // lw t1, 4(a0)
+            0x0000_0000, // nop
+            0x2529_0005, // addiu t1, t1, 5
+            0xAC89_0004, // sw t1, 4(a0)
+            0x03E0_0008, // jr ra
+            0x24A2_0064, // addiu v0, a1, 100
+        ]);
+        m.bus.ram[0x2_0004..0x2_0008].copy_from_slice(&7u32.to_le_bytes());
+        m.bus.ram[0x1_011C..0x1_0120].copy_from_slice(&0u32.to_le_bytes());
+        let r = record(&mut m, &plan, 1, &[]).unwrap();
+        assert_eq!(r.refusals.count, 0, "{:?}", r.refusals.listed);
+        // The peek its binding makes is in its entry, not among the step's calls.
+        let peek = Call {
+            interface: "world.add@1".into(),
+            call: "peek".into(),
+            request: [("at".into(), int(0x8002_0004))].into(),
+            response: Some([("v".into(), int(7))].into()),
+            calls: Vec::new(),
+        };
+        assert_eq!(r.steps[0].calls.len(), 1);
+        assert_eq!(r.steps[0].calls[0].calls, vec![peek]);
+        // Its params are read by its binding, into the step's field for them.
+        assert_eq!(r.params["bump"], Value::Record([("by".into(), int(5))].into()));
+        assert_eq!(r.audit.unaccounted, vec![]);
     }
 }

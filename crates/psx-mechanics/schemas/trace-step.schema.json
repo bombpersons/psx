@@ -6,6 +6,13 @@
         "call": {
           "type": "string"
         },
+        "calls": {
+          "description": "A used mechanic's step: the world calls it made, in order.",
+          "items": {
+            "$ref": "#/$defs/Call"
+          },
+          "type": "array"
+        },
         "interface": {
           "description": "`<id>@<version>`.",
           "type": "string"

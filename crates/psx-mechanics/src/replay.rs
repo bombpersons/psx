@@ -23,6 +23,8 @@ pub trait Mechanic {
     /// `None` for an exact mechanic; a faithful one's tolerance per state
     /// field, in raw units (fields it leaves out must match exactly).
     const TOLERANCE: Option<&'static [(&'static str, i128)]>;
+    /// The mechanics whose steps its step calls, as `<id>@<version>`.
+    const USES: &'static [&'static str];
     type State;
     type Inputs;
     type Params;
@@ -36,10 +38,16 @@ pub trait Mechanic {
 
 /// The calls a step makes, checked against the trace's in order and
 /// answered with its responses. The generated implementations of the
-/// interfaces' traits call [`Calls::call`].
+/// interfaces' traits call [`Calls::call`]. A used mechanic's step is not a
+/// call the world sees: the step calls it directly, and the world calls it
+/// makes are answered from its entry's, in order.
 pub struct Calls<'t> {
-    recorded: &'t [Call],
-    next: usize,
+    /// The lists answered from, the step's own first, then the entry of each
+    /// used step under way: each with the number of its calls taken.
+    levels: Vec<(&'t [Call], usize)>,
+    uses: &'static [&'static str],
+    /// The world calls answered.
+    made: usize,
 }
 
 /// Why a step's call stopped its replay: unwound to [`trace`] without the
@@ -54,28 +62,81 @@ fn stop(why: String) -> ! {
 static NONE: Values = Values::new();
 
 impl<'t> Calls<'t> {
+    fn new(recorded: &'t [Call], uses: &'static [&'static str]) -> Calls<'t> {
+        Calls { levels: vec![(recorded, 0)], uses, made: 0 }
+    }
+
+    /// The next world call the trace has, entering used steps' entries and
+    /// leaving those whose calls are all taken.
+    fn next(&mut self) -> Option<&'t Call> {
+        loop {
+            let (list, k) = *self.levels.last().unwrap();
+            match list.get(k) {
+                Some(c) if c.call == crate::mechanic::STEP && self.uses.contains(&c.interface.as_str()) => {
+                    self.levels.last_mut().unwrap().1 += 1;
+                    self.levels.push((&c.calls, 0));
+                }
+                Some(c) => return Some(c),
+                None if self.levels.len() > 1 => {
+                    self.levels.pop();
+                }
+                None => return None,
+            }
+        }
+    }
+
+    /// Where the next call is: `call <k>`, inside the entries of the used
+    /// steps under way.
+    fn at(&self) -> String {
+        self.where_(self.levels.last().unwrap().1)
+    }
+
+    /// Where call `k` of the innermost list is.
+    fn where_(&self, k: usize) -> String {
+        let (_, outer) = self.levels.split_last().unwrap();
+        let mut out: Vec<String> = outer
+            .iter()
+            .map(|(list, n)| format!("call {} ({}.{})", n - 1, list[n - 1].interface, list[n - 1].call))
+            .collect();
+        out.push(format!("call {k}"));
+        out.join(": ")
+    }
+
     /// The step calls `interface`'s `call` with `request`: the trace's
     /// response (none for a command), once the trace has the step make this
     /// call next with this request.
     pub fn call(&mut self, interface: &str, call: &str, request: Values) -> &'t Values {
-        let k = self.next;
-        let Some(c) = self.recorded.get(k) else {
-            stop(format!("call {k}: the step calls {interface}.{call}, the trace has no more calls"))
+        let Some(c) = self.next() else {
+            stop(format!("{}: the step calls {interface}.{call}, the trace has no more calls", self.at()))
         };
+        let at = self.at();
         if c.interface != interface || c.call != call {
-            stop(format!("call {k}: the step calls {interface}.{call}, the trace has {}.{}", c.interface, c.call));
+            stop(format!("{at}: the step calls {interface}.{call}, the trace has {}.{}", c.interface, c.call));
         }
-        let path = format!("call {k} ({interface}.{call}) request");
+        let path = format!("{at} ({interface}.{call}) request");
         if let Some(d) = differs(&path, Some(&Value::Record(request)), Some(&Value::Record(c.request.clone())), 0) {
             stop(d);
         }
-        self.next += 1;
+        self.levels.last_mut().unwrap().1 += 1;
+        self.made += 1;
         c.response.as_ref().unwrap_or(&NONE)
     }
 
     /// The last call's response does not fit the interface's types.
     pub fn bad(&self, e: String) -> ! {
-        stop(format!("call {} response: {e}", self.next.saturating_sub(1)))
+        stop(format!("{} response: {e}", self.where_(self.levels.last().unwrap().1.saturating_sub(1))))
+    }
+
+    /// The world calls the trace has, in `recorded`, used steps' entries
+    /// counted by theirs.
+    fn count(&self, recorded: &[Call]) -> usize {
+        recorded
+            .iter()
+            .map(|c| match c.call == crate::mechanic::STEP && self.uses.contains(&c.interface.as_str()) {
+                true => self.count(&c.calls),
+                false => 1,
+            })
+            .sum()
     }
 }
 
@@ -163,20 +224,21 @@ pub fn trace<M: Mechanic>(t: &Trace) -> Result<(), String> {
             state = M::state(&f.before).map_err(|e| at(format!("state: {e}")))?;
         }
         let inputs = M::inputs(&f.inputs).map_err(|e| at(format!("inputs: {e}")))?;
-        let mut calls = Calls { recorded: &f.calls, next: 0 };
+        let mut calls = Calls::new(&f.calls, M::USES);
         if let Err(p) = catch_unwind(AssertUnwindSafe(|| M::step(&mut state, &inputs, &params, &mut calls))) {
             match p.downcast::<Stop>() {
                 Ok(s) => return Err(at(s.0)),
                 Err(p) => resume_unwind(p),
             }
         }
-        if let Some(c) = f.calls.get(calls.next) {
+        if let Some(c) = calls.next() {
             return Err(at(format!(
-                "the step made {} calls, the trace has {}: the next is {}.{}",
-                calls.next,
-                f.calls.len(),
+                "the step made {} calls, the trace has {}: the next is {}.{}{}",
+                calls.made,
+                calls.count(&f.calls),
                 c.interface,
-                c.call
+                c.call,
+                if calls.levels.len() > 1 { format!(", at {}", calls.at()) } else { String::new() }
             )));
         }
         let ours = M::record(&state);
@@ -304,6 +366,7 @@ mod tests {
         const VERSION: u32 = 1;
         const FINGERPRINT: &'static str = "f";
         const TOLERANCE: Option<&'static [(&'static str, i128)]> = None;
+        const USES: &'static [&'static str] = &[];
         type State = i32;
         type Inputs = bool;
         type Params = i32;
@@ -325,7 +388,8 @@ mod tests {
             }
             // Asks the world for a bonus past 12, and says when it took one.
             if *count > 12 {
-                let r = calls.call("world.bonus@1", "bonus", Values::from([("count".into(), Value::Int(*count as i128))]));
+                let r =
+                    calls.call("world.bonus@1", "bonus", Values::from([("count".into(), Value::Int(*count as i128))]));
                 let b: i32 = int(field(fields(r, &["value"]).unwrap_or_else(|e| calls.bad(e)), "value"))
                     .unwrap_or_else(|e| calls.bad(e));
                 *count += b;
@@ -366,9 +430,10 @@ mod tests {
                 r#"[{{"interface":"world.bonus@1","call":"bonus","request":{{"count":{count}}},"response":{{"value":{b}}}}},{{"interface":"world.bonus@1","call":"took","request":{{"bonus":{b}}}}}]"#
             )
         };
-        let steps = [
-            format!(r#"{{"step":0,"inputs":{{"on":true}},"state_before":{{"count":11}},"calls":{},"state":{{"count":16}}}}"#, bonus(13, 3)),
-        ];
+        let steps = [format!(
+            r#"{{"step":0,"inputs":{{"on":true}},"state_before":{{"count":11}},"calls":{},"state":{{"count":16}}}}"#,
+            bonus(13, 3)
+        )];
         let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
         assert_eq!(super::trace::<Count>(&trace("", &steps)), Ok(()));
         // The step asks with another request.
@@ -389,8 +454,65 @@ mod tests {
             Err("step 0: the step made 0 calls, the trace has 2: the next is world.bonus@1.bonus".into())
         );
         // A response the step cannot read.
-        let bad = [r#"{"step":0,"inputs":{"on":true},"state_before":{"count":11},"calls":[{"interface":"world.bonus@1","call":"bonus","request":{"count":13},"response":{"v":1}}]}"#];
+        let bad = [
+            r#"{"step":0,"inputs":{"on":true},"state_before":{"count":11},"calls":[{"interface":"world.bonus@1","call":"bonus","request":{"count":13},"response":{"v":1}}]}"#,
+        ];
         assert_eq!(super::trace::<Count>(&trace("", &bad)), Err("step 0: call 0 response: v: no such field".into()));
+    }
+
+    /// Doubles `total`, then runs a step of demo.count on it.
+    struct Outer;
+
+    impl Mechanic for Outer {
+        const ID: &'static str = "demo.outer";
+        const VERSION: u32 = 1;
+        const FINGERPRINT: &'static str = "o";
+        const TOLERANCE: Option<&'static [(&'static str, i128)]> = None;
+        const USES: &'static [&'static str] = &["demo.count@1"];
+        type State = i32;
+        type Inputs = bool;
+        type Params = i32;
+        fn state(v: &Values) -> Result<i32, String> {
+            int(field(fields(v, &["total"])?, "total")).map_err(at("total"))
+        }
+        fn inputs(v: &Values) -> Result<bool, String> {
+            Count::inputs(v)
+        }
+        fn params(v: &Values) -> Result<i32, String> {
+            Count::params(v)
+        }
+        fn record(s: &i32) -> Values {
+            fields_of(make_record([("total", Value::Int(*s as i128))]))
+        }
+        fn step(total: &mut i32, on: &bool, by: &i32, calls: &mut Calls) {
+            *total *= 2;
+            Count::step(total, on, by, calls);
+            calls.call("world.bonus@1", "took", Values::from([("bonus".into(), Value::Int(0))]));
+        }
+    }
+
+    #[test]
+    fn a_used_steps_calls_are_answered_from_its_entry() {
+        let step = |count: i32, bonus: i32| {
+            format!(
+                r#"{{"step":0,"inputs":{{"on":true}},"state_before":{{"total":6}},"calls":[{{"interface":"demo.count@1","call":"step","request":{{"on":true,"count":12}},"response":{{"count":17}},"calls":[{{"interface":"world.bonus@1","call":"bonus","request":{{"count":{count}}},"response":{{"value":3}}}},{{"interface":"world.bonus@1","call":"took","request":{{"bonus":3}}}}]}},{{"interface":"world.bonus@1","call":"took","request":{{"bonus":{bonus}}}}}],"state":{{"total":17}}}}"#
+            )
+        };
+        let outer = |s: &str| {
+            let h = r#"{"format":"mechanic-trace","format_version":1,"mechanic":"demo.outer","mechanic_version":1,"source":{"kind":"synthetic"},"producer":{"name":"test","version":"1"},"params":{"by":2},"initial_state":{"total":0}}"#;
+            Trace::parse(&format!("{h}\n{s}")).unwrap()
+        };
+        assert_eq!(super::trace::<Outer>(&outer(&step(14, 0))), Ok(()));
+        // A difference inside the used step names its entry.
+        assert_eq!(
+            super::trace::<Outer>(&outer(&step(15, 0))),
+            Err("step 0: call 0 (demo.count@1.step): call 0 (world.bonus@1.bonus) request.count is 14, the trace has 15".into())
+        );
+        // And after it, the step's own call.
+        assert_eq!(
+            super::trace::<Outer>(&outer(&step(14, 1))),
+            Err("step 0: call 1 (world.bonus@1.took) request.bonus is 0, the trace has 1".into())
+        );
     }
 
     #[test]

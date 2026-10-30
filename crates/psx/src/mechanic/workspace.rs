@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use psx_mechanics::mechanic::STEP;
 use psx_mechanics::trace::Header;
 use psx_mechanics::{Interface, Mechanic, Trace};
 use serde_json::Value;
@@ -209,7 +210,13 @@ pub fn traces(l: &Loaded) -> crate::Result<Vec<Checked>> {
     for (name, p) in psx_mechanics::trace::files(&l.dir.join("traces")) {
         let (mut problems, header) = match Trace::parse(&read(&p)?) {
             Err(e) => (vec![e], None),
-            Ok(t) => (t.check(&l.mechanic, &l.interfaces), Some(t.header)),
+            Ok(t) => {
+                let mut problems = t.check(&l.mechanic, &l.interfaces);
+                for r in &l.mechanic.uses {
+                    problems.extend(compare_used(l, &name, &t, r)?);
+                }
+                (problems, Some(t.header))
+            }
         };
         match name.split_once('/') {
             None => problems.push(
@@ -230,6 +237,73 @@ pub fn traces(l: &Loaded) -> crate::Result<Vec<Checked>> {
         out.push((name, problems, header));
     }
     Ok(out)
+}
+
+/// How the entries of `used`'s step in `t`, the trace `name` of `l`'s
+/// mechanic, differ from `used`'s own trace of the same recording: at each
+/// tick, the same steps (inputs and state as each begins, state as it ends,
+/// the calls it made) in the same order, and its params the same.
+fn compare_used(l: &Loaded, name: &str, t: &Trace, used: &str) -> crate::Result<Vec<String>> {
+    use psx_mechanics::Value;
+    let id = used.split('@').next().unwrap_or_default();
+    let steps = t.expand();
+    if !steps.iter().any(|f| f.calls.iter().any(|c| c.interface == used && c.call == STEP)) {
+        // Its step never ran here: nothing to compare, and nothing to say
+        // its params are (the used binding reads them at its first entry).
+        return Ok(Vec::new());
+    }
+    let dir = l.dir.parent().unwrap_or(&l.dir).join(id).join("traces");
+    let Some((_, path)) = psx_mechanics::trace::files(&dir).into_iter().find(|(n, _)| n == name) else {
+        return Ok(vec![format!(
+            "no trace of {id} from this recording to compare its steps here with: capture {id} from it too"
+        )]);
+    };
+    let theirs = match Trace::parse(&read(&path)?) {
+        Ok(u) => u,
+        Err(e) => return Ok(vec![format!("{id}'s trace of this recording: {e}")]),
+    };
+    if theirs.header.mechanic_version.to_string() != used.rsplit('@').next().unwrap_or_default() {
+        return Ok(vec![format!("{id}'s trace of this recording is of version {}", theirs.header.mechanic_version)]);
+    }
+    let mut problems = Vec::new();
+    for (field, r) in &l.mechanic.used_params {
+        if r == used && t.header.params.get(field) != Some(&Value::Record(theirs.header.params.clone())) {
+            problems.push(format!("params.{field} differ from the params of {id}'s trace of this recording"));
+        }
+    }
+    let mut by_tick: std::collections::BTreeMap<u64, Vec<psx_mechanics::trace::Full>> = Default::default();
+    for f in theirs.expand() {
+        by_tick.entry(f.tick.unwrap_or(u64::MAX)).or_default().push(f);
+    }
+    let mut taken: std::collections::BTreeMap<u64, usize> = Default::default();
+    for (k, f) in steps.iter().enumerate() {
+        let tick = f.tick.unwrap_or(u64::MAX);
+        for (n, c) in f.calls.iter().enumerate().filter(|(_, c)| c.interface == used && c.call == STEP) {
+            let at = format!("step {k}: calls[{n}] ({used}.{STEP}), tick {tick}");
+            let i = taken.entry(tick).or_default();
+            let Some(u) = by_tick.get(&tick).and_then(|s| s.get(*i)) else {
+                problems.push(format!("{at}: {id}'s trace of this recording has no step {} at that tick", *i));
+                return Ok(problems);
+            };
+            *i += 1;
+            let mut request = u.inputs.clone();
+            request.extend(u.before.clone());
+            let differs = if c.request != request {
+                Some("its request is not the inputs and state its step began with")
+            } else if c.response.as_ref() != Some(&u.after) {
+                Some("its response is not the state its step ended with")
+            } else if c.calls != u.calls {
+                Some("its calls are not the calls its step made")
+            } else {
+                None
+            };
+            if let Some(d) = differs {
+                problems.push(format!("{at}: {d} in {id}'s trace of this recording"));
+                return Ok(problems);
+            }
+        }
+    }
+    Ok(problems)
 }
 
 /// Every PC the binding names: what names it, the PC and its overlay.

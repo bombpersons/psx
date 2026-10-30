@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::interface::{CallKind, Interface};
 use crate::mechanic::Mechanic;
-use crate::value::{Values, check_values};
+use crate::value::{Value, Values, check_values};
 
 pub const FORMAT: &str = "mechanic-trace";
 pub const FORMAT_VERSION: u32 = 1;
@@ -167,6 +167,42 @@ pub struct Call {
     /// Queries only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<Values>,
+    /// A used mechanic's step: the world calls it made, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<Call>,
+}
+
+/// What is wrong with `calls`, made by a step that calls the interfaces of
+/// `types` and the steps of `uses`; a used step's own calls are checked
+/// against `any`.
+fn check_calls(
+    at: &str,
+    calls: &[Call],
+    types: &BTreeMap<String, BTreeMap<String, crate::interface::CallTypes>>,
+    any: &BTreeMap<String, BTreeMap<String, crate::interface::CallTypes>>,
+    uses: &[String],
+    p: &mut Vec<String>,
+) {
+    for (n, c) in calls.iter().enumerate() {
+        let at = format!("{at}: calls[{n}]");
+        let Some(ct) = types.get(&c.interface).and_then(|i| i.get(&c.call)) else {
+            p.push(format!("{at}: {}.{} is not a call of a required interface or used mechanic", c.interface, c.call));
+            continue;
+        };
+        check_values(&format!("{at}: request"), &c.request, &ct.request, false, &[], p);
+        match (ct.kind, &c.response) {
+            (CallKind::Query, Some(r)) => check_values(&format!("{at}: response"), r, &ct.response, false, &[], p),
+            (CallKind::Query, None) => p.push(format!("{at}: a query has a response")),
+            (CallKind::Command, Some(_)) => p.push(format!("{at}: a command has no response")),
+            (CallKind::Command, None) => {}
+        }
+        let used = c.call == crate::mechanic::STEP && uses.contains(&c.interface);
+        match used {
+            true => check_calls(&at, &c.calls, any, any, &[], p),
+            false if !c.calls.is_empty() => p.push(format!("{at}: only a used mechanic's step holds calls")),
+            false => {}
+        }
+    }
 }
 
 /// The trace files in a mechanic's `traces/` directory, sorted, each with its
@@ -310,10 +346,23 @@ impl Trace {
             p.push("header: a captured trace names its platform and image_sha256".into());
         }
         let types = mechanic.types(&mut Vec::new());
-        check_values("header: params", &h.params, &types.params, false, &[], &mut p);
+        let (used, own): (Values, Values) =
+            h.params.clone().into_iter().partition(|(k, _)| mechanic.used_params.contains_key(k));
+        check_values("header: params", &own, &types.params, false, &[], &mut p);
+        for name in mechanic.used_params.keys() {
+            match used.get(name) {
+                None => p.push(format!("header: params: {name} is missing")),
+                Some(Value::Record(_)) => {}
+                Some(_) => p.push(format!("header: params: {name}: the params of a used mechanic, a record")),
+            }
+        }
         check_values("header: initial_state", &h.initial_state, &types.state, false, &[], &mut p);
         let calls: BTreeMap<String, _> =
             mechanic.called(interfaces).into_iter().map(|i| (i.reference(), i.types(&mut Vec::new()))).collect();
+        // A used step's world calls are checked against every interface:
+        // its own trace, which check compares them with, holds them to its
+        // mechanic's.
+        let any: BTreeMap<String, _> = interfaces.iter().map(|i| (i.reference(), i.types(&mut Vec::new()))).collect();
         for (i, s) in self.steps.iter().enumerate() {
             let at = format!("step {i}");
             if s.step != i as u64 {
@@ -324,25 +373,7 @@ impl Trace {
                 check_values(&format!("{at}: state_before"), b, &types.state, true, &[], &mut p);
             }
             check_values(&format!("{at}: state"), &s.state, &types.state, true, &[], &mut p);
-            for (n, c) in s.calls.iter().enumerate() {
-                let at = format!("{at}: calls[{n}]");
-                let Some(ct) = calls.get(&c.interface).and_then(|i| i.get(&c.call)) else {
-                    p.push(format!(
-                        "{at}: {}.{} is not a call of a required interface or used mechanic",
-                        c.interface, c.call
-                    ));
-                    continue;
-                };
-                check_values(&format!("{at}: request"), &c.request, &ct.request, false, &[], &mut p);
-                match (ct.kind, &c.response) {
-                    (CallKind::Query, Some(r)) => {
-                        check_values(&format!("{at}: response"), r, &ct.response, false, &[], &mut p)
-                    }
-                    (CallKind::Query, None) => p.push(format!("{at}: a query has a response")),
-                    (CallKind::Command, Some(_)) => p.push(format!("{at}: a command has no response")),
-                    (CallKind::Command, None) => {}
-                }
-            }
+            check_calls(&at, &s.calls, &calls, &any, &mechanic.uses, &mut p);
         }
         p
     }
