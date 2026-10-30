@@ -28,7 +28,7 @@ Typical routes:
   (guide topic port).
 
 Tool descriptions are brief; guide topics hold the details. Use the run, input,
-fields, cases, states, code, assets, bevy and port topics for the relevant
+fields, states, code, assets, bevy and port topics for the relevant
 route, and troubleshooting for unexpected results. Inspect returned files with artifact_read:
 JSON by RFC 6901 pointer, JSONL/CSV/text by rows (frame_from/frame_to with
 frame_field, hex pc, contains, columns), hex for raw bytes and PNG as an image.
