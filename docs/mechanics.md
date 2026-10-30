@@ -392,7 +392,11 @@ psx_capture::export!(Walk);
   pointer to the player, or check a mode, so the binding works on every
   level. On `false` nothing is recorded and the routine runs on.
 - **`state`** is read at the begin and at the end, **`inputs`** at the
-  begin, **`params`** once, at the first step's begin. The compiler checks
+  begin, **`params`** at the first step's begin. Capture reads them again
+  at a later begin whenever the memory they were read from has changed
+  (at every begin when the binding read registers for them), and stops
+  with the field that differs: params that change, such as level geometry
+  the game swaps in, belong somewhere else. The compiler checks
   every field is given; psx checks each value is of its field's type.
   Constants in the code go in as values; values the game loads, such as a
   car's gear ratios, are read, so every trace carries the values of the run

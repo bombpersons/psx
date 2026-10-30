@@ -566,11 +566,17 @@ impl<'a> Plan<'a> {
 
     /// Call `i`'s params, when it is a used mechanic's step with params: the
     /// field of the step's params they are, and their values.
-    fn used_params(&self, i: usize, view: &View, step: u64, refusals: &mut Refusals) -> Option<(String, Values)> {
+    fn used_params(
+        &self,
+        i: usize,
+        view: &View,
+        step: u64,
+        refusals: &mut Refusals,
+    ) -> Option<(String, Values, Reads)> {
         let By::Used { plugin, types, params: Some(field) } = &self.specs[i].by else { return None };
         let label = format!("params.{field}");
-        let (v, _) = ask(plugin, abi::PARAMS, 0, &types.params, view, &label, "entry", step, refusals);
-        Some((field.clone(), v))
+        let (v, r) = ask(plugin, abi::PARAMS, 0, &types.params, view, &label, "entry", step, refusals);
+        Some((field.clone(), v, r))
     }
 }
 
@@ -632,6 +638,9 @@ pub(crate) struct Recorder<'a> {
     begins_filtered: u64,
     instructions: u64,
     tracker: Tracker<'a>,
+    /// The params as first read, the step's own (`None`) and each used
+    /// mechanic's (its field), with the memory they came from.
+    watches: BTreeMap<Option<String>, Watch>,
     /// The run's field and the tick under way, as the driver counts them.
     field: u64,
     tick: u64,
@@ -651,16 +660,70 @@ pub(crate) struct Before {
     /// A call entered: what the step passes it, and what the call's
     /// request reads.
     entering: Option<(Pending, (Reads, Reads))>,
-    /// A used mechanic's params, read as its step is first entered: the
-    /// field of the step's params they are, and their values.
-    used_params: Option<(String, Values)>,
+    /// A used mechanic's params, read as its step is first entered (or
+    /// when what they were read from changed): the field of the step's
+    /// params they are, their values, and what was read for them.
+    used_params: Option<(String, Values, Reads)>,
     world: Option<usize>,
     inline: bool,
 }
 
-/// A step's begin: its params (the first step only) with the memory they
-/// came from, inputs, state, the state's memory, and everything read.
-type Opening = (Option<(Values, Vec<(u32, u32)>)>, Values, Values, Vec<(u32, u32)>, Reads);
+/// A step's begin: its params (the first step, or when what they were read
+/// from changed) with what was read for them, inputs, state, the state's
+/// memory, and everything read.
+type Opening = (Option<(Values, Reads)>, Values, Values, Vec<(u32, u32)>, Reads);
+
+/// Params as read, and the memory they were read from. They hold for the
+/// whole recording: capture reads them again when that memory changed (or
+/// always, when they were read from registers), and stops if they differ.
+struct Watch {
+    values: Values,
+    memory: Vec<(u32, u32)>,
+    bytes: Vec<u8>,
+    registers: bool,
+}
+
+impl Watch {
+    fn new(m: &Machine, values: Values, reads: &Reads) -> Watch {
+        let mut memory = reads.memory.clone();
+        memory.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::new();
+        for (s, e) in memory {
+            match merged.last_mut() {
+                Some(last) if s <= last.1 => last.1 = last.1.max(e),
+                _ => merged.push((s, e)),
+            }
+        }
+        let bytes = Watch::bytes(m, &merged);
+        Watch { values, memory: merged, bytes, registers: reads.registers != 0 || reads.latched != 0 || reads.gte != 0 }
+    }
+
+    fn bytes(m: &Machine, memory: &[(u32, u32)]) -> Vec<u8> {
+        memory.iter().flat_map(|&(s, e)| memory_or_empty(m, s, e - s)).collect()
+    }
+
+    /// Whether the params may have changed since they were read.
+    fn stale(&self, m: &Machine) -> bool {
+        self.registers || Watch::bytes(m, &self.memory) != self.bytes
+    }
+
+    /// `values`, read again at step `n`: the same params (and the memory
+    /// they now come from), or why the capture stops.
+    fn again(&mut self, m: &Machine, values: Values, reads: &Reads, n: usize, label: &str) -> Result<(), Error> {
+        let changed = self.values.keys().chain(values.keys()).find(|k| self.values.get(*k) != values.get(*k));
+        if let Some(k) = changed {
+            return Err(Error::invalid(format!(
+                "step {n}: {label}.{k} is not what it was at the first step: a mechanic's params hold for the whole recording, so its binding must read the same params at every step"
+            )));
+        }
+        *self = Watch::new(m, values, reads);
+        Ok(())
+    }
+}
+
+fn memory_or_empty(m: &Machine, a: u32, n: u32) -> Vec<u8> {
+    memory(m, a, n).unwrap_or_default()
+}
 
 impl<'a> Recorder<'a> {
     pub(crate) fn new(plan: &'a Plan<'a>) -> Recorder<'a> {
@@ -673,10 +736,39 @@ impl<'a> Recorder<'a> {
             begins_filtered: 0,
             instructions: 0,
             tracker: Tracker::new(&plan.accounts, plan.begin),
+            watches: BTreeMap::new(),
             field: 0,
             tick: 0,
             failed: None,
         }
+    }
+
+    /// Params read at step `n`: the step's own (`field` None) or a used
+    /// mechanic's. The first time, they are the recording's; after that they
+    /// must be the same. The ranges of memory they came from are returned
+    /// for the audit.
+    fn watch(
+        &mut self,
+        m: &Machine,
+        field: Option<String>,
+        values: Values,
+        read: Reads,
+        n: usize,
+    ) -> Result<Option<Vec<(u32, u32)>>, Error> {
+        let ranges = read.memory.iter().map(|&(s, e)| (s, e - s)).collect();
+        if let Some(w) = self.watches.get_mut(&field) {
+            let label = field.as_ref().map_or("params".to_string(), |f| format!("params.{f}"));
+            w.again(m, values, &read, n, &label)?;
+            return Ok(Some(ranges));
+        }
+        match &field {
+            None => self.params.extend(values.clone()),
+            Some(f) => {
+                self.params.insert(f.clone(), psx_mechanics::Value::Record(values.clone()));
+            }
+        }
+        self.watches.insert(field, Watch::new(m, values, &read));
+        Ok(Some(ranges))
     }
 
     /// A field began: a step the frame ends is closed.
@@ -751,11 +843,8 @@ impl<'a> Recorder<'a> {
             let view = View { m, now: &now, latched: &now, load: None };
             let k = n + (open.is_some() && !ends) as u64;
             let first = self.steps.is_empty() && open.is_none();
-            let p = first.then(|| {
-                let (p, read) = plan.read(What::Params, &view, "begin", k, &mut tentative);
-                let ranges: Vec<(u32, u32)> = read.memory.iter().map(|&(s, e)| (s, e - s)).collect();
-                (p, ranges)
-            });
+            let again = self.watches.get(&None).is_some_and(|w| w.stale(m));
+            let p = (first || again).then(|| plan.read(What::Params, &view, "begin", k, &mut tentative));
             let (i, read_inputs) = plan.read(What::Inputs, &view, "begin", k, &mut tentative);
             let (s, read_state) = plan.read(What::State, &view, "begin", k, &mut tentative);
             let bytes = read_state.memory.clone();
@@ -775,7 +864,7 @@ impl<'a> Recorder<'a> {
         let within = inside.map(|p| p.spec);
         let entry = entry.filter(|i| specs[*i].within == within && (open.is_some() || opening.is_some()));
         let used_params = entry.filter(|i| match &specs[*i].by {
-            By::Used { params: Some(f), .. } => !self.params.contains_key(f),
+            By::Used { params: Some(f), .. } => self.watches.get(&Some(f.clone())).is_none_or(|w| w.stale(m)),
             _ => false,
         });
         let used_params = used_params.and_then(|i| {
@@ -905,10 +994,14 @@ impl<'a> Recorder<'a> {
                 let read = Reads { memory: bytes.clone(), ..Reads::default() };
                 close_with(o, (s.clone(), read), &mut self.steps, specs, refusals, &mut self.tracker);
             }
-            let data = p.map(|(p, ranges)| {
-                self.params.extend(p);
-                ranges
-            });
+            let n = self.steps.len();
+            let data = match p.map(|(p, read)| self.watch(m, None, p, read, n)).transpose() {
+                Ok(ranges) => ranges.flatten(),
+                Err(e) => {
+                    self.failed = Some(e);
+                    return;
+                }
+            };
             self.open = Some(Open {
                 latched: now,
                 frame: self.field,
@@ -933,8 +1026,12 @@ impl<'a> Recorder<'a> {
             }
             o.pending.push(p);
         }
-        if let Some((field, v)) = used_params {
-            self.params.insert(field, psx_mechanics::Value::Record(v));
+        if let Some((field, v, read)) = used_params {
+            let n = self.steps.len();
+            if let Err(e) = self.watch(m, Some(field), v, read, n) {
+                self.failed = Some(e);
+                return;
+            }
         }
         if self.open.is_some() {
             self.tracker.observe(m, info, world, inline);
@@ -1327,7 +1424,7 @@ pub struct State {
 
         fn params(&self, m: &Host) -> Vec<i32> {
             let a0 = m.latched(A0);
-            if conf().table { (0..3).map(|k| m.i32(a0 + 4 * k)).collect() } else { Vec::new() }
+            if conf().table { (0..3).map(|k| m.i32(a0 + 0x10 + 4 * k)).collect() } else { Vec::new() }
         }
     }
 
@@ -1669,14 +1766,24 @@ pub struct State {
 
     #[test]
     fn params_the_binding_reads_are_accounted_for_in_every_step() {
-        // The step reads 8(a0) and uses it; a table of three words at a0 holds it.
-        let patches = [(0x8001_010C, 0x8C89_0008), (0x8001_0118, 0x0130_2821)];
+        // The step reads 0x18(a0) and uses it; a table of three words at
+        // a0 + 0x10 holds it.
+        let patches = [(0x8001_010C, 0x8C89_0018), (0x8001_0118, 0x0130_2821)];
         let r = run_patched(Conf { table: true, ..Conf::default() }, &ADD, &patches).unwrap();
         assert_eq!(r.refusals.count, 0, "{:?}", r.refusals.listed);
         assert_eq!(json!(r.params["t"]), json!([0, 0, 0]));
         let found: Vec<Json> = r.audit.unaccounted.iter().map(|f| json!(f)).collect();
         assert_eq!(found.len(), 1, "only s0 is left: {found:?}");
         assert_eq!(found[0]["at"]["register"], "s0");
+    }
+
+    #[test]
+    fn params_that_change_stop_the_capture() {
+        // sw a0, 0x10(a0): the step writes into the table its params are.
+        let Err(e) = run_patched(Conf { table: true, ..Conf::default() }, &ADD, &[(0x8001_010C, 0xAC84_0010)]) else {
+            panic!("the capture went on");
+        };
+        assert!(e.to_string().contains("step 1: params.t is not what it was at the first step"), "{e}");
     }
 
     #[test]

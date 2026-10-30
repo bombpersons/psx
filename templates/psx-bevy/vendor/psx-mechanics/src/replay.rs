@@ -226,10 +226,15 @@ pub fn trace<M: Mechanic>(t: &Trace) -> Result<(), String> {
         let inputs = M::inputs(&f.inputs).map_err(|e| at(format!("inputs: {e}")))?;
         let mut calls = Calls::new(&f.calls, M::USES);
         if let Err(p) = catch_unwind(AssertUnwindSafe(|| M::step(&mut state, &inputs, &params, &mut calls))) {
-            match p.downcast::<Stop>() {
-                Ok(s) => return Err(at(s.0)),
-                Err(p) => resume_unwind(p),
-            }
+            let why = match p.downcast::<Stop>() {
+                Ok(s) => s.0,
+                Err(p) => match (p.downcast_ref::<&str>(), p.downcast_ref::<String>()) {
+                    (Some(m), _) => format!("the step panicked: {m}"),
+                    (_, Some(m)) => format!("the step panicked: {m}"),
+                    _ => "the step panicked".to_string(),
+                },
+            };
+            return Err(at(why));
         }
         if let Some(c) = calls.next() {
             return Err(at(format!(
@@ -386,6 +391,7 @@ mod tests {
             if *on {
                 *count += by;
             }
+            assert!(*count >= 0, "the count is below zero");
             // Asks the world for a bonus past 12, and says when it took one.
             if *count > 12 {
                 let r =
@@ -421,6 +427,15 @@ mod tests {
         assert_eq!(super::trace::<Count>(&trace("", &steps)), Err("step 0: count is 2, the trace has 3".into()));
         let steps = [r#"{"step":0,"inputs":{"on":1}}"#];
         assert_eq!(super::trace::<Count>(&trace("", &steps)), Err("step 0: inputs: on: 1 is not a bool".into()));
+    }
+
+    #[test]
+    fn a_step_that_panics_fails_its_trace() {
+        let steps = [r#"{"step":0,"inputs":{"on":true},"state_before":{"count":-5},"state":{"count":-3}}"#];
+        assert_eq!(
+            super::trace::<Count>(&trace("", &steps)),
+            Err("step 0: the step panicked: the count is below zero".into())
+        );
     }
 
     #[test]
