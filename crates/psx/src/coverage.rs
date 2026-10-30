@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CoverageArgs {
-    /// Traced runs (run --trace).
+    /// Traced runs (run --trace), or scenario recordings (.jsonl: the coverage kept beside each).
     #[arg(required_unless_present = "check")]
     #[serde(default)]
     pub runs: Vec<PathBuf>,
@@ -48,10 +48,10 @@ pub struct CoverageArgs {
 /// not, by function, block and branch way.
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CoverageDiffArgs {
-    /// Traced runs (run --trace) that do the thing whose code you want.
+    /// Traced runs (run --trace) or scenario recordings (.jsonl) that do the thing whose code you want.
     #[arg(required = true)]
     pub runs: Vec<PathBuf>,
-    /// Traced runs that do not: what they reach is left out. Repeatable, or several after one flag.
+    /// Traced runs or recordings that do not: what they reach is left out. Repeatable, or several after one flag.
     #[arg(long, required = true, num_args = 1..)]
     pub against: Vec<PathBuf>,
     /// Inventory (default inventory's out).
@@ -304,6 +304,192 @@ pub(crate) fn executed(run: &Path) -> crate::Result<Vec<(u32, u32, u64)>> {
         *words.entry((u(r, 4), u(r, 8))).or_default() += n(r, size - 8);
     }
     Ok(words.into_iter().map(|((a, w), c)| (a, w, c)).collect())
+}
+
+/// Each executed RAM word of a trace with its instruction and executions,
+/// summed over the code page copies it ran from.
+pub(crate) fn summed(t: &psx_core::trace::Tracer) -> Vec<(u32, u32, u64)> {
+    let mut words: BTreeMap<(u32, u32), u64> = BTreeMap::new();
+    for (_, addr, word, r) in t.executed() {
+        *words.entry((addr, word)).or_default() += r.count;
+    }
+    words.into_iter().map(|((a, w), n)| (a, w, n)).collect()
+}
+
+/// The coverage a recording keeps beside it (`<name>.coverage.json`).
+pub(crate) const KEPT_FORMAT: &str = "psx-recording-coverage";
+
+/// What a recording keeps of what the original ran, credited to the
+/// inventory's images as coverage credits a run: per executable or overlay
+/// (by name), the words run as `[start, end, executions]` ranges, the ways
+/// its conditional branches went, and the sha256 of the instructions run (in
+/// address order), which a later inventory's code must match; and the words
+/// no image holds, as addresses. No instruction is kept, so it can be
+/// committed with the recording.
+fn kept_doc(images: &mut [Image], words: &[(u32, u32, u64)], branches: &[Branch]) -> Value {
+    let (missing, _, _) = credit(images, 0, words);
+    credit_branches(images, 0, branches);
+    let mut groups: Vec<(&str, &str)> = images.iter().map(|i| (i.kind, i.name.as_str())).collect();
+    groups.sort_unstable();
+    groups.dedup();
+    let mut out = Vec::new();
+    for (kind, name) in groups {
+        let members: Vec<&Image> = images.iter().filter(|i| i.kind == kind && i.name == name).collect();
+        let mut ran: BTreeMap<u32, (u64, u32)> = BTreeMap::new();
+        let mut ways: BTreeMap<u32, u8> = BTreeMap::new();
+        for img in &members {
+            for (k, &n) in img.count.iter().enumerate().filter(|(_, n)| **n > 0) {
+                let a = img.base + 4 * k as u32;
+                ran.entry(a).or_insert((n, img.words[k].unwrap_or(0)));
+                if img.ways[k] != 0 {
+                    *ways.entry(a).or_default() |= img.ways[k];
+                }
+            }
+        }
+        if ran.is_empty() {
+            continue;
+        }
+        let code: Vec<u8> = ran.values().flat_map(|&(_, w)| w.to_le_bytes()).collect();
+        let mut executed: Vec<(u32, u32, u64)> = Vec::new();
+        for (&a, &(n, _)) in &ran {
+            match executed.last_mut() {
+                Some(r) if r.1 == a && r.2 == n => r.1 = a + 4,
+                _ => executed.push((a, a + 4, n)),
+            }
+        }
+        let way = |w: u8| match w {
+            1 => "taken",
+            2 => "fell through",
+            _ => "both",
+        };
+        out.push(json!({
+            "kind": kind, "name": name, "words": ran.len(), "sha256": crate::stamp::sha256(&code),
+            "executed": executed.iter().map(|&(s, e, n)| json!([hex(s), hex(e), n])).collect::<Vec<_>>(),
+            "branches": ways.iter().map(|(&a, &w)| json!([hex(a), way(w)])).collect::<Vec<_>>(),
+        }));
+    }
+    let no_image: Vec<Value> =
+        spans(missing.iter().map(|m| m.0)).iter().map(|&(s, e)| json!([hex(s), hex(e)])).collect();
+    json!({"format": KEPT_FORMAT, "format_version": 1, "images": out, "in_no_image": no_image})
+}
+
+/// What a recording keeps of `t`'s run, against the inventory `inv`; and
+/// the code it ran that the inventory knows only from the code that ran
+/// (overlays bounded_by found_code) or not at all, by name.
+pub(crate) fn keep(root: &Path, inv: &Value, t: &psx_core::trace::Tracer) -> crate::Result<(Value, Vec<String>)> {
+    let mut images = images(root, inv)?;
+    let mut doc = kept_doc(&mut images, &summed(t), &t.branches());
+    doc["inventory"] = json!({"made": inv["made"]});
+    let mut partial: Vec<String> = doc["images"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|g| g["kind"] == "overlay" && found_code(inv, g["name"].as_str().unwrap_or_default()))
+        .map(|g| format!("{} (known only from the code that ran)", g["name"].as_str().unwrap_or_default()))
+        .collect();
+    let lost: u32 = doc["in_no_image"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| Some((addr_of(&r[1])? - addr_of(&r[0])?) / 4))
+        .sum();
+    if lost > 0 {
+        partial.push(format!("{lost} words no executable or overlay of the inventory holds"));
+    }
+    Ok((doc, partial))
+}
+
+/// Whether the inventory's overlay `name` is read only around the code
+/// found in it (no file holds it).
+fn found_code(inv: &Value, name: &str) -> bool {
+    inv["overlays"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|o| o["name"].as_str() == Some(name) && o["bounded_by"] == "found_code")
+}
+
+fn addr_of(v: &Value) -> Option<u32> {
+    crate::commands::addr_value(v)
+}
+
+/// Credits a recording's kept coverage `doc` to `images` as run `run`, as
+/// coverage credits a traced run. Returns the words no image held, per
+/// executable or overlay the words credited, and the ones whose code the
+/// inventory no longer holds as the recording ran it.
+#[allow(clippy::type_complexity)]
+fn credit_kept(images: &mut [Image], run: usize, doc: &Value) -> (Vec<u32>, BTreeMap<String, u64>, Vec<String>) {
+    let mut per = BTreeMap::new();
+    let mut stale = Vec::new();
+    for g in doc["images"].as_array().into_iter().flatten() {
+        let name = g["name"].as_str().unwrap_or_default();
+        let members: Vec<usize> =
+            (0..images.len()).filter(|&i| g["kind"] == images[i].kind && images[i].name == name).collect();
+        let mut ran: Vec<(u32, u64)> = Vec::new();
+        for r in g["executed"].as_array().into_iter().flatten() {
+            let (Some(s), Some(e), Some(n)) = (addr_of(&r[0]), addr_of(&r[1]), r[2].as_u64()) else { continue };
+            ran.extend((s..e).step_by(4).map(|a| (a, n)));
+        }
+        let code: Option<Vec<u8>> = ran
+            .iter()
+            .map(|&(a, _)| members.iter().find_map(|&i| images[i].word(a)).map(u32::to_le_bytes))
+            .collect::<Option<Vec<_>>>()
+            .map(|w| w.concat());
+        if code.map(|c| crate::stamp::sha256(&c)).as_deref() != g["sha256"].as_str() {
+            stale.push(name.to_string());
+            continue;
+        }
+        for &(a, n) in &ran {
+            for &i in &members {
+                let img = &mut images[i];
+                if img.word(a).is_none() {
+                    continue;
+                }
+                let at = ((a - img.base) / 4) as usize;
+                img.count[at] += n;
+                img.credited_in[at] = run as u32 + 1;
+                for f in img.functions_at(a) {
+                    img.runs[f].insert(run);
+                }
+            }
+        }
+        for b in g["branches"].as_array().into_iter().flatten() {
+            let Some(a) = addr_of(&b[0]) else { continue };
+            let ways = match b[1].as_str() {
+                Some("taken") => 1,
+                Some("fell through") => 2,
+                _ => 3,
+            };
+            for &i in &members {
+                let img = &mut images[i];
+                if img.word(a).is_none() {
+                    continue;
+                }
+                img.ways[((a - img.base) / 4) as usize] |= ways;
+            }
+        }
+        per.insert(name.to_string(), ran.len() as u64);
+    }
+    let mut missing = Vec::new();
+    for r in doc["in_no_image"].as_array().into_iter().flatten() {
+        if let (Some(s), Some(e)) = (addr_of(&r[0]), addr_of(&r[1])) {
+            missing.extend((s..e).step_by(4));
+        }
+    }
+    (missing, per, stale)
+}
+
+/// branches.bin: each conditional branch run in RAM, its address, its
+/// instruction, and the times it was taken and fell through.
+pub(crate) fn branches_bin(t: &psx_core::trace::Tracer) -> Vec<u8> {
+    let mut branches = b"PSXBRAN1".to_vec();
+    for (addr, word, taken, fell) in t.branches() {
+        branches.extend(addr.to_le_bytes());
+        branches.extend(word.to_le_bytes());
+        branches.extend(taken.to_le_bytes());
+        branches.extend(fell.to_le_bytes());
+    }
+    branches
 }
 
 /// A conditional branch a run ran: `(address, instruction, taken, fell
@@ -632,7 +818,7 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
 }
 
 /// The inventory at `given` (default inventory's out), and its path.
-fn inventory(ctx: &Ctx, given: Option<&Path>) -> crate::Result<(PathBuf, Value)> {
+pub(crate) fn inventory(ctx: &Ctx, given: Option<&Path>) -> crate::Result<(PathBuf, Value)> {
     let inv_path = given.map(|p| at(ctx, p)).unwrap_or_else(|| crate::inventory::default_out(ctx));
     let text = std::fs::read_to_string(&inv_path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -657,15 +843,76 @@ struct Corpus {
     runs: Vec<Value>,
     /// Each run's call targets, with the run frames they were called first and last.
     calls: Vec<Vec<(u32, i64, i64)>>,
-    /// Executed words no image holds, with the runs that executed them.
-    missing: BTreeMap<(u32, u32), BTreeSet<usize>>,
+    /// Executed words no image holds, by address, with the runs that executed them.
+    missing: BTreeMap<u32, BTreeSet<usize>>,
 }
 
-/// Credits the traced runs `dirs` to the inventory `inv`'s images.
+/// What to say when code ran that the inventory knows only from what ran
+/// (overlays bounded_by found_code that coverage `images` reached) or not
+/// at all (`no_image` words or spans).
+fn unheld(inv: &Value, images: &Value, no_image: u64) -> Option<Value> {
+    let partial: Vec<&Value> = images
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|i| i["kind"] == "overlay" && i["totals"]["functions_exercised"].as_u64() > Some(0))
+        .filter(|i| found_code(inv, i["name"].as_str().unwrap_or_default()))
+        .map(|i| &i["name"])
+        .collect();
+    (no_image > 0 || !partial.is_empty()).then(|| {
+        json!({"overlays_known_only_from_what_ran": partial, "in_no_image": no_image,
+               "how": crate::scenario::UNPACK_HINT})
+    })
+}
+
+/// A scenario recording's kept coverage (`<name>.coverage.json`) credited
+/// as run `r`; its row of runs.
+fn recording(c: &mut Corpus, r: usize, path: &Path) -> crate::Result<Value> {
+    let kept = path.with_extension("coverage.json");
+    let text = std::fs::read_to_string(&kept).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::invalid(format!(
+                "{}: the recording keeps no coverage (recorded before psx kept it): scenario record it again",
+                path.display()
+            ))
+        } else {
+            Error::io(&kept, e)
+        }
+    })?;
+    let doc: Value = serde_json::from_str(&text).map_err(|e| Error::malformed(format!("{}: {e}", kept.display())))?;
+    if doc["format"] != KEPT_FORMAT {
+        return Err(Error::malformed(format!("{}: not a recording's coverage", kept.display())));
+    }
+    let (missing, per, stale) = credit_kept(&mut c.images, r, &doc);
+    for a in &missing {
+        c.missing.entry(*a).or_default().insert(r);
+    }
+    let mut row = json!({
+        "run": path, "words_executed": per.values().sum::<u64>() + missing.len() as u64,
+        "words_in_no_image": missing.len(), "words_by_image": per, "branches_recorded": true,
+        "recipe": null, "no_recipe": "a recording's coverage: scenario record makes it again",
+    });
+    if !stale.is_empty() {
+        row["not_credited"] = json!(stale);
+        row["why_not_credited"] = json!(
+            "the inventory's code there is not what the recording ran (the inventory was taken again and read it otherwise, or an overlay was unpacked since): scenario record it again"
+        );
+    }
+    Ok(row)
+}
+
+/// Credits the traced runs and recordings `dirs` to the inventory `inv`'s images.
 fn corpus(ctx: &Ctx, inv: &Value, dirs: &[PathBuf]) -> crate::Result<Corpus> {
     let mut c =
         Corpus { images: images(&ctx.root, inv)?, runs: Vec::new(), calls: Vec::new(), missing: BTreeMap::new() };
-    for (r, dir) in dirs.iter().map(|d| at(ctx, d)).enumerate() {
+    for (r, given) in dirs.iter().map(|d| at(ctx, d)).enumerate() {
+        if given.extension().is_some_and(|e| e == "jsonl") {
+            let row = recording(&mut c, r, &given)?;
+            c.calls.push(Vec::new());
+            c.runs.push(row);
+            continue;
+        }
+        let dir = given;
         let words = executed(&dir)?;
         c.calls.push(run_calls(&dir));
         let (miss, _, per) = credit(&mut c.images, r, &words);
@@ -678,7 +925,7 @@ fn corpus(ctx: &Ctx, inv: &Value, dirs: &[PathBuf]) -> crate::Result<Corpus> {
         };
         let game = words.iter().filter(|w| w.0 >= GAME_RAM).count();
         for m in &miss {
-            c.missing.entry(*m).or_default().insert(r);
+            c.missing.entry(m.0).or_default().insert(r);
         }
         // How to make it again, kept with the coverage (run directories are not).
         let (recipe, no_recipe) = match crate::states::recipe_of(ctx, &dir) {
@@ -740,7 +987,7 @@ impl CoverageArgs {
         // when there is one (its code differs there: changed at runtime).
         let mut no_image = Vec::new();
         let mut addrs: BTreeMap<u32, BTreeSet<usize>> = BTreeMap::new();
-        for ((a, _), r) in &missing {
+        for (a, r) in &missing {
             addrs.entry(*a).or_default().extend(r);
         }
         for (s, e) in spans(addrs.keys().copied()) {
@@ -784,6 +1031,12 @@ impl CoverageArgs {
             "runs": runs.iter().map(|r| json!({"run": r["run"], "words_executed": r["words_executed"], "words_in_no_image": r["words_in_no_image"], "branches_recorded": r["branches_recorded"], "no_recipe": r["no_recipe"]})).collect::<Vec<_>>(),
             "next": "read the coverage for each function's unexecuted blocks and branch_ways_missed: classify them, or record the corpus reaching them; runs without branches_recorded were traced by an older psx (trace them again for their branch ways); executed_outside_functions and in_no_image mean the inventory missed code (take it again with these runs as ram)",
         }))
+        .map(|mut r| {
+            if let Some(hint) = unheld(&inv, &doc["images"], summary["words_in_no_image"].as_u64().unwrap_or(0)) {
+                r["code_not_held"] = hint;
+            }
+            r
+        })
     }
 }
 
@@ -944,7 +1197,7 @@ impl CoverageDiffArgs {
         let b = corpus(ctx, &inv, &self.against)?;
         let (only, further, [only_instructions, blocks_only, ways_count]) = compare(&a.images, &b.images);
         // Executed words no image holds that the other runs did not execute.
-        let addrs: BTreeSet<u32> = a.missing.keys().filter(|k| !b.missing.contains_key(k)).map(|k| k.0).collect();
+        let addrs: BTreeSet<u32> = a.missing.keys().filter(|k| !b.missing.contains_key(k)).copied().collect();
         let no_image: Vec<Value> = spans(addrs)
             .into_iter()
             .map(|(s, e)| json!({"start": hex(s), "end": hex(e), "words": (e - s) / 4}))
@@ -976,6 +1229,9 @@ impl CoverageDiffArgs {
             "only": doc["only"].as_array().into_iter().flatten().take(20).map(|f| json!({"image": f["image"], "entry": f["entry"], "instructions": f["instructions"]})).collect::<Vec<_>>(),
             "next": "read out for every function, block and branch way: these are the candidates for the feature's code; disassemble or decompile them, and keep what a run without the feature also reaches out of the feature",
         });
+        if let Some(hint) = unheld(&inv, &json!(null), no_image.len() as u64) {
+            r["code_not_held"] = hint;
+        }
         if !unbranched.is_empty() {
             r["branches_not_recorded"] = json!(unbranched);
             r["note"] = json!("runs traced by an older psx record no branch ways: trace them again for branch_ways");
@@ -1263,6 +1519,64 @@ mod tests {
         assert!(only.is_empty());
         assert_eq!(further[0]["branch_ways"], json!([{"pc": "0x80100004", "way": "taken"}]));
         assert!(further[0].get("blocks").is_none());
+    }
+
+    #[test]
+    fn a_recording_keeps_coverage_without_its_code() {
+        let base = 0x8010_0000;
+        let code = vec![0x2484_0001, 0x1480_0003, 0, 0x2484_0001, 0x03E0_0008, 0, 0x03E0_0008, 0];
+        let fs = || {
+            vec![
+                Function {
+                    entry: base,
+                    end: base + 24,
+                    chunks: vec![(base, base + 24)],
+                    blocks: vec![base, base + 12, base + 16],
+                    sha: None,
+                },
+                Function {
+                    entry: base + 24,
+                    end: base + 32,
+                    chunks: vec![(base + 24, base + 32)],
+                    blocks: vec![base + 24],
+                    sha: None,
+                },
+            ]
+        };
+        let words: Vec<(u32, u32, u64)> =
+            (0..6).map(|k| (base + 4 * k, code[k as usize], 3)).chain([(0x8020_0000, 0x1234_5678, 1)]).collect();
+        let branches = [(base + 4, code[1], 2, 1)];
+        let mut direct = vec![img("ovl", base, code.clone(), fs())];
+        credit(&mut direct, 0, &words);
+        credit_branches(&mut direct, 0, &branches);
+        let doc = kept_doc(&mut [img("ovl", base, code.clone(), fs())], &words, &branches);
+        let text = doc.to_string();
+        assert!(!text.contains("24840001") && !text.contains("12345678"), "no instruction is kept: {text}");
+        assert_eq!(doc["in_no_image"], json!([["0x80200000", "0x80200004"]]));
+        let mut again = vec![img("ovl", base, code.clone(), fs())];
+        let (missing, per, stale) = credit_kept(&mut again, 0, &doc);
+        assert_eq!((missing, per["ovl"], stale.len()), (vec![0x8020_0000], 6, 0));
+        assert_eq!(report(&again[0]).0, report(&direct[0]).0);
+        // Other code at those addresses: not credited.
+        let mut other = code.clone();
+        other[3] = 0x2484_0002;
+        let mut changed = vec![img("ovl", base, other, fs())];
+        assert_eq!(credit_kept(&mut changed, 0, &doc).2, ["ovl"]);
+        assert_eq!(report(&changed[0]).2.exercised, 0);
+    }
+
+    #[test]
+    fn code_known_only_from_what_ran_points_at_unpacking() {
+        let inv = json!({"overlays": [{"name": "ovl@80100000", "bounded_by": "found_code"}, {"name": "/MENU.BIN", "bounded_by": "file"}]});
+        let images = |n: u64| {
+            json!([{"kind": "overlay", "name": "ovl@80100000", "totals": {"functions_exercised": n}},
+                   {"kind": "overlay", "name": "/MENU.BIN", "totals": {"functions_exercised": 3}}])
+        };
+        assert_eq!(unheld(&inv, &images(0), 0), None);
+        let hint = unheld(&inv, &images(2), 0).unwrap();
+        assert_eq!(hint["overlays_known_only_from_what_ran"], json!(["ovl@80100000"]));
+        assert!(hint["how"].as_str().unwrap().contains("Decompressed code"));
+        assert_eq!(unheld(&inv, &json!(null), 5).unwrap()["in_no_image"], 5);
     }
 
     #[test]

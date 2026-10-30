@@ -2745,6 +2745,9 @@ impl InventoryArgs {
         let old_traces: Vec<Value> =
             inputs.iter().filter(|i| i["overwritten_pages_kept"] == false).map(|i| i["run"].clone()).collect();
         let mut next = String::from("read the inventory for functions and gaps");
+        if found_code > 0 {
+            next += "; overlays_bounded_by_found_code are code no disc file holds as it ran, read only around the code that ran: if the game decompressed it, unpack it (guide topic code, Decompressed code) and take the inventory again with --unpacked, so its functions are read whole and coverage counts them";
+        }
         if !old_traces.is_empty() {
             next += "; the runs in traced_before_overwritten_pages_were_kept were traced before run --trace kept the pages RAM stopped holding, so code beside one may be read on into code no longer there: record them again with run --trace (the same recipe) and take the inventory again";
         }

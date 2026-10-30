@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use psx_core::Machine;
+use psx_core::trace::{TraceConfig, Tracer};
 use psx_scenario::Release;
 use psx_scenario::scenario::{self as format, Full, Header, Producer, Recording, Scenario, Source, SourceKind};
 use psx_scenario::{Glossary, Type, Values};
@@ -272,13 +273,15 @@ struct Quantities<'a> {
 }
 
 /// The quantities at the end of every tick of a run of `frames` fields
-/// after the first tick, with `events` as the pad's input.
+/// after the first tick, with `events` as the pad's input; `tracer` sees
+/// every instruction run, from the start.
 fn record(
     m: &mut Machine,
     q: &Quantities,
     frames: u32,
     events: &[crate::replay::Input],
     deadline: Duration,
+    mut tracer: Option<&mut Tracer>,
 ) -> Recorded {
     let started = Instant::now();
     // The pad is released until the first tick ends: `initial` is the moment
@@ -314,7 +317,11 @@ fn record(
                 break;
             }
         }
-        if !tick.ended_by(&m.step()) {
+        let info = m.step();
+        if let Some(t) = tracer.as_deref_mut() {
+            t.after_step(&info, &m.cpu, &m.bus);
+        }
+        if !tick.ended_by(&info) {
             continue;
         }
         // A tick ended: its quantities, as the store left them.
@@ -347,6 +354,18 @@ fn record(
         }
     }
     out
+}
+
+/// What to do about code the inventory knows only from what ran, or not at
+/// all.
+pub(crate) const UNPACK_HINT: &str = "the inventory does not hold all the code that ran, so its functions there are not counted: if the game decompressed that code from the disc, unpack it (guide topic code, Decompressed code) and take the inventory again with --unpacked; if no snapshot held it, take the inventory again with a run that has it in RAM as --ram. Traced runs are credited anew; a scenario recording keeps only addresses there, so record it again";
+
+/// A tracer that keeps only coverage (no trace lines), from now.
+fn tracer(m: &mut Machine) -> Tracer {
+    // The tracer copies a code page again when a store changed it.
+    m.bus.page_writes = vec![0; psx_core::bus::RAM_SIZE / psx_core::trace::CODE_PAGE];
+    let cfg = TraceConfig { from_frame: m.bus.frames, start_pc: None, frames: None, ranges: Vec::new(), max_lines: 0 };
+    Tracer::new(cfg, Box::new(std::io::sink()), None)
 }
 
 /// What `record` says about a run that gave no recording.
@@ -423,11 +442,16 @@ fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
     if crate::replay::uses_sticks(&events) {
         return Err(Error::invalid("the port's scenario runner has digital buttons only: record without the sticks"));
     }
+    // The recording keeps what the original ran against the inventory.
+    let (_, inv) = crate::coverage::inventory(ctx, None).map_err(|e| {
+        Error::invalid(format!("{e}: scenario record keeps what the original ran as the inventory's functions"))
+    })?;
     let b = binding(root, g)?;
     let mut m = machine(ctx, &chain, &state, &b.described().source)?;
     let compared = l.compared();
     let q = Quantities { binding: &b, types: g.types(), kept: compared.keys().cloned().collect() };
-    let r = record(&mut m, &q, a.frames, &events, Duration::from_secs(a.timeout));
+    let mut tracer = tracer(&mut m);
+    let r = record(&mut m, &q, a.frames, &events, Duration::from_secs(a.timeout), Some(&mut tracer));
     if let Some(why) = unrecorded(&r) {
         return Ok((false, why));
     }
@@ -467,13 +491,21 @@ fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
         std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
     }
     std::fs::write(&out, rec.to_jsonl()).map_err(|e| Error::io(&out, e))?;
+    // What the original ran while recording, for coverage.
+    let (mut kept, partial) = crate::coverage::keep(root, &inv, &tracer)?;
+    kept["recording"] = json!(rel(root, &out));
+    let kept_path = out.with_extension("coverage.json");
+    let text = serde_json::to_string_pretty(&kept).unwrap_or_default() + "\n";
+    std::fs::write(&kept_path, text).map_err(|e| Error::io(&kept_path, e))?;
     let last = r.ticks.last();
-    Ok((
-        true,
-        json!({"status": "recorded", "recording": rel(root, &out), "written": true,
-               "ticks": r.ticks.len(), "fields": last.map(|t| t.field),
-               "next": "psx scenario check runs the determinism check on the scenario's recordings"}),
-    ))
+    let mut result = json!({"status": "recorded", "recording": rel(root, &out), "written": true,
+           "ticks": r.ticks.len(), "fields": last.map(|t| t.field), "coverage": rel(root, &kept_path),
+           "next": "psx scenario check runs the determinism check on the scenario's recordings"});
+    if !partial.is_empty() {
+        result["coverage_partial"] = json!(partial);
+        result["coverage_note"] = json!(UNPACK_HINT);
+    }
+    Ok((true, result))
 }
 
 impl Op for ScenarioRecordArgs {
@@ -579,7 +611,7 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
             .map_err(|e| Error::malformed(format!("{name}: producer.details.input: {e}")))?;
         let events = crate::replay::resolve(None, Some(&events), frames as u64).map_err(Error::invalid)?;
         let mut m = machine(ctx, &chain, &second, &b.described().source)?;
-        let r = record(&mut m, &q, frames, &events, timeout);
+        let r = record(&mut m, &q, frames, &events, timeout, None);
         let (diffs, schedule) = match unrecorded(&r) {
             Some(why) => (
                 vec![format!("the second route gave no recording: {}", why["status"].as_str().unwrap_or(""))],
@@ -826,11 +858,18 @@ pub struct Quantities {
         let types: BTreeMap<String, Type> =
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
-        let r = record(&mut m, &q, 1, &[], Duration::from_secs(60));
+        let mut t = tracer(&mut m);
+        let r = record(&mut m, &q, 1, &[], Duration::from_secs(60), Some(&mut t));
         assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
         assert_eq!(r.initial, Some([("x".to_string(), psx_scenario::Value::Int(1))].into()));
         assert_eq!(r.ticks[0].values, [("x".to_string(), psx_scenario::Value::Int(2))].into());
         assert!(r.ticks.len() > 10, "{} ticks", r.ticks.len());
+        // What the recording keeps for coverage: every word of the loop, at
+        // least once per tick (the last pass stops partway).
+        let words = crate::coverage::summed(&t);
+        assert_eq!(words.len(), loop_.len());
+        assert_eq!((words[3].0, words[3].1), (0x8001_000C, loop_[3]));
+        assert!(words.iter().all(|w| w.2 as usize >= r.ticks.len()), "{words:x?}");
     }
 
     #[test]

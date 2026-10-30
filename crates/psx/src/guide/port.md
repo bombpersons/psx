@@ -52,7 +52,10 @@ the workspace's AGENTS.md and game/AGENTS.md.
 
 Evidence: the disc and psx are the only sources. Record the original as
 scenario recordings from named start states (guide topic states), and cite
-the address, writer or recording beside each constant and rule.
+the address, writer or recording beside each constant and rule. Each
+recording keeps what the original ran as the inventory's code
+(<name>.coverage.json), so take code_inventory before recording, and unpack
+compressed overlays first (guide topic code, Decompressed code).
 
 Template updates: port_update replaces untouched psx-bevy/ and vendor/
 files, writes <file>.psx-new beside edited ones (merge it, keeping the

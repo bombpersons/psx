@@ -221,7 +221,8 @@ enum PortAction {
 #[allow(clippy::large_enum_variant)] // parsed once per process
 enum ScenarioAction {
     /// Run the game from the scenario's state with input and write scenarios/<ID>/<NAME>.jsonl:
-    /// the compared glossary quantities at the end of every tick.
+    /// the compared glossary quantities at the end of every tick; and beside it <NAME>.coverage.json,
+    /// what the original executed as the inventory's code, which code coverage reads.
     Record(Box<scenario::ScenarioRecordArgs>),
     /// The determinism check: reach each scenario again with idle fields added before its
     /// chain's last run, record its recordings again from there, and compare.

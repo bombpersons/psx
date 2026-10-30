@@ -154,6 +154,22 @@ builds the glossary's binding, stops at each tick store and keeps the
 compared quantities. Analog sticks are refused: the port's runner has
 digital buttons only.
 
+It also traces the run and keeps what the original executed beside the
+recording, in `scenarios/<id>/<name>.coverage.json`, credited to the
+workspace's inventory (`psx code inventory`, which must exist first) as
+`code coverage` credits a traced run: per executable or overlay, the
+address ranges run and how often, the ways each conditional branch went,
+and a hash of the instructions run. No instruction is kept, so the file
+is committed with the `.jsonl`. `psx code coverage` and `code coverage
+diff` take the recording's `.jsonl` as one of their runs, so a feature's
+coverage is the union over its recordings without running them again.
+An inventory taken again keeps crediting a recording while it holds the
+same code where the recording ran; where it does not (an overlay unpacked
+since), coverage says so and the recording is made again. Code the
+inventory held only partly when recording (an overlay known only from the
+code that ran, or none) is in the record's result: unpack it first
+(guide topic code), then record.
+
 ```json
 {"format": "scenario-recording", "format_version": 1, "scenario": "level_start",
  "source": {"kind": "captured", "platform": "psx", "image_sha256": "…"},

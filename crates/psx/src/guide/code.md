@@ -20,7 +20,8 @@ stores, and bits=MASK keeps the loads whose value is tested with those bits
 compare the whole word (any button at all) are not bit tests.
 
 Finding a feature's code: trace runs that do the thing (walking, a jump)
-and runs from the same state that do not (standing still), take
+and runs from the same state that do not (standing still), or use scenario
+recordings (each .jsonl keeps its coverage beside it), take
 code_inventory with one of them as ram, then code_coverage_diff runs=[the
 ones doing it] against=[the others]. only lists the functions only they
 executed; further lists, in functions both reached, the blocks and branch
@@ -67,7 +68,8 @@ named findings; the body-bound names it exports can be checked
 against resident bytes in native traces. An address alone cannot identify overlays.
 
 Decompressed code. code_inventory reads an overlay no file holds only around the
-code found in it (bounded_by found_code). When such code was decompressed
+code found in it (bounded_by found_code), and coverage counts only the
+functions found there (code_not_held says so). When such code was decompressed
 from the disc, give code_inventory the decompressed bytes to read it whole:
 1. Find what wrote it: run with watch on one of its addresses gives the
    writer's pc; code_disasm it (and what calls it) for the format and the disc
