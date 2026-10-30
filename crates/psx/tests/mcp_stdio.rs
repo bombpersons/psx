@@ -1281,7 +1281,6 @@ fn mcp_tools_match_cli() {
         "ghidra_export_symbols",
         "xa",
         "str",
-        "loads",
         "native",
     ];
     want.sort_unstable();
@@ -2430,6 +2429,9 @@ fn run_save_as_names_states_with_their_chains() {
     assert!(error && again["error"]["message"].as_str().unwrap().contains("replace"), "{again}");
     let (bare, error, _) = rpc.tool("run", json!({"bios":"bios.bin","frames":1,"save_as":"x"}));
     assert!(error && bare["error"]["message"].as_str().unwrap().contains("description"), "{bare}");
+    // --trace-cd decodes loads when there is a disc to map them to.
+    let (cd, error, _) = rpc.tool("run", json!({"bios":"bios.bin","frames":1,"trace_cd":true,"summary":true}));
+    assert!(!error && cd["loads"]["note"].as_str().unwrap().contains("no disc"), "{cd}");
     drop(rpc);
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -209,7 +209,6 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::ghidra::ExportArgs>("ghidra_export_symbols", "Export a Ghidra analysis's function names as .symbols.json, bound to the input hash and function bytes, for the symbols argument of run, loads, disasm or xrefs.").heavy(),
         def::<crate::xa_cmd::XaArgs>("xa", "List the XA-ADPCM channels in a streamed file (rate, stereo, duration, sectors); with channel and out, decode one channel to a 44.1 kHz WAV."),
         def::<crate::str_cmd::StrArgs>("str", "Decode an STR/MDEC movie from image.cue::/PATH into out: frame PNGs, audio.wav, a contact sheet and summary. frames limits the PNGs; frame_parser handles custom frame wrappers.").heavy(),
-        def::<crate::provenance::LoadsArgs>("loads", "Turn a run recorded with trace_cd into disc-to-RAM provenance: which file and offset each CD transfer copied where, verified against the run's final RAM. Paged; symbols names the reading code.").heavy(),
         def::<crate::native::NativeArgs>("native", "Emulator diagnostic: boot the native core from power-on and report where it got (PC, CD history, SPU state, unhandled I/O, hot PCs, speed). For game investigation use run.").heavy().default_timeout().screen(),
     ]
 }

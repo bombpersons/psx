@@ -131,9 +131,6 @@ enum Command {
     Xa(xa_cmd::XaArgs),
     /// Decode an STR movie (MDEC BS v1/v2/v3) into PNG frames, audio.wav and summary.json.
     Str(str_cmd::StrArgs),
-    /// Decode a `--trace-cd` run into disc → RAM load runs, mapped to ISO9660 files
-    /// and verified against the run's final RAM.
-    Loads(provenance::LoadsArgs),
     /// Emulator diagnostics: run the native core from power-on for N frames and report
     /// how far it got and which hardware it is missing. For game RE use `run`.
     Native(native::NativeArgs),
@@ -312,7 +309,6 @@ fn main() -> ExitCode {
         Command::Xa(a) => a.exec(&ctx),
         Command::Str(a) => a.exec(&ctx),
         Command::Run(a) => a.exec(&ctx),
-        Command::Loads(a) => a.exec(&ctx),
         Command::Native(a) => a.exec(&ctx),
         Command::Ram { action } => action.exec(&ctx),
         Command::Scenario { action } => match action {

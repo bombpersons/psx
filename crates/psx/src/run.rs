@@ -74,7 +74,9 @@ pub struct RunCmdArgs {
     #[arg(long, default_value_t = d_run_timeout())]
     #[serde(default = "d_run_timeout")]
     pub timeout: u64,
-    /// Log CD-ROM controller and CD DMA register writes (cd.jsonl).
+    /// Log CD-ROM controller and CD DMA register writes (cd.jsonl), and decode them into
+    /// loads.json: each transfer's disc file and offset, where in RAM it went, and
+    /// whether the final RAM still holds it (names the reading code with --symbols).
     #[arg(long)]
     #[serde(default)]
     pub trace_cd: bool,
@@ -161,6 +163,7 @@ impl RunCmdArgs {
         }
         let bios = resolved.bios.unwrap();
         let (short, summarise) = (a.brief, a.summary);
+        let loads = a.trace_cd.then(|| (resolved.media.clone(), a.symbols.clone()));
         let (mut complete, mut value) = run(
             &ctx.root,
             RunArgs {
@@ -198,6 +201,9 @@ impl RunCmdArgs {
                     .collect::<Vec<_>>())
                 .unwrap_or_default()
         );
+        if let (Some((media, symbols)), Some(dir)) = (loads, value["run_dir"].as_str().map(PathBuf::from)) {
+            value["loads"] = decode_loads(&dir, media.as_deref(), &symbols);
+        }
         // The full report always goes to the run directory.
         if let Some(dir) = value["run_dir"].as_str().map(PathBuf::from) {
             let p = dir.join("report.json");
@@ -465,6 +471,26 @@ pub fn run(root: &Path, a: RunArgs) -> crate::Result<(bool, Value)> {
 }
 
 /// The `--brief` view of a run report.
+/// `--trace-cd`'s loads: each CD transfer as disc file and offset to RAM,
+/// verified against the run's final RAM, in loads.json; counts in the report.
+fn decode_loads(dir: &Path, media: Option<&Path>, symbols: &[PathBuf]) -> Value {
+    let Some(disc) = media.filter(|m| psx_media::disc::Disc::open(m).is_ok()) else {
+        return json!({"note": "the run has no disc: cd.jsonl has the controller's log, but no files to map loads to"});
+    };
+    let decoded = crate::load_symbols(symbols)
+        .and_then(|scopes| crate::provenance::report(dir, disc, &scopes).map_err(Error::malformed));
+    let v = match decoded {
+        Ok(v) => v,
+        Err(e) => return e.to_value(),
+    };
+    let file = dir.join("loads.json");
+    if let Err(e) = std::fs::write(&file, serde_json::to_vec_pretty(&v).unwrap_or_default()) {
+        return Error::io(&file, e).to_value();
+    }
+    json!({"file": file, "method": v["method"], "transfers": v["transfers"], "evidence": v["evidence"],
+        "runs": v["runs"].as_array().map_or(0, Vec::len), "disc_files": v["files"].as_array().map_or(0, Vec::len)})
+}
+
 pub(crate) fn brief(v: &Value) -> Value {
     let mut frames = v["frames"].clone();
     if let Some(f) = frames.as_object_mut() {
@@ -490,6 +516,7 @@ pub(crate) fn brief(v: &Value) -> Value {
         "screens",
         "states",
         "saved_as",
+        "loads",
         "read_watch",
         "spu",
         "audio",
@@ -588,8 +615,10 @@ pub(crate) fn summary(v: &Value) -> Value {
     if v["event_logs"].as_object().is_some_and(|m| !m.is_empty()) {
         s["event_logs"] = v["event_logs"].clone();
     }
-    if !v["saved_as"].is_null() {
-        s["saved_as"] = v["saved_as"].clone();
+    for k in ["saved_as", "loads"] {
+        if !v[k].is_null() {
+            s[k] = v[k].clone();
+        }
     }
     if let Some(pokes) = v["pokes"].as_array() {
         s["pokes"] = json!(pokes.len());

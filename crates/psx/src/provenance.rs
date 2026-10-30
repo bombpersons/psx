@@ -18,52 +18,10 @@
 
 use std::path::Path;
 
-use crate::Error;
-use crate::commands::{Ctx, Op, Outcome};
 use psx_media::Disc;
 use psx_media::iso9660::FileSystem;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::PathBuf;
-
-#[derive(clap::Args, Deserialize, JsonSchema)]
-pub struct LoadsArgs {
-    /// A run directory recorded with --trace-cd.
-    pub run_dir: PathBuf,
-    /// The disc image the run used.
-    #[arg(long)]
-    pub disc: PathBuf,
-    /// Include at most N individual runs (1..=1000); spans describe the full result.
-    #[arg(long, default_value_t = crate::page::default_limit())]
-    #[serde(default = "crate::page::default_limit")]
-    pub limit: usize,
-    #[arg(long, default_value_t = 0)]
-    #[serde(default)]
-    pub offset: usize,
-    /// `.symbols.json` (verified against RAM) or `.sym` files from `psx code symbols`; repeatable.
-    #[arg(long = "symbols")]
-    #[serde(default)]
-    pub symbols: Vec<PathBuf>,
-}
-
-impl Op for LoadsArgs {
-    fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::result((|| -> crate::Result<Value> {
-            crate::page::validate(self.limit).map_err(Error::invalid)?;
-            let scopes = crate::load_symbols(&self.symbols)?;
-            let mut v = report(&self.run_dir, &self.disc, &scopes).map_err(Error::malformed)?;
-            if let Some(runs) = v["runs"].as_array_mut() {
-                let total = runs.len();
-                let rows: Vec<_> = runs.iter().skip(self.offset).take(self.limit).cloned().collect();
-                *runs = rows;
-                v["page"] = crate::page::metadata(total, self.offset, v["runs"].as_array().unwrap().len(), self.limit);
-                v["runs_total"] = json!(total);
-            }
-            Ok(v)
-        })())
-    }
-}
 
 #[derive(Deserialize)]
 struct CdEvent {
