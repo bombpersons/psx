@@ -36,6 +36,9 @@ access, account for what was read, and check the results.
 | Where the PlayStation keeps things | `binding.toml` | a Rust binding crate using `psx_capture` |
 | Traces | JSON lines, captured from a state and input | unchanged, plus a fingerprint of the mechanic's types; captured from scenario recordings only |
 | Checking the port | step replay through an adapter, and scenarios | scenarios only, with mechanic coverage linked to them |
+| Glossary quantities | `glossary.toml`, `[quantities]` | a Rust struct in the `glossary` crate |
+| Where the PlayStation keeps them, and the tick | `glossary.toml`, `[bindings]` and `tick` | the glossary's Rust binding using `psx_capture` |
+| Scenario files and recordings | TOML and JSON lines | unchanged |
 | `NOTES.md` | quirks and uncovered branches | unchanged |
 | Capture, the read audit, coverage, external changes | psx | psx, unchanged in what they report |
 
@@ -65,6 +68,11 @@ Workspace layout:
 interfaces/world.floor-slope/
   Cargo.toml
   src/lib.rs
+glossary/
+  Cargo.toml          # package glossary; no dependencies
+  src/lib.rs          # Quantities
+  binding/            # package glossary-binding; the tick and where each quantity is
+scenarios/<id>.toml   # unchanged
 mechanics/croc.turn/
   Cargo.toml          # package croc-turn; depends on interfaces and mechanics only
   src/lib.rs          # header, types, step
@@ -322,9 +330,72 @@ the other way at one step, and reports outcomes whose forcing changes no
 compared quantity, meaning that recording does not really test them. It
 is not part of this plan.
 
-## 8. What it means for the port design
+## 8. The glossary and scenario files
 
-`docs/port-design.md` changes in four places:
+`glossary.toml` (`docs/scenarios.md`) is two files in one, the same two
+layers as a mechanic:
+
+- `[quantities.*]`: names, types, units and descriptions in game terms;
+- `[bindings.*]` and `tick`: PlayStation addresses, `{ pointer, offset }`
+  chains, and the store that ends a logic step.
+
+Its bindings already need vocabulary of their own (one pointer level), and
+the next quantities will want more: an enemy found through the object
+list, a value that means something only while a flag is set. So it splits
+the same way:
+
+- **The quantities** are a plain Rust struct in a `glossary` crate, under
+  the mechanic's rules: no dependencies, units and descriptions in doc
+  comments, read by psx with `syn`.
+
+  ```rust
+  //! Croc (Europe) SLES-00593: the quantities scenarios compare.
+
+  pub struct Quantities {
+      /// Croc's position across the level, in world units.
+      pub croc_x: i32,
+      // …
+  }
+  ```
+
+- **Their binding** is a Rust program against `psx_capture`, beside the
+  mechanics' bindings: the tick hook, and one function that reads every
+  quantity from a `Machine`. Pointer chains and list walks are ordinary
+  code there.
+
+  ```rust
+  impl capture::Glossary for Glossary {
+      fn tick(&self, b: &mut Bracket) { b.store(0x8007_5240, 4).at_pc(0x8001_3CA8); }
+      fn quantities(&self, m: &Machine) -> Quantities {
+          let croc = m.read_u32(0x8007_528C);
+          Quantities { croc_x: m.read_i32(croc + 0x370), /* … */ }
+      }
+  }
+  ```
+
+  The release's identity (`source`) moves there too.
+
+`psx scenario record` builds the glossary's binding the way `mechanic
+capture` builds a mechanic's. Once capture runs over scenario recordings
+(section 7), one binary records the quantities and every mechanic's traces
+in the same run.
+
+The port's getters stay as they are, registered by name. A later option,
+not part of this plan: the port fills a `Quantities` struct, so a missing
+or misspelt quantity is a compile error rather than a failed run.
+
+**Scenario files stay TOML.** `scenarios/<id>.toml` holds a feature id, a
+moment in prose, a states chain, the port's launcher name, idle fields,
+the quantities compared with their tolerances, and the launcher's
+parameters. Nothing in it is a location, a layout or a rule; it is
+configuration a person writes and edits by hand. psx checks it against the
+Rust glossary: each compared name must be a quantity there. Recordings
+stay JSON lines.
+
+## 9. What it means for the port design
+
+`docs/port-design.md` changes in five places, and `docs/scenarios.md` in
+its glossary section (section 8):
 
 - **Section 5.4.** "The step is the port's own code" stays true, but the
   port no longer has a trace adapter per mechanic. The mechanic's `step`
@@ -335,7 +406,7 @@ is not part of this plan.
   need a dependency, against both rules above. This plan drops it: exact
   mechanics are plain integers, and the port chooses its own types, held
   to the scenarios' tolerances. The `f32` drift report goes with it.
-  **This is a decision for the person** (section 11).
+  **This is a decision for the person** (section 12).
 - **Section 6, tests.** Layer 1 (step replay) proves the reference, not
   the port. Layer 2 (scenarios) is the port's test, with the coverage
   link above.
@@ -343,8 +414,10 @@ is not part of this plan.
   items are described in Rust terms; capture runs over scenario
   recordings; the read audit, external changes, coverage and refusals are
   unchanged.
+- **Section 4, Glossary.** Quantities are a Rust struct and their binding
+  a Rust program (section 8).
 
-## 9. Level data
+## 10. Level data
 
 Data params are read from RAM by the binding and written into the trace,
 so a trace replays on its own: checking a mechanic never needs the disc.
@@ -355,7 +428,7 @@ frees models the level does not use. An extractor reading the disc must
 reproduce that, and each captured level is its test: extract level 1-1 and
 compare with the params in its traces.
 
-## 10. The order of work
+## 11. The order of work
 
 Each step ends with something that runs, and is committed.
 
@@ -365,14 +438,14 @@ Each step ends with something that runs, and is committed.
 | R2 | M | The `syn` front end in `psx-mechanics`: header, types, the portable subset, the fingerprint, into the model capture uses today. `psx mechanic check` reads Rust mechanics. `croc.turn` converted, types only. |
 | R3 | L | `psx_capture`: `Machine` with tracked reads, `Bracket` and hooks, `is_step`, params, explained reads; `psx mechanic capture` builds and runs a binding. `croc.turn` bound in Rust. **Its traces must equal the TOML binding's for the same recordings**, which checks the new capture against the old. |
 | R4 | M | The replay crate and its generated glue; `croc.turn`'s `step` written and replaying exactly. |
-| R5 | M | `croc.ground-move` and `croc.tick` converted the same way, traces compared with the old ones. The TOML formats, their schemas and the TOML binding vocabulary removed; `docs/mechanics.md`, the guide and the template rewritten. |
-| R6 | M | Capture over scenario recordings: `--scenario` and `--recording`, every bound mechanic in one run, the trace header naming both. Croc's scenarios start at level starts; his traces are captured again from their recordings. `port status` reports each mechanic's branch outcomes confirmed in the port, and a failing recording's tick points at the traces of that tick. |
+| R5 | L | `croc.ground-move` and `croc.tick` converted the same way, traces compared with the old ones. The glossary converted: `Quantities` and its Rust binding, `scenario record` building it, recordings compared with the old ones. The TOML mechanic, interface, binding and glossary formats, their schemas and the TOML binding vocabulary removed; `docs/mechanics.md`, `docs/scenarios.md`, the guide and the template rewritten. |
+| R6 | M | Capture over scenario recordings: `--scenario` and `--recording`, the glossary and every bound mechanic in one run, the trace header naming both. Croc's scenarios start at level starts; his traces are captured again from their recordings. `port status` reports each mechanic's branch outcomes confirmed in the port, and a failing recording's tick points at the traces of that tick. |
 | R7 | L | Collision: the map reader (pieces with their models), the floor cache as array state, the objects interface, the probe points. Captured from scenario recordings with a clear audit and replayed. |
 
 Then the pilot continues where it stopped: `croc.tick`'s sound and rng
 interfaces, Croc's fields and script variables, and the port.
 
-## 11. Decisions for the person
+## 12. Decisions for the person
 
 1. **How the binding runs.** Recommended: it links `psx_capture`, and
    with it psx's native core, as a normal Rust dependency pinned by `port
@@ -384,7 +457,7 @@ interfaces, Croc's fields and script variables, and the port.
    in its own process asking psx for reads (decoupled, but slow for
    bindings that read thousands of bytes per step).
 2. **Numbers.** Drop `Scalar`, `Fixed`, the `f32` instantiation and the
-   drift report (section 8). Recommended.
+   drift report (section 9). Recommended.
 3. **TOML alongside Rust.** Recommended: no. One format; the TOML formats
    are removed once Croc's mechanics are converted (R5).
 4. ~~**How the port is checked.**~~ Settled: by scenarios only, with every
