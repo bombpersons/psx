@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
+use crate::interface::{Call, CallKind, Interface};
 use crate::mechanic::{Exactness, Mechanic, Per, Rate};
 use crate::value::{Field, Kind, Value, is_id};
 
@@ -66,20 +67,8 @@ pub struct Crate<'a> {
 pub fn mechanic(c: &Crate) -> Result<(Mechanic, Vec<String>), Vec<String>> {
     let mut problems = Vec::new();
     let deps = manifest(c.cargo_toml, &mut problems);
-    let mut parsed = Vec::new();
-    for (path, text) in c.files {
-        match syn::parse_file(text) {
-            Ok(f) => parsed.push((path.as_str(), f)),
-            Err(e) => problems.push(format!("{path}:{}: {e}", e.span().start().line)),
-        }
-    }
-    if parsed.len() != c.files.len() {
-        return Err(problems);
-    }
-    let Some((_, lib)) = parsed.iter().find(|(p, _)| *p == LIB) else {
-        problems.push(format!("{LIB}: no such file"));
-        return Err(problems);
-    };
+    let parsed = parse(c, &mut problems)?;
+    let lib = &parsed.iter().find(|(p, _)| *p == LIB).expect("parse found it").1;
     let items = Items::of(lib);
     let mut p = Problems { file: LIB, out: &mut problems };
     let consts = header(&items, &mut p);
@@ -585,10 +574,31 @@ fn step_signature(file: &syn::File) -> Result<Option<Vec<&'static str>>, String>
 /// The glue a binding needs for the mechanic `c` declares: a
 /// `psx_capture::Mechanic` implementation, `Mechanic`, giving its id,
 /// version and fingerprint and its `State`, `Inputs` and `Params` in the
-/// trace's encoding. Its types are named through the crate the package is
-/// (`croc-turn` is `croc_turn`).
-pub fn glue(c: &Crate) -> Result<String, Vec<String>> {
+/// trace's encoding, and for each interface it requires (among
+/// `interfaces`, the crates it depends on) a module of its calls. Types
+/// are named through the crate each package is (`croc-turn` is
+/// `croc_turn`).
+pub fn glue(c: &Crate, interfaces: &[Crate]) -> Result<String, Vec<String>> {
     let (m, _) = mechanic(c)?;
+    let mut calls = String::new();
+    let mut found = Vec::new();
+    for i in interfaces {
+        let (i, code) = call_glue(i)?;
+        if m.requires.contains(&i.reference()) {
+            found.push(i.reference());
+            calls.push('\n');
+            calls.push_str(&code);
+        }
+    }
+    let missing: Vec<String> = m
+        .requires
+        .iter()
+        .filter(|r| !found.contains(r))
+        .map(|r| format!("Cargo.toml: requires {r}, which no interface it depends on declares"))
+        .collect();
+    if !missing.is_empty() {
+        return Err(missing);
+    }
     let krate = package(c.cargo_toml).map_err(|e| vec![e])?.replace('-', "_");
     let lib = c.files.iter().find(|(p, _)| p == LIB).map(|(_, t)| t).expect("read by mechanic");
     let file = syn::parse_file(lib).map_err(|e| vec![format!("{LIB}: {e}")])?;
@@ -616,7 +626,7 @@ pub fn glue(c: &Crate) -> Result<String, Vec<String>> {
          impl psx_capture::Mechanic for Mechanic {{\n    \
          const ID: &'static str = {:?};\n    \
          const VERSION: u32 = {};\n    \
-         const FINGERPRINT: &'static str = {:?};\n{}\n{}\n}}\n",
+         const FINGERPRINT: &'static str = {:?};\n{}\n{}\n}}\n{calls}",
         m.id,
         m.version,
         m.fingerprint(),
@@ -626,12 +636,16 @@ pub fn glue(c: &Crate) -> Result<String, Vec<String>> {
 }
 
 /// For a binding's `build.rs`: writes the [`glue`] for the mechanic crate
-/// at `mechanic_dir` to `$OUT_DIR/glue.rs`, and has cargo run it again when
-/// the mechanic changes. A mechanic it cannot read fails the build.
+/// at `mechanic_dir` and the interfaces it depends on to
+/// `$OUT_DIR/glue.rs`, and has cargo run it again when they change. A
+/// mechanic or interface it cannot read fails the build.
 pub fn write_glue(mechanic_dir: impl AsRef<std::path::Path>) {
     let dir = mechanic_dir.as_ref();
     let (cargo_toml, files) = read_crate(dir);
-    match glue(&Crate { cargo_toml: &cargo_toml, files: &files }) {
+    let interfaces: Vec<(String, Vec<(String, String)>)> =
+        interface_paths(&cargo_toml).into_iter().map(|p| read_crate(&dir.join(p))).collect();
+    let interfaces: Vec<Crate> = interfaces.iter().map(|(c, f)| Crate { cargo_toml: c, files: f }).collect();
+    match glue(&Crate { cargo_toml: &cargo_toml, files: &files }, &interfaces) {
         Ok(code) => write_out("glue.rs", &code),
         Err(problems) => panic!("the mechanic at {} cannot be read:\n{}", dir.display(), problems.join("\n")),
     }
@@ -727,9 +741,10 @@ pub fn replay_glue(c: &Crate) -> Result<String, Vec<String>> {
 /// For the replay crate's `build.rs`: writes to `$OUT_DIR/replay.rs` the
 /// [`replay_glue`] of each mechanic written as Rust under
 /// `<workspace>/mechanics/`, and `mechanics()`, their
-/// `psx_mechanics::replay::Entry`s. A mechanic that cannot be replayed (it
-/// does not read, has no step, or is not a dependency of the replay crate)
-/// gets an entry that fails, so the others still replay.
+/// `psx_mechanics::replay::Entry`s. A mechanic with no `step` yet is
+/// skipped; one that cannot be replayed (it does not read, or is not a
+/// dependency of the replay crate) gets an entry that fails, so the others
+/// still replay.
 pub fn write_replay(workspace: impl AsRef<std::path::Path>) {
     let root = workspace.as_ref().join("mechanics");
     let manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("run from build.rs"));
@@ -759,6 +774,14 @@ pub fn write_replay(workspace: impl AsRef<std::path::Path>) {
             continue;
         }
         let (cargo_toml, files) = read_crate(dir);
+        let lib = files.iter().find(|(p, _)| p == LIB).and_then(|(_, t)| syn::parse_file(t).ok());
+        if lib.is_some_and(|f| matches!(step_signature(&f), Ok(None))) {
+            entries.push(entry(format!(
+                "psx_mechanics::replay::Replayer::Skipped({:?})",
+                "no `step` yet: the mechanic declares its types"
+            )));
+            continue;
+        }
         let package = match package(&cargo_toml) {
             Ok(p) => p,
             Err(e) => {
@@ -820,12 +843,27 @@ fn read_crate(dir: &std::path::Path) -> (String, Vec<(String, String)>) {
     (cargo_toml, files)
 }
 
+/// The paths of the interfaces a mechanic's `Cargo.toml` depends on,
+/// relative to the mechanic.
+fn interface_paths(cargo_toml: &str) -> Vec<String> {
+    let deps = toml::from_str::<toml::Table>(cargo_toml).ok().and_then(|t| t.get("dependencies")?.as_table().cloned());
+    deps.into_iter()
+        .flatten()
+        .filter_map(|(_, d)| d.get("path")?.as_str().map(String::from))
+        .filter(|p| p.starts_with("../../interfaces/"))
+        .collect()
+}
+
 /// The package's name.
 fn package(cargo_toml: &str) -> Result<String, String> {
+    package_name(cargo_toml).ok_or_else(|| "Cargo.toml: no package name".to_string())
+}
+
+/// The package's name, if `Cargo.toml` gives one.
+pub fn package_name(cargo_toml: &str) -> Option<String> {
     toml::from_str::<toml::Table>(cargo_toml)
         .ok()
         .and_then(|t| t.get("package")?.get("name")?.as_str().map(String::from))
-        .ok_or_else(|| "Cargo.toml: no package name".to_string())
 }
 
 /// Writes `code` to `$OUT_DIR/<name>`.
@@ -945,6 +983,277 @@ fn crate_docs(file: &syn::File, p: &mut Problems) -> (String, String) {
         p.at(1, "the crate's documentation's second paragraph is the mechanic's summary");
     }
     (title.trim_end_matches('.').to_string(), summary)
+}
+
+/// Each file of `c`, parsed; `Err` with the problems when one does not
+/// parse or there is no `src/lib.rs`.
+fn parse<'c>(c: &'c Crate, problems: &mut Vec<String>) -> Result<Vec<(&'c str, syn::File)>, Vec<String>> {
+    let mut parsed = Vec::new();
+    for (path, text) in c.files {
+        match syn::parse_file(text) {
+            Ok(f) => parsed.push((path.as_str(), f)),
+            Err(e) => problems.push(format!("{path}:{}: {e}", e.span().start().line)),
+        }
+    }
+    if parsed.len() != c.files.len() {
+        return Err(std::mem::take(problems));
+    }
+    if !parsed.iter().any(|(p, _)| *p == LIB) {
+        problems.push(format!("{LIB}: no such file"));
+        return Err(std::mem::take(problems));
+    }
+    Ok(parsed)
+}
+
+/// The interface an interface crate declares (docs/rust-mechanics-plan.md,
+/// section 4): `ID` and `VERSION`, the crate documentation's title and
+/// description, and one trait whose methods are its calls. A method takes
+/// `&mut self` and its request as arguments; what it returns is the
+/// response, the fields of a struct of the crate or else one field
+/// `value`, and a method that returns nothing is a command. The crate has
+/// no dependencies and keeps to the mechanics' portable subset.
+pub fn interface(c: &Crate) -> Result<(Interface, Vec<String>), Vec<String>> {
+    let mut problems = Vec::new();
+    if !manifest(c.cargo_toml, &mut problems).is_empty() {
+        problems.push("Cargo.toml: an interface depends on nothing".into());
+    }
+    let parsed = parse(c, &mut problems)?;
+    let lib = &parsed.iter().find(|(p, _)| *p == LIB).expect("parse found it").1;
+    let items = Items::of(lib);
+    let mut p = Problems { file: LIB, out: &mut problems };
+    let consts = header(&items, &mut p);
+    let (Some(id), Some(version)) = (consts.id, consts.version) else {
+        p.at(0, "no `pub const ID: &str` (the interface's id) and `pub const VERSION: u32`");
+        return Err(problems);
+    };
+    let (title, description) = interface_docs(lib, &mut p);
+    let traits: Vec<&syn::ItemTrait> = lib
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            syn::Item::Trait(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    let mut calls = BTreeMap::new();
+    match traits[..] {
+        [t] => {
+            if !matches!(t.vis, syn::Visibility::Public(_)) {
+                p.at(line(t), &format!("trait `{}` is pub", t.ident));
+            }
+            for item in &t.items {
+                let syn::TraitItem::Fn(f) = item else {
+                    p.at(line(item), "the trait holds methods only: one per call");
+                    continue;
+                };
+                match call(&items, f) {
+                    Ok(c) => {
+                        calls.insert(f.sig.ident.to_string(), c);
+                    }
+                    Err(e) => p.at(line(&f.sig), &format!("{}: {e}", f.sig.ident)),
+                }
+            }
+        }
+        _ => p.at(0, "one `pub trait`, whose methods are the interface's calls"),
+    }
+    for (path, file) in &parsed {
+        let mut v = Subset { deps: &BTreeSet::new(), problems: Vec::new(), floats: Vec::new() };
+        v.visit_file(file);
+        problems.extend(v.problems.into_iter().map(|(l, e)| format!("{path}:{l}: {e}")));
+    }
+    Ok((Interface { id, version, title, description, calls }, problems))
+}
+
+/// One method of an interface's trait as a call.
+fn call(items: &Items, f: &syn::TraitItemFn) -> Result<Call, String> {
+    if f.default.is_some() {
+        return Err("a call has no body: the world implements it".into());
+    }
+    let mut args = f.sig.inputs.iter();
+    match args.next() {
+        Some(syn::FnArg::Receiver(r)) if r.reference.is_some() && r.mutability.is_some() => {}
+        _ => return Err("a call takes `&mut self` first".into()),
+    }
+    let mut request = BTreeMap::new();
+    for a in args {
+        let syn::FnArg::Typed(t) = a else { unreachable!("only the first argument is a receiver") };
+        let syn::Pat::Ident(name) = &*t.pat else { return Err("each argument is a plain name".into()) };
+        let name = name.ident.to_string();
+        let field = items.ty(&t.ty, 0).map_err(|e| format!("{name}: {e}"))?;
+        request.insert(name, field);
+    }
+    let returned = match &f.sig.output {
+        syn::ReturnType::Type(_, ty) if !matches!(&**ty, syn::Type::Tuple(t) if t.elems.is_empty()) => Some(ty),
+        _ => None,
+    };
+    let (kind, response) = match returned {
+        None => (CallKind::Command, BTreeMap::new()),
+        Some(ty) => {
+            let field = items.ty(ty, 0).map_err(|e| format!("returns {e}"))?;
+            let response = match (field.kind, struct_name(ty, items)) {
+                (Kind::Record, Some(_)) => field.fields.unwrap_or_default(),
+                _ => [("value".to_string(), field)].into(),
+            };
+            (CallKind::Query, response)
+        }
+    };
+    let doc: Vec<String> = doc_lines(&f.attrs).into_iter().filter(|l| !l.is_empty()).collect();
+    Ok(Call { kind, description: (!doc.is_empty()).then(|| doc.join(" ")), request, response })
+}
+
+/// The name of the struct of the crate `ty` names, if it names one.
+fn struct_name<'t>(ty: &'t syn::Type, items: &Items) -> Option<&'t syn::Ident> {
+    let syn::Type::Path(p) = ty else { return None };
+    let id = p.path.get_ident()?;
+    items.structs.contains_key(&id.to_string()).then_some(id)
+}
+
+/// An interface's title (the crate documentation's first paragraph) and
+/// description (the rest).
+fn interface_docs(file: &syn::File, p: &mut Problems) -> (String, Option<String>) {
+    let mut paragraphs: Vec<Vec<String>> = vec![Vec::new()];
+    for l in doc_lines(&file.attrs) {
+        if l.is_empty() {
+            paragraphs.push(Vec::new());
+        } else {
+            paragraphs.last_mut().unwrap().push(l);
+        }
+    }
+    let mut paragraphs = paragraphs.into_iter().filter(|p| !p.is_empty()).map(|p| p.join(" "));
+    let title = paragraphs.next().unwrap_or_default();
+    if title.is_empty() {
+        p.at(1, "the crate's documentation (`//!`) starts with the interface's title");
+    }
+    let rest: Vec<String> = paragraphs.collect();
+    (title.trim_end_matches('.').to_string(), (!rest.is_empty()).then(|| rest.join("\n\n")))
+}
+
+/// The binding glue for the interface `c` declares: a module named after
+/// its trait (`FloorSlope` is `floor_slope`) holding a marker type per
+/// call (`slope_x` is `SlopeX`) implementing `psx_capture::Call` and
+/// `Query` or `Command`. Types are named through the crate the package is.
+fn call_glue(c: &Crate) -> Result<(Interface, String), Vec<String>> {
+    let (i, problems) = interface(c)?;
+    if !problems.is_empty() {
+        return Err(problems);
+    }
+    let krate = package(c.cargo_toml).map_err(|e| vec![e])?.replace('-', "_");
+    let lib = c.files.iter().find(|(p, _)| p == LIB).map(|(_, t)| t).expect("read by interface");
+    let file = syn::parse_file(lib).map_err(|e| vec![format!("{LIB}: {e}")])?;
+    let items = Items::of(&file);
+    let t = file
+        .items
+        .iter()
+        .find_map(|i| match i {
+            syn::Item::Trait(t) => Some(t),
+            _ => None,
+        })
+        .expect("read by interface");
+    let named = |ty: &syn::Type| qualified(ty, &items, &krate);
+    let enc = |ty: &syn::Type, place: &str| {
+        items.encode(ty, place, &krate, Out::Capture, 0).map_err(|e| vec![format!("{LIB}: {e}")])
+    };
+    let mut markers = Vec::new();
+    for item in &t.items {
+        let syn::TraitItem::Fn(f) = item else { continue };
+        let name = f.sig.ident.to_string();
+        let args: Vec<(String, &syn::Type)> = f
+            .sig
+            .inputs
+            .iter()
+            .filter_map(|a| match a {
+                syn::FnArg::Typed(t) => match &*t.pat {
+                    syn::Pat::Ident(n) => Some((n.ident.to_string(), &*t.ty)),
+                    _ => None,
+                },
+                syn::FnArg::Receiver(_) => None,
+            })
+            .collect();
+        let (request_ty, request) = match &args[..] {
+            [] => ("()".to_string(), "psx_capture::Value::Record(Vec::new())".to_string()),
+            [(n, ty)] => (named(ty), format!("psx_capture::Value::Record(vec![({n:?}, {})])", enc(ty, "(*v)")?)),
+            many => {
+                let tys: Vec<String> = many.iter().map(|(_, ty)| named(ty)).collect();
+                let mut fields = Vec::new();
+                for (k, (n, ty)) in many.iter().enumerate() {
+                    fields.push(format!("({n:?}, {})", enc(ty, &format!("v.{k}"))?));
+                }
+                (format!("({})", tys.join(", ")), format!("psx_capture::Value::Record(vec![{}])", fields.join(", ")))
+            }
+        };
+        let query = i.calls[&name].kind == CallKind::Query;
+        let (response_ty, response) = match &f.sig.output {
+            syn::ReturnType::Type(_, ty) if query => {
+                let e = enc(ty, "(*v)")?;
+                let e = if struct_name(ty, &items).is_some() {
+                    e
+                } else {
+                    format!("psx_capture::Value::Record(vec![(\"value\", {e})])")
+                };
+                (named(ty), e)
+            }
+            _ => ("()".to_string(), "psx_capture::Value::Record(Vec::new())".to_string()),
+        };
+        let marker = camel(&name);
+        markers.push(format!(
+            "    pub struct {marker};\n\n    \
+             impl psx_capture::Call for {marker} {{\n        \
+             const INTERFACE: &'static str = {:?};\n        \
+             const NAME: &'static str = {name:?};\n        \
+             type Request = {request_ty};\n        \
+             type Response = {response_ty};\n        \
+             fn request(v: &Self::Request) -> psx_capture::Value {{\n            {request}\n        }}\n        \
+             fn response(v: &Self::Response) -> psx_capture::Value {{\n            {response}\n        }}\n    }}\n\n    \
+             impl psx_capture::{} for {marker} {{}}\n",
+            i.reference(),
+            if query { "Query" } else { "Command" },
+        ));
+    }
+    let code = format!(
+        "/// The calls of {} ({}), as the binding declares them in `bracket`.\n\
+         #[allow(unused_variables, clippy::all)]\n\
+         pub mod {} {{\n{}}}\n",
+        i.reference(),
+        i.title,
+        snake(&t.ident.to_string()),
+        markers.join("\n")
+    );
+    Ok((i, code))
+}
+
+/// `ty` as code outside its crate: the crate's own types through `krate`.
+fn qualified(ty: &syn::Type, items: &Items, krate: &str) -> String {
+    match ty {
+        syn::Type::Paren(p) => qualified(&p.elem, items, krate),
+        syn::Type::Path(p) if p.qself.is_none() && p.path.segments.len() == 1 => {
+            let seg = &p.path.segments[0];
+            let name = seg.ident.to_string();
+            if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                if let Some(syn::GenericArgument::Type(of)) = args.args.first() {
+                    return format!("{name}<{}>", qualified(of, items, krate));
+                }
+            }
+            let own = items.structs.contains_key(&name)
+                || items.enums.contains_key(&name)
+                || items.aliases.contains_key(&name);
+            if own { format!("{krate}::{name}") } else { name }
+        }
+        syn::Type::Array(a) => {
+            let len = items.len(&a.len).map(|n| n.to_string()).unwrap_or_default();
+            format!("[{}; {len}]", qualified(&a.elem, items, krate))
+        }
+        other => quote::ToTokens::to_token_stream(other).to_string(),
+    }
+}
+
+/// `slope_x` → `SlopeX`.
+fn camel(s: &str) -> String {
+    s.split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
+        })
+        .collect()
 }
 
 struct Header {
@@ -1290,10 +1599,91 @@ pub fn step(state: &mut State, inputs: &Inputs, params: &Params, world: &mut imp
         mechanic(&Crate { cargo_toml: cargo, files: &[(LIB.into(), lib.into())] })
     }
 
+    const FLOOR: &str = r#"
+//! Height of the floor under a point.
+//!
+//! The world answers from its level data.
+
+pub const ID: &str = "world.floor-height";
+pub const VERSION: u32 = 1;
+
+/// Fixed point: 20 integer bits, 12 fraction bits.
+pub type Fx20_12 = i32;
+
+pub struct Floor {
+    /// Unit: world units
+    pub y: Fx20_12,
+    pub kind: u8,
+}
+
+pub trait FloorHeight {
+    /// The floor under (x, z).
+    fn height(&mut self, x: i32, z: i32) -> Floor;
+    fn slope(&mut self) -> i16;
+    /// A splash at x.
+    fn splash(&mut self, x: i32);
+}
+"#;
+
+    fn floor() -> Crate<'static> {
+        let files = Box::leak(Box::new([(LIB.to_string(), FLOOR.to_string())]));
+        Crate { cargo_toml: "[package]\nname = \"world-floor-height\"\n", files }
+    }
+
+    #[test]
+    fn an_interface_is_its_trait() {
+        let (i, problems) = interface(&floor()).unwrap();
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(
+            (i.reference(), i.title.as_str()),
+            ("world.floor-height@1".into(), "Height of the floor under a point")
+        );
+        assert_eq!(i.description.as_deref(), Some("The world answers from its level data."));
+        assert_eq!(i.check(), Vec::<String>::new());
+        let types = i.types(&mut Vec::new());
+        assert_eq!(types["height"].kind, CallKind::Query);
+        assert_eq!(types["height"].request.keys().collect::<Vec<_>>(), ["x", "z"]);
+        assert_eq!(types["height"].response.keys().collect::<Vec<_>>(), ["kind", "y"]);
+        assert_eq!(i.calls["height"].response["y"].unit.as_deref(), Some("world units"));
+        assert_eq!(types["slope"].response.keys().collect::<Vec<_>>(), ["value"]);
+        assert_eq!((types["splash"].kind, types["splash"].response.len()), (CallKind::Command, 0));
+        assert_eq!(i.calls["splash"].description.as_deref(), Some("A splash at x."));
+
+        let (_, g) = call_glue(&floor()).unwrap();
+        assert!(g.contains("pub mod floor_height {"), "{g}");
+        assert!(g.contains("const INTERFACE: &'static str = \"world.floor-height@1\";"), "{g}");
+        assert!(g.contains("type Request = (i32, i32);"), "{g}");
+        assert!(g.contains("type Response = world_floor_height::Floor;"), "{g}");
+        assert!(g.contains("(\"z\", psx_capture::Value::Int(v.1 as i128))"), "{g}");
+        assert!(g.contains("(\"y\", psx_capture::Value::Int((*v).y as i128))"), "{g}");
+        assert!(g.contains("(\"value\", psx_capture::Value::Int((*v) as i128))"), "{g}");
+        assert!(g.contains("impl psx_capture::Query for Slope {}"), "{g}");
+        assert!(g.contains("type Request = i32;"), "{g}");
+        assert!(g.contains("impl psx_capture::Command for Splash {}"), "{g}");
+
+        let bad = FLOOR
+            .replace("fn slope(&mut self) -> i16;", "fn slope(&self) -> i16;")
+            .replace("fn splash(&mut self, x: i32);", "fn splash(&mut self, x: i32) {}");
+        let files = [(LIB.to_string(), bad)];
+        let (_, problems) = interface(&Crate {
+            cargo_toml: "[package]\nname = \"w\"\n[dependencies]\nx = { path = \"../x\" }\n",
+            files: &files,
+        })
+        .unwrap();
+        assert_eq!(
+            problems,
+            [
+                "Cargo.toml: an interface depends on nothing",
+                "src/lib.rs:21: slope: a call takes `&mut self` first",
+                "src/lib.rs:23: splash: a call has no body: the world implements it",
+            ]
+        );
+    }
+
     #[test]
     fn the_glue_encodes_each_struct() {
         let files = [(LIB.to_string(), WALK.to_string())];
-        let g = glue(&Crate { cargo_toml: CARGO, files: &files }).unwrap();
+        let g = glue(&Crate { cargo_toml: CARGO, files: &files }, &[floor()]).unwrap();
         let (m, _) = read(CARGO, WALK).unwrap();
         assert!(g.contains(&format!("const FINGERPRINT: &'static str = {:?};", m.fingerprint())), "{g}");
         assert!(g.contains("type State = croc_walk::State;"), "{g}");
@@ -1306,6 +1696,9 @@ pub fn step(state: &mut State, inputs: &Inputs, params: &Params, world: &mut imp
             "{g}"
         );
         assert!(g.contains("(\"x\", psx_capture::Value::Int((*e1).x as i128))"), "{g}");
+        assert!(g.contains("pub mod floor_height {"), "{g}");
+        let none = glue(&Crate { cargo_toml: CARGO, files: &files }, &[]).unwrap_err();
+        assert_eq!(none, ["Cargo.toml: requires world.floor-height@1, which no interface it depends on declares"]);
     }
 
     #[test]

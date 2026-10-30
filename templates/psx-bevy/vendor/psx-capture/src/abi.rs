@@ -3,7 +3,7 @@
 //! psx's loads all the same.
 //!
 //! The binding exports `psx_capture_abi_version() -> u32` and
-//! `psx_capture_call(what, host) -> i32` ([`export!`](crate::export)). psx
+//! `psx_capture_call(what, which, host) -> i32` ([`export!`](crate::export)). psx
 //! passes a [`Host`]: its own functions to read the machine and to take the
 //! answer, which is JSON written through [`Host::out`].
 
@@ -24,13 +24,15 @@ pub struct Host {
     pub reg: unsafe extern "C" fn(ctx: *mut c_void, which: u32, latched: bool) -> u32,
     /// GTE register `which` (0-63).
     pub gte: unsafe extern "C" fn(ctx: *mut c_void, which: u32) -> u32,
+    /// At an inline call: the load's address, width and value; false elsewhere.
+    pub load: unsafe extern "C" fn(ctx: *mut c_void, address: *mut u32, bytes: *mut u32, value: *mut u32) -> bool,
     /// The answer, or a panic's message.
     pub out: unsafe extern "C" fn(ctx: *mut c_void, data: *const u8, len: usize),
 }
 
 /// `what`: the mechanic and the bracket (JSON: `mechanic`,
-/// `mechanic_version`, `fingerprint`, `source` and `capture` as in
-/// `binding.toml`).
+/// `mechanic_version`, `fingerprint`, `source` and `capture`, the bracket:
+/// `begin`, `end`, `explained` and `calls`).
 pub const DESCRIBE: u32 = 0;
 /// `what`: whether this call is the step (JSON `true` or `false`).
 pub const IS_STEP: u32 = 1;
@@ -38,6 +40,10 @@ pub const IS_STEP: u32 = 1;
 pub const STATE: u32 = 2;
 pub const INPUTS: u32 = 3;
 pub const PARAMS: u32 = 4;
+/// `what`: call `which`'s request or response (`which` counts the calls
+/// in the order `bracket` declares them).
+pub const REQUEST: u32 = 5;
+pub const RESPONSE: u32 = 6;
 
 /// Returned: the answer was written.
 pub const OK: i32 = 0;
@@ -45,7 +51,7 @@ pub const OK: i32 = 0;
 pub const PANICKED: i32 = 1;
 /// Returned: psx refused a read, and has the reason.
 pub const READ_REFUSED: i32 = 2;
-/// Returned: `what` is none of the above.
+/// Returned: `what` (or `which`) is none of the above.
 pub const UNKNOWN: i32 = 3;
 
 /// The panic `Machine` raises when psx refuses a read.
@@ -59,7 +65,7 @@ thread_local! {
 ///
 /// # Safety
 /// `host` is psx's, valid for the call.
-pub unsafe fn call<B: Binding>(binding: &B, what: u32, host: *const Host) -> i32 {
+pub unsafe fn call<B: Binding>(binding: &B, what: u32, which: u32, host: *const Host) -> i32 {
     // A panic is the capture's error, reported by psx: keep its message and
     // where it was, and print nothing.
     static HOOK: std::sync::Once = std::sync::Once::new();
@@ -81,6 +87,13 @@ pub unsafe fn call<B: Binding>(binding: &B, what: u32, host: *const Host) -> i32
             STATE => B::Mechanic::state(&binding.state(&m)).json(&mut out),
             INPUTS => B::Mechanic::inputs(&binding.inputs(&m)).json(&mut out),
             PARAMS => B::Mechanic::params(&binding.params(&m)).json(&mut out),
+            REQUEST | RESPONSE => {
+                let mut b = Bracket::default();
+                binding.bracket(&mut b);
+                if !b.read_call(which, what == RESPONSE, &m, &mut out) {
+                    return None;
+                }
+            }
             _ => return None,
         }
         Some(out)

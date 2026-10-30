@@ -44,13 +44,13 @@ enum From {
 
 /// What the binding accounts for, besides the reads capture takes itself.
 pub struct Accounts<'a> {
-    /// Memory parts, read with the step's latched registers: the state,
-    /// inputs, params, explained reads, and the calls' requests and responses.
+    /// Explained memory, read with the step's latched registers. What the
+    /// binding reads is accounted for step by step (`Tracker::binding_reads`).
     pub memory: Vec<(&'a Location, u32)>,
     /// PCs whose loads are explained wherever they read.
     pub readers: HashSet<u32>,
-    /// Registers whose value from before the step is accounted for: bases,
-    /// filters, register inputs and params, explained registers.
+    /// Registers whose value from before the step is accounted for:
+    /// explained registers.
     pub registers: u64,
     /// GTE registers likewise (0-31 data, 32-63 control).
     pub gte: u64,
@@ -62,9 +62,6 @@ pub struct Accounts<'a> {
     pub entries: HashSet<u32>,
     /// The end PC, where the step's code stops.
     pub end: Option<u32>,
-    /// The binding is Rust: its reads are given step by step
-    /// (`Tracker::binding_reads`), and the draft of `explained` is Rust.
-    pub rust: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -422,44 +419,34 @@ impl<'a> Tracker<'a> {
         s.region = p.region;
     }
 
-    /// A bound location read at `pc` (a call's request at entry).
-    fn location(&mut self, pc: u32, at: &Location, n: u32) {
-        match at {
-            Location::Address { address } => self.load(pc, *address, n),
-            Location::Base { base, offset } => {
-                self.load(pc, self.latched[*base as usize].wrapping_add(*offset as u32), n)
-            }
-            Location::Register { register } => {
-                let r = *register as u8;
+    /// Call `call` is entered at `pc` with stack pointer `sp`: what the
+    /// binding read for its request is what the step passes it.
+    pub fn entry(&mut self, pc: u32, call: usize, request: &Reads, sp: u32) {
+        for &(s, e) in &request.memory {
+            self.load(pc, s, e - s);
+        }
+        for r in 0..34u8 {
+            if (request.registers | request.latched) & bit(r) != 0 {
                 for p in self.taint.remove(&r).unwrap_or_default() {
                     self.commit(p);
                 }
                 self.register(pc, r);
             }
-            Location::Gte { gte } => {
-                let from = self.gte[*gte as usize];
-                if from != From::Step {
-                    self.gte_reads(pc, vec![(*gte, from)], "the call's request");
-                }
-            }
-            Location::Load { .. } | Location::Pointer { .. } => {}
         }
-    }
-
-    /// Call `call` is entered at `pc` with stack pointer `sp`: its request's
-    /// parts are what the step passes it.
-    pub fn entry(&mut self, pc: u32, call: usize, request: &[(&Location, u32)], sp: u32) {
-        for (at, n) in request {
-            self.location(pc, at, *n);
-        }
+        let gte: Vec<(u8, From)> = (0..64u8)
+            .filter(|g| request.gte & bit(*g) != 0)
+            .map(|g| (g, self.gte[g as usize]))
+            .filter(|(_, from)| *from != From::Step)
+            .collect();
+        self.gte_reads(pc, gte, "the call's request");
         self.entered = Some(Entered { call, sp, regs: 0, gte: 0, saved: HashMap::new() });
     }
 
-    /// The call returns: the registers it wrote, outside its response, are its.
-    /// `held`: the physical bytes a used mechanic's response holds, which
-    /// the step has from then on.
-    pub fn returned(&mut self, response: &[(&Location, u32)], held: &[(u32, u32)]) {
-        for &(s, e) in held {
+    /// The call returns: the registers it wrote, outside what the binding
+    /// read for its response, are its. The memory its response holds is
+    /// the step's from then on.
+    pub fn returned(&mut self, response: &Reads) {
+        for &(s, e) in &response.memory {
             for b in s..e {
                 self.by_call.remove(&b);
                 self.written.insert(b);
@@ -477,11 +464,14 @@ impl<'a> Tracker<'a> {
                 self.gte[g] = From::Call(e.call);
             }
         }
-        for (at, _) in response {
-            match at {
-                Location::Register { register } => self.regs[*register as usize] = From::Step,
-                Location::Gte { gte } => self.gte[*gte as usize] = From::Step,
-                _ => {}
+        for r in 0..34 {
+            if response.registers & bit(r as u32) != 0 {
+                self.regs[r] = From::Step;
+            }
+        }
+        for g in 0..64 {
+            if response.gte & bit(g as u32) != 0 {
+                self.gte[g] = From::Step;
             }
         }
     }
@@ -640,7 +630,7 @@ impl<'a> Tracker<'a> {
     /// The audit and coverage for the header, and the report for the result.
     pub fn finish(self) -> (Audit, Coverage, Json) {
         let mut unaccounted = Vec::new();
-        let mut draft = Drafts { rust: self.acc.rust, ..Drafts::default() };
+        let mut draft = Drafts::default();
         for (k, s) in &self.found {
             let (at, note) = self.describe(k, s, &mut draft);
             unaccounted.push(Finding { at, note: Some(note) });
@@ -798,46 +788,32 @@ fn signed_hex(v: i64) -> String {
     if v < 0 { format!("-{:#x}", -v) } else { format!("{v:#x}") }
 }
 
-/// TOML has no signed hex.
-fn toml_int(v: i64) -> String {
-    if v < 0 { v.to_string() } else { format!("{v:#x}") }
-}
-
 /// The draft's note for a read outside memory.
 const HARDWARE: &str = "; or bind it as an inline read if the result depends on it";
 
-/// A draft of `capture.explained`, one entry per place, in TOML or, for a
-/// Rust binding, as `Bracket::explain` calls.
+/// A draft of the bracket's explained reads, one `Bracket::explain` call
+/// per place.
 #[derive(Default)]
 struct Drafts {
-    rust: bool,
     /// Location -> bytes, reading PCs, and a note.
     entries: BTreeMap<String, (u32, BTreeSet<u32>, &'static str)>,
 }
 
 impl Drafts {
     fn address(&self, a: u32) -> String {
-        if self.rust { format!("At::Address({})", hex(a)) } else { format!("{{ address = {} }}", hex(a)) }
+        format!("At::Address({})", hex(a))
     }
 
     fn base(&self, b: Reg, o: i64) -> String {
-        if self.rust {
-            format!("At::Base({}, {})", b.name().to_uppercase(), signed_hex(o))
-        } else {
-            format!("{{ base = \"{}\", offset = {} }}", b.name(), toml_int(o))
-        }
+        format!("At::Base({}, {})", b.name().to_uppercase(), signed_hex(o))
     }
 
     fn register(&self, name: &str) -> String {
-        if self.rust {
-            format!("At::Register({})", name.to_uppercase())
-        } else {
-            format!("{{ register = \"{name}\" }}")
-        }
+        format!("At::Register({})", name.to_uppercase())
     }
 
     fn gte(&self, n: u8) -> String {
-        if self.rust { format!("At::Gte({n})") } else { format!("{{ gte = {n} }}") }
+        format!("At::Gte({n})")
     }
 
     fn add(&mut self, at: String, bytes: u32, pc: u32, note: &'static str) {
@@ -847,20 +823,13 @@ impl Drafts {
     }
 
     fn render(&self) -> String {
-        if self.entries.is_empty() {
-            return String::new();
-        }
-        let mut out = String::from(if self.rust { "" } else { "explained = [\n" });
+        let mut out = String::new();
         for (at, (bytes, pcs, note)) in &self.entries {
             let pcs: Vec<String> = pcs.iter().map(|p| hex(*p)).collect();
             let bytes = if *bytes < 16 { bytes.to_string() } else { format!("{bytes:#x}") };
-            out += &if self.rust {
-                format!("b.explain({at}, {bytes}, \"\"); // read at {}{note}\n", pcs.join(", "))
-            } else {
-                format!("  {{ at = {at}, bytes = {bytes}, why = \"\" }},  # read at {}{note}\n", pcs.join(", "))
-            };
+            out += &format!("b.explain({at}, {bytes}, \"\"); // read at {}{note}\n", pcs.join(", "));
         }
-        if self.rust { out } else { out + "]\n" }
+        out
     }
 }
 

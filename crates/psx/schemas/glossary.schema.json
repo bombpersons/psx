@@ -240,13 +240,6 @@
         }
       ]
     },
-    "Load": {
-      "enum": [
-        "address",
-        "value"
-      ],
-      "type": "string"
-    },
     "Location": {
       "anyOf": [
         {
@@ -308,19 +301,6 @@
           },
           "required": [
             "gte"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "An inline read's (`on = { read }`) address (request) or loaded value\n(response).",
-          "properties": {
-            "load": {
-              "$ref": "#/$defs/Load"
-            }
-          },
-          "required": [
-            "load"
           ],
           "type": "object"
         },

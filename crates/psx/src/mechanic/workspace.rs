@@ -1,7 +1,8 @@
 //! A workspace's mechanic files (docs/mechanics.md, section 1):
-//! `interfaces/<id>.toml` and `mechanics/<id>/` with `mechanic.toml` or a
-//! Rust crate (docs/rust-mechanics-plan.md), `binding.toml` or a Rust
-//! binding crate in `binding/`, and `traces/`, read and checked together.
+//! interfaces (`interfaces/<id>/`, Rust crates, or `interfaces/<id>.toml`)
+//! and `mechanics/<id>/` with `mechanic.toml` or a Rust crate
+//! (docs/rust-mechanics-plan.md), its Rust binding crate in `binding/`, and
+//! `traces/`, read and checked together.
 
 use std::path::{Path, PathBuf};
 
@@ -9,7 +10,7 @@ use psx_mechanics::trace::Header;
 use psx_mechanics::{Interface, Mechanic, Trace};
 use serde_json::Value;
 
-use super::{Begin, Binding, CallSite, End, Psx};
+use super::{CallSite, Capture, End};
 use crate::Error;
 
 pub const INTERFACES: &str = "interfaces";
@@ -19,8 +20,7 @@ pub const MECHANICS: &str = "mechanics";
 pub struct Loaded {
     pub dir: PathBuf,
     pub mechanic: Mechanic,
-    pub binding: Option<Binding>,
-    /// The binding written as Rust: its crate, `binding/`.
+    /// The binding: its crate, `binding/`.
     pub plugin: Option<PathBuf>,
     /// Every interface in the workspace, and every mechanic's step.
     pub interfaces: Vec<Interface>,
@@ -32,27 +32,62 @@ fn read(path: &Path) -> crate::Result<String> {
     std::fs::read_to_string(path).map_err(|e| Error::io(path, e))
 }
 
-/// Every `interfaces/*.toml` and every mechanic's step (what a mechanic
-/// that uses it calls), and the problems in them.
+/// Every interface (`interfaces/<id>/`, a Rust crate, or
+/// `interfaces/<id>.toml`) and every mechanic's step (what a mechanic that
+/// uses it calls), and the problems in them.
 pub fn interfaces(root: &Path) -> crate::Result<(Vec<Interface>, Vec<String>)> {
     let (mut out, mut problems) = (Vec::new(), Vec::new());
     let dir = root.join(INTERFACES);
-    let Ok(entries) = std::fs::read_dir(&dir) else { return Ok((out, problems)) };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
     paths.sort();
-    for p in paths.iter().filter(|p| p.extension().is_some_and(|e| e == "toml")) {
-        let stem = p.file_stem().unwrap_or_default().to_string_lossy().to_string();
-        let file = format!("{INTERFACES}/{stem}.toml");
-        match Interface::parse(&read(p)?) {
-            Err(e) => problems.push(format!("{file}: {e}")),
-            Ok(i) => {
-                if i.id != stem {
-                    problems.push(format!("{file}: id {:?} differs from the file's name", i.id));
+    for p in &paths {
+        let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let (i, file, mut found) = if is_crate(p) {
+            let at = |e: String| format!("{INTERFACES}/{name}/{e}");
+            let cargo_toml = read(&p.join("Cargo.toml"))?;
+            let files = sources(p)?;
+            match psx_mechanics::rust::interface(&psx_mechanics::rust::Crate { cargo_toml: &cargo_toml, files: &files })
+            {
+                Err(e) => {
+                    problems.extend(e.into_iter().map(at));
+                    continue;
                 }
-                problems.extend(i.check().into_iter().map(|e| format!("{file}: {e}")));
-                out.push(i);
+                Ok((i, found)) => {
+                    let mut found: Vec<String> = found.into_iter().map(at).collect();
+                    let want = name.replace('.', "-");
+                    if psx_mechanics::rust::package_name(&cargo_toml).as_deref() != Some(want.as_str()) {
+                        found.push(at(format!("Cargo.toml: the package is named {want:?}, after the interface's id")));
+                    }
+                    (i, format!("{INTERFACES}/{name}/{}", psx_mechanics::rust::LIB), found)
+                }
             }
+        } else if let Some(stem) = name.strip_suffix(".toml") {
+            let file = format!("{INTERFACES}/{name}");
+            match Interface::parse(&read(p)?) {
+                Err(e) => {
+                    problems.push(format!("{file}: {e}"));
+                    continue;
+                }
+                Ok(i) => {
+                    let mut found = Vec::new();
+                    if i.id != stem {
+                        found.push(format!("{file}: id {:?} differs from the file's name", i.id));
+                    }
+                    (i, file, found)
+                }
+            }
+        } else {
+            continue;
+        };
+        if is_crate(p) && i.id != name {
+            found.push(format!("{file}: id {:?} differs from the directory's name", i.id));
         }
+        if out.iter().any(|o: &Interface| o.id == i.id) {
+            found.push(format!("{file}: interface {:?} is declared twice", i.id));
+        }
+        problems.extend(found);
+        problems.extend(i.check().into_iter().map(|e| format!("{file}: {e}")));
+        out.push(i);
     }
     // Each mechanic's step, for the mechanics that use it.
     for id in ids(root) {
@@ -146,59 +181,37 @@ pub fn load(root: &Path, id: &str) -> crate::Result<Loaded> {
         problems.push(format!("{declared_in}: id {:?} differs from the directory's name", mechanic.id));
     }
     if is_crate(&dir) {
-        let package = std::fs::read_to_string(dir.join("Cargo.toml"))
-            .ok()
-            .and_then(|t| toml::from_str::<toml::Table>(&t).ok())
-            .and_then(|t| t.get("package")?.get("name")?.as_str().map(String::from));
+        let package =
+            std::fs::read_to_string(dir.join("Cargo.toml")).ok().and_then(|t| psx_mechanics::rust::package_name(&t));
         let want = id.replace('.', "-");
         if package.as_deref() != Some(want.as_str()) {
             problems.push(format!("{}: the package is named {want:?}, after the mechanic's id", file("Cargo.toml")));
         }
     }
     problems.extend(mechanic.check(&interfaces).into_iter().map(|e| format!("{declared_in}: {e}")));
-    let binding_path = dir.join("binding.toml");
+    if dir.join("binding.toml").is_file() {
+        problems.push(format!(
+            "{}: binding.toml is no longer read: bind the mechanic in Rust, in binding/",
+            file("binding.toml")
+        ));
+    }
     let plugin_dir = dir.join("binding");
     let plugin = plugin_dir.join("Cargo.toml").is_file().then_some(plugin_dir);
-    let binding = if let Some(p) = &plugin {
-        if binding_path.is_file() {
-            problems.push(format!("{}: binding/ binds the mechanic in Rust too; keep the crate", file("binding.toml")));
-        }
-        let package = std::fs::read_to_string(p.join("Cargo.toml"))
-            .ok()
-            .and_then(|t| toml::from_str::<toml::Table>(&t).ok())
-            .and_then(|t| t.get("package")?.get("name")?.as_str().map(String::from));
-        let want = super::plugin::package(id);
-        if package.as_deref() != Some(want.as_str()) {
-            problems.push(format!(
-                "{}: the package is named {want:?}, after the mechanic's id",
-                file("binding/Cargo.toml")
-            ));
-        }
-        if !mechanic.requires.is_empty() || !mechanic.uses.is_empty() {
-            problems.push(format!(
-                "{}: a Rust binding does not bind interface calls or used mechanics yet: bind this mechanic in binding.toml",
-                file("binding")
-            ));
-        }
-        None
-    } else if binding_path.is_file() {
-        match toml::from_str::<Binding>(&read(&binding_path)?) {
-            Err(e) => {
-                problems.push(format!("{}: {}", file("binding.toml"), e.message()));
-                None
-            }
-            Ok(b) => {
-                let mut p = b.check::<Psx>(&mechanic, &interfaces);
-                p.extend(overlay_problems(root, &b));
-                problems.extend(p.into_iter().map(|e| format!("{}: {e}", file("binding.toml"))));
-                Some(b)
+    match &plugin {
+        Some(p) => {
+            let package =
+                std::fs::read_to_string(p.join("Cargo.toml")).ok().and_then(|t| psx_mechanics::rust::package_name(&t));
+            let want = super::plugin::package(id);
+            if package.as_deref() != Some(want.as_str()) {
+                problems.push(format!(
+                    "{}: the package is named {want:?}, after the mechanic's id",
+                    file("binding/Cargo.toml")
+                ));
             }
         }
-    } else {
-        problems.push(format!("{}: not written yet", file("binding.toml")));
-        None
-    };
-    Ok(Loaded { dir, mechanic, binding, plugin, interfaces, problems })
+        None => problems.push(format!("{}: not written yet", file("binding"))),
+    }
+    Ok(Loaded { dir, mechanic, plugin, interfaces, problems })
 }
 
 /// A trace's name, its problems and, when it parses, its header.
@@ -224,17 +237,14 @@ pub fn traces(l: &Loaded) -> crate::Result<Vec<Checked>> {
 }
 
 /// Every PC the binding names: what names it, the PC and its overlay.
-pub fn pcs(b: &Binding) -> Vec<(String, u32, Option<&str>)> {
-    let Begin { pc, overlay, .. } = &b.capture.begin;
-    let mut out = vec![("capture.begin".to_string(), *pc, overlay.as_deref())];
-    if let End::At(p) = &b.capture.end {
-        out.push(("capture.end".into(), p.pc, p.overlay.as_deref()));
+pub fn pcs(c: &Capture) -> Vec<(String, u32, Option<&str>)> {
+    let mut out = vec![("begin".to_string(), c.begin.pc, c.begin.overlay.as_deref())];
+    if let End::At(p) = &c.end {
+        out.push(("end".into(), p.pc, p.overlay.as_deref()));
     }
-    for (r, calls) in &b.interfaces {
-        for (name, c) in calls {
-            let (CallSite::Entry { entry: p } | CallSite::Read { read: p }) = &c.on;
-            out.push((format!("interfaces.{r:?}.{name}.on"), p.pc, p.overlay.as_deref()));
-        }
+    for (i, call) in c.calls.iter().enumerate() {
+        let (CallSite::Entry { entry: p } | CallSite::Read { read: p }) = &call.on;
+        out.push((format!("calls[{i}] ({}.{})", call.interface, call.call), p.pc, p.overlay.as_deref()));
     }
     out
 }
@@ -302,8 +312,8 @@ fn resident_in(root: &Path, inv: &Value, name: &str, pc: u32) -> Result<Resident
 }
 
 /// The code each overlay-qualified PC of the binding runs in, by PC.
-pub fn residents(root: &Path, b: &Binding) -> Result<Vec<(u32, Option<Resident>)>, String> {
-    let named = pcs(b);
+pub fn residents(root: &Path, c: &Capture) -> Result<Vec<(u32, Option<Resident>)>, String> {
+    let named = pcs(c);
     let inv = if named.iter().any(|(_, _, o)| o.is_some()) { Some(inventory(root)?) } else { None };
     named
         .into_iter()
@@ -316,8 +326,8 @@ pub fn residents(root: &Path, b: &Binding) -> Result<Vec<(u32, Option<Resident>)
         .collect()
 }
 
-pub fn overlay_problems(root: &Path, b: &Binding) -> Vec<String> {
-    let named = pcs(b);
+pub fn overlay_problems(root: &Path, c: &Capture) -> Vec<String> {
+    let named = pcs(c);
     if named.iter().all(|(_, _, o)| o.is_none()) {
         return Vec::new();
     }
@@ -352,7 +362,7 @@ mod tests {
         let has = |s: &str| l.problems.iter().any(|p| p.contains(s));
         assert!(has("mechanics/croc.turn/Cargo.toml: the package is named \"croc-turn\""), "{:?}", l.problems);
         assert!(has("mechanics/croc.turn/src/helpers.rs:1: format!"), "{:?}", l.problems);
-        assert!(has("mechanics/croc.turn/binding.toml: not written yet"), "{:?}", l.problems);
+        assert!(has("mechanics/croc.turn/binding: not written yet"), "{:?}", l.problems);
         // Both forms at once are refused.
         std::fs::write(dir.join("mechanic.toml"), "id = \"croc.turn\"\n").unwrap();
         assert!(load(&root, "croc.turn").err().unwrap().to_string().contains("keep the crate"));

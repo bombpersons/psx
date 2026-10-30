@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use psx_capture::abi;
-use psx_core::Machine;
+use psx_core::cpu::MemAccess;
 use psx_mechanics::binding::Source;
-use psx_mechanics::{Mechanic, Platform, Type, Values};
+use psx_mechanics::{Interface, Mechanic, Platform, Type, Values};
 use serde_json::json;
 
-use super::capture::{Regs, memory};
-use super::{Binding, Capture, Psx};
+use super::capture::{View, memory};
+use super::{Capture, Psx};
 use crate::Error;
 use crate::run::fold;
 
@@ -71,13 +71,14 @@ fn rel(root: &Path, p: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).to_string_lossy().into_owned()
 }
 
-type Call = unsafe extern "C" fn(u32, *const abi::Host) -> i32;
+/// `psx_capture_call`.
+pub type Call = unsafe extern "C" fn(u32, u32, *const abi::Host) -> i32;
 
 /// A loaded binding.
 pub struct Plugin {
     call: Call,
-    /// Keeps `call` loaded.
-    _lib: libloading::Library,
+    /// Keeps `call` loaded (none for a binding linked into psx, in tests).
+    _lib: Option<libloading::Library>,
     described: Described,
 }
 
@@ -116,9 +117,7 @@ impl Reads {
 /// read and answered.
 struct Ctx<'a> {
     /// None while the binding describes itself.
-    m: Option<&'a Machine>,
-    now: &'a Regs,
-    latched: &'a Regs,
+    view: Option<&'a View<'a>>,
     reads: Reads,
     refused: Option<String>,
     out: Vec<u8>,
@@ -132,11 +131,11 @@ unsafe extern "C" fn host_read(ctx: *mut c_void, addr: u32, out: *mut u8, len: u
     if len == 0 {
         return true;
     }
-    let Some(m) = c.m else {
+    let Some(v) = c.view else {
         c.refused.get_or_insert("the binding read the machine while describing itself".into());
         return false;
     };
-    match memory(m, addr, len) {
+    match memory(v.m, addr, len) {
         Ok(bytes) => {
             // SAFETY: the caller's.
             unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
@@ -156,7 +155,8 @@ unsafe extern "C" fn host_read(ctx: *mut c_void, addr: u32, out: *mut u8, len: u
 unsafe extern "C" fn host_reg(ctx: *mut c_void, which: u32, latched: bool) -> u32 {
     // SAFETY: the caller's.
     let c = unsafe { &mut *(ctx as *mut Ctx) };
-    let Some(&v) = (if latched { c.latched } else { c.now }).get(which as usize) else { return 0 };
+    let Some(view) = c.view else { return 0 };
+    let Some(&v) = (if latched { view.latched } else { view.now }).get(which as usize) else { return 0 };
     if latched {
         c.reads.latched |= 1 << which;
     } else {
@@ -170,8 +170,8 @@ unsafe extern "C" fn host_reg(ctx: *mut c_void, which: u32, latched: bool) -> u3
 unsafe extern "C" fn host_gte(ctx: *mut c_void, which: u32) -> u32 {
     // SAFETY: the caller's.
     let c = unsafe { &mut *(ctx as *mut Ctx) };
-    let Some(m) = c.m else { return 0 };
-    let g = &m.cpu.gte;
+    let Some(view) = c.view else { return 0 };
+    let g = &view.m.cpu.gte;
     let v = match which {
         0..32 => g.read_data(which as usize),
         32..64 => g.read_ctrl(which as usize - 32),
@@ -179,6 +179,21 @@ unsafe extern "C" fn host_gte(ctx: *mut c_void, which: u32) -> u32 {
     };
     c.reads.gte |= 1 << which;
     v
+}
+
+/// # Safety
+/// `ctx` is a `Ctx`; `address`, `bytes` and `value` are writable.
+unsafe extern "C" fn host_load(ctx: *mut c_void, address: *mut u32, bytes: *mut u32, value: *mut u32) -> bool {
+    // SAFETY: the caller's.
+    let c = unsafe { &mut *(ctx as *mut Ctx) };
+    let Some(MemAccess { addr, width, value: v, .. }) = c.view.and_then(|v| v.load) else { return false };
+    // SAFETY: the caller's.
+    unsafe {
+        *address = addr;
+        *bytes = width as u32;
+        *value = v;
+    }
+    true
 }
 
 /// # Safety
@@ -219,21 +234,36 @@ impl Plugin {
                 psx_capture::ABI_VERSION
             )));
         }
-        let text = invoke(call, abi::DESCRIBE, None, &[0; 34], &[0; 34]).0.map_err(Error::invalid)?;
+        Plugin::new(call, Some(library))
+    }
+
+    /// The binding whose `psx_capture_call` is `call`, asked to describe
+    /// itself.
+    pub fn new(call: Call, lib: Option<libloading::Library>) -> crate::Result<Plugin> {
+        let text = invoke(call, abi::DESCRIBE, 0, None).0.map_err(Error::invalid)?;
         let described = serde_json::from_str(&text)
             .map_err(|e| Error::invalid(format!("the binding's description: {e}")).with("description", json!(text)))?;
-        Ok(Plugin { call, _lib: library, described })
+        Ok(Plugin { call, _lib: lib, described })
     }
 
-    /// Asks the binding `what` with the machine at a hook.
-    pub fn call(&self, what: u32, m: &Machine, now: &Regs, latched: &Regs) -> (Result<String, String>, Reads) {
-        invoke(self.call, what, Some(m), now, latched)
+    /// Asks the binding `what` (of call `which`) with the machine at a hook.
+    pub fn call(&self, what: u32, which: u32, view: &View) -> (Result<String, String>, Reads) {
+        invoke(self.call, what, which, Some(view))
     }
 
-    /// The binding as capture plans with it: the mechanic, source and
-    /// bracket the binding describes, with no fields of its own (it reads
-    /// them itself). What is wrong with it is refused.
-    pub fn binding(&self, mechanic: &Mechanic) -> crate::Result<Binding> {
+    /// Where the binding says the step is.
+    pub fn capture(&self) -> &Capture {
+        &self.described.capture
+    }
+
+    /// The release it binds.
+    pub fn source(&self) -> &Source {
+        &self.described.source
+    }
+
+    /// What is wrong with the binding for `mechanic`, whose interfaces are
+    /// among `interfaces`.
+    pub fn check(&self, mechanic: &Mechanic, interfaces: &[Interface]) -> Vec<String> {
         let d = &self.described;
         let mut p = Vec::new();
         if d.mechanic != mechanic.id || d.mechanic_version != mechanic.version {
@@ -246,35 +276,45 @@ impl Plugin {
         }
         d.source.check(Psx::NAME, &mut p);
         Psx::check_capture(&d.capture, &mut p);
-        if !p.is_empty() {
-            return Err(Error::invalid("the Rust binding has problems").with("problems", json!(p)));
+        for c in &d.capture.calls {
+            if !mechanic.requires.contains(&c.interface) {
+                p.push(format!("calls {}.{}: the mechanic does not require {}", c.interface, c.call, c.interface));
+            }
         }
-        Ok(Binding {
-            mechanic: d.mechanic.clone(),
-            mechanic_version: d.mechanic_version,
-            source: d.source.clone(),
-            state: Default::default(),
-            inputs: Default::default(),
-            params: Default::default(),
-            params_provenance: Default::default(),
-            interfaces: Default::default(),
-            capture: d.capture.clone(),
-        })
+        for i in mechanic.required(interfaces) {
+            let r = i.reference();
+            for (name, call) in &i.calls {
+                let bound: Vec<_> = d.capture.calls.iter().filter(|c| c.interface == r && &c.call == name).collect();
+                if bound.is_empty() {
+                    p.push(format!("{r}: {name} is not bound: declare it in bracket"));
+                }
+                if bound.iter().any(|c| c.kind != call.kind) {
+                    p.push(format!(
+                        "{r}: {name}: the glue's kind differs from the interface's: build the binding again"
+                    ));
+                }
+            }
+            for c in d.capture.calls.iter().filter(|c| c.interface == r && !i.calls.contains_key(&c.call)) {
+                p.push(format!("{r}: {} is not one of its calls: build the binding again", c.call));
+            }
+        }
+        p
     }
 }
 
 /// Calls the binding's `psx_capture_call` with psx's side of the boundary.
-fn invoke(call: Call, what: u32, m: Option<&Machine>, now: &Regs, latched: &Regs) -> (Result<String, String>, Reads) {
-    let mut ctx = Ctx { m, now, latched, reads: Reads::default(), refused: None, out: Vec::new() };
+fn invoke(call: Call, what: u32, which: u32, view: Option<&View>) -> (Result<String, String>, Reads) {
+    let mut ctx = Ctx { view, reads: Reads::default(), refused: None, out: Vec::new() };
     let host = abi::Host {
         ctx: &mut ctx as *mut Ctx as *mut c_void,
         read: host_read,
         reg: host_reg,
         gte: host_gte,
+        load: host_load,
         out: host_out,
     };
     // SAFETY: `host` and `ctx` outlive the call.
-    let code = unsafe { call(what, &host) };
+    let code = unsafe { call(what, which, &host) };
     let out = String::from_utf8_lossy(&ctx.out).into_owned();
     let answer = match code {
         abi::OK => Ok(out),

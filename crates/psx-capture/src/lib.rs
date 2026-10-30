@@ -43,11 +43,11 @@ pub mod abi;
 /// The version of the boundary with psx. psx refuses a binding built
 /// against another; `psx template update` brings the vendored crate to
 /// psx's.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 pub mod prelude {
     pub use crate::reg::*;
-    pub use crate::{At, Binding, Bracket, Machine, Pc};
+    pub use crate::{At, Binding, Bracket, Load, Machine, Pc, Site};
 }
 
 /// A CPU register, numbered as the R3000 numbers them; `HI` and `LO` are 32
@@ -139,13 +139,79 @@ pub enum At {
     Gte(u8),
 }
 
-/// Where the step is: its begin and end, and the reads the step makes that
-/// the binding deliberately leaves out, with why.
+/// Where an interface call happens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Site {
+    /// A routine entered at this PC: the request is read as it is entered,
+    /// the response when it returns to its caller. At both, `latched` is the
+    /// registers as it was entered.
+    Entry(Pc),
+    /// A load at this PC that asks the world inline (a table lookup): the
+    /// request and response are read once it has loaded, with
+    /// [`Machine::load`] saying where it read.
+    Load(Pc),
+}
+
+impl Site {
+    pub fn entry(pc: impl Into<Pc>) -> Site {
+        Site::Entry(pc.into())
+    }
+
+    pub fn load(pc: impl Into<Pc>) -> Site {
+        Site::Load(pc.into())
+    }
+}
+
+/// What the load at a [`Site::Load`] read: where, how many bytes, and the
+/// value it gave (zero-extended), which is the only way to see a hardware
+/// register's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Load {
+    pub address: u32,
+    pub bytes: u32,
+    pub value: u32,
+}
+
+/// One call of an interface the mechanic requires, as the binding's glue
+/// declares it from the interface's trait: a marker type per method.
+pub trait Call {
+    /// `<id>@<version>`: `world.floor-slope@1`.
+    const INTERFACE: &'static str;
+    /// The method: `slope_x`.
+    const NAME: &'static str;
+    /// The method's arguments: one type, or a tuple of them; `()` for none.
+    type Request: 'static;
+    /// What it returns; `()` for a command.
+    type Response: 'static;
+    fn request(r: &Self::Request) -> Value;
+    fn response(r: &Self::Response) -> Value;
+}
+
+/// A call that returns something: [`Bracket::query`].
+pub trait Query: Call {}
+
+/// A call that returns nothing: [`Bracket::command`].
+pub trait Command: Call<Response = ()> {}
+
+type Reader = Box<dyn Fn(&Machine) -> Value>;
+
+struct Hook {
+    interface: &'static str,
+    name: &'static str,
+    site: Site,
+    request: Reader,
+    response: Option<Reader>,
+}
+
+/// Where the step is: its begin and end, the interface calls it makes, and
+/// the reads the step makes that the binding deliberately leaves out, with
+/// why.
 #[derive(Default)]
 pub struct Bracket {
     begin: Option<Pc>,
     end: Option<End>,
     explained: Vec<(Explained, &'static str)>,
+    calls: Vec<Hook>,
 }
 
 enum End {
@@ -198,7 +264,48 @@ impl Bracket {
         self
     }
 
-    /// The bracket in `binding.toml`'s `capture` shape, as JSON.
+    /// The step asks the world `Q` at `site`: `request` reads what it asks
+    /// and `response` what the world answers.
+    pub fn query<Q: Query>(
+        &mut self,
+        site: Site,
+        request: fn(&Machine) -> Q::Request,
+        response: fn(&Machine) -> Q::Response,
+    ) -> &mut Self {
+        self.calls.push(Hook {
+            interface: Q::INTERFACE,
+            name: Q::NAME,
+            site,
+            request: Box::new(move |m| Q::request(&request(m))),
+            response: Some(Box::new(move |m| Q::response(&response(m)))),
+        });
+        self
+    }
+
+    /// The step tells the world `C` at `site`: `request` reads what it tells.
+    pub fn command<C: Command>(&mut self, site: Site, request: fn(&Machine) -> C::Request) -> &mut Self {
+        self.calls.push(Hook {
+            interface: C::INTERFACE,
+            name: C::NAME,
+            site,
+            request: Box::new(move |m| C::request(&request(m))),
+            response: None,
+        });
+        self
+    }
+
+    /// Call `which`'s request or response, read from `m`, as JSON.
+    pub(crate) fn read_call(&self, which: u32, response: bool, m: &Machine, out: &mut String) -> bool {
+        let Some(h) = self.calls.get(which as usize) else { return false };
+        match (response, &h.response) {
+            (false, _) => (h.request)(m).json(out),
+            (true, Some(r)) => r(m).json(out),
+            (true, None) => return false,
+        }
+        true
+    }
+
+    /// The bracket as JSON: `begin`, `end`, `explained` and `calls`.
     fn json(&self) -> Result<String, &'static str> {
         let pc = |p: &Pc| match p.overlay {
             Some(o) => format!("{{\"pc\":{},\"overlay\":{}}}", p.pc, string(o)),
@@ -230,7 +337,28 @@ impl Bracket {
                 Explained::By(p) => format!("{{\"by\":{},\"why\":{}}}", pc(p), string(why)),
             })
             .collect();
-        Ok(format!("{{\"begin\":{},\"end\":{end},\"explained\":[{}]}}", pc(begin), explained.join(",")))
+        let calls: Vec<String> = self
+            .calls
+            .iter()
+            .map(|h| {
+                let on = match &h.site {
+                    Site::Entry(p) => format!("{{\"entry\":{}}}", pc(p)),
+                    Site::Load(p) => format!("{{\"read\":{}}}", pc(p)),
+                };
+                format!(
+                    "{{\"interface\":{},\"call\":{},\"kind\":\"{}\",\"on\":{on}}}",
+                    string(h.interface),
+                    string(h.name),
+                    if h.response.is_some() { "query" } else { "command" }
+                )
+            })
+            .collect();
+        Ok(format!(
+            "{{\"begin\":{},\"end\":{end},\"explained\":[{}],\"calls\":[{}]}}",
+            pc(begin),
+            explained.join(","),
+            calls.join(",")
+        ))
     }
 }
 
@@ -302,6 +430,17 @@ impl Machine<'_> {
     pub fn gte(&self, n: u8) -> u32 {
         // SAFETY: as in `bytes`.
         unsafe { (self.host.gte)(self.host.ctx, n as u32) }
+    }
+
+    /// At a [`Site::Load`] call: where the load read. Anywhere else it
+    /// stops the binding with an error.
+    pub fn load(&self) -> Load {
+        let (mut address, mut bytes, mut value) = (0, 0, 0);
+        // SAFETY: as in `bytes`; the outputs are writable.
+        if !unsafe { (self.host.load)(self.host.ctx, &mut address, &mut bytes, &mut value) } {
+            panic!("Machine::load: only a Site::load call's request and response have a load");
+        }
+        Load { address, bytes, value }
     }
 }
 
@@ -429,9 +568,9 @@ macro_rules! export {
         /// # Safety
         /// `host` is psx's, valid for the call.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn psx_capture_call(what: u32, host: *const $crate::abi::Host) -> i32 {
+        pub unsafe extern "C" fn psx_capture_call(what: u32, which: u32, host: *const $crate::abi::Host) -> i32 {
             // SAFETY: the caller's.
-            unsafe { $crate::abi::call(&$binding, what, host) }
+            unsafe { $crate::abi::call(&$binding, what, which, host) }
         }
     };
 }
@@ -442,6 +581,21 @@ mod tests {
 
     #[test]
     fn values_and_brackets_are_json() {
+        struct Slope;
+        impl Call for Slope {
+            const INTERFACE: &'static str = "world.floor-slope@1";
+            const NAME: &'static str = "slope_x";
+            type Request = ();
+            type Response = i16;
+            fn request(_: &()) -> Value {
+                Value::Record(Vec::new())
+            }
+            fn response(r: &i16) -> Value {
+                Value::Record(vec![("value", Value::Int(*r as i128))])
+            }
+        }
+        impl Query for Slope {}
+
         let mut s = String::new();
         Value::Record(vec![
             ("a", Value::Int(-3)),
@@ -455,9 +609,10 @@ mod tests {
         assert!(b.json().is_err());
         b.begin(0x8004_425C).end(Pc::in_overlay("level", 16));
         b.explain(At::Base(reg::A0, -4), 4, "the \"pc\"").explain_reader(0x10u32, "level data");
+        b.query::<Slope>(Site::load(0x8004_3A84), |_| (), |m| m.i16(m.load().address));
         assert_eq!(
             b.json().unwrap(),
-            r#"{"begin":{"pc":2147762780},"end":{"pc":16,"overlay":"level"},"explained":[{"at":{"base":"a0","offset":-4},"bytes":4,"why":"the \"pc\""},{"by":{"pc":16},"why":"level data"}]}"#
+            r#"{"begin":{"pc":2147762780},"end":{"pc":16,"overlay":"level"},"explained":[{"at":{"base":"a0","offset":-4},"bytes":4,"why":"the \"pc\""},{"by":{"pc":16},"why":"level data"}],"calls":[{"interface":"world.floor-slope@1","call":"slope_x","kind":"query","on":{"read":{"pc":2147760772}}}]}"#
         );
     }
 }

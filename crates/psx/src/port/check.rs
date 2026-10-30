@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(
             u,
             [
-                "mechanics/demo.walk/binding.toml: not written yet",
+                "mechanics/demo.walk/binding: not written yet",
                 "mechanics/demo.walk: no captured trace (psx mechanic capture)"
             ]
         );
@@ -419,12 +419,12 @@ mod tests {
         );
         std::fs::write(m.join("traces/a.trace.jsonl"), trace(",\"audit\":{\"unaccounted\":[]}", missed)).unwrap();
         std::fs::write(m.join("NOTES.md"), "Never taken: 0x800432A8, the slope branch.\n").unwrap();
-        assert_eq!(uncaptured(&d.0, "demo.walk"), ["mechanics/demo.walk/binding.toml: not written yet"]);
+        assert_eq!(uncaptured(&d.0, "demo.walk"), ["mechanics/demo.walk/binding: not written yet"]);
         // A branch counts once some trace took each way of it.
         std::fs::write(m.join("NOTES.md"), "").unwrap();
         let other = "{\"at\":{\"pc\":\"0x800432a8\"},\"note\":\"never fell through\"}";
         std::fs::write(m.join("traces/b.trace.jsonl"), trace(",\"audit\":{\"unaccounted\":[]}", other)).unwrap();
-        assert_eq!(uncaptured(&d.0, "demo.walk"), ["mechanics/demo.walk/binding.toml: not written yet"]);
+        assert_eq!(uncaptured(&d.0, "demo.walk"), ["mechanics/demo.walk/binding: not written yet"]);
     }
 
     #[test]
