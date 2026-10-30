@@ -157,7 +157,7 @@ impl Loaded {
                     s.check(&types).into_iter().filter(|p| !p.ends_with("not a glossary quantity")).collect()
                 };
                 if !root.join(&s.chain).is_file() {
-                    p.push(format!("chain: no file {} (psx states make writes notes/states/NAME.json)", s.chain));
+                    p.push(format!("chain: no file {} (psx run --save-as writes notes/states/NAME.json)", s.chain));
                 }
                 if !crate::port::is_feature_id(&s.feature) {
                     p.push(format!("feature {:?}: a catalogue id, F-NNNN", s.feature));

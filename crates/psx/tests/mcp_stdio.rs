@@ -1266,7 +1266,6 @@ fn mcp_tools_match_cli() {
         "ram_search",
         "ram_view",
         "run",
-        "states_make",
         "states_save",
         "states_list",
         "states_rebuild",
@@ -2400,6 +2399,37 @@ fn query_pages_preserve_totals_and_explain_scan_coverage() {
         !error && read["items"].as_array().unwrap().len() == 3 && read["page"]["total"] == 4096,
         "spilled results must be navigable directly: {read}"
     );
+    drop(rpc);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn run_save_as_names_states_with_their_chains() {
+    let root = std::env::temp_dir().join(format!("psx-save-as-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let bios: Vec<u8> = [0x0bf00000u32, 0].iter().flat_map(|w| w.to_le_bytes()).collect();
+    std::fs::write(root.join("bios.bin"), &bios).unwrap();
+    let mut rpc = Rpc::start(&root);
+    let (boot, error, _) = rpc
+        .tool("run", json!({"bios":"bios.bin","frames":2,"save_as":"boot","description":"the start","summary":true}));
+    assert!(!error && boot["saved_as"]["name"] == "boot", "{boot}");
+    let (later, error, _) = rpc
+        .tool("run", json!({"bios":"bios.bin","from_state":"boot","frames":1,"save_as":"later","description":"later"}));
+    assert!(!error && later["saved_as"]["name"] == "later", "{later}");
+    let (list, _, _) = rpc.tool("states_list", json!({}));
+    let steps: Vec<(&str, u64)> = list["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["name"].as_str().unwrap(), s["steps"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(steps, [("boot", 1), ("later", 2)], "{list}");
+    let (again, error, _) =
+        rpc.tool("run", json!({"bios":"bios.bin","frames":1,"save_as":"boot","description":"again"}));
+    assert!(error && again["error"]["message"].as_str().unwrap().contains("replace"), "{again}");
+    let (bare, error, _) = rpc.tool("run", json!({"bios":"bios.bin","frames":1,"save_as":"x"}));
+    assert!(error && bare["error"]["message"].as_str().unwrap().contains("description"), "{bare}");
     drop(rpc);
     std::fs::remove_dir_all(root).unwrap();
 }

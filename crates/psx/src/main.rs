@@ -185,8 +185,6 @@ enum CodeAction {
 
 #[derive(Subcommand)]
 enum StatesAction {
-    /// Run from a named state (or power-on) and name the state it ends in.
-    Make(Box<states::StatesMakeArgs>),
     /// Name a state an earlier run or handoff made; its chain comes from the runs' reports.
     Save(states::StatesSaveArgs),
     /// The named states, and whether each is present.
@@ -331,7 +329,6 @@ fn main() -> ExitCode {
             PortAction::Check(a) => a.exec(&ctx),
         },
         Command::States { action } => match action {
-            StatesAction::Make(a) => a.exec(&ctx),
             StatesAction::Save(a) => a.exec(&ctx),
             StatesAction::List(a) => a.exec(&ctx),
             StatesAction::Rebuild(a) => a.exec(&ctx),

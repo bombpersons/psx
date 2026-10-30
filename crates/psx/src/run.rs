@@ -45,13 +45,28 @@ pub struct RunCmdArgs {
     #[arg(long = "watch")]
     #[serde(default, rename = "watch")]
     pub watches: Vec<String>,
-    /// Continue from a state saved by an earlier run (state.bin) instead of power-on.
+    /// Continue from a state instead of power-on: a named state (`states list`) or a
+    /// state file an earlier run wrote (state.bin).
     #[arg(long)]
     pub from_state: Option<PathBuf>,
     /// Write state.bin into the run directory at the end.
     #[arg(long)]
     #[serde(default)]
     pub save_state: bool,
+    /// Name the state the run ends in: .psx/states/NAME.bin, and its chain of runs from
+    /// power-on in notes/states/NAME.json (guide topic states). Needs --description, and
+    /// a run that starts at power-on or a named state.
+    #[arg(long, requires = "description")]
+    #[serde(default)]
+    pub save_as: Option<String>,
+    /// With --save-as: what the state shows, in game terms.
+    #[arg(long, requires = "save_as")]
+    #[serde(default)]
+    pub description: Option<String>,
+    /// With --save-as: replace a state of that name.
+    #[arg(long, requires = "save_as")]
+    #[serde(default)]
+    pub replace: bool,
     /// Output directory (default .psx/runs/<id>).
     #[arg(long)]
     pub out: Option<PathBuf>,
@@ -119,14 +134,34 @@ impl Op for RunCmdArgs {
 
 impl RunCmdArgs {
     pub(crate) fn run(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
-        let a = self;
+        let mut a = self;
+        let dirs = crate::states::Dirs::default();
+        let (states, chains) = dirs.get(ctx);
+        // A named state: its file under .psx/states.
+        if let Some(name) = a.from_state.as_deref().and_then(|p| p.to_str()) {
+            let named = states.join(format!("{name}.bin"));
+            if !name.contains(['/', '\\', '.']) && named.is_file() {
+                a.from_state = Some(named);
+            }
+        }
+        if let Some(name) = &a.save_as {
+            crate::states::check_name(name)?;
+            if a.description.as_deref().is_none_or(|d| d.trim().is_empty()) {
+                return Err(Error::invalid("save_as needs a description: what the state shows, in game terms"));
+            }
+            if !a.replace && chains.join(format!("{name}.json")).exists() {
+                return Err(Error::invalid(format!("a state named {name} exists; pass replace to replace it")));
+            }
+            a.save_state = true;
+        }
+        let save_as = a.save_as.take().map(|n| (n, a.description.take().unwrap_or_default(), a.replace));
         let resolved = crate::context::resolve(&ctx.root, a.media, a.bios, a.from_state.as_deref(), false)?;
         if let Some(e) = resolved.setup_error() {
             return Err(e);
         }
         let bios = resolved.bios.unwrap();
         let (short, summarise) = (a.brief, a.summary);
-        let (complete, mut value) = run(
+        let (mut complete, mut value) = run(
             &ctx.root,
             RunArgs {
                 media: resolved.media,
@@ -168,6 +203,28 @@ impl RunCmdArgs {
             let p = dir.join("report.json");
             value["report"] = json!(p);
             let _ = std::fs::write(&p, serde_json::to_vec_pretty(&value).unwrap_or_default());
+        }
+        // The run is named once its report is beside its state: the chain is read from it.
+        if let Some((name, description, replace)) = save_as {
+            value["saved_as"] = match value["run_dir"].as_str().map(PathBuf::from) {
+                Some(dir) if complete => {
+                    match crate::states::save(ctx, &dir.join("state.bin"), &name, &description, &dirs, replace) {
+                        Ok(mut v) => {
+                            if value["until"]["met"] == false {
+                                v["warnings"] =
+                                    json!(["the until conditions never held: the state is where the frames ran out"]);
+                            }
+                            v
+                        }
+                        Err(e) => e.to_value(),
+                    }
+                }
+                _ => Error::new("run_incomplete", "the run ended early: no state was named").to_value(),
+            };
+            complete &= value["saved_as"].get("error").is_none();
+            if let Some(p) = value["report"].as_str().map(PathBuf::from) {
+                let _ = std::fs::write(&p, serde_json::to_vec_pretty(&value).unwrap_or_default());
+            }
         }
         if summarise {
             value = summary(&value);
@@ -432,6 +489,7 @@ pub(crate) fn brief(v: &Value) -> Value {
         "pokes",
         "screens",
         "states",
+        "saved_as",
         "read_watch",
         "spu",
         "audio",
@@ -529,6 +587,9 @@ pub(crate) fn summary(v: &Value) -> Value {
     }
     if v["event_logs"].as_object().is_some_and(|m| !m.is_empty()) {
         s["event_logs"] = v["event_logs"].clone();
+    }
+    if !v["saved_as"].is_null() {
+        s["saved_as"] = v["saved_as"].clone();
     }
     if let Some(pokes) = v["pokes"].as_array() {
         s["pokes"] = json!(pokes.len());

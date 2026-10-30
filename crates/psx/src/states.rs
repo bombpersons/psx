@@ -18,61 +18,6 @@ use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct StatesMakeArgs {
-    /// The new state's name (letters, digits, _ and -).
-    pub name: String,
-    /// A named state or state file to start from; power-on when left out.
-    #[arg(long)]
-    #[serde(default)]
-    pub from: Option<String>,
-    /// Fields to run.
-    #[arg(long)]
-    pub frames: u32,
-    /// Pad input, as run's.
-    #[arg(long, conflicts_with = "replay")]
-    #[serde(default)]
-    pub input: Option<crate::replay::Events>,
-    /// Pad input from a replay file.
-    #[arg(long)]
-    #[serde(default)]
-    pub replay: Option<PathBuf>,
-    /// Stop where these hold (run's until); repeatable.
-    #[arg(long)]
-    #[serde(default)]
-    pub until: Vec<String>,
-    /// Memory writes (run's poke); repeatable.
-    #[arg(long = "poke")]
-    #[serde(default, rename = "poke")]
-    pub pokes: Vec<String>,
-    /// What the state shows, in game terms.
-    #[arg(long)]
-    pub description: String,
-    /// Disc image or EXE.
-    #[arg(long)]
-    #[serde(default)]
-    pub media: Option<PathBuf>,
-    /// From power-on: the pad (digital or dualshock).
-    #[arg(long)]
-    #[serde(default)]
-    pub pad: Option<String>,
-    /// From power-on: memory card 1 (`new` or an image).
-    #[arg(long)]
-    #[serde(default)]
-    pub memcard1: Option<String>,
-    /// From power-on: memory card 2.
-    #[arg(long)]
-    #[serde(default)]
-    pub memcard2: Option<String>,
-    #[command(flatten)]
-    #[serde(flatten)]
-    pub dirs: Dirs,
-    /// Replace a state of this name.
-    #[arg(long)]
-    #[serde(default)]
-    pub replace: bool,
-}
-
-#[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct StatesSaveArgs {
     /// A state a run or handoff wrote (state.bin, state_fN.bin, a mark's), or its directory.
     pub source: PathBuf,
@@ -128,7 +73,7 @@ pub struct Dirs {
 }
 
 impl Dirs {
-    fn get(&self, ctx: &Ctx) -> (PathBuf, PathBuf) {
+    pub(crate) fn get(&self, ctx: &Ctx) -> (PathBuf, PathBuf) {
         let at = |d: &Option<PathBuf>, default: &str| match d {
             Some(d) if d.is_absolute() => d.clone(),
             Some(d) => ctx.root.join(d),
@@ -161,7 +106,7 @@ fn pretty(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default() + "\n"
 }
 
-fn check_name(name: &str) -> crate::Result<()> {
+pub(crate) fn check_name(name: &str) -> crate::Result<()> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return Err(Error::invalid(format!("state name {name:?}: letters, digits, _ and - only")));
     }
@@ -234,7 +179,7 @@ fn step_of(ctx: &Ctx, file: &Path) -> crate::Result<(Value, Value, Parent)> {
         return Err(Error::new(
             "no_chain",
             format!(
-                "{}: no report.json beside it and no chain notes its sha256; make start states with `psx states make`, or name a run's state with `psx states save`",
+                "{}: no report.json beside it and no chain notes its sha256; make start states with `psx run --save-as`, or name a run's state with `psx states save`",
                 file.display()
             ),
         ));
@@ -521,7 +466,14 @@ fn chain_of(ctx: &Ctx, file: &Path, known: &[(String, Value)]) -> crate::Result<
 }
 
 /// Name `file`: copy it into the states directory and write its chain.
-fn save(ctx: &Ctx, file: &Path, name: &str, description: &str, dirs: &Dirs, replace: bool) -> crate::Result<Value> {
+pub(crate) fn save(
+    ctx: &Ctx,
+    file: &Path,
+    name: &str,
+    description: &str,
+    dirs: &Dirs,
+    replace: bool,
+) -> crate::Result<Value> {
     check_name(name)?;
     let (states, chain_dir) = dirs.get(ctx);
     let (state_path, chain_path) = (states.join(format!("{name}.bin")), chain_dir.join(format!("{name}.json")));
@@ -586,57 +538,6 @@ fn run_step(
         return Err(Error::new("run_incomplete", format!("the step's run ended early ({})", report["termination"])));
     }
     Ok((state, report))
-}
-
-impl Op for StatesMakeArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::result(make(ctx, self))
-    }
-}
-
-fn make(ctx: &Ctx, a: StatesMakeArgs) -> crate::Result<Value> {
-    check_name(&a.name)?;
-    let (states, chain_dir) = a.dirs.get(ctx);
-    if !a.replace && chain_dir.join(format!("{}.json", a.name)).exists() {
-        return Err(Error::invalid(format!("a state named {} exists; pass replace to replace it", a.name)));
-    }
-    let from = a.from.as_deref().map(|f| {
-        let named = states.join(format!("{f}.bin"));
-        if !f.contains(['/', '\\']) && !f.ends_with(".bin") { named } else { absolute(ctx, Path::new(f)) }
-    });
-    if from.is_some() && (a.pad.is_some() || a.memcard1.is_some() || a.memcard2.is_some()) {
-        return Err(Error::invalid("the pad and memory cards are part of the state: give them only from power-on"));
-    }
-    let input = match (&a.input, &a.replay) {
-        (Some(e), _) => json!(e),
-        (None, Some(p)) => read_json(&absolute(ctx, p))?,
-        (None, None) => json!([]),
-    };
-    let mut run = json!({"media": a.media, "from_state": from, "frames": a.frames, "input": input,
-        "until": a.until, "poke": a.pokes, "save_state": true, "summary": true, "timeout": 7200});
-    for (k, v) in [("pad", &a.pad), ("memcard1", &a.memcard1), ("memcard2", &a.memcard2)] {
-        if let Some(v) = v {
-            run[k] = json!(v);
-        }
-    }
-    let args: crate::run::RunCmdArgs =
-        serde_json::from_value(run).map_err(|e| Error::invalid(format!("states make: {e}")))?;
-    let (complete, report) = args.run(ctx)?;
-    if !complete {
-        return Err(Error::new("run_incomplete", format!("the run ended early ({})", report["termination"])));
-    }
-    let dir = PathBuf::from(report["run_dir"].as_str().unwrap_or_default());
-    let mut out = save(ctx, &dir.join("state.bin"), &a.name, &a.description, &a.dirs, a.replace)?;
-    out["run_dir"] = json!(dir);
-    out["frames"] = report["frames"].clone();
-    if !report["until"].is_null() {
-        out["until"] = report["until"].clone();
-        if report["until"]["met"] == false {
-            out["warnings"] = json!(["the until conditions never held: the state is where the frames ran out"]);
-        }
-    }
-    out["screen"] = json!(dir.join("screen.png"));
-    Ok(out)
 }
 
 impl Op for StatesSaveArgs {
