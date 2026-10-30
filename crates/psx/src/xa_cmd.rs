@@ -1,40 +1,14 @@
-//! `psx xa`: list a file's XA-ADPCM channels, or decode one to a WAV.
+//! XA audio for `psx assets extract`: list a file's XA-ADPCM channels, or
+//! decode one to a WAV.
 
 use crate::Error;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 
-use crate::commands::{Ctx, Op, Outcome};
 use psx_core::xa::{Coding, XaDecoder};
 use psx_media::Disc;
 use psx_media::iso9660::FileSystem;
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::PathBuf;
-
-#[derive(clap::Args, Deserialize, JsonSchema)]
-pub struct XaArgs {
-    /// Disc image: .cue, raw .bin, .iso or .chd.
-    pub image: PathBuf,
-    /// ISO path of the stream, e.g. `/MUSIC.XA`.
-    pub path: String,
-    /// Channel to decode (needs -o).
-    #[arg(long)]
-    pub channel: Option<u8>,
-    /// Also require this subheader file number.
-    #[arg(long)]
-    pub file: Option<u8>,
-    /// WAV output path for the decoded channel.
-    #[arg(short, long)]
-    pub out: Option<PathBuf>,
-}
-
-impl Op for XaArgs {
-    fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::result(run(&self.image, &self.path, self.file, self.channel, self.out.as_deref()))
-    }
-}
 
 pub fn run(
     image: &Path,

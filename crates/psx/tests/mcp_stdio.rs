@@ -761,19 +761,29 @@ fn external_parsers_chain_and_export_through_cli_and_mcp() {
     sector[18..20].copy_from_slice(&16u16.to_le_bytes());
     sector[32..32 + frame.len()].copy_from_slice(&frame);
     std::fs::write(root.join("movie.iso"), iso).unwrap();
-    let (_, ok) = cli(&root, &["str", "movie.iso::/MOVIE.STR", "--no-audio", "-o", "unsupported"]);
+    let (_, ok) = cli(&root, &["assets", "extract", "movie.iso::/MOVIE.STR", "--no-audio", "-o", "unsupported"]);
     assert!(!ok);
     let (movie, ok) = cli(
         &root,
-        &["str", "movie.iso::/MOVIE.STR", "--no-audio", "--frame-parser", "./video/parser.py", "-o", "movie"],
+        &[
+            "assets",
+            "extract",
+            "movie.iso::/MOVIE.STR",
+            "--no-audio",
+            "--frame-parser",
+            "./video/parser.py",
+            "-o",
+            "movie",
+        ],
     );
     let (mcp, error, _) = rpc.tool(
-        "str",
+        "assets_extract",
         json!({"source":"movie.iso::/MOVIE.STR","no_audio":true,"frame_parser":"./video/parser.py","out":"movie"}),
     );
     assert!(ok && !error, "{movie} {mcp}");
     assert_eq!(movie, mcp);
     assert_eq!(movie["video"]["decoded"], 1);
+    assert_eq!(movie["format"], "str");
     let png = std::fs::read(root.join("movie/frame_00001.png")).unwrap();
     let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
     let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
@@ -784,6 +794,7 @@ fn external_parsers_chain_and_export_through_cli_and_mcp() {
         json!({"source":"model/sample.bin","model_parser":"./model/parser.py","asset_parser":"./asset/parser.py","out":"invalid"}),
         json!({"source":"model/sample.bin","model_parser_args":["oops"],"out":"invalid"}),
         json!({"source":"model/sample.bin","parser_timeout":0,"out":"invalid"}),
+        json!({"source":"model/sample.bin","channel":1,"out":"invalid"}),
     ] {
         let (_, error, _) = rpc.tool("assets_extract", args);
         assert!(error);
@@ -1279,8 +1290,6 @@ fn mcp_tools_match_cli() {
         "port_check",
         "ghidra_doctor",
         "ghidra_export_symbols",
-        "xa",
-        "str",
     ];
     want.sort_unstable();
     assert_eq!(names, want);

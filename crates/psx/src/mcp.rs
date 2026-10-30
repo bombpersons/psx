@@ -190,8 +190,6 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::port::PortCheckArgs>("port_check", "In a port's workspace, at a clean commit: run the features' scenarios against the port and write their scenario verdicts. See guide topic port.").heavy(),
         def::<crate::ghidra::DoctorArgs>("ghidra_doctor", "Check that Ghidra and Java are discoverable. Usually unnecessary: query tools import and analyse automatically. Set PSX_GHIDRA_HOME or ghidra_home if discovery fails."),
         def::<crate::ghidra::ExportArgs>("ghidra_export_symbols", "Export a Ghidra analysis's function names as .symbols.json, bound to the input hash and function bytes, for the symbols argument of run, loads, disasm or xrefs.").heavy(),
-        def::<crate::xa_cmd::XaArgs>("xa", "List the XA-ADPCM channels in a streamed file (rate, stereo, duration, sectors); with channel and out, decode one channel to a 44.1 kHz WAV."),
-        def::<crate::str_cmd::StrArgs>("str", "Decode an STR/MDEC movie from image.cue::/PATH into out: frame PNGs, audio.wav, a contact sheet and summary. frames limits the PNGs; frame_parser handles custom frame wrappers.").heavy(),
     ]
 }
 

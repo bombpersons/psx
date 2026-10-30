@@ -1,79 +1,23 @@
-//! `psx str`: decode an STR movie offline into PNG frames, a WAV of its
-//! interleaved XA audio and a JSON summary.
+//! STR movies for `psx assets extract`: decode one offline into PNG frames, a
+//! WAV of its interleaved XA audio and a JSON summary.
 //!
 //! Sector demux and the BS bitstream → MDEC run-length stage live in
 //! `psx_media::str_video` (what games do in software). The run-length data is
 //! then decoded by the native core's hardware MDEC model (`psx_core::mdec`),
 //! loaded with the standard libpress quant and IDCT tables, exactly as a game
 //! feeds it, so frames match what the emulator shows. Audio goes through
-//! `psx xa` unchanged.
+//! the XA decoder unchanged.
 
 use crate::Error;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::commands::{Ctx, Op, Outcome};
 use psx_core::mdec::Mdec;
 use psx_media::Disc;
 use psx_media::iso9660::FileSystem;
 use psx_media::str_video::{BsError, BsHeader, Frame, FrameAssembler, STR_HEADER_LEN, StrHeader, bs_offset, decode_bs};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Value, json};
-
-#[derive(clap::Args, Deserialize, JsonSchema)]
-pub struct StrArgs {
-    /// `image.cue::/PATH`, or the image with the ISO path in `path`.
-    pub source: String,
-    pub path: Option<String>,
-    /// Frames to write, 1-based inclusive: `A..B`, `A..`, `..B` or `N`.
-    #[arg(long)]
-    pub frames: Option<String>,
-    /// XA channel for audio.wav (default: the one with the most sectors).
-    #[arg(long)]
-    pub channel: Option<u8>,
-    #[arg(long)]
-    #[serde(default)]
-    pub no_audio: bool,
-    /// Also write an uncompressed 4:4:4 movie.y4m.
-    #[arg(long)]
-    #[serde(default)]
-    pub y4m: bool,
-    /// Executable normalizing each selected frame to a standard BS payload.
-    #[arg(long)]
-    pub frame_parser: Option<PathBuf>,
-    #[arg(long = "frame-parser-arg", allow_hyphen_values = true, requires = "frame_parser")]
-    #[serde(default)]
-    pub frame_parser_args: Vec<String>,
-    #[arg(long, default_value_t = crate::parser::default_parser_timeout(), value_parser = clap::value_parser!(u64).range(1..=300))]
-    #[serde(default = "crate::parser::default_parser_timeout")]
-    pub parser_timeout: u64,
-    /// Output directory for frames, audio.wav, contact.png, frames.json, summary.json.
-    #[arg(short, long)]
-    pub out: PathBuf,
-}
-
-impl Op for StrArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::result((|| -> crate::Result<Value> {
-            let (image, path) = psx_media::source::split(&self.source, self.path.as_deref())?;
-            let frame_parser =
-                crate::parser::Spec::new(self.frame_parser.as_ref(), &self.frame_parser_args, self.parser_timeout)?;
-            run(Args {
-                image: &image,
-                path: &path,
-                out: &self.out,
-                frames: self.frames.as_deref(),
-                channel: self.channel,
-                no_audio: self.no_audio,
-                y4m: self.y4m,
-                frame_parser: frame_parser.as_ref(),
-                cancel: ctx.cancel.as_ref(),
-            })
-        })())
-    }
-}
 
 /// Zig-zag position → raster index (the order MDEC quant tables are stored in).
 const ZAGZIG: [usize; 64] = [
@@ -190,6 +134,23 @@ struct Scan {
     frames: Vec<Frame>,
     /// XA channel `(file, channel)` -> (coding byte of the first sector, sector LBAs).
     channels: BTreeMap<(u8, u8), (u8, Vec<u32>)>,
+}
+
+/// What a streamed file's sectors hold: STR video sectors, XA audio sectors and
+/// the XA `(file, channel)` pairs, without assembling frames.
+pub fn sector_kinds(disc: &Disc, lba: u32, sectors: u32) -> crate::Result<(u32, u32, Vec<(u8, u8)>)> {
+    let (mut video, mut audio) = (0, 0);
+    let mut channels = std::collections::BTreeSet::new();
+    for l in lba..lba + sectors {
+        let d = disc.read_data(l)?;
+        if let Some(sh) = d.subheader.filter(|sh| sh[2] & 0x04 != 0) {
+            audio += 1;
+            channels.insert((sh[0], sh[1]));
+        } else if StrHeader::parse(&d.data).is_some_and(|h| h.is_video()) {
+            video += 1;
+        }
+    }
+    Ok((video, audio, channels.into_iter().collect()))
 }
 
 fn scan(disc: &Disc, lba: u32, sectors: u32) -> crate::Result<Scan> {

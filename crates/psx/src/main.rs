@@ -85,8 +85,8 @@ enum Command {
         #[command(subcommand)]
         action: DiscAction,
     },
-    /// The game's data: find and convert TIM, TMD and VAB/VAG, VRAM textures,
-    /// VRAM comparison and memory cards.
+    /// The game's data: find and convert TIM, TMD, VAB/VAG, XA audio and STR movies,
+    /// VRAM textures, VRAM comparison and memory cards.
     Assets {
         #[command(subcommand)]
         action: assets_cmd::AssetsAction,
@@ -127,10 +127,6 @@ enum Command {
         #[command(subcommand)]
         action: ghidra::Action,
     },
-    /// List a file's XA-ADPCM audio channels (STR/XA streams), or decode one to a 44.1 kHz WAV.
-    Xa(xa_cmd::XaArgs),
-    /// Decode an STR movie (MDEC BS v1/v2/v3) into PNG frames, audio.wav and summary.json.
-    Str(str_cmd::StrArgs),
     /// Serve every command above as an MCP tool over stdin/stdout (start it in the project root).
     Mcp(mcp::McpArgs),
 }
@@ -303,8 +299,6 @@ fn main() -> ExitCode {
         Command::Disc { action } => action.exec(&ctx),
         Command::Assets { action } => action.exec(&ctx),
         Command::Code { action } => action.exec(&ctx),
-        Command::Xa(a) => a.exec(&ctx),
-        Command::Str(a) => a.exec(&ctx),
         Command::Run(a) => a.exec(&ctx),
         Command::Ram { action } => action.exec(&ctx),
         Command::Scenario { action } => match action {

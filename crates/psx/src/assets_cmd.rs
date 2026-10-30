@@ -171,6 +171,37 @@ pub struct AssetsExtractArgs {
     /// Extract this zero-based archive entry as raw bytes, without conversion.
     #[arg(long, conflicts_with_all = ["offset", "kinds", "textures", "model_parser", "asset_parser", "texture_parser"])]
     pub entry: Option<usize>,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub stream: StreamArgs,
+}
+
+/// A streamed disc file (`IMAGE::/PATH` holding XA audio or STR video), extracted
+/// on its own: STR to frame PNGs, audio.wav, a contact sheet and summary.json; XA to
+/// one WAV per channel.
+#[derive(clap::Args, Clone, Debug, Default, Deserialize, JsonSchema)]
+pub struct StreamArgs {
+    /// XA channel: STR's audio.wav (default the one with the most sectors), or the only
+    /// channel an XA file's WAVs are written for.
+    #[arg(long)]
+    pub channel: Option<u8>,
+    /// STR: frames to write, 1-based inclusive: `A..B`, `A..`, `..B` or `N`.
+    #[arg(long)]
+    pub frames: Option<String>,
+    /// STR: no audio.wav.
+    #[arg(long)]
+    #[serde(default)]
+    pub no_audio: bool,
+    /// STR: also write an uncompressed 4:4:4 movie.y4m.
+    #[arg(long)]
+    #[serde(default)]
+    pub y4m: bool,
+    /// STR: an executable normalizing each frame to a standard BS payload (custom frame wrappers).
+    #[arg(long)]
+    pub frame_parser: Option<PathBuf>,
+    #[arg(long = "frame-parser-arg", allow_hyphen_values = true, requires = "frame_parser")]
+    #[serde(default)]
+    pub frame_parser_args: Vec<String>,
 }
 
 impl Op for AssetsExtractArgs {
@@ -424,7 +455,16 @@ fn scan_inputs(
         let bytes = match fs.read_file(&disc, e) {
             Ok(b) => b,
             Err(error) => {
-                skipped.push(json!({"file":e.path,"streamed":e.is_streamed(),"reason":error.to_string()}));
+                let mut row = json!({"file":e.path,"streamed":e.is_streamed(),"reason":error.to_string()});
+                if let Ok((video, audio, channels)) = crate::str_cmd::sector_kinds(&disc, e.lba, e.sectors()) {
+                    if video > 0 || audio > 0 {
+                        row["stream"] = json!({"format": if video > 0 { "str" } else { "xa" },
+                            "video_sectors": video, "xa_sectors": audio,
+                            "xa_channels": channels.iter().map(|(f, c)| json!({"file": f, "channel": c})).collect::<Vec<_>>()});
+                        row["reason"] = json!("XA or STR: extract it on its own (assets extract IMAGE::PATH)");
+                    }
+                }
+                skipped.push(row);
                 continue;
             }
         };
@@ -599,6 +639,15 @@ pub fn scan_assets(a: &AssetsScanArgs, ctx: &Ctx) -> R<Result<Value, String>> {
 /// `assets extract`.
 pub fn extract_assets(a: &AssetsExtractArgs, ctx: &Ctx) -> R<Value> {
     crate::page::validate(a.limit).map_err(Error::malformed)?;
+    if let Some(v) = extract_stream(a, ctx)? {
+        return Ok(v);
+    }
+    let s = &a.stream;
+    if s.channel.is_some() || s.frames.is_some() || s.no_audio || s.y4m || s.frame_parser.is_some() {
+        return Err(Error::invalid(
+            "channel, frames, no_audio, y4m and frame_parser are for one streamed file (IMAGE::/PATH holding XA or STR)",
+        ));
+    }
     let parsers = a.parsers.build(ctx, a.archive.as_deref())?;
     let texture_parser =
         parser::Spec::new(a.texture_parser.as_ref(), &a.texture_parser_args, a.parsers.parser_timeout)?;
@@ -618,6 +667,54 @@ pub fn extract_assets(a: &AssetsExtractArgs, ctx: &Ctx) -> R<Value> {
         texture_parser: texture_parser.as_ref(),
     })?;
     extraction_response(full, &a.out, a.brief, a.report_offset, a.limit)
+}
+
+/// One disc file holding XA audio or STR video, found by its sectors' content:
+/// `None` when the source is not such a file.
+fn extract_stream(a: &AssetsExtractArgs, ctx: &Ctx) -> R<Option<Value>> {
+    let Some((image, path)) = a.source.split_once("::") else { return Ok(None) };
+    if path.ends_with('/') || path.ends_with('*') {
+        return Ok(None);
+    }
+    let disc = Disc::open(image)?;
+    let fs = FileSystem::read(&disc)?;
+    let entry = fs.entry(path)?.clone();
+    let (video, audio, channels) = crate::str_cmd::sector_kinds(&disc, entry.lba, entry.sectors())?;
+    let s = &a.stream;
+    if video > 0 {
+        let frame_parser = parser::Spec::new(s.frame_parser.as_ref(), &s.frame_parser_args, a.parsers.parser_timeout)?;
+        let mut v = crate::str_cmd::run(crate::str_cmd::Args {
+            image: Path::new(image),
+            path: &entry.path,
+            out: &a.out,
+            frames: s.frames.as_deref(),
+            channel: s.channel,
+            no_audio: s.no_audio,
+            y4m: s.y4m,
+            frame_parser: frame_parser.as_ref(),
+            cancel: ctx.cancel.as_ref(),
+        })?;
+        v["format"] = json!("str");
+        return Ok(Some(v));
+    }
+    if audio == 0 {
+        return Ok(None);
+    }
+    std::fs::create_dir_all(&a.out).map_err(|e| Error::io(&a.out, e))?;
+    let mut v = crate::xa_cmd::run(Path::new(image), &entry.path, None, None, None)?;
+    let stem = safe_name(&entry.path);
+    let mut wavs = Vec::new();
+    for (file, channel) in channels.into_iter().filter(|(_, c)| s.channel.is_none_or(|w| w == *c)) {
+        let out = a.out.join(format!("{stem}_f{file}_c{channel}.wav"));
+        let d = crate::xa_cmd::run(Path::new(image), &entry.path, Some(file), Some(channel), Some(&out))?;
+        wavs.push(json!({"file": file, "channel": channel, "wav": d["wav"]}));
+    }
+    if wavs.is_empty() {
+        return Err(Error::new("not_found", format!("{}: no XA audio on channel {:?}", entry.path, s.channel)));
+    }
+    v["format"] = json!("xa");
+    v["wavs"] = json!(wavs);
+    Ok(Some(v))
 }
 
 /// Persist complete conversion evidence before trimming any response lists.
