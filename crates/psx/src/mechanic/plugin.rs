@@ -225,11 +225,13 @@ unsafe extern "C" fn host_out(ctx: *mut c_void, data: *const u8, len: usize) {
 impl<D: serde::de::DeserializeOwned> Plugin<D> {
     /// Loads the library cargo built at `lib` and asks it to describe
     /// itself. The library is loaded from a copy named by its contents, so
-    /// a rebuilt binding is never taken for one loaded before.
+    /// a rebuilt binding is never taken for one loaded before, and by this
+    /// process, so captures running at once never share one.
     pub fn load(lib: &Path) -> crate::Result<Plugin<D>> {
         let bytes = std::fs::read(lib).map_err(|e| Error::io(lib, e))?;
         let sha = crate::stamp::sha256(&bytes);
-        let copy = lib.with_file_name(format!("psx-load-{}.{}", &sha[..16], std::env::consts::DLL_EXTENSION));
+        let name = format!("psx-load-{}-{}.{}", &sha[..16], std::process::id(), std::env::consts::DLL_EXTENSION);
+        let copy = lib.with_file_name(name);
         std::fs::write(&copy, &bytes).map_err(|e| Error::io(&copy, e))?;
         // SAFETY: the library is the workspace's binding, which psx just
         // built; its initialisers are the Rust standard library's.

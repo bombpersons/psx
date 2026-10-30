@@ -1,6 +1,6 @@
 # Plan: mechanics and bindings as Rust
 
-Status: agreed. R2 to R6 are done (section 11); R7 is next.
+Status: agreed. R2 to R7 are done (section 11); the pilot continues.
 
 The mechanic formats (`docs/mechanics.md`) describe a step in TOML: typed
 fields in `mechanic.toml`, and where the PlayStation keeps them in
@@ -509,7 +509,7 @@ Each step ends with something that runs, and is committed.
 | R4 | M | The replay crate and its generated glue; `croc.turn`'s `step` written and replaying exactly. |
 | R5 | L | `croc.ground-move` and `croc.tick` converted the same way, traces compared with the old ones. The glossary converted: `Quantities` and its Rust binding, `scenario record` building it, recordings compared with the old ones; the port's `Observed` and `app.observe` replace getters registered by name. The TOML mechanic, interface, binding and glossary formats, their schemas and the TOML binding vocabulary removed; `docs/mechanics.md`, `docs/scenarios.md`, the guide and the template rewritten. |
 | R6 | M | Capture over scenario recordings: `--scenario` and `--recording`, the glossary and every bound mechanic in one run, the trace header naming both. Croc's scenarios start at level starts; his traces are captured again from their recordings. `port status` reports each mechanic's branch outcomes confirmed in the port, and a failing recording's tick points at the traces of that tick. |
-| R7 | L | Collision: the map reader (pieces with their models), the floor cache as array state, the objects interface, the probe points. Captured from scenario recordings with a clear audit and replayed. |
+| R7 | L | Collision: the map reader (pieces with their models), the floor cache as array state, the objects interface, the probe points. Captured from scenario recordings with a clear audit and replayed. It brought the write audit, commands at stores, and replay of a step's calls (decisions 11 and 12). |
 
 Then the pilot continues where it stopped: `croc.tick`'s sound and rng
 interfaces, Croc's fields and script variables, and the port.
@@ -556,8 +556,9 @@ interfaces, Croc's fields and script variables, and the port.
    inputs and state as the request, its state on return as the response);
    the using binding declares nothing for it.
 8. ~~**Steps in R5.**~~ Settled: `croc.ground-move` and `croc.tick` were
-   converted with their types and bindings only; writing their steps, and
-   replaying a step that makes calls, is pilot work after R7.
+   converted with their types and bindings only; writing their steps is
+   pilot work after R7. Replaying a step that makes calls came with R7
+   (decision 12).
 9. ~~**Where capture over recordings lives.**~~ Settled (R6): `psx mechanic
    capture [ID...] --scenario S --recording R` runs an existing recording
    again, checking the glossary's quantities against it every tick, and
@@ -568,3 +569,16 @@ interfaces, Croc's fields and script variables, and the port.
 10. ~~**Trace files.**~~ Settled (R6):
    `mechanics/<id>/traces/<scenario>/<recording>.trace.jsonl`, mirroring
    `scenarios/<id>/<name>.jsonl`; the header names both.
+11. ~~**What a step writes.**~~ Settled (R7): a write audit, the read
+   audit's mirror. A store the step's own code makes is an output when
+   something reads it before anything stores there again (the next step,
+   other code, a world call); each output is the step's state at its end,
+   a call's request, a command at the store (`Site::store`), or explained.
+   Without it nothing checked a step's effects outside its state, such as
+   collision marking the object Croc touched.
+12. ~~**Objects in collision.**~~ Settled (R7): other objects are the world,
+   behind an interface (`world.objects`: the surfaces under a point, the
+   object met, touched and pushed), and replay answers a step's calls from
+   its trace, so replaying calls moved into R7. Tables, lists and records
+   are allowed in state, inputs and calls (an object's polygons, a cache
+   per probe point), as section 3's types already said.

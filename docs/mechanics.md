@@ -396,6 +396,11 @@ psx_capture::export!(Walk);
 - **State is read where it is**, at the begin and again at the return:
   usually memory, but a value the game keeps in a register from one step to
   the next is read with `reg` like any other.
+- **A value the game leaves meaningless**, such as a found polygon's number
+  when no piece was found (the routine stores whatever its stack held, and
+  every reader checks the piece first), is reported as 0. The binding still
+  reads its bytes, so the audits account for them, and the mechanic writes
+  0 there too. Every reader of the value must be checked to ignore it.
 - **A used mechanic** needs nothing in the using mechanic's binding: its
   own binding records its step (section 5, "Capturing").
 - **The glue** (`build.rs`) is generated from the mechanic's source and the
