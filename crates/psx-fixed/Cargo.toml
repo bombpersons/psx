@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Numbers for exact ports: fixed point with the original's width and rounding, or f32, from one generic mechanic"
+description = "Numbers for exact ports: fixed point with the original's width and rounding, or f32, from one generic rule"
 
 [dependencies]
 serde = { workspace = true }

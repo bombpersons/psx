@@ -23,7 +23,7 @@ game/          the port: one plugin per feature, its assets/ and tests/ (game/AG
 tools/import/  importers: the player's disc -> the port's asset formats
 glossary/      the quantities scenarios compare, and binding/, where the original keeps them (docs/scenarios.md in psx)
 psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte), scenarios and launcher; yours to change (psx-bevy/AGENTS.md)
-vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-mechanics (the scenario formats and generated glue), psx-capture (the glossary binding's API); don't edit (fix upstream in psx)
+vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-scenario (the scenario formats and generated glue), psx-capture (the glossary binding's API); don't edit (fix upstream in psx)
 docs/          template.md: your changes to psx-bevy/
 ```
 

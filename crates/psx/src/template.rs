@@ -199,16 +199,12 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "vendor/psx-capture/Cargo.toml",
     "vendor/psx-capture/src/abi.rs",
     "vendor/psx-capture/src/lib.rs",
-    "vendor/psx-mechanics/Cargo.toml",
-    "vendor/psx-mechanics/src/interface.rs",
-    "vendor/psx-mechanics/src/lib.rs",
-    "vendor/psx-mechanics/src/mechanic.rs",
-    "vendor/psx-mechanics/src/release.rs",
-    "vendor/psx-mechanics/src/replay.rs",
-    "vendor/psx-mechanics/src/rust.rs",
-    "vendor/psx-mechanics/src/scenario.rs",
-    "vendor/psx-mechanics/src/trace.rs",
-    "vendor/psx-mechanics/src/value.rs",
+    "vendor/psx-scenario/Cargo.toml",
+    "vendor/psx-scenario/src/lib.rs",
+    "vendor/psx-scenario/src/release.rs",
+    "vendor/psx-scenario/src/rust.rs",
+    "vendor/psx-scenario/src/scenario.rs",
+    "vendor/psx-scenario/src/value.rs",
     "vendor/psx-gte/src/unr.rs",
     "vendor/psx-media/Cargo.toml",
     "vendor/psx-media/src/chd.rs",
@@ -228,7 +224,7 @@ pub(crate) const FILES: &[(&str, &str)] = files![
 
 /// Files under these prefixes are tracked; `update` replaces the untouched ones.
 /// `vendor/` holds copies of the toolkit's psx-media, psx-assets, psx-fixed,
-/// psx-gte, psx-mechanics and psx-capture (not to be edited); `psx-bevy/` is the base the game builds on
+/// psx-gte, psx-scenario and psx-capture (not to be edited); `psx-bevy/` is the base the game builds on
 /// (edited freely).
 const VENDOR_PREFIX: &str = "vendor/";
 const PSX_BEVY_PREFIX: &str = "psx-bevy/";
@@ -990,7 +986,7 @@ mod tests {
     #[test]
     fn vendored_crates_match_crates() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for krate in ["psx-media", "psx-assets", "psx-fixed", "psx-gte", "psx-mechanics", "psx-capture"] {
+        for krate in ["psx-media", "psx-assets", "psx-fixed", "psx-gte", "psx-scenario", "psx-capture"] {
             let src = repo.join("crates").join(krate).join("src");
             let mut names: Vec<String> = std::fs::read_dir(&src)
                 .unwrap()

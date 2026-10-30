@@ -11,7 +11,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-/// A field's declared type, as read from a mechanic, interface or glossary crate.
+/// A quantity's declared type, as read from the glossary crate.
 /// Which keys apply depends on `type`; [`Field::ty`] checks them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -293,6 +293,11 @@ pub enum Value {
 const SAFE: i128 = 1 << 53;
 
 impl Value {
+    /// A record's value from its fields.
+    pub fn record<const N: usize>(fields: [(&str, Value); N]) -> Value {
+        Value::Record(fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    }
+
     fn describe(&self) -> String {
         match self {
             Value::Bool(b) => b.to_string(),
@@ -392,25 +397,6 @@ pub fn is_name(s: &str) -> bool {
     let mut c = s.chars();
     c.next().is_some_and(|f| f.is_ascii_lowercase())
         && c.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-}
-
-/// Mechanic and interface ids: dot-separated segments of `[a-z0-9]+`
-/// joined by single hyphens (`croc.walk`, `world.floor-height`).
-pub fn is_id(s: &str) -> bool {
-    !s.is_empty()
-        && s.split('.').all(|seg| {
-            !seg.is_empty()
-                && seg
-                    .split('-')
-                    .all(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()))
-        })
-}
-
-/// An interface reference: `<id>@<version>`.
-pub fn parse_ref(s: &str) -> Option<(&str, u32)> {
-    let (id, v) = s.rsplit_once('@')?;
-    (is_id(id) && !v.is_empty() && v.chars().all(|c| c.is_ascii_digit())).then_some(())?;
-    Some((id, v.parse().ok().filter(|v| *v >= 1)?))
 }
 
 /// Checks `values` against `fields`: every field present (unless `partial`
@@ -528,15 +514,5 @@ mod tests {
             Value::List(vec![Value::Int(1), Value::Bool(true), Value::Variant("walk".into())])
         });
         assert!(serde_json::from_str::<Value>("1.5").is_err());
-    }
-
-    #[test]
-    fn ids_and_refs() {
-        assert!(
-            is_id("croc.walk") && is_id("world.floor-height") && !is_id("Croc.walk") && !is_id("a..b") && !is_id("a-")
-        );
-        assert_eq!(parse_ref("world.floor-height@1"), Some(("world.floor-height", 1)));
-        assert_eq!(parse_ref("world.floor-height"), None);
-        assert_eq!(parse_ref("rng@0"), None);
     }
 }

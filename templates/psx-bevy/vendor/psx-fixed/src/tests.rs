@@ -136,14 +136,14 @@ fn angles_wrap_and_look_up_libgte_sine() {
     assert_eq!(Angle::<Float, i16, 12>::degrees(270.0).normalized_signed().to_degrees(), -90.0);
 }
 
-/// The crate's example, as a mechanic both modes run.
+/// The crate's example, as a rule both modes run.
 fn walk<M: Mode>(pos: &mut Num<M, i32, 12>, speed: Num<M, i32, 16>, heading: Angle<M, i16, 12>) {
     let step: Num<M, i32, 12> = (speed * heading.cos_quarter::<12>(&psx_gte::math::SIN_QUARTER)).rescale();
     *pos += step;
 }
 
 #[test]
-fn one_mechanic_runs_in_both_modes() {
+fn one_rule_runs_in_both_modes() {
     let (mut e, mut f) = (Num::<Exact, i32, 12>::zero(), Num::<Float, i32, 12>::zero());
     for _ in 0..100 {
         walk(&mut e, Num::real(1.5), Angle::degrees(45.0));

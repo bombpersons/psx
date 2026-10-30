@@ -106,7 +106,7 @@
           }
         }
       ],
-      "description": "A field's declared type, as read from a mechanic, interface or glossary crate.\nWhich keys apply depends on `type`; [`Field::ty`] checks them.",
+      "description": "A quantity's declared type, as read from the glossary crate.\nWhich keys apply depends on `type`; [`Field::ty`] checks them.",
       "properties": {
         "bits": {
           "description": "`int`: width in bits (1 to 64). `float`: 32, 64 or 80.",
@@ -256,6 +256,7 @@
     },
     "Source": {
       "additionalProperties": false,
+      "description": "Where a recording came from.",
       "properties": {
         "image_sha256": {
           "type": [

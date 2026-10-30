@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 
 use psx_capture::abi;
 use psx_core::Machine;
-use psx_mechanics::{Type, Values};
+use psx_scenario::{Type, Values};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -59,7 +59,7 @@ impl Tick {
 
 /// Whether `dir` holds a Rust crate: `Cargo.toml` and `src/lib.rs`.
 pub fn is_crate(dir: &Path) -> bool {
-    dir.join("Cargo.toml").is_file() && dir.join(psx_mechanics::rust::LIB).is_file()
+    dir.join("Cargo.toml").is_file() && dir.join(psx_scenario::rust::LIB).is_file()
 }
 
 /// The `.rs` files under `dir/src`, by path relative to `dir`, sorted.

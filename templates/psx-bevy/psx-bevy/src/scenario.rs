@@ -58,9 +58,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use psx_mechanics::Value;
-use psx_mechanics::scenario::{Recording, Scenario};
-use psx_mechanics::trace::SourceKind;
+use psx_scenario::Value;
+use psx_scenario::scenario::{Recording, Scenario};
+use psx_scenario::scenario::SourceKind;
 use serde::Serialize;
 
 use crate::testing::TickApp;
@@ -69,7 +69,7 @@ use crate::testing::TickApp;
 pub type Parameters = serde_json::Map<String, serde_json::Value>;
 
 /// The glossary's quantities as the port has them: `Observed`, generated
-/// from `glossary/` by the game's build (`psx_mechanics::rust::write_observed`).
+/// from `glossary/` by the game's build (`psx_scenario::rust::write_observed`).
 pub trait Observation: Send + Sync + 'static {
     /// Each quantity by name, in the recording's encoding, or `None`.
     fn values(&self) -> Vec<(&'static str, Option<Value>)>;
@@ -288,7 +288,7 @@ impl Scenarios {
             })
             .collect();
         let mut differed: BTreeMap<String, String> = BTreeMap::new();
-        let mut check = |app: &mut App, at: &str, values: &psx_mechanics::Values, differed: &mut BTreeMap<String, String>| {
+        let mut check = |app: &mut App, at: &str, values: &psx_scenario::Values, differed: &mut BTreeMap<String, String>| {
             let now = match registry.observe(app.world_mut()) {
                 Ok(now) => now,
                 Err(e) => return Some(format!("{at}: {e}")),

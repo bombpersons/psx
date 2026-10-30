@@ -1,7 +1,7 @@
-//! Numbers for ports: one mechanic, written once, run exactly as the
+//! Numbers for ports: one rule, written once, run exactly as the
 //! original computed it or in `f32`.
 //!
-//! A mechanic is generic over a [`Mode`]. Each number names its format, the
+//! A rule is generic over a [`Mode`]. Each number names its format, the
 //! original's storage word and fraction bits, and the mode decides what it
 //! is:
 //!

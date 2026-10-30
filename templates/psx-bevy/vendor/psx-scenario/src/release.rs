@@ -1,5 +1,5 @@
 //! The release a binding reads: the game's image, as a binding describes
-//! it to its producer (a mechanic's or the glossary's).
+//! it to its producer.
 
 use serde::Deserialize;
 

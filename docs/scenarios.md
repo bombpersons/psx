@@ -4,20 +4,19 @@ A scenario is a situation both the original and the port can reach, named in
 game terms: "Croc standing at the start of 1-1". It is a feature's
 integration test. psx records the original's quantities in it tick by tick,
 and the port runs the same pad input from the same moment and must give the
-same quantities. Mechanics ([mechanics.md](mechanics.md)) prove each step.
-Scenarios prove what lies between steps: system order, timing, and more than
-one step per tick.
+same quantities, tick by tick ([port-design.md](port-design.md)).
 
 The files:
 
-- `crates/psx-mechanics`: the scenario file and recording formats, the
+- `crates/psx-scenario`: the scenario file and recording formats, the
   glossary read from its crate (`rust.rs`) and the generators for its
   binding's glue and the port's `Observed`, their checks, and JSON Schemas
-  in `crates/psx-mechanics/schemas/`.
+  in `crates/psx-scenario/schemas/`.
 - `crates/psx-capture`: the `Glossary` trait the glossary's binding
   implements.
 - `crates/psx/src/scenario.rs`: `psx scenario record`, `psx scenario check`,
-  and the facts `port next` reads.
+  and the facts `port next` reads; `crates/psx/src/binding.rs` builds and
+  loads the glossary's binding.
 - The template's `psx_bevy::scenario`: the launcher and observer registry
   and the runner, used by the game's `tests/scenarios.rs`.
 
@@ -25,8 +24,8 @@ The files:
 
 The glossary holds the names quantities go by, and where the original keeps
 them. A scenario compares quantities by name, never by how the port stores
-them. Like a mechanic it is two layers: the quantities, plain Rust in game
-terms, and their binding, a program that knows the PlayStation.
+them. It is two layers: the quantities, plain Rust in game terms, and their
+binding, a program that knows the PlayStation.
 
 ```
 glossary/
@@ -47,15 +46,15 @@ pub struct Quantities {
 }
 ```
 
-- **`Quantities`** declares each quantity as a field: its type as a
-  mechanic's field's (`bool`, integers, fixed-point aliases, enums, floats;
-  no tables, lists or records), its description and `Unit: …` line in its
-  doc comment. The crate keeps to the mechanics' portable subset, with no
-  dependencies. The template seeds it empty.
-- **The binding**, `glossary/binding/`, is a plugin like a mechanic's
-  (mechanics.md, section 5), with the same `Cargo.toml` shape (it depends on
-  `glossary` and `psx-capture`, and its `build.rs` calls
-  `psx_mechanics::rust::write_glossary_glue("..")`):
+- **`Quantities`** declares each quantity as a field: its type (`bool`,
+  integers, fixed-point aliases, enums, floats; no tables, lists or
+  records), its description and `Unit: …` line in its doc comment. The
+  crate keeps to a portable subset of Rust (no macros of its own, no
+  generics, no unsafe code), with no dependencies. The template seeds it
+  empty.
+- **The binding**, `glossary/binding/`, is a `cdylib` crate psx builds and
+  loads. It depends on `glossary` and `psx-capture`, and its `build.rs`
+  calls `psx_scenario::rust::write_glossary_glue("..")`:
 
   ```rust
   use glossary::Quantities;
@@ -89,8 +88,8 @@ pub struct Quantities {
   psx_capture::export_glossary!(Croc);
   ```
 
-  - **`TITLE` and `IMAGE_SHA256`** are the release, as in a binding.
-    Recording refuses media with another identity.
+  - **`TITLE` and `IMAGE_SHA256`** are the release. Recording refuses media
+    with another identity.
   - **`tick`** is the store that ends one step of the game's logic: a store
     of `bytes` bytes to an address, made by the instruction at `by` when it
     is given. The quantities are read right after it.
@@ -180,16 +179,6 @@ digital buttons only.
   compared quantity's type changed must be recorded again: the facts say
   so. A changed unit or description does not count.
 
-### Mechanics captured from a recording
-
-A recording is also where mechanics are captured. `psx mechanic capture
---scenario ID --recording NAME` runs the recording again, checking the
-glossary's quantities against it at every tick, and records every bound
-mechanic's steps in that run, each with the tick it ran in
-(`docs/mechanics.md`, "Capturing on the PlayStation"). A recording needs
-only the glossary: record scenarios first, and capture from them whenever a
-binding is written or changed.
-
 ## 4. The determinism check: `psx scenario check [ID…]`
 
 The check reaches the scenario a second way and records each captured
@@ -219,7 +208,7 @@ recording again with the same input:
 ## 5. In the port
 
 The game's build generates `Observed` from the glossary (`game/build.rs`
-calls `psx_mechanics::rust::write_observed("../glossary")`; `game::observed`
+calls `psx_scenario::rust::write_observed("../glossary")`; `game::observed`
 includes it): one `Option` per quantity, of its type in the glossary crate,
 in the original's raw units. Each feature's plugin registers its launchers,
 and a function that fills the quantities it keeps
@@ -261,38 +250,20 @@ Each quantity's first tick out of tolerance is reported.
 
 ## 6. Stages
 
-- **Stage 2 (captured)** needs the feature's scenarios as well as its
-  mechanics:
+- **Stage 2 (captured)** needs the feature's scenarios:
   - it lists at least one scenario;
   - each scenario's files check, and it has a captured recording;
   - each scenario passed `psx scenario check` as its files stand.
 
-  `port next` gives the Scenario item until they do, after Capture.
+  `port next` gives the Scenario item until they do.
 - **Stage 3 (implemented)** holds when the last `port check` at HEAD shows a
   launcher for each of the feature's scenario kinds, and each quantity they
   compare observed in a scenario the port launched.
 - **Stage 4 (verified)** needs the scenario verdict to pass at HEAD.
 
-### What the port confirms of the mechanics
-
-Every trace comes from a scenario recording, so a port that passes a
-recording also went through every branch outcome (each way of each branch)
-that recording's traces took. `port status` reports, for each mechanic of a
-feature, its outcomes over all its traces and how many of them the traces
-of recordings the port passes took, by the last `port check` at HEAD:
-
-```
-croc.turn: 41 of 44 branch outcomes confirmed in the port; the other 3 appear only in level_1_1_jump/slope_jump, which fails at tick 812
-```
-
-For each recording the port fails at a tick, its `diagnosis` names the
-trace steps of that tick: what the reference mechanics did there, with
-their inputs and state, which `cargo test -p replay` runs. That points at
-the rule the port got wrong.
-
-A branch outcome a recording takes may not reach a compared quantity
-before it ends, so a port that took the other way could still pass:
-compare more quantities, record longer routes, and hold routes out.
+A recording may take a branch whose effect does not reach a compared
+quantity before it ends, so a port that took the other way could still
+pass: compare more quantities, record longer routes, and hold routes out.
 
 ## 7. Not yet
 

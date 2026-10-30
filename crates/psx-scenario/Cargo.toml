@@ -1,10 +1,10 @@
 [package]
-name = "psx-mechanics"
+name = "psx-scenario"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Mechanic, interface, binding and trace formats: the platform-free side of porting by mechanics"
+description = "The glossary, scenario and recording formats, and the glue generated from the glossary: the platform-free side of porting by recordings"
 
 [dependencies]
 serde = { workspace = true }
@@ -12,7 +12,7 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 toml = "1"
 sha2 = { workspace = true }
-# Mechanics written as Rust, read from source without building them.
+# The glossary, written as Rust, read from source without building it.
 syn = { version = "2", features = ["full", "visit"] }
 quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }

@@ -9,7 +9,7 @@ members = [
     "crates/psx-gte",
     "crates/psx-media",
     "crates/psx-capture",
-    "crates/psx-mechanics",
+    "crates/psx-scenario",
     "crates/psx-oracle",
     "crates/psx-symbols",
 ]
@@ -31,7 +31,7 @@ psx-fixed = { path = "crates/psx-fixed" }
 psx-gte = { path = "crates/psx-gte" }
 psx-media = { path = "crates/psx-media" }
 psx-capture = { path = "crates/psx-capture" }
-psx-mechanics = { path = "crates/psx-mechanics" }
+psx-scenario = { path = "crates/psx-scenario" }
 psx-symbols = { path = "crates/psx-symbols" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

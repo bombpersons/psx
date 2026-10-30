@@ -6,7 +6,7 @@
 #   tools/import/  importers: the player's disc -> the port's asset formats
 #   glossary/      the quantities scenarios compare; glossary/binding/, where
 #                  the original keeps them, is added once written
-#   vendor/        psx-media, psx-assets, psx-fixed, psx-gte, psx-mechanics and
+#   vendor/        psx-media, psx-assets, psx-fixed, psx-gte, psx-scenario and
 #                  psx-capture, vendored
 #
 # An engine/game split, mod crates and an editor are choices a goal can make
@@ -59,7 +59,7 @@ psx-fixed = { path = "vendor/psx-fixed" }
 psx-gte = { path = "vendor/psx-gte" }
 # The scenario and recording formats (psx_bevy::scenario), and the glue the
 # game and the glossary's binding generate from glossary/.
-psx-mechanics = { path = "vendor/psx-mechanics" }
+psx-scenario = { path = "vendor/psx-scenario" }
 # The API the glossary's binding (glossary/binding/) is written against: psx
 # scenario record builds the binding and loads it.
 psx-capture = { path = "vendor/psx-capture" }

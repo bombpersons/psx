@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::trace::{Producer, SourceKind};
 use crate::value::{Field, Type, Value, Values, check_values, is_name};
 
 pub const RECORDING_FORMAT: &str = "scenario-recording";
@@ -141,6 +140,37 @@ fn kind(ty: &Type) -> &'static str {
     }
 }
 
+/// Where a recording came from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Source {
+    /// `captured` (from the original: evidence) or `synthetic` (written by
+    /// hand or by code: examples and tests only).
+    pub kind: SourceKind,
+    /// Captured: the producer's platform and the image's identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_sha256: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceKind {
+    Captured,
+    Synthetic,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Producer {
+    pub name: String,
+    pub version: String,
+    /// The producer's own: how to make the recording again.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub details: serde_json::Map<String, serde_json::Value>,
+}
+
 /// A recording's first line.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -150,7 +180,7 @@ pub struct Header {
     /// 1.
     pub format_version: u32,
     pub scenario: String,
-    pub source: crate::trace::Source,
+    pub source: Source,
     pub producer: Producer,
     /// The compared quantities' declarations, so the recording stands alone.
     pub quantities: BTreeMap<String, Field>,

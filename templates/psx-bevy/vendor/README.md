@@ -7,16 +7,16 @@ so the game needs neither the toolkit nor any download:
   EXE, for importing from the player's disc (`tools/import`,
   `game/src/disc.rs`).
 - `psx-assets`: TIM, TMD, VAB/VAG and SPU-ADPCM decoding.
-- `psx-fixed`: numbers for exact mechanics, `Fixed` with the original's
-  width and rounding or `f32` from one generic mechanic (`psx_bevy::num`).
+- `psx-fixed`: numbers for exact rules, `Fixed` with the original's width
+  and rounding or `f32` from one generic rule (`psx_bevy::num`).
 - `psx-gte`: the GTE's operations, flags and rounding as psx emulates them
   (`psx_bevy::gte`).
-- `psx-mechanics`: the mechanic, interface, trace, scenario and recording
-  formats, read by step replay (`psx_bevy::replay`) and scenarios
-  (`psx_bevy::scenario`). Its `rust::write_glue` is what a mechanic's
-  binding runs in its `build.rs`.
-- `psx-capture`: the API a mechanic's binding is written against
-  (`mechanics/<id>/binding/`), which `psx mechanic capture` builds and loads.
+- `psx-scenario`: the glossary, scenario and recording formats, read by the
+  port's scenarios (`psx_bevy::scenario`). Its `rust::write_observed` and
+  `rust::write_glossary_glue` are what the game's and the glossary
+  binding's `build.rs` run.
+- `psx-capture`: the API the glossary's binding (`glossary/binding/`) is
+  written against, which `psx scenario record` builds and loads.
 
 They belong to the template: `psx template update` replaces them. Unlike
 `psx-bevy/`, they are not for changing here: if one needs a fix, fix it in

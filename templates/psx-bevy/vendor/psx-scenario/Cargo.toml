@@ -1,14 +1,14 @@
 # Owned by the psx template (`psx template update` replaces it): a copy of the
-# psx toolkit's crates/psx-mechanics, the mechanic, interface and trace
-# formats the step-replay harness reads. Fix bugs upstream, not here. See
+# psx toolkit's crates/psx-scenario, the glossary, scenario and recording
+# formats the port's scenarios read. Fix bugs upstream, not here. See
 # ../README.md.
 [package]
-name = "psx-mechanics"
+name = "psx-scenario"
 version = "0.8.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
-description = "Mechanic, interface, binding and trace formats: the platform-free side of porting by mechanics"
+description = "The glossary, scenario and recording formats, and the glue generated from the glossary: the platform-free side of porting by recordings"
 publish = false
 
 [dependencies]
@@ -17,7 +17,7 @@ serde_json = "1"
 schemars = "1"
 toml = "1"
 sha2 = "0.10"
-# Mechanics written as Rust, read from source without building them.
+# The glossary, written as Rust, read from source without building it.
 syn = { version = "2", features = ["full", "visit"] }
 quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }

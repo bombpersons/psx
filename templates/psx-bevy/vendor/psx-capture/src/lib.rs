@@ -591,7 +591,7 @@ pub trait Binding {
 /// The glossary's quantities (docs/scenarios.md): their fingerprint and
 /// `Quantities` struct in the recording's encoding. Its implementation is
 /// generated from the glossary's source by its binding's `build.rs`
-/// (`psx_mechanics::rust::write_glossary_glue`).
+/// (`psx_scenario::rust::write_glossary_glue`).
 pub trait Quantities {
     /// The glossary's fingerprint, of the source the glue was generated from.
     const FINGERPRINT: &'static str;

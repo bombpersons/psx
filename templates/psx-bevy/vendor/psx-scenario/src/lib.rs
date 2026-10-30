@@ -1,34 +1,23 @@
-//! The formats for porting by mechanics: mechanics, interfaces and the
-//! glossary written as Rust (read by [`rust`]), traces, scenario files and
-//! their recordings, with their checks and the JSON Schemas of the files
-//! that are not Rust; and the replay of traces through a mechanic's step
-//! ([`replay`]).
+//! The formats for porting by recordings: the glossary written as Rust
+//! (read by [`rust`]), scenario files and their recordings, with their checks
+//! and the JSON Schemas of the files that are not Rust; and the glue the
+//! glossary's binding and the port generate from the glossary.
 //!
 //! This is the platform-free side: what a binding reads on the PlayStation
-//! is psx's. The formats are defined in psx's `docs/mechanics.md` and
-//! `docs/scenarios.md`.
+//! is psx's. The formats are defined in psx's `docs/scenarios.md`.
 
-pub mod interface;
-pub mod mechanic;
 pub mod release;
-pub mod replay;
 pub mod rust;
 pub mod scenario;
-pub mod trace;
 pub mod value;
 
-pub use interface::Interface;
-pub use mechanic::Mechanic;
 pub use release::Release;
 pub use scenario::{Glossary, Recording, Scenario};
-pub use trace::Trace;
 pub use value::{Field, Type, Value, Values};
 
 /// The JSON Schemas of the platform-free files, by file name.
 pub fn schemas() -> Vec<(&'static str, serde_json::Value)> {
     vec![
-        ("trace-header.schema.json", schema::<trace::Header>("the first line of a *.trace.jsonl")),
-        ("trace-step.schema.json", schema::<trace::Step>("each later line of a *.trace.jsonl")),
         ("scenario.schema.json", schema::<Scenario>("scenarios/<id>.toml")),
         ("recording-header.schema.json", schema::<scenario::Header>("the first line of a scenarios/<id>/<name>.jsonl")),
         ("recording-row.schema.json", schema::<scenario::Row>("each later line of a scenarios/<id>/<name>.jsonl")),

@@ -9,10 +9,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use psx_core::Machine;
-use psx_mechanics::Release;
-use psx_mechanics::scenario::{self as format, Full, Header, Recording, Scenario};
-use psx_mechanics::trace::{Producer, Source, SourceKind};
-use psx_mechanics::{Glossary, Type, Values};
+use psx_scenario::Release;
+use psx_scenario::scenario::{self as format, Full, Header, Producer, Recording, Scenario, Source, SourceKind};
+use psx_scenario::{Glossary, Type, Values};
 use serde_json::{Value as Json, json};
 
 use crate::Error;
@@ -59,8 +58,7 @@ pub fn glossary(root: &Path) -> Result<Glossary, Vec<String>> {
         Ok((std::fs::read_to_string(&p).map_err(|e| Error::io(&p, e))?, binding::sources(&dir)?))
     };
     let (cargo_toml, files) = read().map_err(|e| vec![e.to_string()])?;
-    let g = match psx_mechanics::rust::glossary(&psx_mechanics::rust::Crate { cargo_toml: &cargo_toml, files: &files })
-    {
+    let g = match psx_scenario::rust::glossary(&psx_scenario::rust::Crate { cargo_toml: &cargo_toml, files: &files }) {
         Ok((g, p)) => {
             problems.extend(p.into_iter().map(at));
             g
@@ -70,13 +68,13 @@ pub fn glossary(root: &Path) -> Result<Glossary, Vec<String>> {
             return Err(problems);
         }
     };
-    if psx_mechanics::rust::package_name(&cargo_toml).as_deref() != Some(GLOSSARY) {
+    if psx_scenario::rust::package_name(&cargo_toml).as_deref() != Some(GLOSSARY) {
         problems.push(at("Cargo.toml: the package is named \"glossary\"".into()));
     }
     let binding = dir.join("binding/Cargo.toml");
     match std::fs::read_to_string(&binding) {
         Err(_) => problems.push(format!("{GLOSSARY}/binding: not written yet")),
-        Ok(t) if psx_mechanics::rust::package_name(&t).as_deref() != Some("glossary-binding") => {
+        Ok(t) if psx_scenario::rust::package_name(&t).as_deref() != Some("glossary-binding") => {
             problems.push(at("binding/Cargo.toml: the package is named \"glossary-binding\"".into()))
         }
         Ok(_) => {}
@@ -101,7 +99,7 @@ fn binding(root: &Path, g: &Glossary) -> crate::Result<Plugin<Described>> {
     let d = p.described();
     let mut problems = Vec::new();
     if d.glossary != g.fingerprint() {
-        problems.push("its glue reads other quantities than glossary/ declares: psx template update brings vendor/psx-mechanics to this psx's".to_string());
+        problems.push("its glue reads other quantities than glossary/ declares: psx template update brings vendor/psx-scenario to this psx's".to_string());
     }
     d.source.check(binding::PLATFORM, &mut problems);
     d.tick.check(&mut problems);
@@ -187,7 +185,7 @@ impl Loaded {
     }
 
     /// The compared quantities' glossary declarations.
-    fn compared(&self) -> BTreeMap<String, psx_mechanics::Field> {
+    fn compared(&self) -> BTreeMap<String, psx_scenario::Field> {
         let (Some(s), Some(g)) = (&self.scenario, &self.glossary) else { return BTreeMap::new() };
         s.compare.keys().filter_map(|n| Some((n.clone(), g.quantities.get(n)?.clone()))).collect()
     }
@@ -203,10 +201,10 @@ impl Loaded {
         let mut p: Vec<String> = r.check(&self.id).into_iter().map(|p| format!("{at}: {p}")).collect();
         // Only the types count: a unit or description edited in the glossary
         // leaves the recorded values as they were.
-        let typed = |f: &psx_mechanics::Field| psx_mechanics::Field { unit: None, description: None, ..f.clone() };
-        let declared: BTreeMap<String, psx_mechanics::Field> =
+        let typed = |f: &psx_scenario::Field| psx_scenario::Field { unit: None, description: None, ..f.clone() };
+        let declared: BTreeMap<String, psx_scenario::Field> =
             self.compared().iter().map(|(n, f)| (n.clone(), typed(f))).collect();
-        let recorded: BTreeMap<String, psx_mechanics::Field> =
+        let recorded: BTreeMap<String, psx_scenario::Field> =
             r.header.quantities.iter().map(|(n, f)| (n.clone(), typed(f))).collect();
         if self.scenario.is_some() && self.glossary.is_some() && recorded != declared {
             p.push(format!(
@@ -515,7 +513,7 @@ fn differences(recorded: &Recording, again: &Header, ticks: &[Full], run: &str) 
     (out, schedule)
 }
 
-fn show(v: Option<&psx_mechanics::Value>) -> String {
+fn show(v: Option<&psx_scenario::Value>) -> String {
     v.map(|v| serde_json::to_string(v).unwrap_or_default()).unwrap_or_else(|| "nothing".into())
 }
 
@@ -826,8 +824,8 @@ pub struct Quantities {
         let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
         let r = record(&mut m, &q, 1, &[], Duration::from_secs(60));
         assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
-        assert_eq!(r.initial, Some([("x".to_string(), psx_mechanics::Value::Int(1))].into()));
-        assert_eq!(r.ticks[0].values, [("x".to_string(), psx_mechanics::Value::Int(2))].into());
+        assert_eq!(r.initial, Some([("x".to_string(), psx_scenario::Value::Int(1))].into()));
+        assert_eq!(r.ticks[0].values, [("x".to_string(), psx_scenario::Value::Int(2))].into());
         assert!(r.ticks.len() > 10, "{} ticks", r.ticks.len());
     }
 
@@ -874,9 +872,9 @@ pub struct Quantities {
         let mut again = rec.header.clone();
         let mut ticks = rec.expand();
         assert_eq!(differences(&rec, &again, &ticks, "the second route"), (vec![], vec![]));
-        again.initial.insert("x".into(), psx_mechanics::Value::Int(3));
+        again.initial.insert("x".into(), psx_scenario::Value::Int(3));
         ticks[0].field = 3;
-        ticks[0].values.insert("x".into(), psx_mechanics::Value::Int(6));
+        ticks[0].values.insert("x".into(), psx_scenario::Value::Int(6));
         let (diffs, schedule) = differences(&rec, &again, &ticks, "the second route");
         assert_eq!(diffs, ["initial x: recorded 1, the second route 3", "tick 1 x: recorded 5, the second route 6"]);
         // When a tick ended is a note: the port replays the recorded schedule.

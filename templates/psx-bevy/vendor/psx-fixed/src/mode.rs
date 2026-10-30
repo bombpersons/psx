@@ -5,11 +5,11 @@ use std::fmt::Debug;
 
 use crate::word::{Word, c_div, c_mul, unsigned};
 
-/// How a mechanic's numbers compute. A mechanic generic over `M: Mode` runs
+/// How a rule's numbers compute. A rule generic over `M: Mode` runs
 /// exactly as the original with [`Exact`], and in `f32` with [`Float`].
 ///
 /// The functions take each number's format: its word `W` and fraction bits
-/// `F` (and `W2`, `G` for a second operand). Mechanics use them through
+/// `F` (and `W2`, `G` for a second operand). Rules use them through
 /// [`Num`](crate::Num) and [`Angle`](crate::Angle).
 pub trait Mode: Copy + Default + Debug + PartialEq + Send + Sync + 'static {
     /// A number of format `W`, `F`.

@@ -85,11 +85,9 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | `psx template adopt DIR [--name N] [--region R] [--fields-per-tick N]` | Start tracking a template workspace that has no `.psx-template.toml` |
 | `psx port init DEST --media DISC [--name PKG] [--region R] [--fields-per-tick N]` | A port's workspace: the template, `goal.toml`, `catalogue/`, the disc and BIOS linked in, `.mcp.json` for psx, git. See [Ports](#ports) |
 | `psx port confirm [--yes]` / `port status [--plain]` / `port next` | The goal's list and its closure (with `--yes`, the person's confirmation); every feature by stage; the one item due now |
-| `psx mechanic check [ID]` | Check `interfaces/` and each mechanic's `mechanic.toml`, `binding.toml` and traces ([docs/mechanics.md](docs/mechanics.md)) |
-| `psx mechanic capture ID --name N --from-state S --frames F [--input/--replay]` | Run on the native core, bracket the mechanic's step as its binding says, write `mechanics/ID/traces/N.trace.jsonl` with the read audit and branch coverage; reports external changes and drafts `capture.explained`; refusals name reads that are not of the field's type |
 | `psx scenario record ID --name N --frames F [--input/--replay]` | Run on the native core from the scenario's state and write `scenarios/ID/N.jsonl`: the compared glossary quantities at the end of each logic tick ([docs/scenarios.md](docs/scenarios.md)) |
 | `psx scenario check [ID...]` | The determinism check: reach each scenario again with idle fields before its chain's last run, record its recordings again and compare values per tick (a different tick schedule is a note) |
-| `psx port check [FEATURE]` | At a clean commit: run the game's `tests/mechanics.rs` and `tests/scenarios.rs` and write the features' replay and scenario verdicts |
+| `psx port check [FEATURE]` | At a clean commit: run the game's `tests/scenarios.rs` and write the features' scenario verdicts |
 | `psx mcp [--jobs N]` | Every command above as an MCP tool over stdio (see below) |
 
 Input images can be `.cue`, a raw `.bin` (single data track), a cooked `.iso` or a CD `.chd`
@@ -200,15 +198,13 @@ Other crates:
   draw streams and decoding VRAM, not for game code.
 - **`psx-gte`:** a register-accurate GTE (COP2) with typed helpers and libgte-style math.
   The template vendors it as `psx_bevy::gte`.
-- **`psx-fixed`:** numbers for ports. A mechanic is written once, generic over a `Mode`:
+- **`psx-fixed`:** numbers for ports. A rule is written once, generic over a `Mode`:
   `Fixed<W, F>` computes as the original's compiled C does (checked against the native
   core's R3000), `f32` from the same code. It has angles, vectors, the named integer
   operations and real-number asset fields. The template vendors it as `psx_bevy::num`.
-- **`psx-mechanics`:** the platform-free mechanic, interface, binding and trace formats, and the
-  glossary, scenario and recording formats, with their checks and JSON Schemas
-  (`docs/mechanics.md`, `docs/scenarios.md`); psx's R3000 binding vocabulary is
-  `crates/psx/src/mechanic.rs`. The template vendors it for step replay (`psx_bevy::replay`)
-  and scenarios (`psx_bevy::scenario`).
+- **`psx-scenario`:** the platform-free glossary, scenario and recording formats, with their
+  checks and JSON Schemas, and the glue generated from the glossary (`docs/scenarios.md`).
+  The template vendors it for scenarios (`psx_bevy::scenario`).
 - **`psx-assets`:** TIM/TMD/VAB/VAG parsing, SPU-ADPCM (shared with the native core's SPU),
   the signature scanner and TMD → glTF. `tim.rs`/`tmd.rs` are copied verbatim into the template.
 
@@ -504,9 +500,7 @@ terms). The person confirms the goal's list with `psx port confirm --yes`. `port
 the one item due now, and `port status` every feature of the goal by stage. Verdicts from
 psx's checks live in `.psx/verdicts/` and count only for the commit they judged. The design
 is [docs/port-design.md](docs/port-design.md); `guide` topic `port` holds the procedure.
-Mechanics are captured with `psx mechanic capture` on the native core, and their files are
-defined in [docs/mechanics.md](docs/mechanics.md). Scenarios are recorded with `psx scenario
-record` and checked for determinism with `psx scenario check`
+Scenarios are recorded with `psx scenario record` and checked for determinism with `psx scenario check`
 ([docs/scenarios.md](docs/scenarios.md)).
 
 ## Local data (never committed)
