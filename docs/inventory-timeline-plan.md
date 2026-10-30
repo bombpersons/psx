@@ -89,8 +89,8 @@ wrong, and nothing else.
 ### What stays a guess
 
 Function boundaries (static analysis, now checked by what ran), and names
-for code no file matches. docs/call-ownership-plan.md makes the body of
-code that ran a fact too: the words that ran inside its calls.
+for code no file matches. The words that ran inside each call (owners.json)
+make the body of code that ran a fact too.
 
 ## Compressed code
 

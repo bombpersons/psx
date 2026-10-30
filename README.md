@@ -163,7 +163,6 @@ Custom formats need a parser. Every finding is evidence to check, not a guarante
 
 - [README_FOR_AGENTS.md](README_FOR_AGENTS.md): every command and flag.
 - [docs/port-design.md](docs/port-design.md): porting by recordings.
-- [docs/agent-workflow.md](docs/agent-workflow.md): evidence, input and project isolation.
 - [templates/psx-bevy](templates/psx-bevy/README.md): the game template.
 - [docs/ghidra-integration.md](docs/ghidra-integration.md): Ghidra analysis and symbol export.
 - [docs/compatibility.md](docs/compatibility.md): how far each game gets on the native core, and known emulation issues.

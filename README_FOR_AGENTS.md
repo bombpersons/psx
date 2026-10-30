@@ -35,7 +35,7 @@ runs never download. See [BIOS setup](docs/bios-setup.md) for storage and select
 | Command | What it gives you |
 |---|---|
 | `psx guide [--topic TOPIC]` | Embedded workflow guidance, topic navigation, build identity and the current path-resolution root; MCP `guide` exposes the same documentation |
-| `psx artifact-read PATH [--pointer /rows --offset N --limit N]` | Read artifact directories, JSON, logs, samples, text, raw bytes or PNGs. MCP `artifact_read` attaches PNGs automatically. Stream filters and cursors keep evidence bounded; see [agent workflow](docs/agent-workflow.md) |
+| `psx artifact-read PATH [--pointer /rows --offset N --limit N]` | Read artifact directories, JSON, logs, samples, text, raw bytes or PNGs. MCP `artifact_read` attaches PNGs automatically. Stream filters and cursors keep evidence bounded |
 | `psx disc <image.cue> [--hash]` | Tracks, volume, file counts, SYSTEM.CNF and boot EXE header; `--hash` adds file hashes and `track_sha256`, per-track hashes of the sectors as read, which match across image formats |
 | `psx ls <image> [--filter NAME --offset N --limit N]` | Paginated ISO9660 entries: LBA, size, CD-XA attributes, streamed flag; full totals and index coverage |
 | `psx extract <image> <path>\|--all -o DIR` | Files as Form 1 data. Form 2/interleaved files are written as raw `.raw` 2352-byte sectors |
@@ -115,7 +115,6 @@ Over MCP, every tool also accepts `project_root` for one isolated call. Set it t
 an existing directory (absolute or relative to the server default); keep it on
 subsequent calls. Defaults and outputs stay in that study, and returned next calls
 retain the selection. The server's default and concurrent calls are unaffected.
-See [project isolation](docs/agent-workflow.md#isolate-game-studies).
 
 ### Agent investigation calls
 
@@ -131,7 +130,6 @@ metadata: total, offset, returned, limit, truncation/completeness and next offse
 Coverage describes the inspected scope independently. Streaming artifact totals
 can be unknown until the entire source is inspected. Ghidra requests for the same
 analysis queue within their deadlines; foreign/GUI locks remain errors.
-See [contracts and examples](docs/agent-workflow.md).
 
 ### Frame numbers
 

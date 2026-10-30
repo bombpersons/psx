@@ -129,8 +129,7 @@ projection and continuation cursors; typed inline controller states with validat
 press/release timing shared with replay files; query pagination and explicit scan/
 recording coverage; and cancellable, deadline-bound same-analysis Ghidra queues.
 Foreign/GUI locks and external-edit detection remain protected. Compact text
-responses omit duplicate detailed arrays. See [workflow contracts](docs/agent-workflow.md)
-and [validation](research/agent-usability-workflow.md). These four follow-ups are
+responses omit duplicate detailed arrays. See [validation](research/agent-usability-workflow.md). These four follow-ups are
 complete, as is template input rebinding. Backend pacing/fidelity investigation
 remains a separate correctness workstream.
 
