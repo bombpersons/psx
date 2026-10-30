@@ -881,6 +881,7 @@ impl<'a> Recorder<'a> {
             let when = if store { "store" } else { "load" };
             let (request, read_request) = plan.request(i, &view, when, n, &mut self.refusals);
             self.tracker.binding_reads(&read_request);
+            self.tracker.passed(&read_request);
             let response = (specs[i].kind == CallKind::Query).then(|| {
                 let (response, read_response) = plan.response(i, &view, when, n, &mut self.refusals);
                 self.tracker.binding_reads(&read_response);

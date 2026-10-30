@@ -58,16 +58,17 @@ fixes its raw value in a trace:
 | `type Fx20_12 = i32;` (`UFx…` unsigned) | fixed: integer bits (sign included) and fraction bits | the underlying integer: the real value × 2^frac |
 | an enum of unit variants | enum | the variant's name, in snake case (`BackingUp` is `backing_up`) |
 | `f32`, `f64` | float | its bit pattern, as an unsigned integer |
-| `[T; N]` | table | a list of `N` raw values; params and state |
-| `Vec<T>` | list | a list of raw values, of any length; params |
-| a struct with named fields | record | an object of raw values by name; params and state |
+| `[T; N]` | table | a list of `N` raw values |
+| `Vec<T>` | list | a list of raw values, of any length |
+| a struct with named fields | record | an object of raw values by name |
 
 A field's doc comment is its description, except a line `Unit: …`, which is
 its unit (`Unit: units/tick`); both are documentation only.
 
-Lists and records hold data the step reads but never changes, such as a
-level's collision polygons. They describe that data in the game's terms
-(pieces, polygons, edges), not its memory layout. Pointers, counts that
+Tables, lists and records hold data in any field: a level's collision
+polygons in params, a cache per probe point in state, an object's polygons
+in a call's response. They describe it in the game's terms (pieces,
+polygons, edges), not its memory layout. Pointers, counts that
 only say how long a list is, strides and padding belong to the binding.
 Declare only the fields the step reads.
 
@@ -243,8 +244,9 @@ pub trait FloorHeight {
 - **Order.** Both kinds are recorded and replayed in order.
 - **Random numbers** are a query, such as `rng@1` with a call `next`, so a
   replay gets the original's numbers and the port can use its own generator.
-- **Field types.** Request and response fields are the scalar types: no
-  tables, lists or records.
+- **Field types.** Request and response fields are any of the value types
+  (section 2), tables, lists and records included: an object the world
+  answers with, its collision polygons and all.
 - The crate keeps to the portable subset, with no dependencies.
 
 ## 5. The binding

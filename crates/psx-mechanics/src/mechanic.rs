@@ -87,9 +87,6 @@ impl Mechanic {
                     problems.push(format!("{what}.{name}: not a name ([a-z][a-z0-9_]*)"));
                 }
                 match f.ty() {
-                    Ok(t) if t.is_data() && what != "params" => {
-                        problems.push(format!("{what}.{name}: tables, lists and records are for params"))
-                    }
                     Ok(t) => {
                         into.insert(name.clone(), t);
                     }
@@ -315,20 +312,18 @@ pub struct Params {
         let mut m = read(WALK);
         m.requires.clear();
         m.rate.hz = None;
-        m.inputs.insert("curve".into(), m.params["curve"].clone());
         m.tolerance.insert("speed".into(), Value::Int(1));
         assert_eq!(
             m.check(&[]),
             vec![
                 "rate: hz is needed (nominal steps per second)",
-                "inputs.curve: tables, lists and records are for params",
                 "tolerance: an exact mechanic has none (make it faithful)",
             ]
         );
         m.exactness = Exactness::Faithful;
         m.tolerance.insert("mode".into(), Value::Int(-1));
         assert_eq!(
-            m.check(&[])[2..],
+            m.check(&[])[1..],
             [
                 "tolerance.mode: only int and fixed fields have a tolerance",
                 "tolerance.mode: a non-negative integer in raw units"
