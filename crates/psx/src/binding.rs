@@ -126,7 +126,7 @@ fn rel(root: &Path, p: &Path) -> String {
 }
 
 /// `psx_capture_call`.
-pub type Call = unsafe extern "C" fn(u32, u32, *const abi::Host) -> i32;
+pub type Call = unsafe extern "C" fn(u32, *const abi::Host) -> i32;
 
 /// A loaded binding, with its answer to `DESCRIBE` as `D`.
 pub struct Plugin<D> {
@@ -186,7 +186,7 @@ unsafe extern "C" fn host_read(ctx: *mut c_void, addr: u32, out: *mut u8, len: u
 
 /// # Safety
 /// `ctx` is a `Ctx`.
-unsafe extern "C" fn host_reg(ctx: *mut c_void, which: u32, _latched: bool) -> u32 {
+unsafe extern "C" fn host_reg(ctx: *mut c_void, which: u32) -> u32 {
     // SAFETY: the caller's.
     let c = unsafe { &mut *(ctx as *mut Ctx) };
     let Some(m) = c.m else { return 0 };
@@ -210,11 +210,6 @@ unsafe extern "C" fn host_gte(ctx: *mut c_void, which: u32) -> u32 {
         32..64 => g.read_ctrl(which as usize - 32),
         _ => 0,
     }
-}
-
-/// No inline call: the glossary's binding has none.
-unsafe extern "C" fn host_access(_: *mut c_void, _: *mut u32, _: *mut u32, _: *mut u32) -> bool {
-    false
 }
 
 /// # Safety
@@ -291,12 +286,10 @@ fn invoke(call: Call, what: u32, m: Option<&Machine>) -> Result<String, String> 
         read: host_read,
         reg: host_reg,
         gte: host_gte,
-        load: host_access,
-        store: host_access,
         out: host_out,
     };
     // SAFETY: `host` and `ctx` outlive the call.
-    let code = unsafe { call(what, 0, &host) };
+    let code = unsafe { call(what, &host) };
     let out = String::from_utf8_lossy(&ctx.out).into_owned();
     match code {
         abi::OK => Ok(out),

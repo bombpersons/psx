@@ -1,17 +1,18 @@
-//! The boundary between psx and a binding: C functions with integers and
-//! pointers to bytes only, so a binding built by another Rust compiler than
-//! psx's loads all the same.
+//! The boundary between psx and the glossary's binding: C functions with
+//! integers and pointers to bytes only, so a binding built by another Rust
+//! compiler than psx's loads all the same.
 //!
 //! The binding exports `psx_capture_abi_version() -> u32` and
-//! `psx_capture_call(what, which, host) -> i32` ([`export!`](crate::export)). psx
-//! passes a [`Host`]: its own functions to read the machine and to take the
-//! answer, which is JSON written through [`Host::out`].
+//! `psx_capture_call(what, host) -> i32`
+//! ([`export_glossary!`](crate::export_glossary)). psx passes a [`Host`]: its
+//! own functions to read the machine and to take the answer, which is JSON
+//! written through [`Host::out`].
 
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::{Binding, Bracket, Glossary, Machine, Mechanic, Quantities, Tick, string};
+use crate::{Glossary, Machine, Quantities, Tick, string};
 
 /// psx's side, valid for one call.
 #[repr(C)]
@@ -20,38 +21,19 @@ pub struct Host {
     /// `len` bytes at `addr` into `out`; false when psx refuses the read
     /// (it keeps the reason).
     pub read: unsafe extern "C" fn(ctx: *mut c_void, addr: u32, out: *mut u8, len: u32) -> bool,
-    /// CPU register `which` (0-33), now or as latched at the step's begin.
-    pub reg: unsafe extern "C" fn(ctx: *mut c_void, which: u32, latched: bool) -> u32,
+    /// CPU register `which` (0-33: r0-r31, hi, lo).
+    pub reg: unsafe extern "C" fn(ctx: *mut c_void, which: u32) -> u32,
     /// GTE register `which` (0-63).
     pub gte: unsafe extern "C" fn(ctx: *mut c_void, which: u32) -> u32,
-    /// At an inline call at a load: the load's address, width and value;
-    /// false elsewhere.
-    pub load: unsafe extern "C" fn(ctx: *mut c_void, address: *mut u32, bytes: *mut u32, value: *mut u32) -> bool,
-    /// At a command at a store: the store's address, width and the value
-    /// stored; false elsewhere.
-    pub store: unsafe extern "C" fn(ctx: *mut c_void, address: *mut u32, bytes: *mut u32, value: *mut u32) -> bool,
     /// The answer, or a panic's message.
     pub out: unsafe extern "C" fn(ctx: *mut c_void, data: *const u8, len: usize),
 }
 
-/// `what`: the mechanic and the bracket (JSON: `mechanic`,
-/// `mechanic_version`, `fingerprint`, `source` and `capture`, the bracket:
-/// `begin`, `end`, `explained` and `calls`).
+/// `what`: the binding (JSON: `glossary`, the fingerprint; `source`; and
+/// `tick`).
 pub const DESCRIBE: u32 = 0;
-/// `what`: whether this call is the step (JSON `true` or `false`).
-pub const IS_STEP: u32 = 1;
-/// `what`: the state, inputs or params (a JSON object, field to value).
-pub const STATE: u32 = 2;
-pub const INPUTS: u32 = 3;
-pub const PARAMS: u32 = 4;
-/// `what`: call `which`'s request or response (`which` counts the calls
-/// in the order `bracket` declares them).
-pub const REQUEST: u32 = 5;
-pub const RESPONSE: u32 = 6;
-/// `what`, of the glossary's binding: the quantities (a JSON object).
-/// Its `DESCRIBE` answers `glossary` (the fingerprint), `source` and
-/// `tick`.
-pub const QUANTITIES: u32 = 7;
+/// `what`: the quantities (a JSON object, quantity to value).
+pub const QUANTITIES: u32 = 1;
 
 /// Returned: the answer was written.
 pub const OK: i32 = 0;
@@ -59,7 +41,7 @@ pub const OK: i32 = 0;
 pub const PANICKED: i32 = 1;
 /// Returned: psx refused a read, and has the reason.
 pub const READ_REFUSED: i32 = 2;
-/// Returned: `what` (or `which`) is none of the above.
+/// Returned: `what` is none of the above.
 pub const UNKNOWN: i32 = 3;
 
 /// The panic `Machine` raises when psx refuses a read.
@@ -69,49 +51,11 @@ thread_local! {
     static PANIC: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-/// Answers psx's question `what` for `binding`.
-///
-/// # Safety
-/// `host` is psx's, valid for the call.
-pub unsafe fn call<B: Binding>(binding: &B, what: u32, which: u32, host: *const Host) -> i32 {
-    // SAFETY: the caller's.
-    unsafe {
-        answer(host, |m, out| match what {
-            DESCRIBE => {
-                *out = describe(binding);
-                true
-            }
-            IS_STEP => {
-                out.push_str(if binding.is_step(m) { "true" } else { "false" });
-                true
-            }
-            STATE => {
-                B::Mechanic::state(&binding.state(m)).json(out);
-                true
-            }
-            INPUTS => {
-                B::Mechanic::inputs(&binding.inputs(m)).json(out);
-                true
-            }
-            PARAMS => {
-                B::Mechanic::params(&binding.params(m)).json(out);
-                true
-            }
-            REQUEST | RESPONSE => {
-                let mut b = Bracket::default();
-                binding.bracket(&mut b);
-                b.read_call(which, what == RESPONSE, m, out)
-            }
-            _ => false,
-        })
-    }
-}
-
 /// Answers psx's question `what` for the glossary's binding.
 ///
 /// # Safety
 /// `host` is psx's, valid for the call.
-pub unsafe fn call_glossary<G: Glossary>(glossary: &G, what: u32, host: *const Host) -> i32 {
+pub unsafe fn call<G: Glossary>(glossary: &G, what: u32, host: *const Host) -> i32 {
     // SAFETY: the caller's.
     unsafe {
         answer(host, |m, out| match what {
@@ -172,21 +116,4 @@ unsafe fn answer(host: *const Host, f: impl FnOnce(&Machine, &mut String) -> boo
     // SAFETY: the caller's; `text` is valid for its length.
     unsafe { (host.out)(host.ctx, text.as_ptr(), text.len()) };
     code
-}
-
-fn describe<B: Binding>(binding: &B) -> String {
-    let mut b = Bracket::default();
-    binding.bracket(&mut b);
-    let capture = match b.json() {
-        Ok(c) => c,
-        Err(e) => panic!("{e}"),
-    };
-    format!(
-        "{{\"mechanic\":{},\"mechanic_version\":{},\"fingerprint\":{},\"source\":{{\"platform\":\"psx\",\"title\":{},\"image_sha256\":{}}},\"capture\":{capture}}}",
-        string(B::Mechanic::ID),
-        B::Mechanic::VERSION,
-        string(B::Mechanic::FINGERPRINT),
-        string(B::TITLE),
-        string(B::IMAGE_SHA256),
-    )
 }

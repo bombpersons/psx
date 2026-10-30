@@ -795,9 +795,9 @@ pub struct Quantities {
     }
 
     #[allow(unsafe_code)]
-    unsafe extern "C" fn demo_call(what: u32, _: u32, host: *const psx_capture::abi::Host) -> i32 {
+    unsafe extern "C" fn demo_call(what: u32, host: *const psx_capture::abi::Host) -> i32 {
         // SAFETY: the caller's.
-        unsafe { psx_capture::abi::call_glossary(&Demo, what, host) }
+        unsafe { psx_capture::abi::call(&Demo, what, host) }
     }
 
     #[test]
