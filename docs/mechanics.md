@@ -265,7 +265,7 @@ so every trace carries the values of the run it came from.
 | Form | Where |
 |---|---|
 | `{ address = 0x800A5C10 }` | main RAM in any segment, or the scratchpad (`0x1F800000` to `0x1F8003FF`); in `explained`, any address |
-| `{ base = "a0", offset = 0x40 }` | relative to a register's value, latched when the step begins |
+| `{ base = "a0", offset = 0x40 }` | relative to a register's value, latched when the step begins, or for an entry call's request and response when the call is entered |
 | `{ register = "v0" }` | a CPU register: at begin for inputs and params, at a call's entry for a request, at its return for a response |
 | `{ gte = 32 }` | a GTE register: data 0 to 31 as `mfc2` numbers them, control 32 to 63 (`cfc2` n is 32 + n) |
 | `{ load = "address" }`, `{ load = "value" }` | an inline read's request (the address loaded from) and response (the value loaded) |
@@ -330,6 +330,9 @@ when the check finds nothing, and when the media is the binding's image.
   response is read when the PC reaches the return address with the stack
   pointer as at entry. Calls the world makes while answering are not
   recorded.
+  - A response may be in memory, such as a result written through a
+    pointer the call was given. The call may change the step's state
+    there, and those bytes are the step's from then on.
 - **An inline read** is recorded when its PC runs inside a step, outside a
   call, and loads.
 - **The read audit** (the header's `audit`) lists what the step's own
@@ -370,8 +373,8 @@ when the check finds nothing, and when the media is the binding's image.
   - Its instructions are its own: they are left out of the step's read
     audit and coverage, as a world call's are. It must have no unobserved
     state.
-  - It may change the step's state where its response is bound (the same
-    bytes). Those bytes are the step's from then on.
+  - Like an entry call's, its response's bytes may change and are the
+    step's from then on.
 - **Refusals** stop the trace from being written, and are listed with step
   and field:
   - a value that is not of the field's type;

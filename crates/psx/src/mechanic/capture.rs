@@ -198,10 +198,8 @@ struct CallSpec<'a> {
     on: CallSite,
     request: Fields<'a>,
     response: Fields<'a>,
-    /// A used mechanic's step: its begin's register filters. Its fields are
-    /// read with the registers as it begins, its request is its own
-    /// binding's to account for, and it may change the state its response
-    /// holds.
+    /// A used mechanic's step: its begin's register filters. Its request is
+    /// its own binding's to account for.
     step: Option<Vec<(usize, u32)>>,
 }
 
@@ -219,9 +217,12 @@ struct Pending {
     request: Values,
     ret: u32,
     sp: u32,
-    /// A used mechanic's step: the registers as it began, and the bytes its
-    /// response holds, physical.
-    step: Option<(Regs, Vec<(u32, u32)>)>,
+    /// The registers as the call was entered, which its fields' bases are
+    /// read with.
+    latched: Regs,
+    /// The bytes its response holds, physical: it may change them, and they
+    /// are the step's once it returns.
+    held: Vec<(u32, u32)>,
 }
 
 /// The step under way.
@@ -419,6 +420,19 @@ fn held(f: &Fields, regs: &Regs) -> Vec<(u32, u32)> {
         .collect()
 }
 
+/// Each part's location and size, with a base read from `regs`.
+fn resolved(f: &Fields, regs: &Regs) -> Vec<(Location, u32)> {
+    parts(f)
+        .into_iter()
+        .map(|(at, n)| match at {
+            Location::Base { base, offset } => {
+                (Location::Address { address: regs[*base as usize].wrapping_add(*offset as u32) }, n)
+            }
+            at => (at.clone(), n),
+        })
+        .collect()
+}
+
 /// Each part's location and size; a table's parts reach over every
 /// element.
 fn parts<'a>(f: &Fields<'a>) -> Vec<(&'a Location, u32)> {
@@ -529,8 +543,8 @@ impl<'a> Plan<'a> {
         let begin_reads: Vec<(&Location, u32)> = [&inputs, &param_reads].into_iter().flat_map(parts).collect();
         let mut all: Vec<(&Location, u32)> =
             [&state, &inputs, &param_reads].into_iter().flat_map(parts).chain(explained.iter().copied()).collect();
-        // A used mechanic's fields are its binding's, read as it begins.
-        for s in specs.iter().filter(|s| s.step.is_none()) {
+        // An inline read's parts; an entry call's are read as it is entered.
+        for s in specs.iter().filter(|s| matches!(s.on, CallSite::Read { .. })) {
             all.extend(parts(&s.request));
             all.extend(parts(&s.response));
         }
@@ -629,7 +643,6 @@ pub(crate) fn record(
     let mut begins_filtered: u64 = 0;
     let mut instructions: u64 = 0;
     let mut timed_out = false;
-    let none: Regs = [0; 34];
     let mut tracker = Tracker::new(&plan.accounts, plan.begin);
 
     while m.bus.frames < target {
@@ -668,7 +681,7 @@ pub(crate) fn record(
                 if let Some(p) = &o.pending {
                     let at = crate::run::fold(acc.addr);
                     let end = at + acc.width as u32;
-                    let held = p.step.as_ref().is_some_and(|(_, w)| w.iter().any(|(s, e)| *s <= at && end <= *e));
+                    let held = p.held.iter().any(|(s, e)| *s <= at && end <= *e);
                     if let Some((_, _, field)) = o.state_bytes.iter().find(|(s, e, _)| !held && at < *e && end > *s) {
                         let s = &specs[p.spec];
                         refusals.push(
@@ -696,8 +709,7 @@ pub(crate) fn record(
         let response = returning.then(|| {
             let o = open.as_ref().unwrap();
             let p = o.pending.as_ref().unwrap();
-            let latched = p.step.as_ref().map_or(&o.latched, |(r, _)| r);
-            let view = View { m, now: &now, latched, load: None };
+            let view = View { m, now: &now, latched: &p.latched, load: None };
             read_all(&specs[p.spec].response, &view, &specs[p.spec].field("response"), "return", n, &mut tentative)
         });
         let pending = open.as_ref().is_some_and(|o| o.pending.is_some()) && !returning;
@@ -744,16 +756,10 @@ pub(crate) fn record(
             _ => None,
         });
         let entering = entry.filter(|_| !pending && (open.is_some() || opening.is_some())).map(|i| {
-            let latched = match (&opening, &open) {
-                _ if specs[i].step.is_some() => &now,
-                (Some(_), _) => &now,
-                (None, Some(o)) => &o.latched,
-                _ => &none,
-            };
-            let view = View { m, now: &now, latched, load: None };
+            let view = View { m, now: &now, latched: &now, load: None };
             let request = read_all(&specs[i].request, &view, &specs[i].field("request"), "entry", n, &mut tentative);
-            let step = specs[i].step.as_ref().map(|_| (now, held(&specs[i].response, &now)));
-            Pending { spec: i, request, ret: now[31], sp: now[29], step }
+            let held = held(&specs[i].response, &now);
+            Pending { spec: i, request, ret: now[31], sp: now[29], latched: now, held }
         });
         // The world call this instruction belongs to, if any.
         let world = entering
@@ -777,7 +783,7 @@ pub(crate) fn record(
             let o = open.as_mut().unwrap();
             let p = o.pending.take().unwrap();
             let s = &specs[p.spec];
-            tracker.returned(&parts(&s.response), p.step.as_ref().map_or(&[][..], |(_, w)| w));
+            tracker.returned(&parts(&s.response), &p.held);
             o.calls.push(Call {
                 interface: s.interface.clone(),
                 call: s.call.clone(),
@@ -816,8 +822,11 @@ pub(crate) fn record(
             tracker.open(m, &now);
         }
         if let (Some(p), Some(o)) = (entering, open.as_mut()) {
-            // A used mechanic's request is its own binding's to account for.
-            let request = if p.step.is_some() { Vec::new() } else { parts(&specs[p.spec].request) };
+            // A used mechanic's request is its own binding's to account for;
+            // an interface's is what the step passes it.
+            let request =
+                if specs[p.spec].step.is_some() { Vec::new() } else { resolved(&specs[p.spec].request, &now) };
+            let request: Vec<(&Location, u32)> = request.iter().map(|(at, n)| (at, *n)).collect();
             tracker.entry(pc, p.spec, &request, now[29]);
             o.pending = Some(p);
         }
@@ -1064,6 +1073,19 @@ end = { pc = 0x8001012C }
             json!({"step": 0, "when": "store", "field": "world.add@1.add",
                    "problem": "the call changed state.count (store at 0x80010204 to 0x80020000)"})
         );
+    }
+
+    #[test]
+    fn a_call_may_change_the_state_its_response_holds() {
+        // world: addiu v0, a1, 100; sw v0, 4(a0); jr ra; nop, its response in memory.
+        let binding = BINDING.replace(
+            r#"response.m = { parts = [{ at = { register = "v0" }, bytes = 4 }], stored_signed = true }"#,
+            r#"response.m = { parts = [{ at = { base = "a0", offset = 4 }, bytes = 4 }], stored_signed = true }"#,
+        );
+        let r = run(&binding, &[0x24A2_0064, 0xAC82_0004, 0x03E0_0008, 0]).unwrap();
+        assert_eq!(r.refusals.count, 0, "{:?}", r.refusals.listed);
+        let add = r.steps[1].calls.iter().find(|c| c.call == "add").unwrap();
+        assert_eq!(add.response.as_ref().unwrap()["m"], int(102));
     }
 
     #[test]
