@@ -1071,14 +1071,14 @@ fn spu_trace_links_key_ons_to_sample_hashes_and_uploads_through_cli_and_mcp() {
     let sample = &spu["samples"][0];
     assert_eq!(sample["sample_sha256"], psx_assets::adpcm::sample_sha256(&block, 0));
     assert_eq!(sample["bytes"], 16);
-    assert_eq!(sample["upload"], json!({"source":"cpu","run_frame":0,"upload_address":0x1000,"offset":0}));
+    assert_eq!(sample["upload"], json!({"source":"cpu","run_frame":0,"upload_address":"0x00001000","offset":0}));
     let events: Vec<Value> = std::fs::read_to_string(root.join("mcp/spu.jsonl"))
         .unwrap()
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(events.iter().map(|e| e["event"].as_str().unwrap()).collect::<Vec<_>>(), ["upload", "key_on", "end"]);
-    assert_eq!(events[1]["pc"], 0xbfc0_0000u32 + 4 * 17, "the key-on store");
+    assert_eq!(events[1]["pc"], format!("0x{:08X}", 0xBFC0_0000u32 + 4 * 17), "the key-on store");
     assert_eq!(events[1]["rate_hz"], 44_100.0);
     // summary keeps paths and counts only, and still attaches the screen.
     let (summary, error, blocks) = rpc.tool(
@@ -2375,7 +2375,7 @@ fn query_pages_preserve_totals_and_explain_scan_coverage() {
         assert!(!error, "{r}");
         assert_eq!(r["page"]["total"], 5);
         assert_eq!(r["page"]["next_offset"], 3);
-        assert_eq!(r[key][0]["address_hex"], "0x80000004");
+        assert_eq!(r[key][0]["address"], "0x80000004");
         assert_eq!(r["coverage"]["complete"], true);
     }
     let mut exe = tiny_exe();
@@ -2386,7 +2386,7 @@ fn query_pages_preserve_totals_and_explain_scan_coverage() {
     std::fs::write(root.join("refs.exe"), exe).unwrap();
     let (refs, error, _) =
         rpc.tool("code_xrefs", json!({"source":"refs.exe","target":"80010040","limit":1,"offset":1}));
-    assert!(!error && refs["page"]["total"] == 3 && refs["refs"][0]["pc_hex"] == "0x80010004", "{refs}");
+    assert!(!error && refs["page"]["total"] == 3 && refs["refs"][0]["pc"] == "0x80010004", "{refs}");
     let (text, error, _) = rpc.tool("code_xrefs", json!({"source":"refs.exe","target":"80010040","text":true}));
     assert!(!error && text["text"].is_string() && text.get("refs").is_none());
     let (text, error, _) = rpc.tool("code_disasm", json!({"source":"refs.exe","addr":"80010000","text":true}));

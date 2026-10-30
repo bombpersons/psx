@@ -10,6 +10,7 @@ use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 use psx_core::disasm::disasm;
 use psx_media::PsxExe;
+use psx_media::memmap::hex;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -185,7 +186,7 @@ impl Code {
                 let run_gp = || {
                     let text = std::fs::read_to_string(r.join("report.json")).ok()?;
                     let v: Value = serde_json::from_str(&text).ok()?;
-                    v["registers"]["gp"].as_u64().map(|g| g as u32).filter(|g| g >> 28 == 8)
+                    crate::commands::addr_value(&v["registers"]["gp"]).filter(|g| g >> 28 == 8)
                 };
                 Ok(Code {
                     base: 0x8000_0000,
@@ -727,9 +728,9 @@ pub fn xref_report(
             let word = code.word(*pc).unwrap_or(0);
             let fname = f.and_then(|f| code.name(scopes, f, 0));
             lines.push(json!({
-                "pc": pc, "pc_hex": format!("0x{pc:08X}"), "kind": r.kind, "via": r.via,
-                "target_hex": format!("0x{:08X}", r.target), "asm": if r.kind == "data" { format!(".word   0x{word:08X}") } else { disasm(word, *pc) },
-                "function_hex": f.map(|f| format!("0x{f:08X}")), "function": fname,
+                "pc": hex(*pc), "kind": r.kind, "via": r.via,
+                "target": hex(r.target), "asm": if r.kind == "data" { format!(".word   0x{word:08X}") } else { disasm(word, *pc) },
+                "function_start": f.map(hex), "function": fname,
             }));
             if filter.bits.is_some() {
                 lines.last_mut().unwrap()["tests_hex"] = json!(format!("0x{tested:X}"));
@@ -754,14 +755,14 @@ pub fn xref_report(
         }
     }
     let v = json!({
-        "source": code.origin, "range": [format!("0x{lo:08X}"), format!("0x{hi:08X}")],
+        "source": code.origin, "range": [hex(lo), hex(hi)], "region": psx_media::memmap::region(lo),
         "scanned": [format!("0x{:08X}", code.base), format!("0x{:08X}", code.end())],
         "gp": code.gp.map(|g| format!("0x{g:08X}")),
         "total": refs.len(), "by_kind": by_kind, "shown": lines.len(),
         "before_filter": (filter.kinds.len() + filter.bits.is_some() as usize > 0).then_some(all.len()),
         "page":crate::page::metadata(refs.len(),offset,lines.len(),limit),
         "coverage":{"complete":true,"scope":"static direct control-flow, resolved address pairs and optional aligned data pointers","indirect_references_complete":false},
-        "functions": funcs.iter().map(|(f, n)| json!({"start_hex": format!("0x{f:08X}"), "refs": n, "name": code.name(scopes, *f, 0)})).collect::<Vec<_>>(),
+        "functions": funcs.iter().map(|(f, n)| json!({"start": hex(*f), "refs": n, "name": code.name(scopes, *f, 0)})).collect::<Vec<_>>(),
         "refs": lines,
     });
     let header = format!(
@@ -943,7 +944,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|r| (r["pc"].as_u64().unwrap(), r["tests_hex"].clone()))
+                .map(|r| (crate::commands::addr_value(&r["pc"]).unwrap() as u64, r["tests_hex"].clone()))
                 .collect::<Vec<_>>()
         };
         assert_eq!(pcs(&Filter { kinds: vec!["load".into()], bits: None }).len(), 3);

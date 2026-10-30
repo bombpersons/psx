@@ -523,7 +523,7 @@ fn import(input: &Input) -> Result<Import> {
                         provenance[file] = json!({"path":p.canonicalize().map_err(|e| Error::io(&p, e))?,"sha256":sha256_bytes(&fs::read(&p).map_err(|e| Error::io(&p, e))?)});
                     }
                 }
-                gp = report["registers"]["gp"].as_u64().and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
+                gp = crate::commands::addr_value(&report["registers"]["gp"]).unwrap_or(0);
             } else {
                 warnings.push(
                     "Run report does not bind these RAM bytes; frame/register/media metadata was not associated."
@@ -791,9 +791,7 @@ fn analysis_symbols(input: &Input, bytes: &[u8], mapping: &Mapping, warnings: &m
                 .as_array()
                 .ok_or_else(|| Error::invalid("symbols report lacks report.symbols"))?;
             for s in list {
-                let a = s["address"]
-                    .as_u64()
-                    .and_then(|a| u32::try_from(a).ok())
+                let a = crate::commands::addr_value(&s["address"])
                     .ok_or_else(|| Error::invalid("invalid symbol address"))?;
                 symbols.push(json!({"address":ram_address(a)?,"name":s["name"],"kind":s["kind"]}));
             }
@@ -1258,7 +1256,15 @@ impl Op for AnnotateArgs {
             let mut out = summary(&a);
             out["status"] = json!("complete");
             out["conflicts"] = json!(conflicts);
-            out["patches"] = json!(patches);
+            // Ghidra's script takes numbers; the result shows them as hex.
+            out["patches"] = patches
+                .iter()
+                .map(|p| {
+                    let mut p = p.clone();
+                    p["address"] = json!(crate::commands::addr_value(&p["address"]).map(psx_media::memmap::hex));
+                    p
+                })
+                .collect();
             let manifest = a.path.clone();
             drop(a);
             out["symbols"] = export(&manifest, self.symbols_out, deadline, ctx)?;

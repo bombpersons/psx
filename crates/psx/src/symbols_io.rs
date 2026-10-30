@@ -214,7 +214,7 @@ pub(crate) fn symbols_cmd(
     let write = |p: PathBuf, text: String| std::fs::write(&p, text).map_err(|e| Error::io(&p, e)).map(|_| p);
     let doc = json!({
         "source": source,
-        "text_addr": exe.text_addr,
+        "text_addr": psx_media::memmap::hex(exe.text_addr),
         "exe_sha256": psx_media::disc::sha256_bytes(&bytes),
         "report": report,
     });

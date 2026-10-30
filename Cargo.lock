@@ -1425,6 +1425,7 @@ dependencies = [
 name = "psx-symbols"
 version = "0.8.0"
 dependencies = [
+ "psx-media",
  "serde",
  "serde_json",
 ]

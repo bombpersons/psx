@@ -95,6 +95,12 @@ pub trait Op: serde::de::DeserializeOwned + JsonSchema {
     fn exec(self, ctx: &Ctx) -> Outcome;
 }
 
+/// An address field psx wrote: hex (with or without `0x`), or a number from
+/// files written before addresses were hex.
+pub(crate) fn addr_value(v: &serde_json::Value) -> Option<u32> {
+    v.as_u64().and_then(|n| u32::try_from(n).ok()).or_else(|| v.as_str().and_then(psx_media::memmap::parse_hex))
+}
+
 /// An optional hex argument (`what` names it in the error).
 pub(crate) fn opt_hex(s: &Option<String>, what: &str) -> crate::Result<Option<u32>> {
     s.as_deref()

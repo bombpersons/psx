@@ -202,7 +202,7 @@ pub fn run(o: Options) -> crate::Result<(bool, Value)> {
             }
             dma_seen = m.bus.recent_dma.len();
         }
-        let mut v = json!({"status": "watch", "addr": format!("0x{w:08X}"), "changes": changes, "frames_reached": m.bus.frames});
+        let mut v = json!({"status": "watch", "addr": format!("0x{w:08X}"), "region": psx_media::memmap::region(w), "changes": changes, "frames_reached": m.bus.frames});
         if deadline.is_some_and(|d| Instant::now() >= d) {
             v["timed_out"] = json!(true);
         }

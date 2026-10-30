@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
-use psx_media::memmap::parse_hex;
+use psx_media::memmap::{hex, parse_hex};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -710,8 +710,8 @@ impl Poke {
             v["value_hex"] = json!(format!("0x{n:0w$X}", w = w * 2));
             v["value_signed"] = json!(signed(n, w));
         }
-        v["address"] = json!(self.at.addr);
-        v["address_hex"] = json!(format!("0x{:08X}", self.at.addr));
+        v["address"] = json!(hex(self.at.addr));
+        v["region"] = json!(psx_media::memmap::region(self.at.addr));
         v
     }
 }
@@ -860,7 +860,7 @@ pub fn diff(a: &Path, b: &Path, o: DiffOpts) -> R {
                 }
                 if total > o.offset as u64 && changes.len() < o.limit {
                     changes.push(json!({
-                        "address": addr_of(off), "address_hex": format!("0x{:08X}", addr_of(off)),
+                        "address": hex(addr_of(off)),
                         "a": value_json(x, w, o.signed), "b": value_json(y, w, o.signed),
                         "a_hex": format!("0x{x:0n$X}", n = w * 2), "b_hex": format!("0x{y:0n$X}", n = w * 2),
                         "delta": delta,
@@ -874,13 +874,13 @@ pub fn diff(a: &Path, b: &Path, o: DiffOpts) -> R {
     big.sort_by_key(|c| (std::cmp::Reverse(c.2), c.0));
     Ok(json!({
         "a": sa.path, "b": sb.path, "width": w, "signed": o.signed,
-        "range": [format!("0x{:08X}", addr_of(lo)), format!("0x{:08X}", addr_of(hi))],
+        "range": [hex(addr_of(lo)), hex(addr_of(hi))],
         "differing": total, "shown": changes.len(),
         "page":crate::page::metadata(total as usize,o.offset,changes.len(),o.limit),
         "coverage":{"scope":"selected RAM range","complete":true},
         "changes": changes,
         "clusters": {"count": clusters.len(), "largest": big.iter().take(o.limit.min(32)).map(|&(s, e, n)| json!({
-            "start_hex": format!("0x{:08X}", addr_of(s)), "end_hex": format!("0x{:08X}", addr_of(e)), "units": n,
+            "start": hex(addr_of(s)), "end": hex(addr_of(e)), "units": n,
         })).collect::<Vec<_>>()},
     }))
 }
@@ -1060,7 +1060,7 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
         .map(|&off| {
             let vals: Vec<u32> = snaps.iter().map(|s| read_le(&s.bytes, off, w)).collect();
             let mut v = json!({
-                "address": addr_of(off), "address_hex": format!("0x{:08X}", addr_of(off)),
+                "address": hex(addr_of(off)),
                 "values": vals.iter().map(|&x| view(x)).collect::<Vec<_>>(),
                 "hex": vals.iter().map(|&x| format!("0x{x:0n$X}", n = w * 2)).collect::<Vec<_>>(),
             });
@@ -1074,7 +1074,7 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
         "snapshots": snaps.iter().map(|s| &s.path).collect::<Vec<_>>(),
         "width": w, "align": align, "signed": o.signed,
         "predicates": pair_preds.iter().map(|p| format!("{p:?}").to_lowercase()).collect::<Vec<_>>(),
-        "range": [format!("0x{:08X}", addr_of(lo)), format!("0x{:08X}", addr_of(hi))],
+        "range": [hex(addr_of(lo)), hex(addr_of(hi))],
         "restricted_to": restrict.as_ref().map(|r| r.len()),
         "candidates": found.len(), "shown": shown.len(),
         "page":crate::page::metadata(found.len(),o.offset,shown.len(),o.limit),
@@ -1108,7 +1108,7 @@ pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str) -> crate::Resu
         let vals: Vec<u32> = snaps.iter().map(|s| read_le(&s.bytes, off, w)).collect();
         let differs = vals.iter().any(|&v| v != vals[0]);
         rows.push(json!({
-            "address_hex": format!("0x{:08X}", addr_of(off)), "offset": format!("+0x{:X}", off - start),
+            "address": hex(addr_of(off)), "offset": format!("+0x{:X}", off - start),
             "values": vals.iter().map(|&v| fmt.json(v)).collect::<Vec<_>>(), "differs": differs,
         }));
         text += &format!("{:<12}{:<8}", format!("{:08X}", addr_of(off)), format!("+{:X}", off - start));
@@ -1297,7 +1297,7 @@ mod tests {
         let d = diff(&a, &b, DiffOpts { width: 4, range: None, min_delta: None, signed: true, limit: 10, offset: 0 })
             .unwrap();
         assert_eq!(d["differing"], 2);
-        assert_eq!(d["changes"][0]["address_hex"], "0x80000100");
+        assert_eq!(d["changes"][0]["address"], "0x80000100");
         assert_eq!(d["changes"][1]["delta"], -4);
         let d =
             diff(&a, &b, DiffOpts { width: 4, range: None, min_delta: Some(5), signed: true, limit: 10, offset: 0 })
@@ -1321,7 +1321,7 @@ mod tests {
         assert_eq!(r["candidates"], 1);
         assert_eq!(r["matches"][0]["values"], json!([10, 20, 35]));
         let r = search(&paths, SearchOpts { preds: &["dec,inc".into()], ..base }).unwrap();
-        assert_eq!(r["matches"][0]["address_hex"], "0x80000200");
+        assert_eq!(r["matches"][0]["address"], "0x80000200");
         let saved = dir.join("cands.json");
         let r = search(
             &paths,

@@ -46,7 +46,79 @@ pub fn parse_hex(s: &str) -> Option<u32> {
     u32::from_str_radix(s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s), 16).ok()
 }
 
+/// An address as psx prints it: `0x` and eight upper-case hex digits.
+pub fn hex(a: u32) -> String {
+    format!("0x{a:08X}")
+}
+
+/// Serde for an address field: written as [`hex`], read from that, from hex
+/// without `0x`, or from a number (files psx wrote before addresses were hex).
+pub mod addr {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(a: &u32, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&super::hex(*a))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+        Ok(Repr::deserialize(d)?.0)
+    }
+
+    struct Repr(u32);
+
+    impl<'de> Deserialize<'de> for Repr {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            #[derive(Deserialize)]
+            #[serde(untagged)]
+            enum Either {
+                Number(u32),
+                Text(String),
+            }
+            match Either::deserialize(d)? {
+                Either::Number(n) => Ok(Repr(n)),
+                Either::Text(t) => super::parse_hex(&t)
+                    .map(Repr)
+                    .ok_or_else(|| serde::de::Error::custom(format!("{t:?} is not a hex address"))),
+            }
+        }
+    }
+
+    /// The same for `Option<u32>`.
+    pub mod option {
+        use serde::{Deserialize, Deserializer, Serializer};
+
+        pub fn serialize<S: Serializer>(a: &Option<u32>, s: S) -> Result<S::Ok, S::Error> {
+            match a {
+                Some(a) => super::serialize(a, s),
+                None => s.serialize_none(),
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+            Ok(Option::<super::Repr>::deserialize(d)?.map(|r| r.0))
+        }
+    }
+
+    /// The same for a list (or, serializing, an array) of addresses.
+    pub mod vec {
+        use serde::{Deserialize, Deserializer, Serializer};
+
+        pub fn serialize<S: Serializer, A: AsRef<[u32]>>(a: &A, s: S) -> Result<S::Ok, S::Error> {
+            s.collect_seq(a.as_ref().iter().map(|a| super::super::hex(*a)))
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u32>, D::Error> {
+            Ok(Vec::<super::Repr>::deserialize(d)?.into_iter().map(|r| r.0).collect())
+        }
+    }
+}
+
 pub const MAIN_RAM_SIZE: u32 = 2 * 1024 * 1024;
+
+/// The region an address reaches, as psx prints it beside data addresses.
+pub fn region(virt: u32) -> Region {
+    resolve(virt).region
+}
 
 pub fn resolve(virt: u32) -> Resolved {
     let segment = match virt >> 29 {

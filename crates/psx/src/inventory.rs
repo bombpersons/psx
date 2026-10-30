@@ -1263,12 +1263,10 @@ fn cluster(spans: impl Iterator<Item = (u32, u32)>) -> Vec<(u32, u32)> {
 }
 
 fn parse_hex(v: &Value) -> u32 {
-    v.as_str().and_then(|s| u32::from_str_radix(s, 16).ok()).unwrap_or(0)
+    crate::commands::addr_value(v).unwrap_or(0)
 }
 
-fn hex(a: u32) -> String {
-    format!("{a:08X}")
-}
+use psx_media::memmap::hex;
 
 fn words(bytes: &[u8], base: u32) -> Vec<(u32, u32)> {
     bytes.as_chunks::<4>().0.iter().enumerate().map(|(i, w)| (base + 4 * i as u32, u32::from_le_bytes(*w))).collect()
@@ -1339,27 +1337,28 @@ struct OwnerRow {
 }
 
 fn owner_rows(v: &Value) -> Vec<OwnerRow> {
-    let ram = |a: u64| (0x8000_0000..0x8020_0000).contains(&a);
+    let ram = |a: u32| (0x8000_0000..0x8020_0000).contains(&a);
     let n = |v: &Value| v.as_u64().map(|x| x as u32);
+    let a = crate::commands::addr_value;
     v.as_array()
         .into_iter()
         .flatten()
         .map(|o| OwnerRow {
             kind: o["owner"].as_str().unwrap_or_default().to_string(),
-            entry: n(&o["copy"]).zip(n(&o["address"])),
+            entry: n(&o["copy"]).zip(a(&o["address"])),
             body: o["body"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|r| Some((n(&r[0])?, r[1].as_u64()?, r[2].as_u64()?)))
+                .filter_map(|r| Some((n(&r[0])?, a(&r[1])?, a(&r[2])?)))
                 .filter(|r| ram(r.1))
-                .flat_map(|(c, a, e)| (a as u32..e as u32).step_by(4).map(move |x| (c, x)))
+                .flat_map(|(c, a, e)| (a..e).step_by(4).map(move |x| (c, x)))
                 .collect(),
             jumps: o["jumps"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|r| Some((n(&r[0])?, n(&r[1])?, r[2].as_u64()? as u8)))
+                .filter_map(|r| Some((n(&r[0])?, a(&r[1])?, r[2].as_u64()? as u8)))
                 .collect(),
             returned_inside: o["returned_inside"]
                 .as_array()
@@ -1401,7 +1400,7 @@ fn timeline(run: &Path) -> crate::Result<Option<Timeline>> {
     let text = std::fs::read_to_string(run.join("calls.json")).unwrap_or_default();
     let v: Value = serde_json::from_str(&text).unwrap_or_default();
     for c in v.as_array().into_iter().flatten() {
-        let (Some(k), Some(a)) = (c["copy"].as_u64(), c["address"].as_u64()) else { continue };
+        let (Some(k), Some(a)) = (c["copy"].as_u64(), crate::commands::addr_value(&c["address"])) else { continue };
         if c.get("moments").is_none() {
             return Err(again());
         }
@@ -1412,7 +1411,7 @@ fn timeline(run: &Path) -> crate::Result<Option<Timeline>> {
             .filter_map(|s| Some((s[0].as_u64()? as u32, s[1].as_u64()? as u32)))
             .collect();
         if let Some(v) = calls.get_mut(k as usize) {
-            v.push((0x8000_0000 | (a as u32 & 0x1F_FFFF), spans));
+            v.push((0x8000_0000 | (a & 0x1F_FFFF), spans));
         }
     }
     let text = std::fs::read_to_string(run.join("owners.json")).map_err(|_| again())?;
@@ -2897,7 +2896,7 @@ mod tests {
         ram[0x10_0000..0x10_0000 + 8 * 1024].copy_from_slice(&file[..8 * 1024]);
         let files = vec![("/OTHER.BIN".to_string(), vec![1u8; 4096]), ("/OVL.BIN".to_string(), file)];
         let (f, lo, hi) = loaded_from(&ram, 0x8010_0400, 0x8010_0800, &files).unwrap();
-        assert_eq!((f["path"].as_str(), f["loads_at"].as_str()), (Some("/OVL.BIN"), Some("80100000")));
+        assert_eq!((f["path"].as_str(), f["loads_at"].as_str()), (Some("/OVL.BIN"), Some("0x80100000")));
         assert_eq!((lo, hi), (0x8010_0000, 0x8010_2000));
         assert!(loaded_from(&ram, 0x8018_0000, 0x8018_0100, &files).is_none());
     }
@@ -3081,7 +3080,7 @@ mod tests {
             BTreeSet::from([(base, base + 0x10), (base + 0x10, base + 0x18), (base, base + 0x20)]),
             "{got:?}"
         );
-        assert!(got.iter().any(|g| g.1 == base + 0x20 && g.2 == "code at 80100000, frame 20"));
+        assert!(got.iter().any(|g| g.1 == base + 0x20 && g.2 == "code at 0x80100000, frame 20"));
     }
 
     #[test]
@@ -3377,7 +3376,7 @@ mod tests {
         a.guesses();
         assert_eq!(a.functions.len(), 2);
         let (rows, _) = a.report();
-        assert_eq!(rows[0]["candidate_entries"], json!(["80010014"]));
+        assert_eq!(rows[0]["candidate_entries"], json!(["0x80010014"]));
         assert_eq!((rows[0]["ends"].as_str(), rows[0]["instructions"].as_u64()), (Some("ran"), Some(8)));
         // One onto what it did not run starts a function there, and the
         // body is read up to it.
@@ -3438,7 +3437,7 @@ mod tests {
         let got: Vec<(u32, u32, &str)> = a.functions.values().map(|f| (f.start, f.end, f.ends)).collect();
         assert_eq!(got, [(x(0), x(0x4C), "return")]);
         let (rows, _) = a.report();
-        assert_eq!(rows[0]["switches"], json!([{"jr": "80010024", "table": "80010050", "cases": 3}]));
+        assert_eq!(rows[0]["switches"], json!([{"jr": "0x80010024", "table": "0x80010050", "cases": 3}]));
         // Without its bound, the table's length is not known: no switch.
         let mut w = w.clone();
         w[1] = NOP;
@@ -3531,7 +3530,7 @@ mod tests {
         let end = |m: &Moment, switches: &mut Switches| {
             let seeds = [(x(0), "call"), (x(0x44), "call")];
             let rows = moment_functions(m, &[], &[], &seeds, &BTreeSet::new(), None, switches);
-            rows.iter().flat_map(|c| &c.2).find(|r| r["entry"] == "80100000").map(|r| parse_hex(&r["end"]))
+            rows.iter().flat_map(|c| &c.2).find(|r| r["entry"] == "0x80100000").map(|r| parse_hex(&r["end"]))
         };
         assert_eq!(end(&moment(false), &mut Switches::new()), Some(x(0x2C)));
         let mut switches = Switches::new();

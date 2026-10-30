@@ -133,7 +133,9 @@ A run's own frame numbers count from the run start: power-on, or the restored st
 `--save-state-at`, and every `run_frame` field. The `frame` fields in `writes.jsonl`, `reads.jsonl`,
 `cd_native.jsonl`, `bios.jsonl`, `samples.csv`, `calls.json` and the first column of `trace.txt` are absolute vblanks
 since power-on, as the core counts them. The report gives `frames.start`, and `frame = run_frame + frames.start`.
-Native logs also carry `address_hex`/`pc_hex`/`value_hex` next to the numbers, and `value_signed`/`old_signed` by store width.
+Every address and PC psx writes is a hex string (`"0x80012345"`), registers included; a data address that
+could be anywhere (a watched store or read, a poke, a sample, an xrefs target) has its `region` beside it
+(`main_ram`, `scratchpad`, `io`, `bios`, ...). Watch logs also carry `value_hex`, and `value_signed`/`old_signed` by store width.
 
 `run --diagnose`'s `cdrom.command_history` records command-time absolute `frame` and
 `cycle`, plus `last_frame`/`last_cycle` for aggregated repeats. A missing frame is

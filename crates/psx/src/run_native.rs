@@ -10,7 +10,9 @@ use psx_core::trace::{Namer, TraceConfig, Tracer};
 use serde_json::{Value, json};
 
 use crate::Error;
+use crate::commands::addr_value;
 use crate::run::{RunArgs, write_png};
+use psx_media::memmap::{hex, region};
 
 mod gpu_capture;
 use gpu_capture::{CapturedFrame, GpuCapture};
@@ -176,9 +178,9 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
                         if reads.len() < a.max_events as usize {
                             reads.push(json!({
                                 "frame": m.bus.frames, "run_frame": m.bus.frames - start_frame, "cycle": m.bus.now,
-                                "pc": info.pc, "pc_hex": format!("0x{:08X}", info.pc),
+                                "pc": hex(info.pc),
                                 "function": observed_name(info.pc, &m.bus.ram),
-                                "address": acc.addr, "address_hex": format!("0x{:08X}", acc.addr), "width": acc.width,
+                                "address": hex(acc.addr), "region": region(acc.addr), "width": acc.width,
                                 "value": acc.value, "value_hex": format!("0x{:0n$X}", acc.value, n = acc.width as usize * 2),
                             }));
                         }
@@ -319,7 +321,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             json!({
                 "file": dir.join("samples.csv"), "rows": s.rows, "every": s.every,
                 "columns": s.columns.iter().map(|c| {
-                    json!({"name": c.name, "address_hex": format!("0x{:08X}", c.addr), "format": c.fmt.name()})
+                    json!({"name": c.name, "address": hex(c.addr), "region": region(c.addr), "format": c.fmt.name()})
                 }).collect::<Vec<_>>(),
                 "timing": "row N = memory at the Nth vblank of the run (row 0 = the starting memory), before that frame's replay input and pokes",
             })
@@ -346,7 +348,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             "complete":read_hits<=a.max_events as u64,"truncated":read_hits>a.max_events as u64,
             "readers_page":crate::page::metadata(top.len(),0,top.len().min(16),16),
             "readers": top.iter().take(16).map(|&(pc, n)| {
-                let mut v = json!({"pc_hex": format!("0x{pc:08X}"), "count": n});
+                let mut v = json!({"pc": hex(pc), "count": n});
                 v["function"] = crate::final_name(&scopes, pc, Some(&m.bus.ram));
                 v
             }).collect::<Vec<_>>(),
@@ -393,24 +395,25 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         .take(64)
         .map(|v| {
             let mut v = v.clone();
-            if let Some(pc) = v["pc"].as_u64() {
+            if let Some(pc) = addr_value(&v["pc"]) {
                 if v["function"].is_null() && !bound_watches {
-                    v["function"] = crate::final_name(&scopes, pc as u32, Some(&m.bus.ram));
+                    v["function"] = crate::final_name(&scopes, pc, Some(&m.bus.ram));
                 }
             }
             v
         })
         .collect();
+    // Each register as a hex word.
     let mut registers = serde_json::Map::new();
-    registers.insert("pc".into(), json!(m.cpu.pc));
+    registers.insert("pc".into(), json!(hex(m.cpu.pc)));
     for i in 0..32 {
-        registers.insert(reg(i as u32).into(), json!(m.cpu.regs[i]));
+        registers.insert(reg(i as u32).into(), json!(hex(m.cpu.regs[i])));
     }
-    registers.insert("hi".into(), json!(m.cpu.hi));
-    registers.insert("lo".into(), json!(m.cpu.lo));
-    registers.insert("cop0_sr".into(), json!(m.cpu.cop0[12]));
-    registers.insert("cop0_cause".into(), json!(m.cpu.cop0[13]));
-    registers.insert("cop0_epc".into(), json!(m.cpu.cop0[14]));
+    registers.insert("hi".into(), json!(hex(m.cpu.hi)));
+    registers.insert("lo".into(), json!(hex(m.cpu.lo)));
+    registers.insert("cop0_sr".into(), json!(hex(m.cpu.cop0[12])));
+    registers.insert("cop0_cause".into(), json!(hex(m.cpu.cop0[13])));
+    registers.insert("cop0_epc".into(), json!(hex(m.cpu.cop0[14])));
     let complete = termination == "frames_reached" || termination == "until_met";
     let from_state_sha256 = a.from_state.as_deref().and_then(|p| std::fs::read(p).ok()).map(|b| sha256(&b));
     // How the machine was set up at power-on (a state carries its cards and pad).
@@ -580,10 +583,7 @@ fn attach_observers(m: &mut Machine, a: &RunArgs) -> crate::Result<()> {
 
 fn annotate_hit(h: &psx_core::observe::WriteHit) -> Value {
     let mut v = serde_json::to_value(h).unwrap();
-    v["address_hex"] = json!(format!("0x{:08X}", h.address));
-    if let Some(pc) = h.pc {
-        v["pc_hex"] = json!(format!("0x{pc:08X}"));
-    }
+    v["region"] = json!(region(h.address));
     let w = h.width as usize;
     if w <= 4 {
         for (key, val) in [("value", h.value), ("old", h.old)] {
@@ -714,12 +714,11 @@ fn trace_outputs(
             let mut callers: Vec<(&(u32, u32), &u64)> = c.callers.iter().collect();
             callers.sort_by_key(|((sc, site), n)| (std::cmp::Reverse(**n), *site, *sc));
             json!({
-                "address": addr, "copy": copy(*target_copy), "first_moment": c.first_moment, "moments": c.moments,
+                "address": hex(*addr), "copy": copy(*target_copy), "first_moment": c.first_moment, "moments": c.moments,
                 "function": name(*addr), "count": c.count,
-                "address_hex": format!("0x{addr:08X}"),
                 "first_frame": c.first_frame, "last_frame": c.last_frame,
                 "first_run_frame": c.first_frame as i64 - start_frame as i64, "last_run_frame": c.last_frame as i64 - start_frame as i64,
-                "callers": callers.iter().take(16).map(|((sc, site), n)| json!({"pc": site, "copy": copy(*sc), "pc_hex": format!("0x{site:08X}"), "count": n})).collect::<Vec<_>>(),
+                "callers": callers.iter().take(16).map(|((sc, site), n)| json!({"pc": hex(*site), "copy": copy(*sc), "count": n})).collect::<Vec<_>>(),
             })
         })
         .collect();
@@ -753,9 +752,9 @@ fn trace_outputs(
         };
         let mut v = json!({
             "owner": kind,
-            "address": at.map(|a| a.1), "address_hex": at.map(|a| format!("0x{:08X}", a.1)), "copy": at.and_then(|a| copy(a.0)),
-            "body": body.iter().map(|r| json!([copy(r.0), r.1, r.2])).collect::<Vec<_>>(),
-            "jumps": jumps.iter().map(|j| json!([copy(j.0), j.1, j.2])).collect::<Vec<_>>(),
+            "address": at.map(|a| hex(a.1)), "copy": at.and_then(|a| copy(a.0)),
+            "body": body.iter().map(|r| json!([copy(r.0), hex(r.1), hex(r.2)])).collect::<Vec<_>>(),
+            "jumps": jumps.iter().map(|j| json!([copy(j.0), hex(j.1), j.2])).collect::<Vec<_>>(),
         });
         if let Some(l) = t.landing(k as u32) {
             landings += 1;
@@ -771,8 +770,8 @@ fn trace_outputs(
             }
             v["returned_copy"] = json!(l.returned_copy.and_then(copy));
             v["returned_inside"] = json!(l.returned_inside.values);
-            v["returned_sp"] = json!(l.returned_sp.values);
-            v["landed_sp"] = json!(l.landed_sp.values);
+            v["returned_sp"] = json!(l.returned_sp.values.iter().map(|&sp| hex(sp)).collect::<Vec<_>>());
+            v["landed_sp"] = json!(l.landed_sp.values.iter().map(|&sp| hex(sp)).collect::<Vec<_>>());
             v["seen_more"] = json!(!all);
         }
         owners += &v.to_string();
@@ -852,9 +851,9 @@ fn trace_outputs(
     // The window as run's arguments give it, for a recipe to run again.
     let options = json!({
         "trace_from_frame": t.cfg.from_frame.saturating_sub(start_frame),
-        "trace_start": t.cfg.start_pc.map(|p| format!("{p:08X}")),
+        "trace_start": t.cfg.start_pc.map(hex),
         "trace_frames": t.cfg.frames,
-        "trace_range": t.cfg.ranges.iter().map(|(lo, hi)| format!("{lo:08X}-{hi:08X}")).collect::<Vec<_>>(),
+        "trace_range": t.cfg.ranges.iter().map(|(lo, hi)| format!("{}-{}", hex(*lo), hex(*hi))).collect::<Vec<_>>(),
         "max_events": t.cfg.max_lines,
     });
     Ok(json!({
@@ -1078,11 +1077,11 @@ fn profile_outputs(
             let at = |phys: u32| if phys >= 0x1FC0_0000 { phys | 0xA000_0000 } else { phys | 0x8000_0000 };
             let name = crate::name_pc(scopes, at(f.entry), Some(&m.bus.ram)).map(|(n, ..)| n);
             json!({
-                "entry": format!("0x{:08X}", at(f.entry)), "name": name,
+                "entry": hex(at(f.entry)), "name": name,
                 "cycles": f.cycles, "share": (f.cycles as f64 / total * 10_000.0).round() / 100.0,
                 "instructions": f.instructions, "calls": f.calls,
                 "cycles_per_call": (f.calls > 0).then(|| f.cycles / f.calls),
-                "hottest_pc": format!("0x{:08X}", at(f.hottest_pc)), "hottest_pc_cycles": f.hottest_cycles,
+                "hottest_pc": hex(at(f.hottest_pc)), "hottest_pc_cycles": f.hottest_cycles,
             })
         })
         .collect();
@@ -1113,13 +1112,15 @@ fn spu_summary(log: &psx_core::observe::SpuLog, events: &[Value], dir: &Path) ->
             Some("upload") => uploads.push(e),
             Some("key_on") => {
                 voices.insert(e["voice"].as_u64());
-                let start = e["start"].as_u64().unwrap_or(0);
+                let start = addr_value(&e["start"]).unwrap_or(0);
                 let hash = &e["sample_sha256"];
-                let pc = format!("0x{:08X}", e["pc"].as_u64().unwrap_or(0));
+                let pc = hex(addr_value(&e["pc"]).unwrap_or(0));
                 if let Some(s) = samples.iter_mut().find(|s| s["sample_sha256"] == *hash) {
                     s["key_ons"] = json!(s["key_ons"].as_u64().unwrap() + 1);
                     s["last_run_frame"] = e["run_frame"].clone();
-                    for (key, value) in [("voices", e["voice"].clone()), ("pcs", json!(pc)), ("starts", json!(start))] {
+                    for (key, value) in
+                        [("voices", e["voice"].clone()), ("pcs", json!(pc)), ("starts", json!(hex(start)))]
+                    {
                         let list = s[key].as_array_mut().unwrap();
                         if !list.contains(&value) && list.len() < 8 {
                             list.push(value);
@@ -1129,21 +1130,21 @@ fn spu_summary(log: &psx_core::observe::SpuLog, events: &[Value], dir: &Path) ->
                 }
                 // The latest recorded upload covering the start address.
                 let upload = uploads.iter().rev().find(|u| {
-                    let (at, len) = (u["address"].as_u64().unwrap_or(0), u["bytes"].as_u64().unwrap_or(0));
+                    let (at, len) = (addr_value(&u["address"]).unwrap_or(0), u["bytes"].as_u64().unwrap_or(0) as u32);
                     (at..at + len).contains(&start)
                 });
                 let source = upload.map(|u| {
-                    let offset = start - u["address"].as_u64().unwrap_or(0);
+                    let offset = start - addr_value(&u["address"]).unwrap_or(0);
                     let mut v = json!({"source": u["source"], "run_frame": u["run_frame"], "upload_address": u["address"], "offset": offset});
-                    if let Some(ram) = u["ram"].as_u64() {
-                        v["ram_hex"] = json!(format!("0x{:08X}", ram + offset));
+                    if let Some(ram) = addr_value(&u["ram"]) {
+                        v["ram"] = json!(hex(ram + offset));
                     }
                     v
                 });
                 samples.push(json!({
                     "sample_sha256": hash, "bytes": e["sample_bytes"], "looped": e["looped"],
                     "key_ons": 1, "first_run_frame": e["run_frame"], "last_run_frame": e["run_frame"],
-                    "voices": [e["voice"]], "pcs": [pc], "starts": [start], "rate_hz": e["rate_hz"],
+                    "voices": [e["voice"]], "pcs": [pc], "starts": [hex(start)], "rate_hz": e["rate_hz"],
                     "function": e.get("function"), "upload": source,
                 }));
             }
@@ -1157,7 +1158,7 @@ fn spu_summary(log: &psx_core::observe::SpuLog, events: &[Value], dir: &Path) ->
         "voices_keyed": voices.into_iter().flatten().collect::<Vec<_>>(),
         "samples_page": crate::page::metadata(samples.len(), 0, shown, 32),
         "samples": &samples[..shown],
-        "matching": "sample_sha256 equals assets_extract adpcm_sha256 for the VAB/VAG waveform with the same ADPCM bytes; upload.ram_hex is the sample's main RAM source for loads/trace_cd provenance",
+        "matching": "sample_sha256 equals assets_extract adpcm_sha256 for the VAB/VAG waveform with the same ADPCM bytes; upload.ram is the sample's main RAM source for loads/trace_cd provenance",
         "timing": "frame/run_frame as in other logs; cycle is the system clock; end events are detected per device step",
     })
 }

@@ -64,7 +64,7 @@ pub struct ReadArgs {
     #[arg(long, default_value = "frame")]
     #[serde(default = "frame_field")]
     pub frame_field: String,
-    /// Keep JSONL/CSV records with this PC (hex, compared numerically to pc/pc_hex).
+    /// Keep JSONL/CSV records with this PC (hex, compared numerically to pc).
     #[arg(long)]
     pub pc: Option<String>,
     /// Case-sensitive substring filter on a serialized record or text line.
@@ -130,10 +130,12 @@ impl ReadArgs {
             }
         }
         if let Some(pc) = pc {
+            // Hex, or a number or pc_hex in logs written before addresses were hex.
             let found = v["pc"]
-                .as_u64()
-                .or_else(|| v["pc_hex"].as_str().and_then(hex))
-                .or_else(|| v["pc"].as_str().and_then(|s| s.parse().ok().or_else(|| hex(s))));
+                .as_str()
+                .and_then(hex)
+                .or_else(|| v["pc"].as_u64())
+                .or_else(|| v["pc_hex"].as_str().and_then(hex));
             if found != Some(pc) {
                 return false;
             }

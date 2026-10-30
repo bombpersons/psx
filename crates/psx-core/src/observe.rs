@@ -25,10 +25,11 @@ pub struct WriteHit {
     pub cycle: u64,
     pub writer: Writer,
     /// Virtual address of a CPU store, or start of a DMA transfer.
+    #[serde(with = "psx_media::memmap::addr")]
     pub address: u32,
     /// Store width, or DMA transfer length in bytes.
     pub width: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(with = "psx_media::memmap::addr::option", skip_serializing_if = "Option::is_none")]
     pub pc: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<u32>,
@@ -50,8 +51,10 @@ pub struct CdTransfer {
     pub bytes: u32,
     /// 2048 or 2340 (Setmode bit 5).
     pub sector_size: u32,
+    #[serde(with = "psx_media::memmap::addr")]
     pub ram: u32,
     /// PC of the store that started the DMA.
+    #[serde(with = "psx_media::memmap::addr")]
     pub pc: u32,
 }
 
@@ -62,7 +65,10 @@ pub struct BiosCall {
     /// "A0", "B0" or "C0".
     pub table: &'static str,
     pub function: u32,
+    /// a0-a3, as words.
+    #[serde(serialize_with = "psx_media::memmap::addr::vec::serialize")]
     pub args: [u32; 4],
+    #[serde(with = "psx_media::memmap::addr")]
     pub ra: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -79,7 +85,7 @@ pub struct SpuEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice: Option<u32>,
     /// The storing instruction (key on/off, CPU uploads, the store that started a DMA).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(with = "psx_media::memmap::addr::option", skip_serializing_if = "Option::is_none")]
     pub pc: Option<u32>,
     #[serde(flatten)]
     pub key_on: Option<KeyOn>,
@@ -91,6 +97,7 @@ pub struct SpuEvent {
 #[derive(Clone, Debug, Serialize)]
 pub struct KeyOn {
     /// Sample start in sound RAM (bytes).
+    #[serde(with = "psx_media::memmap::addr")]
     pub start: u32,
     /// Raw pitch: 0x1000 plays the sample at 44.1 kHz.
     pub pitch: u16,
@@ -112,12 +119,13 @@ pub struct KeyOn {
 #[derive(Clone, Debug, Serialize)]
 pub struct SpuUpload {
     /// Destination in sound RAM (bytes).
+    #[serde(with = "psx_media::memmap::addr")]
     pub address: u32,
     pub bytes: u32,
     /// "dma" (channel 4) or "cpu" (manual FIFO writes, merged while contiguous).
     pub source: &'static str,
     /// Main RAM source of a DMA transfer.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(with = "psx_media::memmap::addr::option", skip_serializing_if = "Option::is_none")]
     pub ram: Option<u32>,
 }
 

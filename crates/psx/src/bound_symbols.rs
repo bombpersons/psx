@@ -15,6 +15,7 @@ pub struct Document {
     pub revision: u64,
     pub input: PathBuf,
     pub input_sha256: String,
+    #[serde(with = "psx_media::memmap::addr")]
     pub base: u32,
     pub file_offset: usize,
     pub size: usize,
@@ -23,6 +24,7 @@ pub struct Document {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Function {
+    #[serde(with = "psx_media::memmap::addr")]
     pub address: u32,
     pub name: String,
     pub body: Vec<Range>,
@@ -30,7 +32,9 @@ pub struct Function {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Range {
+    #[serde(with = "psx_media::memmap::addr")]
     pub start: u32,
+    #[serde(with = "psx_media::memmap::addr")]
     pub end: u32,
     pub sha256: String,
 }

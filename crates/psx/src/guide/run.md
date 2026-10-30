@@ -51,7 +51,7 @@ Observations (native):
 - trace_spu logs voice key on/off (settings, storing PC, sample_sha256),
   each keyed voice's first END and sound RAM uploads to spu.jsonl. spu.samples
   groups key ons by sample; sample_sha256 equals assets_extract adpcm_sha256,
-  and upload.ram_hex is the sample's main RAM source.
+  and upload.ram is the sample's main RAM source.
 - audio records what the console plays (SPU voices, reverb and CD/XA audio,
   mixed as the game sets them) to audio.wav, 44.1 kHz stereo, from the run
   start; the report gives its length and peak (peak 0: silent).

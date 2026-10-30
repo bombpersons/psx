@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use psx_core::observe::{Census, Pair};
+use psx_media::memmap::{hex, region};
 use serde_json::{Value, json};
 
 /// Groups in the report, and candidates per group; the file holds more.
@@ -44,7 +45,7 @@ fn kseg(addr: u32) -> u32 {
 fn candidate(key: u64, p: &Pair) -> Value {
     let (addr, width, pc) = Census::parts(key);
     let (_, kind) = kind(key, p);
-    let mut c = json!({"write": format!("{:08X}:{width}", kseg(addr)), "pc": format!("{:08X}", kseg(pc)), "kind": kind, "stores": p.stores});
+    let mut c = json!({"write": format!("{}:{width}", hex(kseg(addr))), "region": region(kseg(addr)), "pc": hex(kseg(pc)), "kind": kind, "stores": p.stores});
     if kind == "step" || kind == "stepped" {
         let shift = 32 - 8 * width;
         c["step"] = json!(((p.first_step << shift) as i32) >> shift);
@@ -150,7 +151,7 @@ mod tests {
         let c = &tick["candidates"];
         assert_eq!(
             (&c[0]["write"], &c[0]["pc"], &c[0]["kind"]),
-            (&"80080000:4".into(), &"80010000".into(), &"counter".into())
+            (&"0x80080000:4".into(), &"0x80010000".into(), &"counter".into())
         );
         assert_eq!((&c[1]["kind"], &c[1]["step"]), (&"stepped".into(), &1.into()));
         // Only the game's frame count remains beside it: the kernel is left out.

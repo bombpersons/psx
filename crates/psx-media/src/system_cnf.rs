@@ -12,6 +12,7 @@ pub struct SystemCnf {
     pub boot_args: Vec<String>,
     pub tcb: Option<u32>,
     pub event: Option<u32>,
+    #[serde(serialize_with = "crate::memmap::addr::option::serialize")]
     pub stack: Option<u32>,
 }
 

@@ -167,6 +167,7 @@ pub enum Kind {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Symbol {
+    #[serde(with = "psx_media::memmap::addr")]
     pub address: u32,
     pub name: String,
     pub kind: Kind,
@@ -177,6 +178,7 @@ pub struct Symbol {
 #[derive(Clone, Debug, Serialize)]
 pub struct ObjectMatch {
     pub source: String,
+    #[serde(with = "psx_media::memmap::addr")]
     pub address: u32,
     pub size: u32,
     pub concrete_bytes: usize,
@@ -192,6 +194,7 @@ pub struct VersionScore {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct MatchReport {
+    #[serde(with = "psx_media::memmap::addr")]
     pub base: u32,
     pub code_bytes: usize,
     pub min_concrete: usize,
@@ -298,6 +301,7 @@ pub struct MatchReportIn {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct SymbolIn {
+    #[serde(with = "psx_media::memmap::addr")]
     pub address: u32,
     pub name: String,
     pub kind: String,

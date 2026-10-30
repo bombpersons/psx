@@ -140,9 +140,11 @@ pub struct Load {
     pub sector_offset: u32,
     /// 2048 (data only) or 2340 (whole sector after sync; Setmode bit 5).
     pub sector_size: u32,
+    #[serde(with = "psx_media::memmap::addr")]
     pub ram: u32,
     pub bytes: u32,
     /// CPU PC that started the DMA3 transfer.
+    #[serde(with = "psx_media::memmap::addr")]
     pub pc: u32,
     /// How `lba`/`sector_offset` were established: content, ambiguous or inferred.
     pub lba_evidence: &'static str,
@@ -261,11 +263,13 @@ pub struct Run {
     pub last_frame: u32,
     pub lba: u32,
     pub sectors: u32,
+    #[serde(with = "psx_media::memmap::addr")]
     pub ram: u32,
     pub bytes: u32,
     pub sector_size: u32,
     /// Offset inside each sector's FIFO payload where the copied bytes start.
     pub first_offset: u32,
+    #[serde(with = "psx_media::memmap::addr::vec")]
     pub pcs: Vec<u32>,
     /// Weakest evidence among the run's transfers.
     pub lba_evidence: &'static str,
@@ -443,7 +447,7 @@ fn spans(runs: &[Run], symbols: &[crate::ScopedSymbols], ram: Option<&[u8]>) -> 
         }
         s.ram_intact_bytes += r.matching_bytes.unwrap_or(0) as u64;
     }
-    let h = |v: u32| format!("0x{v:08X}");
+    let h = psx_media::memmap::hex;
     out.into_iter()
         .map(|s| {
             json!({
@@ -470,7 +474,9 @@ struct NativeTransfer {
     fifo_offset: u32,
     bytes: u32,
     sector_size: u32,
+    #[serde(with = "psx_media::memmap::addr")]
     ram: u32,
+    #[serde(with = "psx_media::memmap::addr")]
     pc: u32,
 }
 

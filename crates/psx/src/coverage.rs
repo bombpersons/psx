@@ -122,7 +122,7 @@ impl Image {
 }
 
 fn parse_hex(v: &Value) -> Option<u32> {
-    u32::from_str_radix(v.as_str()?, 16).ok()
+    crate::commands::addr_value(v)
 }
 
 fn functions(v: &Value) -> crate::Result<Vec<Function>> {
@@ -333,7 +333,7 @@ fn run_calls(run: &Path) -> Vec<(u32, i64, i64)> {
         .into_iter()
         .flatten()
         .filter_map(|c| {
-            let a = 0x8000_0000 | (c["address"].as_u64()? as u32 & 0x1F_FFFF);
+            let a = 0x8000_0000 | (crate::commands::addr_value(&c["address"])? & 0x1F_FFFF);
             Some((a, c["first_run_frame"].as_i64()?, c["last_run_frame"].as_i64()?))
         })
         .collect()
@@ -351,9 +351,7 @@ fn spans(addrs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
     out
 }
 
-fn hex(a: u32) -> String {
-    format!("{a:08X}")
-}
+use psx_media::memmap::hex;
 
 /// What credit gives: the words no image holds, per image the words
 /// credited, and per executable or overlay (by name) the words.
@@ -869,7 +867,7 @@ mod tests {
         assert_eq!(credited, vec![0, 2]);
         let (rows, outside, t) = report(&images[1]);
         assert_eq!(rows[0]["blocks_executed"], 1);
-        assert_eq!(rows[0]["unexecuted"], json!([["80100008", "80100010"]]));
+        assert_eq!(rows[0]["unexecuted"], json!([["0x80100008", "0x80100010"]]));
         assert_eq!(rows[0]["calls"], 3);
         assert!(outside.is_empty());
         assert_eq!((t.exercised, t.complete), (1, 0));
@@ -919,7 +917,7 @@ mod tests {
         )];
         credit(&mut images, 0, &[(base, 1, 1), (base + 8, 3, 1), (base + 12, 4, 1)]);
         let (_, outside, t) = report(&images[0]);
-        assert_eq!(outside, vec![json!({"start": "80100008", "end": "80100010", "words": 2})]);
+        assert_eq!(outside, vec![json!({"start": "0x80100008", "end": "0x80100010", "words": 2})]);
         assert_eq!((t.complete, t.outside_functions), (1, 2));
     }
 
@@ -947,7 +945,7 @@ mod tests {
         assert_eq!(miss, vec![(base + 8, 9)]);
         let (rows, _, t) = report(&images[0]);
         assert_eq!((t.instructions, t.instructions_executed, t.blocks_executed), (4, 2, 1));
-        assert_eq!(rows[0]["unexecuted"], json!([["80100000", "80100008"]]));
+        assert_eq!(rows[0]["unexecuted"], json!([["0x80100000", "0x80100008"]]));
     }
 
     #[test]
@@ -1026,14 +1024,14 @@ mod tests {
         credit(&mut images, 0, &ran);
         let (rows, _, t) = report(&images[0]);
         assert_eq!((t.branches, t.branch_ways_taken), (1, 0));
-        assert_eq!(rows[0]["branch_ways_missed"], json!([{"pc": "80100004", "never": "ran"}]));
+        assert_eq!(rows[0]["branch_ways_missed"], json!([{"pc": "0x80100004", "never": "ran"}]));
         // Always taken, past the addiu: it never fell through.
         let mut images = vec![img("a", base, code.clone(), f())];
         credit(&mut images, 0, &ran);
         credit_branches(&mut images, 0, &[(base + 4, code[1], 1, 0)]);
         let (rows, _, t) = report(&images[0]);
         assert_eq!((t.branches, t.branch_ways_taken), (1, 1));
-        assert_eq!(rows[0]["branch_ways_missed"], json!([{"pc": "80100004", "never": "fell through"}]));
+        assert_eq!(rows[0]["branch_ways_missed"], json!([{"pc": "0x80100004", "never": "fell through"}]));
         // A second run falls through: both ways, nothing listed.
         let fell = [(base + 4, code[1], 1), (base + 8, 0, 1), (base + 12, code[3], 1)];
         credit(&mut images, 1, &fell);

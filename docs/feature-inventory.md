@@ -31,8 +31,8 @@ external-parser starter), and `gpu-replay` (a test utility of psx's own).
 
 ## Changes within commands
 
-- **Hex everywhere.** Every PC and address in psx's output in hex
-  (`writes.jsonl` gives PCs in decimal today).
+- **Hex everywhere.** Every PC and address in psx's output in hex,
+  with its region beside a data address that could be anywhere.
 - **`run --sample` takes glossary names** and can sample once per game
   tick, not only per field; it replaces the field map.
 - **`code coverage diff`**: the routines and branches one run reaches and
