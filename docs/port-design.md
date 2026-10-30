@@ -180,8 +180,11 @@ disassembly and decompilation, coverage, the glossary and scenarios,
 assets, the template and its developer MCP stay; mechanics (capture,
 traces, replay, audits, interfaces) and cases go.
 
-## 8. Decisions for the person
+## 8. Decisions
 
-1. Done needs every branch resolved, not a threshold. (Proposed.)
-2. Mechanics are removed, and the exact Rust already written for Croc
-   stays in that workspace as reference code. (Proposed.)
+1. A feature is done only when every branch of its code is resolved
+   (covered or won't-reach), not at a coverage threshold.
+2. Mechanics are removed from psx. The exact Rust already written for Croc
+   stays in that workspace's folders; nothing further is planned for it.
+
+The work to get there is in [recordings-plan.md](recordings-plan.md).
