@@ -25,7 +25,7 @@ bevy_render = { version = "=0.20.0", default-features = false, features = ["gles
 bevy_input = { version = "=0.20.0", features = ["serialize"] }
 rmcp = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
-# Numbers for exact mechanics and the GTE (`num`, `gte`).
+# Numbers for exact rules and the GTE (`num`, `gte`).
 psx-fixed.workspace = true
 psx-gte.workspace = true
 psx-mechanics.workspace = true

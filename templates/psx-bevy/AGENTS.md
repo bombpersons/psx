@@ -21,12 +21,9 @@ format. psx writes `.psx/verdicts/`; never edit them.
 ```
 game/          the port: one plugin per feature, its assets/ and tests/ (game/AGENTS.md)
 tools/import/  importers: the player's disc -> the port's asset formats
-mechanics/     each mechanic of the original: its crate (types and step, plain Rust), binding/ (a plugin psx capture loads) and traces/ (docs/mechanics.md in psx)
-interfaces/    the calls mechanics make to the world: one trait per crate
-replay/        every mechanic's step run against its traces: cargo test -p replay
 glossary/      the quantities scenarios compare, and binding/, where the original keeps them (docs/scenarios.md in psx)
 psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte), scenarios and launcher; yours to change (psx-bevy/AGENTS.md)
-vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-mechanics (the formats, replay and generated glue), psx-capture (the binding API); don't edit (fix upstream in psx)
+vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-mechanics (the scenario formats and generated glue), psx-capture (the glossary binding's API); don't edit (fix upstream in psx)
 docs/          template.md: your changes to psx-bevy/
 ```
 
@@ -40,13 +37,11 @@ docs/          template.md: your changes to psx-bevy/
   reads logic's state. Rules the original ties to the screen ("wakes when on
   screen", HUD layout) are defined against its 4:3 view; `PsxAspect` widens
   what is shown and `PsxAnchor` anchors the HUD.
-- **Mechanics are the reference; the port is a translation.** Each
-  mechanic's `step` (`mechanics/<id>/src/lib.rs`) is the rule in plain Rust,
-  proven against the original's traces (`cargo test -p replay`). Translate
-  it into the feature's systems over components and resources: split it,
-  use events where the original sets flags, keep a field where it belongs.
-  Its interfaces' calls become the port's own queries of its world. The
-  port does not link the mechanic crates (a quick prototype may).
+- **The original's code is the reference.** Read each rule from the
+  routines that run it (disassembly, decompilation) and write it as the
+  feature's systems over components and resources: split it, use events
+  where the original sets flags, keep a field where it belongs. Read, don't
+  fit: a constant tuned until a recording matches fails the next one.
 - **Scenarios are the port's test.** A feature's plugin registers a
   launcher for each of its scenario kinds, which builds the world from the
   scenario's parameters with the port's own loading, and observes the
@@ -102,7 +97,7 @@ fn approach<M: Mode>(v: Num<M, i32, 12>, target: Num<M, i32, 12>) -> Num<M, i32,
   rule they don't cover is a small named helper with a test.
 - What the original computed on the GTE calls `psx_bevy::gte` (psx's own
   GTE: operations, flags and rounding) with the same inputs.
-- Faithful mechanics may use `f32` directly. Convert to `f32` for rendering
+- Rules that need no exactness may use `f32` directly. Convert to `f32` for rendering
   once, at the render boundary (`to_f32`).
 - Assets hold real numbers: a `Num` field reads `grip = 1.375` and, in
   `Exact`, refuses a value its format can't hold; an `Angle` reads degrees.
@@ -122,10 +117,9 @@ Read the feature's code as a stranger would:
 
 - Does each system read as a rule someone would recognise?
 - Are states enums with their data in the variants? Are params assets?
-- Mirroring the original belongs inside a mechanic's step, where the order
-  of operations is the behaviour. Above that, no one function per original
-  routine, no resource per RAM address, no hex literal without a name and
-  citation.
+- Mirror the original's order of operations only where it is the
+  behaviour. No one function per original routine, no resource per RAM
+  address, no hex literal without a name and citation.
 
 ## Choices a goal can make
 

@@ -9,8 +9,7 @@ from the disc; pass fields_per_tick from the original's main loop.
 
 goal.toml names the features the person wants (ids, or "all") and a
 description. catalogue/F-NNNN.md is one feature of the game each: id,
-title, area, depends (features it cannot work without), mechanics,
-scenarios, and a paragraph in game terms (catalogue/README.md has the
+title, area, depends (features it cannot work without), scenarios, and a paragraph in game terms (catalogue/README.md has the
 format and how fine to cut). The goal's features and everything they depend
 on are its closure. The agent proposes the catalogue; the person checks it
 with psx port confirm and confirms with psx port confirm --yes. The list may
@@ -25,16 +24,7 @@ its verdicts and the problems; plain=true is text for the person.
 - Confirm (person): the goal's list is not confirmed, or lost a feature.
   Until it is, only investigate and catalogue.
 - Fix: a verdict at HEAD fails; its failures name the scenario, tick and
-  quantity, and port_status's diagnosis names the trace steps of that tick.
-- Capture: a feature's mechanics are not named or not captured (each
-  reason listed): the catalogue entry lists them under mechanics, each
-  mechanics/<id>/ checks clean (psx mechanic check): the mechanic's crate
-  and its binding/, both Rust; a captured trace has a clear read audit; and
-  NOTES.md names each branch no trace took both ways (docs/mechanics.md).
-  Traces come from scenario recordings: mechanic_capture with scenario and
-  recording runs one again and captures every bound mechanic in it.
-  cargo test -p replay runs each mechanic's step against its traces. Every
-  feature has mechanics; Capture comes before Scenario and Implement.
+  quantity.
 - Scenario: a feature's scenarios are not ready. It lists one, each has a
   captured recording (scenario_record) and passes scenario_check, the
   determinism check (docs/scenarios.md). The glossary binding's tick is the

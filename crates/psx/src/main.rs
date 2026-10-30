@@ -12,6 +12,7 @@ use commands::{Ctx, Op};
 
 mod artifact;
 mod assets_cmd;
+mod binding;
 mod bios;
 mod bound_symbols;
 mod case;
@@ -27,7 +28,6 @@ mod guide;
 mod handoff;
 mod inventory;
 mod mcp;
-mod mechanic;
 mod media_cmd;
 mod moved;
 mod native;
@@ -140,11 +140,6 @@ enum Command {
         #[command(subcommand)]
         action: PortAction,
     },
-    /// Mechanics: check their files, and capture traces of their steps from the game.
-    Mechanic {
-        #[command(subcommand)]
-        action: MechanicAction,
-    },
     /// Scenarios: record the original's quantities in them, and check they are deterministic.
     Scenario {
         #[command(subcommand)]
@@ -230,17 +225,6 @@ enum PortAction {
     /// Run the features' scenarios against the port (the game's tests/scenarios.rs) and
     /// write their scenario verdicts for HEAD, which must have no uncommitted changes.
     Check(port::PortCheckArgs),
-}
-
-#[derive(clap::Subcommand)]
-enum MechanicAction {
-    /// Check the interfaces, and a mechanic's (or every mechanic's) crate, binding and
-    /// traces.
-    Check(mechanic::MechanicCheckArgs),
-    /// Run a scenario recording again and capture, in that run, each mechanic's step as
-    /// its binding brackets it: traces/<SCENARIO>/<RECORDING>.trace.jsonl, one line per
-    /// step.
-    Capture(Box<mechanic::MechanicCaptureArgs>),
 }
 
 #[derive(clap::Subcommand)]
@@ -343,10 +327,6 @@ fn main() -> ExitCode {
         Command::Case { action } => match action {
             CaseAction::Record(a) => a.exec(&ctx),
             CaseAction::Check(a) => a.exec(&ctx),
-        },
-        Command::Mechanic { action } => match action {
-            MechanicAction::Check(a) => a.exec(&ctx),
-            MechanicAction::Capture(a) => a.exec(&ctx),
         },
         Command::Scenario { action } => match action {
             ScenarioAction::Record(a) => a.exec(&ctx),

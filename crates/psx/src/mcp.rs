@@ -218,8 +218,6 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::port::PortCheckArgs>("port_check", "In a port's workspace, at a clean commit: run the features' scenarios against the port and write their scenario verdicts. See guide topic port.").heavy(),
         def::<crate::scenario::ScenarioRecordArgs>("scenario_record", "In a port's workspace: run from the scenario's state with input for frames and write scenarios/<id>/<name>.jsonl, the compared glossary quantities at each tick's end. See docs/scenarios.md.").heavy(),
         def::<crate::scenario::ScenarioCheckArgs>("scenario_check", "In a port's workspace: the determinism check. Reach each scenario again with idle fields before its chain's last run, record its recordings again, compare per tick.").heavy(),
-        def::<crate::mechanic::MechanicCheckArgs>("mechanic_check", "In a port's workspace: check interfaces/ and a mechanic's (or every mechanic's) crate, binding and traces. See docs/mechanics.md.").read_only(),
-        def::<crate::mechanic::MechanicCaptureArgs>("mechanic_capture", "In a port's workspace: run a scenario recording again and capture each mechanic in ids (default: every bound one) in that run, to mechanics/<id>/traces/<scenario>/<recording>.trace.jsonl. Reports per mechanic the read audit, external changes, coverage and refusals.").heavy(),
         def::<crate::template::TemplateUpdateArgs>("template_update", "Update the project's psx-bevy/ and vendor/ files to this build; edited files get a .psx-new copy. See guide topic port."),
         def::<crate::vram_diff::GpuReplayArgs>("gpu_replay", "Replay a recorded GP0 command stream into a fresh software GPU and write the resulting VRAM to out (and optionally a PNG). Pair with vram_diff."),
         def::<crate::vram_diff::VramDiffArgs>("vram_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
@@ -744,7 +742,8 @@ mod tests {
         // 50K on 2026-10-17, grown with each tool since; 65.7K from 2026-10-29, after the
         // clean-room tools went and port_status and port_next came; 68.5K from
         // 2026-10-29 with mechanic_check and mechanic_capture; 69K with port_check;
-        // 71.6K with scenario_record and scenario_check (the guide pass trims later).
+        // 71.6K with scenario_record and scenario_check (the guide pass trims later);
+        // mechanic_check and mechanic_capture went on 2026-10-30.
         assert!(size <= 71_600, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(

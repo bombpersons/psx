@@ -10,7 +10,6 @@ id: F-0007
 title: Car handling on tarmac
 area: driving
 depends: [F-0002, F-0005]   # car setup data, track surfaces
-mechanics: []               # named and captured after the confirmation
 scenarios: []
 ---
 A paragraph in game terms: what the player sees and does, and what is in
@@ -23,9 +22,9 @@ and out of this feature.
 - A feature is its own when someone could want it without its neighbours,
   and when it has behaviour of its own. "Physics" is too coarse, "the
   friction curve" too fine.
-- `mechanics` lists the steps the original runs for the feature, each
-  captured under `mechanics/<id>/` (docs/mechanics.md). It may stay empty
-  until the goal is confirmed; `psx port next` asks for them then.
+- `scenarios` lists the scenarios whose recordings test the feature. It
+  may stay empty until the goal is confirmed; `psx port next` asks for them
+  then.
 
 `goal.toml` lists the features the person wants. `psx port confirm` shows
 the list, the closure and any problems; the person confirms it with

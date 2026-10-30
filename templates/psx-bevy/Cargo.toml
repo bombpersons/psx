@@ -4,13 +4,8 @@
 #                  the base the game builds on, yours to change for the game
 #   game/          the port: one plugin per feature, its assets and tests
 #   tools/import/  importers: the player's disc -> the port's asset formats
-#   replay/        step replay: each mechanic (mechanics/<id>/) run against its
-#                  traces
 #   glossary/      the quantities scenarios compare; glossary/binding/, where
 #                  the original keeps them, is added once written
-#   interfaces/*/  the calls mechanics make to the world: one trait each
-#   mechanics/*/   mechanics written as Rust: plain, dependency-free crates, and
-#                  their bindings (binding/), plugins psx mechanic capture loads
 #   vendor/        psx-media, psx-assets, psx-fixed, psx-gte, psx-mechanics and
 #                  psx-capture, vendored
 #
@@ -20,7 +15,7 @@
 # Standalone: copying the template does not require the psx workspace.
 [workspace]
 resolver = "3"
-members = ["psx-bevy", "game", "tools/import", "replay", "glossary"]
+members = ["psx-bevy", "game", "tools/import", "glossary"]
 default-members = ["game"]
 # Template-owned copies of psx crates: dependencies, not members (their tests
 # run in the psx repository).
@@ -57,15 +52,16 @@ bevy = { version = "=0.20.0", default-features = false, features = [
 # players need neither the toolkit nor a separate export step.
 psx-media = { path = "vendor/psx-media" }
 psx-assets = { path = "vendor/psx-assets" }
-# Numbers for exact mechanics (Fixed with the original's width and rounding,
-# or f32, from one generic mechanic) and the GTE as psx emulates it, vendored
+# Numbers for exact rules (Fixed with the original's width and rounding, or
+# f32, from one generic rule) and the GTE as psx emulates it, vendored
 # the same way (psx-bevy re-exports them as `num` and `gte`).
 psx-fixed = { path = "vendor/psx-fixed" }
 psx-gte = { path = "vendor/psx-gte" }
-# The mechanic, interface and trace formats, for step replay (psx_bevy::replay).
+# The scenario and recording formats (psx_bevy::scenario), and the glue the
+# game and the glossary's binding generate from glossary/.
 psx-mechanics = { path = "vendor/psx-mechanics" }
-# The API a mechanic's binding (mechanics/<id>/binding/) is written against:
-# psx mechanic capture builds the binding and loads it.
+# The API the glossary's binding (glossary/binding/) is written against: psx
+# scenario record builds the binding and loads it.
 psx-capture = { path = "vendor/psx-capture" }
 # `rc` and `alloc` match what psx-bevy's `dev-mcp` turns on, so the feature
 # doesn't change how serde builds (psx-bevy/Cargo.toml, "Feature alignment").

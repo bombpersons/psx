@@ -150,12 +150,12 @@ mod tests {
     #[test]
     fn comments_after_values_are_dropped() {
         let fm = front_matter(
-            "---\nid: F-0007\ndepends: [F-0002, F-0005]   # car setup data, track surfaces\ntitle: \"Lap #2\" # the title\nmechanics: [a,  # first\n  b]\n---\nThe body.\n",
+            "---\nid: F-0007\ndepends: [F-0002, F-0005]   # car setup data, track surfaces\ntitle: \"Lap #2\" # the title\nscenarios: [a,  # first\n  b]\n---\nThe body.\n",
         )
         .unwrap();
         assert_eq!(fm["depends"].list(), ["F-0002", "F-0005"]);
         assert_eq!(fm["title"].str(), "Lap #2");
-        assert_eq!(fm["mechanics"].list(), ["a", "b"]);
+        assert_eq!(fm["scenarios"].list(), ["a", "b"]);
     }
 
     #[test]

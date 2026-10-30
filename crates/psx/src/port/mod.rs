@@ -112,7 +112,6 @@ pub struct Entry {
     pub title: String,
     pub area: String,
     pub depends: Vec<String>,
-    pub mechanics: Vec<String>,
     pub scenarios: Vec<String>,
     /// The paragraph after the front matter, in game terms.
     pub description: String,
@@ -198,7 +197,6 @@ fn entry(file: &str, text: &str) -> Result<Entry, String> {
         title: get("title"),
         area: get("area"),
         depends: list("depends"),
-        mechanics: list("mechanics"),
         scenarios: list("scenarios"),
         description: crate::front_matter::body(text).trim().to_string(),
         file: file.to_string(),
@@ -387,7 +385,6 @@ impl Port {
                     "stage": stage(id).map(Stage::name),
                     "in_goal": goal.contains(id),
                     "depends": e.map(|e| &e.depends),
-                    "mechanics": e.map(|e| &e.mechanics),
                     "scenarios": e.map(|e| &e.scenarios),
                     "required_by": required_by,
                 })

@@ -16,10 +16,8 @@ use psx_mechanics::{Glossary, Type, Values};
 use serde_json::{Value as Json, json};
 
 use crate::Error;
+use crate::binding::{self, Plugin, Tick};
 use crate::commands::{Ctx, Op, Outcome};
-use crate::mechanic::capture::{Recorder, View, regs};
-use crate::mechanic::plugin::{self, Plugin};
-use crate::mechanic::{Psx, Tick, workspace};
 use crate::port::Entry;
 
 /// The glossary crate, `glossary/`; its binding is `glossary/binding/`.
@@ -51,14 +49,14 @@ pub fn glossary(root: &Path) -> Result<Glossary, Vec<String>> {
         );
     }
     let dir = root.join(GLOSSARY);
-    if !workspace::is_crate(&dir) {
+    if !binding::is_crate(&dir) {
         problems.push(format!("{GLOSSARY}/: not written yet (a crate whose src/lib.rs declares Quantities)"));
         return Err(problems);
     }
     let at = |e: String| format!("{GLOSSARY}/{e}");
     let read = || -> crate::Result<(String, Vec<(String, String)>)> {
         let p = dir.join("Cargo.toml");
-        Ok((std::fs::read_to_string(&p).map_err(|e| Error::io(&p, e))?, workspace::sources(&dir)?))
+        Ok((std::fs::read_to_string(&p).map_err(|e| Error::io(&p, e))?, binding::sources(&dir)?))
     };
     let (cargo_toml, files) = read().map_err(|e| vec![e.to_string()])?;
     let g = match psx_mechanics::rust::glossary(&psx_mechanics::rust::Crate { cargo_toml: &cargo_toml, files: &files })
@@ -98,14 +96,15 @@ pub struct Described {
 
 /// The glossary's binding, built, loaded and checked against `g`.
 fn binding(root: &Path, g: &Glossary) -> crate::Result<Plugin<Described>> {
-    let p: Plugin<Described> = Plugin::load(&plugin::build(root, &root.join(GLOSSARY).join("binding"), GLOSSARY)?)?;
+    let p: Plugin<Described> =
+        Plugin::load(&binding::build(root, &root.join(GLOSSARY).join("binding"), "glossary-binding")?)?;
     let d = p.described();
     let mut problems = Vec::new();
     if d.glossary != g.fingerprint() {
         problems.push("its glue reads other quantities than glossary/ declares: psx template update brings vendor/psx-mechanics to this psx's".to_string());
     }
-    d.source.check(Psx::NAME, &mut problems);
-    Psx::check_tick(&d.tick, &mut problems);
+    d.source.check(binding::PLATFORM, &mut problems);
+    d.tick.check(&mut problems);
     if !problems.is_empty() {
         return Err(Error::invalid("the glossary's binding has problems").with("problems", json!(problems)));
     }
@@ -266,15 +265,14 @@ struct Quantities<'a> {
     kept: Vec<String>,
 }
 
-/// `recorders` capture mechanics over the same run, from its initial
-/// moment: each is handed every instruction, and the field and tick.
+/// The quantities at the end of every tick of a run of `frames` fields
+/// after the first tick, with `events` as the pad's input.
 fn record(
     m: &mut Machine,
     q: &Quantities,
     frames: u32,
     events: &[crate::replay::Input],
     deadline: Duration,
-    recorders: &mut [Recorder],
 ) -> Recorded {
     let started = Instant::now();
     // The pad is released until the first tick ends: `initial` is the moment
@@ -289,7 +287,6 @@ fn record(
         Recorded { initial: None, ticks: Vec::new(), refusals: Vec::new(), refusal_count: 0, timed_out: false };
     let (mut next_event, mut last_frame) = (0, m.bus.frames);
     let lead_limit = m.bus.frames + frames as u64;
-    let mut befores = Vec::with_capacity(recorders.len());
     while m.bus.frames < target {
         if m.bus.frames != last_frame {
             last_frame = m.bus.frames;
@@ -299,9 +296,6 @@ fn record(
             }
             if let Some(start) = start {
                 let field = m.bus.frames - start;
-                for r in recorders.iter_mut() {
-                    r.field(m, field);
-                }
                 while next_event < events.len() && events[next_event].frame <= field {
                     crate::replay::apply(m, &events[next_event]);
                     next_event += 1;
@@ -315,25 +309,13 @@ fn record(
                 break;
             }
         }
-        // The mechanics are captured from the initial moment, as the port runs.
-        let capturing = out.initial.is_some();
-        if capturing {
-            befores.extend(recorders.iter_mut().map(|r| r.before(m)));
-        }
         let info = m.step();
-        if capturing {
-            for (r, b) in recorders.iter_mut().zip(befores.drain(..)) {
-                r.after(m, &info, b);
-            }
-        }
         let Some(acc) = info.mem.filter(|a| a.store) else { continue };
         let a = crate::run::fold(acc.addr);
         if a >= hi || a + acc.width as u32 <= lo || tick.pc.is_some_and(|pc| pc != info.pc) {
             continue;
         }
         // A tick ended: its quantities, as the store left them.
-        let now = regs(m);
-        let view = View { m, now: &now, latched: &now, load: None };
         let n = out.ticks.len() as u64 + out.initial.is_some() as u64;
         let mut values = Values::new();
         let mut refuse = |quantity: &str, problem: String| {
@@ -342,7 +324,7 @@ fn record(
                 out.refusals.push(json!({"tick": n, "quantity": quantity, "problem": problem}));
             }
         };
-        match q.binding.call(psx_capture::abi::QUANTITIES, 0, &view).0.map(|t| plugin::values(&t, &q.types)) {
+        match q.binding.call(psx_capture::abi::QUANTITIES, m).map(|t| binding::values(&t, &q.types)) {
             Ok(Ok(all)) => {
                 values = all.into_iter().filter(|(name, _)| q.kept.contains(name)).collect();
             }
@@ -352,10 +334,6 @@ fn record(
                 }
             }
             Err(e) => refuse("", e),
-        }
-        // Steps that begin from here on are in the next tick.
-        for r in recorders.iter_mut() {
-            r.tick(n + 1);
         }
         if out.initial.is_none() {
             out.initial = Some(values);
@@ -447,7 +425,7 @@ fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
     let mut m = machine(ctx, &chain, &state, &b.described().source)?;
     let compared = l.compared();
     let q = Quantities { binding: &b, types: g.types(), kept: compared.keys().cloned().collect() };
-    let r = record(&mut m, &q, a.frames, &events, Duration::from_secs(a.timeout), &mut []);
+    let r = record(&mut m, &q, a.frames, &events, Duration::from_secs(a.timeout));
     if let Some(why) = unrecorded(&r) {
         return Ok((false, why));
     }
@@ -457,7 +435,7 @@ fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
         scenario: a.id.clone(),
         source: Source {
             kind: SourceKind::Captured,
-            platform: Some(Psx::NAME.into()),
+            platform: Some(binding::PLATFORM.into()),
             image_sha256: Some(b.described().source.image_sha256.clone()),
         },
         producer: Producer {
@@ -502,91 +480,13 @@ impl Op for ScenarioRecordArgs {
     }
 }
 
-/// The ways two recordings of the same input differ, first per quantity.
 /// The ways a recording made again differs from the recorded one: the
 /// quantities' values, tick by tick (the differences), and when the ticks
 /// ended (the schedule). The schedule is a note, not a difference: the game
 /// falling behind depends on timing no parameter holds (where its loop is
 /// when a field ends, how long a disc read takes), and the port replays the
-/// recorded schedule anyway.
-/// A recording's run made again for mechanic capture.
-pub(crate) struct Rerun {
-    /// The image the run was on.
-    pub image_sha256: String,
-    /// The scenario's chain and the state it made, which the run started from.
-    pub chain: String,
-    pub from_state_sha256: Json,
-    pub description: Option<String>,
-    /// Set when the run is not the recording's: no ticks, the glossary's
-    /// binding refused, a timeout, or quantities that differ.
-    pub unlike: Option<Json>,
-}
-
-/// Runs the scenario `id`'s recording `name` again, from the chain's state
-/// with the recording's input, handing `recorders` every instruction from
-/// its initial moment on, and compares the glossary's quantities with the
-/// recording's tick by tick: when they agree, the run is the recording's.
-pub(crate) fn rerun(
-    ctx: &Ctx,
-    id: &str,
-    name: &str,
-    recorders: &mut [Recorder],
-    timeout: Duration,
-) -> crate::Result<Rerun> {
-    let root = &ctx.root;
-    check_name("scenario", id)?;
-    check_name("recording", name)?;
-    let l = Loaded::load(root, id);
-    if !l.problems.is_empty() {
-        return Err(Error::invalid("the scenario or glossary has problems").with("problems", json!(l.problems)));
-    }
-    let file = recording_path(root, id, name);
-    let Some((_, _, r)) = l.recordings.iter().find(|(n, _, _)| n == name) else {
-        return Err(Error::invalid(format!("{}: no such recording (psx scenario record)", rel(root, &file))));
-    };
-    let problems = l.recording_problems(root, &file, r);
-    if !problems.is_empty() {
-        return Err(Error::invalid("the recording has problems").with("problems", json!(problems)));
-    }
-    let rec = r.as_ref().unwrap();
-    if rec.header.source.kind != SourceKind::Captured {
-        return Err(Error::invalid(format!("{}: not captured from the original", rel(root, &file))));
-    }
-    let (s, g) = (l.scenario.as_ref().unwrap(), l.glossary.as_ref().unwrap());
-    let (state, chain) = crate::states::chain_state(ctx, &root.join(&s.chain))?;
-    let d = &rec.header.producer.details;
-    if d.get("from_state_sha256") != Some(&chain["state_sha256"]) {
-        return Err(Error::invalid(format!(
-            "{}: recorded from another state than the scenario's chain makes now: record it again",
-            rel(root, &file)
-        )));
-    }
-    let frames = d.get("frames").and_then(Json::as_u64).unwrap_or(0) as u32;
-    let events: crate::replay::Events = serde_json::from_value(d["input"]["events"].clone())
-        .map_err(|e| Error::malformed(format!("{}: producer.details.input: {e}", rel(root, &file))))?;
-    let events = crate::replay::resolve(None, Some(&events), frames as u64).map_err(Error::invalid)?;
-    let b = binding(root, g)?;
-    let mut m = machine(ctx, &chain, &state, &b.described().source)?;
-    let q = Quantities { binding: &b, types: g.types(), kept: rec.header.quantities.keys().cloned().collect() };
-    let run = record(&mut m, &q, frames, &events, timeout, recorders);
-    let unlike = unrecorded(&run).or_else(|| {
-        let again = Header { initial: run.initial.clone().unwrap(), ..rec.header.clone() };
-        let (differences, schedule) = differences(rec, &again, &run.ticks, "this run");
-        (!differences.is_empty() || !schedule.is_empty()).then(|| {
-            json!({"status": "unlike_the_recording", "written": false, "differences": differences, "schedule": schedule,
-                   "how": "this run of the recording did not give its quantities: psx scenario check runs the determinism check; record it again if the original's run changed"})
-        })
-    });
-    Ok(Rerun {
-        image_sha256: b.described().source.image_sha256.clone(),
-        chain: s.chain.clone(),
-        from_state_sha256: chain["state_sha256"].clone(),
-        description: rec.header.description.clone(),
-        unlike,
-    })
-}
-
-/// `run` names the run compared, in the lines: `the second route` or `this run`.
+/// recorded schedule anyway. `run` names the run compared, in the lines: `the
+/// second route`.
 fn differences(recorded: &Recording, again: &Header, ticks: &[Full], run: &str) -> (Vec<String>, Vec<String>) {
     let (mut out, mut schedule) = (Vec::new(), Vec::new());
     for (n, v) in &recorded.header.initial {
@@ -629,7 +529,7 @@ fn key(root: &Path, l: &Loaded) -> String {
     }
     for dir in [root.join(GLOSSARY), root.join(GLOSSARY).join("binding")] {
         all.extend(read(&dir.join("Cargo.toml")));
-        for (path, text) in workspace::sources(&dir).unwrap_or_default() {
+        for (path, text) in binding::sources(&dir).unwrap_or_default() {
             all.extend(format!("\n{path}\n{text}").bytes());
         }
     }
@@ -677,7 +577,7 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
             .map_err(|e| Error::malformed(format!("{name}: producer.details.input: {e}")))?;
         let events = crate::replay::resolve(None, Some(&events), frames as u64).map_err(Error::invalid)?;
         let mut m = machine(ctx, &chain, &second, &b.described().source)?;
-        let r = record(&mut m, &q, frames, &events, timeout, &mut []);
+        let r = record(&mut m, &q, frames, &events, timeout);
         let (diffs, schedule) = match unrecorded(&r) {
             Some(why) => (
                 vec![format!("the second route gave no recording: {}", why["status"].as_str().unwrap_or(""))],
@@ -924,104 +824,11 @@ pub struct Quantities {
         let types: BTreeMap<String, Type> =
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
-        let r = record(&mut m, &q, 1, &[], Duration::from_secs(60), &mut []);
+        let r = record(&mut m, &q, 1, &[], Duration::from_secs(60));
         assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
         assert_eq!(r.initial, Some([("x".to_string(), psx_mechanics::Value::Int(1))].into()));
         assert_eq!(r.ticks[0].values, [("x".to_string(), psx_mechanics::Value::Int(2))].into());
         assert!(r.ticks.len() > 10, "{} ticks", r.ticks.len());
-    }
-
-    struct StepMechanic;
-
-    impl psx_capture::Mechanic for StepMechanic {
-        const ID: &'static str = "demo.step";
-        const VERSION: u32 = 1;
-        const FINGERPRINT: &'static str = "";
-        type State = i32;
-        type Inputs = ();
-        type Params = ();
-        fn state(s: &i32) -> psx_capture::Value {
-            psx_capture::Value::Record(vec![("x", psx_capture::Value::Int(*s as i128))])
-        }
-        fn inputs(_: &()) -> psx_capture::Value {
-            psx_capture::Value::Record(Vec::new())
-        }
-        fn params(_: &()) -> psx_capture::Value {
-            psx_capture::Value::Record(Vec::new())
-        }
-    }
-
-    /// demo.step is the loop's body, from the load of x to the tick's store.
-    struct Step;
-
-    impl psx_capture::Binding for Step {
-        type Mechanic = StepMechanic;
-        const TITLE: &'static str = "Demo";
-        const IMAGE_SHA256: &'static str = "0000000000000000000000000000000000000000000000000000000000000000";
-        fn bracket(&self, b: &mut psx_capture::Bracket) {
-            b.begin(0x8001_0004u32).end(0x8001_0010u32);
-        }
-        fn state(&self, m: &psx_capture::Machine) -> i32 {
-            m.i32(0x8002_0000)
-        }
-        fn inputs(&self, _: &psx_capture::Machine) {}
-        fn params(&self, _: &psx_capture::Machine) {}
-    }
-
-    #[allow(unsafe_code)]
-    unsafe extern "C" fn step_call(what: u32, which: u32, host: *const psx_capture::abi::Host) -> i32 {
-        // SAFETY: the caller's.
-        unsafe { psx_capture::abi::call(&Step, what, which, host) }
-    }
-
-    /// The loop of `a_recording_holds_the_kept_quantities_at_each_tick`:
-    /// x counts up, and a tick ends at each store to 0x80020010.
-    fn counting_loop() -> Machine {
-        let mut m = Machine::new(vec![0; 0x8_0000]);
-        #[rustfmt::skip]
-        let loop_ = [
-            0x3C09_8002, // lui t1, 0x8002
-            0x8D28_0000, // lw t0, 0(t1)
-            0x2508_0001, // addiu t0, t0, 1
-            0xAD28_0000, // sw t0, 0(t1): x
-            0xAD28_0010, // sw t0, 0x10(t1): the tick ends
-            0x0800_4000, // j 0x80010000
-            0x0000_0000, // nop
-        ];
-        for (i, w) in loop_.iter().enumerate() {
-            m.bus.ram[0x1_0000 + 4 * i..][..4].copy_from_slice(&u32::to_le_bytes(*w));
-        }
-        m.cpu.set_pc(0x8001_0000);
-        m
-    }
-
-    #[test]
-    fn mechanics_are_captured_in_the_run_from_its_initial_moment_with_their_ticks() {
-        let b: Plugin<Described> = Plugin::new(demo_call, None).unwrap();
-        let types: BTreeMap<String, Type> =
-            [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
-        let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
-        let lib = "//! Step\n//!\n//! s\n\npub const ID: &str = \"demo.step\";\npub const VERSION: u32 = 1;\npub const RATE: &str = \"tick\";\npub const RATE_HZ: u32 = 25;\n\npub struct State {\n    pub x: i32,\n}\n";
-        let files = [(psx_mechanics::rust::LIB.to_string(), lib.to_string())];
-        let crate_ = psx_mechanics::rust::Crate { cargo_toml: "[package]\nname = \"demo-step\"\n", files: &files };
-        let (mechanic, problems) = psx_mechanics::rust::mechanic(&crate_).unwrap();
-        assert_eq!(problems, Vec::<String>::new());
-        let plugin = Plugin::new(step_call, None).unwrap();
-        let plan = crate::mechanic::capture::Plan::new(&mechanic, &plugin, &[], &[], &[]);
-        let mut recorders = [Recorder::new(&plan)];
-        let mut m = counting_loop();
-        let r = record(&mut m, &q, 1, &[], Duration::from_secs(60), &mut recorders);
-        let [rec] = recorders;
-        let steps = rec.finish().unwrap().steps;
-        // The first tick, which ends at the initial moment, is not captured:
-        // the port starts there.
-        assert_eq!(r.initial, Some([("x".to_string(), psx_mechanics::Value::Int(1))].into()));
-        let x = |n: i128| [("x".to_string(), psx_mechanics::Value::Int(n))].into();
-        assert_eq!((&steps[0].before, &steps[0].after, steps[0].tick), (&x(1), &x(2), Some(1)));
-        assert_eq!(steps.len(), r.ticks.len());
-        for (s, t) in steps.iter().zip(&r.ticks) {
-            assert_eq!((s.tick, Some(&s.after)), (Some(t.tick), Some(&t.values)));
-        }
     }
 
     #[test]

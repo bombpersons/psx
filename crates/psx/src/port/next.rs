@@ -48,12 +48,10 @@ pub struct Feature {
     pub id: String,
     pub in_goal: bool,
     pub catalogued: bool,
-    /// Stage checks that come with later steps of the work (mechanic
-    /// capture, plugins and scenario launchers, the structure review) read
-    /// false until psx can make them.
+    /// Stage checks that come with later steps of the work (the structure
+    /// review) read false until psx can make them. Captured: its scenarios
+    /// have captured recordings that pass their determinism check.
     pub captured: bool,
-    /// What stops its mechanics from counting as captured.
-    pub capture: Vec<String>,
     /// What stops its scenarios from counting: none listed, a problem, no
     /// passing determinism check.
     pub scenarios: Vec<String>,
@@ -62,11 +60,6 @@ pub struct Feature {
     /// not observe, by
     /// the last check at HEAD.
     pub unimplemented: Vec<String>,
-    /// Each of its mechanics' branch outcomes, and those the port confirms
-    /// (`check::port_coverage`).
-    pub coverage: Vec<Value>,
-    /// The trace steps of each tick a recording of it fails at.
-    pub diagnosis: Vec<Value>,
     pub reviewed: bool,
     pub verdicts: BTreeMap<Kind, State>,
 }
@@ -121,7 +114,6 @@ impl Facts {
         let port = Port::load(root)?;
         let git = Git::read(root);
         let goal = port.goal_ids();
-        let runs = check::port_runs(root, git.head.as_deref());
         let features = port
             .closure()
             .into_iter()
@@ -129,23 +121,15 @@ impl Facts {
                 let verdicts =
                     Kind::ALL.into_iter().map(|k| (k, verdict::state(root, &id, k, git.head.as_deref()))).collect();
                 let e = port.entries.get(&id);
-                let capture = e.map(|e| check::feature_uncaptured(root, e)).unwrap_or_default();
                 let scenarios = e.map(|e| crate::scenario::feature_unready(root, e)).unwrap_or_default();
                 let unimplemented = e.map(|e| check::unimplemented(root, e, git.head.as_deref())).unwrap_or_default();
-                let coverage = e
-                    .map(|e| e.mechanics.iter().map(|m| check::port_coverage(root, m, runs.as_ref())).collect())
-                    .unwrap_or_default();
-                let diagnosis = e.map(|e| check::diagnosis(root, e, runs.as_ref())).unwrap_or_default();
                 Feature {
                     in_goal: goal.contains(&id),
                     catalogued: e.is_some(),
-                    captured: e.is_some() && capture.is_empty() && scenarios.is_empty(),
-                    capture,
+                    captured: e.is_some() && scenarios.is_empty(),
                     scenarios,
                     implemented: e.is_some() && unimplemented.is_empty(),
                     unimplemented,
-                    coverage,
-                    diagnosis,
                     reviewed: false,
                     verdicts,
                     id,
@@ -213,20 +197,10 @@ impl Facts {
                 Some(&f.id),
                 format!("a verdict at HEAD fails: {}", lines.join("; ")),
                 "every verdict of the feature at HEAD passes",
-                "find the rule the port gets wrong: port status's diagnosis names the trace steps of each failing tick, the reference's steps there (cargo test -p replay runs them); fix the port's code, commit, and run psx port check on the feature again",
+                "find the rule the port gets wrong at the first failing tick, reading the original's code there; fix the port's code, commit, and run psx port check on the feature again",
             );
         }
         let stage = |f: &Feature, s: &[Stage]| f.stage().is_some_and(|x| s.contains(&x));
-        if let Some(f) = order(&|f| stage(f, &[Stage::Catalogued]) && !f.capture.is_empty()) {
-            let lines = first_lines(&f.capture);
-            return Item::agent(
-                "Capture",
-                Some(&f.id),
-                format!("its mechanics are not captured: {}", lines.join("; ")),
-                "it names its mechanics, each checks clean and has a captured trace with a clear read audit, and NOTES.md names every branch no trace took both ways",
-                "name the steps the original runs for it under the catalogue entry's mechanics, write mechanics/<id>/ for each (the mechanic's crate and its binding, binding/), run psx mechanic capture, bind or explain each read the audit lists, and list in NOTES.md the PC of each branch no trace took both ways (docs/mechanics.md)",
-            );
-        }
         if let Some(f) = order(&|f| stage(f, &[Stage::Catalogued])) {
             return Item::agent(
                 "Scenario",
@@ -249,7 +223,7 @@ impl Facts {
                 Some(&f.id),
                 format!("captured, not verified ({})", states.join(", ")),
                 "its scenario verdict passes at HEAD",
-                "write the feature's plugin, translating its mechanics' steps, register its scenario launchers and what it observes (psx_bevy::scenario), commit, and run psx port check on it",
+                "write the feature's plugin from the original's code, register its scenario launchers and what it observes (psx_bevy::scenario), commit, and run psx port check on it",
             );
         }
         if let Some(f) = order(&|f| stage(f, &[Stage::Reviewed])) {
@@ -306,9 +280,7 @@ impl Facts {
             areas.entry(e.map(|e| e.area.clone()).unwrap_or_default()).or_default().push(json!({
                 "id": f.id, "title": e.map(|e| e.title.as_str()), "stage": stage, "in_goal": f.in_goal,
                 "depends": e.map(|e| &e.depends), "verdicts": verdicts,
-                "mechanics": e.map(|e| &e.mechanics), "capture": f.capture,
                 "scenarios": e.map(|e| &e.scenarios), "scenario": f.scenarios, "unimplemented": f.unimplemented,
-                "coverage": f.coverage, "diagnosis": f.diagnosis,
             }));
         }
         json!({
@@ -348,9 +320,6 @@ impl Facts {
             let stage = f.stage().map(Stage::name).unwrap_or("-");
             let mark = if f.in_goal { "" } else { "  (needed by the goal)" };
             s.push_str(&format!("  {}  {stage:<12} {title}{mark}\n", f.id));
-            for c in &f.coverage {
-                s.push_str(&format!("      {}\n", check::coverage_line(c)));
-            }
         }
         if !self.port.problems.is_empty() {
             s.push_str(&format!("\n{} problems in the goal or catalogue.\n", self.port.problems.len()));
@@ -509,31 +478,6 @@ mod tests {
         );
         assert_eq!(f.next().item, "Confirm");
         assert!(f.next().why.contains("F-0001"));
-    }
-
-    #[test]
-    fn a_confirmed_catalogue_asks_for_capture() {
-        let (d, _) = facts(CONFIRMED, &["F-0001", "F-0002"]);
-        let walk = feature("F-0001", "").replace("depends: []", "depends: []\nmechanics: [demo.walk]");
-        std::fs::write(d.0.join("catalogue/F-0001.md"), walk).unwrap();
-        let f = Facts::gather(&d.0).unwrap();
-        let item = f.next();
-        assert_eq!((item.item, item.feature.as_deref()), ("Capture", Some("F-0001")));
-        assert_eq!(
-            item.why,
-            "its mechanics are not captured: mechanics/demo.walk: no mechanic here (a Rust crate with src/lib.rs)"
-        );
-        assert_eq!(f.stage("F-0001"), Some(Stage::Catalogued));
-        // A feature that names no mechanics is asked for them.
-        std::fs::write(d.0.join("catalogue/F-0001.md"), feature("F-0001", "")).unwrap();
-        let f = Facts::gather(&d.0).unwrap();
-        let item = f.next();
-        assert_eq!((item.item, item.feature.as_deref()), ("Capture", Some("F-0001")));
-        assert_eq!(
-            item.why,
-            "its mechanics are not captured: catalogue/F-0001.md: names no mechanics (find the steps the original runs for it and list their ids under mechanics)"
-        );
-        assert_eq!(f.stage("F-0002"), Some(Stage::Catalogued));
     }
 
     fn with(f: &mut Facts, id: &str, stage: Stage, verdicts: &[(Kind, State)]) {

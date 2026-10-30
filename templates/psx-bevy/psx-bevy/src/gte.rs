@@ -1,7 +1,7 @@
 //! The GTE exactly as psx emulates it: its operations, flags and rounding
 //! (`vendor/psx-gte`), and libgte's table sine for [`Angle`]s.
 //!
-//! Exact mechanics that ran on the GTE (a rotation by MVMVA, a projection by
+//! Exact rules that ran on the GTE (a rotation by MVMVA, a projection by
 //! RTPS) call these with the same inputs to get the original's results. The
 //! numbers are [`psx_fixed`]'s ([`crate::num`]): [`to_vec3i16`] and
 //! [`from_vec3i16`] move a vector between the two.

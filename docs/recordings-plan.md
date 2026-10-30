@@ -17,18 +17,22 @@ mechanic code are worth keeping, so they move out first.
    `coverage`, so a traced run reports, per function, the branch outcomes
    taken and not. *Done when* `psx coverage` on a traced run lists untaken
    branch outcomes, with the existing capture test's cases as its tests.
-2. **`psx-scenario`.** Move the scenario and recording formats and the
-   glossary glue generator out of `psx-mechanics` into a new crate; `psx
+2. **Remove mechanics**: `psx mechanic`, `crates/psx/src/mechanic/`, and
+   in the template the `replay/` crate; `port next` and `port status` stop
+   referring to mechanics (they are rewritten in phase C). The glossary
+   binding's loading moves to `crates/psx/src/binding.rs`. This comes before
+   the split because `scenario record` ran the binding through mechanic
+   capture. *Done when* `psx --help` has no `mechanic` and the tests pass.
+3. **`psx-scenario`.** What is left of `psx-mechanics` (the scenario and
+   recording formats and the glossary glue generator) becomes a new crate;
+   mechanics, interfaces, traces, replay and their Rust reading go. `psx
    scenario`, `port check`, the template and the glossary binding use it.
-   *Done when* `scenario record` and `port check` work on Croc unchanged.
-3. **Slim `psx-capture`** to the glossary binding: its tick, quantities and
+   *Done when* `scenario record` and `port check` work on Croc unchanged,
+   and no source mentions mechanics outside git history and Croc's own
+   folders.
+4. **Slim `psx-capture`** to the glossary binding: its tick, quantities and
    memory reads. Brackets, explains, params, calls and the audits go. *Done
    when* Croc's glossary binding builds against it and records as before.
-4. **Remove mechanics**: `psx mechanic`, `crates/psx/src/mechanic/`,
-   `psx-mechanics`, and in the template `psx_bevy::replay` and the
-   `mechanics/`, `interfaces/`, `replay/` folders. `port next` and `port
-   status` stop referring to mechanics (they are rewritten in phase C).
-   *Done when* no source mentions mechanics outside git history.
 5. **Remove cases and the field map**: `psx case`, `samples.toml`, `run
    --map` (until step 9 brings glossary names to `run --sample`). Also
    `template parser` with `templates/parsers/`, and `gpu-replay` (kept as a

@@ -1,5 +1,5 @@
 //! PS1-style games in Bevy: the PS1 look ([`psx`]), logic ticks and
-//! input ([`shell`], [`controller`]), numbers for exact mechanics ([`num`])
+//! input ([`shell`], [`controller`]), numbers for exact rules ([`num`])
 //! and the GTE ([`gte`]), the controls and display menus
 //! ([`controls`], [`display`]), headless testing ([`testing`]), the capture
 //! viewer, the developer MCP (feature `dev-mcp`), layered asset
@@ -20,7 +20,7 @@ pub mod dev_mcp;
 pub mod display;
 pub mod gte;
 pub mod launcher;
-/// Numbers for exact mechanics: `vendor/psx-fixed`.
+/// Numbers for exact rules: `vendor/psx-fixed`.
 pub use psx_fixed as num;
 pub mod pointer;
 pub mod psx;
