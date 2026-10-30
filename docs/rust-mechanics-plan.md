@@ -1,6 +1,6 @@
 # Plan: mechanics and bindings as Rust
 
-Status: agreed. R2 to R7 are done (section 11); the pilot continues.
+Status: agreed. R2 to R7 are done (section 11); R8 is proposed (decision 13).
 
 The mechanic formats (`docs/mechanics.md`) describe a step in TOML: typed
 fields in `mechanic.toml`, and where the PlayStation keeps them in
@@ -134,13 +134,9 @@ pub fn step(state: &mut State, inputs: &Inputs) {
   discriminants; arrays `[T; N]` for tables; `Vec<T>` for lists; plain
   structs for records. Arrays and structs are allowed in state as well as
   params, which covers state that is a table.
-- **`step`** takes `&mut State`, then `&Inputs`, `&Params` and
-  `&mut impl Calls` as needed. `Calls` is a trait the crate declares,
-  listing its interfaces' methods and one method per used mechanic's step.
-  Replay answers them from the trace; the port implements them over its
-  world and by calling the used mechanic's own `step`. Going through
-  `Calls` keeps each mechanic's replay apart from the mechanics it uses,
-  as recorded calls do today.
+- **`step`** takes `&mut State`, then `&Inputs`, `&Params` and the world
+  (`&mut impl` its interfaces' traits) as needed. A mechanic that uses
+  another calls that mechanic's own `step` directly (decision 13).
 - **Helpers and constants.** The crate may define its own functions, types
   and `const` tables (a sine table belongs here, not in a param, once it is
   known to be constant). Integer behaviour is written out: `wrapping_add`
@@ -511,8 +507,11 @@ Each step ends with something that runs, and is committed.
 | R6 | M | Capture over scenario recordings: `--scenario` and `--recording`, the glossary and every bound mechanic in one run, the trace header naming both. Croc's scenarios start at level starts; his traces are captured again from their recordings. `port status` reports each mechanic's branch outcomes confirmed in the port, and a failing recording's tick points at the traces of that tick. |
 | R7 | L | Collision: the map reader (pieces with their models), the floor cache as array state, the objects interface, the probe points. Captured from scenario recordings with a clear audit and replayed. It brought the write audit, commands at stores, and replay of a step's calls (decisions 11 and 12). |
 
-Then the pilot continues where it stopped: `croc.tick`'s sound and rng
-interfaces, Croc's fields and script variables, and the port.
+| R8 | M | Mechanics that use mechanics (decision 13): the front end allows a used mechanic's params as a field; capture records a used step's world calls inside its entry and fills its params from its binding; replay runs the used `step` and answers its calls; check compares a used step's entry with its own trace. Proved on 0x8002D410 using `croc.collide`. |
+
+Then the pilot continues where it stopped: `croc.tick` as Croc's script,
+its sound and rng interfaces, Croc's fields and script variables, and the
+port.
 
 ## 12. Decisions for the person
 
@@ -582,3 +581,47 @@ interfaces, Croc's fields and script variables, and the port.
    its trace, so replaying calls moved into R7. Tables, lists and records
    are allowed in state, inputs and calls (an object's polygons, a cache
    per probe point), as section 3's types already said.
+13. **A step that uses other mechanics** (R8). Settled: the using step
+   calls the used mechanic's `step` directly, so the reference says how
+   the original composes them and the port follows the same calls. Not
+   taken: the used step as one more world call, which replays without
+   running it but leaves the using step opaque exactly where it composes.
+   What follows from it, for the person to confirm:
+   - **State and inputs.** The using step builds the used step's `State`
+     and `Inputs` from its own fields and writes the results back. A field
+     both share (Croc's x, z and heading are ground-move's and collide's)
+     is the using mechanic's, once.
+   - **The world.** The using step passes its world on, so it implements
+     the used mechanics' interfaces as well. `REQUIRES` lists the
+     interfaces the using step calls itself; the generated `World`
+     implements those of its used mechanics too.
+   - **Params.** A used mechanic's params are a field of the using
+     mechanic's, typed by the used crate (`pub collide:
+     croc_collide::Params`). Capture asks the used mechanic's binding for
+     them, so the using binding does not read them again.
+   - **The trace.** A used step stays one entry in the using step's
+     `calls`, as decision 7 records it (its inputs and state as the
+     request, its state at its end as the response), and gains the world
+     calls its step made, in order. Its own trace, captured in the same
+     run, still holds that step in full.
+   - **Replay.** The using step runs the used `step` itself. Its world
+     calls are answered in order, those of a used step taken from that
+     entry, and a disagreement names the used step it is inside. The
+     using step's state at its end is compared as before; the used steps
+     are proved by their own traces. `psx mechanic check` also compares
+     each used-step entry with the used mechanic's own trace of the same
+     recording and tick.
+   - **Audits and coverage** are unchanged: a used step's instructions
+     are its own, and its request accounts for the bytes the using step
+     wrote for it.
+   - **The first use.** 0x8002D410, which the object update (0x8002C790)
+     runs for Croc after his strat, moves him and calls collision
+     (through 0x800362E4): a native routine of 256 instructions that uses
+     `croc.collide`. It proves R8 before `croc.tick`.
+   - **Then `croc.tick`.** The tick is the object update: Croc's strat,
+     bytecode run by the interpreter, which calls turn and ground-move
+     through the native table at 0x8006B720, then 0x8002D410. Its
+     mechanic is a translation of Croc's script, not of the interpreter;
+     how much of it (animation, sound, the routines at 0x80026954 to
+     0x8002BC90 and 0x8002E64C to 0x8002EBE0 not identified yet) is the
+     next decision, after R8.
