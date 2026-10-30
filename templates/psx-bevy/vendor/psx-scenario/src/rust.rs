@@ -861,7 +861,10 @@ pub struct Quantities {
         let o = observed(&c).unwrap();
         assert!(o.contains("pub croc_x: Option<glossary::Fx20_12>,"), "{o}");
         assert!(o.contains("pub croc_mode: Option<glossary::Mode>,"), "{o}");
-        assert!(o.contains("(\"croc_x\", self.croc_x.as_ref().map(|v| psx_scenario::Value::Int((*v) as i128))),"), "{o}");
+        assert!(
+            o.contains("(\"croc_x\", self.croc_x.as_ref().map(|v| psx_scenario::Value::Int((*v) as i128))),"),
+            "{o}"
+        );
     }
 
     #[test]
@@ -894,7 +897,8 @@ pub fn pick(x: &dyn Fn() -> u32) -> u32 { let y = format!("{}", 1); unsafe { 0 }
 
     #[test]
     fn quantities_it_cannot_record_are_named() {
-        let lib = GLOSSARY.replace("pub croc_mode: Mode,", "pub croc_mode: Mode,\n    pub name: String,\n    pub odd: Fx8_8,")
+        let lib = GLOSSARY
+            .replace("pub croc_mode: Mode,", "pub croc_mode: Mode,\n    pub name: String,\n    pub odd: Fx8_8,")
             + "pub type Fx8_8 = i32;\n";
         let (_, problems) = read(CARGO, &lib).unwrap();
         assert!(
