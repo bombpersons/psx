@@ -162,7 +162,7 @@ Custom formats need a parser. Every finding is evidence to check, not a guarante
 
 ## More
 
-- [README_FOR_AGENTS.md](README_FOR_AGENTS.md): every command and flag.
+- `psx guide` and `psx <command> --help`: every command and flag.
 - [docs/port-design.md](docs/port-design.md): porting by recordings.
 - [templates/psx-bevy](templates/psx-bevy/README.md): the game template.
 - [docs/ghidra-integration.md](docs/ghidra-integration.md): Ghidra analysis and symbol export.

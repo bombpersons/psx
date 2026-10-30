@@ -101,7 +101,7 @@ formats need a parser, which the agent writes. Every finding is evidence to chec
 
 ## More
 
-- [README_FOR_AGENTS.md](README_FOR_AGENTS.md): every command and flag.
+- `psx guide` and `psx <command> --help`: every command and flag.
 - [templates/psx-bevy](templates/psx-bevy/README.md): the port workspace.
 - [docs/agent-workflow.md](docs/agent-workflow.md) · [docs/ghidra-integration.md](docs/ghidra-integration.md) · [PLAN.md](PLAN.md)
 - Sibling for the Mega Drive: [mdx](https://github.com/bombpersons/mdx).

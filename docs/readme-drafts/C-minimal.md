@@ -9,7 +9,7 @@
 <!-- TODO screenshots -->
 <img src="docs/images/tr2-rs.png" width="48%" alt="tr2-rs"> <img src="docs/images/gt2-rs.png" width="48%" alt="gt2-rs">
 
-[tr2-rs](https://github.com/bombpersons/tr2-rs) · [gt2-rs](https://github.com/bombpersons/gt2-rs) · [Install](#install) · [Agent docs](README_FOR_AGENTS.md)
+[tr2-rs](https://github.com/bombpersons/tr2-rs) · [gt2-rs](https://github.com/bombpersons/gt2-rs) · [Install](#install)
 
 </div>
 
@@ -52,7 +52,7 @@ claude mcp add --scope user psx -- ~/.local/bin/psx mcp
 ```
 
 Then open your agent in a folder with your disc and the [example port prompt](docs/port-prompt.md).
-Windows and source builds: [BIOS setup](docs/bios-setup.md), [agent docs](README_FOR_AGENTS.md).
+Windows and source builds: [BIOS setup](docs/bios-setup.md), agent docs (`psx guide`).
 
 ## Learn more
 

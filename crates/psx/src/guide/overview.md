@@ -32,6 +32,9 @@ fields, states, code, assets, bevy and port topics for the relevant
 route, and troubleshooting for unexpected results. Inspect returned files with read:
 JSON by RFC 6901 pointer, JSONL/CSV/text by rows (frame_from/frame_to with
 frame_field, hex pc, contains, columns), hex for raw bytes and PNG as an image.
+Addresses, PCs and registers in psx's output are hex strings (0x80012345); a
+data address that could be anywhere (a watch, poke, sample or xrefs target) has
+its region (main_ram, scratchpad, io, bios) beside it.
 Continue with page.next_cursor, reusing the filters; totals stay null until a
 stream is fully scanned. A successful capture proves
 what was recorded, not that the game reached gameplay or that a hypothesis is true.

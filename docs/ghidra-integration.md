@@ -4,7 +4,7 @@ Toolkit plan, 2026-10-15. The first EXE integration (G0/G1) is implemented on
 `feat/ghidra-integration`. G2 is implemented (2026-10-16); G3 remains planned.
 See [runtime validation](../research/ghidra-runtime.md) for the snapshot, annotation
 and byte-bound symbol roundtrip gates. Current commands and limitations
-are documented in [README_FOR_AGENTS.md](../README_FOR_AGENTS.md#ghidra-one-call-from-a-writer-pc-to-pseudocode).
+are documented in `psx guide code` and `psx code --help`.
 
 ## Outcome
 
@@ -147,7 +147,7 @@ The saved project opens in the GUI. Ghidra remains optional for other psx comman
 revision-specific indexes/caches, format 2 exports, and live body-verified native
 trace/watch naming pass the authored and real-game gates. Post-run observations
 expose final-RAM candidates without asserting earlier residency. See the
-[command reference](../README_FOR_AGENTS.md#ghidra-one-call-from-a-writer-pc-to-pseudocode)
+command reference (`psx guide code`)
 and [validation](../research/ghidra-runtime.md). The scope below is retained as
 the acceptance criteria.
 

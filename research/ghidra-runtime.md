@@ -1,7 +1,7 @@
 # Ghidra runtime analysis and verified names
 
 Validated 2026-10-16 with Ghidra 12.1.4 / Java 21, Linux. G2 is implemented.
-The [command reference](../README_FOR_AGENTS.md#ghidra-one-call-from-a-writer-pc-to-pseudocode)
+The command reference (`psx guide code`)
 describes the CLI/MCP workflow and format 2 symbol contract.
 
 ## What passed

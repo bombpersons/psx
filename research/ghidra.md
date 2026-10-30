@@ -5,7 +5,7 @@ MCP call. psx extracts disc files, discovers Ghidra, creates a project, imports
 the payload at its declared RAM address, seeds entry/GP/BSS and optional symbols,
 analyses, decompiles the enclosing function and returns pseudocode/callers inline.
 The CLI shares that implementation. See the
-[command reference](../README_FOR_AGENTS.md#ghidra-one-call-from-a-writer-pc-to-pseudocode).
+command reference (`psx guide code`).
 
 Validated environment: Linux, Ghidra 12.1.4, OpenJDK 21.0.12.1. The worker uses
 `MIPS:LE:32:default` with the default compiler specification and shipped Java

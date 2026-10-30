@@ -60,4 +60,4 @@ The final run boundary is processed so its last completed frame is eligible.
   the captured 320×240 drawing area was visually inspected.
 
 Local smoke artifacts are ignored under `.psx/gpu-next-draw-check/`.
-Usage and MCP arguments are documented in [README_FOR_AGENTS.md](../README_FOR_AGENTS.md#capture-the-next-drawing-frame).
+Usage and MCP arguments are documented in `psx guide run` and `psx run --help`.

@@ -9,7 +9,7 @@
 
 **PS1 games → native, moddable Bevy ports, written by your agent.**
 
-[Install](#install) · [How it works](#how-it-works) · [Ports built with psx](#ports-built-with-psx) · [Docs](README_FOR_AGENTS.md)
+[Install](#install) · [How it works](#how-it-works) · [Ports built with psx](#ports-built-with-psx)
 
 </div>
 
@@ -85,7 +85,7 @@ claude mcp add --scope user psx -- ~/.local/bin/psx mcp
 ```
 
 Windows, building from source and BIOS downloads: see [BIOS setup](docs/bios-setup.md) and the
-[agent reference](README_FOR_AGENTS.md).
+agent reference (`psx guide`).
 
 Start a port: put the disc in a folder with the [example port prompt](docs/port-prompt.md) as
 `AGENTS.md` and open your agent there.
