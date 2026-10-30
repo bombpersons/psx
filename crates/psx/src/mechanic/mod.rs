@@ -261,7 +261,15 @@ impl Op for MechanicCheckArgs {
             let mut ok = interface_problems.is_empty();
             let mut mechanics = Vec::new();
             for id in ids {
-                let l = workspace::load(&ctx.root, &id)?;
+                let l = match workspace::load(&ctx.root, &id) {
+                    Ok(l) => l,
+                    // No mechanic can be read at all: that is its problem.
+                    Err(e) => {
+                        ok = false;
+                        mechanics.push(json!({"id": id, "problems": [e.to_string()], "traces": []}));
+                        continue;
+                    }
+                };
                 let traces = workspace::traces(&l)?;
                 let problems: Vec<String> =
                     l.problems.iter().filter(|p| !p.starts_with("interfaces/")).cloned().collect();
