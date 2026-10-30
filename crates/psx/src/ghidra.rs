@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use clap::{Args, Subcommand};
+use clap::Args;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -30,29 +30,6 @@ fn function_timeout() -> u32 {
 }
 fn limit() -> usize {
     100
-}
-
-#[derive(Subcommand)]
-pub enum Action {
-    /// Check the optional Ghidra installation and Java runtime.
-    Doctor(DoctorArgs),
-    /// Export byte-bound function names for runtime and static tools.
-    ExportSymbols(ExportArgs),
-}
-impl Action {
-    pub fn exec(self, ctx: &Ctx) -> Outcome {
-        match self {
-            Self::Doctor(a) => a.exec(ctx),
-            Self::ExportSymbols(a) => a.exec(ctx),
-        }
-    }
-}
-
-#[derive(Args, Deserialize, JsonSchema)]
-pub struct DoctorArgs {
-    /// Ghidra installation directory. Else PSX_GHIDRA_HOME, PATH, or common install locations.
-    #[arg(long)]
-    pub ghidra_home: Option<PathBuf>,
 }
 
 #[derive(Args, Deserialize, JsonSchema)]
@@ -131,21 +108,13 @@ pub struct AnnotateArgs {
     /// JSON {"functions":[{"addr":"80010000","name":"writer","comment":"Evidence..."}]}.
     #[arg(long)]
     pub file: PathBuf,
+    /// Where to write the new revision's names as a .symbols.json, bound to the input's
+    /// function bytes, for run, disasm and xrefs (default: beside the revision's index).
+    #[arg(long)]
+    pub symbols_out: Option<PathBuf>,
     #[arg(long)]
     pub ghidra_home: Option<PathBuf>,
     #[arg(long, default_value_t = timeout())]
-    #[serde(default = "timeout")]
-    pub timeout: u64,
-}
-#[derive(Args, Deserialize, JsonSchema)]
-pub struct ExportArgs {
-    /// Existing analysis manifest.
-    pub analysis: PathBuf,
-    /// Output .symbols.json; defaults to an immutable revision-specific analysis artifact.
-    #[arg(long)]
-    pub out: Option<PathBuf>,
-    /// Total deadline including time queued for this analysis (1..=3600 seconds).
-    #[arg(long, default_value_t=timeout())]
     #[serde(default = "timeout")]
     pub timeout: u64,
 }
@@ -1016,24 +985,21 @@ fn valid_limit(n: usize) -> Result<()> {
     if (1..=1000).contains(&n) { Ok(()) } else { Err(Error::invalid("limit must be 1..=1000")) }
 }
 
-impl Op for DoctorArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        outcome((|| {
-            let install = installation(self.ghidra_home.as_deref())?;
-            let dir = ctx.root.join(".psx/ghidra/doctor");
-            fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
-            let log = dir.join(format!("{}.log", crate::stamp()));
-            run_worker(
-                Command::new("java").arg("-version"),
-                &log,
-                Instant::now() + Duration::from_secs(15),
-                ctx,
-                None,
-            )?;
-            Ok(
-                json!({"status":"available","ghidra":install,"java":fs::read_to_string(&log).map_err(|e| Error::io(&log, e))?,"validated_version":"12.1.4","language":LANGUAGE}),
-            )
-        })())
+/// For `context`: whether Ghidra and a Java runtime are found, without starting either.
+pub fn status() -> Value {
+    let java = std::env::var_os("JAVA_HOME")
+        .map(|h| PathBuf::from(h).join("bin/java"))
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|d| d.join("java"))
+                .find(|p| p.is_file())
+        });
+    match installation(None) {
+        Ok(i) => json!({"available": java.is_some(), "home": i.home, "version": i.version, "java": java,
+            "validated_version": "12.1.4", "language": LANGUAGE}),
+        Err(e) => json!({"available": false, "reason": e.to_value()["error"]["message"], "java": java,
+            "setup": "set PSX_GHIDRA_HOME to a Ghidra installation (or put analyzeHeadless on PATH); code decompile, functions and annotate need it"}),
     }
 }
 impl Op for FunctionsArgs {
@@ -1293,18 +1259,20 @@ impl Op for AnnotateArgs {
             out["status"] = json!("complete");
             out["conflicts"] = json!(conflicts);
             out["patches"] = json!(patches);
+            let manifest = a.path.clone();
+            drop(a);
+            out["symbols"] = export(&manifest, self.symbols_out, deadline, ctx)?;
             Ok(out)
         })())
     }
 }
-impl Op for ExportArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        outcome((|| {
+/// The analysis's function names as a `.symbols.json` bound to its input's bytes:
+/// `out`, or one beside the revision's index.
+fn export(analysis: &Path, out: Option<PathBuf>, deadline: Instant, ctx: &Ctx) -> Result<Value> {
+    {
+        {
             use crate::bound_symbols::{Document, Function, Range};
-            if !(1..=3600).contains(&self.timeout) {
-                return Err(Error::invalid("timeout must be 1..=3600"));
-            }
-            let a = open_analysis(&self.analysis, Instant::now() + Duration::from_secs(self.timeout), ctx)?;
+            let a = open_analysis(analysis, deadline, ctx)?;
             let m = &a.manifest;
             let bytes = fs::read(&m.input).map_err(|e| Error::io(&m.input, e))?;
             let mapping = &m.mapping;
@@ -1355,7 +1323,7 @@ impl Op for ExportArgs {
                 functions,
             };
             crate::bound_symbols::Loaded::load(document.clone(), Path::new(".")).map_err(Error::invalid)?;
-            let path = self.out.unwrap_or_else(|| m.index.parent().unwrap().join("export.symbols.json"));
+            let path = out.unwrap_or_else(|| m.index.parent().unwrap().join("export.symbols.json"));
             if !path.to_string_lossy().ends_with(".symbols.json") {
                 return Err(Error::invalid("output must end in .symbols.json"));
             }
@@ -1373,7 +1341,7 @@ impl Op for ExportArgs {
             Ok(
                 json!({"analysis":a.path,"revision":m.revision,"symbols":path,"function_count":document.functions.len(),"verification":"all function body bytes; names are withheld without matching code context"}),
             )
-        })())
+        }
     }
 }
 
@@ -1557,7 +1525,14 @@ mod tests {
         let before = fs::read(&path).unwrap();
         let patch = ctx.root.join("patch.json");
         save_json(&patch, &json!({"functions":[{"addr":"80010000","name":"renamed"}]})).unwrap();
-        let out = AnnotateArgs { analysis: path.clone(), file: patch, ghidra_home: Some(home), timeout: 1 }.exec(&ctx);
+        let out = AnnotateArgs {
+            analysis: path.clone(),
+            file: patch,
+            symbols_out: None,
+            ghidra_home: Some(home),
+            timeout: 1,
+        }
+        .exec(&ctx);
         assert_eq!(out.value["error"]["code"], "timeout", "{}", out.value);
         assert_eq!(fs::read(&path).unwrap(), before);
         assert_eq!(fs::read_to_string(project.join("project.gpr")).unwrap(), "original database");

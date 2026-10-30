@@ -1251,7 +1251,6 @@ fn mcp_tools_match_cli() {
     names.sort_unstable();
     let mut want = vec![
         "context",
-        "bios_list",
         "bios_install",
         "guide",
         "read",
@@ -1288,8 +1287,6 @@ fn mcp_tools_match_cli() {
         "port_status",
         "port_next",
         "port_check",
-        "ghidra_doctor",
-        "ghidra_export_symbols",
     ];
     want.sort_unstable();
     assert_eq!(names, want);
@@ -1337,7 +1334,6 @@ fn mcp_tools_match_cli() {
             json!({"source":"tiny.ps-exe","addr":"80010000","ghidra_home":"no-ghidra"}),
             vec!["code", "decompile", "--source", "tiny.ps-exe", "--addr", "80010000", "--ghidra-home", "no-ghidra"],
         ),
-        ("ghidra_doctor", json!({"ghidra_home":"no-ghidra"}), vec!["ghidra", "doctor", "--ghidra-home", "no-ghidra"]),
         (
             "code_functions",
             json!({"source":"tiny.ps-exe","limit":0}),
@@ -1691,11 +1687,13 @@ fn ghidra_single_call_and_cached_cli_mcp_parity() {
         rpc.tool("code_decompile", json!({"source":"probe.ps-exe","addr":"80010048","symbols":["probe.symbols.json"]}));
     assert!(!error && named["function"]["name"] == "measured_helper", "{named}");
     // Respect both our project lock and externally modified Ghidra databases.
+    // The lock is an flock on psx.lock: hold it as another owner would.
     let lock = Path::new(manifest).parent().unwrap().join("psx.lock");
-    std::fs::write(&lock, "other owner").unwrap();
-    let (busy, error, _) = rpc.tool("code_functions", json!({"analysis":manifest}));
-    assert!(error && busy["error"]["code"] == "analysis_busy", "{busy}");
-    std::fs::remove_file(lock).unwrap();
+    let held = std::fs::File::options().write(true).create(true).truncate(false).open(&lock).unwrap();
+    held.try_lock().unwrap();
+    let (busy, error, _) = rpc.tool("code_functions", json!({"analysis":manifest,"timeout":1}));
+    assert!(error && ["analysis_busy", "timeout"].contains(&busy["error"]["code"].as_str().unwrap()), "{busy}");
+    drop(held);
     let project = Path::new(first["project"].as_str().unwrap()).parent().unwrap();
     std::fs::write(project.join("external-edit"), "changed by GUI").unwrap();
     let (stale, error, _) = rpc.tool("code_functions", json!({"analysis":manifest}));
@@ -1743,7 +1741,7 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
     let (same, ok) = cli(
         &root,
         &[
-            "ghidra",
+            "code",
             "decompile",
             "--ram",
             "ram.bin",
@@ -1774,6 +1772,7 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
     std::fs::write(root.join("patch.json"), serde_json::to_vec(&patch).unwrap()).unwrap();
     let (annotated, error, _) = rpc.tool("code_annotate", json!({"analysis":manifest,"file":"patch.json"}));
     assert!(!error && annotated["revision"] == 2, "{annotated}");
+    assert_eq!(annotated["symbols"]["revision"], 2, "{annotated}");
     assert_ne!(annotated["project"], first["project"]);
     assert!(!Path::new(first["project"].as_str().unwrap()).exists(), "annotating removes the project it supersedes");
     let (named, error, _) = rpc.tool("code_decompile", json!({"analysis":manifest,"addr":"8001004c"}));
@@ -1785,12 +1784,7 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
         .unwrap();
     let (conflict, error, _) = rpc.tool("code_annotate", json!({"analysis":manifest,"file":"user-conflict.json"}));
     assert!(error && conflict["error"]["code"] == "symbol_conflict", "{conflict}");
-    let (export, error, _) = rpc.tool("ghidra_export_symbols", json!({"analysis":manifest}));
-    assert!(!error, "{export}");
-    let symbols = export["symbols"].as_str().unwrap();
-    let (cli_export, ok) = cli(&root, &["ghidra", "export-symbols", manifest]);
-    assert!(ok, "{cli_export}");
-    assert_eq!(export, cli_export);
+    let symbols = annotated["symbols"]["symbols"].as_str().unwrap();
     let trace_args = [
         "run",
         "--bios",
@@ -1859,11 +1853,9 @@ fn first_use_bios_setup_context_and_compact_screens_work_through_mcp() {
     let (context, error, _) = rpc.tool("context", json!({}));
     assert!(!error && context["status"] == "needs_setup", "{context}");
     assert!(context["build"]["id"].as_str().unwrap().starts_with("src-"));
-    let (list, error, _) = rpc.tool("bios_list", json!({}));
-    assert!(!error && list["installed"].as_array().unwrap().is_empty(), "{list}");
-    let (same, ok) = cli(&root, &["bios", "list"]);
-    assert!(ok);
-    assert_eq!(list, same);
+    assert!(context["bios_candidates"].as_array().unwrap().is_empty(), "{context}");
+    assert!(!context["bios_download_catalog"].as_array().unwrap().is_empty(), "{context}");
+    assert!(context["ghidra"]["available"].is_boolean(), "{context}");
     let (missing, error, _) = rpc.tool("run", json!({"frames":0}));
     assert!(error && missing["error"]["code"] == "bios_required", "{missing}");
     // Authored firmware is supported as a local explicit preference, without any network.

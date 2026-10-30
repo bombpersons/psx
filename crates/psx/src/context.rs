@@ -69,7 +69,7 @@ pub fn capabilities() -> Value {
     "ghidra":{"optional":true,"runtime_snapshots":true,"rename_comments":true,"verified_symbol_export":true,"same_analysis_queue":true},
     "agent_interface":{"read":true,"inline_input":true,"explicit_release_boundary":true,"query_pagination":true,"coverage_metadata":true,
         "per_call_project_root":true,"extraction_manifests":true,"native_input_application_log":true,"gpu_draw_filters":true},
-        "setup":{"bios_list":true,"bios_install_local":true,"bios_download_explicit":true,"automatic_downloads":false},
+        "setup":{"bios_install_local":true,"bios_download_explicit":true,"automatic_downloads":false},
         "handoff":crate::handoff::capability(),
     })
 }
@@ -152,12 +152,12 @@ impl Resolved {
             Some(r) if self.state.is_none() => {
                 json!({"tool":"bios_install","arguments":{"region":r,"download":true}})
             }
-            _ => json!({"tool":"bios_list","arguments":{}}),
+            _ => json!({"tool":"context","arguments":{}}),
         };
         let message = if self.region.is_none() && self.state.is_none() {
             "No BIOS selected. Pass the disc (image) so its region picks the BIOS, or pass bios. See candidates and next_action."
         } else {
-            "No BIOS selected. Use bios_list, install one (bios_install with download:true for the disc's region), or pass bios. See candidates and next_action."
+            "No BIOS selected. See context's bios_candidates, install one (bios_install with download:true for the disc's region), or pass bios. See candidates and next_action."
         };
         Error::new("bios_required", message)
             .with("candidates", &self.candidates)
@@ -334,7 +334,9 @@ impl ArgsContext {
                 "selection":sigs_selection,
                 "layout":"<version>/<LIB>.json","override":"symbols.sigs / --sigs; shared default: PSX_SIGS_DIR (use an absolute path)"},
             "resolved":{"media":r.media,"media_from":r.media_from,"bios":r.bios,"bios_selection":r.bios_reason,"disc_region_hint":r.region.map(|r|r.hint())},
-            "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),"state":r.state,"setup":setup,"capabilities":capabilities(),"warnings":r.warnings,
+            "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),
+            "bios_download_catalog":bios::catalog(),"ghidra":crate::ghidra::status(),
+            "state":r.state,"setup":setup,"capabilities":capabilities(),"warnings":r.warnings,
             "next_calls":next_calls}))
     }
 }

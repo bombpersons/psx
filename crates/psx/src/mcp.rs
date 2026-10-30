@@ -151,9 +151,8 @@ impl ToolDef {
 pub fn tools() -> Vec<ToolDef> {
     vec![
         def::<crate::guide::GuideArgs>("guide", "Built-in workflow guidance. Omit topic for an overview. Tool descriptions are brief: argument rules and output details live in its topics.").read_only(),
-        def::<crate::context::ArgsContext>("context", "Start here: the running build, project root, saved defaults (media, BIOS), local BIOS candidates and capabilities. image or from_state explains region or checkpoint identity; save=true stores the resolved defaults. Never downloads."),
+        def::<crate::context::ArgsContext>("context", "Start here: the running build, project root, saved defaults (media, BIOS), local BIOS candidates and the download catalog, whether Ghidra is found, and capabilities. image or from_state explains region or checkpoint identity; save=true stores the resolved defaults. Never downloads."),
         def::<crate::artifact::ReadArgs>("read", "Read a returned artifact or run directory in bounded pages: JSON by pointer, JSONL/CSV/text by rows with frame/pc/contains filters and column projection, hex bytes, PNG as an image. Continue with page.next_cursor.").read_only(),
-        def::<crate::bios::ListArgs>("bios_list", "List BIOS images in the project's bios/ and the shared BIOS store, with hashes, regions and the download catalog. Read-only; context shows which one is selected and why.").read_only(),
         def::<crate::bios::InstallArgs>("bios_install", "One-time BIOS setup: import a local file (from), or download=true with region pal|ntsc-u|ntsc-j for a pinned, hash-checked image. Installs into the shared store (PSX_BIOS_DIR); never replaces existing images.").heavy(),
         def::<crate::media_cmd::DiscArgs>("disc_info", "First look at a disc image (.cue preferred): tracks, volume, SYSTEM.CNF boot line, boot EXE header and LibCrypt subchannel status. hash=true hashes the image files (slow).").read_only(),
         def::<crate::media_cmd::LsArgs>("disc_ls", "List ISO9660 entries (path, LBA, size, XA attributes, streamed flag) with filter/offset/limit, to map a disc's layout or find which file an LBA belongs to.").read_only(),
@@ -169,7 +168,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::code::XrefsArgs>("code_xrefs", "Static references to a hex address or LO-HI range in an EXE or run RAM: calls, jumps, branches, lui pairs, gp-relative accesses and data pointers, grouped by function. text=true gives a listing.").read_only(),
         def::<crate::ghidra::DecompileArgs>("code_decompile", "Pseudocode, body ranges and callers/callees for the function containing addr (hex, e.g. a writer PC). Give source (EXE or disc.cue::/PATH), ram with ranges and entries, or an analysis handle. The first call imports and analyses (minutes); needs local Ghidra. See guide topic code.").heavy(),
         def::<crate::ghidra::FunctionsArgs>("code_functions", "List a Ghidra analysis's functions (entries, names, signatures, body ranges) from source, ram or an analysis handle; filter by name, page with offset/limit.").heavy(),
-        def::<crate::ghidra::AnnotateArgs>("code_annotate", "Apply function renames and comments from a JSON file (functions:[{addr,name,comment}]) to a Ghidra analysis as a new revision. User-name collisions fail; generated names yield.").heavy(),
+        def::<crate::ghidra::AnnotateArgs>("code_annotate", "Apply function renames and comments from a JSON file (functions:[{addr,name,comment}]) to a Ghidra analysis as a new revision, and export its names as a byte-bound .symbols.json for run, disasm and xrefs. User-name collisions fail; generated names yield.").heavy(),
         def::<crate::symbols_io::SymbolsArgs>("code_symbols", "Name PsyQ library functions in an EXE by signature matching (signatures from sigs or PSX_SIGS_DIR). Writes .symbols.json for run, loads, disasm and xrefs, plus Ghidra and .sym files. Library code only.").heavy(),
         def::<crate::inventory::InventoryArgs>("code_inventory", "Every function of the disc's executables and of overlays in ram snapshots, with instructions and blocks, and the disc's files. See guide topic code.").heavy(),
         def::<crate::coverage::CoverageArgs>("code_coverage", "Traced runs' executed blocks and branch ways per inventory function, and those no run reached. See guide topic code.").heavy(),
@@ -188,8 +187,6 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::port::PortStatusArgs>("port_status", "In a port's workspace: the goal's features by area and stage, their verdicts, problems in the goal or catalogue, and the item due now. plain=true: text for the person. See guide topic port.").read_only(),
         def::<crate::port::PortNextArgs>("port_next", "In a port's workspace: the one item due now (what, which feature, why, and the fact that shows it done). Start every session with it, and call it again after each item. See guide topic port."),
         def::<crate::port::PortCheckArgs>("port_check", "In a port's workspace, at a clean commit: run the features' scenarios against the port and write their scenario verdicts. See guide topic port.").heavy(),
-        def::<crate::ghidra::DoctorArgs>("ghidra_doctor", "Check that Ghidra and Java are discoverable. Usually unnecessary: query tools import and analyse automatically. Set PSX_GHIDRA_HOME or ghidra_home if discovery fails."),
-        def::<crate::ghidra::ExportArgs>("ghidra_export_symbols", "Export a Ghidra analysis's function names as .symbols.json, bound to the input hash and function bytes, for the symbols argument of run, loads, disasm or xrefs.").heavy(),
     ]
 }
 

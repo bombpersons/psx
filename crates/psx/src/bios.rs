@@ -177,25 +177,19 @@ pub fn inventory(root: &Path) -> crate::Result<Vec<Candidate>> {
 
 #[derive(Subcommand)]
 pub enum Action {
-    List(ListArgs),
+    /// Install a local BIOS image, or download a pinned, hash-checked one for a region.
     Install(InstallArgs),
 }
 impl Action {
     pub fn exec(self, ctx: &Ctx) -> Outcome {
         match self {
-            Self::List(a) => a.exec(ctx),
             Self::Install(a) => a.exec(ctx),
         }
     }
 }
-#[derive(Args, Deserialize, JsonSchema)]
-pub struct ListArgs {}
-impl Op for ListArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::ok(json!({"bios_dir":store(),"project_bios_dir":ctx.root.join("bios"),"hashes":hash_notes(),
-        "installed": match inventory(&ctx.root) {Ok(v)=>v,Err(e)=>return Outcome::result(Err(e))},
-        "download_catalog":CATALOG.iter().map(|c|json!({"name":c.file,"region":c.region,"sha256":c.sha256,"bytes":524288,"url":format!("{ARCHIVE}/{}",c.file)})).collect::<Vec<_>>() }))
-    }
+/// The BIOS images bios install can download (download: true, region), each pinned by its hash.
+pub fn catalog() -> Value {
+    json!(CATALOG.iter().map(|c| json!({"name":c.file,"region":c.region,"sha256":c.sha256,"bytes":524288,"url":format!("{ARCHIVE}/{}",c.file)})).collect::<Vec<_>>())
 }
 #[derive(Args, Deserialize, JsonSchema)]
 pub struct InstallArgs {

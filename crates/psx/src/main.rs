@@ -69,9 +69,9 @@ enum Command {
     McpCall,
     #[command(name = "__handoff-child", hide = true)]
     HandoffChild { run_dir: PathBuf },
-    /// Discover build, project defaults, BIOS candidates and capabilities.
+    /// Discover build, project defaults, BIOS candidates and downloads, Ghidra and capabilities.
     Context(context::ArgsContext),
-    /// List local BIOSes or explicitly install/download a verified image.
+    /// Install a BIOS: a local image, or an explicit download of a verified one.
     Bios {
         #[command(subcommand)]
         action: bios::Action,
@@ -122,11 +122,6 @@ enum Command {
         #[command(subcommand)]
         action: PortAction,
     },
-    /// Ghidra's installation check, analysis, export.
-    Ghidra {
-        #[command(subcommand)]
-        action: ghidra::Action,
-    },
     /// Serve every command above as an MCP tool over stdin/stdout (start it in the project root).
     Mcp(mcp::McpArgs),
 }
@@ -160,7 +155,8 @@ enum CodeAction {
     Decompile(ghidra::DecompileArgs),
     /// Ghidra's functions, with optional name filtering and pagination.
     Functions(ghidra::FunctionsArgs),
-    /// Apply function renames and comments from a JSON patch to a Ghidra analysis.
+    /// Apply function renames and comments from a JSON patch to a Ghidra analysis, and
+    /// export the new revision's names as a .symbols.json for run, disasm and xrefs.
     Annotate(ghidra::AnnotateArgs),
     /// Name library functions in a PS-X EXE by PsyQ signature matching.
     /// Writes <out>.symbols.json, <out>.ghidra.txt (ImportSymbolsScript.py) and <out>.sym.
@@ -294,7 +290,6 @@ fn main() -> ExitCode {
         Command::Context(a) => a.exec(&ctx),
         Command::Read(a) => a.exec(&ctx),
         Command::Bios { action } => action.exec(&ctx),
-        Command::Ghidra { action } => action.exec(&ctx),
         Command::Mcp(a) => return mcp::main(ctx, a, pinned),
         Command::Disc { action } => action.exec(&ctx),
         Command::Assets { action } => action.exec(&ctx),
