@@ -42,11 +42,20 @@ pub fn uncaptured(root: &Path, id: &str) -> Vec<String> {
         captured += 1;
         match &h.audit {
             None => out.push(format!("{file}: no read audit")),
-            Some(a) if !a.unaccounted.is_empty() => out.push(format!(
-                "{file}: the read audit lists {} reads the binding neither binds nor explains",
-                a.unaccounted.len()
-            )),
-            Some(_) => {}
+            Some(a) => {
+                if !a.unaccounted.is_empty() {
+                    out.push(format!(
+                        "{file}: the read audit lists {} reads the binding neither binds nor explains",
+                        a.unaccounted.len()
+                    ));
+                }
+                if !a.unaccounted_writes.is_empty() {
+                    out.push(format!(
+                        "{file}: the write audit lists {} stores read afterwards that the binding neither binds nor explains",
+                        a.unaccounted_writes.len()
+                    ));
+                }
+            }
         }
         if let Some(c) = &h.coverage {
             merge(&mut ways, &took(c));

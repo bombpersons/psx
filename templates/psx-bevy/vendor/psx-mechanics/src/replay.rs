@@ -7,9 +7,11 @@
 //! its `build.rs` ([`crate::rust::write_replay`]) and calls [`run`] from its
 //! test. The helpers here are what that generated code calls.
 
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::Path;
 
 use crate::Trace;
+use crate::trace::Call;
 pub use crate::value::{Value, Values};
 
 /// A mechanic as replay sees it: the conversions between its structs and the
@@ -28,7 +30,53 @@ pub trait Mechanic {
     fn inputs(v: &Values) -> Result<Self::Inputs, String>;
     fn params(v: &Values) -> Result<Self::Params, String>;
     fn record(s: &Self::State) -> Values;
-    fn step(state: &mut Self::State, inputs: &Self::Inputs, params: &Self::Params);
+    /// The mechanic's step, its calls answered from `calls`.
+    fn step(state: &mut Self::State, inputs: &Self::Inputs, params: &Self::Params, calls: &mut Calls);
+}
+
+/// The calls a step makes, checked against the trace's in order and
+/// answered with its responses. The generated implementations of the
+/// interfaces' traits call [`Calls::call`].
+pub struct Calls<'t> {
+    recorded: &'t [Call],
+    next: usize,
+}
+
+/// Why a step's call stopped its replay: unwound to [`trace`] without the
+/// panic hook, so nothing is printed.
+struct Stop(String);
+
+fn stop(why: String) -> ! {
+    resume_unwind(Box::new(Stop(why)))
+}
+
+/// A command's response.
+static NONE: Values = Values::new();
+
+impl<'t> Calls<'t> {
+    /// The step calls `interface`'s `call` with `request`: the trace's
+    /// response (none for a command), once the trace has the step make this
+    /// call next with this request.
+    pub fn call(&mut self, interface: &str, call: &str, request: Values) -> &'t Values {
+        let k = self.next;
+        let Some(c) = self.recorded.get(k) else {
+            stop(format!("call {k}: the step calls {interface}.{call}, the trace has no more calls"))
+        };
+        if c.interface != interface || c.call != call {
+            stop(format!("call {k}: the step calls {interface}.{call}, the trace has {}.{}", c.interface, c.call));
+        }
+        let path = format!("call {k} ({interface}.{call}) request");
+        if let Some(d) = differs(&path, Some(&Value::Record(request)), Some(&Value::Record(c.request.clone())), 0) {
+            stop(d);
+        }
+        self.next += 1;
+        c.response.as_ref().unwrap_or(&NONE)
+    }
+
+    /// The last call's response does not fit the interface's types.
+    pub fn bad(&self, e: String) -> ! {
+        stop(format!("call {} response: {e}", self.next.saturating_sub(1)))
+    }
 }
 
 /// One mechanic of the workspace, as the replay crate was built.
@@ -111,14 +159,26 @@ pub fn trace<M: Mechanic>(t: &Trace) -> Result<(), String> {
     let mut state = M::state(&h.initial_state).map_err(|e| format!("initial_state: {e}"))?;
     for (i, f) in t.expand().iter().enumerate() {
         let at = |e: String| format!("step {i}: {e}");
-        if !f.calls.is_empty() {
-            return Err(at("the trace has calls, and calls are not replayed yet".into()));
-        }
         if f.external || M::TOLERANCE.is_some() {
             state = M::state(&f.before).map_err(|e| at(format!("state: {e}")))?;
         }
         let inputs = M::inputs(&f.inputs).map_err(|e| at(format!("inputs: {e}")))?;
-        M::step(&mut state, &inputs, &params);
+        let mut calls = Calls { recorded: &f.calls, next: 0 };
+        if let Err(p) = catch_unwind(AssertUnwindSafe(|| M::step(&mut state, &inputs, &params, &mut calls))) {
+            match p.downcast::<Stop>() {
+                Ok(s) => return Err(at(s.0)),
+                Err(p) => resume_unwind(p),
+            }
+        }
+        if let Some(c) = f.calls.get(calls.next) {
+            return Err(at(format!(
+                "the step made {} calls, the trace has {}: the next is {}.{}",
+                calls.next,
+                f.calls.len(),
+                c.interface,
+                c.call
+            )));
+        }
         let ours = M::record(&state);
         let allowed = |k: &str| M::TOLERANCE.and_then(|t| t.iter().find(|(n, _)| *n == k)).map_or(0, |(_, d)| *d);
         for k in f.after.keys().chain(ours.keys().filter(|k| !f.after.contains_key(*k))) {
@@ -259,9 +319,17 @@ mod tests {
         fn record(s: &i32) -> Values {
             fields_of(make_record([("count", Value::Int(*s as i128))]))
         }
-        fn step(count: &mut i32, on: &bool, by: &i32) {
+        fn step(count: &mut i32, on: &bool, by: &i32, calls: &mut Calls) {
             if *on {
                 *count += by;
+            }
+            // Asks the world for a bonus past 12, and says when it took one.
+            if *count > 12 {
+                let r = calls.call("world.bonus@1", "bonus", Values::from([("count".into(), Value::Int(*count as i128))]));
+                let b: i32 = int(field(fields(r, &["value"]).unwrap_or_else(|e| calls.bad(e)), "value"))
+                    .unwrap_or_else(|e| calls.bad(e));
+                *count += b;
+                calls.call("world.bonus@1", "took", Values::from([("bonus".into(), Value::Int(b as i128))]));
             }
         }
     }
@@ -289,6 +357,40 @@ mod tests {
         assert_eq!(super::trace::<Count>(&trace("", &steps)), Err("step 0: count is 2, the trace has 3".into()));
         let steps = [r#"{"step":0,"inputs":{"on":1}}"#];
         assert_eq!(super::trace::<Count>(&trace("", &steps)), Err("step 0: inputs: on: 1 is not a bool".into()));
+    }
+
+    #[test]
+    fn calls_are_answered_from_the_trace_and_checked() {
+        let bonus = |count: i32, b: i32| {
+            format!(
+                r#"[{{"interface":"world.bonus@1","call":"bonus","request":{{"count":{count}}},"response":{{"value":{b}}}}},{{"interface":"world.bonus@1","call":"took","request":{{"bonus":{b}}}}}]"#
+            )
+        };
+        let steps = [
+            format!(r#"{{"step":0,"inputs":{{"on":true}},"state_before":{{"count":11}},"calls":{},"state":{{"count":16}}}}"#, bonus(13, 3)),
+        ];
+        let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
+        assert_eq!(super::trace::<Count>(&trace("", &steps)), Ok(()));
+        // The step asks with another request.
+        let other = [format!(
+            r#"{{"step":0,"inputs":{{"on":true}},"state_before":{{"count":11}},"calls":{},"state":{{"count":16}}}}"#,
+            bonus(14, 3)
+        )];
+        let other: Vec<&str> = other.iter().map(String::as_str).collect();
+        assert_eq!(
+            super::trace::<Count>(&trace("", &other)),
+            Err("step 0: call 0 (world.bonus@1.bonus) request.count is 13, the trace has 14".into())
+        );
+        // A call the trace has and the step does not make.
+        let more = [format!(r#"{{"step":0,"inputs":{{"on":false}},"calls":{}}}"#, bonus(13, 3))];
+        let more: Vec<&str> = more.iter().map(String::as_str).collect();
+        assert_eq!(
+            super::trace::<Count>(&trace("", &more)),
+            Err("step 0: the step made 0 calls, the trace has 2: the next is world.bonus@1.bonus".into())
+        );
+        // A response the step cannot read.
+        let bad = [r#"{"step":0,"inputs":{"on":true},"state_before":{"count":11},"calls":[{"interface":"world.bonus@1","call":"bonus","request":{"count":13},"response":{"v":1}}]}"#];
+        assert_eq!(super::trace::<Count>(&trace("", &bad)), Err("step 0: call 0 response: v: no such field".into()));
     }
 
     #[test]

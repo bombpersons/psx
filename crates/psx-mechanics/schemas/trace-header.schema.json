@@ -4,7 +4,15 @@
       "additionalProperties": false,
       "properties": {
         "unaccounted": {
-          "description": "Reads the binding neither binds nor explains. The audit is clear when\nthis is empty.",
+          "description": "Reads the binding neither binds nor explains.",
+          "items": {
+            "$ref": "#/$defs/Finding"
+          },
+          "type": "array"
+        },
+        "unaccounted_writes": {
+          "default": [],
+          "description": "Stores read afterwards (by the next step, a world call or other\ncode, before anything stored there again) that the binding neither\nbinds as state or a command, passes in a call's request, nor\nexplains. The audit is clear when both are empty.",
           "items": {
             "$ref": "#/$defs/Finding"
           },

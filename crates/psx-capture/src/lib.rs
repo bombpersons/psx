@@ -43,11 +43,11 @@ pub mod abi;
 /// The version of the boundary with psx. psx refuses a binding built
 /// against another; `psx template update` brings the vendored crate to
 /// psx's.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 pub mod prelude {
     pub use crate::reg::*;
-    pub use crate::{At, Binding, Bracket, Glossary, Load, Machine, Pc, Site, Tick};
+    pub use crate::{At, Binding, Bracket, Glossary, Load, Machine, Pc, Site, Store, Tick};
 }
 
 /// A CPU register, numbered as the R3000 numbers them; `HI` and `LO` are 32
@@ -128,7 +128,7 @@ impl From<u32> for Pc {
     }
 }
 
-/// Where an explained read is: an address in main RAM or the scratchpad, an
+/// Where an explained read or store is: an address in main RAM or the scratchpad, an
 /// offset from a register as latched at the step's begin, a CPU register,
 /// or a GTE register (data 0 to 31 as `mfc2` numbers them, control 32 to 63).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +150,10 @@ pub enum Site {
     /// request and response are read once it has loaded, with
     /// [`Machine::load`] saying where it read.
     Load(Pc),
+    /// A store at this PC that tells the world (a flag set on another
+    /// object): a command only, its request read once it has stored, with
+    /// [`Machine::store`] saying where and what.
+    Store(Pc),
 }
 
 impl Site {
@@ -160,6 +164,10 @@ impl Site {
     pub fn load(pc: impl Into<Pc>) -> Site {
         Site::Load(pc.into())
     }
+
+    pub fn store(pc: impl Into<Pc>) -> Site {
+        Site::Store(pc.into())
+    }
 }
 
 /// What the load at a [`Site::Load`] read: where, how many bytes, and the
@@ -167,6 +175,15 @@ impl Site {
 /// register's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Load {
+    pub address: u32,
+    pub bytes: u32,
+    pub value: u32,
+}
+
+/// What the store at a [`Site::Store`] wrote: where, how many bytes, and the
+/// value stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Store {
     pub address: u32,
     pub bytes: u32,
     pub value: u32,
@@ -251,7 +268,8 @@ impl Bracket {
         self
     }
 
-    /// The step reads `bytes` at `at`, and it is not behaviour: why.
+    /// The step reads or stores `bytes` at `at`, and it is not behaviour:
+    /// why. A store explained here is not an output the write audit lists.
     pub fn explain(&mut self, at: At, bytes: u32, why: &'static str) -> &mut Self {
         self.explained.push((Explained::At(at, bytes), why));
         self
@@ -337,6 +355,9 @@ impl Bracket {
                 Explained::By(p) => format!("{{\"by\":{},\"why\":{}}}", pc(p), string(why)),
             })
             .collect();
+        if self.calls.iter().any(|h| matches!(h.site, Site::Store(_)) && h.response.is_some()) {
+            return Err("a query at Site::store: a store tells the world, it is not answered: declare a command there");
+        }
         let calls: Vec<String> = self
             .calls
             .iter()
@@ -344,6 +365,7 @@ impl Bracket {
                 let on = match &h.site {
                     Site::Entry(p) => format!("{{\"entry\":{}}}", pc(p)),
                     Site::Load(p) => format!("{{\"read\":{}}}", pc(p)),
+                    Site::Store(p) => format!("{{\"write\":{}}}", pc(p)),
                 };
                 format!(
                     "{{\"interface\":{},\"call\":{},\"kind\":\"{}\",\"on\":{on}}}",
@@ -441,6 +463,17 @@ impl Machine<'_> {
             panic!("Machine::load: only a Site::load call's request and response have a load");
         }
         Load { address, bytes, value }
+    }
+
+    /// At a [`Site::Store`] command: where the store wrote, and what. Anywhere
+    /// else it stops the binding with an error.
+    pub fn store(&self) -> Store {
+        let (mut address, mut bytes, mut value) = (0, 0, 0);
+        // SAFETY: as in `bytes`; the outputs are writable.
+        if !unsafe { (self.host.store)(self.host.ctx, &mut address, &mut bytes, &mut value) } {
+            panic!("Machine::store: only a Site::store command's request has a store");
+        }
+        Store { address, bytes, value }
     }
 }
 

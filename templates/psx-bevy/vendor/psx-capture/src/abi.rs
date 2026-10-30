@@ -24,8 +24,12 @@ pub struct Host {
     pub reg: unsafe extern "C" fn(ctx: *mut c_void, which: u32, latched: bool) -> u32,
     /// GTE register `which` (0-63).
     pub gte: unsafe extern "C" fn(ctx: *mut c_void, which: u32) -> u32,
-    /// At an inline call: the load's address, width and value; false elsewhere.
+    /// At an inline call at a load: the load's address, width and value;
+    /// false elsewhere.
     pub load: unsafe extern "C" fn(ctx: *mut c_void, address: *mut u32, bytes: *mut u32, value: *mut u32) -> bool,
+    /// At a command at a store: the store's address, width and the value
+    /// stored; false elsewhere.
+    pub store: unsafe extern "C" fn(ctx: *mut c_void, address: *mut u32, bytes: *mut u32, value: *mut u32) -> bool,
     /// The answer, or a panic's message.
     pub out: unsafe extern "C" fn(ctx: *mut c_void, data: *const u8, len: usize),
 }

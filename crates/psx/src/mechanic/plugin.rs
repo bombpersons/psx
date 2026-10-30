@@ -187,8 +187,24 @@ unsafe extern "C" fn host_gte(ctx: *mut c_void, which: u32) -> u32 {
 unsafe extern "C" fn host_load(ctx: *mut c_void, address: *mut u32, bytes: *mut u32, value: *mut u32) -> bool {
     // SAFETY: the caller's.
     let c = unsafe { &mut *(ctx as *mut Ctx) };
-    let Some(MemAccess { addr, width, value: v, .. }) = c.view.and_then(|v| v.load) else { return false };
+    access(c, false, address, bytes, value)
+}
+
+/// # Safety
+/// `ctx` is a `Ctx`; `address`, `bytes` and `value` are writable.
+unsafe extern "C" fn host_store(ctx: *mut c_void, address: *mut u32, bytes: *mut u32, value: *mut u32) -> bool {
     // SAFETY: the caller's.
+    let c = unsafe { &mut *(ctx as *mut Ctx) };
+    access(c, true, address, bytes, value)
+}
+
+/// The inline call's load (or store): its address, width and value.
+fn access(c: &Ctx, store: bool, address: *mut u32, bytes: *mut u32, value: *mut u32) -> bool {
+    let Some(MemAccess { addr, width, value: v, .. }) = c.view.and_then(|v| v.load).filter(|a| a.store == store)
+    else {
+        return false;
+    };
+    // SAFETY: the callers' pointers, writable.
     unsafe {
         *address = addr;
         *bytes = width as u32;
@@ -319,6 +335,7 @@ fn invoke(call: Call, what: u32, which: u32, view: Option<&View>) -> (Result<Str
         reg: host_reg,
         gte: host_gte,
         load: host_load,
+        store: host_store,
         out: host_out,
     };
     // SAFETY: `host` and `ctx` outlive the call.

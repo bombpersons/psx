@@ -225,6 +225,8 @@ pub trait FloorHeight {
     fn height(&mut self, x: i32, z: i32) -> Floor;
     /// A splash at x.
     fn splash(&mut self, x: i32);
+    /// Mark the object at this address as touched.
+    fn touched(&mut self, at: u32);
 }
 ```
 
@@ -291,7 +293,7 @@ mod glue {
     include!(concat!(env!("OUT_DIR"), "/glue.rs"));
 }
 
-use glue::floor_height::{Height, Splash};
+use glue::floor_height::{Height, Splash, Touched};
 
 /// The game's pointer to the player's object, on any level.
 const PLAYER: u32 = 0x8007_4B90;
@@ -307,6 +309,7 @@ impl Binding for Walk {
         b.begin(0x8004_3234).end_at_next_begin();
         b.query::<Height>(Site::entry(0x8005_1A00), |m| (m.reg(A0) as i32, m.reg(A1) as i32), |m| m.reg(V0) as i32);
         b.command::<Splash>(Site::entry(0x8005_1B40), |m| m.reg(A0) as i32);
+        b.command::<Touched>(Site::store(0x8004_3B10), |m| m.store().address);
         b.explain(At::Base(A0, 0x80), 0x20, "the animation, another mechanic");
         b.explain_reader(0x8004_3A30, "finding the floor polygon: level data, wherever the level put it");
     }
@@ -367,6 +370,10 @@ psx_capture::export!(Walk);
   - `Site::load(pc)` is a load at that PC that asks the world inline, such as
     a table lookup. The request and response are read once it has loaded;
     `m.load()` gives its `address`, `bytes` and the `value` it gave.
+  - `Site::store(pc)` is a store at that PC that tells the world, such as a
+    flag set on another object. Only a command can be there. Its request is
+    read once it has stored; `m.store()` gives its `address`, `bytes` and
+    the `value` stored.
 - **`is_step`** (default: always) is asked each time the begin PC is about
   to run: whether this call of the routine is the mechanic's step, not an
   enemy's that runs the same code. It can compare with the game's own
@@ -380,8 +387,8 @@ psx_capture::export!(Walk);
   it came from.
 - **`Machine`** reads memory (`u8` to `i32`, `bytes`), CPU registers now
   (`reg`) and as latched at the begin or a call's entry (`latched`), the
-  GTE (`gte`: data 0 to 31 as `mfc2` numbers them, control 32 to 63), and an
-  inline call's load (`load`). Only main RAM and the scratchpad can be
+  GTE (`gte`: data 0 to 31 as `mfc2` numbers them, control 32 to 63), an
+  inline call's load (`load`) and a command's store (`store`). Only main RAM and the scratchpad can be
   read: any other address stops the binding and is the capture's refusal.
   Registers are named as `A0`, `V0`, `SP`, …, `HI` and `LO`.
 - **State is read where it is**, at the begin and again at the return:
@@ -401,15 +408,15 @@ psx_capture::export!(Walk);
   one built against another `psx-capture`, naming `psx template update`. A
   panic in the binding is caught and reported as the capture's error.
 
-### Explained reads and hardware
+### Explained reads and stores, and hardware
 
-- **`explain(at, bytes, why)`**: a read the step makes that the binding
-  deliberately leaves out, at `At::Address(a)` (any address), `At::Base(reg,
+- **`explain(at, bytes, why)`**: a read or store the step makes that the
+  binding deliberately leaves out, at `At::Address(a)` (any address), `At::Base(reg,
   offset)` (from a register as latched at the begin), `At::Register(reg)` or
   `At::Gte(n)`. **`explain_reader(pc, why)`**: every load that instruction
   makes, wherever it reads, for data whose address changes from level to
-  level. Capture's read audit lists every other read the binding does not
-  account for, and drafts these calls.
+  level. Capture's read and write audits list every other read and store
+  the binding does not account for, and draft these calls.
 - **Hardware reads** (a hardware register or the BIOS ROM) are never state,
   inputs or params: the port has no such registers. When the step's result
   depends on the value (a timer as a seed, the pad read from the serial
@@ -495,6 +502,25 @@ every mechanic with a binding. Each is written to
     for small offsets or moving addresses, else the address, and the range
     read for a table. The agent reads what the result depends on and
     explains the rest with a `why`.
+- **The write audit** (the header's `audit.unaccounted_writes`) lists what
+  the step's own instructions store that is read afterwards and the binding
+  does not account for, grouped by storing PC, with who read it.
+  - **An output** is a store whose bytes something reads before anything
+    stores there again: the mechanic's next step, other code after the
+    step, an exception handler, or a world call during the step. A store
+    nothing reads before it is overwritten, such as a scratch variable, is
+    not one. Neither is a store through sp, to the step's own stack frame.
+  - **Accounted for**: bytes the binding reads for the state at the step's
+    end, what a call's request reads (what the step passes the world, a
+    used mechanic's request included), a command's store, and the
+    explained stores. Every other output is listed.
+  - A store to a hardware register is an output unless explained.
+  - An output only the next step reads is state the mechanic carries: bind
+    it in `State`. One other code reads is the step telling the world: bind
+    the store as a command, or, when it is not behaviour, explain it.
+  - The draft's `b.explain(…)` lines say `stored at` for these.
+  - Like coverage, it sees what the recording ran: a store whose reader
+    never runs in the recording looks like a scratch variable.
 - **External changes** are counted per state field in the result: code
   outside the step changed the field between steps. The trace keeps them
   as `state_before`.
@@ -546,8 +572,9 @@ fills the steps back in.
 - **`initial_state`** is the state at the first step's start.
 - **`audit`** and **`coverage`** are standard sections, so stage checks can
   read them. Their `at` is the producer's location, opaque to everything else.
-  - `audit.unaccounted` lists reads the binding neither reads nor explains.
-    The audit is clear when it is empty.
+  - `audit.unaccounted` lists reads the binding neither reads nor explains,
+    and `audit.unaccounted_writes` stores read afterwards that the binding
+    neither binds nor explains. The audit is clear when both are empty.
   - `coverage` counts the branches inside the bracket that the recording
     took (`reached`) out of all of them (`total`). `missed` lists the rest,
     and `branches` every branch, so the traces of a mechanic can be
@@ -610,9 +637,16 @@ cargo test -p replay
 - **Exact** mechanics run from the initial state through every step;
   **faithful** ones start every step from the recorded state and compare
   within `TOLERANCE`. A trace captured with another fingerprint is refused.
+- **Calls are answered from the trace.** A `step` that takes `&mut impl`
+  its interfaces' traits is given `World`, generated per mechanic, whose
+  methods check that the step makes the trace's next call with an equal
+  request and return its recorded response. Each interface the mechanic
+  depends on is a dependency of `replay/Cargo.toml` too.
 - **A failure** names the trace, the step and the field, with the path into
-  a table or record (`last.heading is 7, the trace has 8`).
-- **Not yet:** a `step` that makes calls (answered from the trace).
+  a table or record (`last.heading is 7, the trace has 8`), or the call
+  (`call 2 (world.floor-height@1.height) request.x is 5, the trace has 6`;
+  `the step made 1 calls, the trace has 2`).
+- **Not yet:** a `step` that uses other mechanics.
 
 The port is not replayed step by step: it is a translation, checked from
 outside by scenarios (`docs/scenarios.md`).
@@ -621,7 +655,7 @@ A mechanic counts as **captured** (stage 2 of its feature) when:
 
 - `psx mechanic check` finds no problem in its files;
 - it has at least one captured trace;
-- every captured trace's read audit is clear;
+- every captured trace's read and write audits are clear;
 - `NOTES.md` names the PC of every branch that no captured trace took both
   ways (taken in one trace and fallen through in another counts), as the
   coverage writes it (`0x800432a8`, in any case).

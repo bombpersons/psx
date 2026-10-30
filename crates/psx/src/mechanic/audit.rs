@@ -1,6 +1,8 @@
-//! Capture's read audit and branch coverage (docs/mechanics.md, "Capturing
-//! on the PlayStation"): what the step reads that the binding does not
-//! account for, and which of its branches the recording took each way.
+//! Capture's read and write audits and branch coverage (docs/mechanics.md,
+//! "Capturing on the PlayStation"): what the step reads that the binding
+//! does not account for, what it stores that is read afterwards and the
+//! binding does not account for, and which of its branches the recording
+//! took each way.
 //!
 //! Only the step's own instructions count: not a world call's (its reads
 //! are the world's), and not an exception handler's (from the exception to
@@ -168,7 +170,37 @@ struct Entered {
     saved: HashMap<u32, u8>,
 }
 
-/// The read audit and branch coverage of one recording.
+/// Who read a byte a step stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Reader {
+    /// The mechanic's own code, in a later step.
+    NextStep,
+    /// A world call during the step that stored it, outside its request.
+    Call(usize),
+    /// Other code: the game's, after the step, or an exception handler.
+    Code(u32),
+}
+
+/// A byte the step's own code stored: by which instruction, where that
+/// store wrote, and in which step.
+#[derive(Clone, Debug)]
+struct Stored {
+    pc: u32,
+    addr: u32,
+    width: u32,
+    rel: Vec<i64>,
+    step: u64,
+}
+
+/// One store PC's outputs over the recording: stores read afterwards.
+#[derive(Clone, Debug)]
+struct Output {
+    seen: Seen,
+    steps: BTreeSet<u64>,
+    readers: BTreeSet<Reader>,
+}
+
+/// The read and write audits and branch coverage of one recording.
 pub struct Tracker<'a> {
     acc: &'a Accounts<'a>,
     /// The base registers findings are described from: the binding's, and
@@ -195,6 +227,17 @@ pub struct Tracker<'a> {
     entered: Option<Entered>,
     depth: u32,
     step: HashMap<Key, Seen>,
+    /// Explained memory, as this step's latched registers place it.
+    explained: Vec<(u32, u32)>,
+    /// The write audit: bytes this step's own code stored that nothing
+    /// accounts for yet, and which of them a world call or exception
+    /// handler read during the step.
+    wrote: HashMap<u32, Stored>,
+    read_in_step: Vec<(u32, Reader)>,
+    /// Bytes earlier steps stored and nothing accounted for: an output if
+    /// read before anything stores there again.
+    watch: HashMap<u32, Stored>,
+    outputs: BTreeMap<u32, Output>,
     // The recording.
     found: BTreeMap<Key, Seen>,
     steps: u64,
@@ -234,6 +277,11 @@ impl<'a> Tracker<'a> {
             entered: None,
             depth: 0,
             step: HashMap::new(),
+            explained: Vec::new(),
+            wrote: HashMap::new(),
+            read_in_step: Vec::new(),
+            watch: HashMap::new(),
+            outputs: BTreeMap::new(),
             found: BTreeMap::new(),
             steps: 0,
             branch: None,
@@ -259,7 +307,9 @@ impl<'a> Tracker<'a> {
         self.depth = 0;
         self.step.clear();
         self.branch = None;
-        self.accounted = self
+        self.wrote.clear();
+        self.read_in_step.clear();
+        self.explained = self
             .acc
             .memory
             .iter()
@@ -273,6 +323,7 @@ impl<'a> Tracker<'a> {
                 Some((p, p + n))
             })
             .collect();
+        self.accounted = self.explained.clone();
         if self.code.is_none() {
             self.code = Some(m.bus.ram.to_vec());
         }
@@ -315,12 +366,119 @@ impl<'a> Tracker<'a> {
         i > 0 && b < self.data[i - 1].1
     }
 
-    /// The step ends: its findings count.
-    pub fn close(&mut self) {
+    /// The step ends, `state` what the binding read for its state there:
+    /// its findings count, and what it stored and nothing accounts for is
+    /// watched from now on.
+    pub fn close(&mut self, state: &Reads) {
         for (k, s) in self.step.drain() {
             self.found.entry(k).or_insert_with(|| Seen::new(s.rel.len())).merge(&s);
         }
+        self.passed(state);
+        for (b, r) in std::mem::take(&mut self.read_in_step) {
+            if let Some(s) = self.wrote.get(&b).cloned() {
+                self.output(s, r);
+            }
+        }
+        self.watch.extend(self.wrote.drain());
         self.steps += 1;
+    }
+
+    /// The binding read these bytes for the state at the step's end, a
+    /// call's request or a command at a store: what the step stored there
+    /// is accounted for.
+    pub fn passed(&mut self, r: &Reads) {
+        for &(s, e) in &r.memory {
+            for b in s..e {
+                self.wrote.remove(&b);
+            }
+        }
+    }
+
+    /// An instruction outside every step: what it reads of earlier steps'
+    /// stores is their output, and what it stores ends a watch.
+    pub fn outside(&mut self, info: &StepInfo) {
+        if self.watch.is_empty() {
+            return;
+        }
+        let Some(a) = info.mem else { return };
+        for k in 0..a.width as u32 {
+            let b = fold(a.addr.wrapping_add(k));
+            match self.watch.remove(&b) {
+                Some(s) if !a.store => self.output(s, Reader::Code(info.pc)),
+                _ => {}
+            }
+        }
+    }
+
+    /// The write audit's part of an instruction while a step is open.
+    fn writes(&mut self, info: &StepInfo, call: Option<usize>) {
+        let Some(a) = info.mem else { return };
+        let own = call.is_none() && self.depth == 0 && info.exception.is_none();
+        let width = a.width as u32;
+        for k in 0..width {
+            let b = fold(a.addr.wrapping_add(k));
+            if a.store {
+                self.watch.remove(&b);
+                if !own {
+                    self.wrote.remove(&b);
+                }
+                continue;
+            }
+            if let Some(s) = self.watch.remove(&b) {
+                self.output(s, if own { Reader::NextStep } else { Reader::Code(info.pc) });
+            }
+            if !own && self.wrote.contains_key(&b) {
+                self.read_in_step.push((b, call.map_or(Reader::Code(info.pc), Reader::Call)));
+            }
+        }
+        // The step's own stack frame, addressed from sp, is its own.
+        if !a.store || !own || (info.instruction >> 21) & 31 == 29 {
+            return;
+        }
+        let rel: Vec<i64> =
+            self.bases.iter().map(|b| a.addr.wrapping_sub(self.latched[*b as usize]) as i32 as i64).collect();
+        let stored = Stored { pc: info.pc, addr: a.addr, width, rel, step: self.steps };
+        if !memory(a.addr) {
+            // Hardware takes a store as it comes: an output unless explained.
+            let p = fold(a.addr);
+            if !self.explained.iter().any(|&(s, e)| (s..e).contains(&p)) {
+                self.output(stored, Reader::Code(info.pc));
+            }
+            return;
+        }
+        for k in 0..width {
+            let b = fold(a.addr.wrapping_add(k));
+            if !self.explained.iter().any(|&(s, e)| (s..e).contains(&b)) {
+                self.wrote.insert(b, stored.clone());
+            }
+        }
+    }
+
+    fn output(&mut self, s: Stored, reader: Reader) {
+        let n = self.bases.len();
+        let o = self.outputs.entry(s.pc).or_insert_with(|| Output {
+            seen: Seen::new(n),
+            steps: BTreeSet::new(),
+            readers: BTreeSet::new(),
+        });
+        o.steps.insert(s.step);
+        o.readers.insert(reader);
+        let v = &mut o.seen;
+        v.lo = v.lo.min(s.addr);
+        v.hi = v.hi.max(s.addr.wrapping_add(s.width - 1));
+        v.addr.add(s.addr);
+        v.bytes.add(s.width);
+        for (x, r) in v.rel.iter_mut().zip(s.rel) {
+            x.add(r);
+        }
+        let p = fold(s.addr);
+        v.region = if memory(s.addr) {
+            ""
+        } else if (0x1F80_1000..0x1F80_3000).contains(&p) {
+            "a hardware register"
+        } else {
+            "outside memory"
+        };
     }
 
     fn note(&mut self, key: Key) -> &mut Seen {
@@ -425,6 +583,7 @@ impl<'a> Tracker<'a> {
         for &(s, e) in &request.memory {
             self.load(pc, s, e - s);
         }
+        self.passed(request);
         for r in 0..34u8 {
             if (request.registers | request.latched) & bit(r) != 0 {
                 for p in self.taint.remove(&r).unwrap_or_default() {
@@ -480,6 +639,7 @@ impl<'a> Tracker<'a> {
     /// it belongs to. `inline`: an inline read's load, which the binding
     /// accounts for.
     pub fn observe(&mut self, m: &Machine, info: &StepInfo, call: Option<usize>, inline: bool) {
+        self.writes(info, call);
         if info.exception.is_some() {
             self.depth += 1;
             self.branch = None;
@@ -635,7 +795,12 @@ impl<'a> Tracker<'a> {
             let (at, note) = self.describe(k, s, &mut draft);
             unaccounted.push(Finding { at, note: Some(note) });
         }
-        let audit = Audit { unaccounted };
+        let mut unaccounted_writes = Vec::new();
+        for (pc, o) in &self.outputs {
+            let (at, note) = self.describe_output(*pc, o, &mut draft);
+            unaccounted_writes.push(Finding { at, note: Some(note) });
+        }
+        let audit = Audit { unaccounted, unaccounted_writes };
 
         // Coverage: the step's code, walked from its begin and from every
         // register jump it took, against the branches it took.
@@ -677,9 +842,11 @@ impl<'a> Tracker<'a> {
 
         let report = json!({
             "audit": {
-                "clear": audit.unaccounted.is_empty(),
+                "clear": audit.clear(),
                 "unaccounted": audit.unaccounted.len(),
                 "listed": audit.unaccounted.iter().take(LISTED).collect::<Vec<_>>(),
+                "unaccounted_writes": audit.unaccounted_writes.len(),
+                "listed_writes": audit.unaccounted_writes.iter().take(LISTED).collect::<Vec<_>>(),
                 "draft": draft.render(),
             },
             "coverage": {
@@ -704,24 +871,7 @@ impl<'a> Tracker<'a> {
         };
         let note = match k {
             Key::Mem { pc, from: f } => {
-                match s.addr.one() {
-                    Some(a) => at.insert("address".into(), json!(hex(a))),
-                    None => at.insert("addresses".into(), json!(format!("{}-{}", hex(s.lo), hex(s.hi)))),
-                };
-                // A base and offset when one holds and says more than the
-                // address: a small offset, or an address that moves.
-                let base = self.bases.iter().zip(&s.rel).find_map(|(b, r)| {
-                    r.one().map(|o| (*b, o)).filter(|(_, o)| (0..0x1_0000).contains(o) || s.addr.one().is_none())
-                });
-                if let Some((b, o)) = base {
-                    at.insert("base".into(), json!(b.name()));
-                    at.insert("offset".into(), json!(signed_hex(o)));
-                }
-                let bytes = match s.bytes.one() {
-                    Some(1) => "1 byte".into(),
-                    Some(n) => format!("{n} bytes"),
-                    None => "bytes of varying width".into(),
-                };
+                let base = self.place(s, &mut at);
                 let region = if s.region.is_empty() {
                     String::new()
                 } else {
@@ -729,30 +879,16 @@ impl<'a> Tracker<'a> {
                 };
                 if !s.region.is_empty() {
                     let (a, n) = s.addr.one().map_or((s.lo, s.hi - s.lo + 1), |a| (a, s.bytes.one().unwrap_or(4)));
-                    draft.add(draft.address(a), n, *pc, HARDWARE);
+                    draft.add(draft.address(a), n, *pc, Use::Read, HARDWARE);
                 } else {
-                    let width = s.bytes.one().unwrap_or(s.hi - s.lo + 1);
-                    let loc = match (base, s.addr.one()) {
-                        (Some((b, o)), _) => Some(draft.base(b, o)),
-                        (_, Some(a)) => Some(draft.address(a)),
-                        _ => None,
-                    };
-                    match loc {
-                        Some(l) => draft.add(l, width, *pc, ""),
-                        None => draft.add(
-                            draft.address(s.lo),
-                            s.hi - s.lo + 1,
-                            *pc,
-                            ": the range these steps read; a table may reach further",
-                        ),
-                    }
+                    draft.place(s, base, *pc, Use::Read);
                 }
-                format!("{bytes}, {steps}{region}{}", from(f, "written"))
+                format!("{}, {steps}{region}{}", bytes(s), from(f, "written"))
             }
             Key::Reg { pc, reg, from: f } => {
                 let name = reg_name(*reg);
                 at.insert("register".into(), json!(name));
-                draft.add(draft.register(&name), 4, *pc, "");
+                draft.add(draft.register(&name), 4, *pc, Use::Read, "");
                 match f {
                     From::Before => format!("read before the step wrote it, {steps}"),
                     _ => format!("{steps}{}", from(f, "changed")),
@@ -760,7 +896,7 @@ impl<'a> Tracker<'a> {
             }
             Key::Gte { pc, reg, from: f, by } => {
                 at.insert("gte".into(), json!(reg));
-                draft.add(draft.gte(*reg), 4, *pc, "");
+                draft.add(draft.gte(*reg), 4, *pc, Use::Read, "");
                 let what = format!("{} ({by})", GTE_NAMES[*reg as usize]);
                 match f {
                     From::Before => format!("{what}, read before the step wrote it, {steps}"),
@@ -769,6 +905,80 @@ impl<'a> Tracker<'a> {
             }
         };
         (at, note)
+    }
+}
+
+impl Tracker<'_> {
+    /// Where a finding's memory is: its address or range, and a base and
+    /// offset when one holds and says more than the address (a small
+    /// offset, or an address that moves).
+    fn place(&self, s: &Seen, at: &mut serde_json::Map<String, Json>) -> Option<(Reg, i64)> {
+        match s.addr.one() {
+            Some(a) => at.insert("address".into(), json!(hex(a))),
+            None => at.insert("addresses".into(), json!(format!("{}-{}", hex(s.lo), hex(s.hi)))),
+        };
+        let base = self.bases.iter().zip(&s.rel).find_map(|(b, r)| {
+            r.one().map(|o| (*b, o)).filter(|(_, o)| (0..0x1_0000).contains(o) || s.addr.one().is_none())
+        });
+        if let Some((b, o)) = base {
+            at.insert("base".into(), json!(b.name()));
+            at.insert("offset".into(), json!(signed_hex(o)));
+        }
+        base
+    }
+
+    /// A store read afterwards: where, and who read it.
+    fn describe_output(&self, pc: u32, o: &Output, draft: &mut Drafts) -> (serde_json::Map<String, Json>, String) {
+        let mut at = serde_json::Map::new();
+        at.insert("pc".into(), json!(hex(pc)));
+        let s = &o.seen;
+        let base = self.place(s, &mut at);
+        if s.region.is_empty() {
+            draft.place(s, base, pc, Use::Store);
+        } else {
+            let (a, n) = s.addr.one().map_or((s.lo, s.hi - s.lo + 1), |a| (a, s.bytes.one().unwrap_or(4)));
+            draft.add(draft.address(a), n, pc, Use::Store, "");
+            let note = format!(
+                "{}, stored to {} in {} of {} steps: bind it as a command at the store if it is behaviour, else explain it",
+                bytes(s),
+                s.region,
+                o.steps.len(),
+                self.steps
+            );
+            return (at, note);
+        }
+        let mut readers: Vec<String> = o
+            .readers
+            .iter()
+            .take(READERS)
+            .map(|r| match r {
+                Reader::NextStep => "the next step".into(),
+                Reader::Call(c) => format!("the call {} (not in its request)", self.acc.calls[*c]),
+                Reader::Code(p) => hex(*p),
+            })
+            .collect();
+        if o.readers.len() > READERS {
+            readers.push(format!("{} more", o.readers.len() - READERS));
+        }
+        let note = format!(
+            "{}, stored in {} of {} steps and read before anything stored there again, by {}",
+            bytes(s),
+            o.steps.len(),
+            self.steps,
+            readers.join(", ")
+        );
+        (at, note)
+    }
+}
+
+/// Readers a write finding names.
+const READERS: usize = 4;
+
+fn bytes(s: &Seen) -> String {
+    match s.bytes.one() {
+        Some(1) => "1 byte".into(),
+        Some(n) => format!("{n} bytes"),
+        None => "bytes of varying width".into(),
     }
 }
 
@@ -791,12 +1001,22 @@ fn signed_hex(v: i64) -> String {
 /// The draft's note for a read outside memory.
 const HARDWARE: &str = "; or bind it as an inline read if the result depends on it";
 
-/// A draft of the bracket's explained reads, one `Bracket::explain` call
-/// per place.
+/// Whether a finding is the step's read or its store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Use {
+    Read,
+    Store,
+}
+
+/// A drafted `Bracket::explain`: bytes, reading and storing PCs, and a note.
+type Draft = (u32, BTreeSet<(Use, u32)>, &'static str);
+
+/// A draft of the bracket's explained reads and stores, one
+/// `Bracket::explain` call per place.
 #[derive(Default)]
 struct Drafts {
-    /// Location -> bytes, reading PCs, and a note.
-    entries: BTreeMap<String, (u32, BTreeSet<u32>, &'static str)>,
+    /// By location.
+    entries: BTreeMap<String, Draft>,
 }
 
 impl Drafts {
@@ -816,18 +1036,49 @@ impl Drafts {
         format!("At::Gte({n})")
     }
 
-    fn add(&mut self, at: String, bytes: u32, pc: u32, note: &'static str) {
+    fn add(&mut self, at: String, bytes: u32, pc: u32, how: Use, note: &'static str) {
         let e = self.entries.entry(at).or_insert((bytes, BTreeSet::new(), note));
         e.0 = e.0.max(bytes);
-        e.1.insert(pc);
+        e.1.insert((how, pc));
+    }
+
+    /// A finding in memory, by its base and offset, its address, or the
+    /// range it spans.
+    fn place(&mut self, s: &Seen, base: Option<(Reg, i64)>, pc: u32, how: Use) {
+        let width = s.bytes.one().unwrap_or(s.hi - s.lo + 1);
+        let loc = match (base, s.addr.one()) {
+            (Some((b, o)), _) => Some(self.base(b, o)),
+            (_, Some(a)) => Some(self.address(a)),
+            _ => None,
+        };
+        match (loc, how) {
+            (Some(l), _) => self.add(l, width, pc, how, ""),
+            (None, Use::Read) => self.add(
+                self.address(s.lo),
+                s.hi - s.lo + 1,
+                pc,
+                how,
+                ": the range these steps read; a table may reach further",
+            ),
+            (None, Use::Store) => {
+                self.add(self.address(s.lo), s.hi - s.lo + 1, pc, how, ": the range these steps stored to")
+            }
+        }
     }
 
     fn render(&self) -> String {
         let mut out = String::new();
         for (at, (bytes, pcs, note)) in &self.entries {
-            let pcs: Vec<String> = pcs.iter().map(|p| hex(*p)).collect();
+            let list = |how: Use| -> Vec<String> { pcs.iter().filter(|p| p.0 == how).map(|p| hex(p.1)).collect() };
+            let mut by = Vec::new();
+            for (how, word) in [(Use::Read, "read at"), (Use::Store, "stored at")] {
+                let l = list(how);
+                if !l.is_empty() {
+                    by.push(format!("{word} {}", l.join(", ")));
+                }
+            }
             let bytes = if *bytes < 16 { bytes.to_string() } else { format!("{bytes:#x}") };
-            out += &format!("b.explain({at}, {bytes}, \"\"); // read at {}{note}\n", pcs.join(", "));
+            out += &format!("b.explain({at}, {bytes}, \"\"); // {}{note}\n", by.join("; "));
         }
         out
     }

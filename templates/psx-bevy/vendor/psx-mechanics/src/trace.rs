@@ -82,9 +82,21 @@ pub struct Producer {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Audit {
-    /// Reads the binding neither binds nor explains. The audit is clear when
-    /// this is empty.
+    /// Reads the binding neither binds nor explains.
     pub unaccounted: Vec<Finding>,
+    /// Stores read afterwards (by the next step, a world call or other
+    /// code, before anything stored there again) that the binding neither
+    /// binds as state or a command, passes in a call's request, nor
+    /// explains. The audit is clear when both are empty.
+    #[serde(default)]
+    pub unaccounted_writes: Vec<Finding>,
+}
+
+impl Audit {
+    /// Nothing unaccounted, read or written.
+    pub fn clear(&self) -> bool {
+        self.unaccounted.is_empty() && self.unaccounted_writes.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

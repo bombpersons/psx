@@ -9,7 +9,7 @@ use psx_mechanics::trace::Header;
 use psx_mechanics::{Interface, Mechanic, Trace};
 use serde_json::Value;
 
-use super::{CallSite, Capture, End};
+use super::{Capture, End};
 use crate::Error;
 
 pub const INTERFACES: &str = "interfaces";
@@ -239,7 +239,7 @@ pub fn pcs(c: &Capture) -> Vec<(String, u32, Option<&str>)> {
         out.push(("end".into(), p.pc, p.overlay.as_deref()));
     }
     for (i, call) in c.calls.iter().enumerate() {
-        let (CallSite::Entry { entry: p } | CallSite::Read { read: p }) = &call.on;
+        let p = call.on.pc();
         out.push((format!("calls[{i}] ({}.{})", call.interface, call.call), p.pc, p.overlay.as_deref()));
     }
     out

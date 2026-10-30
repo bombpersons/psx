@@ -414,7 +414,7 @@ impl<'a> Plan<'a> {
             sites.entry(p.pc).or_default().push((Site::End, resident(p.pc)));
         }
         for (i, s) in specs.iter().enumerate() {
-            let (CallSite::Entry { entry: p } | CallSite::Read { read: p }) = &s.on;
+            let p = s.on.pc();
             sites.entry(p.pc).or_default().push((Site::Call(i), resident(p.pc)));
         }
 
@@ -446,7 +446,7 @@ impl<'a> Plan<'a> {
                 .iter()
                 .filter_map(|s| match &s.on {
                     CallSite::Entry { entry } => Some(entry.pc),
-                    CallSite::Read { .. } => None,
+                    CallSite::Read { .. } | CallSite::Write { .. } => None,
                 })
                 .collect(),
             end: match &capture.end {
@@ -603,9 +603,11 @@ pub(crate) struct Before {
     tentative: Refusals,
     here: Vec<Site>,
     response: Option<(Values, Reads)>,
-    after: Option<Values>,
+    after: Option<(Values, Reads)>,
     opening: Option<Opening>,
-    entering: Option<(Pending, Reads)>,
+    /// A call entered: what the step passes it, and what the call's
+    /// request reads.
+    entering: Option<(Pending, (Reads, Reads))>,
     world: Option<usize>,
     inline: bool,
 }
@@ -641,7 +643,7 @@ impl<'a> Recorder<'a> {
             let o = self.open.take().unwrap();
             let now = regs(m);
             let view = View { m, now: &now, latched: &o.latched, load: None };
-            let after = self.plan.read(What::State, &view, "end", self.steps.len() as u64, &mut self.refusals).0;
+            let after = self.plan.read(What::State, &view, "end", self.steps.len() as u64, &mut self.refusals);
             close_with(o, after, &mut self.steps, &self.plan.specs, &mut self.refusals, &mut self.tracker);
         }
     }
@@ -695,7 +697,7 @@ impl<'a> Recorder<'a> {
         let after = ends.then(|| {
             let o = open.as_ref().unwrap();
             let view = View { m, now: &now, latched: &o.latched, load: None };
-            plan.read(What::State, &view, "end", n, &mut tentative).0
+            plan.read(What::State, &view, "end", n, &mut tentative)
         });
         let opening = begins.then(|| {
             let view = View { m, now: &now, latched: &now, load: None };
@@ -725,9 +727,14 @@ impl<'a> Recorder<'a> {
         let entering = entry.filter(|_| !pending && (open.is_some() || opening.is_some())).map(|i| {
             let view = View { m, now: &now, latched: &now, load: None };
             let (request, reads) = plan.request(i, &view, "entry", n, &mut tentative);
-            // A used mechanic's request is its own binding's to account for;
-            // an interface's is what the step passes it.
-            let reads = if matches!(specs[i].by, By::Used { .. }) { Reads::default() } else { reads };
+            // A used mechanic's request is its own binding's to account for
+            // (what it reads is passed to it all the same, for the write
+            // audit); an interface's is what the step passes it.
+            let reads = if matches!(specs[i].by, By::Used { .. }) {
+                (Reads::default(), Reads { memory: reads.memory, ..Reads::default() })
+            } else {
+                (reads.clone(), reads)
+            };
             (Pending { spec: i, request, ret: now[31], sp: now[29], latched: now, stores: Vec::new() }, reads)
         });
         // The world call this instruction belongs to, if any.
@@ -749,6 +756,9 @@ impl<'a> Recorder<'a> {
         let specs = &plan.specs;
         let Some(Before { pc, now, tentative, here, response, after, opening, entering, world, inline }) = before
         else {
+            if self.open.is_none() {
+                self.tracker.outside(info);
+            }
             // A store made inside a call to the step's state: refused at its
             // return unless its response holds it.
             if let (Some(o), Some(acc)) = (self.open.as_mut(), info.mem.filter(|a| a.store)) {
@@ -815,7 +825,8 @@ impl<'a> Recorder<'a> {
                     return;
                 }
                 // Next begin: the step ends where the next one begins.
-                close_with(o, s.clone(), &mut self.steps, specs, refusals, &mut self.tracker);
+                let read = Reads { memory: bytes.clone(), ..Reads::default() };
+                close_with(o, (s.clone(), read), &mut self.steps, specs, refusals, &mut self.tracker);
             }
             let data = p.map(|(p, ranges)| {
                 self.params.extend(p);
@@ -837,35 +848,45 @@ impl<'a> Recorder<'a> {
                 self.tracker.account(&ranges);
             }
         }
-        if let (Some((p, reads)), Some(o)) = (entering, self.open.as_mut()) {
+        if let (Some((p, (reads, passed))), Some(o)) = (entering, self.open.as_mut()) {
             self.tracker.entry(pc, p.spec, &reads, now[29]);
+            self.tracker.passed(&passed);
             o.pending = Some(p);
         }
         if self.open.is_some() {
             self.tracker.observe(m, info, world, inline);
         }
-        // Inline calls, from the load the instruction made.
+        // Inline calls, from the load or store the instruction made.
         for s in &here {
             let Site::Call(i) = *s else { continue };
-            let CallSite::Read { .. } = specs[i].on else { continue };
+            let store = match specs[i].on {
+                CallSite::Read { .. } => false,
+                CallSite::Write { .. } => true,
+                CallSite::Entry { .. } => continue,
+            };
             let Some(o) = self.open.as_mut().filter(|o| o.pending.is_none()) else { continue };
             let n = self.steps.len() as u64;
-            let Some(acc) = info.mem.filter(|a| !a.store) else {
-                self.refusals.push(n, "load", specs[i].field(""), "the read PC made no load".into());
+            let Some(acc) = info.mem.filter(|a| a.store == store) else {
+                let what = if store { "store" } else { "load" };
+                self.refusals.push(n, what, specs[i].field(""), format!("the {what} PC made no {what}"));
                 continue;
             };
+            if store {
+                // What the command says is accounted for.
+                let at = crate::run::fold(acc.addr);
+                self.tracker.passed(&Reads { memory: vec![(at, at + acc.width as u32)], ..Reads::default() });
+            }
             let after_regs = regs(m);
             let view = View { m, now: &after_regs, latched: &o.latched, load: Some(acc) };
-            let (request, read_request) = plan.request(i, &view, "load", n, &mut self.refusals);
-            let (response, read_response) = plan.response(i, &view, "load", n, &mut self.refusals);
+            let when = if store { "store" } else { "load" };
+            let (request, read_request) = plan.request(i, &view, when, n, &mut self.refusals);
             self.tracker.binding_reads(&read_request);
-            self.tracker.binding_reads(&read_response);
-            o.calls.push(Call {
-                interface: specs[i].interface.clone(),
-                call: specs[i].call.clone(),
-                request,
-                response: (specs[i].kind == CallKind::Query).then_some(response),
+            let response = (specs[i].kind == CallKind::Query).then(|| {
+                let (response, read_response) = plan.response(i, &view, when, n, &mut self.refusals);
+                self.tracker.binding_reads(&read_response);
+                response
             });
+            o.calls.push(Call { interface: specs[i].interface.clone(), call: specs[i].call.clone(), request, response });
         }
     }
 
@@ -927,16 +948,16 @@ pub(crate) fn record(
     r.finish()
 }
 
-/// Ends a step with `after` as its state.
+/// Ends a step with `after` as its state, read from the memory it names.
 fn close_with(
     o: Open,
-    after: Values,
+    (after, read): (Values, Reads),
     steps: &mut Vec<Full>,
     specs: &[CallSpec],
     refusals: &mut Refusals,
     tracker: &mut Tracker,
 ) {
-    tracker.close();
+    tracker.close(&read);
     let n = steps.len() as u64;
     if let Some(p) = &o.pending {
         let s = &specs[p.spec];
@@ -1002,6 +1023,7 @@ pub struct Peeked {
 pub trait World {
     fn add(&mut self, n: i32) -> Added;
     fn peek(&mut self, at: u32) -> Peeked;
+    fn mark(&mut self, at: u32);
 }
 "#;
 
@@ -1044,6 +1066,8 @@ pub struct State {
         response_in_memory: bool,
         explained: Vec<(At, u32)>,
         explained_reader: Option<u32>,
+        /// Where `mark`, a command, is bound: a store.
+        mark: u32,
         table: bool,
         /// The bits the binding says `last` has: a stale glue when it is
         /// wider than the mechanic's.
@@ -1060,6 +1084,7 @@ pub struct State {
                 response_in_memory: false,
                 explained: Vec::new(),
                 explained_reader: None,
+                mark: 0x8001_0300,
                 table: false,
                 last_bits: 32,
             }
@@ -1133,6 +1158,21 @@ pub struct State {
     }
     impl Query for Peek {}
 
+    struct Mark;
+    impl psx_capture::Call for Mark {
+        const INTERFACE: &'static str = "world.add@1";
+        const NAME: &'static str = "mark";
+        type Request = u32;
+        type Response = ();
+        fn request(at: &u32) -> psx_capture::Value {
+            psx_capture::Value::Record(vec![("at", psx_capture::Value::Int(*at as i128))])
+        }
+        fn response(_: &()) -> psx_capture::Value {
+            psx_capture::Value::Record(Vec::new())
+        }
+    }
+    impl psx_capture::Command for Mark {}
+
     struct Count;
 
     impl psx_capture::Binding for Count {
@@ -1160,6 +1200,7 @@ pub struct State {
                     |m| m.reg(A1) as i32,
                     |m| if conf().response_in_memory { m.i32(m.latched(A0) + 4) } else { m.reg(V0) as i32 },
                 );
+                b.command::<Mark>(At_::store(c.mark), |m| m.store().address);
             }
         }
 
@@ -1426,6 +1467,64 @@ pub struct State {
         let c = Conf { explained: vec![(At::Register(S0), 4)], explained_reader: Some(0x8001_010C), ..Conf::default() };
         let r = run_patched(c, &ADD, &patches).unwrap();
         assert_eq!(r.audit.unaccounted, vec![]);
+    }
+
+    /// sw t0, 8(a0) in the step's load delay slot: a store outside the state.
+    const STORE_8: (u32, u32) = (0x8001_010C, 0xAC88_0008);
+    /// lw t2, 8(a0) in main's delay slot, before each step.
+    const READ_8: (u32, u32) = (0x8001_0004, 0x8C8A_0008);
+
+    #[test]
+    fn the_write_audit_lists_stores_read_afterwards() {
+        let r = run(Conf::default(), &ADD).unwrap();
+        assert_eq!(r.audit.unaccounted_writes, vec![], "the state, and the stack frame");
+        let r = run_patched(Conf::default(), &ADD, &[STORE_8]).unwrap();
+        assert_eq!(r.audit.unaccounted_writes, vec![], "stored, and never read: not an output");
+        let r = run_patched(Conf::default(), &ADD, &[STORE_8, READ_8]).unwrap();
+        let found: Vec<Json> = r.audit.unaccounted_writes.iter().map(|f| json!(f)).collect();
+        // main reads it after every step, the last included.
+        let n = r.steps.len();
+        assert_eq!(
+            found,
+            vec![json!({"at": {"pc": "0x8001010c", "address": "0x80020008", "base": "a0", "offset": "0x8"},
+                        "note": format!("4 bytes, stored in {n} of {n} steps and read before anything stored there again, by 0x80010004")})]
+        );
+        let draft = r.analysis["audit"]["draft"].as_str().unwrap();
+        assert!(draft.contains("b.explain(At::Base(A0, 0x8), 4, \"\"); // stored at 0x8001010c"), "{draft}");
+        let c = Conf { explained: vec![(At::Base(A0, 8), 4)], ..Conf::default() };
+        let r = run_patched(c, &ADD, &[STORE_8, READ_8]).unwrap();
+        assert_eq!(r.audit.unaccounted_writes, vec![], "explained");
+    }
+
+    #[test]
+    fn a_store_a_call_reads_outside_its_request_is_listed() {
+        // world: lw t3, 8(a0); addiu v0, a1, 100; jr ra; nop
+        let r = run_patched(Conf::default(), &[0x8C8B_0008, 0x24A2_0064, 0x03E0_0008, 0], &[STORE_8]).unwrap();
+        let found: Vec<Json> = r.audit.unaccounted_writes.iter().map(|f| json!(f)).collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0]["note"].as_str().unwrap().ends_with("by the call world.add@1.add (not in its request)"),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_command_at_a_store_accounts_for_it() {
+        let c = Conf { mark: 0x8001_010C, ..Conf::default() };
+        let r = run_patched(c, &ADD, &[STORE_8, READ_8]).unwrap();
+        assert_eq!(r.refusals.count, 0, "{:?}", r.refusals.listed);
+        assert_eq!(r.audit.unaccounted_writes, vec![]);
+        let mark = Call {
+            interface: "world.add@1".into(),
+            call: "mark".into(),
+            request: [("at".into(), int(0x8002_0008))].into(),
+            response: None,
+        };
+        assert_eq!(r.steps[0].calls[1], mark);
+        // At a PC that loads, it is refused.
+        let c = Conf { mark: 0x8001_0108, ..Conf::default() };
+        let r = run(c, &ADD).unwrap();
+        assert_eq!(r.refusals.listed[0]["problem"], "the store PC made no store");
     }
 
     #[test]

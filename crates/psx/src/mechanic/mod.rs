@@ -68,6 +68,17 @@ pub enum CallSite {
     /// A load at this PC that asks the world inline (a table lookup): the
     /// request and response are read once it has loaded.
     Read { read: Pc },
+    /// A store at this PC that tells the world (a flag set on another
+    /// object): a command, its request read once it has stored.
+    Write { write: Pc },
+}
+
+impl CallSite {
+    pub fn pc(&self) -> &Pc {
+        match self {
+            CallSite::Entry { entry: p } | CallSite::Read { read: p } | CallSite::Write { write: p } => p,
+        }
+    }
 }
 
 /// Where a Rust binding says the step is (`psx_capture::Bracket`).
@@ -187,9 +198,7 @@ impl Psx {
     }
 
     pub fn check_call_site(on: &CallSite) -> Result<(), String> {
-        match on {
-            CallSite::Entry { entry: p } | CallSite::Read { read: p } => check_pc(p.pc, &p.overlay),
-        }
+        check_pc(on.pc().pc, &on.pc().overlay)
     }
 
     pub fn check_tick(t: &Tick, problems: &mut Vec<String>) {
@@ -240,6 +249,12 @@ impl Psx {
             if let Err(e) = Psx::check_call_site(&c.on) {
                 problems.push(format!("calls[{i}] ({}.{}): {e}", c.interface, c.call));
             }
+            if matches!(c.on, CallSite::Write { .. }) && c.kind != CallKind::Command {
+                problems.push(format!(
+                    "calls[{i}] ({}.{}): a store tells the world, it is not answered: only a command can be at a store",
+                    c.interface, c.call
+                ));
+            }
         }
     }
 }
@@ -279,7 +294,7 @@ impl Op for MechanicCheckArgs {
                     .map(|(name, problems, h)| {
                         let mut t = json!({"name": name, "problems": problems});
                         if let Some(a) = h.as_ref().and_then(|h| h.audit.as_ref()) {
-                            t["audit"] = json!({"clear": a.unaccounted.is_empty(), "unaccounted": a.unaccounted.len()});
+                            t["audit"] = json!({"clear": a.clear(), "unaccounted": a.unaccounted.len(), "unaccounted_writes": a.unaccounted_writes.len()});
                         }
                         if let Some(c) = h.as_ref().and_then(|h| h.coverage.as_ref()) {
                             t["coverage"] = json!({"reached": c.reached, "total": c.total});
