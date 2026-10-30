@@ -62,6 +62,11 @@ pub struct Feature {
     /// not observe, by
     /// the last check at HEAD.
     pub unimplemented: Vec<String>,
+    /// Each of its mechanics' branch outcomes, and those the port confirms
+    /// (`check::port_coverage`).
+    pub coverage: Vec<Value>,
+    /// The trace steps of each tick a recording of it fails at.
+    pub diagnosis: Vec<Value>,
     pub reviewed: bool,
     pub verdicts: BTreeMap<Kind, State>,
 }
@@ -116,6 +121,7 @@ impl Facts {
         let port = Port::load(root)?;
         let git = Git::read(root);
         let goal = port.goal_ids();
+        let runs = check::port_runs(root, git.head.as_deref());
         let features = port
             .closure()
             .into_iter()
@@ -126,6 +132,10 @@ impl Facts {
                 let capture = e.map(|e| check::feature_uncaptured(root, e)).unwrap_or_default();
                 let scenarios = e.map(|e| crate::scenario::feature_unready(root, e)).unwrap_or_default();
                 let unimplemented = e.map(|e| check::unimplemented(root, e, git.head.as_deref())).unwrap_or_default();
+                let coverage = e
+                    .map(|e| e.mechanics.iter().map(|m| check::port_coverage(root, m, runs.as_ref())).collect())
+                    .unwrap_or_default();
+                let diagnosis = e.map(|e| check::diagnosis(root, e, runs.as_ref())).unwrap_or_default();
                 Feature {
                     in_goal: goal.contains(&id),
                     catalogued: e.is_some(),
@@ -134,6 +144,8 @@ impl Facts {
                     scenarios,
                     implemented: e.is_some() && unimplemented.is_empty(),
                     unimplemented,
+                    coverage,
+                    diagnosis,
                     reviewed: false,
                     verdicts,
                     id,
@@ -201,7 +213,7 @@ impl Facts {
                 Some(&f.id),
                 format!("a verdict at HEAD fails: {}", lines.join("; ")),
                 "every verdict of the feature at HEAD passes",
-                "fix the port's code, commit, and run psx port check on the feature again",
+                "find the rule the port gets wrong: port status's diagnosis names the trace steps of each failing tick, the reference's steps there (cargo test -p replay runs them); fix the port's code, commit, and run psx port check on the feature again",
             );
         }
         let stage = |f: &Feature, s: &[Stage]| f.stage().is_some_and(|x| s.contains(&x));
@@ -296,6 +308,7 @@ impl Facts {
                 "depends": e.map(|e| &e.depends), "verdicts": verdicts,
                 "mechanics": e.map(|e| &e.mechanics), "capture": f.capture,
                 "scenarios": e.map(|e| &e.scenarios), "scenario": f.scenarios, "unimplemented": f.unimplemented,
+                "coverage": f.coverage, "diagnosis": f.diagnosis,
             }));
         }
         json!({
@@ -335,6 +348,9 @@ impl Facts {
             let stage = f.stage().map(Stage::name).unwrap_or("-");
             let mark = if f.in_goal { "" } else { "  (needed by the goal)" };
             s.push_str(&format!("  {}  {stage:<12} {title}{mark}\n", f.id));
+            for c in &f.coverage {
+                s.push_str(&format!("      {}\n", check::coverage_line(c)));
+            }
         }
         if !self.port.problems.is_empty() {
             s.push_str(&format!("\n{} problems in the goal or catalogue.\n", self.port.problems.len()));

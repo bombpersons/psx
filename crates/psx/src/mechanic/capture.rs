@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use psx_capture::abi;
 use psx_core::Machine;
-use psx_core::cpu::MemAccess;
+use psx_core::cpu::{MemAccess, StepInfo};
 use psx_mechanics::interface::CallKind;
 use psx_mechanics::mechanic::Types;
 use psx_mechanics::trace::{Audit, Call, Coverage, Full, Header, Producer, Source, SourceKind};
@@ -33,42 +33,17 @@ const MAX_REFUSALS: usize = 20;
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MechanicCaptureArgs {
-    /// The mechanic: `mechanics/<ID>/`.
-    pub id: String,
-    /// The trace's name: it is written to `mechanics/<ID>/traces/<NAME>.trace.jsonl`.
-    #[arg(long)]
-    pub name: String,
-    /// The state the recording starts from (a state.bin).
-    #[arg(long)]
-    pub from_state: PathBuf,
-    /// Frames (vblanks) to run.
-    #[arg(long)]
-    pub frames: u32,
-    /// Pad input, as run's (frames from the recording's start).
-    #[arg(long, conflicts_with = "replay")]
+    /// The mechanics, `mechanics/<ID>/`; default every one with a binding.
     #[serde(default)]
-    pub input: Option<crate::replay::Events>,
-    /// Pad input from a replay file.
+    pub ids: Vec<String>,
+    /// The scenario: `scenarios/<SCENARIO>.toml`.
     #[arg(long)]
-    #[serde(default)]
-    pub replay: Option<PathBuf>,
-    /// The scenario the recording is made in.
+    pub scenario: String,
+    /// The recording whose run is made again: `scenarios/<SCENARIO>/<RECORDING>.jsonl`.
+    /// Each trace is written to `mechanics/<ID>/traces/<SCENARIO>/<RECORDING>.trace.jsonl`.
     #[arg(long)]
-    #[serde(default)]
-    pub scenario: Option<String>,
-    /// What the recording does, in a sentence.
-    #[arg(long)]
-    #[serde(default)]
-    pub description: Option<String>,
-    /// The disc; default the project's.
-    #[arg(long)]
-    #[serde(default)]
-    pub media: Option<PathBuf>,
-    /// BIOS override; otherwise the state's.
-    #[arg(long)]
-    #[serde(default)]
-    pub bios: Option<PathBuf>,
-    /// Write over an existing trace of that name.
+    pub recording: String,
+    /// Write over existing traces of that recording.
     #[arg(long)]
     #[serde(default)]
     pub replace: bool,
@@ -178,6 +153,7 @@ struct Pending {
 struct Open {
     latched: Regs,
     frame: u64,
+    tick: u64,
     inputs: Values,
     before: Values,
     calls: Vec<Call>,
@@ -195,136 +171,166 @@ enum Site {
     Call(usize),
 }
 
-pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool, Json)> {
-    let root = &ctx.root;
-    if a.name.is_empty() || !a.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-        return Err(Error::invalid(format!("name {:?}: letters, digits, _ and - only", a.name)));
-    }
-    let l = workspace::load(root, &a.id)?;
+/// A mechanic ready to capture: its binding and those of the mechanics it
+/// uses, loaded and checked.
+struct Bound {
+    id: String,
+    mechanic: Mechanic,
+    plugin: Plugin,
+    interfaces: Vec<Interface>,
+    used: Vec<(String, Mechanic, Plugin)>,
+    residents: Vec<(u32, Option<Resident>)>,
+    out: PathBuf,
+}
+
+fn bind(root: &Path, id: &str, out: PathBuf) -> crate::Result<Bound> {
+    let l = workspace::load(root, id)?;
     if !l.problems.is_empty() {
         return Err(Error::invalid("the mechanic's files have problems; psx mechanic check lists them")
             .with("problems", json!(l.problems)));
     }
-    let Loaded { mechanic, plugin, interfaces, dir, .. } = l;
-    let plugin = loaded(root, &a.id, plugin.as_deref(), &mechanic, &interfaces)?;
-    let out = dir.join("traces").join(format!("{}.trace.jsonl", a.name));
-    if out.exists() && !a.replace {
-        return Err(Error::invalid(format!("{}: exists; replace=true writes over it", rel(root, &out))));
-    }
+    let Loaded { mechanic, plugin, interfaces, .. } = l;
+    let plugin = loaded(root, id, plugin.as_deref(), &mechanic, &interfaces)?;
     let mut residents = workspace::residents(root, plugin.capture()).map_err(Error::invalid)?;
     let mut used: Vec<(String, Mechanic, Plugin)> = Vec::new();
     for r in &mechanic.uses {
-        let id = r.split('@').next().unwrap_or_default();
-        let u = workspace::load(root, id)?;
+        let uid = r.split('@').next().unwrap_or_default();
+        let u = workspace::load(root, uid)?;
         if !u.problems.is_empty() {
             return Err(Error::invalid(format!("uses {r}: its files have problems; psx mechanic check lists them"))
                 .with("problems", json!(u.problems)));
         }
-        let p = loaded(root, id, u.plugin.as_deref(), &u.mechanic, &u.interfaces)
+        let p = loaded(root, uid, u.plugin.as_deref(), &u.mechanic, &u.interfaces)
             .map_err(|e| Error::invalid(format!("uses {r}: {e}")))?;
         residents.extend(workspace::residents(root, p.capture()).map_err(Error::invalid)?);
         used.push((r.clone(), u.mechanic, p));
     }
+    Ok(Bound { id: id.into(), mechanic, plugin, interfaces, used, residents, out })
+}
 
-    // The machine, as `run` starts one from a state.
-    let resolved = crate::context::resolve(root, a.media.clone(), a.bios.clone(), Some(&a.from_state), false)?;
-    if let Some(e) = resolved.setup_error() {
-        return Err(e);
+/// Runs a scenario recording again and captures, in that one run, every
+/// mechanic named (or every one with a binding): one trace per mechanic
+/// whose step ran. The glossary's quantities must equal the recording's at
+/// every tick, or nothing is written.
+pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool, Json)> {
+    let root = &ctx.root;
+    let named = !a.ids.is_empty();
+    let ids = if named { a.ids.clone() } else { workspace::ids(root) };
+    let (mut bound, mut skipped) = (Vec::new(), Vec::new());
+    for id in ids {
+        let out = root
+            .join("mechanics")
+            .join(&id)
+            .join("traces")
+            .join(&a.scenario)
+            .join(format!("{}.trace.jsonl", a.recording));
+        if out.exists() && !a.replace {
+            return Err(Error::invalid(format!("{}: exists; replace=true writes over it", rel(root, &out))));
+        }
+        match bind(root, &id, out) {
+            Ok(b) => bound.push(b),
+            Err(e) if named => return Err(e),
+            Err(e) => skipped.push(json!({"id": id, "why": e.message, "problems": e.to_value()["error"]["problems"]})),
+        }
     }
-    let bios_path = resolved.bios.unwrap();
-    let bios = std::fs::read(&bios_path).map_err(|e| Error::io(&bios_path, e))?;
-    let medium = crate::run_native::open_media(resolved.media.as_deref())?;
-    let Some(media_id) = medium.id.clone() else {
-        return Err(Error::invalid("capture needs the game's disc: give media"));
-    };
-    if media_id.sha256 != plugin.source().image_sha256 {
-        return Err(Error::new(
-            "identity_mismatch",
-            format!(
-                "the binding is for image {}, the media is {} (its IMAGE_SHA256 is the media identity psx context reports)",
-                plugin.source().image_sha256,
-                media_id.sha256
-            ),
-        ));
+    if bound.is_empty() {
+        return Err(Error::invalid("no mechanic has a binding that checks clean").with("skipped", json!(skipped)));
     }
-    let mut m = crate::run_native::boot(
-        Some(&a.from_state),
-        &Default::default(),
-        bios,
-        medium.exe.as_deref(),
-        medium.disc,
-        &medium.id,
+    let plans: Vec<Plan> =
+        bound.iter().map(|b| Plan::new(&b.mechanic, &b.plugin, &b.interfaces, &b.used, &b.residents)).collect();
+    let mut recorders: Vec<Recorder> = plans.iter().map(Recorder::new).collect();
+    let started = Instant::now();
+    let run = crate::scenario::rerun(
+        ctx,
+        &a.scenario,
+        &a.recording,
+        &mut recorders,
+        std::time::Duration::from_secs(a.timeout),
     )?;
-    let events =
-        crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64).map_err(Error::invalid)?;
-
-    let plan = Plan::new(&mechanic, &plugin, &interfaces, &used, &residents);
-    let deadline = std::time::Duration::from_secs(a.timeout);
-    let Recorded { steps, params, refusals, timed_out, summary, audit, coverage, analysis } =
-        record(&mut m, &plan, a.frames, &events, deadline)?;
-    if timed_out {
-        return Ok((false, json!({"status": "timeout", "capture": summary, "written": false})));
+    let wall_ms = started.elapsed().as_millis() as u64;
+    if let Some(mut why) = run.unlike {
+        why["wall_ms"] = json!(wall_ms);
+        return Ok((false, why));
     }
+    let mut ok = true;
+    let mut mechanics = Vec::new();
+    for (b, r) in bound.iter().zip(recorders) {
+        let result = written(root, b, r, &run, &a);
+        ok &= !matches!(result["status"].as_str(), Some("failed" | "refused" | "identity_mismatch"));
+        mechanics.push(result);
+    }
+    let mut out = json!({"scenario": a.scenario, "recording": a.recording, "wall_ms": wall_ms, "mechanics": mechanics});
+    if !skipped.is_empty() {
+        out["skipped"] = json!(skipped);
+    }
+    Ok((ok, out))
+}
+
+/// One mechanic's result from the run, its trace written when it has one.
+fn written(root: &Path, b: &Bound, r: Recorder, run: &crate::scenario::Rerun, a: &MechanicCaptureArgs) -> Json {
+    let id = &b.id;
+    if b.plugin.source().image_sha256 != run.image_sha256 {
+        return json!({"id": id, "status": "identity_mismatch",
+            "how": format!("the binding is for image {}, the scenario's chain runs {} (its IMAGE_SHA256 is the media identity psx context reports)",
+                b.plugin.source().image_sha256, run.image_sha256)});
+    }
+    let Recorded { steps, params, refusals, summary, audit, coverage, analysis } = match r.finish() {
+        Ok(r) => r,
+        Err(e) => return json!({"id": id, "status": "failed", "error": e.to_value()["error"]}),
+    };
     if refusals.count > 0 {
-        return Ok((
-            false,
-            json!({"status": "refused", "capture": summary, "written": false,
-                   "refusals": refusals.listed, "refusal_count": refusals.count,
-                   "how": "the binding gave no value of the field's type, or a call changed the step's state: fix the binding or the mechanic's type, then capture again"}),
-        ));
+        return json!({"id": id, "status": "refused", "capture": summary, "written": false,
+               "refusals": refusals.listed, "refusal_count": refusals.count,
+               "how": "the binding gave no value of the field's type, or a call changed the step's state: fix the binding or the mechanic's type, then capture again"});
     }
     if steps.is_empty() {
-        return Ok((
-            false,
-            json!({"status": "no_steps", "capture": summary, "written": false,
-                   "how": "the bracket's begin never ran with is_step saying yes: check its pc and overlay, is_step, and that the recording reaches the mechanic"}),
-        ));
+        return json!({"id": id, "status": "no_steps", "capture": summary, "written": false,
+               "how": "the bracket's begin never ran with is_step saying yes in this recording: if it should have, check its pc and overlay and is_step"});
     }
     let header = Header {
         format: psx_mechanics::trace::FORMAT.into(),
         format_version: psx_mechanics::trace::FORMAT_VERSION,
-        mechanic: mechanic.id.clone(),
-        mechanic_version: mechanic.version,
-        fingerprint: Some(mechanic.fingerprint()),
+        mechanic: b.mechanic.id.clone(),
+        mechanic_version: b.mechanic.version,
+        fingerprint: Some(b.mechanic.fingerprint()),
         source: Source {
             kind: SourceKind::Captured,
             platform: Some(Psx::NAME.into()),
-            image_sha256: Some(media_id.sha256.clone()),
+            image_sha256: Some(run.image_sha256.clone()),
         },
         producer: Producer {
             name: "psx".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            details: json!({
-                "from_state": rel(root, &a.from_state),
-                "from_state_sha256": crate::stamp::sha256(&std::fs::read(&a.from_state).unwrap_or_default()),
-                "frames": a.frames,
-                "input": crate::replay::report(&events),
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
+            details: json!({"chain": run.chain, "from_state_sha256": run.from_state_sha256})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
         },
-        scenario: a.scenario.clone(),
+        scenario: Some(a.scenario.clone()),
+        recording: Some(a.recording.clone()),
         params,
         initial_state: steps[0].before.clone(),
         audit: Some(audit),
         coverage: Some(coverage),
-        description: a.description.clone(),
+        description: run.description.clone(),
     };
     let trace = Trace::encode(header, &steps);
-    let problems = trace.check(&mechanic, &interfaces);
+    let problems = trace.check(&b.mechanic, &b.interfaces);
     if !problems.is_empty() {
-        return Err(Error::new("internal", "the captured trace does not check").with("problems", json!(problems)));
+        return json!({"id": id, "status": "failed",
+            "error": Error::new("internal", "the captured trace does not check").with("problems", json!(problems)).to_value()["error"]});
     }
-    if let Some(d) = out.parent() {
-        std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+    let write = || -> crate::Result<()> {
+        if let Some(d) = b.out.parent() {
+            std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+        }
+        std::fs::write(&b.out, trace.to_jsonl()).map_err(|e| Error::io(&b.out, e))
+    };
+    if let Err(e) = write() {
+        return json!({"id": id, "status": "failed", "error": e.to_value()["error"]});
     }
-    std::fs::write(&out, trace.to_jsonl()).map_err(|e| Error::io(&out, e))?;
-    Ok((
-        true,
-        json!({"status": "captured", "trace": rel(root, &out), "capture": summary, "written": true,
-               "audit": analysis["audit"], "coverage": analysis["coverage"]}),
-    ))
+    json!({"id": id, "status": "captured", "trace": rel(root, &b.out), "capture": summary, "written": true,
+           "audit": analysis["audit"], "coverage": analysis["coverage"]})
 }
 
 /// The binding of mechanic `id` in `crate_dir`, built, loaded and checked.
@@ -560,10 +566,9 @@ fn ask(
 
 /// What a recording gave.
 pub(crate) struct Recorded {
-    steps: Vec<Full>,
+    pub(crate) steps: Vec<Full>,
     params: Values,
     refusals: Refusals,
-    timed_out: bool,
     summary: Json,
     audit: Audit,
     coverage: Coverage,
@@ -571,78 +576,102 @@ pub(crate) struct Recorded {
     analysis: Json,
 }
 
-/// Runs `m` for `frames` with `events`, recording each step `plan` brackets.
-pub(crate) fn record(
-    m: &mut Machine,
-    plan: &Plan,
-    frames: u32,
-    events: &[crate::replay::Input],
-    deadline: std::time::Duration,
-) -> crate::Result<Recorded> {
-    let Plan { specs, sites, end, .. } = plan;
-    let mut params = Values::new();
-    let started = Instant::now();
-    let start_frame = m.bus.frames;
-    let target = start_frame + frames as u64;
-    let mut next_event = 0;
-    let mut last_frame = u64::MAX;
-    let mut refusals = Refusals::default();
-    let mut steps: Vec<Full> = Vec::new();
-    let mut open: Option<Open> = None;
-    let mut begins_filtered: u64 = 0;
-    let mut instructions: u64 = 0;
-    let mut timed_out = false;
-    let mut tracker = Tracker::new(&plan.accounts, plan.begin);
+/// One mechanic's capture over a run. The run's driver steps the machine and
+/// hands every instruction to each recorder: `before` takes the reads due
+/// before an instruction at a PC the binding names runs, `after` the rest
+/// once it has run.
+pub(crate) struct Recorder<'a> {
+    plan: &'a Plan<'a>,
+    params: Values,
+    refusals: Refusals,
+    steps: Vec<Full>,
+    open: Option<Open>,
+    begins_filtered: u64,
+    instructions: u64,
+    tracker: Tracker<'a>,
+    /// The run's field and the tick under way, as the driver counts them.
+    field: u64,
+    tick: u64,
+    /// Why the capture stopped: the rest of the run is not recorded.
+    failed: Option<Error>,
+}
 
-    while m.bus.frames < target {
-        if m.bus.frames != last_frame {
-            last_frame = m.bus.frames;
-            let rel = m.bus.frames - start_frame;
-            if **end == End::Mode(EndMode::Frame) && open.as_ref().is_some_and(|o| o.frame != rel) {
-                let o = open.take().unwrap();
-                let now = regs(m);
-                let view = View { m, now: &now, latched: &o.latched, load: None };
-                let after = plan.read(What::State, &view, "end", steps.len() as u64, &mut refusals).0;
-                close_with(o, after, &mut steps, specs, &mut refusals, &mut tracker);
-            }
-            while next_event < events.len() && events[next_event].frame <= rel {
-                crate::replay::apply(m, &events[next_event]);
-                next_event += 1;
-            }
-            if started.elapsed() > deadline {
-                timed_out = true;
-                break;
-            }
+/// The reads a recorder took before an instruction it watches.
+pub(crate) struct Before {
+    pc: u32,
+    now: Regs,
+    tentative: Refusals,
+    here: Vec<Site>,
+    response: Option<(Values, Reads)>,
+    after: Option<Values>,
+    opening: Option<Opening>,
+    entering: Option<(Pending, Reads)>,
+    world: Option<usize>,
+    inline: bool,
+}
+
+/// A step's begin: its params (the first step only) with the memory they
+/// came from, inputs, state, the state's memory, and everything read.
+type Opening = (Option<(Values, Vec<(u32, u32)>)>, Values, Values, Vec<(u32, u32)>, Reads);
+
+impl<'a> Recorder<'a> {
+    pub(crate) fn new(plan: &'a Plan<'a>) -> Recorder<'a> {
+        Recorder {
+            plan,
+            params: Values::new(),
+            refusals: Refusals::default(),
+            steps: Vec::new(),
+            open: None,
+            begins_filtered: 0,
+            instructions: 0,
+            tracker: Tracker::new(&plan.accounts, plan.begin),
+            field: 0,
+            tick: 0,
+            failed: None,
         }
+    }
+
+    /// A field began: a step the frame ends is closed.
+    pub(crate) fn field(&mut self, m: &Machine, field: u64) {
+        self.field = field;
+        if self.failed.is_some() {
+            return;
+        }
+        if *self.plan.end == End::Mode(EndMode::Frame) && self.open.as_ref().is_some_and(|o| o.frame != field) {
+            let o = self.open.take().unwrap();
+            let now = regs(m);
+            let view = View { m, now: &now, latched: &o.latched, load: None };
+            let after = self.plan.read(What::State, &view, "end", self.steps.len() as u64, &mut self.refusals).0;
+            close_with(o, after, &mut self.steps, &self.plan.specs, &mut self.refusals, &mut self.tracker);
+        }
+    }
+
+    /// The tick under way: a step that begins from now on is in it.
+    pub(crate) fn tick(&mut self, tick: u64) {
+        self.tick = tick;
+    }
+
+    /// The reads due before the instruction at the PC runs, when the
+    /// binding names that PC or a call returns there.
+    pub(crate) fn before(&mut self, m: &Machine) -> Option<Before> {
+        if self.failed.is_some() {
+            return None;
+        }
+        let plan = self.plan;
+        let Plan { specs, sites, .. } = plan;
         let pc = m.cpu.pc;
         let here: Vec<Site> = match sites.get(&pc) {
             Some(s) => s.iter().filter(|(_, r)| r.is_none_or(|r| r.holds(&m.bus.ram))).map(|(s, _)| *s).collect(),
             None => Vec::new(),
         };
+        let open = &self.open;
         let returning =
             open.as_ref().and_then(|o| o.pending.as_ref()).is_some_and(|p| p.ret == pc && m.cpu.regs[29] == p.sp);
         if here.is_empty() && !returning {
-            let info = m.step();
-            instructions += 1;
-            // A store made inside a call to the step's state: refused at its
-            // return unless its response holds it.
-            if let (Some(o), Some(acc)) = (open.as_mut(), info.mem.filter(|a| a.store)) {
-                let at = crate::run::fold(acc.addr);
-                let end = at + acc.width as u32;
-                let hit = o.state_bytes.iter().any(|&(s, e)| at < e && end > s);
-                if let Some(p) = o.pending.as_mut().filter(|_| hit) {
-                    p.stores.push((info.pc, acc.addr, acc.width as u32));
-                }
-            }
-            if let Some(o) = &open {
-                tracker.observe(m, &info, o.pending.as_ref().map(|p| p.spec), false);
-            }
-            continue;
+            return None;
         }
-
-        // Reads due before the instruction runs.
         let now = regs(m);
-        let n = steps.len() as u64;
+        let n = self.steps.len() as u64;
         let mut tentative = Refusals::default();
         let response = returning.then(|| {
             let p = open.as_ref().unwrap().pending.as_ref().unwrap();
@@ -661,7 +690,7 @@ pub(crate) fn record(
             (false, Reads::default())
         };
         if here.iter().any(|s| matches!(s, Site::Begin)) && !begins && !pending {
-            begins_filtered += 1;
+            self.begins_filtered += 1;
         }
         let after = ends.then(|| {
             let o = open.as_ref().unwrap();
@@ -671,7 +700,7 @@ pub(crate) fn record(
         let opening = begins.then(|| {
             let view = View { m, now: &now, latched: &now, load: None };
             let k = n + (open.is_some() && !ends) as u64;
-            let first = steps.is_empty() && open.is_none();
+            let first = self.steps.is_empty() && open.is_none();
             let p = first.then(|| {
                 let (p, read) = plan.read(What::Params, &view, "begin", k, &mut tentative);
                 let ranges: Vec<(u32, u32)> = read.memory.iter().map(|&(s, e)| (s, e - s)).collect();
@@ -707,20 +736,47 @@ pub(crate) fn record(
             .map(|(p, _)| p.spec)
             .or_else(|| open.as_ref().and_then(|o| o.pending.as_ref()).filter(|_| pending).map(|p| p.spec));
         let inline = here.iter().any(|s| matches!(s, Site::Call(i) if matches!(specs[*i].on, CallSite::Read { .. })));
+        Some(Before { pc, now, tentative, here, response, after, opening, entering, world, inline })
+    }
 
-        let info = m.step();
-        instructions += 1;
+    /// The instruction ran (`info`), with what `before` read for it.
+    pub(crate) fn after(&mut self, m: &Machine, info: &StepInfo, before: Option<Before>) {
+        if self.failed.is_some() {
+            return;
+        }
+        self.instructions += 1;
+        let plan = self.plan;
+        let specs = &plan.specs;
+        let Some(Before { pc, now, tentative, here, response, after, opening, entering, world, inline }) = before
+        else {
+            // A store made inside a call to the step's state: refused at its
+            // return unless its response holds it.
+            if let (Some(o), Some(acc)) = (self.open.as_mut(), info.mem.filter(|a| a.store)) {
+                let at = crate::run::fold(acc.addr);
+                let end = at + acc.width as u32;
+                let hit = o.state_bytes.iter().any(|&(s, e)| at < e && end > s);
+                if let Some(p) = o.pending.as_mut().filter(|_| hit) {
+                    p.stores.push((info.pc, acc.addr, acc.width as u32));
+                }
+            }
+            if let Some(o) = &self.open {
+                self.tracker.observe(m, info, o.pending.as_ref().map(|p| p.spec), false);
+            }
+            return;
+        };
         if info.exception.is_some() || info.pc != pc {
             // Interrupted before it ran: it runs again, and is read again then.
-            if open.is_some() {
-                tracker.observe(m, &info, world, inline);
+            if self.open.is_some() {
+                self.tracker.observe(m, info, world, inline);
             }
-            continue;
+            return;
         }
+        let n = self.steps.len() as u64;
+        let refusals = &mut self.refusals;
         refusals.count += tentative.count;
         refusals.listed.extend(tentative.listed.into_iter().take(MAX_REFUSALS.saturating_sub(refusals.listed.len())));
         if let Some((r, reads)) = response {
-            let o = open.as_mut().unwrap();
+            let o = self.open.as_mut().unwrap();
             let p = o.pending.take().unwrap();
             let s = &specs[p.spec];
             for (spc, addr, bytes) in p.stores {
@@ -734,7 +790,7 @@ pub(crate) fn record(
                     );
                 }
             }
-            tracker.returned(&reads);
+            self.tracker.returned(&reads);
             o.calls.push(Call {
                 interface: s.interface.clone(),
                 call: s.call.clone(),
@@ -744,62 +800,66 @@ pub(crate) fn record(
         }
         if let Some(after) = after {
             // The state as read before the instruction at the end PC ran.
-            close_with(open.take().unwrap(), after, &mut steps, specs, &mut refusals, &mut tracker);
+            close_with(self.open.take().unwrap(), after, &mut self.steps, specs, refusals, &mut self.tracker);
         }
         if let Some((p, i, s, bytes, read)) = opening {
-            if let Some(o) = open.take() {
-                if **end != End::Mode(EndMode::NextBegin) {
-                    return Err(Error::invalid(format!(
-                        "step {}: the bracket's begin ran again before its end: is the bracket right?",
-                        steps.len()
-                    ))
-                    .with("pc", json!(format!("{pc:#010x}"))));
+            if let Some(o) = self.open.take() {
+                if *plan.end != End::Mode(EndMode::NextBegin) {
+                    self.failed = Some(
+                        Error::invalid(format!(
+                            "step {}: the bracket's begin ran again before its end: is the bracket right?",
+                            self.steps.len()
+                        ))
+                        .with("pc", json!(format!("{pc:#010x}"))),
+                    );
+                    return;
                 }
                 // Next begin: the step ends where the next one begins.
-                close_with(o, s.clone(), &mut steps, specs, &mut refusals, &mut tracker);
+                close_with(o, s.clone(), &mut self.steps, specs, refusals, &mut self.tracker);
             }
             let data = p.map(|(p, ranges)| {
-                params.extend(p);
+                self.params.extend(p);
                 ranges
             });
-            open = Some(Open {
+            self.open = Some(Open {
                 latched: now,
-                frame: m.bus.frames - start_frame,
+                frame: self.field,
+                tick: self.tick,
                 inputs: i,
                 before: s,
                 calls: Vec::new(),
                 pending: None,
                 state_bytes: bytes,
             });
-            tracker.open(m, &now);
-            tracker.binding_reads(&read);
+            self.tracker.open(m, &now);
+            self.tracker.binding_reads(&read);
             if let Some(ranges) = data {
-                tracker.account(&ranges);
+                self.tracker.account(&ranges);
             }
         }
-        if let (Some((p, reads)), Some(o)) = (entering, open.as_mut()) {
-            tracker.entry(pc, p.spec, &reads, now[29]);
+        if let (Some((p, reads)), Some(o)) = (entering, self.open.as_mut()) {
+            self.tracker.entry(pc, p.spec, &reads, now[29]);
             o.pending = Some(p);
         }
-        if open.is_some() {
-            tracker.observe(m, &info, world, inline);
+        if self.open.is_some() {
+            self.tracker.observe(m, info, world, inline);
         }
         // Inline calls, from the load the instruction made.
         for s in &here {
             let Site::Call(i) = *s else { continue };
             let CallSite::Read { .. } = specs[i].on else { continue };
-            let Some(o) = open.as_mut().filter(|o| o.pending.is_none()) else { continue };
-            let n = steps.len() as u64;
+            let Some(o) = self.open.as_mut().filter(|o| o.pending.is_none()) else { continue };
+            let n = self.steps.len() as u64;
             let Some(acc) = info.mem.filter(|a| !a.store) else {
-                refusals.push(n, "load", specs[i].field(""), "the read PC made no load".into());
+                self.refusals.push(n, "load", specs[i].field(""), "the read PC made no load".into());
                 continue;
             };
             let after_regs = regs(m);
             let view = View { m, now: &after_regs, latched: &o.latched, load: Some(acc) };
-            let (request, read_request) = plan.request(i, &view, "load", n, &mut refusals);
-            let (response, read_response) = plan.response(i, &view, "load", n, &mut refusals);
-            tracker.binding_reads(&read_request);
-            tracker.binding_reads(&read_response);
+            let (request, read_request) = plan.request(i, &view, "load", n, &mut self.refusals);
+            let (response, read_response) = plan.response(i, &view, "load", n, &mut self.refusals);
+            self.tracker.binding_reads(&read_request);
+            self.tracker.binding_reads(&read_response);
             o.calls.push(Call {
                 interface: specs[i].interface.clone(),
                 call: specs[i].call.clone(),
@@ -808,29 +868,63 @@ pub(crate) fn record(
             });
         }
     }
-    // External changes: which fields code outside the step changed, in how many steps.
-    let mut fields: BTreeMap<&String, u64> = BTreeMap::new();
-    for w in steps.windows(2) {
-        for (name, v) in &w[1].before {
-            if w[0].after.get(name) != Some(v) {
-                *fields.entry(name).or_default() += 1;
+
+    /// The steps recorded, the audit and coverage, or why the capture stopped.
+    pub(crate) fn finish(self) -> crate::Result<Recorded> {
+        if let Some(e) = self.failed {
+            return Err(e);
+        }
+        let steps = self.steps;
+        // External changes: which fields code outside the step changed, in how many steps.
+        let mut fields: BTreeMap<&String, u64> = BTreeMap::new();
+        for w in steps.windows(2) {
+            for (name, v) in &w[1].before {
+                if w[0].after.get(name) != Some(v) {
+                    *fields.entry(name).or_default() += 1;
+                }
             }
         }
+        let first: Vec<usize> = steps.iter().enumerate().filter(|(_, s)| s.external).map(|(k, _)| k).take(10).collect();
+        let summary = json!({
+            "steps": steps.len(), "instructions": self.instructions,
+            "begins_filtered_out": self.begins_filtered,
+            "open_step_dropped": self.open.is_some(),
+            "external_changes": {
+                "steps": steps.iter().filter(|s| s.external).count(),
+                "fields": fields,
+                "first_steps": first,
+            },
+        });
+        let (audit, coverage, analysis) = self.tracker.finish();
+        Ok(Recorded { steps, params: self.params, refusals: self.refusals, summary, audit, coverage, analysis })
     }
-    let first: Vec<usize> = steps.iter().enumerate().filter(|(_, s)| s.external).map(|(k, _)| k).take(10).collect();
-    let summary = json!({
-        "steps": steps.len(), "frames": m.bus.frames - start_frame, "instructions": instructions,
-        "begins_filtered_out": begins_filtered,
-        "open_step_dropped": open.is_some(),
-        "external_changes": {
-            "steps": steps.iter().filter(|s| s.external).count(),
-            "fields": fields,
-            "first_steps": first,
-        },
-        "wall_ms": started.elapsed().as_millis() as u64,
-    });
-    let (audit, coverage, analysis) = tracker.finish();
-    Ok(Recorded { steps, params, refusals, timed_out, summary, audit, coverage, analysis })
+}
+
+/// Runs `m` for `frames` with `events`, recording each step `plan` brackets.
+#[cfg(test)]
+pub(crate) fn record(
+    m: &mut Machine,
+    plan: &Plan,
+    frames: u32,
+    events: &[crate::replay::Input],
+) -> crate::Result<Recorded> {
+    let start = m.bus.frames;
+    let mut r = Recorder::new(plan);
+    let (mut next_event, mut last_frame) = (0, u64::MAX);
+    while m.bus.frames < start + frames as u64 {
+        if m.bus.frames != last_frame {
+            last_frame = m.bus.frames;
+            r.field(m, m.bus.frames - start);
+            while next_event < events.len() && events[next_event].frame <= m.bus.frames - start {
+                crate::replay::apply(m, &events[next_event]);
+                next_event += 1;
+            }
+        }
+        let before = r.before(m);
+        let info = m.step();
+        r.after(m, &info, before);
+    }
+    r.finish()
 }
 
 /// Ends a step with `after` as its state.
@@ -856,6 +950,7 @@ fn close_with(
         after,
         external,
         source_frame: Some(o.frame),
+        tick: Some(o.tick),
     });
 }
 
@@ -1205,7 +1300,7 @@ pub struct State {
             let o = (at & 0x1F_FFFF) as usize;
             m.bus.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
         }
-        record(&mut m, &plan, 1, &[], std::time::Duration::from_secs(60))
+        record(&mut m, &plan, 1, &[])
     }
 
     fn int(n: i128) -> Value {
@@ -1215,7 +1310,7 @@ pub struct State {
     #[test]
     fn steps_and_calls_are_recorded() {
         let r = run(Conf::default(), &ADD).unwrap();
-        assert_eq!((r.refusals.count, r.timed_out), (0, false), "{:?}", r.refusals.listed);
+        assert_eq!(r.refusals.count, 0, "{:?}", r.refusals.listed);
         assert!(r.steps.len() > 100, "{} steps", r.steps.len());
         for (k, s) in r.steps.iter().enumerate().take(3) {
             let k = k as i128;
@@ -1389,7 +1484,7 @@ pub struct State {
             m.bus.ram[o..o + 4].copy_from_slice(&w.to_le_bytes());
         }
         m.bus.write(0x1F80_1108, psx_core::Width::Word, 0x1234).unwrap();
-        let r = record(&mut m, &plan, 1, &[], std::time::Duration::from_secs(60)).unwrap();
+        let r = record(&mut m, &plan, 1, &[]).unwrap();
         assert_eq!((r.refusals.count, r.audit.unaccounted.len()), (0, 0), "{:?}", r.refusals.listed);
         let peek = &r.steps[0].calls[0];
         assert_eq!(peek.call, "peek");
@@ -1425,7 +1520,7 @@ pub struct State {
         m.bus.ram[0x2_0004..0x2_0008].copy_from_slice(&7u32.to_le_bytes());
         // The step leaves [a0 + 4] to test.bump: sw v0, 4(a0) becomes a nop.
         m.bus.ram[0x1_011C..0x1_0120].copy_from_slice(&0u32.to_le_bytes());
-        record(&mut m, &plan, 1, &[], std::time::Duration::from_secs(60)).unwrap()
+        record(&mut m, &plan, 1, &[]).unwrap()
     }
 
     #[test]

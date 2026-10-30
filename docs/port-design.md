@@ -158,7 +158,7 @@ the specification it passes.
 mechanics/gt2.drivetrain/
   Cargo.toml, src/lib.rs   # header, typed state, inputs, params; step
   binding/                 # where this release keeps them: a plugin psx loads
-  traces/*.trace.jsonl
+  traces/<scenario>/<recording>.trace.jsonl
   NOTES.md                 # a few lines: what it does, quirks, what traces miss
 ```
 
@@ -212,9 +212,14 @@ R3000 specifics:
   the AI's, when they run the same routine, by the game's own pointer to
   it.
 
-**Capture** (`psx mechanic capture`) runs a recording with the binding and
-writes one trace line per step: the inputs and the state at begin, the
-state at end, and the world calls made in between. It reports:
+**Capture** (`psx mechanic capture --scenario S --recording R`) runs a
+scenario recording again, checking the glossary's quantities against it
+every tick, and writes for each bound mechanic one trace line per step: the
+inputs and the state at begin, the state at end, the world calls made in
+between, and the recording's tick. Because every trace comes from a
+recording the port is checked on, `port status` can say which of a
+mechanic's branch outcomes the port confirms (`docs/scenarios.md`). It
+reports:
 
 - **The read audit.** Every location the step read that the binding does
   not account for: a hidden input, a param's source, unbound state, or a

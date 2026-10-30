@@ -26,7 +26,8 @@ interfaces/<interface-id>/           the calls mechanics make to the world: a cr
 mechanics/<mechanic-id>/
   Cargo.toml, src/lib.rs             the mechanic: typed state, inputs, params; header; step
   binding/                           where this release keeps them: a plugin psx loads
-  traces/<name>.trace.jsonl          captured steps
+  traces/<scenario>/<recording>.trace.jsonl
+                                     captured steps, from a scenario recording's run
   NOTES.md                           a few lines: what it does, quirks, what traces miss
 replay/                              cargo test -p replay: every trace through its mechanic's step
 ```
@@ -420,11 +421,27 @@ psx_capture::export!(Walk);
 ### Capturing on the PlayStation
 
 `psx mechanic check [ID]` checks `interfaces/` and each mechanic's crate and
-traces. `psx mechanic capture ID --name NAME --from-state STATE --frames N
-[--input|--replay]` builds the binding, runs the game on psx's native core
-and writes `traces/NAME.trace.jsonl`. It captures only when the check finds
-nothing, the binding checks against the mechanic and its interfaces, and
-the media is the binding's image.
+traces. Every trace comes from a scenario recording (`docs/scenarios.md`):
+`psx mechanic capture [ID...] --scenario S --recording R` runs that
+recording again on psx's native core, from the scenario's state with the
+recording's input, and captures in that one run every mechanic named, or
+every mechanic with a binding. Each is written to
+`traces/S/R.trace.jsonl`.
+
+- **The run is the recording's.** The glossary's binding runs alongside, and
+  its quantities must equal the recording's at every tick; otherwise
+  nothing is written (`unlike_the_recording`, with the first differences).
+  A recording made from a state its chain no longer makes is refused: record
+  it again.
+- **From the initial moment.** Steps are captured from the end of the
+  recording's first tick, where the port's launcher starts, and each step
+  carries the tick it ran in.
+- **Per mechanic.** A mechanic captures only when the check finds nothing in
+  its files, the binding checks against the mechanic and its interfaces, and
+  the image is the binding's. Named mechanics must; with none named, one
+  that cannot is listed under `skipped` and the rest are captured. A
+  mechanic whose step never ran in the recording reports `no_steps` and
+  gets no trace.
 
 - **Reads at a PC** are taken just before the instruction there runs, with
   the registers as that instruction reads them. If an interrupt is taken
@@ -494,7 +511,7 @@ the media is the binding's image.
   - a store a call makes to the step's state outside its response;
   - a step that ends before its call returns.
 
-## 6. Traces: `traces/<name>.trace.jsonl`
+## 6. Traces: `traces/<scenario>/<recording>.trace.jsonl`
 
 UTF-8 JSON Lines. The first line is the header and each later line is one
 step. Lines hold only what changed, so a trace stays small; `Trace::expand`
@@ -506,8 +523,8 @@ fills the steps back in.
 {"format": "mechanic-trace", "format_version": 1,
  "mechanic": "croc.walk", "mechanic_version": 1, "fingerprint": "3f9a0c21d4e87b56",
  "source": {"kind": "captured", "platform": "psx", "image_sha256": "…"},
- "producer": {"name": "psx", "version": "0.8.0", "details": {"from_state": "…"}},
- "scenario": "walk_forward",
+ "producer": {"name": "psx", "version": "0.8.0", "details": {"chain": "notes/states/level_1_1_start.json", "from_state_sha256": "…"}},
+ "scenario": "level_1_1_ground", "recording": "walk_forward",
  "params": {"target": 35, "curve": [4096, 4096, 3072, 2048, 1024, 512, 256, 0]},
  "initial_state": {"speed": 0},
  "audit": {"unaccounted": [{"at": {"pc": "0x80043260", "address": "0x800A6000"}, "note": "4 bytes, every step"}]},
@@ -523,7 +540,8 @@ fills the steps back in.
   `image_sha256`. `synthetic` is for examples and tests.
 - **`producer.details`** is the producer's own: how to make the recording
   again.
-- **`scenario`** is the scenario the recording was made in, when there is one.
+- **`scenario`** and **`recording`** name the scenario recording whose run
+  the trace was captured in, as its path does.
 - **`params`** holds every param's value, so the trace stands alone.
 - **`initial_state`** is the state at the first step's start.
 - **`audit`** and **`coverage`** are standard sections, so stage checks can
@@ -553,8 +571,9 @@ fills the steps back in.
   values at this step's start. It is there only when something did.
 - **`state`** holds the fields the step changed, with their values at its
   end.
-- **`source_frame`** (the producer's field number) and **`note`** are
-  optional.
+- **`tick`** is the recording's tick the step ran in: its quantities are the
+  recording's at that tick's end. **`source_frame`** is the recording's
+  field, and **`note`** is optional.
 
 ### Conformance
 

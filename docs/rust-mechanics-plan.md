@@ -1,6 +1,6 @@
 # Plan: mechanics and bindings as Rust
 
-Status: agreed. R2 to R5 are done (section 11); R6 is next.
+Status: agreed. R2 to R6 are done (section 11); R7 is next.
 
 The mechanic formats (`docs/mechanics.md`) describe a step in TOML: typed
 fields in `mechanic.toml`, and where the PlayStation keeps them in
@@ -558,3 +558,13 @@ interfaces, Croc's fields and script variables, and the port.
 8. ~~**Steps in R5.**~~ Settled: `croc.ground-move` and `croc.tick` were
    converted with their types and bindings only; writing their steps, and
    replaying a step that makes calls, is pilot work after R7.
+9. ~~**Where capture over recordings lives.**~~ Settled (R6): `psx mechanic
+   capture [ID...] --scenario S --recording R` runs an existing recording
+   again, checking the glossary's quantities against it every tick, and
+   captures every bound mechanic (or those named) in that one run, from the
+   recording's initial moment, each step with its tick. `scenario record`
+   needs only the glossary, so scenarios are recorded before bindings
+   exist. Capture from any state is gone.
+10. ~~**Trace files.**~~ Settled (R6):
+   `mechanics/<id>/traces/<scenario>/<recording>.trace.jsonl`, mirroring
+   `scenarios/<id>/<name>.jsonl`; the header names both.

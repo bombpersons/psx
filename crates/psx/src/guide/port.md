@@ -25,14 +25,16 @@ its verdicts and the problems; plain=true is text for the person.
 - Confirm (person): the goal's list is not confirmed, or lost a feature.
   Until it is, only investigate and catalogue.
 - Fix: a verdict at HEAD fails; its failures name the scenario, tick and
-  quantity.
+  quantity, and port_status's diagnosis names the trace steps of that tick.
 - Capture: a feature's mechanics are not named or not captured (each
   reason listed): the catalogue entry lists them under mechanics, each
   mechanics/<id>/ checks clean (psx mechanic check): the mechanic's crate
   and its binding/, both Rust; a captured trace has a clear read audit; and
   NOTES.md names each branch no trace took both ways (docs/mechanics.md).
-  cargo test -p replay runs each mechanic's step against its traces. Every feature has mechanics; Capture comes before
-  Scenario and Implement.
+  Traces come from scenario recordings: mechanic_capture with scenario and
+  recording runs one again and captures every bound mechanic in it.
+  cargo test -p replay runs each mechanic's step against its traces. Every
+  feature has mechanics; Capture comes before Scenario and Implement.
 - Scenario: a feature's scenarios are not ready. It lists one, each has a
   captured recording (scenario_record) and passes scenario_check, the
   determinism check (docs/scenarios.md). The glossary binding's tick is the

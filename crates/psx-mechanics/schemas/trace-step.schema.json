@@ -121,6 +121,15 @@
       "format": "uint64",
       "minimum": 0,
       "type": "integer"
+    },
+    "tick": {
+      "description": "The tick of the scenario recording the step ran in (its values are\nthe recording's at that tick's end).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
     }
   },
   "required": [

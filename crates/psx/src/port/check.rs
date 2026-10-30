@@ -3,7 +3,7 @@
 //! against the port (the game's `tests/scenarios.rs`,
 //! `psx_bevy::scenario`) and writes their scenario verdicts.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -49,25 +49,7 @@ pub fn uncaptured(root: &Path, id: &str) -> Vec<String> {
             Some(_) => {}
         }
         if let Some(c) = &h.coverage {
-            // The ways this trace took each branch of its walk: both, unless
-            // missed says otherwise. A trace from before `branches` gives
-            // only what it missed.
-            let pc = |at: &serde_json::Map<String, Value>| {
-                at.get("pc").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase()
-            };
-            let mut took: BTreeMap<String, (bool, bool)> = c.branches.iter().map(|b| (pc(b), (true, true))).collect();
-            for m in &c.missed {
-                let ways = match m.note.as_deref() {
-                    Some("never fell through") => (true, false),
-                    Some("never taken") => (false, true),
-                    _ => (false, false),
-                };
-                took.insert(pc(&m.at), ways);
-            }
-            for (p, (t, n)) in took {
-                let w = ways.entry(p).or_insert((false, false));
-                *w = (w.0 || t, w.1 || n);
-            }
+            merge(&mut ways, &took(c));
         }
     }
     for (pc, (t, n)) in &ways {
@@ -86,6 +68,190 @@ pub fn uncaptured(root: &Path, id: &str) -> Vec<String> {
     }
     out.sort();
     out.dedup();
+    out
+}
+
+/// Branch PC -> whether a trace took it, and whether it fell through.
+type Ways = BTreeMap<String, (bool, bool)>;
+
+/// The ways a trace took each branch of its walk: both, unless missed says
+/// otherwise. A trace from before `branches` gives only what it missed.
+fn took(c: &psx_mechanics::trace::Coverage) -> Ways {
+    let pc = |at: &serde_json::Map<String, Value>| {
+        at.get("pc").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase()
+    };
+    let mut took: Ways = c.branches.iter().map(|b| (pc(b), (true, true))).collect();
+    for m in &c.missed {
+        let ways = match m.note.as_deref() {
+            Some("never fell through") => (true, false),
+            Some("never taken") => (false, true),
+            _ => (false, false),
+        };
+        took.insert(pc(&m.at), ways);
+    }
+    took
+}
+
+fn merge(into: &mut Ways, from: &Ways) {
+    for (p, (t, n)) in from {
+        let w = into.entry(p.clone()).or_insert((false, false));
+        *w = (w.0 || *t, w.1 || *n);
+    }
+}
+
+/// The branch outcomes (each way of each branch) in `ways`.
+fn outcomes(ways: &Ways) -> BTreeSet<(String, bool)> {
+    ways.iter()
+        .flat_map(|(pc, (t, n))| [(pc, true, *t), (pc, false, *n)])
+        .filter(|(_, _, took)| *took)
+        .map(|(pc, way, _)| (pc.clone(), way))
+        .collect()
+}
+
+/// A recording the port does not pass, by the last check: the first tick a
+/// quantity differs at (0: the initial moment) and that line, or only a line
+/// when it did not run that far.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Failing {
+    pub tick: Option<u64>,
+    pub first: String,
+}
+
+impl Failing {
+    fn describe(&self) -> String {
+        match self.tick {
+            Some(0) => "fails at its initial moment".into(),
+            Some(t) => format!("fails at tick {t}"),
+            None => format!("fails: {}", self.first),
+        }
+    }
+}
+
+/// How the port ran each scenario recording in the last check at `head`,
+/// keyed `<scenario>/<recording>`: None when it passed. None when no check
+/// ran at `head`.
+pub fn port_runs(root: &Path, head: Option<&str>) -> Option<BTreeMap<String, Option<Failing>>> {
+    let report = last_report(root, head).ok()?;
+    let tick_of = |l: &str| {
+        if l.starts_with("initial ") {
+            Some(0)
+        } else {
+            l.strip_prefix("tick ").and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok())
+        }
+    };
+    let mut out = BTreeMap::new();
+    for s in &report.scenarios {
+        for r in &s.recordings {
+            let failing = if let Some(p) = s.problems.first() {
+                Some(Failing { tick: None, first: p.clone() })
+            } else {
+                let first = r.failures.iter().filter(|l| tick_of(l).is_some()).min_by_key(|l| tick_of(l));
+                first.or(r.failures.first()).map(|l| Failing { tick: tick_of(l), first: l.clone() })
+            };
+            out.insert(format!("{}/{}", s.id, r.name), failing);
+        }
+    }
+    Some(out)
+}
+
+/// A mechanic's branch outcomes in the port: every way of every branch its
+/// captured traces took, and how many of them the traces of recordings the
+/// port passes took (`runs`, from `port_runs`; null without a check at
+/// HEAD). Each recording the port does not pass is listed with the
+/// outcomes only it holds of the unconfirmed ones.
+pub fn port_coverage(root: &Path, id: &str, runs: Option<&BTreeMap<String, Option<Failing>>>) -> Value {
+    let Ok(l) = workspace::load(root, id) else { return json!({"mechanic": id, "outcomes": 0}) };
+    let traces = workspace::traces(&l).unwrap_or_default();
+    let (mut reference, mut port) = (Ways::new(), Ways::new());
+    let mut failing: Vec<(String, String, Ways)> = Vec::new();
+    for (name, _, header) in &traces {
+        let Some(c) = header
+            .as_ref()
+            .filter(|h| h.source.kind == psx_mechanics::trace::SourceKind::Captured)
+            .and_then(|h| h.coverage.as_ref())
+        else {
+            continue;
+        };
+        let w = took(c);
+        merge(&mut reference, &w);
+        match runs.map(|r| r.get(name)) {
+            Some(Some(None)) => merge(&mut port, &w),
+            Some(Some(Some(f))) => failing.push((name.clone(), f.describe(), w)),
+            Some(None) => failing.push((name.clone(), "not run".into(), w)),
+            None => {}
+        }
+    }
+    let (all, confirmed) = (outcomes(&reference), outcomes(&port));
+    let mut out = json!({"mechanic": id, "outcomes": all.len()});
+    if runs.is_some() {
+        out["confirmed"] = json!(confirmed.len());
+        let unconfirmed: Vec<Value> = failing
+            .iter()
+            .map(|(name, why, w)| (name, why, outcomes(w).iter().filter(|o| !confirmed.contains(*o)).count()))
+            .filter(|(_, _, n)| *n > 0)
+            .map(|(name, why, n)| json!({"recording": name, "why": why, "outcomes": n}))
+            .collect();
+        out["unconfirmed"] = json!(unconfirmed);
+    }
+    out
+}
+
+/// The line `port status --plain` gives a mechanic's `port_coverage`.
+pub fn coverage_line(c: &Value) -> String {
+    let id = c["mechanic"].as_str().unwrap_or_default();
+    let all = c["outcomes"].as_u64().unwrap_or(0);
+    let Some(confirmed) = c["confirmed"].as_u64() else {
+        return format!("{id}: {all} branch outcomes in its traces; no psx port check at HEAD");
+    };
+    let mut s = format!("{id}: {confirmed} of {all} branch outcomes confirmed in the port");
+    if confirmed < all {
+        let list: Vec<String> = c["unconfirmed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|u| format!("{}, which {}", u["recording"].as_str().unwrap_or(""), u["why"].as_str().unwrap_or("")))
+            .collect();
+        let other = match all - confirmed {
+            1 => "the other one appears".to_string(),
+            n => format!("the other {n} appear"),
+        };
+        s.push_str(&format!("; {other} only in {}", list.join(" and ")));
+    }
+    s
+}
+
+/// The trace steps that ran in a recording's tick: what each mechanic's
+/// reference did there, one line per step.
+pub fn steps_at(root: &Path, recording: &str, tick: u64) -> Vec<String> {
+    let mut out = Vec::new();
+    for id in workspace::ids(root) {
+        let file = format!("mechanics/{id}/traces/{recording}.trace.jsonl");
+        let Ok(t) = std::fs::read_to_string(root.join(&file))
+            .map_err(|e| e.to_string())
+            .and_then(|t| psx_mechanics::Trace::parse(&t))
+        else {
+            continue;
+        };
+        let steps: Vec<String> = t.steps.iter().filter(|s| s.tick == Some(tick)).map(|s| s.step.to_string()).collect();
+        if !steps.is_empty() {
+            out.push(format!("{file}: step {}", steps.join(", ")));
+        }
+    }
+    out
+}
+
+/// For each of the feature's recordings the port fails at a tick, the trace
+/// steps of that tick.
+pub fn diagnosis(root: &Path, e: &Entry, runs: Option<&BTreeMap<String, Option<Failing>>>) -> Vec<Value> {
+    let Some(runs) = runs else { return Vec::new() };
+    let mut out = Vec::new();
+    for (name, f) in runs {
+        let Some(Failing { tick: Some(tick), first }) = f else { continue };
+        if !e.scenarios.iter().any(|s| name.split('/').next() == Some(s.as_str())) {
+            continue;
+        }
+        out.push(json!({"recording": name, "tick": tick, "first": first, "steps": steps_at(root, name, *tick)}));
+    }
     out
 }
 
@@ -164,12 +330,9 @@ fn scenario_failures(root: &Path, e: &Entry, report: &ScenarioReport) -> Vec<Str
 /// it ran at `head`: a launcher for each of its scenarios' kinds, and each
 /// quantity they compare observed. Empty when every one is.
 pub fn unimplemented(root: &Path, e: &Entry, head: Option<&str>) -> Vec<String> {
-    let last = std::fs::read(root.join(LAST)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-    let Some(last) = last.filter(|l| head.is_some() && l["commit"].as_str() == head) else {
-        return vec!["no psx port check at HEAD".into()];
-    };
-    let Ok(report) = serde_json::from_value::<ScenarioReport>(last["scenarios"].clone()) else {
-        return vec!["the last psx port check ran no scenarios".into()];
+    let report = match last_report(root, head) {
+        Ok(r) => r,
+        Err(why) => return vec![why.into()],
     };
     let mut out = Vec::new();
     for id in &e.scenarios {
@@ -185,6 +348,16 @@ pub fn unimplemented(root: &Path, e: &Entry, head: Option<&str>) -> Vec<String> 
         }
     }
     out
+}
+
+/// The scenario report of the last check, when it ran at `head`.
+fn last_report(root: &Path, head: Option<&str>) -> Result<ScenarioReport, &'static str> {
+    let last = std::fs::read(root.join(LAST)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let Some(last) = last.filter(|l| head.is_some() && l["commit"].as_str() == head) else {
+        return Err("no psx port check at HEAD");
+    };
+    serde_json::from_value::<ScenarioReport>(last["scenarios"].clone())
+        .map_err(|_| "the last psx port check ran no scenarios")
 }
 
 /// `.psx/port/last.json`: the last check's scenario report and the commit
@@ -292,9 +465,9 @@ mod tests {
 
     const MECHANIC: &str = "//! Walk\n//!\n//! s\n\npub const ID: &str = \"demo.walk\";\npub const VERSION: u32 = 1;\npub const RATE: &str = \"tick\";\npub const RATE_HZ: u32 = 25;\n\npub struct State {\n    pub speed: i32,\n}\n";
 
-    fn trace(audit: &str, missed: &str) -> String {
+    fn trace(recording: &str, audit: &str, missed: &str) -> String {
         format!(
-            "{{\"format\":\"mechanic-trace\",\"format_version\":1,\"mechanic\":\"demo.walk\",\"mechanic_version\":1,\"source\":{{\"kind\":\"captured\",\"platform\":\"psx\",\"image_sha256\":\"00\"}},\"producer\":{{\"name\":\"psx\",\"version\":\"0\"}},\"params\":{{}},\"initial_state\":{{\"speed\":0}}{audit},\"coverage\":{{\"reached\":3,\"total\":4,\"missed\":[{missed}],\"branches\":[{{\"pc\":\"0x800432a8\"}},{{\"pc\":\"0x800432c0\"}}]}}}}\n{{\"step\":0,\"state\":{{\"speed\":1}}}}\n"
+            "{{\"format\":\"mechanic-trace\",\"format_version\":1,\"mechanic\":\"demo.walk\",\"mechanic_version\":1,\"source\":{{\"kind\":\"captured\",\"platform\":\"psx\",\"image_sha256\":\"00\"}},\"producer\":{{\"name\":\"psx\",\"version\":\"0\"}},\"scenario\":\"walk\",\"recording\":\"{recording}\",\"params\":{{}},\"initial_state\":{{\"speed\":0}}{audit},\"coverage\":{{\"reached\":3,\"total\":4,\"missed\":[{missed}],\"branches\":[{{\"pc\":\"0x800432a8\"}},{{\"pc\":\"0x800432c0\"}}]}}}}\n{{\"step\":0,\"state\":{{\"speed\":1}}}}\n"
         )
     }
 
@@ -302,7 +475,7 @@ mod tests {
     fn a_mechanic_is_captured_once_its_audit_is_clear_and_its_missed_branches_are_listed() {
         let (d, _) = workspace("description = \"x\"\nfeatures = []\n", &[]);
         let m = d.0.join("mechanics/demo.walk");
-        std::fs::create_dir_all(m.join("traces")).unwrap();
+        std::fs::create_dir_all(m.join("traces/walk")).unwrap();
         std::fs::create_dir_all(m.join("src")).unwrap();
         std::fs::write(m.join("Cargo.toml"), "[package]\nname = \"demo-walk\"\n").unwrap();
         std::fs::write(m.join("src/lib.rs"), MECHANIC).unwrap();
@@ -317,12 +490,12 @@ mod tests {
         // The binding's own checks are capture's (B1); a trace is what this adds.
         let missed = "{\"at\":{\"pc\":\"0x800432a8\"},\"note\":\"never taken\"}";
         std::fs::write(
-            m.join("traces/a.trace.jsonl"),
-            trace(",\"audit\":{\"unaccounted\":[{\"at\":{\"pc\":\"0x80043260\"}}]}", missed),
+            m.join("traces/walk/a.trace.jsonl"),
+            trace("a", ",\"audit\":{\"unaccounted\":[{\"at\":{\"pc\":\"0x80043260\"}}]}", missed),
         )
         .unwrap();
         let u = uncaptured(&d.0, "demo.walk");
-        assert!(u.contains(&"mechanics/demo.walk/traces/a.trace.jsonl: the read audit lists 1 reads the binding neither binds nor explains".to_string()), "{u:?}");
+        assert!(u.contains(&"mechanics/demo.walk/traces/walk/a.trace.jsonl: the read audit lists 1 reads the binding neither binds nor explains".to_string()), "{u:?}");
         assert!(
             u.contains(
                 &"mechanics/demo.walk/NOTES.md: does not list the branch at 0x800432a8, which no trace took"
@@ -330,13 +503,64 @@ mod tests {
             ),
             "{u:?}"
         );
-        std::fs::write(m.join("traces/a.trace.jsonl"), trace(",\"audit\":{\"unaccounted\":[]}", missed)).unwrap();
+        std::fs::write(m.join("traces/walk/a.trace.jsonl"), trace("a", ",\"audit\":{\"unaccounted\":[]}", missed))
+            .unwrap();
         std::fs::write(m.join("NOTES.md"), "Never taken: 0x800432A8, the slope branch.\n").unwrap();
         assert_eq!(uncaptured(&d.0, "demo.walk"), ["mechanics/demo.walk/binding: not written yet"]);
         // A branch counts once some trace took each way of it.
         std::fs::write(m.join("NOTES.md"), "").unwrap();
         let other = "{\"at\":{\"pc\":\"0x800432a8\"},\"note\":\"never fell through\"}";
-        std::fs::write(m.join("traces/b.trace.jsonl"), trace(",\"audit\":{\"unaccounted\":[]}", other)).unwrap();
+        std::fs::write(m.join("traces/walk/b.trace.jsonl"), trace("b", ",\"audit\":{\"unaccounted\":[]}", other))
+            .unwrap();
         assert_eq!(uncaptured(&d.0, "demo.walk"), ["mechanics/demo.walk/binding: not written yet"]);
+        // A trace belongs to the recording its path names.
+        std::fs::write(m.join("traces/walk/c.trace.jsonl"), trace("b", ",\"audit\":{\"unaccounted\":[]}", other))
+            .unwrap();
+        std::fs::write(m.join("traces/d.trace.jsonl"), trace("d", ",\"audit\":{\"unaccounted\":[]}", other)).unwrap();
+        assert_eq!(
+            uncaptured(&d.0, "demo.walk"),
+            [
+                "mechanics/demo.walk/binding: not written yet",
+                "mechanics/demo.walk/traces/d.trace.jsonl: not captured from a scenario recording: psx mechanic capture --scenario S --recording R writes traces/S/R.trace.jsonl",
+                "mechanics/demo.walk/traces/walk/c.trace.jsonl: its header names scenario \"walk\" and recording \"b\", its path walk/c",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_port_confirms_the_branch_outcomes_of_the_recordings_it_passes() {
+        let (d, _) = workspace("description = \"x\"\nfeatures = []\n", &[]);
+        let root = d.0.as_path();
+        let m = root.join("mechanics/demo.walk");
+        std::fs::create_dir_all(m.join("traces/walk")).unwrap();
+        std::fs::create_dir_all(m.join("src")).unwrap();
+        std::fs::write(m.join("Cargo.toml"), "[package]\nname = \"demo-walk\"\n").unwrap();
+        std::fs::write(m.join("src/lib.rs"), MECHANIC).unwrap();
+        let ticked = |recording: &str, note: &str| {
+            let missed = format!("{{\"at\":{{\"pc\":\"0x800432a8\"}},\"note\":\"{note}\"}}");
+            trace(recording, ",\"audit\":{\"unaccounted\":[]}", &missed).replace(
+                "{\"step\":0,\"state\":{\"speed\":1}}",
+                "{\"step\":0,\"state\":{\"speed\":1},\"tick\":1}\n{\"step\":1,\"state\":{\"speed\":2},\"tick\":2}",
+            )
+        };
+        // a never takes the branch at 0x800432a8; b never falls through it.
+        std::fs::write(m.join("traces/walk/a.trace.jsonl"), ticked("a", "never taken")).unwrap();
+        std::fs::write(m.join("traces/walk/b.trace.jsonl"), ticked("b", "never fell through")).unwrap();
+        assert_eq!(port_coverage(root, "demo.walk", None), json!({"mechanic": "demo.walk", "outcomes": 4}));
+        let last = json!({"commit": "abc", "scenarios": {"scenarios": [{"id": "walk", "recordings": [
+            {"name": "a", "captured": true, "failures": []},
+            {"name": "b", "captured": true, "failures": ["tick 2 x: expected 1, got 2"]},
+        ]}]}});
+        std::fs::create_dir_all(root.join(".psx/port")).unwrap();
+        std::fs::write(root.join(LAST), last.to_string()).unwrap();
+        assert_eq!(port_runs(root, Some("def")), None);
+        let runs = port_runs(root, Some("abc")).unwrap();
+        assert_eq!(runs["walk/a"], None);
+        let c = port_coverage(root, "demo.walk", Some(&runs));
+        assert_eq!(
+            coverage_line(&c),
+            "demo.walk: 3 of 4 branch outcomes confirmed in the port; the other one appears only in walk/b, which fails at tick 2"
+        );
+        assert_eq!(steps_at(root, "walk/b", 2), ["mechanics/demo.walk/traces/walk/b.trace.jsonl: step 1"]);
     }
 }

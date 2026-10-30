@@ -1,5 +1,5 @@
-//! `mechanics/<id>/traces/*.trace.jsonl`: a mechanic's steps, captured from
-//! the original. The first line is the header; each later line is one step
+//! `mechanics/<id>/traces/<scenario>/<recording>.trace.jsonl`: a mechanic's
+//! steps, captured from the original in the run of a scenario recording. The first line is the header; each later line is one step
 //! and holds only what changed.
 
 use std::collections::BTreeMap;
@@ -32,6 +32,9 @@ pub struct Header {
     /// The scenario the recording was made in, when there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scenario: Option<String>,
+    /// The scenario recording whose run the trace was captured in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<String>,
     /// Every param's value, so the trace stands alone.
     pub params: Values,
     /// The state at the first step's start.
@@ -134,6 +137,10 @@ pub struct Step {
     /// The producer's frame or field number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_frame: Option<u64>,
+    /// The tick of the scenario recording the step ran in (its values are
+    /// the recording's at that tick's end).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -150,6 +157,28 @@ pub struct Call {
     pub response: Option<Values>,
 }
 
+/// The trace files in a mechanic's `traces/` directory, sorted, each with its
+/// name: `<scenario>/<recording>`, or a file's bare name when it lies in
+/// `traces/` itself.
+pub fn files(dir: &std::path::Path) -> Vec<(String, std::path::PathBuf)> {
+    let list = |d: &std::path::Path| -> Vec<std::path::PathBuf> {
+        let mut v: Vec<_> = std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).collect();
+        v.sort();
+        v
+    };
+    let stem = |p: &std::path::Path| p.file_name()?.to_str()?.strip_suffix(".trace.jsonl").map(str::to_string);
+    let mut out = Vec::new();
+    for p in list(dir) {
+        if p.is_dir() {
+            let scenario = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            out.extend(list(&p).into_iter().filter_map(|f| Some((format!("{scenario}/{}", stem(&f)?), f))));
+        } else if let Some(name) = stem(&p) {
+            out.push((name, p));
+        }
+    }
+    out
+}
+
 /// One step with everything filled in.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Full {
@@ -162,6 +191,7 @@ pub struct Full {
     /// Whether code outside the step changed the state since the last step.
     pub external: bool,
     pub source_frame: Option<u64>,
+    pub tick: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -209,6 +239,7 @@ impl Trace {
                 state_before: (!before.is_empty()).then_some(before),
                 state: changed(&f.before, &f.after),
                 source_frame: f.source_frame,
+                tick: f.tick,
                 note: None,
             };
             steps.push(s);
@@ -236,6 +267,7 @@ impl Trace {
                 after: state.clone(),
                 external: s.state_before.is_some(),
                 source_frame: s.source_frame,
+                tick: s.tick,
             });
         }
         out

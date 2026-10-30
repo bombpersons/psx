@@ -202,21 +202,32 @@ pub fn load(root: &Path, id: &str) -> crate::Result<Loaded> {
 /// A trace's name, its problems and, when it parses, its header.
 pub type Checked = (String, Vec<String>, Option<Header>);
 
-/// The traces in `mechanics/<id>/traces/`.
+/// The traces in `mechanics/<id>/traces/<scenario>/`, named
+/// `<scenario>/<recording>`.
 pub fn traces(l: &Loaded) -> crate::Result<Vec<Checked>> {
-    let dir = l.dir.join("traces");
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
-    paths.sort();
     let mut out = Vec::new();
-    for p in paths {
-        let Some(name) = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".trace.jsonl")) else {
-            continue;
-        };
-        let (problems, header) = match Trace::parse(&read(&p)?) {
+    for (name, p) in psx_mechanics::trace::files(&l.dir.join("traces")) {
+        let (mut problems, header) = match Trace::parse(&read(&p)?) {
             Err(e) => (vec![e], None),
             Ok(t) => (t.check(&l.mechanic, &l.interfaces), Some(t.header)),
         };
-        out.push((name.to_string(), problems, header));
+        match name.split_once('/') {
+            None => problems.push(
+                "not captured from a scenario recording: psx mechanic capture --scenario S --recording R writes traces/S/R.trace.jsonl".into(),
+            ),
+            Some((s, r)) => {
+                if let Some(h) = header.as_ref().filter(|h| {
+                    h.scenario.as_deref() != Some(s) || h.recording.as_deref() != Some(r)
+                }) {
+                    problems.push(format!(
+                        "its header names scenario {:?} and recording {:?}, its path {s}/{r}",
+                        h.scenario.as_deref().unwrap_or_default(),
+                        h.recording.as_deref().unwrap_or_default()
+                    ));
+                }
+            }
+        }
+        out.push((name, problems, header));
     }
     Ok(out)
 }

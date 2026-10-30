@@ -237,8 +237,9 @@ enum MechanicAction {
     /// Check the interfaces, and a mechanic's (or every mechanic's) crate, binding and
     /// traces.
     Check(mechanic::MechanicCheckArgs),
-    /// Run the game from a state with input, bracket the mechanic's step as its binding
-    /// says, and write traces/<NAME>.trace.jsonl: one line per step.
+    /// Run a scenario recording again and capture, in that run, each mechanic's step as
+    /// its binding brackets it: traces/<SCENARIO>/<RECORDING>.trace.jsonl, one line per
+    /// step.
     Capture(Box<mechanic::MechanicCaptureArgs>),
 }
 

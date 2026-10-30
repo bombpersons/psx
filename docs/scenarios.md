@@ -180,6 +180,16 @@ digital buttons only.
   compared quantity's type changed must be recorded again: the facts say
   so. A changed unit or description does not count.
 
+### Mechanics captured from a recording
+
+A recording is also where mechanics are captured. `psx mechanic capture
+--scenario ID --recording NAME` runs the recording again, checking the
+glossary's quantities against it at every tick, and records every bound
+mechanic's steps in that run, each with the tick it ran in
+(`docs/mechanics.md`, "Capturing on the PlayStation"). A recording needs
+only the glossary: record scenarios first, and capture from them whenever a
+binding is written or changed.
+
 ## 4. The determinism check: `psx scenario check [ID…]`
 
 The check reaches the scenario a second way and records each captured
@@ -262,6 +272,27 @@ Each quantity's first tick out of tolerance is reported.
   launcher for each of the feature's scenario kinds, and each quantity they
   compare observed in a scenario the port launched.
 - **Stage 4 (verified)** needs the scenario verdict to pass at HEAD.
+
+### What the port confirms of the mechanics
+
+Every trace comes from a scenario recording, so a port that passes a
+recording also went through every branch outcome (each way of each branch)
+that recording's traces took. `port status` reports, for each mechanic of a
+feature, its outcomes over all its traces and how many of them the traces
+of recordings the port passes took, by the last `port check` at HEAD:
+
+```
+croc.turn: 41 of 44 branch outcomes confirmed in the port; the other 3 appear only in level_1_1_jump/slope_jump, which fails at tick 812
+```
+
+For each recording the port fails at a tick, its `diagnosis` names the
+trace steps of that tick: what the reference mechanics did there, with
+their inputs and state, which `cargo test -p replay` runs. That points at
+the rule the port got wrong.
+
+A branch outcome a recording takes may not reach a compared quantity
+before it ends, so a port that took the other way could still pass:
+compare more quantities, record longer routes, and hold routes out.
 
 ## 7. Not yet
 

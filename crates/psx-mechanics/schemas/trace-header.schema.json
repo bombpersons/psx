@@ -233,6 +233,13 @@
     "producer": {
       "$ref": "#/$defs/Producer"
     },
+    "recording": {
+      "description": "The scenario recording whose run the trace was captured in.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "scenario": {
       "description": "The scenario the recording was made in, when there is one.",
       "type": [

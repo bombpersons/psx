@@ -67,20 +67,11 @@ pub fn run(root: &Path, entries: &[Entry]) {
                 continue;
             }
         };
-        let dir = root.join(e.dir).join("traces");
-        let mut traces: Vec<_> = std::fs::read_dir(&dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|t| t.path())
-            .filter(|p| p.to_string_lossy().ends_with(".trace.jsonl"))
-            .collect();
-        traces.sort();
+        let traces = crate::trace::files(&root.join(e.dir).join("traces"));
         if traces.is_empty() {
             println!("{}: no traces", e.dir);
         }
-        for path in traces {
-            let name = path.file_name().unwrap().to_string_lossy().trim_end_matches(".trace.jsonl").to_string();
+        for (name, path) in traces {
             let result = std::fs::read_to_string(&path)
                 .map_err(|err| err.to_string())
                 .and_then(|text| Trace::parse(&text))
