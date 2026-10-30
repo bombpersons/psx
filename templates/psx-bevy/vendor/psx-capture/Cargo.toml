@@ -1,0 +1,15 @@
+# Owned by the psx template (`psx template update` replaces it): a copy of the
+# psx toolkit's crates/psx-capture, the API a mechanic's binding is written
+# against. Fix bugs upstream, not here. See ../README.md.
+[package]
+name = "psx-capture"
+version = "0.8.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+description = "The API a mechanic's binding is written against: a plugin psx loads to read the step from the machine"
+publish = false
+
+# No dependencies: a binding builds in seconds, and the boundary with psx is
+# a few C functions (docs/mechanics.md, "The binding").
+[dependencies]

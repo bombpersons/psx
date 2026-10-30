@@ -1,5 +1,6 @@
 //! `psx mechanic capture`: run the game from a state on the native core,
-//! bracket the mechanic's step as `binding.toml` says, and write one trace
+//! bracket the mechanic's step as its binding says (`binding.toml`, or a
+//! Rust binding built and loaded by `plugin`), and write one trace
 //! line per step (docs/mechanics.md, section 6).
 //!
 //! Every instruction is stepped singly. Before an instruction at a PC the
@@ -21,6 +22,7 @@ use psx_mechanics::{Interface, Mechanic, Trace, Type, Value, Values};
 use serde_json::{Value as Json, json};
 
 use super::audit::{Accounts, Tracker};
+use super::plugin::{self, Plugin, Reads};
 use super::workspace::{self, Loaded, Resident};
 use super::{Binding, CallSite, End, EndMode, Load, Location, Psx, Reg, in_memory};
 use crate::Error;
@@ -91,6 +93,21 @@ pub fn regs(m: &Machine) -> Regs {
     r
 }
 
+/// `n` (at least 1) bytes at `a`, in main RAM or the scratchpad.
+pub(crate) fn memory(m: &Machine, a: u32, n: u32) -> Result<Vec<u8>, String> {
+    let last = a.wrapping_add(n - 1);
+    if !in_memory(a) || !in_memory(last) || (a >= 0x1F80_0000) != (last >= 0x1F80_0000) {
+        return Err(format!("{n} bytes at {a:#010x}: not in main RAM or the scratchpad"));
+    }
+    let bus = &m.bus;
+    Ok(if (0x1F80_0000..0x1F80_0400).contains(&a) {
+        bus.scratch[(a - 0x1F80_0000) as usize..][..n as usize].to_vec()
+    } else {
+        let o = (a & 0x1F_FFFF) as usize;
+        bus.ram.get(o..o + n as usize).ok_or(format!("{n} bytes at {a:#010x}: past the end of RAM"))?.to_vec()
+    })
+}
+
 /// Where reads are taken at one moment: memory and the GTE now, registers
 /// now and as latched at the step's begin, and an inline read's load.
 pub(crate) struct View<'a> {
@@ -102,17 +119,7 @@ pub(crate) struct View<'a> {
 
 impl View<'_> {
     fn memory(&self, a: u32, n: u32) -> Result<Vec<u8>, String> {
-        let last = a.wrapping_add(n - 1);
-        if !in_memory(a) || !in_memory(last) || (a >= 0x1F80_0000) != (last >= 0x1F80_0000) {
-            return Err(format!("{n} bytes at {a:#010x}: not in main RAM or the scratchpad"));
-        }
-        let bus = &self.m.bus;
-        Ok(if (0x1F80_0000..0x1F80_0400).contains(&a) {
-            bus.scratch[(a - 0x1F80_0000) as usize..][..n as usize].to_vec()
-        } else {
-            let o = (a & 0x1F_FFFF) as usize;
-            bus.ram.get(o..o + n as usize).ok_or(format!("{n} bytes at {a:#010x}: past the end of RAM"))?.to_vec()
-        })
+        memory(self.m, a, n)
     }
 
     fn fetch(&self, at: &Location, offset: u32, n: u32) -> Result<Vec<u8>, String> {
@@ -268,8 +275,25 @@ pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool,
         return Err(Error::invalid("the mechanic's files have problems; psx mechanic check lists them")
             .with("problems", json!(l.problems)));
     }
-    let Loaded { mechanic, binding, interfaces, dir, .. } = l;
-    let b = binding.expect("checked");
+    let Loaded { mechanic, binding, plugin, interfaces, dir, .. } = l;
+    // A binding written as Rust is built and loaded, and describes itself.
+    let plugin = match &plugin {
+        Some(crate_dir) => Some(Plugin::load(&plugin::build(root, crate_dir, &a.id)?)?),
+        None => None,
+    };
+    let b = match (&plugin, binding) {
+        (Some(p), _) => {
+            let b = p.binding(&mechanic)?;
+            let problems = workspace::overlay_problems(root, &b);
+            if !problems.is_empty() {
+                return Err(
+                    Error::invalid("the Rust binding's overlays have problems").with("problems", json!(problems))
+                );
+            }
+            b
+        }
+        (None, b) => b.expect("checked"),
+    };
     let out = dir.join("traces").join(format!("{}.trace.jsonl", a.name));
     if out.exists() && !a.replace {
         return Err(Error::invalid(format!("{}: exists; replace=true writes over it", rel(root, &out))));
@@ -279,6 +303,11 @@ pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool,
     for r in &mechanic.uses {
         let id = r.split('@').next().unwrap_or_default();
         let u = workspace::load(root, id)?;
+        if u.plugin.is_some() {
+            return Err(Error::invalid(format!(
+                "uses {r}: its binding is written as Rust, which a using mechanic's capture cannot record yet"
+            )));
+        }
         let unobserved = u
             .binding
             .as_ref()
@@ -327,7 +356,10 @@ pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool,
     let events =
         crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64).map_err(Error::invalid)?;
 
-    let plan = Plan::new(&mechanic, &b, &interfaces, &used, &residents);
+    let mut plan = Plan::new(&mechanic, &b, &interfaces, &used, &residents);
+    if let Some(p) = &plugin {
+        plan = plan.with_plugin(p, &mechanic);
+    }
     let deadline = std::time::Duration::from_secs(a.timeout);
     let Recorded { steps, params, refusals, timed_out, summary, audit, coverage, analysis } =
         record(&mut m, &plan, a.frames, &events, deadline)?;
@@ -347,7 +379,7 @@ pub fn capture(ctx: &crate::Ctx, a: MechanicCaptureArgs) -> crate::Result<(bool,
         return Ok((
             false,
             json!({"status": "no_steps", "capture": summary, "written": false,
-                   "how": "capture.begin never ran with its filters matching: check its pc, overlay and filters, and that the recording reaches the mechanic"}),
+                   "how": "capture.begin never ran with its filters matching (or is_step saying yes): check its pc, overlay and filters or is_step, and that the recording reaches the mechanic"}),
         ));
     }
     let header = Header {
@@ -418,6 +450,17 @@ pub(crate) struct Plan<'a> {
     /// What the read audit takes as accounted for.
     accounts: Accounts<'a>,
     begin: u32,
+    /// A binding written as Rust, which reads the fields itself, and the
+    /// mechanic's types its answers are checked against.
+    plugin: Option<(&'a Plugin, psx_mechanics::mechanic::Types)>,
+}
+
+/// What a Rust binding is asked for.
+#[derive(Clone, Copy)]
+enum What {
+    State,
+    Inputs,
+    Params,
 }
 
 /// The physical bytes the fields' memory parts hold, with `regs` as
@@ -616,6 +659,7 @@ impl<'a> Plan<'a> {
                 End::At(p) => Some(p.pc),
                 End::Mode(_) => None,
             },
+            rust: false,
         };
         Plan {
             state,
@@ -630,7 +674,64 @@ impl<'a> Plan<'a> {
             end: &b.capture.end,
             accounts,
             begin: b.capture.begin.pc,
+            plugin: None,
         }
+    }
+
+    /// The plan for a binding written as Rust: `b` is what `p` describes.
+    pub(crate) fn with_plugin(mut self, p: &'a Plugin, mechanic: &Mechanic) -> Plan<'a> {
+        self.accounts.rust = true;
+        self.plugin = Some((p, mechanic.types(&mut Vec::new())));
+        self
+    }
+
+    /// Whether the call at the begin PC is the step: the Rust binding's
+    /// `is_step`, and what it read to say so.
+    fn is_step(&self, view: &View, step: u64, refusals: &mut Refusals) -> (bool, Reads) {
+        let Some((p, _)) = &self.plugin else { return (true, Reads::default()) };
+        let (answer, reads) = p.call(psx_capture::abi::IS_STEP, view.m, view.now, view.latched);
+        match answer.and_then(|t| plugin::yes(&t)) {
+            Ok(yes) => (yes, reads),
+            Err(e) => {
+                refusals.push(step, "begin", "is_step".into(), e);
+                (false, reads)
+            }
+        }
+    }
+
+    /// The state, the inputs or the params read with `view`: where the
+    /// binding's fields locate them, or as the Rust binding reads them, with
+    /// what it read. A TOML binding's data params are read apart.
+    fn read(&self, what: What, view: &View, when: &str, step: u64, refusals: &mut Refusals) -> (Values, Reads) {
+        let (label, fields, q) = match what {
+            What::State => ("state", &self.state, psx_capture::abi::STATE),
+            What::Inputs => ("inputs", &self.inputs, psx_capture::abi::INPUTS),
+            What::Params => ("params", &self.param_reads, psx_capture::abi::PARAMS),
+        };
+        let Some((p, types)) = &self.plugin else {
+            return (read_all(fields, view, label, when, step, refusals), Reads::default());
+        };
+        let types = match what {
+            What::State => &types.state,
+            What::Inputs => &types.inputs,
+            What::Params => &types.params,
+        };
+        let (answer, reads) = p.call(q, view.m, view.now, view.latched);
+        let values = match answer.map(|t| plugin::values(&t, types)) {
+            Ok(Ok(v)) => v,
+            Ok(Err(problems)) => {
+                for (field, e) in problems {
+                    let f = if field.is_empty() { label.to_string() } else { format!("{label}.{field}") };
+                    refusals.push(step, when, f, e);
+                }
+                Values::new()
+            }
+            Err(e) => {
+                refusals.push(step, when, label.into(), e);
+                Values::new()
+            }
+        };
+        (values, reads)
     }
 }
 
@@ -655,7 +756,7 @@ pub(crate) fn record(
     events: &[crate::replay::Input],
     deadline: std::time::Duration,
 ) -> crate::Result<Recorded> {
-    let Plan { state, inputs, param_reads, param_data, specs, sites, filters, end, .. } = plan;
+    let Plan { state, param_data, specs, sites, filters, end, .. } = plan;
     let mut params = plan.params.clone();
     let started = Instant::now();
     let start_frame = m.bus.frames;
@@ -678,7 +779,7 @@ pub(crate) fn record(
                 let o = open.take().unwrap();
                 let now = regs(m);
                 let view = View { m, now: &now, latched: &o.latched, load: None };
-                let after = read_all(state, &view, "state", "end", steps.len() as u64, &mut refusals);
+                let after = plan.read(What::State, &view, "end", steps.len() as u64, &mut refusals).0;
                 close_with(o, after, &mut steps, specs, &mut refusals, &mut tracker);
             }
             while next_event < events.len() && events[next_event].frame <= rel {
@@ -741,21 +842,29 @@ pub(crate) fn record(
         let ends = here.iter().any(|s| matches!(s, Site::End)) && open.is_some() && !pending;
         let begins = here.iter().any(|s| matches!(s, Site::Begin)) && !pending;
         let begins = begins && filters.iter().all(|&(r, v)| now[r] == v);
+        // A Rust binding chooses the step, with the registers as they are now.
+        let (begins, chose) = if begins {
+            let view = View { m, now: &now, latched: &now, load: None };
+            let k = n + (open.is_some() && !ends) as u64;
+            plan.is_step(&view, k, &mut tentative)
+        } else {
+            (false, Reads::default())
+        };
         if here.iter().any(|s| matches!(s, Site::Begin)) && !begins && !pending {
             begins_filtered += 1;
         }
         let after = ends.then(|| {
             let o = open.as_ref().unwrap();
             let view = View { m, now: &now, latched: &o.latched, load: None };
-            read_all(state, &view, "state", "end", n, &mut tentative)
+            plan.read(What::State, &view, "end", n, &mut tentative).0
         });
         let opening = begins.then(|| {
             let view = View { m, now: &now, latched: &now, load: None };
             let k = n + (open.is_some() && !ends) as u64;
             let first = steps.is_empty() && open.is_none();
             let p = first.then(|| {
-                let mut ranges = Vec::new();
-                let mut p = read_all(param_reads, &view, "params", "begin", k, &mut tentative);
+                let (mut p, read) = plan.read(What::Params, &view, "begin", k, &mut tentative);
+                let mut ranges: Vec<(u32, u32)> = read.memory.iter().map(|&(s, e)| (s, e - s)).collect();
                 for (name, d, ty) in param_data {
                     match view.data(d, ty) {
                         Ok((v, r)) => {
@@ -767,8 +876,11 @@ pub(crate) fn record(
                 }
                 (p, ranges)
             });
-            let i = read_all(inputs, &view, "inputs", "begin", k, &mut tentative);
-            let s = read_all(state, &view, "state", "begin", k, &mut tentative);
+            let (i, read_inputs) = plan.read(What::Inputs, &view, "begin", k, &mut tentative);
+            let (s, read_state) = plan.read(What::State, &view, "begin", k, &mut tentative);
+            let mut read = chose.clone();
+            read.extend(&read_inputs);
+            read.extend(&read_state);
             let bytes: Vec<(u32, u32, String)> = state
                 .iter()
                 .flat_map(|(name, r, _)| {
@@ -783,7 +895,7 @@ pub(crate) fn record(
                     })
                 })
                 .collect();
-            (p, i, s, bytes)
+            (p, i, s, bytes, read)
         });
         // Entries: a call starts (inline reads are taken after the load).
         let entry = here.iter().find_map(|s| match s {
@@ -833,7 +945,7 @@ pub(crate) fn record(
             // The state as read before the instruction at the end PC ran.
             close_with(open.take().unwrap(), after, &mut steps, specs, &mut refusals, &mut tracker);
         }
-        if let Some((p, i, s, bytes)) = opening {
+        if let Some((p, i, s, bytes, read)) = opening {
             if let Some(o) = open.take() {
                 if **end != End::Mode(EndMode::NextBegin) {
                     return Err(Error::invalid(format!(
@@ -859,6 +971,7 @@ pub(crate) fn record(
                 state_bytes: bytes,
             });
             tracker.open(m, &now);
+            tracker.binding_reads(&read);
             if let Some(ranges) = data {
                 tracker.account(&ranges);
             }

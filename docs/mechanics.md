@@ -43,6 +43,9 @@ mechanics/<mechanic-id>/
 - **A mechanic written as Rust.** In place of `mechanic.toml`, the directory
   may hold a crate (section 3a). Mechanics are moving to that form
   (`docs/rust-mechanics-plan.md`); a directory holds one or the other.
+- **A binding written as Rust.** In place of `binding.toml`, the directory
+  may hold a binding crate in `binding/` (section 5a); again one or the
+  other.
 
 ## 2. Value types
 
@@ -496,6 +499,103 @@ when the check finds nothing, and when the media is the binding's image.
   - a stored integer the map does not name;
   - a store to the state while a call is under way;
   - a step that ends before its call returns.
+
+## 5a. A binding written as Rust
+
+In place of `binding.toml`, `mechanics/<id>/binding/` may hold a crate: a
+small program against `psx-capture`, the vendored API, that says where the
+step is and reads the fields itself. `psx mechanic capture` builds it with
+cargo, loads it as a plugin and asks it questions at the step's hooks; the
+emulator, the read audit, coverage, external changes, refusals and the trace
+stay psx's. For the same recordings its traces are the TOML binding's.
+
+```toml
+# mechanics/croc.turn/binding/Cargo.toml (a member of the workspace)
+[package]
+name = "croc-turn-binding"        # the mechanic's id, dots as hyphens, then -binding
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+croc-turn = { path = ".." }
+psx-capture = { workspace = true }
+
+[build-dependencies]
+psx-mechanics = { workspace = true }
+```
+
+```rust
+// build.rs: the glue between the mechanic's structs and the trace
+fn main() {
+    psx_mechanics::rust::write_glue(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+}
+```
+
+```rust
+// src/lib.rs
+use croc_turn::{Inputs, State};
+use psx_capture::prelude::*;
+
+mod glue {
+    include!(concat!(env!("OUT_DIR"), "/glue.rs"));
+}
+
+struct Turn;
+
+impl Binding for Turn {
+    type Mechanic = glue::Mechanic;
+    const TITLE: &str = "Croc - Legend of the Gobbos (Europe) SLES-00593";
+    const IMAGE_SHA256: &str = "b30a07f5…";
+
+    fn bracket(&self, b: &mut Bracket) {
+        b.begin(0x8004_425C).end(0x8002_D024);
+        b.explain(At::Base(A0, 0x0), 4, "the strat program counter: the interpreter's");
+    }
+
+    fn state(&self, m: &Machine) -> State {
+        State { heading: m.u16(m.latched(A0) + 0x36A), turn_speed: m.i32(0x8007_51D0) }
+    }
+
+    fn inputs(&self, m: &Machine) -> Inputs { /* … */ }
+
+    fn params(&self, _: &Machine) {}
+}
+
+psx_capture::export!(Turn);
+```
+
+- **`bracket`** names the begin and the end (`end`, `end_at_next_begin`,
+  `end_at_frame`), PCs in an overlay as `Pc::in_overlay("name", pc)`, and
+  the explained reads: `explain(At::…, bytes, why)` for a place,
+  `explain_reader(pc, why)` for every load an instruction makes.
+- **`is_step`** (default: always) is asked each time the begin PC is about
+  to run: whether this call of the routine is the mechanic's step. It
+  replaces register filters, and can compare with memory: the game's own
+  pointer to the player, or a mode. On `false` nothing is recorded.
+- **`state`** is read at the begin and at the end, **`inputs`** at the
+  begin, **`params`** once, at the first step's begin. The compiler checks
+  every field is given; psx checks each value is of its field's type.
+- **`Machine`** reads memory (`u8` to `i32`, `bytes`), CPU registers now
+  (`reg`) and as latched at the begin (`latched`), and the GTE (`gte`).
+  Only main RAM and the scratchpad can be read: any other address stops
+  the binding and is the capture's refusal. Every byte and register it
+  reads at the begin is accounted for in the read audit; params' bytes in
+  every step. The audit's draft is written as `b.explain(…)` calls.
+- **The glue** (`build.rs`) is generated from the mechanic's source: its
+  id, version and fingerprint, and its structs in the trace's encoding.
+  psx refuses a binding whose fingerprint is not the mechanic's.
+- **The boundary.** The crate is a plugin: `export!` wraps it in two C
+  functions, so it loads into a psx built by another compiler. psx refuses
+  one built against another `psx-capture`, naming `psx template update`. A
+  panic in the binding is caught and reported as the capture's error.
+- **Not yet:** interface calls and used mechanics, and state left
+  unobserved. A mechanic that requires an interface or uses a mechanic is
+  bound in `binding.toml` for now.
 
 ## 6. Traces: `traces/<name>.trace.jsonl`
 

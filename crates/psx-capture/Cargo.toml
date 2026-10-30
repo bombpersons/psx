@@ -1,0 +1,11 @@
+[package]
+name = "psx-capture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The API a mechanic's binding is written against: a plugin psx loads to read the step from the machine"
+
+# No dependencies: a binding builds in seconds, and the boundary with psx is
+# a few C functions (docs/mechanics.md, "The binding").
+[dependencies]

@@ -53,7 +53,7 @@ pub struct Source {
 }
 
 impl Source {
-    pub(crate) fn check(&self, platform: &str, p: &mut Vec<String>) {
+    pub fn check(&self, platform: &str, p: &mut Vec<String>) {
         if self.platform != platform {
             p.push(format!("source.platform {:?}: this producer is {platform:?}", self.platform));
         }

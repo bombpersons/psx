@@ -1,7 +1,7 @@
 //! A workspace's mechanic files (docs/mechanics.md, section 1):
 //! `interfaces/<id>.toml` and `mechanics/<id>/` with `mechanic.toml` or a
-//! Rust crate (docs/rust-mechanics-plan.md), `binding.toml` and `traces/`,
-//! read and checked together.
+//! Rust crate (docs/rust-mechanics-plan.md), `binding.toml` or a Rust
+//! binding crate in `binding/`, and `traces/`, read and checked together.
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +20,8 @@ pub struct Loaded {
     pub dir: PathBuf,
     pub mechanic: Mechanic,
     pub binding: Option<Binding>,
+    /// The binding written as Rust: its crate, `binding/`.
+    pub plugin: Option<PathBuf>,
     /// Every interface in the workspace, and every mechanic's step.
     pub interfaces: Vec<Interface>,
     /// `<file>: <problem>`, files relative to the workspace.
@@ -155,7 +157,31 @@ pub fn load(root: &Path, id: &str) -> crate::Result<Loaded> {
     }
     problems.extend(mechanic.check(&interfaces).into_iter().map(|e| format!("{declared_in}: {e}")));
     let binding_path = dir.join("binding.toml");
-    let binding = if binding_path.is_file() {
+    let plugin_dir = dir.join("binding");
+    let plugin = plugin_dir.join("Cargo.toml").is_file().then_some(plugin_dir);
+    let binding = if let Some(p) = &plugin {
+        if binding_path.is_file() {
+            problems.push(format!("{}: binding/ binds the mechanic in Rust too; keep the crate", file("binding.toml")));
+        }
+        let package = std::fs::read_to_string(p.join("Cargo.toml"))
+            .ok()
+            .and_then(|t| toml::from_str::<toml::Table>(&t).ok())
+            .and_then(|t| t.get("package")?.get("name")?.as_str().map(String::from));
+        let want = super::plugin::package(id);
+        if package.as_deref() != Some(want.as_str()) {
+            problems.push(format!(
+                "{}: the package is named {want:?}, after the mechanic's id",
+                file("binding/Cargo.toml")
+            ));
+        }
+        if !mechanic.requires.is_empty() || !mechanic.uses.is_empty() {
+            problems.push(format!(
+                "{}: a Rust binding does not bind interface calls or used mechanics yet: bind this mechanic in binding.toml",
+                file("binding")
+            ));
+        }
+        None
+    } else if binding_path.is_file() {
         match toml::from_str::<Binding>(&read(&binding_path)?) {
             Err(e) => {
                 problems.push(format!("{}: {}", file("binding.toml"), e.message()));
@@ -172,7 +198,7 @@ pub fn load(root: &Path, id: &str) -> crate::Result<Loaded> {
         problems.push(format!("{}: not written yet", file("binding.toml")));
         None
     };
-    Ok(Loaded { dir, mechanic, binding, interfaces, problems })
+    Ok(Loaded { dir, mechanic, binding, plugin, interfaces, problems })
 }
 
 /// A trace's name, its problems and, when it parses, its header.
@@ -290,7 +316,7 @@ pub fn residents(root: &Path, b: &Binding) -> Result<Vec<(u32, Option<Resident>)
         .collect()
 }
 
-fn overlay_problems(root: &Path, b: &Binding) -> Vec<String> {
+pub fn overlay_problems(root: &Path, b: &Binding) -> Vec<String> {
     let named = pcs(b);
     if named.iter().all(|(_, _, o)| o.is_none()) {
         return Vec::new();

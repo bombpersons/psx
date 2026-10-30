@@ -14,6 +14,7 @@ use crate::commands::{Ctx, Op, Outcome};
 
 mod audit;
 pub mod capture;
+pub mod plugin;
 pub mod workspace;
 
 pub use capture::MechanicCaptureArgs;
@@ -161,6 +162,11 @@ impl Reg {
     /// Its conventional name: `a0`.
     pub fn name(self) -> String {
         serde_json::to_value(self).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()
+    }
+
+    /// Register `n` (0-33) as the R3000 numbers them, hi and lo last.
+    pub fn from_number(n: u8) -> Reg {
+        reg_name(psx_capture::Reg(n).name()).expect("0 to 33")
     }
 }
 

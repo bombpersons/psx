@@ -1309,10 +1309,12 @@ dependencies = [
  "cpal",
  "font8x8",
  "gilrs",
+ "libloading",
  "memchr",
  "minifb",
  "png",
  "psx-assets",
+ "psx-capture",
  "psx-core",
  "psx-gpu",
  "psx-gte",
@@ -1338,6 +1340,10 @@ dependencies = [
  "serde_json",
  "sha2",
 ]
+
+[[package]]
+name = "psx-capture"
+version = "0.8.0"
 
 [[package]]
 name = "psx-core"

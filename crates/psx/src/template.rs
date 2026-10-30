@@ -195,6 +195,9 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "vendor/psx-gte/src/math.rs",
     "vendor/psx-gte/src/tests.rs",
     "vendor/psx-gte/src/types.rs",
+    "vendor/psx-capture/Cargo.toml",
+    "vendor/psx-capture/src/abi.rs",
+    "vendor/psx-capture/src/lib.rs",
     "vendor/psx-mechanics/Cargo.toml",
     "vendor/psx-mechanics/src/binding.rs",
     "vendor/psx-mechanics/src/interface.rs",
@@ -222,8 +225,8 @@ pub(crate) const FILES: &[(&str, &str)] = files![
 ];
 
 /// Files under these prefixes are tracked; `update` replaces the untouched ones.
-/// `vendor/` holds copies of the toolkit's psx-media, psx-assets, psx-fixed
-/// and psx-gte (not to be edited); `psx-bevy/` is the base the game builds on
+/// `vendor/` holds copies of the toolkit's psx-media, psx-assets, psx-fixed,
+/// psx-gte, psx-mechanics and psx-capture (not to be edited); `psx-bevy/` is the base the game builds on
 /// (edited freely).
 const VENDOR_PREFIX: &str = "vendor/";
 const PSX_BEVY_PREFIX: &str = "psx-bevy/";
@@ -970,7 +973,7 @@ mod tests {
     #[test]
     fn vendored_crates_match_crates() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for krate in ["psx-media", "psx-assets", "psx-fixed", "psx-gte", "psx-mechanics"] {
+        for krate in ["psx-media", "psx-assets", "psx-fixed", "psx-gte", "psx-mechanics", "psx-capture"] {
             let src = repo.join("crates").join(krate).join("src");
             let mut names: Vec<String> = std::fs::read_dir(&src)
                 .unwrap()

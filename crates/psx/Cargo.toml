@@ -9,6 +9,9 @@ description = "PlayStation reverse-engineering toolkit CLI"
 [dependencies]
 psx-media = { workspace = true }
 psx-mechanics = { workspace = true }
+# Bindings written as Rust: the boundary they are built against, and loading them.
+psx-capture = { workspace = true }
+libloading = "0.8"
 psx-assets = { workspace = true }
 psx-core = { workspace = true }
 psx-gte = { workspace = true }
@@ -35,7 +38,8 @@ cpal = { version = "0.17", optional = true }
 sha2 = { workspace = true }
 
 [lints.rust]
-unsafe_code = "forbid"
+# Denied, not forbidden: mechanic/plugin.rs loads and calls Rust bindings.
+unsafe_code = "deny"
 
 [features]
 default = ["window"]

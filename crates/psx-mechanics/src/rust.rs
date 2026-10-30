@@ -352,6 +352,151 @@ impl<'f> Items<'f> {
             _ => None,
         }
     }
+
+    /// Code giving the `psx_capture::Value` of `place`, a value of type
+    /// `ty` (as `ty` reads it), in the trace's encoding. Types are named
+    /// through `krate`, the mechanic's crate.
+    fn encode(&self, ty: &syn::Type, place: &str, krate: &str, depth: u32) -> Result<String, String> {
+        const V: &str = "psx_capture::Value";
+        if depth > 16 {
+            return Err("types nest more than 16 deep".into());
+        }
+        let shown = quote::ToTokens::to_token_stream(ty).to_string();
+        let each = |of: &syn::Type| -> Result<String, String> {
+            let e = format!("e{depth}");
+            let inner = self.encode(of, &format!("(*{e})"), krate, depth + 1)?;
+            Ok(format!("{V}::List({place}.iter().map(|{e}| {inner}).collect())"))
+        };
+        match ty {
+            syn::Type::Array(a) => each(&a.elem),
+            syn::Type::Paren(p) => self.encode(&p.elem, place, krate, depth),
+            syn::Type::Path(p) if p.qself.is_none() && p.path.segments.len() == 1 => {
+                let seg = &p.path.segments[0];
+                let name = seg.ident.to_string();
+                if name == "Vec" {
+                    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                        if let Some(syn::GenericArgument::Type(of)) = args.args.first() {
+                            return each(of);
+                        }
+                    }
+                    return Err(format!("`{shown}`"));
+                }
+                match primitive(&name).map(|f| f.kind) {
+                    Some(Kind::Bool) => return Ok(format!("{V}::Bool({place})")),
+                    Some(Kind::Float) => return Ok(format!("{V}::Int({place}.to_bits() as i128)")),
+                    Some(_) => return Ok(format!("{V}::Int({place} as i128)")),
+                    None => {}
+                }
+                if let Some(a) = self.aliases.get(&name) {
+                    if fixed_name(&name).is_some() {
+                        return Ok(format!("{V}::Int({place} as i128)"));
+                    }
+                    return self.encode(&a.ty, place, krate, depth + 1);
+                }
+                if let Some(e) = self.enums.get(&name) {
+                    let arms: Vec<String> = e
+                        .variants
+                        .iter()
+                        .map(|v| {
+                            format!("{krate}::{name}::{} => {V}::Variant({:?}),", v.ident, snake(&v.ident.to_string()))
+                        })
+                        .collect();
+                    return Ok(format!("match &{place} {{ {} }}", arms.join(" ")));
+                }
+                if let Some(s) = self.structs.get(&name) {
+                    let syn::Fields::Named(named) = &s.fields else { return Err(format!("`{shown}`")) };
+                    let mut fields = Vec::new();
+                    for f in &named.named {
+                        let n = f.ident.as_ref().unwrap().to_string();
+                        fields.push(format!(
+                            "({n:?}, {})",
+                            self.encode(&f.ty, &format!("{place}.{n}"), krate, depth + 1)?
+                        ));
+                    }
+                    return Ok(format!("{V}::Record(vec![{}])", fields.join(", ")));
+                }
+                Err(format!("`{shown}`"))
+            }
+            _ => Err(format!("`{shown}`")),
+        }
+    }
+}
+
+/// The glue a binding needs for the mechanic `c` declares: a
+/// `psx_capture::Mechanic` implementation, `Mechanic`, giving its id,
+/// version and fingerprint and its `State`, `Inputs` and `Params` in the
+/// trace's encoding. Its types are named through the crate the package is
+/// (`croc-turn` is `croc_turn`).
+pub fn glue(c: &Crate) -> Result<String, Vec<String>> {
+    let (m, _) = mechanic(c)?;
+    let package = toml::from_str::<toml::Table>(c.cargo_toml)
+        .ok()
+        .and_then(|t| t.get("package")?.get("name")?.as_str().map(String::from))
+        .ok_or_else(|| vec!["Cargo.toml: no package name".to_string()])?;
+    let krate = package.replace('-', "_");
+    let lib = c.files.iter().find(|(p, _)| p == LIB).map(|(_, t)| t).expect("read by mechanic");
+    let file = syn::parse_file(lib).map_err(|e| vec![format!("{LIB}: {e}")])?;
+    let items = Items::of(&file);
+    let mut types = Vec::new();
+    let mut fns = Vec::new();
+    for (name, f) in [("State", "state"), ("Inputs", "inputs"), ("Params", "params")] {
+        let (ty, body) = match items.structs.get(name) {
+            None => ("()".to_string(), "psx_capture::Value::Record(Vec::new())".to_string()),
+            Some(_) => {
+                let path: syn::Type = syn::parse_str(name).unwrap();
+                let body = items.encode(&path, "(*v)", &krate, 0).map_err(|e| vec![format!("{LIB}: {name}: {e}")])?;
+                (format!("{krate}::{name}"), body)
+            }
+        };
+        types.push(format!("    type {name} = {ty};"));
+        fns.push(format!("    fn {f}(v: &Self::{name}) -> psx_capture::Value {{\n        {body}\n    }}"));
+    }
+    Ok(format!(
+        "// Generated from the mechanic's source by psx_mechanics::rust::write_glue: not for editing.\n\
+         pub struct Mechanic;\n\n\
+         #[allow(unused_variables)]\n\
+         impl psx_capture::Mechanic for Mechanic {{\n    \
+         const ID: &'static str = {:?};\n    \
+         const VERSION: u32 = {};\n    \
+         const FINGERPRINT: &'static str = {:?};\n{}\n{}\n}}\n",
+        m.id,
+        m.version,
+        m.fingerprint(),
+        types.join("\n"),
+        fns.join("\n"),
+    ))
+}
+
+/// For a binding's `build.rs`: writes the [`glue`] for the mechanic crate
+/// at `mechanic_dir` to `$OUT_DIR/glue.rs`, and has cargo run it again when
+/// the mechanic changes. A mechanic it cannot read fails the build.
+pub fn write_glue(mechanic_dir: impl AsRef<std::path::Path>) {
+    let dir = mechanic_dir.as_ref();
+    println!("cargo::rerun-if-changed={}", dir.join("Cargo.toml").display());
+    println!("cargo::rerun-if-changed={}", dir.join("src").display());
+    let read = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let cargo_toml = read(&dir.join("Cargo.toml"));
+    let mut files = Vec::new();
+    let mut todo = vec![dir.join("src")];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).unwrap_or_else(|e| panic!("{}: {e}", d.display())).flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                todo.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                let rel = p.strip_prefix(dir).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+                files.push((rel, read(&p)));
+            }
+        }
+    }
+    files.sort();
+    match glue(&Crate { cargo_toml: &cargo_toml, files: &files }) {
+        Ok(code) => {
+            let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("run from build.rs")).join("glue.rs");
+            std::fs::write(&out, code).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
+        }
+        Err(problems) => panic!("the mechanic at {} cannot be read:\n{}", dir.display(), problems.join("\n")),
+    }
 }
 
 fn blank(kind: Kind) -> Field {
@@ -808,6 +953,24 @@ pub fn step(state: &mut State, inputs: &Inputs, params: &Params, world: &mut imp
 
     fn read(cargo: &str, lib: &str) -> Result<(Mechanic, Vec<String>), Vec<String>> {
         mechanic(&Crate { cargo_toml: cargo, files: &[(LIB.into(), lib.into())] })
+    }
+
+    #[test]
+    fn the_glue_encodes_each_struct() {
+        let files = [(LIB.to_string(), WALK.to_string())];
+        let g = glue(&Crate { cargo_toml: CARGO, files: &files }).unwrap();
+        let (m, _) = read(CARGO, WALK).unwrap();
+        assert!(g.contains(&format!("const FINGERPRINT: &'static str = {:?};", m.fingerprint())), "{g}");
+        assert!(g.contains("type State = croc_walk::State;"), "{g}");
+        assert!(g.contains("(\"speed\", psx_capture::Value::Int((*v).speed as i128))"), "{g}");
+        assert!(g.contains("croc_walk::Mode::BackingUp => psx_capture::Value::Variant(\"backing_up\"),"), "{g}");
+        assert!(
+            g.contains(
+                "psx_capture::Value::List((*v).curve.iter().map(|e1| psx_capture::Value::Int((*e1) as i128)).collect())"
+            ),
+            "{g}"
+        );
+        assert!(g.contains("(\"x\", psx_capture::Value::Int((*e1).x as i128))"), "{g}");
     }
 
     #[test]

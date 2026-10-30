@@ -17,6 +17,7 @@ use psx_mechanics::trace::{Audit, Coverage, Finding};
 use serde_json::{Value as Json, json};
 
 use super::capture::Regs;
+use super::plugin::Reads;
 use super::{Location, Reg, SCRATCHPAD};
 use crate::run::fold;
 
@@ -61,6 +62,9 @@ pub struct Accounts<'a> {
     pub entries: HashSet<u32>,
     /// The end PC, where the step's code stops.
     pub end: Option<u32>,
+    /// The binding is Rust: its reads are given step by step
+    /// (`Tracker::binding_reads`), and the draft of `explained` is Rust.
+    pub rust: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -170,8 +174,14 @@ struct Entered {
 /// The read audit and branch coverage of one recording.
 pub struct Tracker<'a> {
     acc: &'a Accounts<'a>,
+    /// The base registers findings are described from: the binding's, and
+    /// sp last.
+    bases: Vec<Reg>,
     // The step under way.
     latched: Regs,
+    /// Registers and GTE registers a Rust binding read for this step.
+    step_registers: u64,
+    step_gte: u64,
     regs: [From; 34],
     gte: [From; 64],
     accounted: Vec<(u32, u32)>,
@@ -212,7 +222,10 @@ impl<'a> Tracker<'a> {
     pub fn new(acc: &'a Accounts<'a>, begin: u32) -> Tracker<'a> {
         Tracker {
             acc,
+            bases: acc.bases.clone(),
             latched: [0; 34],
+            step_registers: 0,
+            step_gte: 0,
             regs: [From::Before; 34],
             gte: [From::Before; 64],
             accounted: Vec::new(),
@@ -237,6 +250,8 @@ impl<'a> Tracker<'a> {
     /// A step begins, with the registers as latched there.
     pub fn open(&mut self, m: &Machine, latched: &Regs) {
         self.latched = *latched;
+        self.step_registers = 0;
+        self.step_gte = 0;
         self.regs = [From::Before; 34];
         self.gte = [From::Before; 64];
         self.written.clear();
@@ -263,6 +278,25 @@ impl<'a> Tracker<'a> {
             .collect();
         if self.code.is_none() {
             self.code = Some(m.bus.ram.to_vec());
+        }
+    }
+
+    /// What a Rust binding read at this step's begin, to choose the step and
+    /// read its inputs and state: accounted for in this step. The registers
+    /// it read at the first step are the bases findings are described from.
+    pub fn binding_reads(&mut self, r: &Reads) {
+        self.accounted.extend_from_slice(&r.memory);
+        self.step_registers |= r.registers | r.latched;
+        self.step_gte |= r.gte;
+        if self.steps == 0 && self.found.is_empty() && self.step.is_empty() {
+            let sp = self.bases.pop();
+            for n in 0..34u8 {
+                let reg = Reg::from_number(n);
+                if (r.registers | r.latched) & bit(n) != 0 && !self.bases.contains(&reg) && Some(reg) != sp {
+                    self.bases.push(reg);
+                }
+            }
+            self.bases.extend(sp);
         }
     }
 
@@ -293,7 +327,7 @@ impl<'a> Tracker<'a> {
     }
 
     fn note(&mut self, key: Key) -> &mut Seen {
-        let n = self.acc.bases.len();
+        let n = self.bases.len();
         self.step.entry(key).or_insert_with(|| Seen::new(n))
     }
 
@@ -301,7 +335,7 @@ impl<'a> Tracker<'a> {
         match self.regs[r as usize] {
             _ if bit(r) & ABI != 0 => {}
             From::Step => {}
-            From::Before if bit(r) & self.acc.registers != 0 => {}
+            From::Before if bit(r) & (self.acc.registers | self.step_registers) != 0 => {}
             from => {
                 self.note(Key::Reg { pc, reg: r, from });
             }
@@ -310,7 +344,7 @@ impl<'a> Tracker<'a> {
 
     fn gte_reads(&mut self, pc: u32, bad: Vec<(u8, From)>, by: &'static str) {
         for (reg, from) in bad {
-            if from == From::Before && bit(reg) & self.acc.gte != 0 {
+            if from == From::Before && bit(reg) & (self.acc.gte | self.step_gte) != 0 {
                 continue;
             }
             self.note(Key::Gte { pc, reg, from, by });
@@ -369,8 +403,7 @@ impl<'a> Tracker<'a> {
                 let ks: Vec<u32> = bytes.iter().filter(|b| b.1 == from).map(|b| b.0).collect();
                 let (k0, k1) = (ks[0], ks[ks.len() - 1]);
                 let a = addr.wrapping_add(k0);
-                let rel =
-                    self.acc.bases.iter().map(|b| a.wrapping_sub(self.latched[*b as usize]) as i32 as i64).collect();
+                let rel = self.bases.iter().map(|b| a.wrapping_sub(self.latched[*b as usize]) as i32 as i64).collect();
                 Pend { key: Key::Mem { pc, from }, addr: a, bytes: k1 - k0 + 1, rel, region }
             })
             .collect()
@@ -607,7 +640,7 @@ impl<'a> Tracker<'a> {
     /// The audit and coverage for the header, and the report for the result.
     pub fn finish(self) -> (Audit, Coverage, Json) {
         let mut unaccounted = Vec::new();
-        let mut draft = Drafts::default();
+        let mut draft = Drafts { rust: self.acc.rust, ..Drafts::default() };
         for (k, s) in &self.found {
             let (at, note) = self.describe(k, s, &mut draft);
             unaccounted.push(Finding { at, note: Some(note) });
@@ -657,7 +690,7 @@ impl<'a> Tracker<'a> {
                 "clear": audit.unaccounted.is_empty(),
                 "unaccounted": audit.unaccounted.len(),
                 "listed": audit.unaccounted.iter().take(LISTED).collect::<Vec<_>>(),
-                "draft": draft.toml(),
+                "draft": draft.render(),
             },
             "coverage": {
                 "reached": coverage.reached,
@@ -687,7 +720,7 @@ impl<'a> Tracker<'a> {
                 };
                 // A base and offset when one holds and says more than the
                 // address: a small offset, or an address that moves.
-                let base = self.acc.bases.iter().zip(&s.rel).find_map(|(b, r)| {
+                let base = self.bases.iter().zip(&s.rel).find_map(|(b, r)| {
                     r.one().map(|o| (*b, o)).filter(|(_, o)| (0..0x1_0000).contains(o) || s.addr.one().is_none())
                 });
                 if let Some((b, o)) = base {
@@ -706,18 +739,18 @@ impl<'a> Tracker<'a> {
                 };
                 if !s.region.is_empty() {
                     let (a, n) = s.addr.one().map_or((s.lo, s.hi - s.lo + 1), |a| (a, s.bytes.one().unwrap_or(4)));
-                    draft.add(format!("{{ address = {} }}", hex(a)), n, *pc, HARDWARE);
+                    draft.add(draft.address(a), n, *pc, HARDWARE);
                 } else {
                     let width = s.bytes.one().unwrap_or(s.hi - s.lo + 1);
                     let loc = match (base, s.addr.one()) {
-                        (Some((b, o)), _) => Some(format!("{{ base = \"{}\", offset = {} }}", b.name(), toml_int(o))),
-                        (_, Some(a)) => Some(format!("{{ address = {} }}", hex(a))),
+                        (Some((b, o)), _) => Some(draft.base(b, o)),
+                        (_, Some(a)) => Some(draft.address(a)),
                         _ => None,
                     };
                     match loc {
                         Some(l) => draft.add(l, width, *pc, ""),
                         None => draft.add(
-                            format!("{{ address = {} }}", hex(s.lo)),
+                            draft.address(s.lo),
                             s.hi - s.lo + 1,
                             *pc,
                             ": the range these steps read; a table may reach further",
@@ -729,7 +762,7 @@ impl<'a> Tracker<'a> {
             Key::Reg { pc, reg, from: f } => {
                 let name = reg_name(*reg);
                 at.insert("register".into(), json!(name));
-                draft.add(format!("{{ register = \"{name}\" }}"), 4, *pc, "");
+                draft.add(draft.register(&name), 4, *pc, "");
                 match f {
                     From::Before => format!("read before the step wrote it, {steps}"),
                     _ => format!("{steps}{}", from(f, "changed")),
@@ -737,7 +770,7 @@ impl<'a> Tracker<'a> {
             }
             Key::Gte { pc, reg, from: f, by } => {
                 at.insert("gte".into(), json!(reg));
-                draft.add(format!("{{ gte = {reg} }}"), 4, *pc, "");
+                draft.add(draft.gte(*reg), 4, *pc, "");
                 let what = format!("{} ({by})", GTE_NAMES[*reg as usize]);
                 match f {
                     From::Before => format!("{what}, read before the step wrote it, {steps}"),
@@ -773,31 +806,61 @@ fn toml_int(v: i64) -> String {
 /// The draft's note for a read outside memory.
 const HARDWARE: &str = "; or bind it as an inline read if the result depends on it";
 
-/// A draft of `capture.explained`, one entry per place.
+/// A draft of `capture.explained`, one entry per place, in TOML or, for a
+/// Rust binding, as `Bracket::explain` calls.
 #[derive(Default)]
 struct Drafts {
+    rust: bool,
     /// Location -> bytes, reading PCs, and a note.
     entries: BTreeMap<String, (u32, BTreeSet<u32>, &'static str)>,
 }
 
 impl Drafts {
+    fn address(&self, a: u32) -> String {
+        if self.rust { format!("At::Address({})", hex(a)) } else { format!("{{ address = {} }}", hex(a)) }
+    }
+
+    fn base(&self, b: Reg, o: i64) -> String {
+        if self.rust {
+            format!("At::Base({}, {})", b.name().to_uppercase(), signed_hex(o))
+        } else {
+            format!("{{ base = \"{}\", offset = {} }}", b.name(), toml_int(o))
+        }
+    }
+
+    fn register(&self, name: &str) -> String {
+        if self.rust {
+            format!("At::Register({})", name.to_uppercase())
+        } else {
+            format!("{{ register = \"{name}\" }}")
+        }
+    }
+
+    fn gte(&self, n: u8) -> String {
+        if self.rust { format!("At::Gte({n})") } else { format!("{{ gte = {n} }}") }
+    }
+
     fn add(&mut self, at: String, bytes: u32, pc: u32, note: &'static str) {
         let e = self.entries.entry(at).or_insert((bytes, BTreeSet::new(), note));
         e.0 = e.0.max(bytes);
         e.1.insert(pc);
     }
 
-    fn toml(&self) -> String {
+    fn render(&self) -> String {
         if self.entries.is_empty() {
             return String::new();
         }
-        let mut out = String::from("explained = [\n");
+        let mut out = String::from(if self.rust { "" } else { "explained = [\n" });
         for (at, (bytes, pcs, note)) in &self.entries {
             let pcs: Vec<String> = pcs.iter().map(|p| hex(*p)).collect();
             let bytes = if *bytes < 16 { bytes.to_string() } else { format!("{bytes:#x}") };
-            out += &format!("  {{ at = {at}, bytes = {bytes}, why = \"\" }},  # read at {}{note}\n", pcs.join(", "));
+            out += &if self.rust {
+                format!("b.explain({at}, {bytes}, \"\"); // read at {}{note}\n", pcs.join(", "))
+            } else {
+                format!("  {{ at = {at}, bytes = {bytes}, why = \"\" }},  # read at {}{note}\n", pcs.join(", "))
+            };
         }
-        out + "]\n"
+        if self.rust { out } else { out + "]\n" }
     }
 }
 

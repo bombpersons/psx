@@ -1,6 +1,6 @@
 # Plan: mechanics and bindings as Rust
 
-Status: agreed; nothing built yet. Work starts at R2 (section 11).
+Status: agreed. R2 and R3 are done (section 11); R4 is next.
 
 The mechanic formats (`docs/mechanics.md`) describe a step in TOML: typed
 fields in `mechanic.toml`, and where the PlayStation keeps them in

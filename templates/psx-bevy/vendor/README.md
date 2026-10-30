@@ -13,7 +13,10 @@ so the game needs neither the toolkit nor any download:
   (`psx_bevy::gte`).
 - `psx-mechanics`: the mechanic, interface, trace, scenario and recording
   formats, read by step replay (`psx_bevy::replay`) and scenarios
-  (`psx_bevy::scenario`).
+  (`psx_bevy::scenario`). Its `rust::write_glue` is what a mechanic's
+  binding runs in its `build.rs`.
+- `psx-capture`: the API a mechanic's binding is written against
+  (`mechanics/<id>/binding/`), which `psx mechanic capture` builds and loads.
 
 They belong to the template: `psx template update` replaces them. Unlike
 `psx-bevy/`, they are not for changing here: if one needs a fix, fix it in
