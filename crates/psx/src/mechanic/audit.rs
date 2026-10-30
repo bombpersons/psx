@@ -660,8 +660,10 @@ impl<'a> Tracker<'a> {
         }
         let op = i >> 26;
         let store = info.mem.filter(|a| a.store);
-        // A register saved to the step's own stack frame is not used.
+        // A register saved to the step's own stack frame is not used. Any
+        // store there replaces what the slot held.
         if let Some(a) = store {
+            self.saved.remove(&fold(a.addr & !3));
             let sp = m.cpu.regs[29];
             let r = rt as usize;
             if (sp..self.latched[29]).contains(&a.addr) && (self.regs[r] != From::Step || self.taint.contains_key(&rt))

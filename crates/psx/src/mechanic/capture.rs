@@ -1529,6 +1529,29 @@ pub struct State {
     }
 
     #[test]
+    fn a_slot_saved_to_again_is_restored_as_the_step_left_it() {
+        // s1 saved from before the step, then written and saved to the same
+        // slot again: restored, it is the step's.
+        #[rustfmt::skip]
+        let patches = [
+            (0x8001_010C, 0xAFB1_0004), // sw s1, 4(sp)
+            (0x8001_0110, 0x2511_0001), // addiu s1, t0, 1
+            (0x8001_0124, 0xAFB1_0004), // sw s1, 4(sp)
+            (0x8001_0128, 0x8FB1_0004), // lw s1, 4(sp)
+            (0x8001_012C, 0x8FBF_0000), // lw ra, 0(sp)
+            (0x8001_0130, 0x0220_1821), // addu v1, s1, zero
+            (0x8001_0134, 0x27BD_0008), // addiu sp, sp, 8
+            (0x8001_0138, 0x03E0_0008), // jr ra
+            (0x8001_013C, 0x0000_0000), // nop
+        ];
+        let c = Conf { end: Some(0x8001_0138), ..Conf::default() };
+        let r = run_patched(c, &ADD, &patches).unwrap();
+        assert_eq!(r.refusals.count, 0, "{:?}", r.refusals.listed);
+        assert!(!r.steps.is_empty());
+        assert_eq!(r.audit.unaccounted, vec![]);
+    }
+
+    #[test]
     fn params_the_binding_reads_are_accounted_for_in_every_step() {
         // The step reads 8(a0) and uses it; a table of three words at a0 holds it.
         let patches = [(0x8001_010C, 0x8C89_0008), (0x8001_0118, 0x0130_2821)];
