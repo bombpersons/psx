@@ -27,21 +27,23 @@ vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gt
 docs/          template.md: your changes to psx-bevy/
 ```
 
-## The shape of the code
+## The code
+
+Write the port as code someone would write for a new game today, not a
+translation of the original: clean, idiomatic Rust and Bevy, reusable in
+another game with its own content, with little duplication. How to get
+there is yours to decide. What the tools rely on:
 
 - **One plugin per feature**, named after its catalogue entry, adding only
-  the plugins its `depends` lists, and working with only those.
+  the plugins its `depends` lists.
 - **Logic apart from rendering.** Logic runs in `FixedUpdate`
   (`GameSystems::Game`) at the game's tick rate, reads `ControllerState`, and
-  never reads the window, the camera's pixels or the frame rate. Rendering
-  reads logic's state. Rules the original ties to the screen ("wakes when on
-  screen", HUD layout) are defined against its 4:3 view; `PsxAspect` widens
-  what is shown and `PsxAnchor` anchors the HUD.
-- **The original's code is the reference.** Read each rule from the
-  routines that run it (disassembly, decompilation) and write it as the
-  feature's systems over components and resources: split it, use events
-  where the original sets flags, keep a field where it belongs. Read, don't
-  fit: a constant tuned until a recording matches fails the next one.
+  never reads the window, the camera's pixels or the frame rate, so it runs
+  headless. Rules the original ties to the screen ("wakes when on screen",
+  HUD layout) are defined against its 4:3 view; `PsxAspect` widens what is
+  shown and `PsxAnchor` anchors the HUD.
+- **The tick stays fixed** at the original's rate (`REGION`,
+  `FIELDS_PER_TICK` in `game/src/lib.rs`).
 - **Scenarios are the port's test.** A feature's plugin registers a
   launcher for each of its scenario kinds, which builds the world from the
   scenario's parameters with the port's own loading, and observes the
@@ -52,84 +54,37 @@ docs/          template.md: your changes to psx-bevy/
   (`scenarios/<id>/`) tick by tick with its pad; add each feature's logic
   plugin to its `app`. `psx port check` runs it for the verdicts; `cargo
   test -p <game> --test scenarios` while working.
-- **States are enums** with each state's data in its variant; transitions
-  are assignments. No state bytes, function tables, or a CPU-like main loop.
-- **Rules apart from content.** Tuning, setup and content are assets with a
-  documented contract (RON, glTF, PNG, WAV/OGG), never constants in code.
-  Assets hold real numbers (`grip = 1.375`, not `0x16000`). Only importers
-  read the original's formats.
-- **The tick stays fixed** at the original's rate (`REGION`,
-  `FIELDS_PER_TICK` in `game/src/lib.rs`).
+- **Only importers read the original's formats** (`tools/import`); the
+  game reads the port's own (RON, glTF, PNG, WAV/OGG).
 
-## Numbers
+## The original as evidence
 
-Name the rule, then convert the units. Say what the code *does* in one
-sentence and implement that sentence. Croc's walk code (0x80043234) is
-`v = v - (v >> 2) + target` with `target = 35 << 12`: "close a quarter of the
-gap to four times the target each tick", which settles at 140 units/tick.
+- **Read, don't fit.** Read each rule from the routines that run it
+  (disassembly, decompilation), then write it the way the port's code
+  wants it: the original's routines, state bytes and RAM layout are not a
+  structure to copy. A constant tuned until a recording matches fails the
+  next one.
+- **Cite** where each constant and non-obvious rule came from: the address,
+  the instruction that writes or tests it, or the recording that showed
+  it, and what was not verified, so someone can re-check it with psx.
+- Where a recording needs the original's exact arithmetic,
+  `psx_bevy::num` computes as its compiled C does (`Num`, `Fixed`,
+  `Angle`) and `psx_bevy::gte` as its GTE does.
 
-The port chooses its own number types, held to the scenarios' tolerances.
-Where a feature is exact, keep the original's arithmetic with
-`psx_bevy::num`: `Num<M, W, F>` is a number the original stores in word `W`
-with `F` fraction bits. In `Exact` it is `Fixed<W, F>` and computes as the
-original's compiled C does: `a * b` is `(a * b) >> F` on the low 32 bits of
-the product, `a / b` truncates, and results wrap at `W`. Code generic over
-the `Mode` can also run with `Float` (`f32`).
+## The review
 
-```rust
-use psx_bevy::prelude::*;
+A feature is reviewed before it is done, by someone who did not write it:
+a sub-agent or a fresh session, given the brief `port_next` prints. They
+read the feature's code and how it sits in the rest of the game, not the
+disassembly, and write their findings in `reviews/<id>.md`; answer each
+one, fixed or kept and why.
 
-/// Closes a quarter of the gap to four times `target` each tick, so the
-/// speed settles at 4 × target (0x80043234: `v = v - (v >> 2) + target`).
-fn approach<M: Mode>(v: Num<M, i32, 12>, target: Num<M, i32, 12>) -> Num<M, i32, 12> {
-    v - v.div_pow2_floor(2) + target
-}
-```
+## Beyond the features
 
-- A constant is the number it is (`Num::real(1.375)`, which panics in
-  `Exact` on a value the format can't hold), with a doc comment giving the
-  raw value and where it was read.
-- Integer behaviour that carries meaning is a named operation on `Num` or
-  `Angle`: `div_pow2_floor` (the original's `>>`), `div_pow2_trunc`,
-  `settle_to_zero`, `snap_to_unit`, `floor_int`, `rescale` (another format),
-  `mul_wide` (the 64-bit product), `Angle::normalized`, `sin` and `cos`
-  (`GteAngle`: libgte's table). Never raw shifts and masks in a system; a
-  rule they don't cover is a small named helper with a test.
-- What the original computed on the GTE calls `psx_bevy::gte` (psx's own
-  GTE: operations, flags and rounding) with the same inputs.
-- Rules that need no exactness may use `f32` directly. Convert to `f32` for rendering
-  once, at the render boundary (`to_f32`).
-- Assets hold real numbers: a `Num` field reads `grip = 1.375` and, in
-  `Exact`, refuses a value its format can't hold; an `Angle` reads degrees.
-- Per-tick units where the original is defined per tick; give per-second
-  values for reference.
-
-## Evidence
-
-Every constant and every non-obvious rule says where it came from: the RAM
-address and width, the instruction that writes or tests it, or the psx
-recording that measured it. Say what was not verified. Someone must be able
-to re-check each number with psx.
-
-## Before calling a feature done
-
-Read the feature's code as a stranger would:
-
-- Does each system read as a rule someone would recognise?
-- Are states enums with their data in the variants? Are params assets?
-- Mirror the original's order of operations only where it is the
-  behaviour. No one function per original routine, no resource per RAM
-  address, no hex literal without a name and citation.
-
-## Choices a goal can make
-
-Suggested for a complete port, never required. Add one only when the goal
-asks for it:
-
-- an engine/game split: a reusable engine crate the game builds on;
-- mod crates built on `game` (it is a library);
-- the original's whole front end: menus, saves, options;
-- an editor for the port's asset formats.
+A goal may ask for more than the game's features: the original's whole
+front end (menus, saves, options), an editor for the port's formats, or
+mod support (`game` is a library, and psx-bevy's asset folders layer).
+Add them when it does.
 
 ## Checks
 

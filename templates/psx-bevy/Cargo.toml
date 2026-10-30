@@ -9,8 +9,8 @@
 #   vendor/        psx-media, psx-assets, psx-fixed, psx-gte, psx-scenario and
 #                  psx-capture, vendored
 #
-# An engine/game split, mod crates and an editor are choices a goal can make
-# (AGENTS.md), added as members when it does.
+# The port adds crates (an engine, mods, an editor) as members when it needs
+# them.
 #
 # Standalone: copying the template does not require the psx workspace.
 [workspace]

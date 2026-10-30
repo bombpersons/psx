@@ -364,7 +364,8 @@ and a `--replay` file, keep both under `tests/data/`, and compare tick by tick
 with `psx_bevy::testing::{Alignment, Replay, Trajectory, compare}`. A mismatch
 reports the first divergence per column, the values around it and a hint when
 the rebuild is a tick early or late. The [module docs](src/testing/trajectory.rs)
-explain the field/tick alignment; `game/AGENTS.md` has the full recipe.
+explain the field/tick alignment. A port compares against scenario recordings
+instead (`psx_bevy::scenario`, AGENTS.md).
 
 | DualShock | Keyboard | Gamepad |
 |---|---|---|
@@ -535,30 +536,6 @@ that session (`DisplayOverrides`) and are only saved if the player saves. A
 missing file keeps the game's defaults; an invalid one is reported, left
 untouched and ignored. Pass your own `screens` to offer other sizes, or set
 `global_shortcuts: false` and call `DisplayMenu::open()` from your options screen.
-
-## From evidence to idiomatic code
-
-Reverse-engineering evidence arrives as fixed-point RAM words, per-tick deltas
-and MIPS shifts. Turn it into rules a reader recognises; `game/AGENTS.md` has the full
-guide with examples from the Croc and Mega Man 8 studies. In short:
-
-- **Name the rule, convert units once.** Croc's `v = v - (v >> 2) + target` is
-  "ease a quarter of the way to the target each tick":
-  `velocity += (target - velocity) * VELOCITY_BLEND`, with `RUN_SPEED =
-  units(140.0)` and a `units()` helper for the original's world units.
-  MM8's 16.16 `0x0005C900` is `JUMP_SPEED: f32 = 5.785_156_3` px/tick.
-- **Cite evidence** on every constant and rule: RAM address, writer or test
-  instruction, or measurement, and what was not verified.
-- **Exact integer behaviour only where it shows**: tick counts, thresholds,
-  landing rules. Wrap it in a small documented helper with a test; keep any
-  literal model of the original code in `tools/`, not in the game.
-- **State machines are enums + systems**: one enum component with per-state
-  data, a few systems chained in the original's decision order, `match` on the
-  enum. No state bytes or per-frame dispatch tables.
-- **Captures are reference, not levels**: decode tile sets, tile layers,
-  collision and spawn lists into `game/assets/` and build entities from them; render
-  from the game's camera and compare against the capture to verify.
-- **Test per tick** against recorded trajectories (`game/tests/player.rs`).
 
 ## Agent driving (`dev-mcp`)
 

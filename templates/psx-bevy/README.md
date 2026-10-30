@@ -35,11 +35,10 @@ cargo build --release --no-default-features  # shipping build: Bevy linked in, d
 | `docs/` | this project | `template.md` (changes to `psx-bevy/`) |
 | `.psx-template.toml` | psx template | Which template version this is and which files it owns |
 
-The demo in `game/src/demo/` shows the intended shape: one plugin per
-feature, rules (player, spinner) apart from the scene that dresses them, and
-level and tuning in RON files (`game/assets/demo/`). Replace it with your
-game. An engine/game split, mod crates and an editor are choices a goal can
-make ([AGENTS.md](AGENTS.md)).
+The demo in `game/src/demo/` shows the pieces working together: feature
+plugins (player, spinner) whose logic runs headless, the scene that dresses
+them, and level and tuning in RON files (`game/assets/demo/`). Replace it
+with your game; [AGENTS.md](AGENTS.md) has what the port's code is held to.
 
 ## Game data from the disc
 

@@ -7,9 +7,9 @@ which writes the same template with a goal and catalogue.
 
 Pass the original's display region (ntsc/pal) and choose fields_per_tick
 from the original's main loop, not the region alone. The generated
-AGENTS.md (root and game/) has the rules: one plugin per feature, logic in
-FixedUpdate apart from rendering, states as enums, content as assets,
-constants named with the raw value and where it was read.
+AGENTS.md (root and game/) has what the code is held to: clean, idiomatic
+and reusable, one plugin per feature, logic in FixedUpdate apart from
+rendering, and each constant's source cited.
 
 Build ordinary Bevy entities, components and plugins on decoded assets. Do
 not recreate an emulator or translate CPU instructions into a disguised game

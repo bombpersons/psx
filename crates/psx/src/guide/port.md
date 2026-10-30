@@ -46,10 +46,9 @@ recording replayed tick by tick with its pad, every quantity within the
 scenario's tolerance. While working, cargo test -p <game> --test scenarios
 gives the same result without a verdict.
 
-How to write the port (the shape of the code, numbers, evidence, the
-self-review before calling a feature done, and the choices a goal can make:
-an engine/game split, mod crates, the whole front end, an editor) is in the
-workspace's AGENTS.md and game/AGENTS.md.
+How to write the port (what the code is held to, the original as
+evidence, the review, and what a goal may ask for beyond features) is in
+the workspace's AGENTS.md and game/AGENTS.md.
 
 Evidence: the disc and psx are the only sources. Record the original as
 scenario recordings from named start states (guide topic states), and cite

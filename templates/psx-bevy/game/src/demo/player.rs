@@ -4,8 +4,7 @@
 //!
 //! Tuning is in natural units (metres, seconds, radians) and systems scale it
 //! by the tick length, so it reads the same at any `TickRate`. A port would
-//! cite where each value came from; see AGENTS.md, "From evidence to
-//! idiomatic code".
+//! cite where each value came from (AGENTS.md).
 use bevy::prelude::*;
 use psx_bevy::controller::Button;
 use psx_bevy::prelude::*;
