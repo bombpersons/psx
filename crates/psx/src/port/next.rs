@@ -1135,7 +1135,8 @@ pub struct PortStatusArgs {
 
 impl Op for PortStatusArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::result(Facts::gather(&ctx.root).and_then(|f| {
+        let plain = self.plain && self.feature.is_none() && self.assets.is_none();
+        Outcome::result_text(Facts::gather(&ctx.root).and_then(|f| {
             if let Some(id) = &self.feature {
                 let feature = f.features.iter().find(|x| &x.id == id);
                 let feature =
@@ -1148,7 +1149,7 @@ impl Op for PortStatusArgs {
             let mut v = f.status();
             v["next"] = f.next().to_json();
             Ok(if self.plain { json!({"text": f.plain()}) } else { v })
-        }))
+        }), plain)
     }
 }
 
