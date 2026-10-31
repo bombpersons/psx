@@ -186,9 +186,9 @@ pub fn tools() -> Vec<ToolDef> {
         ToolDef { call: call_handoff, schema: handoff_schema, ..def::<crate::handoff::HandoffArgs>("scenario_play", "Ask the person to play: opens a window on this machine with the game and your request, and returns a ticket; poll with status (its run_dir). With id and name, play starts at the scenario's state (or the end of its recording from) and becomes that recording, with coverage. Without, from media or from_state: state.bin, input.json, note and F6 marks. See guide topic input.").screen() },
         def::<crate::port::PortInitArgs>("port_init", "Write a port's workspace in dest: the Bevy template, goal.toml, the catalogue, the disc and BIOS linked in, and this MCP server for the agent working there. See guide topic port."),
         def::<crate::template::TemplateUpdateArgs>("port_update", "Update the project's psx-bevy/ and vendor/ files to this build; edited files get a .psx-new copy. See guide topic port."),
-        def::<crate::port::PortStatusArgs>("port_status", "In a port's workspace: the goal's features by area and stage, their verdicts, problems in the goal or catalogue, and the item due now. plain=true: text for the person. See guide topic port.").read_only(),
+        def::<crate::port::PortStatusArgs>("port_status", "In a port's workspace: the goal's features by area and stage, with their recordings, branches of their code resolved, open questions and review, problems in the goal or catalogue, and the item due now. plain=true: text for the person. See guide topic port.").read_only(),
         def::<crate::port::PortNextArgs>("port_next", "In a port's workspace: the one item due now (what, which feature, why, and the fact that shows it done). Start every session with it, and call it again after each item. See guide topic port."),
-        def::<crate::port::PortCheckArgs>("port_check", "In a port's workspace, at a clean commit: run the features' scenarios against the port and write their scenario verdicts. See guide topic port.").heavy(),
+        def::<crate::port::PortCheckArgs>("port_check", "In a port's workspace, at a clean commit: replay the recordings each feature names against the port and write their verdicts (held-out results are counted, not shown). See guide topic port.").heavy(),
     ]
 }
 

@@ -286,16 +286,16 @@ Each quantity's first tick out of tolerance is reported.
 
 ## 6. Stages
 
-- **Stage 2 (captured)** needs the feature's scenarios:
-  - its entry names at least one recording;
-  - each of their scenarios' files check, and it has a captured recording;
-  - each scenario passed `psx scenario check` as its files stand.
+The stages are port-design.md's (section 5). Scenarios decide two of them:
 
-  `port next` gives the Scenario item until they do.
-- **Stage 3 (implemented)** holds when the last `port check` at HEAD shows a
-  launcher for each of the feature's scenario kinds, and each quantity they
-  compare observed in a scenario the port launched.
-- **Stage 4 (verified)** needs the scenario verdict to pass at HEAD.
+- **Recorded** needs the feature's work recordings ready: its entry names
+  at least one; each of their scenarios' files check, with a captured
+  recording, and passed `psx scenario check` as its files stand; and each
+  recording's coverage counts against the inventory. `port next` gives the
+  Record item until they do.
+- **Matching** needs every work recording to pass the last `port check`
+  at HEAD. Before that, `port next` gives Build while the port has no
+  launcher for a scenario kind or does not observe a compared quantity.
 
 A recording may take a branch whose effect does not reach a compared
 quantity before it ends, so a port that took the other way could still

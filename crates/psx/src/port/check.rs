@@ -2,13 +2,14 @@
 //! game's `tests/scenarios.rs`, `psx_bevy::scenario`) and writes their
 //! scenario verdicts.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::next::Git;
-use super::verdict::{self, Kind, Verdict};
+use super::verdict::{self, Verdict};
 use super::{Entry, Port};
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
@@ -37,37 +38,24 @@ pub struct ScenarioRun {
 pub struct RecordingRun {
     pub name: String,
     #[serde(default)]
-    pub captured: bool,
-    #[serde(default)]
     pub failures: Vec<String>,
 }
 
-/// The scenario run's failures for one feature: no scenarios, what the
-/// report says of each, and recordings on disk it did not run.
-fn scenario_failures(root: &Path, e: &Entry, report: &ScenarioReport) -> Vec<String> {
-    let scenarios = e.scenarios();
-    if scenarios.is_empty() {
-        return vec![format!("{}: names no recordings", e.file)];
-    }
-    let mut out = Vec::new();
-    for id in &scenarios {
-        let Some(s) = report.scenarios.iter().find(|s| &s.id == id) else {
-            out.push(format!("{id}: not run (no scenarios/{id}.toml)"));
-            continue;
+/// Each recording the entry names, with what the scenario run found:
+/// its failures, its scenario's problems, or that it did not run.
+fn recording_results(e: &Entry, report: &ScenarioReport) -> BTreeMap<String, Vec<String>> {
+    let mut out = BTreeMap::new();
+    for name in e.recordings.all() {
+        let (id, rec) = name.split_once('/').unwrap_or((name.as_str(), ""));
+        let failures = match report.scenarios.iter().find(|s| s.id == id) {
+            None => vec![format!("not run: no scenarios/{id}.toml")],
+            Some(s) if !s.problems.is_empty() => s.problems.clone(),
+            Some(s) => match s.recordings.iter().find(|r| r.name == rec) {
+                None => vec!["not run: the scenario test has no such recording".into()],
+                Some(r) => r.failures.clone(),
+            },
         };
-        out.extend(s.problems.iter().map(|p| format!("{id}: {p}")));
-        for r in &s.recordings {
-            out.extend(r.failures.iter().map(|f| format!("{id} {}: {f}", r.name)));
-        }
-        let on_disk = crate::scenario::Loaded::load(root, id).recordings;
-        for (name, _, _) in &on_disk {
-            if !s.recordings.iter().any(|r| &r.name == name) {
-                out.push(format!("{id} {name}: not run"));
-            }
-        }
-        if !s.recordings.iter().any(|r| r.captured) && s.problems.is_empty() {
-            out.push(format!("{id}: no captured recording run"));
-        }
+        out.insert(name.clone(), failures);
     }
     out
 }
@@ -174,25 +162,28 @@ impl PortCheckArgs {
         crate::write_atomic(&p, &serde_json::to_vec_pretty(&last).unwrap_or_default()).map_err(|e| Error::io(&p, e))?;
         let mut verdicts = Vec::new();
         for e in features {
-            let failures: Vec<String> = match &ran {
-                Ok(r) => scenario_failures(root, e, r),
-                Err(why) => vec![why.clone()],
+            let (failures, recordings) = match &ran {
+                Ok(r) => (Vec::new(), recording_results(e, r)),
+                Err(why) => (vec![why.clone()], BTreeMap::new()),
             };
-            let kind = Kind::Scenario;
             let v = Verdict {
                 feature: e.id.clone(),
-                kind: kind.name().into(),
                 commit: head.clone(),
                 clean: true,
                 at: crate::stamp::utc_now(),
-                passed: failures.is_empty(),
                 failures,
+                recordings,
             };
-            let p = verdict::path(root, &e.id, kind);
-            std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| Error::io(&p, e))?;
-            crate::write_atomic(&p, &serde_json::to_vec_pretty(&v).unwrap_or_default())
-                .map_err(|e| Error::io(&p, e))?;
-            verdicts.push(json!({"feature": v.feature, "kind": v.kind, "passed": v.passed, "failures": v.failures}));
+            verdict::write(root, &v)?;
+            // Held-out recordings are counted, not shown: port status shows
+            // them once the feature is reviewed.
+            let work: BTreeMap<&String, Vec<String>> = e.recordings.work.iter().map(|r| (r, v.of(r))).collect();
+            let mut row = json!({"feature": v.feature, "passed": work.values().all(Vec::is_empty) && !work.is_empty(),
+                                 "work": work, "held_out": e.recordings.held_out.len()});
+            if !v.failures.is_empty() {
+                row["failures"] = json!(v.failures);
+            }
+            verdicts.push(row);
         }
         Ok(json!({"commit": head, "verdicts": verdicts}))
     }
@@ -201,5 +192,29 @@ impl PortCheckArgs {
 impl Op for PortCheckArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::result(self.run(&ctx.root))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_named_recording_gets_what_the_run_found() {
+        let report: ScenarioReport = serde_json::from_value(json!({"scenarios": [
+            {"id": "jump", "recordings": [{"name": "stomp", "failures": []},
+                                          {"name": "long", "failures": ["tick 4 croc_y: expected 3, got 2"]}]},
+            {"id": "swim", "problems": ["no launcher registered for scenario kind water"]},
+        ]}))
+        .unwrap();
+        let mut e = Entry::default();
+        e.recordings.work = vec!["jump/stomp".into(), "jump/long".into(), "jump/gone".into()];
+        e.recordings.held_out = vec!["swim/lap".into(), "walk/a".into()];
+        let r = recording_results(&e, &report);
+        assert_eq!(r["jump/stomp"], Vec::<String>::new());
+        assert_eq!(r["jump/long"], ["tick 4 croc_y: expected 3, got 2"]);
+        assert_eq!(r["jump/gone"], ["not run: the scenario test has no such recording"]);
+        assert_eq!(r["swim/lap"], ["no launcher registered for scenario kind water"]);
+        assert_eq!(r["walk/a"], ["not run: no scenarios/walk.toml"]);
     }
 }

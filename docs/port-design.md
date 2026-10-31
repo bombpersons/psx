@@ -152,10 +152,10 @@ belongs shared), but not the disassembly, and judges it against the
 workspace's AGENTS.md. Its findings go in `reviews/<id>.md`:
 
 ```markdown
----
-commit: 3f2a91c
-files: [game/src/croc/jump.rs, game/src/croc/mod.rs]
----
++++
+commit = "3f2a91c"
+files = ["game/src/croc/jump.rs", "game/src/croc/mod.rs"]
++++
 ## Stomp is a bool beside the jump state
 `stomping: bool` lives next to `JumpState`; a stomp is a state of the jump.
 **Answer:** fixed in 7c01d2e: `JumpState::Stomp { hang }`.

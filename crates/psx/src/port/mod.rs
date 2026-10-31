@@ -18,6 +18,7 @@ pub mod check;
 mod confirm;
 mod init;
 pub mod next;
+pub mod review;
 pub mod verdict;
 
 pub use check::PortCheckArgs;
@@ -181,30 +182,37 @@ pub fn entry_addr(s: &str) -> Option<u32> {
     (!h.is_empty() && h.len() <= 8).then(|| u32::from_str_radix(h, 16).ok()).flatten()
 }
 
-/// A feature's stage (design section 9): each holds when its check, a fact
-/// read from the workspace's files, holds and so do the ones before it.
+/// A feature's stage (docs/port-design.md, section 5): each holds when its
+/// fact, read from the workspace's files, holds and so do the ones before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Stage {
+    /// It has a catalogue entry.
     Catalogued,
-    Captured,
-    Implemented,
-    Verified,
+    /// Its entry names its code.
+    Located,
+    /// It names work recordings, and their scenarios pass the determinism check.
+    Recorded,
+    /// Every work recording passes at HEAD.
+    Matching,
+    /// Every branch of its code covered or confirmed won't-reach, no question
+    /// open, and a review that holds.
     Reviewed,
-    Extracted,
+    /// Its held-out recordings pass.
+    Done,
 }
 
 impl Stage {
     pub const ALL: [Stage; 6] =
-        [Stage::Catalogued, Stage::Captured, Stage::Implemented, Stage::Verified, Stage::Reviewed, Stage::Extracted];
+        [Stage::Catalogued, Stage::Located, Stage::Recorded, Stage::Matching, Stage::Reviewed, Stage::Done];
 
     pub fn name(self) -> &'static str {
         match self {
             Stage::Catalogued => "catalogued",
-            Stage::Captured => "captured",
-            Stage::Implemented => "implemented",
-            Stage::Verified => "verified",
+            Stage::Located => "located",
+            Stage::Recorded => "recorded",
+            Stage::Matching => "matching",
             Stage::Reviewed => "reviewed",
-            Stage::Extracted => "extracted",
+            Stage::Done => "done",
         }
     }
 }
@@ -244,34 +252,36 @@ fn problem(file: &str, problem: impl Into<String>) -> Problem {
     Problem { file: file.to_string(), problem: problem.into() }
 }
 
-/// One catalogue file: its entry, or why it is not one.
-fn entry(file: &str, text: &str) -> Result<Entry, String> {
+/// The front matter's text and what follows it, or why there is none.
+pub(crate) fn split_front(text: &str) -> Result<(String, String), String> {
     let mut lines = text.split_inclusive('\n');
     let first = lines.next().unwrap_or_default().trim();
     if first != "+++" {
         return Err(if first == "---" {
-            "its front matter is TOML between +++ lines (catalogue/README.md), not ---".into()
+            "its front matter is TOML between +++ lines, not ---".into()
         } else {
             "no front matter: the file starts with +++, its TOML fields, and +++".into()
         });
     }
-    let (mut front, mut closed) = (String::new(), false);
+    let mut front = String::new();
     for line in lines.by_ref() {
         if line.trim() == "+++" {
-            closed = true;
-            break;
+            return Ok((front, lines.collect()));
         }
         front.push_str(line);
     }
-    if !closed {
-        return Err("its front matter is never closed by a +++ line".into());
-    }
+    Err("its front matter is never closed by a +++ line".into())
+}
+
+/// One catalogue file: its entry, or why it is not one.
+fn entry(file: &str, text: &str) -> Result<Entry, String> {
+    let (front, body) = split_front(text)?;
     let mut e: Entry = toml::from_str(&front).map_err(|e| format!("front matter: {}", e.message()))?;
     let stem = Path::new(file).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     if e.id != stem {
         return Err(format!("its id is {:?}; a file's id is its name ({stem})", e.id));
     }
-    e.description = lines.collect::<String>().trim().to_string();
+    e.description = body.trim().to_string();
     e.file = file.to_string();
     Ok(e)
 }
@@ -735,7 +745,7 @@ pub(crate) mod tests {
         assert_eq!(e.scenarios(), ["jump"]);
         // The old YAML front matter, and an unknown field, say what is wrong.
         let (_d, port) = workspace(goal, &[("F-0001.md", "---\nid: F-0001\n---\n")]);
-        assert!(port.problems[0].problem.contains("TOML between +++ lines"));
+        assert!(port.problems[0].problem.contains("TOML between +++ lines"), "{:?}", port.problems);
         let (_d, port) = workspace(goal, &[("F-0001.md", &entry("scenarios = []"))]);
         assert!(port.problems[0].problem.contains("unknown field `scenarios`"), "{:?}", port.problems);
     }

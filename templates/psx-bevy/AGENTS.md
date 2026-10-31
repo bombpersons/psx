@@ -11,8 +11,10 @@ evidence.
 When the workspace has `goal.toml`, psx leads the work. Call `port_next`: it
 gives one item (what, for which feature, why, and the fact that will show it
 done). Do it until that fact holds, commit, and call `port_next` again.
-`port_status` shows every feature of the goal by stage. An item for the
-person (Confirm, Stuck) waits for them: tell them and stop. psx's `guide`
+Name the feature's id in each of its commits (`F-0003: stomp hang`): its
+review finds the feature's files by them. `port_status` shows every
+feature of the goal by stage. An item for the person (Confirm, Play,
+Stuck) waits for them: tell them and stop. psx's `guide`
 tool, topic `port`, explains each item; `catalogue/README.md` has the feature
 format. psx writes `.psx/verdicts/`; never edit them.
 

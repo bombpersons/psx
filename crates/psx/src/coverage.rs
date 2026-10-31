@@ -540,6 +540,65 @@ impl Functions {
     }
 }
 
+/// A feature's branches, as its recordings ran them.
+#[derive(Debug, Default)]
+pub(crate) struct FeatureBranches {
+    /// Each conditional branch in the feature's functions: its address,
+    /// its function's entry, and the ways its recordings took (1 taken,
+    /// 2 fell through).
+    pub branches: Vec<(u32, u32, u8)>,
+    /// What keeps the count from being whole: recordings whose coverage
+    /// is missing or no longer credited.
+    pub problems: Vec<String>,
+}
+
+/// The conditional branches of the functions `code` (by entry) and the
+/// ways the `recordings` (`.jsonl` paths) took them.
+pub(crate) fn feature_branches(ctx: &Ctx, inv: &Value, recordings: &[PathBuf], code: &[u32]) -> FeatureBranches {
+    let mut out = FeatureBranches::default();
+    let mut c = match images(&ctx.root, inv) {
+        Ok(images) => Corpus { images, runs: Vec::new(), calls: Vec::new(), missing: BTreeMap::new() },
+        Err(e) => {
+            out.problems.push(format!("the inventory's code: {}", e.message));
+            return out;
+        }
+    };
+    for (r, path) in recordings.iter().enumerate() {
+        match recording(&mut c, r, path) {
+            Ok(row) if row.get("not_credited").is_some() => out.problems.push(format!(
+                "{}: its coverage is not the inventory's code ({}): scenario record it again",
+                rel_path(ctx, path),
+                row["not_credited"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            Ok(_) => {}
+            Err(e) => out.problems.push(e.message),
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for img in &c.images {
+        for f in img.functions.iter().filter(|f| code.contains(&f.entry)) {
+            for a in f.words() {
+                if img.word(a).is_some_and(conditional) && seen.insert(a) {
+                    let w = img.ways.get(((a - img.base) / 4) as usize).copied().unwrap_or(0);
+                    out.branches.push((a, f.entry, w));
+                }
+            }
+        }
+    }
+    out.branches.sort_unstable();
+    out
+}
+
+fn rel_path(ctx: &Ctx, p: &Path) -> String {
+    p.strip_prefix(&ctx.root).unwrap_or(p).display().to_string()
+}
+
 /// Whether `i` is a conditional branch: one that can both be taken and fall
 /// through (`beq zero, zero` always jumps, `bne zero, zero` never does).
 fn conditional(i: u32) -> bool {
