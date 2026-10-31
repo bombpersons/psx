@@ -2,9 +2,11 @@
 //! someone who did not write it (docs/port-design.md, The review). It asks
 //! whether the code is what one would write for a new game, not whether it
 //! does what the original does (the recordings check that). TOML front
-//! matter between `+++` lines names the commit reviewed; each finding is a
-//! `## ` section, answered by a `**Answer:**` line. The review holds while
-//! the code is unchanged since its commit and every finding has an answer.
+//! matter between `+++` lines names the commit reviewed and the features
+//! finished then; each finding is a `## ` section, answered by a
+//! `**Answer:**` line. The review holds while the code is unchanged since
+//! its commit and every finding has an answer. A review comes each time a
+//! feature finishes its own work, so each reads about one feature's change.
 
 use std::path::Path;
 
@@ -21,6 +23,8 @@ pub const CODE: [&str; 2] = ["game", "tools"];
 #[serde(deny_unknown_fields)]
 struct Front {
     commit: String,
+    #[serde(default)]
+    features: Vec<String>,
 }
 
 /// The review as it stands.
@@ -75,6 +79,17 @@ fn findings(body: &str) -> Vec<(String, bool)> {
 
 fn git(root: &Path, args: &[&str]) -> Option<std::process::Output> {
     std::process::Command::new("git").args(args).current_dir(root).output().ok()
+}
+
+/// The features the review lists as finished when it was written; none
+/// without a readable review.
+pub fn features(root: &Path) -> Vec<String> {
+    std::fs::read_to_string(root.join(REVIEW))
+        .ok()
+        .and_then(|t| split_front(&t).ok())
+        .and_then(|(front, _)| toml::from_str::<Front>(&front).ok())
+        .map(|f| f.features)
+        .unwrap_or_default()
 }
 
 /// The review in the workspace `root`.
@@ -145,6 +160,9 @@ mod tests {
         assert_eq!(read(root), Review::Open { unanswered: vec!["A finding".into()] });
         write("## A finding\nwhat and why\n**Answer:** done in the next commit\n");
         assert_eq!(read(root), Review::Holds { commit: head.clone(), findings: 1 });
+        assert_eq!(features(root), Vec::<String>::new());
+        std::fs::write(root.join(REVIEW), format!("+++\ncommit = \"{head}\"\nfeatures = [\"F-0001\"]\n+++\n")).unwrap();
+        assert_eq!((read(root).holds(), features(root)), (true, vec!["F-0001".to_string()]));
         // What is not code leaves it holding.
         std::fs::create_dir_all(root.join("catalogue")).unwrap();
         std::fs::write(root.join("catalogue/F-0001.md"), "+++\n+++\n").unwrap();

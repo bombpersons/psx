@@ -175,6 +175,12 @@ fn earliest(rs: &[(String, Option<Vec<String>>)]) -> Option<(String, String)> {
 }
 
 impl Feature {
+    /// Its own work is finished: matching, every branch resolved, no
+    /// question open.
+    pub fn finished(&self) -> bool {
+        self.matching() && self.branches_resolved() && self.questions.is_empty()
+    }
+
     pub fn matching(&self) -> bool {
         matches!(self.verdict, State::Current(_)) && all_pass(&self.work)
     }
@@ -316,6 +322,8 @@ pub struct Facts {
     pub needs: assets::Needs,
     /// The code's review.
     pub review: Review,
+    /// The features it lists as finished when it was written.
+    pub review_features: Vec<String>,
 }
 
 impl Facts {
@@ -436,7 +444,8 @@ impl Facts {
         if let Ok(a) = &assets {
             port.problems.extend(a.problems.iter().cloned());
         }
-        Ok(Facts { port, git, features, unpack, assets, needs: goal_needs, review })
+        let review_features = review::features(root);
+        Ok(Facts { port, git, features, unpack, assets, needs: goal_needs, review, review_features })
     }
 
     pub fn stage(&self, id: &str) -> Option<Stage> {
@@ -528,6 +537,20 @@ impl Facts {
         }
         let find = |pred: &dyn Fn(&Feature) -> bool| self.features.iter().find(|f| pred(f));
         let at = |f: &Feature, s: Stage| f.stage().is_some_and(|x| x >= s);
+        // A feature finished since the last review: a review of the
+        // change, so each reads about one feature's work; findings are
+        // answered as they come.
+        let unreviewed: Vec<&str> = self
+            .features
+            .iter()
+            .filter(|f| f.finished() && !self.review_features.contains(&f.id))
+            .map(|f| f.id.as_str())
+            .collect();
+        if matches!(self.review, Review::Open { .. } | Review::Invalid(_))
+            || (!unreviewed.is_empty() && !self.review.holds())
+        {
+            return self.review_item(format!("{} finished its own work since the last review", unreviewed.join(", ")));
+        }
         // 0. The assets a feature's recordings need to replay.
         if let Some(item) = self.features.iter().find_map(|f| self.asset_item(Some(&f.id), &f.assets)) {
             return item;
@@ -639,42 +662,8 @@ impl Facts {
         }
         // 7. The review of the code as a whole, once the rest of the
         // goal's work is finished.
-        let finished = |f: &Feature| f.matching() && f.branches_resolved() && f.questions.is_empty();
-        if self.features.iter().all(finished) && !self.review.holds() {
-            let done = "the review holds: the code (game/, tools/) unchanged since its commit, every finding answered";
-            return match &self.review {
-                Review::Open { unanswered } => Item::agent(
-                    "Review",
-                    None,
-                    format!("findings without an answer: {}", first_lines(unanswered).join("; ")),
-                    done,
-                    &format!(
-                        "answer each finding in {} with an **Answer:** line: done (restructure as it asks, keeping what the code does: psx port check must pass again), or kept and why; changed code then has a follow-up review of the changes",
-                        review::REVIEW
-                    ),
-                ),
-                Review::Invalid(why) => Item::agent(
-                    "Review",
-                    None,
-                    format!("{} is not a review: {why}", review::REVIEW),
-                    done,
-                    "write the review's front matter as the brief says: +++, commit, +++",
-                ),
-                Review::Stale { commit, changed } => Item::agent(
-                    "Review",
-                    None,
-                    format!("the code changed since the review: {}", first_lines(changed).join(", ")),
-                    done,
-                    &self.follow_up(commit),
-                ),
-                _ => Item::agent(
-                    "Review",
-                    None,
-                    "the goal's features are finished and the code has no review".into(),
-                    done,
-                    &self.brief(),
-                ),
-            };
+        if self.features.iter().all(Feature::finished) && !self.review.holds() {
+            return self.review_item("the goal's features are finished".into());
         }
         // 8. Held-out recordings, played by the person.
         if let Some(f) = find(&|f| f.reviewed() && f.held_out.is_empty()) {
@@ -818,13 +807,52 @@ impl Facts {
         })
     }
 
+    /// The features whose own work is finished now.
+    fn finished_ids(&self) -> Vec<String> {
+        self.features.iter().filter(|f| f.finished()).map(|f| f.id.clone()).collect()
+    }
+
+    /// The review item due, `why` it is due when the review is missing or
+    /// stale.
+    fn review_item(&self, why: String) -> Item {
+        let done = "the review holds: the code (game/, tools/) unchanged since its commit, every finding answered, its features the ones finished";
+        match &self.review {
+            Review::Open { unanswered } => Item::agent(
+                "Review",
+                None,
+                format!("findings without an answer: {}", first_lines(unanswered).join("; ")),
+                done,
+                &format!(
+                    "answer each finding in {} with an **Answer:** line: done (restructure as it asks, keeping what the code does: psx port check must pass again), or kept and why; changed code has a follow-up review when the next feature finishes",
+                    review::REVIEW
+                ),
+            ),
+            Review::Invalid(why) => Item::agent(
+                "Review",
+                None,
+                format!("{} is not a review: {why}", review::REVIEW),
+                done,
+                "write the review's front matter as the brief says: +++, commit, features, +++",
+            ),
+            Review::Stale { commit, changed } => Item::agent(
+                "Review",
+                None,
+                format!("{why}, and the code changed since the review: {}", first_lines(changed).join(", ")),
+                done,
+                &self.follow_up(commit),
+            ),
+            _ => Item::agent("Review", None, format!("{why}, and the code has no review"), done, &self.brief()),
+        }
+    }
+
     /// The Review item's brief, for a reviewer who has not seen the work.
     fn brief(&self) -> String {
         format!(
-            "Give this brief to a reviewer who has not seen the work (a sub-agent or a new session): review the port's code as a whole, {code} (git ls-files {code}). Its recordings already check that it does what the original does, so this review does not: leave the catalogue, the notes and the original's code unread. Ask instead: would you write a new game like this? Judge it as code written for a new game today, not as a port: how it is divided (modules, plugins, systems, components, data), names, how readily it takes more (another character, level or rule), duplication, and what is shaped by the original rather than chosen. AGENTS.md's \"The code\" says what the tools rely on. Write {review}: front matter between +++ lines with commit = \"{head}\", then one ## heading per finding: what you would change, the shape you would choose instead and why; what the code does stays as it is. The writer then answers each finding with an **Answer:** line.",
+            "Give this brief to a reviewer who has not seen the work (a sub-agent or a new session): review the port's code as a whole, {code} (git ls-files {code}). Its recordings already check that it does what the original does, so this review does not: leave the catalogue, the notes and the original's code unread. Ask instead: would you write a new game like this? Judge it as code written for a new game today, not as a port: how it is divided (modules, plugins, systems, components, data), names, how readily it takes more (another character, level or rule), duplication, and what is shaped by the original rather than chosen. AGENTS.md's \"The code\" says what the tools rely on. Write {review}: front matter between +++ lines with commit = \"{head}\" and features = {features}, then one ## heading per finding: what you would change, the shape you would choose instead and why; what the code does stays as it is. The writer then answers each finding with an **Answer:** line.",
             code = review::CODE.join(" "),
             review = review::REVIEW,
             head = self.git.head.as_deref().unwrap_or("HEAD"),
+            features = toml::Value::from(self.finished_ids()),
         )
     }
 
@@ -832,10 +860,11 @@ impl Facts {
     /// what that review read is not read again.
     fn follow_up(&self, commit: &str) -> String {
         format!(
-            "Give this brief to a reviewer who did not write the changes (a sub-agent or a new session): a follow-up review of the port's code. The review at {commit} read the code then; read only what changed since: git diff {commit} -- {code}, with the findings and answers in {review} (are the changes what the answers say?). Ask of the changed code what the review asked: would you write a new game like this? If the changes rewrite most of the code, review it whole. Leave the catalogue, the notes and the original's code unread: the recordings check what the code does. Keep the findings and answers already in {review}; set its commit to \"{head}\", and add one ## heading per new finding: what you would change, the shape you would choose instead and why; with none, the commit is all that changes. The writer then answers each new finding with an **Answer:** line.",
+            "Give this brief to a reviewer who did not write the changes (a sub-agent or a new session): a follow-up review of the port's code. The review at {commit} read the code then; read what changed since: git diff {commit} -- {code}, with the findings and answers in {review} (are the changes what the answers say?), and enough of the code around it to judge how the change fits the whole (how the code is divided, what a new feature reuses or duplicates). Ask what the review asked: would you write a new game like this? If the changes rewrite most of the code, review it whole. Leave the catalogue, the notes and the original's code unread: the recordings check what the code does. Keep the findings and answers already in {review}; set its commit to \"{head}\" and its features to {features}, and add one ## heading per new finding: what you would change, the shape you would choose instead and why; with none, the commit is all that changes. The writer then answers each new finding with an **Answer:** line.",
             code = review::CODE.join(" "),
             review = review::REVIEW,
             head = self.git.head.as_deref().unwrap_or("HEAD"),
+            features = toml::Value::from(self.finished_ids()),
         )
     }
 
@@ -1221,6 +1250,13 @@ mod tests {
             x.held_out = results(&[("walk/h", &["tick 1 x: expected 0, got 1"])]);
         });
         assert_eq!(f.stage("F-0001"), Some(Stage::Matching));
+        // F-0001's own work is finished: a review of it comes before more work.
+        let item = f.next();
+        assert_eq!(item.item, "Review");
+        assert_eq!(item.why, "F-0001 finished its own work since the last review, and the code has no review");
+        assert!(item.how.contains("features = [\"F-0001\"]"), "{}", item.how);
+        // Once a review lists them, the review waits for the next feature to finish, or the goal.
+        f.review_features = vec!["F-0001".into(), "F-0002".into()];
         let item = f.next();
         assert_eq!((item.item, item.feature.as_deref()), ("Fix", Some("F-0002")));
         assert_eq!(item.why, "walk/c fails: tick 4 y: expected 3, got 2");
@@ -1411,6 +1447,30 @@ mod tests {
             f.assets_named("/NOPE.*").unwrap()["unresolved"],
             "matches no disc file or archive entry (code files are not assets)"
         );
+    }
+
+    #[test]
+    fn a_review_comes_each_time_a_feature_finishes() {
+        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        finished(&mut f, vec![]);
+        // F-0002 still has work: a branch its recordings never took.
+        set(&mut f, "F-0002", |x| x.branches = vec![Branch::code(0x8002_D820, 0x8002_D810, 1, None)]);
+        let next = |f: &Facts| (f.next().item, f.next().why, f.next().how);
+        // A review that holds at HEAD saw the finished code: nothing to review.
+        review(&mut f, Review::Holds { commit: "abc".into(), findings: 0 });
+        assert_eq!(next(&f).0, "Cover");
+        // Changed since, and F-0001 not listed: a follow-up of the change.
+        review(&mut f, Review::Stale { commit: "abc".into(), changed: vec!["game/src/run.rs".into()] });
+        let (item, why, how) = next(&f);
+        assert_eq!(item, "Review");
+        assert!(why.starts_with("F-0001 finished its own work since the last review, and the code changed"), "{why}");
+        assert!(how.contains("git diff abc") && how.contains("its features to [\"F-0001\"]"), "{how}");
+        // Listed: building F-0002 changes the code without a review each time.
+        f.review_features = vec!["F-0001".into()];
+        assert_eq!(next(&f).0, "Cover");
+        // Findings are answered as they come.
+        review(&mut f, Review::Open { unanswered: vec!["Run is a bool".into()] });
+        assert_eq!(next(&f).0, "Review");
     }
 
     #[test]

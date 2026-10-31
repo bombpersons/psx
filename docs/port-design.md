@@ -179,6 +179,7 @@ prove it still does. The findings go in `review.md`:
 ```markdown
 +++
 commit = "3f2a91c"
+features = ["F-0001", "F-0002"]
 +++
 ## One plugin per feature
 Running, the jump and the stomp are four plugins sharing one step order;
@@ -196,13 +197,23 @@ its answers made, among others) asks for a follow-up: a reviewer reads
 only the diff since that commit, keeps the findings and answers, moves the
 commit on and adds new findings.
 
-One review covers the whole code, once the goal's features work, rather
-than one per feature as each is finished. Croc's movement showed why: each
-feature's reviewer read that feature's slice and checked it against its
-catalogue entry, so nobody saw that running, the jump and the stomp had
-become four plugins where a game written from scratch would have one
-character controller; and a whole review after every fix, with a comment
-changed in a file three features share, brought six rounds.
+One review covers the whole code, not one per feature. Croc's movement
+showed why: each feature's reviewer read that feature's slice and checked
+it against its catalogue entry, so nobody saw that running, the jump and
+the stomp had become four plugins where a game written from scratch would
+have one character controller; and a whole review after every fix, with a
+comment changed in a file three features share, brought six rounds.
+
+It comes each time a feature finishes its own work (matching, branches
+resolved, no question open), not only once the goal's features all
+have: a whole port reviewed only at the end would be one huge review,
+and a shape chosen badly for the first feature would carry every feature
+built on it. The review's front matter lists the features finished when
+it was written (`features = ["F-0001"]`); a finished feature it does not
+list, with the code changed since, asks for a follow-up. Building the
+next feature changes the code without asking for one, and findings are
+answered as they come. The follow-up reads the change in the shape of the
+code around it, so the whole is still what is judged.
 
 ### `port status`
 
@@ -238,7 +249,9 @@ One item, in this order:
    an archive not listed, then an importer not yet checked.
 7. Every feature's own work finished (matching, branches resolved, no
    question open) and the code without a current review: the review's
-   brief, a follow-up's, or the unanswered findings.
+   brief, a follow-up's, or the unanswered findings. The same comes
+   before item 0 when a feature finishes its own work and the review does
+   not list it, and whenever findings have no answer.
 8. A feature without held-out recordings, the code reviewed: the person's.
 
 Items for the person (**Play**, **Confirm**) stop the agent until the

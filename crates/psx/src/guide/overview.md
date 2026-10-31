@@ -208,17 +208,15 @@ port_next's items, in this order:
   play it, or list it under wont_reach.
 - Confirm (person): wont_reach branches not confirmed as they stand.
 - Format, Index, Import, Check (the goal's assets): see Assets.
-- Review: every feature's own work is finished and the code (game/,
-  tools/) has no review that holds. One review covers the code as a whole
-  and asks whether one would write a new game like this, not whether it
-  matches the original (the recordings check that). how is the brief for
-  someone who did not write it (a sub-agent or a fresh session). Findings
-  go in review.md: TOML front matter (commit) between +++ lines, then one
-  ## heading per finding, each answered with an **Answer:** line: done,
-  restructured with port_check passing again, or kept and why. It holds
-  while the code is unchanged since its commit; once it changes, how is
-  the brief for a follow-up that reads only the changes since then (git
-  diff) and keeps the findings.
+- Review: a feature finished its own work since the last review (or
+  every feature has) and the code (game/, tools/) has no review that
+  holds; also findings without an answer. It asks whether one would write
+  a new game like this, not whether it matches the original. how is the
+  brief for someone who did not write it (a sub-agent or a fresh session):
+  the whole code first, then follow-ups of the changes since (git diff).
+  review.md: TOML front matter (commit, features finished) between +++
+  lines, then one ## heading per finding, each answered with an
+  **Answer:** line: done, with port_check passing again, or kept and why.
 - Play (person): a feature without held-out recordings, the code
   reviewed: start scenario_play and name the recording under held_out.
 - Stuck (person): the same item three times with nothing changed.

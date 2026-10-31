@@ -173,6 +173,14 @@ mechanic code are worth keeping, so they move out first.
     Built: goal.toml's `assets` takes names, a catalogue entry `assets`,
     and the confirmation keeps the names.
 
+    Also before Croc: **a review each time a feature finishes**, not only
+    once the goal's features all have, so a whole port is not one huge
+    review at the end. The review lists the features finished when it was
+    written; a finished feature it does not list, with the code changed
+    since, asks for a follow-up of the change (port-design.md, The
+    review). Built; to be judged after the Croc example, on how its
+    reviews went.
+
     Then Croc, by the porting agent in Croc's workspace through `port
     next`, with the person confirming and playing:
     1. Settle the Cover items step 23 found (recordings, or wont_reach

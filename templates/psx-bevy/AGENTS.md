@@ -73,9 +73,10 @@ there is yours to decide. What the tools rely on:
 
 ## The review
 
-Once the goal's features work, the code is reviewed as a whole by someone
-who did not write it: a sub-agent or a fresh session, given the brief
-`port_next` prints. The recordings already check what the code does; the
+Each time a feature's own work is finished, the code is reviewed by
+someone who did not write it: a sub-agent or a fresh session, given the
+brief `port_next` prints (the whole code the first time, then what
+changed since). The recordings already check what the code does; the
 review asks whether you would write a new game like this, and its
 findings say how to restructure it. They go in `review.md`; answer each
 one: done (with `port_check` passing again), or kept and why.
