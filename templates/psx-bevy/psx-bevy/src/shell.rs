@@ -28,8 +28,8 @@ impl TickRate {
         Self::every_nth_field(region, 1)
     }
 
-    /// One logic tick per `fields` video fields (vblanks). Croc (PAL) waits
-    /// for two vblanks per game frame: `every_nth_field(Region::Pal, 2)` = 25 Hz.
+    /// One logic tick per `fields` video fields (vblanks). A PAL game waiting
+    /// for two vblanks per game frame is `every_nth_field(Region::Pal, 2)` = 25 Hz.
     pub fn every_nth_field(region: Region, fields: u32) -> Self {
         Self { hz: region.hz() / f64::from(fields.max(1)) }
     }

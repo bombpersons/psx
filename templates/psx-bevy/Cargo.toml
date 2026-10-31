@@ -5,7 +5,8 @@
 #   game/          the port, its assets and tests
 #   tools/import/  importers: the player's disc -> the port's asset formats
 #   glossary/      the quantities scenarios compare; glossary/binding/, where
-#                  the original keeps them, is added once written
+#                  the original keeps them, joins members once written
+#                  (vendor/psx-capture's crate docs)
 #   vendor/        psx-media, psx-assets, psx-fixed, psx-gte, psx-scenario and
 #                  psx-capture, vendored
 #

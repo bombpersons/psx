@@ -85,11 +85,11 @@ The glossary (glossary/src/lib.rs) names the quantities a scenario
 compares, in game terms:
 
   pub struct Quantities {
-      /// Croc's position across the level
+      /// The player's position across the level
       /// Unit: world units
-      pub croc_x: i32,
-      /// Croc stands on the ground; false through a jump
-      pub croc_on_ground: bool,
+      pub player_x: i32,
+      /// The player stands on the ground; false through a jump
+      pub player_on_ground: bool,
   }
 
 Fields are bool, integers, fixed-point aliases, enums or floats, each with a
@@ -97,18 +97,18 @@ doc comment and a Unit: line; the crate has no dependencies, macros,
 generics or unsafe code. Its binding, glossary/binding/ (a cdylib psx builds
 and loads), knows the PlayStation:
 
-  impl Glossary for Croc {
+  impl Glossary for Game {
       type Glue = glue::Glossary;
-      const TITLE: &str = "Croc (Europe) SLES-00593";
-      const IMAGE_SHA256: &str = "…";   // recording refuses other media
+      const TITLE: &str = "A Game (Europe) SLES-01234";
+      const IMAGE_SHA256: &str = "…";   // context's image_sha256
       /// The logic step: the main loop's accumulator -= 256.
-      fn tick(&self, t: &mut Tick) { t.store(0x8007_5240, 4).by(0x8001_3CA8); }
+      fn tick(&self, t: &mut Tick) { t.store(0x800A_1C30, 4).by(0x8001_52A4); }
       fn quantities(&self, m: &Machine) -> Quantities {
-          let croc = m.u32(0x8007_528C);
-          Quantities { croc_x: m.i32(croc + 0x370), croc_on_ground: m.u32(croc + 0x178) & 2 != 0 }
+          let player = m.u32(0x800A_2F18);
+          Quantities { player_x: m.i32(player + 0x24), player_on_ground: m.u32(player + 0x60) & 1 != 0 }
       }
   }
-  psx_capture::export_glossary!(Croc);
+  psx_capture::export_glossary!(Game);
 
 The tick is the store that ends one step of the game's logic; the
 quantities are read right after it, anew each tick (pointers and list walks
@@ -120,12 +120,12 @@ every second one, or draw as fast as they can. run with find_tick finds it
 A scenario, scenarios/<id>.toml, is a moment both the original and the port
 can reach:
 
-  moment = "Croc standing at the start of 1-1, the first step he can move"
+  moment = "the player at the start of 1-1, the first tick they can move"
   chain = "notes/states/level_1_1.json"   # how the original gets there
   kind = "level"                          # the port's launcher
   idle = 60                               # the determinism check's idle fields
   [compare]                               # quantity = tolerance, raw units
-  croc_x = 0
+  player_x = 0
   [parameters]                            # how the port gets there
   level = "1-1"
 

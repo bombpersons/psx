@@ -22,12 +22,12 @@ use psx_bevy::prelude::*;
 pub const TITLE: &str = "PSX game template — arrows, Z/X/C/S, Q/E, Enter";
 
 /// The original game's video region. It sets the display rate and, with
-/// [`FIELDS_PER_TICK`], the logic tick rate. Mega Man 8 and Croc (PAL) use
+/// [`FIELDS_PER_TICK`], the logic tick rate. A European release uses
 /// `Region::Pal`. `--region ntsc|pal` overrides it at run time.
 pub const REGION: Region = Region::Ntsc;
 
 /// Video fields per logic tick: 1 when the original's main loop runs every
-/// vblank, 2 when it waits for two (Croc PAL: 25 Hz logic on a 50 Hz display).
+/// vblank, 2 when it waits for two (PAL: 25 Hz logic on a 50 Hz display).
 pub const FIELDS_PER_TICK: u32 = 1;
 
 /// The original's display size in pixels: the PS1 screen target and, at 3x,

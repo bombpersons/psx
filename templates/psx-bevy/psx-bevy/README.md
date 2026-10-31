@@ -312,8 +312,7 @@ the same path. Synchronous loads use `assets::find` (the psx template's
   The tick rate is the game's, not the display's: the game's `lib.rs` sets `REGION`
   (60 Hz NTSC / 50 Hz PAL fields) and `FIELDS_PER_TICK`, giving
   `TickRate::every_nth_field(REGION, FIELDS_PER_TICK)`. Many PS1 games run their
-  logic every second field (Croc PAL: 25 Hz); Mega Man 8 PAL runs every field
-  (50 Hz). Changing the `TickRate` resource at run time retunes `Time<Fixed>`.
+  logic every second field (25 Hz on PAL), others every field (50 Hz). Changing the `TickRate` resource at run time retunes `Time<Fixed>`.
   `GameClock.frame` counts ticks. `psx port init --region pal
   --fields-per-tick 2` writes both constants when creating a project.
 - `Res<Time>` in `FixedUpdate` is one tick long, so speeds can be written per

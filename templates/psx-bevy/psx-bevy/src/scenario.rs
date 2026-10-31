@@ -15,30 +15,30 @@
 //! use crate::observed::Observed;
 //!
 //! #[derive(Component)]
-//! struct Croc {
+//! struct Player {
 //!     x: i32,
 //! }
 //!
 //! fn level(app: &mut App, p: &Parameters) -> Result<(), String> {
 //!     let level = p.get("level").and_then(|l| l.as_str()).ok_or("level: a name")?;
-//!     // In a game: load the level by name, then place Croc at its start.
+//!     // In a game: load the level by name, then place the player at its start.
 //!     let _ = level;
-//!     app.world_mut().spawn(Croc { x: 4096 });
+//!     app.world_mut().spawn(Player { x: 4096 });
 //!     Ok(())
 //! }
 //!
-//! struct CrocPlugin;
+//! struct PlayerPlugin;
 //!
-//! impl Plugin for CrocPlugin {
+//! impl Plugin for PlayerPlugin {
 //!     fn build(&self, app: &mut App) {
 //!         app.register_scenario("level", level).observe(|w: &mut World| Observed {
-//!             croc_x: w.query::<&Croc>().iter(w).next().map(|c| c.x),
+//!             player_x: w.query::<&Player>().iter(w).next().map(|c| c.x),
 //!             ..Observed::none()
 //!         });
 //!     }
 //! }
 //!
-//! // #[test] fn scenarios() { Scenarios::new(root, || { /* a headless app with CrocPlugin */ }).run(); }
+//! // #[test] fn scenarios() { Scenarios::new(root, || { /* a headless app with PlayerPlugin */ }).run(); }
 //! ```
 //!
 //! A misspelt or removed quantity is a compile error. Several plugins may

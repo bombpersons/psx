@@ -4,6 +4,30 @@
 //! machine. `psx scenario record` builds it, loads it, and asks it for the
 //! quantities at the end of every tick; the emulator is psx's.
 //!
+//! In a port's workspace it is `glossary/binding/`, a member of the
+//! workspace (root `Cargo.toml`), built with `cargo build -p glossary-binding`:
+//!
+//! ```toml
+//! [package]
+//! name = "glossary-binding"
+//! version.workspace = true
+//! edition.workspace = true
+//!
+//! [lib]
+//! crate-type = ["cdylib"]
+//!
+//! [dependencies]
+//! glossary = { path = ".." }
+//! psx-capture = { path = "../../vendor/psx-capture" }
+//!
+//! [build-dependencies]
+//! psx-scenario = { path = "../../vendor/psx-scenario" }
+//! ```
+//!
+//! Its `build.rs` writes the glue from the glossary's source:
+//! `psx_scenario::rust::write_glossary_glue(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))`.
+//! `src/lib.rs`:
+//!
 //! ```ignore
 //! use glossary::Quantities;
 //! use psx_capture::prelude::*;
@@ -12,24 +36,24 @@
 //!     include!(concat!(env!("OUT_DIR"), "/glue.rs"));
 //! }
 //!
-//! struct Croc;
+//! struct Game;
 //!
-//! impl Glossary for Croc {
+//! impl Glossary for Game {
 //!     type Glue = glue::Glossary;
-//!     const TITLE: &str = "Croc - Legend of the Gobbos (Europe) SLES-00593";
-//!     const IMAGE_SHA256: &str = "b30a…";
+//!     const TITLE: &str = "A Game (Europe) SLES-01234";
+//!     const IMAGE_SHA256: &str = "9f1c…";
 //!
 //!     fn tick(&self, t: &mut Tick) {
-//!         t.store(0x8007_5240, 4).by(0x8001_3CA8);
+//!         t.store(0x800A_1C30, 4).by(0x8001_52A4);
 //!     }
 //!
 //!     fn quantities(&self, m: &Machine) -> Quantities {
-//!         let croc = m.u32(0x8007_528C);
-//!         Quantities { croc_x: m.i32(croc + 0x370) }
+//!         let player = m.u32(0x800A_2F18);
+//!         Quantities { player_x: m.i32(player + 0x24) }
 //!     }
 //! }
 //!
-//! psx_capture::export_glossary!(Croc);
+//! psx_capture::export_glossary!(Game);
 //! ```
 //!
 //! The boundary with psx is two C functions ([`abi`]), so a binding built
@@ -277,7 +301,7 @@ pub trait Glossary {
     type Glue: Quantities;
     /// The release, in words.
     const TITLE: &'static str;
-    /// The image's identity, as `psx context` reports the media.
+    /// The image's identity: `psx context`'s `resolved.image_sha256` for the media.
     const IMAGE_SHA256: &'static str;
 
     fn tick(&self, t: &mut Tick);
@@ -323,7 +347,7 @@ mod tests {
 
         let mut t = Tick::default();
         assert!(t.json().is_err());
-        t.store(0x8007_5240, 4).by(0x8001_3CA8);
-        assert_eq!(t.json().unwrap(), format!(r#"{{"at":{},"bytes":4,"pc":{}}}"#, 0x8007_5240u32, 0x8001_3CA8u32));
+        t.store(0x800A_1C30, 4).by(0x8001_52A4);
+        assert_eq!(t.json().unwrap(), format!(r#"{{"at":{},"bytes":4,"pc":{}}}"#, 0x800A_1C30u32, 0x8001_52A4u32));
     }
 }

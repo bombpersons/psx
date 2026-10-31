@@ -87,8 +87,8 @@ player's disc image next to it (`src/disc.rs`, running `import::import` from
 
 - `REGION` sets the display rate (PAL 50 Hz, NTSC 60 Hz); logic runs at
   `TickRate::every_nth_field(REGION, FIELDS_PER_TICK)`. Set both from the
-  original's main loop: how many vblanks it waits per game frame (Croc PAL
-  waits for two: 25 Hz).
+  original's main loop: how many vblanks it waits per game frame (a PAL
+  game waiting for two runs at 25 Hz).
 - `SCREEN` is the original's display size, from its display mode (most show
   320x240).
 - Never run logic every Nth tick by counting frames: button edges would fall

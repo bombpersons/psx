@@ -313,6 +313,9 @@ impl ArgsContext {
                 .map_err(|e| Error::io(&profile, e))?;
         }
         let setup = r.setup_error().map(|e| e.to_value()["error"].take());
+        // The media's identity, which a glossary binding's IMAGE_SHA256 names.
+        let image_sha256 =
+            crate::run_native::open_media(r.media.as_deref()).ok().and_then(|m| m.id).map(|id| id.sha256);
         // In a port's workspace psx leads with port next; elsewhere port init
         // (it takes the region from the disc) makes one.
         let mut next_calls: Vec<Value> = if ctx.root.join(crate::port::GOAL).is_file() {
@@ -337,7 +340,7 @@ impl ArgsContext {
             "signatures":{"path":signatures,"available":signatures.is_dir(),
                 "selection":sigs_selection,
                 "layout":"<version>/<LIB>.json","override":"symbols.sigs / --sigs; shared default: PSX_SIGS_DIR (use an absolute path)"},
-            "resolved":{"media":r.media,"media_from":r.media_from,"bios":r.bios,"bios_selection":r.bios_reason,"disc_region_hint":r.region.map(|r|r.hint())},
+            "resolved":{"media":r.media,"media_from":r.media_from,"image_sha256":image_sha256,"bios":r.bios,"bios_selection":r.bios_reason,"disc_region_hint":r.region.map(|r|r.hint())},
             "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),
             "bios_download_catalog":bios::catalog(),"ghidra":crate::ghidra::status(),
             "state":r.state,"setup":setup,"capabilities":capabilities(),"warnings":r.warnings,

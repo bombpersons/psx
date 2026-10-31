@@ -74,7 +74,9 @@ pub fn glossary(root: &Path) -> Result<Glossary, Vec<String>> {
     }
     let binding = dir.join("binding/Cargo.toml");
     match std::fs::read_to_string(&binding) {
-        Err(_) => problems.push(format!("{GLOSSARY}/binding: not written yet")),
+        Err(_) => problems.push(format!(
+            "{GLOSSARY}/binding: not written yet (a cdylib package named glossary-binding, a member of the workspace; vendor/psx-capture's crate docs show it)"
+        )),
         Ok(t) if psx_scenario::rust::package_name(&t).as_deref() != Some("glossary-binding") => {
             problems.push(at("binding/Cargo.toml: the package is named \"glossary-binding\"".into()))
         }
@@ -253,7 +255,7 @@ fn machine(ctx: &Ctx, chain: &Json, state: &Path, source: &Release) -> crate::Re
         return Err(Error::new(
             "identity_mismatch",
             format!(
-                "the glossary's binding is for image {}, the chain's media is {} (its IMAGE_SHA256 is the media identity psx context reports)",
+                "the glossary's binding is for image {}, the chain's media is {} (its IMAGE_SHA256 is psx context's resolved.image_sha256 for the media)",
                 source.image_sha256, id.sha256
             ),
         ));
@@ -1192,7 +1194,7 @@ pub struct Quantities {
             glossary(root).unwrap_err(),
             [
                 "glossary.toml: no longer read: the glossary is Rust, glossary/ and glossary/binding/ (psx guide, Recordings)",
-                "glossary/binding: not written yet"
+                "glossary/binding: not written yet (a cdylib package named glossary-binding, a member of the workspace; vendor/psx-capture's crate docs show it)"
             ]
         );
     }

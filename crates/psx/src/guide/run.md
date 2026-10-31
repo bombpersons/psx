@@ -40,7 +40,7 @@ zeros left off; until takes = and != only) or a width 1/2/4.
 ## Observations
 
 - sample: samples.csv, one row per field. Each entry is a glossary quantity
-  by name (croc_x), ADDR:FMT[:NAME] or {"addr","format","name"}.
+  by name (player_x), ADDR:FMT[:NAME] or {"addr","format","name"}.
   sample_every thins rows. sample_per tick takes a row where the glossary
   binding's tick ends, with a tick column; glossary names and ticks build
   the workspace's binding and need its media. Values are raw, as recordings

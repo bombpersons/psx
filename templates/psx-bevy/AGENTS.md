@@ -48,7 +48,7 @@ there is yours to decide. What the tools rely on:
   each scenario kind, which builds the world from the
   scenario's parameters with the port's own loading, and observes the
   glossary quantities it keeps: `app.observe(|w: &mut World| Observed {
-  croc_x: …, ..Observed::none() })`, in the original's raw units
+  player_x: …, ..Observed::none() })`, in the original's raw units
   (`game::observed`, generated from `glossary/`; `psx_bevy::scenario`).
   `game/tests/scenarios.rs` replays each recording of the original
   (`scenarios/<id>/`) tick by tick with its pad, in a headless `app` with

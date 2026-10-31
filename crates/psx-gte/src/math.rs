@@ -5,8 +5,7 @@
 //! Exactness notes:
 //! * [`rsin`]/[`rcos`] use `round(4096 * sin(2π·a/4096))`. This matches
 //!   libgte's quarter-wave table entry for entry: all 1025 entries of the
-//!   table that PsyQ 4.0 `rsin` reads in Croc's PAL `CROC.EXE` (at
-//!   0x8006D5D4 in RAM) equal it (research/case-study-croc.md).
+//!   table PsyQ 4.0 `rsin` reads in a game linked with it equal it.
 //! * [`mul_matrix`] and [`apply_matrix_sv`] reproduce what libgte's
 //!   GTE-based `MulMatrix0`/`ApplyMatrixSV` compute (MVMVA, sf=1, lm=0),
 //!   so they are bit-exact given the same inputs.
