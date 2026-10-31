@@ -547,7 +547,7 @@ impl Facts {
                     format!("findings without an answer: {}", first_lines(unanswered).join("; ")),
                     "every finding in its review has an answer and its files are unchanged since the review's commit",
                     &format!(
-                        "answer each finding in reviews/{}.md with an **Answer:** line: kept and why, or fixed; a fix changes the files, so the review is then due again",
+                        "answer each finding in reviews/{}.md with an **Answer:** line: kept and why, or fixed; a fix changes the files, so a follow-up review of the changes is then due",
                         f.id
                     ),
                 ),
@@ -558,15 +558,17 @@ impl Facts {
                     "its review holds",
                     "write the review's front matter as the brief says: +++, commit and files, +++",
                 ),
-                r => Item::agent(
+                Review::Stale { commit, changed } => Item::agent(
                     "Review",
                     Some(&f.id),
-                    match r {
-                        Review::Stale { changed, .. } => {
-                            format!("its files changed since the review: {}", first_lines(changed).join(", "))
-                        }
-                        _ => "its own work is finished and its code has no review".into(),
-                    },
+                    format!("its files changed since the review: {}", first_lines(changed).join(", ")),
+                    "its review holds: its files unchanged since the review's commit, every finding answered",
+                    &self.follow_up(f, commit),
+                ),
+                _ => Item::agent(
+                    "Review",
+                    Some(&f.id),
+                    "its own work is finished and its code has no review".into(),
                     "its review holds: its files unchanged since the review's commit, every finding answered",
                     &self.brief(f),
                 ),
@@ -694,6 +696,19 @@ impl Facts {
             "Give this brief to a reviewer who has not seen the work (a sub-agent or a new session): Review {id} ({title}). Read the code as a stranger who must maintain or reuse it: the catalogue entry catalogue/{id}.md, {files}, and what that code uses; not the disassembly. Judge it against AGENTS.md's \"The code\", not against the original (the recordings check that). Write reviews/{id}.md: front matter between +++ lines with commit = \"{head}\" and files = [the files read], then one ## heading per finding, each saying what is wrong and why, not the fix. The writer then answers each finding with an **Answer:** line.",
             id = f.id,
             title = self.title(&f.id),
+            head = self.git.head.as_deref().unwrap_or("HEAD"),
+        )
+    }
+
+    /// The brief for a review of what changed since the review at `commit`:
+    /// what that review read is not read again.
+    fn follow_up(&self, f: &Feature, commit: &str) -> String {
+        let files = review::touched(&self.root, &f.id);
+        format!(
+            "Give this brief to a reviewer who did not write the changes (a sub-agent or a new session): a follow-up review of {id} ({title}). The review at {commit} read the code then; read only what changed since: git diff {commit} -- {files}, with the findings and answers in reviews/{id}.md (are the fixes what the answers say, and is the changed code clear?). If the changes rewrite most of the code, review it whole. Judge it against AGENTS.md's \"The code\". Keep the findings and answers already in reviews/{id}.md; set its commit to \"{head}\", add files the changes touched to files, and add one ## heading per new finding, each saying what is wrong and why. The writer then answers each new finding with an **Answer:** line.",
+            id = f.id,
+            title = self.title(&f.id),
+            files = files.join(" "),
             head = self.git.head.as_deref().unwrap_or("HEAD"),
         )
     }
@@ -1057,6 +1072,11 @@ mod tests {
         set(&mut f, "F-0001", |x| x.branches = vec![branch(Some(true))]);
         assert_eq!(next(&f), ("Review", "agent", "F-0001".into()));
         assert!(f.next().how.contains("Review F-0001 (Feature F-0001)"), "{}", f.next().how);
+        set(&mut f, "F-0001", |x| x.review = Review::Stale { commit: "abc".into(), changed: vec!["jump.rs".into()] });
+        assert_eq!(next(&f), ("Review", "agent", "F-0001".into()));
+        let how = f.next().how;
+        assert!(how.contains("a follow-up review of F-0001") && how.contains("git diff abc --"), "{how}");
+        set(&mut f, "F-0001", |x| x.review = Review::Missing);
         set(&mut f, "F-0001", |x| x.review = Review::Open { unanswered: vec!["Stomp is a bool".into()] });
         assert!(f.next().why.contains("Stomp is a bool"));
         for id in ["F-0001", "F-0002"] {

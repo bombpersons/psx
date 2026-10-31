@@ -203,7 +203,8 @@ port_next's items, in this order:
   Findings go in reviews/F-NNNN.md: TOML front matter (commit, files)
   between +++ lines, then one ## heading per finding, each answered with an
   **Answer:** line. It holds while its files are unchanged since its
-  commit.
+  commit; once they change, how is the brief for a follow-up that reads
+  only the changes since then (git diff) and keeps the findings.
 - Play (person): a reviewed feature without held-out recordings: start
   scenario_play and name the recording under held_out.
 - Format, Index, Import, Check (assets = true): see Assets.

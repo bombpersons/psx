@@ -26,7 +26,7 @@ pub enum Review {
     Missing,
     /// The file is not a review: why.
     Invalid(String),
-    /// Its files changed since its commit: another review is due.
+    /// Its files changed since its commit: a follow-up review of the changes is due.
     Stale {
         commit: String,
         changed: Vec<String>,

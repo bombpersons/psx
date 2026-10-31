@@ -172,8 +172,13 @@ files = ["game/src/croc/jump.rs", "game/src/croc/mod.rs"]
 ```
 
 The writer answers every finding: fixed, or kept and why. The review
-holds while its files are unchanged since its commit; a change to them
-asks for another.
+holds while its files are unchanged since its commit. A change to them
+(the fixes its answers made, among others) asks for a follow-up: a
+reviewer reads only the diff since that commit, keeps the findings and
+answers, moves the commit on and adds new findings. Croc's movement
+showed why: with a whole review after every fix, a comment changed in
+a file three features share brought three full reviews, six rounds in
+all.
 
 ### `port status`
 
