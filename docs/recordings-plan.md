@@ -99,9 +99,12 @@ mechanic code are worth keeping, so they move out first.
     assets, recordings and play, status and next, and the command
     reference, short enough to read in one go. Topics that described
     mechanics, cases and fields go.
-20. **Examples**: look at `examples/croc-movement` and
-    `examples/megaman8-movement`; keep or replace them with one worked
-    example of the loop.
+20. **Examples**: decided: both stay until step 21. They predate the port
+    workspace (the old `engine/` layout, CSV trajectories, no goal,
+    catalogue or recordings). Step 21's workspace replaces
+    `examples/croc-movement` as the one worked example of the loop, and
+    `examples/megaman8-movement` goes then; the case studies in
+    `research/` stay.
 
 ## Phase E: proving it
 
@@ -111,6 +114,10 @@ mechanic code are worth keeping, so they move out first.
     state, a world the host provides; the controller review's points),
     checked against the recordings, with at least one held-out recording
     the person plays, driven by `port next` until it has nothing left.
+    It then becomes `examples/croc-movement` (no disc data: recordings
+    hold quantities, coverage no instructions, states stay out of git),
+    `examples/megaman8-movement` is removed, and the README's examples
+    point at it.
 22. **One asset, end to end**: a Croc file the template does not already
     decode (1-1's level geometry), from `loads` to an importer checked
     against the RAM the game builds.
