@@ -84,10 +84,12 @@ pub fn unimplemented(root: &Path, e: &Entry, head: Option<&str>) -> Vec<String> 
     out
 }
 
-/// The scenario report of the last check, when it ran at `head`.
+/// The scenario report of the last check, when it judges `head`.
 fn last_report(root: &Path, head: Option<&str>) -> Result<ScenarioReport, &'static str> {
     let last = std::fs::read(root.join(LAST)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-    let Some(last) = last.filter(|l| head.is_some() && l["commit"].as_str() == head) else {
+    // A check judges HEAD when only notes or the review changed since.
+    let judged = |l: &Value| l["commit"].as_str().is_some_and(|c| verdict::judges(root, c, head));
+    let Some(last) = last.filter(judged) else {
         return Err("no psx port check at HEAD");
     };
     serde_json::from_value::<ScenarioReport>(last["scenarios"].clone())
