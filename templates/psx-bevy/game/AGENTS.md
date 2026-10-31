@@ -111,7 +111,8 @@ never for shipping: levels come from the disc's data through the importers.
   for routine builds; Bevy resolves the same features either way.
 - Visual changes: `game_step` and `game_screenshot`, and look at the image
   (`cargo run --features dev-mcp -- --mcp --headless --software`; screenshot
-  target `screen` when headless). `tests/dev_mcp.rs` is the opt-in GPU check
+  target `screen` when headless; an MCP client may run the built
+  `target/debug/<game> --mcp --headless --software` directly). `tests/dev_mcp.rs` is the opt-in GPU check
   (`cargo test --workspace --all-features -- --ignored`).
 - Each project needs its own target directory: two projects with the same
   game package name must not share a `CARGO_TARGET_DIR`.

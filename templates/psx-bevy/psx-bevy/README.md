@@ -542,6 +542,11 @@ untouched and ignored. Pass your own `screens` to offer other sizes, or set
 Build with `--features dev-mcp` and run with `--mcp`. This starts a stdio MCP server;
 stdout is reserved for JSON-RPC and logs go to stderr. Simulation starts paused.
 
+A game's development build also starts outside cargo, so an MCP client can
+run `target/debug/<game> --mcp` itself: the game's build script gives the
+binary the paths to Bevy's shared library and the standard library, and
+`main.rs` hands `assets::development_base` its crate folder for `assets/`.
+
 Add `--headless` to render without X11/Wayland or a window. The normal GPU
 pipeline still draws the native-resolution screen target; `--software` selects
 a fallback adapter such as Mesa llvmpipe. A working graphics driver is required.

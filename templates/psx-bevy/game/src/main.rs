@@ -5,6 +5,10 @@ use bevy::app::PluginGroup;
 use psx_bevy::launcher::{self, Game};
 
 fn main() {
+    // Started outside cargo (an MCP client), a development build reads
+    // this crate's assets/.
+    #[cfg(debug_assertions)]
+    psx_bevy::assets::development_base(env!("CARGO_MANIFEST_DIR"));
     launcher::run(Game {
         name: env!("CARGO_PKG_NAME"),
         title: game::TITLE,

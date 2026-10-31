@@ -32,6 +32,22 @@ pub fn add_root(path: impl Into<PathBuf>) {
     }
 }
 
+/// Makes `dir` the base the running crate's `assets/` is under when nothing
+/// else names one: no `BEVY_ASSET_ROOT`, no `CARGO_MANIFEST_DIR` (`cargo
+/// run` sets it) and no `assets/` beside the executable. A development
+/// build started on its own (an MCP client running `target/debug/<game>
+/// --mcp`) then finds its crate's. A game's `main.rs` calls it first, with
+/// `env!("CARGO_MANIFEST_DIR")`, in debug builds.
+pub fn development_base(dir: &str) {
+    let named = |var| std::env::var_os(var).is_some();
+    let beside = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.join("assets").is_dir()));
+    if named("BEVY_ASSET_ROOT") || named("CARGO_MANIFEST_DIR") || beside != Some(false) {
+        return;
+    }
+    // SAFETY: called at the start of main, before any other thread runs.
+    unsafe { std::env::set_var("BEVY_ASSET_ROOT", dir) };
+}
+
 /// Every asset folder, highest priority first: the running crate's
 /// `assets/`, then the added roots.
 pub fn roots() -> Vec<PathBuf> {
