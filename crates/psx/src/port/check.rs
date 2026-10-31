@@ -98,7 +98,7 @@ fn last_report(root: &Path, head: Option<&str>) -> Result<ScenarioReport, &'stat
 /// (a file is imported when an output's provenance names it) and their
 /// tests with `PSX_IMPORT_REPORT` set (a file is checked when a passing
 /// test marked it with `import::checking`).
-fn run_importers(root: &Path, head: &str) -> crate::Result<assets::Report> {
+fn run_importers(root: &Path, head: &str, archives: &[String]) -> crate::Result<assets::Report> {
     let mut r = assets::Report { commit: head.into(), clean: true, at: crate::stamp::utc_now(), ..Default::default() };
     let media = crate::context::resolve(root, None, None, None, false)
         .ok()
@@ -129,6 +129,29 @@ fn run_importers(root: &Path, head: &str) -> crate::Result<assets::Report> {
                 r.failures.push(format!("the importers on the disc: {}", errors(&o)));
             }
             r.imported = provenance_sources(&out_dir);
+            if !archives.is_empty() {
+                let mut args = vec!["run", "--locked", "-q", "-p", "import", "--", "index", disc.as_str()];
+                args.extend(archives.iter().map(String::as_str));
+                let o = cargo(&args, None)?;
+                let listed: Value = serde_json::from_slice(&o.stdout).unwrap_or_default();
+                if !o.status.success() || !listed.is_object() {
+                    r.failures.push(format!("the importer's index: {}", errors(&o)));
+                }
+                for a in archives {
+                    match &listed[a.as_str()] {
+                        Value::Null => {}
+                        v if v.get("error").is_some() => r
+                            .failures
+                            .push(format!("the importer's index of {a}: {}", v["error"].as_str().unwrap_or(""))),
+                        v => match serde_json::from_value::<Vec<assets::IndexEntry>>(v["entries"].clone()) {
+                            Ok(entries) => {
+                                r.index.insert(a.clone(), entries);
+                            }
+                            Err(e) => r.failures.push(format!("the importer's index of {a}: {e}")),
+                        },
+                    }
+                }
+            }
         }
     }
     let marks = root.join(".psx/port/import-checked.txt");
@@ -222,7 +245,7 @@ impl PortCheckArgs {
         // The importers, when there is something to import: run on the disc
         // and their tests, judged at the same commit.
         let imports = (self.feature.is_none() && (port.goal.assets || !port.formats.is_empty()))
-            .then(|| run_importers(root, &head))
+            .then(|| run_importers(root, &head, &assets::archive_files(root, &port)))
             .transpose()?;
         let after = Git::read(root);
         if after.head != git.head || !after.clean {

@@ -49,6 +49,26 @@ pub fn import(disc: &DiscReader, out: &Path, progress: &ImportProgress) -> Resul
     Ok(())
 }
 
+/// One entry of an archive on the disc: its name if the archive has names,
+/// and its bytes' place in the archive file.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct IndexEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub offset: u64,
+    pub size: u64,
+}
+
+/// The entries of the archive at `path` (`/DATA/LEVELS.PAK`), read from its
+/// own index as the importer reads it: None when the importer does not
+/// list that file. `psx port check` asks for each file a format doc says is
+/// an archive, so each entry is imported and checked on its own
+/// (`/DATA/LEVELS.PAK:LEVEL1.DAT`, or `@0x1A000` without names).
+/// `psx_assets::archive` reads DOT-T archives and Croc-style DIR indexes.
+pub fn index(_disc: &DiscReader, _path: &str) -> Option<Result<Vec<IndexEntry>, String>> {
+    None
+}
+
 /// What the template's [`import`] writes: `imported/disc.ron`.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct DiscInfo {
@@ -233,22 +253,26 @@ impl Provenance {
 /// checked when the test passes: `let _checked = import::checking("/DATA/LEVEL1.DAT");`
 /// at its start.
 pub fn checking(path: &str) -> Checking {
-    Checking(path.to_string())
+    Checking { path: path.to_string(), report: std::env::var_os("PSX_IMPORT_REPORT").map(PathBuf::from) }
 }
 
 /// See [`checking`]: recorded when dropped, unless the test panicked.
-pub struct Checking(String);
+pub struct Checking {
+    path: String,
+    /// `PSX_IMPORT_REPORT`, which psx port check sets.
+    report: Option<PathBuf>,
+}
 
 impl Drop for Checking {
     fn drop(&mut self) {
         if std::thread::panicking() {
             return;
         }
-        if let Some(report) = std::env::var_os("PSX_IMPORT_REPORT") {
+        if let Some(report) = &self.report {
             use std::io::Write;
             let file = std::fs::OpenOptions::new().create(true).append(true).open(report);
             if let Ok(mut f) = file {
-                let _ = writeln!(f, "{}", self.0);
+                let _ = writeln!(f, "{}", self.path);
             }
         }
     }
@@ -287,11 +311,12 @@ mod tests {
     #[test]
     fn a_passing_check_is_recorded_for_psx() {
         let report = std::env::temp_dir().join(format!("import-checked-{}", std::process::id()));
-        // Only psx port check sets the variable; this test sets it for itself.
-        unsafe { std::env::set_var("PSX_IMPORT_REPORT", &report) };
-        drop(super::checking("/DATA/LEVEL1.DAT"));
-        let failed = std::thread::spawn(|| {
-            let _checked = super::checking("/DATA/LEVEL2.DAT");
+        // As super::checking makes them, with this test's own report.
+        let mark = |path: &str| super::Checking { path: path.into(), report: Some(report.clone()) };
+        drop(mark("/DATA/LEVEL1.DAT"));
+        let level2 = mark("/DATA/LEVEL2.DAT");
+        let failed = std::thread::spawn(move || {
+            let _checked = level2;
             panic!("the import differs from the game's RAM");
         });
         assert!(failed.join().is_err());

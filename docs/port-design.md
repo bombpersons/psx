@@ -126,7 +126,9 @@ its files and the code that parses them, then the layout); a file psx
 finds whole as a standard format needs none. `port check` runs the
 importers on the disc (imported: an output's provenance names the file)
 and their tests (checked: a passing test marked it). Assets are part of a
-goal when `goal.toml` says `assets = true`.
+goal when `goal.toml` says `assets = true`. An archive's entries are
+assets of their own: its format doc says `archive = true`, and the
+importer lists the entries (`import::index`), which `port check` asks for.
 
 ## 5. Progress: `port status` and `port next`
 

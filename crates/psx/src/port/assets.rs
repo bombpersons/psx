@@ -27,6 +27,8 @@ pub const UNUSED: &str = "formats/unused.toml";
 pub const REPORT: &str = ".psx/port/assets.json";
 /// Which disc files `assets scan` finds whole as standard formats, by disc.
 const SCAN: &str = ".psx/port/assets-scan.json";
+/// Which archive entries are standard formats, per archive and its index.
+const ENTRY_SCAN: &str = ".psx/port/assets-entries.json";
 /// What the scan cache says of a PS-X executable: code, left out.
 const EXE: &str = "PS-X EXE";
 
@@ -44,6 +46,10 @@ pub struct Format {
     /// The code that parses it, by function entry, as the inventory has it.
     #[serde(default)]
     pub loader: Vec<String>,
+    /// Its files are archives: their entries, which the importer lists
+    /// (`import::index`), are the assets.
+    #[serde(default)]
+    pub archive: bool,
     /// The paragraphs after the front matter: the layout.
     #[serde(skip)]
     pub description: String,
@@ -155,10 +161,46 @@ pub struct Report {
     pub checked: Vec<String>,
     #[serde(default)]
     pub failures: Vec<String>,
+    /// Each archive's entries, as the importer listed them.
+    #[serde(default)]
+    pub index: BTreeMap<String, Vec<IndexEntry>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// One entry of an archive, as `import::index` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexEntry {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub offset: u64,
+    pub size: u64,
+}
+
+/// The entries' asset paths: `/ARCHIVE:NAME`, with `@0xOFFSET` added to a
+/// name another entry shares, and `/ARCHIVE@0xOFFSET` for an entry with no
+/// name.
+pub fn entry_paths(archive: &str, entries: &[IndexEntry]) -> Vec<String> {
+    let names: Vec<Option<String>> = entries
+        .iter()
+        .map(|e| e.name.as_ref().map(|n| n.trim().to_ascii_uppercase()).filter(|n| !n.is_empty()))
+        .collect();
+    let mut seen: BTreeMap<&String, usize> = BTreeMap::new();
+    for n in names.iter().flatten() {
+        *seen.entry(n).or_default() += 1;
+    }
+    entries
+        .iter()
+        .zip(&names)
+        .map(|(e, n)| match n {
+            Some(n) if seen[n] == 1 => format!("{archive}:{n}"),
+            Some(n) => format!("{archive}:{n}@0x{:X}", e.offset),
+            None => format!("{archive}@0x{:X}", e.offset),
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum State {
+    #[default]
     Unknown,
     Found,
     Imported,
@@ -185,13 +227,18 @@ impl State {
     }
 }
 
-/// One disc file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One disc file, or one entry of an archive on the disc.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Asset {
     pub path: String,
     pub state: State,
     /// The format doc covering it, or the standard format it is.
     pub format: Option<String>,
+    /// An archive whose entries the importer does not list yet.
+    pub unlisted: bool,
+    /// Whether a traced run (`run --trace-cd`, loads.json) read any of
+    /// its bytes; None when no run traced the CD.
+    pub loaded: Option<bool>,
 }
 
 /// The disc's files by state.
@@ -225,6 +272,14 @@ impl Inventory {
             "files": self.files.len(), "states": states, "formats": formats,
             "unknown": list(State::Unknown), "format_found": list(State::Found), "imported": list(State::Imported),
         });
+        let unlisted: Vec<&str> = self.files.iter().filter(|a| a.unlisted).map(|a| a.path.as_str()).collect();
+        if !unlisted.is_empty() {
+            v["archives_not_listed"] = json!(unlisted);
+        }
+        if self.files.iter().any(|a| a.loaded.is_some()) {
+            v["never_loaded"] =
+                json!(self.files.iter().filter(|a| a.loaded == Some(false) && !a.state.settled()).count());
+        }
         match (&self.report, &self.stale) {
             (Some(r), _) if !r.failures.is_empty() => v["check_failures"] = json!(r.failures),
             (None, Some(c)) => v["check"] = json!(format!("the last psx port check judged {c}, not HEAD")),
@@ -237,12 +292,15 @@ impl Inventory {
 
 /// The disc's files, which are code, and which `assets scan` finds whole
 /// as standard formats (cached by the disc's file list).
-fn disc_files(root: &Path, media: &Path, inv: Option<&Value>) -> Result<Vec<(String, Option<String>)>, String> {
-    use psx_media::iso9660::{FileSystem, xa};
-    let disc = psx_media::disc::Disc::open(media).map_err(|e| format!("{}: {e}", media.display()))?;
-    let fs = FileSystem::read(&disc).map_err(|e| format!("{}: {e}", media.display()))?;
+fn disc_files(
+    root: &Path,
+    disc: &psx_media::disc::Disc,
+    fs: &psx_media::iso9660::FileSystem,
+    inv: Option<&Value>,
+) -> Vec<(String, Option<String>)> {
+    use psx_media::iso9660::xa;
     let mut code: BTreeSet<String> = ["/SYSTEM.CNF".to_string()].into();
-    let boot = fs.find("/SYSTEM.CNF").and_then(|e| fs.read_file(&disc, e).ok());
+    let boot = fs.find("/SYSTEM.CNF").and_then(|e| fs.read_file(disc, e).ok());
     if let Some(b) = boot.and_then(|b| psx_media::system_cnf::SystemCnf::parse(&b).boot) {
         let name = b.rsplit(['\\', ':']).next().unwrap_or(&b).to_string();
         code.insert(disc_path(&name));
@@ -271,9 +329,9 @@ fn disc_files(root: &Path, media: &Path, inv: Option<&Value>) -> Result<Vec<(Str
             let mut s = BTreeMap::new();
             for e in &entries {
                 let found = if e.xa_attributes.is_some_and(|a| a & (xa::MODE2_FORM2 | xa::INTERLEAVED) != 0) {
-                    whole_stream(&disc, e.lba, e.sectors())
+                    whole_stream(disc, e.lba, e.sectors())
                 } else {
-                    fs.read_file(&disc, e).ok().and_then(|b| {
+                    fs.read_file(disc, e).ok().and_then(|b| {
                         // An executable is code, whether or not the inventory has it.
                         if b.starts_with(b"PS-X EXE") { Some(EXE.to_string()) } else { whole_standard(&b) }
                     })
@@ -290,7 +348,7 @@ fn disc_files(root: &Path, media: &Path, inv: Option<&Value>) -> Result<Vec<(Str
             s
         }
     };
-    Ok(entries
+    entries
         .iter()
         .map(|e| {
             let p = disc_path(&e.path);
@@ -298,7 +356,88 @@ fn disc_files(root: &Path, media: &Path, inv: Option<&Value>) -> Result<Vec<(Str
             (p, s)
         })
         .filter(|(_, s)| s.as_deref() != Some(EXE))
-        .collect())
+        .collect()
+}
+
+/// The workspace's disc and its file system.
+fn open_disc(root: &Path) -> Result<(psx_media::disc::Disc, psx_media::iso9660::FileSystem), String> {
+    let media = crate::context::resolve(root, None, None, None, false)
+        .ok()
+        .and_then(|r| r.media)
+        .ok_or("no media: the workspace's disc image (psx context --image ... --save)")?;
+    let disc = psx_media::disc::Disc::open(&media).map_err(|e| format!("{}: {e}", media.display()))?;
+    let fs = psx_media::iso9660::FileSystem::read(&disc).map_err(|e| format!("{}: {e}", media.display()))?;
+    Ok((disc, fs))
+}
+
+/// The disc files a format doc says are archives, for `port check` to ask
+/// the importer to list.
+pub fn archive_files(root: &Path, port: &super::Port) -> Vec<String> {
+    let archives: Vec<&Format> = port.formats.values().filter(|f| f.archive).collect();
+    if archives.is_empty() {
+        return Vec::new();
+    }
+    let Ok((_, fs)) = open_disc(root) else { return Vec::new() };
+    fs.entries
+        .iter()
+        .filter(|e| !e.is_dir)
+        .map(|e| disc_path(&e.path))
+        .filter(|p| archives.iter().any(|f| f.files.iter().any(|g| matches(g, p))))
+        .collect()
+}
+
+/// Which archive entries are wholly standard formats (cached per archive by
+/// its place on the disc and its index).
+fn entry_standard(
+    root: &Path,
+    disc: &psx_media::disc::Disc,
+    fs: &psx_media::iso9660::FileSystem,
+    archive: &str,
+    entries: &[IndexEntry],
+    paths: &[String],
+) -> BTreeMap<String, String> {
+    let Some(e) = fs.entries.iter().find(|e| disc_path(&e.path) == archive) else { return BTreeMap::new() };
+    let key = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(format!("{} {} {} {:?}", e.path, e.lba, e.size, entries)))
+    };
+    let cache = root.join(ENTRY_SCAN);
+    let mut all: BTreeMap<String, Value> =
+        std::fs::read(&cache).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    if let Some(kept) = all.get(archive).filter(|v| v["key"] == key.as_str()) {
+        return serde_json::from_value(kept["standard"].clone()).unwrap_or_default();
+    }
+    let bytes = fs.read_file(disc, e).unwrap_or_default();
+    let mut standard = BTreeMap::new();
+    for (x, p) in entries.iter().zip(paths) {
+        let (lo, hi) = (x.offset as usize, x.offset.saturating_add(x.size) as usize);
+        if let Some(k) = bytes.get(lo..hi).and_then(whole_standard) {
+            standard.insert(p.clone(), k);
+        }
+    }
+    all.insert(archive.to_string(), json!({"key": key, "standard": standard}));
+    let _ = crate::write_atomic(&cache, &serde_json::to_vec(&all).unwrap_or_default());
+    standard
+}
+
+/// Each disc file's byte ranges that traced runs loaded (their loads.json),
+/// or None when no run traced the CD.
+fn loads(root: &Path) -> Option<BTreeMap<String, Vec<(u64, u64)>>> {
+    let mut out: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
+    let mut any = false;
+    for d in std::fs::read_dir(root.join(".psx/runs")).into_iter().flatten().flatten() {
+        let Ok(b) = std::fs::read(d.path().join("loads.json")) else { continue };
+        let Ok(v) = serde_json::from_slice::<Value>(&b) else { continue };
+        any = true;
+        for r in v["runs"].as_array().into_iter().flatten() {
+            let (Some(f), Some(off), Some(n)) = (r["file"].as_str(), r["file_offset"].as_u64(), r["bytes"].as_u64())
+            else {
+                continue;
+            };
+            out.entry(disc_path(f)).or_default().push((off, off + n));
+        }
+    }
+    any.then_some(out)
 }
 
 /// The standard format a file is wholly made of (one or more TIM, TMD, VAB
@@ -342,59 +481,99 @@ fn whole_stream(disc: &psx_media::disc::Disc, lba: u32, sectors: u32) -> Option<
     }
 }
 
-/// The last `port check`'s report, and whether it judged `head`.
-fn report(root: &Path, head: Option<&str>) -> (Option<Report>, Option<String>) {
+/// The last `port check`'s report: whole when it judged `head`, else the
+/// commit it judged; and its archive index either way (an index lists
+/// entries, it is no verdict).
+fn report(root: &Path, head: Option<&str>) -> (Option<Report>, Option<String>, BTreeMap<String, Vec<IndexEntry>>) {
     let Some(r) = std::fs::read(root.join(REPORT)).ok().and_then(|b| serde_json::from_slice::<Report>(&b).ok()) else {
-        return (None, None);
+        return (None, None, BTreeMap::new());
     };
-    if r.clean && Some(r.commit.as_str()) == head { (Some(r), None) } else { (None, Some(r.commit)) }
+    let index = r.index.clone();
+    if r.clean && Some(r.commit.as_str()) == head { (Some(r), None, index) } else { (None, Some(r.commit), index) }
 }
 
-/// The disc's files by state, for the workspace `root` whose formats and
-/// unused list `port` read.
+/// The disc's files by state, archives opened into their entries, for the
+/// workspace `root` whose formats and unused list `port` read.
 pub fn inventory(
     root: &Path,
     port: &super::Port,
     inv: Option<&Value>,
     head: Option<&str>,
 ) -> Result<Inventory, String> {
-    let media = crate::context::resolve(root, None, None, None, false)
-        .ok()
-        .and_then(|r| r.media)
-        .ok_or("no media: the workspace's disc image (psx context --image ... --save)")?;
-    let files = disc_files(root, &media, inv)?;
-    let (report, stale) = report(root, head);
+    let (disc, fs) = open_disc(root)?;
+    let files = disc_files(root, &disc, &fs, inv);
+    let (report, stale, index) = report(root, head);
     let imported: BTreeSet<String> = report.iter().flat_map(|r| r.imported.iter().map(|p| disc_path(p))).collect();
     let checked: BTreeSet<String> = report.iter().flat_map(|r| r.checked.iter().map(|p| disc_path(p))).collect();
     let unused: BTreeMap<String, &String> = port.unused.iter().map(|(p, w)| (disc_path(p), w)).collect();
-    let mut problems = Vec::new();
-    for f in port.formats.values() {
-        for p in f.files.iter().filter(|p| !files.iter().any(|(path, _)| matches(p, path))) {
-            problems.push(problem(&f.file, format!("files: {p} matches no disc file (code files are not assets)")));
-        }
-    }
-    let mut out = Vec::new();
-    for (path, standard) in files {
-        let doc = port.formats.values().find(|f| f.files.iter().any(|p| matches(p, &path)));
-        if let (true, Some(d)) = (unused.contains_key(&path), doc) {
-            problems.push(problem(UNUSED, format!("{path} is unused, but {} covers it", d.file)));
-        }
-        let format = doc.map(|f| f.id.clone()).or(standard);
-        let state = if unused.contains_key(&path) {
+    let loaded = loads(root);
+    let was_loaded = |file: &str, lo: u64, hi: u64| {
+        loaded.as_ref().map(|l| l.get(file).is_some_and(|rs| rs.iter().any(|&(a, b)| a < hi && lo < b)))
+    };
+    let state = |path: &str, format: &Option<String>| {
+        if unused.contains_key(path) {
             State::Unused
-        } else if checked.contains(&path) {
+        } else if checked.contains(path) {
             State::Checked
-        } else if imported.contains(&path) {
+        } else if imported.contains(path) {
             State::Imported
         } else if format.is_some() {
             State::Found
         } else {
             State::Unknown
-        };
-        out.push(Asset { path, state, format });
+        }
+    };
+    // A plain format doc (not an archive's) covering `path`.
+    let doc = |path: &str| port.formats.values().find(|f| !f.archive && f.files.iter().any(|p| matches(p, path)));
+    let mut problems = Vec::new();
+    let mut out = Vec::new();
+    for (path, standard) in &files {
+        let archive = port.formats.values().find(|f| f.archive && f.files.iter().any(|p| matches(p, path)));
+        let entries = archive.and_then(|_| index.get(path)).filter(|_| !unused.contains_key(path));
+        match (archive, entries) {
+            (Some(_), Some(entries)) => {
+                let paths = entry_paths(path, entries);
+                let standard = entry_standard(root, &disc, &fs, path, entries, &paths);
+                for (e, p) in entries.iter().zip(paths) {
+                    let format = doc(&p).map(|f| f.id.clone()).or_else(|| standard.get(&p).cloned());
+                    let loaded = was_loaded(path, e.offset, e.offset + e.size);
+                    out.push(Asset { state: state(&p, &format), format, loaded, path: p, ..Default::default() });
+                }
+            }
+            (Some(a), None) => {
+                let unlisted = !unused.contains_key(path);
+                let format = Some(a.id.clone());
+                let loaded = was_loaded(path, 0, u64::MAX);
+                out.push(Asset { path: path.clone(), state: state(path, &format), format, unlisted, loaded });
+            }
+            (None, _) => {
+                let d = doc(path);
+                if let (true, Some(d)) = (unused.contains_key(path), d) {
+                    problems.push(problem(UNUSED, format!("{path} is unused, but {} covers it", d.file)));
+                }
+                let format = d.map(|f| f.id.clone()).or(standard.clone());
+                let loaded = was_loaded(path, 0, u64::MAX);
+                out.push(Asset {
+                    path: path.clone(),
+                    state: state(path, &format),
+                    format,
+                    loaded,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    let named = |p: &str| files.iter().any(|(f, _)| matches(p, f)) || out.iter().any(|a| matches(p, &a.path));
+    for f in port.formats.values() {
+        for p in f.files.iter().filter(|p| !named(p)) {
+            problems.push(problem(
+                &f.file,
+                format!("files: {p} matches no disc file or archive entry (code files are not assets)"),
+            ));
+        }
     }
     for p in unused.keys().filter(|p| !out.iter().any(|a| &a.path == *p)) {
-        problems.push(problem(UNUSED, format!("{p} is not an asset file on the disc")));
+        problems.push(problem(UNUSED, format!("{p} is not an asset on the disc")));
     }
     Ok(Inventory { files: out, report, stale, problems })
 }
@@ -411,6 +590,21 @@ mod tests {
         assert!(matches("/*/*.WLD", "/MAPS/L1_1.WLD"));
         assert!(!matches("/MAPS/*.WLD", "/MAPS/L1_1.WLDX"));
         assert_eq!(disc_path("maps\\l1_1.wld;1"), "/MAPS/L1_1.WLD");
+    }
+
+    #[test]
+    fn entries_are_named_by_name_when_each_has_its_own() {
+        let e = |name: Option<&str>, offset| IndexEntry { name: name.map(Into::into), offset, size: 4 };
+        assert_eq!(
+            entry_paths("/CROCFILE.1", &[e(Some("ambiatla.bin"), 0), e(Some("AMBIBIRD.BIN"), 4)]),
+            ["/CROCFILE.1:AMBIATLA.BIN", "/CROCFILE.1:AMBIBIRD.BIN"]
+        );
+        assert_eq!(
+            entry_paths("/DATA.VOL", &[e(Some("A"), 0), e(Some("a"), 0x1A000), e(Some("B"), 0x1B000)]),
+            ["/DATA.VOL:A@0x0", "/DATA.VOL:A@0x1A000", "/DATA.VOL:B"]
+        );
+        assert_eq!(entry_paths("/DATA.VOL", &[e(None, 16)]), ["/DATA.VOL@0x10"]);
+        assert!(matches("/CROCFILE.1:AMBI*.BIN", "/CROCFILE.1:AMBIATLA.BIN"));
     }
 
     #[test]

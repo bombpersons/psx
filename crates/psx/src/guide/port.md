@@ -61,9 +61,10 @@ Items, in this order:
   line. A review holds while its files are unchanged since its commit.
 - Play (person): a reviewed feature without held-out recordings: start
   scenario_play for the person and name the recording under held_out.
-- Format, Import, Check (with assets = true): a disc file with no format
-  yet, one not imported, one not checked against what the game built
-  (formats/README.md).
+- Format, Index, Import, Check (with assets = true): a disc file or archive
+  entry with no format yet, an archive whose entries the importer does not
+  list (import::index), one not imported, one not checked against what the
+  game built (formats/README.md).
 - Stuck (person): the same item three times with nothing changed. Stop and
   ask.
 - Done: every feature of the goal is done.
@@ -98,8 +99,12 @@ port_check ran the importers on the disc, and an output's
 Provenance::of_disc names it), checked (a passing importer test marked it
 with import::checking after comparing the import with what the game built:
 RAM after loading, VRAM uploads, a GPU capture) or unused
-(formats/unused.toml, with the runs that never load it). port_status shows
-them always; port_next asks for them when the goal has assets = true.
+(formats/unused.toml, with the runs that never load it). An archive's
+format doc says archive = true: its entries, listed by the importer's
+import::index, are then the assets, named /ARCHIVE:NAME or
+/ARCHIVE@0xOFFSET. port_status shows them always, with how many no traced
+run (trace_cd) loaded; port_next asks for them when the goal has
+assets = true.
 
 Template updates: port_update replaces untouched psx-bevy/ and vendor/
 files, writes <file>.psx-new beside edited ones (merge it, keeping the

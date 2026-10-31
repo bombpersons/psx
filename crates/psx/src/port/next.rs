@@ -626,12 +626,26 @@ impl Facts {
         };
         if let Some(f) = a.first(AssetState::Unknown) {
             let n = a.count(AssetState::Unknown);
+            let read = if f.loaded == Some(false) { "; no traced run loaded it" } else { "" };
             return Some(Item::agent(
                 "Format",
                 None,
-                format!("{} has no format yet; {n} files are unknown", f.path),
+                format!("{} has no format yet{read}; {n} files are unknown", f.path),
                 "every disc file is covered by a format doc, found whole as a standard format, or listed in formats/unused.toml",
                 "find what loads it: run with trace_cd (loads.json gives where each file goes in RAM), watch that buffer for the code that parses it, and read that code (code disasm, decompile); write formats/<id>.md (formats/README.md) naming the files and the loader; when no run ever loads it, list it in formats/unused.toml with the runs that show so",
+            ));
+        }
+        if let Some(f) = a.files.iter().find(|f| f.unlisted) {
+            return Some(Item::agent(
+                "Index",
+                None,
+                format!(
+                    "{} is an archive ({}) whose entries the importer does not list{stale}",
+                    f.path,
+                    f.format.as_deref().unwrap_or("")
+                ),
+                "the importer lists its entries (import::index), at the last psx port check",
+                "write import::index for it in tools/import, reading the archive's own index as the importer will (psx_assets::archive reads DOT-T archives and Croc-style DIR indexes); commit and run psx port check: each entry is then an asset of its own (/ARCHIVE:NAME, or @0xOFFSET without names)",
             ));
         }
         if let Some(f) = a.first(AssetState::Found) {
@@ -1040,9 +1054,15 @@ mod tests {
             x.held_out = results(&[("walk/h", &[])]);
             x.review = Review::Holds { commit: "abc".into(), findings: 0 };
         }
-        let file = |path: &str, state| assets::Asset { path: path.into(), state, format: None };
+        let file = |path: &str, state| assets::Asset { path: path.into(), state, ..Default::default() };
+        let archive =
+            assets::Asset { unlisted: true, format: Some("pak".into()), ..file("/DATA.PAK", AssetState::Found) };
         f.assets = Ok(assets::Inventory {
-            files: vec![file("/MAPS/L1.WLD", AssetState::Found), file("/CUTS/BALL.AN2", AssetState::Unknown)],
+            files: vec![
+                file("/MAPS/L1.WLD", AssetState::Found),
+                assets::Asset { loaded: Some(false), ..file("/CUTS/BALL.AN2", AssetState::Unknown) },
+                archive,
+            ],
             ..Default::default()
         });
         // Not in the goal: shown, not asked for.
@@ -1051,9 +1071,13 @@ mod tests {
         assert!(!f.complete());
         let next = |f: &Facts| (f.next().item, f.next().why);
         assert_eq!(next(&f).0, "Format");
-        assert!(next(&f).1.starts_with("/CUTS/BALL.AN2 has no format yet"));
+        assert!(next(&f).1.starts_with("/CUTS/BALL.AN2 has no format yet; no traced run loaded it"));
         let set = |f: &mut Facts, i: usize, s| f.assets.as_mut().unwrap().files[i].state = s;
         set(&mut f, 1, AssetState::Unused);
+        assert_eq!(next(&f).0, "Index");
+        assert!(next(&f).1.starts_with("/DATA.PAK is an archive (pak) whose entries the importer does not list"));
+        // Listed: its entries take its place.
+        f.assets.as_mut().unwrap().files[2] = file("/DATA.PAK:LEVEL1.DAT", AssetState::Unused);
         assert_eq!(next(&f).0, "Import");
         assert!(next(&f).1.contains("no psx port check has run the importers"), "{}", next(&f).1);
         set(&mut f, 0, AssetState::Imported);
@@ -1061,7 +1085,7 @@ mod tests {
         set(&mut f, 0, AssetState::Checked);
         assert!(f.complete());
         assert_eq!(next(&f).0, "Done");
-        assert!(f.plain().contains("assets  1/2 files checked · 1 unused · 0 formats · 0 unknown\n"), "{}", f.plain());
+        assert!(f.plain().contains("assets  1/3 files checked · 2 unused · 0 formats · 0 unknown\n"), "{}", f.plain());
     }
 
     #[test]
