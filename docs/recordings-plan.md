@@ -135,6 +135,71 @@ mechanic code are worth keeping, so they move out first.
     high, a long fall's landing and a random switch's default. Next: Croc
     settles those (recordings, or wont_reach the person confirms), then
     the example is updated.
+24. **Croc in a level: assets, slopes and platforms.** The port so far
+    runs on a flat floor with no model. Next it imports Croc's model, his
+    animations and 1-1 from the person's disc, and moves on the level's
+    slopes, ledges, walls and platforms as the original does. psx's part
+    comes first, **choosing which assets**. A goal now takes all of the
+    disc (`assets = true`) or none, but a feature like "Croc on slopes"
+    needs 1-1's geometry, not every file, and how much of a game a port
+    extracts (every level, every car) is the person's choice:
+    - **Names.** An asset name is a disc path or archive entry, as
+      format docs write them (`/MAPS/*.WLD`, `/CROCFILE.1:CROC.*`; `*`
+      and `?` within a name), or `format:<id>`, every file
+      `formats/<id>.md` covers.
+    - **The goal** takes `assets = true` (every file), `false` (none),
+      or a list of names: what the person wants extracted.
+      `port confirm` keeps the list with the features; taking a name
+      out needs the person again, as taking a feature out does.
+    - **A feature's entry** takes `assets`, the names its recordings
+      need to replay (1-1 for slopes). A feature in the goal brings them
+      in, whatever the goal's own list says.
+    - **What is needed** is the goal's names and its features', each
+      file once. A name resolves against the inventory. A path into an
+      archive whose entries the importer does not list yet gives that
+      archive's Index item first. A `format:` id with no doc gives a
+      Format item: find which files those are (a run with `trace_cd`
+      that loads one) and write the doc. A name that still matches no
+      file is a problem `port next` reports.
+    - **Order.** The assets a goal feature needs (Format, Index, Import,
+      Check) come before item 1, since its recordings cannot replay
+      without them. The goal's own names come where assets come now
+      (item 6). A feature is Reviewed only with its assets checked, and
+      the goal is done only with every needed file checked or unused.
+    - **Status.** `port status` counts the needed files, and other files
+      apart. `port status --assets <name>` lists the files a name
+      matches, each with its format and state.
+
+    Built: goal.toml's `assets` takes names, a catalogue entry `assets`,
+    and the confirmation keeps the names.
+
+    Then Croc, by the porting agent in Croc's workspace through `port
+    next`, with the person confirming and playing:
+    1. Settle the Cover items step 23 found (recordings, or wont_reach
+       the person confirms).
+    2. **Croc's animations** (a new feature, with F-0004's sidestep): his
+       model and animations imported and checked. The animation playing
+       and its frame become glossary quantities, so the recordings check
+       the port plays them tick for tick; the rules that hang on them
+       (animation events in the script, the stomp's timings, the
+       sidestep's root motion) come from the imported data, not
+       constants.
+    3. **1-1's geometry** (step 22's asset): imported, checked against
+       the RAM the game builds, with collision in the port's own level
+       format.
+    4. **Slopes, ledges and walls**: the ground F-0001's wont_reach set
+       aside (slides, walls, walking off ledges), recorded in 1-1. Those
+       entries come out of wont_reach, and the person confirms again.
+    5. **Platforms**: standing on moving objects, recorded where 1-1 has
+       them.
+
+    Last, outside psx, the example: making stand-in assets is a game's
+    own work once its features are done, so psx and the template know
+    nothing of them. `examples/croc-movement` ships a stand-in Croc
+    (its own mesh and clips, timed to the imported animations' gameplay
+    data) and a small arena of the kinds of ground the recordings cover,
+    loaded in place of the imported ones. The recordings that need 1-1
+    run only with the person's disc; the README says so.
 
 After phase E: decide on the release, and whether the method goes to
 other platforms (mdx).

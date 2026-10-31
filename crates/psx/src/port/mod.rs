@@ -38,7 +38,7 @@ pub(crate) const GOAL_TOML: &str = "\
 # after that; taking a feature out needs the person to confirm again.
 description = \"\"
 features = []   # feature ids, or \"all\"
-assets = false  # true: every disc file imported and checked, or unused (formats/README.md)
+assets = false  # what to extract: true (every disc file), false, or names: [\"format:level\", \"/MAPS/*.WLD\"] (formats/README.md)
 ";
 
 /// The features a goal names: a list, or every catalogued feature.
@@ -88,6 +88,84 @@ impl Features {
     }
 }
 
+/// The disc's assets a goal asks for: every file, or the files some names
+/// cover (none for `false`). A name is a disc path or archive entry, `*`
+/// and `?` within a name (`/MAPS/*.WLD`, `/CROCFILE.1:CROC.*`), or
+/// `format:<id>`, every file of that format.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "AssetsToml")]
+pub enum Assets {
+    All,
+    Names(Vec<String>),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AssetsToml {
+    Flag(bool),
+    Names(Vec<String>),
+}
+
+impl TryFrom<AssetsToml> for Assets {
+    type Error = String;
+    fn try_from(a: AssetsToml) -> Result<Self, String> {
+        Ok(match a {
+            AssetsToml::Flag(true) => Assets::All,
+            AssetsToml::Flag(false) => Assets::Names(Vec::new()),
+            AssetsToml::Names(n) => Assets::Names(n),
+        })
+    }
+}
+
+impl Default for Assets {
+    fn default() -> Self {
+        Assets::Names(Vec::new())
+    }
+}
+
+impl Assets {
+    pub fn is_all(&self) -> bool {
+        *self == Assets::All
+    }
+    /// The names it lists; none for every file.
+    pub fn names(&self) -> &[String] {
+        match self {
+            Assets::All => &[],
+            Assets::Names(n) => n,
+        }
+    }
+    /// Asks for nothing.
+    pub fn is_none(&self) -> bool {
+        self.names().is_empty() && !self.is_all()
+    }
+    pub(crate) fn to_json(&self) -> Value {
+        match self {
+            Assets::All => json!(true),
+            Assets::Names(n) if n.is_empty() => json!(false),
+            Assets::Names(n) => json!(n),
+        }
+    }
+    pub(crate) fn to_toml(&self) -> String {
+        match self {
+            Assets::All => "true".into(),
+            Assets::Names(n) if n.is_empty() => "false".into(),
+            Assets::Names(n) => toml::Value::from(n.clone()).to_string(),
+        }
+    }
+}
+
+/// What is wrong with an asset name, if anything.
+pub fn asset_name_problem(name: &str) -> Option<String> {
+    match name.strip_prefix("format:") {
+        Some(id) if id.is_empty() || id.contains(['/', '*', '?']) => {
+            Some(format!("{name:?} is not format:<id>, a format doc's id (formats/<id>.md) or a standard format"))
+        }
+        Some(_) => None,
+        None if name.starts_with('/') => None,
+        None => Some(format!("{name:?} is not a disc path from / (/MAPS/*.WLD, /ARCHIVE:ENTRY) or format:<id>")),
+    }
+}
+
 /// `goal.toml`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,10 +174,11 @@ pub struct Goal {
     pub description: String,
     #[serde(default)]
     pub features: Features,
-    /// Whether the goal includes the disc's assets: every file imported and
-    /// checked, or unused.
+    /// The disc's assets the person wants extracted: each file they cover
+    /// imported and checked, or unused. The goal's features bring in their
+    /// own besides.
     #[serde(default)]
-    pub assets: bool,
+    pub assets: Assets,
     #[serde(default)]
     pub confirmed: Option<Confirmed>,
 }
@@ -112,7 +191,7 @@ pub struct Confirmed {
     pub at: String,
     pub features: Features,
     #[serde(default)]
-    pub assets: bool,
+    pub assets: Assets,
     #[serde(default)]
     pub wont_reach: WontReach,
 }
@@ -140,6 +219,10 @@ pub struct Entry {
     pub code: Vec<String>,
     #[serde(default)]
     pub recordings: Recordings,
+    /// The disc's assets its recordings need to replay, by name (as the
+    /// goal's `assets` names them): brought in whatever the goal asks.
+    #[serde(default)]
+    pub assets: Vec<String>,
     /// Branches of its code no recording can reach, by address (or a
     /// script position or stretch in one of its code's), and why; the
     /// person confirms them (`port confirm`).
@@ -348,6 +431,19 @@ fn entry_problems(e: &Entry, out: &mut Vec<Problem>) {
     if e.questions.iter().any(|q| q.trim().is_empty()) {
         out.push(problem(f, "questions: an empty question"));
     }
+    asset_names_problems(f, &e.assets, out);
+}
+
+/// What is wrong with a list of asset names.
+fn asset_names_problems(file: &str, names: &[String], out: &mut Vec<Problem>) {
+    let mut seen = BTreeSet::new();
+    for n in names {
+        if let Some(p) = asset_name_problem(n) {
+            out.push(problem(file, format!("assets: {p}")));
+        } else if !seen.insert(n) {
+            out.push(problem(file, format!("assets: {n} is listed twice")));
+        }
+    }
 }
 
 impl Port {
@@ -512,6 +608,7 @@ impl Port {
         if self.goal.features == Features::List(Vec::new()) {
             out.push(problem(GOAL, "names no features: list the catalogue entries the goal needs, or \"all\""));
         }
+        asset_names_problems(GOAL, self.goal.assets.names(), &mut out);
         if let Features::List(l) = &self.goal.features {
             let mut seen = BTreeSet::new();
             for id in l {
@@ -592,8 +689,15 @@ impl Port {
                 was.iter().filter(|id| !now.contains(*id)).cloned().collect()
             }
         };
-        let missing: Vec<String> =
-            missing.into_iter().chain((c.assets && !self.goal.assets).then(|| "assets".to_string())).collect();
+        // Every asset name the person confirmed is still asked for.
+        let assets: Vec<String> = match (&c.assets, &self.goal.assets) {
+            (_, Assets::All) => Vec::new(),
+            (Assets::All, _) => vec!["assets = true".into()],
+            (Assets::Names(was), Assets::Names(now)) => {
+                was.iter().filter(|n| !now.contains(n)).map(|n| format!("assets {n}")).collect()
+            }
+        };
+        let missing: Vec<String> = missing.into_iter().chain(assets).collect();
         if missing.is_empty() { Confirmation::Covers { at } } else { Confirmation::Shrunk { at, missing } }
     }
 
@@ -622,6 +726,7 @@ impl Port {
                     "depends": e.map(|e| &e.depends),
                     "code": e.map(|e| &e.code),
                     "recordings": e.map(|e| &e.recordings),
+                    "assets": e.map(|e| &e.assets),
                     "wont_reach": e.map(|e| &e.wont_reach),
                     "questions": e.map(|e| &e.questions),
                     "required_by": required_by,
@@ -867,6 +972,39 @@ pub(crate) mod tests {
         let all = "confirmed = { at = \"t\", features = \"all\" }\n";
         let (_d, port) = workspace(&format!("features = [\"F-0001\"]\n{all}"), &entries);
         assert!(matches!(port.confirmation(), Confirmation::Shrunk { .. }));
+    }
+
+    #[test]
+    fn a_goal_asks_for_every_asset_none_or_names_the_person_confirms() {
+        let goal = |a: &str| toml::from_str::<Goal>(&format!("assets = {a}")).map(|g| g.assets);
+        assert_eq!(goal("true").unwrap(), Assets::All);
+        assert_eq!(goal("false").unwrap(), Assets::Names(vec![]));
+        assert_eq!(goal("[\"format:level\"]").unwrap(), Assets::Names(vec!["format:level".into()]));
+        assert!(goal("\"some\"").is_err());
+        assert_eq!(toml::from_str::<Goal>(GOAL_TOML).unwrap().assets, Assets::Names(vec![]));
+        let a = feature("F-0001", "").replace("depends = []", "depends = []\nassets = [\"MAPS/*.WLD\", \"format:\"]");
+        let confirmed =
+            "confirmed = { at = \"t\", features = [\"F-0001\"], assets = [\"format:level\", \"format:car\"] }\n";
+        let (_d, port) = workspace(
+            &format!("description = \"x\"\nfeatures = [\"F-0001\"]\nassets = [\"format:level\", \"lvl\"]\n{confirmed}"),
+            &[("F-0001.md", &a)],
+        );
+        let p: Vec<String> = port.problems.iter().map(|p| format!("{}: {}", p.file, p.problem)).collect();
+        assert_eq!(
+            p,
+            [
+                "catalogue/F-0001.md: assets: \"MAPS/*.WLD\" is not a disc path from / (/MAPS/*.WLD, /ARCHIVE:ENTRY) or format:<id>",
+                "catalogue/F-0001.md: assets: \"format:\" is not format:<id>, a format doc's id (formats/<id>.md) or a standard format",
+                "goal.toml: assets: \"lvl\" is not a disc path from / (/MAPS/*.WLD, /ARCHIVE:ENTRY) or format:<id>",
+            ]
+        );
+        // A name the person confirmed taken out needs them again; every file covers it.
+        assert_eq!(
+            port.confirmation(),
+            Confirmation::Shrunk { at: "t".into(), missing: vec!["assets format:car".into()] }
+        );
+        let (_d, port) = workspace(&format!("features = [\"F-0001\"]\nassets = true\n{confirmed}"), &[]);
+        assert!(matches!(port.confirmation(), Confirmation::Covers { .. }));
     }
 
     #[test]

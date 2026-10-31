@@ -42,5 +42,18 @@ Each disc file is then unknown, format found, imported (an importer in
 checked (a passing importer test compared the import with what the game
 built from it, marked with `import::checking`) or unused. `psx port check`
 runs the importers on the disc and their tests; `psx port status` shows the
-files by state. When `goal.toml` has `assets = true`, `psx port next` asks
-for each file until every one is checked or unused.
+files by state.
+
+How much of the disc the port extracts is the person's choice, in
+`goal.toml`'s `assets`: `true` (every file), `false`, or a list of names.
+A name is a disc path or archive entry as above (`/MAPS/*.WLD`,
+`/CROCFILE.1:CROC.*`) or `format:<id>`, every file of a format doc's id or
+a standard format's (`format:TIM`). A feature's entry names the assets its
+recordings need, and those come in whatever the goal says. `psx port next`
+asks for each needed file until it is checked or unused; a `format:` id no
+doc has yet is first a format to find. `psx port status --assets NAME`
+lists the files a name covers.
+
+```toml
+assets = ["format:level", "format:car"]   # every level and car
+```

@@ -129,8 +129,17 @@ game never loads it). A format is `formats/<id>.md` (TOML front matter:
 its files and the code that parses them, then the layout); a file psx
 finds whole as a standard format needs none. `port check` runs the
 importers on the disc (imported: an output's provenance names the file)
-and their tests (checked: a passing test marked it). Assets are part of a
-goal when `goal.toml` says `assets = true`. An archive's entries are
+and their tests (checked: a passing test marked it).
+
+How much is extracted is the person's choice. An asset name is a disc path
+or archive entry (`/MAPS/*.WLD`, `/CROCFILE.1:CROC.*`) or `format:<id>`,
+every file of that format. `goal.toml`'s `assets` is `true` (every file),
+`false`, or a list of names (`["format:level", "format:car"]`), confirmed
+with the features. A catalogue entry's `assets` names what its recordings
+need to replay (1-1's geometry for "Croc on slopes"); those come in
+whatever the goal says. A `format:` id no doc has yet is first a format to
+find; a name reaching into a file no doc calls an archive, that archive's
+format; a name that matches nothing is a problem. An archive's entries are
 assets of their own: its format doc says `archive = true`, and the
 importer lists the entries (`import::index`), which `port check` asks for.
 
@@ -143,7 +152,7 @@ importer lists the entries (`import::index`), which `port check` asks for.
 | Located | its code is found |
 | Recorded | it has recordings |
 | Matching | every working recording passes |
-| Reviewed | matching, every branch of its code covered by a recording or marked won't-reach, no question open, and the code reviewed by someone who did not write it, with every finding answered |
+| Reviewed | matching, every branch of its code covered by a recording or marked won't-reach, no question open, its assets checked or unused, and the code reviewed by someone who did not write it, with every finding answered |
 | Done | reviewed, and its held-out recordings pass |
 
 Coverage is the union of what the original ran across a feature's
@@ -214,6 +223,8 @@ swimming     located   no recordings
 
 One item, in this order:
 
+0. A feature's assets (its entry's names) not checked or unused: Format,
+   Index, Import, Check, since its recordings cannot replay without them.
 1. The port cannot replay a recording (its world or start state is
    missing): build that.
 2. A feature without its code: record with and without it, diff the
@@ -223,7 +234,8 @@ One item, in this order:
 5. An uncovered branch: a recording that reaches it, phrased as what to do
    ("jump, and let go of CROSS once the rise eases"). The agent records it
    when it can script it; otherwise it is the person's.
-6. Assets: an unknown file, then an importer not yet checked.
+6. The goal's assets: a name that covers nothing yet, an unknown file,
+   an archive not listed, then an importer not yet checked.
 7. Every feature's own work finished (matching, branches resolved, no
    question open) and the code without a current review: the review's
    brief, a follow-up's, or the unanswered findings.

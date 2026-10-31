@@ -246,9 +246,12 @@ impl PortCheckArgs {
         let ran = run_tests(root, &scenarios_path)?;
         // The importers, when there is something to import: run on the disc
         // and their tests, judged at the same commit.
-        let imports = (self.feature.is_none() && (port.goal.assets || !port.formats.is_empty()))
-            .then(|| run_importers(root, &head, &assets::archive_files(root, &port)))
-            .transpose()?;
+        let imports = (self.feature.is_none()
+            && (!port.goal.assets.is_none()
+                || port.entries.values().any(|e| !e.assets.is_empty())
+                || !port.formats.is_empty()))
+        .then(|| run_importers(root, &head, &assets::archive_files(root, &port)))
+        .transpose()?;
         let after = Git::read(root);
         if after.head != git.head || !after.clean {
             return Err(Error::invalid(

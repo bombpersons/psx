@@ -61,7 +61,8 @@ Rules:
 ## The goal and the catalogue
 
 goal.toml names the features the person wants (ids, or "all"), a
-description, and assets = true when the goal includes the disc's assets.
+description, and the disc's assets to extract: true (every file), false, or
+a list of asset names (see Assets).
 catalogue/F-NNNN.md is one feature: TOML between +++ lines, then a
 paragraph in game terms (catalogue/README.md has the format and how fine to
 cut):
@@ -72,6 +73,7 @@ cut):
               and stretches of script programs (croc+0x1803..0x18A0;
               topic code, Scripted rules)
   questions   what is not known yet
+  assets      asset names its recordings need to replay (topic assets)
   [recordings] work and held_out, as scenario/name
   [wont_reach] branch address (or script position) = why no recording
               can reach it
@@ -79,8 +81,8 @@ cut):
 The goal's features and their dependencies are its closure. The person
 reviews it with psx port confirm and confirms with psx port confirm --yes,
 which also confirms the wont_reach branches with their reasons. The list may
-grow afterwards; taking a feature out, or a wont_reach added or changed,
-needs confirming again.
+grow afterwards; taking a feature out or an asset name out of the goal, or
+a wont_reach added or changed, needs confirming again.
 
 ## Recordings
 
@@ -182,7 +184,8 @@ A feature's stages, each holding with those before it:
   counted against the inventory.
 - matching: every work recording passes at HEAD.
 - reviewed: every branch of its code taken both ways by its recordings or
-  a confirmed wont_reach, no question open, and the code's review holds.
+  a confirmed wont_reach, no question open, its assets checked or unused,
+  and the code's review holds.
 - done: its held-out recordings pass.
 
 port_next's items, in this order:
@@ -190,6 +193,7 @@ port_next's items, in this order:
 - Catalogue: goal.toml or the catalogue has problems; fix them.
 - Confirm (person): the list is unconfirmed or lost a feature; until it is,
   only investigate and catalogue.
+- Format, Index, Import, Check: a feature's assets, before its work.
 - Build: the port has no launcher for a scenario kind, or does not observe
   a compared quantity.
 - Unpack: overlays the inventory knows only from code that ran in them.
@@ -203,7 +207,7 @@ port_next's items, in this order:
   decision's way never taken: record what reaches it, ask the person to
   play it, or list it under wont_reach.
 - Confirm (person): wont_reach branches not confirmed as they stand.
-- Format, Index, Import, Check (assets = true): see Assets.
+- Format, Index, Import, Check (the goal's assets): see Assets.
 - Review: every feature's own work is finished and the code (game/,
   tools/) has no review that holds. One review covers the code as a whole
   and asks whether one would write a new game like this, not whether it
@@ -242,9 +246,11 @@ Each disc file but the code is:
 An archive's format doc says archive = true: the importer lists its entries
 (import::index), which are then the assets, named /ARCHIVE:NAME (with @0xOFF
 where names repeat) or /ARCHIVE@0xOFF. port_status counts them always, with
-how many no traced run (trace_cd) loaded. With assets = true, port_next
-gives, after the features, Format (a file or entry with no format), Index
-(an archive the importer does not list), Import and Check. Only the
+how many no traced run (trace_cd) loaded.
+
+Asset names pick what is extracted (topic assets): goal.toml's for the
+person's choice, an entry's for what its recordings need, which port_next
+gives before the feature's work: Format, Index, Import, Check. Only the
 importers read the original's formats; the game reads the port's own.
 
 ## Commands

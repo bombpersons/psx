@@ -147,6 +147,8 @@ pub struct Feature {
     pub questions: Vec<String>,
     /// The code's review holds (one review covers every feature).
     pub code_reviewed: bool,
+    /// The disc's assets its entry names, as the inventory has them.
+    pub assets: assets::Needs,
 }
 
 /// Every recording passed.
@@ -191,7 +193,7 @@ impl Feature {
             self.located,
             self.unrecorded.is_empty(),
             self.matching(),
-            self.branches_resolved() && self.questions.is_empty() && self.code_reviewed,
+            self.branches_resolved() && self.questions.is_empty() && self.code_reviewed && self.assets.settled(),
             all_pass(&self.held_out),
         ];
         Some(Stage::ALL[checks.iter().take_while(|c| **c).count()])
@@ -310,6 +312,8 @@ pub struct Facts {
     pub unpack: Vec<String>,
     /// The disc's files by state, or why psx cannot list them.
     pub assets: Result<assets::Inventory, String>,
+    /// What the goal's own asset names need.
+    pub needs: assets::Needs,
     /// The code's review.
     pub review: Review,
 }
@@ -330,7 +334,17 @@ impl Facts {
         let confirmed = port.goal.confirmed.as_ref().map(|c| c.wont_reach.clone()).unwrap_or_default();
         let head = git.head.as_deref();
         let review = review::read(root);
-        let features = port
+        let assets = assets::inventory(root, &port, inv.as_ref(), head);
+        let needs = |names: &[String], all: bool, file: &str, problems: &mut Vec<super::Problem>| {
+            let n = assets::Needs::of(names, all, &port, &assets);
+            for (name, why) in n.unresolved.iter().filter(|(_, w)| *w == assets::Unresolved::NoMatch) {
+                problems.push(super::problem(file, format!("assets: {name} {}", why.describe())));
+            }
+            n
+        };
+        let mut problems = Vec::new();
+        let goal_needs = needs(port.goal.assets.names(), port.goal.assets.is_all(), super::GOAL, &mut problems);
+        let features: Vec<Feature> = port
             .closure()
             .into_iter()
             .map(|id| {
@@ -347,6 +361,7 @@ impl Facts {
                         branches: Vec::new(),
                         questions: Vec::new(),
                         code_reviewed: false,
+                        assets: Default::default(),
                         id,
                     };
                 };
@@ -412,15 +427,16 @@ impl Facts {
                     branches,
                     questions: e.questions.clone(),
                     code_reviewed: review.holds(),
+                    assets: needs(&e.assets, false, &e.file, &mut problems),
                     id,
                 }
             })
             .collect();
-        let assets = assets::inventory(root, &port, inv.as_ref(), head);
+        port.problems.extend(problems);
         if let Ok(a) = &assets {
             port.problems.extend(a.problems.iter().cloned());
         }
-        Ok(Facts { port, git, features, unpack, assets, review })
+        Ok(Facts { port, git, features, unpack, assets, needs: goal_needs, review })
     }
 
     pub fn stage(&self, id: &str) -> Option<Stage> {
@@ -432,7 +448,46 @@ impl Facts {
         self.port.confirmation() != Confirmation::Missing
             && !self.features.is_empty()
             && self.features.iter().all(|f| f.stage() == Some(Stage::Done))
-            && (!self.port.goal.assets || self.assets.as_ref().is_ok_and(|a| a.files.iter().all(|f| f.state.settled())))
+            && self.needs.settled()
+    }
+
+    /// The files the goal and its features need, by index, and how many
+    /// of them are checked or unused.
+    fn needed(&self) -> (std::collections::BTreeSet<usize>, usize) {
+        let files: std::collections::BTreeSet<usize> =
+            self.features.iter().flat_map(|f| &f.assets.files).chain(&self.needs.files).copied().collect();
+        let settled = match &self.assets {
+            Ok(a) => files.iter().filter(|&&i| a.files[i].state.settled()).count(),
+            Err(_) => 0,
+        };
+        (files, settled)
+    }
+
+    /// `port status --assets NAME`: the files a name covers, or why none.
+    pub fn assets_named(&self, name: &str) -> crate::Result<Value> {
+        if let Some(p) = super::asset_name_problem(name) {
+            return Err(Error::invalid(p));
+        }
+        let a =
+            self.assets.as_ref().map_err(|why| Error::invalid(format!("psx cannot list the disc's files: {why}")))?;
+        let needed = self.needed().0;
+        Ok(match assets::resolve(name, &self.port, a) {
+            Err(why) => json!({"name": name, "files": [], "unresolved": why.describe()}),
+            Ok(files) => {
+                let rows: Vec<Value> = files
+                    .iter()
+                    .map(|&i| {
+                        let f = &a.files[i];
+                        let mut v = json!({"path": f.path, "format": f.format, "state": f.state.name(), "needed": needed.contains(&i)});
+                        if f.unlisted {
+                            v["archive"] = json!("entries not listed yet");
+                        }
+                        v
+                    })
+                    .collect();
+                json!({"name": name, "count": rows.len(), "files": rows})
+            }
+        })
     }
 
     fn title(&self, id: &str) -> String {
@@ -457,7 +512,7 @@ impl Facts {
             let why = match self.port.confirmation() {
                 Confirmation::Shrunk { missing, .. } => {
                     format!(
-                        "features the person confirmed are no longer in the goal or needed by it: {}",
+                        "what the person confirmed is no longer in the goal or needed by it: {}",
                         missing.join(", ")
                     )
                 }
@@ -473,6 +528,10 @@ impl Facts {
         }
         let find = |pred: &dyn Fn(&Feature) -> bool| self.features.iter().find(|f| pred(f));
         let at = |f: &Feature, s: Stage| f.stage().is_some_and(|x| x >= s);
+        // 0. The assets a feature's recordings need to replay.
+        if let Some(item) = self.features.iter().find_map(|f| self.asset_item(Some(&f.id), &f.assets)) {
+            return item;
+        }
         // 1. The port cannot replay a recording.
         if let Some(f) = find(&|f| at(f, Stage::Recorded) && !f.unbuilt.is_empty()) {
             return Item::agent(
@@ -574,11 +633,9 @@ impl Facts {
                 "the person reads psx port confirm (each branch and why no recording can reach it) and runs psx port confirm --yes; the agent may go on with other work",
             );
         }
-        // 6. Assets, when the goal includes them.
-        if self.port.goal.assets {
-            if let Some(item) = self.asset_item() {
-                return item;
-            }
+        // 6. The assets the goal asks for.
+        if let Some(item) = self.asset_item(None, &self.needs) {
+            return item;
         }
         // 7. The review of the code as a whole, once the rest of the
         // goal's work is finished.
@@ -653,21 +710,53 @@ impl Facts {
         )
     }
 
-    /// The next asset item: an unknown file, then one not imported, then
-    /// one not checked.
-    fn asset_item(&self) -> Option<Item> {
+    /// The next asset item of what `needs` covers, for `feature` or the
+    /// goal: a name that covers no files yet, then an unknown file, an
+    /// archive not listed, one not imported, one not checked.
+    fn asset_item(&self, feature: Option<&str>, needs: &assets::Needs) -> Option<Item> {
+        if needs.settled() {
+            return None;
+        }
         let a = match &self.assets {
             Ok(a) => a,
             Err(why) => {
                 return Some(Item::agent(
                     "Assets",
-                    None,
+                    feature,
                     format!("psx cannot list the disc's files: {why}"),
                     "psx port status lists the disc's files",
                     "save the workspace's disc image as its media: psx context --image media/<game>.cue --save",
                 ));
             }
         };
+        let asks = |name: &str| match feature {
+            Some(_) => format!("its entry's assets name {name}"),
+            None => format!("the goal's assets name {name}"),
+        };
+        for (name, why) in &needs.unresolved {
+            match why {
+                assets::Unresolved::NoFormat(id) => {
+                    return Some(Item::agent(
+                        "Format",
+                        feature,
+                        format!("{}, and {}", asks(name), why.describe()),
+                        &format!("formats/{id}.md names the disc files in that format"),
+                        "find which disc files these are: run the game where it loads one with trace_cd (loads.json gives each file's place in RAM), watch that buffer for the code that parses it, and read that code (code disasm, decompile); write the format doc (formats/README.md) naming the files and the loader",
+                    ));
+                }
+                assets::Unresolved::Archive { path, documented: false } => {
+                    return Some(Item::agent(
+                        "Format",
+                        feature,
+                        format!("{}, an entry of {path}, which no format doc says is an archive", asks(name)),
+                        &format!("a format doc with archive = true covers {path}"),
+                        "find the archive's index from the code that reads it (trace_cd, a watch on the buffer, code disasm), and write its format doc with archive = true (formats/README.md)",
+                    ));
+                }
+                // The Index item below lists it; a name matching nothing is a problem.
+                _ => {}
+            }
+        }
         let stale = match (&a.report, &a.stale) {
             (Some(r), _) if !r.failures.is_empty() => {
                 format!(" (the importers failed: {})", first_lines(&r.failures).join("; "))
@@ -676,21 +765,30 @@ impl Facts {
             (None, None) => " (no psx port check has run the importers)".into(),
             _ => String::new(),
         };
-        if let Some(f) = a.first(AssetState::Unknown) {
-            let n = a.count(AssetState::Unknown);
+        let mut unlisted: Vec<&assets::Asset> =
+            needs.files.iter().map(|&i| &a.files[i]).filter(|f| f.unlisted).collect();
+        for (_, why) in &needs.unresolved {
+            if let assets::Unresolved::Archive { path, documented: true } = why {
+                unlisted.extend(a.files.iter().find(|f| &f.path == path));
+            }
+        }
+        let files: Vec<&assets::Asset> = needs.files.iter().map(|&i| &a.files[i]).collect();
+        let first = |s: AssetState| files.iter().find(|f| f.state == s && !f.unlisted).copied();
+        if let Some(f) = first(AssetState::Unknown) {
+            let n = files.iter().filter(|f| f.state == AssetState::Unknown).count();
             let read = if f.loaded == Some(false) { "; no traced run loaded it" } else { "" };
             return Some(Item::agent(
                 "Format",
-                None,
+                feature,
                 format!("{} has no format yet{read}; {n} files are unknown", f.path),
                 "every disc file is covered by a format doc, found whole as a standard format, or listed in formats/unused.toml",
                 "find what loads it: run with trace_cd (loads.json gives where each file goes in RAM), watch that buffer for the code that parses it, and read that code (code disasm, decompile); write formats/<id>.md (formats/README.md) naming the files and the loader; when no run ever loads it, list it in formats/unused.toml with the runs that show so",
             ));
         }
-        if let Some(f) = a.files.iter().find(|f| f.unlisted) {
+        if let Some(f) = unlisted.first() {
             return Some(Item::agent(
                 "Index",
-                None,
+                feature,
                 format!(
                     "{} is an archive ({}) whose entries the importer does not list{stale}",
                     f.path,
@@ -700,19 +798,19 @@ impl Facts {
                 "write import::index for it in tools/import, reading the archive's own index as the importer will (psx_assets::archive reads DOT-T archives and Croc-style DIR indexes); commit and run psx port check: each entry is then an asset of its own (/ARCHIVE:NAME, or @0xOFFSET without names)",
             ));
         }
-        if let Some(f) = a.first(AssetState::Found) {
+        if let Some(f) = first(AssetState::Found) {
             return Some(Item::agent(
                 "Import",
-                None,
+                feature,
                 format!("{} ({}) is not imported{stale}", f.path, f.format.as_deref().unwrap_or("")),
                 "the importers' outputs name it in their provenance, at HEAD",
                 "write its importer in tools/import, converting exactly into the port's formats with Provenance naming the disc file; commit and run psx port check, which runs the importers on the disc",
             ));
         }
-        a.first(AssetState::Imported).map(|f| {
+        first(AssetState::Imported).map(|f| {
             Item::agent(
                 "Check",
-                None,
+                feature,
                 format!("{} is imported, not checked against what the game built", f.path),
                 "an importer test that compares it with what the game built marks it with import::checking and passes, at HEAD",
                 "write a test in tools/import comparing the importer's output with what the game built from that file (RAM after loading it, its VRAM uploads, a GPU capture of the same view: psx run with trace_cd, gpu_frame), starting with let _checked = import::checking(\"/PATH\"); commit and run psx port check",
@@ -771,6 +869,9 @@ impl Facts {
             if !f.unbuilt.is_empty() {
                 row["unbuilt"] = json!(f.unbuilt);
             }
+            if !f.assets.is_empty() {
+                row["assets"] = f.assets.json();
+            }
             areas.entry(e.map(|e| e.area.clone()).unwrap_or_default()).or_default().push(row);
         }
         let mut v = json!({
@@ -787,10 +888,15 @@ impl Facts {
         v["assets"] = match &self.assets {
             Ok(a) => {
                 let mut j = a.json(self.port.formats.len());
-                j["in_goal"] = json!(self.port.goal.assets);
+                j["in_goal"] = self.port.goal.assets.to_json();
+                let (needed, settled) = self.needed();
+                j["needed"] = json!({"files": needed.len(), "settled": settled});
+                if !self.needs.unresolved.is_empty() {
+                    j["goal"] = self.needs.json();
+                }
                 j
             }
-            Err(why) => json!({"in_goal": self.port.goal.assets, "error": why}),
+            Err(why) => json!({"in_goal": self.port.goal.assets.to_json(), "error": why}),
         };
         if !self.unpack.is_empty() {
             v["unpack"] = json!(self.unpack);
@@ -809,15 +915,22 @@ impl Facts {
             self.features.len()
         ));
         if let Ok(a) = &self.assets {
-            s.push_str(&format!(
-                "assets  {}/{} files checked · {} unused · {} formats · {} unknown{}\n",
+            let (needed, settled) = self.needed();
+            let all = format!(
+                "{}/{} files checked · {} unused · {} formats · {} unknown",
                 a.count(AssetState::Checked),
                 a.files.len(),
                 a.count(AssetState::Unused),
                 self.port.formats.len(),
                 a.count(AssetState::Unknown),
-                if self.port.goal.assets { "" } else { "  (not in the goal)" }
-            ));
+            );
+            s.push_str(&if self.port.goal.assets.is_all() {
+                format!("assets  {all}\n")
+            } else if needed.is_empty() {
+                format!("assets  {all}  (not in the goal)\n")
+            } else {
+                format!("assets  {settled}/{} needed files checked or unused · disc: {all}\n", needed.len())
+            });
         }
         s.push_str(&match self.port.confirmation() {
             Confirmation::Missing => "not confirmed yet\n".to_string(),
@@ -980,6 +1093,11 @@ pub struct PortStatusArgs {
     #[arg(long)]
     #[serde(default)]
     pub feature: Option<String>,
+    /// The disc files an asset name covers (/MAPS/*.WLD, /ARCHIVE:ENTRY,
+    /// format:<id>), each with its format and state.
+    #[arg(long)]
+    #[serde(default)]
+    pub assets: Option<String>,
     /// Text for the person instead of JSON.
     #[arg(long)]
     #[serde(default)]
@@ -994,6 +1112,9 @@ impl Op for PortStatusArgs {
                 let feature =
                     feature.ok_or_else(|| crate::Error::invalid(format!("feature {id}: not in the catalogue")))?;
                 return Ok(json!({"feature": id, "branches": feature.branches_json(true)}));
+            }
+            if let Some(name) = &self.assets {
+                return f.assets_named(name);
             }
             let mut v = f.status();
             v["next"] = f.next().to_json();
@@ -1160,9 +1281,8 @@ mod tests {
         assert_eq!(next(&f), ("Done", "person", String::new()));
     }
 
-    #[test]
-    fn assets_follow_the_features_when_the_goal_has_them() {
-        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+    /// Every feature of `f` done, with the given files on the disc.
+    fn finished(f: &mut Facts, files: Vec<assets::Asset>) {
         for x in f.features.iter_mut() {
             x.located = true;
             x.unrecorded.clear();
@@ -1170,31 +1290,56 @@ mod tests {
             x.work = results(&[("walk/a", &[])]);
             x.held_out = results(&[("walk/h", &[])]);
         }
-        review(&mut f, Review::Holds { commit: "abc".into(), findings: 0 });
-        let file = |path: &str, state| assets::Asset { path: path.into(), state, ..Default::default() };
+        review(f, Review::Holds { commit: "abc".into(), findings: 0 });
+        f.assets = Ok(assets::Inventory { files, ..Default::default() });
+        needs_again(f);
+    }
+
+    /// What the goal and the features need, read again from the inventory.
+    fn needs_again(f: &mut Facts) {
+        f.needs = assets::Needs::of(f.port.goal.assets.names(), f.port.goal.assets.is_all(), &f.port, &f.assets);
+        for x in f.features.iter_mut() {
+            let names = f.port.entries.get(&x.id).map(|e| e.assets.clone()).unwrap_or_default();
+            x.assets = assets::Needs::of(&names, false, &f.port, &f.assets);
+        }
+    }
+
+    fn file(path: &str, state: AssetState) -> assets::Asset {
+        assets::Asset { path: path.into(), state, ..Default::default() }
+    }
+
+    #[test]
+    fn assets_follow_the_features_when_the_goal_has_them() {
+        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
         let archive =
             assets::Asset { unlisted: true, format: Some("pak".into()), ..file("/DATA.PAK", AssetState::Found) };
-        f.assets = Ok(assets::Inventory {
-            files: vec![
+        finished(
+            &mut f,
+            vec![
                 file("/MAPS/L1.WLD", AssetState::Found),
                 assets::Asset { loaded: Some(false), ..file("/CUTS/BALL.AN2", AssetState::Unknown) },
                 archive,
             ],
-            ..Default::default()
-        });
+        );
         // Not in the goal: shown, not asked for.
         assert!(f.complete());
-        f.port.goal.assets = true;
+        assert!(f.plain().contains("(not in the goal)"), "{}", f.plain());
+        f.port.goal.assets = super::super::Assets::All;
+        needs_again(&mut f);
         assert!(!f.complete());
         let next = |f: &Facts| (f.next().item, f.next().why);
         assert_eq!(next(&f).0, "Format");
         assert!(next(&f).1.starts_with("/CUTS/BALL.AN2 has no format yet; no traced run loaded it"));
-        let set = |f: &mut Facts, i: usize, s| f.assets.as_mut().unwrap().files[i].state = s;
+        let set = |f: &mut Facts, i: usize, s| {
+            f.assets.as_mut().unwrap().files[i].state = s;
+            needs_again(f);
+        };
         set(&mut f, 1, AssetState::Unused);
         assert_eq!(next(&f).0, "Index");
         assert!(next(&f).1.starts_with("/DATA.PAK is an archive (pak) whose entries the importer does not list"));
         // Listed: its entries take its place.
         f.assets.as_mut().unwrap().files[2] = file("/DATA.PAK:LEVEL1.DAT", AssetState::Unused);
+        needs_again(&mut f);
         assert_eq!(next(&f).0, "Import");
         assert!(next(&f).1.contains("no psx port check has run the importers"), "{}", next(&f).1);
         set(&mut f, 0, AssetState::Imported);
@@ -1203,6 +1348,69 @@ mod tests {
         assert!(f.complete());
         assert_eq!(next(&f).0, "Done");
         assert!(f.plain().contains("assets  1/3 files checked · 2 unused · 0 formats · 0 unknown\n"), "{}", f.plain());
+    }
+
+    #[test]
+    fn a_feature_brings_in_the_assets_it_names_before_its_own_work() {
+        let level = "+++\nid = \"F-0002\"\ntitle = \"Slopes\"\narea = \"player\"\nassets = [\"/CROCFILE.1:MAP1*\"]\n+++\nOn slopes.\n";
+        let (d, _) = workspace(CONFIRMED, &[("F-0001.md", &feature("F-0001", "")), ("F-0002.md", level)]);
+        let mut f = Facts::gather(&d.0).unwrap();
+        let disc = vec![file("/CROCFILE.1", AssetState::Unknown), file("/MAPS/L2.WLD", AssetState::Unknown)];
+        finished(&mut f, disc);
+        let next = |f: &Facts| {
+            let i = f.next();
+            (i.item, i.feature.unwrap_or_default(), i.why)
+        };
+        // No format doc says CROCFILE.1 is an archive: the feature's item comes first.
+        let (item, feature, why) = next(&f);
+        assert_eq!((item, feature.as_str()), ("Format", "F-0002"));
+        assert!(why.contains("an entry of /CROCFILE.1, which no format doc says is an archive"), "{why}");
+        assert_eq!(f.stage("F-0002"), Some(Stage::Matching), "its assets keep it from Reviewed");
+        // An archive doc, not listed yet: Index.
+        f.port.formats.insert(
+            "crocfile".into(),
+            assets::Format {
+                id: "crocfile".into(),
+                files: vec!["/CROCFILE.1".into()],
+                archive: true,
+                ..Default::default()
+            },
+        );
+        f.assets.as_mut().unwrap().files[0] =
+            assets::Asset { unlisted: true, format: Some("crocfile".into()), ..file("/CROCFILE.1", AssetState::Found) };
+        needs_again(&mut f);
+        assert_eq!(next(&f).0, "Index");
+        // Listed: only the entries it names.
+        let files = &mut f.assets.as_mut().unwrap().files;
+        files[0] = assets::Asset { format: Some("level".into()), ..file("/CROCFILE.1:MAP1.GEO", AssetState::Found) };
+        files.push(file("/CROCFILE.1:CROC.MOD", AssetState::Found));
+        needs_again(&mut f);
+        assert_eq!(f.features[1].assets.files, [0]);
+        assert_eq!(next(&f).0, "Import");
+        f.assets.as_mut().unwrap().files[0].state = AssetState::Checked;
+        needs_again(&mut f);
+        // The goal asks for no assets: the files no feature names wait.
+        assert!(f.complete());
+        assert!(f.plain().contains("assets  1/1 needed files checked or unused · disc:"), "{}", f.plain());
+        // The goal asks for every level: a format with no doc yet is the agent's to find.
+        f.port.goal.assets = super::super::Assets::Names(vec!["format:level".into(), "format:car".into()]);
+        needs_again(&mut f);
+        let (item, feature, why) = next(&f);
+        assert_eq!((item, feature.as_str()), ("Format", ""));
+        assert!(why.contains("format:car, and no format doc (formats/car.md)"), "{why}");
+        f.port.goal.assets = super::super::Assets::Names(vec!["format:level".into()]);
+        needs_again(&mut f);
+        assert!(f.complete());
+        let named = f.assets_named("/CROCFILE.1:*").unwrap();
+        assert_eq!(named["count"], 2);
+        assert_eq!(
+            named["files"][1],
+            json!({"path": "/CROCFILE.1:CROC.MOD", "format": null, "state": "format found", "needed": false})
+        );
+        assert_eq!(
+            f.assets_named("/NOPE.*").unwrap()["unresolved"],
+            "matches no disc file or archive entry (code files are not assets)"
+        );
     }
 
     #[test]

@@ -259,10 +259,6 @@ impl Inventory {
         self.files.iter().filter(|a| a.state == s).count()
     }
 
-    pub fn first(&self, s: State) -> Option<&Asset> {
-        self.files.iter().find(|a| a.state == s)
-    }
-
     pub fn json(&self, formats: usize) -> Value {
         let states: BTreeMap<&str, usize> = State::ALL.iter().map(|s| (s.name(), self.count(*s))).collect();
         let list = |s: State| -> Vec<&str> {
@@ -582,6 +578,132 @@ pub fn inventory(
     Ok(Inventory { files: out, report, stale, problems })
 }
 
+/// Why an asset name covers no files yet, or none at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unresolved {
+    /// `format:<id>`, and no format doc or standard format has that id.
+    NoFormat(String),
+    /// It reaches into an archive whose entries the importer does not list
+    /// yet; `documented` when a format doc says it is an archive.
+    Archive { path: String, documented: bool },
+    /// No disc file or archive entry matches it.
+    NoMatch,
+}
+
+/// The archive part of an asset path (`/CROCFILE.1` of
+/// `/CROCFILE.1:CROC.MOD` or `/DATA.VOL@0x10`), if it names an entry.
+fn archive_part(path: &str) -> Option<&str> {
+    let at = path.get(1..)?.find([':', '@'])? + 1;
+    Some(&path[..at])
+}
+
+/// The files of `inv` an asset name covers, by index; or why it covers
+/// none yet.
+pub fn resolve(name: &str, port: &super::Port, inv: &Inventory) -> Result<Vec<usize>, Unresolved> {
+    let indices = |pred: &dyn Fn(&Asset) -> bool| -> Vec<usize> {
+        inv.files.iter().enumerate().filter(|(_, a)| pred(a)).map(|(i, _)| i).collect()
+    };
+    if let Some(id) = name.strip_prefix("format:") {
+        let doc = port.formats.values().find(|f| f.id.eq_ignore_ascii_case(id));
+        if let Some(doc) = doc.filter(|f| f.archive) {
+            // An archive's format: its entries, once the importer lists them.
+            if let Some(a) = inv.files.iter().find(|a| a.unlisted && a.format.as_deref() == Some(doc.id.as_str())) {
+                return Err(Unresolved::Archive { path: a.path.clone(), documented: true });
+            }
+            return Ok(indices(&|a| archive_part(&a.path).is_some_and(|p| doc.files.iter().any(|g| matches(g, p)))));
+        }
+        // A standard kind may be several back to back (STR+XA): each counts.
+        let found = indices(&|a| a.format.as_deref().is_some_and(|f| f.split('+').any(|k| k.eq_ignore_ascii_case(id))));
+        return if found.is_empty() && doc.is_none() { Err(Unresolved::NoFormat(id.to_string())) } else { Ok(found) };
+    }
+    if let Some(archive) = archive_part(name) {
+        if let Some(a) = inv.files.iter().find(|a| matches(archive, &a.path)) {
+            return Err(Unresolved::Archive { path: a.path.clone(), documented: a.unlisted });
+        }
+    }
+    let found = indices(&|a| matches(name, &a.path));
+    if found.is_empty() { Err(Unresolved::NoMatch) } else { Ok(found) }
+}
+
+/// What a set of names needs of the inventory: the files they cover, and
+/// the names that cover none yet.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Needs {
+    /// The names it was made from.
+    pub names: Vec<String>,
+    /// Indices into the inventory's files, each once.
+    pub files: Vec<usize>,
+    pub unresolved: Vec<(String, Unresolved)>,
+    /// Files neither checked nor unused.
+    pub unsettled: usize,
+    /// psx cannot list the disc's files.
+    pub unlisted: bool,
+}
+
+impl Needs {
+    /// What `names` need; `all` for every file.
+    pub fn of(names: &[String], all: bool, port: &super::Port, inv: &Result<Inventory, String>) -> Needs {
+        let mut n = Needs { names: names.to_vec(), ..Default::default() };
+        if names.is_empty() && !all {
+            return n;
+        }
+        let Ok(inv) = inv else {
+            n.unlisted = true;
+            return n;
+        };
+        let mut files = BTreeSet::new();
+        if all {
+            files.extend(0..inv.files.len());
+        }
+        for name in names {
+            match resolve(name, port, inv) {
+                Ok(f) => files.extend(f),
+                Err(why) => n.unresolved.push((name.clone(), why)),
+            }
+        }
+        n.files = files.into_iter().collect();
+        n.unsettled = n.files.iter().filter(|&&i| !inv.files[i].state.settled()).count();
+        n
+    }
+
+    /// Asks for nothing.
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty() && self.files.is_empty() && !self.unlisted
+    }
+
+    /// Every file it covers checked or unused, and every name resolved.
+    pub fn settled(&self) -> bool {
+        !self.unlisted && self.unresolved.is_empty() && self.unsettled == 0
+    }
+
+    pub fn json(&self) -> Value {
+        let mut v = json!({"files": self.files.len(), "settled": self.files.len() - self.unsettled});
+        if !self.names.is_empty() {
+            v["names"] = json!(self.names);
+        }
+        if !self.unresolved.is_empty() {
+            v["unresolved"] =
+                json!(self.unresolved.iter().map(|(n, w)| format!("{n}: {}", w.describe())).collect::<Vec<_>>());
+        }
+        v
+    }
+}
+
+impl Unresolved {
+    pub fn describe(&self) -> String {
+        match self {
+            Unresolved::NoFormat(id) => format!("no format doc (formats/{id}.md) or standard format has the id {id}"),
+            Unresolved::Archive { path, documented: true } => {
+                format!("{path} is an archive whose entries the importer does not list yet")
+            }
+            Unresolved::Archive { path, documented: false } => {
+                format!("{path} is not known to be an archive: no format doc says archive = true")
+            }
+            Unresolved::NoMatch => "matches no disc file or archive entry (code files are not assets)".into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +731,28 @@ mod tests {
         );
         assert_eq!(entry_paths("/DATA.VOL", &[e(None, 16)]), ["/DATA.VOL@0x10"]);
         assert!(matches("/CROCFILE.1:AMBI*.BIN", "/CROCFILE.1:AMBIATLA.BIN"));
+    }
+
+    #[test]
+    fn names_resolve_to_files_or_say_why_not() {
+        let (_d, port) = super::super::tests::workspace("", &[]);
+        let file = |path: &str, format: Option<&str>| Asset {
+            path: path.into(),
+            format: format.map(Into::into),
+            ..Default::default()
+        };
+        let inv = Inventory {
+            files: vec![file("/PACK1.STR", Some("XA")), file("/LOGO.STR", Some("STR+XA")), file("/CROCFILE.1", None)],
+            ..Default::default()
+        };
+        assert_eq!(resolve("format:xa", &port, &inv), Ok(vec![0, 1]));
+        assert_eq!(resolve("format:level", &port, &inv), Err(Unresolved::NoFormat("level".into())));
+        assert_eq!(
+            resolve("/CROCFILE.1:CROC.*", &port, &inv),
+            Err(Unresolved::Archive { path: "/CROCFILE.1".into(), documented: false })
+        );
+        assert_eq!(resolve("/*.STR", &port, &inv), Ok(vec![0, 1]));
+        assert_eq!(resolve("/MAPS/*", &port, &inv), Err(Unresolved::NoMatch));
     }
 
     #[test]

@@ -11,6 +11,7 @@ title = "Car handling on tarmac"
 area = "driving"
 depends = ["F-0002", "F-0005"]   # car setup data, track surfaces
 code = ["0x8002D810"]
+assets = ["/TRACKS/TARMAC1.TRK"]  # what its recordings need to replay
 questions = ["does the handbrake change grip, or only steering?"]
 
 [recordings]
@@ -44,6 +45,10 @@ the `[recordings]` and `[wont_reach]` tables.
   a conditional branch in one of its functions, with why. The person
   confirms them with `psx port confirm --yes`; one added or changed later
   needs confirming again.
+- `assets` names the disc files its recordings need to replay (a track, a
+  level), as `goal.toml`'s `assets` names them (`formats/README.md`): psx
+  asks for them to be imported and checked before the feature's own work,
+  whatever the goal says about the rest of the disc.
 - `questions` lists what is not known yet.
 
 All but `id`, `title` and `area` may stay empty until the goal is
