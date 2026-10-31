@@ -322,7 +322,7 @@ pub struct Facts {
     pub needs: assets::Needs,
     /// The code's review.
     pub review: Review,
-    /// The features it lists as finished when it was written.
+    /// The features it lists as matching when it was written.
     pub review_features: Vec<String>,
 }
 
@@ -537,19 +537,25 @@ impl Facts {
         }
         let find = |pred: &dyn Fn(&Feature) -> bool| self.features.iter().find(|f| pred(f));
         let at = |f: &Feature, s: Stage| f.stage().is_some_and(|x| x >= s);
-        // A feature finished since the last review: a review of the
-        // change, so each reads about one feature's work; findings are
-        // answered as they come.
+        // A feature come to match its recordings since the last review: a
+        // review of the change while it is fresh, so each reads about one
+        // feature's work (most of its code is written by then; what Cover
+        // adds later the next review reads); findings are answered as they
+        // come.
         let unreviewed: Vec<&str> = self
             .features
             .iter()
-            .filter(|f| f.finished() && !self.review_features.contains(&f.id))
+            .filter(|f| f.matching() && !self.review_features.contains(&f.id))
             .map(|f| f.id.as_str())
             .collect();
         if matches!(self.review, Review::Open { .. } | Review::Invalid(_))
             || (!unreviewed.is_empty() && !self.review.holds())
         {
-            return self.review_item(format!("{} finished its own work since the last review", unreviewed.join(", ")));
+            return self.review_item(format!(
+                "{} came to match {} recordings since the last review",
+                unreviewed.join(", "),
+                if unreviewed.len() == 1 { "its" } else { "their" }
+            ));
         }
         // 0. The assets a feature's recordings need to replay.
         if let Some(item) = self.features.iter().find_map(|f| self.asset_item(Some(&f.id), &f.assets)) {
@@ -807,15 +813,15 @@ impl Facts {
         })
     }
 
-    /// The features whose own work is finished now.
-    fn finished_ids(&self) -> Vec<String> {
-        self.features.iter().filter(|f| f.finished()).map(|f| f.id.clone()).collect()
+    /// The features matching their recordings now: what a review lists.
+    fn matching_ids(&self) -> Vec<String> {
+        self.features.iter().filter(|f| f.matching()).map(|f| f.id.clone()).collect()
     }
 
     /// The review item due, `why` it is due when the review is missing or
     /// stale.
     fn review_item(&self, why: String) -> Item {
-        let done = "the review holds: the code (game/, tools/) unchanged since its commit, every finding answered, its features the ones finished";
+        let done = "the review holds: the code (game/, tools/) unchanged since its commit, every finding answered, its features the ones matching";
         match &self.review {
             Review::Open { unanswered } => Item::agent(
                 "Review",
@@ -852,7 +858,7 @@ impl Facts {
             code = review::CODE.join(" "),
             review = review::REVIEW,
             head = self.git.head.as_deref().unwrap_or("HEAD"),
-            features = toml::Value::from(self.finished_ids()),
+            features = toml::Value::from(self.matching_ids()),
         )
     }
 
@@ -864,7 +870,7 @@ impl Facts {
             code = review::CODE.join(" "),
             review = review::REVIEW,
             head = self.git.head.as_deref().unwrap_or("HEAD"),
-            features = toml::Value::from(self.finished_ids()),
+            features = toml::Value::from(self.matching_ids()),
         )
     }
 
@@ -1136,20 +1142,23 @@ pub struct PortStatusArgs {
 impl Op for PortStatusArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         let plain = self.plain && self.feature.is_none() && self.assets.is_none();
-        Outcome::result_text(Facts::gather(&ctx.root).and_then(|f| {
-            if let Some(id) = &self.feature {
-                let feature = f.features.iter().find(|x| &x.id == id);
-                let feature =
-                    feature.ok_or_else(|| crate::Error::invalid(format!("feature {id}: not in the catalogue")))?;
-                return Ok(json!({"feature": id, "branches": feature.branches_json(true)}));
-            }
-            if let Some(name) = &self.assets {
-                return f.assets_named(name);
-            }
-            let mut v = f.status();
-            v["next"] = f.next().to_json();
-            Ok(if self.plain { json!({"text": f.plain()}) } else { v })
-        }), plain)
+        Outcome::result_text(
+            Facts::gather(&ctx.root).and_then(|f| {
+                if let Some(id) = &self.feature {
+                    let feature = f.features.iter().find(|x| &x.id == id);
+                    let feature =
+                        feature.ok_or_else(|| crate::Error::invalid(format!("feature {id}: not in the catalogue")))?;
+                    return Ok(json!({"feature": id, "branches": feature.branches_json(true)}));
+                }
+                if let Some(name) = &self.assets {
+                    return f.assets_named(name);
+                }
+                let mut v = f.status();
+                v["next"] = f.next().to_json();
+                Ok(if self.plain { json!({"text": f.plain()}) } else { v })
+            }),
+            plain,
+        )
     }
 }
 
@@ -1251,12 +1260,12 @@ mod tests {
             x.held_out = results(&[("walk/h", &["tick 1 x: expected 0, got 1"])]);
         });
         assert_eq!(f.stage("F-0001"), Some(Stage::Matching));
-        // F-0001's own work is finished: a review of it comes before more work.
+        // F-0001 matches: a review of it comes before more work.
         let item = f.next();
         assert_eq!(item.item, "Review");
-        assert_eq!(item.why, "F-0001 finished its own work since the last review, and the code has no review");
+        assert_eq!(item.why, "F-0001 came to match its recordings since the last review, and the code has no review");
         assert!(item.how.contains("features = [\"F-0001\"]"), "{}", item.how);
-        // Once a review lists them, the review waits for the next feature to finish, or the goal.
+        // Once a review lists them, the review waits for the next feature to match, or the goal.
         f.review_features = vec!["F-0001".into(), "F-0002".into()];
         let item = f.next();
         assert_eq!((item.item, item.feature.as_deref()), ("Fix", Some("F-0002")));
@@ -1451,23 +1460,37 @@ mod tests {
     }
 
     #[test]
-    fn a_review_comes_each_time_a_feature_finishes() {
+    fn a_review_comes_each_time_a_feature_matches() {
         let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
         finished(&mut f, vec![]);
-        // F-0002 still has work: a branch its recordings never took.
-        set(&mut f, "F-0002", |x| x.branches = vec![Branch::code(0x8002_D820, 0x8002_D810, 1, None)]);
+        // F-0002 is still being built: a recording fails.
+        set(&mut f, "F-0002", |x| x.work = results(&[("walk/b", &["tick 9 x: expected 1, got 2"])]));
         let next = |f: &Facts| (f.next().item, f.next().why, f.next().how);
-        // A review that holds at HEAD saw the finished code: nothing to review.
+        // A review that holds at HEAD saw the matching code: nothing to review.
         review(&mut f, Review::Holds { commit: "abc".into(), findings: 0 });
-        assert_eq!(next(&f).0, "Cover");
+        assert_eq!(next(&f).0, "Fix");
         // Changed since, and F-0001 not listed: a follow-up of the change.
         review(&mut f, Review::Stale { commit: "abc".into(), changed: vec!["game/src/run.rs".into()] });
         let (item, why, how) = next(&f);
         assert_eq!(item, "Review");
-        assert!(why.starts_with("F-0001 finished its own work since the last review, and the code changed"), "{why}");
+        assert!(
+            why.starts_with("F-0001 came to match its recordings since the last review, and the code changed"),
+            "{why}"
+        );
         assert!(how.contains("git diff abc") && how.contains("its features to [\"F-0001\"]"), "{how}");
         // Listed: building F-0002 changes the code without a review each time.
         f.review_features = vec!["F-0001".into()];
+        assert_eq!(next(&f).0, "Fix");
+        // F-0002 matches, with branches still to cover: its review comes
+        // before the Cover work, not once that is done.
+        set(&mut f, "F-0002", |x| {
+            x.work = results(&[("walk/b", &[])]);
+            x.branches = vec![Branch::code(0x8002_D820, 0x8002_D810, 1, None)];
+        });
+        let (item, why, _) = next(&f);
+        assert_eq!(item, "Review");
+        assert!(why.starts_with("F-0002 came to match"), "{why}");
+        f.review_features = vec!["F-0001".into(), "F-0002".into()];
         assert_eq!(next(&f).0, "Cover");
         // Findings are answered as they come.
         review(&mut f, Review::Open { unanswered: vec!["Run is a bool".into()] });

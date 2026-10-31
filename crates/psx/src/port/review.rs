@@ -3,10 +3,11 @@
 //! whether the code is what one would write for a new game, not whether it
 //! does what the original does (the recordings check that). TOML front
 //! matter between `+++` lines names the commit reviewed and the features
-//! finished then; each finding is a `## ` section, answered by a
+//! matching then; each finding is a `## ` section, answered by a
 //! `**Answer:**` line. The review holds while the code is unchanged since
 //! its commit and every finding has an answer. A review comes each time a
-//! feature finishes its own work, so each reads about one feature's change.
+//! feature comes to match its recordings, so each reads about one
+//! feature's change.
 
 use std::path::Path;
 
@@ -81,7 +82,7 @@ fn git(root: &Path, args: &[&str]) -> Option<std::process::Output> {
     std::process::Command::new("git").args(args).current_dir(root).output().ok()
 }
 
-/// The features the review lists as finished when it was written; none
+/// The features the review lists as matching their recordings when it was written; none
 /// without a readable review.
 pub fn features(root: &Path) -> Vec<String> {
     std::fs::read_to_string(root.join(REVIEW))

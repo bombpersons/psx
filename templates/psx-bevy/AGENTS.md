@@ -73,7 +73,7 @@ there is yours to decide. What the tools rely on:
 
 ## The review
 
-Each time a feature's own work is finished, the code is reviewed by
+Each time a feature comes to match its recordings, the code is reviewed by
 someone who did not write it: a sub-agent or a fresh session, given the
 brief `port_next` prints (the whole code the first time, then what
 changed since). The recordings already check what the code does; the

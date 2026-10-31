@@ -178,8 +178,9 @@ mechanic code are worth keeping, so they move out first.
     review at the end. The review lists the features finished when it was
     written; a finished feature it does not list, with the code changed
     since, asks for a follow-up of the change (port-design.md, The
-    review). Built; to be judged after the Croc example, on how its
-    reviews went.
+    review). Built; on Croc no feature finished (each matched, then the
+    next feature's fixes came first), so no review came in 43 commits:
+    the review now comes when a feature first matches its recordings.
 
     Then Croc, by the porting agent in Croc's workspace through `port
     next`, with the person confirming and playing:

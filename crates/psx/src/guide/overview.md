@@ -208,8 +208,8 @@ port_next's items, in this order:
   play it, or list it under wont_reach.
 - Confirm (person): wont_reach branches not confirmed as they stand.
 - Format, Index, Import, Check (the goal's assets): see Assets.
-- Review: a feature finished its own work since the last review (or
-  every feature has) and the code (game/, tools/) has no review that
+- Review: a feature came to match its recordings since the last review
+  (or every feature's work is finished) and the code (game/, tools/) has no review that
   holds; also findings without an answer. It asks whether one would write
   a new game like this, not whether it matches the original. how is the
   brief for someone who did not write it (a sub-agent or a fresh session):
