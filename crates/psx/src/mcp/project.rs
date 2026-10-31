@@ -104,13 +104,7 @@ impl Drop for Worker {
 }
 
 pub(super) fn call(tool: &str, args: Value, ctx: &Ctx) -> Result<Value, String> {
-    // The server's own binary: after a rebuild, current_exe names a deleted
-    // file on Linux, which /proc/self/exe still opens.
-    #[cfg(target_os = "linux")]
-    let exe = PathBuf::from("/proc/self/exe");
-    #[cfg(not(target_os = "linux"))]
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut command = Command::new(exe);
+    let mut command = Command::new(crate::self_exe().map_err(|e| e.to_string())?);
     command
         .env_remove("PSX_ROOT")
         .current_dir(&ctx.root)

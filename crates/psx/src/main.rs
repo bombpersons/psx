@@ -363,6 +363,13 @@ pub(crate) fn stamp() -> String {
     format!("{}-{}{}", now_ms(), std::process::id(), instance_suffix())
 }
 
+/// This running psx, for the processes it starts (project workers, the
+/// handoff window). On Linux, /proc/self/exe: after a rebuild, current_exe
+/// names a deleted file, which /proc/self/exe still opens.
+pub(crate) fn self_exe() -> std::io::Result<std::path::PathBuf> {
+    if cfg!(target_os = "linux") { Ok("/proc/self/exe".into()) } else { std::env::current_exe() }
+}
+
 /// Write `bytes` to `path` through a temporary file beside it and a rename,
 /// so readers never see a partly written file.
 pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {

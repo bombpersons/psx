@@ -276,11 +276,10 @@ fn can_open_window() -> crate::Result<()> {
 
 /// Start the window in a child process and return a ticket.
 fn detach(ctx: &Ctx, dir: &Path) -> crate::Result<(bool, Value)> {
-    let exe =
-        std::env::current_exe().map_err(|e| Error::new("io_error", format!("cannot find the psx executable: {e}")))?;
+    let exe = crate::self_exe().map_err(|e| Error::new("io_error", format!("cannot find the psx executable: {e}")))?;
     let log_path = dir.join("launch.log");
     let log = std::fs::File::create(&log_path).map_err(|e| Error::io(&log_path, e))?;
-    let child = std::process::Command::new(exe)
+    let child = std::process::Command::new(&exe)
         .arg("--root")
         .arg(&ctx.root)
         .arg("__handoff-child")
@@ -298,7 +297,7 @@ fn detach(ctx: &Ctx, dir: &Path) -> crate::Result<(bool, Value)> {
                 "next_call": {"tool": "scenario_play", "arguments": {"status": dir, "wait": 300}},
             }),
         )),
-        Err(e) => Err(Error::new("io_error", format!("could not start the handoff window: {e}"))),
+        Err(e) => Err(Error::new("io_error", format!("could not start the handoff window ({}): {e}", exe.display()))),
     }
 }
 
