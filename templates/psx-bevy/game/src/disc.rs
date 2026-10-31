@@ -19,8 +19,9 @@
 //! `.chd`, `.iso`, `.bin` and `.img` are accepted; a `.cue` is preferred over
 //! the `.bin` files it lists. `--skip-import` starts without importing.
 //!
-//! The screens are plain Bevy UI at window resolution; restyle them to match
-//! the game.
+//! This is a working example of the flow, the game's to change: restyle the
+//! screens (plain Bevy UI at window resolution), change when and where it
+//! looks, or leave the plugin out while the port uses no imported data.
 use bevy::asset::io::file::FileAssetReader;
 use bevy::prelude::*;
 use bevy::state::app::StatesPlugin;

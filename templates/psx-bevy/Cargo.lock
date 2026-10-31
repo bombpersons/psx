@@ -2601,6 +2601,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "game"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "glossary",
+ "import",
+ "psx-bevy",
+ "psx-scenario",
+ "ron",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4276,20 +4290,6 @@ name = "psx-fixed"
 version = "0.8.0"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "psx-game"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "glossary",
- "import",
- "psx-bevy",
- "psx-scenario",
- "ron",
- "serde",
- "serde_json",
 ]
 
 [[package]]

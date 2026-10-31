@@ -18,7 +18,7 @@ fn headless_render_edit_step_and_query() {
     let output = std::env::temp_dir().join(format!("psx-template-headless-{}", std::process::id()));
     std::fs::create_dir_all(&output).unwrap();
     println!("GPU evidence: {}", output.display());
-    let mut command = Command::new(env!(concat!("CARGO_BIN_EXE_", env!("CARGO_PKG_NAME"))));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_psx-game"));
     command.env("BEVY_ASSET_ROOT", env!("CARGO_MANIFEST_DIR"));
     // The demo world without a disc import (no disc on test machines).
     command.arg("--skip-import");

@@ -180,7 +180,10 @@ pub const MANIFEST: &str = ".psx-template.toml";
 /// Where `update` writes new versions of seeded files for the project to merge.
 const SEEDED_UPDATES: &str = ".psx/template-update";
 
-const TEMPLATE_PACKAGE: &str = "psx-game";
+/// The executable's name in the template (`game/Cargo.toml` and the test that
+/// runs it), which `create` replaces with the game's; the package itself is
+/// always `game`.
+const TEMPLATE_BIN: &str = "psx-game";
 /// The lines of the template's `game/src/lib.rs` that `create` rewrites.
 const REGION_LINE: &str = "pub const REGION: Region = Region::Ntsc;";
 const FIELDS_PER_TICK_LINE: &str = "pub const FIELDS_PER_TICK: u32 = 1;";
@@ -388,10 +391,11 @@ fn render(name: &str, options: TemplateOptions) -> crate::Result<Vec<(&'static s
         .map(|(rel, contents)| {
             let contents = match *rel {
                 "game/Cargo.toml" => {
-                    contents.replacen(&format!("name = \"{TEMPLATE_PACKAGE}\""), &format!("name = \"{name}\""), 1)
+                    contents.replacen(&format!("name = \"{TEMPLATE_BIN}\""), &format!("name = \"{name}\""), 1)
                 }
-                // The package's own entry and every dependency on it.
-                "Cargo.lock" => contents.replace(&format!("\"{TEMPLATE_PACKAGE}\""), &format!("\"{name}\"")),
+                "game/tests/dev_mcp.rs" => {
+                    contents.replace(&format!("CARGO_BIN_EXE_{TEMPLATE_BIN}"), &format!("CARGO_BIN_EXE_{name}"))
+                }
                 "game/src/lib.rs" => configure_lib(contents, options)?,
                 _ => contents.to_string(),
             };
@@ -443,7 +447,7 @@ pub fn package_name(dest: &Path, name: Option<&str>) -> String {
             .unwrap_or(dest)
             .file_name()
             .map(|n| n.to_string_lossy().to_ascii_lowercase().replace([' ', '.'], "-"))
-            .unwrap_or_else(|| TEMPLATE_PACKAGE.to_string()),
+            .unwrap_or_else(|| TEMPLATE_BIN.to_string()),
     }
 }
 
@@ -744,9 +748,10 @@ mod tests {
         assert_eq!(out["region"], "ntsc");
         let game = dir.join("my-game");
         let toml = std::fs::read_to_string(game.join("game/Cargo.toml")).unwrap();
-        assert!(toml.contains("name = \"my-game\""));
-        let lock = std::fs::read_to_string(game.join("Cargo.lock")).unwrap();
-        assert!(lock.contains("name = \"my-game\"") && !lock.contains(TEMPLATE_PACKAGE));
+        assert!(toml.contains("[package]\nname = \"game\"") && toml.contains("[[bin]]\nname = \"my-game\""));
+        assert!(!toml.contains(TEMPLATE_BIN));
+        let dev_mcp = std::fs::read_to_string(game.join("game/tests/dev_mcp.rs")).unwrap();
+        assert!(dev_mcp.contains("CARGO_BIN_EXE_my-game"));
         let workspace = std::fs::read_to_string(game.join("Cargo.toml")).unwrap();
         assert!(workspace.contains(r#"psx-bevy = { path = "psx-bevy", default-features = false }"#));
         assert!(game.join("psx-bevy/src/lib.rs").exists());

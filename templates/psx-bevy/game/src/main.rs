@@ -10,7 +10,7 @@ fn main() {
     #[cfg(debug_assertions)]
     psx_bevy::assets::development_base(env!("CARGO_MANIFEST_DIR"));
     launcher::run(Game {
-        name: env!("CARGO_PKG_NAME"),
+        name: env!("CARGO_BIN_NAME"),
         title: game::TITLE,
         region: game::REGION,
         fields_per_tick: game::FIELDS_PER_TICK,

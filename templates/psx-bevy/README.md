@@ -54,7 +54,9 @@ it on start:
    The output is written beside the old import and swapped in when complete.
 3. No disc: show "Put your disc next to the game" and look again every second.
 
-Game code that needs imported files starts on `OnEnter(GameData::Ready)`.
+`game/src/disc.rs` is a working example of this, the game's to change or
+leave out. Game code that needs imported files starts on
+`OnEnter(GameData::Ready)`.
 Tests and sandboxes use `GamePlugins` as is, which imports nothing and starts
 ready. `assets/imported/` is git-ignored.
 

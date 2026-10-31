@@ -8,14 +8,15 @@ shape, numbers and evidence; this file has the Bevy specifics.
 
 ## Layout
 
-The game is a library (crate `game`, `src/lib.rs`); `src/main.rs` only calls
-psx-bevy's launcher, so tests and sandboxes can use every module.
+The game is a library (package and crate `game`, `src/lib.rs`); `src/main.rs`
+only calls psx-bevy's launcher, so tests and sandboxes can use every module.
+The executable is named after the game (`[[bin]]` in `Cargo.toml`).
 
 ```
 src/lib.rs            REGION, FIELDS_PER_TICK, SCREEN, TITLE, GamePlugins (the game's plugins)
 src/main.rs           psx_bevy::launcher::run(...): window, renderer, --flags; turns on the disc import
 src/config.rs         load_ron and TuningPlugin: hand-editable RON under assets/
-src/disc.rs           GameData state: import from the player's disc on first start
+src/disc.rs           GameData state: import from the player's disc on first start (an example)
 assets/               hand-made content (tuning, setup)
 assets/imported/      imported from the player's disc on first start (git-ignored)
 tests/                headless tick tests; dev_mcp.rs is the opt-in GPU check
@@ -57,7 +58,9 @@ from `GamePlugins`, and replacing or removing the tests that use it
 
 The game imports the original's data itself on first start, from the
 player's disc image next to it (`src/disc.rs`, running `import::import` from
-`tools/import`). Players need neither psx nor an export step.
+`tools/import`). Players need neither psx nor an export step. `src/disc.rs`
+is a working example of that flow, not a library: change it as the game
+needs, or leave `GameDataPlugin` out while the port uses no imported data.
 
 - Importers are the only code that reads the original's formats. They write
   the port's formats under `assets/imported/`, report progress, and record
@@ -71,7 +74,6 @@ player's disc image next to it (`src/disc.rs`, running `import::import` from
   `GameSystems::Game` already waits for it.
 - Tests use a disc made with `import::test_disc::iso` (`tests/disc.rs`);
   tests that need the real disc are opt-in.
-- Restyle the disc and progress screens in `src/disc.rs` to fit the game.
 
 ## Input and menus
 

@@ -166,7 +166,7 @@ investigation (topic run).
 In the port, each feature's plugin registers a launcher per scenario kind
 and observes the quantities it keeps (AGENTS.md, The code); game/tests/
 scenarios.rs replays each recording tick by tick with its pad. port_check
-runs it and writes the verdicts; cargo test -p <game> --test scenarios gives
+runs it and writes the verdicts; cargo test -p game --test scenarios gives
 the same result while working.
 
 ## Status and next
