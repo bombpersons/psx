@@ -293,16 +293,17 @@ struct Quantities<'a> {
 /// after the first tick, with `events` as the pad's input; `tracer` sees
 /// every instruction run, from the start.
 /// Record `frames` fields of ticks from `m`, with `events` by field. With
-/// `ends`, the fields a recording's ticks ended in, the input follows the
-/// ticks instead: each event lands as many fields after the last tick before
-/// it as it did there, and the run lasts as many ticks. A game that falls a
-/// field behind on another route then reads each press on the same tick.
+/// `ticks`, the pad each of a recording's ticks ended with, the input
+/// follows the ticks instead, as the port's replay does: until a tick ends,
+/// the pad is the one that tick had, and the run lasts as many ticks. A game
+/// that falls a field behind, or catches up, on another route then reads
+/// each press on the same tick.
 fn record(
     m: &mut Machine,
     q: &Quantities,
     frames: u32,
     events: &[crate::replay::Input],
-    ends: Option<&[u64]>,
+    ticks: Option<&[crate::replay::Input]>,
     deadline: Duration,
     mut tracer: Option<&mut Tracer>,
 ) -> Recorded {
@@ -324,12 +325,15 @@ fn record(
             if out.initial.is_some() && start.is_none() {
                 start = Some(m.bus.frames);
                 // Following ticks, the game may fall behind: room for it.
-                let slack = if ends.is_some() { frames as u64 / 8 + 16 } else { 0 };
+                let slack = if ticks.is_some() { frames as u64 / 8 + 16 } else { 0 };
                 target = m.bus.frames + frames as u64 + slack;
             }
             if let Some(start) = start {
                 let field = m.bus.frames - start;
-                while next_event < events.len() && due(&events[next_event], field, ends, &out.ticks) {
+                if let Some(pad) = ticks.and_then(|t| t.get(out.ticks.len())) {
+                    crate::replay::apply(m, pad);
+                }
+                while ticks.is_none() && next_event < events.len() && events[next_event].frame <= field {
                     crate::replay::apply(m, &events[next_event]);
                     next_event += 1;
                 }
@@ -376,7 +380,7 @@ fn record(
             // field, which the recording counts as field 0.
             let field = start.map_or(0, |s| m.bus.frames - s);
             out.ticks.push(Full { tick: n, field, pad: crate::replay::button_names(m.bus.sio0.buttons), values });
-            if ends.is_some_and(|e| out.ticks.len() >= e.len()) {
+            if ticks.is_some_and(|t| out.ticks.len() >= t.len()) {
                 break;
             }
         }
@@ -384,15 +388,17 @@ fn record(
     out
 }
 
-/// Whether `e` is due at `field`: by its field, or with `ends` (the fields a
-/// recording's ticks ended in) as many fields after the tick before it as
-/// there, once that tick has ended in `done`.
-fn due(e: &crate::replay::Input, field: u64, ends: Option<&[u64]>, done: &[Full]) -> bool {
-    let Some(ends) = ends else { return e.frame <= field };
-    match ends.partition_point(|&end| end < e.frame) {
-        0 => e.frame <= field,
-        k => done.get(k - 1).is_some_and(|t| t.field + (e.frame - ends[k - 1]) <= field),
-    }
+/// The pad held when each tick ended, from `events` by field: the last event
+/// at or before the tick's field, or released before any.
+fn held_by_tick(events: &[crate::replay::Input], ticks: &[Full]) -> Vec<crate::replay::Input> {
+    let released = crate::replay::Input { frame: 0, buttons: 0, sticks: [0x80; 4] };
+    ticks
+        .iter()
+        .map(|t| {
+            let held = events.iter().take_while(|e| e.frame <= t.field).last().unwrap_or(&released);
+            crate::replay::Input { frame: t.field, ..*held }
+        })
+        .collect()
 }
 
 /// What to do about code the inventory knows only from what ran, or not at
@@ -826,8 +832,8 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
         if let Some(from) = rec.header.producer.details.get("from").and_then(Json::as_str) {
             reach_end(&mut m, &l, &q, from, timeout)?;
         }
-        let ends: Vec<u64> = rec.expand().iter().map(|t| t.field).collect();
-        let r = record(&mut m, &q, frames, &events, Some(&ends), timeout, None);
+        let pads = held_by_tick(&events, &rec.expand());
+        let r = record(&mut m, &q, frames, &events, Some(&pads), timeout, None);
         let (diffs, schedule) = match unrecorded(&r) {
             Some(why) => (
                 vec![format!("the second route gave no recording: {}", why["status"].as_str().unwrap_or(""))],
@@ -1407,19 +1413,14 @@ pub struct Quantities {
     }
 
     #[test]
-    fn input_following_ticks_moves_with_a_late_tick() {
-        let press = crate::replay::Input { frame: 5, buttons: 1, sticks: [128; 4] };
+    fn each_tick_holds_the_pad_it_ended_with() {
+        let input = |frame, buttons| crate::replay::Input { frame, buttons, sticks: [128; 4] };
         let tick = |field| Full { tick: 0, field, pad: Vec::new(), values: Values::new() };
-        // Recorded, ticks ended in fields 2 and 4; the press came a field after.
-        let ends = [2, 4];
-        assert!(due(&press, 5, None, &[]));
-        assert!(!due(&press, 5, Some(&ends), &[tick(2)]), "the tick before it has not ended");
-        assert!(due(&press, 5, Some(&ends), &[tick(2), tick(4)]));
-        // The second tick ended a field late: so does the press.
-        assert!(!due(&press, 5, Some(&ends), &[tick(2), tick(5)]));
-        assert!(due(&press, 6, Some(&ends), &[tick(2), tick(5)]));
-        let early = crate::replay::Input { frame: 1, ..press };
-        assert!(due(&early, 1, Some(&ends), &[]), "before the first tick ends, by field");
+        let events = [input(1, 1), input(3, 2), input(4, 0)];
+        let held = held_by_tick(&events, &[tick(0), tick(2), tick(4), tick(6)]);
+        let buttons: Vec<u16> = held.iter().map(|i| i.buttons).collect();
+        assert_eq!(buttons, [0, 1, 0, 0], "a press and release inside one tick is not held at its end");
+        assert_eq!(held_by_tick(&events, &[tick(3)])[0].buttons, 2);
     }
 
     #[test]
