@@ -98,9 +98,18 @@ pub fn read(root: &Path, id: &str) -> Review {
     // Against the working tree: uncommitted changes count as changes.
     let mut args = vec!["diff", "--name-only", f.commit.as_str(), "--"];
     args.extend(f.files.iter().map(String::as_str));
-    let changed: Vec<String> = git(root, &args)
+    let mut changed: Vec<String> = git(root, &args)
         .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect())
         .unwrap_or_default();
+    // Naming held-out recordings, which come after the review, changes no
+    // entry it read.
+    changed.retain(|file| {
+        let then = git(root, &["show", &format!("{}:{file}", f.commit)])
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let now = std::fs::read_to_string(root.join(file)).ok();
+        !(file.starts_with("catalogue/") && then.zip(now).is_some_and(|(a, b)| super::same_but_held_out(file, &a, &b)))
+    });
     if !changed.is_empty() {
         return Review::Stale { commit: f.commit, changed };
     }
@@ -171,5 +180,33 @@ mod tests {
         assert_eq!(read(root, "F-0001"), Review::Stale { commit: head, changed: vec!["jump.rs".into()] });
         std::fs::write(root.join("reviews/F-0001.md"), "---\ncommit: x\n---\n").unwrap();
         assert!(matches!(read(root, "F-0001"), Review::Invalid(_)));
+    }
+
+    #[test]
+    fn naming_held_out_recordings_keeps_a_review() {
+        let d = super::super::tests::tempdir::Dir::new();
+        let root = d.0.as_path();
+        let run = |args: &[&str]| assert!(git(root, args).unwrap().status.success(), "git {args:?}");
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        let entry = |held_out: &str, work: &str| {
+            format!("+++\nid = \"F-0001\"\n[recordings]\nwork = [{work}]\nheld_out = [{held_out}]\n+++\nThe jump.\n")
+        };
+        std::fs::create_dir_all(root.join("catalogue")).unwrap();
+        std::fs::write(root.join("catalogue/F-0001.md"), entry("", "\"walk/a\"")).unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "F-0001: entry"]);
+        let head = String::from_utf8(git(root, &["rev-parse", "HEAD"]).unwrap().stdout).unwrap().trim().to_string();
+        std::fs::create_dir_all(root.join(REVIEWS)).unwrap();
+        std::fs::write(
+            root.join("reviews/F-0001.md"),
+            format!("+++\ncommit = \"{head}\"\nfiles = [\"catalogue/F-0001.md\"]\n+++\n"),
+        )
+        .unwrap();
+        std::fs::write(root.join("catalogue/F-0001.md"), entry("\"walk/h\"", "\"walk/a\"")).unwrap();
+        assert_eq!(read(root, "F-0001"), Review::Holds { commit: head.clone(), findings: 0 });
+        std::fs::write(root.join("catalogue/F-0001.md"), entry("\"walk/h\"", "\"walk/a\", \"walk/b\"")).unwrap();
+        assert_eq!(read(root, "F-0001"), Review::Stale { commit: head, changed: vec!["catalogue/F-0001.md".into()] });
     }
 }

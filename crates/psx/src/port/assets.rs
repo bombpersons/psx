@@ -489,7 +489,11 @@ fn report(root: &Path, head: Option<&str>) -> (Option<Report>, Option<String>, B
         return (None, None, BTreeMap::new());
     };
     let index = r.index.clone();
-    if r.clean && Some(r.commit.as_str()) == head { (Some(r), None, index) } else { (None, Some(r.commit), index) }
+    if r.clean && super::verdict::judges(root, &r.commit, head) {
+        (Some(r), None, index)
+    } else {
+        (None, Some(r.commit), index)
+    }
 }
 
 /// The disc's files by state, archives opened into their entries, for the

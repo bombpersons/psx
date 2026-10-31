@@ -22,7 +22,8 @@ use crate::commands::{Ctx, Op, Outcome};
 pub struct Git {
     /// None before the first commit, or outside a repository.
     pub head: Option<String>,
-    /// No uncommitted changes.
+    /// No uncommitted changes but to notes and reviews, which a check does
+    /// not read.
     pub clean: bool,
     /// A hash of the uncommitted changes, so the loop guard sees work in
     /// progress.
@@ -40,7 +41,9 @@ impl Git {
         let status = git(root, &["status", "--porcelain"]).unwrap_or_default();
         let diff = git(root, &["diff", "HEAD"]).unwrap_or_default();
         let changes = format!("{:x}", Sha256::digest(format!("{status}\n{diff}")));
-        Git { head, clean: status.trim().is_empty(), changes }
+        // `XY path`, or `XY from -> to` for a rename.
+        let clean = status.lines().all(|l| l.get(3..).is_some_and(|p| p.split(" -> ").all(super::verdict::inert)));
+        Git { head, clean, changes }
     }
 }
 
@@ -470,7 +473,9 @@ impl Facts {
         if let Some(f) = find(&|f| at(f, Stage::Recorded) && !matches!(f.verdict, State::Current(_))) {
             let why = match &f.verdict {
                 State::Stale { commit } => {
-                    format!("its verdict is from {commit}, not HEAD with no uncommitted changes")
+                    format!(
+                        "its verdict is from {commit}, not HEAD with no uncommitted changes (notes and reviews aside)"
+                    )
                 }
                 _ => "no psx port check has judged it".into(),
             };
