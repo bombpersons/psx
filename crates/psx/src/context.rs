@@ -313,9 +313,13 @@ impl ArgsContext {
                 .map_err(|e| Error::io(&profile, e))?;
         }
         let setup = r.setup_error().map(|e| e.to_value()["error"].take());
-        // port init takes the region from the disc.
-        let mut next_calls: Vec<Value> =
-            r.media.iter().map(|m| json!({"tool":"port_init","arguments":{"dest":"port","media":m}})).collect();
+        // In a port's workspace psx leads with port next; elsewhere port init
+        // (it takes the region from the disc) makes one.
+        let mut next_calls: Vec<Value> = if ctx.root.join(crate::port::GOAL).is_file() {
+            vec![json!({"tool":"port_next","arguments":{}})]
+        } else {
+            r.media.iter().map(|m| json!({"tool":"port_init","arguments":{"dest":"port","media":m}})).collect()
+        };
         if let Some(disc) = fix_region {
             match r.candidates.iter().find(|c| c.region == Some(disc) && c.bytes == 524288) {
                 Some(c) => next_calls
