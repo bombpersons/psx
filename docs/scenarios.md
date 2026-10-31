@@ -114,7 +114,6 @@ pub struct Quantities {
 ## 2. Scenario files: `scenarios/<id>.toml`
 
 ```toml
-feature = "F-0001"
 moment = "Croc standing at the start of 1-1, the first step he can move"
 chain = "notes/states/level_1_1.json"   # how the original gets there
 kind = "level"                           # the port's launcher
@@ -140,7 +139,10 @@ level = "1-1"
 - **`compare`** lists the glossary quantities compared, each with its
   tolerance in raw units. Use 0 for an exact feature. A bool or enum is
   always compared exactly.
-- **The catalogue entry** lists the scenario's id in its `scenarios`.
+- **The catalogue entry** names the scenario's recordings, as
+  `<id>/<name>` under `recordings.work` or `held_out`; the scenario does
+  not name a feature. `scenario record` and `play` say which entries name
+  a new recording, or which name the scenario's others.
 - **Isolation.** A scenario may only depend on features in the goal's
   closure (port-design.md, Scenarios).
 
@@ -277,16 +279,16 @@ Each quantity's first tick out of tolerance is reported.
 `psx port check` runs that test and writes each feature's scenario verdict.
 **A feature passes when:**
 
-- it lists at least one scenario;
-- each scenario runs (its launcher is registered);
+- its entry names at least one recording;
+- each of their scenarios runs (its launcher is registered);
 - each recording on disk runs with no quantity out of tolerance;
 - each scenario ran at least one captured recording.
 
 ## 6. Stages
 
 - **Stage 2 (captured)** needs the feature's scenarios:
-  - it lists at least one scenario;
-  - each scenario's files check, and it has a captured recording;
+  - its entry names at least one recording;
+  - each of their scenarios' files check, and it has a captured recording;
   - each scenario passed `psx scenario check` as its files stand.
 
   `port next` gives the Scenario item until they do.

@@ -26,7 +26,12 @@ fn with_confirmation(text: &str, c: &Confirmed) -> String {
         }
         lines.push(line);
     }
-    let line = format!("confirmed = {{ at = \"{}\", features = {} }}", c.at, c.features.to_toml());
+    let mut line = format!("confirmed = {{ at = \"{}\", features = {}", c.at, c.features.to_toml());
+    if !c.wont_reach.is_empty() {
+        let v = toml::Value::try_from(&c.wont_reach).expect("strings serialise");
+        line += &format!(", wont_reach = {v}");
+    }
+    line += " }";
     // A top-level key goes before the first table.
     let at = lines.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(lines.len());
     lines.insert(at, &line);
@@ -55,10 +60,11 @@ impl PortConfirmArgs {
             "problems": port.problems,
             "stages": Stage::ALL.map(Stage::name),
             "confirmation": port.confirmation_json(),
+            "wont_reach": port.wont_reach(),
         });
         if !self.yes {
             out["next"] = json!(if port.problems.is_empty() {
-                "if this is the list the person wants: psx port confirm --yes (the person runs it)"
+                "if this is the list the person wants, and each wont_reach branch is one no recording can reach for its reason: psx port confirm --yes (the person runs it)"
             } else {
                 "the agent fixes the problems first"
             });
@@ -73,19 +79,25 @@ impl PortConfirmArgs {
         if port.goal_ids().is_empty() {
             return Err(Error::invalid("the goal names no features, and no feature is catalogued"));
         }
-        let c = Confirmed { at: crate::stamp::utc_now(), features: port.goal.features.clone() };
+        let c = Confirmed {
+            at: crate::stamp::utc_now(),
+            features: port.goal.features.clone(),
+            wont_reach: port.wont_reach(),
+        };
         let path = ctx.root.join(GOAL);
         let text = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, e))?;
         let new = with_confirmation(&text, &c);
         // What was written must read back as this confirmation.
         let check: Goal = toml::from_str(&new)
             .map_err(|e| Error::invalid(format!("{GOAL} rewritten unreadably: {}", e.message())))?;
-        if check.confirmed.as_ref().map(|k| (&k.at, &k.features)) != Some((&c.at, &c.features)) {
+        if check.confirmed.as_ref().map(|k| (&k.at, &k.features, &k.wont_reach))
+            != Some((&c.at, &c.features, &c.wont_reach))
+        {
             return Err(Error::invalid(format!("{GOAL} rewritten without the confirmation; nothing written")));
         }
         crate::write_atomic(&path, new.as_bytes()).map_err(|e| Error::io(&path, e))?;
         out["confirmation"] = json!({"state": "covers", "at": c.at});
-        out["confirmed"] = json!({"at": c.at, "features": c.features.to_json()});
+        out["confirmed"] = json!({"at": c.at, "features": c.features.to_json(), "wont_reach": c.wont_reach});
         Ok(out)
     }
 }
@@ -103,19 +115,29 @@ mod tests {
 
     #[test]
     fn confirming_rewrites_only_the_confirmation() {
-        let c = Confirmed { at: "2026-10-29T10:00:00Z".into(), features: Features::List(vec!["F-0001".into()]) };
+        let c = Confirmed {
+            at: "2026-10-29T10:00:00Z".into(),
+            features: Features::List(vec!["F-0001".into()]),
+            wont_reach: Default::default(),
+        };
         let text = "# The goal.\ndescription = \"x\"\nfeatures = [\"F-0001\"]   # one\nconfirmed = { at = \"old\", features = [] }\n";
         assert_eq!(
             with_confirmation(text, &c),
             "# The goal.\ndescription = \"x\"\nfeatures = [\"F-0001\"]   # one\nconfirmed = { at = \"2026-10-29T10:00:00Z\", features = [\"F-0001\"] }\n"
         );
         let table = "features = \"all\"\n\n[confirmed]\nat = \"old\"\nfeatures = []\n";
-        let all = Confirmed { at: "t".into(), features: Features::All };
+        let all = Confirmed { at: "t".into(), features: Features::All, wont_reach: Default::default() };
         assert_eq!(
             with_confirmation(table, &all),
             "features = \"all\"\n\nconfirmed = { at = \"t\", features = \"all\" }\n"
         );
         let goal: Goal = toml::from_str(&with_confirmation(GOAL_TOML, &c)).unwrap();
         assert_eq!(goal.confirmed.unwrap().features, c.features);
+        // The won't-reach branches the person saw, reasons and all.
+        let mut w = c.clone();
+        w.wont_reach.entry("F-0001".into()).or_default().insert("0x8002D820".into(), "under \"water\"".into());
+        let text = with_confirmation(GOAL_TOML, &w);
+        let goal: Goal = toml::from_str(&text).unwrap();
+        assert_eq!(goal.confirmed.unwrap().wont_reach, w.wont_reach, "{text}");
     }
 }

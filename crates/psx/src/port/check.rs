@@ -45,11 +45,12 @@ pub struct RecordingRun {
 /// The scenario run's failures for one feature: no scenarios, what the
 /// report says of each, and recordings on disk it did not run.
 fn scenario_failures(root: &Path, e: &Entry, report: &ScenarioReport) -> Vec<String> {
-    if e.scenarios.is_empty() {
-        return vec![format!("{}: lists no scenarios", e.file)];
+    let scenarios = e.scenarios();
+    if scenarios.is_empty() {
+        return vec![format!("{}: names no recordings", e.file)];
     }
     let mut out = Vec::new();
-    for id in &e.scenarios {
+    for id in &scenarios {
         let Some(s) = report.scenarios.iter().find(|s| &s.id == id) else {
             out.push(format!("{id}: not run (no scenarios/{id}.toml)"));
             continue;
@@ -80,7 +81,7 @@ pub fn unimplemented(root: &Path, e: &Entry, head: Option<&str>) -> Vec<String> 
         Err(why) => return vec![why.into()],
     };
     let mut out = Vec::new();
-    for id in &e.scenarios {
+    for id in &e.scenarios() {
         let Some(s) = crate::scenario::Loaded::load(root, id).scenario else {
             out.push(format!("{id}: no scenario file"));
             continue;

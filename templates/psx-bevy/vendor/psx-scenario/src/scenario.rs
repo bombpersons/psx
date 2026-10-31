@@ -68,8 +68,6 @@ impl Glossary {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
-    /// The feature whose integration test it is.
-    pub feature: String,
     /// The moment it starts at, in game terms.
     pub moment: String,
     /// How the original gets there: the producer's state chain, relative to
@@ -355,7 +353,6 @@ pub struct Quantities {
 "#;
 
     const SCENARIO: &str = r#"
-feature = "F-0001"
 moment = "the first tick Croc can move, standing at the start of level 1-1"
 chain = "notes/states/level_1_1.json"
 kind = "level"

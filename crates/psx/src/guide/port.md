@@ -9,8 +9,12 @@ from the disc; pass fields_per_tick from the original's main loop.
 
 goal.toml names the features the person wants (ids, or "all") and a
 description. catalogue/F-NNNN.md is one feature of the game each: id,
-title, area, depends (features it cannot work without), scenarios, and a paragraph in game terms (catalogue/README.md has the
-format and how fine to cut). The goal's features and everything they depend
+title, area, depends (features it cannot work without), code (the
+original's functions, found with code_coverage_diff), recordings (work and
+held_out, as scenario/name), wont_reach (branches no recording can reach,
+and why; the person confirms them) and questions, as TOML between +++
+lines, then a paragraph in game terms (catalogue/README.md has the format
+and how fine to cut). psx checks each against the workspace. The goal's features and everything they depend
 on are its closure. The agent proposes the catalogue; the person checks it
 with psx port confirm and confirms with psx port confirm --yes. The list may
 grow afterwards; taking a feature out needs confirming again.

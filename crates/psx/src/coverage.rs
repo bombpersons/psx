@@ -513,6 +513,33 @@ fn branches(run: &Path) -> crate::Result<Option<Vec<Branch>>> {
     Ok(Some(body.as_chunks::<24>().0.iter().map(|r| (u(r, 0), u(r, 4), n(r, 8), n(r, 16))).collect()))
 }
 
+/// The inventory's functions, for checking the addresses a catalogue
+/// entry names.
+pub(crate) struct Functions(Vec<Image>);
+
+impl Functions {
+    pub(crate) fn read(root: &Path, inv: &Value) -> crate::Result<Functions> {
+        Ok(Functions(images(root, inv)?))
+    }
+
+    /// Whether a function of the inventory starts at `addr`.
+    pub(crate) fn starts(&self, addr: u32) -> bool {
+        self.0.iter().any(|i| i.functions.iter().any(|f| f.entry == addr))
+    }
+
+    /// When `addr` is a conditional branch of the inventory's code: the
+    /// entries of the functions holding it.
+    pub(crate) fn branch(&self, addr: u32) -> Option<Vec<u32>> {
+        let mut out = None;
+        for i in &self.0 {
+            if i.word(addr).is_some_and(conditional) {
+                out.get_or_insert_with(Vec::new).extend(i.functions_at(addr).iter().map(|&f| i.functions[f].entry));
+            }
+        }
+        out
+    }
+}
+
 /// Whether `i` is a conditional branch: one that can both be taken and fall
 /// through (`beq zero, zero` always jumps, `bne zero, zero` never does).
 fn conditional(i: u32) -> bool {

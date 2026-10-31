@@ -20,7 +20,6 @@ mod commands;
 mod context;
 mod coverage;
 mod error;
-mod front_matter;
 mod ghidra;
 mod guide;
 mod handoff;

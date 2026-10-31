@@ -206,8 +206,8 @@ impl Facts {
                 "Scenario",
                 Some(&f.id),
                 format!("its scenarios are not ready: {}", first_lines(&f.scenarios).join("; ")),
-                "it lists a scenario, and each it lists has a captured recording and passes psx scenario check",
-                "declare the quantities in glossary/ and bind them and the tick (the logic step) in glossary/binding/, write scenarios/<id>.toml from a psx states chain whose last run ends at a game moment (until), list it in the catalogue entry, run psx scenario record, then psx scenario check (docs/scenarios.md)",
+                "its entry names recordings, and each of their scenarios has a captured recording and passes psx scenario check",
+                "declare the quantities in glossary/ and bind them and the tick (the logic step) in glossary/binding/, write scenarios/<id>.toml from a psx states chain whose last run ends at a game moment (until), run psx scenario record, name the recording under recordings in the catalogue entry, then psx scenario check (docs/scenarios.md)",
             );
         }
         if let Some(f) = order(&|f| stage(f, &[Stage::Captured, Stage::Implemented])) {
@@ -280,7 +280,7 @@ impl Facts {
             areas.entry(e.map(|e| e.area.clone()).unwrap_or_default()).or_default().push(json!({
                 "id": f.id, "title": e.map(|e| e.title.as_str()), "stage": stage, "in_goal": f.in_goal,
                 "depends": e.map(|e| &e.depends), "verdicts": verdicts,
-                "scenarios": e.map(|e| &e.scenarios), "scenario": f.scenarios, "unimplemented": f.unimplemented,
+                "recordings": e.map(|e| &e.recordings), "scenario": f.scenarios, "unimplemented": f.unimplemented,
             }));
         }
         json!({

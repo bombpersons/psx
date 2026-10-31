@@ -77,24 +77,34 @@ the behaviour is the same, however the port implements it.
 | Verdict | psx's result of the port against one recording: pass, or the first tick and quantity that differ | `.psx/verdicts/` |
 | Format | a disc file's format, read by an importer | `formats/<id>.md`, `tools/import` |
 
-A catalogue entry:
+A catalogue entry, its TOML front matter between `+++` lines and then a
+paragraph in game terms:
 
-```yaml
-id: F-0003
-title: Croc's jump and stomp
-depends: [F-0002]                 # running
-code: [0x8002D810, 0x8002D8D4, 0x80028688, 0x800286F4, 0x80028734]
-recordings:
-  work: [level_1_1_jump/short_and_long, level_1_1_jump/stomp]
-  held_out: [level_1_1_walk/free_play]
-wont_reach:                       # branches no recording can reach, and why
-  0x8002D820: "under water: part kind 1 (F-0011)"
-questions:
-  - "does the floor snap (y - floor < 131) apply while rising?"
+```toml
++++
+id = "F-0003"
+title = "Croc's jump and stomp"
+area = "movement"
+depends = ["F-0002"]              # running
+code = ["0x8002D810", "0x8002D8D4", "0x80028688", "0x800286F4", "0x80028734"]
+questions = ["does the floor snap (y - floor < 131) apply while rising?"]
+
+[recordings]
+work = ["level_1_1_jump/short_and_long", "level_1_1_jump/stomp"]
+held_out = ["level_1_1_walk/free_play"]
+
+[wont_reach]                      # branches no recording can reach, and why
+"0x8002D820" = "under water: part kind 1 (F-0011)"
++++
 ```
 
-`code` is found with psx (coverage diff, watches), not guessed;
-`wont_reach` entries need the person's confirmation.
+The entry is the one place a feature names its recordings: a scenario
+does not name a feature, and the feature's scenarios are those its
+recordings come from. `code` is found with psx (coverage diff, watches),
+not guessed: each address is a function the inventory has. Each
+`wont_reach` address is a conditional branch in one of those functions,
+and needs the person's confirmation (`port confirm` keeps the entries they
+confirmed, reasons and all).
 
 ## 4. Assets
 

@@ -152,7 +152,6 @@ pub struct Report {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ScenarioReport {
     pub id: String,
-    pub feature: String,
     pub kind: String,
     /// What stops the scenario from running at all.
     pub problems: Vec<String>,
@@ -224,7 +223,7 @@ impl Scenarios {
                 return r;
             }
         };
-        (r.feature, r.kind) = (s.feature.clone(), s.kind.clone());
+        r.kind = s.kind.clone();
         if !registry.launchers.contains_key(&s.kind) {
             r.problems.push(format!("no launcher registered for scenario kind {}", s.kind));
         }
@@ -354,9 +353,8 @@ impl Scenarios {
         for s in &report.scenarios {
             let ticks: usize = s.recordings.iter().map(|r| r.ticks).sum();
             println!(
-                "{} ({}, {}): {} recordings, {ticks} ticks, {}",
+                "{} ({}): {} recordings, {ticks} ticks, {}",
                 s.id,
-                s.feature,
                 s.kind,
                 s.recordings.len(),
                 if s.passed() { "pass" } else { "FAIL" }
@@ -454,7 +452,7 @@ mod tests {
         root
     }
 
-    const SCENARIO: &str = "feature = \"F-0001\"\nmoment = \"m\"\nchain = \"c\"\nkind = \"level\"\n[compare]\nx = 0\n[parameters]\nx = 4096\n";
+    const SCENARIO: &str = "moment = \"m\"\nchain = \"c\"\nkind = \"level\"\n[compare]\nx = 0\n[parameters]\nx = 4096\n";
 
     #[test]
     fn a_port_that_matches_passes() {

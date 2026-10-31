@@ -47,10 +47,6 @@
       "description": "The glossary quantities compared, each with its tolerance in raw\nunits (0: exactly; bool and enum quantities only exactly).",
       "type": "object"
     },
-    "feature": {
-      "description": "The feature whose integration test it is.",
-      "type": "string"
-    },
     "idle": {
       "description": "The determinism check's idle fields, added before the chain's last\nrun (60 when left out).",
       "format": "uint32",
@@ -76,7 +72,6 @@
     }
   },
   "required": [
-    "feature",
     "moment",
     "chain",
     "kind",

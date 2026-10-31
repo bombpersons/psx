@@ -168,9 +168,6 @@ impl Loaded {
                 if !root.join(&s.chain).is_file() {
                     p.push(format!("chain: no file {} (psx run --save-as writes notes/states/NAME.json)", s.chain));
                 }
-                if !crate::port::is_feature_id(&s.feature) {
-                    p.push(format!("feature {:?}: a catalogue id, F-NNNN", s.feature));
-                }
                 l.problems.extend(p.into_iter().map(|p| format!("{file}: {p}")));
                 l.scenario = Some(s);
             }
@@ -649,12 +646,49 @@ impl Prepared {
         if let Some(f) = &self.from {
             result["from"] = json!(f);
         }
+        if let Some(c) = catalogue_note(root, &self.id, &self.name) {
+            result["catalogue"] = json!(c);
+        }
         if !partial.is_empty() {
             result["coverage_partial"] = json!(partial);
             result["coverage_note"] = json!(UNPACK_HINT);
         }
         Ok((true, result))
     }
+}
+
+/// Which catalogue entries name the recording `id/name`, or where it
+/// could go: the features naming the scenario's other recordings. None
+/// outside a port.
+fn catalogue_note(root: &Path, id: &str, name: &str) -> Option<String> {
+    let port = crate::port::Port::load(root).ok()?;
+    let target = format!("{id}/{name}");
+    let named: Vec<String> = port
+        .entries
+        .values()
+        .flat_map(|e| {
+            let r = &e.recordings;
+            let w = r.work.contains(&target).then(|| format!("{} (work)", e.id));
+            let h = r.held_out.contains(&target).then(|| format!("{} (held_out)", e.id));
+            w.into_iter().chain(h)
+        })
+        .collect();
+    if !named.is_empty() {
+        return Some(format!("{target} is named by {}", named.join(", ")));
+    }
+    let using: Vec<&str> =
+        port.entries.values().filter(|e| e.scenarios().iter().any(|s| s == id)).map(|e| e.id.as_str()).collect();
+    Some(if using.is_empty() {
+        format!(
+            "{target} is in no catalogue entry's recordings: add it to recordings.work (or held_out) of the feature it is for"
+        )
+    } else {
+        format!(
+            "{target} is in no catalogue entry's recordings; {} {} this scenario's other recordings: add it to recordings.work or held_out of the feature it is for",
+            using.join(", "),
+            if using.len() == 1 { "names" } else { "name" }
+        )
+    })
 }
 
 fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
@@ -1053,12 +1087,9 @@ impl Op for ScenarioShowArgs {
 /// What stops one scenario from counting toward its feature's stage 2:
 /// problems in its files, no captured recording, or no passing determinism
 /// check of the files as they are.
-pub fn unready(root: &Path, id: &str, feature: &str) -> Vec<String> {
+pub fn unready(root: &Path, id: &str) -> Vec<String> {
     let l = Loaded::load(root, id);
     let mut out = l.problems.clone();
-    if let Some(s) = l.scenario.as_ref().filter(|s| s.feature != feature) {
-        out.push(format!("{SCENARIOS}/{id}.toml: names feature {}, but {feature} lists it", s.feature));
-    }
     for (_, f, r) in &l.recordings {
         out.extend(l.recording_problems(root, f, r));
     }
@@ -1097,16 +1128,15 @@ pub fn unready(root: &Path, id: &str, feature: &str) -> Vec<String> {
     out
 }
 
-/// What stops the feature's scenarios from counting toward stage 2; empty
-/// when it lists at least one and each is deterministic.
+/// What stops the feature's scenarios (those its recordings come from)
+/// from counting toward stage 2; empty when it names a recording and each
+/// scenario is deterministic.
 pub fn feature_unready(root: &Path, e: &Entry) -> Vec<String> {
-    if e.scenarios.is_empty() {
-        return vec![format!(
-            "{}: lists no scenarios (write scenarios/<id>.toml and list its id under scenarios)",
-            e.file
-        )];
+    let scenarios = e.scenarios();
+    if scenarios.is_empty() {
+        return vec![format!("{}: names no recordings (recordings.work: <scenario>/<name>)", e.file)];
     }
-    e.scenarios.iter().flat_map(|s| unready(root, s, &e.id)).collect()
+    scenarios.iter().flat_map(|s| unready(root, s)).collect()
 }
 
 #[cfg(test)]
@@ -1134,7 +1164,7 @@ pub struct Quantities {
         std::fs::write(root.join("notes/states/start.json"), "{}").unwrap();
         std::fs::write(
             root.join("scenarios/walk.toml"),
-            "feature = \"F-0001\"\nmoment = \"standing\"\nchain = \"notes/states/start.json\"\nkind = \"level\"\n[compare]\nx = 0\n",
+            "moment = \"standing\"\nchain = \"notes/states/start.json\"\nkind = \"level\"\n[compare]\nx = 0\n",
         )
         .unwrap();
     }
@@ -1286,32 +1316,25 @@ pub struct Quantities {
         let d = crate::port::tests::tempdir::Dir::new();
         let root = d.0.as_path();
         write_scenario(root);
-        assert_eq!(unready(root, "walk", "F-0001"), ["scenarios/walk/: no captured recording (psx scenario record)"]);
+        assert_eq!(unready(root, "walk"), ["scenarios/walk/: no captured recording (psx scenario record)"]);
         std::fs::write(root.join("scenarios/walk/a.jsonl"), recording(1)).unwrap();
-        assert_eq!(unready(root, "walk", "F-0001"), ["walk: no determinism check (psx scenario check walk)"]);
+        assert_eq!(unready(root, "walk"), ["walk: no determinism check (psx scenario check walk)"]);
         let l = Loaded::load(root, "walk");
         let ok = json!({"key": key(root, &l), "result": {"status": "deterministic"}});
         std::fs::create_dir_all(root.join(CHECKS)).unwrap();
         std::fs::write(root.join(CHECKS).join("walk.json"), ok.to_string()).unwrap();
-        assert_eq!(unready(root, "walk", "F-0001"), Vec::<String>::new());
-        assert_eq!(unready(root, "walk", "F-0002"), ["scenarios/walk.toml: names feature F-0001, but F-0002 lists it"]);
+        assert_eq!(unready(root, "walk"), Vec::<String>::new());
         // Any change to what was judged makes the check stale.
         std::fs::write(root.join("scenarios/walk/a.jsonl"), recording(2)).unwrap();
-        assert_eq!(
-            unready(root, "walk", "F-0001"),
-            ["walk: changed since its determinism check (psx scenario check walk)"]
-        );
+        assert_eq!(unready(root, "walk"), ["walk: changed since its determinism check (psx scenario check walk)"]);
         // A unit or description is documentation: the recording still stands.
         std::fs::write(root.join("scenarios/walk/a.jsonl"), recording(1).replace(",\"unit\":\"units\"", "")).unwrap();
-        assert_eq!(
-            unready(root, "walk", "F-0001"),
-            ["walk: changed since its determinism check (psx scenario check walk)"]
-        );
+        assert_eq!(unready(root, "walk"), ["walk: changed since its determinism check (psx scenario check walk)"]);
         // A recording of a type the glossary no longer declares is recorded again.
         std::fs::write(root.join("scenarios/walk/a.jsonl"), recording(1).replace("\"bits\":32", "\"bits\":16"))
             .unwrap();
         assert_eq!(
-            unready(root, "walk", "F-0001"),
+            unready(root, "walk"),
             [
                 "scenarios/walk/a.jsonl: recorded for other quantities than the scenario compares, or with other types than the glossary declares; record it again"
             ]
