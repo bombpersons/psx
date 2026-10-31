@@ -1,0 +1,106 @@
+{
+  "bios_sha256": "1faaa18fa820a0225e488d9f086296b8e6c46df739666093987ff7d8fd352c09",
+  "description": "The in-engine title (Croc logo, Gobbo cage) showing PRESS START",
+  "how": "psx states rebuild replays the steps from power-on, each continuing from the state the one before ended in",
+  "media": "media/Croc - Legend of the Gobbos.cue",
+  "media_identity": {
+    "kind": "disc",
+    "sha256": "b30a07f5d5f9681c3943c21af5b9926d111ee2ba1d49024794369aa970b77aad"
+  },
+  "name": "press_start",
+  "state": ".psx/states/press_start.bin",
+  "state_sha256": "92456b26cef8995abdde8c5e3dcc81a1e41573473e443dcfbea7a24644921cf8",
+  "steps": [
+    {
+      "emulator": "emu-b340ad5730f28af3",
+      "made_with": "0.8.0+src-3c1fa468d983506f-release",
+      "run": {
+        "frames": 1500,
+        "input": []
+      },
+      "state": "end",
+      "state_sha256": "7195e54b650779964bedc8c0456f5eaad613f7824659d5a19d00cfab32d053a8"
+    },
+    {
+      "emulator": "emu-b340ad5730f28af3",
+      "made_with": "0.8.0+src-3c1fa468d983506f-release",
+      "run": {
+        "frames": 1000,
+        "input": []
+      },
+      "state": "end",
+      "state_sha256": "307ad6dad3809905cb3733037c9ce5128d274c54a472eb0b331c55c77cc07857"
+    },
+    {
+      "emulator": "emu-b340ad5730f28af3",
+      "made_with": "0.8.0+src-3c1fa468d983506f-release",
+      "run": {
+        "frames": 1500,
+        "input": [
+          {
+            "buttons": [
+              "START"
+            ],
+            "frame": 10
+          },
+          {
+            "buttons": [],
+            "frame": 16
+          },
+          {
+            "buttons": [
+              "CROSS"
+            ],
+            "frame": 100
+          },
+          {
+            "buttons": [],
+            "frame": 106
+          },
+          {
+            "buttons": [
+              "CROSS"
+            ],
+            "frame": 200
+          },
+          {
+            "buttons": [],
+            "frame": 206
+          },
+          {
+            "buttons": [
+              "CROSS"
+            ],
+            "frame": 300
+          },
+          {
+            "buttons": [],
+            "frame": 306
+          },
+          {
+            "buttons": [
+              "CROSS"
+            ],
+            "frame": 400
+          },
+          {
+            "buttons": [],
+            "frame": 406
+          },
+          {
+            "buttons": [
+              "CROSS"
+            ],
+            "frame": 500
+          },
+          {
+            "buttons": [],
+            "frame": 506
+          }
+        ]
+      },
+      "state": "end",
+      "state_sha256": "92456b26cef8995abdde8c5e3dcc81a1e41573473e443dcfbea7a24644921cf8"
+    }
+  ]
+}

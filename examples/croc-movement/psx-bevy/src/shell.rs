@@ -5,7 +5,9 @@
 //! many PS1 games run their logic every second field (25 or 30 Hz) while the
 //! screen refreshes at 50 or 60 Hz.
 use crate::controller::{self, Button, ControllerBindings, ControllerState};
+use crate::pointer::{self, Pointer};
 use crate::psx::Region;
+use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use std::time::Duration;
 
@@ -69,6 +71,8 @@ pub enum GameSystems {
 /// Modal interfaces capture raw input before the shell samples gameplay devices.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PhysicalInputSystems {
+    /// Updates [`Pointer`], so menus in `Capture` see this frame's mouse.
+    Pointer,
     Capture,
     Sample,
 }
@@ -91,11 +95,76 @@ impl InputFocus {
 #[derive(Resource, Default, Debug, Clone, Copy)]
 pub struct InjectedInput {
     pub buttons: u16,
+    pub mouse: InjectedMouse,
 }
 
 impl InjectedInput {
     pub fn set(&mut self, buttons: &[Button]) {
         self.buttons = Button::mask_all(buttons);
+    }
+    /// Releases every injected button and the mouse.
+    pub fn release(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Mouse input held on by tools, merged into [`ControllerState::mouse`] each
+/// tick: `buttons` add to the physical ones (and press the actions they are
+/// bound to), `position` replaces the cursor when set, and `motion` and
+/// `wheel` are added on every tick they are held.
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+pub struct InjectedMouse {
+    /// [`pointer::mouse_bits`] of the held buttons.
+    pub buttons: u8,
+    /// Screen pixels, origin top-left, y down.
+    pub position: Option<Vec2>,
+    pub motion: Vec2,
+    pub wheel: f32,
+}
+
+impl InjectedMouse {
+    /// The JSON form replays and the developer MCP share:
+    /// `{"buttons": ["left"], "position": [x, y], "motion": [dx, dy], "wheel": n}`,
+    /// every field optional.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        let object = value.as_object().ok_or("mouse is an object")?;
+        if let Some(key) = object.keys().find(|k| !["buttons", "position", "motion", "wheel"].contains(&k.as_str())) {
+            return Err(format!("mouse: unknown field {key:?}"));
+        }
+        let pair = |name: &str| -> Result<Option<Vec2>, String> {
+            let Some(value) = object.get(name) else { return Ok(None) };
+            let xy = value.as_array().filter(|a| a.len() == 2).ok_or(format!("mouse {name} is [x, y]"))?;
+            let [x, y] = [0, 1].map(|i| xy[i].as_f64().filter(|v| v.is_finite()));
+            match (x, y) {
+                (Some(x), Some(y)) => Ok(Some(Vec2::new(x as f32, y as f32))),
+                _ => Err(format!("mouse {name} needs two finite numbers")),
+            }
+        };
+        let mut buttons = 0;
+        for name in object
+            .get("buttons")
+            .map(|v| v.as_array().ok_or("mouse buttons is an array"))
+            .transpose()?
+            .into_iter()
+            .flatten()
+        {
+            let name = name.as_str().ok_or("mouse button names are strings")?;
+            let button = pointer::mouse_button_named(name).ok_or(format!("no mouse button {name:?}"))?;
+            buttons |= pointer::mouse_bit(button);
+        }
+        let wheel = match object.get("wheel") {
+            None => 0.0,
+            Some(v) => v.as_f64().filter(|w| w.is_finite()).ok_or("mouse wheel is a finite number")? as f32,
+        };
+        Ok(Self { buttons, position: pair("position")?, motion: pair("motion")?.unwrap_or_default(), wheel })
+    }
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "buttons": pointer::mouse_button_names(self.buttons),
+            "position": self.position.map(|p| [p.x, p.y]),
+            "motion": [self.motion.x, self.motion.y],
+            "wheel": self.wheel,
+        })
     }
 }
 
@@ -108,6 +177,11 @@ struct DeviceInput {
     tapped: u16,
     left_stick: Vec2,
     right_stick: Vec2,
+    /// Mouse buttons, latched like `tapped`; motion and wheel summed.
+    mouse_tapped: u8,
+    mouse_position: Option<Vec2>,
+    mouse_motion: Vec2,
+    wheel: f32,
 }
 
 /// Fixed-rate logic, controller input and the tick clock.
@@ -126,10 +200,14 @@ impl Plugin for ShellPlugin {
             .init_resource::<InjectedInput>()
             .init_resource::<DeviceInput>()
             .init_resource::<InputFocus>()
+            .init_resource::<Pointer>()
             .configure_sets(
                 PreUpdate,
-                (PhysicalInputSystems::Capture, PhysicalInputSystems::Sample).chain().after(bevy::input::InputSystems),
+                (PhysicalInputSystems::Pointer, PhysicalInputSystems::Capture, PhysicalInputSystems::Sample)
+                    .chain()
+                    .after(bevy::input::InputSystems),
             )
+            .add_systems(PreUpdate, pointer::track_pointer.in_set(PhysicalInputSystems::Pointer))
             .configure_sets(FixedUpdate, (GameSystems::Input, GameSystems::Game, GameSystems::Finish).chain())
             .configure_sets(FixedUpdate, GameSystems::Game.run_if(|clock: Res<GameClock>| clock.ticking))
             .add_systems(
@@ -146,10 +224,13 @@ fn apply_tick_rate(rate: Res<TickRate>, mut time: ResMut<Time<Fixed>>) {
     time.set_timestep_hz(rate.hz);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sample_devices(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<(Entity, &Gamepad)>,
     bindings: Res<ControllerBindings>,
+    pointer: Res<Pointer>,
+    motion: Option<Res<AccumulatedMouseMotion>>,
     mut input: ResMut<DeviceInput>,
     mut focus: ResMut<InputFocus>,
     mut state: ResMut<ControllerState>,
@@ -159,8 +240,10 @@ fn sample_devices(
     if focus.blocked() {
         *input = DeviceInput::default();
         state.reset();
-        injected.buttons = 0;
+        injected.release();
+        // A click that closed a menu must not reach the game either.
         let neutral = keys.get_pressed().next().is_none()
+            && !pointer.any_held()
             && pad.is_none_or(|p| {
                 p.get_pressed().next().is_none()
                     && p.left_stick().length() < bindings.stick_deadzone().max(0.01)
@@ -171,11 +254,15 @@ fn sample_devices(
         }
         return;
     }
-    let (held, left, right) = controller::sample(&keys, pad, &bindings);
+    let (held, left, right) = controller::sample(&keys, pad, pointer.held_bits(), &bindings);
     input.held = held;
     input.tapped |= held;
     input.left_stick = left;
     input.right_stick = right;
+    input.mouse_tapped |= pointer.held_bits();
+    input.mouse_position = pointer.position;
+    input.mouse_motion += motion.map_or(Vec2::ZERO, |m| m.delta);
+    input.wheel += pointer.wheel;
 }
 
 fn begin_tick(
@@ -185,6 +272,7 @@ fn begin_tick(
     mut state: ResMut<ControllerState>,
     mut clock: ResMut<GameClock>,
     focus: Res<InputFocus>,
+    bindings: Res<ControllerBindings>,
     #[cfg(feature = "dev-mcp")] control: Option<ResMut<crate::dev_mcp::Control>>,
 ) {
     clock.ticking = !focus.blocked();
@@ -192,18 +280,29 @@ fn begin_tick(
     if let Some(mut control) = control {
         if focus.blocked() {
             control.interrupt_for_input_focus();
-            injected.buttons = 0;
+            injected.release();
         }
         if control.discard_cancelled_step() {
-            injected.buttons = 0;
+            injected.release();
         }
         clock.ticking &= !control.paused || control.has_step();
     }
     if clock.ticking {
-        let buttons = device.held | device.tapped | injected.buttons;
+        let mouse = injected.mouse;
+        let buttons =
+            device.held | device.tapped | injected.buttons | controller::mouse_actions(mouse.buttons, &bindings);
         state.update(buttons, device.left_stick, device.right_stick);
+        state.mouse.update(
+            device.mouse_tapped | mouse.buttons,
+            mouse.position.or(device.mouse_position),
+            device.mouse_motion + mouse.motion,
+            device.wheel + mouse.wheel,
+        );
     }
     device.tapped = 0;
+    device.mouse_tapped = 0;
+    device.mouse_motion = Vec2::ZERO;
+    device.wheel = 0.0;
 }
 
 fn finish_tick(
@@ -219,7 +318,7 @@ fn finish_tick(
     if let Some(mut control) = control
         && control.finish_tick(clock.frame)
     {
-        injected.buttons = 0;
+        injected.release();
     }
 }
 
@@ -254,5 +353,45 @@ mod tests {
             app.update();
         }
         assert!(app.world().resource::<ControllerState>().released(Button::Cross));
+    }
+
+    /// The mouse follows the pad's rules: a click between ticks reaches the
+    /// next tick, and motion adds up over the tick's frames.
+    #[test]
+    fn mouse_clicks_and_motion_reach_the_next_tick() {
+        let tick = TickRate::every_nth_field(Region::Pal, 2);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, ShellPlugin { tick }))
+            .insert_resource(TimeUpdateStrategy::ManualDuration(tick.period() / 4))
+            .insert_resource(crate::psx::PsxScreen::default())
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseMotion>();
+        let mut window = Window { resolution: (960, 720).into(), ..default() };
+        window.set_cursor_position(Some(Vec2::new(480.0, 30.0)));
+        app.world_mut().spawn((window, bevy::window::PrimaryWindow));
+        let frame = |app: &App| app.world().resource::<GameClock>().frame;
+        while frame(&app) == 0 {
+            app.update();
+        }
+        let start = frame(&app);
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+        app.world_mut().resource_mut::<AccumulatedMouseMotion>().delta = Vec2::new(2.0, 1.0);
+        app.update();
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
+        app.update();
+        app.world_mut().resource_mut::<AccumulatedMouseMotion>().delta = Vec2::ZERO;
+        while frame(&app) == start {
+            app.update();
+        }
+        let mouse = app.world().resource::<ControllerState>().mouse;
+        assert!(mouse.pressed(MouseButton::Left), "{mouse:?}");
+        assert_eq!(mouse.position, Some(Vec2::new(160.0, 10.0)), "window pixels / 3");
+        assert!(mouse.motion.x >= 4.0 && mouse.motion.y >= 2.0, "summed over frames: {mouse:?}");
+        while frame(&app) == start + 1 {
+            app.update();
+        }
+        let mouse = app.world().resource::<ControllerState>().mouse;
+        assert!(mouse.released(MouseButton::Left) && mouse.motion == Vec2::ZERO, "{mouse:?}");
     }
 }

@@ -1,0 +1,11 @@
+// The rise and fall (VerticalTuning in src/character/vertical.rs). Read from
+// the opcodes rise 0x8002D8D4 and fall 0x8002D810 of CROC.EXE (PAL).
+(
+    slow_below: 700,       // rise: h < 700 -> v -= 8 + v/4
+    rise_drag: 8,          // ...the 8
+    release_below: 1400,   // rise: h < 1400, jump released -> v -= v/2
+    apex_height: 4,        // rise: h < 4 ...
+    apex_speed: 4,         // ... || v < 4 -> fall
+    fall_gain: 8,          // fall: v += 8 + v/4
+    max_fall: 576,         // fall: v capped at 0x240
+)

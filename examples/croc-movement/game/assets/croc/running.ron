@@ -1,0 +1,17 @@
+// Croc's running and turning (RunningTuning in src/croc/running.rs).
+// Read from the MOVE (0x80043234) and TURN (0x8004425C) opcodes of
+// CROC.EXE (PAL); notes/player-controller.md has the derivation.
+// The speeds are targets: Croc settles at target << smoothing_shift
+// (35 << 2 = 140 world units per tick running).
+(
+    forward: 35,          // 0x23, MOVE's target with forward held
+    backward: -15,        // -0xF, back held
+    sidestep: 12,         // 0xC, L1/R1 while moving on the ground
+    air_strafe: 17,       // 0x11, left/right in the air
+    smoothing_shift: 2,   // v += target - (v >> 2), 0x8004406C
+    walk_ticks: 5,        // gp+0x768 counts forward ticks to 5, then running
+    turn_standing: (start: 3.0, cap: 63.0, wind_down_shift: 2),   // 0x30000, 0x3F0000, >> 2
+    turn_moving: (start: 11.0, cap: 52.0, wind_down_shift: 3),    // 0xB0000, 0x340000, >> 3
+    turn_coasting: 0.4000091552734375,        // 0x6667 (16.16)
+    turn_stop: 3.0,                           // 0x30000
+)

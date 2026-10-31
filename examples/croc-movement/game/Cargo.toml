@@ -1,25 +1,38 @@
 [package]
-name = "croc-movement"
+name = "game"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-# The game is a library (`game`, whatever the package is called) so that
-# integration tests in `tests/` and tools can drive it; `src/main.rs` is the
-# thin executable.
+# The port is a library so that integration tests in `tests/`, sandboxes
+# and tools can drive it; `src/main.rs` is the thin executable, named after
+# the game.
 [lib]
-name = "game"
 path = "src/lib.rs"
 
+[[bin]]
+name = "croc-legend-of-the-gobbos"
+path = "src/main.rs"
+
 [features]
-default = []
-dev-mcp = ["engine/dev-mcp"]
+default = ["dynamic"]
+dynamic = ["psx-bevy/dynamic"]
+dev-mcp = ["psx-bevy/dev-mcp"]
 
 [dependencies]
-engine.workspace = true
+psx-bevy.workspace = true
 bevy.workspace = true
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
+# Hand-editable tables and tuning (src/config.rs).
+ron.workspace = true
+# The importers and disc reader (tools/import), run in the game on first start.
+import.workspace = true
+# The glossary's quantities (glossary/), which the port observes for the
+# scenarios as `Observed` (src/lib.rs, build.rs).
+glossary = { path = "../glossary" }
+psx-scenario.workspace = true
+
+[build-dependencies]
+psx-scenario.workspace = true

@@ -28,10 +28,17 @@ pub struct Client {
 }
 impl Client {
     pub fn launch(mut command: Command, log: &std::path::Path) -> Self {
+        // An empty settings folder beside the log, so a player's saved
+        // controls.json or display.json cannot change what the test sees.
+        let config = log.with_extension("config");
+        let _ = std::fs::remove_dir_all(&config);
+        std::fs::create_dir_all(&config).unwrap();
         let mut child = command
             .args(["--mcp", "--headless", "--software"])
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_DISPLAY")
+            .env("XDG_CONFIG_HOME", &config)
+            .env("APPDATA", &config)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(std::fs::File::create(log).unwrap())

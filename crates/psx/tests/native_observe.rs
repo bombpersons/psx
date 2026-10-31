@@ -65,7 +65,7 @@ fn samples_reproduce_the_recorded_jump_and_pokes_take_effect() {
     assert_eq!(r["frames"]["start"], 3900);
     let csv = std::fs::read_to_string(dir.join("jump/samples.csv")).unwrap();
     let recorded = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/megaman8-movement/tests/data/jump_hold.csv"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/megaman8_jump_hold.csv"),
     )
     .unwrap();
     let ys = column(&csv, "y");

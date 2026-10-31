@@ -1,0 +1,19 @@
+# The glossary's binding (psx's guide, Recordings): where the original keeps
+# each quantity. psx scenario record builds it as a plugin and loads it.
+[package]
+name = "glossary-binding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+glossary = { path = ".." }
+psx-capture = { path = "../../vendor/psx-capture" }
+
+[build-dependencies]
+psx-scenario = { path = "../../vendor/psx-scenario" }
+

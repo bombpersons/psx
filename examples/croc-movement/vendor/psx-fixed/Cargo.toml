@@ -1,0 +1,17 @@
+# Owned by the psx template (`psx template update` replaces it): a copy of the
+# psx toolkit's crates/psx-fixed, the numbers exact rules compute with.
+# Fix bugs upstream, not here. See ../README.md.
+[package]
+name = "psx-fixed"
+version = "0.8.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+description = "Numbers for exact ports: fixed point with the original's width and rounding, or f32, from one generic rule"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[lints.rust]
+unsafe_code = "forbid"

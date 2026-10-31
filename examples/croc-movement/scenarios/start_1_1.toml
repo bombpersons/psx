@@ -1,0 +1,27 @@
+moment = "Croc at the start of 1-1, the first step he can move, standing on the flat ground before the path rises"
+chain = "notes/states/level_1_1.json"
+kind = "flat_floor"
+idle = 60
+
+# croc_jump_height_left is not compared: before Croc's first jump the
+# original's field (+0x14C) holds whatever the level's setup left there.
+[compare]
+croc_x = 0
+croc_y = 0
+croc_z = 0
+croc_angle = 0
+croc_on_ground = 0
+croc_speed_x = 0
+croc_speed_z = 0
+croc_turn_rate = 0
+croc_vertical_speed = 0
+croc_gait = 0
+croc_action = 0
+
+# The stand-in world: a flat floor at Croc's starting height, Croc on it
+# where and as 1-1 starts him (the recording's first tick).
+[parameters]
+floor_y = -225
+start_x = 12288
+start_z = 12288
+start_angle = 94

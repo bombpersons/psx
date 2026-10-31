@@ -1,3 +1,6 @@
 # Wide lines keep Bevy spawn bundles and queries readable on one line.
 max_width = 120
 use_small_heuristics = "Max"
+# The same style as the template and psx-bevy (edition 2024 crates), so shared
+# files such as psx-assets' tim.rs and tmd.rs format identically in each.
+style_edition = "2024"

@@ -258,7 +258,7 @@ impl AssetLoader for PsxSceneLoader {
         let file: SceneFile = serde_json::from_slice(&bytes).map_err(|e| SceneLoadError(e.to_string()))?;
         if !SCENE_FORMATS.contains(&file.format) {
             return Err(SceneLoadError(format!(
-                "unsupported format {} (this template reads {}-{}; update src/psx from a newer template)",
+                "unsupported format {} (this psx-bevy reads {}-{}; update psx-bevy)",
                 file.format,
                 SCENE_FORMATS.start(),
                 SCENE_FORMATS.end()

@@ -29,8 +29,9 @@
 //! the renderer. Keeping rules and presentation in separate plugins is what
 //! makes them testable.
 //!
-//! To check rules against the original game, replay a psx recording's input
-//! and compare per-tick values with [`compare`] (see [`trajectory`]).
+//! To check rules against the original game, run its scenario recordings
+//! (`psx_bevy::scenario`), or a bare psx recording's input with [`compare`]
+//! (see [`trajectory`]).
 use crate::controller::Button;
 use crate::shell::{GameClock, InjectedInput, ShellPlugin, TickRate};
 use bevy::{prelude::*, time::TimeUpdateStrategy};
@@ -38,9 +39,30 @@ use bevy::{prelude::*, time::TimeUpdateStrategy};
 #[cfg(feature = "dev-mcp")]
 pub mod mcp;
 pub mod trajectory;
-pub use trajectory::{Alignment, Comparison, Replay, Trajectory, compare};
+pub use crate::shell::InjectedMouse;
+pub use trajectory::{Alignment, Comparison, Replay, Trajectory, compare, compare_from};
 
-/// An app with Bevy's minimal plugins and the template's tick loop. Each
+/// One tick of injected input: pad buttons and the mouse. `Vec<Button>`
+/// converts into one with the mouse left alone.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TickInput {
+    pub buttons: Vec<Button>,
+    pub mouse: InjectedMouse,
+}
+
+impl From<Vec<Button>> for TickInput {
+    fn from(buttons: Vec<Button>) -> Self {
+        Self { buttons, mouse: default() }
+    }
+}
+
+impl From<&[Button]> for TickInput {
+    fn from(buttons: &[Button]) -> Self {
+        buttons.to_vec().into()
+    }
+}
+
+/// An app with Bevy's minimal plugins and psx-bevy's tick loop. Each
 /// [`TickApp::run_tick`] advances time by exactly one tick.
 pub fn headless_app(tick: TickRate) -> App {
     let mut app = App::new();
@@ -60,11 +82,22 @@ pub trait TickApp {
             self.run_tick(buttons);
         }
     }
+
+    /// Runs one logic tick with exactly this input, mouse included.
+    fn run_input(&mut self, input: &TickInput);
 }
 
 impl TickApp for App {
     fn run_tick(&mut self, buttons: &[Button]) {
-        self.world_mut().resource_mut::<InjectedInput>().set(buttons);
+        self.run_input(&buttons.into());
+    }
+
+    fn run_input(&mut self, input: &TickInput) {
+        {
+            let mut injected = self.world_mut().resource_mut::<InjectedInput>();
+            injected.set(&input.buttons);
+            injected.mouse = input.mouse;
+        }
         let start = self.world().resource::<GameClock>().frame;
         // The very first update only starts the clock; later ones each
         // advance exactly one tick.

@@ -1,17 +1,25 @@
 # One workspace, one target directory, one lockfile:
 #
-#   psx-bevy/      the psx template's own crate. `psx template update` replaces
-#                  it; extend it from engine/ or game/ instead of editing it
-#   engine/        this game's engine family: no names, numbers or assets from
-#                  this game
-#   game/          this title: controllers, rules, HUD, menus, baked assets
-#   tools/import/  offline importers: extracted disc data -> engine formats
+#   psx-bevy/      the PS1 look, ticks, input, menus, testing and launcher:
+#                  the base the game builds on, yours to change for the game
+#   game/          the port, its assets and tests
+#   tools/import/  importers: the player's disc -> the port's asset formats
+#   glossary/      the quantities scenarios compare; glossary/binding/, where
+#                  the original keeps them, is added once written
+#   vendor/        psx-media, psx-assets, psx-fixed, psx-gte, psx-scenario and
+#                  psx-capture, vendored
+#
+# The port adds crates (an engine, mods, an editor) as members when it needs
+# them.
 #
 # Standalone: copying the template does not require the psx workspace.
 [workspace]
 resolver = "3"
-members = ["psx-bevy", "engine", "game", "tools/import"]
+members = ["psx-bevy", "game", "tools/import", "glossary", "glossary/binding"]
 default-members = ["game"]
+# Template-owned copies of psx crates: dependencies, not members (their tests
+# run in the psx repository).
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,41 +28,57 @@ rust-version = "1.97.1"
 publish = false
 
 [workspace.dependencies]
-psx-bevy = { path = "psx-bevy" }
-engine = { path = "engine" }
+# Each member's default feature `dynamic` links Bevy as one shared library
+# (`bevy/dynamic_linking`, turned on in psx-bevy/Cargo.toml): a change then
+# relinks each binary and test in seconds instead of copying all of Bevy into
+# every one. This leaves it to the member being built, so
+# `--no-default-features` (the release build) links Bevy in statically.
+psx-bevy = { path = "psx-bevy", default-features = false }
+# The importers (tools/import), a library the game runs on first start.
+import = { path = "tools/import" }
 bevy = { version = "=0.20.0", default-features = false, features = [
   "std", "async_executor", "multi_threaded", "bevy_asset", "bevy_log", "bevy_winit",
   "bevy_core_pipeline", "bevy_pbr", "bevy_sprite_render", "bevy_gltf", "bevy_gilrs",
   "png", "x11", "wayland", "bevy_ui_render", "default_font",
+  # States: the game waits in GameData until its disc import is ready.
+  "bevy_state",
   # Components and resources deriving `Reflect` register themselves, so the
   # developer MCP's `game_query` can read them without `register_type` calls.
   "reflect_auto_register",
 ] }
-# Bevy 0.20 exposes native GLES on its renderer crate, not the facade features.
-bevy_render = { version = "=0.20.0", default-features = false, features = ["gles"] }
-# Persist physical bindings without enabling serialization on the renderer/world.
-bevy_input = { version = "=0.20.0", features = ["serialize"] }
-rmcp = { version = "=3.5.1", features = ["transport-io"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-std"] }
+# Disc images (CUE/BIN, ISO, CHD), ISO9660 and PS1 asset formats: the psx
+# toolkit's crates, vendored by the template (vendor/README.md). The game
+# imports from the player's disc itself (game/src/disc.rs, tools/import), so
+# players need neither the toolkit nor a separate export step.
+psx-media = { path = "vendor/psx-media" }
+psx-assets = { path = "vendor/psx-assets" }
+# Numbers for exact rules (Fixed with the original's width and rounding, or
+# f32, from one generic rule) and the GTE as psx emulates it, vendored
+# the same way (psx-bevy re-exports them as `num` and `gte`).
+psx-fixed = { path = "vendor/psx-fixed" }
+psx-gte = { path = "vendor/psx-gte" }
+# The scenario and recording formats (psx_bevy::scenario), and the glue the
+# game and the glossary's binding generate from glossary/.
+psx-scenario = { path = "vendor/psx-scenario" }
+# The API the glossary's binding (glossary/binding/) is written against: psx
+# scenario record builds the binding and loads it.
+psx-capture = { path = "vendor/psx-capture" }
+# `rc` and `alloc` match what psx-bevy's `dev-mcp` turns on, so the feature
+# doesn't change how serde builds (psx-bevy/Cargo.toml, "Feature alignment").
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["alloc"] }
 # Hand-editable tables and tuning (the version Bevy already uses).
 ron = "0.12"
-# Feature alignment: rmcp and tokio-util enable `serde/rc`, `serde_json/alloc`,
-# `futures/std`, default futures-sink and default base64 0.23, all of which
-# Bevy shares. Enabling them in every build keeps the shared crates' resolved
-# features identical with and without `dev-mcp`, so switching rebuilds only the
-# MCP crates and the game instead of most of Bevy.
-futures = { version = "0.3", default-features = false, features = ["std"] }
-futures-sink = "0.3"
-base64 = "0.23"
-image = { version = "0.25", default-features = false, features = ["png"] }
+# psx-bevy's game MCP (stdio, `dev-mcp`).
+rmcp = { version = "=3.5.1", features = ["transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-std"] }
 
 # Iteration builds: your code at opt-level 1 (fast to rebuild), dependencies
 # (Bevy) at 3, so `cargo run` plays at close to release speed. Line tables
 # only keeps backtraces while cutting link time and target size.
-# `cargo build --release` compiles all of Bevy again in its own profile
-# (minutes, not seconds): use it for shipping and profiling, not iteration.
+# `cargo build --release --no-default-features` compiles all of Bevy again in
+# its own profile and links it in (minutes, not seconds): use it for shipping
+# and profiling, not iteration.
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"

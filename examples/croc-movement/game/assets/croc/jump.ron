@@ -1,0 +1,9 @@
+// Croc's jump (JumpTuning in src/croc/jump.rs). Read from Croc's script
+// (sub 0x1803, landing handler 0x119E) and the opcode JUMP 0x80028688 of
+// CROC.EXE (PAL). The rise and fall are in vertical.ron.
+(
+    height: 2300,          // script: JUMP(h) 2300
+    speed: 261,            // JUMP: +0x150 = 0x105
+    buffer_ticks: 5,       // script 0x18B0: L152 = 5
+    landing_lockout: 1,    // landing handler: L151 = 1
+)

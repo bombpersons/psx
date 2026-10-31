@@ -1,4 +1,5 @@
 use super::*;
+use crate::pointer::Hitboxes;
 use crate::{
     controller::ControllerState,
     shell::{GameClock, ShellPlugin, TickRate},
@@ -404,5 +405,199 @@ fn binding_moves_to_the_next_action_so_enter_alone_walks_the_layout() {
     tap(&mut app, KeyCode::Enter);
     tap(&mut app, KeyCode::Escape);
     assert_eq!(app.world().resource::<ControlsMenu>().selected, Button::Cross as usize);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Row and slot rectangles laid out like the view's, at 320x240.
+fn row_rect(i: usize) -> Rect {
+    Rect::new(6.0, 20.0 + i as f32 * 10.0, 314.0, 30.0 + i as f32 * 10.0)
+}
+fn slot_rect(i: usize, device: BindingDevice) -> Rect {
+    let column = BindingDevice::ALL.iter().position(|d| *d == device).unwrap() as f32;
+    Rect::new(76.0 + column * 78.0, row_rect(i).min.y, 154.0 + column * 78.0, row_rect(i).max.y)
+}
+/// The fixture with a window, a screen and the view's hitboxes.
+fn mouse_fixture(path: &Path) -> App {
+    let mut app = fixture(path);
+    app.insert_resource(crate::psx::PsxScreen::default()).init_resource::<ButtonInput<MouseButton>>();
+    app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow));
+    let mut boxes: Vec<_> = (0..ROWS).map(|i| (row_rect(i), Item { row: i, device: None })).collect();
+    for i in 0..RESTORE {
+        for device in BindingDevice::ALL {
+            boxes.push((slot_rect(i, device), Item { row: i, device: Some(device) }));
+        }
+    }
+    app.world_mut().resource_mut::<Hitboxes<Item>>().0 = boxes;
+    app
+}
+/// Moves to screen pixel `at` (the default 1280x720 window shows the screen
+/// at 3x with 160-pixel bars), then clicks `button` there.
+fn click_at(app: &mut App, at: Vec2, button: MouseButton) {
+    let world = app.world_mut();
+    let mut window =
+        world.query_filtered::<&mut Window, With<bevy::window::PrimaryWindow>>().single_mut(world).unwrap();
+    window.set_cursor_position(Some(Vec2::new(160.0, 0.0) + at * 3.0));
+    frame(app);
+    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(button);
+    frame(app);
+    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(button);
+    frame(app);
+}
+fn listening(app: &App) -> bool {
+    matches!(app.world().resource::<ControlsMenu>().mode, Mode::Listen { .. })
+}
+
+/// Without arrow keys (a remote desktop sending other codes), the mouse
+/// reaches every slot: click a keyboard cell, press the new key.
+#[test]
+fn the_mouse_rebinds_without_arrow_keys() {
+    let dir = directory("mouse");
+    let path = dir.join("controls.json");
+    let mut app = mouse_fixture(&path);
+    tap(&mut app, KeyCode::F1);
+    assert!(app.world().resource::<ControlsMenu>().is_open());
+    click_at(&mut app, slot_rect(Button::Up as usize, BindingDevice::Keyboard).center(), MouseButton::Left);
+    assert_eq!(app.world().resource::<ControlsMenu>().device, BindingDevice::Keyboard);
+    tap(&mut app, KeyCode::KeyW);
+    let draft = app.world().resource::<ControlsMenu>().draft().unwrap().clone();
+    assert_eq!(draft.key(Button::Up), Some(KeyCode::KeyW));
+    click_at(&mut app, row_rect(SAVE).center(), MouseButton::Left);
+    assert!(!app.world().resource::<ControlsMenu>().is_open());
+    assert_eq!(app.world().resource::<ControllerBindings>().key(Button::Up), Some(KeyCode::KeyW));
+    assert!(path.exists());
+    // Right click discards an open menu.
+    tap(&mut app, KeyCode::F1);
+    click_at(&mut app, row_rect(RESTORE).center(), MouseButton::Right);
+    assert!(!app.world().resource::<ControlsMenu>().is_open());
+}
+
+/// Clicking around must never leave the menu waiting unseen for a key: an
+/// action name only selects, and a click elsewhere during capture moves the
+/// capture (or cancels it) instead of being ignored.
+#[test]
+fn clicking_around_never_strands_the_menu_in_capture() {
+    let dir = directory("mouse-around");
+    let mut app = mouse_fixture(&dir.join("controls.json"));
+    tap(&mut app, KeyCode::F1);
+    click_at(&mut app, row_rect(Button::Up as usize).center() - Vec2::new(120.0, 0.0), MouseButton::Left);
+    assert!(!listening(&app), "the action name selects without capturing");
+    assert_eq!(app.world().resource::<ControlsMenu>().selected, Button::Up as usize);
+    click_at(&mut app, slot_rect(Button::Up as usize, BindingDevice::Gamepad).center(), MouseButton::Left);
+    assert!(listening(&app));
+    click_at(&mut app, slot_rect(Button::Down as usize, BindingDevice::Keyboard).center(), MouseButton::Left);
+    let menu = app.world().resource::<ControlsMenu>();
+    assert!(listening(&app), "a click on another slot moves the capture there");
+    assert_eq!((menu.selected, menu.device), (Button::Down as usize, BindingDevice::Keyboard));
+    click_at(&mut app, row_rect(SAVE).center(), MouseButton::Left);
+    assert!(!listening(&app), "a click on a non-binding row cancels the capture");
+    assert!(app.world().resource::<ControlsMenu>().is_open(), "and only cancels: Save needs its own click");
+    tap(&mut app, KeyCode::KeyW);
+    assert_eq!(app.world().resource::<ControlsMenu>().draft().unwrap().key(Button::Down), Some(KeyCode::ArrowDown));
+}
+
+/// Another modal (the display menu) owns input focus: the controls shortcut
+/// must not open a second menu on top of it.
+#[test]
+fn shortcut_waits_for_another_menu_to_close() {
+    let dir = directory("modal");
+    let mut app = fixture(&dir.join("controls.json"));
+    app.world_mut().resource_mut::<InputFocus>().captured = true;
+    tap(&mut app, KeyCode::F1);
+    assert!(!app.world().resource::<ControlsMenu>().is_open());
+    app.world_mut().resource_mut::<InputFocus>().captured = false;
+    tap(&mut app, KeyCode::F1);
+    assert!(app.world().resource::<ControlsMenu>().is_open());
+}
+
+/// A mouse slot captures any mouse button, right click included (so only
+/// Esc cancels), once the click that opened the capture is released.
+#[test]
+fn mouse_slots_capture_mouse_buttons() {
+    let dir = directory("mouse-slot");
+    let path = dir.join("controls.json");
+    let mut app = mouse_fixture(&path);
+    tap(&mut app, KeyCode::F1);
+    click_at(&mut app, slot_rect(Button::Cross as usize, BindingDevice::Mouse).center(), MouseButton::Left);
+    assert!(listening(&app));
+    assert_eq!(app.world().resource::<ControlsMenu>().device, BindingDevice::Mouse);
+    click_at(&mut app, slot_rect(Button::Cross as usize, BindingDevice::Mouse).center(), MouseButton::Right);
+    let draft = app.world().resource::<ControlsMenu>().draft().unwrap().clone();
+    assert_eq!(draft.mouse_button(Button::Cross), Some(MouseButton::Right));
+    assert!(app.world().resource::<ControlsMenu>().is_open(), "right click bound rather than closing");
+    // Saved and reloaded with the profile.
+    app.world_mut().resource_mut::<ControlsMenu>().select(Button::Up, BindingDevice::Keyboard);
+    app.world_mut().resource_mut::<ControlsMenu>().selected = SAVE;
+    tap(&mut app, KeyCode::Enter);
+    assert_eq!(
+        BindingStore::new(Some(path)).load().unwrap().unwrap().mouse_button(Button::Cross),
+        Some(MouseButton::Right)
+    );
+}
+
+/// Profiles saved before mouse bindings existed still load, with the mouse unbound.
+#[test]
+fn profiles_without_mouse_slots_load() {
+    let dir = directory("old-profile");
+    let path = dir.join("controls.json");
+    let store = BindingStore::new(Some(path.clone()));
+    store.save(&ControllerBindings::default()).unwrap();
+    let mut json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    json["bindings"].as_object_mut().unwrap().remove("mouse");
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    let loaded = store.load().unwrap().unwrap();
+    assert!(Button::ALL.iter().all(|b| loaded.mouse_button(*b).is_none()));
+    assert_eq!(loaded, ControllerBindings::default());
+}
+
+/// What a game's own controls screen sees through the public API.
+#[derive(Resource, Default)]
+struct CustomView(Vec<String>);
+
+fn custom_view(menu: Res<ControlsMenu>, bindings: Res<ControllerBindings>, mut view: ResMut<CustomView>) {
+    view.0.clear();
+    if !menu.is_open() {
+        return;
+    }
+    let shown = menu.shown(&bindings);
+    for row in 0..ROWS {
+        let mark = if row == menu.selected { ">" } else { " " };
+        let key = Button::ALL.get(row).and_then(|b| shown.key(*b)).map_or(String::new(), |k| format!("{k:?}"));
+        view.0.push(format!("{mark}{} {key}", row_label(row)));
+    }
+    view.0.push(format!("{}|{}", menu.status(), menu.hint()));
+}
+
+/// As the launcher sets it up (built-in view on), then the game's `add`
+/// closure swaps in its own view: no built-in UI is spawned (it would need
+/// the renderer, which this app lacks), F1 is left to the game, and the
+/// public API is enough to draw and drive the menu.
+#[test]
+fn a_game_can_replace_the_built_in_view_with_its_own() {
+    let dir = directory("custom-view");
+    let mut app = App::new();
+    let tick = TickRate::default();
+    app.add_plugins((MinimalPlugins, ShellPlugin { tick }))
+        .add_plugins(ControlsPlugin { path: Some(dir.join("controls.json")), ..default() })
+        .insert_resource(ControlsUi { view: false, shortcuts: false })
+        .init_resource::<CustomView>()
+        .add_systems(Update, custom_view)
+        .insert_resource(TimeUpdateStrategy::ManualDuration(tick.period()))
+        .init_resource::<ButtonInput<KeyCode>>();
+    frame(&mut app);
+    tap(&mut app, KeyCode::F1);
+    assert!(!app.world().resource::<ControlsMenu>().is_open(), "shortcuts are the game's");
+    assert_eq!(app.world_mut().query::<&Node>().iter(app.world()).count(), 0, "no built-in view");
+
+    app.world_mut().resource_mut::<ControlsMenu>().open();
+    frame(&mut app);
+    tap(&mut app, KeyCode::ArrowDown);
+    let view = &app.world().resource::<CustomView>().0;
+    assert_eq!(view.len(), ROWS + 1);
+    assert!(view[1].starts_with(&format!(">{}", Button::ALL[1].label())), "{view:?}");
+    assert_eq!(view[SAVE].trim(), "Save and close");
+    assert!(view[ROWS].contains("Enter/click: edit"));
+
+    capture_key(&mut app, Button::ALL[1], KeyCode::KeyP);
+    assert!(app.world().resource::<CustomView>().0[1].ends_with("KeyP"), "the draft is shown");
     std::fs::remove_dir_all(dir).unwrap();
 }

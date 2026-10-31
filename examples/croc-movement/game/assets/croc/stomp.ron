@@ -1,0 +1,12 @@
+// Croc's stomp (StompTuning in src/croc/stomp.rs). Read from Croc's script
+// (stomp test 0x18B9, action 4 at 0x2732) and opcode 0x73 (0x800286F4) of
+// CROC.EXE (PAL); the animation lengths from the recordings
+// (scenarios/start_1_1/stomp_at_threshold: 15 ticks hanging).
+(
+    min_height: 983,       // y - floor > 0x3D7
+    hang_frames: 15,       // CROCSMP1, one frame a tick
+    drop_speed: 384,       // FALL(v = 0x180)
+    land_frames: 2,        // CROCSMP3
+    recovery_ticks: 11,    // L104 counts 5..16
+    again_min_height: 131, // jump held at settling, y - floor > 0x83
+)

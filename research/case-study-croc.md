@@ -1,5 +1,9 @@
 # Case study: Croc's player movement, from RAM to a native Bevy demo
 
+> The example this describes (`examples/croc-movement` as it was then) predates psx's port loop. It
+> was removed when Croc's movement was ported end to end, and the repository's history still
+> has it. [`examples/croc-movement`](../examples/croc-movement/README.md) is the current worked example.
+
 Game: *Croc: Legend of the Gobbos*, PAL (SLES-00593), level 1-1. Every result
 below comes from the psx native core (`psx run --backend native`). The demo is
 [`examples/croc-movement`](../examples/croc-movement/README.md).

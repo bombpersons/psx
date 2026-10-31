@@ -1,0 +1,25 @@
+{
+  "bios_sha256": "1faaa18fa820a0225e488d9f086296b8e6c46df739666093987ff7d8fd352c09",
+  "description": "The intro after power-on (planet), before any input",
+  "how": "psx states rebuild replays the steps from power-on, each continuing from the state the one before ended in",
+  "media": "media/Croc - Legend of the Gobbos.cue",
+  "media_identity": {
+    "kind": "disc",
+    "sha256": "b30a07f5d5f9681c3943c21af5b9926d111ee2ba1d49024794369aa970b77aad"
+  },
+  "name": "boot",
+  "state": ".psx/states/boot.bin",
+  "state_sha256": "7195e54b650779964bedc8c0456f5eaad613f7824659d5a19d00cfab32d053a8",
+  "steps": [
+    {
+      "emulator": "emu-b340ad5730f28af3",
+      "made_with": "0.8.0+src-3c1fa468d983506f-release",
+      "run": {
+        "frames": 1500,
+        "input": []
+      },
+      "state": "end",
+      "state_sha256": "7195e54b650779964bedc8c0456f5eaad613f7824659d5a19d00cfab32d053a8"
+    }
+  ]
+}

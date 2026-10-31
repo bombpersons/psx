@@ -49,7 +49,8 @@
 //! compared with that row ([`Alignment`]). Record the rebuild in the original's
 //! units (fixed point decoded, original axes), so each value compares directly.
 use crate::controller::Button;
-use crate::testing::TickApp;
+use crate::shell::InjectedMouse;
+use crate::testing::{TickApp, TickInput};
 use bevy::prelude::*;
 use std::fmt;
 use std::path::Path;
@@ -80,12 +81,19 @@ impl Alignment {
 struct Event {
     frame: u64,
     buttons: Vec<Button>,
+    mouse: Option<InjectedMouse>,
     until: Option<u64>,
 }
 
 /// A psx controller replay (`psx run --replay`/`--input`): each event is the
 /// complete held state from its `frame`, until the next event or its exclusive
 /// `until`. Frames count video fields from the start of the run.
+///
+/// The rebuild also reads an optional `"mouse"` per event, in
+/// [`InjectedMouse::from_json`]'s form: its buttons and position are held like
+/// pad buttons, and its motion and wheel apply on every tick of the event. The
+/// original had no mouse, so `psx run` refuses replays that use it; they are
+/// for the rebuild's own tests. Read them with [`Replay::ticks`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Replay {
     events: Vec<Event>,
@@ -104,7 +112,9 @@ impl Replay {
         let mut events: Vec<Event> = Vec::with_capacity(items.len());
         for (i, item) in items.iter().enumerate() {
             let object = item.as_object().ok_or(format!("event {i} is not an object"))?;
-            if let Some(key) = object.keys().find(|k| !["frame", "buttons", "until", "sticks"].contains(&k.as_str())) {
+            if let Some(key) =
+                object.keys().find(|k| !["frame", "buttons", "until", "sticks", "mouse"].contains(&k.as_str()))
+            {
                 return Err(format!("event {i}: unknown field {key:?}"));
             }
             let frame = object.get("frame").and_then(|v| v.as_u64()).ok_or(format!("event {i} needs a frame"))?;
@@ -133,7 +143,9 @@ impl Replay {
                     return Err(format!("event {i}: frame {frame} starts inside the previous event's until"));
                 }
             }
-            events.push(Event { frame, buttons, until });
+            let mouse =
+                object.get("mouse").map(InjectedMouse::from_json).transpose().map_err(|e| format!("event {i}: {e}"))?;
+            events.push(Event { frame, buttons, mouse, until });
         }
         Ok(Self { events })
     }
@@ -141,16 +153,35 @@ impl Replay {
     /// The buttons held during `frame`. Before the first event nothing is held:
     /// start replays at frame 0 so the original's checkpoint pad state agrees.
     pub fn held(&self, frame: u64) -> &[Button] {
-        match self.events.iter().rev().find(|e| e.frame <= frame) {
-            Some(e) if e.until.is_none_or(|u| frame < u) => &e.buttons,
-            _ => &[],
-        }
+        self.active(frame).map_or(&[], |e| &e.buttons)
+    }
+
+    /// The injected mouse during `frame`; none before the first event.
+    pub fn mouse(&self, frame: u64) -> InjectedMouse {
+        self.active(frame).and_then(|e| e.mouse).unwrap_or_default()
+    }
+
+    /// Whether any event drives the mouse.
+    pub fn uses_mouse(&self) -> bool {
+        self.events.iter().any(|e| e.mouse.is_some())
+    }
+
+    fn active(&self, frame: u64) -> Option<&Event> {
+        self.events.iter().rev().find(|e| e.frame <= frame).filter(|e| e.until.is_none_or(|u| frame < u))
     }
 
     /// The buttons for each of `ticks` ticks. Input may only change on a tick
     /// boundary; an edge inside a tick is an error rather than a guess about
     /// which field the original read the pad on.
     pub fn tick_inputs(&self, align: Alignment, ticks: usize) -> Result<Vec<Vec<Button>>, String> {
+        if self.uses_mouse() {
+            return Err("this replay drives the mouse; read it with Replay::ticks".into());
+        }
+        Ok(self.ticks(align, ticks)?.into_iter().map(|input| input.buttons).collect())
+    }
+
+    /// [`Replay::tick_inputs`] with the mouse: one [`TickInput`] per tick.
+    pub fn ticks(&self, align: Alignment, ticks: usize) -> Result<Vec<TickInput>, String> {
         let (first, last) = (align.field(0), align.field(ticks));
         let edges = self.events.iter().flat_map(|e| std::iter::once(e.frame).chain(e.until));
         for edge in edges.filter(|&f| f > first && f < last) {
@@ -165,11 +196,13 @@ impl Replay {
                 ));
             }
         }
-        Ok((0..ticks).map(|k| self.held(align.field(k)).to_vec()).collect())
+        Ok((0..ticks)
+            .map(|k| TickInput { buttons: self.held(align.field(k)).to_vec(), mouse: self.mouse(align.field(k)) })
+            .collect())
     }
 }
 
-fn button(name: &str) -> Option<Button> {
+pub(crate) fn button(name: &str) -> Option<Button> {
     // Variant names are the psx names (`CROSS`, `L1`) in another case.
     Button::ALL.into_iter().find(|b| format!("{b:?}").eq_ignore_ascii_case(name))
 }
@@ -206,16 +239,18 @@ impl Trajectory {
     }
 
     /// Records row 0 before any tick, then one row after each input's tick.
-    pub fn record(
+    /// `inputs` are per-tick buttons ([`Replay::tick_inputs`]) or
+    /// [`TickInput`]s with the mouse ([`Replay::ticks`]).
+    pub fn record<I: Clone + Into<TickInput>>(
         app: &mut App,
-        inputs: &[Vec<Button>],
+        inputs: &[I],
         columns: &[&str],
         mut read: impl FnMut(&World) -> Vec<f64>,
     ) -> Self {
         let mut trajectory = Self::new(columns);
         trajectory.push(read(app.world()));
-        for buttons in inputs {
-            app.run_tick(buttons);
+        for input in inputs {
+            app.run_input(&input.clone().into());
             trajectory.push(read(app.world()));
         }
         trajectory
@@ -312,6 +347,10 @@ pub struct Comparison {
     /// If the rebuild fails as aligned but matches when shifted: the rebuild
     /// reaches each state this many ticks earlier (positive) or later (negative).
     pub shift: Option<i64>,
+    /// The first row compared ([`compare_from`]); 0 for [`compare`].
+    pub first: usize,
+    /// What a row is: a tick ([`compare`]) or a field ([`compare_from`]).
+    unit: &'static str,
     original: Trajectory,
     rebuild: Trajectory,
 }
@@ -329,6 +368,27 @@ fn error(a: f64, b: f64) -> f64 {
 /// Compares the listed columns tick by tick, each with its absolute tolerance
 /// (0.0 for exact). Both trajectories must have the same number of ticks to pass.
 pub fn compare(original: &Trajectory, rebuild: &Trajectory, tolerances: &[(&str, f64)]) -> Result<Comparison, String> {
+    compare_rows(original, rebuild, tolerances, 0, "tick")
+}
+
+/// [`compare`] for rows that are video fields (a run's samples), from
+/// row `first` on: the rows before it set up the state but are not judged.
+pub fn compare_from(
+    original: &Trajectory,
+    rebuild: &Trajectory,
+    tolerances: &[(&str, f64)],
+    first: usize,
+) -> Result<Comparison, String> {
+    compare_rows(original, rebuild, tolerances, first, "row")
+}
+
+fn compare_rows(
+    original: &Trajectory,
+    rebuild: &Trajectory,
+    tolerances: &[(&str, f64)],
+    first: usize,
+    unit: &'static str,
+) -> Result<Comparison, String> {
     if tolerances.is_empty() {
         return Err("list at least one column to compare".into());
     }
@@ -342,7 +402,7 @@ pub fn compare(original: &Trajectory, rebuild: &Trajectory, tolerances: &[(&str,
         })
         .collect::<Result<Vec<_>, String>>()?;
     let errors_at = |shift: i64| {
-        let ticks = (0..rebuild.rows.len()).filter_map(move |k| {
+        let ticks = (first..rebuild.rows.len()).filter_map(move |k| {
             let o = usize::try_from(k as i64 + shift).ok()?;
             Some((k, original.rows.get(o)?, &rebuild.rows[k]))
         });
@@ -376,7 +436,7 @@ pub fn compare(original: &Trajectory, rebuild: &Trajectory, tolerances: &[(&str,
             errors.iter().zip(&pairs).all(|(e, p)| *e <= p.1)
         });
         // A shift must still cover most of the run to mean anything.
-        ok && compared * 2 > original.rows.len().max(1)
+        ok && compared * 2 > original.rows.len().saturating_sub(first).max(1)
     };
     let shift = diverged.then(|| [1, -1, 2, -2].into_iter().find(|&s| fits(s))).flatten();
     Ok(Comparison {
@@ -384,6 +444,8 @@ pub fn compare(original: &Trajectory, rebuild: &Trajectory, tolerances: &[(&str,
         rebuild_ticks: rebuild.rows.len(),
         columns,
         shift,
+        first,
+        unit,
         original: original.clone(),
         rebuild: rebuild.clone(),
     })
@@ -409,18 +471,22 @@ impl Comparison {
 impl fmt::Display for Comparison {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let verdict = if self.passed() { "match" } else { "MISMATCH" };
-        writeln!(f, "{verdict}: original {} ticks, rebuild {} ticks", self.original_ticks, self.rebuild_ticks)?;
+        let unit = self.unit;
+        writeln!(f, "{verdict}: original {} {unit}s, rebuild {} {unit}s", self.original_ticks, self.rebuild_ticks)?;
+        if self.first > 0 {
+            writeln!(f, "  compared from {unit} {}", self.first)?;
+        }
         for c in &self.columns {
             let first = c.first_divergence.map_or("-".to_string(), |t| t.to_string());
             writeln!(
                 f,
-                "  {:<16} tolerance {:<10} max error {:<12} at tick {:<5} first divergence {first}",
+                "  {:<16} tolerance {:<10} max error {:<12} at {unit} {:<5} first divergence {first}",
                 c.name, c.tolerance, c.max_error, c.max_error_tick
             )?;
         }
         if let Some(tick) = self.first_divergence() {
-            writeln!(f, "around tick {tick} (original | rebuild):")?;
-            for k in tick.saturating_sub(3)..=tick + 3 {
+            writeln!(f, "around {unit} {tick} (original | rebuild):")?;
+            for k in tick.saturating_sub(3).max(self.first)..=tick + 3 {
                 let mut line = format!("  {k:>5}");
                 for c in &self.columns {
                     let (o, r) = (self.original.get(k, &c.name), self.rebuild.get(k, &c.name));
@@ -435,10 +501,15 @@ impl fmt::Display for Comparison {
             let (n, way) = (shift.unsigned_abs(), if shift > 0 { "earlier" } else { "later" });
             writeln!(
                 f,
-                "hint: the rebuild matches when shifted: it reaches each state {n} tick(s) {way} than the original. Check input latency (when the original reads the pad) and Alignment::start."
+                "hint: the rebuild matches when shifted: it reaches each state {n} {unit}(s) {way} than the original. {}",
+                if unit == "tick" {
+                    "Check input latency (when the original reads the pad) and Alignment::start."
+                } else {
+                    "Check which field each tick reads the pad of (the case's timing)."
+                }
             )?;
         }
-        if self.original_ticks != self.rebuild_ticks {
+        if self.original_ticks != self.rebuild_ticks && unit == "tick" {
             writeln!(f, "hint: record as many ticks as the original: tick_inputs(align, original.ticks() - 1).")?;
         }
         Ok(())
@@ -485,6 +556,54 @@ mod tests {
         assert!(error.contains("field 5, inside tick 2 (fields 4..6)"), "{error}");
         // Edges outside the replayed ticks do not matter.
         assert_eq!(replay.tick_inputs(Alignment::new(2, 0), 2).unwrap().len(), 2);
+    }
+
+    /// Mouse events: buttons and position held, motion and wheel per tick,
+    /// a bound mouse button pressing its action, and nothing left behind.
+    #[test]
+    fn replayed_mouse_reaches_controller_state_each_tick() {
+        use crate::controller::{ConflictPolicy, ControllerBindings, ControllerState, PhysicalBinding};
+        use crate::prelude::{Region, TickRate};
+        let replay = Replay::parse(
+            r#"[{"frame":0,"buttons":[],"mouse":{"buttons":["left"],"position":[10,20],"motion":[3,-1],"wheel":1},"until":2},
+                {"frame":2,"buttons":["CROSS"]}]"#,
+        )
+        .unwrap();
+        assert!(replay.uses_mouse());
+        assert!(replay.tick_inputs(Alignment::new(1, 0), 3).unwrap_err().contains("Replay::ticks"));
+        let inputs = replay.ticks(Alignment::new(1, 0), 3).unwrap();
+        let mut app = crate::testing::headless_app(TickRate::every_field(Region::Ntsc));
+        let mut bindings = ControllerBindings::default();
+        bindings.assign(Button::Circle, PhysicalBinding::Mouse(MouseButton::Left), ConflictPolicy::Reject).unwrap();
+        app.insert_resource(bindings);
+        let read = |w: &World| {
+            let pad = w.resource::<ControllerState>();
+            let m = pad.mouse;
+            vec![
+                f64::from(u8::from(m.held(MouseButton::Left))),
+                m.position.map_or(-1.0, |p| f64::from(p.x)),
+                f64::from(m.motion.x),
+                f64::from(m.wheel),
+                f64::from(u8::from(pad.held(Button::Circle))),
+            ]
+        };
+        let t = Trajectory::record(&mut app, &inputs, &["left", "x", "dx", "wheel", "circle"], read);
+        // Row 0 is before any tick; rows 1 and 2 are the mouse event's ticks.
+        for tick in [1, 2] {
+            assert_eq!(
+                ["left", "x", "dx", "wheel", "circle"].map(|c| t.get(tick, c).unwrap()),
+                [1.0, 10.0, 3.0, 1.0, 1.0],
+                "tick {tick}"
+            );
+        }
+        assert_eq!(["left", "x", "dx", "circle"].map(|c| t.get(3, c).unwrap()), [0.0, -1.0, 0.0, 0.0]);
+        for bad in [
+            r#"[{"frame":0,"buttons":[],"mouse":{"buttons":["thumb"]}}]"#,
+            r#"[{"frame":0,"buttons":[],"mouse":{"position":[1]}}]"#,
+            r#"[{"frame":0,"buttons":[],"mouse":{"speed":2}}]"#,
+        ] {
+            assert!(Replay::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

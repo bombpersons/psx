@@ -1,5 +1,5 @@
 //! The executable's side of a game: window, renderer, headless mode and the
-//! command line every game built on the template shares. A game's `main.rs`
+//! command line every game built on psx-bevy shares. A game's `main.rs`
 //! describes itself with [`Game`] and calls [`run`]:
 //!
 //! ```no_run
@@ -13,19 +13,21 @@
 //!         region: Region::Pal,
 //!         fields_per_tick: 2,
 //!         screen: UVec2::new(320, 240),
-//!         add: |app| { /* app.add_plugins(game::GamePlugin); */ },
+//!         add: |app| { /* app.add_plugins(game::GamePlugins); */ },
 //!     });
 //! }
 //! ```
 //!
 //! Flags: `--mcp` (developer MCP, needs the `dev-mcp` feature), `--headless`,
 //! `--software`, `--region ntsc|pal`, `--scene PATH` [`--painter`],
-//! `--model PATH.tmd [--texture PATH.tim]... [--cull]`, `--controls`,
-//! `--bindings PATH`, `--no-dither`, `--no-quantize`.
+//! `--controls`,
+//! `--bindings PATH`, `--display`, `--display-settings PATH`, `--fullscreen`,
+//! `--aspect fixed|window`, `--no-dither`, `--no-quantize`. F11 toggles
+//! borderless fullscreen.
 use crate::controller::BindingStore;
 use crate::controls::ControlsPlugin;
-use crate::model_viewer::ModelViewerPlugin;
-use crate::psx::{PsxLook, PsxPlugin, PsxSceneDepth, PsxScreen, Region};
+use crate::display::{self, DisplayOverrides, DisplayPlugin, DisplayStore};
+use crate::psx::{PsxAspect, PsxLook, PsxPlugin, PsxSceneDepth, PsxScreen, Region};
 use crate::shell::{ShellPlugin, TickRate};
 use crate::viewer::SceneViewerPlugin;
 use bevy::prelude::*;
@@ -44,8 +46,9 @@ pub struct Game<F: FnOnce(&mut App)> {
     /// The original's display size in pixels, which sizes [`PsxScreen`] and
     /// the window (at 3x). 320x240 for most games; read the real one from
     /// the original's display setup (the GPU's display range and mode).
+    /// The display menu also offers [`screen_choices`] of it.
     pub screen: UVec2,
-    /// Adds the game's plugins. Not called for `--scene` or `--model`.
+    /// Adds the game's plugins. Not called for `--scene`.
     pub add: F,
 }
 
@@ -67,6 +70,19 @@ impl Args {
     }
 }
 
+/// The display menu's resolutions for a game drawn at `native`: native, the
+/// same height at 16:9 (even width), and native at 2x.
+pub fn screen_choices(native: UVec2) -> Vec<UVec2> {
+    let wide = UVec2::new((native.y * 16 / 9).next_multiple_of(2), native.y);
+    let mut screens = vec![native];
+    for size in [wide, native * 2] {
+        if !screens.contains(&size) {
+            screens.push(size);
+        }
+    }
+    screens
+}
+
 /// Builds the app from the command line and runs it.
 pub fn run<F: FnOnce(&mut App)>(game: Game<F>) -> AppExit {
     app(game, &Args::from_env()).run()
@@ -74,7 +90,7 @@ pub fn run<F: FnOnce(&mut App)>(game: Game<F>) -> AppExit {
 
 /// Builds the app without running it: window or headless runner, renderer,
 /// [`PsxPlugin`], [`ShellPlugin`], then either a viewer or the game with the
-/// controls menu, then the developer MCP when `--mcp` is given.
+/// controls and display menus, then the developer MCP when `--mcp` is given.
 pub fn app<F: FnOnce(&mut App)>(game: Game<F>, args: &Args) -> App {
     let mcp = args.flag("--mcp");
     let headless = args.flag("--headless");
@@ -99,17 +115,33 @@ pub fn app<F: FnOnce(&mut App)>(game: Game<F>, args: &Args) -> App {
     let depth = if args.flag("--painter") { PsxSceneDepth::Painter } else { default() };
     // --no-dither / --no-quantize: switch PsxLook effects off (e.g. to compare against a capture).
     let look = PsxLook { dither: !args.flag("--no-dither"), quantize: !args.flag("--no-quantize"), ..default() };
-    // --model PATH.tmd [--texture PATH.tim]... [--cull] (under assets/): view an extracted original model.
-    let model = args.value("--model");
-    let textures = args.values("--texture");
     let screen = PsxScreen { width: game.screen.x, height: game.screen.y, region, ..default() };
+    // --fullscreen: start in borderless fullscreen (F11 toggles).
+    let fullscreen = args.flag("--fullscreen");
+    // --aspect window: the screen's width follows the window's shape (fixed: letterbox).
+    let aspect = match args.value("--aspect").as_deref() {
+        None => None,
+        Some("fixed") => Some(PsxAspect::Fixed),
+        Some("window") => Some(PsxAspect::Window),
+        Some(other) => {
+            eprintln!("--aspect must be fixed or window, not {other}");
+            std::process::exit(2);
+        }
+    };
 
     let mut app = App::new();
+    // Asset folders added with assets::add_root (a mod's base game) layer under assets/.
+    crate::assets::register(&mut app);
     let mut plugins = DefaultPlugins
         .set(WindowPlugin {
             primary_window: (!headless).then(|| Window {
                 title: game.title.into(),
                 resolution: (screen.width * 3, screen.height * 3).into(),
+                mode: if fullscreen {
+                    bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
+                } else {
+                    bevy::window::WindowMode::Windowed
+                },
                 ..default()
             }),
             exit_condition: if headless {
@@ -137,21 +169,38 @@ pub fn app<F: FnOnce(&mut App)>(game: Game<F>, args: &Args) -> App {
             PsxPlugin { screen },
             ShellPlugin { tick: TickRate::every_nth_field(region, game.fields_per_tick) },
         ))
-        .insert_resource(look);
-    match (scene, model) {
-        (Some(path), _) => {
+        .insert_resource(look)
+        .insert_resource(aspect.unwrap_or_default());
+    if !headless {
+        app.add_systems(Update, display::fullscreen_shortcut);
+    }
+    match scene {
+        Some(path) => {
             app.add_plugins(SceneViewerPlugin { path, depth });
         }
-        (None, Some(path)) => {
-            app.add_plugins(ModelViewerPlugin { path, textures, cull: args.flag("--cull") });
-        }
-        (None, None) => {
+        None => {
             app.add_plugins(ControlsPlugin {
                 path: args
                     .value("--bindings")
                     .map(std::path::PathBuf::from)
                     .or_else(|| BindingStore::default_path(game.name)),
                 initially_open: args.flag("--controls"),
+                ..default()
+            });
+            // --display opens the display menu; --display-settings PATH picks its file.
+            app.add_plugins(DisplayPlugin {
+                path: args
+                    .value("--display-settings")
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| DisplayStore::default_path(game.name)),
+                screens: screen_choices(game.screen),
+                overrides: DisplayOverrides {
+                    aspect,
+                    fullscreen: fullscreen.then_some(true),
+                    dither: args.flag("--no-dither").then_some(false),
+                    quantize: args.flag("--no-quantize").then_some(false),
+                },
+                initially_open: args.flag("--display"),
                 ..default()
             });
             (game.add)(&mut app);

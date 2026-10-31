@@ -1,5 +1,9 @@
 # Case study: Mega Man 8 (PAL), from a captured stage to a rebuilt walk and jump
 
+> The example this describes (`examples/megaman8-movement` as it was then) predates psx's port loop. It
+> was removed when Croc's movement was ported end to end, and the repository's history still
+> has it. [`examples/croc-movement`](../examples/croc-movement/README.md) is the current worked example.
+
 A usability study of the toolkit on a 2D game. The aim was to get Mega Man 8
 (SLES-01064, SCPH-7502 BIOS) into its intro stage, capture a frame into the
 Bevy template, reverse engineer Mega Man's walk and jump from RAM and code,

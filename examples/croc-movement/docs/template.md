@@ -1,28 +1,23 @@
-# Template edits
+# psx-bevy changes
 
-`psx-bevy/` comes from the psx template (`.psx-template.toml` records the
-version). Edits to it are allowed under the rules in `psx-bevy/AGENTS.md`;
-this file lists them so that `psx template update` stays easy to merge.
+`psx-bevy/` came from the psx template (`.psx-template.toml` records the
+version) and is this project's to change: a port that needs the original's
+rendering tricks or a different input or tick model makes them there
+(`psx-bevy/AGENTS.md`). This file lists the changes, so template updates stay
+easy to merge.
 
 ```sh
-psx template update --dry-run
-psx template update
+psx port update --dry-run
+psx port update
 ```
 
-Each edited file that the template also changed comes back as
-`<file>.psx-new`. Take the new version, reapply the change listed below (or
-drop the row if the template now does it), then delete the `.psx-new`.
+The update replaces the `psx-bevy/` files you haven't changed. Each file you
+changed that the template also changed comes back as `<file>.psx-new`: bring
+the template's changes into your file (or take the new version and reapply
+the change listed below), then delete the `.psx-new`.
 
-## Local edits
+## Changes
 
-| File | Change | Why | Raised upstream |
-|---|---|---|---|
-| _example: `psx-bevy/src/psx/material.rs`_ | _adds a `foo` field to `PsxMaterial`_ | _the original's X needs it (`docs/evidence.md`)_ | _no_ |
-
-## Workarounds
-
-Template limits handled from `engine/` or `game/` without editing it, and
-whether they should be raised upstream.
-
-| Limit | Workaround | Raised upstream |
+| File | Change | Why |
 |---|---|---|
+| _example: `psx-bevy/src/psx/material.rs`_ | _adds a `foo` field to `PsxMaterial`_ | _the original's X needs it (a recording of it)_ |

@@ -85,15 +85,11 @@ The template's demo, out of the box:
 
 <img src="docs/images/template-demo.png" width="640" alt="The template demo: a textured crate mid-hop on a wobbly checkerboard floor, with a sphere, a semi-transparent quad and HUD bars">
 
-Two worked examples rebuild real mechanics. They use stand-in graphics on purpose: the point is the
-*mechanics*, and none of the original art goes in the repo.
-
-<img src="docs/images/croc-movement.png" width="320" alt="The Croc movement demo: a green capsule stand-in for Croc jumping above a grassy plain"> <img src="docs/images/megaman8-movement.png" width="320" alt="The Mega Man 8 movement demo: a blue block stand-in for Mega Man mid-jump over green blocks">
-
-- **Croc:** movement traced from RAM to the code that writes it, rebuilt in 3D.
-  [Write-up](research/case-study-croc.md) · [code](examples/croc-movement/README.md)
-- **Mega Man 8:** walk and jump rebuilt in 2D, exact tick for tick against the real game.
-  [Write-up](research/case-study-megaman8.md) · [code](examples/megaman8-movement/README.md)
+One worked example goes through the whole port loop:
+[**Croc's movement**](examples/croc-movement/README.md). Croc's running, jump and stomp were
+found with coverage diff, recorded from the original, ported until every recording passed
+(three of them played by a person and held out from the agent), and reviewed as code for a new
+game. It's the workspace as the agent left it, with no disc data in it.
 
 ## Get started
 

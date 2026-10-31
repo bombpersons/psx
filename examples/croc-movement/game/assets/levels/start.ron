@@ -1,0 +1,10 @@
+// The start of 1-1 as a flat stand-in (Level in src/world.rs): the floor's
+// height, and Croc's place and facing at the level's first tick, from the
+// recordings (scenarios/start_1_1.toml: floor_y -225, start 12288, 12288,
+// angle 94 of 4096 = 8.26171875 degrees).
+(
+    floor: (height: -225),
+    placements: [
+        (kind: "player", position: (12288, -225, 12288), facing: 8.26171875),
+    ],
+)

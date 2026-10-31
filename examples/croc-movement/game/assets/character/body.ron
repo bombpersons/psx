@@ -1,0 +1,5 @@
+// A body (BodyTuning in src/character/mod.rs), read from Croc's script in
+// CROC.EXE (PAL).
+(
+    step: 131,   // prelude 0x1923: y - floor < 0x83 -> y = floor
+)

@@ -71,6 +71,6 @@ external-parser starter), and `gpu-replay` (a test utility of psx's own).
 - **Docs removed:** `mechanics.md`, `rust-mechanics-plan.md`,
   `dispatch-plan.md`, `call-ownership-plan.md`, `agent-workflow.md`.
   `scenarios.md` and `ghidra-integration.md` stay, updated.
-- **Examples:** `examples/croc-movement` and `examples/megaman8-movement`
-  are looked at before deciding; the likely outcome is one worked example,
-  Croc's running and jumping against its recordings.
+- **Examples:** one worked example, `examples/croc-movement`: Croc's
+  running, jump and stomp, the port workspace as its loop left it (step
+  21); `examples/megaman8-movement` is removed.
