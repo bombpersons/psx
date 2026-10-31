@@ -1373,6 +1373,15 @@ pub struct Quantities {
                 other => panic!("a hook at {other:?}, which the toy never asked for"),
             }
         }
+
+        /// Its decoder: each byte below 9 is an `if`; 9 is data.
+        fn map(&self, name: &str, code: &[u8], map: &mut psx_capture::Map) {
+            assert_eq!((name, code), ("toy", &[1, 0, 1, 1, 9, 9, 9, 9][..]));
+            for (i, _) in code.iter().enumerate().filter(|(_, b)| **b < 9) {
+                map.statement(i as u32, i as u32 + 1).decision(i as u32, 2);
+            }
+            map.routine("main", 0, 4);
+        }
     }
 
     #[allow(unsafe_code)]
@@ -1432,6 +1441,30 @@ pub struct Quantities {
         let kept = c.scripts.kept().unwrap();
         assert_eq!(kept[0]["read"], json!([["0x0", "0x4"]]));
         assert_eq!(kept[0]["ways"][1], json!(["0x1", 2, [1]]));
+        // The map, from the binding's decoder: positions, never bytes.
+        assert_eq!(
+            kept[0]["map"],
+            json!({"statements": [["0x0", [1, 1, 1, 1]]], "decisions": [["0x0", 2], ["0x1", 2], ["0x2", 2], ["0x3", 2]],
+                   "routines": [["main", "0x0", "0x4"]]})
+        );
+        // With it, the data bytes are no gap: only decisions' ways are.
+        let mut merged = crate::script_cover::Merged::default();
+        merged.add(&json!({ "programs": kept }), "toy");
+        let (items, problems) =
+            crate::script_cover::items(&merged, &[crate::script_cover::Stretch::parse("toy+0x0..0x8").unwrap()]);
+        assert!(problems.is_empty(), "{problems:?}");
+        let never: Vec<String> =
+            items.iter().filter(|i| !i.never.is_empty()).map(|i| format!("{} {}", i.at, i.never)).collect();
+        assert_eq!(
+            never,
+            [
+                "toy+0x0 went way 1 of 2",
+                "toy+0x1 went way 0 of 2",
+                "toy+0x2 went way 1 of 2",
+                "toy+0x3 went way 1 of 2"
+            ]
+        );
+        assert!(items.iter().all(|i| i.routine.as_deref() == Some("main")));
     }
 
     #[test]

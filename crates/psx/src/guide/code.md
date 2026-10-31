@@ -94,16 +94,26 @@ interpreter, and psx keeps the script's coverage with each recording
   ways). A position is an offset into the program, or whatever names it
   the same way in every run.
 
+- map(name, code, map): once you can decode the script, the program's
+  structure from its bytes: map.statement(start, end) for each statement,
+  map.decision(at, ways) for each that decides, map.routine(name, start,
+  end) for names. Asked once per program in a recording, and kept beside
+  it (positions and names only).
+
 Reads need only where the program is; hooks give each decision's ways,
-and cover programs that are not bytes in one place. Positions are psx's
-only knowledge of the script: reading it is yours.
+and cover programs that are not bytes in one place. With a map, coverage
+counts statements run (a byte read or a site named) instead of bytes
+read, so tables and skipped operands are no gaps, and a decision that ran
+with no hook naming its way is a gap until one does. Positions and the
+map are psx's only knowledge of the script: reading it is yours. A
+recording made before the map changed is made again.
 
 A catalogue entry's code lists stretches of a program beside functions,
 name+0xSTART..0xEND (end excluded), and wont_reach takes a position
 (name+0xAT) or a stretch inside them. code_coverage and code_coverage_diff
-on recordings report programs: stretches read, sites and ways, and in a
-diff the ones only the first set ran, which locate a feature's part of the
-script.
+on recordings report programs: stretches read, sites and ways (with a
+map, statements run and routines entered), and in a diff the ones only the
+first set ran, which locate a feature's part of the script.
 
 ## Compressed code
 

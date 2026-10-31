@@ -53,9 +53,10 @@ impl Git {
 pub enum Place {
     /// A conditional branch of its machine code, in the function at `function`.
     Code { pc: u32, function: u32 },
-    /// A stretch of a script program it names: one read or never read, or
-    /// a decision (docs/script-coverage-design.md).
-    Script(Stretch),
+    /// A stretch of a script program it names: one read or never read (run
+    /// or never run, with the program's map), or a decision; the routine
+    /// the map puts it in (docs/script-coverage-design.md).
+    Script { at: Stretch, routine: Option<String> },
 }
 
 /// A branch of a feature's code, as its recordings ran it: a conditional
@@ -93,15 +94,27 @@ impl Branch {
             Place::Code { pc, function } => {
                 format!("the branch at {} (in {}) never {}", hex(*pc), hex(*function), self.never)
             }
-            Place::Script(s) if self.never == "read" => format!("the script's bytes {s} were never read"),
-            Place::Script(s) => format!("the script's decision at {s} never {}", self.never),
+            Place::Script { at, routine } => {
+                let at = match routine {
+                    Some(r) => format!("{at} (in {r})"),
+                    None => at.to_string(),
+                };
+                match self.never.as_str() {
+                    "read" => format!("the script's bytes {at} were never read"),
+                    "ran" => format!("the script's statements {at} never ran"),
+                    never => format!("the script's decision at {at} never {never}"),
+                }
+            }
         }
     }
 
     fn json(&self) -> Value {
         match &self.at {
             Place::Code { pc, function } => json!({"pc": hex(*pc), "function": hex(*function), "never": self.never}),
-            Place::Script(s) => json!({"at": s.to_string(), "never": self.never}),
+            Place::Script { at, routine: None } => json!({"at": at.to_string(), "never": self.never}),
+            Place::Script { at, routine: Some(r) } => {
+                json!({"at": at.to_string(), "routine": r, "never": self.never})
+            }
         }
     }
 }
@@ -367,7 +380,11 @@ impl Facts {
                     unrecorded.extend(problems);
                     branches.extend(items.into_iter().map(|i| {
                         let key = e.wont_reach.keys().find(|k| Stretch::parse(k).is_some_and(|w| w.contains(&i.at)));
-                        Branch { at: Place::Script(i.at), never: i.never, wont_reach: key.map(agreed) }
+                        Branch {
+                            at: Place::Script { at: i.at, routine: i.routine },
+                            never: i.never,
+                            wont_reach: key.map(agreed),
+                        }
                     }));
                 }
                 let verdict = verdict::state(root, &id, head);
@@ -542,7 +559,7 @@ impl Facts {
                 Some(&f.id),
                 format!("{} in its recordings; {n} branches of its code are unresolved", b.describe()),
                 "every branch of its code is taken both ways by its recordings, or listed under wont_reach",
-                "read the branch's condition (code disasm; for a script's stretch or decision, your own reading of the program) and work out what reaches the other way in game terms; record that (psx scenario record) and name it under recordings, or when it cannot be scripted ask the person to play it (psx scenario play); when no recording can reach it, list it under wont_reach with why",
+                "read the branch's condition (code disasm; for a script's stretch or decision, your own reading of the program) and work out what reaches the other way in game terms; record that (psx scenario record) and name it under recordings, or when it cannot be scripted ask the person to play it (psx scenario play); when no recording can reach it, list it under wont_reach with why; a script decision no hook named needs a hook in the glossary binding that names its way, then the recordings made again",
             );
         }
         if let Some(f) = find(&|f| f.branches.iter().any(|b| !b.resolved())) {
@@ -1108,7 +1125,7 @@ mod tests {
         set(&mut f, "F-0001", |x| x.branches = vec![branch(Some(false))]);
         assert_eq!(next(&f), ("Confirm", "person", "F-0001".into()));
         let script = Branch {
-            at: Place::Script(Stretch::parse("croc+0x3..0x8").unwrap()),
+            at: Place::Script { at: Stretch::parse("croc+0x3..0x8").unwrap(), routine: None },
             never: "read".into(),
             wont_reach: None,
         };

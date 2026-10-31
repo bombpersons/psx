@@ -199,9 +199,9 @@ port_next's items, in this order:
 - Fix: a recording fails; the earliest divergence first.
 - Answer: an open question.
 - Cover: a branch of its code its recordings never took one way, or a
-  stretch of its script never read or a decision's way never taken:
-  record what reaches it, ask the person to play it, or list it under
-  wont_reach.
+  stretch of its script never read (never run, with a map) or a
+  decision's way never taken: record what reaches it, ask the person to
+  play it, or list it under wont_reach.
 - Confirm (person): wont_reach branches not confirmed as they stand.
 - Format, Index, Import, Check (assets = true): see Assets.
 - Review: every feature's own work is finished and the code (game/,

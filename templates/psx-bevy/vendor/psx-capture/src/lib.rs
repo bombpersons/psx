@@ -83,6 +83,23 @@
 //! }
 //! ```
 //!
+//! Once the script's format is decoded, the binding can also give each
+//! program's map ([`Glossary::map`]): its statements, which of them decide
+//! and between how many ways, and names for routines. Coverage then counts
+//! statements run instead of bytes read, and decisions no hook reported:
+//!
+//! ```ignore
+//! fn map(&self, name: &str, code: &[u8], map: &mut Map) {
+//!     for s in decode(code) {
+//!         map.statement(s.start, s.end);
+//!         if let Some(ways) = s.ways {
+//!             map.decision(s.start, ways);
+//!         }
+//!     }
+//!     map.routine("jump_test", 0x1803, 0x18F1);
+//! }
+//! ```
+//!
 //! The boundary with psx is two C functions ([`abi`]), so a binding built
 //! by another Rust compiler than psx's loads all the same. Values cross it
 //! in the recording's JSON encoding.
@@ -92,11 +109,11 @@ pub mod abi;
 /// The version of the boundary with psx. psx refuses a binding built
 /// against another; `psx template update` brings the vendored crate to
 /// psx's.
-pub const ABI_VERSION: u32 = 5;
+pub const ABI_VERSION: u32 = 6;
 
 pub mod prelude {
     pub use crate::reg::*;
-    pub use crate::{Glossary, Hook, Hooks, Machine, Programs, Script, Tick};
+    pub use crate::{Glossary, Hook, Hooks, Machine, Map, Programs, Script, Tick};
 }
 
 /// A CPU register, numbered as the R3000 numbers them; `HI` and `LO` are 32
@@ -349,6 +366,53 @@ pub trait Glossary {
     /// At a hook: the script position running, and the way a decision went,
     /// worked out from the registers and memory as they are.
     fn hook(&self, _at: Hook, _m: &Machine, _s: &mut Script) {}
+
+    /// The program `name`'s structure, decoded from its bytes `code`: asked
+    /// once per recording for each program and bytes [`Glossary::programs`]
+    /// names. Positions are offsets into `code`. None by default.
+    fn map(&self, _name: &str, _code: &[u8], _map: &mut Map) {}
+}
+
+/// A program's structure ([`Glossary::map`]).
+#[derive(Default)]
+pub struct Map {
+    statements: Vec<(u32, u32)>,
+    decisions: Vec<(u32, u32)>,
+    routines: Vec<(String, u32, u32)>,
+}
+
+impl Map {
+    /// A statement (an instruction of the script) is the bytes `start` to
+    /// `end`, `end` excluded. It ran when a recording read any of them, or
+    /// a hook named `start`; bytes in no statement are not coverage.
+    pub fn statement(&mut self, start: u32, end: u32) -> &mut Self {
+        self.statements.push((start, end));
+        self
+    }
+
+    /// The statement at `at` decides between `ways` ways, which hooks name
+    /// with [`Script::way`].
+    pub fn decision(&mut self, at: u32, ways: u32) -> &mut Self {
+        self.decisions.push((at, ways));
+        self
+    }
+
+    /// The bytes `start` to `end` (excluded) are the routine `name`.
+    pub fn routine(&mut self, name: &str, start: u32, end: u32) -> &mut Self {
+        self.routines.push((name.to_string(), start, end));
+        self
+    }
+
+    fn json(&self) -> String {
+        let pairs = |v: &[(u32, u32)]| v.iter().map(|(a, b)| format!("[{a},{b}]")).collect::<Vec<_>>().join(",");
+        let routines: Vec<String> = self.routines.iter().map(|(n, s, e)| format!("[{},{s},{e}]", string(n))).collect();
+        format!(
+            "{{\"statements\":[{}],\"decisions\":[{}],\"routines\":[{}]}}",
+            pairs(&self.statements),
+            pairs(&self.decisions),
+            routines.join(",")
+        )
+    }
 }
 
 /// The programs running ([`Glossary::programs`]).
@@ -491,5 +555,8 @@ mod tests {
         s.way("croc", 3, 1, 2);
         assert_eq!(s.json(), r#"[["croc",3],["croc",3,1,2]]"#);
         assert_eq!(Script::default().json(), "[]");
+        let mut m = Map::default();
+        m.statement(0, 3).statement(3, 4).decision(0, 2).routine("go", 0, 4);
+        assert_eq!(m.json(), r#"{"statements":[[0,3],[3,4]],"decisions":[[0,2]],"routines":[["go",0,4]]}"#);
     }
 }

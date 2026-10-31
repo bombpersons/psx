@@ -127,9 +127,14 @@ mechanic code are worth keeping, so they move out first.
     the binding that name script positions and decision ways however the
     interpreter works; `code` and `wont_reach` take `name+offset`
     stretches; Locate's coverage diff and Cover work in script space.
-    Built (psx-capture boundary version 5); next it is tried on Croc's
-    F-0002 and F-0003, whose stomp rules live in a script coverage never
-    saw (step 21), then the example updated.
+    With a decoder, the binding also gives each program's map
+    (statements, decisions, routines), so coverage counts statements run
+    and decisions no hook named. Built (psx-capture boundary version 6)
+    and tried on Croc's F-0002 and F-0003: the diff gives the stomp state
+    by name, and Cover asks for the bounce-pad jump, the second stomp from
+    high, a long fall's landing and a random switch's default. Next: Croc
+    settles those (recordings, or wont_reach the person confirms), then
+    the example is updated.
 
 After phase E: decide on the release, and whether the method goes to
 other platforms (mdx).

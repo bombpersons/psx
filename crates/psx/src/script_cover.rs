@@ -11,6 +11,11 @@
 //! sha256 of its bytes when the binding declared where it is, the stretches
 //! read, the sites run and the ways each decision went. No program byte is
 //! kept, so it is committed with the recording.
+//!
+//! A binding that decodes the script can also give each program's map
+//! (section 10): its statements, decisions and routines. Coverage then
+//! counts statements run rather than bytes read, and decisions no hook
+//! named; the recording keeps the map, offsets and names only.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -47,6 +52,117 @@ pub struct Program {
     pub sites: BTreeMap<u32, u64>,
     /// Each decision by position: how many ways it has, and the ways seen.
     pub ways: BTreeMap<u32, (u32, BTreeSet<u32>)>,
+    /// Its structure, when the binding gives it.
+    pub map: Option<ProgramMap>,
+}
+
+/// A program's structure as the binding decoded it (`Glossary::map`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProgramMap {
+    /// Each statement's start, to its end (excluded).
+    pub statements: BTreeMap<u32, u32>,
+    /// Each decision's position, to how many ways it has.
+    pub decisions: BTreeMap<u32, u32>,
+    /// Named stretches: name, start, end (excluded).
+    pub routines: Vec<(String, u32, u32)>,
+}
+
+impl ProgramMap {
+    /// The binding's answer to MAP for a program of `bytes` bytes; None for
+    /// an empty map.
+    fn parse(text: &str, bytes: u32) -> Result<Option<ProgramMap>, String> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            statements: Vec<(u32, u32)>,
+            decisions: Vec<(u32, u32)>,
+            routines: Vec<(String, u32, u32)>,
+        }
+        let raw: Raw = serde_json::from_str(text).map_err(|e| format!("the binding's answer: {e}"))?;
+        let mut map = ProgramMap::default();
+        for (start, end) in raw.statements {
+            if start >= end || end > bytes {
+                return Err(format!("statement {start:#x}..{end:#x}: not inside the program's {bytes:#x} bytes"));
+            }
+            if map.statements.insert(start, end).is_some() {
+                return Err(format!("statement {start:#x}: given twice"));
+            }
+        }
+        let mut last = 0;
+        for (&start, &end) in &map.statements {
+            if start < last {
+                return Err(format!("statement {start:#x}..{end:#x}: overlaps the one before"));
+            }
+            last = end;
+        }
+        for (at, ways) in raw.decisions {
+            if !map.statements.contains_key(&at) {
+                return Err(format!("decision {at:#x}: no statement starts there"));
+            }
+            if ways < 2 {
+                return Err(format!("decision {at:#x}: {ways} ways; a decision has at least 2"));
+            }
+            map.decisions.insert(at, ways);
+        }
+        for (name, start, end) in raw.routines {
+            if !valid_name(&name) {
+                return Err(format!("routine {name:?}: a name is letters, digits, _ and -"));
+            }
+            if start >= end || end > bytes {
+                return Err(format!("routine {name} {start:#x}..{end:#x}: not inside the program's {bytes:#x} bytes"));
+            }
+            map.routines.push((name, start, end));
+        }
+        map.routines.sort_by_key(|r| (r.1, std::cmp::Reverse(r.2)));
+        let empty = map.statements.is_empty() && map.routines.is_empty();
+        Ok((!empty).then_some(map))
+    }
+
+    /// The innermost routine holding `at`.
+    pub fn routine(&self, at: u32) -> Option<&str> {
+        self.routines.iter().filter(|r| (r.1..r.2).contains(&at)).min_by_key(|r| r.2 - r.1).map(|r| r.0.as_str())
+    }
+
+    fn kept(&self) -> Value {
+        // Statements as runs of back-to-back lengths: [start, [length]].
+        let mut runs: Vec<(u32, u32, Vec<u32>)> = Vec::new();
+        for (&start, &end) in &self.statements {
+            match runs.last_mut() {
+                Some(r) if r.1 == start => {
+                    r.1 = end;
+                    r.2.push(end - start);
+                }
+                _ => runs.push((start, end, vec![end - start])),
+            }
+        }
+        json!({
+            "statements": runs.iter().map(|(s, _, l)| json!([hex(*s), l])).collect::<Vec<_>>(),
+            "decisions": self.decisions.iter().map(|(&a, w)| json!([hex(a), w])).collect::<Vec<_>>(),
+            "routines": self.routines.iter().map(|(n, s, e)| json!([n, hex(*s), hex(*e)])).collect::<Vec<_>>(),
+        })
+    }
+
+    fn from_kept(v: &Value) -> ProgramMap {
+        let mut map = ProgramMap::default();
+        for r in v["statements"].as_array().into_iter().flatten() {
+            let Some(mut at) = unhex(&r[0]) else { continue };
+            for l in r[1].as_array().into_iter().flatten().filter_map(Value::as_u64) {
+                map.statements.insert(at, at + l as u32);
+                at += l as u32;
+            }
+        }
+        for d in v["decisions"].as_array().into_iter().flatten() {
+            if let (Some(a), Some(w)) = (unhex(&d[0]), d[1].as_u64()) {
+                map.decisions.insert(a, w as u32);
+            }
+        }
+        for r in v["routines"].as_array().into_iter().flatten() {
+            if let (Some(n), Some(s), Some(e)) = (r[0].as_str(), unhex(&r[1]), unhex(&r[2])) {
+                map.routines.push((n.to_string(), s, e));
+            }
+        }
+        map
+    }
 }
 
 /// A branch hook whose way is not known yet: its pc, where it goes when
@@ -104,7 +220,7 @@ impl Scripts {
             Err(e) => return self.problem(format!("programs: the binding's answer: {e}")),
         };
         let mut regions = Vec::new();
-        for (name, at, bytes) in list {
+        for (index, (name, at, bytes)) in list.into_iter().enumerate() {
             let start = crate::run::fold(at);
             if !valid_name(&name) {
                 self.problem(format!("program {name:?}: a name is letters, digits, _ and -"));
@@ -119,7 +235,14 @@ impl Scripts {
                 let sha = crate::stamp::sha256(&m.bus.ram[start as usize..(start + bytes) as usize]);
                 let p = self.programs.entry(name.clone()).or_default();
                 match (&p.bytes, &p.sha256) {
-                    (None, _) => (p.bytes, p.sha256) = (Some(bytes), Some(sha)),
+                    (None, _) => {
+                        (p.bytes, p.sha256) = (Some(bytes), Some(sha));
+                        let answer = b.call_with(psx_capture::abi::MAP, m, [index as u32, 0, 0, 0]);
+                        match answer.and_then(|t| ProgramMap::parse(&t, bytes)) {
+                            Ok(map) => self.programs.get_mut(&name).expect("just added").map = map,
+                            Err(e) => self.problem(format!("program {name}'s map: {e}")),
+                        }
+                    }
                     (Some(b), Some(s)) if *b == bytes && *s == sha => {}
                     _ => self.problem(format!(
                         "program {name}: other bytes than it held before in the recording, so its positions mean something else: name each program the game runs by its own name"
@@ -197,7 +320,22 @@ impl Scripts {
             }
             let pos = pos as u32;
             let p = self.programs.entry(name.to_string()).or_default();
-            match (mark.get(2).and_then(Value::as_u64), mark.get(3).and_then(Value::as_u64)) {
+            let decision = mark.get(3).and_then(Value::as_u64);
+            let unmapped = p.map.as_ref().and_then(|map| match decision {
+                Some(of) if map.decisions.get(&pos) != Some(&(of as u32)) => Some(format!(
+                    "{name}+{pos:#x}: a hook names a decision of {of} ways there, which its map does not have"
+                )),
+                None if !map.statements.contains_key(&pos) => {
+                    Some(format!("{name}+{pos:#x}: a hook names a site there, where its map has no statement start"))
+                }
+                _ => None,
+            });
+            if let Some(problem) = unmapped {
+                self.problem(problem);
+                continue;
+            }
+            let p = self.programs.get_mut(name).expect("just added");
+            match (mark.get(2).and_then(Value::as_u64), decision) {
                 (Some(way), Some(of)) => {
                     let e = p.ways.entry(pos).or_insert_with(|| (of as u32, BTreeSet::new()));
                     if e.0 != of as u32 {
@@ -255,6 +393,9 @@ fn kept(name: &str, p: &Program) -> Value {
     v["read"] = json!(stretches(&p.read).iter().map(|&(s, e)| json!([hex(s), hex(e)])).collect::<Vec<_>>());
     v["sites"] = json!(p.sites.iter().map(|(&a, n)| json!([hex(a), n])).collect::<Vec<_>>());
     v["ways"] = json!(p.ways.iter().map(|(&a, (of, w))| json!([hex(a), of, w])).collect::<Vec<_>>());
+    if let Some(map) = &p.map {
+        v["map"] = map.kept();
+    }
     v
 }
 
@@ -266,6 +407,7 @@ fn parse(doc: &Value) -> Vec<(String, Program)> {
         let mut p = Program {
             bytes: g["bytes"].as_u64().map(|b| b as u32),
             sha256: g["sha256"].as_str().map(String::from),
+            map: g.get("map").map(ProgramMap::from_kept),
             ..Program::default()
         };
         for r in g["read"].as_array().into_iter().flatten() {
@@ -312,6 +454,13 @@ impl Merged {
                 (None, Some(_)) => (m.bytes, m.sha256) = (p.bytes, p.sha256.clone()),
                 _ => {}
             }
+            match (&m.map, &p.map) {
+                (Some(a), Some(b)) if a != b => self.problems.push(format!(
+                    "{what}: its map of {name} is not the other recordings': record them again with the binding as it is"
+                )),
+                (None, Some(b)) => m.map = Some(b.clone()),
+                _ => {}
+            }
             m.read.extend(&p.read);
             for (a, n) in &p.sites {
                 *m.sites.entry(*a).or_default() += n;
@@ -335,10 +484,32 @@ impl Merged {
                 .iter()
                 .map(|(n, p)| {
                     let incomplete = p.ways.values().filter(|(of, seen)| seen.len() < *of as usize).count();
-                    json!({"name": n, "bytes": p.bytes, "bytes_read": p.read.len(), "sites": p.sites.len(),
+                    let mut v = json!({"name": n, "bytes": p.bytes, "bytes_read": p.read.len(), "sites": p.sites.len(),
                        "decisions": p.ways.len(), "decisions_with_ways_never_taken": incomplete,
                        "read": stretches(&p.read).iter().map(|&(s, e)| format!("{n}+{s:#x}..{e:#x}")).collect::<Vec<_>>(),
-                       "never_read": p.bytes.map(|b| unread(p, 0, b).iter().map(|&(s, e)| format!("{n}+{s:#x}..{e:#x}")).collect::<Vec<_>>())})
+                       "never_read": p.bytes.map(|b| unread(p, 0, b).iter().map(|&(s, e)| format!("{n}+{s:#x}..{e:#x}")).collect::<Vec<_>>())});
+                    if let (Some(map), Some(b)) = (&p.map, p.bytes) {
+                        let groups = statement_groups(map, 0, b, |s, e| ran(p, s, e));
+                        let at = |ran: bool| -> Vec<String> {
+                            groups.iter().filter(|g| g.2 == ran).map(|g| located(n, g.0, g.1, &g.3)).collect()
+                        };
+                        let entered = |r: &(String, u32, u32)| map.statements.range(r.1..r.2).any(|(&s, &e)| ran(p, s, e));
+                        v["map"] = json!({
+                            "statements": map.statements.len(),
+                            "statements_ran": map.statements.iter().filter(|(s, e)| ran(p, **s, **e)).count(),
+                            "decisions": map.decisions.len(),
+                            "decisions_unnamed_by_hooks": map.decisions.keys().filter(|a| !p.ways.contains_key(a)
+                                && map.statements.get(a).is_some_and(|&e| ran(p, **a, e))).count(),
+                            "routines_never_entered": map.routines.iter().filter(|r| !entered(r)).map(|r| r.0.clone()).collect::<Vec<_>>(),
+                            "ran": at(true),
+                            "never_ran": at(false),
+                        });
+                        // Bytes read are the map's statements, less noisy.
+                        for k in ["read", "never_read"] {
+                            v.as_object_mut().expect("an object").remove(k);
+                        }
+                    }
+                    v
                 })
                 .collect::<Vec<_>>()
         )
@@ -365,6 +536,28 @@ impl Merged {
                     ways.push(json!({"at": format!("{n}+{a:#x}"), "way": w, "of": of}));
                 }
             }
+            if let (Some(map), Some(b)) = (&p.map, p.bytes) {
+                let theirs = |s: u32, e: u32| other.is_some_and(|o| ran(o, s, e));
+                let only: Vec<String> = statement_groups(map, 0, b, |s, e| ran(p, s, e) && !theirs(s, e))
+                    .iter()
+                    .filter(|g| g.2)
+                    .map(|g| located(n, g.0, g.1, &g.3))
+                    .collect();
+                let entered = |r: &(String, u32, u32), f: &dyn Fn(u32, u32) -> bool| {
+                    map.statements.range(r.1..r.2).any(|(&s, &e)| f(s, e))
+                };
+                let routines: Vec<&str> = map
+                    .routines
+                    .iter()
+                    .filter(|r| entered(r, &|s, e| ran(p, s, e)) && !entered(r, &theirs))
+                    .map(|r| r.0.as_str())
+                    .collect();
+                if only.is_empty() && ways.is_empty() {
+                    continue;
+                }
+                out.push(json!({"name": n, "statements_only": only, "routines_only": routines, "ways_only": ways}));
+                continue;
+            }
             if read.is_empty() && sites.is_empty() && ways.is_empty() {
                 continue;
             }
@@ -380,6 +573,41 @@ impl Merged {
 fn unread(p: &Program, start: u32, end: u32) -> Vec<(u32, u32)> {
     let gaps: BTreeSet<u32> = (start..end).filter(|x| !p.read.contains(x)).collect();
     stretches(&gaps)
+}
+
+/// Whether the statement `[start, end)` ran: a byte of it read, or a hook
+/// named its start.
+fn ran(p: &Program, start: u32, end: u32) -> bool {
+    p.sites.contains_key(&start) || p.read.range(start..end).next().is_some()
+}
+
+/// The map's statements starting in `[start, end)`, grouped into stretches
+/// of back-to-back statements that `keep` says the same of and that lie in
+/// the same routine: `(start, end, said, routine)`.
+fn statement_groups<T: PartialEq + Copy>(
+    map: &ProgramMap,
+    start: u32,
+    end: u32,
+    keep: impl Fn(u32, u32) -> T,
+) -> Vec<(u32, u32, T, Option<String>)> {
+    let mut out: Vec<(u32, u32, T, Option<String>)> = Vec::new();
+    for (&s, &e) in map.statements.range(start..end) {
+        let (said, routine) = (keep(s, e), map.routine(s).map(String::from));
+        match out.last_mut() {
+            Some(g) if g.1 == s && g.2 == said && g.3 == routine => g.1 = e,
+            _ => out.push((s, e, said, routine)),
+        }
+    }
+    out
+}
+
+/// `name+0xS..0xE`, with the routine it is in.
+fn located(name: &str, start: u32, end: u32, routine: &Option<String>) -> String {
+    let at = Stretch { program: name.to_string(), start, end };
+    match routine {
+        Some(r) => format!("{at} ({r})"),
+        None => at.to_string(),
+    }
 }
 
 /// A stretch of a program: `name+0xSTART..0xEND` (end excluded), or one
@@ -430,6 +658,8 @@ impl std::fmt::Display for Stretch {
 pub struct Item {
     pub at: Stretch,
     pub never: String,
+    /// The routine of the program's map it is in.
+    pub routine: Option<String>,
 }
 
 /// What the feature's script stretches `code` have covered, by the merged
@@ -446,6 +676,30 @@ pub fn items(m: &Merged, code: &[Stretch]) -> (Vec<Item>, Vec<String>) {
             ));
             continue;
         };
+        if let (Some(map), Some(b)) = (&p.map, p.bytes) {
+            if s.end > b {
+                problems.push(format!("code {s}: past the end of {} ({b:#x} bytes)", s.program));
+                continue;
+            }
+            let stretch = |start, end| Stretch { program: s.program.clone(), start, end };
+            for (gs, ge, ran, routine) in statement_groups(map, s.start, s.end, |a, b| ran(p, a, b)) {
+                items.push(Item { at: stretch(gs, ge), never: if ran { "" } else { "ran" }.into(), routine });
+            }
+            let mut decisions: BTreeMap<u32, u32> = p.ways.range(s.start..s.end).map(|(&a, w)| (a, w.0)).collect();
+            decisions.extend(map.decisions.range(s.start..s.end));
+            for (a, of) in decisions {
+                // One never run is in a stretch of statements never run.
+                if map.statements.get(&a).is_some_and(|&e| !ran(p, a, e)) {
+                    continue;
+                }
+                let never = match p.ways.get(&a) {
+                    None => "had its way named by a hook".into(),
+                    Some((_, seen)) => never_ways(of, seen),
+                };
+                items.push(Item { at: stretch(a, a + 1), never, routine: map.routine(a).map(String::from) });
+            }
+            continue;
+        }
         if let Some(b) = p.bytes {
             if s.end > b {
                 problems.push(format!("code {s}: past the end of {} ({b:#x} bytes)", s.program));
@@ -458,11 +712,13 @@ pub fn items(m: &Merged, code: &[Stretch]) -> (Vec<Item>, Vec<String>) {
                     items.push(Item {
                         at: Stretch { program: s.program.clone(), start: x, end: gs },
                         never: String::new(),
+                        routine: None,
                     });
                 }
                 items.push(Item {
                     at: Stretch { program: s.program.clone(), start: gs, end: ge },
                     never: "read".into(),
+                    routine: None,
                 });
                 x = ge;
             }
@@ -470,21 +726,30 @@ pub fn items(m: &Merged, code: &[Stretch]) -> (Vec<Item>, Vec<String>) {
                 items.push(Item {
                     at: Stretch { program: s.program.clone(), start: x, end: s.end },
                     never: String::new(),
+                    routine: None,
                 });
             }
         }
         for (&a, (of, seen)) in p.ways.range(s.start..s.end) {
-            let missing: Vec<String> = (0..*of).filter(|w| !seen.contains(w)).map(|w| w.to_string()).collect();
-            let never = match missing.len() {
-                0 => String::new(),
-                1 => format!("went way {} of {of}", missing[0]),
-                _ => format!("went ways {} of {of}", missing.join(", ")),
-            };
-            items.push(Item { at: Stretch { program: s.program.clone(), start: a, end: a + 1 }, never });
+            items.push(Item {
+                at: Stretch { program: s.program.clone(), start: a, end: a + 1 },
+                never: never_ways(*of, seen),
+                routine: None,
+            });
         }
     }
     problems.extend(m.problems.iter().cloned());
     (items, problems)
+}
+
+/// What no recording did of a decision of `of` ways that went `seen`.
+fn never_ways(of: u32, seen: &BTreeSet<u32>) -> String {
+    let missing: Vec<String> = (0..of).filter(|w| !seen.contains(w)).map(|w| w.to_string()).collect();
+    match missing.len() {
+        0 => String::new(),
+        1 => format!("went way {} of {of}", missing[0]),
+        _ => format!("went ways {} of {of}", missing.join(", ")),
+    }
 }
 
 /// The programs kept beside the recordings `paths` (`.jsonl`), merged.
@@ -570,5 +835,64 @@ mod tests {
         let (_, problems) = super::items(&m, &[st("gex+0x0..0x4"), st("croc+0x10..0x30")]);
         assert!(problems[0].starts_with("code gex+0x0..0x4: no recording of the feature has the program gex"));
         assert_eq!(problems[1], "code croc+0x10..0x30: past the end of croc (0x20 bytes)");
+    }
+
+    #[test]
+    fn a_map_counts_statements_and_decisions_no_hook_named() {
+        // Statements 0..3, 3..5, 5..6, 8..10 (6..8 is data); decisions at 0
+        // and 5; the routine `go` is 5..10.
+        let answer = r#"{"statements":[[0,3],[3,5],[5,6],[8,10]],"decisions":[[0,2],[5,3]],"routines":[["go",5,10]]}"#;
+        let map = ProgramMap::parse(answer, 0x10).unwrap().unwrap();
+        for (bad, why) in [
+            (r#"{"statements":[[0,3],[2,4]],"decisions":[],"routines":[]}"#, "statement 0x2..0x4: overlaps"),
+            (r#"{"statements":[[0,17]],"decisions":[],"routines":[]}"#, "statement 0x0..0x11: not inside"),
+            (r#"{"statements":[[0,3]],"decisions":[[1,2]],"routines":[]}"#, "decision 0x1: no statement starts there"),
+            (r#"{"statements":[[0,3]],"decisions":[[0,1]],"routines":[]}"#, "decision 0x0: 1 ways"),
+        ] {
+            assert!(ProgramMap::parse(bad, 0x10).unwrap_err().starts_with(why), "{bad}");
+        }
+        assert_eq!(ProgramMap::parse(r#"{"statements":[],"decisions":[],"routines":[]}"#, 4), Ok(None));
+        let mut p =
+            Program { bytes: Some(0x10), sha256: Some("s".into()), map: Some(map.clone()), ..Program::default() };
+        // The first statement's opcode read and its decision named; the
+        // last only by an operand byte; 6..8 read as data.
+        p.read.extend([0, 6, 7, 9]);
+        p.ways.insert(0, (2, [1].into()));
+        let doc = json!({"programs": [kept("croc", &p)]});
+        let mut m = Merged::default();
+        m.add(&doc, "a");
+        assert_eq!(m.programs["croc"].map.as_ref(), Some(&map), "the map is kept and read back");
+        let (items, problems) = items(&m, &[st("croc+0x0..0x10")]);
+        assert!(problems.is_empty(), "{problems:?}");
+        let got: Vec<(String, &str, Option<&str>)> =
+            items.iter().map(|i| (i.at.to_string(), i.never.as_str(), i.routine.as_deref())).collect();
+        assert_eq!(
+            got,
+            [
+                ("croc+0x0..0x3".into(), "", None),
+                ("croc+0x3..0x5".into(), "ran", None),
+                ("croc+0x5".into(), "ran", Some("go")),
+                ("croc+0x8..0xa".into(), "", Some("go")),
+                ("croc+0x0".into(), "went way 0 of 2", None),
+            ]
+        );
+        // A site at 5 runs it: its decision then ran with no way named.
+        let mut q = p.clone();
+        q.sites.insert(5, 1);
+        let mut m2 = Merged::default();
+        m2.add(&json!({"programs": [kept("croc", &q)]}), "b");
+        let (items, _) = super::items(&m2, &[st("croc+0x5..0x6")]);
+        assert_eq!(items[1].never, "had its way named by a hook");
+        // The diff gives statements and routines only one side ran.
+        let d = m2.diff(&m);
+        assert_eq!(d[0]["statements_only"], json!(["croc+0x5 (go)"]));
+        assert_eq!(d[0]["routines_only"], json!([]), "a ran 8..10, in go too");
+        let mut empty = Merged::default();
+        empty.add(&json!({"programs": [kept("croc", &Program { read: BTreeSet::new(), ..p.clone() })]}), "c");
+        assert_eq!(m2.diff(&empty)[0]["routines_only"], json!(["go"]));
+        // Another map of the same bytes does not merge.
+        let other = Program { map: Some(ProgramMap { routines: vec![], ..map }), ..p };
+        m.add(&json!({"programs": [kept("croc", &other)]}), "d");
+        assert!(m.problems[0].starts_with("d: its map of croc is not the other recordings'"), "{:?}", m.problems);
     }
 }

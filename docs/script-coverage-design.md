@@ -1,7 +1,8 @@
 # Design: coverage of scripted rules
 
-Built in psx (step 23 of [recordings-plan.md](recordings-plan.md)); not
-yet tried on a game. It extends [port-design.md](port-design.md)'s
+Built in psx (step 23 of [recordings-plan.md](recordings-plan.md)) and
+tried on Croc (section 6); the program's map (section 10) is the second
+part. It extends [port-design.md](port-design.md)'s
 coverage (section 5) to games whose rules live in a script run by an
 interpreter, so a feature made of script code can be located, covered and
 counted done the way one made of machine code is.
@@ -220,8 +221,9 @@ code = ["0x800286F4", "0x80028734", "croc+0x1803..0x18A0", "croc+0x2732..0x2B82"
   anything that reads the whole program each tick shows up as no gap at
   all, which is the sign to rely on decisions from hooks instead.
 - **Padding and tables.** Alignment bytes and unused table entries are
-  never read, so they are gaps, given `wont_reach` as padding. Decisions
-  have no such noise.
+  never read, so they are gaps, given `wont_reach` as padding; operands
+  the interpreter skips are too. Decisions have no such noise, and a map
+  (section 10) leaves out bytes that are no statement.
 - **Blocks, not ways.** With reads only, an `if` whose skipped arm is
   empty, or whose other arm is reached by another path, looks covered:
   the classic gap between block and branch coverage. Ways from hooks
@@ -282,6 +284,76 @@ Built:
    stretches; Cover and status count them as section 5 says.
 5. The guide (code topic, overview's catalogue lines) and port-design.md.
 
-Next: try it on Croc's workspace: declare `croc`, add the script
-stretches to F-0002 and F-0003, and see what Cover asks for. Then the
-example.
+Tried on Croc's workspace: the binding declares `croc` and hooks its
+`if` and `switch`; F-0002 and F-0003 list their script stretches. A
+coverage diff of stomps against jumps gives the stomp state
+(croc+0x2732..0x2937) as positions only stomps run, and Cover asks for
+the bounce-pad jump, the second stomp from high, a long fall's landing
+and a `switch` default a random number never takes, which the port's
+comments named but no item did. Reads were the noisy half: operand
+bytes the interpreter skips (croc+0x27A5, inside a spawn) and tables read
+a byte at a time count as stretches, and a decision kind the binding
+does not hook (Croc's `repeat ... until`) is not seen at all. Section 10
+answers both.
+
+## 10. The program's map
+
+An agent porting a scripted game ends up decoding the script language;
+Croc's porting agent had a disassembler in its notes before the first
+recording. That decoder can go in the binding, so psx learns the
+program's structure without knowing its format:
+
+```rust
+fn map(&self, name: &str, code: &[u8], map: &mut Map) {
+    for s in decode(code) {
+        map.statement(s.start, s.end);
+        if let Some(ways) = s.ways { map.decision(s.start, ways); }
+    }
+    map.routine("jump_test", 0x1803, 0x18F1);
+}
+```
+
+- **Statements** (`statement(start, end)`): the program's instructions,
+  as offsets. A statement ran when a recording read any of its bytes or a
+  hook named its start; bytes in no statement (tables, strings, padding)
+  are not coverage. With a map, Cover's items are statements never run,
+  stretch by stretch, instead of bytes never read: an operand the
+  interpreter skips no longer counts.
+- **Decisions** (`decision(at, ways)`): every statement that chooses
+  between ways, with how many. A decision that ran with no hook naming
+  its ways is an item of its own ("ran, but no hook said which way it
+  went"), so a decision kind the hooks miss shows; one never run is part
+  of a stretch never run.
+- **Routines** (`routine(name, start, end)`): names for stretches,
+  shown beside positions in Cover, status and coverage diff (the diff
+  lists the routines only the runs entered).
+
+psx asks for a program's map when the binding first declares it with
+bytes it has not seen in the recording (a boundary call, `MAP`, given the
+program's index in the declared list; the boundary reads its bytes and
+calls `map`). The recording keeps the map beside the program's coverage:
+statements as runs of lengths, decisions and routines, offsets and names
+only, never bytes. Recordings of the same bytes must keep the same map;
+when the decoder improves, the recordings are made again (seconds each).
+The map also checks the hooks: a site that is no statement's start, a way
+at a position that is no decision, or a decision whose ways differ from
+the map's, is a problem of the recording.
+
+A map is optional. Without one, reads and hooks work as sections 4 and 5
+say.
+
+On Croc (boundary version 6): the binding's decoder, written from the
+porting agent's disassembler, walks the statements from set-up (0x4), the
+main loop (0x1EA8, entered by the engine) and the event handlers in
+Croc's object's table, and finds the 1279 statements of the agent's
+listing, 295 of them decisions (8.7 KB kept per recording). Its first
+version started at set-up alone, and psx refused the hooks' positions
+outside the map until the other entry points were added. With the map,
+the operand byte of section 9 is gone, the `repeat ... until` showed as a
+decision no hook named until the binding hooked it, and the stomp diff
+reads `routines_only: [state_stomp]` with 17 statement stretches where
+reads gave 189.
+
+Not done: a catalogue entry naming a routine instead of its offsets, and
+the binding describing a position in words for Cover's text (shown only,
+never kept).

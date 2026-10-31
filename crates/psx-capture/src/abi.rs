@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::{Glossary, Hook, Hooks, Machine, Programs, Quantities, Script, Tick, string};
+use crate::{Glossary, Hook, Hooks, Machine, Map, Programs, Quantities, Script, Tick, string};
 
 /// psx's side, valid for one call.
 #[repr(C)]
@@ -29,7 +29,7 @@ pub struct Host {
     pub out: unsafe extern "C" fn(ctx: *mut c_void, data: *const u8, len: usize),
     /// The question's arguments: for [`HOOK`], the pc, then 0 for
     /// `Hooks::at` or 1 for `Hooks::branch`, then 1 when the branch was
-    /// taken.
+    /// taken; for [`MAP`], the program's index in [`PROGRAMS`]' answer.
     pub args: [u32; 4],
 }
 
@@ -44,6 +44,11 @@ pub const PROGRAMS: u32 = 2;
 /// position]]` for a site, `[[name, position, way, of]]` for a decision's
 /// way).
 pub const HOOK: u32 = 3;
+/// `what`: the map of a program ([`Host::args`]: its index in the programs
+/// the binding names now), read from the machine (JSON: `{"statements":
+/// [[start, end]], "decisions": [[at, ways]], "routines": [[name, start,
+/// end]]}`).
+pub const MAP: u32 = 4;
 
 /// Returned: the answer was written.
 pub const OK: i32 = 0;
@@ -105,6 +110,21 @@ pub unsafe fn call<G: Glossary>(glossary: &G, what: u32, host: *const Host) -> i
                 let mut s = Script::default();
                 glossary.hook(at, m, &mut s);
                 *out = s.json();
+                true
+            }
+            MAP => {
+                let mut p = Programs::default();
+                glossary.programs(&mut p, m);
+                // `host` is the caller's, valid for the call.
+                let index = (*host).args[0] as usize;
+                let Some((name, address, bytes)) = p.list.get(index) else {
+                    panic!("map: the binding names {} programs now, not one at {index}", p.list.len())
+                };
+                let mut code = vec![0; *bytes as usize];
+                m.bytes(*address, &mut code);
+                let mut map = Map::default();
+                glossary.map(name, &code, &mut map);
+                *out = map.json();
                 true
             }
             _ => false,
