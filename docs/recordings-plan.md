@@ -121,6 +121,14 @@ mechanic code are worth keeping, so they move out first.
 22. **One asset, end to end**: a Croc file the template does not already
     decode (1-1's level geometry), from `loads` to an importer checked
     against the RAM the game builds.
+23. **Coverage of scripted rules**
+    ([script-coverage-design.md](script-coverage-design.md)): programs
+    the binding names, whose bytes read count as coverage, and hooks in
+    the binding that name script positions and decision ways however the
+    interpreter works; `code` and `wont_reach` take `name+offset`
+    stretches; Locate's coverage diff and Cover work in script space.
+    Tried on Croc's F-0002 and F-0003, whose stomp rules live in a script
+    coverage never saw (step 21), then the example updated.
 
 After phase E: decide on the release, and whether the method goes to
 other platforms (mdx).
