@@ -428,8 +428,8 @@ impl PsxServer {
             Err(e) => return respond(e.to_value(), None),
         };
         // Relative paths in-process resolve against the working directory, so
-        // any other root needs a worker running there.
-        let isolated = scoped.is_some() || root != self.base;
+        // any other root needs a worker running there; naming this one does not.
+        let isolated = root != self.base;
         let from_client = scoped.is_none() && isolated;
         let worker_cancel = cancel.child_token();
         let ctx = Ctx { root, cancel: Some(worker_cancel.clone()) };
