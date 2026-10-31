@@ -56,6 +56,33 @@
 //! psx_capture::export_glossary!(Game);
 //! ```
 //!
+//! When the game's rules live in a script its own interpreter runs, the
+//! binding can also say where the programs are ([`Glossary::programs`]),
+//! so the bytes the game read of them count as coverage, and run code at
+//! points of the interpreter ([`Glossary::hooks`], [`Glossary::hook`]) that
+//! names the script position running and the way each decision went
+//! (docs/script-coverage-design.md):
+//!
+//! ```ignore
+//! fn programs(&self, p: &mut Programs, m: &Machine) {
+//!     let base = m.u32(0x800D_8A20);
+//!     p.program("croc", base, m.u32(base - 4));
+//! }
+//!
+//! fn hooks(&self, h: &mut Hooks) {
+//!     h.at(0x8002_CFF8).branch(0x8002_8190);
+//! }
+//!
+//! fn hook(&self, at: Hook, m: &Machine, s: &mut Script) {
+//!     let obj = m.reg(S0);
+//!     let position = m.u32(obj) - m.u32(obj + 4);
+//!     match at {
+//!         Hook::At(_) => s.site("croc", position),
+//!         Hook::Branch { taken, .. } => s.way("croc", position, taken as u32, 2),
+//!     }
+//! }
+//! ```
+//!
 //! The boundary with psx is two C functions ([`abi`]), so a binding built
 //! by another Rust compiler than psx's loads all the same. Values cross it
 //! in the recording's JSON encoding.
@@ -65,11 +92,11 @@ pub mod abi;
 /// The version of the boundary with psx. psx refuses a binding built
 /// against another; `psx template update` brings the vendored crate to
 /// psx's.
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 pub mod prelude {
     pub use crate::reg::*;
-    pub use crate::{Glossary, Machine, Tick};
+    pub use crate::{Glossary, Hook, Hooks, Machine, Programs, Script, Tick};
 }
 
 /// A CPU register, numbered as the R3000 numbers them; `HI` and `LO` are 32
@@ -308,6 +335,105 @@ pub trait Glossary {
 
     /// The quantities, read when a tick ends.
     fn quantities(&self, m: &Machine) -> <Self::Glue as Quantities>::Quantities;
+
+    /// The programs a script interpreter is running, each by a name that
+    /// stays the same across runs, read where a recording starts and when
+    /// each tick ends. The bytes the game reads of them count as coverage
+    /// until the next tick says otherwise. None by default.
+    fn programs(&self, _p: &mut Programs, _m: &Machine) {}
+
+    /// The interpreter's instructions where [`Glossary::hook`] runs. None by
+    /// default.
+    fn hooks(&self, _h: &mut Hooks) {}
+
+    /// At a hook: the script position running, and the way a decision went,
+    /// worked out from the registers and memory as they are.
+    fn hook(&self, _at: Hook, _m: &Machine, _s: &mut Script) {}
+}
+
+/// The programs running ([`Glossary::programs`]).
+#[derive(Default)]
+pub struct Programs {
+    list: Vec<(String, u32, u32)>,
+}
+
+impl Programs {
+    /// The program `name` is the `bytes` bytes at `address`. Positions in it
+    /// are offsets from `address`.
+    pub fn program(&mut self, name: &str, address: u32, bytes: u32) -> &mut Self {
+        self.list.push((name.to_string(), address, bytes));
+        self
+    }
+
+    fn json(&self) -> String {
+        let items: Vec<String> = self.list.iter().map(|(n, a, b)| format!("[{},{a},{b}]", string(n))).collect();
+        format!("[{}]", items.join(","))
+    }
+}
+
+/// Where [`Glossary::hook`] runs ([`Glossary::hooks`]).
+#[derive(Default)]
+pub struct Hooks {
+    at: Vec<u32>,
+    branch: Vec<u32>,
+}
+
+impl Hooks {
+    /// Once the instruction at `pc` has run.
+    pub fn at(&mut self, pc: u32) -> &mut Self {
+        self.at.push(pc);
+        self
+    }
+
+    /// Once the conditional branch at `pc` has gone one way or the other,
+    /// after its delay slot.
+    pub fn branch(&mut self, pc: u32) -> &mut Self {
+        self.branch.push(pc);
+        self
+    }
+
+    fn json(&self) -> String {
+        let list = |v: &[u32]| v.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        format!("{{\"at\":[{}],\"branch\":[{}]}}", list(&self.at), list(&self.branch))
+    }
+}
+
+/// The hook that ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hook {
+    /// The instruction at this pc ran ([`Hooks::at`]).
+    At(u32),
+    /// The branch at `pc` went: taken, or fell through ([`Hooks::branch`]).
+    Branch { pc: u32, taken: bool },
+}
+
+/// What a hook says ran ([`Glossary::hook`]).
+#[derive(Default)]
+pub struct Script {
+    out: String,
+}
+
+impl Script {
+    /// The script position `position` of the program `name` ran.
+    pub fn site(&mut self, name: &str, position: u32) {
+        self.push(format!("[{},{position}]", string(name)));
+    }
+
+    /// The decision at `position` of the program `name`, one of `of` ways,
+    /// went way `way` (from 0).
+    pub fn way(&mut self, name: &str, position: u32, way: u32, of: u32) {
+        assert!(way < of, "way {way} of {of}: a way is counted from 0, below of");
+        self.push(format!("[{},{position},{way},{of}]", string(name)));
+    }
+
+    fn push(&mut self, item: String) {
+        self.out.push(if self.out.is_empty() { '[' } else { ',' });
+        self.out.push_str(&item);
+    }
+
+    fn json(self) -> String {
+        if self.out.is_empty() { "[]".into() } else { self.out + "]" }
+    }
 }
 
 /// Exports the glossary's binding, a unit struct implementing
@@ -349,5 +475,21 @@ mod tests {
         assert!(t.json().is_err());
         t.store(0x800A_1C30, 4).by(0x8001_52A4);
         assert_eq!(t.json().unwrap(), format!(r#"{{"at":{},"bytes":4,"pc":{}}}"#, 0x800A_1C30u32, 0x8001_52A4u32));
+    }
+
+    #[test]
+    fn programs_hooks_and_script_marks_are_json() {
+        let mut p = Programs::default();
+        p.program("croc", 16, 4);
+        assert_eq!(p.json(), r#"[["croc",16,4]]"#);
+        let mut h = Hooks::default();
+        assert_eq!(h.json(), r#"{"at":[],"branch":[]}"#);
+        h.at(8).branch(12);
+        assert_eq!(h.json(), r#"{"at":[8],"branch":[12]}"#);
+        let mut s = Script::default();
+        s.site("croc", 3);
+        s.way("croc", 3, 1, 2);
+        assert_eq!(s.json(), r#"[["croc",3],["croc",3,1,2]]"#);
+        assert_eq!(Script::default().json(), "[]");
     }
 }

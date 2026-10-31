@@ -127,8 +127,9 @@ mechanic code are worth keeping, so they move out first.
     the binding that name script positions and decision ways however the
     interpreter works; `code` and `wont_reach` take `name+offset`
     stretches; Locate's coverage diff and Cover work in script space.
-    Tried on Croc's F-0002 and F-0003, whose stomp rules live in a script
-    coverage never saw (step 21), then the example updated.
+    Built (psx-capture boundary version 5); next it is tried on Croc's
+    F-0002 and F-0003, whose stomp rules live in a script coverage never
+    saw (step 21), then the example updated.
 
 After phase E: decide on the release, and whether the method goes to
 other platforms (mdx).

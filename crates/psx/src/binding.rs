@@ -268,7 +268,7 @@ impl<D: serde::de::DeserializeOwned> Plugin<D> {
     /// The binding whose `psx_capture_call` is `call`, asked to describe
     /// itself.
     pub fn new(call: Call, lib: Option<libloading::Library>) -> crate::Result<Plugin<D>> {
-        let text = invoke(call, abi::DESCRIBE, None).map_err(Error::invalid)?;
+        let text = invoke(call, abi::DESCRIBE, None, [0; 4]).map_err(Error::invalid)?;
         let described = serde_json::from_str(&text)
             .map_err(|e| Error::invalid(format!("the binding's description: {e}")).with("description", json!(text)))?;
         Ok(Plugin { call, _lib: lib, described })
@@ -276,7 +276,12 @@ impl<D: serde::de::DeserializeOwned> Plugin<D> {
 
     /// Asks the binding `what` with the machine as it is.
     pub fn call(&self, what: u32, m: &Machine) -> Result<String, String> {
-        invoke(self.call, what, Some(m))
+        invoke(self.call, what, Some(m), [0; 4])
+    }
+
+    /// Asks the binding `what`, with `args`, with the machine as it is.
+    pub fn call_with(&self, what: u32, m: &Machine, args: [u32; 4]) -> Result<String, String> {
+        invoke(self.call, what, Some(m), args)
     }
 
     /// What the binding says of itself.
@@ -286,7 +291,7 @@ impl<D: serde::de::DeserializeOwned> Plugin<D> {
 }
 
 /// Calls the binding's `psx_capture_call` with psx's side of the boundary.
-fn invoke(call: Call, what: u32, m: Option<&Machine>) -> Result<String, String> {
+fn invoke(call: Call, what: u32, m: Option<&Machine>, args: [u32; 4]) -> Result<String, String> {
     let mut ctx = Ctx { m, refused: None, out: Vec::new() };
     let host = abi::Host {
         ctx: &mut ctx as *mut Ctx as *mut c_void,
@@ -294,6 +299,7 @@ fn invoke(call: Call, what: u32, m: Option<&Machine>) -> Result<String, String> 
         reg: host_reg,
         gte: host_gte,
         out: host_out,
+        args,
     };
     // SAFETY: `host` and `ctx` outlive the call.
     let code = unsafe { call(what, &host) };

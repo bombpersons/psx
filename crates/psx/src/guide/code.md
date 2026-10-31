@@ -73,6 +73,38 @@ both reached. To find a feature's code, diff runs or recordings doing it
 against runs (other actions) leave out more shared code. Swap the sets for
 what the feature skips.
 
+## Scripted rules
+
+When the rules are a program the game's own interpreter runs (bytecode,
+tables, a tree of nodes), coverage of the machine code shows only the
+interpreter: its if is one branch for every if of every script. Then the
+glossary's binding names the program and, when needed, points of the
+interpreter, and psx keeps the script's coverage with each recording
+(psx-capture's crate docs show the methods):
+
+- programs(p, m): p.program(name, address, bytes) for each program
+  running, read where a recording starts and when each tick ends. The
+  bytes the game reads of it count as run; stretches never read are gaps.
+  Name each program by a name that means the same program in every run.
+- hooks(h): h.at(pc) runs once the instruction at pc has run, h.branch(pc)
+  once the conditional branch at pc has gone, after its delay slot.
+- hook(at, m, s): from the registers and memory as they are, s.site(name,
+  position) for the position running and s.way(name, position, way, of)
+  for a decision's way (a switch of five cases is one decision of five
+  ways). A position is an offset into the program, or whatever names it
+  the same way in every run.
+
+Reads need only where the program is; hooks give each decision's ways,
+and cover programs that are not bytes in one place. Positions are psx's
+only knowledge of the script: reading it is yours.
+
+A catalogue entry's code lists stretches of a program beside functions,
+name+0xSTART..0xEND (end excluded), and wont_reach takes a position
+(name+0xAT) or a stretch inside them. code_coverage and code_coverage_diff
+on recordings report programs: stretches read, sites and ways, and in a
+diff the ones only the first set ran, which locate a feature's part of the
+script.
+
 ## Compressed code
 
 The inventory reads an overlay no disc file holds only around the code that

@@ -101,7 +101,11 @@ held_out = ["level_1_1_walk/free_play"]
 The entry is the one place a feature names its recordings: a scenario
 does not name a feature, and the feature's scenarios are those its
 recordings come from. `code` is found with psx (coverage diff, watches),
-not guessed: each address is a function the inventory has. Each
+not guessed: each address is a function the inventory has. When the rules
+are a script the game interprets, `code` also names stretches of the
+programs the glossary's binding declares (`croc+0x1803..0x18A0`), covered
+by the bytes read and the decisions' ways
+([script-coverage-design.md](script-coverage-design.md)). Each
 `wont_reach` address is a conditional branch in one of those functions,
 and needs the person's confirmation (`port confirm` keeps the entries they
 confirmed, reasons and all).
@@ -143,7 +147,8 @@ importer lists the entries (`import::index`), which `port check` asks for.
 | Done | reviewed, and its held-out recordings pass |
 
 Coverage is the union of what the original ran across a feature's
-recordings, within the feature's code. "Done" needs every branch resolved,
+recordings, within the feature's code: its machine code's branches, and
+its script stretches' bytes and decisions. "Done" needs every branch resolved,
 not a percentage, so the uncovered ones always say what to record next.
 
 ### The review

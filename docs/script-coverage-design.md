@@ -1,6 +1,7 @@
 # Design: coverage of scripted rules
 
-A proposal, not built yet. It extends [port-design.md](port-design.md)'s
+Built in psx (step 23 of [recordings-plan.md](recordings-plan.md)); not
+yet tried on a game. It extends [port-design.md](port-design.md)'s
 coverage (section 5) to games whose rules live in a script run by an
 interpreter, so a feature made of script code can be located, covered and
 counted done the way one made of machine code is.
@@ -83,12 +84,13 @@ impl Glossary for Game {
 
 ## 4. What psx records
 
-The native core already counts each executed word and each branch's ways
-for `run --trace`. It gains:
+`scenario record` already sees every instruction the original runs (for
+the machine code's coverage). It also keeps, under `programs` in the
+recording's `<name>.coverage.json`:
 
-1. **Program reads** (needs only `programs`): a bitmap per program of the
-   bytes any load read. In `coverage.json`, per program: name, length,
-   sha256, and the read stretches as `[start, end, reads]` offsets.
+1. **Program reads** (needs only `programs`): the bytes of each program
+   any load read. Per program: name, length, sha256, and the stretches
+   read as `[start, end)` offsets.
 2. **Sites and ways** (optional): code in the binding, run where the
    binding asks, that says which script position is running and which way
    a script decision went. psx stores what it is told, keyed by
@@ -117,24 +119,26 @@ for `run --trace`. It gains:
 
    ```rust
    fn hooks(&self, h: &mut Hooks) {
-       h.before(0x8002_CFF8);             // Croc's dispatch (illustrative)
-       h.branch(0x8002_8190);             // the `if` handler's deciding branch (illustrative)
+       h.at(0x8002_CFF8)                  // Croc's dispatch (illustrative)
+           .branch(0x8002_8190);          // the `if` handler's deciding branch (illustrative)
    }
 
-   fn hook(&self, at: Hook, cpu: &Cpu, m: &Machine, c: &mut Script) {
+   fn hook(&self, at: Hook, m: &Machine, s: &mut Script) {
        // The object running (in s0 here, illustrative), its script position
        // at +0x00 and its program's base at +0x04 (0x8002C790).
-       let obj = cpu.reg(16);
-       let site = m.u32(obj) - m.u32(obj + 0x04);
+       let obj = m.reg(S0);
+       let position = m.u32(obj) - m.u32(obj + 0x04);
        match at {
-           Hook::Before(_) => c.site("croc", site),
-           Hook::Branch(_, taken) => c.way("croc", site, taken as u32, 2),
+           Hook::At(_) => s.site("croc", position),
+           Hook::Branch { taken, .. } => s.way("croc", position, taken as u32, 2),
        }
    }
    ```
 
-   - `before(pc)` runs before the instruction at `pc`; `branch(pc)` runs
-     after a conditional branch at `pc` resolves, with the way it went.
+   - `at(pc)` runs once the instruction at `pc` has run; `branch(pc)`
+     runs once a conditional branch at `pc` has gone, after its delay
+     slot, with the way it went. Registers are as they are then: a delay
+     slot that moves the script position on has already moved it.
    - `c.site(program, position)` marks a position run. `c.way(program,
      position, way, of)` counts one way of a decision at that position;
      `of` is how many ways it has, so a `switch` with five cases is one
@@ -149,9 +153,11 @@ for `run --trace`. It gains:
    - Hooks only run at the pcs registered, so the cost is a call per
      dispatched opcode, not per instruction.
 
-   Sites also replace raw reads as "executed", which removes the noise in
-   section 7. A program can use reads alone, hooks alone (a tree walker
-   with nothing to read as bytes), or both.
+   Sites say what ran, for `coverage diff` (Locate) and for the agent's
+   own reading; psx cannot know the sites that never ran, so they are not
+   gaps. The gaps are unread stretches and decision ways never taken. A
+   program can use reads alone, hooks alone (a tree walker with nothing to
+   read as bytes), or both.
 
    Finding the hook points is the agent's work with the tools psx already
    has: coverage of the interpreter, the hottest code reading the program,
@@ -167,13 +173,14 @@ code = ["0x800286F4", "0x80028734", "croc+0x1803..0x18A0", "croc+0x2732..0x2B82"
 
 [wont_reach]
 "croc+0x19D2..0x1A77" = "surface 4 bounce: the fixed JUMP 2300 off a type 4 floor"
-"croc+0x18F0" = "decision: never false on a flat floor (wall contact)"
+"croc+0x1890" = "decision: never false on a flat floor (wall contact)"
 ```
 
 - A stretch must lie in a program a recording of the feature declared,
   as an address must be a function of the inventory.
-- **Cover** counts, within the feature's stretches: unread bytes (with
-  programs only) or decision ways and unreached sites (with hooks).
+- **Cover** counts, within the feature's stretches: each stretch read or
+  never read (when the binding declared where the program is) and each
+  decision with the ways its recordings took (with hooks).
   Each gap is a `wont_reach` key in the same `name+offset` form,
   confirmed by the person as today.
 - **Locate**: `code coverage diff` diffs program reads (or sites) as it
@@ -211,11 +218,10 @@ code = ["0x800286F4", "0x80028734", "croc+0x1803..0x18A0", "croc+0x2732..0x2B82"
   checksum or a scan for labels reads every byte. Recordings start from a
   state after the level loaded, so a copy at load time does not count;
   anything that reads the whole program each tick shows up as no gap at
-  all, which is the sign to add hooks, whose sites count only what the
-  interpreter ran.
+  all, which is the sign to rely on decisions from hooks instead.
 - **Padding and tables.** Alignment bytes and unused table entries are
-  never read; with reads only they are gaps, given `wont_reach` as
-  padding. Sites have no such noise.
+  never read, so they are gaps, given `wont_reach` as padding. Decisions
+  have no such noise.
 - **Blocks, not ways.** With reads only, an `if` whose skipped arm is
   empty, or whose other arm is reached by another path, looks covered:
   the classic gap between block and branch coverage. Ways from hooks
@@ -262,18 +268,20 @@ code = ["0x800286F4", "0x80028734", "croc+0x1803..0x18A0", "croc+0x2732..0x2B82"
 
 ## 9. Work
 
-1. psx-core: per-program read bitmaps, and calls out at registered pcs
-   (before an instruction, after a branch resolves) with the CPU's
-   registers, behind `--trace`; tests on two toy interpreters in the
-   core's test ROM style, one dispatch loop and one threaded.
-2. psx-capture: `Programs`, `Hooks`, `Cpu` and `Script`, and the optional
-   `programs`, `hooks` and `hook` methods (ABI bump); the template's
-   binding stub mentions them in a comment.
-3. coverage.json format 5: `programs` (reads) and `script` (sites and
-   ways). `code coverage` and `coverage
-   diff` report program stretches and sites.
-4. port: `code` and `wont_reach` accept `name+offset` and stretches;
-   Cover, Locate and status as section 5.
-5. Guide (code topic, overview's catalogue lines) and port-design.md.
-6. Try it on Croc's workspace: declare `croc`, add the script stretches
-   to F-0002 and F-0003, and see what Cover asks for. Then the example.
+Built:
+
+1. `scenario record` keeps each program's reads, and calls the binding at
+   its hooks (after an instruction, after a branch has gone) with the
+   machine as it is; tested on a toy interpreter.
+2. psx-capture: `Programs`, `Hooks`, `Hook` and `Script`, and the optional
+   `programs`, `hooks` and `hook` methods (boundary version 5).
+3. `programs` in a recording's kept coverage; `code coverage` and
+   `coverage diff` report program stretches, sites and ways for
+   recordings (traced runs from `run` keep none).
+4. port: `code` and `wont_reach` take `name+offset` positions and
+   stretches; Cover and status count them as section 5 says.
+5. The guide (code topic, overview's catalogue lines) and port-design.md.
+
+Next: try it on Croc's workspace: declare `croc`, add the script
+stretches to F-0002 and F-0003, and see what Cover asks for. Then the
+example.

@@ -37,6 +37,7 @@ mod replay;
 mod run;
 mod run_native;
 mod scenario;
+mod script_cover;
 mod stall;
 mod stamp;
 mod states;

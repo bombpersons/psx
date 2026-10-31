@@ -68,10 +68,13 @@ cut):
 
   id, title, area
   depends     features it cannot work without
-  code        the original's functions, by entry address (the inventory's)
+  code        the original's functions, by entry address (the inventory's),
+              and stretches of script programs (croc+0x1803..0x18A0;
+              topic code, Scripted rules)
   questions   what is not known yet
   [recordings] work and held_out, as scenario/name
-  [wont_reach] branch address = why no recording can reach it
+  [wont_reach] branch address (or script position) = why no recording
+              can reach it
 
 The goal's features and their dependencies are its closure. The person
 reviews it with psx port confirm and confirms with psx port confirm --yes,
@@ -195,8 +198,10 @@ port_next's items, in this order:
 - Implement: no port_check has judged it at HEAD.
 - Fix: a recording fails; the earliest divergence first.
 - Answer: an open question.
-- Cover: a branch of its code its recordings never took one way: record
-  what reaches it, ask the person to play it, or list it under wont_reach.
+- Cover: a branch of its code its recordings never took one way, or a
+  stretch of its script never read or a decision's way never taken:
+  record what reaches it, ask the person to play it, or list it under
+  wont_reach.
 - Confirm (person): wont_reach branches not confirmed as they stand.
 - Format, Index, Import, Check (assets = true): see Assets.
 - Review: every feature's own work is finished and the code (game/,

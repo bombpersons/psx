@@ -93,6 +93,9 @@ pub struct Described {
     glossary: String,
     pub source: Release,
     pub tick: Tick,
+    /// Where the binding's hooks run (docs/script-coverage-design.md).
+    #[serde(default)]
+    pub hooks: crate::script_cover::HookPoints,
 }
 
 /// The glossary's quantities by type, and its binding, built and loaded:
@@ -289,15 +292,20 @@ struct Quantities<'a> {
     kept: Vec<String>,
 }
 
-/// The quantities at the end of every tick of a run of `frames` fields
-/// after the first tick, with `events` as the pad's input; `tracer` sees
-/// every instruction run, from the start.
+/// What a recording keeps of what the original ran: its machine code
+/// (every instruction, from the start) and its scripts.
+pub(crate) struct Cover {
+    pub tracer: Tracer,
+    pub scripts: crate::script_cover::Scripts,
+}
+
 /// Record `frames` fields of ticks from `m`, with `events` by field. With
 /// `ticks`, the pad each of a recording's ticks ended with, the input
 /// follows the ticks instead, as the port's replay does: until a tick ends,
 /// the pad is the one that tick had, and the run lasts as many ticks. A game
 /// that falls a field behind, or catches up, on another route then reads
-/// each press on the same tick.
+/// each press on the same tick. `cover` sees every instruction run, from
+/// the start.
 fn record(
     m: &mut Machine,
     q: &Quantities,
@@ -305,7 +313,7 @@ fn record(
     events: &[crate::replay::Input],
     ticks: Option<&[crate::replay::Input]>,
     deadline: Duration,
-    mut tracer: Option<&mut Tracer>,
+    mut cover: Option<&mut Cover>,
 ) -> Recorded {
     let started = Instant::now();
     // The pad is released until the first tick ends: `initial` is the moment
@@ -319,6 +327,9 @@ fn record(
         Recorded { initial: None, ticks: Vec::new(), refusals: Vec::new(), refusal_count: 0, timed_out: false };
     let (mut next_event, mut last_frame) = (0, m.bus.frames);
     let lead_limit = m.bus.frames + frames as u64;
+    if let Some(c) = cover.as_deref_mut() {
+        c.scripts.declare(q.binding, m);
+    }
     while m.bus.frames < target {
         if m.bus.frames != last_frame {
             last_frame = m.bus.frames;
@@ -347,11 +358,15 @@ fn record(
             }
         }
         let info = m.step();
-        if let Some(t) = tracer.as_deref_mut() {
-            t.after_step(&info, &m.cpu, &m.bus);
+        if let Some(c) = cover.as_deref_mut() {
+            c.tracer.after_step(&info, &m.cpu, &m.bus);
+            c.scripts.step(&info, q.binding, m);
         }
         if !tick.ended_by(&info) {
             continue;
+        }
+        if let Some(c) = cover.as_deref_mut() {
+            c.scripts.declare(q.binding, m);
         }
         // A tick ended: its quantities, as the store left them.
         let n = out.ticks.len() as u64 + out.initial.is_some() as u64;
@@ -620,8 +635,9 @@ impl Prepared {
                 "the port's scenario runner has digital buttons only: record without the sticks",
             ));
         }
-        let mut tracer = tracer(m);
-        let r = record(m, &self.quantities(), frames, events, None, timeout, Some(&mut tracer));
+        let mut cover =
+            Cover { tracer: tracer(m), scripts: crate::script_cover::Scripts::new(&self.b.described().hooks) };
+        let r = record(m, &self.quantities(), frames, events, None, timeout, Some(&mut cover));
         if let Some(why) = unrecorded(&r) {
             return Ok((false, why));
         }
@@ -664,7 +680,10 @@ impl Prepared {
         }
         std::fs::write(out, rec.to_jsonl()).map_err(|e| Error::io(out, e))?;
         // What the original ran while recording, for coverage.
-        let (mut kept, partial) = crate::coverage::keep(root, &self.inv, &tracer)?;
+        let (mut kept, partial) = crate::coverage::keep(root, &self.inv, &cover.tracer)?;
+        if let Some(p) = cover.scripts.kept() {
+            kept["programs"] = p;
+        }
         kept["recording"] = json!(rel(root, out));
         let kept_path = out.with_extension("coverage.json");
         let text = serde_json::to_string_pretty(&kept).unwrap_or_default() + "\n";
@@ -682,6 +701,14 @@ impl Prepared {
         if !partial.is_empty() {
             result["coverage_partial"] = json!(partial);
             result["coverage_note"] = json!(UNPACK_HINT);
+        }
+        let sc = &cover.scripts;
+        if !sc.programs.is_empty() {
+            result["programs"] = json!(sc.programs.iter().map(|(n, p)| json!({"name": n, "bytes_read": p.read.len(), "sites": p.sites.len(), "decisions": p.ways.len()})).collect::<Vec<_>>());
+        }
+        if sc.problem_count > 0 {
+            result["program_problems"] = json!(sc.problems);
+            result["program_problem_count"] = json!(sc.problem_count);
         }
         Ok((true, result))
     }
@@ -1292,18 +1319,115 @@ pub struct Quantities {
         let types: BTreeMap<String, Type> =
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
-        let mut t = tracer(&mut m);
-        let r = record(&mut m, &q, 1, &[], None, Duration::from_secs(60), Some(&mut t));
+        let mut c = Cover { tracer: tracer(&mut m), scripts: crate::script_cover::Scripts::new(&Default::default()) };
+        let r = record(&mut m, &q, 1, &[], None, Duration::from_secs(60), Some(&mut c));
+        let t = &c.tracer;
         assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
         assert_eq!(r.initial, Some([("x".to_string(), psx_scenario::Value::Int(1))].into()));
         assert_eq!(r.ticks[0].values, [("x".to_string(), psx_scenario::Value::Int(2))].into());
         assert!(r.ticks.len() > 10, "{} ticks", r.ticks.len());
         // What the recording keeps for coverage: every word of the loop, at
         // least once per tick (the last pass stops partway).
-        let words = crate::coverage::summed(&t);
+        let words = crate::coverage::summed(t);
         assert_eq!(words.len(), loop_.len());
         assert_eq!((words[3].0, words[3].1), (0x8001_000C, loop_[3]));
         assert!(words.iter().all(|w| w.2 as usize >= r.ticks.len()), "{words:x?}");
+    }
+
+    /// A toy interpreter: its program is 8 bytes at 0x80030000, of which it
+    /// runs the first 4 over and over; each byte is an `if`, taken when the
+    /// byte is 0. The tick ends at the store the `if` skips.
+    struct Toy;
+
+    impl psx_capture::Glossary for Toy {
+        type Glue = Glue;
+        const TITLE: &'static str = "Toy";
+        const IMAGE_SHA256: &'static str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        fn tick(&self, t: &mut psx_capture::Tick) {
+            t.store(0x8002_0010, 4).by(0x8001_0018);
+        }
+
+        fn quantities(&self, m: &psx_capture::Machine) -> Q {
+            Q { x: m.i32(0x8002_0000), dead: false }
+        }
+
+        fn programs(&self, p: &mut psx_capture::Programs, _m: &psx_capture::Machine) {
+            p.program("toy", 0x8003_0000, 8);
+        }
+
+        fn hooks(&self, h: &mut psx_capture::Hooks) {
+            h.at(0x8001_0008).branch(0x8001_0010);
+        }
+
+        fn hook(&self, at: psx_capture::Hook, m: &psx_capture::Machine, s: &mut psx_capture::Script) {
+            use psx_capture::reg::T2;
+            match at {
+                // The dispatch read the byte at t2.
+                psx_capture::Hook::At(_) => s.site("toy", m.reg(T2) - 0x8003_0000),
+                // The delay slot moved t2 on past the byte decided.
+                psx_capture::Hook::Branch { taken, .. } => s.way("toy", m.reg(T2) - 0x8003_0001, taken as u32, 2),
+            }
+        }
+    }
+
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn toy_call(what: u32, host: *const psx_capture::abi::Host) -> i32 {
+        // SAFETY: the caller's.
+        unsafe { psx_capture::abi::call(&Toy, what, host) }
+    }
+
+    #[test]
+    fn a_recording_keeps_what_the_binding_says_its_scripts_ran() {
+        let b: Plugin<Described> = Plugin::new(toy_call, None).unwrap();
+        assert_eq!(
+            (b.described().hooks.at.clone(), b.described().hooks.branch.clone()),
+            (vec![0x8001_0008], vec![0x8001_0010])
+        );
+        let mut m = Machine::new(vec![0; 0x8_0000]);
+        #[rustfmt::skip]
+        let interpreter = [
+            0x3C09_8002, // lui t1, 0x8002
+            0x3C0A_8003, // lui t2, 0x8003: the program
+            0x9148_0000, // lbu t0, 0(t2): the dispatch
+            0x0000_0000, // nop
+            0x1100_0002, // beq t0, zero, +2: the `if`
+            0x254A_0001, // addiu t2, t2, 1
+            0xAD28_0010, // sw t0, 0x10(t1): the tick ends
+            0x314B_0003, // andi t3, t2, 3
+            0x1560_FFF9, // bne t3, zero, the dispatch
+            0x0000_0000, // nop
+            0x0800_4001, // j 0x80010004: from the start of the program
+            0x0000_0000, // nop
+        ];
+        for (i, w) in interpreter.iter().enumerate() {
+            m.bus.ram[0x1_0000 + 4 * i..][..4].copy_from_slice(&u32::to_le_bytes(*w));
+        }
+        m.bus.ram[0x3_0000..0x3_0008].copy_from_slice(&[1, 0, 1, 1, 9, 9, 9, 9]);
+        m.cpu.set_pc(0x8001_0000);
+        let types: BTreeMap<String, Type> =
+            [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
+        let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
+        let mut c = Cover { tracer: tracer(&mut m), scripts: crate::script_cover::Scripts::new(&b.described().hooks) };
+        let r = record(&mut m, &q, 2, &[], None, Duration::from_secs(60), Some(&mut c));
+        assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
+        assert!(c.scripts.problems.is_empty(), "{:?}", c.scripts.problems);
+        let toy = &c.scripts.programs["toy"];
+        assert_eq!(toy.bytes, Some(8));
+        assert_eq!(toy.read, [0, 1, 2, 3].into(), "the last 4 bytes are never read");
+        assert_eq!(toy.sites.keys().copied().collect::<Vec<_>>(), [0, 1, 2, 3]);
+        let ways: Vec<(u32, Vec<u32>)> = toy
+            .ways
+            .iter()
+            .map(|(&a, (of, w))| {
+                assert_eq!(*of, 2);
+                (a, w.iter().copied().collect())
+            })
+            .collect();
+        assert_eq!(ways, [(0, vec![0]), (1, vec![1]), (2, vec![0]), (3, vec![0])]);
+        let kept = c.scripts.kept().unwrap();
+        assert_eq!(kept[0]["read"], json!([["0x0", "0x4"]]));
+        assert_eq!(kept[0]["ways"][1], json!(["0x1", 2, [1]]));
     }
 
     #[test]

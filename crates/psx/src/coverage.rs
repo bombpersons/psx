@@ -557,7 +557,13 @@ pub(crate) struct FeatureBranches {
 pub(crate) fn feature_branches(ctx: &Ctx, inv: &Value, recordings: &[PathBuf], code: &[u32]) -> FeatureBranches {
     let mut out = FeatureBranches::default();
     let mut c = match images(&ctx.root, inv) {
-        Ok(images) => Corpus { images, runs: Vec::new(), calls: Vec::new(), missing: BTreeMap::new() },
+        Ok(images) => Corpus {
+            images,
+            runs: Vec::new(),
+            calls: Vec::new(),
+            missing: BTreeMap::new(),
+            scripts: Default::default(),
+        },
         Err(e) => {
             out.problems.push(format!("the inventory's code: {}", e.message));
             return out;
@@ -931,6 +937,8 @@ struct Corpus {
     calls: Vec<Vec<(u32, i64, i64)>>,
     /// Executed words no image holds, by address, with the runs that executed them.
     missing: BTreeMap<u32, BTreeSet<usize>>,
+    /// The scripts recordings kept (traced runs keep none).
+    scripts: crate::script_cover::Merged,
 }
 
 /// What to say when code ran that the inventory knows only from what ran
@@ -970,6 +978,7 @@ fn recording(c: &mut Corpus, r: usize, path: &Path) -> crate::Result<Value> {
         return Err(Error::malformed(format!("{}: not a recording's coverage", kept.display())));
     }
     let (missing, per, stale) = credit_kept(&mut c.images, r, &doc);
+    c.scripts.add(&doc, &path.display().to_string());
     for a in &missing {
         c.missing.entry(*a).or_default().insert(r);
     }
@@ -989,8 +998,13 @@ fn recording(c: &mut Corpus, r: usize, path: &Path) -> crate::Result<Value> {
 
 /// Credits the traced runs and recordings `dirs` to the inventory `inv`'s images.
 fn corpus(ctx: &Ctx, inv: &Value, dirs: &[PathBuf]) -> crate::Result<Corpus> {
-    let mut c =
-        Corpus { images: images(&ctx.root, inv)?, runs: Vec::new(), calls: Vec::new(), missing: BTreeMap::new() };
+    let mut c = Corpus {
+        images: images(&ctx.root, inv)?,
+        runs: Vec::new(),
+        calls: Vec::new(),
+        missing: BTreeMap::new(),
+        scripts: Default::default(),
+    };
     for (r, given) in dirs.iter().map(|d| at(ctx, d)).enumerate() {
         if given.extension().is_some_and(|e| e == "jsonl") {
             let row = recording(&mut c, r, &given)?;
@@ -1030,7 +1044,7 @@ fn corpus(ctx: &Ctx, inv: &Value, dirs: &[PathBuf]) -> crate::Result<Corpus> {
 impl CoverageArgs {
     fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
         let (inv_path, inv) = inventory(ctx, self.inventory.as_deref())?;
-        let Corpus { images, runs, calls, missing } = corpus(ctx, &inv, &self.runs)?;
+        let Corpus { images, runs, calls, missing, scripts } = corpus(ctx, &inv, &self.runs)?;
 
         // An overlay's functions are an image each: reported together.
         let mut totals = Totals::default();
@@ -1105,6 +1119,7 @@ impl CoverageArgs {
             "inventory": {"path": inv_path, "made": inv["made"]},
         "how": "each run's executed words, credited to the executable or overlay whose code holds that instruction at that address; a block is executed when any of its words is; a conditional branch's ways (taken, fell through) are the ones a run took where its word was credited, and branch_ways_missed lists each branch with a way no run took (never ran, never taken, never fell through); runs are indices into runs; each run's recipe (the named state it started from, its arguments, its executed.bin's sha256) is what coverage check runs again",
             "runs": runs, "totals": summary["totals"], "in_no_image": no_image, "images": out_images,
+            "programs": scripts.summary(), "program_problems": scripts.problems,
         });
         if let Some(d) = out.parent() {
             std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
@@ -1115,6 +1130,7 @@ impl CoverageArgs {
             "out": out, "totals": summary["totals"], "words_in_no_image": summary["words_in_no_image"],
             "images": doc["images"].as_array().into_iter().flatten().map(|i| json!({"name": i["name"], "bounded_by": i["bounded_by"], "totals": i["totals"]})).collect::<Vec<_>>(),
             "runs": runs.iter().map(|r| json!({"run": r["run"], "words_executed": r["words_executed"], "words_in_no_image": r["words_in_no_image"], "branches_recorded": r["branches_recorded"], "no_recipe": r["no_recipe"]})).collect::<Vec<_>>(),
+            "programs": doc["programs"].as_array().into_iter().flatten().map(|p| json!({"name": p["name"], "bytes": p["bytes"], "bytes_read": p["bytes_read"], "decisions": p["decisions"], "decisions_with_ways_never_taken": p["decisions_with_ways_never_taken"]})).collect::<Vec<_>>(),
             "next": "read the coverage for each function's unexecuted blocks and branch_ways_missed: classify them, or record the corpus reaching them; runs without branches_recorded were traced by an older psx (trace them again for their branch ways); executed_outside_functions and in_no_image mean the inventory missed code (take it again with these runs as ram)",
         }))
         .map(|mut r| {
@@ -1288,6 +1304,7 @@ impl CoverageDiffArgs {
             .into_iter()
             .map(|(s, e)| json!({"start": hex(s), "end": hex(e), "words": (e - s) / 4}))
             .collect();
+        let programs = a.scripts.diff(&b.scripts);
         let unbranched: Vec<&Value> =
             a.runs.iter().chain(&b.runs).filter(|r| r["branches_recorded"] == false).map(|r| &r["run"]).collect();
         let totals = json!({
@@ -1304,6 +1321,7 @@ impl CoverageDiffArgs {
             "runs": a.runs.iter().map(|r| &r["run"]).collect::<Vec<_>>(),
             "against": b.runs.iter().map(|r| &r["run"]).collect::<Vec<_>>(),
             "totals": totals, "only": only, "further": further, "in_no_image": no_image,
+            "programs": programs,
         });
         if let Some(d) = out.parent() {
             std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
@@ -1317,6 +1335,13 @@ impl CoverageDiffArgs {
         });
         if let Some(hint) = unheld(&inv, &json!(null), no_image.len() as u64) {
             r["code_not_held"] = hint;
+        }
+        if !doc["programs"].as_array().is_none_or(Vec::is_empty) {
+            r["programs"] = doc["programs"].clone();
+        }
+        let problems: Vec<&String> = a.scripts.problems.iter().chain(&b.scripts.problems).collect();
+        if !problems.is_empty() {
+            r["program_problems"] = json!(problems);
         }
         if !unbranched.is_empty() {
             r["branches_not_recorded"] = json!(unbranched);

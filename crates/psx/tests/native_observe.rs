@@ -64,10 +64,9 @@ fn samples_reproduce_the_recorded_jump_and_pokes_take_effect() {
     assert_eq!(r["status"], "complete", "{r}");
     assert_eq!(r["frames"]["start"], 3900);
     let csv = std::fs::read_to_string(dir.join("jump/samples.csv")).unwrap();
-    let recorded = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/megaman8_jump_hold.csv"),
-    )
-    .unwrap();
+    let recorded =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/megaman8_jump_hold.csv"))
+            .unwrap();
     let ys = column(&csv, "y");
     let mut ticks = 0;
     for line in recorded.lines().filter(|l| !l.starts_with('#')) {

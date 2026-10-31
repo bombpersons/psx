@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::Error;
+use crate::script_cover::Stretch;
 
 pub mod assets;
 pub mod check;
@@ -132,13 +133,16 @@ pub struct Entry {
     #[serde(default)]
     pub depends: Vec<String>,
     /// The original's functions that are the feature, by entry address:
-    /// found with psx (coverage diff, watches), each one the inventory has.
+    /// found with psx (coverage diff, watches), each one the inventory has;
+    /// and stretches of script programs the glossary's binding names
+    /// (`croc+0x1803..0x18A0`).
     #[serde(default)]
     pub code: Vec<String>,
     #[serde(default)]
     pub recordings: Recordings,
-    /// Branches of its code no recording can reach, by address, and why;
-    /// the person confirms them (`port confirm`).
+    /// Branches of its code no recording can reach, by address (or a
+    /// script position or stretch in one of its code's), and why; the
+    /// person confirms them (`port confirm`).
     #[serde(default)]
     pub wont_reach: BTreeMap<String, String>,
     /// What is not known yet about the feature.
@@ -314,15 +318,28 @@ fn entry_problems(e: &Entry, out: &mut Vec<Problem>) {
     }
     let mut code = BTreeSet::new();
     for c in &e.code {
-        match entry_addr(c) {
-            None => out.push(problem(f, format!("code: {c:?} is not an address (0x8002D810)"))),
-            Some(a) if !code.insert(a) => out.push(problem(f, format!("code: {c} is listed twice"))),
-            Some(_) => {}
+        match (entry_addr(c), Stretch::parse(c)) {
+            (None, None) => out.push(problem(
+                f,
+                format!("code: {c:?} is not an address (0x8002D810) or a script stretch (croc+0x1803..0x18A0)"),
+            )),
+            (Some(a), _) if !code.insert(a) => out.push(problem(f, format!("code: {c} is listed twice"))),
+            _ => {}
         }
     }
+    let script: Vec<Stretch> = e.code.iter().filter_map(|c| Stretch::parse(c)).collect();
     for (a, why) in &e.wont_reach {
-        if entry_addr(a).is_none() {
-            out.push(problem(f, format!("wont_reach: {a:?} is not an address (0x8002D820)")));
+        match (entry_addr(a), Stretch::parse(a)) {
+            (None, None) => out.push(problem(
+                f,
+                format!(
+                    "wont_reach: {a:?} is not an address (0x8002D820) or a script position or stretch (croc+0x18F0)"
+                ),
+            )),
+            (None, Some(w)) if !script.iter().any(|s| s.contains(&w)) => {
+                out.push(problem(f, format!("wont_reach: {a} is in no script stretch code lists")))
+            }
+            _ => {}
         }
         if why.trim().is_empty() {
             out.push(problem(f, format!("wont_reach.{a}: no reason: why no recording can reach it")));
@@ -391,8 +408,12 @@ impl Port {
                 }
             }
         }
-        let naming: Vec<&Entry> =
-            self.entries.values().filter(|e| !e.code.is_empty() || !e.wont_reach.is_empty()).collect();
+        // Script stretches are the binding's programs': only addresses are the inventory's.
+        let naming: Vec<&Entry> = self
+            .entries
+            .values()
+            .filter(|e| e.code.iter().chain(e.wont_reach.keys()).any(|c| entry_addr(c).is_some()))
+            .collect();
         let loaders: Vec<&assets::Format> = self.formats.values().filter(|f| !f.loader.is_empty()).collect();
         if !naming.is_empty() || !loaders.is_empty() {
             let ctx = crate::commands::Ctx { root: root.to_path_buf(), cancel: None };
@@ -760,7 +781,7 @@ pub(crate) mod tests {
             [
                 "recordings: \"jump\" is not <scenario>/<name>",
                 "recordings: jump/stomp is listed twice (work and held_out are apart)",
-                "code: \"jump\" is not an address (0x8002D810)",
+                "code: \"jump\" is not an address (0x8002D810) or a script stretch (croc+0x1803..0x18A0)",
                 "code: 0x8002D810 is listed twice",
                 "wont_reach.0x8002D820: no reason: why no recording can reach it",
                 "questions: an empty question",
@@ -771,6 +792,18 @@ pub(crate) mod tests {
         );
         let e = &port.entries["F-0001"];
         assert_eq!(e.scenarios(), ["jump"]);
+        // Script stretches need no inventory; a wont_reach in one lies in a stretch code lists.
+        let fields = "code = [\"croc+0x1803..0x18A0\"]\n[wont_reach]\n\"croc+0x1890\" = \"wall contact\"\n\
+            \"croc+0x2000\" = \"elsewhere\"\n\"croc+\" = \"bad\"";
+        let (_d, port) = workspace(goal, &[("F-0001.md", &entry(fields))]);
+        let p: Vec<&str> = port.problems.iter().map(|p| p.problem.as_str()).collect();
+        assert_eq!(
+            p,
+            [
+                "wont_reach: \"croc+\" is not an address (0x8002D820) or a script position or stretch (croc+0x18F0)",
+                "wont_reach: croc+0x2000 is in no script stretch code lists",
+            ]
+        );
         // The old YAML front matter, and an unknown field, say what is wrong.
         let (_d, port) = workspace(goal, &[("F-0001.md", "---\nid: F-0001\n---\n")]);
         assert!(port.problems[0].problem.contains("TOML between +++ lines"), "{:?}", port.problems);

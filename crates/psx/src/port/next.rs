@@ -16,6 +16,7 @@ use super::verdict::{self, State};
 use super::{Confirmation, Port, Stage};
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
+use crate::script_cover::Stretch;
 
 /// The workspace's commit.
 #[derive(Debug, Clone, Default)]
@@ -47,30 +48,60 @@ impl Git {
     }
 }
 
-/// A conditional branch of a feature's code, as its recordings ran it.
+/// Where a branch of a feature's code is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Place {
+    /// A conditional branch of its machine code, in the function at `function`.
+    Code { pc: u32, function: u32 },
+    /// A stretch of a script program it names: one read or never read, or
+    /// a decision (docs/script-coverage-design.md).
+    Script(Stretch),
+}
+
+/// A branch of a feature's code, as its recordings ran it: a conditional
+/// branch of its machine code, or a stretch or decision of its script.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
-    pub pc: u32,
-    /// The entry of the function holding it.
-    pub function: u32,
-    /// The ways its recordings took: 1 taken, 2 fell through.
-    pub ways: u8,
+    pub at: Place,
+    /// What no recording did there ("fell through", "read", "went way 1
+    /// of 2"); empty when they did it all.
+    pub never: String,
     /// Listed under wont_reach: whether the person confirmed it as it stands.
     pub wont_reach: Option<bool>,
 }
 
 impl Branch {
-    pub fn resolved(&self) -> bool {
-        self.ways == 3 || self.wont_reach == Some(true)
-    }
-
-    /// What no recording did there.
-    pub fn never(&self) -> &'static str {
-        match self.ways {
+    /// A conditional branch of machine code whose recordings took `ways`
+    /// (1 taken, 2 fell through).
+    pub fn code(pc: u32, function: u32, ways: u8, wont_reach: Option<bool>) -> Branch {
+        let never = match ways {
             0 => "ran",
             1 => "fell through",
             2 => "taken",
             _ => "",
+        };
+        Branch { at: Place::Code { pc, function }, never: never.into(), wont_reach }
+    }
+
+    pub fn resolved(&self) -> bool {
+        self.never.is_empty() || self.wont_reach == Some(true)
+    }
+
+    /// What no recording did, and where.
+    pub fn describe(&self) -> String {
+        match &self.at {
+            Place::Code { pc, function } => {
+                format!("the branch at {} (in {}) never {}", hex(*pc), hex(*function), self.never)
+            }
+            Place::Script(s) if self.never == "read" => format!("the script's bytes {s} were never read"),
+            Place::Script(s) => format!("the script's decision at {s} never {}", self.never),
+        }
+    }
+
+    fn json(&self) -> Value {
+        match &self.at {
+            Place::Code { pc, function } => json!({"pc": hex(*pc), "function": hex(*function), "never": self.never}),
+            Place::Script(s) => json!({"at": s.to_string(), "never": self.never}),
         }
     }
 }
@@ -190,7 +221,7 @@ impl Feature {
             .filter(|b| !b.resolved())
             .take(if all { usize::MAX } else { 5 })
             .map(|b| {
-                let mut v = json!({"pc": hex(b.pc), "function": hex(b.function), "never": b.never()});
+                let mut v = b.json();
                 if b.wont_reach == Some(false) {
                     v["wont_reach"] = json!("not confirmed by the person");
                 }
@@ -312,26 +343,32 @@ impl Facts {
                     crate::scenario::feature_unready(root, e)
                 };
                 let mut branches = Vec::new();
-                if let (Some(inv), false, false) = (&inv, e.code.is_empty(), e.recordings.work.is_empty()) {
-                    let paths: Vec<PathBuf> = e
-                        .recordings
-                        .all()
-                        .filter_map(|r| r.split_once('/'))
-                        .map(|(s, n)| root.join("scenarios").join(s).join(format!("{n}.jsonl")))
-                        .collect();
-                    let code: Vec<u32> = e.code.iter().filter_map(|c| super::entry_addr(c)).collect();
+                let paths: Vec<PathBuf> = e
+                    .recordings
+                    .all()
+                    .filter_map(|r| r.split_once('/'))
+                    .map(|(s, n)| root.join("scenarios").join(s).join(format!("{n}.jsonl")))
+                    .collect();
+                let mine = confirmed.get(&id);
+                // The person confirmed the key as it stands.
+                let agreed = |k: &String| mine.and_then(|m| m.get(k)) == e.wont_reach.get(k);
+                let code: Vec<u32> = e.code.iter().filter_map(|c| super::entry_addr(c)).collect();
+                if let (Some(inv), false, false) = (&inv, code.is_empty(), e.recordings.work.is_empty()) {
                     let fb = crate::coverage::feature_branches(&ctx, inv, &paths, &code);
                     unrecorded.extend(fb.problems);
-                    let mine = confirmed.get(&id);
-                    branches = fb
-                        .branches
-                        .into_iter()
-                        .map(|(pc, function, ways)| {
-                            let key = e.wont_reach.keys().find(|k| super::entry_addr(k) == Some(pc));
-                            let wont_reach = key.map(|k| mine.and_then(|m| m.get(k)) == e.wont_reach.get(k));
-                            Branch { pc, function, ways, wont_reach }
-                        })
-                        .collect();
+                    branches.extend(fb.branches.into_iter().map(|(pc, function, ways)| {
+                        let key = e.wont_reach.keys().find(|k| super::entry_addr(k) == Some(pc));
+                        Branch::code(pc, function, ways, key.map(agreed))
+                    }));
+                }
+                let script: Vec<Stretch> = e.code.iter().filter_map(|c| Stretch::parse(c)).collect();
+                if !script.is_empty() && !e.recordings.work.is_empty() {
+                    let (items, problems) = crate::script_cover::items(&crate::script_cover::merged(&paths), &script);
+                    unrecorded.extend(problems);
+                    branches.extend(items.into_iter().map(|i| {
+                        let key = e.wont_reach.keys().find(|k| Stretch::parse(k).is_some_and(|w| w.contains(&i.at)));
+                        Branch { at: Place::Script(i.at), never: i.never, wont_reach: key.map(agreed) }
+                    }));
                 }
                 let verdict = verdict::state(root, &id, head);
                 let results = |names: &[String]| -> Vec<(String, Option<Vec<String>>)> {
@@ -503,14 +540,9 @@ impl Facts {
             return Item::agent(
                 "Cover",
                 Some(&f.id),
-                format!(
-                    "the branch at {} (in {}) never {} in its recordings; {n} branches of its code are unresolved",
-                    hex(b.pc),
-                    hex(b.function),
-                    b.never()
-                ),
+                format!("{} in its recordings; {n} branches of its code are unresolved", b.describe()),
                 "every branch of its code is taken both ways by its recordings, or listed under wont_reach",
-                "read the branch's condition (code disasm) and work out what reaches the other way in game terms; record that (psx scenario record) and name it under recordings, or when it cannot be scripted ask the person to play it (psx scenario play); when no recording can reach it, list it under wont_reach with why",
+                "read the branch's condition (code disasm; for a script's stretch or decision, your own reading of the program) and work out what reaches the other way in game terms; record that (psx scenario record) and name it under recordings, or when it cannot be scripted ask the person to play it (psx scenario play); when no recording can reach it, list it under wont_reach with why",
             );
         }
         if let Some(f) = find(&|f| f.branches.iter().any(|b| !b.resolved())) {
@@ -813,7 +845,7 @@ impl Facts {
             s.push_str(&format!("  {title:<width$}  {stage:<10} {}{mark}\n", f.summary()));
             let indent = " ".repeat(width + 4);
             if let Some(b) = f.branches.iter().find(|b| !b.resolved()) {
-                s.push_str(&format!("{indent}uncovered: {} never {} (in {})\n", hex(b.pc), b.never(), hex(b.function)));
+                s.push_str(&format!("{indent}uncovered: {}\n", b.describe()));
             }
             for q in f.questions.iter().take(2) {
                 s.push_str(&format!("{indent}open: {q}\n"));
@@ -1062,7 +1094,7 @@ mod tests {
         set(&mut f, "F-0002", |x| x.questions = vec!["does it snap while rising?".into()]);
         assert_eq!(next(&f), ("Answer", "agent", "F-0002".into()));
         set(&mut f, "F-0002", |x| x.questions.clear());
-        let branch = |wont_reach| Branch { pc: 0x8002_D820, function: 0x8002_D810, ways: 1, wont_reach };
+        let branch = |wont_reach| Branch::code(0x8002_D820, 0x8002_D810, 1, wont_reach);
         set(&mut f, "F-0001", |x| x.branches = vec![branch(None); 7]);
         let short = f.features[0].branches_json(false);
         assert_eq!(
@@ -1075,6 +1107,22 @@ mod tests {
         assert!(f.next().why.starts_with("the branch at 0x8002D820 (in 0x8002D810) never fell through"));
         set(&mut f, "F-0001", |x| x.branches = vec![branch(Some(false))]);
         assert_eq!(next(&f), ("Confirm", "person", "F-0001".into()));
+        let script = Branch {
+            at: Place::Script(Stretch::parse("croc+0x3..0x8").unwrap()),
+            never: "read".into(),
+            wont_reach: None,
+        };
+        set(&mut f, "F-0001", |x| x.branches = vec![script]);
+        assert_eq!(next(&f), ("Cover", "agent", "F-0001".into()));
+        assert!(
+            f.next().why.starts_with("the script's bytes croc+0x3..0x8 were never read in its recordings"),
+            "{}",
+            f.next().why
+        );
+        assert_eq!(
+            f.features[0].branches_json(false)["unresolved"][0],
+            json!({"at": "croc+0x3..0x8", "never": "read"})
+        );
         set(&mut f, "F-0001", |x| x.branches = vec![branch(Some(true))]);
         // Every feature finished: one review of the code as a whole.
         assert_eq!(next(&f), ("Review", "agent", String::new()));
