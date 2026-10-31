@@ -1,87 +1,88 @@
-Start from an observation: a sampled value, writer PC, read access or CD load.
-run supports sample, watch, watch_reads, trace and trace_cd.
-run with trace_cd maps CD DMA transfers to disc files (loads.json) and checks
-final RAM residency; it does not follow every later CPU copy or decompression
-into its final destination.
+Start from an observation: a sampled value, a writer's PC, a read, a CD
+load. Ghidra's names and pseudocode, and every heuristic here, are
+hypotheses to check against the instructions and what runs do (MIPS delay
+slots, GTE operations).
 
-code_disasm requires source (a host EXE or disc.cue::/PATH), ram (run directory or
-ram.bin), or both. text:true avoids duplicate instruction JSON. function selects
-a heuristic function extent; read its boundary evidence, stop reason and
-truncation warnings. function_budget limits discovery; count limits the listing.
-code_xrefs finds static callers/references, with limited indirect-reference coverage.
-listing.next_addr continues a code_disasm listing. code_xrefs accepts a hex address or a
-LO-HI range (a whole struct) and also reports aligned data words equal to the
-address (pointer/jump tables; no_data skips them); give gp for RAM-only scans.
-An address built in main RAM's KUSEG mirror (lui 0x8 + addiu for 0x0008xxxx)
-counts as the same address.
-A busy global (an input word, a flags word) has hundreds: kind keeps loads or
-stores, and bits=MASK keeps the loads whose value is tested with those bits
-(andi, or and with a constant), each with the bits it tests. Loads that
-compare the whole word (any button at all) are not bit tests.
+## Finding things in RAM
 
-Finding a feature's code: trace runs that do the thing (walking, a jump)
-and runs from the same state that do not (standing still), or use scenario
-recordings (each .jsonl keeps its coverage beside it), take
-code_inventory with one of them as ram, then code_coverage_diff runs=[the
-ones doing it] against=[the others]. only lists the functions only they
-executed; further lists, in functions both reached, the blocks and branch
-ways (taken, fell through) only they took. Both are candidates to read with
-code_disasm or code_decompile. More against runs (other actions) leave out
-more shared code. Swap the two sets for what the feature skips.
+ram_search keeps the addresses whose values satisfy pred between
+consecutive snapshots (changed, unchanged, increased, decreased, delta=N;
+one for all pairs or one per pair), exact values per snapshot ("441,*,376")
+or a between range; save writes the matches and candidates narrows a later
+search to them. ram_view reads a struct across snapshots; ram_diff
+clusters nearby changes between two.
 
-ram_search keeps addresses whose values satisfy pred between consecutive
-snapshots (one predicate for all pairs or one per pair), exact values per
-snapshot ("441,*,376") or a between range. save writes matches and candidates
-restricts a later search to them, narrowing over rounds. ram_view reads a struct
-across snapshots; ram_diff clusters nearby changes between two snapshots.
+- The player: search 32-bit values for its position while it moves one way
+  (width=4, between, increased), then narrow. Its other fields are near it:
+  ram_view the struct across snapshots.
+- Input: hold one button and diff against holding none for the game's input
+  word; a write watch gives the routine that writes it, code_xrefs on it the
+  readers, where behaviour starts. code_xrefs bits=MASK keeps the loads
+  tested with one button's bit.
+- Arrays of objects: one element found, the others are a stride apart;
+  code_xrefs on its address often finds the table's base.
+- An object at another address in each level: find it in two, then search
+  for a word holding its address in both (with or without its 80 prefix);
+  the glossary's binding reads it through that pointer.
+- The tick: run with find_tick (topic run).
 
-code_decompile takes source plus addr and imports/analyzes automatically.
-Reuse its analysis handle for further functions, references and pseudocode.
-For runtime overlays, supply ram with explicit ranges and entries, and gp when
-known. Same-analysis queries queue within deadlines; a project open in the
-Ghidra GUI is an error until it is closed. A query interrupted (its psx
-killed, or a deadline) is dealt with by the next query on that analysis,
-which stops what is left of it; its result says so under recovered. Leave
-lock files alone: removing one by hand loses that record.
+## Reading code
 
-Functions reached only through a table (per-state handlers, object update
-routines, a jump table's cases) are often missing from an analysis of the
-EXE: nothing calls them directly. Seed a RAM analysis with the table:
-1. Find a table. A trace's "-> target (from pc)" lines show the jump into
-   one handler; code_xrefs on that handler's address lists the aligned data word
-   holding it, which is inside the table. Or decompile the dispatcher: a
-   call through table[state] names the base.
-2. Read it from a run's RAM with ram_view fmt=x32 from the base: entries are
-   code addresses (80xxxxxx inside the code range), and the first word that
-   is not one ends the table. The state or kind numbers index it.
-3. code_functions with ram (that run's directory), range (the code range
-   holding the entries: the EXE's text, or the overlay's) and entry once per
-   table entry; gp comes from the run's registers. The new analysis has the
-   handlers as functions, named by entry address, and what they call;
-   decompile them there.
+code_disasm takes source (a host EXE or disc.cue::/PATH), ram (a run
+directory or ram.bin), or both; function selects a heuristic function
+extent (read its boundary evidence and stop reason), text:true gives
+lines, listing.next_addr continues.
 
-code_symbols names matching PsyQ library code, not every game function. Low coverage
-alone does not prove a bad match; ambiguous signatures are skipped. Ghidra names
-and pseudocode are hypotheses to check against instructions and runtime behavior,
-especially MIPS delay slots and COP2/GTE operations. Use code_annotate for
-named findings; the body-bound names it exports can be checked
-against resident bytes in native traces. An address alone cannot identify overlays.
+code_xrefs finds references to an address or a LO-HI range: jal, j and
+branch targets, lui pairs, gp-relative accesses, and aligned data words
+holding the address (pointer and jump tables; no_data skips them). Give gp
+for RAM. A busy global has hundreds: kind keeps loads or stores, bits=MASK
+the loads tested with those bits.
 
-Decompressed code. code_inventory reads an overlay no file holds only around the
-code found in it (bounded_by found_code), and coverage counts only the
-functions found there (code_not_held says so). When such code was decompressed
-from the disc, give code_inventory the decompressed bytes to read it whole:
-1. Find what wrote it: run with watch on one of its addresses gives the
-   writer's pc; code_disasm it (and what calls it) for the format and the disc
-   data it reads.
-2. Write a decompressor and decompress that data into a directory with an
-   unpacked.json:
+code_decompile takes source and addr, importing and analysing on first use;
+reuse its analysis handle. For overlays give ram with ranges, entries and
+gp. A project open in the Ghidra GUI is an error until closed. A query cut
+short (a deadline, a killed psx) is recovered by the next one; a lock left
+by a dead process (psx.lock under .psx/ghidra/) is removed by hand only
+after checking its pid is gone. code_annotate applies names and comments
+and exports them as symbols for run, disasm and xrefs. code_symbols names
+PsyQ library code by signature, not the game's own functions.
+
+Functions reached only through a table (state handlers, object updates, a
+jump table's cases) are often missing from an analysis of the EXE. Seed one
+from RAM:
+1. Find the table: a trace's "-> target (from pc)" shows the jump into one
+   handler; code_xrefs on that handler gives the data word holding it.
+2. ram_view fmt=x32 from the base: entries are code addresses; the first
+   word that is not one ends the table.
+3. code_functions with ram, range (the code holding them) and entry once
+   per table entry, gp from the run's registers; decompile them there.
+
+## The inventory and coverage
+
+code_inventory lists every function of every executable on the disc and of
+the overlays in RAM snapshots (traced runs), with blocks and instruction
+counts. Take it before recording: recordings credit their coverage to it.
+
+code_coverage reads traced runs and recordings (.jsonl): per function, the
+blocks run and not, and branch_ways_missed. code_coverage_diff runs=[...]
+against=[...]: only lists the functions only the first set ran, further the
+blocks and branch ways (taken, fell through) only they took in functions
+both reached. To find a feature's code, diff runs or recordings doing it
+(walking, a jump) against runs from the same state not doing it; more
+against runs (other actions) leave out more shared code. Swap the sets for
+what the feature skips.
+
+## Compressed code
+
+The inventory reads an overlay no disc file holds only around the code that
+ran (bounded_by found_code), and coverage counts only that (code_not_held);
+port_next gives Unpack. Read it whole from the decompressed bytes:
+1. watch one of its addresses: the writer's pc is the decompressor;
+   code_disasm it and its callers for the format and the disc data read.
+2. Decompress that data into a directory with an unpacked.json:
      {"files": [{"file": "menu.bin", "source": "/DATA.VOL",
                  "offset": 81920, "length": 23104}]}
-   (file holds what length bytes of source at offset decompress to).
-3. code_inventory --unpacked DIR --ram RUN ... An unpacked file names the code
-   RAM holds as its bytes, like a disc file, and is read over that extent.
-   The inventory's unpacked list says per file whether RAM held its code
-   (in_ram, and the overlays it names). One that did not was decompressed
-   wrongly, holds no code, or no run loaded it: only bytes RAM held are
-   read, so a wrong decompressor adds nothing.
+3. code_inventory with unpacked DIR and the run's ram. Its unpacked list
+   says per file whether RAM held its code (in_ram); only bytes RAM held
+   are read, so a wrong decompressor adds nothing.

@@ -101,7 +101,7 @@ pub fn report(c: &Census) -> (Value, Value) {
         stores its variables once a tick, so the tick's group is usually the first whose fields_by_stores \
         varies (a group stored once in every field is the field rate). In that group a counter \
         (or a steady step) is the glossary binding's tick: t.store(its write).by(its pc). \
-        Check it as guide topic fields says.";
+        Check it as guide topic run says (find_tick).";
     let mut warnings = Vec::new();
     if fields < 60 {
         warnings.push("fewer than 60 fields: run longer, in play".to_string());

@@ -44,7 +44,7 @@ pub fn glossary(root: &Path) -> Result<Glossary, Vec<String>> {
     let mut problems = Vec::new();
     if root.join("glossary.toml").is_file() {
         problems.push(
-            "glossary.toml: no longer read: the glossary is Rust, glossary/ and glossary/binding/ (docs/scenarios.md)"
+            "glossary.toml: no longer read: the glossary is Rust, glossary/ and glossary/binding/ (psx guide, Recordings)"
                 .to_string(),
         );
     }
@@ -1191,7 +1191,7 @@ pub struct Quantities {
         assert_eq!(
             glossary(root).unwrap_err(),
             [
-                "glossary.toml: no longer read: the glossary is Rust, glossary/ and glossary/binding/ (docs/scenarios.md)",
+                "glossary.toml: no longer read: the glossary is Rust, glossary/ and glossary/binding/ (psx guide, Recordings)",
                 "glossary/binding: not written yet"
             ]
         );

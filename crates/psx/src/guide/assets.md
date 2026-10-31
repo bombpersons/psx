@@ -1,72 +1,56 @@
-Use disc_ls with filter/offset/limit to orient yourself, then assets_scan on a narrow
-source or filename filter. Scan totals cover the selected scope; page and coverage
-describe returned rows and what was actually inspected. No standard TIM/TMD/VAB/VAG
-hits does not prove that a game has no textures, models or audio.
-Host directories are expanded recursively in sorted path order, without following
-symlinks. Each file retains its provenance and sibling .DIR/.VB lookup. Use the
-same source syntax for extraction and additional texture sources.
+The port's assets come from the player's disc through tools/import (the
+overview's Assets: formats, importers, checks). These commands find and read
+what the disc holds.
 
-assets_extract converts validated hits to PNG, glTF or WAV and retains source
-bytes/provenance. Select kinds, an offset or an archive entry when appropriate.
-Extraction returns paged results (limit/report_offset), or brief:true summary
-counts. The complete content-bound manifest and next_call let read
-continue without repeating conversion. Nested output lists are bounded too;
-inspect the manifest with a JSON pointer for omitted rows. Narrow source/kinds
-to avoid converting unnecessary assets; originals and provenance are retained.
-TMD details and summary.skipped_primitives report omitted geometry, with a warning
-when conversion skips primitive types or packet layouts. Runtime FIXP size:0 means
-the model uses relocated pointers, not that its geometry is empty. Gs-style
-preprocessed primitive runs need an explicit model/asset parser; the standard
-scanner does not infer their packet lengths or guarantee discovery.
+## The disc
 
-Sounds: VAB/VAG extraction reports adpcm_sha256 per waveform. run with
-trace_spu logs which voice keyed on which sample when (spu.jsonl), with the
-same hash as sample_sha256, the key-on PC and the sample's main RAM source when
-its upload was traced. Match the two to name the bank and waveform behind a
-gameplay sound; banks often share waveforms, so one hash may match several.
-Key-ons usually come from one sound-driver routine; trace the request (watch
-the driver's queue) to find the gameplay code that asked for a sound.
+disc_info gives tracks, volume, SYSTEM.CNF and the boot EXE (and the
+track hashes that identify the release); disc_ls lists entries with
+filters and paging; disc_exe parses an EXE (image.cue::/PATH). disc_extract
+writes a file, or with offset and length returns just those bytes inline
+(hex up to 0x100) without extracting a large volume file; Form 2 files come
+out as raw 2352-byte sectors (.raw). disc_sector describes sectors: form,
+XA subheader, owning file. Images: .cue with its .bin, a raw .bin, .iso or
+CD .chd. LibCrypt discs need the redump .sbi or .lsd beside the image.
 
-Archives: validated DOT-T sector archives and Croc sibling .DIR indexes are
-recognised automatically; archive:dot-t forces validation and archive:none
-disables indexing. files[].archive lists every zero-based entry, including empty
-ones; hits keep the parent-file offset plus entry index and relative offset.
-assets_extract entry:N writes one complete raw entry without interpreting it
-(one source file; not with offset, kinds or textures). ram_base overrides RAM
-address mapping for dumps. TMD textures come from this file or extra textures
-sources; texture_parser adapts those sources first.
+## Standard formats
 
-Custom containers, compression and models need format evidence. An external
-parser (docs/external-parsers.md) is any executable: archive parsers index unchanged
-source spans; asset parsers unwrap/decompress standard payloads or raw VRAM
-uploads; model parsers produce validated geometry. Parser flags have separate
-roles; consult the protocol rather than copying internal Rust structs
-into JSON. Inspect errors and stderr; do not silently fall back after a parser
-failure. Retain original offsets, hashes and parser provenance.
+assets_scan lists TIM, TMD, VAB and VAG found by signature and validation;
+narrow it with source and filter. No hits does not mean the game has no
+textures, models or sounds: most games use their own formats.
+assets_extract converts what scan finds (TIM to PNG per CLUT, TMD to glTF,
+VAB and VAG to WAV), keeping the original bytes and provenance beside each;
+brief, limit and report_offset page it. TMD's skipped_primitives says what
+geometry was left out.
 
-run with gpu_frame captures an exact frame; gpu_next_draw searches completed
-frames containing draws within its bounded window. Fills qualify, so a clear or
-logo may be found before gameplay. Inspect gpu_frame.content, draw_commands,
-textures and the image. gpu_draw_filter:primitives skips fill-only frames;
-gpu_draw_filter:textured requires textured polygons/rectangles. Both filters
-require gpu_next_draw and remain within its search/run budget.
-search.effective_max_frames shows the window available within frames, and
-search.truncated_by_run_budget identifies a shorter run. A frames:1 run can
-inspect only one completed frame even when gpu_search_frames defaults to 60.
-assets_textures decodes the captured frame's resident VRAM and creates a .psxscene for
-reference. That capture is screen-space drawing evidence, not recovered world
-geometry or a complete level. Raw streamed-file extraction (disc_extract) is
-marked raw_2352; do not interpret sector framing as ordinary file payload.
+Streams: XA audio and STR movies are listed under coverage.skipped_files;
+assets_extract on one decodes STR to frame PNGs, audio.wav and a contact
+sheet, XA to one WAV per channel.
 
-Streamed files (XA audio, STR movies): assets_scan lists them under
-coverage.skipped_files with what their sectors hold. assets_extract on one
-(IMAGE::/PATH) decodes it: STR to frame PNGs, audio.wav, a contact sheet and
-summary.json (frames A..B, channel, no_audio, y4m, frame_parser for custom
-frame wrappers); XA to one WAV per channel (channel keeps one).
+Archives: DOT-T sector archives and Croc-style sibling .DIR indexes are
+recognised; files[].archive lists each entry, and entry:N extracts one raw.
+The vendored psx_assets::archive reads the same layouts for the importer's
+import::index.
 
-Bytes at a known file offset: disc_extract path offset:0x597aa length:0x40 reads only
-the sectors that window covers (no need to extract a large volume file) and
-returns the bytes inline as hex up to 0x100. start.image.offset is where the
-first byte sits in the raw .bin: file offset O is user-data byte O%2048 of the
-file's O/2048th sector, after a 16 (Mode 1) or 24 (Mode 2) byte header, so it is
-not lba*2352+O%2048 without the header. CHD images report no image offset.
+Other formats need evidence from the code that reads them: trace_cd (topic
+run) finds which run loads a file and where it lands in RAM; a watch on that
+RAM finds the parser; its disassembly is the layout, written in the format's
+doc. assets_scan and assets_extract also take external parsers
+(--archive-parser, --asset-parser, --model-parser, --frame-parser; see their
+help) for a quick look while investigating; the port's importers are Rust
+in tools/import.
+
+## What the game built
+
+run with gpu_frame captures one frame's GPU commands; gpu_next_draw searches
+for a frame that draws (fills count: gpu_draw_filter primitives or textured
+narrows it). assets_textures decodes the captured frame's VRAM through its
+CLUTs into PNGs and a .psxscene for the template's --scene viewer: screen
+drawing, not world geometry. assets_diff compares two vram.bin dumps. These,
+and RAM after a load, are what an importer's test compares against.
+
+Sounds: trace_spu logs which voice keyed which sample; its sample_sha256
+equals assets_extract's adpcm_sha256 for the waveform in a VAB, naming the
+bank behind a sound (banks share waveforms, so one may match several).
+
+assets_memcard lists the saves on a .mcd.

@@ -458,7 +458,7 @@ impl Facts {
                 Some(&f.id),
                 format!("its recordings are not ready: {}", first_lines(&f.unrecorded).join("; ")),
                 "it names work recordings, each scenario of its recordings passes psx scenario check, and their coverage counts",
-                "declare the quantities in glossary/ and bind them and the tick (the logic step) in glossary/binding/, write scenarios/<id>.toml from a psx states chain whose last run ends at a game moment (until), run psx scenario record, name the recording under recordings.work in the catalogue entry, then psx scenario check (docs/scenarios.md)",
+                "declare the quantities in glossary/ and bind them and the tick (the logic step) in glossary/binding/, write scenarios/<id>.toml from a psx states chain whose last run ends at a game moment (until), run psx scenario record, name the recording under recordings.work in the catalogue entry, then psx scenario check (psx guide, Recordings)",
             );
         }
         if let Some(f) = find(&|f| at(f, Stage::Recorded) && !matches!(f.verdict, State::Current(_))) {

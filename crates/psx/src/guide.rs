@@ -9,62 +9,32 @@ use serde_json::json;
 pub enum Topic {
     #[default]
     Overview,
-    Setup,
-    Input,
     Run,
-    Fields,
-    States,
     Code,
     Assets,
-    Bevy,
-    Port,
-    Troubleshooting,
+    Setup,
 }
 
 impl Topic {
-    const ALL: [Self; 11] = [
-        Self::Overview,
-        Self::Setup,
-        Self::Input,
-        Self::Run,
-        Self::Fields,
-        Self::States,
-        Self::Code,
-        Self::Assets,
-        Self::Bevy,
-        Self::Port,
-        Self::Troubleshooting,
-    ];
+    const ALL: [Self; 5] = [Self::Overview, Self::Run, Self::Code, Self::Assets, Self::Setup];
 
     fn title(self) -> &'static str {
         match self {
-            Self::Overview => "Choose an investigation workflow",
-            Self::Setup => "Resolve the project, media and BIOS",
-            Self::Input => "Explore gameplay from checkpoints",
-            Self::Run => "Run, observe and read run results",
-            Self::Fields => "Read the game's memory, find its tick, drive menus",
-            Self::States => "Keep start states that rebuild from power-on",
-            Self::Code => "Follow runtime evidence into code",
-            Self::Assets => "Find, decode and validate assets",
-            Self::Bevy => "Rebuild the game in Bevy",
-            Self::Port => "Port a game by goals and features",
-            Self::Troubleshooting => "Diagnose incomplete or unexpected results",
+            Self::Overview => "Port a game by recordings: the loop, recordings, status and next, assets, commands",
+            Self::Run => "Run the game: input, memory formats, observations, the tick, asking the person",
+            Self::Code => "Find and read the game's code: RAM search, disassembly, decompilation, coverage, unpacking",
+            Self::Assets => "The disc and its data: standard formats, streams, archives, what the game built",
+            Self::Setup => "The project, BIOS, named states, template updates, and results that look wrong",
         }
     }
 
     fn text(self) -> &'static str {
         match self {
             Self::Overview => include_str!("guide/overview.md"),
-            Self::Setup => include_str!("guide/setup.md"),
-            Self::Input => include_str!("guide/input.md"),
             Self::Run => include_str!("guide/run.md"),
-            Self::Fields => include_str!("guide/fields.md"),
-            Self::States => include_str!("guide/states.md"),
             Self::Code => include_str!("guide/code.md"),
             Self::Assets => include_str!("guide/assets.md"),
-            Self::Bevy => include_str!("guide/bevy.md"),
-            Self::Port => include_str!("guide/port.md"),
-            Self::Troubleshooting => include_str!("guide/troubleshooting.md"),
+            Self::Setup => include_str!("guide/setup.md"),
         }
     }
 }

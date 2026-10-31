@@ -203,7 +203,7 @@ recording's first tick still runs with the pad released, and its details
 name OTHER, which the determinism check replays first.
 
 `psx scenario play ID --name NAME --request "…"` makes the recording from
-a person's play (guide topic input). The window starts where `scenario
+a person's play (guide topic run). The window starts where `scenario
 record` starts counting fields, after the first tick. When the person
 hands back with F12, psx records their input as `scenario record` does,
 with its coverage, and says whether it ended where the play did.

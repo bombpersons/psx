@@ -54,7 +54,7 @@ pub struct RunCmdArgs {
     #[serde(default)]
     pub save_state: bool,
     /// Name the state the run ends in: .psx/states/NAME.bin, and its chain of runs from
-    /// power-on in notes/states/NAME.json (guide topic states). Needs --description, and
+    /// power-on in notes/states/NAME.json (guide topic setup). Needs --description, and
     /// a run that starts at power-on or a named state.
     #[arg(long, requires = "description")]
     #[serde(default)]
@@ -304,12 +304,12 @@ pub struct ObserveArgs {
     #[serde(default, rename = "sample")]
     pub samples: Vec<crate::ram::SampleSpec>,
     /// Group every CPU store by the fields it fell in, to find the game's tick (guide
-    /// topic fields). Writes tick_finder.json; run a few hundred frames of play.
+    /// topic run). Writes tick_finder.json; run a few hundred frames of play.
     #[arg(long)]
     #[serde(default)]
     pub find_tick: bool,
     /// Stop at the first vblank where `ADDR:FMT=VALUE` holds (or != < <= > >=; guide topic
-    /// fields). Repeatable: all must hold.
+    /// run). Repeatable: all must hold.
     #[arg(long)]
     #[serde(default)]
     pub until: Vec<String>,

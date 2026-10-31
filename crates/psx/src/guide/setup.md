@@ -1,57 +1,72 @@
-Call context with an image path, or from_state for a checkpoint; without one it
-uses the saved defaults, else protocol.toml's disc (resolved.media_from says
-which). Read build, project_root, resolved, capabilities and warnings.
-guide itself only returns documentation; it does not validate the installation.
+## The project
 
-All relative input and output paths resolve against the server's project root:
---root/PSX_ROOT if set, else the client's single workspace root, else the server's
-working directory. context reports the root in use. Use project_root on an MCP
-call to select a different existing study directory. Each scoped call runs in an
-isolated process; returned continuation calls retain that root. It does not
-change other calls or the server default. A server started with
-mcp --require-project-root refuses calls that omit project_root.
-context(save:true) persists defaults in the selected root's .psx/project.json: use it
-deliberately, since other clients sharing the root see those defaults too.
+Relative paths resolve against the project root: --root or PSX_ROOT, else
+the MCP client's single workspace root, else the server's directory.
+context reports it, the build, the media and BIOS in use (resolved, and
+media_from says where from), capabilities and warnings; record its build
+when results look odd, since a connected server may be older than the
+source. project_root on any MCP call selects another existing project for
+that call only. context with save:true keeps defaults in .psx/project.json,
+which other clients of the root also see. A port workspace has its media/
+and bios/ linked in.
 
-Moving a project: the files psx keeps (saved defaults, state chains, case
-recipes) name what lies inside the project relative to its root, so the
-folder can move. Files written by an older psx, and run and play
-reports, keep absolute paths; one that no longer exists is found again by
-its trailing components under the root (.psx/states/a.bin, notes/states/a.json),
-or beside it (rom/game.cue for a disc kept next to the project). states
-rebuild writes a chain's paths back relative; context save does the same for the defaults. A chain checks each
-state's hash, so a state found wrongly stops it (chain_broken) rather than
-passing.
+## BIOS and media
 
-context lists the installed images and the download catalog. bios_install can import a local dump,
-or with download:true fetch the pinned image for a region (psx never downloads
-on its own: call it yourself). Use a BIOS of the disc's region (context reports
-disc_region_hint): the BIOS makes the console, so a PAL disc on an NTSC BIOS
-boots but runs on an NTSC console (its GPU clock and BIOS), not the one the
-game was made for. When none of that region is installed, install it with
-bios_install(region, download:true) before recording anything; do not record
-on another region's BIOS instead. context warns when the selected BIOS's
-region differs.
-Native checkpoints require the exact BIOS/media identity they saved.
-sha256 identifies the BIOS file; native_sha256 identifies the 512 KiB ROM image
-used by the native core, so they can differ for padded/truncated inputs.
-BIOS discovery checks the selected project's bios/ and the shared store, not
-sibling toolkit checkouts. Import a known local dump once with bios_install(from),
-set an absolute PSX_BIOS_DIR, or save an explicit context bios path for the project.
-Signature matching uses explicit symbols.sigs, otherwise PSX_SIGS_DIR, otherwise
-external/psx_psyq_signatures in the selected project, otherwise the installer's
-shared copy (context reports signatures.path and selection). Use an absolute PSX_SIGS_DIR
-in the server environment to share a checkout. context.signatures reports its
-default path and directory presence without loading or downloading the index.
+Use a BIOS of the disc's region (context's disc_region_hint): the BIOS makes
+the console, so a PAL disc on an NTSC BIOS runs on an NTSC console. When none
+is installed, bios_install region download:true fetches a pinned,
+hash-checked one (psx never downloads on its own), or from imports a local
+dump. Don't record on another region's BIOS. States need the exact BIOS and
+media they were saved with.
 
-Disc images can be .cue (with its .bin files), a bare raw .bin, a cooked .iso
-or a CD .chd; a .chd and the .cue it was made from give the same sectors,
-track_sha256 (disc_info hash) and save-state identity.
-disc_info inspects the disc and boot EXE; disc_ls filters/pages its ISO entries.
-LibCrypt-protected discs need the redump .sbi/.lsd beside the image (same base
-name); disc_info reports subchannel.source and the native core honours it. disc_exe,
-code_disasm and asset tools accept disc.cue::/PATH where documented. run accepts a
-disc or host EXE path; do not assume every tool accepts the disc-member syntax.
+## Named states
 
-Boot and menu duration vary by game; use snapshot_every and save_state to locate a
-useful starting point instead of assuming a universal gameplay frame number.
+A start state is where scenarios, plays and probes begin. A state file holds
+the console's whole memory (the game's code), so it stays out of git; its
+chain, every run from power-on that led to it, is small and committed.
+
+- .psx/states/NAME.bin: the state.
+- notes/states/NAME.json: the chain: a description in game terms, the media
+  and BIOS, and each run's frames, input, pokes, until and pad, with the
+  state each ended in and its sha256.
+
+run save_as NAME description TEXT runs one step and names the state it ends
+in; from_state continues from it:
+
+  run frames 1500 save_as title description "the title screen"
+  run from_state title frames 900 input [{"frame":10,"buttons":["START"],"until":14}]
+      until 800A1F2C:u16=16 save_as level1 description "Lara at the level start"
+
+states_save SOURCE NAME names a state an earlier run or play made (state.bin,
+a state_fN.bin, a mark's state.bin or the run directory), its chain taken
+from the runs' reports back to power-on or a named state. replace=true keeps
+the replaced chain under notes/states/replaced/. states_list gives each
+state and whether its file matches its chain. states_rebuild [NAME...]
+replays chains from power-on (shared steps once) and reports per state the
+first step that differs and status same, differs or restored; after a psx
+update, rebuild, then replace=true, then scenario_check.
+
+## The template
+
+port_update replaces untouched psx-bevy/ and vendor/ files with this build's,
+writes <file>.psx-new beside ones the port changed (merge it, keeping the
+change listed in docs/template.md, then delete it) and puts changed seeded
+files under .psx/template-update/ to merge; removed_upstream lists seeded
+files the template dropped. Keep each project's cargo target directory to
+itself.
+
+## When results look wrong
+
+- A missing file is resolved against the server's root, not the client's
+  shell: use project_root or absolute paths.
+- Input that does nothing: check input.jsonl, the pad state and frame
+  origins, and whether the game reads the pad then (topic run, Driving
+  menus).
+- A blank or still screen: no_gpu_draws also fires on a still title or a
+  load. cd_retry_loop is an emulator bug: report the LBA.
+- Screen sizes change during boot; read the video mode before comparing
+  images.
+- Without a vision-capable model, leave return_screen off and say that the
+  picture was not looked at.
+- A Ghidra query that timed out keeps its partial analysis: retry with a
+  longer timeout. stale_analysis after a Ghidra update analyses again.

@@ -15,7 +15,7 @@ Name the feature's id in each of its commits (`F-0003: stomp hang`): its
 review finds the feature's files by them. `port_status` shows every
 feature of the goal by stage. An item for the person (Confirm, Play,
 Stuck) waits for them: tell them and stop. psx's `guide`
-tool, topic `port`, explains each item; `catalogue/README.md` has the feature
+tool explains each item; `catalogue/README.md` has the feature
 format. psx writes `.psx/verdicts/`; never edit them.
 
 ## Layout
@@ -23,7 +23,7 @@ format. psx writes `.psx/verdicts/`; never edit them.
 ```
 game/          the port, its assets/ and tests/ (game/AGENTS.md)
 tools/import/  importers: the player's disc -> the port's asset formats
-glossary/      the quantities scenarios compare, and binding/, where the original keeps them (docs/scenarios.md in psx)
+glossary/      the quantities scenarios compare, and binding/, where the original keeps them (psx's guide, Recordings)
 psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte), scenarios and launcher; yours to change (psx-bevy/AGENTS.md)
 vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-scenario (the scenario formats and generated glue), psx-capture (the glossary binding's API); don't edit (fix upstream in psx)
 docs/          template.md: your changes to psx-bevy/
@@ -95,6 +95,6 @@ cargo clippy --workspace --all-targets --all-features
 cargo build --release --no-default-features   # shipping build
 ```
 
-Iteration builds link Bevy as a shared library (default feature `dynamic`),
-which only `cargo run` and `cargo test` find: start binaries through cargo,
-not from `target/`.
+Iteration builds link Bevy as a shared library (default feature `dynamic`);
+a debug build finds it, and the game's `assets/`, when started from
+`target/` too (an MCP client running `target/debug/<game> --mcp`).
