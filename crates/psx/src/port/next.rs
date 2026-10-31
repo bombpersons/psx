@@ -793,6 +793,18 @@ impl Facts {
                 "write import::index for it in tools/import, reading the archive's own index as the importer will (psx_assets::archive reads DOT-T archives and Croc-style DIR indexes); commit and run psx port check: each entry is then an asset of its own (/ARCHIVE:NAME, or @0xOFFSET without names)",
             ));
         }
+        if let (Some(c), Some(f)) = (&a.stale, files.iter().find(|f| f.imported_then)) {
+            return Some(Item::agent(
+                "Import",
+                feature,
+                format!(
+                    "{} was imported at {c}, the last psx port check, not at HEAD with no uncommitted changes",
+                    f.path
+                ),
+                "the importers' outputs name it in their provenance, at HEAD",
+                "commit the changes and run psx port check",
+            ));
+        }
         if let Some(f) = first(AssetState::Found) {
             return Some(Item::agent(
                 "Import",
@@ -1388,6 +1400,19 @@ mod tests {
         needs_again(&mut f);
         assert_eq!(next(&f).0, "Import");
         assert!(next(&f).1.contains("no psx port check has run the importers"), "{}", next(&f).1);
+        // Imported by a check of an older commit: rerun it, no importer to write.
+        f.assets.as_mut().unwrap().stale = Some("6c91908".into());
+        f.assets.as_mut().unwrap().files[0].imported_then = true;
+        needs_again(&mut f);
+        assert_eq!(next(&f).0, "Import");
+        assert!(
+            next(&f).1.starts_with("/MAPS/L1.WLD was imported at 6c91908, the last psx port check"),
+            "{}",
+            next(&f).1
+        );
+        assert_eq!(f.next().how, "commit the changes and run psx port check");
+        f.assets.as_mut().unwrap().stale = None;
+        f.assets.as_mut().unwrap().files[0].imported_then = false;
         set(&mut f, 0, AssetState::Imported);
         assert_eq!(next(&f).0, "Check");
         set(&mut f, 0, AssetState::Checked);

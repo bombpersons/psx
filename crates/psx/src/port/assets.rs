@@ -239,6 +239,9 @@ pub struct Asset {
     /// Whether a traced run (`run --trace-cd`, loads.json) read any of
     /// its bytes; None when no run traced the CD.
     pub loaded: Option<bool>,
+    /// The last `port check` imported it, though that check did not judge
+    /// HEAD: rerunning it, not an importer, is what is missing.
+    pub imported_then: bool,
 }
 
 /// The disc's files by state.
@@ -477,10 +480,13 @@ fn whole_stream(disc: &psx_media::disc::Disc, lba: u32, sectors: u32) -> Option<
     }
 }
 
+/// What [`report`] returns.
+type LastCheck = (Option<Report>, Option<(String, BTreeSet<String>)>, BTreeMap<String, Vec<IndexEntry>>);
+
 /// The last `port check`'s report: whole when it judged `head`, else the
-/// commit it judged; and its archive index either way (an index lists
-/// entries, it is no verdict).
-fn report(root: &Path, head: Option<&str>) -> (Option<Report>, Option<String>, BTreeMap<String, Vec<IndexEntry>>) {
+/// commit it judged and what it imported then; and its archive index either
+/// way (an index lists entries, it is no verdict).
+fn report(root: &Path, head: Option<&str>) -> LastCheck {
     let Some(r) = std::fs::read(root.join(REPORT)).ok().and_then(|b| serde_json::from_slice::<Report>(&b).ok()) else {
         return (None, None, BTreeMap::new());
     };
@@ -488,7 +494,8 @@ fn report(root: &Path, head: Option<&str>) -> (Option<Report>, Option<String>, B
     if r.clean && super::verdict::judges(root, &r.commit, head) {
         (Some(r), None, index)
     } else {
-        (None, Some(r.commit), index)
+        let then = r.imported.iter().chain(&r.checked).map(|p| disc_path(p)).collect();
+        (None, Some((r.commit, then)), index)
     }
 }
 
@@ -503,6 +510,7 @@ pub fn inventory(
     let (disc, fs) = open_disc(root)?;
     let files = disc_files(root, &disc, &fs, inv);
     let (report, stale, index) = report(root, head);
+    let (stale, then) = stale.map_or((None, BTreeSet::new()), |(c, t)| (Some(c), t));
     let imported: BTreeSet<String> = report.iter().flat_map(|r| r.imported.iter().map(|p| disc_path(p))).collect();
     let checked: BTreeSet<String> = report.iter().flat_map(|r| r.checked.iter().map(|p| disc_path(p))).collect();
     let unused: BTreeMap<String, &String> = port.unused.iter().map(|(p, w)| (disc_path(p), w)).collect();
@@ -544,7 +552,14 @@ pub fn inventory(
                 let unlisted = !unused.contains_key(path);
                 let format = Some(a.id.clone());
                 let loaded = was_loaded(path, 0, u64::MAX);
-                out.push(Asset { path: path.clone(), state: state(path, &format), format, unlisted, loaded });
+                out.push(Asset {
+                    path: path.clone(),
+                    state: state(path, &format),
+                    format,
+                    unlisted,
+                    loaded,
+                    ..Default::default()
+                });
             }
             (None, _) => {
                 let d = doc(path);
@@ -574,6 +589,9 @@ pub fn inventory(
     }
     for p in unused.keys().filter(|p| !out.iter().any(|a| &a.path == *p)) {
         problems.push(problem(UNUSED, format!("{p} is not an asset on the disc")));
+    }
+    for a in &mut out {
+        a.imported_then = !a.state.settled() && then.contains(&a.path);
     }
     Ok(Inventory { files: out, report, stale, problems })
 }
