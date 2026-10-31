@@ -1363,10 +1363,14 @@ pub struct Quantities {
         fn hook(&self, at: psx_capture::Hook, m: &psx_capture::Machine, s: &mut psx_capture::Script) {
             use psx_capture::reg::T2;
             match at {
-                // The dispatch read the byte at t2.
-                psx_capture::Hook::At(_) => s.site("toy", m.reg(T2) - 0x8003_0000),
+                // The dispatch read the byte at t2. A hook is told its pc as
+                // given, not folded.
+                psx_capture::Hook::At(0x8001_0008) => s.site("toy", m.reg(T2) - 0x8003_0000),
                 // The delay slot moved t2 on past the byte decided.
-                psx_capture::Hook::Branch { taken, .. } => s.way("toy", m.reg(T2) - 0x8003_0001, taken as u32, 2),
+                psx_capture::Hook::Branch { pc: 0x8001_0010, taken } => {
+                    s.way("toy", m.reg(T2) - 0x8003_0001, taken as u32, 2)
+                }
+                other => panic!("a hook at {other:?}, which the toy never asked for"),
             }
         }
     }

@@ -60,8 +60,10 @@ struct Pending {
 
 /// What a recording collects of the scripts the original ran.
 pub struct Scripts {
-    at: BTreeSet<u32>,
-    branch: BTreeSet<u32>,
+    /// The hooks' pcs, folded, to the pc as the binding gave it (which its
+    /// hook is told).
+    at: BTreeMap<u32, u32>,
+    branch: BTreeMap<u32, u32>,
     /// The programs declared at the last tick: name, folded start, length.
     regions: Vec<(String, u32, u32)>,
     pub programs: BTreeMap<String, Program>,
@@ -73,8 +75,8 @@ pub struct Scripts {
 impl Scripts {
     pub fn new(hooks: &HookPoints) -> Scripts {
         Scripts {
-            at: hooks.at.iter().map(|&p| crate::run::fold(p)).collect(),
-            branch: hooks.branch.iter().map(|&p| crate::run::fold(p)).collect(),
+            at: hooks.at.iter().map(|&p| (crate::run::fold(p), p)).collect(),
+            branch: hooks.branch.iter().map(|&p| (crate::run::fold(p), p)).collect(),
             regions: Vec::new(),
             programs: BTreeMap::new(),
             pending: None,
@@ -155,19 +157,19 @@ impl Scripts {
             } else {
                 let taken = pc == p.target;
                 if taken || pc == p.pc + 8 {
-                    self.hook(b, m, [p.pc, 1, taken as u32, 0]);
+                    self.hook(b, m, [self.branch[&p.pc], 1, taken as u32, 0]);
                 }
             }
         }
         if info.exception.is_some() {
             return;
         }
-        if self.branch.contains(&pc) {
+        if self.branch.contains_key(&pc) {
             let target = pc.wrapping_add(4).wrapping_add(((info.instruction & 0xFFFF) as i16 as i32 as u32) << 2);
             self.pending = Some(Pending { pc, target, slot_ran: false });
         }
-        if self.at.contains(&pc) {
-            self.hook(b, m, [pc, 0, 0, 0]);
+        if let Some(&given) = self.at.get(&pc) {
+            self.hook(b, m, [given, 0, 0, 0]);
         }
     }
 
