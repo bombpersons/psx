@@ -34,11 +34,15 @@ pub struct DisasmArgs {
     #[arg(long = "symbols")]
     #[serde(default)]
     pub symbols: Vec<PathBuf>,
-    /// Plain-text listing (`ADDR WORD asm ; notes`, with labels for symbols and
+    /// Plain-text listing (`ADDR asm ; notes`, with labels for symbols and
     /// branch targets) instead of JSON lines.
     #[arg(long)]
     #[serde(default)]
     pub text: bool,
+    /// The text listing also shows each instruction's word (`ADDR WORD asm`).
+    #[arg(long)]
+    #[serde(default)]
+    pub words: bool,
     /// Disassemble the whole function containing this hex address: back to the
     /// nearest jal target or `addiu sp,sp,-N` prologue, forward to its final `jr ra`.
     #[arg(long)]
@@ -500,6 +504,8 @@ fn function_end(code: &Code, start: u32, jal: &BTreeSet<u32>, max: u32) -> (u32,
 pub struct ListOpts<'a> {
     pub scopes: &'a [crate::ScopedSymbols],
     pub text: bool,
+    /// The text shows each instruction's word.
+    pub words: bool,
 }
 
 /// Disassemble `[lo, hi)`: JSON lines (addr, word, asm, label, refs) and, for `--text`,
@@ -570,8 +576,9 @@ pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, Stri
                 }
                 _ => asm,
             };
-            let note = if notes.is_empty() { String::new() } else { format!("  ; {}", notes.join(", ")) };
-            text += &format!("  {a:08X}  {i:08X}  {asm_l:<32}{note}\n");
+            let word = if o.words { format!("{i:08X}  ") } else { String::new() };
+            let line = if notes.is_empty() { asm_l } else { format!("{asm_l:<32}  ; {}", notes.join(", ")) };
+            text += &format!("  {a:08X}  {word}{line}\n");
         }
         lines.push(v);
         // A return ends the straight-line tracking after its delay slot.
@@ -777,7 +784,7 @@ pub fn xref_report(
 
 /// `psx code disasm`: a listing from an address, an EXE entry point or a discovered function.
 pub(crate) fn disasm_cmd(a: DisasmArgs) -> crate::Result<Value> {
-    let DisasmArgs { source, addr, count, function_budget, symbols, text, function, ram, gp } = a;
+    let DisasmArgs { source, addr, count, function_budget, symbols, text, words, function, ram, gp } = a;
     if !(1..=262144).contains(&function_budget) || count.is_some_and(|n| !(1..=262144).contains(&n)) {
         return Err(Error::invalid("count/function_budget must be 1..=262144"));
     }
@@ -814,7 +821,7 @@ pub(crate) fn disasm_cmd(a: DisasmArgs) -> crate::Result<Value> {
         } & !3;
         (start, start.saturating_add(4 * count.unwrap_or(32)), None)
     };
-    let (lines, listing) = listing(&code, start, end, &ListOpts { scopes: &scopes, text });
+    let (lines, listing) = listing(&code, start, end, &ListOpts { scopes: &scopes, text, words });
     let mut warnings = Vec::new();
     if func.as_ref().is_some_and(|f| f["truncated"] == true) {
         warnings.push(
@@ -993,7 +1000,7 @@ mod tests {
     #[test]
     fn text_listing_labels_branch_targets() {
         let c = sample();
-        let (lines, text) = listing(&c, 0x8001_0000, 0x8001_0030, &ListOpts { scopes: &[], text: true });
+        let (lines, text) = listing(&c, 0x8001_0000, 0x8001_0030, &ListOpts { scopes: &[], text: true, words: false });
         assert_eq!(lines.len(), 12);
         assert!(text.contains("loc_80010014:\n"), "{text}");
         assert!(text.contains("beq     a0, zero, loc_80010014"), "{text}");

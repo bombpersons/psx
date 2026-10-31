@@ -10,7 +10,7 @@
 //! - Every call has a hard wall-clock cap (its `timeout` + 60 s, or 15 minutes).
 //!   A job that overruns it is reported as `timeout` and left to finish in the
 //!   background, except supervised Ghidra workers, which are stopped.
-//! - Results over 256 KiB are written to `.psx/mcp/` and replaced by a summary
+//! - Results over 32 KiB are written to `.psx/mcp/` and replaced by a summary
 //!   with the file path.
 //! - Heavy tools (emulation, signature matching) share `--jobs` execution slots.
 //! - The default project root is `--root`/`PSX_ROOT` when given, else the
@@ -48,7 +48,12 @@ pub struct McpArgs {
 }
 
 /// Inline result limit; larger results are spilled to a file.
-const INLINE_LIMIT: usize = 256 * 1024;
+/// Results larger than this go to a file, with a summary inline: every
+/// result stays in the agent's context for the rest of its session.
+const INLINE_LIMIT: usize = 32 * 1024;
+/// How much of a long text field (a listing, pseudocode) a spilled
+/// result's summary keeps.
+const PREVIEW: usize = 8 * 1024;
 /// Request argument limit.
 const ARGS_LIMIT: usize = 1024 * 1024;
 /// Hard cap for a call without a `timeout` argument.
@@ -296,11 +301,65 @@ fn screen_path(tool: &str, v: &Value) -> Option<String> {
     p.as_str().map(str::to_string)
 }
 
+/// A tool's input schema without what goes without saying, since every
+/// tool's schema is in the agent's context on every call: defaults of
+/// null, false, 0-length lists or empty text; and null as an alternative
+/// type (an optional field may be left out).
+fn slim(v: &mut Value) {
+    match v {
+        Value::Object(o) => {
+            let trivial = |d: &Value| match d {
+                Value::Null | Value::Bool(false) => true,
+                Value::Array(a) => a.is_empty(),
+                Value::String(s) => s.is_empty(),
+                _ => false,
+            };
+            if o.get("default").is_some_and(trivial) {
+                o.remove("default");
+            }
+            if let Some(Value::Array(t)) = o.get_mut("type") {
+                t.retain(|t| t != "null");
+                if t.len() == 1 {
+                    let only = t.remove(0);
+                    o.insert("type".into(), only);
+                }
+            }
+            if let Some(Value::Array(any)) = o.get("anyOf") {
+                let rest: Vec<Value> = any.iter().filter(|a| a.get("type") != Some(&json!("null"))).cloned().collect();
+                if rest.len() == 1 {
+                    o.remove("anyOf");
+                    if let Value::Object(only) = &rest[0] {
+                        for (k, v) in only {
+                            o.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                    }
+                }
+            }
+            o.values_mut().for_each(slim);
+        }
+        Value::Array(a) => a.iter_mut().for_each(slim),
+        _ => {}
+    }
+}
+
+/// A result asked for as `text`: the text, without the structured data it
+/// shows (rows, listings), keeping small fields.
+fn text_only(value: Value) -> Value {
+    let Value::Object(o) = value else { return value };
+    if !o.get("text").is_some_and(Value::is_string) || o.contains_key("error") {
+        return Value::Object(o);
+    }
+    let small = |k: &str, v: &Value| k == "text" || serde_json::to_string(v).is_ok_and(|s| s.len() <= 200);
+    Value::Object(o.into_iter().filter(|(k, v)| small(k, v)).collect())
+}
+
 fn spill(tool: &str, value: Value, ctx: &Ctx) -> Value {
-    let text = serde_json::to_string_pretty(&value).unwrap();
-    if text.len() <= INLINE_LIMIT {
+    // As sent: compact. read pages through spilled results itself, so it is
+    // never spilled.
+    if serde_json::to_string(&value).map_or(0, |t| t.len()) <= INLINE_LIMIT || tool == "read" {
         return value;
     }
+    let text = serde_json::to_string_pretty(&value).unwrap();
     let dir = ctx.root.join(".psx/mcp");
     let path = dir.join(format!("{tool}-{}.json", crate::stamp()));
     if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &text)) {
@@ -321,6 +380,14 @@ fn spill(tool: &str, value: Value, ctx: &Ctx) -> Value {
                     v.clone()
                 } else {
                     match v {
+                        Value::String(t) => {
+                            let mut end = PREVIEW.min(t.len());
+                            while !t.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            let end = t[..end].rfind('\n').map_or(end, |n| n + 1);
+                            json!({"preview": &t[..end], "chars": t.len()})
+                        }
                         Value::Array(a) => json!({"omitted": "array", "len": a.len()}),
                         Value::Object(m) => json!({"omitted": "object", "keys": m.len()}),
                         _ => json!({"omitted": "value"}),
@@ -332,7 +399,7 @@ fn spill(tool: &str, value: Value, ctx: &Ctx) -> Value {
     json!({
         "result_file": path,
         "result_bytes": text.len(),
-        "note": "The full structured result exceeded the MCP inline limit and was written to result_file as pretty JSON. Use read with a JSON pointer and pagination. Large fields are summarised below.",
+        "note": "The result exceeded the MCP inline limit (32 KiB) and was written to result_file as pretty JSON. Large fields are summarised below (a long text's start as preview); read with a JSON pointer and pagination gives the rest. A narrower call (fewer instructions, a smaller range) often answers without it.",
         "summary": summary,
         "artifact": crate::artifact::descriptor(&path).ok(),
         "next_call": {"tool":"read","arguments":{"path":path,"project_root":ctx.root}},
@@ -374,7 +441,8 @@ impl PsxServer {
         let mut tools = Vec::new();
         let mut defs = BTreeMap::new();
         for d in self::tools() {
-            let schema = d.input_schema();
+            let mut schema = d.input_schema();
+            slim(&mut schema);
             let tool = Tool::new(d.name, d.description, Arc::new(schema.as_object().unwrap().clone()))
                 .with_annotations(ToolAnnotations::from_raw(None, Some(d.read_only), Some(false), None, Some(false)));
             tools.push(tool);
@@ -454,6 +522,7 @@ impl PsxServer {
         };
         let call = tool.call;
         let tool_name = tool.name;
+        let as_text = args.get("text") == Some(&Value::Bool(true));
         let supervised = isolated
             || name.starts_with("ghidra_")
             || name == "bios_install"
@@ -481,6 +550,9 @@ impl PsxServer {
                     ok.then(|| std::fs::read(&path).ok()).flatten()
                 })
             });
+            if as_text {
+                out = text_only(out);
+            }
             (spill(tool_name, out, &ctx), shot)
         });
         // Also stop a supervised child if the request future itself is dropped.
@@ -532,7 +604,7 @@ impl ServerHandler for PsxServer {
                 "PlayStation (PS1) reverse-engineering toolkit. Each tool is one `psx` CLI command and returns the JSON the CLI prints. \
                  {default} bios/, media/, external/ and .psx/ outputs live in the project root; relative paths resolve against it. project_root on any call selects another existing project for that call only. \
                  In a port's workspace start with port_next; otherwise with context. guide is the method, read once (topics run, code, assets and setup hold the details): tool descriptions are brief and the guide holds argument rules and recipes. \
-                 Emulation outputs are files in the returned run_dir; read them with read. run summary=true returns only paths and counts. Results over 256 KiB come back as a result_file path.",
+                 Emulation outputs are files in the returned run_dir; read them with read. run summary=true returns only paths and counts. Results over 32 KiB come back as a result_file path with a summary.",
                 default = self.default_note()
             ))
     }
@@ -683,6 +755,38 @@ pub fn main(ctx: Ctx, a: McpArgs, pinned: bool) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn results_and_schemas_carry_nothing_twice() {
+        // Text asked for: the table without the rows it shows.
+        let rows: Vec<Value> = (0..50).map(|i| json!({"address": i, "values": [i, i]})).collect();
+        let v = text_only(json!({"text": "a table", "format": "i32", "rows": rows}));
+        assert_eq!(v, json!({"text": "a table", "format": "i32"}));
+        // Defaults that go without saying, and null as an alternative type.
+        let mut schema = json!({"properties": {
+            "a": {"type": ["string", "null"], "default": null},
+            "b": {"type": "boolean", "default": false},
+            "c": {"type": "integer", "default": 60},
+            "d": {"anyOf": [{"$ref": "#/$defs/X"}, {"type": "null"}], "description": "x"},
+        }});
+        slim(&mut schema);
+        assert_eq!(
+            schema,
+            json!({"properties": {
+                "a": {"type": "string"}, "b": {"type": "boolean"}, "c": {"type": "integer", "default": 60},
+                "d": {"$ref": "#/$defs/X", "description": "x"},
+            }})
+        );
+        // A spilled result keeps the start of a long text.
+        let dir = std::env::temp_dir().join(format!("psx-spill-{}", std::process::id()));
+        let ctx = Ctx { root: dir.clone(), cancel: None };
+        let listing: String = (0..4000).map(|i| format!("  {i:08X}  nop\n")).collect();
+        let v = spill("code_disasm", json!({"text": listing}), &ctx);
+        let preview = v["summary"]["text"]["preview"].as_str().unwrap();
+        assert!(preview.len() <= PREVIEW && preview.ends_with('\n') && v["result_file"].is_string(), "{v}");
+        assert_eq!(spill("read", json!({"text": listing}), &ctx)["text"].as_str().unwrap().len(), listing.len());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn descriptions_keep_their_first_sentence() {

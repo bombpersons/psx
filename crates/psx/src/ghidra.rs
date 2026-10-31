@@ -1094,6 +1094,17 @@ impl Op for DecompileArgs {
             out["function"] = result["function"].take();
             out["pseudocode"] = result["pseudocode"].take();
             out["diagnostic"] = result["diagnostic"].take();
+            // One line a call: where it is, and the function it is in or calls.
+            let call = |r: &Value, other: &str, sep: &str| {
+                let kind = r["type"].as_str().filter(|t| *t != "UNCONDITIONAL_CALL");
+                let mut s = format!("{} {sep} {}", r["from"].as_str().unwrap_or("?"), r[other].as_str().unwrap_or("?"));
+                if let Some(k) = kind {
+                    s += &format!(" ({})", k.to_ascii_lowercase());
+                }
+                json!(s)
+            };
+            let callers: Vec<Value> = callers.iter().map(|r| call(r, "function", "in")).collect();
+            let callees: Vec<Value> = callees.iter().map(|r| call(r, "to", "->")).collect();
             out["callers"] = page(&callers, 0, 100);
             out["callees"] = page(&callees, 0, 100);
             out["artifact"] = if result_path.exists() { json!(result_path) } else { Value::Null };

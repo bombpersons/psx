@@ -9,8 +9,9 @@ ram_search keeps the addresses whose values satisfy pred between
 consecutive snapshots (changed, unchanged, increased, decreased, delta=N;
 one for all pairs or one per pair), exact values per snapshot ("441,*,376")
 or a between range; save writes the matches and candidates narrows a later
-search to them. ram_view reads a struct across snapshots; ram_diff
-clusters nearby changes between two.
+search to them. ram_view reads a struct across snapshots (only the rows
+that differ, unless same=true); ram_diff clusters nearby changes between
+two.
 
 - The player: search 32-bit values for its position while it moves one way
   (width=4, between, increased), then narrow. Its other fields are near it:

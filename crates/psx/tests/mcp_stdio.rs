@@ -1454,7 +1454,9 @@ fn mcp_tools_match_cli() {
         psx().args(["code", "disasm", "tiny.ps-exe", "--count", "2", "--text"]).current_dir(&root).output().unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
     assert_eq!(text.trim_end(), v["text"].as_str().unwrap().trim_end());
-    assert!(text.contains("80010000  24080001  li      t0, 1"), "{text}");
+    assert!(text.contains("80010000  li      t0, 1"), "{text}");
+    let (v, _, _) = rpc.tool("code_disasm", json!({"source": "tiny.ps-exe", "count": 2, "text": true, "words": true}));
+    assert!(v["text"].as_str().unwrap().contains("80010000  24080001  li      t0, 1"), "{v}");
 
     // --root: the same command from another directory.
     let elsewhere = std::env::temp_dir();
@@ -1654,7 +1656,8 @@ fn ghidra_single_call_and_cached_cli_mcp_parity() {
     assert_eq!(first["function"]["entry"], "0x80010040", "{first}");
     let c = first["pseudocode"].as_str().unwrap();
     assert!(c.contains("800100c0") && c.contains("3") && c.contains("param_1"), "{c}");
-    assert_eq!(first["callers"]["items"][0]["from"], "0x80010008", "{first}");
+    let caller = first["callers"]["items"][0].as_str().unwrap();
+    assert!(caller.starts_with("0x80010008 in 0x"), "{first}");
     let manifest = first["analysis"].as_str().unwrap();
     let artifact = first["artifact"].as_str().unwrap();
     let before = std::fs::metadata(artifact).unwrap().modified().unwrap();

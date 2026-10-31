@@ -335,16 +335,23 @@ impl ArgsContext {
         if setup.is_none() {
             next_calls.push(json!({"tool":"run","arguments":{"media":r.media,"bios":r.bios,"frames":60,"save_state":true,"brief":true,"return_screen":true}}));
         }
-        Ok(json!({"status":if setup.is_none(){"ready"}else{"needs_setup"},"build":build(),"project_root":ctx.root,
+        // With a BIOS chosen, the others and the catalogue are only counted.
+        let chosen = r.bios.is_some();
+        let candidates = if chosen { json!(r.candidates.len()) } else { json!(r.candidates) };
+        let mut out = json!({"status":if setup.is_none(){"ready"}else{"needs_setup"},"build":build(),"project_root":ctx.root,
             "config":profile,"saved":self.save,"output_root":ctx.root.join(".psx"),"bios_dir":bios::store(),
             "signatures":{"path":signatures,"available":signatures.is_dir(),
                 "selection":sigs_selection,
                 "layout":"<version>/<LIB>.json","override":"symbols.sigs / --sigs; shared default: PSX_SIGS_DIR (use an absolute path)"},
             "resolved":{"media":r.media,"media_from":r.media_from,"image_sha256":image_sha256,"bios":r.bios,"bios_selection":r.bios_reason,"disc_region_hint":r.region.map(|r|r.hint())},
-            "selected_bios":selected_info,"bios_candidates":r.candidates,"bios_hashes":bios::hash_notes(),
-            "bios_download_catalog":bios::catalog(),"ghidra":crate::ghidra::status(),
+            "selected_bios":selected_info,"bios_candidates":candidates,"ghidra":crate::ghidra::status(),
             "state":r.state,"setup":setup,"capabilities":capabilities(),"warnings":r.warnings,
-            "next_calls":next_calls}))
+            "next_calls":next_calls});
+        if !chosen {
+            out["bios_hashes"] = bios::hash_notes();
+            out["bios_download_catalog"] = bios::catalog();
+        }
+        Ok(out)
     }
 }
 

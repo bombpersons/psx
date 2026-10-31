@@ -163,6 +163,11 @@ pub struct RamViewArgs {
     #[arg(long)]
     #[serde(default)]
     pub text: bool,
+    /// With two or more snapshots, also the rows the same in every one
+    /// (by default only the rows that differ, and how many are the same).
+    #[arg(long)]
+    #[serde(default)]
+    pub same: bool,
 }
 
 fn d_view_len() -> usize {
@@ -176,7 +181,7 @@ impl Op for RamViewArgs {
     fn exec(self, _: &Ctx) -> Outcome {
         let text = self.text;
         Outcome::result_text(
-            view(&self.snapshots, &self.addr, self.len, &self.fmt).map(|(mut v, t)| {
+            view(&self.snapshots, &self.addr, self.len, &self.fmt, self.same).map(|(mut v, t)| {
                 if text {
                     v["text"] = json!(t);
                 }
@@ -1191,8 +1196,9 @@ pub fn search(paths: &[PathBuf], o: SearchOpts) -> R {
     }))
 }
 
-/// A memory window from one or more snapshots side by side, marking units that differ.
-pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str) -> crate::Result<(Value, String)> {
+/// A memory window from one or more snapshots side by side, marking units
+/// that differ; with two or more, only those unless `same`.
+pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str, same: bool) -> crate::Result<(Value, String)> {
     let fmt = Fmt::parse(fmt)
         .filter(|f| !matches!(f, Fmt::Bits(..) | Fmt::Str(_)))
         .ok_or_else(|| Error::invalid(format!("unknown format {fmt:?}")))?;
@@ -1211,9 +1217,15 @@ pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str) -> crate::Resu
     }
     text += "\n";
     let mut off = start;
+    let mut hidden = 0;
     while off + w <= end {
         let vals: Vec<u32> = snaps.iter().map(|s| read_le(&s.bytes, off, w)).collect();
         let differs = vals.iter().any(|&v| v != vals[0]);
+        if snaps.len() > 1 && !same && !differs {
+            hidden += 1;
+            off += w;
+            continue;
+        }
         rows.push(json!({
             "address": hex(addr_of(off)), "offset": format!("+0x{:X}", off - start),
             "values": vals.iter().map(|&v| fmt.json(v)).collect::<Vec<_>>(), "differs": differs,
@@ -1226,11 +1238,15 @@ pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str) -> crate::Resu
         off += w;
     }
     let legend: Vec<String> = snaps.iter().enumerate().map(|(i, s)| format!("[{i}] {}", s.path.display())).collect();
-    let text = format!("; {} as {}\n{text}", legend.join("  "), fmt.name());
-    Ok((
-        json!({"snapshots": snaps.iter().map(|s| &s.path).collect::<Vec<_>>(), "format": fmt.name(), "rows": rows}),
-        text,
-    ))
+    let mut text = format!("; {} as {}\n{text}", legend.join("  "), fmt.name());
+    let mut v =
+        json!({"snapshots": snaps.iter().map(|s| &s.path).collect::<Vec<_>>(), "format": fmt.name(), "rows": rows});
+    if hidden > 0 {
+        let note = format!("{hidden} rows the same in every snapshot are left out (same=true shows them)");
+        text += &format!("; {note}\n");
+        v["same_rows_left_out"] = json!(hidden);
+    }
+    Ok((v, text))
 }
 
 #[cfg(test)]
@@ -1456,9 +1472,13 @@ mod tests {
         let r = search(&paths, SearchOpts { preds: &["delta=10".into(), "delta=15".into()], ..base }).unwrap();
         assert_eq!(r["candidates"], 1);
         assert!(search(&paths, SearchOpts { preds: &["inc".into(), "inc".into(), "inc".into()], ..base }).is_err());
-        let (v, text) = view(&paths, "800000FC", 12, "u32").unwrap();
+        let (v, text) = view(&paths, "800000FC", 12, "u32", true).unwrap();
         assert_eq!(v["rows"][1]["values"], json!([10, 20, 35]));
         assert!(text.contains("80000100") && text.contains('*'));
+        // By default only the rows that differ.
+        let (v, text) = view(&paths, "800000FC", 12, "u32", false).unwrap();
+        assert_eq!((v["rows"].as_array().unwrap().len(), &v["same_rows_left_out"]), (1, &json!(2)));
+        assert!(text.contains("2 rows the same in every snapshot are left out"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
