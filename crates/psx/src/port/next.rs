@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use super::assets::{self, State as AssetState};
 use super::check;
 use super::review::{self, Review};
 use super::verdict::{self, State};
@@ -267,11 +268,13 @@ pub struct Facts {
     pub features: Vec<Feature>,
     /// Overlays the inventory knows only from the code that ran in them.
     pub unpack: Vec<String>,
+    /// The disc's files by state, or why psx cannot list them.
+    pub assets: Result<assets::Inventory, String>,
 }
 
 impl Facts {
     pub fn gather(root: &Path) -> crate::Result<Facts> {
-        let port = Port::load(root)?;
+        let mut port = Port::load(root)?;
         let git = Git::read(root);
         let goal = port.goal_ids();
         let ctx = Ctx { root: root.to_path_buf(), cancel: None };
@@ -360,7 +363,11 @@ impl Facts {
                 }
             })
             .collect();
-        Ok(Facts { root: root.to_path_buf(), port, git, features, unpack })
+        let assets = assets::inventory(root, &port, inv.as_ref(), head);
+        if let Ok(a) = &assets {
+            port.problems.extend(a.problems.iter().cloned());
+        }
+        Ok(Facts { root: root.to_path_buf(), port, git, features, unpack, assets })
     }
 
     pub fn stage(&self, id: &str) -> Option<Stage> {
@@ -372,6 +379,7 @@ impl Facts {
         self.port.confirmation() != Confirmation::Missing
             && !self.features.is_empty()
             && self.features.iter().all(|f| f.stage() == Some(Stage::Done))
+            && (!self.port.goal.assets || self.assets.as_ref().is_ok_and(|a| a.files.iter().all(|f| f.state.settled())))
     }
 
     fn title(&self, id: &str) -> String {
@@ -563,6 +571,12 @@ impl Facts {
                 "the agent starts psx scenario play on one of its scenarios with a request to play the feature freely and differently from its work recordings; the person plays, and the agent names the recording under recordings.held_out",
             );
         }
+        // 8. Assets, when the goal includes them.
+        if self.port.goal.assets {
+            if let Some(item) = self.asset_item() {
+                return item;
+            }
+        }
         if self.complete() {
             return Item::person(
                 "Done",
@@ -585,6 +599,59 @@ impl Facts {
             "",
             "psx's port next has no item for this state: tell the person",
         )
+    }
+
+    /// The next asset item: an unknown file, then one not imported, then
+    /// one not checked.
+    fn asset_item(&self) -> Option<Item> {
+        let a = match &self.assets {
+            Ok(a) => a,
+            Err(why) => {
+                return Some(Item::agent(
+                    "Assets",
+                    None,
+                    format!("psx cannot list the disc's files: {why}"),
+                    "psx port status lists the disc's files",
+                    "save the workspace's disc image as its media: psx context --image media/<game>.cue --save",
+                ));
+            }
+        };
+        let stale = match (&a.report, &a.stale) {
+            (Some(r), _) if !r.failures.is_empty() => {
+                format!(" (the importers failed: {})", first_lines(&r.failures).join("; "))
+            }
+            (None, Some(c)) => format!(" (the last psx port check judged {c}, not HEAD)"),
+            (None, None) => " (no psx port check has run the importers)".into(),
+            _ => String::new(),
+        };
+        if let Some(f) = a.first(AssetState::Unknown) {
+            let n = a.count(AssetState::Unknown);
+            return Some(Item::agent(
+                "Format",
+                None,
+                format!("{} has no format yet; {n} files are unknown", f.path),
+                "every disc file is covered by a format doc, found whole as a standard format, or listed in formats/unused.toml",
+                "find what loads it: run with trace_cd (loads.json gives where each file goes in RAM), watch that buffer for the code that parses it, and read that code (code disasm, decompile); write formats/<id>.md (formats/README.md) naming the files and the loader; when no run ever loads it, list it in formats/unused.toml with the runs that show so",
+            ));
+        }
+        if let Some(f) = a.first(AssetState::Found) {
+            return Some(Item::agent(
+                "Import",
+                None,
+                format!("{} ({}) is not imported{stale}", f.path, f.format.as_deref().unwrap_or("")),
+                "the importers' outputs name it in their provenance, at HEAD",
+                "write its importer in tools/import, converting exactly into the port's formats with Provenance naming the disc file; commit and run psx port check, which runs the importers on the disc",
+            ));
+        }
+        a.first(AssetState::Imported).map(|f| {
+            Item::agent(
+                "Check",
+                None,
+                format!("{} is imported, not checked against what the game built", f.path),
+                "an importer test that compares it with what the game built marks it with import::checking and passes, at HEAD",
+                "write a test in tools/import comparing the importer's output with what the game built from that file (RAM after loading it, its VRAM uploads, a GPU capture of the same view: psx run with trace_cd, gpu_frame), starting with let _checked = import::checking(\"/PATH\"); commit and run psx port check",
+            )
+        })
     }
 
     /// The Review item's brief, for a reviewer who has not seen the work.
@@ -637,8 +704,15 @@ impl Facts {
             "areas": areas,
             "complete": self.complete(),
             "git": {"head": self.git.head, "clean": self.git.clean},
-            "not_measured_yet": ["assets"],
         });
+        v["assets"] = match &self.assets {
+            Ok(a) => {
+                let mut j = a.json(self.port.formats.len());
+                j["in_goal"] = json!(self.port.goal.assets);
+                j
+            }
+            Err(why) => json!({"in_goal": self.port.goal.assets, "error": why}),
+        };
         if !self.unpack.is_empty() {
             v["unpack"] = json!(self.unpack);
         }
@@ -655,6 +729,17 @@ impl Facts {
             if goal.is_empty() { "(no description)" } else { goal },
             self.features.len()
         ));
+        if let Ok(a) = &self.assets {
+            s.push_str(&format!(
+                "assets  {}/{} files checked · {} unused · {} formats · {} unknown{}\n",
+                a.count(AssetState::Checked),
+                a.files.len(),
+                a.count(AssetState::Unused),
+                self.port.formats.len(),
+                a.count(AssetState::Unknown),
+                if self.port.goal.assets { "" } else { "  (not in the goal)" }
+            ));
+        }
         s.push_str(&match self.port.confirmation() {
             Confirmation::Missing => "not confirmed yet\n".to_string(),
             Confirmation::Covers { at } => format!("confirmed {at}\n"),
@@ -942,6 +1027,41 @@ mod tests {
         set(&mut f, "F-0001", |x| x.held_out = results(&[("walk/i", &[])]));
         assert!(f.complete());
         assert_eq!(next(&f), ("Done", "person", String::new()));
+    }
+
+    #[test]
+    fn assets_follow_the_features_when_the_goal_has_them() {
+        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        for x in f.features.iter_mut() {
+            x.located = true;
+            x.unrecorded.clear();
+            x.verdict = current();
+            x.work = results(&[("walk/a", &[])]);
+            x.held_out = results(&[("walk/h", &[])]);
+            x.review = Review::Holds { commit: "abc".into(), findings: 0 };
+        }
+        let file = |path: &str, state| assets::Asset { path: path.into(), state, format: None };
+        f.assets = Ok(assets::Inventory {
+            files: vec![file("/MAPS/L1.WLD", AssetState::Found), file("/CUTS/BALL.AN2", AssetState::Unknown)],
+            ..Default::default()
+        });
+        // Not in the goal: shown, not asked for.
+        assert!(f.complete());
+        f.port.goal.assets = true;
+        assert!(!f.complete());
+        let next = |f: &Facts| (f.next().item, f.next().why);
+        assert_eq!(next(&f).0, "Format");
+        assert!(next(&f).1.starts_with("/CUTS/BALL.AN2 has no format yet"));
+        let set = |f: &mut Facts, i: usize, s| f.assets.as_mut().unwrap().files[i].state = s;
+        set(&mut f, 1, AssetState::Unused);
+        assert_eq!(next(&f).0, "Import");
+        assert!(next(&f).1.contains("no psx port check has run the importers"), "{}", next(&f).1);
+        set(&mut f, 0, AssetState::Imported);
+        assert_eq!(next(&f).0, "Check");
+        set(&mut f, 0, AssetState::Checked);
+        assert!(f.complete());
+        assert_eq!(next(&f).0, "Done");
+        assert!(f.plain().contains("assets  1/2 files checked · 1 unused · 0 formats · 0 unknown\n"), "{}", f.plain());
     }
 
     #[test]

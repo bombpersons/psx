@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::next::Git;
 use super::verdict::{self, Verdict};
-use super::{Entry, Port};
+use super::{Entry, Port, assets};
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 
@@ -94,6 +94,77 @@ fn last_report(root: &Path, head: Option<&str>) -> Result<ScenarioReport, &'stat
         .map_err(|_| "the last psx port check ran no scenarios")
 }
 
+/// Runs the importers on the workspace's disc into `.psx/port/import/`
+/// (a file is imported when an output's provenance names it) and their
+/// tests with `PSX_IMPORT_REPORT` set (a file is checked when a passing
+/// test marked it with `import::checking`).
+fn run_importers(root: &Path, head: &str) -> crate::Result<assets::Report> {
+    let mut r = assets::Report { commit: head.into(), clean: true, at: crate::stamp::utc_now(), ..Default::default() };
+    let media = crate::context::resolve(root, None, None, None, false)
+        .ok()
+        .and_then(|r| r.media)
+        .map(|m| std::path::absolute(&m).unwrap_or(m));
+    let errors = |out: &std::process::Output| -> String {
+        let text = String::from_utf8_lossy(&out.stderr);
+        let e: Vec<&str> = text.lines().filter(|l| l.starts_with("error") || l.contains("panicked")).take(5).collect();
+        if e.is_empty() { text.lines().last().unwrap_or("no output").to_string() } else { e.join("; ") }
+    };
+    let cargo = |args: &[&str], env: Option<(&str, &Path)>| {
+        let mut c = std::process::Command::new("cargo");
+        c.args(args).current_dir(root);
+        if let Some((k, v)) = env {
+            c.env(k, v);
+        }
+        c.output().map_err(|e| Error::invalid(format!("cargo: {e}")))
+    };
+    let out_dir = root.join(".psx/port/import");
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir).map_err(|e| Error::io(&out_dir, e))?;
+    match &media {
+        None => r.failures.push("no media: the workspace's disc image (psx context --image ... --save)".into()),
+        Some(m) => {
+            let disc = m.to_string_lossy().into_owned();
+            let o = cargo(&["run", "--locked", "-q", "-p", "import", "--", &disc, &out_dir.to_string_lossy()], None)?;
+            if !o.status.success() {
+                r.failures.push(format!("the importers on the disc: {}", errors(&o)));
+            }
+            r.imported = provenance_sources(&out_dir);
+        }
+    }
+    let marks = root.join(".psx/port/import-checked.txt");
+    let _ = std::fs::remove_file(&marks);
+    let o = cargo(&["test", "--locked", "--no-fail-fast", "-q", "-p", "import"], Some(("PSX_IMPORT_REPORT", &marks)))?;
+    if !o.status.success() {
+        r.failures.push(format!("the importers' tests: {}", errors(&o)));
+    }
+    let text = std::fs::read_to_string(&marks).unwrap_or_default();
+    let mut checked: Vec<String> = text.lines().filter(|l| !l.trim().is_empty()).map(assets::disc_path).collect();
+    checked.sort();
+    checked.dedup();
+    r.checked = checked;
+    Ok(r)
+}
+
+/// The disc files the import's `*.provenance.json` files name.
+fn provenance_sources(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                todo.push(p);
+            } else if p.to_string_lossy().ends_with(".provenance.json") {
+                let v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap_or_default()).unwrap_or_default();
+                out.extend(v["source"].as_str().map(assets::disc_path));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// `.psx/port/last.json`: the last check's scenario report and the commit
 /// it ran at.
 const LAST: &str = ".psx/port/last.json";
@@ -148,6 +219,11 @@ impl PortCheckArgs {
         let scenarios_path = root.join(".psx/port/scenarios.json");
         std::fs::create_dir_all(scenarios_path.parent().unwrap()).map_err(|e| Error::io(&scenarios_path, e))?;
         let ran = run_tests(root, &scenarios_path)?;
+        // The importers, when there is something to import: run on the disc
+        // and their tests, judged at the same commit.
+        let imports = (self.feature.is_none() && (port.goal.assets || !port.formats.is_empty()))
+            .then(|| run_importers(root, &head))
+            .transpose()?;
         let after = Git::read(root);
         if after.head != git.head || !after.clean {
             return Err(Error::invalid(
@@ -185,7 +261,14 @@ impl PortCheckArgs {
             }
             verdicts.push(row);
         }
-        Ok(json!({"commit": head, "verdicts": verdicts}))
+        let mut out = json!({"commit": head, "verdicts": verdicts});
+        if let Some(r) = imports {
+            let p = root.join(assets::REPORT);
+            crate::write_atomic(&p, &serde_json::to_vec_pretty(&r).unwrap_or_default())
+                .map_err(|e| Error::io(&p, e))?;
+            out["assets"] = json!({"imported": r.imported.len(), "checked": r.checked.len(), "failures": r.failures});
+        }
+        Ok(out)
     }
 }
 

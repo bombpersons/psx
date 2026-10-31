@@ -196,6 +196,17 @@ pub struct Provenance {
 }
 
 impl Provenance {
+    /// For a file read from the disc, named as [`DiscReader::read`] takes it
+    /// (`/DATA/LEVEL1.DAT`): psx counts a disc file imported by this name.
+    pub fn of_disc(path: &str, bytes: &[u8], importer: &str) -> Self {
+        Self {
+            source: path.to_string(),
+            source_size: bytes.len() as u64,
+            source_fnv1a64: format!("{:016x}", fnv1a64(bytes)),
+            importer: importer.to_string(),
+        }
+    }
+
     pub fn of(source: &Path, importer: &str) -> std::io::Result<Self> {
         let bytes = std::fs::read(source)?;
         Ok(Self {
@@ -213,6 +224,33 @@ impl Provenance {
         let path = output.with_file_name(name);
         std::fs::write(&path, serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)?;
         Ok(path)
+    }
+}
+
+/// Marks a test as checking the import of the disc file `path` against
+/// what the game built from it (its RAM after loading, its VRAM uploads, a
+/// GPU capture: evidence from psx). `psx port check` counts the file
+/// checked when the test passes: `let _checked = import::checking("/DATA/LEVEL1.DAT");`
+/// at its start.
+pub fn checking(path: &str) -> Checking {
+    Checking(path.to_string())
+}
+
+/// See [`checking`]: recorded when dropped, unless the test panicked.
+pub struct Checking(String);
+
+impl Drop for Checking {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        if let Some(report) = std::env::var_os("PSX_IMPORT_REPORT") {
+            use std::io::Write;
+            let file = std::fs::OpenOptions::new().create(true).append(true).open(report);
+            if let Ok(mut f) = file {
+                let _ = writeln!(f, "{}", self.0);
+            }
+        }
     }
 }
 
@@ -244,6 +282,21 @@ mod tests {
         super::import(&disc, &out, &super::ImportProgress::default()).unwrap();
         let info: super::DiscInfo = ron::from_str(&std::fs::read_to_string(out.join("disc.ron")).unwrap()).unwrap();
         assert_eq!(info, super::DiscInfo { volume_id: "MY_GAME".into(), serial: "SLUS_123.45".into(), files: 2 });
+    }
+
+    #[test]
+    fn a_passing_check_is_recorded_for_psx() {
+        let report = std::env::temp_dir().join(format!("import-checked-{}", std::process::id()));
+        // Only psx port check sets the variable; this test sets it for itself.
+        unsafe { std::env::set_var("PSX_IMPORT_REPORT", &report) };
+        drop(super::checking("/DATA/LEVEL1.DAT"));
+        let failed = std::thread::spawn(|| {
+            let _checked = super::checking("/DATA/LEVEL2.DAT");
+            panic!("the import differs from the game's RAM");
+        });
+        assert!(failed.join().is_err());
+        assert_eq!(std::fs::read_to_string(&report).unwrap(), "/DATA/LEVEL1.DAT\n");
+        std::fs::remove_file(report).unwrap();
     }
 
     #[test]

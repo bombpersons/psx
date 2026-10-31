@@ -7,8 +7,8 @@ template (psx-bevy/, game/, tools/import, vendor/), goal.toml, catalogue/,
 media/ and bios/ linked in, .mcp.json for psx, and git. The region comes
 from the disc; pass fields_per_tick from the original's main loop.
 
-goal.toml names the features the person wants (ids, or "all") and a
-description. catalogue/F-NNNN.md is one feature of the game each: id,
+goal.toml names the features the person wants (ids, or "all"), a
+description, and assets = true when the goal includes the disc's assets. catalogue/F-NNNN.md is one feature of the game each: id,
 title, area, depends (features it cannot work without), code (the
 original's functions, found with code_coverage_diff), recordings (work and
 held_out, as scenario/name), wont_reach (branches no recording can reach,
@@ -61,6 +61,9 @@ Items, in this order:
   line. A review holds while its files are unchanged since its commit.
 - Play (person): a reviewed feature without held-out recordings: start
   scenario_play for the person and name the recording under held_out.
+- Format, Import, Check (with assets = true): a disc file with no format
+  yet, one not imported, one not checked against what the game built
+  (formats/README.md).
 - Stuck (person): the same item three times with nothing changed. Stop and
   ask.
 - Done: every feature of the goal is done.
@@ -87,6 +90,16 @@ recording keeps what the original ran as the inventory's code
 compressed overlays first (guide topic code, Decompressed code).
 scenario_show reads a recording back per tick, with each numeric
 quantity's change since the tick before.
+
+Assets: each disc file but the code is unknown, format found (a
+formats/<id>.md doc names it, with the code that parses it, or assets_scan
+finds it whole as TIM, TMD, VAB, VAG, XA or STR), imported (the last
+port_check ran the importers on the disc, and an output's
+Provenance::of_disc names it), checked (a passing importer test marked it
+with import::checking after comparing the import with what the game built:
+RAM after loading, VRAM uploads, a GPU capture) or unused
+(formats/unused.toml, with the runs that never load it). port_status shows
+them always; port_next asks for them when the goal has assets = true.
 
 Template updates: port_update replaces untouched psx-bevy/ and vendor/
 files, writes <file>.psx-new beside edited ones (merge it, keeping the

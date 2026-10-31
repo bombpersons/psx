@@ -10,6 +10,7 @@ use crate::commands::{Ctx, Op, Outcome};
 use crate::template::{TemplateOptions, TemplateRegion};
 
 const CATALOGUE_README: &str = include_str!("../../../../templates/port/catalogue/README.md");
+const FORMATS_README: &str = include_str!("../../../../templates/port/formats/README.md");
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PortInitArgs {
@@ -65,7 +66,7 @@ impl PortInitArgs {
     fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
         let media = absolute(&ctx.root.join(&self.media));
         let dest = absolute(&ctx.root.join(&self.dest));
-        let ours = [GOAL, "catalogue/README.md", ".mcp.json", ".psx/project.json"];
+        let ours = [GOAL, "catalogue/README.md", "formats/README.md", ".mcp.json", ".psx/project.json"];
         let clashes: Vec<&str> = ours.into_iter().filter(|r| dest.join(r).exists()).collect();
         if !clashes.is_empty() {
             return Err(Error::invalid(format!(
@@ -107,6 +108,7 @@ impl PortInitArgs {
         let mut written = Vec::new();
         write_new(&dest, GOAL, GOAL_TOML, &mut written)?;
         write_new(&dest, "catalogue/README.md", CATALOGUE_README, &mut written)?;
+        write_new(&dest, "formats/README.md", FORMATS_README, &mut written)?;
         let mcp = json!({"mcpServers": {"psx": {"command": psx_exe(), "args": ["--root", dest, "mcp"]}}});
         write_new(
             &dest,

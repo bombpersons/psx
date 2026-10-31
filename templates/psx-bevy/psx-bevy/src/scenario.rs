@@ -452,7 +452,8 @@ mod tests {
         root
     }
 
-    const SCENARIO: &str = "moment = \"m\"\nchain = \"c\"\nkind = \"level\"\n[compare]\nx = 0\n[parameters]\nx = 4096\n";
+    const SCENARIO: &str =
+        "moment = \"m\"\nchain = \"c\"\nkind = \"level\"\n[compare]\nx = 0\n[parameters]\nx = 4096\n";
 
     #[test]
     fn a_port_that_matches_passes() {

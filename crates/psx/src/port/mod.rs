@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use crate::Error;
 
+pub mod assets;
 pub mod check;
 mod confirm;
 mod init;
@@ -36,6 +37,7 @@ pub(crate) const GOAL_TOML: &str = "\
 # after that; taking a feature out needs the person to confirm again.
 description = \"\"
 features = []   # feature ids, or \"all\"
+assets = false  # true: every disc file imported and checked, or unused (formats/README.md)
 ";
 
 /// The features a goal names: a list, or every catalogued feature.
@@ -93,6 +95,10 @@ pub struct Goal {
     pub description: String,
     #[serde(default)]
     pub features: Features,
+    /// Whether the goal includes the disc's assets: every file imported and
+    /// checked, or unused.
+    #[serde(default)]
+    pub assets: bool,
     #[serde(default)]
     pub confirmed: Option<Confirmed>,
 }
@@ -104,6 +110,8 @@ pub struct Goal {
 pub struct Confirmed {
     pub at: String,
     pub features: Features,
+    #[serde(default)]
+    pub assets: bool,
     #[serde(default)]
     pub wont_reach: WontReach,
 }
@@ -240,6 +248,10 @@ pub struct Problem {
 pub struct Port {
     pub goal: Goal,
     pub entries: BTreeMap<String, Entry>,
+    /// `formats/<id>.md`: the disc's formats found so far.
+    pub formats: BTreeMap<String, assets::Format>,
+    /// `formats/unused.toml`: disc files the game never loads, with why.
+    pub unused: BTreeMap<String, String>,
     pub problems: Vec<Problem>,
 }
 
@@ -357,7 +369,8 @@ impl Port {
                 Err(p) => problems.push(problem(&file, p)),
             }
         }
-        let mut port = Port { goal, entries, problems };
+        let (formats, unused) = assets::read_formats(root, &mut problems)?;
+        let mut port = Port { goal, entries, formats, unused, problems };
         port.check();
         port.check_disk(root);
         Ok(port)
@@ -380,10 +393,23 @@ impl Port {
         }
         let naming: Vec<&Entry> =
             self.entries.values().filter(|e| !e.code.is_empty() || !e.wont_reach.is_empty()).collect();
-        if !naming.is_empty() {
+        let loaders: Vec<&assets::Format> = self.formats.values().filter(|f| !f.loader.is_empty()).collect();
+        if !naming.is_empty() || !loaders.is_empty() {
             let ctx = crate::commands::Ctx { root: root.to_path_buf(), cancel: None };
             let functions = crate::coverage::inventory(&ctx, None)
                 .and_then(|(_, inv)| crate::coverage::Functions::read(root, &inv));
+            for f in loaders {
+                match &functions {
+                    Err(err) => {
+                        out.push(problem(&f.file, format!("loader is checked against the inventory: {}", err.message)))
+                    }
+                    Ok(fns) => {
+                        for l in f.loader.iter().filter(|l| entry_addr(l).is_some_and(|a| !fns.starts(a))) {
+                            out.push(problem(&f.file, format!("loader: no function of the inventory starts at {l}")));
+                        }
+                    }
+                }
+            }
             for e in naming {
                 let f = &e.file;
                 let fns = match &functions {
@@ -545,6 +571,8 @@ impl Port {
                 was.iter().filter(|id| !now.contains(*id)).cloned().collect()
             }
         };
+        let missing: Vec<String> =
+            missing.into_iter().chain((c.assets && !self.goal.assets).then(|| "assets".to_string())).collect();
         if missing.is_empty() { Confirmation::Covers { at } } else { Confirmation::Shrunk { at, missing } }
     }
 

@@ -121,7 +121,12 @@ The same loop, with RAM and VRAM as the evidence:
    builds after loading, geometry against a GPU capture of the same view.
 
 Each disc file is unknown, format found, imported, checked, or unused (the
-game never loads it).
+game never loads it). A format is `formats/<id>.md` (TOML front matter:
+its files and the code that parses them, then the layout); a file psx
+finds whole as a standard format needs none. `port check` runs the
+importers on the disc (imported: an output's provenance names the file)
+and their tests (checked: a passing test marked it). Assets are part of a
+goal when `goal.toml` says `assets = true`.
 
 ## 5. Progress: `port status` and `port next`
 

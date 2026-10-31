@@ -61,7 +61,9 @@ player's disc image next to it (`src/disc.rs`, running `import::import` from
 
 - Importers are the only code that reads the original's formats. They write
   the port's formats under `assets/imported/`, report progress, and record
-  where each output came from. Bump `import::VERSION` whenever their output
+  where each output came from (`Provenance::of_disc`, which `psx port
+  check` counts as the file imported). A test that compares an import with
+  what the game built from it marks the file with `import::checking`. Bump `import::VERSION` whenever their output
   changes.
 - Set `import::SERIALS` to the disc revisions the importers support (the boot
   executable in `SYSTEM.CNF`) and `import::GAME` to the original's name.
