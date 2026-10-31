@@ -292,11 +292,17 @@ struct Quantities<'a> {
 /// The quantities at the end of every tick of a run of `frames` fields
 /// after the first tick, with `events` as the pad's input; `tracer` sees
 /// every instruction run, from the start.
+/// Record `frames` fields of ticks from `m`, with `events` by field. With
+/// `ends`, the fields a recording's ticks ended in, the input follows the
+/// ticks instead: each event lands as many fields after the last tick before
+/// it as it did there, and the run lasts as many ticks. A game that falls a
+/// field behind on another route then reads each press on the same tick.
 fn record(
     m: &mut Machine,
     q: &Quantities,
     frames: u32,
     events: &[crate::replay::Input],
+    ends: Option<&[u64]>,
     deadline: Duration,
     mut tracer: Option<&mut Tracer>,
 ) -> Recorded {
@@ -317,11 +323,13 @@ fn record(
             last_frame = m.bus.frames;
             if out.initial.is_some() && start.is_none() {
                 start = Some(m.bus.frames);
-                target = m.bus.frames + frames as u64;
+                // Following ticks, the game may fall behind: room for it.
+                let slack = if ends.is_some() { frames as u64 / 8 + 16 } else { 0 };
+                target = m.bus.frames + frames as u64 + slack;
             }
             if let Some(start) = start {
                 let field = m.bus.frames - start;
-                while next_event < events.len() && events[next_event].frame <= field {
+                while next_event < events.len() && due(&events[next_event], field, ends, &out.ticks) {
                     crate::replay::apply(m, &events[next_event]);
                     next_event += 1;
                 }
@@ -368,9 +376,23 @@ fn record(
             // field, which the recording counts as field 0.
             let field = start.map_or(0, |s| m.bus.frames - s);
             out.ticks.push(Full { tick: n, field, pad: crate::replay::button_names(m.bus.sio0.buttons), values });
+            if ends.is_some_and(|e| out.ticks.len() >= e.len()) {
+                break;
+            }
         }
     }
     out
+}
+
+/// Whether `e` is due at `field`: by its field, or with `ends` (the fields a
+/// recording's ticks ended in) as many fields after the tick before it as
+/// there, once that tick has ended in `done`.
+fn due(e: &crate::replay::Input, field: u64, ends: Option<&[u64]>, done: &[Full]) -> bool {
+    let Some(ends) = ends else { return e.frame <= field };
+    match ends.partition_point(|&end| end < e.frame) {
+        0 => e.frame <= field,
+        k => done.get(k - 1).is_some_and(|t| t.field + (e.frame - ends[k - 1]) <= field),
+    }
 }
 
 /// What to do about code the inventory knows only from what ran, or not at
@@ -525,7 +547,7 @@ fn continued(l: &Loaded, name: &str) -> Result<Vec<(String, u32, Vec<crate::repl
 /// Run `m` on to the end of recording `from` (and those it continues).
 fn reach_end(m: &mut Machine, l: &Loaded, q: &Quantities, from: &str, deadline: Duration) -> crate::Result<()> {
     for (n, frames, events) in continued(l, from).map_err(Error::invalid)? {
-        let r = record(m, q, frames, &events, deadline, None);
+        let r = record(m, q, frames, &events, None, deadline, None);
         if let Some(why) = unrecorded(&r) {
             return Err(Error::invalid(format!(
                 "replaying {n} to continue from its end gave no recording: {}",
@@ -593,7 +615,7 @@ impl Prepared {
             ));
         }
         let mut tracer = tracer(m);
-        let r = record(m, &self.quantities(), frames, events, timeout, Some(&mut tracer));
+        let r = record(m, &self.quantities(), frames, events, None, timeout, Some(&mut tracer));
         if let Some(why) = unrecorded(&r) {
             return Ok((false, why));
         }
@@ -804,7 +826,8 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
         if let Some(from) = rec.header.producer.details.get("from").and_then(Json::as_str) {
             reach_end(&mut m, &l, &q, from, timeout)?;
         }
-        let r = record(&mut m, &q, frames, &events, timeout, None);
+        let ends: Vec<u64> = rec.expand().iter().map(|t| t.field).collect();
+        let r = record(&mut m, &q, frames, &events, Some(&ends), timeout, None);
         let (diffs, schedule) = match unrecorded(&r) {
             Some(why) => (
                 vec![format!("the second route gave no recording: {}", why["status"].as_str().unwrap_or(""))],
@@ -1264,7 +1287,7 @@ pub struct Quantities {
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
         let mut t = tracer(&mut m);
-        let r = record(&mut m, &q, 1, &[], Duration::from_secs(60), Some(&mut t));
+        let r = record(&mut m, &q, 1, &[], None, Duration::from_secs(60), Some(&mut t));
         assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
         assert_eq!(r.initial, Some([("x".to_string(), psx_scenario::Value::Int(1))].into()));
         assert_eq!(r.ticks[0].values, [("x".to_string(), psx_scenario::Value::Int(2))].into());
@@ -1381,6 +1404,22 @@ pub struct Quantities {
         assert_eq!(out["rows"], json!([[2, 4, "right", "walk", 3, 0, -1, 4095]]));
         let bad = ScenarioShowArgs { quantities: vec!["y".into()], ..args(None, false) };
         assert!(show_cmd(&ctx, &bad).unwrap_err().to_string().contains("the recording holds m, n, x"));
+    }
+
+    #[test]
+    fn input_following_ticks_moves_with_a_late_tick() {
+        let press = crate::replay::Input { frame: 5, buttons: 1, sticks: [128; 4] };
+        let tick = |field| Full { tick: 0, field, pad: Vec::new(), values: Values::new() };
+        // Recorded, ticks ended in fields 2 and 4; the press came a field after.
+        let ends = [2, 4];
+        assert!(due(&press, 5, None, &[]));
+        assert!(!due(&press, 5, Some(&ends), &[tick(2)]), "the tick before it has not ended");
+        assert!(due(&press, 5, Some(&ends), &[tick(2), tick(4)]));
+        // The second tick ended a field late: so does the press.
+        assert!(!due(&press, 5, Some(&ends), &[tick(2), tick(5)]));
+        assert!(due(&press, 6, Some(&ends), &[tick(2), tick(5)]));
+        let early = crate::replay::Input { frame: 1, ..press };
+        assert!(due(&early, 1, Some(&ends), &[]), "before the first tick ends, by field");
     }
 
     #[test]
