@@ -11,8 +11,8 @@ evidence.
 When the workspace has `goal.toml`, psx leads the work. Call `port_next`: it
 gives one item (what, for which feature, why, and the fact that will show it
 done). Do it until that fact holds, commit, and call `port_next` again.
-Name the feature's id in each of its commits (`F-0003: stomp hang`): its
-review finds the feature's files by them. `port_status` shows every
+Name the feature's id in each of its commits (`F-0003: stomp hang`).
+`port_status` shows every
 feature of the goal by stage. An item for the person (Confirm, Play,
 Stuck) waits for them: tell them and stop. psx's `guide`
 tool explains each item; `catalogue/README.md` has the feature
@@ -73,11 +73,12 @@ there is yours to decide. What the tools rely on:
 
 ## The review
 
-A feature is reviewed before it is done, by someone who did not write it:
-a sub-agent or a fresh session, given the brief `port_next` prints. They
-read the feature's code and how it sits in the rest of the game, not the
-disassembly, and write their findings in `reviews/<id>.md`; answer each
-one, fixed or kept and why.
+Once the goal's features work, the code is reviewed as a whole by someone
+who did not write it: a sub-agent or a fresh session, given the brief
+`port_next` prints. The recordings already check what the code does; the
+review asks whether you would write a new game like this, and its
+findings say how to restructure it. They go in `review.md`; answer each
+one: done (with `port_check` passing again), or kept and why.
 
 ## Beyond the features
 

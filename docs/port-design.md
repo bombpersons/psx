@@ -73,7 +73,7 @@ the behaviour is the same, however the port implements it.
 | Glossary | named quantities, and the binding that reads them from the original | `glossary/` |
 | Scenario | a place to start (a state) and what is compared there, with tolerances | `scenarios/<id>.toml` |
 | Recording | the original's quantities per tick for one input, scripted or played | `scenarios/<id>/<name>.jsonl` |
-| Review | findings on a feature's code by someone who did not write it, each answered | `reviews/<id>.md` |
+| Review | findings on the port's code as a whole by someone who did not write it, each answered | `review.md` |
 | Verdict | psx's result of the port against one recording: pass, or the first tick and quantity that differ | `.psx/verdicts/` |
 | Format | a disc file's format, read by an importer | `formats/<id>.md`, `tools/import` |
 
@@ -139,7 +139,7 @@ importer lists the entries (`import::index`), which `port check` asks for.
 | Located | its code is found |
 | Recorded | it has recordings |
 | Matching | every working recording passes |
-| Reviewed | matching, every branch of its code covered by a recording or marked won't-reach, no question open, and its code reviewed by someone who did not write it, with every finding answered |
+| Reviewed | matching, every branch of its code covered by a recording or marked won't-reach, no question open, and the code reviewed by someone who did not write it, with every finding answered |
 | Done | reviewed, and its held-out recordings pass |
 
 Coverage is the union of what the original ran across a feature's
@@ -149,36 +149,46 @@ not a percentage, so the uncovered ones always say what to record next.
 ### The review
 
 The recordings check behaviour, not shape: a line-by-line transliteration
-of the assembly passes them as well as a rewrite into rules. The agent
-that wrote a feature, fresh from its disassembly, is the worst judge of
-whether the code reads as rules, so someone who has not seen that work
-reads it: a sub-agent or a new session, given the brief `port next` prints.
-The reviewer reads the feature's catalogue entry, its code and how it sits
-in the rest of the game (duplication with other features, something that
-belongs shared), but not the disassembly, and judges it against the
-workspace's AGENTS.md. Its findings go in `reviews/<id>.md`:
+of the assembly passes them as well as a rewrite into rules. So the
+review leaves behaviour alone and asks one question of the code: would
+you write a new game like this? The agent that wrote it, fresh from the
+disassembly, is the worst judge, so someone who has not seen that work
+reads it: a sub-agent or a new session, given the brief `port next`
+prints. The reviewer reads the port's code as a whole (`game/`, `tools/`)
+and not the catalogue, the notes or the disassembly, and judges it as code
+written for a new game today: how it is divided, names, how readily it
+takes another character, level or rule, duplication, and what is shaped
+by the original rather than chosen. Each finding says what to change and
+the shape to choose instead; what the code does stays, and the recordings
+prove it still does. The findings go in `review.md`:
 
 ```markdown
 +++
 commit = "3f2a91c"
-files = ["game/src/croc/jump.rs", "game/src/croc/mod.rs"]
 +++
-## Stomp is a bool beside the jump state
-`stomping: bool` lives next to `JumpState`; a stomp is a state of the jump.
-**Answer:** fixed in 7c01d2e: `JumpState::Stomp { hang }`.
+## One plugin per feature
+Running, the jump and the stomp are four plugins sharing one step order;
+a character controller written today is one plugin whose moves are
+states of one machine, so a new move is a state, not a plugin.
+**Answer:** done in 7c01d2e: `CrocController` with `Move::{Run, Jump, Stomp}`.
 
-## One system per original routine
+## Components documented by the original's offsets
 ...
 ```
 
-The writer answers every finding: fixed, or kept and why. The review
-holds while its files are unchanged since its commit. A change to them
-(the fixes its answers made, among others) asks for a follow-up: a
-reviewer reads only the diff since that commit, keeps the findings and
-answers, moves the commit on and adds new findings. Croc's movement
-showed why: with a whole review after every fix, a comment changed in
-a file three features share brought three full reviews, six rounds in
-all.
+The writer answers every finding: done, or kept and why. The review holds
+while the code is unchanged since its commit. A change (the restructuring
+its answers made, among others) asks for a follow-up: a reviewer reads
+only the diff since that commit, keeps the findings and answers, moves the
+commit on and adds new findings.
+
+One review covers the whole code, once the goal's features work, rather
+than one per feature as each is finished. Croc's movement showed why: each
+feature's reviewer read that feature's slice and checked it against its
+catalogue entry, so nobody saw that running, the jump and the stomp had
+become four plugins where a game written from scratch would have one
+character controller; and a whole review after every fix, with a comment
+changed in a file three features share, brought six rounds.
 
 ### `port status`
 
@@ -208,11 +218,11 @@ One item, in this order:
 5. An uncovered branch: a recording that reaches it, phrased as what to do
    ("jump, and let go of CROSS once the rise eases"). The agent records it
    when it can script it; otherwise it is the person's.
-6. A feature whose own work is finished (matching, branches resolved, no
-   question open) without a current review: the review's brief, or the
-   unanswered findings.
-7. A reviewed feature without held-out recordings: the person's.
-8. Assets: an unknown file, then an importer not yet checked.
+6. Assets: an unknown file, then an importer not yet checked.
+7. Every feature's own work finished (matching, branches resolved, no
+   question open) and the code without a current review: the review's
+   brief, a follow-up's, or the unanswered findings.
+8. A feature without held-out recordings, the code reviewed: the person's.
 
 Items for the person (**Play**, **Confirm**) stop the agent until the
 person answers. When `port next` has nothing left, the goal is done.
@@ -242,7 +252,8 @@ traces, replay, audits, interfaces) and cases go.
    (covered or won't-reach), not at a coverage threshold.
 2. Mechanics are removed from psx. The exact Rust already written for Croc
    stays in that workspace's folders; nothing further is planned for it.
-3. A feature's code is reviewed by someone who did not write it before it
-   is done; its own author's self-review is not enough.
+3. The code is reviewed by someone who did not write it before a feature
+   is done; its own author's self-review is not enough. The review is of
+   the code as a whole and of its design, not of whether it matches.
 
 The work to get there is in [recordings-plan.md](recordings-plan.md).

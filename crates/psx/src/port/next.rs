@@ -101,7 +101,8 @@ pub struct Feature {
     pub held_out: Vec<(String, Option<Vec<String>>)>,
     pub branches: Vec<Branch>,
     pub questions: Vec<String>,
-    pub review: Review,
+    /// The code's review holds (one review covers every feature).
+    pub code_reviewed: bool,
 }
 
 /// Every recording passed.
@@ -146,7 +147,7 @@ impl Feature {
             self.located,
             self.unrecorded.is_empty(),
             self.matching(),
-            self.branches_resolved() && self.questions.is_empty() && self.review.holds(),
+            self.branches_resolved() && self.questions.is_empty() && self.code_reviewed,
             all_pass(&self.held_out),
         ];
         Some(Stage::ALL[checks.iter().take_while(|c| **c).count()])
@@ -170,7 +171,7 @@ impl Feature {
     /// Its held-out recordings: how many, and once it is reviewed how they did.
     fn held_out_json(&self) -> Value {
         if !self.reviewed() {
-            return json!({"total": self.held_out.len(), "shown": "once the feature is reviewed"});
+            return json!({"total": self.held_out.len(), "shown": "once the code is reviewed"});
         }
         let pass = self.held_out.iter().filter(|(_, f)| f.as_ref().is_some_and(Vec::is_empty)).count();
         let mut v = json!({"total": self.held_out.len(), "pass": pass});
@@ -202,16 +203,6 @@ impl Feature {
             v["more"] = json!(format!("{} more: port_status feature {}", unresolved - uncovered.len(), self.id));
         }
         v
-    }
-
-    fn review_json(&self) -> Value {
-        match &self.review {
-            Review::Missing => json!({"state": "missing"}),
-            Review::Invalid(why) => json!({"state": "invalid", "why": why}),
-            Review::Stale { commit, changed } => json!({"state": "stale", "commit": commit, "changed": changed}),
-            Review::Open { unanswered } => json!({"state": "open", "unanswered": unanswered}),
-            Review::Holds { commit, findings } => json!({"state": "holds", "commit": commit, "findings": findings}),
-        }
     }
 
     /// One line for the person: recordings, held out, branches, review.
@@ -252,9 +243,6 @@ impl Feature {
                 format!("{r}/{} branches", self.branches.len())
             });
         }
-        if self.matching() && !self.review.holds() {
-            parts.push(format!("review {}", self.review.name()));
-        }
         parts.join(" · ")
     }
 }
@@ -270,7 +258,6 @@ fn first_lines(lines: &[String]) -> Vec<String> {
 
 /// Everything the items are decided on.
 pub struct Facts {
-    pub root: PathBuf,
     pub port: Port,
     pub git: Git,
     /// The closure in dependency order.
@@ -279,6 +266,8 @@ pub struct Facts {
     pub unpack: Vec<String>,
     /// The disc's files by state, or why psx cannot list them.
     pub assets: Result<assets::Inventory, String>,
+    /// The code's review.
+    pub review: Review,
 }
 
 impl Facts {
@@ -296,6 +285,7 @@ impl Facts {
             .collect();
         let confirmed = port.goal.confirmed.as_ref().map(|c| c.wont_reach.clone()).unwrap_or_default();
         let head = git.head.as_deref();
+        let review = review::read(root);
         let features = port
             .closure()
             .into_iter()
@@ -312,7 +302,7 @@ impl Facts {
                         held_out: Vec::new(),
                         branches: Vec::new(),
                         questions: Vec::new(),
-                        review: Review::Missing,
+                        code_reviewed: false,
                         id,
                     };
                 };
@@ -367,7 +357,7 @@ impl Facts {
                     held_out,
                     branches,
                     questions: e.questions.clone(),
-                    review: review::read(root, &id),
+                    code_reviewed: review.holds(),
                     id,
                 }
             })
@@ -376,7 +366,7 @@ impl Facts {
         if let Ok(a) = &assets {
             port.problems.extend(a.problems.iter().cloned());
         }
-        Ok(Facts { root: root.to_path_buf(), port, git, features, unpack, assets })
+        Ok(Facts { port, git, features, unpack, assets, review })
     }
 
     pub fn stage(&self, id: &str) -> Option<Stage> {
@@ -471,21 +461,19 @@ impl Facts {
             );
         }
         if let Some(f) = find(&|f| at(f, Stage::Recorded) && !matches!(f.verdict, State::Current(_))) {
-            let why = match &f.verdict {
-                State::Stale { commit } => {
+            let (why, how) = match &f.verdict {
+                State::Stale { commit } => (
                     format!(
-                        "its verdict is from {commit}, not HEAD with no uncommitted changes (notes and reviews aside)"
-                    )
-                }
-                _ => "no psx port check has judged it".into(),
+                        "its verdict is from {commit}, not HEAD with no uncommitted changes (notes and the review aside)"
+                    ),
+                    "commit the changes and run psx port check",
+                ),
+                _ => (
+                    "no psx port check has judged it".into(),
+                    "write the feature from the original's code (citing each rule), register its scenario launchers and what it observes (psx_bevy::scenario), commit, and run psx port check",
+                ),
             };
-            return Item::agent(
-                "Implement",
-                Some(&f.id),
-                why,
-                "psx port check has judged it at HEAD",
-                "write the feature from the original's code (citing each rule), register its scenario launchers and what it observes (psx_bevy::scenario), commit, and run psx port check",
-            );
+            return Item::agent("Implement", Some(&f.id), why, "psx port check has judged it at HEAD", how);
         }
         // 3. A failing recording, the earliest divergence first.
         let failed = |f: &Feature| earliest(&f.work).or_else(|| earliest(&f.held_out).filter(|_| f.reviewed()));
@@ -537,58 +525,60 @@ impl Facts {
                 "the person reads psx port confirm (each branch and why no recording can reach it) and runs psx port confirm --yes; the agent may go on with other work",
             );
         }
-        // 6. The review.
-        if let Some(f) = find(&|f| f.matching() && f.branches_resolved() && f.questions.is_empty() && !f.review.holds())
-        {
-            return match &f.review {
-                Review::Open { unanswered } => Item::agent(
-                    "Review",
-                    Some(&f.id),
-                    format!("findings without an answer: {}", first_lines(unanswered).join("; ")),
-                    "every finding in its review has an answer and its files are unchanged since the review's commit",
-                    &format!(
-                        "answer each finding in reviews/{}.md with an **Answer:** line: kept and why, or fixed; a fix changes the files, so a follow-up review of the changes is then due",
-                        f.id
-                    ),
-                ),
-                Review::Invalid(why) => Item::agent(
-                    "Review",
-                    Some(&f.id),
-                    format!("reviews/{}.md is not a review: {why}", f.id),
-                    "its review holds",
-                    "write the review's front matter as the brief says: +++, commit and files, +++",
-                ),
-                Review::Stale { commit, changed } => Item::agent(
-                    "Review",
-                    Some(&f.id),
-                    format!("its files changed since the review: {}", first_lines(changed).join(", ")),
-                    "its review holds: its files unchanged since the review's commit, every finding answered",
-                    &self.follow_up(f, commit),
-                ),
-                _ => Item::agent(
-                    "Review",
-                    Some(&f.id),
-                    "its own work is finished and its code has no review".into(),
-                    "its review holds: its files unchanged since the review's commit, every finding answered",
-                    &self.brief(f),
-                ),
-            };
-        }
-        // 7. Held-out recordings, played by the person.
-        if let Some(f) = find(&|f| f.reviewed() && f.held_out.is_empty()) {
-            return Item::person(
-                "Play",
-                Some(&f.id),
-                "it is reviewed and has no held-out recordings".into(),
-                "its entry names held-out recordings (recordings.held_out)",
-                "the agent starts psx scenario play on one of its scenarios with a request to play the feature freely and differently from its work recordings; the person plays, and the agent names the recording under recordings.held_out",
-            );
-        }
-        // 8. Assets, when the goal includes them.
+        // 6. Assets, when the goal includes them.
         if self.port.goal.assets {
             if let Some(item) = self.asset_item() {
                 return item;
             }
+        }
+        // 7. The review of the code as a whole, once the rest of the
+        // goal's work is finished.
+        let finished = |f: &Feature| f.matching() && f.branches_resolved() && f.questions.is_empty();
+        if self.features.iter().all(finished) && !self.review.holds() {
+            let done = "the review holds: the code (game/, tools/) unchanged since its commit, every finding answered";
+            return match &self.review {
+                Review::Open { unanswered } => Item::agent(
+                    "Review",
+                    None,
+                    format!("findings without an answer: {}", first_lines(unanswered).join("; ")),
+                    done,
+                    &format!(
+                        "answer each finding in {} with an **Answer:** line: done (restructure as it asks, keeping what the code does: psx port check must pass again), or kept and why; changed code then has a follow-up review of the changes",
+                        review::REVIEW
+                    ),
+                ),
+                Review::Invalid(why) => Item::agent(
+                    "Review",
+                    None,
+                    format!("{} is not a review: {why}", review::REVIEW),
+                    done,
+                    "write the review's front matter as the brief says: +++, commit, +++",
+                ),
+                Review::Stale { commit, changed } => Item::agent(
+                    "Review",
+                    None,
+                    format!("the code changed since the review: {}", first_lines(changed).join(", ")),
+                    done,
+                    &self.follow_up(commit),
+                ),
+                _ => Item::agent(
+                    "Review",
+                    None,
+                    "the goal's features are finished and the code has no review".into(),
+                    done,
+                    &self.brief(),
+                ),
+            };
+        }
+        // 8. Held-out recordings, played by the person.
+        if let Some(f) = find(&|f| f.reviewed() && f.held_out.is_empty()) {
+            return Item::person(
+                "Play",
+                Some(&f.id),
+                "the code is reviewed and it has no held-out recordings".into(),
+                "its entry names held-out recordings (recordings.held_out)",
+                "the agent starts psx scenario play on one of its scenarios with a request to play the feature freely and differently from its work recordings; the person plays, and the agent names the recording under recordings.held_out",
+            );
         }
         if self.complete() {
             return Item::person(
@@ -682,35 +672,34 @@ impl Facts {
     }
 
     /// The Review item's brief, for a reviewer who has not seen the work.
-    fn brief(&self, f: &Feature) -> String {
-        let files = review::touched(&self.root, &f.id);
-        let files = if files.is_empty() {
-            format!(
-                "no commit names {} yet: name the feature's id in its commits' messages, then ask port next again",
-                f.id
-            )
-        } else {
-            format!("the files its commits touched: {}", files.join(", "))
-        };
+    fn brief(&self) -> String {
         format!(
-            "Give this brief to a reviewer who has not seen the work (a sub-agent or a new session): Review {id} ({title}). Read the code as a stranger who must maintain or reuse it: the catalogue entry catalogue/{id}.md, {files}, and what that code uses; not the disassembly. Judge it against AGENTS.md's \"The code\", not against the original (the recordings check that). Write reviews/{id}.md: front matter between +++ lines with commit = \"{head}\" and files = [the files read], then one ## heading per finding, each saying what is wrong and why, not the fix. The writer then answers each finding with an **Answer:** line.",
-            id = f.id,
-            title = self.title(&f.id),
+            "Give this brief to a reviewer who has not seen the work (a sub-agent or a new session): review the port's code as a whole, {code} (git ls-files {code}). Its recordings already check that it does what the original does, so this review does not: leave the catalogue, the notes and the original's code unread. Ask instead: would you write a new game like this? Judge it as code written for a new game today, not as a port: how it is divided (modules, plugins, systems, components, data), names, how readily it takes more (another character, level or rule), duplication, and what is shaped by the original rather than chosen. AGENTS.md's \"The code\" says what the tools rely on. Write {review}: front matter between +++ lines with commit = \"{head}\", then one ## heading per finding: what you would change, the shape you would choose instead and why; what the code does stays as it is. The writer then answers each finding with an **Answer:** line.",
+            code = review::CODE.join(" "),
+            review = review::REVIEW,
             head = self.git.head.as_deref().unwrap_or("HEAD"),
         )
     }
 
     /// The brief for a review of what changed since the review at `commit`:
     /// what that review read is not read again.
-    fn follow_up(&self, f: &Feature, commit: &str) -> String {
-        let files = review::touched(&self.root, &f.id);
+    fn follow_up(&self, commit: &str) -> String {
         format!(
-            "Give this brief to a reviewer who did not write the changes (a sub-agent or a new session): a follow-up review of {id} ({title}). The review at {commit} read the code then; read only what changed since: git diff {commit} -- {files}, with the findings and answers in reviews/{id}.md (are the fixes what the answers say, and is the changed code clear?). If the changes rewrite most of the code, review it whole. Judge it against AGENTS.md's \"The code\". Keep the findings and answers already in reviews/{id}.md; set its commit to \"{head}\", add files the changes touched to files, and add one ## heading per new finding, each saying what is wrong and why. The writer then answers each new finding with an **Answer:** line.",
-            id = f.id,
-            title = self.title(&f.id),
-            files = files.join(" "),
+            "Give this brief to a reviewer who did not write the changes (a sub-agent or a new session): a follow-up review of the port's code. The review at {commit} read the code then; read only what changed since: git diff {commit} -- {code}, with the findings and answers in {review} (are the changes what the answers say?). Ask of the changed code what the review asked: would you write a new game like this? If the changes rewrite most of the code, review it whole. Leave the catalogue, the notes and the original's code unread: the recordings check what the code does. Keep the findings and answers already in {review}; set its commit to \"{head}\", and add one ## heading per new finding: what you would change, the shape you would choose instead and why. The writer then answers each new finding with an **Answer:** line.",
+            code = review::CODE.join(" "),
+            review = review::REVIEW,
             head = self.git.head.as_deref().unwrap_or("HEAD"),
         )
+    }
+
+    fn review_json(&self) -> Value {
+        match &self.review {
+            Review::Missing => json!({"state": "missing"}),
+            Review::Invalid(why) => json!({"state": "invalid", "why": why}),
+            Review::Stale { commit, changed } => json!({"state": "stale", "commit": commit, "changed": changed}),
+            Review::Open { unanswered } => json!({"state": "open", "unanswered": unanswered}),
+            Review::Holds { commit, findings } => json!({"state": "holds", "commit": commit, "findings": findings}),
+        }
     }
 
     /// `port status`.
@@ -725,7 +714,7 @@ impl Facts {
                 "id": f.id, "title": e.map(|e| e.title.as_str()), "stage": stage, "in_goal": f.in_goal,
                 "depends": e.map(|e| &e.depends), "code": e.map(|e| &e.code), "verdict": f.verdict.name(),
                 "work": f.work_json(), "held_out": f.held_out_json(), "branches": f.branches_json(false),
-                "questions": f.questions, "review": f.review_json(),
+                "questions": f.questions,
             });
             if !f.unrecorded.is_empty() && f.located {
                 row["unrecorded"] = json!(f.unrecorded);
@@ -742,6 +731,7 @@ impl Facts {
             "problems": self.port.problems,
             "stages": counts,
             "areas": areas,
+            "review": self.review_json(),
             "complete": self.complete(),
             "git": {"head": self.git.head, "clean": self.git.clean},
         });
@@ -786,6 +776,15 @@ impl Facts {
             Confirmation::Shrunk { at, missing } => {
                 format!("confirmed {at}, but {} is no longer in the goal or needed by it\n", missing.join(", "))
             }
+        });
+        s.push_str(&match &self.review {
+            Review::Holds { commit, findings } => {
+                format!("code reviewed at {commit} ({findings} findings, answered)\n")
+            }
+            Review::Stale { commit, changed } => {
+                format!("code reviewed at {commit}, changed since in {} files\n", changed.len())
+            }
+            r => format!("code review: {}\n", r.name()),
         });
         let width = self.features.iter().map(|f| self.title(&f.id).chars().count()).max().unwrap_or(0).min(32);
         // By area, in the order areas first come in the closure; dependency
@@ -997,6 +996,13 @@ mod tests {
         change(f.features.iter_mut().find(|x| x.id == id).unwrap());
     }
 
+    fn review(f: &mut Facts, r: Review) {
+        for x in f.features.iter_mut() {
+            x.code_reviewed = r.holds();
+        }
+        f.review = r;
+    }
+
     fn current() -> State {
         State::Current(verdict::Verdict {
             feature: String::new(),
@@ -1048,7 +1054,7 @@ mod tests {
         let item = f.next();
         assert_eq!((item.item, item.feature.as_deref()), ("Fix", Some("F-0002")));
         assert_eq!(item.why, "walk/c fails: tick 4 y: expected 3, got 2");
-        assert_eq!(f.features[1].held_out_json()["shown"], "once the feature is reviewed");
+        assert_eq!(f.features[1].held_out_json()["shown"], "once the code is reviewed");
         set(&mut f, "F-0002", |x| x.work = results(&[("walk/b", &[])]));
         set(&mut f, "F-0001", |x| x.unbuilt = vec!["walk: no launcher for scenario kind level".into()]);
         assert_eq!(next(&f), ("Build", "agent", "F-0001".into()));
@@ -1070,18 +1076,16 @@ mod tests {
         set(&mut f, "F-0001", |x| x.branches = vec![branch(Some(false))]);
         assert_eq!(next(&f), ("Confirm", "person", "F-0001".into()));
         set(&mut f, "F-0001", |x| x.branches = vec![branch(Some(true))]);
-        assert_eq!(next(&f), ("Review", "agent", "F-0001".into()));
-        assert!(f.next().how.contains("Review F-0001 (Feature F-0001)"), "{}", f.next().how);
-        set(&mut f, "F-0001", |x| x.review = Review::Stale { commit: "abc".into(), changed: vec!["jump.rs".into()] });
-        assert_eq!(next(&f), ("Review", "agent", "F-0001".into()));
+        // Every feature finished: one review of the code as a whole.
+        assert_eq!(next(&f), ("Review", "agent", String::new()));
         let how = f.next().how;
-        assert!(how.contains("a follow-up review of F-0001") && how.contains("git diff abc --"), "{how}");
-        set(&mut f, "F-0001", |x| x.review = Review::Missing);
-        set(&mut f, "F-0001", |x| x.review = Review::Open { unanswered: vec!["Stomp is a bool".into()] });
+        assert!(how.contains("would you write a new game like this?") && how.contains("game tools"), "{how}");
+        review(&mut f, Review::Stale { commit: "abc".into(), changed: vec!["game/src/jump.rs".into()] });
+        let how = f.next().how;
+        assert!(how.contains("a follow-up review") && how.contains("git diff abc -- game tools"), "{how}");
+        review(&mut f, Review::Open { unanswered: vec!["Stomp is a bool".into()] });
         assert!(f.next().why.contains("Stomp is a bool"));
-        for id in ["F-0001", "F-0002"] {
-            set(&mut f, id, |x| x.review = Review::Holds { commit: "abc".into(), findings: 1 });
-        }
+        review(&mut f, Review::Holds { commit: "abc".into(), findings: 1 });
         assert_eq!(f.stage("F-0001"), Some(Stage::Reviewed));
         assert_eq!(next(&f), ("Fix", "agent", "F-0002".into()), "reviewed: its held-out failure shows");
         set(&mut f, "F-0002", |x| x.held_out = results(&[("walk/h", &[])]));
@@ -1100,8 +1104,8 @@ mod tests {
             x.verdict = current();
             x.work = results(&[("walk/a", &[])]);
             x.held_out = results(&[("walk/h", &[])]);
-            x.review = Review::Holds { commit: "abc".into(), findings: 0 };
         }
+        review(&mut f, Review::Holds { commit: "abc".into(), findings: 0 });
         let file = |path: &str, state| assets::Asset { path: path.into(), state, ..Default::default() };
         let archive =
             assets::Asset { unlisted: true, format: Some("pak".into()), ..file("/DATA.PAK", AssetState::Found) };

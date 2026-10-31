@@ -121,7 +121,7 @@ pub type WontReach = BTreeMap<String, BTreeMap<String, String>>;
 
 /// One catalogue entry: `catalogue/F-NNNN.md`, its TOML front matter
 /// between `+++` lines, then a paragraph in game terms.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
     pub id: String,
@@ -153,7 +153,7 @@ pub struct Entry {
 }
 
 /// The recordings a feature is checked against, as `<scenario>/<name>`.
-#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recordings {
     /// Checked as the feature is built.
@@ -203,7 +203,7 @@ pub enum Stage {
     /// Every work recording passes at HEAD.
     Matching,
     /// Every branch of its code covered or confirmed won't-reach, no question
-    /// open, and a review that holds.
+    /// open, and the code's review holds.
     Reviewed,
     /// Its held-out recordings pass.
     Done,
@@ -283,18 +283,6 @@ pub(crate) fn split_front(text: &str) -> Result<(String, String), String> {
         front.push_str(line);
     }
     Err("its front matter is never closed by a +++ line".into())
-}
-
-/// Whether two texts of catalogue file `file` are the same entry but for
-/// the held-out recordings it names, which its review does not read.
-pub(crate) fn same_but_held_out(file: &str, a: &str, b: &str) -> bool {
-    let without = |text| {
-        entry(file, text).ok().map(|mut e| {
-            e.recordings.held_out.clear();
-            e
-        })
-    };
-    matches!((without(a), without(b)), (Some(a), Some(b)) if a == b)
 }
 
 /// One catalogue file: its entry, or why it is not one.

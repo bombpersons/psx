@@ -49,7 +49,7 @@ Rules:
 - Cite the address, the instruction or the recording beside each constant
   and rule, and what was not verified.
 - Hold recordings out. A feature's held_out recordings are judged only
-  once it is reviewed; the person's play-throughs are the best ones. Their
+  once the code is reviewed; the person's play-throughs are the best ones. Their
   results stay hidden until then: don't tune to them.
 - The first tick that differs is where to look; the end state only
   summarises.
@@ -179,7 +179,7 @@ A feature's stages, each holding with those before it:
   counted against the inventory.
 - matching: every work recording passes at HEAD.
 - reviewed: every branch of its code taken both ways by its recordings or
-  a confirmed wont_reach, no question open, and a review that holds.
+  a confirmed wont_reach, no question open, and the code's review holds.
 - done: its held-out recordings pass.
 
 port_next's items, in this order:
@@ -198,16 +198,20 @@ port_next's items, in this order:
 - Cover: a branch of its code its recordings never took one way: record
   what reaches it, ask the person to play it, or list it under wont_reach.
 - Confirm (person): wont_reach branches not confirmed as they stand.
-- Review: its work is finished without a review that holds. how is the
-  brief for someone who did not write it (a sub-agent or a fresh session).
-  Findings go in reviews/F-NNNN.md: TOML front matter (commit, files)
-  between +++ lines, then one ## heading per finding, each answered with an
-  **Answer:** line. It holds while its files are unchanged since its
-  commit; once they change, how is the brief for a follow-up that reads
-  only the changes since then (git diff) and keeps the findings.
-- Play (person): a reviewed feature without held-out recordings: start
-  scenario_play and name the recording under held_out.
 - Format, Index, Import, Check (assets = true): see Assets.
+- Review: every feature's own work is finished and the code (game/,
+  tools/) has no review that holds. One review covers the code as a whole
+  and asks whether one would write a new game like this, not whether it
+  matches the original (the recordings check that). how is the brief for
+  someone who did not write it (a sub-agent or a fresh session). Findings
+  go in review.md: TOML front matter (commit) between +++ lines, then one
+  ## heading per finding, each answered with an **Answer:** line: done,
+  restructured with port_check passing again, or kept and why. It holds
+  while the code is unchanged since its commit; once it changes, how is
+  the brief for a follow-up that reads only the changes since then (git
+  diff) and keeps the findings.
+- Play (person): a feature without held-out recordings, the code
+  reviewed: start scenario_play and name the recording under held_out.
 - Stuck (person): the same item three times with nothing changed.
 - Done: every feature of the goal is done.
 

@@ -1,7 +1,7 @@
 //! Verdicts: what `port check` found for a feature's recordings, and the
 //! commit it judged. A verdict counts only while that commit is the
 //! workspace's HEAD and the check ran with no uncommitted changes, where
-//! notes and reviews do not count (they change nothing a check runs). psx
+//! notes and the review do not count (they change nothing a check runs). psx
 //! writes them; nobody else does. They live in
 //! `.psx/verdicts/F-NNNN/scenario.json`, outside the commit, so recording
 //! one does not make it stale.
@@ -77,9 +77,9 @@ pub fn state(root: &Path, feature: &str, head: Option<&str>) -> State {
     if !v.clean || !judges(root, &v.commit, head) { State::Stale { commit: v.commit } } else { State::Current(v) }
 }
 
-/// Paths a check does not read: the agent's notes and the reviews.
+/// Paths a check does not read: the agent's notes and the review.
 pub fn inert(path: &str) -> bool {
-    path.starts_with("notes/") || path.starts_with("reviews/")
+    path.starts_with("notes/") || path == super::review::REVIEW
 }
 
 /// Whether a check at `commit` judges `head`: the same commit, or one that
@@ -106,7 +106,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn notes_and_reviews_leave_a_check_judging_head() {
+    fn notes_and_the_review_leave_a_check_judging_head() {
         let d = super::super::tests::tempdir::Dir::new();
         let root = d.0.as_path();
         let git = |args: &[&str]| {
@@ -129,7 +129,7 @@ mod tests {
         let notes = commit("notes/feedback.md");
         assert!(judges(root, &checked, Some(&checked)));
         assert!(judges(root, &checked, Some(&notes)));
-        let reviewed = commit("reviews/F-0001.md");
+        let reviewed = commit("review.md");
         assert!(judges(root, &checked, Some(&reviewed)));
         let code = commit("game/src/jump.rs");
         assert!(!judges(root, &checked, Some(&code)));

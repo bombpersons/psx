@@ -1,9 +1,10 @@
-//! Reviews: `reviews/<id>.md`, findings on a feature's code by someone who
-//! did not write it (docs/port-design.md, The review). TOML front matter
-//! between `+++` lines names the commit reviewed and its files; each
-//! finding is a `## ` section, answered by a `**Answer:**` line. A review
-//! holds while its files are unchanged since its commit and every finding
-//! has an answer.
+//! The review: `review.md`, findings on the port's code as a whole by
+//! someone who did not write it (docs/port-design.md, The review). It asks
+//! whether the code is what one would write for a new game, not whether it
+//! does what the original does (the recordings check that). TOML front
+//! matter between `+++` lines names the commit reviewed; each finding is a
+//! `## ` section, answered by a `**Answer:**` line. The review holds while
+//! the code is unchanged since its commit and every finding has an answer.
 
 use std::path::Path;
 
@@ -11,22 +12,24 @@ use serde::Deserialize;
 
 use super::split_front;
 
-pub const REVIEWS: &str = "reviews";
+pub const REVIEW: &str = "review.md";
+
+/// The port's code: what the review reads and what makes it stale.
+pub const CODE: [&str; 2] = ["game", "tools"];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Front {
     commit: String,
-    files: Vec<String>,
 }
 
-/// A feature's review as it stands.
+/// The review as it stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Review {
     Missing,
     /// The file is not a review: why.
     Invalid(String),
-    /// Its files changed since its commit: a follow-up review of the changes is due.
+    /// The code changed since its commit: a follow-up review of the changes is due.
     Stale {
         commit: String,
         changed: Vec<String>,
@@ -74,9 +77,9 @@ fn git(root: &Path, args: &[&str]) -> Option<std::process::Output> {
     std::process::Command::new("git").args(args).current_dir(root).output().ok()
 }
 
-/// The review of feature `id` in the workspace `root`.
-pub fn read(root: &Path, id: &str) -> Review {
-    let Ok(text) = std::fs::read_to_string(root.join(REVIEWS).join(format!("{id}.md"))) else {
+/// The review in the workspace `root`.
+pub fn read(root: &Path) -> Review {
+    let Ok(text) = std::fs::read_to_string(root.join(REVIEW)) else {
         return Review::Missing;
     };
     let (front, body) = match split_front(&text) {
@@ -87,9 +90,6 @@ pub fn read(root: &Path, id: &str) -> Review {
         Ok(f) => f,
         Err(e) => return Review::Invalid(format!("front matter: {}", e.message())),
     };
-    if f.files.is_empty() {
-        return Review::Invalid("files: the files reviewed, none listed".into());
-    }
     let known = git(root, &["rev-parse", "--verify", "-q", &format!("{}^{{commit}}", f.commit)])
         .is_some_and(|o| o.status.success());
     if !known {
@@ -97,19 +97,10 @@ pub fn read(root: &Path, id: &str) -> Review {
     }
     // Against the working tree: uncommitted changes count as changes.
     let mut args = vec!["diff", "--name-only", f.commit.as_str(), "--"];
-    args.extend(f.files.iter().map(String::as_str));
-    let mut changed: Vec<String> = git(root, &args)
+    args.extend(CODE);
+    let changed: Vec<String> = git(root, &args)
         .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect())
         .unwrap_or_default();
-    // Naming held-out recordings, which come after the review, changes no
-    // entry it read.
-    changed.retain(|file| {
-        let then = git(root, &["show", &format!("{}:{file}", f.commit)])
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
-        let now = std::fs::read_to_string(root.join(file)).ok();
-        !(file.starts_with("catalogue/") && then.zip(now).is_some_and(|(a, b)| super::same_but_held_out(file, &a, &b)))
-    });
     if !changed.is_empty() {
         return Review::Stale { commit: f.commit, changed };
     }
@@ -119,22 +110,6 @@ pub fn read(root: &Path, id: &str) -> Review {
         return Review::Open { unanswered };
     }
     Review::Holds { commit: f.commit, findings: all.len() }
-}
-
-/// The files the feature's commits touched (commits naming its id), that
-/// still exist.
-pub fn touched(root: &Path, id: &str) -> Vec<String> {
-    let Some(o) = git(root, &["log", "--format=", "--name-only", &format!("--grep={id}"), "-F"]) else {
-        return Vec::new();
-    };
-    let mut out: Vec<String> = Vec::new();
-    for f in String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.is_empty()) {
-        if !out.iter().any(|o| o == f) && root.join(f).is_file() {
-            out.push(f.to_string());
-        }
-    }
-    out.sort();
-    out
 }
 
 #[cfg(test)]
@@ -151,62 +126,32 @@ mod tests {
     }
 
     #[test]
-    fn a_review_holds_while_its_files_are_unchanged_and_answered() {
+    fn the_review_holds_while_the_code_is_unchanged_and_answered() {
         let d = super::super::tests::tempdir::Dir::new();
         let root = d.0.as_path();
         let run = |args: &[&str]| assert!(git(root, args).unwrap().status.success(), "git {args:?}");
         run(&["init", "-q"]);
         run(&["config", "user.email", "t@t"]);
         run(&["config", "user.name", "t"]);
-        std::fs::write(root.join("jump.rs"), "fn jump() {}\n").unwrap();
+        std::fs::create_dir_all(root.join("game/src")).unwrap();
+        std::fs::write(root.join("game/src/jump.rs"), "fn jump() {}\n").unwrap();
         run(&["add", "."]);
         run(&["commit", "-q", "-m", "F-0001: jump"]);
-        assert_eq!(read(root, "F-0001"), Review::Missing);
-        assert_eq!(touched(root, "F-0001"), ["jump.rs"]);
+        assert_eq!(read(root), Review::Missing);
         let head = String::from_utf8(git(root, &["rev-parse", "HEAD"]).unwrap().stdout).unwrap().trim().to_string();
-        std::fs::create_dir_all(root.join(REVIEWS)).unwrap();
-        let write = |body: &str| {
-            std::fs::write(
-                root.join("reviews/F-0001.md"),
-                format!("+++\ncommit = \"{head}\"\nfiles = [\"jump.rs\"]\n+++\n{body}"),
-            )
-            .unwrap()
-        };
+        let write =
+            |body: &str| std::fs::write(root.join(REVIEW), format!("+++\ncommit = \"{head}\"\n+++\n{body}")).unwrap();
         write("## A finding\nwhat and why\n");
-        assert_eq!(read(root, "F-0001"), Review::Open { unanswered: vec!["A finding".into()] });
-        write("## A finding\nwhat and why\n**Answer:** kept: the original does it once per field\n");
-        assert_eq!(read(root, "F-0001"), Review::Holds { commit: head.clone(), findings: 1 });
-        std::fs::write(root.join("jump.rs"), "fn jump() { let _ = 1; }\n").unwrap();
-        assert_eq!(read(root, "F-0001"), Review::Stale { commit: head, changed: vec!["jump.rs".into()] });
-        std::fs::write(root.join("reviews/F-0001.md"), "---\ncommit: x\n---\n").unwrap();
-        assert!(matches!(read(root, "F-0001"), Review::Invalid(_)));
-    }
-
-    #[test]
-    fn naming_held_out_recordings_keeps_a_review() {
-        let d = super::super::tests::tempdir::Dir::new();
-        let root = d.0.as_path();
-        let run = |args: &[&str]| assert!(git(root, args).unwrap().status.success(), "git {args:?}");
-        run(&["init", "-q"]);
-        run(&["config", "user.email", "t@t"]);
-        run(&["config", "user.name", "t"]);
-        let entry = |held_out: &str, work: &str| {
-            format!("+++\nid = \"F-0001\"\n[recordings]\nwork = [{work}]\nheld_out = [{held_out}]\n+++\nThe jump.\n")
-        };
+        assert_eq!(read(root), Review::Open { unanswered: vec!["A finding".into()] });
+        write("## A finding\nwhat and why\n**Answer:** done in the next commit\n");
+        assert_eq!(read(root), Review::Holds { commit: head.clone(), findings: 1 });
+        // What is not code leaves it holding.
         std::fs::create_dir_all(root.join("catalogue")).unwrap();
-        std::fs::write(root.join("catalogue/F-0001.md"), entry("", "\"walk/a\"")).unwrap();
-        run(&["add", "."]);
-        run(&["commit", "-q", "-m", "F-0001: entry"]);
-        let head = String::from_utf8(git(root, &["rev-parse", "HEAD"]).unwrap().stdout).unwrap().trim().to_string();
-        std::fs::create_dir_all(root.join(REVIEWS)).unwrap();
-        std::fs::write(
-            root.join("reviews/F-0001.md"),
-            format!("+++\ncommit = \"{head}\"\nfiles = [\"catalogue/F-0001.md\"]\n+++\n"),
-        )
-        .unwrap();
-        std::fs::write(root.join("catalogue/F-0001.md"), entry("\"walk/h\"", "\"walk/a\"")).unwrap();
-        assert_eq!(read(root, "F-0001"), Review::Holds { commit: head.clone(), findings: 0 });
-        std::fs::write(root.join("catalogue/F-0001.md"), entry("\"walk/h\"", "\"walk/a\", \"walk/b\"")).unwrap();
-        assert_eq!(read(root, "F-0001"), Review::Stale { commit: head, changed: vec!["catalogue/F-0001.md".into()] });
+        std::fs::write(root.join("catalogue/F-0001.md"), "+++\n+++\n").unwrap();
+        assert!(read(root).holds());
+        std::fs::write(root.join("game/src/jump.rs"), "fn jump() { let _ = 1; }\n").unwrap();
+        assert_eq!(read(root), Review::Stale { commit: head, changed: vec!["game/src/jump.rs".into()] });
+        std::fs::write(root.join(REVIEW), "---\ncommit: x\n---\n").unwrap();
+        assert!(matches!(read(root), Review::Invalid(_)));
     }
 }
