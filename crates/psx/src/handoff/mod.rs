@@ -1,7 +1,12 @@
-//! `psx scenario play`: an agent asks a person to play the game to a point it cannot
-//! easily reach itself. A window shows the game and the agent's request; the
-//! person plays with a keyboard or gamepad and presses F12 when it is done.
-//! The run directory then holds what the agent continues from:
+//! `psx scenario play`: an agent asks a person to play. A window shows the
+//! game and the agent's request; the person plays with a keyboard or gamepad
+//! and presses F12 when it is done. With a scenario id the play starts at the
+//! scenario's state (or the end of one of its recordings, `--from`) and
+//! becomes a recording, made as `scenario record` makes one by replaying the
+//! person's input, so it has the same frame origin and its coverage. Without
+//! one it starts from media or a state, to reach a point the agent cannot
+//! easily reach itself. The run directory then holds what the agent continues
+//! from:
 //!
 //! - `state.bin`: the machine at the end (continue with `run --from-state`);
 //! - `input.json`: everything the person pressed, as a `run --replay` file
@@ -44,15 +49,37 @@ pub struct HandoffArgs {
     #[arg(long, required_unless_present = "status", default_value = "")]
     #[serde(default)]
     pub request: String,
+    /// A scenario (`scenarios/<ID>.toml`): start at its state and write the play as its
+    /// recording NAME, with coverage, as scenario record does.
+    #[arg(conflicts_with_all = ["media", "bios", "from_state", "memcard1", "memcard2", "pad", "verify"])]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// With a scenario: the recording's name (`scenarios/<ID>/<NAME>.jsonl`).
+    #[arg(long, requires = "id")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// With a scenario: start at the end of this recording of it instead of at its state.
+    #[arg(long, requires = "id")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// With a scenario: what the recording does, in a sentence (default the request).
+    #[arg(long, requires = "id")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// With a scenario: write over an existing recording of that name.
+    #[arg(long, requires = "id")]
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub replace: bool,
     /// A play's run_dir (the ticket's): report its progress or result instead of starting one.
-    #[arg(long, conflicts_with_all = ["request", "media", "bios", "from_state", "out", "verify", "detach", "expect"])]
+    #[arg(long, conflicts_with_all = ["request", "id", "media", "bios", "from_state", "out", "verify", "detach", "expect"])]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<PathBuf>,
     /// With --status: seconds to wait for the person to finish (max 600).
     #[arg(long, default_value_t = 0, requires = "status")]
     #[serde(default, skip_serializing_if = "is_zero")]
     pub wait: u64,
-    /// Disc image or PS-X EXE, as for run.
+    /// Disc image or PS-X EXE, as for run (without a scenario).
+    #[arg(long)]
     pub media: Option<PathBuf>,
     /// BIOS override, as for run.
     #[arg(long)]
@@ -128,6 +155,10 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 impl Op for HandoffArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         if let Some(run_dir) = self.status {
@@ -139,13 +170,45 @@ impl Op for HandoffArgs {
         if self.request.trim().is_empty() {
             return Error::invalid("request is required: what the person should do").into();
         }
+        if let Err(e) = self.check_scenario() {
+            return e.into();
+        }
         Outcome::report(self.start(ctx))
     }
 }
 
 impl HandoffArgs {
+    /// The arguments that go with a scenario, and those that do not.
+    fn check_scenario(&self) -> crate::Result<()> {
+        if self.id.is_some() {
+            if self.name.is_none() {
+                return Err(Error::invalid("name is required with a scenario id: the recording's name"));
+            }
+            if self.media.is_some() || self.bios.is_some() || self.from_state.is_some() || self.cards.given() {
+                return Err(Error::invalid(
+                    "a scenario starts at its own state on its chain's media: drop media, bios, from_state and the cards",
+                ));
+            }
+            if self.verify {
+                return Err(Error::invalid(
+                    "with a scenario the recording is made by replaying the input, which checks it: drop verify",
+                ));
+            }
+        } else if self.name.is_some() || self.from.is_some() || self.description.is_some() || self.replace {
+            return Err(Error::invalid("name, from, description and replace go with a scenario id"));
+        }
+        Ok(())
+    }
+
     fn start(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
         let mut a = self;
+        if let Some(id) = &a.id {
+            // What can fail does so now, not after the person has played.
+            crate::scenario::prepare(ctx, id, a.name.as_deref().unwrap(), a.from.as_deref(), a.replace)?;
+            expectations(&a)?;
+            can_open_window()?;
+            return a.open(ctx);
+        }
         let resolved =
             crate::context::resolve(&ctx.root, a.media.take(), a.bios.take(), a.from_state.as_deref(), false)?;
         if let Some(e) = resolved.setup_error() {
@@ -157,6 +220,12 @@ impl HandoffArgs {
         // A bad condition fails now, not after the person has played.
         expectations(&a)?;
         can_open_window()?;
+        a.open(ctx)
+    }
+
+    /// Write the request to its run directory and open the window, here or detached.
+    fn open(mut self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
+        let a = &mut self;
         let dir = a.out.clone().unwrap_or_else(|| {
             ctx.root.join(".psx/handoffs").join(format!(
                 "{}-{}{}",
@@ -173,7 +242,7 @@ impl HandoffArgs {
         if a.detach {
             return detach(ctx, &dir);
         }
-        Ok(run(a, &dir))
+        Ok(run(ctx, self, &dir))
     }
 }
 
@@ -234,7 +303,7 @@ fn detach(ctx: &Ctx, dir: &Path) -> crate::Result<(bool, Value)> {
 }
 
 /// `__handoff-child <run_dir>`: the detached window process.
-pub fn child(dir: &Path) -> Outcome {
+pub fn child(ctx: &Ctx, dir: &Path) -> Outcome {
     let a: HandoffArgs = match std::fs::read(dir.join("request.json"))
         .map_err(|e| e.to_string())
         .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
@@ -242,7 +311,7 @@ pub fn child(dir: &Path) -> Outcome {
         Ok(a) => a,
         Err(e) => return Error::invalid(format!("{}: {e}", dir.display())).into(),
     };
-    Outcome::report(Ok(run(a, dir)))
+    Outcome::report(Ok(run(ctx, a, dir)))
 }
 
 impl Op for HandoffStatusArgs {
@@ -522,32 +591,122 @@ fn start(a: &HandoffArgs) -> crate::Result<Session> {
         &medium.id,
     )?;
     let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
-    let start = m.save_state(medium.id.clone());
-    let start_ram = m.bus.ram.to_vec();
-    Ok(Session {
-        m,
-        bios,
-        start_frame,
-        events: Vec::new(),
-        quick: None,
-        start,
-        start_ram,
-        media_id: medium.id,
-        marks: Vec::new(),
-        history: Default::default(),
+    Ok(Session::new(m, bios, medium.id, start_frame))
+}
+
+impl Session {
+    fn new(m: Machine, bios: Vec<u8>, media_id: Option<MediaId>, start_frame: u64) -> Session {
+        let start = m.save_state(media_id.clone());
+        let start_ram = m.bus.ram.to_vec();
+        Session {
+            m,
+            bios,
+            start_frame,
+            events: Vec::new(),
+            quick: None,
+            start,
+            start_ram,
+            media_id,
+            marks: Vec::new(),
+            history: Default::default(),
+        }
+    }
+}
+
+/// Fields the first tick may take before a scenario's play gives up.
+const LEAD_FIELDS: u64 = 600;
+/// Wall-clock limit for reaching a scenario play's start and for recording it.
+const RECORD_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// A scenario play's session: at the scenario's start (or the end of the
+/// recording it continues), run on to where a recording's fields count
+/// from, so the person's input has `scenario record`'s frame origin.
+fn scenario_start(ctx: &Ctx, a: &mut HandoffArgs) -> crate::Result<(Session, crate::scenario::Prepared)> {
+    let p = crate::scenario::prepare(
+        ctx,
+        a.id.as_deref().unwrap(),
+        a.name.as_deref().unwrap(),
+        a.from.as_deref(),
+        a.replace,
+    )?;
+    let mut b = p.start(ctx, RECORD_TIMEOUT)?;
+    if !p.lead_in(&mut b.m, LEAD_FIELDS) {
+        return Err(Error::invalid(format!(
+            "the glossary binding's tick did not end within {LEAD_FIELDS} fields of the start: check its tick, and that the scenario's state is in the game's logic"
+        )));
+    }
+    // The report's identity, so run --from-state finds the media and BIOS.
+    a.media = b.media.clone().map(|p| std::path::absolute(p).unwrap_or_default());
+    a.bios = Some(std::path::absolute(&b.bios_path).unwrap_or_default());
+    a.from_state = Some(std::path::absolute(&p.state).unwrap_or_default());
+    let frames = b.m.bus.frames;
+    Ok((Session::new(b.m, b.bios, b.media_id, frames), p))
+}
+
+/// Run `f` while keeping `live.json` fresh with `state`, so the status
+/// keeps waiting through work that takes a while.
+fn alive<T>(dir: &Path, state: &str, f: impl FnOnce() -> T) -> T {
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|sc| {
+        sc.spawn(|| {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let v = json!({"status": state, "pid": std::process::id(), "updated_unix_ms": crate::now_ms() as u64});
+                let _ = crate::write_atomic(&dir.join("live.json"), v.to_string().as_bytes());
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        });
+        let r = f();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        r
     })
+}
+
+/// The play as the scenario's recording: replayed from the same start,
+/// recorded as `scenario record` records, and checked to end where the
+/// play did.
+fn record_play(
+    ctx: &Ctx,
+    a: &HandoffArgs,
+    p: &crate::scenario::Prepared,
+    events: &[Input],
+    frames: u64,
+    end_state: &[u8],
+) -> crate::Result<Value> {
+    let mut b = p.start(ctx, RECORD_TIMEOUT)?;
+    let description = a.description.clone().or_else(|| Some(a.request.clone()));
+    let (ok, mut v) = p.write(ctx, &mut b.m, frames as u32, events, description, RECORD_TIMEOUT)?;
+    if ok {
+        let matches = b.m.save_state(b.media_id.clone()) == end_state;
+        v["matches_play"] = json!(matches);
+        if !matches {
+            v["warning"] = json!(
+                "replaying the input did not end where the play did: the recording is the original's run of that input, which differs from what the person saw; scenario check shows whether the scenario is deterministic"
+            );
+        }
+    }
+    Ok(v)
 }
 
 /// The handoff's report, also written to report.json; a failure is recorded
 /// there as an error so `scenario play --status` can return it.
-fn run(a: HandoffArgs, dir: &Path) -> (bool, Value) {
-    let result = start(&a).and_then(|mut s| {
+fn run(ctx: &Ctx, mut a: HandoffArgs, dir: &Path) -> (bool, Value) {
+    let result = (|| -> crate::Result<Value> {
+        let (mut s, scenario) = match a.id {
+            Some(_) => alive(dir, "starting", || scenario_start(ctx, &mut a)).map(|(s, p)| (s, Some(p)))?,
+            None => (start(&a)?, None),
+        };
         let (end, note) = play(&mut s, &a, dir).map_err(|e| Error::new("window_failed", e))?;
         // The person is done; keep the status from calling this abandoned while
         // the files are written (and verify replays, which can take minutes).
         s.write_live(dir, "finishing");
-        finish(&a, s, end, note, dir)
-    });
+        let (events, frames) = (s.events.clone(), s.rel());
+        let state = s.m.save_state(s.media_id.clone());
+        let mut v = finish(&a, s, end, note, dir)?;
+        if let Some(p) = scenario {
+            scenario_report(ctx, &a, &p, &mut v, end, &events, frames, &state, dir);
+        }
+        Ok(v)
+    })();
     let (ok, v) = match result {
         Ok(v) => (true, v),
         Err(e) => (false, e.with("run_dir", dir).to_value()),
@@ -555,6 +714,39 @@ fn run(a: HandoffArgs, dir: &Path) -> (bool, Value) {
     // report.json is what the status returns and what `run --from-state` reads identity from.
     let _ = std::fs::write(dir.join("report.json"), serde_json::to_vec_pretty(&v).unwrap());
     (ok, v)
+}
+
+/// A scenario play's recording (when the person finished) and how to make it again.
+#[allow(clippy::too_many_arguments)]
+fn scenario_report(
+    ctx: &Ctx,
+    a: &HandoffArgs,
+    p: &crate::scenario::Prepared,
+    v: &mut Value,
+    end: End,
+    events: &[Input],
+    frames: u64,
+    state: &[u8],
+    dir: &Path,
+) {
+    let mut args = json!({"id": p.id, "name": p.name, "frames": frames, "replay": dir.join("input.json"),
+        "description": a.description.clone().unwrap_or_else(|| a.request.clone())});
+    if let Some(f) = &p.from {
+        args["from"] = json!(f);
+    }
+    v["input"]["frame_origin"] = json!("scenario_record");
+    v["input"]["note"] = json!(
+        "Complete pad states at fields counted as scenario record counts them: from the field after the recording's first tick, which runs with the pad released."
+    );
+    v["reproduce"] = json!({"tool": "scenario_record", "arguments": args.clone(),
+        "note": "Records the person's input again from the same start, as the recording was made."});
+    v["recording"] = if end == End::Done {
+        alive(dir, "recording", || record_play(ctx, a, p, events, frames, state)).unwrap_or_else(|e| e.to_value())
+    } else {
+        args["replace"] = json!(a.replace);
+        json!({"written": false, "note": "the person did not finish, so the play is not recorded: ask again, or record what they did with scenario_record and these arguments",
+               "arguments": args})
+    };
 }
 
 #[cfg(feature = "window")]
@@ -829,6 +1021,62 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Plays a scenario headless the way the window does and records it: the
+    /// recording ends where the play did, and is the one scenario record makes
+    /// from the play's input.json. Needs a port workspace with an inventory:
+    /// PSX_TEST_WORKSPACE=DIR PSX_TEST_SCENARIO=ID cargo test -p psx --release scenario_play -- --ignored
+    #[test]
+    #[ignore]
+    fn scenario_play_records_what_was_played() {
+        let (Some(root), Some(id)) = (std::env::var_os("PSX_TEST_WORKSPACE"), std::env::var("PSX_TEST_SCENARIO").ok())
+        else {
+            return;
+        };
+        let ctx = Ctx { root: PathBuf::from(root), cancel: None };
+        let dir = std::env::temp_dir().join(format!("psx-scenario-play-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut a: HandoffArgs =
+            serde_json::from_value(json!({"request": "walk up", "id": id, "name": "play_test", "replace": true}))
+                .unwrap();
+        let (mut s, p) = scenario_start(&ctx, &mut a).unwrap();
+        let up = psx_core::sio0::button::UP;
+        let press = |s: &mut Session, frames: u64, buttons: u16| (0..frames).for_each(|_| s.frame(buttons, [0x80; 4]));
+        press(&mut s, 3, up);
+        s.quick_save();
+        press(&mut s, 20, 0);
+        s.quick_load().unwrap();
+        press(&mut s, 40, up);
+        press(&mut s, 10, 0);
+        let (events, frames) = (s.events.clone(), s.rel());
+        let state = s.m.save_state(s.media_id.clone());
+        let mut v = finish(&a, s, End::Done, String::new(), &dir).unwrap();
+        scenario_report(&ctx, &a, &p, &mut v, End::Done, &events, frames, &state, &dir);
+        assert_eq!(v["recording"]["matches_play"], true, "{}", v["recording"]);
+        let at = |name: &str| ctx.root.join("scenarios").join(&id).join(name);
+        let read = |name: &str| {
+            let r = psx_scenario::Recording::parse(&std::fs::read_to_string(at(name)).unwrap()).unwrap();
+            (r.header.initial, r.rows)
+        };
+        // scenario record from the play's input: the same frame origin, so the same recording.
+        let record = |args: Value| {
+            let a: crate::scenario::ScenarioRecordArgs = serde_json::from_value(args).unwrap();
+            a.exec(&ctx).value
+        };
+        let mut args = v["reproduce"]["arguments"].clone();
+        args["name"] = json!("play_test_again");
+        args["replace"] = json!(true);
+        assert_eq!(record(args)["status"], "recorded");
+        assert_eq!(read("play_test.jsonl"), read("play_test_again.jsonl"));
+        // A recording continuing from the play's end.
+        let r = record(json!({"id": id, "name": "play_test_on", "from": "play_test", "frames": 20, "replace": true}));
+        assert_eq!((r["status"].clone(), r["from"].clone()), (json!("recorded"), json!("play_test")));
+        for n in ["play_test", "play_test_again", "play_test_on"] {
+            std::fs::remove_file(at(&format!("{n}.jsonl"))).unwrap();
+            std::fs::remove_file(at(&format!("{n}.coverage.json"))).unwrap();
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// Plays a real disc headless the way the window does: input, a quick save
     /// and load, starting over, then hand-back with verify. Needs a disc:
     /// PSX_TEST_DISC=$PWD/media/game.cue cargo test -p psx --release handoff_session -- --ignored
@@ -840,6 +1088,11 @@ mod tests {
         let r = crate::context::resolve(&root, Some(disc.into()), None, None, false).unwrap();
         let a = HandoffArgs {
             request: "test".into(),
+            id: None,
+            name: None,
+            from: None,
+            description: None,
+            replace: false,
             media: r.media,
             bios: r.bios,
             from_state: None,

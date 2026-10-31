@@ -195,6 +195,17 @@ code that ran, or none) is in the record's result: unpack it first
   compared quantity's type changed must be recorded again: the facts say
   so. A changed unit or description does not count.
 
+`--from OTHER` starts at the end of the scenario's recording OTHER instead
+of at its state, so a long play-through is recorded in parts. The
+recording's first tick still runs with the pad released, and its details
+name OTHER, which the determinism check replays first.
+
+`psx scenario play ID --name NAME --request "…"` makes the recording from
+a person's play (guide topic input). The window starts where `scenario
+record` starts counting fields, after the first tick. When the person
+hands back with F12, psx records their input as `scenario record` does,
+with its coverage, and says whether it ended where the play did.
+
 `psx scenario show ID --name NAME` reads a recording back as a table: one
 row per tick from tick 0 (`initial`), with the field, the pad and every
 quantity, and beside each numeric one its change since the tick before

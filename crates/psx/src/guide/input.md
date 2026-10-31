@@ -37,6 +37,16 @@ drawn over the game. Over MCP it returns a ticket at once; poll
 `scenario_play` with status (the ticket's run_dir) and wait (up to 600 s per call) until status is no longer
 waiting. People take minutes.
 
+With a scenario id and name, the play becomes that scenario's recording:
+the window starts at the scenario's state (from: at the end of one of its
+recordings, to split a long play-through) once its first tick has run with
+the pad released, as scenario_record starts. When the person hands back
+with F12, psx records their input as scenario_record does, with its
+coverage, and the result's recording says whether it ended where the play
+did (matches_play). input.json then counts frames as scenario_record's
+input does, and reproduce is the scenario_record call that makes the
+recording again. A play the person declined or closed is not recorded.
+
 Write the request as a precise target: the level and spot, which way to face,
 health or items, and whether a cutscene should already have played. With a
 known address, say it in expect too (run's until syntax: 8007528C:u8=3):
@@ -58,7 +68,7 @@ optional note. Results:
 - state.bin: continue with run from_state (report.json supplies media and BIOS);
 - input.json: every pad change since the play's start as a replay, with input
   undone by rewinds, quick loads and restarts removed. `reproduce` gives the run call that
-  replays it; verify=true checks it reproduces state.bin;
+  replays it (without a scenario); verify=true checks it reproduces state.bin;
 - ram.bin, screen.png and the person's note;
 - marks: each F6 press as marks/<n>/ (state.bin, ram.bin, screen.png,
   mark.json with the label and frames). The report gives each mark's RAM diff

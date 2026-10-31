@@ -197,7 +197,7 @@ person answers. When `port next` has nothing left, the goal is done.
 
 ## 6. Recordings the person plays
 
-`psx scenario play <id>` (today's `handoff`, folded into scenarios) opens
+`psx scenario play <id> --name <name>` (the handoff, folded into scenarios) opens
 the game at the scenario's state with a request ("run along the wall and
 stomp onto the ledge"); the person plays and the run becomes a recording,
 with the same frame origin as a scripted one. `--from <recording>`

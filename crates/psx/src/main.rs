@@ -232,8 +232,10 @@ enum ScenarioAction {
     Show(scenario::ScenarioShowArgs),
     /// Ask a person to play: open a window showing the game and REQUEST, let them play with a
     /// keyboard or gamepad, and on F12 write state.bin, their input as a replay, a screenshot
-    /// and their note; F6 marks moments on the way (state, RAM and screen each). --detach
-    /// returns at once; --status RUN_DIR reports a play's progress or result.
+    /// and their note; F6 marks moments on the way (state, RAM and screen each). With a scenario
+    /// ID, play starts at its state (or the end of --from, one of its recordings) and is written as
+    /// its recording NAME, as scenario record writes one. --detach returns at once; --status RUN_DIR
+    /// reports a play's progress or result.
     Play(handoff::HandoffArgs),
 }
 
@@ -306,7 +308,7 @@ fn main() -> ExitCode {
     let ctx = Ctx { root: std::env::current_dir().unwrap_or_default(), cancel: None };
     let out = match cli.command {
         Command::McpCall => mcp::project::worker(&ctx),
-        Command::HandoffChild { run_dir } => handoff::child(&run_dir),
+        Command::HandoffChild { run_dir } => handoff::child(&ctx, &run_dir),
         Command::Guide(a) => a.exec(&ctx),
         Command::Context(a) => a.exec(&ctx),
         Command::Read(a) => a.exec(&ctx),

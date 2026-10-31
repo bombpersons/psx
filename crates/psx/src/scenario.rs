@@ -229,8 +229,18 @@ fn recording_path(root: &Path, id: &str, name: &str) -> PathBuf {
     root.join(SCENARIOS).join(id).join(format!("{name}.jsonl"))
 }
 
+/// A machine at a state, on the chain's medium, with what saves and
+/// restores it.
+pub(crate) struct Booted {
+    pub m: Machine,
+    pub bios: Vec<u8>,
+    pub media_id: Option<psx_core::state::MediaId>,
+    pub media: Option<PathBuf>,
+    pub bios_path: PathBuf,
+}
+
 /// The machine at a state, on the chain's medium, with its identity.
-fn machine(ctx: &Ctx, chain: &Json, state: &Path, source: &Release) -> crate::Result<Machine> {
+fn machine(ctx: &Ctx, chain: &Json, state: &Path, source: &Release) -> crate::Result<Booted> {
     let media = chain["media"].as_str().map(|m| crate::moved::find(&ctx.root, Path::new(m)));
     let resolved = crate::context::resolve(&ctx.root, media, None, Some(state), false)?;
     if let Some(e) = resolved.setup_error() {
@@ -251,7 +261,15 @@ fn machine(ctx: &Ctx, chain: &Json, state: &Path, source: &Release) -> crate::Re
             ),
         ));
     }
-    crate::run_native::boot(Some(state), &Default::default(), bios, medium.exe.as_deref(), medium.disc, &medium.id)
+    let m = crate::run_native::boot(
+        Some(state),
+        &Default::default(),
+        bios.clone(),
+        medium.exe.as_deref(),
+        medium.disc,
+        &medium.id,
+    )?;
+    Ok(Booted { m, bios, media_id: medium.id, media: resolved.media, bios_path })
 }
 
 /// The original's quantities at the end of every tick of a run.
@@ -408,6 +426,11 @@ pub struct ScenarioRecordArgs {
     #[arg(long)]
     #[serde(default)]
     pub description: Option<String>,
+    /// Start at the end of this recording of the scenario instead of at its state (a long
+    /// play-through split in parts); its first tick runs with the pad released, as always.
+    #[arg(long)]
+    #[serde(default)]
+    pub from: Option<String>,
     /// Write over an existing recording of that name.
     #[arg(long)]
     #[serde(default)]
@@ -422,90 +445,225 @@ fn d_timeout() -> u64 {
     600
 }
 
-fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
+/// A scenario ready to record from: its glossary and binding, the
+/// inventory, its state and where the recording goes.
+pub(crate) struct Prepared {
+    pub id: String,
+    pub name: String,
+    /// The recording this one continues from the end of.
+    pub from: Option<String>,
+    l: Loaded,
+    inv: Json,
+    b: Plugin<Described>,
+    out: PathBuf,
+    pub state: PathBuf,
+    chain: Json,
+}
+
+/// Everything a recording needs that can fail before anything runs.
+pub(crate) fn prepare(ctx: &Ctx, id: &str, name: &str, from: Option<&str>, replace: bool) -> crate::Result<Prepared> {
     let root = &ctx.root;
-    check_name("id", &a.id)?;
-    check_name("name", &a.name)?;
-    let l = Loaded::load(root, &a.id);
+    check_name("id", id)?;
+    check_name("name", name)?;
+    let l = Loaded::load(root, id);
     if !l.problems.is_empty() {
         return Err(Error::invalid("the scenario or glossary has problems").with("problems", json!(l.problems)));
     }
-    let (s, g) = (l.scenario.as_ref().unwrap(), l.glossary.as_ref().unwrap());
-    let out = recording_path(root, &a.id, &a.name);
-    if out.exists() && !a.replace {
+    let s = l.scenario.as_ref().unwrap();
+    let out = recording_path(root, id, name);
+    if out.exists() && !replace {
         return Err(Error::invalid(format!("{}: exists; replace=true writes over it", rel(root, &out))));
     }
-    let chain_file = root.join(&s.chain);
-    let (state, chain) = crate::states::chain_state(ctx, &chain_file)?;
-    let events =
-        crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64).map_err(Error::invalid)?;
-    if crate::replay::uses_sticks(&events) {
-        return Err(Error::invalid("the port's scenario runner has digital buttons only: record without the sticks"));
+    if let Some(f) = from {
+        check_name("from", f)?;
+        if f == name {
+            return Err(Error::invalid("from names the recording being written: continue from another one"));
+        }
+        continued(&l, f).map_err(Error::invalid)?;
     }
+    let (state, chain) = crate::states::chain_state(ctx, &root.join(&s.chain))?;
     // The recording keeps what the original ran against the inventory.
     let (_, inv) = crate::coverage::inventory(ctx, None).map_err(|e| {
         Error::invalid(format!("{e}: scenario record keeps what the original ran as the inventory's functions"))
     })?;
-    let b = binding(root, g)?;
-    let mut m = machine(ctx, &chain, &state, &b.described().source)?;
-    let compared = l.compared();
-    let q = Quantities { binding: &b, types: g.types(), kept: compared.keys().cloned().collect() };
-    let mut tracer = tracer(&mut m);
-    let r = record(&mut m, &q, a.frames, &events, Duration::from_secs(a.timeout), Some(&mut tracer));
-    if let Some(why) = unrecorded(&r) {
-        return Ok((false, why));
+    let b = binding(root, l.glossary.as_ref().unwrap())?;
+    Ok(Prepared { id: id.into(), name: name.into(), from: from.map(Into::into), l, inv, b, out, state, chain })
+}
+
+/// A recording's frames and input, as its producer kept them.
+fn kept_input(name: &str, rec: &Recording) -> Result<(u32, Vec<crate::replay::Input>), String> {
+    let d = &rec.header.producer.details;
+    let frames = d.get("frames").and_then(Json::as_u64).unwrap_or(0) as u32;
+    let events: crate::replay::Events = serde_json::from_value(d["input"]["events"].clone())
+        .map_err(|e| format!("{name}: producer.details.input: {e}"))?;
+    let events = crate::replay::resolve(None, Some(&events), frames as u64)?;
+    Ok((frames, events))
+}
+
+/// The recordings that lead to the end of `name`, earliest first: `name`
+/// and those it continues, each with its frames and input.
+fn continued(l: &Loaded, name: &str) -> Result<Vec<(String, u32, Vec<crate::replay::Input>)>, String> {
+    let mut out = Vec::new();
+    let mut next = Some(name.to_string());
+    while let Some(n) = next {
+        if out.iter().any(|(m, _, _)| *m == n) {
+            return Err(format!("{n} continues from itself, through the recordings it continues"));
+        }
+        let rec = match l.recordings.iter().find(|(m, _, _)| *m == n) {
+            Some((_, _, Ok(r))) if r.header.source.kind == SourceKind::Captured => r,
+            Some((_, f, Ok(_))) => return Err(format!("{}: not captured from the original", f.display())),
+            Some((_, f, Err(e))) => return Err(format!("{}: {e}", f.display())),
+            None => return Err(format!("{n}: no recording of that name in {SCENARIOS}/{}/", l.id)),
+        };
+        let (frames, events) = kept_input(&n, rec)?;
+        next = rec.header.producer.details.get("from").and_then(Json::as_str).map(Into::into);
+        out.push((n, frames, events));
     }
-    let header = Header {
-        format: format::RECORDING_FORMAT.into(),
-        format_version: format::RECORDING_FORMAT_VERSION,
-        scenario: a.id.clone(),
-        source: Source {
-            kind: SourceKind::Captured,
-            platform: Some(binding::PLATFORM.into()),
-            image_sha256: Some(b.described().source.image_sha256.clone()),
-        },
-        producer: Producer {
-            name: "psx".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            details: json!({
-                "chain": s.chain,
-                "from_state": rel(root, &state),
-                "from_state_sha256": chain["state_sha256"],
-                "frames": a.frames,
-                "input": crate::replay::report(&events),
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        },
-        quantities: compared,
-        initial: r.initial.unwrap(),
-        description: a.description.clone(),
-    };
-    let rec = Recording::encode(header, &r.ticks);
-    let problems = rec.check(&a.id);
-    if !problems.is_empty() {
-        return Err(Error::new("internal", "the recording does not check").with("problems", json!(problems)));
+    out.reverse();
+    Ok(out)
+}
+
+/// Run `m` on to the end of recording `from` (and those it continues).
+fn reach_end(m: &mut Machine, l: &Loaded, q: &Quantities, from: &str, deadline: Duration) -> crate::Result<()> {
+    for (n, frames, events) in continued(l, from).map_err(Error::invalid)? {
+        let r = record(m, q, frames, &events, deadline, None);
+        if let Some(why) = unrecorded(&r) {
+            return Err(Error::invalid(format!(
+                "replaying {n} to continue from its end gave no recording: {}",
+                why["status"].as_str().unwrap_or("")
+            )));
+        }
     }
-    if let Some(d) = out.parent() {
-        std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+    Ok(())
+}
+
+impl Prepared {
+    fn quantities(&self) -> Quantities<'_> {
+        let g = self.l.glossary.as_ref().unwrap();
+        Quantities { binding: &self.b, types: g.types(), kept: self.l.compared().keys().cloned().collect() }
     }
-    std::fs::write(&out, rec.to_jsonl()).map_err(|e| Error::io(&out, e))?;
-    // What the original ran while recording, for coverage.
-    let (mut kept, partial) = crate::coverage::keep(root, &inv, &tracer)?;
-    kept["recording"] = json!(rel(root, &out));
-    let kept_path = out.with_extension("coverage.json");
-    let text = serde_json::to_string_pretty(&kept).unwrap_or_default() + "\n";
-    std::fs::write(&kept_path, text).map_err(|e| Error::io(&kept_path, e))?;
-    let last = r.ticks.last();
-    let mut result = json!({"status": "recorded", "recording": rel(root, &out), "written": true,
-           "ticks": r.ticks.len(), "fields": last.map(|t| t.field), "coverage": rel(root, &kept_path),
-           "next": "psx scenario check runs the determinism check on the scenario's recordings"});
-    if !partial.is_empty() {
-        result["coverage_partial"] = json!(partial);
-        result["coverage_note"] = json!(UNPACK_HINT);
+
+    /// The machine where the recording starts: the scenario's state, or the
+    /// end of the recording it continues.
+    pub(crate) fn start(&self, ctx: &Ctx, timeout: Duration) -> crate::Result<Booted> {
+        let mut b = machine(ctx, &self.chain, &self.state, &self.b.described().source)?;
+        if let Some(from) = &self.from {
+            reach_end(&mut b.m, &self.l, &self.quantities(), from, timeout)?;
+        }
+        Ok(b)
     }
-    Ok((true, result))
+
+    /// Run `m` from where the recording starts to where its fields count
+    /// from: the pad released until the first tick ends, then on to the
+    /// next field. False when no tick ended within `fields`.
+    pub(crate) fn lead_in(&self, m: &mut Machine, fields: u64) -> bool {
+        crate::replay::apply(m, &crate::replay::Input { frame: 0, buttons: 0, sticks: [128; 4] });
+        let tick = &self.b.described().tick;
+        let (mut ticked, mut last_frame) = (false, m.bus.frames);
+        let limit = m.bus.frames + fields;
+        loop {
+            // As `record` counts fields: from the first field change after the tick.
+            if m.bus.frames != last_frame {
+                last_frame = m.bus.frames;
+                if ticked {
+                    return true;
+                }
+                if m.bus.frames >= limit {
+                    return false;
+                }
+            }
+            ticked |= tick.ended_by(&m.step());
+        }
+    }
+
+    /// Record `frames` fields of `events` on `m` (where [`Prepared::start`]
+    /// left it) and write the recording and its coverage.
+    pub(crate) fn write(
+        &self,
+        ctx: &Ctx,
+        m: &mut Machine,
+        frames: u32,
+        events: &[crate::replay::Input],
+        description: Option<String>,
+        timeout: Duration,
+    ) -> crate::Result<(bool, Json)> {
+        let root = &ctx.root;
+        if crate::replay::uses_sticks(events) {
+            return Err(Error::invalid(
+                "the port's scenario runner has digital buttons only: record without the sticks",
+            ));
+        }
+        let mut tracer = tracer(m);
+        let r = record(m, &self.quantities(), frames, events, timeout, Some(&mut tracer));
+        if let Some(why) = unrecorded(&r) {
+            return Ok((false, why));
+        }
+        let mut details = json!({
+            "chain": self.l.scenario.as_ref().unwrap().chain,
+            "from_state": rel(root, &self.state),
+            "from_state_sha256": self.chain["state_sha256"],
+            "frames": frames,
+            "input": crate::replay::report(events),
+        });
+        if let Some(f) = &self.from {
+            details["from"] = json!(f);
+        }
+        let header = Header {
+            format: format::RECORDING_FORMAT.into(),
+            format_version: format::RECORDING_FORMAT_VERSION,
+            scenario: self.id.clone(),
+            source: Source {
+                kind: SourceKind::Captured,
+                platform: Some(binding::PLATFORM.into()),
+                image_sha256: Some(self.b.described().source.image_sha256.clone()),
+            },
+            producer: Producer {
+                name: "psx".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                details: details.as_object().cloned().unwrap_or_default(),
+            },
+            quantities: self.l.compared(),
+            initial: r.initial.unwrap(),
+            description,
+        };
+        let rec = Recording::encode(header, &r.ticks);
+        let problems = rec.check(&self.id);
+        if !problems.is_empty() {
+            return Err(Error::new("internal", "the recording does not check").with("problems", json!(problems)));
+        }
+        let out = &self.out;
+        if let Some(d) = out.parent() {
+            std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+        }
+        std::fs::write(out, rec.to_jsonl()).map_err(|e| Error::io(out, e))?;
+        // What the original ran while recording, for coverage.
+        let (mut kept, partial) = crate::coverage::keep(root, &self.inv, &tracer)?;
+        kept["recording"] = json!(rel(root, out));
+        let kept_path = out.with_extension("coverage.json");
+        let text = serde_json::to_string_pretty(&kept).unwrap_or_default() + "\n";
+        std::fs::write(&kept_path, text).map_err(|e| Error::io(&kept_path, e))?;
+        let last = r.ticks.last();
+        let mut result = json!({"status": "recorded", "recording": rel(root, out), "written": true,
+               "ticks": r.ticks.len(), "fields": last.map(|t| t.field), "coverage": rel(root, &kept_path),
+               "next": "psx scenario check runs the determinism check on the scenario's recordings"});
+        if let Some(f) = &self.from {
+            result["from"] = json!(f);
+        }
+        if !partial.is_empty() {
+            result["coverage_partial"] = json!(partial);
+            result["coverage_note"] = json!(UNPACK_HINT);
+        }
+        Ok((true, result))
+    }
+}
+
+fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
+    let events =
+        crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64).map_err(Error::invalid)?;
+    let p = prepare(ctx, &a.id, &a.name, a.from.as_deref(), a.replace)?;
+    let timeout = Duration::from_secs(a.timeout);
+    let mut b = p.start(ctx, timeout)?;
+    p.write(ctx, &mut b.m, a.frames, &events, a.description.clone(), timeout)
 }
 
 impl Op for ScenarioRecordArgs {
@@ -605,12 +763,11 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
     let mut recordings = Vec::new();
     let mut same = true;
     for (name, rec) in captured {
-        let d = &rec.header.producer.details;
-        let frames = d.get("frames").and_then(Json::as_u64).unwrap_or(0) as u32;
-        let events: crate::replay::Events = serde_json::from_value(d["input"]["events"].clone())
-            .map_err(|e| Error::malformed(format!("{name}: producer.details.input: {e}")))?;
-        let events = crate::replay::resolve(None, Some(&events), frames as u64).map_err(Error::invalid)?;
-        let mut m = machine(ctx, &chain, &second, &b.described().source)?;
+        let (frames, events) = kept_input(name, rec).map_err(Error::malformed)?;
+        let mut m = machine(ctx, &chain, &second, &b.described().source)?.m;
+        if let Some(from) = rec.header.producer.details.get("from").and_then(Json::as_str) {
+            reach_end(&mut m, &l, &q, from, timeout)?;
+        }
         let r = record(&mut m, &q, frames, &events, timeout, None);
         let (diffs, schedule) = match unrecorded(&r) {
             Some(why) => (
