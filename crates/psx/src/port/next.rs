@@ -177,12 +177,14 @@ impl Feature {
         v
     }
 
-    fn branches_json(&self) -> Value {
+    /// The branches, with the first five unresolved, or all of them.
+    fn branches_json(&self, all: bool) -> Value {
+        let unresolved = self.branches.iter().filter(|b| !b.resolved()).count();
         let uncovered: Vec<Value> = self
             .branches
             .iter()
             .filter(|b| !b.resolved())
-            .take(5)
+            .take(if all { usize::MAX } else { 5 })
             .map(|b| {
                 let mut v = json!({"pc": hex(b.pc), "function": hex(b.function), "never": b.never()});
                 if b.wont_reach == Some(false) {
@@ -191,8 +193,12 @@ impl Feature {
                 v
             })
             .collect();
-        json!({"total": self.branches.len(), "resolved": self.branches.iter().filter(|b| b.resolved()).count(),
-               "unresolved": uncovered})
+        let mut v = json!({"total": self.branches.len(), "resolved": self.branches.len() - unresolved,
+               "unresolved": uncovered});
+        if uncovered.len() < unresolved {
+            v["more"] = json!(format!("{} more: port_status feature {}", unresolved - uncovered.len(), self.id));
+        }
+        v
     }
 
     fn review_json(&self) -> Value {
@@ -698,7 +704,7 @@ impl Facts {
             let mut row = json!({
                 "id": f.id, "title": e.map(|e| e.title.as_str()), "stage": stage, "in_goal": f.in_goal,
                 "depends": e.map(|e| &e.depends), "code": e.map(|e| &e.code), "verdict": f.verdict.name(),
-                "work": f.work_json(), "held_out": f.held_out_json(), "branches": f.branches_json(),
+                "work": f.work_json(), "held_out": f.held_out_json(), "branches": f.branches_json(false),
                 "questions": f.questions, "review": f.review_json(),
             });
             if !f.unrecorded.is_empty() && f.located {
@@ -902,6 +908,10 @@ fn guarded(root: &Path, facts: &Facts, item: Item) -> crate::Result<Value> {
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PortStatusArgs {
+    /// One feature's unresolved branches, all of them.
+    #[arg(long)]
+    #[serde(default)]
+    pub feature: Option<String>,
     /// Text for the person instead of JSON.
     #[arg(long)]
     #[serde(default)]
@@ -910,10 +920,16 @@ pub struct PortStatusArgs {
 
 impl Op for PortStatusArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::result(Facts::gather(&ctx.root).map(|f| {
+        Outcome::result(Facts::gather(&ctx.root).and_then(|f| {
+            if let Some(id) = &self.feature {
+                let feature = f.features.iter().find(|x| &x.id == id);
+                let feature =
+                    feature.ok_or_else(|| crate::Error::invalid(format!("feature {id}: not in the catalogue")))?;
+                return Ok(json!({"feature": id, "branches": feature.branches_json(true)}));
+            }
             let mut v = f.status();
             v["next"] = f.next().to_json();
-            if self.plain { json!({"text": f.plain()}) } else { v }
+            Ok(if self.plain { json!({"text": f.plain()}) } else { v })
         }))
     }
 }
@@ -1021,6 +1037,13 @@ mod tests {
         assert_eq!(next(&f), ("Answer", "agent", "F-0002".into()));
         set(&mut f, "F-0002", |x| x.questions.clear());
         let branch = |wont_reach| Branch { pc: 0x8002_D820, function: 0x8002_D810, ways: 1, wont_reach };
+        set(&mut f, "F-0001", |x| x.branches = vec![branch(None); 7]);
+        let short = f.features[0].branches_json(false);
+        assert_eq!(
+            (short["unresolved"].as_array().unwrap().len(), &short["more"]),
+            (5, &json!("2 more: port_status feature F-0001"))
+        );
+        assert_eq!(f.features[0].branches_json(true)["unresolved"].as_array().unwrap().len(), 7);
         set(&mut f, "F-0001", |x| x.branches = vec![branch(None)]);
         assert_eq!(next(&f), ("Cover", "agent", "F-0001".into()));
         assert!(f.next().why.starts_with("the branch at 0x8002D820 (in 0x8002D810) never fell through"));
