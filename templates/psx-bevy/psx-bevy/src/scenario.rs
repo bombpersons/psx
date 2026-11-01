@@ -255,12 +255,42 @@ impl Scenarios {
         r
     }
 
+    /// Replays one recording. A panic in the port (its launcher, a tick or
+    /// an observer) fails this recording, at the tick it happened, and the
+    /// rest still run and reach the report.
     fn recording(
         &self,
         name: &str,
         s: &Scenario,
         rec: &Recording,
         observed: &mut std::collections::BTreeSet<String>,
+    ) -> RecordingReport {
+        let mut at = String::from("the launcher");
+        let run =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.replay(name, s, rec, observed, &mut at)));
+        run.unwrap_or_else(|p| {
+            let why = p
+                .downcast_ref::<&str>()
+                .map(|m| m.to_string())
+                .or_else(|| p.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "no message".into());
+            RecordingReport {
+                name: name.into(),
+                captured: rec.header.source.kind == SourceKind::Captured,
+                ticks: rec.rows.len(),
+                failures: vec![format!("{at} panicked: {why}")],
+            }
+        })
+    }
+
+    /// `at` says where the replay is, for a panic's failure.
+    fn replay(
+        &self,
+        name: &str,
+        s: &Scenario,
+        rec: &Recording,
+        observed: &mut std::collections::BTreeSet<String>,
+        at: &mut String,
     ) -> RecordingReport {
         let mut out = RecordingReport {
             name: name.into(),
@@ -310,6 +340,7 @@ impl Scenarios {
                 }
                 None
             };
+        *at = "initial".into();
         if let Some(e) = check(&mut app, "initial", &rec.header.initial, &mut differed) {
             out.failures.push(e);
             return out;
@@ -318,6 +349,7 @@ impl Scenarios {
             if differed.len() == compared.len() {
                 break;
             }
+            *at = format!("tick {}", t.tick);
             let pad: Result<Vec<_>, String> = t
                 .pad
                 .iter()
@@ -495,5 +527,36 @@ mod tests {
         for d in [root, root2, root3, root4] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    #[derive(Component)]
+    struct Fragile;
+
+    fn break_at(q: Query<&Walker, With<Fragile>>) {
+        if q.iter().any(|w| w.0 > 4196) {
+            panic!("walked off the floor");
+        }
+    }
+
+    #[test]
+    fn a_panic_fails_its_recording_and_the_rest_still_run() {
+        let root = workspace(SCENARIO, RECORDING);
+        std::fs::create_dir_all(root.join("scenarios/fragile")).unwrap();
+        std::fs::write(root.join("scenarios/fragile.toml"), SCENARIO.replace("\"level\"", "\"fragile\"")).unwrap();
+        std::fs::write(root.join("scenarios/fragile/a.jsonl"), RECORDING.replace("\"walk\"", "\"fragile\"")).unwrap();
+        let fragile = || {
+            let mut a = app();
+            a.add_systems(FixedUpdate, break_at.in_set(GameSystems::Game).after(walk));
+            a.register_scenario("fragile", |app, _| {
+                app.world_mut().spawn((Walker(4096), Fragile));
+                Ok(())
+            });
+            a
+        };
+        let r = Scenarios::new(&root, fragile).report();
+        let by_id = |id: &str| r.scenarios.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(by_id("fragile").recordings[0].failures, ["tick 2 panicked: walked off the floor"]);
+        assert!(by_id("walk").passed(), "{:?}", by_id("walk"));
+        let _ = std::fs::remove_dir_all(root);
     }
 }
