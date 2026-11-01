@@ -153,8 +153,13 @@ game on psx's native core. It starts from the scenario's state with the pad
 released until the first tick ends, then records N more fields holding the
 pad as given (the input's frames count from the field after that tick). It
 builds the glossary's binding, stops at each tick store and keeps the
-compared quantities. Analog sticks are refused: the port's runner has
-digital buttons only.
+compared quantities. The analog sticks are kept as the game read them:
+that needs a DualShock (`pad dualshock` in the chain) in analog mode,
+which the game switches to itself or the input does with a press of
+`ANALOG` (the controller's mode button, as on hardware), and sticks moved
+while it is not are refused. A recording's `pad` keeps only what the game
+reads, so `ANALOG` is not in it; its effect is, in the pad's mode and the
+sticks.
 
 It also traces the run and keeps what the original executed beside the
 recording, in `scenarios/<id>/<name>.coverage.json`, credited to the
@@ -180,7 +185,7 @@ code that ran, or none) is in the record's result: unpack it first
  "initial": {"croc_x": 12288},
  "description": "Walk right for two seconds, then stand"}
 {"tick": 1, "field": 1, "pad": ["UP"], "values": {"croc_x": 12293}}
-{"tick": 2, "field": 3, "values": {"croc_x": 12301}}
+{"tick": 2, "field": 3, "analog": true, "sticks": {"lx": 143}, "values": {"croc_x": 12301}}
 ```
 
 - **`initial`** holds the quantities at the end of the recording's first
@@ -191,6 +196,17 @@ code that ran, or none) is in the record's result: unpack it first
     the first tick (field 0, the input's frame 0): the original's schedule. Two ticks in one field, or a field with
     none, is the original falling behind.
   - `pad` holds the buttons held during that field, when they changed.
+  - `analog` is whether the pad was in analog mode, when it changed
+    (digital at the start): what the game read in the pad's ID each poll,
+    which it can act on with the sticks at rest. The port's runner gives
+    it as `ControllerState::analog`; live, a port keeps the pad analog.
+  - `sticks` holds the stick axes the game read in that field that
+    changed (`lx`, `ly`, `rx`, `ry`): raw bytes, 0 left or up, 255 right
+    or down, 128 at rest, never deadzoned or rounded. With none, the
+    sticks are at rest; on a pad not in analog mode they always are. The
+    port's runner gives the game each tick's sticks
+    (`ControllerState::sticks`), so it can apply the original's own
+    deadzone and curve.
   - `values` holds the quantities that changed.
 - **The header carries the quantities' declarations**, so the recording
   stands alone. A recording made before the scenario's `compare` or a
@@ -209,7 +225,8 @@ hands back with F12, psx records their input as `scenario record` does,
 with its coverage, and says whether it ended where the play did.
 
 `psx scenario show ID --name NAME` reads a recording back as a table: one
-row per tick from tick 0 (`initial`), with the field, the pad and every
+row per tick from tick 0 (`initial`), with the field, the pad (and the
+stick axes away from rest, when the recording moves them) and every
 quantity, and beside each numeric one its change since the tick before
 (a walk's speed, a jump's gravity). A fixed shows as its exact decimal and
 a 32- or 64-bit float as its number; `--raw` shows the integers recorded.

@@ -19,8 +19,10 @@ Each event replaces the whole held state and stays until the next one or its
 until (exclusive: [0,5) is five fields); buttons:[] releases all. Events are
 strictly ordered within 0..=frames and do not overlap. Before the first
 event a state keeps its saved pad. Buttons: SELECT L3 R3 START UP RIGHT DOWN
-LEFT L2 R2 L1 R1 TRIANGLE CIRCLE CROSS SQUARE (any case). sticks
-[lx,ly,rx,ry], 0..255 with 128 centred, need pad dualshock at power-on.
+LEFT L2 R2 L1 R1 TRIANGLE CIRCLE CROSS SQUARE (any case), and ANALOG,
+the DualShock's mode button: a press toggles analog mode unless the game
+locked it. sticks [lx,ly,rx,ry], 0..255 with 128 centred, need pad
+dualshock at power-on and analog mode (the game's or ANALOG's).
 input.jsonl says when each event was applied, not that the game read it.
 
 Driving menus. A game reads the pad once a tick, and a menu acts on a

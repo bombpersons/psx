@@ -319,7 +319,12 @@ the same path. Synchronous loads use `assets::find` (the psx template's
   second (`speed * time.delta_secs()`) or, when the original's per-tick values
   matter, per tick.
 - Read input from `ControllerState::{held, pressed, released}(Button::..)`,
-  `direction()` and `left_stick`/`right_stick`. Edges are per logic tick.
+  `direction()` and `left_stick`/`right_stick`. `sticks` holds the sticks'
+  raw bytes as the PlayStation's pad sends them (lx, ly, rx, ry; 128 at
+  rest), which a port reads to apply the original's own deadzone and curve;
+  `left_stick`/`right_stick` are a -1..=1 view of them. `analog` is the
+  pad's mode, which a game can act on: always on live, the original's in a
+  scenario's recording. Edges are per logic tick.
   Devices are sampled every rendered frame and a press is kept until the next
   tick, so a tap shorter than one tick still counts as held for one tick.
   Do not skip ticks by counting `GameClock.frame`: presses on skipped ticks

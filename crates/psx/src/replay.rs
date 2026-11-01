@@ -1,7 +1,9 @@
 //! Replay files for `psx run`: a JSON array of
 //! `{"frame": n, "buttons": ["CROSS", ...], "sticks": [lx, ly, rx, ry]}`.
 //! Each event is the complete pad state from that frame on; `sticks` is
-//! optional (0-255, 128 = centred) and only read by a DualShock.
+//! optional (0-255, 128 = centred) and only read by a DualShock in analog
+//! mode. `ANALOG` is the DualShock's mode button: a press toggles analog mode
+//! (unless the game locked it), as on the controller.
 
 use psx_core::Machine;
 use schemars::JsonSchema;
@@ -26,16 +28,21 @@ pub enum Button {
     Circle,
     Cross,
     Square,
+    Analog,
 }
 impl<'de> Deserialize<'de> for Button {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
+        if s.eq_ignore_ascii_case("ANALOG") {
+            return Ok(Button::Analog);
+        }
         let bit = psx_core::sio0::button_from_name(&s)
             .ok_or_else(|| serde::de::Error::custom(format!("unknown button {s:?}")))?;
         Ok(BUTTONS[bit.trailing_zeros() as usize])
     }
 }
-const BUTTONS: [Button; 16] = [
+/// In bit order: the pad's 16 (see `psx_core::sio0::button`), then [`ANALOG`].
+const BUTTONS: [Button; 17] = [
     Button::Select,
     Button::L3,
     Button::R3,
@@ -52,7 +59,10 @@ const BUTTONS: [Button; 16] = [
     Button::Circle,
     Button::Cross,
     Button::Square,
+    Button::Analog,
 ];
+/// The DualShock's ANALOG button in [`Input::buttons`] (the pad itself sends 16).
+pub const ANALOG: u32 = 1 << 16;
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Event {
@@ -80,7 +90,8 @@ impl std::str::FromStr for Events {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Input {
     pub frame: u64,
-    pub buttons: u16,
+    /// The pad's buttons, and [`ANALOG`].
+    pub buttons: u32,
     /// Left x/y, right x/y.
     pub sticks: [u8; 4],
 }
@@ -133,9 +144,9 @@ pub fn resolve(path: Option<&std::path::Path>, inline: Option<&Events>, frames: 
         if out.last().is_some_and(|i: &Input| i.frame == e.frame) {
             out.pop();
         }
-        let mut bits = 0u16;
+        let mut bits = 0u32;
         for b in &e.buttons {
-            let bit = 1u16
+            let bit = 1u32
                 << BUTTONS
                     .iter()
                     .position(|candidate| std::mem::discriminant(candidate) == std::mem::discriminant(b))
@@ -155,7 +166,7 @@ pub fn resolve(path: Option<&std::path::Path>, inline: Option<&Events>, frames: 
     Ok(out)
 }
 
-pub fn button_names(bits: u16) -> Vec<String> {
+pub fn button_names(bits: u32) -> Vec<String> {
     BUTTONS
         .iter()
         .enumerate()
@@ -174,7 +185,7 @@ pub fn uses_sticks(inputs: &[Input]) -> bool {
 }
 
 pub fn apply(m: &mut Machine, i: &Input) {
-    m.bus.sio0.buttons = i.buttons;
-    let [lx, ly, rx, ry] = i.sticks;
-    m.bus.sio0.pad.sticks = [rx, ry, lx, ly];
+    m.bus.sio0.buttons = i.buttons as u16;
+    m.bus.sio0.analog_button = i.buttons & ANALOG != 0;
+    m.bus.sio0.pad.set_axes(i.sticks);
 }

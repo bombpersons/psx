@@ -281,6 +281,9 @@ struct Recorded {
     refusals: Vec<Json>,
     refusal_count: u64,
     timed_out: bool,
+    /// The first tick that ended with the sticks moved on a pad not in
+    /// analog mode, which the game does not read.
+    unread_sticks: Option<u64>,
 }
 
 /// What the glossary's binding is asked, and which quantities are kept.
@@ -323,8 +326,14 @@ fn record(
     let mut start: Option<u64> = None;
     let mut target = u64::MAX;
     let tick = &q.binding.described().tick;
-    let mut out =
-        Recorded { initial: None, ticks: Vec::new(), refusals: Vec::new(), refusal_count: 0, timed_out: false };
+    let mut out = Recorded {
+        initial: None,
+        ticks: Vec::new(),
+        refusals: Vec::new(),
+        refusal_count: 0,
+        timed_out: false,
+        unread_sticks: None,
+    };
     let (mut next_event, mut last_frame) = (0, m.bus.frames);
     let lead_limit = m.bus.frames + frames as u64;
     if let Some(c) = cover.as_deref_mut() {
@@ -394,7 +403,14 @@ fn record(
             // A second tick in the first tick's field belongs to the lead-in
             // field, which the recording counts as field 0.
             let field = start.map_or(0, |s| m.bus.frames - s);
-            out.ticks.push(Full { tick: n, field, pad: crate::replay::button_names(m.bus.sio0.buttons), values });
+            // The sticks as the game read them: centred unless the pad is in analog mode.
+            let pad = &m.bus.sio0.pad;
+            let sticks = if pad.analog { pad.axes() } else { format::CENTRED };
+            if !pad.analog && pad.axes() != format::CENTRED {
+                out.unread_sticks.get_or_insert(n);
+            }
+            let buttons = crate::replay::button_names(m.bus.sio0.buttons.into());
+            out.ticks.push(Full { tick: n, field, pad: buttons, analog: pad.analog, sticks, values });
             if ticks.is_some_and(|t| out.ticks.len() >= t.len()) {
                 break;
             }
@@ -630,16 +646,16 @@ impl Prepared {
         timeout: Duration,
     ) -> crate::Result<(bool, Json)> {
         let root = &ctx.root;
-        if crate::replay::uses_sticks(events) {
-            return Err(Error::invalid(
-                "the port's scenario runner has digital buttons only: record without the sticks",
-            ));
-        }
         let mut cover =
             Cover { tracer: tracer(m), scripts: crate::script_cover::Scripts::new(&self.b.described().hooks) };
         let r = record(m, &self.quantities(), frames, events, None, timeout, Some(&mut cover));
         if let Some(why) = unrecorded(&r) {
             return Ok((false, why));
+        }
+        if let Some(n) = r.unread_sticks {
+            return Err(Error::invalid(format!(
+                "tick {n}: the sticks moved while the pad was not in analog mode, so the game did not read them: the chain needs a DualShock (pad dualshock) in analog mode before the sticks move: the game's own switch, or a press of ANALOG in the input"
+            )));
         }
         let mut details = json!({
             "chain": self.l.scenario.as_ref().unwrap().chain,
@@ -796,6 +812,13 @@ fn differences(recorded: &Recording, again: &Header, ticks: &[Full], run: &str) 
                 show(b.values.get(n))
             ));
         }
+    }
+    if let Some((a, b)) = full.iter().zip(ticks).find(|(a, b)| a.analog != b.analog) {
+        let mode = |analog| if analog { "analog" } else { "digital" };
+        out.push(format!("tick {} pad mode: recorded {}, {run} {}", a.tick, mode(a.analog), mode(b.analog)));
+    }
+    if let Some((a, b)) = full.iter().zip(ticks).find(|(a, b)| a.sticks != b.sticks) {
+        out.push(format!("tick {} sticks: recorded {:?}, {run} {:?}", a.tick, a.sticks, b.sticks));
     }
     out.truncate(MAX_DIFFERENCES);
     (out, schedule)
@@ -1049,10 +1072,15 @@ fn show_cmd(ctx: &Ctx, a: &ScenarioShowArgs) -> crate::Result<Json> {
     }
     let (lo, hi) = a.ticks.as_deref().map(tick_range).transpose()?.unwrap_or((0, u64::MAX));
 
-    let initial = Full { tick: 0, field: 0, pad: vec![], values: rec.header.initial.clone() };
+    let initial = Full { values: rec.header.initial.clone(), ..Full::default() };
     let full = rec.expand();
     let ticks = full.len() as u64;
+    // Only a recording with the pad in analog mode shows the sticks.
+    let sticks = full.iter().any(|f| f.analog);
     let mut columns = vec![json!("tick"), json!("field"), json!("pad")];
+    if sticks {
+        columns.push(json!("sticks"));
+    }
     for n in &names {
         columns.push(json!(n));
         if moves(&types[n], a.raw) {
@@ -1065,6 +1093,9 @@ fn show_cmd(ctx: &Ctx, a: &ScenarioShowArgs) -> crate::Result<Json> {
         if (lo..=hi).contains(&f.tick) {
             let mut row =
                 vec![json!(f.tick), if f.tick == 0 { Json::Null } else { json!(f.field) }, json!(f.pad.join("+"))];
+            if sticks {
+                row.push(json!(if f.analog { off_centre(f.sticks) } else { "digital".into() }));
+            }
             for n in &names {
                 let t = &types[n];
                 let v = f.values.get(n);
@@ -1094,6 +1125,10 @@ fn show_cmd(ctx: &Ctx, a: &ScenarioShowArgs) -> crate::Result<Json> {
         "columns": columns,
         "rows": rows,
     });
+    if sticks {
+        out["sticks"] =
+            json!("the stick axes away from centre (128), as the game read them: 0 is left or up, 255 right or down; digital: the pad not in analog mode, so it sends no sticks");
+    }
     if let Some(d) = &rec.header.description {
         out["description"] = json!(d);
     }
@@ -1104,6 +1139,13 @@ fn show_cmd(ctx: &Ctx, a: &ScenarioShowArgs) -> crate::Result<Json> {
         out["text"] = json!(table(&out));
     }
     Ok(out)
+}
+
+/// The axes of `sticks` (lx, ly, rx, ry) away from centre, as `lx=143 ry=0`.
+fn off_centre(sticks: [u8; 4]) -> String {
+    let names = ["lx", "ly", "rx", "ry"];
+    let moved = names.iter().zip(sticks).filter(|(_, v)| *v != format::CENTRED[0]);
+    moved.map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join(" ")
 }
 
 /// `show`'s columns and rows as aligned text.
@@ -1579,10 +1621,10 @@ pub struct Quantities {
     #[test]
     fn each_tick_holds_the_pad_it_ended_with() {
         let input = |frame, buttons| crate::replay::Input { frame, buttons, sticks: [128; 4] };
-        let tick = |field| Full { tick: 0, field, pad: Vec::new(), values: Values::new() };
+        let tick = |field| Full { field, ..Full::default() };
         let events = [input(1, 1), input(3, 2), input(4, 0)];
         let held = held_by_tick(&events, &[tick(0), tick(2), tick(4), tick(6)]);
-        let buttons: Vec<u16> = held.iter().map(|i| i.buttons).collect();
+        let buttons: Vec<u32> = held.iter().map(|i| i.buttons).collect();
         assert_eq!(buttons, [0, 1, 0, 0], "a press and release inside one tick is not held at its end");
         assert_eq!(held_by_tick(&events, &[tick(3)])[0].buttons, 2);
     }

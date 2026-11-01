@@ -48,8 +48,10 @@
 //! For each recording (`scenarios/<id>/<name>.jsonl`, made by `psx scenario
 //! record`) the runner makes a fresh app, launches the scenario, compares
 //! the quantities with the recording's initial values (the end of the
-//! original's first tick), then runs one tick per line with the line's pad
-//! and compares again. Each quantity is compared within the scenario's
+//! original's first tick), then runs one tick per line with the line's pad,
+//! the pad's mode ([`crate::controller::ControllerState::analog`]) and sticks
+//! (their raw bytes, in [`crate::controller::ControllerState::sticks`]) and
+//! compares again. Each quantity is compared within the scenario's
 //! tolerance (`compare`, raw units); the first tick each one differs is
 //! reported.
 
@@ -356,7 +358,14 @@ impl Scenarios {
                 .map(|b| crate::testing::trajectory::button(b).ok_or(format!("tick {}: no button {b:?}", t.tick)))
                 .collect();
             match pad {
-                Ok(pad) => app.run_tick(&pad),
+                Ok(buttons) => {
+                    app.run_input(&crate::testing::TickInput {
+                    buttons,
+                    analog: Some(t.analog),
+                    sticks: Some(t.sticks),
+                    ..default()
+                })
+                }
                 Err(e) => {
                     out.failures.push(e);
                     return out;
@@ -449,9 +458,12 @@ mod tests {
 
     fn walk(pad: Res<ControllerState>, mut q: Query<&mut Walker>) {
         for mut w in &mut q {
+            // Slower on an analog pad, as a game can act on the mode.
             if pad.held(Button::Right) {
-                w.0 += 100;
+                w.0 += if pad.analog { 50 } else { 100 };
             }
+            // The left stick's raw byte, from centre.
+            w.0 += i32::from(pad.sticks[0]) - 128;
         }
     }
 
@@ -495,6 +507,20 @@ mod tests {
         let s = &r.scenarios[0];
         assert!(s.passed(), "{s:?}");
         assert_eq!((s.recordings[0].ticks, s.recordings[0].captured), (3, true));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_mode_and_sticks_replay_tick_for_tick() {
+        let header = RECORDING.lines().next().unwrap();
+        let rows = [
+            r#"{"tick":1,"field":1,"analog":true,"sticks":{"lx":160},"values":{"x":4128}}"#,
+            r#"{"tick":2,"field":2,"pad":["RIGHT"],"sticks":{"lx":0},"values":{"x":4050}}"#,
+            r#"{"tick":3,"field":3,"analog":false,"sticks":{"lx":128},"values":{"x":4150}}"#, // RIGHT still held
+        ];
+        let root = workspace(SCENARIO, &format!("{header}\n{}\n", rows.join("\n")));
+        let s = &Scenarios::new(&root, app).report().scenarios[0];
+        assert!(s.passed(), "{s:?}");
         let _ = std::fs::remove_dir_all(root);
     }
 

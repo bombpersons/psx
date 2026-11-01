@@ -95,6 +95,12 @@ impl InputFocus {
 #[derive(Resource, Default, Debug, Clone, Copy)]
 pub struct InjectedInput {
     pub buttons: u16,
+    /// The sticks (as [`ControllerState::sticks`]) in place of the
+    /// gamepad's, when set.
+    pub sticks: Option<[u8; 4]>,
+    /// The pad's mode (as [`ControllerState::analog`]) in place of live
+    /// play's analog, when set.
+    pub analog: Option<bool>,
     pub mouse: InjectedMouse,
 }
 
@@ -171,17 +177,30 @@ impl InjectedMouse {
 /// Physical input, sampled every rendered frame. `tapped` remembers every
 /// button seen held since the last tick, so a tap shorter than one tick (easy
 /// at 25 Hz) still reaches the game as one tick of press.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Debug)]
 struct DeviceInput {
     held: u16,
     tapped: u16,
-    left_stick: Vec2,
-    right_stick: Vec2,
+    sticks: [u8; 4],
     /// Mouse buttons, latched like `tapped`; motion and wheel summed.
     mouse_tapped: u8,
     mouse_position: Option<Vec2>,
     mouse_motion: Vec2,
     wheel: f32,
+}
+
+impl Default for DeviceInput {
+    fn default() -> Self {
+        Self {
+            held: 0,
+            tapped: 0,
+            sticks: controller::CENTRED,
+            mouse_tapped: 0,
+            mouse_position: None,
+            mouse_motion: Vec2::ZERO,
+            wheel: 0.0,
+        }
+    }
 }
 
 /// Fixed-rate logic, controller input and the tick clock.
@@ -254,11 +273,10 @@ fn sample_devices(
         }
         return;
     }
-    let (held, left, right) = controller::sample(&keys, pad, pointer.held_bits(), &bindings);
+    let (held, sticks) = controller::sample(&keys, pad, pointer.held_bits(), &bindings);
     input.held = held;
     input.tapped |= held;
-    input.left_stick = left;
-    input.right_stick = right;
+    input.sticks = sticks;
     input.mouse_tapped |= pointer.held_bits();
     input.mouse_position = pointer.position;
     input.mouse_motion += motion.map_or(Vec2::ZERO, |m| m.delta);
@@ -291,7 +309,8 @@ fn begin_tick(
         let mouse = injected.mouse;
         let buttons =
             device.held | device.tapped | injected.buttons | controller::mouse_actions(mouse.buttons, &bindings);
-        state.update(buttons, device.left_stick, device.right_stick);
+        state.update(buttons, injected.sticks.unwrap_or(device.sticks));
+        state.analog = injected.analog.unwrap_or(true);
         state.mouse.update(
             device.mouse_tapped | mouse.buttons,
             mouse.position.or(device.mouse_position),

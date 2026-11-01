@@ -98,6 +98,13 @@ pub struct Pad {
     pub locked: bool,
     /// Last motor values sent (small, large).
     pub motors: (u8, u8),
+    /// The DualShock's ANALOG button held, and held when last looked at
+    /// (Mednafen's `cur_ana_button_state`, `prev_ana_button_state`). Not
+    /// saved: a state restores with it released.
+    #[serde(skip)]
+    pub analog_button: bool,
+    #[serde(skip)]
+    analog_button_was: bool,
     da_rumble_compat: bool,
     rumble_magic: [u8; 6],
     command: u8,
@@ -114,6 +121,8 @@ impl Default for Pad {
             config: false,
             locked: false,
             motors: (0, 0),
+            analog_button: false,
+            analog_button_was: false,
             da_rumble_compat: true,
             rumble_magic: [0xFF; 6],
             command: 0,
@@ -123,8 +132,37 @@ impl Default for Pad {
 }
 
 impl Pad {
+    /// The sticks as left x, left y, right x, right y (the order the
+    /// field keeps them in is the order they are sent: right first).
+    pub fn axes(&self) -> [u8; 4] {
+        let [rx, ry, lx, ly] = self.sticks;
+        [lx, ly, rx, ry]
+    }
+
+    /// Sets the sticks from left x, left y, right x, right y.
+    pub fn set_axes(&mut self, [lx, ly, rx, ry]: [u8; 4]) {
+        self.sticks = [rx, ry, lx, ly];
+    }
+
     pub(crate) fn set_dtr(&mut self, dtr: bool) {
+        let was = self.link.dtr();
         self.link.set_dtr(dtr);
+        if was && !dtr {
+            self.check_analog_button();
+        }
+    }
+
+    /// A press of the ANALOG button toggles analog mode unless the game
+    /// locked it; the button is not looked at while selected (Mednafen's
+    /// `CheckManualAnaModeChange`, called as input arrives and as DTR falls).
+    pub(crate) fn check_analog_button(&mut self) {
+        if self.kind != PadKind::DualShock || self.link.dtr() {
+            return;
+        }
+        if self.analog_button && !self.analog_button_was && !self.locked {
+            self.analog = !self.analog;
+        }
+        self.analog_button_was = self.analog_button;
     }
 
     /// One bit each way (Mednafen's `Clock`). Returns the bit sent and the
@@ -400,6 +438,36 @@ pub(crate) mod tests {
             xfer(&mut p, &[0x42, 0, 0, 0, 0, 0, 0, 0]),
             vec![0xFF, 0x73, 0x5A, 0xFF, 0xFF, 0x10, 0x20, 0x30, 0x40]
         );
+    }
+
+    #[test]
+    fn analog_button_toggles_unless_locked() {
+        let mut p = Pad { kind: PadKind::DualShock, ..Default::default() };
+        let press = |p: &mut Pad, held| {
+            p.analog_button = held;
+            p.check_analog_button();
+        };
+        press(&mut p, true);
+        assert!(p.analog);
+        press(&mut p, true); // held, not pressed again
+        assert!(p.analog);
+        press(&mut p, false);
+        press(&mut p, true);
+        assert!(!p.analog);
+        press(&mut p, false);
+        // Pressed while selected: seen when DTR falls.
+        p.set_dtr(true);
+        press(&mut p, true);
+        assert!(!p.analog);
+        p.set_dtr(false);
+        assert!(p.analog);
+        press(&mut p, false);
+        xfer(&mut p, &[0x43, 0, 1]); // enter config
+        xfer(&mut p, &[0x44, 0, 0, 3, 0, 0, 0, 0]); // digital, locked
+        xfer(&mut p, &[0x43, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(!p.analog && p.locked);
+        press(&mut p, true);
+        assert!(!p.analog);
     }
 
     #[test]

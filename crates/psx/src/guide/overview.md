@@ -145,8 +145,13 @@ the scenario's state, runs the first tick with the pad released (the
 recording's initial values, the moment the port's launcher builds), then
 records frames more fields with the pad as given, counted from the field
 after that tick: scenarios/<id>/<name>.jsonl, one line per tick with the
-field it ended in, the pad when it changed and the quantities that changed.
-Digital buttons only. Beside it, <name>.coverage.json keeps what the
+field it ended in, the pad, its mode and sticks when they changed and
+the quantities that changed. The sticks are the raw bytes the game read
+(128 at rest), so they need pad dualshock in the chain and analog mode
+(the game's own switch, or a press of ANALOG in the input) before they
+move; the port reads them as ControllerState::sticks and the mode, which
+a game can act on with the sticks at rest, as ControllerState::analog.
+Beside it, <name>.coverage.json keeps what the
 original ran as the inventory's code (no instructions, so it is committed):
 take code_inventory first, and unpack compressed overlays first (topic
 code). from starts at the end of another recording of the scenario, to

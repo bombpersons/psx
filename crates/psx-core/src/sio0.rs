@@ -88,6 +88,9 @@ pub struct Sio0 {
     irq: bool,
     /// Pressed buttons on the port-1 pad.
     pub buttons: u16,
+    /// The port-1 DualShock's ANALOG button held (not saved, like the pad's own).
+    #[serde(skip)]
+    pub analog_button: bool,
     /// Bytes written to JOY_DATA.
     pub transfers: u64,
     /// Memory cards in slots 1 and 2.
@@ -163,6 +166,8 @@ impl Sio0 {
         let clocks = t.saturating_sub(self.last) as i32;
         // Mednafen hands devices new input as each frame starts.
         self.pad.buttons = self.buttons;
+        self.pad.analog_button = self.analog_button;
+        self.pad.check_analog_button();
         for i in 0..4 {
             if self.dsr_delay[i] > 0 {
                 self.dsr_delay[i] -= clocks;

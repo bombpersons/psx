@@ -444,7 +444,7 @@ impl Session {
 
     /// Run one frame with this pad state, recording it when it changed.
     /// Input applies at the frame boundary, exactly as `run --replay` applies it.
-    pub fn frame(&mut self, buttons: u16, sticks: [u8; 4]) {
+    pub fn frame(&mut self, buttons: u32, sticks: [u8; 4]) {
         let rel = self.rel();
         let input = Input { frame: rel, buttons, sticks };
         if self.events.last().is_none_or(|l| (l.buttons, l.sticks) != (buttons, sticks)) {
@@ -850,8 +850,8 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> cr
             "input": {"recorded_events": s.events.len(), "file": dir.join("input.json"), "frame_origin": "handoff_start",
                 "note": "Complete pad states at run frames from the handoff start, in run --replay format."},
             "pad": {"kind": format!("{:?}", s.m.bus.sio0.pad.kind).to_lowercase(), "analog": s.m.bus.sio0.pad.analog, "locked": s.m.bus.sio0.pad.locked,
-                "buttons": crate::replay::button_names(s.m.bus.sio0.buttons),
-                "sticks": [s.m.bus.sio0.pad.sticks[2], s.m.bus.sio0.pad.sticks[3], s.m.bus.sio0.pad.sticks[0], s.m.bus.sio0.pad.sticks[1]],
+                "buttons": crate::replay::button_names(s.m.bus.sio0.buttons.into()),
+                "sticks": s.m.bus.sio0.pad.axes(),
                 "motors": [s.m.bus.sio0.pad.motors.0, s.m.bus.sio0.pad.motors.1]},
             "files": files,
             "marks": marks,
@@ -966,7 +966,7 @@ mod tests {
     fn replay_file_is_valid_run_input() {
         let events = [
             Input { frame: 0, buttons: 0, sticks: [0x80; 4] },
-            Input { frame: 3, buttons: psx_core::sio0::button::CROSS, sticks: [0x80; 4] },
+            Input { frame: 3, buttons: u32::from(psx_core::sio0::button::CROSS) | crate::replay::ANALOG, sticks: [0x80; 4] },
             Input { frame: 9, buttons: 0, sticks: [0, 0x80, 0x80, 0x80] },
         ];
         let text = replay_json(&events);
@@ -1039,7 +1039,7 @@ mod tests {
                 .unwrap();
         let (mut s, p) = scenario_start(&ctx, &mut a).unwrap();
         let up = psx_core::sio0::button::UP;
-        let press = |s: &mut Session, frames: u64, buttons: u16| (0..frames).for_each(|_| s.frame(buttons, [0x80; 4]));
+        let press = |s: &mut Session, frames: u64, buttons: u16| (0..frames).for_each(|_| s.frame(buttons.into(), [0x80; 4]));
         press(&mut s, 3, up);
         s.quick_save();
         press(&mut s, 20, 0);
@@ -1106,7 +1106,7 @@ mod tests {
         let mut s = start(&a).unwrap();
         let cross = psx_core::sio0::button::CROSS;
         let start_btn = psx_core::sio0::button::START;
-        let press = |s: &mut Session, frames: u64, buttons: u16| (0..frames).for_each(|_| s.frame(buttons, [0x80; 4]));
+        let press = |s: &mut Session, frames: u64, buttons: u16| (0..frames).for_each(|_| s.frame(buttons.into(), [0x80; 4]));
         press(&mut s, 300, 0);
         press(&mut s, 5, start_btn);
         press(&mut s, 100, 0);

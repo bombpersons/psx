@@ -1,5 +1,48 @@
 {
   "$defs": {
+    "Sticks": {
+      "additionalProperties": false,
+      "description": "The analog sticks' raw bytes, as the game read them in the field: 0\nis left or up, 0xFF right or down, [`CENTRED`] the stick at rest. In a\nrow, only the axes that changed.",
+      "properties": {
+        "lx": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ly": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rx": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ry": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Value": {
       "anyOf": [
         {
@@ -36,6 +79,13 @@
   "additionalProperties": false,
   "description": "One tick line.",
   "properties": {
+    "analog": {
+      "description": "Whether the pad is in analog mode (a DualShock answering with its\nsticks, ID 73h), when it differs from the previous tick's (digital at\nthe initial moment). It is what the game read, whatever switched it:\nthe game itself or the player's ANALOG button.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "field": {
       "description": "The field the tick ended in, counted from the recording's start.\nTwo ticks in one field, or a field with none, is the original\nfalling behind.",
       "format": "uint64",
@@ -51,6 +101,17 @@
         "array",
         "null"
       ]
+    },
+    "sticks": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sticks"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The analog sticks' axes that differ from the previous tick's (all\ncentred at the initial moment, and on a pad not in analog mode)."
     },
     "tick": {
       "description": "Ticks since the initial moment: 1, 2, ... with no gaps.",

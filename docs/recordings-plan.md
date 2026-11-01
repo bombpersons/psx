@@ -233,9 +233,13 @@ mechanic code are worth keeping, so they move out first.
       keeps right before left today). Raw bytes, never deadzoned or
       rounded: the port must see what the original saw.
     - **Record and play.** The refusal goes; in its place, sticks that
-      move while the game has not switched the pad to analog mode are
-      refused, saying the chain needs `pad dualshock` and the game's own
-      switch. A play using the sticks records.
+      move while the pad is not in analog mode are refused, saying the
+      chain needs `pad dualshock` and analog mode. A game that does not
+      switch the pad itself (Gran Turismo 2) leaves it to the player's
+      ANALOG button, which psx-core's DualShock has (Mednafen's toggle,
+      unless locked) and input, replay files and play bindings press as
+      `ANALOG`; a recording's `pad` leaves it out, as the game never reads
+      it. A play using the sticks records.
     - **Check and show.** The determinism check replays the sticks;
       `scenario show` prints them per tick.
     - **The port.** `ControllerState` keeps the raw bytes, with the

@@ -9,19 +9,24 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// PS1 buttons in menu order (the d-pad and face buttons first).
-pub const ACTIONS: [&str; 16] = [
+/// PS1 buttons in menu order (the d-pad and face buttons first), then the
+/// DualShock's ANALOG mode button.
+pub const ACTIONS: [&str; 17] = [
     "UP", "DOWN", "LEFT", "RIGHT", "CROSS", "CIRCLE", "SQUARE", "TRIANGLE", "L1", "R1", "L2", "R2", "START", "SELECT",
-    "L3", "R3",
+    "L3", "R3", "ANALOG",
 ];
 
 /// Keys the handoff window keeps for itself; they cannot be bound.
 pub const RESERVED_KEYS: [&str; 14] =
     ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Tab", "Escape"];
 
-/// The pad bit (see `psx_core::sio0::button`) of an action.
-pub fn bit(action: usize) -> u16 {
-    psx_core::sio0::button_from_name(ACTIONS[action]).expect("ACTIONS are pad button names")
+/// The input bit of an action: the pad's (see `psx_core::sio0::button`), or
+/// [`crate::replay::ANALOG`].
+pub fn bit(action: usize) -> u32 {
+    match psx_core::sio0::button_from_name(ACTIONS[action]) {
+        Some(b) => b.into(),
+        None => crate::replay::ANALOG,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,15 +47,15 @@ impl Device {
 /// One optional physical input per action and device; no input presses two actions.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bindings {
-    pub keyboard: [Option<String>; 16],
-    pub gamepad: [Option<String>; 16],
+    pub keyboard: [Option<String>; 17],
+    pub gamepad: [Option<String>; 17],
     /// Stick travel (0..1) ignored around the centre.
     pub stick_deadzone: f32,
 }
 
 impl Default for Bindings {
     fn default() -> Self {
-        let some = |names: [&str; 16]| names.map(|n| (!n.is_empty()).then(|| n.to_string()));
+        let some = |names: [&str; 17]| names.map(|n| (!n.is_empty()).then(|| n.to_string()));
         Bindings {
             // The template's defaults (psx-bevy controller bindings).
             keyboard: some([
@@ -70,6 +75,7 @@ impl Default for Bindings {
                 "RightShift",
                 "",
                 "",
+                "A",
             ]),
             gamepad: some([
                 "DPadUp",
@@ -88,6 +94,7 @@ impl Default for Bindings {
                 "Select",
                 "LeftThumb",
                 "RightThumb",
+                "Mode",
             ]),
             stick_deadzone: 0.2,
         }
@@ -95,14 +102,14 @@ impl Default for Bindings {
 }
 
 impl Bindings {
-    pub fn slots(&self, device: Device) -> &[Option<String>; 16] {
+    pub fn slots(&self, device: Device) -> &[Option<String>; 17] {
         match device {
             Device::Keyboard => &self.keyboard,
             Device::Gamepad => &self.gamepad,
         }
     }
 
-    fn slots_mut(&mut self, device: Device) -> &mut [Option<String>; 16] {
+    fn slots_mut(&mut self, device: Device) -> &mut [Option<String>; 17] {
         match device {
             Device::Keyboard => &mut self.keyboard,
             Device::Gamepad => &mut self.gamepad,
@@ -134,7 +141,7 @@ impl Bindings {
     }
 
     /// The pad bits pressed by the held keys and gamepad buttons.
-    pub fn buttons<'a>(&self, keys: impl IntoIterator<Item = &'a str>, pad: impl IntoIterator<Item = &'a str>) -> u16 {
+    pub fn buttons<'a>(&self, keys: impl IntoIterator<Item = &'a str>, pad: impl IntoIterator<Item = &'a str>) -> u32 {
         let mut bits = 0;
         for k in keys {
             if let Some(a) = self.action_of(Device::Keyboard, k) {
@@ -212,7 +219,7 @@ pub fn load(path: &Path) -> Result<Option<Bindings>, String> {
 
 pub fn save(path: &Path, b: &Bindings) -> Result<(), String> {
     b.validate()?;
-    let map = |slots: &[Option<String>; 16]| {
+    let map = |slots: &[Option<String>; 17]| {
         slots.iter().enumerate().filter_map(|(i, s)| s.as_ref().map(|s| (ACTIONS[i].to_string(), s.clone()))).collect()
     };
     let doc =

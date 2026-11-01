@@ -42,17 +42,23 @@ pub mod trajectory;
 pub use crate::shell::InjectedMouse;
 pub use trajectory::{Alignment, Comparison, Replay, Trajectory, compare, compare_from};
 
-/// One tick of injected input: pad buttons and the mouse. `Vec<Button>`
-/// converts into one with the mouse left alone.
+/// One tick of injected input: pad buttons, the sticks and the mouse.
+/// `Vec<Button>` converts into one with the sticks and mouse left alone.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TickInput {
     pub buttons: Vec<Button>,
+    /// As [`crate::controller::ControllerState::sticks`]; None leaves the
+    /// gamepad's.
+    pub sticks: Option<[u8; 4]>,
+    /// As [`crate::controller::ControllerState::analog`]; None leaves live
+    /// play's analog.
+    pub analog: Option<bool>,
     pub mouse: InjectedMouse,
 }
 
 impl From<Vec<Button>> for TickInput {
     fn from(buttons: Vec<Button>) -> Self {
-        Self { buttons, mouse: default() }
+        Self { buttons, ..default() }
     }
 }
 
@@ -96,6 +102,8 @@ impl TickApp for App {
         {
             let mut injected = self.world_mut().resource_mut::<InjectedInput>();
             injected.set(&input.buttons);
+            injected.sticks = input.sticks;
+            injected.analog = input.analog;
             injected.mouse = input.mouse;
         }
         let start = self.world().resource::<GameClock>().frame;
