@@ -181,6 +181,10 @@ mechanic code are worth keeping, so they move out first.
     review). Built; on Croc no feature finished (each matched, then the
     next feature's fixes came first), so no review came in 43 commits:
     the review now comes when a feature first matches its recordings.
+    Then every feature had matched and been reviewed, and the slides and a
+    collision refactor (+931/-534 lines, 18 commits) went unreviewed until
+    the last would finish: the review comes again when each feature
+    finishes (review.md's `finished`).
 
     Then Croc, by the porting agent in Croc's workspace through `port
     next`, with the person confirming and playing:

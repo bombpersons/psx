@@ -322,8 +322,10 @@ pub struct Facts {
     pub needs: assets::Needs,
     /// The code's review.
     pub review: Review,
-    /// The features it lists as matching when it was written.
+    /// The features it lists as matching when it was written, and as
+    /// finished.
     pub review_features: Vec<String>,
+    pub review_finished: Vec<String>,
 }
 
 impl Facts {
@@ -444,8 +446,8 @@ impl Facts {
         if let Ok(a) = &assets {
             port.problems.extend(a.problems.iter().cloned());
         }
-        let review_features = review::features(root);
-        Ok(Facts { port, git, features, unpack, assets, needs: goal_needs, review, review_features })
+        let (review_features, review_finished) = review::features(root);
+        Ok(Facts { port, git, features, unpack, assets, needs: goal_needs, review, review_features, review_finished })
     }
 
     pub fn stage(&self, id: &str) -> Option<Stage> {
@@ -537,25 +539,30 @@ impl Facts {
         }
         let find = |pred: &dyn Fn(&Feature) -> bool| self.features.iter().find(|f| pred(f));
         let at = |f: &Feature, s: Stage| f.stage().is_some_and(|x| x >= s);
-        // A feature come to match its recordings since the last review: a
-        // review of the change while it is fresh, so each reads about one
-        // feature's work (most of its code is written by then; what Cover
-        // adds later the next review reads); findings are answered as they
-        // come.
-        let unreviewed: Vec<&str> = self
-            .features
-            .iter()
-            .filter(|f| f.matching() && !self.review_features.contains(&f.id))
-            .map(|f| f.id.as_str())
-            .collect();
+        // A feature come to match its recordings since the last review, or
+        // finished since: a review of the change while it is fresh, so each
+        // reads about one feature's work (most of its code is written once
+        // it matches; what Cover adds, the review at its finish reads);
+        // findings are answered as they come.
+        let since = |listed: &[String], pred: fn(&Feature) -> bool| -> Vec<&str> {
+            self.features.iter().filter(|f| pred(f) && !listed.contains(&f.id)).map(|f| f.id.as_str()).collect()
+        };
+        let finished = since(&self.review_finished, Feature::finished);
+        // A feature that matches and finishes at once is said to finish.
+        let mut matched = since(&self.review_features, Feature::matching);
+        matched.retain(|id| !finished.contains(id));
         if matches!(self.review, Review::Open { .. } | Review::Invalid(_))
-            || (!unreviewed.is_empty() && !self.review.holds())
+            || ((!matched.is_empty() || !finished.is_empty()) && !self.review.holds())
         {
-            return self.review_item(format!(
-                "{} came to match {} recordings since the last review",
-                unreviewed.join(", "),
-                if unreviewed.len() == 1 { "its" } else { "their" }
-            ));
+            let mut why = Vec::new();
+            if !matched.is_empty() {
+                let their = if matched.len() == 1 { "its" } else { "their" };
+                why.push(format!("{} came to match {their} recordings", matched.join(", ")));
+            }
+            if !finished.is_empty() {
+                why.push(format!("{} finished (branches resolved, no question open)", finished.join(", ")));
+            }
+            return self.review_item(format!("{} since the last review", why.join(", and ")));
         }
         // 0. The assets a feature's recordings need to replay.
         if let Some(item) = self.features.iter().find_map(|f| self.asset_item(Some(&f.id), &f.assets)) {
@@ -830,10 +837,15 @@ impl Facts {
         self.features.iter().filter(|f| f.matching()).map(|f| f.id.clone()).collect()
     }
 
+    /// The features finished now: what a review lists as finished.
+    fn finished_ids(&self) -> Vec<String> {
+        self.features.iter().filter(|f| f.finished()).map(|f| f.id.clone()).collect()
+    }
+
     /// The review item due, `why` it is due when the review is missing or
     /// stale.
     fn review_item(&self, why: String) -> Item {
-        let done = "the review holds: the code (game/, tools/) unchanged since its commit, every finding answered, its features the ones matching";
+        let done = "the review holds: the code (game/, tools/) unchanged since its commit, every finding answered, its features and finished the ones matching and finished";
         match &self.review {
             Review::Open { unanswered } => Item::agent(
                 "Review",
@@ -841,7 +853,7 @@ impl Facts {
                 format!("findings without an answer: {}", first_lines(unanswered).join("; ")),
                 done,
                 &format!(
-                    "answer each finding in {} with an **Answer:** line: done (restructure as it asks, keeping what the code does: psx port check must pass again), or kept and why; changed code has a follow-up review when the next feature finishes",
+                    "answer each finding in {} with an **Answer:** line: done (restructure as it asks, keeping what the code does: psx port check must pass again), or kept and why; changed code has a follow-up review when the next feature matches or finishes",
                     review::REVIEW
                 ),
             ),
@@ -850,7 +862,7 @@ impl Facts {
                 None,
                 format!("{} is not a review: {why}", review::REVIEW),
                 done,
-                "write the review's front matter as the brief says: +++, commit, features, +++",
+                "write the review's front matter as the brief says: +++, commit, features, finished, +++",
             ),
             Review::Stale { commit, changed } => Item::agent(
                 "Review",
@@ -866,11 +878,12 @@ impl Facts {
     /// The Review item's brief, for a reviewer who has not seen the work.
     fn brief(&self) -> String {
         format!(
-            "Give this brief to a reviewer who has not seen the work (a sub-agent or a new session): review the port's code as a whole, {code} (git ls-files {code}). Its recordings already check that it does what the original does, so this review does not: leave the catalogue, the notes and the original's code unread. Ask instead: would you write a new game like this? Judge it as code written for a new game today, not as a port: how it is divided (modules, plugins, systems, components, data), names, how readily it takes more (another character, level or rule), duplication, and what is shaped by the original rather than chosen. AGENTS.md's \"The code\" says what the tools rely on. Write {review}: front matter between +++ lines with commit = \"{head}\" and features = {features}, then one ## heading per finding: what you would change, the shape you would choose instead and why; what the code does stays as it is. The writer then answers each finding with an **Answer:** line.",
+            "Give this brief to a reviewer who has not seen the work (a sub-agent or a new session): review the port's code as a whole, {code} (git ls-files {code}). Its recordings already check that it does what the original does, so this review does not: leave the catalogue, the notes and the original's code unread. Ask instead: would you write a new game like this? Judge it as code written for a new game today, not as a port: how it is divided (modules, plugins, systems, components, data), names, how readily it takes more (another character, level or rule), duplication, and what is shaped by the original rather than chosen. AGENTS.md's \"The code\" says what the tools rely on. Write {review}: front matter between +++ lines with commit = \"{head}\", features = {features} and finished = {finished}, then one ## heading per finding: what you would change, the shape you would choose instead and why; what the code does stays as it is. The writer then answers each finding with an **Answer:** line.",
             code = review::CODE.join(" "),
             review = review::REVIEW,
             head = self.git.head.as_deref().unwrap_or("HEAD"),
             features = toml::Value::from(self.matching_ids()),
+            finished = toml::Value::from(self.finished_ids()),
         )
     }
 
@@ -878,11 +891,12 @@ impl Facts {
     /// what that review read is not read again.
     fn follow_up(&self, commit: &str) -> String {
         format!(
-            "Give this brief to a reviewer who did not write the changes (a sub-agent or a new session): a follow-up review of the port's code. The review at {commit} read the code then; read what changed since: git diff {commit} -- {code}, with the findings and answers in {review} (are the changes what the answers say?), and enough of the code around it to judge how the change fits the whole (how the code is divided, what a new feature reuses or duplicates). Ask what the review asked: would you write a new game like this? If the changes rewrite most of the code, review it whole. Leave the catalogue, the notes and the original's code unread: the recordings check what the code does. Keep the findings and answers already in {review}; set its commit to \"{head}\" and its features to {features}, and add one ## heading per new finding: what you would change, the shape you would choose instead and why; with none, the commit is all that changes. The writer then answers each new finding with an **Answer:** line.",
+            "Give this brief to a reviewer who did not write the changes (a sub-agent or a new session): a follow-up review of the port's code. The review at {commit} read the code then; read what changed since: git diff {commit} -- {code}, with the findings and answers in {review} (are the changes what the answers say?), and enough of the code around it to judge how the change fits the whole (how the code is divided, what a new feature reuses or duplicates). Ask what the review asked: would you write a new game like this? If the changes rewrite most of the code, review it whole. Leave the catalogue, the notes and the original's code unread: the recordings check what the code does. Keep the findings and answers already in {review}; set its commit to \"{head}\", its features to {features} and its finished to {finished}, and add one ## heading per new finding: what you would change, the shape you would choose instead and why; with none, the commit is all that changes. The writer then answers each new finding with an **Answer:** line.",
             code = review::CODE.join(" "),
             review = review::REVIEW,
             head = self.git.head.as_deref().unwrap_or("HEAD"),
             features = toml::Value::from(self.matching_ids()),
+            finished = toml::Value::from(self.finished_ids()),
         )
     }
 
@@ -1275,15 +1289,20 @@ mod tests {
         // F-0001 matches: a review of it comes before more work.
         let item = f.next();
         assert_eq!(item.item, "Review");
-        assert_eq!(item.why, "F-0001 came to match its recordings since the last review, and the code has no review");
+        assert_eq!(
+            item.why,
+            "F-0001 finished (branches resolved, no question open) since the last review, and the code has no review"
+        );
         assert!(item.how.contains("features = [\"F-0001\"]"), "{}", item.how);
-        // Once a review lists them, the review waits for the next feature to match, or the goal.
+        // Once a review lists them, the review waits for the next feature to match or finish.
         f.review_features = vec!["F-0001".into(), "F-0002".into()];
+        f.review_finished = vec!["F-0001".into()];
         let item = f.next();
         assert_eq!((item.item, item.feature.as_deref()), ("Fix", Some("F-0002")));
         assert_eq!(item.why, "walk/c fails: tick 4 y: expected 3, got 2");
         assert_eq!(f.features[1].held_out_json()["shown"], "once the code is reviewed");
         set(&mut f, "F-0002", |x| x.work = results(&[("walk/b", &[])]));
+        f.review_finished = vec!["F-0001".into(), "F-0002".into()];
         set(&mut f, "F-0001", |x| x.unbuilt = vec!["walk: no launcher for scenario kind level".into()]);
         assert_eq!(next(&f), ("Build", "agent", "F-0001".into()));
         set(&mut f, "F-0001", |x| x.unbuilt.clear());
@@ -1485,7 +1504,7 @@ mod tests {
     }
 
     #[test]
-    fn a_review_comes_each_time_a_feature_matches() {
+    fn a_review_comes_each_time_a_feature_matches_or_finishes() {
         let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
         finished(&mut f, vec![]);
         // F-0002 is still being built: a recording fails.
@@ -1499,12 +1518,24 @@ mod tests {
         let (item, why, how) = next(&f);
         assert_eq!(item, "Review");
         assert!(
-            why.starts_with("F-0001 came to match its recordings since the last review, and the code changed"),
+            why.starts_with(
+                "F-0001 finished (branches resolved, no question open) since the last review, and the code changed"
+            ),
             "{why}"
         );
         assert!(how.contains("git diff abc") && how.contains("its features to [\"F-0001\"]"), "{how}");
-        // Listed: building F-0002 changes the code without a review each time.
+        assert!(how.contains("its finished to [\"F-0001\"]"), "{how}");
+        // Listed as matching, not as finished (a review from before the
+        // finished list): its finish asks for one.
         f.review_features = vec!["F-0001".into()];
+        let (item, why, _) = next(&f);
+        assert_eq!(item, "Review");
+        assert!(
+            why.starts_with("F-0001 finished (branches resolved, no question open) since the last review"),
+            "{why}"
+        );
+        // Listed: building F-0002 changes the code without a review each time.
+        f.review_finished = vec!["F-0001".into()];
         assert_eq!(next(&f).0, "Fix");
         // F-0002 matches, with branches still to cover: its review comes
         // before the Cover work, not once that is done.
@@ -1517,6 +1548,14 @@ mod tests {
         assert!(why.starts_with("F-0002 came to match"), "{why}");
         f.review_features = vec!["F-0001".into(), "F-0002".into()];
         assert_eq!(next(&f).0, "Cover");
+        // Its branches covered: the review of what Cover added.
+        set(&mut f, "F-0002", |x| x.branches.clear());
+        let (item, why, _) = next(&f);
+        assert_eq!(item, "Review");
+        assert!(why.starts_with("F-0002 finished"), "{why}");
+        f.review_finished = vec!["F-0001".into(), "F-0002".into()];
+        review(&mut f, Review::Holds { commit: "abc".into(), findings: 0 });
+        assert_ne!(next(&f).0, "Review");
         // Findings are answered as they come.
         review(&mut f, Review::Open { unanswered: vec!["Run is a bool".into()] });
         assert_eq!(next(&f).0, "Review");
