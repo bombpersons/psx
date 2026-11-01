@@ -209,8 +209,10 @@ port_next's items, in this order:
 - Confirm (person): wont_reach branches not confirmed as they stand.
 - Format, Index, Import, Check (the goal's assets): see Assets.
 - Review: a feature came to match its recordings or finished (branches
-  resolved, no question open) since the last review and the code (game/, tools/) has no review that
-  holds; also findings without an answer. It asks whether one would write
+  resolved, no question open) since the last review and the code (game/,
+  tools/) has no review that holds, or the commits since the review
+  changed review_lines lines of it (goal.toml, 800 by default); also
+  findings without an answer. It asks whether one would write
   a new game like this, not whether it matches the original. how is the
   brief for someone who did not write it (a sub-agent or a fresh session):
   the whole code first, then follow-ups of the changes since (git diff).

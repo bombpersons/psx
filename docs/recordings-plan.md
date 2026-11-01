@@ -184,7 +184,10 @@ mechanic code are worth keeping, so they move out first.
     Then every feature had matched and been reviewed, and the slides and a
     collision refactor (+931/-534 lines, 18 commits) went unreviewed until
     the last would finish: the review comes again when each feature
-    finishes (review.md's `finished`).
+    finishes (review.md's `finished`). And since features sharing a
+    controller can need most of it before any matches, a follow-up also
+    comes once the commits since the review change goal.toml's
+    `review_lines` lines of the code (800 by default).
 
     Then Croc, by the porting agent in Croc's workspace through `port
     next`, with the person confirming and playing:

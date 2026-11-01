@@ -37,10 +37,12 @@ pub enum Review {
     Missing,
     /// The file is not a review: why.
     Invalid(String),
-    /// The code changed since its commit: a follow-up review of the changes is due.
+    /// The code changed since its commit: a follow-up review of the changes
+    /// is due. `lines`: lines added and removed in the commits since.
     Stale {
         commit: String,
         changed: Vec<String>,
+        lines: usize,
     },
     /// Findings without an answer, by heading.
     Open {
@@ -96,6 +98,21 @@ pub fn features(root: &Path) -> (Vec<String>, Vec<String>) {
         .unwrap_or_default()
 }
 
+/// Lines added and removed in the code by the commits since `commit` (not
+/// what is uncommitted: work in progress is not yet up for review).
+fn lines_since(root: &Path, commit: &str) -> usize {
+    let mut args = vec!["diff", "--numstat", commit, "HEAD", "--"];
+    args.extend(CODE);
+    git(root, &args)
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .flat_map(|l| l.split('\t').take(2).map(|n| n.parse::<usize>().unwrap_or(0)).collect::<Vec<_>>())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
 /// The review in the workspace `root`.
 pub fn read(root: &Path) -> Review {
     let Ok(text) = std::fs::read_to_string(root.join(REVIEW)) else {
@@ -121,7 +138,7 @@ pub fn read(root: &Path) -> Review {
         .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect())
         .unwrap_or_default();
     if !changed.is_empty() {
-        return Review::Stale { commit: f.commit, changed };
+        return Review::Stale { lines: lines_since(root, &f.commit), commit: f.commit, changed };
     }
     let all = findings(&body);
     let unanswered: Vec<String> = all.iter().filter(|(_, a)| !a).map(|(h, _)| h.clone()).collect();
@@ -176,7 +193,11 @@ mod tests {
         std::fs::write(root.join("catalogue/F-0001.md"), "+++\n+++\n").unwrap();
         assert!(read(root).holds());
         std::fs::write(root.join("game/src/jump.rs"), "fn jump() { let _ = 1; }\n").unwrap();
-        assert_eq!(read(root), Review::Stale { commit: head, changed: vec!["game/src/jump.rs".into()] });
+        // Uncommitted: stale, with no lines committed since.
+        let stale = |lines| Review::Stale { commit: head.clone(), changed: vec!["game/src/jump.rs".into()], lines };
+        assert_eq!(read(root), stale(0));
+        run(&["commit", "-qam", "F-0001: jump"]);
+        assert_eq!(read(root), stale(2));
         std::fs::write(root.join(REVIEW), "---\ncommit: x\n---\n").unwrap();
         assert!(matches!(read(root), Review::Invalid(_)));
     }

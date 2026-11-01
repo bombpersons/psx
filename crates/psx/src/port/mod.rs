@@ -39,6 +39,7 @@ pub(crate) const GOAL_TOML: &str = "\
 description = \"\"
 features = []   # feature ids, or \"all\"
 assets = false  # what to extract: true (every disc file), false, or names: [\"format:level\", \"/MAPS/*.WLD\"] (formats/README.md)
+# review_lines = 800  # a follow-up review once the code changed by this many lines since the last
 ";
 
 /// The features a goal names: a list, or every catalogued feature.
@@ -181,6 +182,22 @@ pub struct Goal {
     pub assets: Assets,
     #[serde(default)]
     pub confirmed: Option<Confirmed>,
+    /// A follow-up review comes due once the code has changed by this many
+    /// lines (added and removed) in the commits since the last review,
+    /// whatever the features do; [`REVIEW_LINES`] when unset.
+    #[serde(default)]
+    pub review_lines: Option<usize>,
+}
+
+/// The lines of change that ask for a follow-up review when goal.toml does
+/// not say: on Croc, +931/-534 lines went unreviewed while no feature
+/// matched or finished.
+pub const REVIEW_LINES: usize = 800;
+
+impl Goal {
+    pub fn review_lines(&self) -> usize {
+        self.review_lines.unwrap_or(REVIEW_LINES)
+    }
 }
 
 /// The person's confirmation: when, the list they confirmed, and the

@@ -73,9 +73,10 @@ there is yours to decide. What the tools rely on:
 
 ## The review
 
-Each time a feature comes to match its recordings, and again when it is
-finished (its branches resolved), the code is reviewed by someone who
-did not write it: a sub-agent or a fresh session, given the brief
+Each time a feature comes to match its recordings, again when it is
+finished (its branches resolved), and when much of the code has changed
+since the last review, the code is reviewed by someone who did not
+write it: a sub-agent or a fresh session, given the brief
 `port_next` prints (the whole code the first time, then what changed
 since). The recordings already check what the code does; the
 review asks whether you would write a new game like this, and its

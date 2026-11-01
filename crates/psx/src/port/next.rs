@@ -551,8 +551,17 @@ impl Facts {
         // A feature that matches and finishes at once is said to finish.
         let mut matched = since(&self.review_features, Feature::matching);
         matched.retain(|id| !finished.contains(id));
+        // And when much of the code changed with no feature moving: a
+        // controller several features share can grow long before any of
+        // them matches.
+        let limit = self.port.goal.review_lines();
+        let grown = match self.review {
+            Review::Stale { lines, .. } if lines >= limit => Some(lines),
+            _ => None,
+        };
         if matches!(self.review, Review::Open { .. } | Review::Invalid(_))
             || ((!matched.is_empty() || !finished.is_empty()) && !self.review.holds())
+            || grown.is_some()
         {
             let mut why = Vec::new();
             if !matched.is_empty() {
@@ -561,6 +570,9 @@ impl Facts {
             }
             if !finished.is_empty() {
                 why.push(format!("{} finished (branches resolved, no question open)", finished.join(", ")));
+            }
+            if let Some(n) = grown.filter(|_| why.is_empty()) {
+                why.push(format!("{n} lines of the code changed (goal.toml's review_lines: {limit})"));
             }
             return self.review_item(format!("{} since the last review", why.join(", and ")));
         }
@@ -853,8 +865,9 @@ impl Facts {
                 format!("findings without an answer: {}", first_lines(unanswered).join("; ")),
                 done,
                 &format!(
-                    "answer each finding in {} with an **Answer:** line: done (restructure as it asks, keeping what the code does: psx port check must pass again), or kept and why; changed code has a follow-up review when the next feature matches or finishes",
-                    review::REVIEW
+                    "answer each finding in {} with an **Answer:** line: done (restructure as it asks, keeping what the code does: psx port check must pass again), or kept and why; changed code has a follow-up review when the next feature matches or finishes, or once {} lines of it change",
+                    review::REVIEW,
+                    self.port.goal.review_lines()
                 ),
             ),
             Review::Invalid(why) => Item::agent(
@@ -864,7 +877,7 @@ impl Facts {
                 done,
                 "write the review's front matter as the brief says: +++, commit, features, finished, +++",
             ),
-            Review::Stale { commit, changed } => Item::agent(
+            Review::Stale { commit, changed, .. } => Item::agent(
                 "Review",
                 None,
                 format!("{why}, and the code changed since the review: {}", first_lines(changed).join(", ")),
@@ -904,7 +917,9 @@ impl Facts {
         match &self.review {
             Review::Missing => json!({"state": "missing"}),
             Review::Invalid(why) => json!({"state": "invalid", "why": why}),
-            Review::Stale { commit, changed } => json!({"state": "stale", "commit": commit, "changed": changed}),
+            Review::Stale { commit, changed, lines } => {
+                json!({"state": "stale", "commit": commit, "changed": changed, "lines": lines, "review_lines": self.port.goal.review_lines()})
+            }
             Review::Open { unanswered } => json!({"state": "open", "unanswered": unanswered}),
             Review::Holds { commit, findings } => json!({"state": "holds", "commit": commit, "findings": findings}),
         }
@@ -1004,8 +1019,12 @@ impl Facts {
             Review::Holds { commit, findings } => {
                 format!("code reviewed at {commit} ({findings} findings, answered)\n")
             }
-            Review::Stale { commit, changed } => {
-                format!("code reviewed at {commit}, changed since in {} files\n", changed.len())
+            Review::Stale { commit, changed, lines } => {
+                format!(
+                    "code reviewed at {commit}, changed since in {} files ({lines} of {} lines committed before a follow-up)\n",
+                    changed.len(),
+                    self.port.goal.review_lines()
+                )
             }
             r => format!("code review: {}\n", r.name()),
         });
@@ -1343,7 +1362,7 @@ mod tests {
         assert_eq!(next(&f), ("Review", "agent", String::new()));
         let how = f.next().how;
         assert!(how.contains("would you write a new game like this?") && how.contains("game tools"), "{how}");
-        review(&mut f, Review::Stale { commit: "abc".into(), changed: vec!["game/src/jump.rs".into()] });
+        review(&mut f, Review::Stale { commit: "abc".into(), changed: vec!["game/src/jump.rs".into()], lines: 3 });
         let how = f.next().how;
         assert!(how.contains("a follow-up review") && how.contains("git diff abc -- game tools"), "{how}");
         review(&mut f, Review::Open { unanswered: vec!["Stomp is a bool".into()] });
@@ -1514,7 +1533,7 @@ mod tests {
         review(&mut f, Review::Holds { commit: "abc".into(), findings: 0 });
         assert_eq!(next(&f).0, "Fix");
         // Changed since, and F-0001 not listed: a follow-up of the change.
-        review(&mut f, Review::Stale { commit: "abc".into(), changed: vec!["game/src/run.rs".into()] });
+        review(&mut f, Review::Stale { commit: "abc".into(), changed: vec!["game/src/run.rs".into()], lines: 40 });
         let (item, why, how) = next(&f);
         assert_eq!(item, "Review");
         assert!(
@@ -1537,6 +1556,20 @@ mod tests {
         // Listed: building F-0002 changes the code without a review each time.
         f.review_finished = vec!["F-0001".into()];
         assert_eq!(next(&f).0, "Fix");
+        // Unless much of it changes before F-0002 matches: a follow-up then.
+        let grown = |lines| Review::Stale { commit: "abc".into(), changed: vec!["game/src/run.rs".into()], lines };
+        review(&mut f, grown(800));
+        let (item, why, how) = next(&f);
+        assert_eq!(item, "Review");
+        assert!(
+            why.starts_with("800 lines of the code changed (goal.toml's review_lines: 800) since the last review"),
+            "{why}"
+        );
+        assert!(how.contains("git diff abc"), "{how}");
+        f.port.goal.review_lines = Some(1000);
+        assert_eq!(next(&f).0, "Fix");
+        f.port.goal.review_lines = None;
+        review(&mut f, grown(40));
         // F-0002 matches, with branches still to cover: its review comes
         // before the Cover work, not once that is done.
         set(&mut f, "F-0002", |x| {

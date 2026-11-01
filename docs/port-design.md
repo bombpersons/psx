@@ -221,7 +221,13 @@ matching when it was written (`features`) and those finished then
 (`finished`); a matching or finished feature it does not list, with the
 code changed since, asks for a follow-up. A feature that matches and
 finishes at once asks once. Building the next feature changes the code
-without asking for one, and findings are answered as they come. The follow-up reads the change in the shape of the
+without asking for one, until the commits since the review have added
+and removed `review_lines` lines of it (goal.toml, 800 by default): then
+a follow-up comes whatever the features do. Features that share code (a
+character controller under running, walking and crouching, each compared
+exactly) can need most of it written before any of them matches, as
+Tomb Raider Chronicles' locomotion did. Uncommitted work does not count.
+Findings are answered as they come. The follow-up reads the change in the shape of the
 code around it, so the whole is still what is judged.
 
 ### `port status`
@@ -260,8 +266,9 @@ One item, in this order:
    question open) and the code without a current review: the review's
    brief, a follow-up's, or the unanswered findings. The same comes
    before item 0 when a feature comes to match its recordings, or
-   finishes, and the review does not list it so, and whenever findings
-   have no answer.
+   finishes, and the review does not list it so, when the code changed by
+   `review_lines` lines in the commits since the review, and whenever
+   findings have no answer.
 8. A feature without held-out recordings, the code reviewed: the person's.
 
 Items for the person (**Play**, **Confirm**) stop the agent until the
