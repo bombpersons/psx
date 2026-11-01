@@ -42,8 +42,12 @@ the `[recordings]` and `[wont_reach]` tables.
   once it matches. This is the only place a feature names them; its
   scenarios are those its recordings come from.
 - `wont_reach` gives the branches of its code no recording can reach, each
-  a conditional branch in one of its functions, with why. The person
-  confirms them with `psx port confirm --yes`; one added or changed later
+  a conditional branch in one of its functions, with why. A range
+  (`"0x8002D800..0x8002D860"`, the end excluded) names a block of them
+  no recording reaches: it answers for the branches in it no recording
+  ran, and a recording that runs one makes it a problem.
+  `psx port confirm` says how many branches each range answers for. The
+  person confirms them with `psx port confirm --yes`; one added or changed later
   needs confirming again.
 - `assets` names the disc files its recordings need to replay (a track, a
   level), as `goal.toml`'s `assets` names them (`formats/README.md`): psx

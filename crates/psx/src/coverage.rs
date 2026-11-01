@@ -538,6 +538,12 @@ impl Functions {
         }
         out
     }
+
+    /// The conditional branches of the inventory's code from `start` to
+    /// `end` (excluded), each with the entries of the functions holding it.
+    pub(crate) fn branches_in(&self, start: u32, end: u32) -> Vec<(u32, Vec<u32>)> {
+        (start & !3..end).step_by(4).filter_map(|a| self.branch(a).map(|h| (a, h))).collect()
+    }
 }
 
 /// A feature's branches, as its recordings ran them.

@@ -318,6 +318,40 @@ fn passing(ids: &[String], of: impl Fn(&str) -> Option<Vec<String>>) -> Vec<(Str
     ids.iter().filter_map(|id| Some((id.clone(), of(id)?))).filter(|(_, r)| !r.is_empty()).collect()
 }
 
+/// The wont_reach key that answers for the code branch at `pc` its
+/// recordings took `ways` (0 never ran): its own address, else a range
+/// holding it when it never ran.
+fn code_key(wont_reach: &BTreeMap<String, String>, pc: u32, ways: u8) -> Option<&String> {
+    let within = |k: &String| super::entry_range(k).is_some_and(|(start, end)| start <= pc && pc < end);
+    wont_reach
+        .keys()
+        .find(|k| super::entry_addr(k) == Some(pc))
+        .or_else(|| (ways == 0).then(|| wont_reach.keys().find(|k| within(k))).flatten())
+}
+
+/// The wont_reach ranges holding code branches a recording ran: a range
+/// holds only code none reaches.
+fn ranges_run(wont_reach: &BTreeMap<String, String>, branches: &[Branch]) -> Vec<String> {
+    let ran: Vec<u32> = branches
+        .iter()
+        .filter_map(|b| match b.at {
+            Place::Code { pc, .. } if b.never != "ran" => Some(pc),
+            _ => None,
+        })
+        .collect();
+    wont_reach
+        .keys()
+        .filter_map(|k| {
+            let (start, end) = super::entry_range(k)?;
+            let pc = ran.iter().find(|&&pc| start <= pc && pc < end)?;
+            Some(format!(
+                "wont_reach: {k} holds the branch at {}, which a recording ran: a range holds only code no recording reaches",
+                hex(*pc)
+            ))
+        })
+        .collect()
+}
+
 /// The recordings of the other features `passing` gives that `id`'s
 /// branches also count: not its own, each once.
 fn borrowed(id: &str, own: &[String], passing: &[(String, Vec<String>)]) -> Vec<String> {
@@ -442,8 +476,7 @@ impl Facts {
                         let fb = crate::coverage::feature_branches(&ctx, inv, paths, &code);
                         problems.extend(fb.problems);
                         branches.extend(fb.branches.into_iter().map(|(pc, function, ways)| {
-                            let key = e.wont_reach.keys().find(|k| super::entry_addr(k) == Some(pc));
-                            Branch::code(pc, function, ways, key.map(agreed))
+                            Branch::code(pc, function, ways, code_key(&e.wont_reach, pc, ways).map(agreed))
                         }));
                     }
                     if !script.is_empty() {
@@ -474,6 +507,7 @@ impl Facts {
                     branches = branches_of(&all).0;
                     borrowed_resolved = branches.iter().filter(|b| b.resolved()).count().saturating_sub(own);
                 }
+                problems.extend(ranges_run(&e.wont_reach, &branches).into_iter().map(|p| super::problem(&e.file, p)));
                 let verdict = verdict::state(root, &id, head);
                 let results = |names: &[String]| -> Vec<(String, Option<Vec<String>>)> {
                     names
@@ -512,6 +546,23 @@ impl Facts {
         }
         let (review_features, review_finished) = review::features(root);
         Ok(Facts { port, git, features, unpack, assets, needs: goal_needs, review, review_features, review_finished })
+    }
+
+    /// How many never-ran code branches each wont_reach range answers
+    /// for, by feature.
+    pub fn wont_reach_ranges(&self) -> BTreeMap<String, BTreeMap<String, usize>> {
+        let mut out: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        for f in &self.features {
+            let Some(e) = self.port.entries.get(&f.id) else { continue };
+            for k in e.wont_reach.keys().filter(|k| super::entry_range(k).is_some()) {
+                let answers = |b: &&Branch| match b.at {
+                    Place::Code { pc, .. } => code_key(&e.wont_reach, pc, (b.never != "ran") as u8) == Some(k),
+                    _ => false,
+                };
+                out.entry(f.id.clone()).or_default().insert(k.clone(), f.branches.iter().filter(answers).count());
+            }
+        }
+        out
     }
 
     pub fn stage(&self, id: &str) -> Option<Stage> {
@@ -1629,6 +1680,29 @@ mod tests {
         assert_eq!(x.branches_json(false)["resolved_by_others"]["branches"], 1);
         assert_eq!(f.next().item, "Cover");
         assert!(f.next().why.contains("in its recordings or the 1 of other features that pass;"), "{}", f.next().why);
+    }
+
+    #[test]
+    fn a_wont_reach_range_answers_only_for_the_branches_in_it_that_never_ran() {
+        let wont: BTreeMap<String, String> =
+            [("0x8002D800..0x8002D840", "the swim exit"), ("0x8002D830", "under water")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .into();
+        // Never ran, inside: the range. Ran one way: no key. Its own address wins.
+        assert_eq!(code_key(&wont, 0x8002_D820, 0).map(String::as_str), Some("0x8002D800..0x8002D840"));
+        assert_eq!(code_key(&wont, 0x8002_D820, 1), None);
+        assert_eq!(code_key(&wont, 0x8002_D830, 0).map(String::as_str), Some("0x8002D830"));
+        assert_eq!(code_key(&wont, 0x8002_D840, 0), None);
+        // A recording that ran a branch in it says the range is wrong.
+        let never_ran = Branch::code(0x8002_D820, 0x8002_D810, 0, Some(true));
+        assert_eq!(ranges_run(&wont, std::slice::from_ref(&never_ran)), Vec::<String>::new());
+        let ran = Branch::code(0x8002_D824, 0x8002_D810, 1, None);
+        assert_eq!(
+            ranges_run(&wont, &[never_ran, ran]),
+            [
+                "wont_reach: 0x8002D800..0x8002D840 holds the branch at 0x8002D824, which a recording ran: a range holds only code no recording reaches"
+            ]
+        );
     }
 
     #[test]

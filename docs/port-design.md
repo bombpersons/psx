@@ -106,8 +106,13 @@ are a script the game interprets, `code` also names stretches of the
 programs the glossary's binding declares (`croc+0x1803..0x18A0`), covered
 by the bytes read and the decisions' ways
 ([script-coverage-design.md](script-coverage-design.md)). Each
-`wont_reach` address is a conditional branch in one of those functions,
-and needs the person's confirmation (`port confirm` keeps the entries they
+`wont_reach` address is a conditional branch in one of those functions.
+A `wont_reach` address range (`"0x8002D800..0x8002D860"`, the end
+excluded) answers for a block no recording reaches: the branches in it
+that no recording ran, so a branch taken one way still needs its own
+entry or a recording, and a recording that runs a branch in the range
+makes it a problem. Its branches must all be in the functions `code`
+lists. Each `wont_reach` entry needs the person's confirmation (`port confirm` keeps the entries they
 confirmed, reasons and all).
 
 ## 4. Assets

@@ -76,7 +76,9 @@ cut):
   assets      asset names its recordings need to replay (topic assets)
   [recordings] work and held_out, as scenario/name
   [wont_reach] branch address (or script position) = why no recording
-              can reach it
+              can reach it; an address range (0xSTART..0xEND, end
+              excluded) answers for the branches in it no recording ran,
+              and a recording that runs one is a problem
 
 The goal's features and their dependencies are its closure. The person
 reviews it with psx port confirm and confirms with psx port confirm --yes,

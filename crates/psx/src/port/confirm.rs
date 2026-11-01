@@ -66,6 +66,11 @@ impl PortConfirmArgs {
             "confirmation": port.confirmation_json(),
             "wont_reach": port.wont_reach(),
         });
+        let ranges = facts.wont_reach_ranges();
+        if !ranges.is_empty() {
+            // What each range claims: the branches no recording ran in it.
+            out["wont_reach_range_branches"] = json!(ranges);
+        }
         if !self.yes {
             out["next"] = json!(if port.problems.is_empty() {
                 "if this is the list the person wants, and each wont_reach branch is one no recording can reach for its reason: psx port confirm --yes (the person runs it)"

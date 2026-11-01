@@ -294,6 +294,13 @@ pub fn entry_addr(s: &str) -> Option<u32> {
     (!h.is_empty() && h.len() <= 8).then(|| u32::from_str_radix(h, 16).ok()).flatten()
 }
 
+/// An address range in an entry: `0xSTART..0xEND`, the end excluded.
+pub fn entry_range(s: &str) -> Option<(u32, u32)> {
+    let (a, b) = s.split_once("..")?;
+    let (a, b) = (entry_addr(a)?, entry_addr(b)?);
+    (a < b).then_some((a, b))
+}
+
 /// A feature's stage (docs/port-design.md, section 5): each holds when its
 /// fact, read from the workspace's files, holds and so do the ones before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -429,11 +436,11 @@ fn entry_problems(e: &Entry, out: &mut Vec<Problem>) {
     }
     let script: Vec<Stretch> = e.code.iter().filter_map(|c| Stretch::parse(c)).collect();
     for (a, why) in &e.wont_reach {
-        match (entry_addr(a), Stretch::parse(a)) {
+        match (entry_addr(a).or(entry_range(a).map(|r| r.0)), Stretch::parse(a)) {
             (None, None) => out.push(problem(
                 f,
                 format!(
-                    "wont_reach: {a:?} is not an address (0x8002D820) or a script position or stretch (croc+0x18F0)"
+                    "wont_reach: {a:?} is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded) or a script position or stretch (croc+0x18F0)"
                 ),
             )),
             (None, Some(w)) if !script.iter().any(|s| s.contains(&w)) => {
@@ -525,7 +532,12 @@ impl Port {
         let naming: Vec<&Entry> = self
             .entries
             .values()
-            .filter(|e| e.code.iter().chain(e.wont_reach.keys()).any(|c| entry_addr(c).is_some()))
+            .filter(|e| {
+                e.code
+                    .iter()
+                    .chain(e.wont_reach.keys())
+                    .any(|c| entry_addr(c).or(entry_range(c).map(|r| r.0)).is_some())
+            })
             .collect();
         let loaders: Vec<&assets::Format> = self.formats.values().filter(|f| !f.loader.is_empty()).collect();
         if !naming.is_empty() || !loaders.is_empty() {
@@ -564,23 +576,46 @@ impl Port {
                         )));
                     }
                 }
+                let named = |holders: &[u32]| {
+                    let holders: Vec<String> = holders.iter().map(|h| format!("0x{h:08X}")).collect();
+                    if holders.is_empty() { "no function".to_string() } else { holders.join(", ") }
+                };
                 for a in e.wont_reach.keys() {
+                    if let Some((start, end)) = entry_range(a) {
+                        let branches = fns.branches_in(start, end);
+                        let outside: Vec<u32> = branches
+                            .iter()
+                            .filter(|(_, h)| !h.iter().any(|h| code.contains(h)))
+                            .flat_map(|(_, h)| h.iter().copied())
+                            .collect::<BTreeSet<u32>>()
+                            .into_iter()
+                            .collect();
+                        if branches.is_empty() {
+                            out.push(problem(
+                                f,
+                                format!("wont_reach: {a} holds no conditional branch of the inventory's code"),
+                            ));
+                        } else if branches.iter().any(|(_, h)| !h.iter().any(|h| code.contains(h))) {
+                            out.push(problem(
+                                f,
+                                format!(
+                                    "wont_reach: {a} holds branches of {}, which code does not list",
+                                    named(&outside)
+                                ),
+                            ));
+                        }
+                        continue;
+                    }
                     let Some(addr) = entry_addr(a) else { continue };
                     match fns.branch(addr) {
                         None => out.push(problem(
                             f,
                             format!("wont_reach: {a} is not a conditional branch of the inventory's code"),
                         )),
-                        Some(holders) if !holders.iter().any(|h| code.contains(h)) => {
-                            let holders: Vec<String> = holders.iter().map(|h| format!("0x{h:08X}")).collect();
-                            out.push(problem(
-                                f,
-                                format!(
-                                    "wont_reach: {a} is in {}, which code does not list",
-                                    if holders.is_empty() { "no function".to_string() } else { holders.join(", ") }
-                                ),
-                            ));
-                        }
+                        Some(holders) if !holders.iter().any(|h| code.contains(h)) => out.push(problem(
+                            f,
+                            format!("wont_reach: {a} is in {}, which code does not list", named(&holders)),
+                        )),
                         Some(_) => {}
                     }
                 }
@@ -895,7 +930,7 @@ pub(crate) mod tests {
         let goal = "description = \"x\"\nfeatures = [\"F-0001\"]\n";
         let fields = "code = [\"0x8002D810\", \"jump\", \"0x8002D810\"]\nquestions = [\"\"]\n\
             [recordings]\nwork = [\"jump/stomp\", \"jump\"]\nheld_out = [\"jump/stomp\"]\n\
-            [wont_reach]\n\"0x8002D820\" = \"\"";
+            [wont_reach]\n\"0x8002D820\" = \"\"\n\"0x8002D860..0x8002D800\" = \"backwards\"";
         let (d, port) = workspace(goal, &[("F-0001.md", &entry(fields))]);
         let p: Vec<&str> = port.problems.iter().map(|p| p.problem.as_str()).collect();
         assert_eq!(
@@ -906,6 +941,7 @@ pub(crate) mod tests {
                 "code: \"jump\" is not an address (0x8002D810) or a script stretch (croc+0x1803..0x18A0)",
                 "code: 0x8002D810 is listed twice",
                 "wont_reach.0x8002D820: no reason: why no recording can reach it",
+                "wont_reach: \"0x8002D860..0x8002D800\" is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded) or a script position or stretch (croc+0x18F0)",
                 "questions: an empty question",
                 "recordings: no scenarios/jump/stomp.jsonl (psx scenario record, or play)",
                 "code and wont_reach are checked against the inventory: .psx/inventory.json: no inventory; take one with inventory first",
@@ -922,7 +958,7 @@ pub(crate) mod tests {
         assert_eq!(
             p,
             [
-                "wont_reach: \"croc+\" is not an address (0x8002D820) or a script position or stretch (croc+0x18F0)",
+                "wont_reach: \"croc+\" is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded) or a script position or stretch (croc+0x18F0)",
                 "wont_reach: croc+0x2000 is in no script stretch code lists",
             ]
         );
