@@ -214,5 +214,41 @@ mechanic code are worth keeping, so they move out first.
     loaded in place of the imported ones. The recordings that need 1-1
     run only with the person's disc; the README says so.
 
+25. **Analog sticks in recordings.** psx-core's DualShock, `run`'s
+    replay events and `scenario play` all carry the sticks (a play's
+    replay file holds every pad change; its 1M-event limit is there for
+    the sticks), but a scenario recording keeps buttons only: `scenario
+    record` refuses sticks because the port's runner had none, and a play
+    that moved one fails at F12. A racing game (GT2) steers and works its
+    pedals with them, and that code is out of reach with buttons alone.
+    - **The format.** A recording's row gets `sticks` beside `pad`, the
+      raw bytes the game read (0x80 centred), only the axes that changed
+      since the tick before (`"sticks":{"lx":143}`), as quantities are
+      written; no row means centred, so recordings so far stay valid. A
+      tick's sticks are their value in the field it ended in, as its
+      buttons are. One order, named, everywhere (lx, ly, rx, ry; psx-core
+      keeps right before left today). Raw bytes, never deadzoned or
+      rounded: the port must see what the original saw.
+    - **Record and play.** The refusal goes; in its place, sticks that
+      move while the game has not switched the pad to analog mode are
+      refused, saying the chain needs `pad dualshock` and the game's own
+      switch. A play using the sticks records.
+    - **Check and show.** The determinism check replays the sticks;
+      `scenario show` prints them per tick.
+    - **The port.** `ControllerState` keeps the raw bytes, with the
+      -1..=1 floats a view of them, so a port can apply the original's
+      own deadzone and curve. A gamepad maps to bytes once, as `scenario
+      play` does (`bindings::stick_byte`), and the scenario runner gives
+      `run_tick` each tick's sticks; the template's scenario test has a
+      recording with sticks.
+    - **Docs.** The guide's Recordings, docs/scenarios.md and
+      port-design.md lose "digital buttons only" and say what analog mode
+      needs.
+
+    *Done when* a recording made with a stick replays in the template's
+    scenario test tick for tick, and a play using the stick records.
+    Not here: the neGcon (analog buttons and a twist; Mednafen's
+    `negcon` is the reference), a pad of its own for when a port wants it.
+
 After phase E: decide on the release, and whether the method goes to
 other platforms (mdx).
