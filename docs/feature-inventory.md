@@ -7,7 +7,7 @@ easier to learn and cheaper to run.
 
 ## The commands
 
-About 33 top-level commands become 12, and `mcp` to serve them:
+About 33 top-level commands become 13, `mcp` to serve them, and two for the person (not MCP tools): `web`, their page, and `play`:
 
 | Command | Subcommands | Takes in |
 |---|---|---|
@@ -21,9 +21,12 @@ About 33 top-level commands become 12, and `mcp` to serve them:
 | `ram` | `diff`, `search`, `view` | `ram *`, `addr` (every address psx prints comes classified) |
 | `run` | | `run`, `loads` (`--trace-cd` writes the decoded loads), `native` (`--diagnose`, for psx development), `states make` (`--save-as NAME`) |
 | `states` | `list`, `save`, `rebuild` | `states` without `make` |
-| `scenario` | `record`, `play`, `show`, `check` | `scenario`, `handoff`, `handoff-status` (`play --detach` and `play --status`) |
+| `scenario` | `record`, `play`, `show`, `check` | `scenario`, `handoff`, `handoff-status` (`play` queues; `play --status`) |
 | `port` | `init`, `update`, `confirm`, `status`, `next`, `check` | `port`, `template create/update/adopt` (`update`, `init --existing`) |
+| `message` | | new: the agent's side of the chat with the person |
 | `mcp` | | |
+| `web` | | new: progress, the live call log, the play requests, the chat and recordings replayed, for the person |
+| `play` | | new: the person plays or declines the waiting play requests of every project |
 
 Removed: `mechanic` (check, capture), `case` (record, check) and the field
 map (`samples.toml`, `run --map`), `template parser` (the Python

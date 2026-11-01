@@ -102,23 +102,35 @@ fixed field.
 ## Asking the person
 
 When scripted input cannot reach a place in reasonable time (platforming,
-combat, long routes), scenario_play without a scenario opens a window at
-media or from_state, with the request beside the game. Over MCP it returns a
-ticket at once; poll with status and wait (up to 600 s a call) until it is
-no longer waiting. expect gives the end state asked for (until's syntax):
-the result says whether it held, and ask_again. Ask for marks to find
-where the game keeps something: "press F6 just before and after you pick up
-the key". The person plays with keyboard or gamepad, can rewind (F2), quick
-save and load (F5/F7), restart (F8 twice), mark (F6) and hand back with F12
-(done) or F10 (cannot do it).
+combat, long routes), scenario_play without a scenario asks the person to
+play from media or from_state, with the request beside the game. The
+request joins a queue and the call returns at once: go on with other work.
+The person answers when they can, in psx web (in the browser or a window)
+or with psx play, or declines with a note saying why or what to ask
+instead. port next gives a Read item when an answer arrives; status reads
+it (wait blocks up to 600 s for one). expect gives the end state asked for
+(until's syntax): the result says whether it held, and ask_again. Ask for
+marks to find where the game keeps something: "mark just before and after
+you pick up the key". The person plays with keyboard or gamepad, can
+rewind, quick save and load, restart, mark and hand back done or say they
+cannot do it.
 
 Results: status (done, declined, closed, abandoned); state.bin to continue
 from; input.json, every pad change with rewound input removed, and
 reproduce, the run that replays it (verify=true checks it); ram.bin,
-screen.png and the person's note; marks/<n>/ per F6 (state, RAM, screen,
+screen.png and the person's note; marks/<n>/ per mark (state, RAM, screen,
 label), each with a RAM diff against the mark before and on_route;
-route_snapshots for ram_search. The window needs a desktop session on the
-psx machine; analog games want pad dualshock.
+route_snapshots for ram_search. Analog games want pad dualshock.
+
+## Messages
+
+The person can write from psx web at any time. What they wrote arrives
+with the result of a later psx call, under messages; it is not an
+interruption. message sends them text (reply_to answers in a thread), and
+without text lists the latest threads. From a shell, psx message --wait
+blocks until they write (at most an hour; after --text, until they
+answer) and prints what they wrote: run in the background, it ends when
+they do, which is a way to hear from them while nothing else runs.
 
 diagnose is an emulator diagnostic for psx's own development, not for
 reading a game.

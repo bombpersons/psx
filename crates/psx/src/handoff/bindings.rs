@@ -230,6 +230,22 @@ pub fn save(path: &Path, b: &Bindings) -> Result<(), String> {
     crate::write_atomic(path, &serde_json::to_vec_pretty(&doc).unwrap()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// A frame's pad from held keys, gamepad buttons and the gamepad's sticks
+/// (-1..1, +y up). A digital pad (or a DualShock the game has not switched
+/// to analog) gets the left stick as the d-pad instead.
+pub fn pad_state(b: &Bindings, analog: bool, keys: &[String], pad: &[String], sticks: [f32; 4]) -> (u32, [u8; 4]) {
+    let mut buttons = b.buttons(keys.iter().map(String::as_str), pad.iter().map(String::as_str));
+    let [lx, ly, rx, ry] = sticks;
+    let dz = b.stick_deadzone;
+    let sticks = [stick_byte(lx, dz, false), stick_byte(ly, dz, true), stick_byte(rx, dz, false), stick_byte(ry, dz, true)];
+    if analog {
+        (buttons, sticks)
+    } else {
+        buttons |= u32::from(stick_dpad(sticks[0], sticks[1]));
+        (buttons, [0x80; 4])
+    }
+}
+
 /// A stick axis (-1..1, +y up as gamepads report it) as a PS1 stick byte (0 = left/up, 255 = right/down).
 pub fn stick_byte(v: f32, deadzone: f32, invert: bool) -> u8 {
     let v = if invert { -v } else { v };

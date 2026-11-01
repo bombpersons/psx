@@ -150,6 +150,14 @@ psx port init ../my-port --media "media/Some Game.cue" --fields-per-tick 2
 cd ../my-port && cargo run
 ```
 
+To watch the ports while agents work on them, `psx web ../my-port` serves a page on
+http://127.0.0.1:7878: what needs you, the port's progress over time, a live log of every psx
+call the agents make (each drawn as a card: screens, plots, code, the next item), a chat with
+the agent that reaches it with its next call without interrupting it, the agent's requests to
+play a part of the game (played in the page or a window, or declined with a note), and each
+recording replayed frame by frame with its values plotted beside the port's. `psx play` answers
+the same requests from a terminal.
+
 ## Honest limits
 
 Booting a game isn't proof the whole game is accurate, and emulator timing work continues.

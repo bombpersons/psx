@@ -427,24 +427,8 @@ impl Panel<'_> {
 }
 
 /// This frame's pad: buttons from both devices, sticks from the active gamepad.
-/// A digital pad (or a DualShock the game has not switched to analog) gets the
-/// left stick as the d-pad instead.
 fn pad_state(s: &Session, b: &Bindings, keys: &[String], pad: &[String], pads: &Pads) -> (u32, [u8; 4]) {
-    let mut buttons = b.buttons(keys.iter().map(String::as_str), pad.iter().map(String::as_str));
-    let [lx, ly, rx, ry] = pads.sticks();
-    let dz = b.stick_deadzone;
-    let sticks = [
-        bindings::stick_byte(lx, dz, false),
-        bindings::stick_byte(ly, dz, true),
-        bindings::stick_byte(rx, dz, false),
-        bindings::stick_byte(ry, dz, true),
-    ];
-    if s.analog() {
-        (buttons, sticks)
-    } else {
-        buttons |= u32::from(bindings::stick_dpad(sticks[0], sticks[1]));
-        (buttons, [0x80; 4])
-    }
+    bindings::pad_state(b, s.analog(), keys, pad, pads.sticks())
 }
 
 fn key_name(k: &Key) -> String {

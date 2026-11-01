@@ -16,13 +16,17 @@ use psx_scenario::{Glossary, Type, Values};
 use serde_json::{Value as Json, json};
 
 use crate::Error;
+
+/// What sees the machine at the end of each recorded tick (the web viewer's
+/// frames).
+pub(crate) type OnTick<'a> = &'a mut dyn FnMut(&Full, &Machine);
 use crate::binding::{self, Plugin, Tick};
 use crate::commands::{Ctx, Op, Outcome};
 use crate::port::Entry;
 
 /// The glossary crate, `glossary/`; its binding is `glossary/binding/`.
 pub const GLOSSARY: &str = "glossary";
-const SCENARIOS: &str = "scenarios";
+pub const SCENARIOS: &str = "scenarios";
 /// Each scenario's last determinism check: `<id>.json`.
 const CHECKS: &str = ".psx/scenarios";
 const MAX_REFUSALS: usize = 20;
@@ -308,7 +312,8 @@ pub(crate) struct Cover {
 /// the pad is the one that tick had, and the run lasts as many ticks. A game
 /// that falls a field behind, or catches up, on another route then reads
 /// each press on the same tick. `cover` sees every instruction run, from
-/// the start.
+/// the start. `on_tick` sees the machine at the end of each recorded tick.
+#[allow(clippy::too_many_arguments)]
 fn record(
     m: &mut Machine,
     q: &Quantities,
@@ -317,6 +322,7 @@ fn record(
     ticks: Option<&[crate::replay::Input]>,
     deadline: Duration,
     mut cover: Option<&mut Cover>,
+    mut on_tick: Option<OnTick<'_>>,
 ) -> Recorded {
     let started = Instant::now();
     // The pad is released until the first tick ends: `initial` is the moment
@@ -411,6 +417,9 @@ fn record(
             }
             let buttons = crate::replay::button_names(m.bus.sio0.buttons.into());
             out.ticks.push(Full { tick: n, field, pad: buttons, analog: pad.analog, sticks, values });
+            if let Some(f) = on_tick.as_deref_mut() {
+                f(out.ticks.last().unwrap(), m);
+            }
             if ticks.is_some_and(|t| out.ticks.len() >= t.len()) {
                 break;
             }
@@ -584,7 +593,7 @@ fn continued(l: &Loaded, name: &str) -> Result<Vec<(String, u32, Vec<crate::repl
 /// Run `m` on to the end of recording `from` (and those it continues).
 fn reach_end(m: &mut Machine, l: &Loaded, q: &Quantities, from: &str, deadline: Duration) -> crate::Result<()> {
     for (n, frames, events) in continued(l, from).map_err(Error::invalid)? {
-        let r = record(m, q, frames, &events, None, deadline, None);
+        let r = record(m, q, frames, &events, None, deadline, None, None);
         if let Some(why) = unrecorded(&r) {
             return Err(Error::invalid(format!(
                 "replaying {n} to continue from its end gave no recording: {}",
@@ -648,7 +657,7 @@ impl Prepared {
         let root = &ctx.root;
         let mut cover =
             Cover { tracer: tracer(m), scripts: crate::script_cover::Scripts::new(&self.b.described().hooks) };
-        let r = record(m, &self.quantities(), frames, events, None, timeout, Some(&mut cover));
+        let r = record(m, &self.quantities(), frames, events, None, timeout, Some(&mut cover), None);
         if let Some(why) = unrecorded(&r) {
             return Ok((false, why));
         }
@@ -886,7 +895,7 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
             reach_end(&mut m, &l, &q, from, timeout)?;
         }
         let pads = held_by_tick(&events, &rec.expand());
-        let r = record(&mut m, &q, frames, &events, Some(&pads), timeout, None);
+        let r = record(&mut m, &q, frames, &events, Some(&pads), timeout, None, None);
         let (diffs, schedule) = match unrecorded(&r) {
             Some(why) => (
                 vec![format!("the second route gave no recording: {}", why["status"].as_str().unwrap_or(""))],
@@ -906,6 +915,155 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
     }
     Ok(json!({"id": id, "status": if same { "deterministic" } else { "differs" }, "idle": s.idle(),
               "recordings": recordings}))
+}
+
+/// A value as a number to plot: in the quantity's units, a bool as 0 or 1,
+/// an enum as its variant's index.
+fn plotted(t: &Type, v: &psx_scenario::Value) -> Option<f64> {
+    use psx_scenario::Value as V;
+    match (t, v) {
+        (_, V::Bool(b)) => Some(f64::from(u8::from(*b))),
+        (Type::Enum(names), V::Variant(n)) => names.iter().position(|x| x == n).map(|i| i as f64),
+        (Type::Fixed { frac_bits, .. }, V::Int(n)) => Some(*n as f64 / 2f64.powi(*frac_bits as i32)),
+        (Type::Float { bits }, V::Int(n)) => float_number(*bits, *n),
+        (Type::Int { .. }, V::Int(n)) => Some(*n as f64),
+        _ => None,
+    }
+}
+
+/// A recording for `psx web`'s viewer: each tick's pad, each compared
+/// quantity's values over the ticks (index 0 the initial ones), and what the
+/// last `port check` said of it (`last`, `.psx/port/last.json`): its
+/// failures, and the port's values when the port's report kept them.
+pub(crate) fn plot(root: &Path, id: &str, name: &str, last: &Json) -> crate::Result<Json> {
+    check_name("id", id)?;
+    check_name("name", name)?;
+    let l = Loaded::load(root, id);
+    let rec = match l.recordings.iter().find(|(n, _, _)| n == name) {
+        Some((_, _, Ok(r))) => r,
+        Some((_, f, Err(e))) => return Err(Error::malformed(format!("{}: {e}", rel(root, f)))),
+        None => return Err(Error::invalid(format!("{name}: no recording of that name in {SCENARIOS}/{id}/"))),
+    };
+    let full = rec.expand();
+    let declared = l.glossary.as_ref().map(|g| g.quantities.clone()).unwrap_or_default();
+    let tolerance = |q: &str| l.scenario.as_ref().and_then(|s| s.compare.get(q).cloned());
+    let reported = last["scenarios"]["scenarios"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["id"] == id)
+        .and_then(|s| s["recordings"].as_array()?.iter().find(|r| r["name"] == name).cloned());
+    let port_values: Vec<psx_scenario::Values> = reported
+        .as_ref()
+        .and_then(|r| serde_json::from_value(r["values"].clone()).ok())
+        .unwrap_or_default();
+    let mut quantities = Vec::new();
+    let mut types = BTreeMap::new();
+    for (q, f) in &rec.header.quantities {
+        let Ok(t) = f.ty() else { continue };
+        let at = |v: Option<&psx_scenario::Value>| v.and_then(|v| plotted(&t, v));
+        let text = |v: Option<&psx_scenario::Value>| v.map(|v| shown(&t, v, false)).unwrap_or(Json::Null);
+        let values: Vec<Option<f64>> =
+            std::iter::once(at(rec.header.initial.get(q))).chain(full.iter().map(|x| at(x.values.get(q)))).collect();
+        let shown_values: Vec<Json> =
+            std::iter::once(text(rec.header.initial.get(q))).chain(full.iter().map(|x| text(x.values.get(q)))).collect();
+        let g = declared.get(q);
+        let mut row = json!({
+            "name": q, "type": f.kind, "unit": g.and_then(|g| g.unit.clone()).or(f.unit.clone()),
+            "description": g.and_then(|g| g.description.clone()), "tolerance": tolerance(q),
+            "values": values, "shown": shown_values,
+        });
+        if let Type::Enum(names) = &t {
+            row["variants"] = json!(names);
+        }
+        if !port_values.is_empty() {
+            row["port"] = json!(port_values.iter().map(|v| at(v.get(q))).collect::<Vec<_>>());
+            row["port_shown"] = json!(port_values.iter().map(|v| text(v.get(q))).collect::<Vec<_>>());
+        }
+        types.insert(q.clone(), t);
+        quantities.push(row);
+    }
+    // "tick 91 croc_x: expected 14990, got 15026" or "initial x: …".
+    let failures: Vec<Json> = reported
+        .as_ref()
+        .and_then(|r| r["failures"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Json::as_str)
+        .map(|line| {
+            let (tick, rest) = match line.strip_prefix("tick ").and_then(|r| r.split_once(' ')) {
+                Some((n, rest)) if n.parse::<u64>().is_ok() => (n.parse::<u64>().ok(), rest),
+                _ => (line.strip_prefix("initial ").map(|_| 0), line.strip_prefix("initial ").unwrap_or(line)),
+            };
+            let (q, what) = rest.split_once(": ").unwrap_or(("", rest));
+            let number = |s: &str| {
+                let v: psx_scenario::Value = serde_json::from_str(s).ok()?;
+                plotted(types.get(q)?, &v)
+            };
+            let (expected, got) = match what.strip_prefix("expected ").and_then(|w| w.split_once(", got ")) {
+                Some((e, g)) => (number(e), number(g)),
+                None => (None, None),
+            };
+            let known = types.contains_key(q);
+            json!({"text": line, "tick": tick.filter(|_| known), "quantity": known.then_some(q), "expected": expected, "got": got})
+        })
+        .collect();
+    let d = &rec.header.producer.details;
+    Ok(json!({
+        "scenario": id, "name": name, "description": rec.header.description,
+        "captured": rec.header.source.kind == SourceKind::Captured,
+        "from": d.get("from"), "frames": d.get("frames"),
+        "moment": l.scenario.as_ref().map(|s| &s.moment),
+        "ticks": full.iter().map(|t| json!({"tick": t.tick, "field": t.field, "pad": t.pad, "analog": t.analog, "sticks": t.sticks})).collect::<Vec<_>>(),
+        "quantities": quantities,
+        "check": reported.map(|_| json!({"commit": last["commit"], "at": last["at"], "failures": failures})),
+    }))
+}
+
+/// Replay a captured recording from the scenario's state, following its
+/// ticks as the port's replay does; `on_tick` sees the machine at the end of
+/// each. What differs from the recording comes back (nothing when the replay
+/// is the recording).
+pub(crate) fn replay(
+    ctx: &Ctx,
+    id: &str,
+    name: &str,
+    timeout: Duration,
+    on_tick: OnTick<'_>,
+) -> crate::Result<Vec<String>> {
+    let root = &ctx.root;
+    check_name("id", id)?;
+    check_name("name", name)?;
+    let l = Loaded::load(root, id);
+    if !l.problems.is_empty() {
+        return Err(Error::invalid("the scenario or glossary has problems").with("problems", json!(l.problems)));
+    }
+    let rec = match l.recordings.iter().find(|(n, _, _)| n == name) {
+        Some((_, _, Ok(r))) if r.header.source.kind == SourceKind::Captured => r,
+        Some((_, f, Ok(_))) => return Err(Error::invalid(format!("{}: not captured from the original", rel(root, f)))),
+        Some((_, f, Err(e))) => return Err(Error::malformed(format!("{}: {e}", rel(root, f)))),
+        None => return Err(Error::invalid(format!("{name}: no recording of that name in {SCENARIOS}/{id}/"))),
+    };
+    let (s, g) = (l.scenario.as_ref().unwrap(), l.glossary.as_ref().unwrap());
+    let (state, chain) = crate::states::chain_state(ctx, &root.join(&s.chain))?;
+    let b = binding(root, g)?;
+    let q = Quantities { binding: &b, types: g.types(), kept: l.compared().keys().cloned().collect() };
+    let (frames, events) = kept_input(name, rec).map_err(Error::malformed)?;
+    let mut m = machine(ctx, &chain, &state, &b.described().source)?.m;
+    if let Some(from) = rec.header.producer.details.get("from").and_then(Json::as_str) {
+        reach_end(&mut m, &l, &q, from, timeout)?;
+    }
+    let pads = held_by_tick(&events, &rec.expand());
+    let r = record(&mut m, &q, frames, &events, Some(&pads), timeout, None, Some(on_tick));
+    Ok(match unrecorded(&r) {
+        Some(why) => vec![format!("the replay gave no recording: {}", why["status"].as_str().unwrap_or(""))],
+        None => {
+            let again = Header { initial: r.initial.clone().unwrap(), ..rec.header.clone() };
+            let (mut d, schedule) = differences(rec, &again, &r.ticks, "the replay");
+            d.extend(schedule);
+            d
+        }
+    })
 }
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1365,7 +1523,7 @@ pub struct Quantities {
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
         let mut c = Cover { tracer: tracer(&mut m), scripts: crate::script_cover::Scripts::new(&Default::default()) };
-        let r = record(&mut m, &q, 1, &[], None, Duration::from_secs(60), Some(&mut c));
+        let r = record(&mut m, &q, 1, &[], None, Duration::from_secs(60), Some(&mut c), None);
         let t = &c.tracer;
         assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
         assert_eq!(r.initial, Some([("x".to_string(), psx_scenario::Value::Int(1))].into()));
@@ -1467,7 +1625,7 @@ pub struct Quantities {
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
         let mut c = Cover { tracer: tracer(&mut m), scripts: crate::script_cover::Scripts::new(&b.described().hooks) };
-        let r = record(&mut m, &q, 2, &[], None, Duration::from_secs(60), Some(&mut c));
+        let r = record(&mut m, &q, 2, &[], None, Duration::from_secs(60), Some(&mut c), None);
         assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
         assert!(c.scripts.problems().is_empty(), "{:?}", c.scripts.problems());
         let toy = &c.scripts.programs["toy"];
@@ -1616,6 +1774,31 @@ pub struct Quantities {
         assert_eq!(out["rows"], json!([[2, 4, "right", "walk", 3, 0, -1, 4095]]));
         let bad = ScenarioShowArgs { quantities: vec!["y".into()], ..args(None, false) };
         assert!(show_cmd(&ctx, &bad).unwrap_err().to_string().contains("the recording holds m, n, x"));
+    }
+
+    #[test]
+    fn the_viewer_gets_each_quantity_over_the_ticks_with_the_port_beside_it() {
+        let d = crate::port::tests::tempdir::Dir::new();
+        let root = d.0.as_path();
+        write_scenario(root);
+        let header = r#"{"format":"scenario-recording","format_version":1,"scenario":"walk","source":{"kind":"captured","platform":"psx","image_sha256":"00"},"producer":{"name":"psx","version":"0"},"quantities":{"x":{"type":"fixed","signed":true,"int_bits":20,"frac_bits":12},"m":{"type":"enum","variants":["idle","walk"]}},"initial":{"x":-6144,"m":"idle"}}"#;
+        let rows = [r#"{"tick":1,"field":2,"pad":["RIGHT"],"values":{"x":-4096,"m":"walk"}}"#, r#"{"tick":2,"field":4}"#];
+        std::fs::write(root.join("scenarios/walk/w.jsonl"), format!("{header}\n{}\n", rows.join("\n"))).unwrap();
+        let last = json!({"commit": "c0", "at": "t", "scenarios": {"scenarios": [{"id": "walk", "recordings": [{"name": "w",
+            "failures": ["tick 2 x: expected -4096, got -2048"],
+            "values": [{"x": -6144, "m": "idle"}, {"x": -4096, "m": "walk"}, {"x": -2048, "m": "walk"}]}]}]}});
+        let v = plot(root, "walk", "w", &last).unwrap();
+        assert_eq!(v["ticks"][0]["pad"], json!(["RIGHT"]));
+        let q = |n: &str| v["quantities"].as_array().unwrap().iter().find(|q| q["name"] == n).unwrap().clone();
+        assert_eq!(q("x")["values"], json!([-1.5, -1.0, -1.0]));
+        assert_eq!(q("x")["port"], json!([-1.5, -1.0, -0.5]));
+        assert_eq!((q("m")["values"].clone(), q("m")["variants"].clone()), (json!([0.0, 1.0, 1.0]), json!(["idle", "walk"])));
+        assert_eq!(
+            v["check"]["failures"][0],
+            json!({"text": "tick 2 x: expected -4096, got -2048", "tick": 2, "quantity": "x", "expected": -1.0, "got": -0.5})
+        );
+        // Not in the last check: nothing to overlay.
+        assert_eq!(plot(root, "walk", "w", &Json::Null).unwrap()["check"], Json::Null);
     }
 
     #[test]

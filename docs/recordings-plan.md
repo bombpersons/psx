@@ -72,8 +72,10 @@ mechanic code are worth keeping, so they move out first.
 13. **`scenario play`**: handoff folded in. It starts at the scenario's
     state, shows the request, and writes a recording with the same frame
     origin as `scenario record` (fixing today's one-field offset);
-    `--from <recording>` continues from the end of one; `--detach` and
-    `--status` for MCP clients. `handoff` and `handoff-status` go.
+    `--from <recording>` continues from the end of one. Requests queue
+    and the call returns; the person answers in `psx web` or `psx play`
+    (or declines with a note), `port next` gives a Read item and
+    `--status` reads it. `handoff` and `handoff-status` go.
 14. **The catalogue entry** (port-design.md, section 3): `code`,
     `recordings.work`/`held_out`, `wont_reach` and `questions`, checked by
     `port confirm`; scenario tolerances per quantity.

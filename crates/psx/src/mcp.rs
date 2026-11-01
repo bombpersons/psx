@@ -81,22 +81,6 @@ fn call_op<A: Op>(args: Value, ctx: &Ctx) -> Result<Outcome, String> {
     Ok(a.exec(ctx).with_path_context(ctx))
 }
 
-/// A handoff over MCP always detaches: the person may take longer than any call.
-fn call_handoff(args: Value, ctx: &Ctx) -> Result<Outcome, String> {
-    let mut a: crate::handoff::HandoffArgs = serde_json::from_value(args).map_err(|e| e.to_string())?;
-    a.detach = true;
-    Ok(a.exec(ctx).with_path_context(ctx))
-}
-
-/// `detach` is forced over MCP, so it is not offered.
-fn handoff_schema() -> Value {
-    let mut s = schema_of::<crate::handoff::HandoffArgs>();
-    if let Some(p) = s["properties"].as_object_mut() {
-        p.remove("detach");
-    }
-    s
-}
-
 fn schema_of<A: Op>() -> Value {
     let mut s = serde_json::to_value(schemars::schema_for!(A)).unwrap();
     if let Some(o) = s.as_object_mut() {
@@ -156,6 +140,7 @@ impl ToolDef {
 pub fn tools() -> Vec<ToolDef> {
     vec![
         def::<crate::guide::GuideArgs>("guide", "The method: omit topic for the porting guide, read once; topics run, code, assets and setup hold the details. Tool descriptions are brief: argument rules and output details live here.").read_only(),
+        def::<crate::messages::MessageArgs>("message", "Talk with the person, who reads psx web: text sends (reply_to: a message's id, to answer in its thread); without text, the latest threads. Their messages arrive in any psx result as messages; nothing interrupts you, so answer when it suits the work."),
         def::<crate::context::ArgsContext>("context", "Start here: the running build, project root, saved defaults (media, BIOS), local BIOS candidates and the download catalog, whether Ghidra is found, and capabilities. image or from_state explains region or checkpoint identity; save=true stores the resolved defaults. Never downloads."),
         def::<crate::artifact::ReadArgs>("read", "Read a returned artifact or run directory in bounded pages: JSON by pointer, JSONL/CSV/text by rows with frame/pc/contains filters and column projection, hex bytes, PNG as an image. Continue with page.next_cursor.").read_only(),
         def::<crate::bios::InstallArgs>("bios_install", "One-time BIOS setup: import a local file (from), or download=true with region pal|ntsc-u|ntsc-j for a pinned, hash-checked image. Installs into the shared store (PSX_BIOS_DIR); never replaces existing images.").heavy(),
@@ -188,7 +173,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::scenario::ScenarioRecordArgs>("scenario_record", "In a port's workspace: run from the scenario's state with input for frames and write scenarios/<id>/<name>.jsonl, the compared glossary quantities at each tick's end, and <name>.coverage.json beside it, what the original executed as the inventory's code (code_coverage takes the .jsonl; take code_inventory first). See the guide's Recordings.").heavy(),
         def::<crate::scenario::ScenarioCheckArgs>("scenario_check", "In a port's workspace: the determinism check. Reach each scenario again with idle fields before its chain's last run, record its recordings again, compare per tick.").heavy(),
         def::<crate::scenario::ScenarioShowArgs>("scenario_show", "In a port's workspace: a recording's quantities per tick (tick 0 the initial moment), with each numeric one's change since the tick before; fixed values as exact decimals unless raw. quantities and ticks (A..B) narrow it; text=true: an aligned table.").read_only(),
-        ToolDef { call: call_handoff, schema: handoff_schema, ..def::<crate::handoff::HandoffArgs>("scenario_play", "Ask the person to play: opens a window on this machine with the game and your request, and returns a ticket; poll with status (its run_dir). With id and name, play starts at the scenario's state (or the end of its recording from) and becomes that recording, with coverage. Without, from media or from_state: state.bin, input.json, note and F6 marks. See guide topic run.").screen() },
+        def::<crate::handoff::HandoffArgs>("scenario_play", "Ask the person to play: queues your request and returns a ticket at once; go on with other work: port next gives a Read item when they answer (recorded, or declined with a note). With id and name, play starts at the scenario's state (or the end of its recording from) and becomes that recording, with coverage. Without, from media or from_state (state.bin, input.json, note). See guide topic run.").screen(),
         def::<crate::port::PortInitArgs>("port_init", "Write a port's workspace in dest: the Bevy template, goal.toml, the catalogue, the disc and BIOS linked in, and this MCP server for the agent working there. See the guide."),
         def::<crate::template::TemplateUpdateArgs>("port_update", "Update the project's psx-bevy/ and vendor/ files to this build; edited files get a .psx-new copy. See guide topic setup."),
         def::<crate::port::PortStatusArgs>("port_status", "In a port's workspace: the goal's features by area and stage, with their recordings, branches of their code resolved, open questions and review, problems in the goal or catalogue, and the item due now. plain=true: text for the person. See the guide.").read_only(),
@@ -500,6 +485,21 @@ impl PsxServer {
         let isolated = root != self.base;
         let from_client = scoped.is_none() && isolated;
         let worker_cancel = cancel.child_token();
+        let client = peer.peer_info().map(|i| format!("{} {}", i.client_info.name, i.client_info.version));
+        let log = crate::calls::start(&root, name, Value::Object(args.clone()), crate::calls::caller("mcp", client));
+        let inbox = root.clone();
+        let respond = move |mut value: Value, shot: Option<Option<Vec<u8>>>| {
+            // The person's messages ride on whatever the agent called.
+            if value.is_object() && name != "message" {
+                if let Some(m) = crate::messages::deliver(&inbox) {
+                    value["messages"] = m;
+                }
+            }
+            if let Some(log) = log {
+                log.end(&value, u8::from(value.get("error").is_some()));
+            }
+            respond(value, shot)
+        };
         let ctx = Ctx { root, cancel: Some(worker_cancel.clone()) };
         let (args, want_screen) = match prepare(tool, args) {
             Ok(r) => r,

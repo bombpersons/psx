@@ -281,27 +281,64 @@ One item, in this order:
    findings have no answer.
 8. A feature without held-out recordings, the code reviewed: the person's.
 
-Items for the person (**Play**, **Confirm**) stop the agent until the
-person answers. When `port next` has nothing left, the goal is done.
+**Confirm** and **Stuck** stop the agent until the person answers. A
+**Play** item does not: the agent starts the play request, which joins a
+queue, and `port next` goes on to other work, skipping features that wait
+on a play; when the person answers, a **Read** item comes first. **Wait**
+is left only when nothing but unanswered plays remains. When `port next`
+has nothing left, the goal is done.
 
 ## 6. Recordings the person plays
 
-`psx scenario play <id> --name <name>` (the handoff, folded into scenarios) opens
-the game at the scenario's state with a request ("run along the wall and
-stomp onto the ledge"); the person plays and the run becomes a recording,
-with the same frame origin as a scripted one. `--from <recording>`
-continues from the end of an earlier one, so a long play-through can be
-split.
+`psx scenario play <id> --name <name>` (the handoff, folded into scenarios) asks
+the person to play from the scenario's state with a request ("run along
+the wall and stomp onto the ledge"); the run becomes a recording, with the
+same frame origin as a scripted one. `--from <recording>` continues from
+the end of an earlier one, so a long play-through can be split.
+
+A request joins the project's queue (`.psx/handoffs/<run>/`) and the call
+returns at once. The person answers when they can: in `psx web`, in the
+browser or a window, or with `psx play` (the waiting requests of every
+project, played by number or id). They can decline one with a note, which
+reaches the agent (why, or what to ask instead). `--status` reads the
+answer and marks it read; `--wait` blocks for it up to 600 s.
 
 ## 7. The tools
 
 [feature-inventory.md](feature-inventory.md) lists what psx keeps, merges
-and removes: twelve commands (`context`, `bios`, `guide`, `read`, `disc`,
-`assets`, `code`, `ram`, `run`, `states`, `scenario`, `port`, and `mcp`
-to serve them). The emulator and its run options (watch, sample, trace),
+and removes: thirteen commands (`context`, `bios`, `guide`, `read`, `disc`,
+`assets`, `code`, `ram`, `run`, `states`, `scenario`, `port`, `message`,
+and `mcp` to serve them). The emulator and its run options (watch, sample, trace),
 disassembly and decompilation, coverage, the glossary and scenarios,
 assets, the template and its developer MCP stay; mechanics (capture,
 traces, replay, audits, interfaces) and cases go.
+
+`psx web [ROOT…]` is the person's view of the ports, beside the thirteen: a
+page on 127.0.0.1 (port 7878; `--port`, `--forget ROOT`), one tab per
+project (the roots given are remembered). It shows what wants
+the person across projects (an item that is theirs, the loop guard near
+its limit, the same call failing again and again, passing recordings
+fewer than their best, no work for an hour); `port next`'s item and
+`port status`'s counts with their history from `.psx/progress.jsonl`;
+a live log of every psx call (`.psx/calls.jsonl`, results in
+`.psx/calls/`, written by the CLI and MCP alike in any project with a
+`.psx`) grouped by the agent that made it, each drawn as a card for the
+person (screens, plots, tables, code, the item handed out) with the raw
+result folded away; the play requests, which the person plays in the
+page on psx-core or in a window, or declines; a chat with the agent; and
+each recording, replayed on psx-core into frames
+with its quantities plotted over the ticks and, from the last `port
+check`, the port's values where they differ and its first failure
+marked. The template's report keeps the port's values for a recording
+that failed for that.
+
+Messages (`.psx/messages.jsonl`) never interrupt the agent: what the
+person writes reaches it in the result of its next psx call, CLI or MCP,
+under `messages`, and it answers with `psx message` (`--reply-to` for a
+thread) when it has something to say. `psx message --wait` (CLI only)
+blocks until the person writes and prints it, so an agent with nothing
+else to do can run it in the background and be woken by the answer. `.psx/messages.seen.json` keeps how
+far each side has read, for the page's unread count and its seen marks.
 
 ## 8. Decisions
 

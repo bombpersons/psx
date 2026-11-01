@@ -1,0 +1,959 @@
+//! `psx web`: a read-only page on localhost over the projects' call logs,
+//! progress and recordings.
+//!
+//! One embedded page ([`PAGE`]) and a small JSON API, served by a thread per
+//! connection on 127.0.0.1. `/api/events` streams which files changed
+//! (server-sent events), so the page fetches only what moved. A recording's
+//! frames come from replaying it on psx-core in a child process
+//! (`psx __web-replay`), cached per recording in the data directory.
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
+
+use serde_json::{Value, json};
+
+use crate::commands::{Ctx, Outcome};
+
+const PAGE: &str = include_str!("web/index.html");
+
+/// Serve the page.
+#[derive(clap::Args)]
+pub struct WebArgs {
+    /// Project roots to show (remembered for next time), beside the ones shown before.
+    pub roots: Vec<PathBuf>,
+    /// Stop showing these project roots.
+    #[arg(long)]
+    pub forget: Vec<PathBuf>,
+    /// Port on 127.0.0.1.
+    #[arg(long, default_value_t = 7878)]
+    pub port: u16,
+}
+
+struct Project {
+    root: PathBuf,
+    name: String,
+}
+
+struct State {
+    projects: Vec<Project>,
+    port: u16,
+    /// Given to the page it serves, and wanted on every POST: a page from
+    /// elsewhere cannot read it, so cannot act.
+    token: String,
+    /// Replays started by this server, by cache key.
+    replays: Mutex<HashMap<String, Arc<Mutex<Replay>>>>,
+    /// Requests being played in the browser, by run directory.
+    plays: Mutex<HashMap<PathBuf, Arc<crate::handoff::browser::Live>>>,
+}
+
+#[derive(Default)]
+struct Replay {
+    dir: PathBuf,
+    running: bool,
+    /// The child's result once it ended: differences or an error.
+    done: Option<Value>,
+}
+
+pub fn main(a: WebArgs) -> ExitCode {
+    let roots = remember(&a.roots, &a.forget);
+    let projects: Vec<Project> = roots
+        .into_iter()
+        .filter(|r| r.is_dir())
+        .map(|root| {
+            let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| root.display().to_string());
+            Project { root, name }
+        })
+        .collect();
+    let listener = match TcpListener::bind(("127.0.0.1", a.port)) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("psx web: 127.0.0.1:{}: {e} (--port picks another)", a.port);
+            return ExitCode::from(1);
+        }
+    };
+    eprintln!("psx web: http://127.0.0.1:{}/", a.port);
+    for p in &projects {
+        eprintln!("  {}", p.root.display());
+    }
+    if projects.is_empty() {
+        eprintln!("  no projects yet: psx web <ROOT>... adds them");
+    }
+    let state = Arc::new(State { projects, port: a.port, token: token(), replays: Mutex::new(HashMap::new()), plays: Mutex::new(HashMap::new()) });
+    for stream in listener.incoming().flatten() {
+        let state = state.clone();
+        std::thread::spawn(move || handle(stream, &state));
+    }
+    ExitCode::SUCCESS
+}
+
+/// 128 random bits, as hex.
+fn token() -> String {
+    let mut b = [0u8; 16];
+    let read = std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut b));
+    if read.is_err() {
+        // No /dev/urandom: the clock and the process, hashed.
+        use std::hash::{BuildHasher, Hasher};
+        for (i, c) in b.chunks_mut(8).enumerate() {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u128(crate::now_ms() + i as u128);
+            h.write_u32(std::process::id());
+            c.copy_from_slice(&h.finish().to_le_bytes());
+        }
+    }
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// The remembered roots with `add` and without `forget`, written back.
+pub(crate) fn remember(add: &[PathBuf], forget: &[PathBuf]) -> Vec<PathBuf> {
+    let file = crate::calls::projects_file();
+    let mut roots: Vec<PathBuf> = file
+        .as_ref()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .map(|t| t.lines().filter(|l| !l.trim().is_empty()).map(PathBuf::from).collect())
+        .unwrap_or_default();
+    let abs = |p: &PathBuf| std::fs::canonicalize(p).or_else(|_| std::path::absolute(p)).unwrap_or(p.clone());
+    for r in add {
+        let r = abs(r);
+        if !roots.contains(&r) {
+            roots.push(r);
+        }
+    }
+    let forget: Vec<PathBuf> = forget.iter().map(abs).collect();
+    roots.retain(|r| !forget.contains(r));
+    if let Some(f) = file {
+        let text: String = roots.iter().map(|r| format!("{}\n", r.display())).collect();
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(f, text);
+    }
+    roots
+}
+
+// ---------------------------------------------------------------- HTTP
+
+struct Request {
+    path: String,
+    query: HashMap<String, String>,
+    /// A POST's body, as JSON.
+    body: Value,
+}
+
+/// Largest POST body read.
+const BODY_LIMIT: usize = 64 * 1024;
+
+fn handle(stream: TcpStream, st: &State) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let Ok(read) = stream.try_clone() else { return };
+    let mut r = BufReader::new(read);
+    let mut line = String::new();
+    if r.read_line(&mut line).unwrap_or(0) == 0 {
+        return;
+    }
+    let (mut host, mut origin, mut token, mut length) = (String::new(), None, String::new(), 0usize);
+    loop {
+        let mut h = String::new();
+        if r.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+            break;
+        }
+        let Some((k, v)) = h.split_once(':') else { continue };
+        let v = v.trim().to_string();
+        match k.to_ascii_lowercase().as_str() {
+            "host" => host = v,
+            "origin" => origin = Some(v),
+            "x-psx-token" => token = v,
+            "content-length" => length = v.parse().unwrap_or(usize::MAX),
+            _ => {}
+        }
+    }
+    let mut parts = line.split_whitespace();
+    let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or("/"));
+    let mut out = stream;
+    // Only this machine's names: a page elsewhere cannot rebind a name to
+    // 127.0.0.1 and read the projects.
+    let hosts = [format!("127.0.0.1:{}", st.port), format!("localhost:{}", st.port)];
+    if !hosts.contains(&host) {
+        let _ = send(&mut out, "403 Forbidden", "text/plain", b"psx web answers 127.0.0.1 and localhost only");
+        return;
+    }
+    let mut body = Value::Null;
+    match method {
+        "GET" => {}
+        "POST" => {
+            // Only the page this server gave out acts.
+            let ours = origin.as_ref().is_none_or(|o| hosts.iter().any(|h| o == &format!("http://{h}")));
+            if !ours || token != st.token {
+                let _ = send(&mut out, "403 Forbidden", "text/plain", b"psx web acts only for the page it serves");
+                return;
+            }
+            if length > BODY_LIMIT {
+                let _ = send(&mut out, "413 Payload Too Large", "text/plain", b"too large");
+                return;
+            }
+            let mut b = vec![0; length];
+            if std::io::Read::read_exact(&mut r, &mut b).is_err() {
+                return;
+            }
+            body = serde_json::from_slice(&b).unwrap_or(Value::Null);
+        }
+        _ => {
+            let _ = send(&mut out, "405 Method Not Allowed", "text/plain", b"GET and POST only");
+            return;
+        }
+    }
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let query = query
+        .split('&')
+        .filter_map(|kv| kv.split_once('=').or(Some((kv, ""))))
+        .filter(|(k, _)| !k.is_empty())
+        .map(|(k, v)| (decode(k), decode(v)))
+        .collect();
+    let req = Request { path: decode(path), query, body };
+    if method == "POST" {
+        let _ = match act(&req, st) {
+            Ok(v) => send(&mut out, "200 OK", "application/json", v.to_string().as_bytes()),
+            Err(e) => send(&mut out, "400 Bad Request", "application/json", e.to_value().to_string().as_bytes()),
+        };
+        return;
+    }
+    if req.path == "/api/events" {
+        events(out, st);
+        return;
+    }
+    if let Some(live) = req.path.strip_suffix("/stream").and_then(|p| request_dir(p, st).ok()).and_then(|(_, d)| st.live(&d)) {
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+        let _ = out.set_nodelay(true);
+        if out.write_all(head.as_bytes()).is_ok() {
+            live.stream(&mut out);
+        }
+        return;
+    }
+    let _ = match route(&req, st) {
+        Reply::Json(v) => send(&mut out, "200 OK", "application/json", v.to_string().as_bytes()),
+        Reply::Bytes(ct, b) => send(&mut out, "200 OK", ct, &b),
+        Reply::Missing(why) => send(&mut out, "404 Not Found", "application/json", json!({"error": why}).to_string().as_bytes()),
+    };
+}
+
+fn send(s: &mut TcpStream, status: &str, ctype: &str, body: &[u8]) -> std::io::Result<()> {
+    let head = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    s.write_all(head.as_bytes())?;
+    s.write_all(body)?;
+    s.flush()
+}
+
+/// `%XX` and `+` decoded.
+fn decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < b.len() => {
+                match u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or(""), 16) {
+                    Ok(v) => {
+                        out.push(v);
+                        i += 2;
+                    }
+                    Err(_) => out.push(b'%'),
+                }
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+enum Reply {
+    Json(Value),
+    Bytes(&'static str, Vec<u8>),
+    Missing(String),
+}
+
+fn route(req: &Request, st: &State) -> Reply {
+    let path = req.path.as_str();
+    if path == "/" || path == "/index.html" {
+        return Reply::Bytes("text/html; charset=utf-8", PAGE.replace("__PSX_TOKEN__", &st.token).into_bytes());
+    }
+    if path == "/api/requests" {
+        return Reply::Json(requests(st));
+    }
+    if path == "/api/bindings" {
+        return Reply::Json(bindings());
+    }
+    if path == "/api/projects" {
+        return Reply::Json(json!(st.projects.iter().enumerate().map(|(i, p)| json!({
+            "i": i, "name": p.name, "root": p.root, "port": p.root.join(crate::port::GOAL).is_file(),
+        })).collect::<Vec<_>>()));
+    }
+    let Some(rest) = path.strip_prefix("/api/p/") else { return Reply::Missing(format!("{path}: no such page")) };
+    let (i, what) = rest.split_once('/').unwrap_or((rest, ""));
+    let Some(p) = i.parse::<usize>().ok().and_then(|i| st.projects.get(i)) else {
+        return Reply::Missing(format!("project {i}: not shown"));
+    };
+    let root = &p.root;
+    let q = |k: &str| req.query.get(k).map(String::as_str).unwrap_or("");
+    match what {
+        "overview" => Reply::Json(overview(root)),
+        "calls" => Reply::Json(calls(root, q("since").parse().ok())),
+        "recordings" => Reply::Json(recordings(root)),
+        "recording" => match crate::scenario::plot(root, q("scenario"), q("name"), &last_check(root)) {
+            Ok(v) => Reply::Json(v),
+            Err(e) => Reply::Json(e.to_value()),
+        },
+        "replay" => Reply::Json(replay(st, root, q("scenario"), q("name"), q("start") == "1")),
+        "frame" => frame(st, root, q("scenario"), q("name"), q("tick")),
+        "messages" => Reply::Json(messages(root)),
+        "file" => project_file(root, q("path")),
+        _ => {
+            let id = what.strip_prefix("call/").unwrap_or("");
+            if !id.is_empty() && id.bytes().all(|c| c.is_ascii_digit() || c == b'-') {
+                return match std::fs::read(root.join(crate::calls::RESULTS).join(format!("{id}.json"))) {
+                    Ok(b) => Reply::Bytes("application/json", b),
+                    Err(_) => Reply::Missing(format!("{id}: its result was not kept")),
+                };
+            }
+            Reply::Missing(format!("{what}: no such page"))
+        }
+    }
+}
+
+// ---------------------------------------------------------------- events
+
+/// What changed, by project, once a second: the call log, the progress
+/// line, the last check, the loop guard, the commits.
+fn events(mut out: TcpStream, st: &State) {
+    // The comment is the body's first bytes: Firefox opens the stream only
+    // once some arrive.
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n: open\n\n";
+    if out.write_all(head.as_bytes()).is_err() {
+        return;
+    }
+    let mut seen: Vec<Vec<(u64, u128)>> = st.projects.iter().map(|_| Vec::new()).collect();
+    let mut beat = 0;
+    loop {
+        for (i, p) in st.projects.iter().enumerate() {
+            let mut now: Vec<(u64, u128)> = WATCHED.iter().map(|(_, f)| stamp(&p.root.join(f))).collect();
+            now.push(queue_stamp(&p.root));
+            if seen[i] != now {
+                let what: Vec<&str> = WATCHED
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .chain(["plays"])
+                    .zip(now.iter().zip(seen[i].iter().chain(std::iter::repeat(&(0, 0)))))
+                    .filter(|(_, (a, b))| a != b)
+                    .map(|(name, _)| name)
+                    .collect();
+                let first = seen[i].is_empty();
+                seen[i] = now;
+                if first {
+                    continue;
+                }
+                let msg = format!("event: change\ndata: {}\n\n", json!({"p": i, "what": what}));
+                if out.write_all(msg.as_bytes()).is_err() {
+                    return;
+                }
+            }
+        }
+        beat += 1;
+        if beat % 15 == 0 && out.write_all(b": beat\n\n").is_err() {
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+const WATCHED: [(&str, &str); 8] = [
+    ("messages", crate::messages::LOG),
+    ("messages_seen", crate::messages::SEEN),
+    ("calls", crate::calls::LOG),
+    ("progress", crate::port::next::PROGRESS),
+    ("check", ".psx/port/last.json"),
+    ("guard", ".psx/port/next.json"),
+    ("commit", ".git/logs/HEAD"),
+    ("goal", crate::port::GOAL),
+];
+
+/// The play queue's files, folded into one stamp: a request added,
+/// claimed, given back, answered or read changes it.
+fn queue_stamp(root: &Path) -> (u64, u128) {
+    let Ok(entries) = std::fs::read_dir(root.join(crate::handoff::queue::DIR)) else { return (0, 0) };
+    let (mut n, mut t) = (0u64, 0u128);
+    for e in entries.flatten() {
+        for f in ["queued.json", "claim.json", "report.json", "read"] {
+            let (len, mt) = stamp(&e.path().join(f));
+            if mt != 0 {
+                n += 1 + len;
+                t = t.wrapping_add(mt);
+            }
+        }
+    }
+    (n, t)
+}
+
+fn stamp(p: &Path) -> (u64, u128) {
+    std::fs::metadata(p)
+        .map(|m| {
+            let t = m.modified().ok().and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok());
+            (m.len(), t.map_or(0, |d| d.as_nanos()))
+        })
+        .unwrap_or((0, 0))
+}
+
+// ---------------------------------------------------------------- play requests
+
+/// The person's controls (the window's, saved from its menu): what the page
+/// shows beside a browser play. The server applies them to the input.
+fn bindings() -> Value {
+    use crate::handoff::bindings::{self, ACTIONS, Bindings};
+    let b = match bindings::default_path().as_deref().map(bindings::load) {
+        Some(Ok(Some(saved))) => saved,
+        _ => Bindings::default(),
+    };
+    let map = |slots: &[Option<String>; 17]| -> Value {
+        ACTIONS.iter().zip(slots).filter_map(|(a, s)| s.as_ref().map(|s| (a.to_string(), json!(s)))).collect::<serde_json::Map<_, _>>().into()
+    };
+    json!({"keyboard": map(&b.keyboard), "gamepad": map(&b.gamepad), "stick_deadzone": b.stick_deadzone})
+}
+
+/// Answered requests shown per project, beside the waiting ones.
+const ANSWERED_SHOWN: usize = 10;
+
+/// Every project's play requests: the waiting ones oldest first, then the
+/// latest answered.
+fn requests(st: &State) -> Value {
+    let mut waiting = Vec::new();
+    let mut answered = Vec::new();
+    for (i, p) in st.projects.iter().enumerate() {
+        let all = crate::handoff::queue::list(&p.root);
+        let with = |r: &crate::handoff::queue::Request| {
+            let mut v = r.json();
+            v["p"] = json!(i);
+            v["project"] = json!(p.name);
+            v["here"] = json!(st.live(&r.dir).is_some());
+            v
+        };
+        let (done, open): (Vec<_>, Vec<_>) =
+            all.iter().partition(|r| matches!(r.state, crate::handoff::queue::State::Answered(_)));
+        waiting.extend(open.into_iter().map(with));
+        answered.extend(done.into_iter().rev().take(ANSWERED_SHOWN).map(with));
+    }
+    let t = |v: &Value| v["queued_unix_ms"].as_u64().unwrap_or(0);
+    waiting.sort_by_key(t);
+    answered.sort_by_key(|v| std::cmp::Reverse(t(v)));
+    json!({"waiting": waiting, "answered": answered, "window": crate::handoff::capability()})
+}
+
+/// `/api/p/I/request/ID`: the project root and the request's run directory.
+fn request_dir(path: &str, st: &State) -> crate::Result<(PathBuf, PathBuf)> {
+    let bad = || crate::Error::invalid(format!("{path}: no such action"));
+    let rest = path.strip_prefix("/api/p/").ok_or_else(bad)?;
+    let mut parts = rest.splitn(3, '/');
+    let (i, kind, id) = (parts.next(), parts.next(), parts.next());
+    let p = i.and_then(|i| i.parse::<usize>().ok()).and_then(|i| st.projects.get(i)).ok_or_else(bad)?;
+    let ok = |id: &&str| !id.is_empty() && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_');
+    let id = id.filter(|id| kind == Some("request") && ok(id)).ok_or_else(bad)?;
+    Ok((p.root.clone(), p.root.join(crate::handoff::queue::DIR).join(id)))
+}
+
+impl State {
+    /// The browser play of the request in `dir`, while it lasts.
+    fn live(&self, dir: &Path) -> Option<Arc<crate::handoff::browser::Live>> {
+        let mut plays = self.plays.lock().unwrap();
+        plays.retain(|_, l| !l.ended());
+        plays.get(dir).cloned()
+    }
+}
+
+/// A POST: play a request in the browser (and its input and commands), open
+/// its window, or decline it with a note.
+fn act(req: &Request, st: &State) -> crate::Result<Value> {
+    if let Some((i, what)) = req.path.strip_prefix("/api/p/").and_then(|r| r.split_once("/messages/")) {
+        let p = i.parse::<usize>().ok().and_then(|i| st.projects.get(i));
+        let p = p.ok_or_else(|| crate::Error::invalid(format!("project {i}: not shown")))?;
+        return match what {
+            "send" => crate::messages::post(&p.root, "person", req.body["text"].as_str().unwrap_or(""), req.body["reply_to"].as_str()),
+            "seen" => {
+                crate::messages::mark_seen(&p.root, "person", req.body["n"].as_u64().unwrap_or(0) as usize);
+                Ok(json!({"status": "ok"}))
+            }
+            _ => Err(crate::Error::invalid(format!("{}: no such action", req.path))),
+        };
+    }
+    let (head, what) = req.path.rsplit_once('/').unwrap_or(("", ""));
+    let (root, dir) = request_dir(head, st)?;
+    let id = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let playing = || st.live(&dir).ok_or_else(|| crate::Error::new("ended", format!("{id} is not being played here")));
+    match what {
+        "input" => {
+            playing()?.input(&req.body);
+            return Ok(json!({"status": "ok"}));
+        }
+        "cmd" => return playing()?.command(&req.body),
+        _ => {}
+    }
+    let r = crate::handoff::queue::load(&dir).ok_or_else(|| crate::Error::invalid(format!("{id}: no such play request")))?;
+    match what {
+        "play" => {
+            if st.live(&dir).is_some() {
+                return Ok(json!({"status": "playing"}));
+            }
+            if r.state != crate::handoff::queue::State::Queued {
+                return Err(crate::Error::new("busy", format!("{id} is {}", r.state.name())));
+            }
+            let live = crate::handoff::browser::Live::start(&root, &dir)?;
+            st.plays.lock().unwrap().insert(dir, live);
+            Ok(json!({"status": "playing"}))
+        }
+        "window" => {
+            if r.state != crate::handoff::queue::State::Queued {
+                return Err(crate::Error::new("busy", format!("{id} is {}", r.state.name())));
+            }
+            let pid = crate::handoff::spawn_window(&root, &dir)?;
+            Ok(json!({"status": "opening", "pid": pid}))
+        }
+        "decline" => {
+            let note = req.body["note"].as_str().unwrap_or("").trim();
+            if note.is_empty() {
+                return Err(crate::Error::invalid("a decline needs a note: it is what the agent gets"));
+            }
+            crate::handoff::queue::decline(&dir, note)
+        }
+        _ => Err(crate::Error::invalid(format!("{}: no such action", req.path))),
+    }
+}
+
+// ---------------------------------------------------------------- data
+
+/// The port's status (or why there is none), its progress lines and what
+/// wants the person's attention.
+/// A project's messages, with what each side has seen.
+fn messages(root: &Path) -> Value {
+    let all = crate::messages::all(root);
+    let (agent, person) = (crate::messages::seen(root, "agent"), crate::messages::seen(root, "person"));
+    let unread = all.iter().enumerate().filter(|(i, m)| *i >= person && m["from"] == "agent").count();
+    json!({"messages": all, "agent_seen": agent, "person_seen": person, "unread": unread})
+}
+
+fn overview(root: &Path) -> Value {
+    let port = root.join(crate::port::GOAL).is_file();
+    let status = if port {
+        match crate::port::next::look(root) {
+            Ok(v) => v,
+            Err(e) => json!({"error": e.to_value()["error"]}),
+        }
+    } else {
+        Value::Null
+    };
+    let progress = jsonl(&root.join(crate::port::next::PROGRESS));
+    let recent = recent_calls(root, 400);
+    let attention = attention(root, &status, &progress, &recent);
+    let last = recent.iter().rev().find_map(|c| c["t"].as_u64());
+    let unread = messages(root)["unread"].clone();
+    json!({"port": port, "status": status, "progress": progress, "attention": attention, "unread_messages": unread,
+           "last_call": last, "last_commit": last_commit(root), "now": crate::now_ms() as u64})
+}
+
+fn jsonl(p: &Path) -> Vec<Value> {
+    std::fs::read_to_string(p)
+        .map(|t| t.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+        .unwrap_or_default()
+}
+
+/// The last commit's time (ms), from git.
+fn last_commit(root: &Path) -> Option<u64> {
+    let out = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%ct"])
+        .current_dir(root)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok().map(|s| s * 1000)
+}
+
+/// How much of the call log the page is sent at first.
+const TAIL: u64 = 4 * 1024 * 1024;
+
+/// The call log's lines from byte `since` (the page's last `next`), or its
+/// last [`TAIL`] bytes. A log rotated since (shorter than `since`) starts
+/// again: `reset` says so.
+fn calls(root: &Path, since: Option<u64>) -> Value {
+    let path = root.join(crate::calls::LOG);
+    let Ok(mut f) = std::fs::File::open(&path) else { return json!({"lines": [], "next": 0, "reset": true}) };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let (from, reset) = match since {
+        Some(s) if s <= len => (s, false),
+        _ => (len.saturating_sub(TAIL), true),
+    };
+    let mut text = String::new();
+    let _ = f.seek(SeekFrom::Start(from)).and_then(|_| f.read_to_string(&mut text).map(|_| ()));
+    // Only whole lines: one still being written waits for the next call.
+    let whole = text.rfind('\n').map_or(0, |i| i + 1);
+    let mut body = &text[..whole];
+    if reset && from > 0 {
+        body = body.split_once('\n').map_or("", |(_, b)| b);
+    }
+    let lines: Vec<Value> = body.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    json!({"lines": lines, "next": from + whole as u64, "reset": reset})
+}
+
+/// The last `n` calls, start and end merged.
+fn recent_calls(root: &Path, n: usize) -> Vec<Value> {
+    let v = calls(root, None);
+    let mut by_id: Vec<Value> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for l in v["lines"].as_array().into_iter().flatten() {
+        let id = l["id"].as_str().unwrap_or("").to_string();
+        if l["event"] == "start" {
+            index.insert(id, by_id.len());
+            by_id.push(l.clone());
+        } else if let Some(&i) = index.get(&id) {
+            let c = &mut by_id[i];
+            for k in ["exit", "ms", "bytes", "summary", "error", "kept"] {
+                if let Some(x) = l.get(k) {
+                    c[k] = x.clone();
+                }
+            }
+            c["ended"] = l["t"].clone();
+        }
+    }
+    let skip = by_id.len().saturating_sub(n);
+    by_id.split_off(skip)
+}
+
+/// What wants the person: the port asking for them, a loop, passing
+/// recordings falling, a call failing the same way again and again, psx
+/// itself failing, work going on long without a commit, and quiet.
+fn attention(root: &Path, status: &Value, progress: &[Value], calls: &[Value]) -> Vec<Value> {
+    let mut out = Vec::new();
+    // Play requests first: they are what the person can act on at once.
+    let plays = crate::handoff::queue::waiting(root);
+    let queued: Vec<_> = plays.iter().filter(|r| r.state == crate::handoff::queue::State::Queued).collect();
+    if !queued.is_empty() {
+        let n = queued.len();
+        out.push(json!({"level": "act", "view": "requests",
+            "title": format!("{n} play request{} for you", if n == 1 { "" } else { "s" }),
+            "detail": queued.iter().take(3).map(|r| r.text().lines().next().unwrap_or("").to_string()).collect::<Vec<_>>().join("; ")}));
+    }
+    let mut add = |level: &str, title: String, detail: String| out.push(json!({"level": level, "title": title, "detail": detail}));
+    let next = &status["next"];
+    if let Some(e) = status.get("error") {
+        add("act", "port status fails".into(), e["message"].as_str().unwrap_or("").into());
+    }
+    // The Wait item is the requests above.
+    if next["who"] == "person" && next["item"] != "Wait" {
+        let item = next["item"].as_str().unwrap_or("");
+        add("act", format!("{item}: the port waits for you"), next["why"].as_str().unwrap_or("").into());
+    }
+    if let Some(g) = status.get("guard") {
+        let (count, limit) = (g["count"].as_u64().unwrap_or(0), g["limit"].as_u64().unwrap_or(3));
+        if count >= 2 && count < limit && next["who"] == "agent" {
+            add("warn", format!("port next gave {} {count} times unchanged", g["item"].as_str().unwrap_or("").trim()),
+                format!("at {limit} it reports Stuck"));
+        }
+    }
+    if let Some(p) = status["problems"].as_array().filter(|p| !p.is_empty()) {
+        add("warn", format!("{} problem{} in the port", p.len(), if p.len() == 1 { "" } else { "s" }),
+            p.iter().take(3).filter_map(|x| x["problem"].as_str()).collect::<Vec<_>>().join("; "));
+    }
+    // The most passing recordings the port had, against now.
+    let pass = |l: &Value| l["recordings"]["pass"].as_u64();
+    let (best, now) = (progress.iter().filter_map(pass).max(), progress.last().and_then(pass));
+    if let (Some(best), Some(now)) = (best.zip(now).filter(|(b, n)| n < b).map(|x| x.0), now) {
+        add("warn", format!("passing recordings fell from {best} to {now}"),
+            "a change broke recordings that passed before: the progress history shows where".into());
+    }
+    let questions: usize = status["areas"]
+        .as_object()
+        .into_iter()
+        .flat_map(|a| a.values())
+        .flat_map(|v| v.as_array().into_iter().flatten())
+        .map(|f| f["questions"].as_array().map_or(0, Vec::len))
+        .sum();
+    if questions > 0 {
+        add("info", format!("{questions} open question{}", if questions == 1 { "" } else { "s" }),
+            "in the catalogue's features".into());
+    }
+    // The same call failing again and again.
+    let mut failing: HashMap<String, (usize, String)> = HashMap::new();
+    for c in calls.iter().filter(|c| c["exit"].as_u64().is_some_and(|e| e != 0)) {
+        let key = format!("{} {}", c["tool"].as_str().unwrap_or(""), c["args"]);
+        let e = failing.entry(key).or_insert((0, String::new()));
+        e.0 += 1;
+        e.1 = c["summary"].as_str().unwrap_or("").to_string();
+    }
+    let mut repeated: Vec<(String, (usize, String))> = failing.into_iter().filter(|(_, (n, _))| *n >= 3).collect();
+    repeated.sort_by_key(|r| std::cmp::Reverse(r.1.0));
+    for (key, (n, summary)) in repeated.into_iter().take(3) {
+        let tool = key.split_once(' ').map_or(key.as_str(), |(t, _)| t);
+        add("warn", format!("{tool} failed {n} times with the same arguments"), summary);
+    }
+    for c in calls.iter().rev().filter(|c| {
+        matches!(c["error"].as_str(), Some("internal" | "worker_failed" | "panic" | "worker_crashed"))
+    }).take(2) {
+        add("warn", format!("psx failed inside: {}", c["tool"].as_str().unwrap_or("")),
+            c["summary"].as_str().unwrap_or("").into());
+    }
+    let now = crate::now_ms() as u64;
+    let last = calls.iter().rev().find_map(|c| c["t"].as_u64());
+    if let (Some(last), Some(commit)) = (last, last_commit(root)) {
+        let since_commit = calls.iter().filter(|c| c["t"].as_u64().is_some_and(|t| t > commit)).count();
+        if now - last < 30 * 60 * 1000 && last > commit && last - commit > 3 * 3600 * 1000 && since_commit >= 20 {
+            add("info", format!("{since_commit} calls since the last commit, {} ago", ago(now - commit)),
+                "work going on long without a commit".into());
+        }
+    }
+    if let Some(last) = last.filter(|l| now - l > 3600 * 1000) {
+        add("info", format!("quiet for {}", ago(now - last)), "no psx call since".into());
+    }
+    out
+}
+
+fn ago(ms: u64) -> String {
+    let m = ms / 60_000;
+    if m < 60 { format!("{m} min") } else if m < 48 * 60 { format!("{} h", m / 60) } else { format!("{} days", m / 1440) }
+}
+
+fn last_check(root: &Path) -> Value {
+    std::fs::read(root.join(".psx/port/last.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// The scenarios and their recordings, each with what the last check said.
+fn recordings(root: &Path) -> Value {
+    let last = last_check(root);
+    let reported = |id: &str, name: &str| {
+        last["scenarios"]["scenarios"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|s| s["id"] == id)
+            .and_then(|s| s["recordings"].as_array()?.iter().find(|r| r["name"] == name).cloned())
+    };
+    let scenarios: Vec<Value> = crate::scenario::ids(root)
+        .into_iter()
+        .map(|id| {
+            let dir = root.join(crate::scenario::SCENARIOS).join(&id);
+            let mut names: Vec<String> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+                .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+                .collect();
+            names.sort();
+            let recs: Vec<Value> = names
+                .iter()
+                .map(|n| {
+                    let r = reported(&id, n);
+                    json!({"name": n, "checked": r.is_some(),
+                           "failures": r.as_ref().map_or(0, |r| r["failures"].as_array().map_or(0, Vec::len))})
+                })
+                .collect();
+            json!({"id": id, "recordings": recs})
+        })
+        .collect();
+    json!({"scenarios": scenarios, "check": {"commit": last["commit"], "at": last["at"]}})
+}
+
+// ---------------------------------------------------------------- replay
+
+/// Where a recording's replay is cached: by what it replays (the scenario,
+/// its chain, the recording, the glossary's binding sources) and psx's build.
+fn replay_dir(root: &Path, id: &str, name: &str) -> Option<PathBuf> {
+    let read = |p: &Path| std::fs::read(p).unwrap_or_default();
+    let scen = root.join(crate::scenario::SCENARIOS);
+    let toml = read(&scen.join(format!("{id}.toml")));
+    let mut all = root.display().to_string().into_bytes();
+    all.extend(&toml);
+    if let Ok(s) = psx_scenario::Scenario::parse(&String::from_utf8_lossy(&toml)) {
+        all.extend(read(&root.join(&s.chain)));
+    }
+    all.extend(read(&scen.join(id).join(format!("{name}.jsonl"))));
+    for dir in [root.join(crate::scenario::GLOSSARY), root.join(crate::scenario::GLOSSARY).join("binding")] {
+        all.extend(read(&dir.join("Cargo.toml")));
+        for (path, text) in crate::binding::sources(&dir).unwrap_or_default() {
+            all.extend(format!("\n{path}\n{text}").bytes());
+        }
+    }
+    all.extend(crate::context::version().to_string().bytes());
+    let key = crate::stamp::sha256(&all);
+    Some(crate::bios::data_dir()?.join("web-replays").join(&key[..16]))
+}
+
+/// How many replays the cache keeps.
+const KEEP_REPLAYS: usize = 12;
+
+/// How far the recording's replay is; with `start`, start it unless it ran
+/// or runs (again, when it failed: the state may be back).
+fn replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Value {
+    let Some(dir) = replay_dir(root, id, name) else { return json!({"error": "no data directory for the replay cache"}) };
+    let key = dir.display().to_string();
+    let job = st.replays.lock().unwrap().entry(key).or_insert_with(|| Arc::new(Mutex::new(Replay { dir: dir.clone(), ..Default::default() }))).clone();
+    let mut j = job.lock().unwrap();
+    if start && !j.running && j.done.as_ref().is_some_and(|d| d.get("error").is_some()) {
+        j.done = None;
+    }
+    if start && j.done.is_none() && !j.running {
+        if let Some(done) = std::fs::read(dir.join("done.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+            j.done = Some(done);
+        } else {
+            prune_replays(&dir);
+            j.running = true;
+            let (root, id, name, job) = (root.to_path_buf(), id.to_string(), name.to_string(), job.clone());
+            std::thread::spawn(move || {
+                let dir = job.lock().unwrap().dir.clone();
+                let out = std::env::current_exe().and_then(|exe| {
+                    std::process::Command::new(exe)
+                        .arg("--root")
+                        .arg(&root)
+                        .args(["__web-replay", &id, &name])
+                        .arg(&dir)
+                        .stdin(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .output()
+                });
+                let done = match out {
+                    Ok(o) => serde_json::from_slice::<Value>(&o.stdout)
+                        .unwrap_or_else(|_| json!({"error": {"code": "internal", "message": format!("the replay ended without a result ({})", o.status)}})),
+                    Err(e) => json!({"error": {"code": "internal", "message": format!("psx: {e}")}}),
+                };
+                let mut j = job.lock().unwrap();
+                j.running = false;
+                j.done = Some(done);
+            });
+        }
+    }
+    let frames = std::fs::read_dir(&j.dir).map_or(0, |d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count());
+    json!({"running": j.running, "frames": frames, "done": j.done})
+}
+
+/// Room for one more replay: the oldest past [`KEEP_REPLAYS`] go.
+fn prune_replays(keep: &Path) {
+    let Some(parent) = keep.parent() else { return };
+    let mut dirs: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path() != keep)
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    dirs.sort();
+    while dirs.len() >= KEEP_REPLAYS {
+        let (_, d) = dirs.remove(0);
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// `/api/p/I/file?path=P`: a PNG or a CSV in the project (a run's screen,
+/// a mark's, a decoded texture, a run's samples) for the log's cards; P is
+/// relative to the root or absolute inside it.
+fn project_file(root: &Path, path: &str) -> Reply {
+    const LIMIT: u64 = 16 * 1024 * 1024;
+    let p = if Path::new(path).is_absolute() { PathBuf::from(path) } else { root.join(path) };
+    let kind = match p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("png") => "image/png",
+        Some("csv") => "text/csv; charset=utf-8",
+        _ => "",
+    };
+    let inside = match (std::fs::canonicalize(&p), std::fs::canonicalize(root)) {
+        (Ok(p), Ok(r)) => p.starts_with(r) && std::fs::metadata(&p).is_ok_and(|m| m.is_file() && m.len() <= LIMIT),
+        _ => false,
+    };
+    match (!kind.is_empty() && inside).then(|| std::fs::read(&p).ok()).flatten() {
+        Some(b) => Reply::Bytes(kind, b),
+        None => Reply::Missing(format!("{path}: no such image or table in the project")),
+    }
+}
+
+fn frame(st: &State, root: &Path, id: &str, name: &str, tick: &str) -> Reply {
+    let _ = st;
+    let (Some(dir), Ok(tick)) = (replay_dir(root, id, name), tick.parse::<u64>()) else {
+        return Reply::Missing("no such frame".into());
+    };
+    match std::fs::read(dir.join(format!("{tick}.png"))) {
+        Ok(b) => Reply::Bytes("image/png", b),
+        Err(_) => Reply::Missing(format!("tick {tick}: not replayed yet")),
+    }
+}
+
+/// `psx __web-replay ID NAME DIR`: replay the recording, the screen at the
+/// end of each tick to `DIR/<tick>.png`, then (when it ran) `DIR/done.json`.
+pub fn replay_child(ctx: &Ctx, id: &str, name: &str, dir: &Path) -> Outcome {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return Outcome::result(Err(crate::Error::io(dir, e)));
+    }
+    let mut failed = None;
+    let r = crate::scenario::replay(ctx, id, name, Duration::from_secs(600), &mut |t, m| {
+        let (w, h, rgba) = m.bus.gpu.display_rgba();
+        let p = dir.join(format!("{}.png", t.tick));
+        if let Err(e) = crate::run::write_png(&p, w, h, &rgba, png::ColorType::Rgba) {
+            failed.get_or_insert(format!("{}: {e}", p.display()));
+        }
+    });
+    let v = match (r, failed) {
+        (Ok(diffs), None) => json!({"differences": diffs}),
+        (Ok(_), Some(e)) => crate::Error::invalid(e).to_value(),
+        (Err(e), _) => e.to_value(),
+    };
+    // Only a replay that ran is kept: a failed one runs again next time.
+    if v.get("error").is_none() {
+        let _ = crate::write_atomic(&dir.join("done.json"), v.to_string().as_bytes());
+    }
+    Outcome::result(Ok::<_, crate::Error>(v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queries_are_decoded() {
+        assert_eq!(decode("a%20b+c"), "a b c");
+        assert_eq!(decode("100%"), "100%");
+        assert_eq!(decode("%e2%9c%93"), "✓");
+    }
+
+    #[test]
+    fn the_call_log_is_read_from_where_the_page_left_it() {
+        let root = std::env::temp_dir().join(format!("psx-web-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".psx")).unwrap();
+        let a = crate::calls::start(&root, "port_next", json!({}), json!({"via": "cli"})).unwrap();
+        a.end(&json!({"item": "Record"}), 0);
+        let first = calls(&root, None);
+        assert_eq!(first["lines"].as_array().unwrap().len(), 2);
+        let next = first["next"].as_u64().unwrap();
+        assert_eq!(calls(&root, Some(next))["lines"], json!([]));
+        // Half a line waits for the rest.
+        let mut f = std::fs::OpenOptions::new().append(true).open(root.join(crate::calls::LOG)).unwrap();
+        f.write_all(b"{\"id\":\"x\"").unwrap();
+        assert_eq!(calls(&root, Some(next))["next"].as_u64(), Some(next));
+        f.write_all(b",\"event\":\"start\",\"tool\":\"run\"}\n").unwrap();
+        assert_eq!(calls(&root, Some(next))["lines"][0]["tool"], "run");
+        // Rotated: shorter than where the page was.
+        assert_eq!(calls(&root, Some(next * 10))["reset"], true);
+        assert_eq!(recent_calls(&root, 10)[0]["summary"], "item: Record");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_same_failing_call_wants_attention() {
+        let failed = |n: u64| json!({"t": n, "tool": "run", "args": ["run", "--frames", "9"], "exit": 1, "summary": "invalid: no"});
+        let calls: Vec<Value> = (0..3).map(failed).collect();
+        let a = attention(Path::new("/nonexistent"), &Value::Null, &[], &calls);
+        assert!(a.iter().any(|x| x["title"] == "run failed 3 times with the same arguments"), "{a:?}");
+        let progress = [json!({"recordings": {"pass": 5}}), json!({"recordings": {"pass": 3}})];
+        let a = attention(Path::new("/nonexistent"), &json!({"next": {"who": "person", "item": "Confirm"}}), &progress, &[]);
+        let titles: Vec<&str> = a.iter().filter_map(|x| x["title"].as_str()).collect();
+        assert_eq!(titles, ["Confirm: the port waits for you", "passing recordings fell from 5 to 3"]);
+    }
+}

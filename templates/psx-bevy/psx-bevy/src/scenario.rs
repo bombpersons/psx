@@ -174,6 +174,11 @@ pub struct RecordingReport {
     pub ticks: usize,
     /// The first tick each quantity differs at, or why the run stopped.
     pub failures: Vec<String>,
+    /// When a quantity differed: the compared quantities the port had,
+    /// initially and after each tick it ran (`psx web` plots them beside
+    /// the recording's).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<psx_scenario::Values>,
 }
 
 /// The scenarios of a workspace, run against apps `app` makes.
@@ -250,6 +255,7 @@ impl Scenarios {
                     captured: rec.header.source.kind == SourceKind::Captured,
                     ticks: rec.rows.len(),
                     failures: vec!["not run: the scenario has problems".into()],
+                    ..default()
                 },
                 Err(e) => RecordingReport { name, failures: vec![e], ..default() },
             });
@@ -281,6 +287,7 @@ impl Scenarios {
                 captured: rec.header.source.kind == SourceKind::Captured,
                 ticks: rec.rows.len(),
                 failures: vec![format!("{at} panicked: {why}")],
+                ..default()
             }
         })
     }
@@ -299,6 +306,7 @@ impl Scenarios {
             captured: rec.header.source.kind == SourceKind::Captured,
             ticks: rec.rows.len(),
             failures: Vec::new(),
+            values: Vec::new(),
         };
         let mut app = (self.app)();
         let registry = registry(&mut app);
@@ -319,6 +327,7 @@ impl Scenarios {
             })
             .collect();
         let mut differed: BTreeMap<String, String> = BTreeMap::new();
+        let mut trail: Vec<psx_scenario::Values> = Vec::new();
         let mut check =
             |app: &mut App, at: &str, values: &psx_scenario::Values, differed: &mut BTreeMap<String, String>| {
                 let now = match registry.observe(app.world_mut()) {
@@ -326,6 +335,9 @@ impl Scenarios {
                     Err(e) => return Some(format!("{at}: {e}")),
                 };
                 observed.extend(now.keys().map(|q| q.to_string()));
+                trail.push(
+                    compared.iter().filter_map(|(q, _)| Some(((*q).clone(), now.get(q.as_str())?.clone()))).collect(),
+                );
                 for (q, tol) in &compared {
                     if differed.contains_key(q.as_str()) {
                         continue;
@@ -375,6 +387,9 @@ impl Scenarios {
                 out.failures.push(e);
                 return out;
             }
+        }
+        if !differed.is_empty() {
+            out.values = trail;
         }
         // In the order they first differed.
         let mut lines: Vec<String> = differed.into_values().collect();
@@ -534,6 +549,9 @@ mod tests {
         let root2 = workspace(&tolerant, &RECORDING.replace("4296", "4300"));
         let r = Scenarios::new(&root2, app).report();
         assert_eq!(r.scenarios[0].recordings[0].failures, ["tick 2 x: expected 4300, got 4295"]);
+        // What the port had, initially and after each tick it ran.
+        let had: Vec<_> = r.scenarios[0].recordings[0].values.iter().map(|v| v["x"].clone()).collect();
+        assert_eq!(had, [Value::Int(4095), Value::Int(4195), Value::Int(4295)]);
         let missing = SCENARIO.replace("kind = \"level\"", "kind = \"race\"");
         let root3 = workspace(&missing, RECORDING);
         let r = Scenarios::new(&root3, app).report();

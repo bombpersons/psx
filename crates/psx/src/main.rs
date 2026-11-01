@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use commands::{Ctx, Op};
 
@@ -15,6 +15,7 @@ mod assets_cmd;
 mod binding;
 mod bios;
 mod bound_symbols;
+mod calls;
 mod code;
 mod commands;
 mod context;
@@ -26,10 +27,12 @@ mod handoff;
 mod inventory;
 mod mcp;
 mod media_cmd;
+mod messages;
 mod moved;
 mod native;
 mod page;
 mod parser;
+mod play;
 mod port;
 mod provenance;
 mod ram;
@@ -48,6 +51,7 @@ mod textures;
 mod tickfind;
 mod until;
 mod vram_diff;
+mod web;
 mod xa_cmd;
 
 #[derive(Parser)]
@@ -69,6 +73,8 @@ enum Command {
     McpCall,
     #[command(name = "__handoff-child", hide = true)]
     HandoffChild { run_dir: PathBuf },
+    #[command(name = "__web-replay", hide = true)]
+    WebReplay { id: String, name: String, dir: PathBuf },
     /// Discover build, project defaults, BIOS candidates and downloads, Ghidra and capabilities.
     Context(context::ArgsContext),
     /// Install a BIOS: a local image, or an explicit download of a verified one.
@@ -78,6 +84,9 @@ enum Command {
     },
     /// Read built-in investigation workflows and tool-usage guidance.
     Guide(guide::GuideArgs),
+    /// Messages with the person, who reads and writes them in psx web: send one
+    /// (a new thread, or a reply), or read the latest threads.
+    Message(messages::MessageArgs),
     /// Inspect artifacts: directory inventory, paginated JSON/logs/CSV, text, hex or PNG.
     Read(artifact::ReadArgs),
     /// A disc image: its tracks and boot executable, files, sectors and executables.
@@ -124,6 +133,13 @@ enum Command {
     },
     /// Serve every command above as an MCP tool over stdin/stdout (start it in the project root).
     Mcp(mcp::McpArgs),
+    /// Serve a read-only page on localhost: what needs a person, each port's
+    /// progress over time, every psx call, and recordings replayed with their quantities.
+    Web(web::WebArgs),
+    /// For the person: play the agents' play requests (scenario play) in a window, oldest
+    /// first, across the projects psx web shows; --list lists them, --decline answers one
+    /// with a note for the agent instead.
+    Play(play::PlayArgs),
 }
 
 #[derive(Subcommand)]
@@ -230,12 +246,13 @@ enum ScenarioAction {
     /// A recording's quantities per tick, with each numeric one's change since the tick before
     /// (a fixed as its exact decimal unless --raw); --text for an aligned table.
     Show(scenario::ScenarioShowArgs),
-    /// Ask a person to play: open a window showing the game and REQUEST, let them play with a
-    /// keyboard or gamepad, and on F12 write state.bin, their input as a replay, a screenshot
-    /// and their note; F6 marks moments on the way (state, RAM and screen each). With a scenario
-    /// ID, play starts at its state (or the end of --from, one of its recordings) and is written as
-    /// its recording NAME, as scenario record writes one. --detach returns at once; --status RUN_DIR
-    /// reports a play's progress or result.
+    /// Ask a person to play: queue REQUEST for them and return a ticket at once. They answer
+    /// from psx web or psx play: a window shows the game and REQUEST, they play with a keyboard
+    /// or gamepad, and on F12 it writes state.bin, their input as a replay, a screenshot and
+    /// their note (F10 declines, with a note); F6 marks moments on the way. With a scenario ID,
+    /// play starts at its state (or the end of --from, one of its recordings) and is written as
+    /// its recording NAME, as scenario record writes one. --status RUN_DIR reports where a request
+    /// stands and the answer.
     Play(handoff::HandoffArgs),
 }
 
@@ -294,7 +311,16 @@ fn project_root(flag: Option<PathBuf>) -> Option<PathBuf> {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    // The subcommands as MCP names the tool: `scenario record` is scenario_record.
+    let mut tool = Vec::new();
+    let mut m = &matches;
+    while let Some((name, sub)) = m.subcommand() {
+        tool.push(name.replace('-', "_"));
+        m = sub;
+    }
+    let tool = tool.join("_");
     let pinned_root = project_root(cli.root);
     let pinned = pinned_root.is_some();
     if let Some(root) = pinned_root {
@@ -306,14 +332,24 @@ fn main() -> ExitCode {
         }
     }
     let ctx = Ctx { root: std::env::current_dir().unwrap_or_default(), cancel: None };
+    // An MCP server logs its own calls (its project workers' included); a
+    // handoff's child is part of the play that started it; web only reads.
+    let logged = !matches!(cli.command, Command::McpCall | Command::Mcp(_) | Command::HandoffChild { .. } | Command::Web(_) | Command::WebReplay { .. } | Command::Play(_));
+    let call = logged
+        .then(|| calls::start(&ctx.root, &tool, serde_json::json!(std::env::args().skip(1).collect::<Vec<_>>()), calls::caller("cli", None)))
+        .flatten();
     let out = match cli.command {
         Command::McpCall => mcp::project::worker(&ctx),
         Command::HandoffChild { run_dir } => handoff::child(&ctx, &run_dir),
+        Command::WebReplay { id, name, dir } => web::replay_child(&ctx, &id, &name, &dir),
         Command::Guide(a) => a.exec(&ctx),
+        Command::Message(a) => a.exec(&ctx),
         Command::Context(a) => a.exec(&ctx),
         Command::Read(a) => a.exec(&ctx),
         Command::Bios { action } => action.exec(&ctx),
         Command::Mcp(a) => return mcp::main(ctx, a, pinned),
+        Command::Web(a) => return web::main(a),
+        Command::Play(a) => return play::main(a, &ctx.root),
         Command::Disc { action } => action.exec(&ctx),
         Command::Assets { action } => action.exec(&ctx),
         Command::Code { action } => action.exec(&ctx),
@@ -339,7 +375,24 @@ fn main() -> ExitCode {
             StatesAction::Rebuild(a) => a.exec(&ctx),
         },
     };
-    let out = out.with_path_context(&ctx);
+    let mut out = out.with_path_context(&ctx);
+    // The person's messages ride on whatever the agent called, as over MCP.
+    if logged && tool != "message" && out.value.is_object() {
+        if let Some(m) = messages::deliver(&ctx.root) {
+            if out.text {
+                let mut t = out.value["text"].as_str().unwrap_or_default().trim_end().to_string();
+                t.push_str("\n\nFrom the person (in psx web; not an interruption, answer with psx message --text ... --reply-to ID):");
+                for x in m["from_person"].as_array().into_iter().flatten() {
+                    t.push_str(&format!("\n  [{}] {}", x["id"].as_str().unwrap_or(""), x["text"].as_str().unwrap_or("")));
+                }
+                out.value["text"] = serde_json::json!(t);
+            }
+            out.value["messages"] = m;
+        }
+    }
+    if let Some(call) = call {
+        call.end(&out.value, out.exit);
+    }
     println!("{}", out.render());
     ExitCode::from(out.exit)
 }

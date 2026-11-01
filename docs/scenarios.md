@@ -219,10 +219,13 @@ recording's first tick still runs with the pad released, and its details
 name OTHER, which the determinism check replays first.
 
 `psx scenario play ID --name NAME --request "…"` makes the recording from
-a person's play (guide topic run). The window starts where `scenario
+a person's play (guide topic run). The request joins the project's play
+queue and the call returns; the person plays it in `psx web` or with `psx
+play`, or declines it with a note. The play starts where `scenario
 record` starts counting fields, after the first tick. When the person
-hands back with F12, psx records their input as `scenario record` does,
-with its coverage, and says whether it ended where the play did.
+hands back, psx records their input as `scenario record` does, with its
+coverage, and says whether it ended where the play did; `port next` gives
+a Read item and `--status` returns the answer.
 
 `psx scenario show ID --name NAME` reads a recording back as a table: one
 row per tick from tick 0 (`initial`), with the field, the pad (and the

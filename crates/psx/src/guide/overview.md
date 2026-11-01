@@ -24,8 +24,8 @@ held to; this guide says how the work goes.
 In a workspace, start each session with port_next: one item, why it is
 due, done_when (the fact that will show it done) and how. Do it until
 done_when holds, commit, naming the feature's id (F-0003: stomp hang), and
-call port_next again. An item for the person (Confirm, Play, Stuck) waits
-for them: say what it needs and stop. port_status shows every feature by
+call port_next again. Confirm, Wait and Stuck wait for the person: say
+what they need and stop. port_status shows every feature by
 stage; plain=true is text for the person. Without a workspace the same
 commands investigate a game: start with context.
 
@@ -166,11 +166,9 @@ ending on a count of fields or a tick on the render loop); a different
 schedule is only a note. A recording made before the scenario's compare or
 a quantity's type changed is made again.
 
-scenario_play id name request opens a window for the person, at the
-scenario's state after its first tick (or at the end of from), with the
-request beside the game. On F12 psx records their input as scenario_record
-does and says whether it ended where the play did; over MCP it returns a
-ticket at once: poll with status and wait until it is no longer waiting.
+scenario_play id name request asks the person to play from the
+scenario's state after its first tick (or the end of from). It queues;
+port_next gives a Read item once played, recorded as scenario_record does.
 Write the request in game terms: the spot, the way to face, what should
 have happened. Without a scenario, a play reaches a hard place for
 investigation (topic run).
@@ -198,6 +196,7 @@ A feature's stages, each holding with those before it:
 
 port_next's items, in this order:
 
+- Read: the person answered a play request.
 - Catalogue: goal.toml or the catalogue has problems; fix them.
 - Confirm (person): the list is unconfirmed or lost a feature; until it is,
   only investigate and catalogue.
@@ -229,9 +228,10 @@ port_next's items, in this order:
   lines, then one ## heading per finding, each answered with an
   **Answer:** line: done, with port_check passing again, or kept and why.
 - Play (person): a feature without held-out recordings, the code
-  reviewed: start scenario_play and name the recording under held_out.
-- Stuck (person): the same item three times with nothing changed.
+  reviewed: start scenario_play; name its recording under held_out.
 - Done: every feature of the goal is done.
+- Wait (person): only unanswered play requests are left.
+- Stuck (person): the same item three times with nothing changed.
 
 Verdicts are psx's (.psx/verdicts/, never edited). A verdict counts only
 for the commit it judged with no uncommitted changes, so commit, then
@@ -285,3 +285,4 @@ importers read the original's formats; the game reads the port's own.
   recordings.
 - port_init, port_update, port_status, port_next, port_check: the port
   (port_update: setup). psx port confirm is the person's.
+- message: talk with the person (run).

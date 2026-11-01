@@ -17,9 +17,9 @@
 //!   `state.bin`, `ram.bin`, `screen.png` and `mark.json` (label, frames);
 //!   the report diffs each one's RAM against the mark before it on its route.
 //!
-//! The window runs in the calling process, or with `--detach` (always over MCP)
-//! in a child process: the call returns a ticket at once and `scenario play --status`
-//! reports progress (`live.json`) and the result.
+//! A play is a request in the queue ([`queue`]): the call returns a ticket at
+//! once, a person answers it from `psx web` or `psx play` when they can, and
+//! `scenario play --status` reports where it stands and the answer.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -37,8 +37,10 @@ use crate::replay::Input;
 mod audio;
 #[cfg_attr(not(feature = "window"), allow(dead_code))]
 pub mod bindings;
+pub mod browser;
 #[cfg_attr(not(feature = "window"), allow(dead_code))]
 pub mod menu;
+pub mod queue;
 #[cfg(feature = "window")]
 mod window;
 
@@ -71,10 +73,10 @@ pub struct HandoffArgs {
     #[serde(default, skip_serializing_if = "is_false")]
     pub replace: bool,
     /// A play's run_dir (the ticket's): report its progress or result instead of starting one.
-    #[arg(long, conflicts_with_all = ["request", "id", "media", "bios", "from_state", "out", "verify", "detach", "expect"])]
+    #[arg(long, conflicts_with_all = ["request", "id", "media", "bios", "from_state", "out", "verify", "expect"])]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<PathBuf>,
-    /// With --status: seconds to wait for the person to finish (max 600).
+    /// With --status: seconds to wait for the person to answer (max 600).
     #[arg(long, default_value_t = 0, requires = "status")]
     #[serde(default, skip_serializing_if = "is_zero")]
     pub wait: u64,
@@ -98,11 +100,6 @@ pub struct HandoffArgs {
     #[arg(long)]
     #[serde(default)]
     pub verify: bool,
-    /// Return a ticket at once and run the window in its own process; poll with
-    /// `--status`. Over MCP a play always detaches.
-    #[arg(long)]
-    #[serde(default)]
-    pub detach: bool,
     /// The end state asked for, as run's until (`ADDR:FMT=VALUE`); repeatable. The result says
     /// whether each holds and whether to ask again.
     #[arg(long)]
@@ -142,13 +139,13 @@ fn expect_report(a: &HandoffArgs, m: &Machine, end: End) -> Value {
 pub struct HandoffStatusArgs {
     /// The handoff ticket's run_dir.
     pub run_dir: PathBuf,
-    /// Seconds to wait for the person to finish (max 600).
+    /// Seconds to wait for the person to answer (max 600).
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub wait: u64,
 }
 
-/// Seconds without a `live.json` update after which a handoff counts as abandoned.
+/// Seconds without a `live.json` update after which a play's claim lapses.
 const STALE_S: u128 = 20;
 
 fn is_zero(n: &u64) -> bool {
@@ -206,7 +203,6 @@ impl HandoffArgs {
             // What can fail does so now, not after the person has played.
             crate::scenario::prepare(ctx, id, a.name.as_deref().unwrap(), a.from.as_deref(), a.replace)?;
             expectations(&a)?;
-            can_open_window()?;
             return a.open(ctx);
         }
         let resolved =
@@ -219,15 +215,14 @@ impl HandoffArgs {
         a.from_state = a.from_state.map(|p| std::path::absolute(p).unwrap_or_default());
         // A bad condition fails now, not after the person has played.
         expectations(&a)?;
-        can_open_window()?;
         a.open(ctx)
     }
 
-    /// Write the request to its run directory and open the window, here or detached.
+    /// Queue the request in its run directory.
     fn open(mut self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
         let a = &mut self;
         let dir = a.out.clone().unwrap_or_else(|| {
-            ctx.root.join(".psx/handoffs").join(format!(
+            ctx.root.join(queue::DIR).join(format!(
                 "{}-{}{}",
                 crate::now_ms(),
                 std::process::id(),
@@ -237,12 +232,7 @@ impl HandoffArgs {
         let dir = std::path::absolute(&dir).unwrap_or(dir);
         std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
         a.out = Some(dir.clone());
-        let request = dir.join("request.json");
-        std::fs::write(&request, serde_json::to_vec_pretty(&a).unwrap()).map_err(|e| Error::io(&request, e))?;
-        if a.detach {
-            return detach(ctx, &dir);
-        }
-        Ok(run(ctx, self, &dir))
+        queue::enqueue(&dir, &serde_json::to_value(&a).unwrap()).map(|v| (true, v))
     }
 }
 
@@ -274,43 +264,45 @@ fn can_open_window() -> crate::Result<()> {
     Ok(())
 }
 
-/// Start the window in a child process and return a ticket.
-fn detach(ctx: &Ctx, dir: &Path) -> crate::Result<(bool, Value)> {
+/// Open a queued request's window in its own process (for `psx web`).
+pub fn spawn_window(root: &Path, dir: &Path) -> crate::Result<u32> {
+    can_open_window()?;
     let exe = crate::self_exe().map_err(|e| Error::new("io_error", format!("cannot find the psx executable: {e}")))?;
     let log_path = dir.join("launch.log");
     let log = std::fs::File::create(&log_path).map_err(|e| Error::io(&log_path, e))?;
-    let child = std::process::Command::new(&exe)
+    std::process::Command::new(&exe)
         .arg("--root")
-        .arg(&ctx.root)
+        .arg(root)
         .arg("__handoff-child")
         .arg(dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log)
-        .spawn();
-    match child {
-        Ok(c) => Ok((
-            true,
-            json!({
-                "status": "waiting", "run_dir": dir, "pid": c.id(),
-                "note": "A window is open for the person. Poll scenario_play with status (wait up to 600 s per call) until status is no longer waiting; the person may take several minutes.",
-                "next_call": {"tool": "scenario_play", "arguments": {"status": dir, "wait": 300}},
-            }),
-        )),
-        Err(e) => Err(Error::new("io_error", format!("could not start the handoff window ({}): {e}", exe.display()))),
-    }
+        .spawn()
+        .map(|c| c.id())
+        .map_err(|e| Error::new("io_error", format!("could not start the play window ({}): {e}", exe.display())))
 }
 
-/// `__handoff-child <run_dir>`: the detached window process.
+/// `__handoff-child <run_dir>`: a queued request's window in its own process.
 pub fn child(ctx: &Ctx, dir: &Path) -> Outcome {
-    let a: HandoffArgs = match std::fs::read(dir.join("request.json"))
-        .map_err(|e| e.to_string())
-        .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
-    {
-        Ok(a) => a,
-        Err(e) => return Error::invalid(format!("{}: {e}", dir.display())).into(),
-    };
-    Outcome::report(Ok(run(ctx, a, dir)))
+    Outcome::report(answer(ctx, dir, "window"))
+}
+
+/// Claim a queued request and play it in a window here: the answer, or why
+/// it went back to the queue.
+pub fn answer(ctx: &Ctx, dir: &Path, by: &str) -> crate::Result<(bool, Value)> {
+    can_open_window()?;
+    let (a, text) = claim(dir, by)?;
+    Ok(run(ctx, a, &text, dir, play))
+}
+
+/// Claim a queued request: its arguments and the text the person reads.
+fn claim(dir: &Path, by: &str) -> crate::Result<(HandoffArgs, String)> {
+    let r = queue::load(dir).ok_or_else(|| Error::invalid(format!("{}: not a queued play request", dir.display())))?;
+    let a: HandoffArgs =
+        serde_json::from_value(r.args.clone()).map_err(|e| Error::invalid(format!("{}: {e}", dir.display())))?;
+    queue::claim(dir, by)?;
+    Ok((a, r.text()))
 }
 
 impl Op for HandoffStatusArgs {
@@ -331,39 +323,30 @@ fn status(dir: &Path, wait: u64) -> crate::Result<(bool, Value)> {
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(wait);
     loop {
-        if let Some(report) = read_json(&dir.join("report.json")) {
-            let ok = report.get("error").is_none();
-            return Ok((ok, report));
-        }
-        let live = read_json(&dir.join("live.json"));
-        let age_ms = |v: &Option<Value>| {
-            v.as_ref().and_then(|v| v["updated_unix_ms"].as_u64()).map(|t| crate::now_ms().saturating_sub(t as u128))
+        let Some(r) = queue::load(dir) else {
+            // From before the queue: its report, or nothing more will come.
+            return Ok(match read_json(&dir.join("report.json")) {
+                Some(report) => (report.get("error").is_none(), report),
+                None => (false, json!({"status": "abandoned", "run_dir": dir,
+                    "message": "a play from before the play queue that never finished: ask again"})),
+            });
         };
-        let started_ms = std::fs::metadata(dir.join("request.json"))
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.elapsed().ok())
-            .map(|d| d.as_millis());
-        let stale = match age_ms(&live) {
-            Some(age) => age > STALE_S * 1000,
-            None => started_ms.is_none_or(|s| s > 60_000),
-        };
-        if stale {
-            let log = std::fs::read_to_string(dir.join("launch.log")).unwrap_or_default();
-            let tail: String =
-                log.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-            return Ok((
-                false,
-                json!({"status": "abandoned", "run_dir": dir, "live": live,
-                    "message": "the handoff window stopped without a result (crashed, killed, or never started)", "launch_log": tail}),
-            ));
+        if let queue::State::Answered(report) = r.state {
+            queue::mark_read(dir);
+            return Ok((report.get("error").is_none(), report));
         }
         if std::time::Instant::now() >= deadline {
-            return Ok((
-                true,
-                json!({"status": "waiting", "run_dir": dir, "live": live,
-                "next_call": {"tool": "scenario_play", "arguments": {"status": dir, "wait": 300}}}),
-            ));
+            let mut v = json!({"status": r.state.name(), "run_dir": dir,
+                "note": "the person has not answered yet: go on with other work; port next hands out a Read item when they do"});
+            match &r.state {
+                queue::State::Playing(live) => v["live"] = json!(live),
+                _ => {
+                    let queue = dir.parent().map(queue::list_in).unwrap_or_default();
+                    let ahead = queue.iter().filter(|q| q.state == queue::State::Queued && q.queued_unix_ms < r.queued_unix_ms);
+                    v["position"] = json!(ahead.count() + 1);
+                }
+            }
+            return Ok((true, v));
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -687,14 +670,26 @@ fn record_play(
 }
 
 /// The handoff's report, also written to report.json; a failure is recorded
-/// there as an error so `scenario play --status` can return it.
-fn run(ctx: &Ctx, mut a: HandoffArgs, dir: &Path) -> (bool, Value) {
+/// there as an error so `scenario play --status` can return it. A window
+/// closed without an answer, or one that could not open, gives the request
+/// back to the queue instead. `play` is where the person plays: the window,
+/// or the browser.
+fn run(
+    ctx: &Ctx,
+    mut a: HandoffArgs,
+    text: &str,
+    dir: &Path,
+    play: impl FnOnce(&mut Session, &str, &Path) -> Result<(End, String), String>,
+) -> (bool, Value) {
     let result = (|| -> crate::Result<Value> {
         let (mut s, scenario) = match a.id {
             Some(_) => alive(dir, "starting", || scenario_start(ctx, &mut a)).map(|(s, p)| (s, Some(p)))?,
             None => (start(&a)?, None),
         };
-        let (end, note) = play(&mut s, &a, dir).map_err(|e| Error::new("window_failed", e))?;
+        let (end, note) = play(&mut s, text, dir).map_err(|e| Error::new("window_failed", e))?;
+        if end == End::Closed {
+            return Err(Error::new("closed", "the window was closed without an answer"));
+        }
         // The person is done; keep the status from calling this abandoned while
         // the files are written (and verify replays, which can take minutes).
         s.write_live(dir, "finishing");
@@ -708,6 +703,13 @@ fn run(ctx: &Ctx, mut a: HandoffArgs, dir: &Path) -> (bool, Value) {
     })();
     let (ok, v) = match result {
         Ok(v) => (true, v),
+        Err(e) if e.code == "closed" || e.code == "window_failed" => {
+            queue::release(dir);
+            let mut v = e.with("run_dir", dir).to_value();
+            v["status"] = json!("queued");
+            v["note"] = json!("the request is back in the queue");
+            return (false, v);
+        }
         Err(e) => (false, e.with("run_dir", dir).to_value()),
     };
     // report.json is what the status returns and what `run --from-state` reads identity from.
@@ -749,12 +751,12 @@ fn scenario_report(
 }
 
 #[cfg(feature = "window")]
-fn play(s: &mut Session, a: &HandoffArgs, dir: &Path) -> Result<(End, String), String> {
-    window::play(s, &a.request, dir)
+fn play(s: &mut Session, text: &str, dir: &Path) -> Result<(End, String), String> {
+    window::play(s, text, dir)
 }
 
 #[cfg(not(feature = "window"))]
-fn play(_: &mut Session, _: &HandoffArgs, _: &Path) -> Result<(End, String), String> {
+fn play(_: &mut Session, _: &str, _: &Path) -> Result<(End, String), String> {
     Err("this psx was built without the `window` feature".into())
 }
 
@@ -1006,18 +1008,26 @@ mod tests {
     }
 
     #[test]
-    fn status_reports_waiting_then_abandoned_then_the_report() {
-        let dir = std::env::temp_dir().join(format!("psx-handoff-status-{}", std::process::id()));
+    fn status_reports_queued_then_playing_then_the_answer() {
+        let root = std::env::temp_dir().join(format!("psx-handoff-status-{}", std::process::id()));
+        let dir = root.join(queue::DIR).join("1");
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(status(&dir, 0).unwrap_err().code, "invalid_arguments");
-        std::fs::write(dir.join("request.json"), "{}").unwrap();
+        queue::enqueue(&dir, &json!({"request": "x"})).unwrap();
+        let v = status(&dir, 0).unwrap().1;
+        assert_eq!((v["status"].clone(), v["position"].clone()), (json!("queued"), json!(1)));
+        queue::claim(&dir, "test").unwrap();
         std::fs::write(dir.join("live.json"), json!({"updated_unix_ms": crate::now_ms() as u64}).to_string()).unwrap();
-        assert_eq!(status(&dir, 0).unwrap().1["status"], "waiting");
-        std::fs::write(dir.join("live.json"), json!({"updated_unix_ms": 0}).to_string()).unwrap();
-        assert_eq!(status(&dir, 0).unwrap().1["status"], "abandoned");
+        assert_eq!(status(&dir, 0).unwrap().1["status"], "playing");
         std::fs::write(dir.join("report.json"), json!({"status": "done"}).to_string()).unwrap();
         assert_eq!(status(&dir, 0).unwrap().1["status"], "done");
-        std::fs::remove_dir_all(dir).unwrap();
+        assert!(queue::load(&dir).unwrap().read, "the agent has read the answer");
+        // From before the queue, never finished.
+        let old = root.join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("request.json"), "{}").unwrap();
+        assert_eq!(status(&old, 0).unwrap().1["status"], "abandoned");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// Plays a scenario headless the way the window does and records it: the
@@ -1098,7 +1108,6 @@ mod tests {
             cards: Default::default(),
             out: None,
             verify: true,
-            detach: false,
             expect: vec!["80000000:u32>=0".into(), "80000000:u32<0".into()],
             status: None,
             wait: 0,

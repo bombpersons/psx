@@ -13,8 +13,9 @@ gives one item (what, for which feature, why, and the fact that will show it
 done). Do it until that fact holds, commit, and call `port_next` again.
 Name the feature's id in each of its commits (`F-0003: stomp hang`).
 `port_status` shows every
-feature of the goal by stage. An item for the person (Confirm, Play,
-Stuck) waits for them: tell them and stop. psx's `guide`
+feature of the goal by stage. An item for the person (Confirm,
+Stuck, Wait) waits for them: tell them and stop. A play request does not:
+it queues and `port_next` goes on to other work. psx's `guide`
 tool explains each item; `catalogue/README.md` has the feature
 format. psx writes `.psx/verdicts/`; never edit them.
 

@@ -347,7 +347,13 @@ fn guide_is_self_contained_read_only_and_matches_the_cli_for_every_topic() {
     assert!(!psx().args(["guide", "--topic", "not-a-topic"]).current_dir(&root).output().unwrap().status.success());
     assert_eq!(std::fs::read(root.join(".psx/project.json")).unwrap(), config);
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1, "guide must not create artifacts");
-    assert_eq!(std::fs::read_dir(root.join(".psx")).unwrap().count(), 1);
+    // The call log (`psx web` reads it) is the only other thing in .psx.
+    let other = std::fs::read_dir(root.join(".psx"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| !["calls.jsonl", "calls"].contains(&n.as_str()))
+        .count();
+    assert_eq!(other, 1);
     drop(rpc);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1253,6 +1259,7 @@ fn mcp_tools_match_cli() {
         "context",
         "bios_install",
         "guide",
+        "message",
         "read",
         "disc_info",
         "disc_ls",

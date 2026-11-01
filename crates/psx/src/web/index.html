@@ -1,0 +1,1778 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>psx web</title>
+<script>try { const t = localStorage.getItem("psx-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
+<style>
+:root {
+  --bg: #f6f6f3; --panel: #ffffff; --ink: #1d1d1b; --dim: #6b6b66; --line: #e2e1dc;
+  --accent: #2f6fdb; --port: #e07a1f; --act: #c6362f; --warn: #b7791f; --info: #4a7a5c; --ok: #2e8b57;
+  --chip: #efeee9; --sel: #e8f0fd; --violet: #8a5cd0; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+/* Themes: the system's light or dark unless one is picked (data-theme). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg: #151515; --panel: #1e1e1e; --ink: #e8e8e4; --dim: #9a9a94; --line: #2f2f2d;
+    --accent: #6ea0ff; --port: #f0a050; --act: #ff6b61; --warn: #e3b04b; --info: #79b591; --ok: #5cc28a;
+    --chip: #2a2a28; --sel: #23324a; --violet: #a888e8;
+  }
+}
+:root[data-theme=dark] {
+  --bg: #151515; --panel: #1e1e1e; --ink: #e8e8e4; --dim: #9a9a94; --line: #2f2f2d;
+  --accent: #6ea0ff; --port: #f0a050; --act: #ff6b61; --warn: #e3b04b; --info: #79b591; --ok: #5cc28a;
+  --chip: #2a2a28; --sel: #23324a; --violet: #a888e8;
+  color-scheme: dark;
+}
+:root[data-theme=light] { color-scheme: light; }
+/* PlayStation: the boot screen's deep blue, the pad's four buttons for
+   colour (triangle green, circle red, cross blue, square pink). */
+:root[data-theme=ps] {
+  --bg: #0a0d26; --panel: #13183a; --ink: #e7e9f7; --dim: #8e94c4; --line: #262c5c;
+  --accent: #6f9cf0; --port: #f0a050; --act: #f0525a; --warn: #e8c15a; --info: #e58fd0; --ok: #41c49a;
+  --chip: #1d2350; --sel: #232c6a; --violet: #e58fd0;
+  color-scheme: dark;
+}
+:root[data-theme=ps] body { background: radial-gradient(ellipse at top, #18205a 0%, var(--bg) 60%) fixed; }
+:root[data-theme=ps] header { border-bottom: 0; box-shadow: 0 1px 0 var(--line); background: linear-gradient(90deg, #13183a, #1a2150); }
+:root[data-theme=ps] header::after { content: ""; position: absolute; left: 0; right: 0; bottom: -3px; height: 3px; background: linear-gradient(90deg, #41c49a 0 25%, #f0525a 25% 50%, #6f9cf0 50% 75%, #e58fd0 75%); }
+:root[data-theme=ps] header h1::after { content: " △◯✕□"; font-size: 12px; letter-spacing: .25em; background: linear-gradient(90deg, #41c49a 0 25%, #f0525a 25% 50%, #6f9cf0 50% 75%, #e58fd0 75%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+:root[data-theme=ps] .card, :root[data-theme=ps] .call { box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+:root[data-theme=ps] .card h2 { color: var(--accent); letter-spacing: .12em; }
+#theme { font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; height: var(--hd); }
+:root { --hd: 42px; --side: 250px; --chatw: 380px; }
+/* The page: projects on the left, the view in the middle, on the log the
+   messages on the right. A desktop page. */
+#shell { display: grid; grid-template-columns: var(--side) minmax(0, 1fr) auto; align-items: start; }
+#side { position: sticky; top: var(--hd); height: calc(100vh - var(--hd)); overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 10px 8px; }
+#side .sh { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 12px 8px 4px; font-weight: 600; }
+.proj { display: block; width: 100%; text-align: left; font: inherit; color: var(--ink); background: none; border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; margin-bottom: 2px; cursor: pointer; }
+.proj:hover { background: var(--chip); }
+.proj.on { background: var(--sel); border-color: var(--line); }
+.proj .pn { display: flex; align-items: center; gap: 7px; }
+.proj .pn b { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj .pi { font-size: 12px; color: var(--dim); margin: 2px 0 0 15px; }
+.proj .pa { font-size: 12px; margin: 3px 0 0 15px; padding-left: 6px; border-left: 2px solid var(--line); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.proj .pa:hover { color: var(--accent); }
+.proj .pa.act { border-left-color: var(--act); } .proj .pa.warn { border-left-color: var(--warn); }
+.proj .n, .proj .mail { font-size: 11px; background: var(--act); color: #fff; border-radius: 9px; padding: 0 6px; }
+.proj .n:empty { display: none; }
+header h1 { font-size: 15px; margin: 0 8px 0 0; letter-spacing: .02em; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.tab { border: 1px solid transparent; background: none; color: var(--ink); padding: 4px 10px; border-radius: 6px; cursor: pointer; font: inherit; display: inline-flex; align-items: center; gap: 6px; }
+.tab:hover { background: var(--chip); }
+.tab.on { background: var(--sel); border-color: var(--line); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); display: inline-block; }
+.dot.act { background: var(--act); } .dot.warn { background: var(--warn); } .dot.info { background: var(--info); }
+#live { margin-left: auto; color: var(--dim); font-size: 12px; }
+.chip { background: var(--chip); border-radius: 6px; padding: 3px 9px; font-size: 13px; cursor: pointer; border-left: 3px solid var(--line); max-width: 560px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.act { border-left-color: var(--act); } .chip.warn { border-left-color: var(--warn); } .chip.info { border-left-color: var(--info); }
+.chip b { font-weight: 600; }
+.quiet { color: var(--dim); font-size: 13px; }
+main { padding: 12px 20px 40px; min-width: 0; }
+nav.sub { display: flex; gap: 4px; margin-bottom: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 0 0 8px; font-weight: 600; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+.next .item { font-size: 18px; font-weight: 600; }
+.tab .mail { font-size: 11px; background: var(--act); color: #fff; border-radius: 9px; padding: 0 5px; }
+.who { font-size: 12px; padding: 1px 7px; border-radius: 10px; background: var(--chip); margin-left: 6px; vertical-align: middle; }
+.who.person { background: var(--act); color: #fff; }
+details summary { cursor: pointer; color: var(--dim); margin-top: 6px; }
+.att { padding: 6px 0 6px 10px; border-left: 3px solid var(--line); margin: 4px 0; }
+.att.act { border-left-color: var(--act); } .att.warn { border-left-color: var(--warn); } .att.info { border-left-color: var(--info); }
+.att .d { color: var(--dim); font-size: 13px; overflow-wrap: anywhere; }
+.tiles { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.tile { background: var(--chip); border-radius: 6px; padding: 6px 10px; min-width: 110px; }
+.tile .n { font-size: 18px; font-weight: 600; } .tile .l { font-size: 12px; color: var(--dim); }
+canvas.chart { width: 100%; height: 130px; display: block; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--dim); font-weight: 600; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); font-size: 12px; }
+.bar { height: 6px; background: var(--chip); border-radius: 3px; overflow: hidden; min-width: 60px; }
+.bar i { display: block; height: 100%; background: var(--ok); }
+/* log */
+.filters { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.filters input[type=text], .filters select { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+.filters input[type=text] { min-width: 220px; }
+.feed { max-width: 1600px; margin: 0 auto; }
+/* The log scrolls in its own box, so the header and filters stay in view. */
+body.logv main { padding-bottom: 0; }
+.feedbox { overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; border-top: 1px solid var(--line); padding: 0 6px 12px 0; }
+.grp { display: flex; gap: 10px; align-items: center; margin: 18px 0 6px; }
+.grp .av { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; flex: none; }
+.grp .nm { font-weight: 600; } .grp .m { color: var(--dim); font-size: 12px; }
+.call { --fam: var(--line); background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--fam); border-radius: 8px; margin: 0 0 8px 40px; min-width: 0; }
+.call[data-fam=disc] { --fam: var(--info); } .call[data-fam=code] { --fam: var(--accent); } .call[data-fam=emu] { --fam: var(--port); }
+.call[data-fam=scenario] { --fam: var(--violet); } .call[data-fam=port] { --fam: var(--ok); } .call[data-fam=talk] { --fam: var(--accent); }
+.call.err { --fam: var(--act); background: color-mix(in srgb, var(--act) 5%, var(--panel)); }
+.call > .ch { display: flex; gap: 8px; align-items: baseline; padding: 6px 10px; min-width: 0; }
+.call .lab { font-weight: 600; white-space: nowrap; }
+.call .tn { font-family: var(--mono); font-size: 11px; color: var(--dim); white-space: nowrap; }
+.call .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.call .m { color: var(--dim); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.call > .cb { padding: 0 10px 10px; font-size: 13px; min-width: 0; }
+.call > .cb:empty { display: none; }
+.call .raw > summary { font-size: 12px; margin-top: 8px; }
+.call .raw pre { max-height: 360px; overflow: auto; background: var(--bg); padding: 6px; border-radius: 6px; margin-top: 4px; }
+.call .lead { margin-bottom: 6px; }
+.call .note { color: var(--dim); font-size: 12px; margin-top: 4px; }
+.call .text { white-space: pre-wrap; }
+.call h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 10px 0 4px; font-weight: 600; }
+.badge { font-size: 11px; padding: 0 5px; border-radius: 4px; background: var(--chip); white-space: nowrap; }
+.badge.rep { background: var(--act); color: #fff; } .badge.big { background: var(--warn); color: #000; } .badge.run { background: var(--accent); color: #fff; }
+.more { padding: 6px 0; color: var(--accent); cursor: pointer; font-size: 13px; text-align: center; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; font-size: 13px; }
+.kv > :nth-child(odd) { color: var(--dim); }
+.kv > :nth-child(even) { min-width: 0; overflow-wrap: anywhere; }
+.pill { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 10px; background: var(--chip); white-space: nowrap; }
+.pill.ok { background: color-mix(in srgb, var(--ok) 22%, transparent); } .pill.bad { background: color-mix(in srgb, var(--act) 22%, transparent); }
+.pill.warn { background: color-mix(in srgb, var(--warn) 25%, transparent); }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 6px; }
+.stat { background: var(--chip); border-radius: 6px; padding: 3px 9px; }
+.stat b { font-size: 15px; font-variant-numeric: tabular-nums; } .stat span { color: var(--dim); font-size: 12px; margin-left: 4px; }
+.stat .bar { margin-top: 3px; height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.stat .bar i { display: block; height: 100%; background: var(--ok); }
+.scroll { max-height: 320px; overflow: auto; }
+.tbl { font-size: 12px; }
+.tbl td, .tbl th { padding: 2px 8px; }
+.tbl td { font-variant-numeric: tabular-nums; }
+.tbl tr.hot td { background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.tbl td.ch { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.code { font-family: var(--mono); font-size: 12px; background: var(--bg); border-radius: 6px; padding: 6px 8px; overflow: auto; max-height: 420px; white-space: pre; tab-size: 4; }
+.code .ad { color: var(--dim); } .code .wd { color: var(--dim); opacity: .6; } .code .mn { color: var(--accent); font-weight: 600; }
+.code .rg { color: var(--port); } .code .nu { color: var(--ok); } .code .lb { color: var(--violet); font-weight: 600; } .code .cm { color: var(--dim); font-style: italic; }
+.code .kw { color: var(--accent); font-weight: 600; } .code .ty { color: var(--violet); } .code .fn { color: var(--port); } .code .st { color: var(--ok); }
+.code .df { background: color-mix(in srgb, var(--warn) 25%, transparent); }
+.shots { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; }
+.shot { margin: 0; }
+.shot img { display: block; max-width: 100%; width: 320px; image-rendering: pixelated; border-radius: 6px; background: #000; cursor: zoom-in; }
+.shot.small img { width: 160px; } .shot.tex { width: 112px; } .shot.tex figcaption { font-size: 10px; } .shot.tex img { width: auto; max-width: 128px; max-height: 128px; background: repeating-conic-gradient(var(--chip) 0 25%, var(--panel) 0 50%) 0 0 / 12px 12px; }
+.shot figcaption { font-size: 11px; color: var(--dim); max-width: 320px; overflow-wrap: anywhere; }
+.footage { margin-top: 6px; }
+.footage .screen { width: 384px; }
+.md h3 { font-size: 13px; margin: 10px 0 4px; } .md p { margin: 4px 0; } .md code { font-family: var(--mono); font-size: 12px; background: var(--chip); padding: 0 3px; border-radius: 3px; }
+.md .code { max-height: none; }
+.fold { position: relative; max-height: 220px; overflow: hidden; }
+.fold.open { max-height: none; }
+.fold:not(.open)::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 40px; background: linear-gradient(transparent, var(--panel)); }
+.unfold { color: var(--accent); cursor: pointer; font-size: 12px; }
+#zoom { position: fixed; inset: 0; background: rgba(0,0,0,.8); display: flex; align-items: center; justify-content: center; z-index: 50; cursor: zoom-out; }
+#zoom img { max-width: 95vw; max-height: 95vh; image-rendering: pixelated; min-width: min(90vw, 1024px); object-fit: contain; }
+/* messages */
+/* The messages: a column of the page, right of the view; folded, a strip. */
+#chat { position: sticky; top: var(--hd); width: var(--chatw); height: calc(100vh - var(--hd)); background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+#chat[hidden] { display: none; }
+#chat.min { width: 44px; }
+#chat.min .hd { flex-direction: column; height: 100%; padding: 12px 0; }
+#chat.min .hd b { writing-mode: vertical-rl; flex: none; }
+#chat.min #chatwho { display: none; }
+#chat.min .body, #chat.min .compose { display: none; }
+#chat .hd { padding: 8px 12px; display: flex; gap: 8px; align-items: center; cursor: pointer; user-select: none; }
+#chat:not(.min) .hd { border-bottom: 1px solid var(--line); }
+#chat .hd b { flex: 1; } #chat .hd .n { background: var(--act); color: #fff; border-radius: 9px; padding: 0 6px; font-size: 12px; }
+#chat .hd .n:empty { display: none; }
+#chat .body { overflow: auto; padding: 8px 10px; flex: 1; min-height: 80px; }
+#chat .thr { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+#chat .msg { padding: 5px 9px; font-size: 13px; }
+#chat .msg .w { font-size: 11px; color: var(--dim); display: flex; gap: 6px; }
+#chat .msg .w b { color: var(--ink); }
+#chat .msg.agent .w b { color: var(--accent); }
+#chat .msg.new { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+#chat .msg .t { white-space: pre-wrap; overflow-wrap: anywhere; }
+#chat .replies { margin-left: 10px; border-left: 2px solid var(--line); }
+#chat .rep { font-size: 12px; color: var(--accent); cursor: pointer; padding: 3px 9px 6px; }
+#chat .seen { font-size: 11px; color: var(--dim); }
+#chat textarea { font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); resize: vertical; min-height: 2.4em; }
+#chat .compose { padding: 8px 10px; border-top: 1px solid var(--line); }
+#chat .thr .compose { border-top: 1px solid var(--line); padding: 6px 9px; }
+#chat .hint { font-size: 11px; color: var(--dim); margin-top: 3px; display: flex; justify-content: space-between; gap: 6px; }
+/* overview */
+.ovgrid { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(0, 2fr); gap: 12px; align-items: start; }
+.ovgrid > .col > .card:last-child { margin-bottom: 0; }
+.ovgrid .wide { grid-column: 1 / -1; }
+.recent td { padding: 3px 6px; } .recent tr { cursor: pointer; } .recent tr:hover td { background: var(--chip); }
+.call.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
+.recent .t { color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.recent .x { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12px; }
+/* recordings */
+.recs { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 900px) { .recs { grid-template-columns: minmax(0, 1fr); } }
+.reclist { max-height: calc(100vh - var(--hd) - 24px); overflow: auto; position: sticky; top: calc(var(--hd) + 12px); }
+.reclist .sc { font-weight: 600; margin: 8px 0 2px; font-size: 13px; }
+.reclist .r { padding: 2px 8px; border-radius: 5px; cursor: pointer; display: flex; gap: 6px; align-items: center; font-size: 13px; }
+.reclist .r:hover { background: var(--chip); } .reclist .r.on { background: var(--sel); }
+.mark { width: 14px; text-align: center; font-size: 12px; }
+.mark.pass { color: var(--ok); } .mark.fail { color: var(--act); } .mark.none { color: var(--dim); }
+.viewer-top { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; }
+@media (max-width: 1100px) { .viewer-top { grid-template-columns: minmax(0, 1fr); } }
+.screen { background: #000; width: 512px; max-width: 100%; aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; border-radius: 6px; overflow: hidden; position: relative; }
+.screen img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
+.screen img:not([src]) { visibility: hidden; }
+.screen .msg { color: #aaa; position: absolute; font-size: 13px; padding: 12px; text-align: center; }
+.controls { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+.controls input[type=range] { flex: 1; min-width: 160px; }
+button.b { font: inherit; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+button.b:hover { background: var(--chip); }
+.padline { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.plots .q { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 8px; border-top: 1px solid var(--line); padding: 4px 0; }
+.plots .q .lab { font-size: 13px; overflow: hidden; }
+.plots .q .lab .nm { font-family: var(--mono); font-size: 12px; font-weight: 600; word-break: break-all; }
+.plots .q .lab .v { font-variant-numeric: tabular-nums; font-size: 12px; }
+.plots .q .lab .v .p { color: var(--port); } .plots .q .lab .v .r { color: var(--accent); }
+.plots .q.diff .lab .nm { color: var(--act); }
+.plots .pl { position: relative; }
+.plots canvas { width: 100%; height: 64px; display: block; cursor: crosshair; }
+.plots .cur { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--ink); opacity: .8; pointer-events: none; }
+.legend { font-size: 12px; color: var(--dim); display: flex; gap: 14px; margin: 4px 0; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 4px; }
+.warnbox { border-left: 3px solid var(--warn); padding: 4px 10px; margin: 6px 0; font-size: 13px; }
+.empty { color: var(--dim); padding: 20px 0; }
+/* play requests */
+.req { border-left: 3px solid var(--act); }
+.req.playing { border-left-color: var(--accent); }
+.req.answered { border-left-color: var(--line); }
+.req .what { white-space: pre-wrap; font-size: 15px; margin: 6px 0; }
+.req .meta { color: var(--dim); font-size: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+.req .after { border-left: 3px solid var(--warn); padding: 2px 8px; margin: 6px 0; font-size: 13px; }
+.req .acts { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px; }
+.req textarea { font: inherit; flex: 1; min-width: 240px; min-height: 2.4em; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+button.b.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.b:disabled { opacity: .5; cursor: default; }
+div.err:not(.call) { color: var(--act); font-size: 13px; }
+/* browser play */
+.player { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; }
+@media (max-width: 1000px) { .player { grid-template-columns: minmax(0, 1fr); } }
+.player canvas { width: 100%; aspect-ratio: 4 / 3; background: #000; image-rendering: pixelated; border-radius: 6px; display: block; outline: none; }
+.player canvas:focus { box-shadow: 0 0 0 2px var(--accent); }
+.player .side { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.player .row { display: flex; gap: 6px; flex-wrap: wrap; }
+.player textarea, .player input[type=text] { font: inherit; width: 100%; box-sizing: border-box; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+.player textarea { min-height: 4em; }
+.player .msg { border-left: 3px solid var(--accent); padding: 2px 8px; min-height: 1.4em; }
+.player .msg:empty { visibility: hidden; }
+.player .keys { font-family: var(--mono); font-size: 11px; color: var(--dim); display: grid; grid-template-columns: auto 1fr 1fr; gap: 0 8px; }
+.player button.b.on { background: var(--sel); }
+</style>
+</head>
+<body>
+<header>
+  <h1>psx</h1>
+  <span id="live">connecting…</span>
+  <select id="theme" title="theme"><option value="">system theme</option><option value="light">light</option><option value="dark">dark</option><option value="ps">PlayStation</option></select>
+</header>
+<div id="shell">
+<aside id="side"></aside>
+<main id="main"><div class="empty">Loading…</div></main>
+<div id="chat" class="min" hidden><div class="hd"><b>Messages</b><span class="n"></span><span class="quiet" id="chatwho"></span><span class="arr"></span></div><div class="body"></div><div class="compose"><textarea id="chatnew" placeholder="A message to the agent"></textarea><div class="hint"><span>Enter sends · Shift+Enter, a new line</span><span>it reads it with its next psx call</span></div></div></div>
+</div>
+<script>
+"use strict";
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const api = async path => { const r = await fetch(path); return r.json(); };
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const fmtTime = t => new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+const fmtDate = t => new Date(t).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+const fmtMs = ms => ms == null ? "" : ms < 1000 ? ms + " ms" : ms < 60000 ? (ms / 1000).toFixed(1) + " s" : Math.round(ms / 60000) + " min";
+const fmtBytes = b => b == null ? "" : b < 1024 ? b + " B" : b < 1048576 ? Math.round(b / 1024) + " KB" : (b / 1048576).toFixed(1) + " MB";
+const ago = ms => { const m = Math.round(ms / 60000); return m < 60 ? m + " min" : m < 2880 ? Math.round(m / 60) + " h" : Math.round(m / 1440) + " days"; };
+const LEVEL = {act: 3, warn: 2, info: 1};
+// Sent with every action: only the page this server gave out can act.
+const TOKEN = "__PSX_TOKEN__";
+const post = async (path, body) => {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-PSX-Token": TOKEN}, body: JSON.stringify(body || {})});
+  try { return await r.json(); } catch (e) { return {error: {message: r.status + " " + r.statusText}}; }
+};
+
+const S = {
+  projects: [], cur: 0, view: "overview", overview: {}, calls: {},
+  sel: null, errorsOnly: false, filter: "", open: {},
+  recs: null, rec: null, recKey: null, tick: 0, playing: null, replay: null,
+  requests: null, seenRequests: null, drafts: {},
+  // The request being played in this page: {p, id, status, ...}.
+  player: null,
+};
+
+// ------------------------------------------------------------ shell
+async function start() {
+  S.projects = await api("/api/projects");
+  try { const h = JSON.parse(localStorage.getItem("psx-web") || "{}"); if (h.cur < S.projects.length) S.cur = h.cur; if (h.view) S.view = h.view === "calls" ? "log" : h.view; } catch (e) {}
+  // A link: #/PROJECT/VIEW, or #/PROJECT/recordings/SCENARIO/NAME/TICK.
+  const [i, view, scenario, name, tick] = location.hash.slice(2).split("/").map(decodeURIComponent);
+  if (i === "requests") S.view = "requests";
+  else if (+i < S.projects.length && ["overview", "log", "calls", "recordings"].includes(view)) {
+    S.cur = +i; S.view = view === "calls" ? "log" : view;
+    if (view === "recordings" && name) { S.rec = {scenario, name}; S.tick = +tick || 0; }
+  }
+  if (!S.projects.length) { $("#main").innerHTML = `<div class="empty">No projects yet. Run <span class="mono">psx web &lt;ROOT&gt;</span> with a project's root; it is remembered.</div>`; }
+  tabs();
+  initChat();
+  initTheme();
+  await Promise.all([...S.projects.map((_, i) => loadOverview(i)), ...S.projects.map((_, i) => loadMessages(i)), loadRequests()]);
+  tabs();
+  render();
+  listen();
+  setInterval(tabs, 60000);
+}
+function initTheme() {
+  const sel = $("#theme");
+  sel.value = document.documentElement.dataset.theme || "";
+  sel.onchange = () => {
+    const t = sel.value;
+    if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+    try { t ? localStorage.setItem("psx-theme", t) : localStorage.removeItem("psx-theme"); } catch (e) {}
+    // Charts take their colours when drawn.
+    render();
+  };
+}
+function save() { try { localStorage.setItem("psx-web", JSON.stringify({cur: S.cur, view: S.view})); } catch (e) {} link(); }
+function link() {
+  if (S.view === "requests") { history.replaceState(null, "", "#/requests"); return; }
+  const r = S.view === "recordings" && S.rec && S.recKey ? [S.rec.scenario, S.rec.name, S.tick] : [];
+  history.replaceState(null, "", "#/" + [S.cur, S.view, ...r].map(x => encodeURIComponent(x)).join("/"));
+}
+
+function worst(i) {
+  const a = S.overview[i]?.attention || [];
+  return a.reduce((w, x) => LEVEL[x.level] > (LEVEL[w] || 0) ? x.level : w, "");
+}
+// The projects, each with its next item and what needs the person, and
+// the play requests across them.
+function tabs() {
+  const queued = (S.requests?.waiting || []).filter(r => r.state === "queued").length;
+  const proj = (p, i) => {
+    const o = S.overview[i] || {}, n = o.status?.next;
+    const att = (o.attention || []).filter(a => a.level !== "info").sort((a, b) => LEVEL[b.level] - LEVEL[a.level]);
+    const mail = S.msgs[i]?.unread && !(i === S.cur && S.chatOpen) ? `<span class="mail" title="unread messages from the agent">✉ ${S.msgs[i].unread}</span>` : "";
+    return `<div class="proj ${i === S.cur && S.view !== "requests" ? "on" : ""}" data-i="${i}" title="${esc(p.root)}">
+      <div class="pn"><span class="dot ${worst(i)}"></span><b>${esc(p.name)}</b>${mail}</div>
+      ${n?.item ? `<div class="pi">next: ${esc(n.item)}${n.feature ? " " + esc(n.feature) : ""}${n.who === "person" ? " · yours" : ""}</div>` : ""}
+      ${att.map(a => `<div class="pa ${a.level}" data-v="${esc(a.view || "overview")}" title="${esc(a.detail)}">${esc(a.title)}</div>`).join("")}</div>`;
+  };
+  $("#side").innerHTML = `<button class="proj ${S.view === "requests" ? "on" : ""}" id="reqtab" title="the agents' play requests, across projects"><div class="pn"><b>Play requests</b><span class="n">${queued || ""}</span></div></button>
+    <div class="sh">Projects</div>${S.projects.map(proj).join("")}`;
+  $("#reqtab").onclick = () => { S.view = "requests"; save(); tabs(); render(); };
+  for (const b of document.querySelectorAll("#side .proj[data-i]")) b.onclick = ev => {
+    const i = +b.dataset.i, v = ev.target.closest(".pa")?.dataset.v;
+    if (i !== S.cur) { S.sel = null; S.rec = null; S.recKey = null; }
+    S.cur = i;
+    if (v) S.view = v; else if (S.view === "requests") S.view = "overview";
+    save(); tabs(); render();
+  };
+}
+
+function listen() {
+  const es = new EventSource("/api/events");
+  es.onopen = () => $("#live").textContent = "live";
+  es.onerror = () => $("#live").textContent = "reconnecting…";
+  es.addEventListener("change", async ev => {
+    const {p, what} = JSON.parse(ev.data);
+    $("#live").textContent = "live · " + fmtTime(Date.now());
+    await loadOverview(p);
+    if (what.includes("plays")) { await loadRequests(); if (S.view === "requests" && !S.player && document.activeElement?.tagName !== "TEXTAREA") requestsView(); }
+    if (what.includes("calls") && S.calls[p]) await loadCalls(p);
+    if (what.includes("messages") || what.includes("messages_seen")) {
+      const before = S.msgs[p]; await loadMessages(p); notifyMessages(p, before);
+      if (p === S.cur) chatView();
+      if (!what.some(w => !w.startsWith("messages"))) { tabs(); return; }
+    }
+    if (what.includes("check") && p === S.cur) { S.recs = null; if (S.rec) S.recKey = null; }
+    tabs();
+    if (p === S.cur && S.view !== "requests") render(true);
+  });
+}
+
+async function loadOverview(i) { S.overview[i] = await api(`/api/p/${i}/overview`); }
+
+function render(refresh) {
+  if (!S.projects.length) return;
+  const m = $("#main");
+  if (S.view !== "requests" && S.player) stopPlayer();
+  if (S.view === "requests") { chatView(); m.innerHTML = `<div id="view"></div>`; S.player ? playerView() : requestsView(); return; }
+  const views = [["overview", "Overview"], ["log", "Log"], ["recordings", "Recordings"]];
+  if (!refresh || !$("nav.sub", m)) {
+    m.innerHTML = `<nav class="sub">${views.map(([k, l]) => `<button class="tab ${k === S.view ? "on" : ""}" data-v="${k}">${l}</button>`).join("")}</nav><div id="view"></div>`;
+    for (const b of m.querySelectorAll("nav.sub .tab")) b.onclick = () => { S.view = b.dataset.v; save(); render(); };
+  }
+  chatView();
+  if (S.view !== "log") S.feed = null;
+  document.body.classList.toggle("logv", S.view === "log");
+  if (S.view === "overview") overview();
+  else if (S.view === "log") logView();
+  else recordingsView(refresh);
+}
+
+// ------------------------------------------------------------ overview
+function overview() {
+  const o = S.overview[S.cur] || {};
+  const st = o.status;
+  const recent = `<div class="card"><h2>Recent calls</h2><div id="recent"><div class="quiet">Loading…</div></div></div>`;
+  let h = "";
+  if (!o.port) {
+    h += `<div class="ovgrid"><div class="col"><div class="card"><h2>Project</h2>Not a port (no goal.toml): its calls show under Log.</div><div class="card"><h2>Attention</h2>${attentionList(o)}</div></div><div class="col">${recent}</div></div>`;
+  } else if (st?.error) {
+    h += `<div class="ovgrid"><div class="col"><div class="card"><h2>Status</h2><div class="att act">${esc(st.error.message)}</div></div></div><div class="col">${recent}</div></div>`;
+  } else if (st) {
+    const n = st.next || {};
+    const next = `<div class="card next"><h2>Next</h2>
+      <div><span class="item">${esc(n.item)}${n.feature ? " " + esc(n.feature) : ""}</span><span class="who ${n.who === "person" ? "person" : ""}">${esc(n.who)}</span></div>
+      <div style="margin-top:6px">${esc(n.why)}</div>
+      ${n.how ? `<details><summary>how</summary><div style="margin-top:4px">${esc(n.how)}</div></details>` : ""}
+      ${n.done_when ? `<details><summary>done when</summary><div style="margin-top:4px">${esc(n.done_when)}</div></details>` : ""}
+      ${st.guard && st.guard.item.trim() === `${n.item} ${n.feature || ""}`.trim() ? `<div class="quiet" style="margin-top:6px">port next gave “${esc(st.guard.item.trim())}” ${st.guard.count}× in a row (Stuck at ${st.guard.limit})</div>` : ""}
+    </div>`;
+    h += `<div class="ovgrid"><div class="col">${next}<div class="card"><h2>Attention</h2>${attentionList(o)}</div></div>
+      <div class="col">${progressCard(o, st)}${recent}</div><div class="wide">${featuresCard(st)}</div></div>`;
+  }
+  $("#view").innerHTML = h;
+  drawProgress(o);
+  recentCalls();
+}
+// The project's last calls, each a link to its card in the log.
+async function recentCalls() {
+  const i = S.cur;
+  if (!S.calls[i]) await loadCalls(i);
+  const box = $("#recent");
+  if (!box || i !== S.cur) return;
+  const c = S.calls[i], xs = c.order.slice(-10).reverse().map(id => c.byId.get(id));
+  box.innerHTML = xs.length ? `<table class="recent">${xs.map(x => `<tr data-id="${esc(x.id)}"><td class="t">${fmtTime(x.t)}</td><td>${x.ended == null ? pill("running", "") : x.exit ? pill("failed", "bad") : ""}</td><td style="white-space:nowrap">${esc(TOOLS[x.tool] || x.tool)}</td><td class="x" title="${esc(argsText(x))}">${esc(unroot(title(x)))}</td></tr>`).join("")}</table>`
+    : `<div class="quiet">No calls logged yet.</div>`;
+  for (const tr of box.querySelectorAll("tr")) tr.onclick = () => { S.view = "log"; S.jumpTo = tr.dataset.id; save(); render(); };
+}
+function attentionList(o) {
+  const a = o.attention || [];
+  const last = o.last_call ? `<div class="quiet" style="margin-top:6px">last call ${ago(o.now - o.last_call)} ago${o.last_commit ? ` · last commit ${ago(o.now - o.last_commit)} ago` : ""}</div>` : "";
+  return (a.length ? a.map(x => `<div class="att ${x.level}"><div>${esc(x.title)}</div><div class="d">${esc(x.detail)}</div></div>`).join("") : `<div class="quiet">Nothing needs you.</div>`) + last;
+}
+function featuresOf(st) { return Object.entries(st.areas || {}).flatMap(([area, fs]) => fs.map(f => ({...f, area}))); }
+function progressCard(o, st) {
+  const fs = featuresOf(st).filter(f => f.in_goal);
+  const sum = k => fs.reduce((s, f) => s + (f[k]?.pass ?? f[k]?.resolved ?? 0), 0);
+  const tot = k => fs.reduce((s, f) => s + (f[k]?.total ?? 0), 0);
+  const stages = Object.entries(st.stages || {}).map(([k, v]) => `${v} ${k}`).join(" · ");
+  const tiles = [
+    [fs.length, "goal features", stages],
+    [`${sum("work")}/${tot("work")}`, "work recordings pass"],
+    [`${sum("branches")}/${tot("branches")}`, "branches resolved"],
+    [(st.problems || []).length, "problems"],
+    [st.review?.state ?? "–", "review"],
+  ];
+  const p = o.progress || [];
+  return `<div class="card"><h2>Progress</h2><div class="tiles">${tiles.map(([n, l, t]) => `<div class="tile" title="${esc(t || "")}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join("")}</div>
+    ${p.length > 1 ? `<div class="grid2"><div><div class="quiet">work recordings passing, of all</div><canvas class="chart" id="ch-rec"></canvas></div><div><div class="quiet">branches resolved, of all</div><canvas class="chart" id="ch-br"></canvas></div></div>
+    <div class="quiet" style="margin-top:4px">${p.length} changes since ${fmtDate(p[0].t)} · each line is a port status or port next that saw the standing change</div>`
+    : `<div class="quiet">History builds up as port status and port next see the standing change.</div>`}</div>`;
+}
+function featuresCard(st) {
+  const fs = featuresOf(st);
+  const row = f => {
+    const w = f.work || {}, b = f.branches || {};
+    const pct = (a, t) => t ? Math.round(100 * a / t) : 0;
+    return `<tr><td class="mono">${esc(f.id)}</td><td>${esc(f.title)}${f.in_goal ? "" : ' <span class="quiet">(not in goal)</span>'}</td><td>${esc(f.stage)}</td><td>${esc(f.verdict)}</td>
+      <td class="num">${w.pass ?? "–"}/${w.total ?? 0}</td><td><div class="bar"><i style="width:${pct(b.resolved, b.total)}%"></i></div></td><td class="num">${b.resolved ?? 0}/${b.total ?? 0}</td>
+      <td class="num">${(f.questions || []).length || ""}</td></tr>`;
+  };
+  return `<div class="card"><h2>Features</h2><table><tr><th>id</th><th>title</th><th>stage</th><th>verdict</th><th class="num">work</th><th colspan="2">branches</th><th class="num">questions</th></tr>${fs.map(row).join("")}</table></div>`;
+}
+function drawProgress(o) {
+  const p = o.progress || [];
+  if (p.length < 2) return;
+  const series = (c, get) => chart(c, p.map(x => x.t), get);
+  series($("#ch-rec"), [[x => x.recordings?.pass, css("--ok")], [x => x.recordings?.total, css("--dim")]]);
+  series($("#ch-br"), [[x => x.branches?.resolved, css("--accent")], [x => x.branches?.total, css("--dim")]]);
+  function chart(canvas, ts, lines) {
+    if (!canvas) return;
+    const ctx = setup(canvas), W = canvas.clientWidth, H = canvas.clientHeight;
+    const t0 = ts[0], t1 = Math.max(o.now, ts[ts.length - 1]), max = Math.max(1, ...p.flatMap(x => lines.map(([g]) => g(x) ?? 0)));
+    const X = t => 30 + (W - 36) * (t - t0) / Math.max(1, t1 - t0), Y = v => H - 16 - (H - 24) * v / max;
+    ctx.fillStyle = css("--dim"); ctx.font = "11px system-ui";
+    ctx.fillText(max, 2, 12); ctx.fillText("0", 2, H - 16);
+    ctx.fillText(fmtDate(t0), 30, H - 2); const e = fmtDate(t1); ctx.fillText(e, W - ctx.measureText(e).width - 4, H - 2);
+    // A commit changed: a faint mark.
+    ctx.strokeStyle = css("--line");
+    p.forEach((x, i) => { if (i && x.head !== p[i - 1].head) { ctx.beginPath(); ctx.moveTo(X(x.t), 4); ctx.lineTo(X(x.t), H - 16); ctx.stroke(); } });
+    for (const [get, color] of lines) {
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      p.forEach((x, i) => { const v = get(x) ?? 0; if (i) ctx.lineTo(X(x.t), Y(get(p[i - 1]) ?? 0)); i ? ctx.lineTo(X(x.t), Y(v)) : ctx.moveTo(X(x.t), Y(v)); });
+      ctx.lineTo(X(t1), Y(get(p[p.length - 1]) ?? 0)); ctx.stroke(); ctx.lineWidth = 1;
+    }
+  }
+}
+function setup(canvas) {
+  const r = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * r; canvas.height = H * r;
+  const ctx = canvas.getContext("2d"); ctx.setTransform(r, 0, 0, r, 0, 0); ctx.clearRect(0, 0, W, H);
+  return ctx;
+}
+
+// ------------------------------------------------------------ log
+// Every psx call the agents make, as a card drawn from its kept result,
+// newest at the bottom.
+async function loadCalls(i) {
+  const c = S.calls[i] || (S.calls[i] = {next: null, byId: new Map(), order: []});
+  const r = await api(`/api/p/${i}/calls` + (c.next != null ? `?since=${c.next}` : ""));
+  if (r.reset) { c.byId = new Map(); c.order = []; }
+  for (const l of r.lines) {
+    if (l.event === "start") { if (!c.byId.has(l.id)) { c.byId.set(l.id, {...l}); c.order.push(l.id); } }
+    else { const x = c.byId.get(l.id); if (x) Object.assign(x, {exit: l.exit, ms: l.ms, bytes: l.bytes, summary: l.summary, error: l.error, kept: l.kept, ended: l.t}); }
+  }
+  c.next = r.next;
+}
+function sessionKey(x) {
+  const c = x.caller || {};
+  const who = c.session ? `${c.session.name}:${c.session.pid}` : `${c.parent || "?"}:${c.ppid || c.pid}`;
+  return `${c.via}|${c.client || ""}|${who}`;
+}
+// A CLI call's words without the global flags in front.
+function argv(a) {
+  const out = [];
+  for (let i = 0; i < a.length; i++) {
+    if (["--root", "--project-root"].includes(a[i])) { i++; continue; }
+    if (/^--(root|project-root)=/.test(a[i])) continue;
+    out.push(a[i]);
+  }
+  return out;
+}
+// How many of a CLI call's words name the command ("code coverage-diff").
+function cmdLen(a, tool) {
+  let k = 0, said = "";
+  while (k < a.length && tool.startsWith(said + (said ? "_" : "") + String(a[k]).replace(/-/g, "_"))) { said += (said ? "_" : "") + String(a[k]).replace(/-/g, "_"); k++; if (said === tool) break; }
+  return k;
+}
+// The CLI's positional arguments, by the names MCP gives them.
+const POS = {ram_diff: ["a", "b"], assets_diff: ["a", "b"], ram_search: ["snapshots*"], ram_view: ["snapshots*"], scenario_play: ["request"],
+  code_coverage: ["runs*"], code_coverage_diff: ["runs*"], code_inventory: ["media"], disc_info: ["image"], disc_ls: ["image"],
+  disc_extract: ["image", "path"], disc_exe: ["source"], assets_memcard: ["image"], disc_sector: ["image", "lba"], assets_textures: ["run_dir"],
+  states_save: ["source", "name"], states_rebuild: ["names*"], code_disasm: ["source"], code_xrefs: ["target"], code_symbols: ["source"],
+  assets_scan: ["source"], assets_extract: ["source"], run: ["media"], scenario_record: ["id"], scenario_check: ["ids*"], scenario_show: ["id"],
+  port_check: ["feature*"], port_init: ["dest"]};
+function argsText(x) {
+  const a = Array.isArray(x.args) ? argv(x.args) : x.args;
+  if (Array.isArray(a)) return a.slice(cmdLen(a, x.tool)).map(s => /\s/.test(s) ? JSON.stringify(s) : s).join(" ");
+  if (a && typeof a === "object") return Object.entries(a).map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ");
+  return "";
+}
+// An argument by name: an MCP call's field, or a CLI call's --flag.
+function arg(x, k) {
+  const a = Array.isArray(x.args) ? argv(x.args) : x.args;
+  if (a && typeof a === "object" && !Array.isArray(a)) return a[k];
+  if (!Array.isArray(a)) return undefined;
+  const names = POS[x.tool] || [], at = names.findIndex(n => n.replace("*", "") === k);
+  if (at >= 0) {
+    const pos = [];
+    for (let i = cmdLen(a, x.tool); i < a.length && !String(a[i]).startsWith("--"); i++) pos.push(a[i]);
+    if (names[at].endsWith("*")) { if (pos.length > at) return pos.slice(at); } else if (pos[at] != null) return pos[at];
+  }
+  const f = "--" + k.replace(/_/g, "-"), out = [];
+  for (let i = 0; i < a.length; i++) {
+    const s = String(a[i]);
+    if (s === f) { const v = a[i + 1]; if (v == null || String(v).startsWith("--")) out.push(true); else { out.push(v); i++; } }
+    else if (s.startsWith(f + "=")) out.push(s.slice(f.length + 1));
+  }
+  return out.length > 1 ? out : out[0];
+}
+const list = v => v == null ? [] : Array.isArray(v) ? v : [v];
+const num = n => n == null || n === "" ? "–" : typeof n === "number" ? n.toLocaleString() : String(n);
+const pct = (a, b) => b ? Math.round(1000 * a / b) / 10 : 0;
+// Paths without the project root in front.
+function unroot(s) {
+  s = String(s ?? "");
+  const root = S.projects[S.cur]?.root;
+  return root ? s.split(root + "/").join("") : s;
+}
+function srcName(s) { s = unroot(s); const i = s.lastIndexOf("::"); return i >= 0 ? s.slice(i + 2) : s.replace(/^media\//, ""); }
+const stateName = s => unroot(s).replace(/^\.psx\/states\//, "").replace(/\.bin$/, "");
+const hex = a => a == null || a === "" ? "" : /^0x/i.test(a) ? String(a) : "0x" + String(a).toUpperCase();
+
+const TOOLS = {
+  context: "Context", guide: "Guide", bios_install: "BIOS install", message: "Message",
+  disc_info: "Disc", disc_ls: "Disc files", disc_sector: "Disc sectors", disc_exe: "EXE header", disc_extract: "Extract from disc",
+  states_list: "States", states_save: "Save state", states_rebuild: "Rebuild states",
+  run: "Run", read: "Read", ram_diff: "RAM diff", ram_view: "RAM view", ram_search: "RAM search",
+  assets_diff: "Image diff", assets_scan: "Asset scan", assets_extract: "Asset extract", assets_textures: "Textures", assets_memcard: "Memory card",
+  code_disasm: "Disassembly", code_decompile: "Decompile", code_xrefs: "References", code_functions: "Functions", code_symbols: "Library symbols",
+  code_inventory: "Code inventory", code_coverage: "Coverage", code_coverage_diff: "Coverage diff", code_annotate: "Annotate",
+  scenario_show: "Recording", scenario_play: "Play request", scenario_record: "Record", scenario_check: "Determinism check",
+  port_status: "Port status", port_next: "Next", port_check: "Port check", port_init: "Port init", port_update: "Template update",
+};
+const famOf = t => ["message", "guide", "context"].includes(t) ? "talk" : /^(disc_|states_|bios_)/.test(t) ? "disc"
+  : t.startsWith("code_") ? "code" : t.startsWith("scenario_") ? "scenario" : t.startsWith("port_") ? "port" : "emu";
+const FAMILIES = [["", "every tool"], ["emu", "run, RAM, assets, read"], ["code", "code"], ["scenario", "scenarios"], ["port", "port"], ["disc", "disc and states"], ["talk", "context, guide, messages"]];
+
+// The header's one line: what the call was about, from its arguments.
+const TITLE = {
+  guide: x => arg(x, "topic") || "overview",
+  disc_info: x => srcName(arg(x, "image")), disc_ls: x => [srcName(arg(x, "image")), arg(x, "path")].filter(Boolean).join(" "),
+  disc_sector: x => `${srcName(arg(x, "image"))} · LBA ${arg(x, "lba") ?? ""}${arg(x, "count") > 1 ? ` (${arg(x, "count")})` : ""}`,
+  disc_exe: x => srcName(arg(x, "source")), disc_extract: x => `${arg(x, "path") || ""}${arg(x, "offset") ? " @ " + hex(arg(x, "offset")) : ""}`,
+  states_save: x => arg(x, "name"), states_rebuild: x => list(arg(x, "names")).join(", ") || "every chain",
+  run: x => [arg(x, "from_state") ? "from " + stateName(arg(x, "from_state")) : srcName(arg(x, "exe") || arg(x, "media") || ""), arg(x, "frames") ? arg(x, "frames") + " fields" : "",
+    arg(x, "input") ? "with input" : arg(x, "replay") ? "replay " + unroot(arg(x, "replay")) : "", arg(x, "gpu_frame") != null ? "GPU frame" + (arg(x, "gpu_frame") === true ? "" : " " + arg(x, "gpu_frame")) : ""].filter(Boolean).join(" · "),
+  read: x => unroot(arg(x, "path")) + (arg(x, "pointer") ? " " + arg(x, "pointer") : ""),
+  ram_diff: x => `${unroot(arg(x, "a"))} → ${unroot(arg(x, "b"))}`, assets_diff: x => `${unroot(arg(x, "a"))} → ${unroot(arg(x, "b"))}`,
+  ram_view: x => `${hex(arg(x, "addr"))} · ${list(arg(x, "snapshots")).map(unroot).join(", ")}`,
+  ram_search: x => `${list(arg(x, "pred")).join(" ")} · ${list(arg(x, "snapshots")).map(unroot).join(", ")}`,
+  assets_scan: x => srcName(arg(x, "source")), assets_extract: x => srcName(arg(x, "source")), assets_textures: x => unroot(arg(x, "run_dir")), assets_memcard: x => unroot(arg(x, "image")),
+  code_disasm: x => `${srcName(arg(x, "source"))} @ ${hex(arg(x, "function") || arg(x, "addr"))}`, code_decompile: x => `${srcName(arg(x, "source"))} @ ${hex(arg(x, "addr"))}`,
+  code_xrefs: x => `${srcName(arg(x, "source"))} → ${hex(arg(x, "target"))}`, code_functions: x => srcName(arg(x, "source")), code_symbols: x => srcName(arg(x, "source")),
+  code_coverage: x => list(arg(x, "runs")).map(unroot).join(", "), code_coverage_diff: x => `${list(arg(x, "runs")).map(unroot).join(", ")} vs ${list(arg(x, "against")).map(unroot).join(", ")}`,
+  code_annotate: x => unroot(arg(x, "file")),
+  scenario_show: x => `${arg(x, "id") || ""}/${arg(x, "name") || ""}`, scenario_record: x => `${arg(x, "id") || ""}/${arg(x, "name") || ""}`,
+  scenario_check: x => list(arg(x, "ids")).join(", ") || "every scenario",
+  scenario_play: x => arg(x, "status") ? "status of " + unroot(arg(x, "status")).replace(/^\.psx\/(handoffs|plays)\//, "") : arg(x, "request") || "",
+  port_update: x => arg(x, "dry_run") ? "dry run" : "", port_check: x => list(arg(x, "feature")).join(", "), port_init: x => unroot(arg(x, "dest")),
+  message: x => (arg(x, "text") ? (arg(x, "reply_to") ? "reply: " : "") + arg(x, "text") : waits(x) ? "" : "read the threads") + (waits(x) ? (arg(x, "text") ? " · then waits for your answer" : "waits for you to write") : ""),
+};
+// A CLI call with --wait (only the CLI takes it).
+const waits = x => Array.isArray(x.args) && x.args.some(a => a === "--wait" || String(a).startsWith("--wait="));
+function title(x) {
+  let t = "";
+  try { t = TITLE[x.tool]?.(x) || ""; } catch (e) {}
+  return /[A-Za-z0-9]/.test(t.replace(/undefined|null/g, "")) ? t : argsText(x);
+}
+
+// --- small pieces of a card
+const lead = h => `<div class="lead">${h}</div>`;
+const note = s => s ? `<div class="note">${esc(unroot(s))}</div>` : "";
+const pill = (s, cls) => `<span class="pill ${cls || ""}">${esc(s)}</span>`;
+const kv = pairs => { const p = pairs.filter(x => x && x[1] != null && x[1] !== ""); return p.length ? `<div class="kv">${p.map(([k, v]) => `<span>${esc(k)}</span><span>${v}</span>`).join("")}</div>` : ""; };
+const stat = (n, l, bar) => `<div class="stat"><b>${typeof n === "number" ? num(n) : esc(n)}</b><span>${esc(l)}</span>${bar != null ? `<div class="bar"><i style="width:${Math.min(100, bar)}%"></i></div>` : ""}</div>`;
+const stats = items => `<div class="stats">${items.filter(Boolean).join("")}</div>`;
+const h4 = s => `<h4>${esc(s)}</h4>`;
+const mono = s => `<span class="mono">${esc(unroot(s))}</span>`;
+function tbl(head, rows, hot) {
+  if (!rows.length) return "";
+  return `<div class="scroll"><table class="tbl"><tr>${head.map(h => `<th>${esc(h)}</th>`).join("")}</tr>${rows.map((r, i) => `<tr class="${hot && hot(i) ? "hot" : ""}">${r.map(c => `<td>${c ?? ""}</td>`).join("")}</tr>`).join("")}</table></div>`;
+}
+const page = p => p && (p.truncated || p.complete === false) && p.total != null ? `<div class="note">${num(p.returned)} of ${num(p.total)} shown${p.offset ? `, from ${num(p.offset)}` : ""}</div>` : "";
+const fileUrl = p => `/api/p/${S.cur}/file?path=${encodeURIComponent(p)}`;
+const shot = (p, cap, cls) => p ? `<figure class="shot ${cls || ""}"><img loading="lazy" src="${fileUrl(p)}" alt="" data-zoom="1" onerror="this.parentElement.style.display='none'">${cap ? `<figcaption>${esc(cap)}</figcaption>` : ""}</figure>` : "";
+const fold = (h, n) => `<div class="fold">${h}</div><span class="unfold" data-act="unfold">show all${n ? ` (${n})` : ""}</span>`;
+const warnings = w => (w || []).length ? `<div class="warnbox">${w.map(s => esc(unroot(typeof s === "string" ? s : JSON.stringify(s)))).join("<br>")}</div>` : "";
+function val(v) {
+  if (v == null) return "–";
+  if (typeof v === "string") return esc(unroot(v));
+  if (typeof v === "number") return num(v);
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (Array.isArray(v) && v.every(e => e == null || typeof e !== "object")) return esc(v.map(e => unroot(e)).join(", ")) || "none";
+  const j = JSON.stringify(v);
+  return `<span class="mono">${esc(unroot(j.length > 240 ? j.slice(0, 240) + "…" : j))}</span>`;
+}
+const nextCall = c => c && c.tool ? `<div class="note">next: <span class="mono">${esc(c.tool)} ${esc(unroot(Object.entries(c.arguments || {}).map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ")))}</span></div>` : "";
+function hexdump(h, base) {
+  const b = String(h || "").replace(/[^0-9a-fA-F]/g, "").match(/../g) || [];
+  const o = typeof base === "string" ? parseInt(base, 16) : base || 0;
+  let out = "";
+  for (let i = 0; i < b.length; i += 16) {
+    const row = b.slice(i, i + 16);
+    const asc = row.map(x => { const c = parseInt(x, 16); return c >= 32 && c < 127 ? String.fromCharCode(c) : "."; }).join("");
+    out += `<span class="ad">${(o + i).toString(16).toUpperCase().padStart(8, "0")}</span>  ${row.join(" ").padEnd(47)}  <span class="cm">${esc(asc)}</span>\n`;
+  }
+  return out ? `<div class="code">${out}</div>` : "";
+}
+// MIPS operands: registers, numbers and labels coloured.
+function asmHtml(s) {
+  const m = String(s).match(/^(\S+)(\s*)(.*)$/);
+  if (!m) return esc(s);
+  const ops = m[3].replace(/(0x[0-9A-Fa-f]+|-?\b\d+\b|\b(?:zero|at|v[01]|a[0-3]|t[0-9]|s[0-8]|k[01]|gp|sp|fp|ra|hi|lo|r\d+)\b|\b(?:loc|FUN|LAB|sub|DAT)_[0-9A-Fa-f]+\b)|([^]+?)/g,
+    (all, t) => t ? (/^(0x|-|\d)/.test(t) ? `<span class="nu">${esc(t)}</span>` : /_/.test(t) ? `<span class="lb">${esc(t)}</span>` : `<span class="rg">${esc(t)}</span>`) : esc(all));
+  return `<span class="mn">${esc(m[1])}</span>${m[2]}${ops}`;
+}
+// A text listing from code_disasm: addresses, labels and comments.
+function listingHtml(text) {
+  return String(text).split("\n").map(l => {
+    if (/^\s*;/.test(l)) return `<span class="cm">${esc(l)}</span>`;
+    if (/^\S+:\s*$/.test(l)) return `<span class="lb">${esc(l)}</span>`;
+    const m = l.match(/^(\s*)([0-9A-Fa-f]{8})(\s+)(.*?)(\s+;.*)?$/);
+    return m ? `${m[1]}<span class="ad">${m[2]}</span>${m[3]}${asmHtml(m[4])}${m[5] ? `<span class="cm">${esc(m[5])}</span>` : ""}` : esc(l);
+  }).join("\n");
+}
+const C_KW = /^(if|else|while|do|for|return|break|continue|goto|switch|case|default|sizeof)$/;
+const C_TY = /^(void|int|uint|char|uchar|short|ushort|long|ulong|float|double|bool|byte|undefined\d*|code|dword|word|struct|unsigned|signed|const)$/;
+function cHtml(src) {
+  return String(src).replace(/(\/\*[^]*?\*\/|\/\/[^\n]*)|("(?:\\.|[^"\\])*")|\b(0x[0-9a-fA-F]+|\d+)\b|\b([A-Za-z_]\w*)\b(\s*\()?|([^]+?)/g, (all, cm, st, nu, id, call, other) => {
+    if (cm) return `<span class="cm">${esc(cm)}</span>`;
+    if (st) return `<span class="st">${esc(st)}</span>`;
+    if (nu) return `<span class="nu">${esc(nu)}</span>`;
+    if (id) return (C_KW.test(id) ? `<span class="kw">${id}</span>` : C_TY.test(id) ? `<span class="ty">${id}</span>` : call ? `<span class="fn">${id}</span>` : id) + (call || "");
+    return esc(other);
+  });
+}
+// The guide's markdown, enough of it: headings, paragraphs, code blocks.
+function md(text) {
+  const inline = s => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>");
+  return String(text).split(/\n\s*\n/).map(b => {
+    if (/^#+ /.test(b)) return `<h3>${inline(b.replace(/^#+ /, ""))}</h3>`;
+    if (b.split("\n").every(l => /^( {2,}|\t)/.test(l) || !l.trim())) return `<div class="code">${esc(b.replace(/^ {2}/gm, ""))}</div>`;
+    // Hard-wrapped prose flows again; list items keep their lines.
+    return `<p>${b.split("\n").map((l, k) => (k && /^\s*([-*]|\d+\.) /.test(l) ? "<br>" : k ? " " : "") + inline(l)).join("")}</p>`;
+  }).join("");
+}
+const errorBody = e => lead(`${pill(e.code || "error", "bad")} <span class="text">${esc(unroot(e.message))}</span>`)
+  + kv(Object.entries(e).filter(([k, v]) => !["code", "message", "project_root", "path_resolution"].includes(k) && !(typeof v === "string" && unroot(e.message).includes(unroot(v)))).map(([k, v]) => [k, val(v)]));
+// What a result says besides the fields a card draws.
+function rest(r, skip) {
+  const noise = new Set(["build", "identity", "mapping", "provenance", "source_sha256", "project", "analysis", "ghidra_version", "references_truncated", "cop2_instructions", "rfe_instructions", "revision", "coverage", "messages", ...skip]);
+  return kv(Object.entries(r).filter(([k, v]) => !noise.has(k) && v != null && !(Array.isArray(v) && !v.length) && !(typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length)).map(([k, v]) => [k.replace(/_/g, " "), val(v)]));
+}
+
+// --- one renderer per tool: the result, as the person wants to read it.
+const CARDS = {
+  context(r) {
+    const b = r.selected_bios || {}, res = r.resolved || {};
+    return lead(`${pill(r.status, r.status === "ready" ? "ok" : "warn")} psx ${esc(r.build?.version || "")}`) + kv([
+      ["media", res.media ? `${esc(srcName(res.media))}${res.disc_region_hint ? ` · ${esc(res.disc_region_hint)}` : ""}` : "none"],
+      ["BIOS", b.version ? `${esc(b.version)} <span class="quiet">${esc([b.known_image, b.region].filter(Boolean).join(" · "))}</span>` : `${num(r.bios_candidates)} candidates, none chosen`],
+      ["Ghidra", r.ghidra?.available ? esc(r.ghidra.version) : "not set up"],
+      ["signatures", r.signatures?.available ? "PsyQ signatures installed" : "none"],
+      ["state", r.state ? val(r.state) : null], ["setup", r.setup ? val(r.setup) : null],
+    ]) + warnings(r.warnings) + (r.next_calls || []).slice(0, 1).map(nextCall).join("");
+  },
+  guide(r) {
+    const t = r.text || "";
+    return lead(`<b>${esc(r.title || r.topic)}</b>`) + fold(`<div class="md">${md(t)}</div>`, `${t.split("\n").length} lines`);
+  },
+  bios_install(r) { return rest(r, []); },
+  message(r, x) {
+    // psx message --wait: what it sent, then whether the person wrote (their
+    // words show below, as what reached the agent).
+    if (r.status === "message" || r.status === "timeout") {
+      return (arg(x, "text") ? lead("To you:") + `<div class="text">${esc(arg(x, "text"))}</div>` : "")
+        + note(r.status === "message" ? "it waited for you and woke when you wrote" : `it waited ${r.waited_s} s and nothing came from you`);
+    }
+    if (r.status === "sent") {
+      const start = arg(x, "reply_to") && (S.msgs[S.cur]?.messages || []).find(m => m.id === r.thread);
+      return (start ? `<div class="att info"><div class="quiet">in reply to ${start.from === "agent" ? "its own" : "your"} message</div><div class="text" style="color:var(--dim)">${esc(start.text.slice(0, 300))}</div></div>` : lead("To you:"))
+        + `<div class="text">${esc(arg(x, "text") || "")}</div>`;
+    }
+    const th = r.threads || [];
+    return lead(`Read ${th.length} thread${th.length === 1 ? "" : "s"}`) + th.slice(-4).map(t => `<div class="note"><b>${esc(t.from)}</b>: ${esc(String(t.text).slice(0, 160))}${t.replies?.length ? ` · ${t.replies.length} replies` : ""}</div>`).join("");
+  },
+  disc_info(r) {
+    const v = r.volume || {}, e = r.boot_exe || {}, h = e.header || {}, fs = r.filesystem || {};
+    const made = /^\d{8}/.test(v.created || "") ? `${v.created.slice(0, 4)}-${v.created.slice(4, 6)}-${v.created.slice(6, 8)}` : v.created;
+    return lead(`<b>${esc(v.volume_id)}</b> · ${esc(v.publisher || "")} · ${esc(made || "")}`) + kv([
+      ["boot", `${mono(e.entry?.path || r.boot_path)} <span class="quiet">entry ${esc(h.pc)} · ${esc(h.region_hint || "")} · ${fmtBytes(h.file_size)}</span>`],
+      ["files", `${num(fs.files)} in ${num(fs.dirs)} directories · ${fmtBytes(fs.bytes)} · ${num(fs.streamed_files)} streamed`],
+      ["tracks", `${num(r.track_summary?.data)} data, ${num(r.track_summary?.audio)} audio`],
+      ["image", (r.media_files || []).map(f => `${esc(f.name)} <span class="quiet">${fmtBytes(f.bytes)}</span>`).join(", ")],
+    ]) + warnings([...(r.fs_warnings || []), ...(h.warnings || [])]);
+  },
+  disc_ls(r) {
+    return tbl(["path", "size", "LBA", ""], (r.entries || []).map(e => [mono(e.path), e.dir ? "" : fmtBytes(e.size), num(e.lba), e.dir ? "directory" : e.streamed ? "XA stream" : ""])) + page(r.page) + warnings(r.warnings);
+  },
+  disc_sector(r) {
+    return (r.sectors || []).map(s => lead(`LBA ${num(s.lba)} · ${esc(s.form)} · track ${esc(s.track)}${s.owner ? ` · ${mono(s.owner.path || s.owner)}` : ""}`) + hexdump(s.preview, 0)).join("");
+  },
+  disc_exe(r) {
+    const seg = s => s && parseInt(s.size, 16) ? `${esc(s.addr)} · ${fmtBytes(parseInt(s.size, 16))}` : null;
+    return lead(`entry <b class="mono">${esc(r.pc)}</b> · ${esc(r.region_hint || "")} · ${fmtBytes(r.file_size)}`) + kv([
+      ["text", r.text ? `${esc(r.text.addr)}..${esc(r.text.end)} · ${fmtBytes(parseInt(r.text.size, 16))}` : null],
+      ["data", seg(r.data)], ["bss", seg(r.bss)], ["stack", esc(r.initial_sp)], ["gp", parseInt(r.gp, 16) ? esc(r.gp) : null], ["marker", esc(r.marker)],
+    ]) + warnings(r.warnings);
+  },
+  disc_extract(r) {
+    return lead(`${mono(r.path)} @ ${esc(r.offset)} · ${num(r.bytes)} bytes of ${fmtBytes(r.file_bytes)} → ${mono(r.dest)}`) + hexdump(r.hex, r.offset);
+  },
+  states_list(r) {
+    return tbl(["state", "what", "steps", ""], (r.states || []).map(s => {
+      const missing = String(s.state || "").startsWith("missing");
+      return [mono(s.name), esc(s.description || ""), num(s.steps), missing ? `<span title="${esc(s.state)}">${pill("missing", "warn")}</span>` : pill("ok", "ok")];
+    }));
+  },
+  states_save(r, x) {
+    return lead(`Saved <b class="mono">${esc(r.name)}</b>, ${num(r.steps)} steps from power-on`) + (arg(x, "description") ? `<div class="text">${esc(arg(x, "description"))}</div>` : "") + note(r.state);
+  },
+  states_rebuild(r) {
+    return lead(pill(r.status, r.status === "same" ? "ok" : "warn")) + tbl(["state", "", "matches its chain", "steps ran / reused", "first differing step"], (r.states || []).map(s =>
+      [mono(s.name), esc(s.status), s.matches_chain ? "yes" : `<b style="color:var(--act)">no</b>`, `${num(s.ran)} / ${num(s.reused)}`, s.first_differing_step ?? ""]), i => r.states[i].matches_chain === false);
+  },
+  run(r, x) { return runCard(r, x); },
+  read(r) {
+    const a = r.artifact || {};
+    const head = lead(`${mono(a.path)} · ${esc(r.format)}${a.bytes != null && !a.directory ? ` · ${fmtBytes(a.bytes)}` : ""}`);
+    if (r.format === "image") return head + shot(r.image?.path || a.path, `${r.image?.width}×${r.image?.height}`);
+    if (r.format === "directory") return head + tbl(["", "size", "format"], (r.items || []).map(i => [mono(String(i.path).split("/").pop() + (i.directory ? "/" : "")), i.directory ? "" : fmtBytes(i.bytes), esc(i.format)])) + page(r.page);
+    if (r.format === "hex") return head + hexdump(r.hex, r.page?.offset || 0) + page(r.page);
+    if (Array.isArray(r.items) && r.items.length && typeof r.items[0] === "object") {
+      const cols = r.columns || [...new Set(r.items.flatMap(o => Object.keys(o)))].slice(0, 12);
+      return head + tbl(cols, r.items.map(o => cols.map(c => val(o[c])))) + page(r.page);
+    }
+    if (r.text != null || r.lines) return head + `<div class="code">${esc(r.text ?? (r.lines || []).join("\n"))}</div>` + page(r.page);
+    if ("value" in r) return head + `<div class="code">${esc(unroot(JSON.stringify(r.value, null, 1)).slice(0, 20000))}</div>` + page(r.page);
+    return head + rest(r, ["artifact", "format", "page", "source_id"]);
+  },
+  ram_diff(r) {
+    return lead(`<b>${num(r.differing)}</b> ${r.width || 4}-byte units differ · ${num(r.clusters?.count)} runs`) +
+      tbl(["address", "a", "b", "change"], (r.changes || []).map(c => [mono(c.address), mono(c.a_hex), mono(c.b_hex), num(c.delta)])) + page(r.page) +
+      ((r.clusters?.largest || []).length ? h4("largest changed runs") + `<div class="chips">${r.clusters.largest.slice(0, 12).map(c => `<span class="pill mono">${esc(c.start)}..${esc(c.end)} · ${num(c.units)}</span>`).join("")}</div>` : "");
+  },
+  ram_view(r) {
+    const snaps = (r.snapshots || []).map(s => unroot(s).replace(/\/ram\.bin$/, ""));
+    const rows = r.rows || [];
+    return (rows.length ? tbl(["address", "offset", ...snaps], rows.map(w => [mono(w.address), `<span class="quiet">${esc(w.offset)}</span>`, ...w.values.map(v => mono(v))]), i => rows[i].differs)
+      : lead(snaps.length > 1 ? "The snapshots are the same here." : "Nothing to show.")) + (r.same_rows_left_out ? note(`${r.same_rows_left_out} rows where every snapshot agrees are left out`) : "");
+  },
+  ram_search(r) {
+    const snaps = (r.snapshots || []).map(s => unroot(s).replace(/\/ram\.bin$/, ""));
+    return lead(`<b>${num(r.candidates)}</b> addresses match ${(r.predicates || []).map(p => mono(p)).join(" ")}${r.saved ? ` · saved to ${mono(r.saved)}` : ""}`) +
+      tbl(["address", ...snaps], (r.matches || []).map(m => [mono(m.address), ...(m.hex || m.values || []).map((h, k) => `${mono(h)} <span class="quiet">${num(m.values?.[k])}</span>`)])) + page(r.page);
+  },
+  assets_diff(r) {
+    const rg = r.region || {}, bb = r.bbox;
+    return lead(`<b>${num(r.differing)}</b> of ${num(r.pixels)} pixels differ (${pct(r.differing, r.pixels)}%)${r.mask_bit_only ? ` · ${num(r.mask_bit_only)} only in the mask bit` : ""}`) + kv([
+      ["region", `${rg.w}×${rg.h} at ${rg.x},${rg.y}`], ["changed box", bb ? `${bb.x0},${bb.y0} .. ${bb.x1},${bb.y1}` : "none"],
+    ]) + (r.png ? `<div class="shots">${shot(r.png, "the difference")}</div>` : "") +
+      ((r.cells?.differing || []).length ? h4(`busiest ${r.cells.size}×${r.cells.size} cells`) + `<div class="chips">${r.cells.differing.slice(0, 12).map(c => `<span class="pill">${c.x},${c.y} · ${num(c.count)}</span>`).join("")}</div>` : "");
+  },
+  assets_scan(r) {
+    const t = Object.entries(r.totals || {});
+    const hits = r.hits || r.items || r.assets || [];
+    return lead(`${num(r.files_scanned)} files scanned · ${t.length ? t.map(([k, v]) => `${num(v)} ${esc(k)}`).join(", ") : "nothing recognised"}`) +
+      (hits.length ? tbl(Object.keys(hits[0]).slice(0, 7), hits.map(h => Object.keys(hits[0]).slice(0, 7).map(k => val(h[k])))) : "") + page(r.page) + note(r.coverage?.note);
+  },
+  assets_extract(r) {
+    const k = Object.entries(r.summary?.by_kind || {});
+    return lead(`<b>${num(r.extracted)}</b> extracted → ${mono(r.out)}${k.length ? " · " + k.map(([a, b]) => `${num(b)} ${esc(a)}`).join(", ") : ""}`) +
+      ((r.assets || []).length ? tbl(Object.keys(r.assets[0]).slice(0, 6), r.assets.map(a => Object.keys(r.assets[0]).slice(0, 6).map(c => val(a[c])))) : "") + page(r.assets_page) + nextCall(r.next_call);
+  },
+  assets_textures(r) {
+    const t = r.textures || [];
+    return lead(`<b>${t.length}</b> textures from ${mono(r.source)} · the scene has ${num(r.scene?.elements)} elements`) +
+      `<div class="shots">${t.slice(0, 48).map(x => shot(x.used?.path || x.full?.path, `page ${x.page?.x},${x.page?.y} · ${x.page?.depth}bpp · ×${x.uses}`, "tex")).join("")}</div>` + (t.length > 48 ? note(`${t.length - 48} more in ${unroot(r.scene?.path || "")}`) : "") + note(r.note);
+  },
+  assets_memcard(r) {
+    const saves = r.saves || r.entries || r.files || [];
+    return Array.isArray(saves) && saves.length ? tbl(Object.keys(saves[0]).slice(0, 6), saves.map(s => Object.keys(saves[0]).slice(0, 6).map(k => val(s[k])))) : rest(r, []);
+  },
+  code_disasm(r) {
+    const L = r.listing || {};
+    const body = r.text != null ? listingHtml(r.text)
+      : (r.lines || []).map(l => `${l.label ? `<span class="lb">${esc(l.label)}:</span>\n` : ""}  <span class="ad">${esc(String(l.addr).replace(/^0x/, ""))}</span>  <span class="wd">${esc(l.word || "")}</span>  ${asmHtml(l.asm || "")}${l.comment ? `  <span class="cm">; ${esc(l.comment)}</span>` : ""}`).join("\n");
+    return lead(`${mono(srcName(r.source))} · ${esc(L.start)}..${esc(L.end)}`) + `<div class="code">${body}</div>` + (L.next_addr ? note(`continues at ${L.next_addr}`) : "");
+  },
+  code_decompile(r) {
+    const f = r.function || {};
+    const calls = (r.callees?.items || []).map(c => String(c).split("->").pop().trim());
+    return lead(`<b class="mono">${esc(f.name)}</b> <span class="quiet">${esc(f.entry)} · ${esc(r.decompile_status || r.status)}</span>`) +
+      `<div class="code">${cHtml(String(r.pseudocode || "").trim())}</div>` + kv([
+        ["called from", (r.callers?.items || []).length ? (r.callers.items).map(c => mono(c)).join(", ") : "no direct callers"],
+        ["calls", calls.length ? calls.map(c => mono(c)).join(", ") : "nothing"],
+      ]) + (r.diagnostic ? note(r.diagnostic) : "");
+  },
+  code_xrefs(r) {
+    const k = Object.entries(r.by_kind || {});
+    return lead(`<b>${num(r.total)}</b> references to ${mono((r.range || [])[0])}${k.length ? " · " + k.map(([a, b]) => `${num(b)} ${esc(a)}`).join(", ") : ""}`) +
+      tbl(["from", "function", "kind", "instruction"], (r.refs || []).map(f => [mono(f.pc), f.function ? mono(f.function) : `<span class="quiet">${esc(f.function_start || "")}</span>`, esc(f.kind), `<span class="code" style="padding:0;background:none">${asmHtml(f.asm || "")}</span>`])) + page(r.page);
+  },
+  code_functions(r) {
+    const f = r.functions || {};
+    return lead(`<b>${num(r.function_count)}</b> functions in ${mono(srcName(r.source))}`) +
+      tbl(["entry", "name", "signature"], (f.items || []).map(x => [mono(x.entry), x.name_source === "DEFAULT" ? `<span class="quiet">${esc(x.name)}</span>` : `<b>${esc(x.name)}</b>`, mono(x.signature)])) + page(f);
+  },
+  code_symbols(r) {
+    return stats([stat(r.functions_named, "functions named"), stat(`${r.code_covered_pct}%`, "of the code", r.code_covered_pct), stat(r.objects_matched, "library objects"), stat(r.ambiguous, "ambiguous, skipped")]) +
+      lead(`PsyQ ${esc(r.chosen_version)} signatures`) + `<div class="chips">${Object.entries(r.objects_by_library || {}).map(([l, n]) => `<span class="pill">${esc(l)} · ${n}</span>`).join("")}</div>`;
+  },
+  code_inventory(r) {
+    const t = r.totals || {}, p = r.previous || {};
+    const d = k => p[k] != null && p[k] !== t[k] ? ` (${t[k] > p[k] ? "+" : ""}${num(t[k] - p[k])})` : "";
+    return stats([stat(`${num(t.functions)}${d("functions")}`, "functions"), stat(`${num(t.blocks)}${d("blocks")}`, "blocks"), stat(`${num(t.instructions)}${d("instructions")}`, "instructions"), stat(t.executables, "executables"), stat(t.overlays, "overlays")]) +
+      tbl(["executable", "functions", "blocks", "instructions", "found through pointers", "gaps"], (r.executables || []).map(e => [mono(e.path) + (e.boot ? " " + pill("boot") : ""), num(e.totals?.functions), num(e.totals?.blocks), num(e.totals?.instructions), num(e.totals?.found_only_through_pointers), num(e.totals?.unclaimed_gaps)])) + note(r.next);
+  },
+  code_coverage(r) {
+    const t = r.totals || {};
+    return stats([stat(`${num(t.blocks_executed)} / ${num(t.blocks)}`, "blocks ran", pct(t.blocks_executed, t.blocks)), stat(`${num(t.branch_ways_taken)} / ${num(t.branch_ways)}`, "branch ways taken", pct(t.branch_ways_taken, t.branch_ways)),
+      stat(`${num(t.functions_exercised)} / ${num(t.functions)}`, "functions reached", pct(t.functions_exercised, t.functions)), stat(t.functions_complete, "functions complete")]) +
+      tbl(["image", "blocks ran", "branch ways", "functions reached"], (r.images || []).map(i => { const u = i.totals || {}; return [mono(i.name), `${num(u.blocks_executed)} / ${num(u.blocks)}`, `${num(u.branch_ways_taken)} / ${num(u.branch_ways)}`, `${num(u.functions_exercised)} / ${num(u.functions)}`]; })) +
+      ((r.programs || []).length ? h4("the port's programs") + tbl(["program", "decisions", "never all ways"], r.programs.map(p => [mono(p.name), num(p.decisions), num(p.decisions_with_ways_never_taken)])) : "") + note(r.next);
+  },
+  code_coverage_diff(r) {
+    const t = r.totals || {};
+    return stats([stat(t.functions_only, "functions only here"), stat(t.blocks_only, "blocks"), stat(t.branch_ways_only, "branch ways"), stat(t.instructions_only, "instructions")]) +
+      tbl(["function", "image", "instructions only here"], (r.only || []).map(o => [mono(o.entry), mono(o.image), num(o.instructions)])) +
+      (r.programs || []).map(p => (p.routines_only || []).length ? h4(`${p.name}: routines only here`) + `<div class="chips">${p.routines_only.map(n => `<span class="pill mono">${esc(n)}</span>`).join("")}</div>` : "").join("") + note(r.next);
+  },
+  code_annotate(r) {
+    return lead(`${pill(r.status, r.status === "complete" ? "ok" : "warn")} revision ${num(r.revision)}`) +
+      tbl(["address", "name", "comment"], (r.patches || []).map(p => [mono(p.address), `<b>${esc(p.name || "")}</b>`, esc(p.comment || "")])) +
+      ((r.conflicts || []).length ? `<div class="warnbox">${r.conflicts.map(c => esc(unroot(JSON.stringify(c)))).join("<br>")}</div>` : "");
+  },
+  scenario_show(r, x) {
+    const head = lead(`${esc(r.description || "")}`) + note(`${unroot(r.recording)} · ${r.ticks} ticks`) + footage(r.scenario || arg(x, "id"), String(r.recording || "").split("/").pop().replace(/\.jsonl$/, ""));
+    if (r.text != null) return head + `<div class="code">${esc(r.text)}</div>`;
+    const cols = r.columns || [], rows = r.rows || [];
+    // The quantities, a cell marked where it changed (its Δ column beside it is folded in).
+    const keep = cols.map((c, k) => [c, k]).filter(([c]) => !c.startsWith("Δ"));
+    const delta = new Map(cols.map((c, k) => [c, k]));
+    return head + `<div class="scroll"><table class="tbl"><tr>${keep.map(([c]) => `<th title="${esc(r.units?.[c] || "")}">${esc(c)}</th>`).join("")}</tr>${rows.map(row => `<tr>${keep.map(([c, k]) => {
+      const d = delta.get("Δ" + c), dv = d != null ? row[d] : null, moved = dv != null && dv !== 0 && dv !== "0";
+      return `<td class="${moved ? "ch" : ""}" title="${moved ? "Δ " + esc(dv) : ""}">${esc(fmtVal(row[k]))}</td>`;
+    }).join("")}</tr>`).join("")}</table></div>`;
+  },
+  scenario_play(r, x) { return playCard(r, x); },
+  scenario_record(r, x) {
+    const name = String(r.recording || "").split("/").pop().replace(/\.jsonl$/, "");
+    const id = String(r.recording || "").split("/").slice(-2, -1)[0] || arg(x, "id");
+    return lead(`${pill(r.status, r.written ? "ok" : "bad")} ${r.recording ? mono(r.recording) : ""}${r.ticks ? ` · ${num(r.ticks)} ticks · ${num(r.fields)} fields` : ""}`) +
+      ((r.programs || []).length ? `<div class="chips">${r.programs.map(p => `<span class="pill">${esc(p.name)}: ${num(p.decisions)} decisions at ${num(p.sites)} sites</span>`).join("")}</div>` : "") +
+      (r.written && name ? footage(id, name) : "") + note(r.catalogue) + rest(r, ["status", "recording", "ticks", "fields", "programs", "catalogue", "coverage", "written", "next"]);
+  },
+  scenario_check(r) {
+    return lead(pill(r.ok ? "deterministic" : "not deterministic", r.ok ? "ok" : "bad")) + (r.scenarios || []).map(s => {
+      const recs = s.recordings || [];
+      return `<div style="margin-top:4px"><b class="mono">${esc(s.id)}</b> ${pill(s.status, s.status === "deterministic" ? "ok" : "bad")}${s.idle != null ? ` <span class="quiet">idle ${s.idle}</span>` : ""}</div>
+        <div class="chips" style="margin-top:3px">${recs.map(c => { const bad = c.status && !/deterministic|same|ok|pass/.test(c.status); return `<span class="pill ${bad ? "bad" : ""}" title="${esc(c.status || "")}${c.detail ? " · " + esc(c.detail) : ""}">${esc(c.name)}${bad ? " · " + esc(c.status) : ""}</span>`; }).join("")}</div>`;
+    }).join("");
+  },
+  port_status(r) {
+    const fs = Object.values(r.areas || {}).flat();
+    const n = r.next || {};
+    return nextBlock(n) + stats([stat(fs.length, "features"), stat(Object.entries(r.stages || {}).map(([k, v]) => `${v} ${k}`).join(", ") || "–", "stages"), stat((r.problems || []).length, "problems"), stat(r.review?.state || "–", r.review?.lines != null ? `review · ${num(r.review.lines)} of ${num(r.review.review_lines)} lines` : "review")]) +
+      tbl(["", "feature", "stage", "verdict", "work recordings passing", "branches resolved"], fs.map(f => [mono(f.id), esc(f.title), esc(f.stage), pill(f.verdict, f.verdict === "pass" ? "ok" : f.verdict === "fail" ? "bad" : "warn"),
+        f.work ? `${f.work.pass ?? "–"} of ${num(f.work.total)}` : "", f.branches ? `${num(f.branches.resolved)} / ${num(f.branches.total)} <span class="quiet">${Math.round(pct(f.branches.resolved, f.branches.total))}%</span>` : ""])) +
+      warnings((r.problems || []).map(p => typeof p === "string" ? p : p.text || p.message || JSON.stringify(p)));
+  },
+  port_next(r) { return nextBlock(r); },
+  port_check(r) {
+    return lead(`at ${mono(String(r.commit || "").slice(0, 10))}`) + (r.verdicts || []).map(v => {
+      const work = Object.entries(v.work || {});
+      return `<div style="margin-top:4px"><b class="mono">${esc(v.feature)}</b> ${pill(v.passed ? "passes" : "fails", v.passed ? "ok" : "bad")}${v.held_out ? ` <span class="quiet">${v.held_out} held out</span>` : ""}</div>
+        <div class="chips" style="margin-top:3px">${work.map(([name, f]) => `<span class="pill ${f.length ? "bad" : "ok"}" title="${esc(f.join("\n"))}">${esc(name)}${f.length ? ` · ${f.length}` : ""}</span>`).join("")}</div>
+        ${(v.failures || []).length ? `<div class="warnbox">${v.failures.map(esc).join("<br>")}</div>` : ""}${work.filter(([, f]) => f.length).slice(0, 3).map(([n, f]) => note(`${n}: ${f[0]}`)).join("")}`;
+    }).join("") + (r.assets ? note(`assets: ${r.assets.imported} imported, ${r.assets.checked} checked${(r.assets.failures || []).length ? `, ${r.assets.failures.length} failed` : ""}`) : "");
+  },
+  port_init(r) { return rest(r, []); },
+  port_update(r) {
+    const group = (l, xs, cls) => (xs || []).length ? `<div style="margin-top:3px"><span class="quiet">${l}</span> <span class="chips" style="display:inline-flex">${xs.map(p => `<span class="pill ${cls || ""} mono">${esc(typeof p === "string" ? p : p.path)}</span>`).join("")}</span></div>` : "";
+    return lead(`${r.dry_run ? pill("dry run", "warn") + " " : ""}template ${esc(ver(r.from))} → ${esc(ver(r.to))} · ${num(r.unchanged)} files unchanged`) +
+      group("updated", r.updated) + group("edited here, merged", r.edited) + group("added", r.added) + group("removed", r.removed) + group("conflicts", r.conflicts, "bad") + group("to merge by hand", r.seeded_changes, "warn") +
+      (r.next || []).map(note).join("");
+  },
+};
+// A template version ("src-d3d81c3e9c70116-release"): its commit, short.
+const ver = v => { const m = String(v || "").match(/[0-9a-f]{12,}/); return m ? m[0].slice(0, 9) : String(v || "?"); };
+function nextBlock(n) {
+  if (!n || !n.item) return "";
+  return lead(`<b style="font-size:15px">${esc(n.item)}${n.feature ? " " + esc(n.feature) : ""}</b> <span class="who ${n.who === "person" ? "person" : ""}">${esc(n.who || "")}</span>`) +
+    `<div class="text">${esc(unroot(n.why || ""))}</div>` +
+    (n.how ? `<details><summary>how</summary><div class="text">${esc(unroot(n.how))}</div></details>` : "") +
+    (n.done_when ? `<details><summary>done when</summary><div class="text">${esc(unroot(n.done_when))}</div></details>` : "");
+}
+function runCard(r, x) {
+  const f = r.frames || {}, id = r.identity || {};
+  // The files a run wrote: by name (a brief result lists names only).
+  const files = Array.isArray(r.files) ? Object.fromEntries(r.files.map(n => [n, {path: `${r.run_dir}/${n}`}])) : r.files || {};
+  const fp = n => files[n]?.path;
+  const from = id.from_state ? `from ${mono(stateName(id.from_state))}` : id.media ? `booted ${mono(srcName(id.media))}` : arg(x, "from_state") ? `from ${mono(stateName(arg(x, "from_state")))}` : "";
+  const ok = r.status === "complete";
+  let h = lead(`${pill(r.termination ? r.termination.replace(/_/g, " ") : r.status, ok ? "ok" : "warn")} <b>${num(f.reached)}</b>${f.requested != null && f.requested !== f.reached ? ` of ${num(f.requested)}` : ""} fields ${from}${f.start != null ? ` <span class="quiet">(${num(f.start)}..${num(f.end)})</span>` : ""} · ${fmtMs(r.wall_ms)}`);
+  const ev = r.input?.events || [];
+  if (ev.length) h += `<div class="chips">${ev.slice(0, 24).map(e => `<span class="pill mono">${e.frame}${e.until != null ? "–" + e.until : ""}: ${esc((e.buttons || []).join("+") || "release")}</span>`).join("")}${ev.length > 24 ? `<span class="quiet">+${ev.length - 24}</span>` : ""}</div>`;
+  const g = r.gpu_frame;
+  const shots = [shot(fp("screen.png"), `the screen after field ${num(f.reached)}`),
+    g ? shot(fp("gpu_frame_screen.png"), `GPU frame ${g.run_frame}: what it drew`) : "", g ? shot(fp("gpu_frame_wire.png"), "its polygons") : "",
+    shot(fp("vram.png"), "VRAM", "small")].join("");
+  if (shots) h += `<div class="shots" style="margin-top:6px">${shots}</div>`;
+  if (g) h += h4(`GPU frame ${g.run_frame}`) + stats([stat(g.draw_commands, "draws"), stat(g.content?.primitives, "primitives"), stat(g.textured, "textured"), stat(g.semi_transparent, "semi-transparent"), stat((g.texture_pages || []).length, "texture pages"), stat((g.cluts || []).length, "palettes"), g.gte ? stat(g.gte.projections_logged, "GTE projections") : ""]);
+  if (r.samples?.file) h += h4(`samples: ${(r.samples.columns || []).map(c => c.name || c.address).join(", ")}`) + `<div class="samples" data-csv="${esc(r.samples.file)}"><div class="quiet">loading…</div></div>`;
+  const w = r.watch;
+  if (w?.enabled) h += h4("watched writes") + (w.first?.length ? tbl(Object.keys(w.first[0]).slice(0, 6), w.first.slice(0, 20).map(e => Object.keys(w.first[0]).slice(0, 6).map(k => val(e[k])))) : `<div class="quiet">${num(w.hits)} hits</div>`);
+  if (r.read_watch) h += h4("watched reads") + rest(r.read_watch, []);
+  if (r.trace) h += h4("trace") + rest(r.trace, []);
+  if (r.until) h += h4("until") + rest(r.until, []);
+  if (r.tick_finder) h += h4("tick finder") + rest(r.tick_finder, []);
+  if (r.pokes) h += h4("pokes") + val(r.pokes);
+  const rg = r.registers;
+  if (rg) h += `<details><summary>registers at the end · pc ${esc(rg.pc)}</summary><div class="code">${Object.entries(rg).map(([k, v], i) => `<span class="rg">${k.padStart(9)}</span> ${esc(v)}${i % 4 === 3 ? "\n" : "  "}`).join("")}</div></details>`;
+  return h + warnings(r.warnings) + note(r.run_dir ? `in ${r.run_dir}` : "");
+}
+// A play request: what was asked, where it stands, and once answered the
+// person's note, marks and the recording.
+function playCard(r, x) {
+  const req = arg(x, "request") || (typeof r.request === "string" ? r.request : r.request?.text);
+  let h = req ? `<div class="text"${arg(x, "request") ? "" : ` style="color:var(--dim)"`}>${esc(req)}</div>` : "";
+  const st = r.status;
+  const cls = st === "done" ? "ok" : st === "declined" || st === "failed" ? "bad" : "warn";
+  h += lead(`${pill(st === "queued" ? `queued${r.position ? ", #" + r.position : ""}` : st, cls)}${r.live?.run_frame != null ? ` being played · field ${num(r.live.run_frame)}${r.live.marks?.length ? ` · ${r.live.marks.length} marks` : ""}` : ""}${st === "done" && r.frames?.reached != null ? ` played ${num(r.frames.reached - (r.frames.start || 0))} fields${(r.input?.recorded_events ?? r.input?.events?.length) ? `, ${num(r.input.recorded_events ?? r.input.events.length)} pad changes` : ""}` : ""}`);
+  if (r.note && st !== "queued" && st !== "waiting") h += `<div class="att info"><div class="quiet">the person's note</div><div class="text">${esc(r.note)}</div></div>`;
+  else if (r.note) h += note(r.note);
+  const marks = r.marks?.list || (Array.isArray(r.marks) ? r.marks : []);
+  const final = r.run_dir && (st === "done" || r.files) ? `${r.run_dir}/screen.png` : null;
+  const shots = marks.map((m, i) => shot(m.files?.screen || (m.dir && m.dir + "/screen.png"), `mark ${i + 1}${m.label ? ": " + m.label : ""}${m.run_frame != null ? ` · field ${m.run_frame}` : ""}`, "small")).join("") + (final ? shot(final, "where the play ended", "small") : "");
+  if (shots) h += `<div class="shots" style="margin-top:6px">${shots}</div>`;
+  const rec = r.recording;
+  if (rec) {
+    const path = typeof rec === "string" ? rec : rec.recording || rec.path || "";
+    const name = String(path).split("/").pop().replace(/\.jsonl$/, ""), id = String(path).split("/").slice(-2, -1)[0];
+    h += lead(`recording ${pill(rec.status || (rec.written === false ? "not written" : "written"), rec.written === false ? "bad" : "ok")} ${mono(path)}`) + (name && id && rec.written !== false ? footage(id, name) : "");
+  }
+  if (st === "queued" || st === "waiting") h += `<div style="margin-top:6px"><button class="b" data-act="requests">Open the requests</button></div>`;
+  return h + (r.verify ? note(`verify: ${typeof r.verify === "string" ? r.verify : r.verify.status || JSON.stringify(r.verify)}`) : "");
+}
+// A recording's footage: psx-core replays it for the screen, on request.
+const footage = (id, name) => id && name ? `<div class="footage" data-id="${esc(id)}" data-name="${esc(name)}"><button class="b" data-act="footage">▶ Footage</button> <button class="b" data-act="open-rec">Open in Recordings</button></div>` : "";
+
+function cardBody(x, r) {
+  let h;
+  try {
+    h = r.error && typeof r.error === "object" ? errorBody(r.error) : (CARDS[x.tool] || ((r) => rest(r, [])))(r, x);
+  } catch (e) {
+    h = `<div class="quiet">(this card could not be drawn: ${esc(e.message)})</div>` + rest(r, []);
+  }
+  // A message from the person that reached the agent with this result.
+  const m = r.messages?.from_person || [];
+  if (m.length) h += `<div class="att info" style="margin-top:8px"><div class="quiet">your message${m.length > 1 ? "s" : ""} reached the agent with this result</div>${m.map(x => `<div class="text">${esc(x.text)}</div>`).join("")}</div>`;
+  return h + `<details class="raw"><summary>result</summary><pre>…</pre></details>`;
+}
+
+// --- the feed
+const LOG_SHOWN = 60;
+S.results = new Map(); S.logLimit = LOG_SHOWN; S.feed = null; S.family = "";
+function logItems() {
+  const c = S.calls[S.cur];
+  const all = c.order.map(id => c.byId.get(id));
+  const f = S.filter.toLowerCase();
+  const shown = all.filter(x => (!S.errorsOnly || x.exit) && (!S.family || famOf(x.tool) === S.family)
+    && (!f || (x.tool + " " + (TOOLS[x.tool] || "") + " " + argsText(x) + " " + (x.summary || "")).toLowerCase().includes(f)));
+  // The same failure again and again: one card, counted.
+  const items = [];
+  for (const x of shown) {
+    const p = items[items.length - 1];
+    if (p && x.exit && p.x.exit && p.x.tool === x.tool && JSON.stringify(p.x.args) === JSON.stringify(x.args) && sessionKey(p.x) === sessionKey(x)) { p.rep.push(x); p.x = x; continue; }
+    items.push({x, rep: [x]});
+  }
+  return {all, items};
+}
+function groupHtml(x) {
+  const c = x.caller || {};
+  const who = c.client || (c.session ? c.session.name : c.parent) || "?";
+  return `<div class="grp"><div class="av">${esc(who[0].toUpperCase())}</div><span class="nm">${esc(who)}</span><span class="m">${esc(c.via || "")}${c.session ? " · pid " + c.session.pid : ""} · ${fmtDate(x.t)}</span></div>`;
+}
+function callHead(it) {
+  const x = it.x, n = it.rep.length;
+  const badges = (n > 1 ? `<span class="badge rep" title="the same call failed ${n} times in a row">×${n}</span>` : "")
+    + (x.bytes > 32768 ? `<span class="badge big" title="a large result">${fmtBytes(x.bytes)}</span>` : "")
+    + (x.ended == null ? `<span class="badge run">running</span>` : "");
+  return `<span class="lab">${esc(TOOLS[x.tool] || x.tool)}</span><span class="tn">${esc(x.tool)}</span><span class="ttl" title="${esc(argsText(x))}">${esc(unroot(title(x)))}</span>${badges}<span class="m">${x.ended != null ? fmtMs(x.ms) + " · " : ""}${fmtTime(x.t)}</span>`;
+}
+async function logView() {
+  const i = S.cur;
+  if (!S.calls[i]) { $("#view").innerHTML = `<div class="empty">Loading calls…</div>`; await loadCalls(i); if (i !== S.cur || S.view !== "log") return; }
+  const sig = `${i}|${S.filter}|${S.errorsOnly}|${S.family}`;
+  if (!$("#feed") || !S.feed || S.feed.sig !== sig) {
+    if (!$("#feed")) {
+      $("#view").innerHTML = `<div class="feed"><div class="filters"><input type="text" id="cf" placeholder="filter: tool, arguments, result"><select id="cfam">${FAMILIES.map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select><label><input type="checkbox" id="ce"> failures only</label><span class="quiet" id="ccount"></span></div><div class="feedbox"><div id="feed"></div></div></div>`;
+      $("#cf").value = S.filter; $("#ce").checked = S.errorsOnly; $("#cfam").value = S.family;
+      $("#cf").oninput = e => { S.filter = e.target.value; logView(); };
+      $("#ce").onchange = e => { S.errorsOnly = e.target.checked; logView(); };
+      $("#cfam").onchange = e => { S.family = e.target.value; logView(); };
+      $("#feed").onclick = feedClick;
+      feedBox();
+    }
+    $("#feed").innerHTML = "";
+    S.feed = {sig, els: new Map()};
+    S.pinned = true; S.lastTop = $(".feedbox").scrollTop; S.lastHeight = 0;
+  }
+  const {all, items} = logItems();
+  $("#ccount").textContent = `${all.length} calls · ${all.filter(x => x.exit).length} failed`;
+  const feed = $("#feed"), F = S.feed;
+  const shown = items.slice(-S.logLimit);
+  const want = [];
+  if (items.length > shown.length) want.push(["more", () => `<div class="more" data-act="earlier">${items.length - shown.length} earlier calls…</div>`]);
+  if (!items.length) want.push(["none", () => `<div class="empty">No calls${all.length ? " match" : " logged yet: psx logs each call once the project has a .psx directory"}.</div>`]);
+  let prev = null;
+  for (const it of shown) {
+    // A new speaker, or a pause of ten minutes: a header, as a chat would.
+    if (!prev || sessionKey(prev) !== sessionKey(it.rep[0]) || it.rep[0].t - (prev.ended || prev.t) > 10 * 60000) want.push(["g" + it.rep[0].id, () => groupHtml(it.rep[0])]);
+    want.push(["c" + it.rep[0].id, it]);
+    prev = it.x;
+  }
+  want.forEach(([k, v], at) => {
+    let el = F.els.get(k);
+    if (typeof v === "function") {
+      if (!el) { el = document.createElement("div"); el.innerHTML = v(); el = el.firstElementChild; F.els.set(k, el); }
+    } else {
+      const head = callHead(v), x = v.x;
+      if (!el) {
+        el = document.createElement("div"); el.className = "call"; el.dataset.fam = famOf(x.tool);
+        el.innerHTML = `<div class="ch"></div><div class="cb"></div>`; F.els.set(k, el); observe(el);
+      }
+      el.classList.toggle("err", !!x.exit);
+      if (el._head !== head) { el._head = head; el.firstElementChild.innerHTML = head; }
+      // The card's call: the last of a repeated failure.
+      if (el._x !== x || el._kept !== x.kept) { el._x = x; el._kept = x.kept; el._drawn = false; placeholder(el); if (el._seen) fill(el); }
+    }
+    if (feed.children[at] !== el) feed.insertBefore(el, feed.children[at] || null);
+  });
+  while (feed.children.length > want.length) feed.lastElementChild.remove();
+  keepPlace();
+  // From the overview's recent calls: that call's card.
+  if (S.jumpTo) {
+    const el = F.els.get("c" + S.jumpTo) || [...F.els.values()].find(e => e._x?.id === S.jumpTo);
+    if (!el && S.logLimit < items.length) { S.logLimit = items.length; return logView(); }
+    S.jumpTo = null;
+    if (el) {
+      const box = $(".feedbox");
+      S.pinned = false;
+      box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - 12;
+      S.anchor = anchorOf(box); S.lastTop = box.scrollTop; S.lastHeight = box.scrollHeight;
+      el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1600);
+    }
+  }
+}
+// The log's box: as tall as the window leaves it, at the newest call until
+// the person scrolls up; then cards drawn or loaded above keep what is read
+// in place.
+function feedBox() {
+  const box = $(".feedbox"), feed = $("#feed");
+  const size = () => { if (box.isConnected) box.style.height = Math.max(240, innerHeight - box.getBoundingClientRect().top - 12) + "px"; };
+  size();
+  box.onscroll = () => { if (box.scrollTop !== S.lastTop) { S.pinned = box.scrollTop + box.clientHeight >= box.scrollHeight - 40; S.lastTop = box.scrollTop; S.lastHeight = box.scrollHeight; S.anchor = anchorOf(box); } };
+  // Cards grow as their results and images arrive.
+  new ResizeObserver(keepPlace).observe(feed);
+  const hd = new ResizeObserver(() => box.isConnected ? size() : hd.disconnect());
+  hd.observe($("header"));
+}
+function anchorOf(box) {
+  const top = box.getBoundingClientRect().top;
+  for (const c of $("#feed").querySelectorAll(":scope > .call")) { const r = c.getBoundingClientRect(); if (r.bottom > top) return {el: c, off: r.top - top}; }
+  return null;
+}
+function keepPlace() {
+  const box = $(".feedbox");
+  if (!box) return;
+  // Scrolled since: the scroll event may not have come yet.
+  if (box.scrollTop !== S.lastTop) { S.pinned = box.scrollTop + box.clientHeight >= S.lastHeight - 40; S.anchor = anchorOf(box); }
+  if (S.pinned) box.scrollTop = box.scrollHeight;
+  else if (S.anchor?.el.isConnected) box.scrollTop += S.anchor.el.getBoundingClientRect().top - box.getBoundingClientRect().top - S.anchor.off;
+  S.anchor = anchorOf(box); S.lastTop = box.scrollTop; S.lastHeight = box.scrollHeight;
+}
+function placeholder(el) {
+  const x = el._x;
+  el.lastElementChild.innerHTML = x.ended == null ? `<div class="quiet">running…</div>`
+    : x.exit && !x.kept ? errorBody({code: x.error, message: x.summary}) : `<div class="quiet">${esc(unroot(x.summary || ""))}</div>`;
+}
+let seer = null;
+function observe(el) {
+  const box = $(".feedbox");
+  if (seer?.root !== box) {
+    seer?.disconnect();
+    seer = new IntersectionObserver(es => { for (const e of es) if (e.isIntersecting) { e.target._seen = true; fill(e.target); seer.unobserve(e.target); } }, {root: box, rootMargin: "600px"});
+  }
+  seer.observe(el);
+}
+// The card's result, fetched once it is near the screen.
+async function fill(el) {
+  const x = el._x;
+  if (el._drawn || !x || !x.kept || x.ended == null) return;
+  el._drawn = true;
+  const key = `${S.cur}/${x.id}`;
+  let r = S.results.get(key);
+  if (!r) {
+    if (x.bytes > 4 << 20) { el.lastElementChild.innerHTML = `<div class="quiet">${esc(unroot(x.summary || ""))} · a ${fmtBytes(x.bytes)} result, too large to draw</div>`; return; }
+    try { r = await api(`/api/p/${S.cur}/call/${encodeURIComponent(x.id)}`); } catch (e) { el._drawn = false; return; }
+    S.results.set(key, r);
+  }
+  if (el._x !== x) return;
+  el.lastElementChild.innerHTML = typeof r === "object" && r ? cardBody(x, r) : `<pre>${esc(String(r))}</pre>`;
+  el._result = r;
+  for (const s of el.querySelectorAll(".samples")) samples(s);
+  for (const f of el.querySelectorAll(".fold")) if (f.scrollHeight <= f.clientHeight + 4) { f.classList.add("open"); f.nextElementSibling?.remove(); }
+}
+function feedClick(ev) {
+  const t = ev.target;
+  if (t.dataset.zoom) { const z = document.createElement("div"); z.id = "zoom"; z.innerHTML = `<img src="${t.src}">`; z.onclick = () => z.remove(); document.body.append(z); return; }
+  const act = t.dataset.act; if (!act) return;
+  const el = t.closest(".call");
+  if (act === "earlier") { S.logLimit += LOG_SHOWN; logView(); }
+  else if (act === "unfold") { t.previousElementSibling.classList.add("open"); t.remove(); }
+  else if (act === "requests") { S.view = "requests"; save(); tabs(); render(); }
+  else if (act === "open-rec") { const f = t.closest(".footage"); S.rec = {scenario: f.dataset.id, name: f.dataset.name}; S.recKey = null; S.view = "recordings"; save(); render(); }
+  else if (act === "footage") playFootage(t.closest(".footage"));
+  else if (t.closest(".raw") && el) {}
+}
+document.addEventListener("toggle", e => {
+  const d = e.target;
+  if (!d.classList?.contains("raw") || !d.open) return;
+  const el = d.closest(".call");
+  if (el?._result !== undefined) d.querySelector("pre").textContent = unroot(JSON.stringify(el._result, null, 1)).slice(0, 300000);
+}, true);
+// The samples a run kept, one plot per column.
+async function samples(box) {
+  let text;
+  try { const r = await fetch(fileUrl(box.dataset.csv)); if (!r.ok) throw new Error(r.statusText); text = await r.text(); }
+  catch (e) { box.innerHTML = `<div class="quiet">the samples file is gone</div>`; return; }
+  const lines = text.trim().split("\n"), head = lines[0].split(","), rows = lines.slice(1).map(l => l.split(","));
+  const cols = head.map((h, k) => [h, k]).filter(([h]) => h !== "run_frame" && h !== "frame");
+  const parse = v => /^0x/i.test(v) ? parseInt(v, 16) : +v;
+  box.innerHTML = `<div class="plots">${cols.map(([h, k]) => `<div class="q"><div class="lab"><div class="nm">${esc(h)}</div><div class="v quiet">${esc(rows[0]?.[k] ?? "")} → ${esc(rows[rows.length - 1]?.[k] ?? "")}</div></div><div class="pl"><canvas data-k="${k}"></canvas></div></div>`).join("")}</div><div class="note">${rows.length} rows, one per sampled field</div>`;
+  for (const c of box.querySelectorAll("canvas")) {
+    const k = +c.dataset.k, vals = rows.map(r => parse(r[k])), ok = vals.filter(v => Number.isFinite(v));
+    const ctx = setup(c), W = c.clientWidth, H = c.clientHeight;
+    if (!ok.length) continue;
+    let lo = Math.min(...ok), hi = Math.max(...ok); if (lo === hi) { lo -= 1; hi += 1; }
+    const X = t => 2 + (W - 4) * t / Math.max(1, vals.length - 1), Y = v => H - 4 - (H - 8) * (v - lo) / (hi - lo);
+    ctx.fillStyle = css("--dim"); ctx.font = "10px system-ui"; ctx.fillText(+hi.toFixed(3), 3, 10); ctx.fillText(+lo.toFixed(3), 3, H - 3);
+    ctx.strokeStyle = css("--port"); ctx.lineWidth = 1.5; ctx.beginPath();
+    vals.forEach((v, t) => { if (!Number.isFinite(v)) return; t ? ctx.lineTo(X(t), Y(v)) : ctx.moveTo(X(t), Y(v)); });
+    ctx.stroke();
+  }
+}
+// The replay's screens, looped at the field rate once they are all there.
+async function playFootage(box) {
+  if (box._on) return; box._on = true;
+  const q = `scenario=${encodeURIComponent(box.dataset.id)}&name=${encodeURIComponent(box.dataset.name)}`, p = S.cur;
+  box.innerHTML = `<div class="screen"><img alt=""><div class="msg">replaying on psx-core…</div></div><div class="note"></div>`;
+  const img = box.querySelector("img"), msg = box.querySelector(".msg"), line = box.querySelector(".note");
+  let start = 1, r;
+  for (;;) {
+    r = await api(`/api/p/${p}/replay?${q}&start=${start}`); start = 0;
+    if (!box.isConnected) return;
+    if (r.error || r.done?.error) { msg.textContent = "The replay failed: " + (r.error || r.done.error.message); return; }
+    if (r.done) break;
+    msg.textContent = `replaying on psx-core… ${r.frames} ticks`;
+    await new Promise(res => setTimeout(res, 700));
+  }
+  const n = r.frames || r.done.ticks || 0;
+  if (!n) { msg.textContent = "no frames"; return; }
+  // Each tick's screen, loaded once, then shown in turn.
+  const frames = [];
+  for (let t = 1; t <= n; t++) { const im = new Image(); im.src = `/api/p/${p}/frame?${q}&tick=${t}`; frames.push(im); }
+  msg.style.display = "none";
+  // A click pauses and resumes.
+  let t = 0, paused = false;
+  img.style.cursor = "pointer"; img.title = "click to pause";
+  img.onclick = () => { paused = !paused; img.title = paused ? "click to play" : "click to pause"; line.textContent = `tick ${(t || n)} of ${n}${paused ? " · paused" : ""}`; };
+  const step = () => { if (!box.isConnected) return; if (!paused && frames[t].complete) { img.src = frames[t].src; line.textContent = `tick ${t + 1} of ${n}`; t = (t + 1) % n; } setTimeout(step, t === 0 ? 800 : 1000 / 30); };
+  step();
+}
+
+// ------------------------------------------------------------ messages
+// A chat with the project's agent, bottom right. What the person writes
+// reaches the agent with the result of its next psx call; nothing
+// interrupts it.
+S.msgs = {}; S.chatOpen = false; S.replying = null;
+try { S.chatOpen = localStorage.getItem("psx-chat") === "open"; } catch (e) {}
+async function loadMessages(i) { S.msgs[i] = await api(`/api/p/${i}/messages`); }
+function chatView() {
+  const box = $("#chat");
+  if (!S.projects.length || S.view === "requests") { box.hidden = true; return; }
+  const m = S.msgs[S.cur];
+  box.hidden = false;
+  box.classList.toggle("min", !S.chatOpen);
+  $(".arr", box).textContent = S.chatOpen ? "▸" : "◂";
+  $(".hd", box).title = S.chatOpen ? "fold the messages away" : "open the messages";
+  $("#chatwho").textContent = S.projects[S.cur]?.name || "";
+  if (!m) { loadMessages(S.cur).then(() => chatView()); return; }
+  const unread = S.chatOpen && document.visibilityState === "visible" ? 0 : m.unread;
+  $(".hd .n", box).textContent = unread || "";
+  if (!S.chatOpen) return;
+  const msgs = m.messages || [];
+  // Which index each message has, for "seen".
+  const at = new Map(msgs.map((x, k) => [x.id, k]));
+  const one = x => {
+    const k = at.get(x.id), mine = x.from === "person";
+    const seen = mine ? (k < m.agent_seen ? `<span class="seen" title="it came with the result of one of its psx calls">✓ seen by the agent</span>` : `<span class="seen">arrives with its next psx call</span>`) : "";
+    return `<div class="msg ${mine ? "" : "agent"} ${!mine && k >= S.chatSeen ? "new" : ""}"><div class="w"><b>${mine ? "you" : "agent"}</b><span>${fmtDate(x.t)}</span>${seen}</div><div class="t">${esc(x.text)}</div></div>`;
+  };
+  const starts = msgs.filter(x => !x.thread);
+  const body = $(".body", box);
+  const stick = body.scrollTop + body.clientHeight >= body.scrollHeight - 30;
+  const draft = S.replying ? document.getElementById("chatrep")?.value || "" : "";
+  body.innerHTML = starts.length ? starts.map(s => {
+    const reps = msgs.filter(x => x.thread === s.id);
+    return `<div class="thr">${one(s)}${reps.length ? `<div class="replies">${reps.map(one).join("")}</div>` : ""}
+      ${S.replying === s.id ? `<div class="compose"><textarea id="chatrep" placeholder="Reply in this thread"></textarea></div>` : `<div class="rep" data-r="${esc(s.id)}">reply</div>`}</div>`;
+  }).join("") : `<div class="quiet">No messages yet. Write to the agent below: it reads it with the result of its next psx call and answers when it has something to say.</div>`;
+  for (const r of body.querySelectorAll(".rep")) r.onclick = () => { S.replying = r.dataset.r; chatView(); $("#chatrep")?.focus(); };
+  const rep = $("#chatrep");
+  if (rep) { rep.value = draft; rep.onkeydown = ev => chatKey(ev, rep, S.replying); }
+  if (stick || S.chatJump) { body.scrollTop = body.scrollHeight; S.chatJump = false; }
+  markRead();
+}
+function markRead() {
+  const m = S.msgs[S.cur];
+  if (!m || !S.chatOpen || document.visibilityState !== "visible") return;
+  S.chatSeen = m.person_seen;
+  const n = (m.messages || []).length;
+  if (n > m.person_seen) { m.person_seen = n; m.unread = 0; post(`/api/p/${S.cur}/messages/seen`, {n}); }
+}
+function chatKey(ev, ta, replyTo) {
+  if (ev.key !== "Enter" || ev.shiftKey || ev.isComposing) return;
+  ev.preventDefault();
+  const text = ta.value.trim(); if (!text) return;
+  const p = S.cur;
+  ta.disabled = true;
+  post(`/api/p/${p}/messages/send`, {text, reply_to: replyTo || null}).then(async r => {
+    ta.disabled = false;
+    if (r.error) { ta.title = r.error.message || String(r.error); ta.style.borderColor = "var(--act)"; return; }
+    ta.value = ""; ta.style.borderColor = ""; if (replyTo) S.replying = null;
+    S.chatJump = true; await loadMessages(p); if (p === S.cur) chatView();
+  });
+}
+function initChat() {
+  $("#chat .hd").onclick = () => { S.chatOpen = !S.chatOpen; try { localStorage.setItem("psx-chat", S.chatOpen ? "open" : "min"); } catch (e) {} S.chatJump = true; chatView(); tabs(); if (S.chatOpen) { $("#chatnew").focus(); if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } };
+  $("#chatnew").onkeydown = ev => chatKey(ev, ev.target, null);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") chatView(); });
+  document.addEventListener("keydown", ev => { if (ev.key === "Escape" && S.replying && ev.target.id === "chatrep") { S.replying = null; chatView(); } });
+}
+// A new message from an agent: a count on the tab, and a notification when
+// the page is out of sight.
+function notifyMessages(p, before) {
+  const m = S.msgs[p]; if (!m || !before) return;
+  const fresh = (m.messages || []).slice(before.messages.length).filter(x => x.from === "agent");
+  if (!fresh.length || (document.visibilityState === "visible" && p === S.cur && S.chatOpen)) return;
+  if ("Notification" in window && Notification.permission === "granted")
+    new Notification(`${S.projects[p]?.name}: the agent wrote`, {body: fresh[fresh.length - 1].text.slice(0, 200), tag: "psx-msg-" + p});
+}
+
+// ------------------------------------------------------------ play requests
+async function loadRequests() {
+  S.requests = await api("/api/requests");
+  // New requests since the page last looked: a notification, when allowed.
+  const ids = new Set(S.requests.waiting.map(r => r.p + "/" + r.id));
+  if (S.seenRequests && "Notification" in window && Notification.permission === "granted") {
+    for (const r of S.requests.waiting) if (!S.seenRequests.has(r.p + "/" + r.id) && r.state === "queued") {
+      const n = new Notification(`psx · ${r.project}: a play request`, {body: r.request, tag: r.p + "/" + r.id});
+      n.onclick = () => { window.focus(); S.view = "requests"; save(); tabs(); render(); };
+    }
+  }
+  S.seenRequests = ids;
+}
+let requestPoll = null;
+function requestsView() {
+  const R = S.requests;
+  if (!R) { $("#view").innerHTML = `<div class="empty">Loading…</div>`; return; }
+  // A draft note survives the list being drawn again.
+  for (const t of document.querySelectorAll(".req textarea")) S.drafts[t.dataset.k] = t.value;
+  const win = R.window || {};
+  const card = r => {
+    const k = r.p + "/" + r.id;
+    const rec = r.scenario ? `${r.scenario}/${r.name}` : "";
+    const meta = [`<b>${esc(r.project)}</b>`, rec && `recording ${esc(rec)}${r.from ? " from the end of " + esc(r.from) : ""}`, `asked ${ago(Date.now() - r.queued_unix_ms)} ago`,
+      r.state === "playing" ? `<span style="color:var(--accent)">being played${r.live?.run_frame != null ? ` · field ${r.live.run_frame}` : ""}</span>` : "",
+      `<span class="mono">${esc(r.id)}</span>`].filter(Boolean).join(" · ");
+    const after = r.after?.note ? `<div class="after">Asked again after you declined: ${esc(r.after.note)}</div>` : "";
+    const expect = (r.expect || []).length ? `<div class="quiet">expects: <span class="mono">${(r.expect).map(esc).join(", ")}</span></div>` : "";
+    let acts = "";
+    if (r.state === "queued") {
+      acts = `<div class="acts"><button class="b primary" data-act="play" data-k="${esc(k)}" title="play it in this page, with the keyboard or a gamepad">Play here</button>
+        <button class="b" data-act="window" data-k="${esc(k)}" ${win.available ? "" : "disabled"} title="${esc(win.available ? "opens the native window on this machine (with sound)" : win.reason || "")}">Open in window</button>
+        <textarea data-k="${esc(k)}" placeholder="Why not, for the agent: what is wrong with the request, or what to ask instead">${esc(S.drafts[k] || "")}</textarea>
+        <button class="b" data-act="decline" data-k="${esc(k)}">Decline with note</button></div><div class="err" id="err-${esc(k)}"></div>`;
+    }
+    if (r.state === "playing" && r.here) {
+      acts = `<div class="acts"><button class="b primary" data-act="play" data-k="${esc(k)}">Resume here</button></div><div class="err" id="err-${esc(k)}"></div>`;
+    }
+    if (r.state === "answered") {
+      const a = r.answer || {};
+      const what = a.error ? `failed: ${esc(a.error.message)}` : `${esc(a.status)}${a.recording ? " · recording " + esc(a.recording) : ""}`;
+      acts = `<div class="meta" style="margin-top:6px">${what}${a.note ? ` · note: ${esc(a.note)}` : ""} · ${r.read ? "the agent has read it" : "the agent has not read it yet"}</div>`;
+    }
+    return `<div class="card req ${r.state}"><div class="meta">${meta}</div><div class="what">${esc(r.request)}</div>${after}${expect}${acts}</div>`;
+  };
+  const notify = "Notification" in window && Notification.permission === "default"
+    ? `<button class="b" id="notify">Notify me of new requests</button>` : "";
+  $("#view").innerHTML = `<div class="filters"><span class="quiet">The agents' play requests across ${S.projects.length === 1 ? "the project" : "the projects"}, oldest first. Answer here, or in a terminal with <span class="mono">psx play</span>.</span>${notify}</div>
+    ${!win.available ? `<div class="warnbox">The window cannot open here: ${esc(win.reason || "")}</div>` : ""}
+    ${R.waiting.length ? R.waiting.map(card).join("") : `<div class="card quiet">No play requests wait.</div>`}
+    ${R.answered.length ? `<h2 class="quiet" style="font-size:13px;margin:18px 0 8px">Answered</h2>` + R.answered.map(card).join("") : ""}`;
+  if ($("#notify")) $("#notify").onclick = async () => { await Notification.requestPermission(); requestsView(); };
+  for (const t of document.querySelectorAll(".req textarea")) t.oninput = () => S.drafts[t.dataset.k] = t.value;
+  for (const b of document.querySelectorAll(".req button[data-act]")) b.onclick = async () => {
+    const [p, id] = b.dataset.k.split("/");
+    const body = b.dataset.act === "decline" ? {note: (S.drafts[b.dataset.k] || "").trim()} : {};
+    if (b.dataset.act === "decline" && !body.note) { $(`#err-${CSS.escape(b.dataset.k)}`).textContent = "Write a note first: it is what the agent gets."; return; }
+    b.disabled = true;
+    const r = await post(`/api/p/${p}/request/${encodeURIComponent(id)}/${b.dataset.act}`, body);
+    if (r.error) { b.disabled = false; $(`#err-${CSS.escape(b.dataset.k)}`).textContent = r.error.message; return; }
+    if (b.dataset.act === "play") { startPlayer(+p, id); return; }
+    if (b.dataset.act === "decline") delete S.drafts[b.dataset.k];
+    await loadRequests(); tabs(); requestsView();
+  };
+  // While someone plays, how far they are (not while a note is being written).
+  clearTimeout(requestPoll);
+  const poll = () => requestPoll = setTimeout(async () => {
+    if (S.view !== "requests" || S.player) return;
+    if (document.activeElement?.tagName === "TEXTAREA") { poll(); return; }
+    await loadRequests(); tabs(); requestsView();
+  }, 3000);
+  if (R.waiting.some(r => r.state === "playing")) poll();
+}
+
+// ------------------------------------------------------------ browser play
+// The game runs in psx web; this page shows its frames and sends what is held.
+const ACTION_LABEL = {UP: "Up", DOWN: "Down", LEFT: "Left", RIGHT: "Right", CROSS: "✕", CIRCLE: "○", SQUARE: "□", TRIANGLE: "△",
+  L1: "L1", R1: "R1", L2: "L2", R2: "R2", START: "Start", SELECT: "Select", L3: "L3", R3: "R3", ANALOG: "Analog"};
+// KeyboardEvent.code as the window names keys (its controls file uses these).
+const KEY_NAMES = {ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", Enter: "Enter", NumpadEnter: "NumPadEnter",
+  ShiftLeft: "LeftShift", ShiftRight: "RightShift", ControlLeft: "LeftCtrl", ControlRight: "RightCtrl", AltLeft: "LeftAlt", AltRight: "RightAlt",
+  Space: "Space", Backspace: "Backspace", Tab: "Tab", Escape: "Escape", Quote: "Apostrophe", Backquote: "Backquote", Backslash: "Backslash",
+  Comma: "Comma", Equal: "Equal", BracketLeft: "LeftBracket", BracketRight: "RightBracket", Minus: "Minus", Period: "Period",
+  Semicolon: "Semicolon", Slash: "Slash", Insert: "Insert", Delete: "Delete", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown",
+  NumpadDecimal: "NumPadDot", NumpadDivide: "NumPadSlash", NumpadMultiply: "NumPadAsterisk", NumpadSubtract: "NumPadMinus", NumpadAdd: "NumPadPlus"};
+const keyName = code => /^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digit\d$/.test(code) ? "Key" + code.slice(5)
+  : /^Numpad\d$/.test(code) ? "NumPad" + code.slice(6) : KEY_NAMES[code] || code;
+// The Gamepad API's standard mapping, as gilrs names the buttons.
+const PAD_NAMES = ["South", "East", "West", "North", "LeftTrigger", "RightTrigger", "LeftTrigger2", "RightTrigger2", "Select", "Start",
+  "LeftThumb", "RightThumb", "DPadUp", "DPadDown", "DPadLeft", "DPadRight", "Mode"];
+// The window's keys, kept here too where the browser lets go of them.
+const SHORTCUTS = {F2: "rewind", F3: "pause", F5: "quick_save", F6: "mark", F7: "quick_load", F8: "restart", F12: "done", F10: "decline"};
+
+async function startPlayer(p, id) {
+  stopPlayer();
+  const P = S.player = {p, id, status: {state: "starting"}, keys: new Set(), fast: false, sent: "", busy: false, dirty: false, msgSeq: -1};
+  P.base = `/api/p/${p}/request/${encodeURIComponent(id)}`;
+  S.bindings = S.bindings || await api("/api/bindings");
+  playerView();
+  P.abort = new AbortController();
+  P.onkey = ev => playerKey(ev, P);
+  addEventListener("keydown", P.onkey); addEventListener("keyup", P.onkey);
+  P.onblur = () => { P.keys.clear(); P.fast = false; sendInput(P); };
+  addEventListener("blur", P.onblur);
+  const pads = () => { if (S.player !== P) return; pollPads(P); P.raf = requestAnimationFrame(pads); };
+  P.raf = requestAnimationFrame(pads);
+  try { await readStream(P); } catch (e) { if (S.player === P && !P.ended) playerStatus(P, {state: "lost", message: "The connection to psx web was lost: " + e.message}); }
+  if (S.player === P && !P.ended) playerStatus(P, {state: "lost", message: "The connection to psx web closed. Resume from Requests while the play lasts (a minute)."});
+}
+function stopPlayer() {
+  const P = S.player; if (!P) return;
+  P.abort?.abort(); cancelAnimationFrame(P.raf);
+  removeEventListener("keydown", P.onkey); removeEventListener("keyup", P.onkey); removeEventListener("blur", P.onblur);
+  S.player = null;
+}
+async function readStream(P) {
+  const r = await fetch(P.base + "/stream", {signal: P.abort.signal});
+  if (!r.ok || !r.body) throw new Error(r.status + " " + r.statusText);
+  const rd = r.body.getReader();
+  let buf = new Uint8Array(1 << 20), len = 0;
+  for (;;) {
+    const {value, done} = await rd.read();
+    if (done) return;
+    if (len + value.length > buf.length) { const b = new Uint8Array(Math.max(buf.length * 2, len + value.length)); b.set(buf.subarray(0, len)); buf = b; }
+    buf.set(value, len); len += value.length;
+    let at = 0;
+    while (len - at >= 5) {
+      const n = new DataView(buf.buffer, at + 1, 4).getUint32(0, true);
+      if (len - at < 5 + n) break;
+      const kind = buf[at], body = buf.subarray(at + 5, at + 5 + n);
+      if (kind === 70) { P.frame = body.slice(); drawPlayFrame(P, P.frame); }
+      else if (kind === 83) playerStatus(P, JSON.parse(new TextDecoder().decode(body)));
+      at += 5 + n;
+    }
+    buf.copyWithin(0, at, len); len -= at;
+  }
+}
+function drawPlayFrame(P, b) {
+  const c = $("#pscreen"); if (!c) return;
+  const v = new DataView(b.buffer, b.byteOffset, 4), w = v.getUint16(0, true), h = v.getUint16(2, true);
+  if (!w || !h || b.length < 4 + w * h * 4) return;
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(b.buffer, b.byteOffset + 4, w * h * 4), w, h), 0, 0);
+}
+function playerStatus(P, st) {
+  const was = P.status.state;
+  P.status = {...P.status, ...st};
+  if (st.state === "ended") { P.ended = true; P.abort.abort(); loadRequests().then(() => tabs()); }
+  if (st.state !== was || st.state === "ended" || st.state === "lost" || (st.message_seq ?? -1) !== P.msgSeq || st.labelling !== P.labelShown) playerView();
+  else playerLine(P);
+}
+function playerLine(P) {
+  const st = P.status, l = $("#pline"); if (!l) return;
+  l.textContent = [st.state, st.mode, st.run_frame != null ? `field ${st.run_frame}` : "", st.quick_save ? "quick save kept" : "", P.fast ? "fast forward" : ""].filter(Boolean).join(" · ");
+  const pz = $("#ppause"); if (pz) pz.classList.toggle("on", st.state === "paused");
+}
+function playerView() {
+  const P = S.player, st = P.status, v = $("#view"); if (!v) return;
+  // A note being written survives the panel being drawn again.
+  const note = $("#pnote")?.value ?? P.note ?? "", label = $("#plabel")?.value ?? "";
+  const writing = document.activeElement === $("#pnote") ? [$("#pnote").selectionStart, $("#pnote").selectionEnd] : null;
+  P.note = note; P.msgSeq = st.message_seq ?? -1; P.labelShown = st.labelling;
+  const r = (S.requests?.waiting || []).concat(S.requests?.answered || []).find(x => x.p === P.p && x.id === P.id);
+  const req = st.request || r?.request || "";
+  if (st.state === "ended") {
+    const a = st.result || {};
+    const what = a.error ? `It failed: ${esc(a.error.message)}` : a.status === "queued" ? "Left without an answer: the request is back in the queue."
+      : `Answered: ${esc(a.status)}${a.recording ? ` · recording ${a.recording.written === false ? "not written" : esc(a.recording.status || a.recording.name || "written")}` : ""}.`;
+    v.innerHTML = `<div class="card"><div class="what" style="white-space:pre-wrap">${esc(req)}</div><p>${what}</p><button class="b primary" id="pback">Back to requests</button></div>`;
+    $("#pback").onclick = () => { stopPlayer(); requestsView(); };
+    return;
+  }
+  const B = S.bindings || {keyboard: {}, gamepad: {}};
+  const keys = Object.keys(ACTION_LABEL).filter(a => B.keyboard[a] || B.gamepad[a])
+    .map(a => `<span>${ACTION_LABEL[a]}</span><span>${esc(B.keyboard[a] || "")}</span><span>${esc(B.gamepad[a] || "")}</span>`).join("");
+  const labelling = st.labelling != null;
+  v.innerHTML = `<div class="player">
+    <div><canvas id="pscreen" width="320" height="240" tabindex="0" title="click to play: the keys go to the game"></canvas>
+      <div class="padline" id="pline" style="margin-top:6px"></div></div>
+    <div class="side">
+      <div class="what" style="white-space:pre-wrap;font-size:14px">${esc(req)}</div>
+      <div class="msg">${esc(st.message || "")}</div>
+      ${labelling ? `<div><b>Label mark ${st.labelling}</b> (the game waits): <input type="text" id="plabel" value="${esc(label)}" placeholder="what this moment is, for the agent"><div class="row" style="margin-top:4px"><button class="b primary" id="plabelok">Save label</button></div></div>` : ""}
+      <div class="row">
+        <button class="b" data-c="mark" title="F6: its state, RAM and screen go to the agent">Mark</button>
+        <button class="b" data-c="rewind" title="F2: about 5 s back (again: further)">Rewind</button>
+        <button class="b" data-c="quick_save" title="F5">Quick save</button>
+        <button class="b" data-c="quick_load" title="F7">Quick load</button>
+        <button class="b" id="ppause" data-c="pause" title="F3">Pause</button>
+        <button class="b" id="pfast" title="Tab (hold)">Fast</button>
+        <button class="b" data-c="restart" title="F8: from the beginning of the request">Start over</button>
+      </div>
+      <textarea id="pnote" placeholder="A note for the agent: what you did, or why you could not">${esc(note)}</textarea>
+      <div class="row">
+        <button class="b primary" data-c="done" title="F12: done; with an id the play becomes the recording">Done</button>
+        <button class="b" data-c="decline" title="F10: could not or would not; the note goes to the agent">Decline with note</button>
+        <button class="b" data-c="leave" title="stop without answering: the request goes back to the queue">Leave</button>
+      </div>
+      <div class="err" id="perr"></div>
+      <div class="quiet">Click the screen, then play with your keys or a gamepad (sound plays only in the window).</div>
+      <div class="keys"><span></span><b>key</b><b>gamepad</b>${keys}</div>
+    </div></div>`;
+  playerLine(P);
+  if (P.frame) drawPlayFrame(P, P.frame);
+  for (const b of v.querySelectorAll("button[data-c]")) b.onclick = () => playerCmd(P, b.dataset.c);
+  const fast = $("#pfast");
+  fast.onpointerdown = () => { P.fast = true; sendInput(P); }; fast.onpointerup = fast.onpointerleave = () => { if (P.fast) { P.fast = false; sendInput(P); } };
+  if ($("#plabelok")) {
+    const save = () => playerCmdBody(P, {cmd: "label", n: st.labelling, label: $("#plabel").value});
+    $("#plabelok").onclick = save; $("#plabel").onkeydown = e => { if (e.key === "Enter") save(); };
+    $("#plabel").focus();
+  } else if (writing) { $("#pnote").focus(); $("#pnote").setSelectionRange(...writing); }
+  else if (st.state !== "lost") $("#pscreen").focus();
+}
+function playerCmd(P, c) {
+  const note = ($("#pnote")?.value || "").trim();
+  if (c === "decline" && !note) { $("#perr").textContent = "Write a note first: it is what the agent gets."; $("#pnote").focus(); return; }
+  if (c === "restart" && !confirm("Start over from the beginning of the request? Progress since then is lost (the quick save is kept).")) return;
+  if (c === "leave" && !confirm("Leave without answering? The request goes back to the queue.")) return;
+  const body = {cmd: c};
+  if (c === "done" || c === "decline") body.note = note;
+  if (c === "pause") body.paused = P.status.state !== "paused";
+  playerCmdBody(P, body);
+}
+async function playerCmdBody(P, body) {
+  const r = await post(P.base + "/cmd", body);
+  const e = $("#perr"); if (e) e.textContent = r.error ? r.error.message : "";
+}
+function typing(ev) { const t = ev.target?.tagName; return t === "TEXTAREA" || t === "INPUT"; }
+function playerKey(ev, P) {
+  if (S.player !== P || typing(ev)) return;
+  const down = ev.type === "keydown";
+  if (down && SHORTCUTS[ev.code]) { ev.preventDefault(); if (!ev.repeat) playerCmd(P, SHORTCUTS[ev.code]); return; }
+  if (ev.code === "Tab") { ev.preventDefault(); P.fast = down; sendInput(P); return; }
+  const k = keyName(ev.code);
+  if (!down && P.keys.delete(k)) { sendInput(P); return; }
+  // Keys go to the game while the screen has focus.
+  if (!down || document.activeElement !== $("#pscreen")) return;
+  ev.preventDefault();
+  P.keys.add(k);
+  sendInput(P);
+}
+function pollPads(P) {
+  const pads = [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(g => g && g.connected);
+  const pad = new Set();
+  let sticks = [0, 0, 0, 0];
+  for (const g of pads) {
+    if (g.mapping !== "standard") continue;
+    g.buttons.forEach((b, i) => { if (b.pressed && PAD_NAMES[i]) pad.add(PAD_NAMES[i]); });
+    // The pad whose sticks moved steers (+y up, as gamepads report it to the window).
+    const a = [g.axes[0] || 0, -(g.axes[1] || 0), g.axes[2] || 0, -(g.axes[3] || 0)].map(x => Math.round(x * 100) / 100);
+    if (a.some(x => Math.abs(x) > 0.15) || pads.length === 1) sticks = a;
+  }
+  P.pad = [...pad].sort(); P.sticks = sticks;
+  sendInput(P);
+}
+async function sendInput(P) {
+  const body = {keys: [...P.keys].sort(), pad: P.pad || [], sticks: P.sticks || [0, 0, 0, 0], fast: P.fast};
+  const j = JSON.stringify(body);
+  if (j === P.sent || S.player !== P || P.ended) return;
+  if (P.busy) { P.dirty = true; return; }
+  P.busy = true; P.sent = j;
+  await post(P.base + "/input", body);
+  P.busy = false;
+  if (P.dirty) { P.dirty = false; sendInput(P); }
+  playerLine(P);
+}
+
+// ------------------------------------------------------------ recordings
+async function recordingsView(refresh) {
+  const i = S.cur;
+  if (!S.recs || S.recs.i !== i) { S.recs = {i, ...(await api(`/api/p/${i}/recordings`))}; if (i !== S.cur) return; }
+  const list = S.recs.scenarios.map(s => `<div class="sc">${esc(s.id)}</div>` + s.recordings.map(r => {
+    const mark = !r.checked ? `<span class="mark none" title="not in the last port check">·</span>` : r.failures ? `<span class="mark fail" title="${r.failures} failures">✗</span>` : `<span class="mark pass">✓</span>`;
+    const on = S.rec && S.rec.scenario === s.id && S.rec.name === r.name;
+    return `<div class="r ${on ? "on" : ""}" data-s="${esc(s.id)}" data-n="${esc(r.name)}">${mark}<span>${esc(r.name)}</span></div>`;
+  }).join("")).join("");
+  const chk = S.recs.check?.commit ? `last port check: ${esc(String(S.recs.check.commit).slice(0, 10))}, ${esc(S.recs.check.at)}` : "no port check yet";
+  if (!refresh || !$("#reclist")) {
+    $("#view").innerHTML = `<div class="recs"><div class="card reclist" id="reclist"></div><div id="viewer"><div class="card quiet">Pick a recording: psx replays it on psx-core for the screen, beside the compared quantities and what the last port check said.</div></div></div>`;
+  }
+  $("#reclist").innerHTML = `<div class="quiet">${chk}</div>` + (list || `<div class="empty">No scenarios.</div>`);
+  for (const r of document.querySelectorAll("#reclist .r")) r.onclick = () => openRec(r.dataset.s, r.dataset.n);
+  if (S.rec && !S.recKey) openRec(S.rec.scenario, S.rec.name, true);
+  else if (S.rec && !$("#plots")) viewer();
+}
+async function openRec(scenario, name, keepTick) {
+  const i = S.cur, key = `${i}/${scenario}/${name}`;
+  stop();
+  const rec = await api(`/api/p/${i}/recording?scenario=${encodeURIComponent(scenario)}&name=${encodeURIComponent(name)}`);
+  if (i !== S.cur) return;
+  if (rec.error) { $("#viewer").innerHTML = `<div class="card"><div class="att act">${esc(rec.error.message)}</div></div>`; return; }
+  const sameRec = S.recKey === null && S.rec && S.rec.scenario === scenario && S.rec.name === name;
+  S.rec = rec; S.recKey = key; S.replay = null;
+  if (!(keepTick && sameRec)) S.tick = firstDiff() ?? 0;
+  for (const r of document.querySelectorAll("#reclist .r")) r.classList.toggle("on", r.dataset.s === scenario && r.dataset.n === name);
+  viewer();
+  pollReplay(key);
+}
+function firstDiff() {
+  const f = (S.rec?.check?.failures || []).filter(x => x.tick != null).map(x => x.tick);
+  return f.length ? Math.min(...f) : null;
+}
+function viewer() {
+  const r = S.rec, n = r.ticks.length, fd = firstDiff();
+  const ch = r.check;
+  const checkLine = !ch ? `<div class="quiet">Not in the last port check.</div>`
+    : ch.failures.length ? `<div class="warnbox">port check at ${esc(String(ch.commit).slice(0, 10))} (${esc(ch.at)}): ${ch.failures.length} difference${ch.failures.length > 1 ? "s" : ""}${fd != null ? `, the first at tick ${fd}` : ""}<br>${ch.failures.map(f => `<span class="mono">${esc(f.text)}</span>`).join("<br>")}</div>`
+    : `<div class="quiet" style="color:var(--ok)">The port matched every tick at ${esc(String(ch.commit).slice(0, 10))} (${esc(ch.at)}).</div>`;
+  const hasPort = r.quantities.some(q => q.port);
+  $("#viewer").innerHTML = `<div class="card"><h2>${esc(r.scenario)} / ${esc(r.name)}</h2>
+    <div>${esc(r.description || "")}</div><div class="quiet">${esc(r.moment || "")}${r.from ? ` · continues ${esc(r.from)}` : ""} · ${n} ticks${r.captured ? "" : " · an example, not captured"}</div>${checkLine}
+    <div class="viewer-top" style="margin-top:8px"><div><div class="screen"><img id="frame" alt=""><div class="msg" id="fmsg">replaying…</div></div></div>
+    <div><div class="controls"><button class="b" id="play">▶</button><button class="b" id="prev" title="previous tick (←)">‹</button><button class="b" id="nextb" title="next tick (→)">›</button>
+      <input type="range" id="scrub" min="0" max="${n}" value="${S.tick}">${fd != null ? `<button class="b" id="jump" style="color:var(--act)">first difference</button>` : ""}</div>
+      <div id="tickinfo" class="padline"></div><div id="replaynote" class="quiet" style="margin-top:6px"></div>
+      <div class="legend"><span><i style="background:var(--accent)"></i>original (the recording)</span>${hasPort ? `<span><i style="background:var(--port)"></i>port (last check), where it is not the original</span>` : ""}${ch?.failures.length ? `<span><i style="background:var(--act)"></i>first difference</span>` : ""}</div>
+      ${ch?.failures.length && !hasPort ? `<div class="quiet">The port's own values show once its scenario report keeps them (a template update): until then, where it first differed.</div>` : ""}
+    </div></div></div>
+    <div class="card plots" id="plots">${r.quantities.map((q, k) => `<div class="q ${(ch?.failures || []).some(f => f.quantity === q.name) ? "diff" : ""}"><div class="lab"><div class="nm" title="${esc(q.description || "")}">${esc(q.name)}</div><div class="quiet">${esc(q.type)}${q.unit ? " · " + esc(q.unit) : ""}${q.tolerance ? " · ±" + esc(q.tolerance) : ""}</div><div class="v" id="v${k}"></div></div><div class="pl"><canvas data-k="${k}"></canvas><div class="cur"></div></div></div>`).join("")}</div>`;
+  $("#play").onclick = () => S.playing ? stop() : play();
+  $("#prev").onclick = () => setTick(S.tick - 1);
+  $("#nextb").onclick = () => setTick(S.tick + 1);
+  $("#scrub").oninput = e => setTick(+e.target.value);
+  if ($("#jump")) $("#jump").onclick = () => setTick(fd);
+  for (const c of document.querySelectorAll("#plots canvas")) {
+    const at = e => { const b = c.getBoundingClientRect(); setTick(Math.round((e.clientX - b.left) / b.width * n)); };
+    c.onmousedown = e => { stop(); at(e); c.onmousemove = at; };
+    window.addEventListener("mouseup", () => c.onmousemove = null);
+  }
+  drawPlots(); setTick(S.tick);
+}
+document.addEventListener("keydown", e => {
+  if (S.view !== "recordings" || !S.rec || e.target.tagName === "INPUT" && e.target.type === "text") return;
+  if (e.key === "ArrowLeft") { setTick(S.tick - (e.shiftKey ? 10 : 1)); e.preventDefault(); }
+  if (e.key === "ArrowRight") { setTick(S.tick + (e.shiftKey ? 10 : 1)); e.preventDefault(); }
+  if (e.key === " ") { S.playing ? stop() : play(); e.preventDefault(); }
+});
+function play() {
+  if (S.tick >= S.rec.ticks.length) S.tick = 0;
+  $("#play").textContent = "❚❚";
+  S.playing = setInterval(() => { if (S.tick >= S.rec.ticks.length) stop(); else setTick(S.tick + 1); }, 1000 / 30);
+}
+function stop() { if (S.playing) clearInterval(S.playing); S.playing = null; const p = $("#play"); if (p) p.textContent = "▶"; }
+const frameCache = new Map();
+function setTick(t) {
+  const r = S.rec; if (!r) return;
+  t = Math.max(0, Math.min(r.ticks.length, t)); S.tick = t;
+  $("#scrub").value = t;
+  const row = t ? r.ticks[t - 1] : null;
+  const pad = row ? (row.pad.length ? row.pad.join(" ") : "released") : "the moment the launcher builds";
+  const sticks = row && row.analog ? ` · analog ${row.sticks.join(" ")}` : "";
+  $("#tickinfo").textContent = t ? `tick ${t} · field ${row.field} · pad ${pad}${sticks}` : `initial · ${pad}`;
+  r.quantities.forEach((q, k) => {
+    const v = $("#v" + k); if (!v) return;
+    const rec = q.shown[t], port = q.port_shown ? q.port_shown[t] : undefined;
+    v.innerHTML = `<span class="r">${esc(fmtVal(rec))}</span>` + (port !== undefined ? ` · <span class="p">${esc(port == null ? "–" : fmtVal(port))}</span>` : "");
+  });
+  drawCursor();
+  link();
+  showFrame(Math.max(1, t));
+}
+function fmtVal(v) { return v == null ? "–" : typeof v === "number" ? (Number.isInteger(v) ? v : +v.toFixed(4)) : typeof v === "object" ? JSON.stringify(v) : v; }
+function showFrame(t) {
+  const img = $("#frame"), msg = $("#fmsg"); if (!img) return;
+  const url = `/api/p/${S.cur}/frame?scenario=${encodeURIComponent(S.rec.scenario)}&name=${encodeURIComponent(S.rec.name)}&tick=${t}`;
+  const have = S.replay?.frames ?? 0;
+  if (S.replay && !S.replay.done && t > have) { msg.textContent = `replaying… ${have} of ${S.rec.ticks.length} ticks`; msg.style.display = ""; return; }
+  img.onload = () => msg.style.display = "none";
+  img.onerror = () => { img.removeAttribute("src"); if (!S.replay?.done?.error) msg.textContent = "no frame for this tick"; msg.style.display = ""; };
+  img.src = url;
+}
+async function pollReplay(key) {
+  let start = 1;
+  while (S.recKey === key) {
+    const r = await api(`/api/p/${S.cur}/replay?scenario=${encodeURIComponent(S.rec.scenario)}&name=${encodeURIComponent(S.rec.name)}&start=${start}`);
+    start = 0;
+    if (S.recKey !== key) return;
+    const first = !S.replay;
+    S.replay = r;
+    const note = $("#replaynote");
+    if (r.error) { note.textContent = r.error; return; }
+    if (r.done?.error) { note.textContent = ""; const m = $("#fmsg"); m.textContent = "The replay failed: " + r.done.error.message; m.style.display = ""; return; }
+    if (r.done) {
+      const d = r.done.differences || [];
+      note.innerHTML = d.length ? `<div class="warnbox">The replay is not the recording, so the screen may not show what was recorded:<br>${d.map(esc).join("<br>")}</div>` : "psx-core replayed the recording tick for tick.";
+      if (first || $("#fmsg").style.display !== "none") showFrame(Math.max(1, S.tick));
+      return;
+    }
+    note.textContent = `replaying on psx-core… ${r.frames} of ${S.rec.ticks.length} ticks`;
+    if (Math.max(1, S.tick) <= r.frames) showFrame(Math.max(1, S.tick));
+    await new Promise(res => setTimeout(res, 700));
+  }
+}
+function drawPlots() {
+  const r = S.rec, n = r.ticks.length, fails = r.check?.failures || [];
+  for (const c of document.querySelectorAll("#plots canvas")) {
+    const q = r.quantities[+c.dataset.k];
+    const ctx = setup(c), W = c.clientWidth, H = c.clientHeight;
+    const vals = q.values.concat(q.port || []).filter(v => v != null);
+    const f = fails.find(x => x.quantity === q.name);
+    if (f) { if (f.expected != null) vals.push(f.expected); if (f.got != null) vals.push(f.got); }
+    if (!vals.length) { ctx.fillStyle = css("--dim"); ctx.font = "12px system-ui"; ctx.fillText("not a number: its value shows on the left", 4, 20); continue; }
+    let lo = Math.min(...vals), hi = Math.max(...vals);
+    if (lo === hi) { lo -= 1; hi += 1; }
+    const X = t => 2 + (W - 4) * t / Math.max(1, n), Y = v => H - 4 - (H - 8) * (v - lo) / (hi - lo);
+    c._X = X;
+    ctx.fillStyle = css("--dim"); ctx.font = "10px system-ui";
+    const lab = v => q.variants ? (q.variants[v] ?? v) : +v.toFixed(3);
+    ctx.fillText(lab(hi), 3, 10); ctx.fillText(lab(lo), 3, H - 3);
+    // The port is drawn only where it is not the original, so the two part
+    // where they differ.
+    const off = t => q.port && q.port[t] != null && q.port[t] !== q.values[t];
+    const line = (arr, color, w, only) => {
+      ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath(); let pen = false;
+      arr.forEach((v, t) => { if (v == null || only && !only(t) && !only(t + 1)) { pen = false; return; } const x = X(t), y = Y(v);
+        if (!pen) { ctx.moveTo(x, y); pen = true; } else if (q.variants || q.type === "bool") { ctx.lineTo(x, Y(arr[t - 1])); ctx.lineTo(x, y); } else ctx.lineTo(x, y); });
+      ctx.stroke(); ctx.lineWidth = 1;
+    };
+    line(q.values, css("--accent"), 1.5);
+    if (q.port) line(q.port, css("--port"), 2, off);
+    if (f && f.tick != null) {
+      ctx.strokeStyle = css("--act"); ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(X(f.tick), 0); ctx.lineTo(X(f.tick), H); ctx.stroke(); ctx.setLineDash([]);
+      if (f.got != null) { ctx.fillStyle = css("--act"); ctx.beginPath(); ctx.arc(X(f.tick), Y(f.got), 3.5, 0, 7); ctx.fill(); }
+    }
+  }
+}
+// The cursor is an element over the plot, so moving it leaves the plot
+// as drawn (some browsers hand canvas pixels back as noise to stop
+// fingerprinting, so they are never read back).
+function drawCursor() {
+  for (const c of document.querySelectorAll("#plots canvas")) {
+    if (c._X) c.nextElementSibling.style.left = c._X(S.tick) + "px";
+  }
+}
+window.addEventListener("resize", () => { if ($(".feedbox")) { $(".feedbox").style.height = Math.max(240, innerHeight - $(".feedbox").getBoundingClientRect().top - 12) + "px"; keepPlace(); } if (S.view === "recordings" && S.rec && $("#plots")) { drawPlots(); drawCursor(); } else if (S.view === "overview") overview(); });
+start();
+</script>
+</body>
+</html>

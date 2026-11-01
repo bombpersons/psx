@@ -376,6 +376,15 @@ fn first_lines(lines: &[String]) -> Vec<String> {
     out
 }
 
+/// A request's text on one line, shortened.
+fn one_line(s: &str) -> String {
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    match s.char_indices().nth(120) {
+        Some((i, _)) => format!("{}…", &s[..i]),
+        None => s,
+    }
+}
+
 /// Everything the items are decided on.
 pub struct Facts {
     pub port: Port,
@@ -394,6 +403,8 @@ pub struct Facts {
     /// finished.
     pub review_features: Vec<String>,
     pub review_finished: Vec<String>,
+    /// The play requests in the queue (`scenario play`), oldest first.
+    pub plays: Vec<crate::handoff::queue::Request>,
 }
 
 impl Facts {
@@ -545,7 +556,8 @@ impl Facts {
             port.problems.extend(a.problems.iter().cloned());
         }
         let (review_features, review_finished) = review::features(root);
-        Ok(Facts { port, git, features, unpack, assets, needs: goal_needs, review, review_features, review_finished })
+        let plays = crate::handoff::queue::list(root);
+        Ok(Facts { port, git, features, unpack, assets, needs: goal_needs, review, review_features, review_finished, plays })
     }
 
     /// How many never-ran code branches each wont_reach range answers
@@ -621,7 +633,53 @@ impl Facts {
     }
 
     /// The item due now, in the order of docs/port-design.md, section 5.
+    /// The play requests still waiting for the person.
+    fn waiting_plays(&self) -> impl Iterator<Item = &crate::handoff::queue::Request> {
+        self.plays.iter().filter(|r| !matches!(r.state, crate::handoff::queue::State::Answered(_)))
+    }
+
+    /// The feature a play request is for: the first whose recordings name
+    /// it, or else use its scenario.
+    fn play_feature(&self, r: &crate::handoff::queue::Request) -> Option<&Feature> {
+        let rec = r.recording()?;
+        let scenario = r.args["id"].as_str()?;
+        let names = |f: &Feature| f.work.iter().chain(&f.held_out).map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        self.features
+            .iter()
+            .find(|f| names(f).contains(&rec))
+            .or_else(|| self.features.iter().find(|f| names(f).iter().any(|n| n.split('/').next() == Some(scenario))))
+    }
+
+    /// The feature waits on a play request: what the agent would ask the
+    /// person for next is already asked.
+    fn waits(&self, f: &Feature) -> bool {
+        self.waiting_plays().any(|r| self.play_feature(r).is_some_and(|w| w.id == f.id))
+    }
+
     pub fn next(&self) -> Item {
+        // An answer to a play request, read before anything else: the
+        // recording is there to use, or the note says why not.
+        if let Some(r) = self.plays.iter().find(|r| !r.read && matches!(r.state, crate::handoff::queue::State::Answered(_))) {
+            let crate::handoff::queue::State::Answered(report) = &r.state else { unreachable!() };
+            let answer = match report["status"].as_str() {
+                Some("declined") => format!("declined: {}", report["note"].as_str().unwrap_or("").trim()),
+                Some(s) if report.get("error").is_none() => {
+                    let rec = report["recording"]["status"].as_str().map(|r| format!(", recording {r}")).unwrap_or_default();
+                    format!("{s}{rec}")
+                }
+                _ => format!("failed: {}", report["error"]["message"].as_str().unwrap_or("")),
+            };
+            return Item::agent(
+                "Read",
+                self.play_feature(r).map(|f| f.id.as_str()),
+                format!("the person answered the play request \"{}\": {answer}", one_line(r.args["request"].as_str().unwrap_or(""))),
+                "the answer is read (scenario play --status returns it and marks it read)",
+                &format!(
+                    "read the answer: psx scenario play --status {}. When it is a recording, name it under the feature's recordings and go on; when declined, the note says why: ask again in other words or from another start, list the branch under wont_reach with the note as why, or go on without it",
+                    r.dir.display()
+                ),
+            );
+        }
         // Until the person confirms the goal, the agent only investigates
         // and catalogues; the person is asked once the list has no problems.
         if !self.port.problems.is_empty() {
@@ -773,7 +831,10 @@ impl Facts {
             );
         }
         // 5. An uncovered branch: a recording that reaches it.
-        let uncovered = |f: &Feature| f.branches.iter().find(|b| !b.resolved() && b.wont_reach.is_none()).cloned();
+        // Not one waiting on a play request: its answer may cover it.
+        let uncovered = |f: &Feature| {
+            f.branches.iter().find(|b| !b.resolved() && b.wont_reach.is_none()).filter(|_| !self.waits(f)).cloned()
+        };
         if let Some((f, b)) = self.features.iter().find_map(|f| Some((f, uncovered(f)?))) {
             let n = f.branches.iter().filter(|b| !b.resolved()).count();
             return Item::agent(
@@ -788,10 +849,10 @@ impl Facts {
                     }
                 ),
                 "every branch of its code is taken both ways by its recordings (or the other features' that pass at HEAD), or listed under wont_reach",
-                "read the branch's condition (code disasm; for a script's stretch or decision, your own reading of the program) and work out what reaches the other way in game terms; record that (psx scenario record) and name it under recordings, or when it cannot be scripted ask the person to play it (psx scenario play); when no recording can reach it, list it under wont_reach with why; a script decision no hook named needs a hook in the glossary binding that names its way, then the recordings made again",
+                "read the branch's condition (code disasm; for a script's stretch or decision, your own reading of the program) and work out what reaches the other way in game terms; record that (psx scenario record) and name it under recordings, or when it cannot be scripted ask the person to play it (psx scenario play queues the request; go on with other work meanwhile); when no recording can reach it, list it under wont_reach with why; a script decision no hook named needs a hook in the glossary binding that names its way, then the recordings made again",
             );
         }
-        if let Some(f) = find(&|f| f.branches.iter().any(|b| !b.resolved())) {
+        if let Some(f) = find(&|f| f.branches.iter().any(|b| !b.resolved() && b.wont_reach.is_some())) {
             return Item::person(
                 "Confirm",
                 Some(&f.id),
@@ -813,13 +874,13 @@ impl Facts {
             return self.review_item("the goal's features are finished".into());
         }
         // 8. Held-out recordings, played by the person.
-        if let Some(f) = find(&|f| f.reviewed() && f.held_out.is_empty()) {
+        if let Some(f) = find(&|f| f.reviewed() && f.held_out.is_empty() && !self.waits(f)) {
             return Item::person(
                 "Play",
                 Some(&f.id),
                 "the code is reviewed and it has no held-out recordings".into(),
                 "its entry names held-out recordings (recordings.held_out)",
-                "the agent starts psx scenario play on one of its scenarios with a request to play the feature freely and differently from its work recordings; the person plays, and the agent names the recording under recordings.held_out",
+                "the agent starts psx scenario play on one of its scenarios with a request to play the feature freely and differently from its work recordings; the person plays it when they can, and the agent names the recording under recordings.held_out when port next gives its Read item",
             );
         }
         if self.complete() {
@@ -829,6 +890,19 @@ impl Facts {
                 "every feature of the goal is done".into(),
                 "",
                 "the goal is complete; the person may set a new one",
+            );
+        }
+        // Nothing for the agent but what the person was asked to play.
+        let plays: Vec<_> = self.waiting_plays().collect();
+        if !plays.is_empty() {
+            let n = plays.len();
+            let asks: Vec<String> = plays.iter().map(|r| one_line(r.args["request"].as_str().unwrap_or(""))).collect();
+            return Item::person(
+                "Wait",
+                plays.iter().find_map(|r| self.play_feature(r)).map(|f| f.id.as_str()),
+                format!("{n} play {} for the person: {}", if n == 1 { "request waits" } else { "requests wait" }, first_lines(&asks).join("; ")),
+                "the person answers them",
+                "the person answers them from psx web or psx play; the agent waits (port next gives a Read item for each answer)",
             );
         }
         let left: Vec<String> = self
@@ -1099,6 +1173,22 @@ impl Facts {
         if !self.unpack.is_empty() {
             v["unpack"] = json!(self.unpack);
         }
+        // The play requests still open, and answers the agent has not read.
+        let open: Vec<Value> = self
+            .plays
+            .iter()
+            .filter(|r| !r.read || !matches!(r.state, crate::handoff::queue::State::Answered(_)))
+            .map(|r| {
+                let mut j = r.json();
+                if let Some(f) = self.play_feature(r) {
+                    j["feature"] = json!(f.id);
+                }
+                j
+            })
+            .collect();
+        if !open.is_empty() {
+            v["plays"] = json!(open);
+        }
         v
     }
 
@@ -1267,6 +1357,82 @@ struct Guard {
     count: u32,
 }
 
+/// Where the port stands, a line each time it changes, for `psx web`'s
+/// progress over time.
+pub const PROGRESS: &str = ".psx/progress.jsonl";
+
+/// Append the port's standing (from its status, `next` set) to
+/// [`PROGRESS`] when it differs from the last line. Never fails the command.
+fn progress(root: &Path, status: &Value) {
+    let line = standing(status);
+    let path = root.join(PROGRESS);
+    let last = std::fs::read_to_string(&path).ok().and_then(|t| {
+        t.lines().last().and_then(|l| serde_json::from_str::<Value>(l).ok())
+    });
+    if last.is_some_and(|mut l| {
+        l.as_object_mut().map(|o| o.remove("t"));
+        l == line
+    }) {
+        return;
+    }
+    let mut line = line;
+    line["t"] = json!(crate::now_ms() as u64);
+    let _ = std::fs::create_dir_all(root.join(".psx"));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = f.write_all(format!("{line}\n").as_bytes());
+    }
+}
+
+/// The counts the progress line keeps: the goal's features by stage and
+/// verdict, their branches and work recordings, problems, questions, the
+/// review and the next item.
+fn standing(status: &Value) -> Value {
+    let mut verdicts: BTreeMap<String, u64> = BTreeMap::new();
+    let (mut resolved, mut branches, mut passing, mut recordings, mut questions) = (0, 0, 0, 0, 0);
+    let mut features = 0;
+    for f in status["areas"].as_object().into_iter().flat_map(|a| a.values()).flat_map(|v| v.as_array().into_iter().flatten()) {
+        if f["in_goal"] != json!(true) {
+            continue;
+        }
+        features += 1;
+        *verdicts.entry(f["verdict"].as_str().unwrap_or("none").to_string()).or_default() += 1;
+        resolved += f["branches"]["resolved"].as_u64().unwrap_or(0);
+        branches += f["branches"]["total"].as_u64().unwrap_or(0);
+        passing += f["work"]["pass"].as_u64().unwrap_or(0);
+        recordings += f["work"]["total"].as_u64().unwrap_or(0);
+        questions += f["questions"].as_array().map_or(0, Vec::len);
+    }
+    let next = &status["next"];
+    json!({
+        "head": status["git"]["head"],
+        "features": features,
+        "stages": status["stages"],
+        "verdicts": verdicts,
+        "branches": {"resolved": resolved, "total": branches},
+        "recordings": {"pass": passing, "total": recordings},
+        "problems": status["problems"].as_array().map_or(0, Vec::len),
+        "questions": questions,
+        "review": status["review"]["state"],
+        "next": {"item": next["item"], "feature": next["feature"], "who": next["who"], "times": next["times"]},
+    })
+}
+
+/// The port's status with its next item as `port status` gives them, and
+/// the loop guard as the last `port next` left it, for `psx web`: nothing is
+/// written.
+pub fn look(root: &Path) -> crate::Result<Value> {
+    let f = Facts::gather(root)?;
+    let mut v = f.status();
+    v["next"] = f.next().to_json();
+    let g: Option<Guard> =
+        std::fs::read(root.join(".psx/port/next.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    if let Some(g) = g {
+        v["guard"] = json!({"item": g.item, "count": g.count, "limit": GUARD});
+    }
+    Ok(v)
+}
+
 fn guarded(root: &Path, facts: &Facts, item: Item) -> crate::Result<Value> {
     let path = root.join(".psx/port/next.json");
     let key = format!("{} {}", item.item, item.feature.as_deref().unwrap_or(""));
@@ -1322,6 +1488,7 @@ impl Op for PortStatusArgs {
                 }
                 let mut v = f.status();
                 v["next"] = f.next().to_json();
+                progress(&ctx.root, &v);
                 Ok(if self.plain { json!({"text": f.plain()}) } else { v })
             }),
             plain,
@@ -1334,7 +1501,13 @@ pub struct PortNextArgs {}
 
 impl Op for PortNextArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::result(Facts::gather(&ctx.root).and_then(|f| guarded(&ctx.root, &f, f.next())))
+        Outcome::result(Facts::gather(&ctx.root).and_then(|f| {
+            let next = guarded(&ctx.root, &f, f.next())?;
+            let mut v = f.status();
+            v["next"] = next.clone();
+            progress(&ctx.root, &v);
+            Ok(next)
+        }))
     }
 }
 
@@ -1461,6 +1634,25 @@ mod tests {
         set(&mut f, "F-0001", |x| x.branches = vec![branch(None)]);
         assert_eq!(next(&f), ("Cover", "agent", "F-0001".into()));
         assert!(f.next().why.starts_with("the branch at 0x8002D820 (in 0x8002D810) never fell through"));
+        // Asked of the person: the feature waits on the answer, then reads it.
+        let play = |state, read| crate::handoff::queue::Request {
+            dir: PathBuf::from("/q/1"),
+            args: json!({"request": "walk off the ledge", "id": "walk", "name": "ledge"}),
+            queued_unix_ms: 1,
+            after: None,
+            state,
+            read,
+        };
+        f.plays = vec![play(crate::handoff::queue::State::Queued, false)];
+        assert_eq!(next(&f), ("Wait", "person", "F-0001".into()));
+        assert!(f.next().why.starts_with("1 play request waits for the person: walk off the ledge"), "{}", f.next().why);
+        let declined = json!({"status": "declined", "note": "there is no ledge there"});
+        f.plays = vec![play(crate::handoff::queue::State::Answered(declined.clone()), false)];
+        assert_eq!(next(&f), ("Read", "agent", "F-0001".into()));
+        assert!(f.next().why.ends_with("declined: there is no ledge there"), "{}", f.next().why);
+        f.plays = vec![play(crate::handoff::queue::State::Answered(declined), true)];
+        assert_eq!(next(&f), ("Cover", "agent", "F-0001".into()));
+        f.plays.clear();
         set(&mut f, "F-0001", |x| x.branches = vec![branch(Some(false))]);
         assert_eq!(next(&f), ("Confirm", "person", "F-0001".into()));
         let script = Branch {
