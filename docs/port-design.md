@@ -157,7 +157,12 @@ importer lists the entries (`import::index`), which `port check` asks for.
 
 Coverage is the union of what the original ran across a feature's
 recordings, within the feature's code: its machine code's branches, and
-its script stretches' bytes and decisions. "Done" needs every branch resolved,
+its script stretches' bytes and decisions. The other goal features' work
+recordings that pass at HEAD count too: a foundation feature's code (the
+controller, collision) runs in every recording, and a branch another
+feature's passing recording took both ways needs no recording of its own.
+Only passing ones count, so the port is known to match the original
+there; status says how many branches were resolved that way. "Done" needs every branch resolved,
 not a percentage, so the uncovered ones always say what to record next.
 
 ### The review

@@ -183,8 +183,9 @@ A feature's stages, each holding with those before it:
 - recorded: work recordings, their scenarios deterministic, their coverage
   counted against the inventory.
 - matching: every work recording passes at HEAD.
-- reviewed: every branch of its code taken both ways by its recordings or
-  a confirmed wont_reach, no question open, its assets checked or unused,
+- reviewed: every branch of its code taken both ways by its recordings
+  (or the other goal features' that pass at HEAD) or a confirmed
+  wont_reach, no question open, its assets checked or unused,
   and the code's review holds.
 - done: its held-out recordings pass.
 
@@ -202,7 +203,8 @@ port_next's items, in this order:
 - Implement: no port_check has judged it at HEAD.
 - Fix: a recording fails; the earliest divergence first.
 - Answer: an open question.
-- Cover: a branch of its code its recordings never took one way, or a
+- Cover: a branch of its code its recordings (and the other features'
+  that pass at HEAD) never took one way, or a
   stretch of its script never read (never run, with a map) or a
   decision's way never taken: record what reaches it, ask the person to
   play it, or list it under wont_reach.

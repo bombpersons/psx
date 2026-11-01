@@ -144,6 +144,11 @@ pub struct Feature {
     pub work: Vec<(String, Option<Vec<String>>)>,
     pub held_out: Vec<(String, Option<Vec<String>>)>,
     pub branches: Vec<Branch>,
+    /// The other features' recordings its branches also count (their work
+    /// recordings passing at HEAD), and how many branches only they
+    /// resolve.
+    pub borrowed: Vec<String>,
+    pub borrowed_resolved: usize,
     pub questions: Vec<String>,
     /// The code's review holds (one review covers every feature).
     pub code_reviewed: bool,
@@ -251,6 +256,10 @@ impl Feature {
             .collect();
         let mut v = json!({"total": self.branches.len(), "resolved": self.branches.len() - unresolved,
                "unresolved": uncovered});
+        if self.borrowed_resolved > 0 {
+            v["resolved_by_others"] = json!({"branches": self.borrowed_resolved, "recordings": self.borrowed.len(),
+                "first": first_lines(&self.borrowed)});
+        }
         if uncovered.len() < unresolved {
             v["more"] = json!(format!("{} more: port_status feature {}", unresolved - uncovered.len(), self.id));
         }
@@ -289,14 +298,39 @@ impl Feature {
         });
         if !self.branches.is_empty() {
             let r = self.branches.iter().filter(|b| b.resolved()).count();
-            parts.push(if r == self.branches.len() {
+            let mut p = if r == self.branches.len() {
                 format!("branches {r}/{r} resolved")
             } else {
                 format!("{r}/{} branches", self.branches.len())
-            });
+            };
+            if self.borrowed_resolved > 0 {
+                p += &format!(" ({} by other features' recordings)", self.borrowed_resolved);
+            }
+            parts.push(p);
         }
         parts.join(" · ")
     }
+}
+
+/// Each feature's work recordings that pass at HEAD, by id (`of` gives
+/// them, None without a verdict at HEAD).
+fn passing(ids: &[String], of: impl Fn(&str) -> Option<Vec<String>>) -> Vec<(String, Vec<String>)> {
+    ids.iter().filter_map(|id| Some((id.clone(), of(id)?))).filter(|(_, r)| !r.is_empty()).collect()
+}
+
+/// The recordings of the other features `passing` gives that `id`'s
+/// branches also count: not its own, each once.
+fn borrowed(id: &str, own: &[String], passing: &[(String, Vec<String>)]) -> Vec<String> {
+    let mut out: Vec<String> = passing
+        .iter()
+        .filter(|(other, _)| other != id)
+        .flat_map(|(_, r)| r)
+        .filter(|r| !own.contains(r))
+        .cloned()
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Up to three lines, and how many more there are.
@@ -354,8 +388,17 @@ impl Facts {
         };
         let mut problems = Vec::new();
         let goal_needs = needs(port.goal.assets.names(), port.goal.assets.is_all(), super::GOAL, &mut problems);
-        let features: Vec<Feature> = port
-            .closure()
+        let closure = port.closure();
+        let passing = passing(&closure, |id| {
+            let e = port.entries.get(id)?;
+            match verdict::state(root, id, head) {
+                State::Current(v) => Some(e.recordings.work.iter().filter(|n| v.of(n).is_empty()).cloned().collect()),
+                _ => None,
+            }
+        });
+        let path =
+            |r: &String| r.split_once('/').map(|(s, n)| root.join("scenarios").join(s).join(format!("{n}.jsonl")));
+        let features: Vec<Feature> = closure
             .into_iter()
             .map(|id| {
                 let Some(e) = port.entries.get(&id) else {
@@ -369,6 +412,8 @@ impl Facts {
                         work: Vec::new(),
                         held_out: Vec::new(),
                         branches: Vec::new(),
+                        borrowed: Vec::new(),
+                        borrowed_resolved: 0,
                         questions: Vec::new(),
                         code_reviewed: false,
                         assets: Default::default(),
@@ -380,37 +425,54 @@ impl Facts {
                 } else {
                     crate::scenario::feature_unready(root, e)
                 };
-                let mut branches = Vec::new();
-                let paths: Vec<PathBuf> = e
-                    .recordings
-                    .all()
-                    .filter_map(|r| r.split_once('/'))
-                    .map(|(s, n)| root.join("scenarios").join(s).join(format!("{n}.jsonl")))
-                    .collect();
+                let paths: Vec<PathBuf> = e.recordings.all().filter_map(path).collect();
                 let mine = confirmed.get(&id);
                 // The person confirmed the key as it stands.
                 let agreed = |k: &String| mine.and_then(|m| m.get(k)) == e.wont_reach.get(k);
                 let code: Vec<u32> = e.code.iter().filter_map(|c| super::entry_addr(c)).collect();
-                if let (Some(inv), false, false) = (&inv, code.is_empty(), e.recordings.work.is_empty()) {
-                    let fb = crate::coverage::feature_branches(&ctx, inv, &paths, &code);
-                    unrecorded.extend(fb.problems);
-                    branches.extend(fb.branches.into_iter().map(|(pc, function, ways)| {
-                        let key = e.wont_reach.keys().find(|k| super::entry_addr(k) == Some(pc));
-                        Branch::code(pc, function, ways, key.map(agreed))
-                    }));
-                }
                 let script: Vec<Stretch> = e.code.iter().filter_map(|c| Stretch::parse(c)).collect();
-                if !script.is_empty() && !e.recordings.work.is_empty() {
-                    let (items, problems) = crate::script_cover::items(&crate::script_cover::merged(&paths), &script);
-                    unrecorded.extend(problems);
-                    branches.extend(items.into_iter().map(|i| {
-                        let key = e.wont_reach.keys().find(|k| Stretch::parse(k).is_some_and(|w| w.contains(&i.at)));
-                        Branch {
-                            at: Place::Script { at: i.at, routine: i.routine },
-                            never: i.never,
-                            wont_reach: key.map(agreed),
-                        }
-                    }));
+                // The ways `paths` took the branches of its code, and what
+                // stops psx counting them.
+                let branches_of = |paths: &[PathBuf]| -> (Vec<Branch>, Vec<String>) {
+                    let (mut branches, mut problems) = (Vec::new(), Vec::new());
+                    if e.recordings.work.is_empty() {
+                        return (branches, problems);
+                    }
+                    if let (Some(inv), false) = (&inv, code.is_empty()) {
+                        let fb = crate::coverage::feature_branches(&ctx, inv, paths, &code);
+                        problems.extend(fb.problems);
+                        branches.extend(fb.branches.into_iter().map(|(pc, function, ways)| {
+                            let key = e.wont_reach.keys().find(|k| super::entry_addr(k) == Some(pc));
+                            Branch::code(pc, function, ways, key.map(agreed))
+                        }));
+                    }
+                    if !script.is_empty() {
+                        let (items, p) = crate::script_cover::items(&crate::script_cover::merged(paths), &script);
+                        problems.extend(p);
+                        branches.extend(items.into_iter().map(|i| {
+                            let key =
+                                e.wont_reach.keys().find(|k| Stretch::parse(k).is_some_and(|w| w.contains(&i.at)));
+                            Branch {
+                                at: Place::Script { at: i.at, routine: i.routine },
+                                never: i.never,
+                                wont_reach: key.map(agreed),
+                            }
+                        }));
+                    }
+                    (branches, problems)
+                };
+                let (mut branches, uncounted) = branches_of(&paths);
+                unrecorded.extend(uncounted);
+                // Code the other features' recordings run counts their
+                // ways too, once the port matches them (their problems
+                // are theirs).
+                let borrowed = borrowed(&id, &e.recordings.all().cloned().collect::<Vec<_>>(), &passing);
+                let mut borrowed_resolved = 0;
+                if !borrowed.is_empty() && !branches.is_empty() {
+                    let all: Vec<PathBuf> = paths.iter().cloned().chain(borrowed.iter().filter_map(path)).collect();
+                    let own = branches.iter().filter(|b| b.resolved()).count();
+                    branches = branches_of(&all).0;
+                    borrowed_resolved = branches.iter().filter(|b| b.resolved()).count().saturating_sub(own);
                 }
                 let verdict = verdict::state(root, &id, head);
                 let results = |names: &[String]| -> Vec<(String, Option<Vec<String>>)> {
@@ -435,6 +497,8 @@ impl Facts {
                     work,
                     held_out,
                     branches,
+                    borrowed,
+                    borrowed_resolved,
                     questions: e.questions.clone(),
                     code_reviewed: review.holds(),
                     assets: needs(&e.assets, false, &e.file, &mut problems),
@@ -664,8 +728,15 @@ impl Facts {
             return Item::agent(
                 "Cover",
                 Some(&f.id),
-                format!("{} in its recordings; {n} branches of its code are unresolved", b.describe()),
-                "every branch of its code is taken both ways by its recordings, or listed under wont_reach",
+                format!(
+                    "{} in its recordings{}; {n} branches of its code are unresolved",
+                    b.describe(),
+                    match f.borrowed.len() {
+                        0 => String::new(),
+                        k => format!(" or the {k} of other features that pass"),
+                    }
+                ),
+                "every branch of its code is taken both ways by its recordings (or the other features' that pass at HEAD), or listed under wont_reach",
                 "read the branch's condition (code disasm; for a script's stretch or decision, your own reading of the program) and work out what reaches the other way in game terms; record that (psx scenario record) and name it under recordings, or when it cannot be scripted ask the person to play it (psx scenario play); when no recording can reach it, list it under wont_reach with why; a script decision no hook named needs a hook in the glossary binding that names its way, then the recordings made again",
             );
         }
@@ -1520,6 +1591,44 @@ mod tests {
             f.assets_named("/NOPE.*").unwrap()["unresolved"],
             "matches no disc file or archive entry (code files are not assets)"
         );
+    }
+
+    #[test]
+    fn branches_count_the_other_features_passing_recordings() {
+        let ids: Vec<String> = ["F-0001", "F-0002", "F-0003"].map(String::from).to_vec();
+        let of = |id: &str| match id {
+            "F-0001" => Some(vec!["walk/a".to_string()]),
+            "F-0002" => Some(vec!["run/a".to_string(), "walk/a".to_string()]),
+            _ => None,
+        };
+        // F-0003 has no verdict at HEAD: none of its recordings count.
+        let p = passing(&ids, of);
+        assert_eq!(p.len(), 2);
+        assert_eq!(borrowed("F-0001", &["walk/a".into()], &p), ["run/a"]);
+        assert_eq!(borrowed("F-0003", &["climb/a".into()], &p), ["run/a", "walk/a"]);
+        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        for id in ["F-0001", "F-0002"] {
+            set(&mut f, id, |x| {
+                x.located = true;
+                x.unrecorded.clear();
+                x.verdict = current();
+                x.work = results(&[("walk/a", &[])]);
+            });
+        }
+        set(&mut f, "F-0001", |x| {
+            x.branches =
+                vec![Branch::code(0x8002_D820, 0x8002_D810, 1, None), Branch::code(0x8002_D830, 0x8002_D810, 3, None)];
+            x.borrowed = vec!["run/a".into()];
+            x.borrowed_resolved = 1;
+        });
+        // Both matching and reviewed: F-0001's branch is what is left.
+        review(&mut f, Review::Holds { commit: "abc".into(), findings: 0 });
+        f.review_features = vec!["F-0001".into(), "F-0002".into()];
+        let x = &f.features[0];
+        assert!(x.summary().ends_with("1/2 branches (1 by other features' recordings)"), "{}", x.summary());
+        assert_eq!(x.branches_json(false)["resolved_by_others"]["branches"], 1);
+        assert_eq!(f.next().item, "Cover");
+        assert!(f.next().why.contains("in its recordings or the 1 of other features that pass;"), "{}", f.next().why);
     }
 
     #[test]
