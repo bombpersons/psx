@@ -28,6 +28,43 @@ use crate::scenario::Described;
 
 /// Problems kept per recording; past it they are only counted.
 const MAX_PROBLEMS: usize = 20;
+/// Stretches named in a line of positions a map lacks.
+const MAX_STRETCHES: usize = 8;
+
+/// The line for the positions `at` of program `name` that hooks named and
+/// its map lacks (as a decision when `decision`): stretches with no
+/// statement of the map starting inside them, each with how many.
+fn unmapped(name: &str, decision: bool, at: &BTreeSet<u32>, statements: Option<&BTreeMap<u32, u32>>) -> String {
+    let mut stretches: Vec<(u32, u32, usize)> = Vec::new();
+    for &pos in at {
+        match stretches.last_mut() {
+            Some((_, end, n)) if statements.is_none_or(|s| s.range(*end + 1..pos).next().is_none()) => {
+                (*end, *n) = (pos, *n + 1);
+            }
+            _ => stretches.push((pos, pos, 1)),
+        }
+    }
+    let mut list: Vec<String> = stretches
+        .iter()
+        .take(MAX_STRETCHES)
+        .map(|&(a, b, n)| if a == b { format!("{a:#x}") } else { format!("{a:#x}..{b:#x} ({n})") })
+        .collect();
+    if stretches.len() > MAX_STRETCHES {
+        list.push(format!("{} more stretches", stretches.len() - MAX_STRETCHES));
+    }
+    let (what, so) = if decision {
+        (
+            "decisions its map does not have (or not of the ways the hook gives)",
+            "decision coverage leaves their ways out",
+        )
+    } else {
+        (
+            "sites where its map has no statement start",
+            "the game ran code the map does not decode there, and statement coverage leaves it out",
+        )
+    };
+    format!("{name}: hooks named {} {what}, at {}: {so}", at.len(), list.join(", "))
+}
 
 /// The binding's hooks (`hooks` in its answer to DESCRIBE).
 #[derive(Clone, Debug, Default, serde::Deserialize)]
@@ -184,8 +221,12 @@ pub struct Scripts {
     regions: Vec<(String, u32, u32)>,
     pub programs: BTreeMap<String, Program>,
     pending: Option<Pending>,
-    pub problems: Vec<String>,
-    pub problem_count: usize,
+    /// What else went wrong ([`Scripts::problems`] gives it all).
+    problems: Vec<String>,
+    problem_count: usize,
+    /// Positions hooks named that the program's map lacks, by program and
+    /// whether as a decision: one problem each, however many.
+    unmapped: BTreeMap<(String, bool), BTreeSet<u32>>,
 }
 
 impl Scripts {
@@ -198,7 +239,24 @@ impl Scripts {
             pending: None,
             problems: Vec::new(),
             problem_count: 0,
+            unmapped: BTreeMap::new(),
         }
+    }
+
+    /// What went wrong: the positions hooks named that a map lacks first,
+    /// one line per program, then the rest.
+    pub fn problems(&self) -> Vec<String> {
+        let lines = self.unmapped.iter().map(|((name, decision), at)| {
+            let map = self.programs.get(name).and_then(|p| p.map.as_ref());
+            unmapped(name, *decision, at, map.map(|m| &m.statements))
+        });
+        lines.chain(self.problems.iter().cloned()).collect()
+    }
+
+    /// How many problems past those [`Scripts::problems`] lists, repeats
+    /// included.
+    pub fn unlisted(&self) -> usize {
+        self.problem_count - self.problems.len()
     }
 
     fn problem(&mut self, p: String) {
@@ -321,17 +379,12 @@ impl Scripts {
             let pos = pos as u32;
             let p = self.programs.entry(name.to_string()).or_default();
             let decision = mark.get(3).and_then(Value::as_u64);
-            let unmapped = p.map.as_ref().and_then(|map| match decision {
-                Some(of) if map.decisions.get(&pos) != Some(&(of as u32)) => Some(format!(
-                    "{name}+{pos:#x}: a hook names a decision of {of} ways there, which its map does not have"
-                )),
-                None if !map.statements.contains_key(&pos) => {
-                    Some(format!("{name}+{pos:#x}: a hook names a site there, where its map has no statement start"))
-                }
-                _ => None,
+            let lacks = p.map.as_ref().is_some_and(|map| match decision {
+                Some(of) => map.decisions.get(&pos) != Some(&(of as u32)),
+                None => !map.statements.contains_key(&pos),
             });
-            if let Some(problem) = unmapped {
-                self.problem(problem);
+            if lacks {
+                self.unmapped.entry((name.to_string(), decision.is_some())).or_default().insert(pos);
                 continue;
             }
             let p = self.programs.get_mut(name).expect("just added");
@@ -835,6 +888,24 @@ mod tests {
         let (_, problems) = super::items(&m, &[st("gex+0x0..0x4"), st("croc+0x10..0x30")]);
         assert!(problems[0].starts_with("code gex+0x0..0x4: no recording of the feature has the program gex"));
         assert_eq!(problems[1], "code croc+0x10..0x30: past the end of croc (0x20 bytes)");
+    }
+
+    #[test]
+    fn positions_a_map_lacks_make_one_line_of_stretches() {
+        // Statements start at 0x10 and 0x40; the hooks named 0x20..0x30
+        // between them, and 0x41 (inside one), 0x50 and 0x52 past the last.
+        let statements: BTreeMap<u32, u32> = [(0x10, 0x20), (0x40, 0x42)].into();
+        let at: BTreeSet<u32> = [0x20, 0x24, 0x30, 0x41, 0x50, 0x52].into();
+        assert_eq!(
+            unmapped("croc", false, &at, Some(&statements)),
+            "croc: hooks named 6 sites where its map has no statement start, at 0x20..0x30 (3), 0x41..0x52 (3): the game ran code the map does not decode there, and statement coverage leaves it out"
+        );
+        let many: BTreeSet<u32> = (0..10).map(|i| 0x100 * i + 0x80).collect();
+        let starts: BTreeMap<u32, u32> = (0..10).map(|i| (0x100 * i, 0x100 * i + 1)).collect();
+        assert!(
+            unmapped("croc", true, &many, Some(&starts))
+                .ends_with("0x780, 2 more stretches: decision coverage leaves their ways out")
+        );
     }
 
     #[test]

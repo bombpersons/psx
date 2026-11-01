@@ -706,9 +706,12 @@ impl Prepared {
         if !sc.programs.is_empty() {
             result["programs"] = json!(sc.programs.iter().map(|(n, p)| json!({"name": n, "bytes_read": p.read.len(), "sites": p.sites.len(), "decisions": p.ways.len()})).collect::<Vec<_>>());
         }
-        if sc.problem_count > 0 {
-            result["program_problems"] = json!(sc.problems);
-            result["program_problem_count"] = json!(sc.problem_count);
+        let problems = sc.problems();
+        if !problems.is_empty() {
+            result["program_problems"] = json!(problems);
+        }
+        if sc.unlisted() > 0 {
+            result["program_problems_unlisted"] = json!(sc.unlisted());
         }
         Ok((true, result))
     }
@@ -1424,7 +1427,7 @@ pub struct Quantities {
         let mut c = Cover { tracer: tracer(&mut m), scripts: crate::script_cover::Scripts::new(&b.described().hooks) };
         let r = record(&mut m, &q, 2, &[], None, Duration::from_secs(60), Some(&mut c));
         assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
-        assert!(c.scripts.problems.is_empty(), "{:?}", c.scripts.problems);
+        assert!(c.scripts.problems().is_empty(), "{:?}", c.scripts.problems());
         let toy = &c.scripts.programs["toy"];
         assert_eq!(toy.bytes, Some(8));
         assert_eq!(toy.read, [0, 1, 2, 3].into(), "the last 4 bytes are never read");
