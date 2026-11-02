@@ -16,7 +16,14 @@ use crate::{Error, Result};
 use psx_media::{PsxExe, disc::sha256_bytes};
 
 const SCRIPT: &str = include_str!("../../../tools/ghidra/PsxGhidra.java");
-const LANGUAGE: &str = "MIPS:LE:32:default";
+/// MIPS with the GTE's registers and commands by name and GCC's division
+/// checks folded; tools/ghidra/language holds its source.
+const LANGUAGE: &str = "MIPS:LE:32:psx";
+const LANGUAGE_FILES: [(&str, &str); 3] = [
+    ("psx.slaspec", include_str!("../../../tools/ghidra/language/psx.slaspec")),
+    ("psx.ldefs", include_str!("../../../tools/ghidra/language/psx.ldefs")),
+    ("psx_gte.sinc", include_str!("../../../tools/ghidra/language/psx_gte.sinc")),
+];
 const FORMAT: u32 = 2;
 const FILE_LIMIT: u64 = 64 * 1024 * 1024;
 fn outcome(result: Result<Value>) -> Outcome {
@@ -589,7 +596,14 @@ fn import(input: &Input) -> Result<Import> {
         size: exe.text_size,
         file_offset: 0x800,
         entry,
-        gp: exe.gp,
+        // Most headers leave gp 0; the startup code sets it.
+        gp: if exe.gp != 0 {
+            exe.gp
+        } else {
+            psx_symbols::build::startup_gp(exe.payload(&bytes), exe.text_addr, exe.pc)
+                .and_then(|gp| ram_address(gp).ok())
+                .unwrap_or(0)
+        },
         sp: exe.initial_sp().unwrap_or(0),
         bss_addr: bss,
         bss_size: exe.bss_size,
@@ -672,7 +686,81 @@ impl Drop for PendingProject {
         }
     }
 }
-fn command(install: &Installation, attempt: &Path) -> Result<Command> {
+/// The psx language built for this installation from its own MIPS sources,
+/// once, under .psx/ghidra/language; returns the extension's directory.
+fn language(install: &Installation, cache: &Path) -> Result<PathBuf> {
+    let mut sources = install.build_sha256.clone();
+    for (name, text) in LANGUAGE_FILES {
+        sources += name;
+        sources += &sha256_bytes(text.as_bytes());
+    }
+    let dir = cache.join("language").join(&sha256_bytes(sources.as_bytes())[..16]);
+    let ext = dir.join("PsxGte");
+    if ext.join("data/languages/psx.sla").is_file() {
+        return Ok(ext);
+    }
+    let tmp = dir.with_extension(crate::stamp());
+    let languages = tmp.join("PsxGte/data/languages");
+    fs::create_dir_all(&languages).map_err(|e| Error::io(&languages, e))?;
+    let mips = install.home.join("Ghidra/Processors/MIPS/data/languages");
+    for entry in fs::read_dir(&mips).map_err(|e| Error::io(&mips, e))? {
+        let path = entry?.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if name.ends_with(".sinc") || name == "mips32.pspec" || name == "mips32le.cspec" {
+            fs::copy(&path, languages.join(&name)).map_err(|e| Error::io(&path, e))?;
+        }
+    }
+    for (name, text) in LANGUAGE_FILES {
+        fs::write(languages.join(name), text)?;
+    }
+    let ext_tmp = tmp.join("PsxGte");
+    fs::write(
+        ext_tmp.join("extension.properties"),
+        format!("name=PsxGte\ndescription=PlayStation MIPS for psx\nauthor=psx\ncreatedOn=\nversion={}\n", install.version),
+    )?;
+    fs::write(ext_tmp.join("Module.manifest"), "")?;
+    let log = tmp.join("sleigh.log");
+    let out = File::create(&log).map_err(|e| Error::io(&log, e))?;
+    let status = Command::new(install.home.join("support/sleigh"))
+        .arg(languages.join("psx.slaspec"))
+        .arg(languages.join("psx.sla"))
+        .env("XDG_CONFIG_HOME", &tmp)
+        .env("XDG_CACHE_HOME", &tmp)
+        .stdout(out.try_clone()?)
+        .stderr(out)
+        .stdin(Stdio::null())
+        .status()
+        .map_err(|e| Error::new("ghidra_unavailable", format!("sleigh: {e}")))?;
+    if !status.success() || !languages.join("psx.sla").is_file() {
+        return Err(Error::new(
+            "ghidra_failed",
+            format!("building the psx language failed; inspect {}", log.display()),
+        ));
+    }
+    // Another process may have built it meanwhile; either copy will do.
+    if fs::rename(&ext_tmp, &ext).is_err() && !ext.join("data/languages/psx.sla").is_file() {
+        fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        fs::rename(&ext_tmp, &ext).map_err(|e| Error::io(&ext, e))?;
+    }
+    let _ = fs::remove_dir_all(&tmp);
+    Ok(ext)
+}
+/// The user name Java reports (from the password database), which Ghidra puts
+/// in its settings directory's name when XDG_CONFIG_HOME is set.
+fn java_user_name() -> String {
+    let uid = fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("Uid:")?.split_whitespace().next().map(str::to_owned)));
+    let from_passwd = uid.and_then(|uid| {
+        fs::read_to_string("/etc/passwd").ok()?.lines().find_map(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            (f.len() > 2 && f[2] == uid).then(|| f[0].to_owned())
+        })
+    });
+    let name = from_passwd.or_else(|| std::env::var("USER").ok()).unwrap_or_else(|| "?".into());
+    name.split_whitespace().collect()
+}
+fn command(install: &Installation, attempt: &Path, language_id: &str, ctx: &Ctx) -> Result<Command> {
     let mut cmd = Command::new(&install.launcher);
     // Keep Ghidra's generated configuration and compiled scripts in the project,
     // including when psx is used in a filesystem sandbox.
@@ -688,6 +776,26 @@ fn command(install: &Installation, attempt: &Path) -> Result<Command> {
         "JAVA_TOOL_OPTIONS",
         format!("{} -XX:-UsePerfData", std::env::var("JAVA_TOOL_OPTIONS").unwrap_or_default()),
     );
+    // Ghidra loads extensions from its settings directory: put the psx language
+    // there for the analyses that use it.
+    if language_id != LANGUAGE {
+        return Ok(cmd);
+    }
+    let ext = language(install, &ctx.root.join(".psx/ghidra"))?;
+    let props = fs::read_to_string(install.home.join("Ghidra/application.properties"))?;
+    let prop = |key: &str| {
+        props.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix('=')).unwrap_or_default().trim().to_owned()
+    };
+    let settings = attempt.join("config").join(format!("{}-ghidra", java_user_name())).join(format!(
+        "{}_{}_{}",
+        prop("application.name").to_lowercase(),
+        prop("application.version"),
+        prop("application.release.name")
+    ));
+    let installed = settings.join("Extensions/PsxGte");
+    if !installed.join("data/languages/psx.sla").is_file() {
+        copy_dir(&ext, &installed)?;
+    }
     Ok(cmd)
 }
 fn script_dir(dir: &Path) -> Result<PathBuf> {
@@ -874,7 +982,7 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
     }
     let export = attempt.join("export.json");
     save_json(&export, &request)?;
-    let mut cmd = command(&install, &attempt)?;
+    let mut cmd = command(&install, &attempt, LANGUAGE, ctx)?;
     cmd.arg(&project_dir)
         .arg("project")
         .arg("-import")
@@ -922,7 +1030,7 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
         ));
     }
     warnings.push("Only canonical KSEG0 main RAM is mapped; query aliases are folded, but static references using other RAM mirrors may remain unresolved.".into());
-    warnings.push("Generic MIPS analysis: PS1 load-delay and COP2/GTE semantics are not guaranteed; verify affected pseudocode against instructions and runtime evidence.".into());
+    warnings.push("GTE (COP2) operations are shown by register and command name without their arithmetic, and PS1 load delays are not modelled; verify affected pseudocode against instructions and runtime evidence.".into());
     let manifest = Manifest {
         format: FORMAT,
         key,
@@ -1047,7 +1155,7 @@ impl Op for DecompileArgs {
                     &request,
                     &json!({"mode":"query","addr":addr,"decompile_timeout":self.decompile_timeout,"query_result":output}),
                 )?;
-                let mut cmd = command(&install, attempt)?;
+                let mut cmd = command(&install, attempt, &a.manifest.language, ctx)?;
                 cmd.arg(&a.manifest.project_dir)
                     .arg("project")
                     .args(["-process", "payload.bin", "-noanalysis", "-readOnly", "-max-cpu", "2"])
@@ -1094,6 +1202,9 @@ impl Op for DecompileArgs {
             out["function"] = result["function"].take();
             out["pseudocode"] = result["pseudocode"].take();
             out["diagnostic"] = result["diagnostic"].take();
+            if let Some(note) = unset_registers(&a, out["pseudocode"].as_str().unwrap_or(""), entry_addr) {
+                out["note"] = json!(note);
+            }
             // One line a call: where it is, and the function it is in or calls.
             let call = |r: &Value, other: &str, sep: &str| {
                 let kind = r["type"].as_str().filter(|t| *t != "UNCONDITIONAL_CALL");
@@ -1111,6 +1222,39 @@ impl Op for DecompileArgs {
             Ok(out)
         })())
     }
+}
+
+/// Explains pseudocode that reads registers no path in the function sets
+/// (Ghidra's unaff_ and in_ names): a start inside a function, or code
+/// that reads such values on purpose.
+fn unset_registers(a: &Analysis, pseudocode: &str, entry: Option<u32>) -> Option<String> {
+    const REGISTERS: &[&str] = &[
+        "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9",
+        "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "fp", "k0", "k1", "gp", "retaddr",
+    ];
+    let mut names: Vec<&str> = pseudocode
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| {
+            w.strip_prefix("unaff_").or_else(|| w.strip_prefix("in_")).is_some_and(|r| REGISTERS.contains(&r))
+        })
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    if names.is_empty() {
+        return None;
+    }
+    let list = names.join(", ");
+    let payload = fs::read(a.manifest.index.parent()?.join("payload.bin")).ok()?;
+    let entry = entry?;
+    Some(if psx_symbols::build::follows_function_end(&payload, a.manifest.mapping.base, entry) {
+        format!(
+            "Reads registers it never sets ({list}): the original reads values no path sets, or was written by hand to its own register use; code disasm shows the instructions."
+        )
+    } else {
+        format!(
+            "Reads registers it never sets ({list}), and 0x{entry:08X} does not follow the end of a function: it probably starts earlier, inside the code before it (with ram, seed an earlier entry)."
+        )
+    })
 }
 
 fn open_analysis(path: &Path, deadline: Instant, ctx: &Ctx) -> Result<Analysis> {
@@ -1195,6 +1339,19 @@ fn patches(index: &Value, patch: Patch) -> Result<(Vec<Value>, Vec<Value>)> {
     Ok((rows.into_values().collect(), conflicts))
 }
 
+fn copy_dir(source: &Path, target: &Path) -> Result<()> {
+    fs::create_dir_all(target).map_err(|e| Error::io(target, e))?;
+    for entry in fs::read_dir(source).map_err(|e| Error::io(source, e))? {
+        let entry = entry?;
+        let dest = target.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &dest)?;
+        } else {
+            fs::copy(entry.path(), dest)?;
+        }
+    }
+    Ok(())
+}
 fn copy_project(source: &Path, target: &Path) -> Result<()> {
     fs::create_dir(target).map_err(|e| Error::io(target, e))?;
     for entry in fs::read_dir(source).map_err(|e| Error::io(source, e))? {
@@ -1241,7 +1398,7 @@ impl Op for AnnotateArgs {
             let index = attempt.join("index.json");
             let request = attempt.join("annotations.json");
             save_json(&request, &json!({"mode":"annotate","patches":patches,"index":index}))?;
-            let mut cmd = command(&install, &attempt)?;
+            let mut cmd = command(&install, &attempt, &a.manifest.language, ctx)?;
             cmd.arg(&project)
                 .arg("project")
                 .args(["-process", "payload.bin", "-noanalysis", "-max-cpu", "2"])
@@ -1497,6 +1654,11 @@ mod tests {
         let launcher = home.join("support/analyzeHeadless");
         fs::write(&launcher, "#!/bin/sh\nsleep 30\n").unwrap();
         fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        // The psx language is built with the installation's sleigh from its MIPS sources.
+        fs::create_dir_all(home.join("Ghidra/Processors/MIPS/data/languages")).unwrap();
+        let sleigh = home.join("support/sleigh");
+        fs::write(&sleigh, "#!/bin/sh\necho sla > \"$2\"\n").unwrap();
+        fs::set_permissions(&sleigh, fs::Permissions::from_mode(0o755)).unwrap();
         let project = ctx.root.join("original-project");
         fs::create_dir(&project).unwrap();
         fs::write(project.join("project.gpr"), "original database").unwrap();

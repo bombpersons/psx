@@ -118,6 +118,11 @@ reports Java/version problems before creating a project.
 callee decompile, and diagnostics identify any unsupported PS1 instructions.
 Resolve blockers here before committing to a custom loader or processor extension.
 
+*Later (2026-11-02):* generic MIPS left `unaff_gp`, `trap()` and
+coprocessor 2's generic calls all over the games' decompiles, so psx now
+uses its own language, `MIPS:LE:32:psx` (tools/ghidra/language), and
+takes gp from the startup code; docs/decomp-plan.md has the details.
+
 ### G1: Useful EXE analysis through CLI and MCP
 
 - Extract the EXE payload using `psx-media`; exclude its 0x800-byte file header.

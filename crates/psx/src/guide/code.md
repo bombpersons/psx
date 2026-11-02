@@ -42,12 +42,16 @@ the loads tested with those bits.
 
 code_decompile takes source and addr, importing and analysing on first use;
 reuse its analysis handle. For overlays give ram with ranges, entries and
-gp. A project open in the Ghidra GUI is an error until closed. A query cut
+gp. GTE operations read as calls by register and command
+(gte_set_VXY0(v), gte_RTPS(sf,lm), gte_get_SXY2()), without their
+arithmetic. A note says why the pseudocode reads registers nothing sets
+(unaff_, in_): a start inside a function, or code that does so on purpose. A project open in the Ghidra GUI is an error until closed. A query cut
 short (a deadline, a killed psx) is recovered by the next one; a lock left
 by a dead process (psx.lock under .psx/ghidra/) is removed by hand only
 after checking its pid is gone. code_annotate applies names and comments
 and exports them as symbols for run, disasm and xrefs. code_symbols names
-PsyQ library code by signature, not the game's own functions.
+PsyQ library code by signature, not the game's own functions, and reports
+the build: gp, GCC's division checks, scheduling, hand-written library code.
 
 Functions reached only through a table (state handlers, object updates, a
 jump table's cases) are often missing from an analysis of the EXE. Seed one

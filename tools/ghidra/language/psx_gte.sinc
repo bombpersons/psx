@@ -1,0 +1,303 @@
+# The PlayStation's GTE (coprocessor 2) by name, and GCC's division checks folded.
+define pcodeop gte_get_VXY0; define pcodeop gte_set_VXY0;
+define pcodeop gte_get_VZ0; define pcodeop gte_set_VZ0;
+define pcodeop gte_get_VXY1; define pcodeop gte_set_VXY1;
+define pcodeop gte_get_VZ1; define pcodeop gte_set_VZ1;
+define pcodeop gte_get_VXY2; define pcodeop gte_set_VXY2;
+define pcodeop gte_get_VZ2; define pcodeop gte_set_VZ2;
+define pcodeop gte_get_RGBC; define pcodeop gte_set_RGBC;
+define pcodeop gte_get_OTZ; define pcodeop gte_set_OTZ;
+define pcodeop gte_get_IR0; define pcodeop gte_set_IR0;
+define pcodeop gte_get_IR1; define pcodeop gte_set_IR1;
+define pcodeop gte_get_IR2; define pcodeop gte_set_IR2;
+define pcodeop gte_get_IR3; define pcodeop gte_set_IR3;
+define pcodeop gte_get_SXY0; define pcodeop gte_set_SXY0;
+define pcodeop gte_get_SXY1; define pcodeop gte_set_SXY1;
+define pcodeop gte_get_SXY2; define pcodeop gte_set_SXY2;
+define pcodeop gte_get_SXYP; define pcodeop gte_set_SXYP;
+define pcodeop gte_get_SZ0; define pcodeop gte_set_SZ0;
+define pcodeop gte_get_SZ1; define pcodeop gte_set_SZ1;
+define pcodeop gte_get_SZ2; define pcodeop gte_set_SZ2;
+define pcodeop gte_get_SZ3; define pcodeop gte_set_SZ3;
+define pcodeop gte_get_RGB0; define pcodeop gte_set_RGB0;
+define pcodeop gte_get_RGB1; define pcodeop gte_set_RGB1;
+define pcodeop gte_get_RGB2; define pcodeop gte_set_RGB2;
+define pcodeop gte_get_RES1; define pcodeop gte_set_RES1;
+define pcodeop gte_get_MAC0; define pcodeop gte_set_MAC0;
+define pcodeop gte_get_MAC1; define pcodeop gte_set_MAC1;
+define pcodeop gte_get_MAC2; define pcodeop gte_set_MAC2;
+define pcodeop gte_get_MAC3; define pcodeop gte_set_MAC3;
+define pcodeop gte_get_IRGB; define pcodeop gte_set_IRGB;
+define pcodeop gte_get_ORGB; define pcodeop gte_set_ORGB;
+define pcodeop gte_get_LZCS; define pcodeop gte_set_LZCS;
+define pcodeop gte_get_LZCR; define pcodeop gte_set_LZCR;
+define pcodeop gte_get_RT11RT12; define pcodeop gte_set_RT11RT12;
+define pcodeop gte_get_RT13RT21; define pcodeop gte_set_RT13RT21;
+define pcodeop gte_get_RT22RT23; define pcodeop gte_set_RT22RT23;
+define pcodeop gte_get_RT31RT32; define pcodeop gte_set_RT31RT32;
+define pcodeop gte_get_RT33; define pcodeop gte_set_RT33;
+define pcodeop gte_get_TRX; define pcodeop gte_set_TRX;
+define pcodeop gte_get_TRY; define pcodeop gte_set_TRY;
+define pcodeop gte_get_TRZ; define pcodeop gte_set_TRZ;
+define pcodeop gte_get_L11L12; define pcodeop gte_set_L11L12;
+define pcodeop gte_get_L13L21; define pcodeop gte_set_L13L21;
+define pcodeop gte_get_L22L23; define pcodeop gte_set_L22L23;
+define pcodeop gte_get_L31L32; define pcodeop gte_set_L31L32;
+define pcodeop gte_get_L33; define pcodeop gte_set_L33;
+define pcodeop gte_get_RBK; define pcodeop gte_set_RBK;
+define pcodeop gte_get_GBK; define pcodeop gte_set_GBK;
+define pcodeop gte_get_BBK; define pcodeop gte_set_BBK;
+define pcodeop gte_get_LR1LR2; define pcodeop gte_set_LR1LR2;
+define pcodeop gte_get_LR3LG1; define pcodeop gte_set_LR3LG1;
+define pcodeop gte_get_LG2LG3; define pcodeop gte_set_LG2LG3;
+define pcodeop gte_get_LB1LB2; define pcodeop gte_set_LB1LB2;
+define pcodeop gte_get_LB3; define pcodeop gte_set_LB3;
+define pcodeop gte_get_RFC; define pcodeop gte_set_RFC;
+define pcodeop gte_get_GFC; define pcodeop gte_set_GFC;
+define pcodeop gte_get_BFC; define pcodeop gte_set_BFC;
+define pcodeop gte_get_OFX; define pcodeop gte_set_OFX;
+define pcodeop gte_get_OFY; define pcodeop gte_set_OFY;
+define pcodeop gte_get_H; define pcodeop gte_set_H;
+define pcodeop gte_get_DQA; define pcodeop gte_set_DQA;
+define pcodeop gte_get_DQB; define pcodeop gte_set_DQB;
+define pcodeop gte_get_ZSF3; define pcodeop gte_set_ZSF3;
+define pcodeop gte_get_ZSF4; define pcodeop gte_set_ZSF4;
+define pcodeop gte_get_FLAG; define pcodeop gte_set_FLAG;
+define pcodeop gte_RTPS;
+define pcodeop gte_NCLIP;
+define pcodeop gte_OP;
+define pcodeop gte_DPCS;
+define pcodeop gte_INTPL;
+define pcodeop gte_MVMVA;
+define pcodeop gte_NCDS;
+define pcodeop gte_CDP;
+define pcodeop gte_NCDT;
+define pcodeop gte_NCCS;
+define pcodeop gte_CC;
+define pcodeop gte_NCS;
+define pcodeop gte_NCT;
+define pcodeop gte_SQR;
+define pcodeop gte_DCPL;
+define pcodeop gte_DPCT;
+define pcodeop gte_AVSZ3;
+define pcodeop gte_AVSZ4;
+define pcodeop gte_RTPT;
+define pcodeop gte_GPF;
+define pcodeop gte_GPL;
+define pcodeop gte_NCCT;
+:mtc2 RTsrc, "VXY0" is $(AMODE) & prime=0x12 & copop=4 & rd=0 & RTsrc { gte_set_VXY0(RTsrc); }
+:mfc2 RT, "VXY0" is $(AMODE) & prime=0x12 & copop=0 & rd=0 & RT { tmp:4 = gte_get_VXY0(); RT = sext(tmp); }
+:lwc2 "VXY0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=0 & OFF_BASE { gte_set_VXY0(*[ram]:4 OFF_BASE); }
+:swc2 "VXY0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=0 & OFF_BASE { tmp:4 = gte_get_VXY0(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "VZ0" is $(AMODE) & prime=0x12 & copop=4 & rd=1 & RTsrc { gte_set_VZ0(RTsrc); }
+:mfc2 RT, "VZ0" is $(AMODE) & prime=0x12 & copop=0 & rd=1 & RT { tmp:4 = gte_get_VZ0(); RT = sext(tmp); }
+:lwc2 "VZ0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=1 & OFF_BASE { gte_set_VZ0(*[ram]:4 OFF_BASE); }
+:swc2 "VZ0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=1 & OFF_BASE { tmp:4 = gte_get_VZ0(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "VXY1" is $(AMODE) & prime=0x12 & copop=4 & rd=2 & RTsrc { gte_set_VXY1(RTsrc); }
+:mfc2 RT, "VXY1" is $(AMODE) & prime=0x12 & copop=0 & rd=2 & RT { tmp:4 = gte_get_VXY1(); RT = sext(tmp); }
+:lwc2 "VXY1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=2 & OFF_BASE { gte_set_VXY1(*[ram]:4 OFF_BASE); }
+:swc2 "VXY1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=2 & OFF_BASE { tmp:4 = gte_get_VXY1(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "VZ1" is $(AMODE) & prime=0x12 & copop=4 & rd=3 & RTsrc { gte_set_VZ1(RTsrc); }
+:mfc2 RT, "VZ1" is $(AMODE) & prime=0x12 & copop=0 & rd=3 & RT { tmp:4 = gte_get_VZ1(); RT = sext(tmp); }
+:lwc2 "VZ1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=3 & OFF_BASE { gte_set_VZ1(*[ram]:4 OFF_BASE); }
+:swc2 "VZ1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=3 & OFF_BASE { tmp:4 = gte_get_VZ1(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "VXY2" is $(AMODE) & prime=0x12 & copop=4 & rd=4 & RTsrc { gte_set_VXY2(RTsrc); }
+:mfc2 RT, "VXY2" is $(AMODE) & prime=0x12 & copop=0 & rd=4 & RT { tmp:4 = gte_get_VXY2(); RT = sext(tmp); }
+:lwc2 "VXY2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=4 & OFF_BASE { gte_set_VXY2(*[ram]:4 OFF_BASE); }
+:swc2 "VXY2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=4 & OFF_BASE { tmp:4 = gte_get_VXY2(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "VZ2" is $(AMODE) & prime=0x12 & copop=4 & rd=5 & RTsrc { gte_set_VZ2(RTsrc); }
+:mfc2 RT, "VZ2" is $(AMODE) & prime=0x12 & copop=0 & rd=5 & RT { tmp:4 = gte_get_VZ2(); RT = sext(tmp); }
+:lwc2 "VZ2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=5 & OFF_BASE { gte_set_VZ2(*[ram]:4 OFF_BASE); }
+:swc2 "VZ2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=5 & OFF_BASE { tmp:4 = gte_get_VZ2(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "RGBC" is $(AMODE) & prime=0x12 & copop=4 & rd=6 & RTsrc { gte_set_RGBC(RTsrc); }
+:mfc2 RT, "RGBC" is $(AMODE) & prime=0x12 & copop=0 & rd=6 & RT { tmp:4 = gte_get_RGBC(); RT = sext(tmp); }
+:lwc2 "RGBC", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=6 & OFF_BASE { gte_set_RGBC(*[ram]:4 OFF_BASE); }
+:swc2 "RGBC", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=6 & OFF_BASE { tmp:4 = gte_get_RGBC(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "OTZ" is $(AMODE) & prime=0x12 & copop=4 & rd=7 & RTsrc { gte_set_OTZ(RTsrc); }
+:mfc2 RT, "OTZ" is $(AMODE) & prime=0x12 & copop=0 & rd=7 & RT { tmp:4 = gte_get_OTZ(); RT = sext(tmp); }
+:lwc2 "OTZ", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=7 & OFF_BASE { gte_set_OTZ(*[ram]:4 OFF_BASE); }
+:swc2 "OTZ", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=7 & OFF_BASE { tmp:4 = gte_get_OTZ(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "IR0" is $(AMODE) & prime=0x12 & copop=4 & rd=8 & RTsrc { gte_set_IR0(RTsrc); }
+:mfc2 RT, "IR0" is $(AMODE) & prime=0x12 & copop=0 & rd=8 & RT { tmp:4 = gte_get_IR0(); RT = sext(tmp); }
+:lwc2 "IR0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=8 & OFF_BASE { gte_set_IR0(*[ram]:4 OFF_BASE); }
+:swc2 "IR0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=8 & OFF_BASE { tmp:4 = gte_get_IR0(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "IR1" is $(AMODE) & prime=0x12 & copop=4 & rd=9 & RTsrc { gte_set_IR1(RTsrc); }
+:mfc2 RT, "IR1" is $(AMODE) & prime=0x12 & copop=0 & rd=9 & RT { tmp:4 = gte_get_IR1(); RT = sext(tmp); }
+:lwc2 "IR1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=9 & OFF_BASE { gte_set_IR1(*[ram]:4 OFF_BASE); }
+:swc2 "IR1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=9 & OFF_BASE { tmp:4 = gte_get_IR1(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "IR2" is $(AMODE) & prime=0x12 & copop=4 & rd=10 & RTsrc { gte_set_IR2(RTsrc); }
+:mfc2 RT, "IR2" is $(AMODE) & prime=0x12 & copop=0 & rd=10 & RT { tmp:4 = gte_get_IR2(); RT = sext(tmp); }
+:lwc2 "IR2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=10 & OFF_BASE { gte_set_IR2(*[ram]:4 OFF_BASE); }
+:swc2 "IR2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=10 & OFF_BASE { tmp:4 = gte_get_IR2(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "IR3" is $(AMODE) & prime=0x12 & copop=4 & rd=11 & RTsrc { gte_set_IR3(RTsrc); }
+:mfc2 RT, "IR3" is $(AMODE) & prime=0x12 & copop=0 & rd=11 & RT { tmp:4 = gte_get_IR3(); RT = sext(tmp); }
+:lwc2 "IR3", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=11 & OFF_BASE { gte_set_IR3(*[ram]:4 OFF_BASE); }
+:swc2 "IR3", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=11 & OFF_BASE { tmp:4 = gte_get_IR3(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "SXY0" is $(AMODE) & prime=0x12 & copop=4 & rd=12 & RTsrc { gte_set_SXY0(RTsrc); }
+:mfc2 RT, "SXY0" is $(AMODE) & prime=0x12 & copop=0 & rd=12 & RT { tmp:4 = gte_get_SXY0(); RT = sext(tmp); }
+:lwc2 "SXY0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=12 & OFF_BASE { gte_set_SXY0(*[ram]:4 OFF_BASE); }
+:swc2 "SXY0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=12 & OFF_BASE { tmp:4 = gte_get_SXY0(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "SXY1" is $(AMODE) & prime=0x12 & copop=4 & rd=13 & RTsrc { gte_set_SXY1(RTsrc); }
+:mfc2 RT, "SXY1" is $(AMODE) & prime=0x12 & copop=0 & rd=13 & RT { tmp:4 = gte_get_SXY1(); RT = sext(tmp); }
+:lwc2 "SXY1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=13 & OFF_BASE { gte_set_SXY1(*[ram]:4 OFF_BASE); }
+:swc2 "SXY1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=13 & OFF_BASE { tmp:4 = gte_get_SXY1(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "SXY2" is $(AMODE) & prime=0x12 & copop=4 & rd=14 & RTsrc { gte_set_SXY2(RTsrc); }
+:mfc2 RT, "SXY2" is $(AMODE) & prime=0x12 & copop=0 & rd=14 & RT { tmp:4 = gte_get_SXY2(); RT = sext(tmp); }
+:lwc2 "SXY2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=14 & OFF_BASE { gte_set_SXY2(*[ram]:4 OFF_BASE); }
+:swc2 "SXY2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=14 & OFF_BASE { tmp:4 = gte_get_SXY2(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "SXYP" is $(AMODE) & prime=0x12 & copop=4 & rd=15 & RTsrc { gte_set_SXYP(RTsrc); }
+:mfc2 RT, "SXYP" is $(AMODE) & prime=0x12 & copop=0 & rd=15 & RT { tmp:4 = gte_get_SXYP(); RT = sext(tmp); }
+:lwc2 "SXYP", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=15 & OFF_BASE { gte_set_SXYP(*[ram]:4 OFF_BASE); }
+:swc2 "SXYP", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=15 & OFF_BASE { tmp:4 = gte_get_SXYP(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "SZ0" is $(AMODE) & prime=0x12 & copop=4 & rd=16 & RTsrc { gte_set_SZ0(RTsrc); }
+:mfc2 RT, "SZ0" is $(AMODE) & prime=0x12 & copop=0 & rd=16 & RT { tmp:4 = gte_get_SZ0(); RT = sext(tmp); }
+:lwc2 "SZ0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=16 & OFF_BASE { gte_set_SZ0(*[ram]:4 OFF_BASE); }
+:swc2 "SZ0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=16 & OFF_BASE { tmp:4 = gte_get_SZ0(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "SZ1" is $(AMODE) & prime=0x12 & copop=4 & rd=17 & RTsrc { gte_set_SZ1(RTsrc); }
+:mfc2 RT, "SZ1" is $(AMODE) & prime=0x12 & copop=0 & rd=17 & RT { tmp:4 = gte_get_SZ1(); RT = sext(tmp); }
+:lwc2 "SZ1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=17 & OFF_BASE { gte_set_SZ1(*[ram]:4 OFF_BASE); }
+:swc2 "SZ1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=17 & OFF_BASE { tmp:4 = gte_get_SZ1(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "SZ2" is $(AMODE) & prime=0x12 & copop=4 & rd=18 & RTsrc { gte_set_SZ2(RTsrc); }
+:mfc2 RT, "SZ2" is $(AMODE) & prime=0x12 & copop=0 & rd=18 & RT { tmp:4 = gte_get_SZ2(); RT = sext(tmp); }
+:lwc2 "SZ2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=18 & OFF_BASE { gte_set_SZ2(*[ram]:4 OFF_BASE); }
+:swc2 "SZ2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=18 & OFF_BASE { tmp:4 = gte_get_SZ2(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "SZ3" is $(AMODE) & prime=0x12 & copop=4 & rd=19 & RTsrc { gte_set_SZ3(RTsrc); }
+:mfc2 RT, "SZ3" is $(AMODE) & prime=0x12 & copop=0 & rd=19 & RT { tmp:4 = gte_get_SZ3(); RT = sext(tmp); }
+:lwc2 "SZ3", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=19 & OFF_BASE { gte_set_SZ3(*[ram]:4 OFF_BASE); }
+:swc2 "SZ3", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=19 & OFF_BASE { tmp:4 = gte_get_SZ3(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "RGB0" is $(AMODE) & prime=0x12 & copop=4 & rd=20 & RTsrc { gte_set_RGB0(RTsrc); }
+:mfc2 RT, "RGB0" is $(AMODE) & prime=0x12 & copop=0 & rd=20 & RT { tmp:4 = gte_get_RGB0(); RT = sext(tmp); }
+:lwc2 "RGB0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=20 & OFF_BASE { gte_set_RGB0(*[ram]:4 OFF_BASE); }
+:swc2 "RGB0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=20 & OFF_BASE { tmp:4 = gte_get_RGB0(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "RGB1" is $(AMODE) & prime=0x12 & copop=4 & rd=21 & RTsrc { gte_set_RGB1(RTsrc); }
+:mfc2 RT, "RGB1" is $(AMODE) & prime=0x12 & copop=0 & rd=21 & RT { tmp:4 = gte_get_RGB1(); RT = sext(tmp); }
+:lwc2 "RGB1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=21 & OFF_BASE { gte_set_RGB1(*[ram]:4 OFF_BASE); }
+:swc2 "RGB1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=21 & OFF_BASE { tmp:4 = gte_get_RGB1(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "RGB2" is $(AMODE) & prime=0x12 & copop=4 & rd=22 & RTsrc { gte_set_RGB2(RTsrc); }
+:mfc2 RT, "RGB2" is $(AMODE) & prime=0x12 & copop=0 & rd=22 & RT { tmp:4 = gte_get_RGB2(); RT = sext(tmp); }
+:lwc2 "RGB2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=22 & OFF_BASE { gte_set_RGB2(*[ram]:4 OFF_BASE); }
+:swc2 "RGB2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=22 & OFF_BASE { tmp:4 = gte_get_RGB2(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "RES1" is $(AMODE) & prime=0x12 & copop=4 & rd=23 & RTsrc { gte_set_RES1(RTsrc); }
+:mfc2 RT, "RES1" is $(AMODE) & prime=0x12 & copop=0 & rd=23 & RT { tmp:4 = gte_get_RES1(); RT = sext(tmp); }
+:lwc2 "RES1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=23 & OFF_BASE { gte_set_RES1(*[ram]:4 OFF_BASE); }
+:swc2 "RES1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=23 & OFF_BASE { tmp:4 = gte_get_RES1(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "MAC0" is $(AMODE) & prime=0x12 & copop=4 & rd=24 & RTsrc { gte_set_MAC0(RTsrc); }
+:mfc2 RT, "MAC0" is $(AMODE) & prime=0x12 & copop=0 & rd=24 & RT { tmp:4 = gte_get_MAC0(); RT = sext(tmp); }
+:lwc2 "MAC0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=24 & OFF_BASE { gte_set_MAC0(*[ram]:4 OFF_BASE); }
+:swc2 "MAC0", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=24 & OFF_BASE { tmp:4 = gte_get_MAC0(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "MAC1" is $(AMODE) & prime=0x12 & copop=4 & rd=25 & RTsrc { gte_set_MAC1(RTsrc); }
+:mfc2 RT, "MAC1" is $(AMODE) & prime=0x12 & copop=0 & rd=25 & RT { tmp:4 = gte_get_MAC1(); RT = sext(tmp); }
+:lwc2 "MAC1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=25 & OFF_BASE { gte_set_MAC1(*[ram]:4 OFF_BASE); }
+:swc2 "MAC1", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=25 & OFF_BASE { tmp:4 = gte_get_MAC1(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "MAC2" is $(AMODE) & prime=0x12 & copop=4 & rd=26 & RTsrc { gte_set_MAC2(RTsrc); }
+:mfc2 RT, "MAC2" is $(AMODE) & prime=0x12 & copop=0 & rd=26 & RT { tmp:4 = gte_get_MAC2(); RT = sext(tmp); }
+:lwc2 "MAC2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=26 & OFF_BASE { gte_set_MAC2(*[ram]:4 OFF_BASE); }
+:swc2 "MAC2", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=26 & OFF_BASE { tmp:4 = gte_get_MAC2(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "MAC3" is $(AMODE) & prime=0x12 & copop=4 & rd=27 & RTsrc { gte_set_MAC3(RTsrc); }
+:mfc2 RT, "MAC3" is $(AMODE) & prime=0x12 & copop=0 & rd=27 & RT { tmp:4 = gte_get_MAC3(); RT = sext(tmp); }
+:lwc2 "MAC3", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=27 & OFF_BASE { gte_set_MAC3(*[ram]:4 OFF_BASE); }
+:swc2 "MAC3", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=27 & OFF_BASE { tmp:4 = gte_get_MAC3(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "IRGB" is $(AMODE) & prime=0x12 & copop=4 & rd=28 & RTsrc { gte_set_IRGB(RTsrc); }
+:mfc2 RT, "IRGB" is $(AMODE) & prime=0x12 & copop=0 & rd=28 & RT { tmp:4 = gte_get_IRGB(); RT = sext(tmp); }
+:lwc2 "IRGB", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=28 & OFF_BASE { gte_set_IRGB(*[ram]:4 OFF_BASE); }
+:swc2 "IRGB", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=28 & OFF_BASE { tmp:4 = gte_get_IRGB(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "ORGB" is $(AMODE) & prime=0x12 & copop=4 & rd=29 & RTsrc { gte_set_ORGB(RTsrc); }
+:mfc2 RT, "ORGB" is $(AMODE) & prime=0x12 & copop=0 & rd=29 & RT { tmp:4 = gte_get_ORGB(); RT = sext(tmp); }
+:lwc2 "ORGB", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=29 & OFF_BASE { gte_set_ORGB(*[ram]:4 OFF_BASE); }
+:swc2 "ORGB", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=29 & OFF_BASE { tmp:4 = gte_get_ORGB(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "LZCS" is $(AMODE) & prime=0x12 & copop=4 & rd=30 & RTsrc { gte_set_LZCS(RTsrc); }
+:mfc2 RT, "LZCS" is $(AMODE) & prime=0x12 & copop=0 & rd=30 & RT { tmp:4 = gte_get_LZCS(); RT = sext(tmp); }
+:lwc2 "LZCS", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=30 & OFF_BASE { gte_set_LZCS(*[ram]:4 OFF_BASE); }
+:swc2 "LZCS", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=30 & OFF_BASE { tmp:4 = gte_get_LZCS(); *[ram]:4 OFF_BASE = tmp; }
+:mtc2 RTsrc, "LZCR" is $(AMODE) & prime=0x12 & copop=4 & rd=31 & RTsrc { gte_set_LZCR(RTsrc); }
+:mfc2 RT, "LZCR" is $(AMODE) & prime=0x12 & copop=0 & rd=31 & RT { tmp:4 = gte_get_LZCR(); RT = sext(tmp); }
+:lwc2 "LZCR", OFF_BASE is $(AMODE) & REL6=0 & prime=0x32 & rt=31 & OFF_BASE { gte_set_LZCR(*[ram]:4 OFF_BASE); }
+:swc2 "LZCR", OFF_BASE is $(AMODE) & REL6=0 & prime=0x3A & rt=31 & OFF_BASE { tmp:4 = gte_get_LZCR(); *[ram]:4 OFF_BASE = tmp; }
+:ctc2 RTsrc, "RT11RT12" is $(AMODE) & prime=0x12 & copop=6 & rd=0 & RTsrc { gte_set_RT11RT12(RTsrc); }
+:cfc2 RT, "RT11RT12" is $(AMODE) & prime=0x12 & copop=2 & rd=0 & RT { tmp:4 = gte_get_RT11RT12(); RT = sext(tmp); }
+:ctc2 RTsrc, "RT13RT21" is $(AMODE) & prime=0x12 & copop=6 & rd=1 & RTsrc { gte_set_RT13RT21(RTsrc); }
+:cfc2 RT, "RT13RT21" is $(AMODE) & prime=0x12 & copop=2 & rd=1 & RT { tmp:4 = gte_get_RT13RT21(); RT = sext(tmp); }
+:ctc2 RTsrc, "RT22RT23" is $(AMODE) & prime=0x12 & copop=6 & rd=2 & RTsrc { gte_set_RT22RT23(RTsrc); }
+:cfc2 RT, "RT22RT23" is $(AMODE) & prime=0x12 & copop=2 & rd=2 & RT { tmp:4 = gte_get_RT22RT23(); RT = sext(tmp); }
+:ctc2 RTsrc, "RT31RT32" is $(AMODE) & prime=0x12 & copop=6 & rd=3 & RTsrc { gte_set_RT31RT32(RTsrc); }
+:cfc2 RT, "RT31RT32" is $(AMODE) & prime=0x12 & copop=2 & rd=3 & RT { tmp:4 = gte_get_RT31RT32(); RT = sext(tmp); }
+:ctc2 RTsrc, "RT33" is $(AMODE) & prime=0x12 & copop=6 & rd=4 & RTsrc { gte_set_RT33(RTsrc); }
+:cfc2 RT, "RT33" is $(AMODE) & prime=0x12 & copop=2 & rd=4 & RT { tmp:4 = gte_get_RT33(); RT = sext(tmp); }
+:ctc2 RTsrc, "TRX" is $(AMODE) & prime=0x12 & copop=6 & rd=5 & RTsrc { gte_set_TRX(RTsrc); }
+:cfc2 RT, "TRX" is $(AMODE) & prime=0x12 & copop=2 & rd=5 & RT { tmp:4 = gte_get_TRX(); RT = sext(tmp); }
+:ctc2 RTsrc, "TRY" is $(AMODE) & prime=0x12 & copop=6 & rd=6 & RTsrc { gte_set_TRY(RTsrc); }
+:cfc2 RT, "TRY" is $(AMODE) & prime=0x12 & copop=2 & rd=6 & RT { tmp:4 = gte_get_TRY(); RT = sext(tmp); }
+:ctc2 RTsrc, "TRZ" is $(AMODE) & prime=0x12 & copop=6 & rd=7 & RTsrc { gte_set_TRZ(RTsrc); }
+:cfc2 RT, "TRZ" is $(AMODE) & prime=0x12 & copop=2 & rd=7 & RT { tmp:4 = gte_get_TRZ(); RT = sext(tmp); }
+:ctc2 RTsrc, "L11L12" is $(AMODE) & prime=0x12 & copop=6 & rd=8 & RTsrc { gte_set_L11L12(RTsrc); }
+:cfc2 RT, "L11L12" is $(AMODE) & prime=0x12 & copop=2 & rd=8 & RT { tmp:4 = gte_get_L11L12(); RT = sext(tmp); }
+:ctc2 RTsrc, "L13L21" is $(AMODE) & prime=0x12 & copop=6 & rd=9 & RTsrc { gte_set_L13L21(RTsrc); }
+:cfc2 RT, "L13L21" is $(AMODE) & prime=0x12 & copop=2 & rd=9 & RT { tmp:4 = gte_get_L13L21(); RT = sext(tmp); }
+:ctc2 RTsrc, "L22L23" is $(AMODE) & prime=0x12 & copop=6 & rd=10 & RTsrc { gte_set_L22L23(RTsrc); }
+:cfc2 RT, "L22L23" is $(AMODE) & prime=0x12 & copop=2 & rd=10 & RT { tmp:4 = gte_get_L22L23(); RT = sext(tmp); }
+:ctc2 RTsrc, "L31L32" is $(AMODE) & prime=0x12 & copop=6 & rd=11 & RTsrc { gte_set_L31L32(RTsrc); }
+:cfc2 RT, "L31L32" is $(AMODE) & prime=0x12 & copop=2 & rd=11 & RT { tmp:4 = gte_get_L31L32(); RT = sext(tmp); }
+:ctc2 RTsrc, "L33" is $(AMODE) & prime=0x12 & copop=6 & rd=12 & RTsrc { gte_set_L33(RTsrc); }
+:cfc2 RT, "L33" is $(AMODE) & prime=0x12 & copop=2 & rd=12 & RT { tmp:4 = gte_get_L33(); RT = sext(tmp); }
+:ctc2 RTsrc, "RBK" is $(AMODE) & prime=0x12 & copop=6 & rd=13 & RTsrc { gte_set_RBK(RTsrc); }
+:cfc2 RT, "RBK" is $(AMODE) & prime=0x12 & copop=2 & rd=13 & RT { tmp:4 = gte_get_RBK(); RT = sext(tmp); }
+:ctc2 RTsrc, "GBK" is $(AMODE) & prime=0x12 & copop=6 & rd=14 & RTsrc { gte_set_GBK(RTsrc); }
+:cfc2 RT, "GBK" is $(AMODE) & prime=0x12 & copop=2 & rd=14 & RT { tmp:4 = gte_get_GBK(); RT = sext(tmp); }
+:ctc2 RTsrc, "BBK" is $(AMODE) & prime=0x12 & copop=6 & rd=15 & RTsrc { gte_set_BBK(RTsrc); }
+:cfc2 RT, "BBK" is $(AMODE) & prime=0x12 & copop=2 & rd=15 & RT { tmp:4 = gte_get_BBK(); RT = sext(tmp); }
+:ctc2 RTsrc, "LR1LR2" is $(AMODE) & prime=0x12 & copop=6 & rd=16 & RTsrc { gte_set_LR1LR2(RTsrc); }
+:cfc2 RT, "LR1LR2" is $(AMODE) & prime=0x12 & copop=2 & rd=16 & RT { tmp:4 = gte_get_LR1LR2(); RT = sext(tmp); }
+:ctc2 RTsrc, "LR3LG1" is $(AMODE) & prime=0x12 & copop=6 & rd=17 & RTsrc { gte_set_LR3LG1(RTsrc); }
+:cfc2 RT, "LR3LG1" is $(AMODE) & prime=0x12 & copop=2 & rd=17 & RT { tmp:4 = gte_get_LR3LG1(); RT = sext(tmp); }
+:ctc2 RTsrc, "LG2LG3" is $(AMODE) & prime=0x12 & copop=6 & rd=18 & RTsrc { gte_set_LG2LG3(RTsrc); }
+:cfc2 RT, "LG2LG3" is $(AMODE) & prime=0x12 & copop=2 & rd=18 & RT { tmp:4 = gte_get_LG2LG3(); RT = sext(tmp); }
+:ctc2 RTsrc, "LB1LB2" is $(AMODE) & prime=0x12 & copop=6 & rd=19 & RTsrc { gte_set_LB1LB2(RTsrc); }
+:cfc2 RT, "LB1LB2" is $(AMODE) & prime=0x12 & copop=2 & rd=19 & RT { tmp:4 = gte_get_LB1LB2(); RT = sext(tmp); }
+:ctc2 RTsrc, "LB3" is $(AMODE) & prime=0x12 & copop=6 & rd=20 & RTsrc { gte_set_LB3(RTsrc); }
+:cfc2 RT, "LB3" is $(AMODE) & prime=0x12 & copop=2 & rd=20 & RT { tmp:4 = gte_get_LB3(); RT = sext(tmp); }
+:ctc2 RTsrc, "RFC" is $(AMODE) & prime=0x12 & copop=6 & rd=21 & RTsrc { gte_set_RFC(RTsrc); }
+:cfc2 RT, "RFC" is $(AMODE) & prime=0x12 & copop=2 & rd=21 & RT { tmp:4 = gte_get_RFC(); RT = sext(tmp); }
+:ctc2 RTsrc, "GFC" is $(AMODE) & prime=0x12 & copop=6 & rd=22 & RTsrc { gte_set_GFC(RTsrc); }
+:cfc2 RT, "GFC" is $(AMODE) & prime=0x12 & copop=2 & rd=22 & RT { tmp:4 = gte_get_GFC(); RT = sext(tmp); }
+:ctc2 RTsrc, "BFC" is $(AMODE) & prime=0x12 & copop=6 & rd=23 & RTsrc { gte_set_BFC(RTsrc); }
+:cfc2 RT, "BFC" is $(AMODE) & prime=0x12 & copop=2 & rd=23 & RT { tmp:4 = gte_get_BFC(); RT = sext(tmp); }
+:ctc2 RTsrc, "OFX" is $(AMODE) & prime=0x12 & copop=6 & rd=24 & RTsrc { gte_set_OFX(RTsrc); }
+:cfc2 RT, "OFX" is $(AMODE) & prime=0x12 & copop=2 & rd=24 & RT { tmp:4 = gte_get_OFX(); RT = sext(tmp); }
+:ctc2 RTsrc, "OFY" is $(AMODE) & prime=0x12 & copop=6 & rd=25 & RTsrc { gte_set_OFY(RTsrc); }
+:cfc2 RT, "OFY" is $(AMODE) & prime=0x12 & copop=2 & rd=25 & RT { tmp:4 = gte_get_OFY(); RT = sext(tmp); }
+:ctc2 RTsrc, "H" is $(AMODE) & prime=0x12 & copop=6 & rd=26 & RTsrc { gte_set_H(RTsrc); }
+:cfc2 RT, "H" is $(AMODE) & prime=0x12 & copop=2 & rd=26 & RT { tmp:4 = gte_get_H(); RT = sext(tmp); }
+:ctc2 RTsrc, "DQA" is $(AMODE) & prime=0x12 & copop=6 & rd=27 & RTsrc { gte_set_DQA(RTsrc); }
+:cfc2 RT, "DQA" is $(AMODE) & prime=0x12 & copop=2 & rd=27 & RT { tmp:4 = gte_get_DQA(); RT = sext(tmp); }
+:ctc2 RTsrc, "DQB" is $(AMODE) & prime=0x12 & copop=6 & rd=28 & RTsrc { gte_set_DQB(RTsrc); }
+:cfc2 RT, "DQB" is $(AMODE) & prime=0x12 & copop=2 & rd=28 & RT { tmp:4 = gte_get_DQB(); RT = sext(tmp); }
+:ctc2 RTsrc, "ZSF3" is $(AMODE) & prime=0x12 & copop=6 & rd=29 & RTsrc { gte_set_ZSF3(RTsrc); }
+:cfc2 RT, "ZSF3" is $(AMODE) & prime=0x12 & copop=2 & rd=29 & RT { tmp:4 = gte_get_ZSF3(); RT = sext(tmp); }
+:ctc2 RTsrc, "ZSF4" is $(AMODE) & prime=0x12 & copop=6 & rd=30 & RTsrc { gte_set_ZSF4(RTsrc); }
+:cfc2 RT, "ZSF4" is $(AMODE) & prime=0x12 & copop=2 & rd=30 & RT { tmp:4 = gte_get_ZSF4(); RT = sext(tmp); }
+:ctc2 RTsrc, "FLAG" is $(AMODE) & prime=0x12 & copop=6 & rd=31 & RTsrc { gte_set_FLAG(RTsrc); }
+:cfc2 RT, "FLAG" is $(AMODE) & prime=0x12 & copop=2 & rd=31 & RT { tmp:4 = gte_get_FLAG(); RT = sext(tmp); }
+:rtps sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=1 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_RTPS(sf:1, lm:1); }
+:nclip is $(AMODE) & prime=0x12 & bit25=1 & fct=6 & cofun { gte_NCLIP(); }
+:op sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=12 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_OP(sf:1, lm:1); }
+:dpcs sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=16 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_DPCS(sf:1, lm:1); }
+:intpl sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=17 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_INTPL(sf:1, lm:1); }
+:mvmva sf, mx, v, cv, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=18 & cofun [ sf = (cofun >> 19) & 1; mx = (cofun >> 17) & 3; v = (cofun >> 15) & 3; cv = (cofun >> 13) & 3; lm = (cofun >> 10) & 1; ] { gte_MVMVA(sf:1, mx:1, v:1, cv:1, lm:1); }
+:ncds sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=19 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_NCDS(sf:1, lm:1); }
+:cdp sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=20 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_CDP(sf:1, lm:1); }
+:ncdt sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=22 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_NCDT(sf:1, lm:1); }
+:nccs sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=27 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_NCCS(sf:1, lm:1); }
+:cc sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=28 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_CC(sf:1, lm:1); }
+:ncs sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=30 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_NCS(sf:1, lm:1); }
+:nct sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=32 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_NCT(sf:1, lm:1); }
+:sqr sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=40 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_SQR(sf:1, lm:1); }
+:dcpl sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=41 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_DCPL(sf:1, lm:1); }
+:dpct sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=42 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_DPCT(sf:1, lm:1); }
+:avsz3 is $(AMODE) & prime=0x12 & bit25=1 & fct=45 & cofun { gte_AVSZ3(); }
+:avsz4 is $(AMODE) & prime=0x12 & bit25=1 & fct=46 & cofun { gte_AVSZ4(); }
+:rtpt sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=48 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_RTPT(sf:1, lm:1); }
+:gpf sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=61 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_GPF(sf:1, lm:1); }
+:gpl sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=62 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_GPL(sf:1, lm:1); }
+:ncct sf, lm is $(AMODE) & prime=0x12 & bit25=1 & fct=63 & cofun [ sf = (cofun >> 19) & 1; lm = (cofun >> 10) & 1; ] { gte_NCCT(sf:1, lm:1); }
+:break "7" is $(AMODE) & prime=0 & fct=0xD & breakcode=0x1C00 { }
+:break "6" is $(AMODE) & prime=0 & fct=0xD & breakcode=0x1800 { }

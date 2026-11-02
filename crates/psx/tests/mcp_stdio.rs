@@ -1589,6 +1589,11 @@ fn ghidra_mcp_cancellation_stops_worker() {
         let launcher = install.join("support/analyzeHeadless");
         std::fs::write(&launcher, "#!/bin/sh\nsleep 60 &\necho $! > \"$(dirname \"$0\")/child.pid\"\nwait\n").unwrap();
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // psx builds its language with the installation's sleigh from its MIPS sources.
+        std::fs::create_dir_all(install.join("Ghidra/Processors/MIPS/data/languages")).unwrap();
+        let sleigh = install.join("support/sleigh");
+        std::fs::write(&sleigh, "#!/bin/sh\necho sla > \"$2\"\n").unwrap();
+        std::fs::set_permissions(&sleigh, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::write(root.join("probe.ps-exe"), ghidra_probe()).unwrap();
         let mut rpc = Rpc::start(&root);
         let id = rpc.next_id;

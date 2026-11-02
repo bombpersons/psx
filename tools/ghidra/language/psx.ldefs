@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<language_definitions>
+  <language processor="MIPS" endian="little" size="32" variant="psx" version="1.0" slafile="psx.sla"
+            processorspec="mips32.pspec" id="MIPS:LE:32:psx">
+    <description>PlayStation R3000A with the GTE</description>
+    <compiler name="default" spec="mips32le.cspec" id="default"/>
+  </language>
+</language_definitions>

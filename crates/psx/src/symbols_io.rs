@@ -228,6 +228,23 @@ pub(crate) fn symbols_cmd(
         *libs.entry(lib).or_default() += 1;
     }
     let matched: u64 = report.objects.iter().map(|o| o.size as u64).sum();
+    let build = psx_symbols::build::detect(exe.payload(&bytes), exe.text_addr, exe.pc);
+    // Only inside matched library objects is a word known to be code; there,
+    // name the function holding it.
+    let mut hand_written = std::collections::BTreeSet::new();
+    for &a in &build.hand_written {
+        let Some(o) = report.objects.iter().find(|o| o.address <= a && a < o.address + o.size) else { continue };
+        let function = report
+            .symbols
+            .iter()
+            .filter(|s| s.kind == psx_symbols::Kind::Function && o.address <= s.address && s.address <= a)
+            .max_by_key(|s| s.address);
+        let lib = o.source.split('/').skip(1).collect::<Vec<_>>().join("/");
+        hand_written.insert(match function {
+            Some(f) => format!("{} ({lib})", f.name),
+            None => lib,
+        });
+    }
     Ok(json!({
         "exe": source,
         "text": {"addr": format!("0x{:08X}", exe.text_addr), "bytes": exe.text_size},
@@ -240,7 +257,19 @@ pub(crate) fn symbols_cmd(
         "code_covered_bytes": matched,
         "code_covered_pct": (matched as f64 * 1000.0 / exe.text_size.max(1) as f64).round() / 10.0,
         "ambiguous": report.ambiguous.len(),
+        "build": {
+            "gp": build.gp.map(psx_media::memmap::hex),
+            "gp_accesses": build.gp_accesses,
+            "divisions": build.divisions,
+            "zero_checks": build.zero_checks,
+            "overflow_checks": build.overflow_checks,
+            "frames": build.frames,
+            "frame_pointers": build.frame_pointers,
+            "load_nops_pct": build.load_nops_pct,
+            "hand_written": hand_written,
+        },
         "interpretation": {
+            "build":"Read from the code: gp is set by the startup code when small data is addressed from it (GCC's -G); zero_checks and overflow_checks are GCC's division checks (break 7 and 6), which psx's decompile folds; load_nops_pct near 50 means the code was not scheduled; hand_written names the library functions that write gp, k0 or k1 outside the startup code, which compiled C never does (game code is not checked: its words cannot be told from data here). Counts cover every word, data included.",
             "scope":"PsyQ library signatures, not a catalogue of game-specific functions; low coverage alone is not a failure.",
             "chosen_version":"Best-scoring installed signature set, not proof of a game's exact SDK version.",
             "ambiguous":"Signatures with multiple matches are skipped, never arbitrarily selected.",
