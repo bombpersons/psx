@@ -348,6 +348,7 @@ fn record(
     while m.bus.frames < target {
         if m.bus.frames != last_frame {
             last_frame = m.bus.frames;
+            crate::live::field(m);
             if out.initial.is_some() && start.is_none() {
                 start = Some(m.bus.frames);
                 // Following ticks, the game may fall behind: room for it.

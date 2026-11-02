@@ -319,6 +319,14 @@ fn route(req: &Request, st: &State) -> Reply {
         "file" => project_file(root, q("path")),
         _ => {
             let id = what.strip_prefix("call/").unwrap_or("");
+            // The screen of the game a running call runs (crate::live).
+            let (id, live) = id.strip_suffix("/live").map_or((id, false), |id| (id, true));
+            if !id.is_empty() && id.bytes().all(|c| c.is_ascii_digit() || c == b'-') && live {
+                return match std::fs::read(root.join(crate::calls::RESULTS).join(format!("{id}.live.png"))) {
+                    Ok(b) => Reply::Bytes("image/png", b),
+                    Err(_) => Reply::Missing(format!("{id}: no game running")),
+                };
+            }
             if !id.is_empty() && id.bytes().all(|c| c.is_ascii_digit() || c == b'-') {
                 return match std::fs::read(root.join(crate::calls::RESULTS).join(format!("{id}.json"))) {
                     Ok(b) => Reply::Bytes("application/json", b),

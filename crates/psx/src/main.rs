@@ -24,6 +24,7 @@ mod error;
 mod ghidra;
 mod guide;
 mod handoff;
+mod live;
 mod inventory;
 mod mcp;
 mod media_cmd;
@@ -338,6 +339,12 @@ fn main() -> ExitCode {
     let call = logged
         .then(|| calls::start(&ctx.root, &tool, serde_json::json!(std::env::args().skip(1).collect::<Vec<_>>()), calls::caller("cli", None)))
         .flatten();
+    // The screen of a game this call runs, for psx web (a worker's from its MCP server).
+    let _live = call
+        .as_ref()
+        .map(|c| c.live_path())
+        .or_else(|| std::env::var_os(live::ENV).map(Into::into))
+        .map(live::publish);
     let out = match cli.command {
         Command::McpCall => mcp::project::worker(&ctx),
         Command::HandoffChild { run_dir } => handoff::child(&ctx, &run_dir),
@@ -381,7 +388,7 @@ fn main() -> ExitCode {
         if let Some(m) = messages::deliver(&ctx.root) {
             if out.text {
                 let mut t = out.value["text"].as_str().unwrap_or_default().trim_end().to_string();
-                t.push_str("\n\nFrom the person (in psx web; not an interruption, answer with psx message --text ... --reply-to ID):");
+                t.push_str("\n\nFrom the person (in psx web; reply now in a line or two with psx message --text ... --reply-to ID, then go on):");
                 for x in m["from_person"].as_array().into_iter().flatten() {
                     t.push_str(&format!("\n  [{}] {}", x["id"].as_str().unwrap_or(""), x["text"].as_str().unwrap_or("")));
                 }

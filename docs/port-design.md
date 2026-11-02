@@ -337,8 +337,8 @@ that failed for that.
 
 Messages (`.psx/messages.jsonl`) never interrupt the agent: what the
 person writes reaches it in the result of its next psx call, CLI or MCP,
-under `messages`, and it answers with `psx message` (`--reply-to` for a
-thread) when it has something to say. `psx message --wait` (CLI only)
+under `messages`, and it answers at once with `psx message` (`--reply-to`
+for a thread), a line or two, before going on with its work. `psx message --wait` (CLI only)
 blocks until the person writes and prints it, so an agent with nothing
 else to do can run it in the background and be woken by the answer. `.psx/messages.seen.json` keeps how
 far each side has read, for the page's unread count and its seen marks.

@@ -329,6 +329,7 @@ async function start() {
   render();
   listen();
   setInterval(tabs, 60000);
+  setInterval(liveScreens, 250);
 }
 function initTheme() {
   const sel = $("#theme");
@@ -1166,8 +1167,22 @@ function keepPlace() {
 }
 function placeholder(el) {
   const x = el._x;
-  el.lastElementChild.innerHTML = x.ended == null ? `<div class="quiet">running…</div>`
+  el.lastElementChild.innerHTML = x.ended == null ? `<div class="quiet">running…</div>${LIVE_TOOLS.has(x.tool) ? `<figure class="shot live" hidden><img alt="" data-live="${S.cur}/${esc(x.id)}"><figcaption>the game as it runs</figcaption></figure>` : ""}`
     : x.exit && !x.kept ? errorBody({code: x.error, message: x.summary}) : `<div class="quiet">${esc(unroot(x.summary || ""))}</div>`;
+}
+// Calls that run the game show its screen while they run (psx writes
+// .psx/calls/<id>.live.png a few times a second).
+const LIVE_TOOLS = new Set(["run", "scenario_record", "scenario_check", "port_check", "states_save", "states_rebuild"]);
+function liveScreens() {
+  for (const img of document.querySelectorAll("img[data-live]")) {
+    if (img._loading || !img.isConnected) continue;
+    const [p, id] = img.dataset.live.split("/");
+    const next = new Image();
+    img._loading = true;
+    next.onload = () => { img._loading = false; img.src = next.src; img.parentElement.hidden = false; };
+    next.onerror = () => { img._loading = false; };
+    next.src = `/api/p/${p}/call/${encodeURIComponent(id)}/live?t=${Date.now()}`;
+  }
 }
 let seer = null;
 function observe(el) {

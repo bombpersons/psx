@@ -144,7 +144,7 @@ pub fn deliver(root: &Path) -> Option<Value> {
     mark_seen(root, "agent", msgs.len());
     (!new.is_empty()).then(|| {
         json!({"from_person": new,
-            "note": "From the person, who reads what you send in psx web. Not an interruption: finish what you are doing unless it changes that work. Answer with message (text, reply_to: its id; psx message --text ... --reply-to ID) when you have something to say."})
+            "note": "From the person, who reads what you send in psx web. Reply now, before your next step: a line or two with message (text, reply_to: its id; psx message --text ... --reply-to ID) that answers, or says what you will do and when. Then go on with your work, changed only if what they wrote changes it."})
     })
 }
 

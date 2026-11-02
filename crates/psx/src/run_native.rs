@@ -163,6 +163,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         if rel != last_rel {
             // A frame boundary (vblank), or the run start: observe first, then intervene.
             last_rel = rel;
+            crate::live::field(&m);
             if !until.is_empty() && until.iter().all(|u| u.holds(&m.bus.ram, &m.bus.scratch)) {
                 // Met: this boundary is the run's last (below).
                 met = Some((rel, m.bus.frames));

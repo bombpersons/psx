@@ -487,6 +487,7 @@ impl PsxServer {
         let worker_cancel = cancel.child_token();
         let client = peer.peer_info().map(|i| format!("{} {}", i.client_info.name, i.client_info.version));
         let log = crate::calls::start(&root, name, Value::Object(args.clone()), crate::calls::caller("mcp", client));
+        let live = log.as_ref().map(|l| l.live_path());
         let inbox = root.clone();
         let respond = move |mut value: Value, shot: Option<Option<Vec<u8>>>| {
             // The person's messages ride on whatever the agent called.
@@ -531,6 +532,7 @@ impl PsxServer {
                 .any(|key| args.get(*key).is_some_and(Value::is_string));
         let mut worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            let _live = live.map(crate::live::publish);
             let mut out = if isolated {
                 project::call(tool_name, args, &ctx).unwrap_or_else(|e| Error::new("worker_failed", e).to_value())
             } else {

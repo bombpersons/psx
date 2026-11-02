@@ -125,8 +125,9 @@ route_snapshots for ram_search. Analog games want pad dualshock.
 ## Messages
 
 The person can write from psx web at any time. What they wrote arrives
-with the result of a later psx call, under messages; it is not an
-interruption. message sends them text (reply_to answers in a thread), and
+with the result of a later psx call, under messages. Reply at once, in a
+line or two, then go on with the work: they are waiting on the page.
+message sends them text (reply_to answers in a thread), and
 without text lists the latest threads. From a shell, psx message --wait
 blocks until they write (at most an hour; after --text, until they
 answer) and prints what they wrote: run in the background, it ends when

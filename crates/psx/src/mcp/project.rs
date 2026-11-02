@@ -108,10 +108,14 @@ pub(super) fn call(tool: &str, args: Value, ctx: &Ctx) -> Result<Value, String> 
     command
         .env_remove("PSX_ROOT")
         .current_dir(&ctx.root)
+        .env_remove(crate::live::ENV)
         .arg("__mcp-call")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some(p) = crate::live::current() {
+        command.env(crate::live::ENV, p);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

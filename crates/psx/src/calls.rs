@@ -106,6 +106,11 @@ pub fn start(root: &Path, tool: &str, args: Value, caller: Value) -> Option<Call
 }
 
 impl Call {
+    /// Where the screen of a game this call runs goes ([`crate::live`]).
+    pub fn live_path(&self) -> PathBuf {
+        self.root.join(RESULTS).join(format!("{}.live.png", self.id))
+    }
+
     /// Log the end: exit code, duration, size, a one-line summary and the
     /// result kept beside the log.
     pub fn end(self, value: &Value, exit: u8) {
