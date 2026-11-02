@@ -1260,6 +1260,7 @@ fn mcp_tools_match_cli() {
         "bios_install",
         "guide",
         "message",
+        "report",
         "read",
         "disc_info",
         "disc_ls",

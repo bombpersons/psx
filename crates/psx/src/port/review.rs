@@ -148,9 +148,132 @@ pub fn read(root: &Path) -> Review {
     Review::Holds { commit: f.commit, findings: all.len() }
 }
 
+/// A finding as `psx web` shows it: heading, text and answer (Markdown).
+fn finding_texts(body: &str) -> Vec<serde_json::Value> {
+    let mut out: Vec<(String, String, Option<String>)> = Vec::new();
+    for line in body.lines() {
+        if let Some(h) = line.strip_prefix("## ") {
+            out.push((h.trim().to_string(), String::new(), None));
+        } else if let Some(last) = out.last_mut() {
+            match (&mut last.2, line.trim_start().strip_prefix("**Answer:**")) {
+                (None, Some(a)) => last.2 = Some(a.trim().to_string()),
+                (Some(a), _) => {
+                    a.push('\n');
+                    a.push_str(line);
+                }
+                (None, None) => {
+                    last.1.push_str(line);
+                    last.1.push('\n');
+                }
+            }
+        }
+    }
+    out.into_iter()
+        .map(|(h, t, a)| {
+            let a = a.map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
+            serde_json::json!({"heading": h, "text": t.trim(), "answer": a})
+        })
+        .collect()
+}
+
+/// Every review round in the history, for `psx web`: the review as it stood
+/// at each commit that changed `review.md` (and uncommitted), grouped by
+/// the commit it reviewed, newest last. A finding a round adds is `new`.
+pub fn rounds(root: &Path) -> serde_json::Value {
+    use serde_json::json;
+    let text = |o: Option<std::process::Output>| {
+        o.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    let log = text(git(root, &["log", "--reverse", "--format=%H%x1f%ct%x1f%s", "--", REVIEW])).unwrap_or_default();
+    let mut versions: Vec<(Option<String>, u64, String, String)> = log
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split('\x1f');
+            let (h, t, s) = (f.next()?, f.next()?, f.next().unwrap_or(""));
+            let body = text(git(root, &["show", &format!("{h}:{REVIEW}")]))?;
+            Some((Some(h.to_string()), t.parse::<u64>().ok()? * 1000, s.to_string(), body))
+        })
+        .collect();
+    if let Ok(now) = std::fs::read_to_string(root.join(REVIEW)) {
+        if versions.last().is_none_or(|v| v.3 != now) {
+            let t = std::fs::metadata(root.join(REVIEW))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_millis() as u64);
+            versions.push((None, t, "uncommitted".into(), now));
+        }
+    }
+    let mut rounds: Vec<serde_json::Value> = Vec::new();
+    for (commit, t, subject, body) in versions {
+        let Ok((front, body)) = split_front(&body) else { continue };
+        let Ok(f) = toml::from_str::<Front>(&front) else { continue };
+        let findings = finding_texts(&body);
+        let version = json!({"commit": commit, "t": t, "subject": subject});
+        match rounds.last_mut().filter(|r| r["reviewed"] == json!(f.commit)) {
+            // The same round, answered further.
+            Some(r) => {
+                r["findings"] = json!(findings);
+                r["versions"].as_array_mut().unwrap().push(version);
+            }
+            None => rounds.push(json!({"reviewed": f.commit, "features": f.features, "finished": f.finished,
+                "findings": findings, "versions": [version]})),
+        }
+    }
+    // What each round added to the one before.
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    for r in &mut rounds {
+        for f in r["findings"].as_array_mut().unwrap() {
+            let h = f["heading"].as_str().unwrap_or("").to_string();
+            f["new"] = json!(seen.insert(h));
+        }
+    }
+    let status = read(root);
+    let mut s = json!({"state": status.name()});
+    match &status {
+        Review::Invalid(why) => s["why"] = json!(why),
+        Review::Stale { commit, changed, lines } => {
+            s["commit"] = json!(commit);
+            s["changed"] = json!(changed.len());
+            s["lines"] = json!(lines);
+        }
+        Review::Open { unanswered } => s["unanswered"] = json!(unanswered),
+        Review::Holds { commit, findings } => {
+            s["commit"] = json!(commit);
+            s["findings"] = json!(findings);
+        }
+        Review::Missing => {}
+    }
+    json!({"status": s, "rounds": rounds})
+}
+
+/// The code's changes from `from` to `to` (the commits two rounds
+/// reviewed), as `git diff` prints them, or None for a commit that is not
+/// one or a diff too large to show.
+pub fn diff(root: &Path, from: &str, to: &str) -> Option<String> {
+    let ok = |c: &str| c.len() >= 7 && c.len() <= 40 && c.bytes().all(|b| b.is_ascii_hexdigit());
+    if !ok(from) || !ok(to) {
+        return None;
+    }
+    let mut args = vec!["diff", "--stat=120", "--patch", from, to, "--"];
+    args.extend(CODE);
+    let out = git(root, &args).filter(|o| o.status.success())?;
+    (out.stdout.len() <= 2 << 20).then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finding_texts_keep_the_text_and_answer() {
+        let body = "## Stomp is a bool\n`stomping` is...\n\n**Answer:** fixed in 7c01d2e\nand tested\n## One system\ntext\n**Answer:**\n";
+        let f = finding_texts(body);
+        assert_eq!(f[0]["heading"], "Stomp is a bool");
+        assert_eq!(f[0]["text"], "`stomping` is...");
+        assert_eq!(f[0]["answer"], "fixed in 7c01d2e\nand tested");
+        assert_eq!(f[1]["answer"], serde_json::Value::Null);
+    }
 
     #[test]
     fn findings_need_an_answer_each() {

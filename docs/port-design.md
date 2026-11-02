@@ -332,7 +332,15 @@ check`, the port's values where they differ and its first failure
 marked. On request the port draws the same recording beside it (the
 game's `--replay`, built with cargo in the project; frames kept in
 `.psx/port-frames/` for the code that drew them), on the same ticks:
-its own screen, laid over the original's, or where the two differ. The template's report keeps the port's values for a recording
+its own screen, laid over the original's, or where the two differ.
+The Reviews tab reads `review.md`'s history from git: each round (the
+commit it reviewed), its findings with their answers, those it added,
+and the diff a follow-up read; and the reviewers' reports, which the
+review brief asks for (`psx report`): a few paragraphs for the person
+alone on how the port looks as a game in the making and what worries
+the reviewer. psx keeps them outside the project
+(`reports/<key>/` in its data directory) and never returns them in a
+result, so the writer's work is not shaped by them. The template's report keeps the port's values for a recording
 that failed for that.
 
 Messages (`.psx/messages.jsonl`) never interrupt the agent: what the

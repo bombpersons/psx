@@ -156,7 +156,8 @@ call the agents make (each drawn as a card: screens, plots, code, the next item)
 the agent that reaches it with its next call without interrupting it, the agent's requests to
 play a part of the game (played in the page or a window, or declined with a note), and each
 recording replayed frame by frame with its values plotted beside the port's, and the port
-playing the same recording beside it. `psx play` answers
+playing the same recording beside it. Its Reviews tab has every review round, each finding
+with its answer and the changes it read, and the reviewers' reports written for you alone. `psx play` answers
 the same requests from a terminal.
 
 ## Honest limits

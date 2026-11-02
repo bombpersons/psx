@@ -223,7 +223,8 @@ port_next's items, in this order:
   findings without an answer. It asks whether one would write
   a new game like this, not whether it matches the original. how is the
   brief for someone who did not write it (a sub-agent or a fresh session):
-  the whole code first, then follow-ups of the changes since (git diff).
+  the whole code first, then follow-ups of the changes since (git diff);
+  the reviewer also files a report for the person alone (report).
   review.md: TOML front matter (commit, features finished) between +++
   lines, then one ## heading per finding, each answered with an
   **Answer:** line: done, with port_check passing again, or kept and why.

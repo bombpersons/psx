@@ -316,6 +316,15 @@ fn route(req: &Request, st: &State) -> Reply {
         "port_replay" => Reply::Json(port_replay(st, root, q("scenario"), q("name"), q("start") == "1")),
         "port_frame" => port_frame(root, q("key"), q("tick")),
         "messages" => Reply::Json(messages(root)),
+        "reviews" => {
+            let mut v = crate::port::review::rounds(root);
+            v["reports"] = json!(crate::reports::all(root));
+            Reply::Json(v)
+        }
+        "review_diff" => match crate::port::review::diff(root, q("from"), q("to")) {
+            Some(d) => Reply::Bytes("text/plain; charset=utf-8", d.into_bytes()),
+            None => Reply::Missing("no diff between those commits (or too large to show)".into()),
+        },
         "file" => project_file(root, q("path")),
         _ => {
             let id = what.strip_prefix("call/").unwrap_or("");

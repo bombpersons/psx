@@ -38,6 +38,7 @@ mod port;
 mod provenance;
 mod ram;
 mod replay;
+mod reports;
 mod run;
 mod run_native;
 mod scenario;
@@ -88,6 +89,8 @@ enum Command {
     /// Messages with the person, who reads and writes them in psx web: send one
     /// (a new thread, or a reply), or read the latest threads.
     Message(messages::MessageArgs),
+    /// A reviewer's report for the person alone, shown in psx web.
+    Report(reports::ReportArgs),
     /// Inspect artifacts: directory inventory, paginated JSON/logs/CSV, text, hex or PNG.
     Read(artifact::ReadArgs),
     /// A disc image: its tracks and boot executable, files, sectors and executables.
@@ -351,6 +354,7 @@ fn main() -> ExitCode {
         Command::WebReplay { id, name, dir } => web::replay_child(&ctx, &id, &name, &dir),
         Command::Guide(a) => a.exec(&ctx),
         Command::Message(a) => a.exec(&ctx),
+        Command::Report(a) => a.exec(&ctx),
         Command::Context(a) => a.exec(&ctx),
         Command::Read(a) => a.exec(&ctx),
         Command::Bios { action } => action.exec(&ctx),

@@ -203,6 +203,20 @@ body.logv main { padding-bottom: 0; }
 .call.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
 .recent .t { color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .recent .x { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12px; }
+/* reviews */
+.revgrid { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 1150px) { .revgrid { grid-template-columns: 1fr; } .revgrid .rounds { max-height: 240px; overflow: auto; } }
+.rounds .rd { padding: 7px 9px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+.rounds .rd:hover { background: var(--chip); } .rounds .rd.on { background: var(--sel); border-color: var(--line); }
+.rounds .rd .s { color: var(--dim); font-size: 12px; }
+.finding { border-left: 3px solid var(--line); padding: 2px 0 2px 12px; margin: 14px 0; }
+.finding.open { border-left-color: var(--act); } .finding.new { border-left-color: var(--accent); }
+.finding h3 { font-size: 14px; margin: 0 0 4px; }
+.finding .ans { background: var(--bg); border-radius: 6px; padding: 6px 10px; margin-top: 6px; }
+.finding .ans b { color: var(--ok); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.diff .a { color: var(--ok); } .diff .r { color: var(--act); } .diff .h { color: var(--accent); }
+.report { border-left: 3px solid var(--violet); padding-left: 12px; }
+
 /* recordings */
 .recs { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 12px; align-items: start; }
 @media (max-width: 900px) { .recs { grid-template-columns: minmax(0, 1fr); } }
@@ -316,7 +330,7 @@ async function start() {
   // A link: #/PROJECT/VIEW, or #/PROJECT/recordings/SCENARIO/NAME/TICK.
   const [i, view, scenario, name, tick] = location.hash.slice(2).split("/").map(decodeURIComponent);
   if (i === "requests") S.view = "requests";
-  else if (+i < S.projects.length && ["overview", "log", "calls", "recordings"].includes(view)) {
+  else if (+i < S.projects.length && ["overview", "log", "calls", "recordings", "reviews"].includes(view)) {
     S.cur = +i; S.view = view === "calls" ? "log" : view;
     if (view === "recordings" && name) { S.rec = {scenario, name}; S.tick = +tick || 0; }
   }
@@ -406,7 +420,7 @@ function render(refresh) {
   const m = $("#main");
   if (S.view !== "requests" && S.player) stopPlayer();
   if (S.view === "requests") { chatView(); m.innerHTML = `<div id="view"></div>`; S.player ? playerView() : requestsView(); return; }
-  const views = [["overview", "Overview"], ["log", "Log"], ["recordings", "Recordings"]];
+  const views = [["overview", "Overview"], ["log", "Log"], ["recordings", "Recordings"], ["reviews", "Reviews"]];
   if (!refresh || !$("nav.sub", m)) {
     m.innerHTML = `<nav class="sub">${views.map(([k, l]) => `<button class="tab ${k === S.view ? "on" : ""}" data-v="${k}">${l}</button>`).join("")}</nav><div id="view"></div>`;
     for (const b of m.querySelectorAll("nav.sub .tab")) b.onclick = () => { S.view = b.dataset.v; save(); render(); };
@@ -416,6 +430,7 @@ function render(refresh) {
   document.body.classList.toggle("logv", S.view === "log");
   if (S.view === "overview") overview();
   else if (S.view === "log") logView();
+  else if (S.view === "reviews") reviewsView(refresh);
   else recordingsView(refresh);
 }
 
@@ -1624,6 +1639,86 @@ async function sendInput(P) {
   P.busy = false;
   if (P.dirty) { P.dirty = false; sendInput(P); }
   playerLine(P);
+}
+
+
+// ------------------------------------------------------------ reviews
+// review.md's rounds from git (each the commit it reviewed, its findings
+// and their answers) and the reviewers' reports for the person.
+async function reviewsView(refresh) {
+  const i = S.cur;
+  if (!S.revs || S.revs.i !== i || (refresh && Date.now() - S.revs.at > 20000)) {
+    if (!S.revs || S.revs.i !== i) $("#view").innerHTML = `<div class="quiet">Loading…</div>`;
+    let r;
+    try { r = await api(`/api/p/${i}/reviews`); } catch (e) { $("#view").innerHTML = `<div class="card">${esc(e.message || e)}</div>`; return; }
+    if (i !== S.cur || S.view !== "reviews") return;
+    const same = S.revs && S.revs.i === i && JSON.stringify(S.revs.data) === JSON.stringify(r);
+    const pick = S.revs && S.revs.i === i ? S.revs.pick : null;
+    S.revs = {i, at: Date.now(), data: r, pick, diff: same ? S.revs.diff : null};
+    if (same && refresh) return;
+  }
+  drawReviews();
+}
+function reviewState(st) {
+  const why = {
+    missing: "No review yet.",
+    invalid: "review.md cannot be read: " + (st.why || ""),
+    stale: `The code changed since the review of ${(st.commit || "").slice(0, 7)}: ${num(st.changed)} files, ${num(st.lines)} lines in commits since. A follow-up is due once port next asks.`,
+    open: `${(st.unanswered || []).length} findings wait for the writer's answer.`,
+    holds: `It holds: ${num(st.findings)} findings, each answered, and the code unchanged since ${(st.commit || "").slice(0, 7)}.`,
+  }[st.state] || st.state;
+  return lead(`${pill(st.state, st.state === "holds" ? "ok" : st.state === "open" || st.state === "invalid" ? "bad" : "warn")} ${esc(why)}`);
+}
+function drawReviews() {
+  const {data: d} = S.revs;
+  const rounds = d.rounds || [], reports = d.reports || [];
+  // Newest first: rounds and reports by time.
+  const items = [
+    ...rounds.map((r, k) => ({kind: "round", k, t: r.versions.at(-1).t})),
+    ...reports.map((r, k) => ({kind: "report", k, t: r.t})),
+  ].sort((a, b) => b.t - a.t);
+  if (!S.revs.pick || !items.some(x => x.kind === S.revs.pick.kind && x.k === S.revs.pick.k)) S.revs.pick = items[0] ? {kind: items[0].kind, k: items[0].k} : null;
+  const pick = S.revs.pick;
+  const list = items.map(x => {
+    const on = pick && pick.kind === x.kind && pick.k === x.k ? "on" : "";
+    if (x.kind === "report") {
+      const r = reports[x.k];
+      return `<div class="rd ${on}" data-kind="report" data-k="${x.k}"><span class="badge" style="background:var(--violet);color:#fff">report</span> for you<div class="s">${fmtDate(r.t)}${r.commit ? " · at " + esc(r.commit.slice(0, 7)) : ""}</div></div>`;
+    }
+    const r = rounds[x.k], fresh = r.findings.filter(f => f.new).length, open = r.findings.filter(f => !f.answer).length;
+    return `<div class="rd ${on}" data-kind="round" data-k="${x.k}"><b>${x.k ? "Follow-up" : "Review"} ${x.k + 1}</b> of ${esc(r.reviewed.slice(0, 7))}
+      <div class="s">${fmtDate(r.versions[0].t)} · ${r.findings.length} findings${x.k ? `, ${fresh} new` : ""}${open ? ` · <span style="color:var(--act)">${open} unanswered</span>` : ""}</div></div>`;
+  }).join("") || `<div class="quiet">No review in the history yet.</div>`;
+  let body = "";
+  if (pick?.kind === "report") {
+    const r = reports[pick.k];
+    body = `<div class="card"><h2>Report for you · ${fmtDate(r.t)}</h2><div class="quiet" style="margin-bottom:8px">Written by the reviewer for you alone${r.commit ? `, with the code at ${esc(r.commit.slice(0, 7))}` : ""}. psx never shows it to the agent.</div><div class="md report">${md(r.text)}</div></div>`;
+  } else if (pick) {
+    const r = rounds[pick.k], prev = rounds[pick.k - 1];
+    const only = S.revs.onlyNew && pick.k > 0;
+    const fs = r.findings.filter(f => !only || f.new);
+    const vs = r.versions.map(v => v.commit ? `<span title="${esc(v.subject)}">${esc(v.commit.slice(0, 7))} ${esc(v.subject.length > 70 ? v.subject.slice(0, 70) + "…" : v.subject)}</span>` : "uncommitted").join("<br>");
+    body = `<div class="card"><h2>${pick.k ? "Follow-up" : "Review"} ${pick.k + 1} · of ${esc(r.reviewed.slice(0, 7))}</h2>
+      ${kv([["features matching", r.features.length ? r.features.map(esc).join(", ") : null], ["finished", r.finished.length ? r.finished.map(esc).join(", ") : null], ["review.md in", vs],
+        ["reads", prev ? `the changes since ${esc(prev.reviewed.slice(0, 7))} <button class="b" data-act="rev-diff">${S.revs.diff ? "hide" : "show"} the diff</button>` : "the code as a whole"]])}
+      ${S.revs.diff ? `<div class="code diff" style="max-height:520px;margin-top:8px">${S.revs.diff}</div>` : ""}
+      ${pick.k ? `<label class="quiet" style="display:block;margin-top:8px"><input type="checkbox" id="rev-new" ${only ? "checked" : ""}> only the findings this round added</label>` : ""}
+      ${fs.map(f => `<div class="finding ${f.answer ? "" : "open"} ${f.new && pick.k ? "new" : ""}"><h3 class="md">${esc(f.heading).replace(/`([^`]+)`/g, "<code>$1</code>")} ${f.new && pick.k ? `<span class="badge">new</span>` : ""}</h3>
+        <div class="md">${md(f.text)}</div>
+        ${f.answer ? `<div class="ans"><b>Answer</b><div class="md">${md(f.answer)}</div></div>` : pill("no answer yet", "bad")}</div>`).join("")}</div>`;
+  }
+  $("#view").innerHTML = `<div class="card">${reviewState(d.status)}</div><div class="revgrid"><div class="card rounds"><h2>Rounds and reports</h2>${list}</div><div>${body}</div></div>`;
+  for (const el of $("#view").querySelectorAll(".rd")) el.onclick = () => { S.revs.pick = {kind: el.dataset.kind, k: +el.dataset.k}; S.revs.diff = null; drawReviews(); };
+  const cb = $("#rev-new"); if (cb) cb.onchange = () => { S.revs.onlyNew = cb.checked; drawReviews(); };
+  const db = $("#view").querySelector("[data-act=rev-diff]");
+  if (db) db.onclick = async () => {
+    if (S.revs.diff) { S.revs.diff = null; drawReviews(); return; }
+    const r = rounds[pick.k], prev = rounds[pick.k - 1];
+    const res = await fetch(`/api/p/${S.cur}/review_diff?from=${prev.reviewed}&to=${r.reviewed}`);
+    const t = await res.text();
+    S.revs.diff = res.ok ? t.split("\n").map(l => { const c = /^(\+\+\+|---|diff |index )/.test(l) ? "h" : l[0] === "+" ? "a" : l[0] === "-" ? "r" : l.startsWith("@@") ? "h" : ""; return c ? `<span class="${c}">${esc(l)}</span>` : esc(l); }).join("\n") : esc(t);
+    drawReviews();
+  };
 }
 
 // ------------------------------------------------------------ recordings
