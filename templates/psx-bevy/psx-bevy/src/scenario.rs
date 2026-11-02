@@ -92,6 +92,10 @@ impl ScenarioRegistry {
         self.launchers.keys().cloned().collect()
     }
 
+    pub(crate) fn launcher(&self, kind: &str) -> Option<Launcher> {
+        self.launchers.get(kind).cloned()
+    }
+
     /// Every quantity some observer has now: by name, or why not.
     fn observe(&self, w: &mut World) -> Result<BTreeMap<&'static str, Value>, String> {
         let mut out = BTreeMap::new();
@@ -364,20 +368,8 @@ impl Scenarios {
                 break;
             }
             *at = format!("tick {}", t.tick);
-            let pad: Result<Vec<_>, String> = t
-                .pad
-                .iter()
-                .map(|b| crate::testing::trajectory::button(b).ok_or(format!("tick {}: no button {b:?}", t.tick)))
-                .collect();
-            match pad {
-                Ok(buttons) => {
-                    app.run_input(&crate::testing::TickInput {
-                    buttons,
-                    analog: Some(t.analog),
-                    sticks: Some(t.sticks),
-                    ..default()
-                })
-                }
+            match tick_input(&t) {
+                Ok(input) => app.run_input(&input),
                 Err(e) => {
                     out.failures.push(e);
                     return out;
@@ -424,7 +416,17 @@ impl Scenarios {
     }
 }
 
-fn registry(app: &mut App) -> ScenarioRegistry {
+/// A recording's tick as input: its pad, mode and sticks.
+pub(crate) fn tick_input(t: &psx_scenario::scenario::Full) -> Result<crate::testing::TickInput, String> {
+    let buttons = t
+        .pad
+        .iter()
+        .map(|b| crate::testing::trajectory::button(b).ok_or(format!("tick {}: no button {b:?}", t.tick)))
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(crate::testing::TickInput { buttons, analog: Some(t.analog), sticks: Some(t.sticks), ..default() })
+}
+
+pub(crate) fn registry(app: &mut App) -> ScenarioRegistry {
     app.world_mut().get_resource_or_insert_with(ScenarioRegistry::default).clone()
 }
 

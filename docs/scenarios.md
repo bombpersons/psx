@@ -296,6 +296,15 @@ the runner:
 
 Each quantity's first tick out of tolerance is reported.
 
+The game draws the same replay with its renderer for the person to watch:
+`cargo run -p game -- --replay scenarios/<id>/<name>.jsonl --frames DIR`
+(`psx_bevy::frames`) builds the whole game headless, calls the launcher,
+runs the recording's ticks and saves the screen after each as
+`DIR/<tick>.png`. `psx web` runs it beside the original's replay. The
+game's own opening (its title, its first level) skips itself while
+`psx_bevy::frames::Replaying` is in the world, as the launcher builds
+the world instead.
+
 `psx port check` runs that test and writes each feature's scenario verdict.
 **A feature passes when:**
 

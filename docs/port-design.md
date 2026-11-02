@@ -329,7 +329,10 @@ page on psx-core or in a window, or declines; a chat with the agent; and
 each recording, replayed on psx-core into frames
 with its quantities plotted over the ticks and, from the last `port
 check`, the port's values where they differ and its first failure
-marked. The template's report keeps the port's values for a recording
+marked. On request the port draws the same recording beside it (the
+game's `--replay`, built with cargo in the project; frames kept in
+`.psx/port-frames/` for the code that drew them), on the same ticks:
+its own screen, laid over the original's, or where the two differ. The template's report keeps the port's values for a recording
 that failed for that.
 
 Messages (`.psx/messages.jsonl`) never interrupt the agent: what the

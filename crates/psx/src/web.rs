@@ -57,6 +57,8 @@ struct Replay {
     running: bool,
     /// The child's result once it ended: differences or an error.
     done: Option<Value>,
+    /// What a port replay is doing: building, or the tick it drew.
+    progress: String,
 }
 
 pub fn main(a: WebArgs) -> ExitCode {
@@ -311,6 +313,8 @@ fn route(req: &Request, st: &State) -> Reply {
         },
         "replay" => Reply::Json(replay(st, root, q("scenario"), q("name"), q("start") == "1")),
         "frame" => frame(st, root, q("scenario"), q("name"), q("tick")),
+        "port_replay" => Reply::Json(port_replay(st, root, q("scenario"), q("name"), q("start") == "1")),
+        "port_frame" => port_frame(root, q("key"), q("tick")),
         "messages" => Reply::Json(messages(root)),
         "file" => project_file(root, q("path")),
         _ => {
@@ -850,6 +854,163 @@ fn prune_replays(keep: &Path) {
     while dirs.len() >= KEEP_REPLAYS {
         let (_, d) = dirs.remove(0);
         let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+// ----------------------------------------------------------- port replay
+
+/// Where the port's frames for a recording are kept, in the project: by the
+/// recording, its scenario and the port's code (HEAD and what changed since).
+const PORT_FRAMES: &str = ".psx/port-frames";
+
+fn port_key(root: &Path, id: &str, name: &str) -> String {
+    let read = |p: &Path| std::fs::read(p).unwrap_or_default();
+    let scen = root.join(crate::scenario::SCENARIOS);
+    let mut all = read(&scen.join(format!("{id}.toml")));
+    all.extend(read(&scen.join(id).join(format!("{name}.jsonl"))));
+    let git = |args: &[&str]| {
+        std::process::Command::new("git").args(args).current_dir(root).output().map(|o| o.stdout).unwrap_or_default()
+    };
+    all.extend(git(&["rev-parse", "HEAD"]));
+    // Uncommitted changes to the code, not to the project's notes or scenarios.
+    all.extend(git(&["diff", "HEAD", "--", "game", "psx-bevy", "tools", "vendor", "glossary", "Cargo.toml", "Cargo.lock"]));
+    crate::stamp::sha256(&all)[..16].to_string()
+}
+
+/// The port drawing the recording, as `replay` the original: the port's
+/// game with `--replay` (psx_bevy::frames), built and run with cargo in the
+/// project, a PNG a tick into `.psx/port-frames/<key>/`. `key` names the
+/// frames for `port_frame`.
+fn port_replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Value {
+    if !root.join("game/Cargo.toml").is_file() {
+        return json!({"error": {"code": "invalid", "message": "no port here (game/Cargo.toml)"}});
+    }
+    // Older ports start their game as usual, which never ends headless.
+    if !root.join("psx-bevy/src/frames.rs").is_file() {
+        return json!({"error": {"code": "invalid", "message": "the port's psx-bevy has no --replay yet: psx port update brings it"}});
+    }
+    let jobs_key = format!("port:{}:{id}:{name}", root.display());
+    let job = st.replays.lock().unwrap().get(&jobs_key).cloned();
+    // A job running; otherwise the key is worked out again, for the code now.
+    let drawn = |dir: &Path| {
+        std::fs::read(dir.join("frames.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).filter(|v| v.get("error").is_none())
+    };
+    let job = match job {
+        Some(j) if j.lock().unwrap().running => j,
+        last => {
+            let dir = root.join(PORT_FRAMES).join(port_key(root, id, name));
+            // How the last run for this code ended (a failure is not kept on disk).
+            if let Some(j) = last.filter(|j| !start && j.lock().unwrap().dir == dir) {
+                return port_state(&j.lock().unwrap());
+            }
+            // Without start, only frames drawn before for this code.
+            let done = drawn(&dir);
+            if !start && done.is_none() {
+                return json!({"running": false, "frames": 0, "done": null});
+            }
+            let j = Arc::new(Mutex::new(Replay { dir, done, ..Default::default() }));
+            st.replays.lock().unwrap().insert(jobs_key, j.clone());
+            j
+        }
+    };
+    let mut j = job.lock().unwrap();
+    if start && !j.running && j.done.is_none() {
+        match drawn(&j.dir) {
+            // Kept from before.
+            Some(v) => j.done = Some(v),
+            None => {
+                prune_replays(&j.dir);
+                let _ = std::fs::remove_dir_all(&j.dir);
+                j.running = true;
+                j.progress = "building the port".into();
+                let (root, rec, job) = (root.to_path_buf(), format!("{}/{id}/{name}.jsonl", crate::scenario::SCENARIOS), job.clone());
+                std::thread::spawn(move || run_port_replay(&root, &rec, &job));
+            }
+        }
+    }
+    port_state(&j)
+}
+
+fn port_state(j: &Replay) -> Value {
+    let frames = std::fs::read_dir(&j.dir).map_or(0, |d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count());
+    let key = j.dir.file_name().map(|n| n.to_string_lossy().into_owned());
+    json!({"key": key, "running": j.running, "progress": j.progress, "frames": frames, "done": j.done})
+}
+
+/// Longest a port replay runs, its build included.
+const PORT_LIMIT: Duration = Duration::from_secs(30 * 60);
+
+fn run_port_replay(root: &Path, recording: &str, job: &Arc<Mutex<Replay>>) {
+    let dir = job.lock().unwrap().dir.clone();
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.args(["run", "--locked", "-q", "-p", "game", "--", "--skip-import", "--replay", recording, "--frames"])
+        .arg(&dir)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // Its own process group, so the time limit stops the game with cargo.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let child = cmd.spawn();
+    let done = match child {
+        Err(e) => json!({"error": format!("cargo: {e}")}),
+        Ok(mut c) => {
+            let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (pid, watch) = (c.id(), ended.clone());
+            std::thread::spawn(move || {
+                let until = std::time::Instant::now() + PORT_LIMIT;
+                while std::time::Instant::now() < until {
+                    if watch.load(std::sync::atomic::Ordering::Acquire) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
+            });
+            // stderr is read beside stdout, so neither pipe fills.
+            let err = c.stderr.take().map(|e| std::thread::spawn(move || {
+                let mut s = String::new();
+                let _ = BufReader::new(e).read_to_string(&mut s);
+                s
+            }));
+            if let Some(out) = c.stdout.take() {
+                for line in BufReader::new(out).lines().map_while(Result::ok) {
+                    if line.starts_with("tick ") {
+                        job.lock().unwrap().progress = format!("drawing {line}");
+                    }
+                }
+            }
+            let status = c.wait();
+            ended.store(true, std::sync::atomic::Ordering::Release);
+            let stderr = err.and_then(|t| t.join().ok()).unwrap_or_default();
+            let summary = std::fs::read(dir.join("frames.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+            match (status, summary) {
+                (Ok(s), Some(v)) if s.success() || v.get("error").is_some() => v,
+                (status, _) => {
+                    // The build failed, or the game before it drew: cargo's errors, or the end of what it said.
+                    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+                    let errors: Vec<&str> = lines.iter().copied().filter(|l| l.starts_with("error")).take(5).collect();
+                    let why = if errors.is_empty() { lines[lines.len().saturating_sub(6)..].join("\n") } else { errors.join("\n") };
+                    let code = status.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
+                    json!({"error": format!("the port did not draw it ({code}): {why}")})
+                }
+            }
+        }
+    };
+    let mut j = job.lock().unwrap();
+    j.running = false;
+    j.progress.clear();
+    j.done = Some(done);
+}
+
+fn port_frame(root: &Path, key: &str, tick: &str) -> Reply {
+    let (true, Ok(tick)) = (key.len() == 16 && key.bytes().all(|b| b.is_ascii_hexdigit()), tick.parse::<u64>()) else {
+        return Reply::Missing("no such frame".into());
+    };
+    match std::fs::read(root.join(PORT_FRAMES).join(key).join(format!("{tick}.png"))) {
+        Ok(b) => Reply::Bytes("image/png", b),
+        Err(_) => Reply::Missing(format!("tick {tick}: not drawn yet")),
     }
 }
 

@@ -55,6 +55,10 @@ there is yours to decide. What the tools rely on:
   (`scenarios/<id>/`) tick by tick with its pad, in a headless `app` with
   the game's logic. `psx port check` runs it for the verdicts; `cargo
   test -p game --test scenarios` while working.
+  The person watches the whole game play the same recordings in `psx
+  web` (`--replay`, `psx_bevy::frames`): the launcher builds the world,
+  so the game's own opening skips itself while
+  `psx_bevy::frames::Replaying` is in the world.
 - **Only importers read the original's formats** (`tools/import`); the
   game reads the port's own (RON, glTF, PNG, WAV/OGG).
 

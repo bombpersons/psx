@@ -101,7 +101,9 @@ needs, or leave `GameDataPlugin` out while the port uses no imported data.
 `psx_bevy::testing` runs rules headless for exact ticks with scripted
 buttons (`tests/player.rs`). `tests/scenarios.rs` replays each scenario
 recording of the original tick by tick (`psx_bevy::scenario`); a failure
-names each quantity's first tick out of tolerance.
+names each quantity's first tick out of tolerance. `cargo run -p game -- --replay
+scenarios/<id>/<name>.jsonl --frames DIR` draws a recording with the whole
+game, a PNG per tick, for psx web.
 
 Captures (`psx run --gpu-frame`, `.psxscene`) are for checking the rebuild,
 never for shipping: levels come from the disc's data through the importers.

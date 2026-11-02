@@ -22,6 +22,7 @@ use bevy::{
 };
 use player::Player;
 use psx_bevy::controller::Button;
+use psx_bevy::frames::Replaying;
 use psx_bevy::prelude::*;
 use psx_bevy::psx::{PsxAnchor, PsxBlend, PsxLook, PsxMaterial, PsxMaterial2d, PsxSprite, PsxStp, PsxView};
 use psx_bevy::psx::{font, psx_indices, psx_palette, rgb15};
@@ -116,6 +117,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PsxMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    replaying: Option<Res<Replaying>>,
 ) {
     // 3D camera: renders first and clears. DistanceFog drives PS1 depth cueing.
     commands.spawn((
@@ -144,9 +146,12 @@ fn setup(
         MeshMaterial3d(materials.add(PsxMaterial::textured(checker(&mut images, [90, 140, 70], [60, 100, 50], true)))),
     ));
 
-    // Everything the level places comes from data.
-    let level: DemoLevel = load_ron(DemoLevel::PATH).unwrap_or_else(|e| panic!("demo level: {e}"));
-    level.spawn(&mut commands);
+    // Everything the level places comes from data. Drawing a scenario's
+    // recording (psx_bevy::frames), its launcher places them instead.
+    if replaying.is_none() {
+        let level: DemoLevel = load_ron(DemoLevel::PATH).unwrap_or_else(|e| panic!("demo level: {e}"));
+        level.spawn(&mut commands);
+    }
     // Additive "glow" panel: PS1 semi-transparency mode B+F.
     commands.spawn((
         Mesh3d(meshes.add(Rectangle::new(1.5, 1.5))),

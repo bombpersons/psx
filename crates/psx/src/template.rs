@@ -86,6 +86,7 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "psx-bevy/src/display/mod.rs",
     "psx-bevy/src/display/tests.rs",
     "psx-bevy/src/display/view.rs",
+    "psx-bevy/src/frames.rs",
     "psx-bevy/src/gte.rs",
     "psx-bevy/src/launcher.rs",
     "psx-bevy/src/lib.rs",

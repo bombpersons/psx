@@ -212,12 +212,19 @@ body.logv main { padding-bottom: 0; }
 .reclist .r:hover { background: var(--chip); } .reclist .r.on { background: var(--sel); }
 .mark { width: 14px; text-align: center; font-size: 12px; }
 .mark.pass { color: var(--ok); } .mark.fail { color: var(--act); } .mark.none { color: var(--dim); }
-.viewer-top { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; }
+.viewer-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 @media (max-width: 1100px) { .viewer-top { grid-template-columns: minmax(0, 1fr); } }
 .screen { background: #000; width: 512px; max-width: 100%; aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; border-radius: 6px; overflow: hidden; position: relative; }
 .screen img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
 .screen img:not([src]) { visibility: hidden; }
 .screen .msg { color: #aaa; position: absolute; font-size: 13px; padding: 12px; text-align: center; }
+.screens { display: flex; gap: 10px; flex-wrap: wrap; }
+.screens .screen { width: 448px; }
+.screens .slab { font-size: 12px; color: var(--dim); margin-bottom: 4px; display: flex; gap: 8px; align-items: center; min-height: 24px; }
+.screens .slab select { font-size: 12px; }
+.screen canvas { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; position: absolute; inset: 0; }
+.screen canvas[hidden] { display: none; }
+.screen .msg button { margin-top: 8px; }
 .controls { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
 .controls input[type=range] { flex: 1; min-width: 160px; }
 button.b { font: inherit; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
@@ -296,7 +303,7 @@ const post = async (path, body) => {
 const S = {
   projects: [], cur: 0, view: "overview", overview: {}, calls: {},
   sel: null, errorsOnly: false, filter: "", open: {},
-  recs: null, rec: null, recKey: null, tick: 0, playing: null, replay: null,
+  recs: null, rec: null, recKey: null, tick: 0, playing: null, replay: null, port: null, portAuto: false, portMode: "side",
   requests: null, seenRequests: null, drafts: {},
   // The request being played in this page: {p, id, status, ...}.
   player: null,
@@ -1615,7 +1622,7 @@ async function recordingsView(refresh) {
   }).join("")).join("");
   const chk = S.recs.check?.commit ? `last port check: ${esc(String(S.recs.check.commit).slice(0, 10))}, ${esc(S.recs.check.at)}` : "no port check yet";
   if (!refresh || !$("#reclist")) {
-    $("#view").innerHTML = `<div class="recs"><div class="card reclist" id="reclist"></div><div id="viewer"><div class="card quiet">Pick a recording: psx replays it on psx-core for the screen, beside the compared quantities and what the last port check said.</div></div></div>`;
+    $("#view").innerHTML = `<div class="recs"><div class="card reclist" id="reclist"></div><div id="viewer"><div class="card quiet">Pick a recording: psx replays it on psx-core for the screen, the port draws it beside that on request, and below are the compared quantities and what the last port check said.</div></div></div>`;
   }
   $("#reclist").innerHTML = `<div class="quiet">${chk}</div>` + (list || `<div class="empty">No scenarios.</div>`);
   for (const r of document.querySelectorAll("#reclist .r")) r.onclick = () => openRec(r.dataset.s, r.dataset.n);
@@ -1629,11 +1636,12 @@ async function openRec(scenario, name, keepTick) {
   if (i !== S.cur) return;
   if (rec.error) { $("#viewer").innerHTML = `<div class="card"><div class="att act">${esc(rec.error.message)}</div></div>`; return; }
   const sameRec = S.recKey === null && S.rec && S.rec.scenario === scenario && S.rec.name === name;
-  S.rec = rec; S.recKey = key; S.replay = null;
+  S.rec = rec; S.recKey = key; S.replay = null; S.port = null;
   if (!(keepTick && sameRec)) S.tick = firstDiff() ?? 0;
   for (const r of document.querySelectorAll("#reclist .r")) r.classList.toggle("on", r.dataset.s === scenario && r.dataset.n === name);
   viewer();
   pollReplay(key);
+  pollPort(key, S.portAuto ? 1 : 0);
 }
 function firstDiff() {
   const f = (S.rec?.check?.failures || []).filter(x => x.tick != null).map(x => x.tick);
@@ -1648,7 +1656,10 @@ function viewer() {
   const hasPort = r.quantities.some(q => q.port);
   $("#viewer").innerHTML = `<div class="card"><h2>${esc(r.scenario)} / ${esc(r.name)}</h2>
     <div>${esc(r.description || "")}</div><div class="quiet">${esc(r.moment || "")}${r.from ? ` · continues ${esc(r.from)}` : ""} · ${n} ticks${r.captured ? "" : " · an example, not captured"}</div>${checkLine}
-    <div class="viewer-top" style="margin-top:8px"><div><div class="screen"><img id="frame" alt=""><div class="msg" id="fmsg">replaying…</div></div></div>
+    <div class="viewer-top" style="margin-top:8px"><div class="screens">
+      <div><div class="slab">original · psx-core</div><div class="screen"><img id="frame" alt=""><div class="msg" id="fmsg">replaying…</div></div></div>
+      <div><div class="slab">port <select id="pmode" title="how the port's screen is shown"><option value="side">its own screen</option><option value="blend">over the original</option><option value="diff">difference</option></select><button class="b" id="pagain" hidden title="draw it again with the port's code now">draw again</button></div>
+        <div class="screen" id="pscreen"><img id="pframe" alt=""><canvas id="pcanvas" hidden></canvas><div class="msg" id="pmsg"></div></div></div></div>
     <div><div class="controls"><button class="b" id="play">▶</button><button class="b" id="prev" title="previous tick (←)">‹</button><button class="b" id="nextb" title="next tick (→)">›</button>
       <input type="range" id="scrub" min="0" max="${n}" value="${S.tick}">${fd != null ? `<button class="b" id="jump" style="color:var(--act)">first difference</button>` : ""}</div>
       <div id="tickinfo" class="padline"></div><div id="replaynote" class="quiet" style="margin-top:6px"></div>
@@ -1656,6 +1667,9 @@ function viewer() {
       ${ch?.failures.length && !hasPort ? `<div class="quiet">The port's own values show once its scenario report keeps them (a template update): until then, where it first differed.</div>` : ""}
     </div></div></div>
     <div class="card plots" id="plots">${r.quantities.map((q, k) => `<div class="q ${(ch?.failures || []).some(f => f.quantity === q.name) ? "diff" : ""}"><div class="lab"><div class="nm" title="${esc(q.description || "")}">${esc(q.name)}</div><div class="quiet">${esc(q.type)}${q.unit ? " · " + esc(q.unit) : ""}${q.tolerance ? " · ±" + esc(q.tolerance) : ""}</div><div class="v" id="v${k}"></div></div><div class="pl"><canvas data-k="${k}"></canvas><div class="cur"></div></div></div>`).join("")}</div>`;
+  $("#pmode").value = S.portMode;
+  $("#pmode").onchange = e => { S.portMode = e.target.value; showPort(S.tick); };
+  $("#pagain").onclick = () => pollPort(S.recKey, 1);
   $("#play").onclick = () => S.playing ? stop() : play();
   $("#prev").onclick = () => setTick(S.tick - 1);
   $("#nextb").onclick = () => setTick(S.tick + 1);
@@ -1697,6 +1711,7 @@ function setTick(t) {
   drawCursor();
   link();
   showFrame(Math.max(1, t));
+  showPort(t);
 }
 function fmtVal(v) { return v == null ? "–" : typeof v === "number" ? (Number.isInteger(v) ? v : +v.toFixed(4)) : typeof v === "object" ? JSON.stringify(v) : v; }
 function showFrame(t) {
@@ -1729,6 +1744,74 @@ async function pollReplay(key) {
     if (Math.max(1, S.tick) <= r.frames) showFrame(Math.max(1, S.tick));
     await new Promise(res => setTimeout(res, 700));
   }
+}
+// The port drawing the same recording (psx_bevy::frames): built and run
+// with cargo in the project on request, then kept for that code.
+const portQ = () => `scenario=${encodeURIComponent(S.rec.scenario)}&name=${encodeURIComponent(S.rec.name)}`;
+async function pollPort(key, start) {
+  if (start) S.portAuto = true;
+  while (S.recKey === key) {
+    const r = await api(`/api/p/${S.cur}/port_replay?${portQ()}&start=${start}`);
+    start = 0;
+    if (S.recKey !== key) return;
+    S.port = r;
+    showPort(S.tick);
+    if (!r.running) return;
+    await new Promise(res => setTimeout(res, 700));
+  }
+}
+const imgCache = new Map();
+function loadImg(url) {
+  let p = imgCache.get(url);
+  if (!p) {
+    p = new Promise((ok, no) => { const im = new Image(); im.onload = () => ok(im); im.onerror = no; im.src = url; });
+    p.catch(() => imgCache.delete(url));
+    if (imgCache.size > 600) imgCache.delete(imgCache.keys().next().value);
+    imgCache.set(url, p);
+  }
+  return p;
+}
+function showPort(t) {
+  const img = $("#pframe"), cv = $("#pcanvas"), msg = $("#pmsg"); if (!img) return;
+  const r = S.port, again = $("#pagain");
+  again.hidden = !(r && !r.running && (r.done || r.error));
+  const say = html => { msg.innerHTML = html; msg.style.display = ""; img.removeAttribute("src"); cv.hidden = true; };
+  if (!r || (!r.running && !r.done && !r.error)) {
+    say(`The port's game draws this recording tick by tick (its <span class="mono">--replay</span>), headless. The first time builds it with cargo.<br><button class="b" id="pdraw">Draw the port</button>`);
+    $("#pdraw").onclick = () => pollPort(S.recKey, 1);
+    return;
+  }
+  const err = r.error?.message || r.error || r.done?.error;
+  if (err && !(r.frames > t)) { say(`<span style="color:var(--act)">${esc(err)}</span>`); return; }
+  if (r.running && t >= r.frames) { say(esc(r.progress || "starting") + "…"); return; }
+  const url = `/api/p/${S.cur}/port_frame?key=${r.key}&tick=${t}`;
+  if (S.portMode === "side") {
+    cv.hidden = true;
+    img.onload = () => msg.style.display = "none";
+    img.onerror = () => say("no frame for this tick");
+    img.src = url;
+    return;
+  }
+  // Over the original, or where the two differ, at the port's size.
+  const orig = `/api/p/${S.cur}/frame?${portQ()}&tick=${Math.max(1, t)}`;
+  Promise.all([loadImg(url), loadImg(orig)]).then(([a, b]) => {
+    if (S.tick !== t || S.portMode === "side") return;
+    const w = a.naturalWidth, h = a.naturalHeight;
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext("2d");
+    if (S.portMode === "blend") {
+      ctx.globalAlpha = 1; ctx.drawImage(b, 0, 0, w, h); ctx.globalAlpha = 0.5; ctx.drawImage(a, 0, 0); ctx.globalAlpha = 1;
+    } else {
+      ctx.drawImage(b, 0, 0, w, h); const B = ctx.getImageData(0, 0, w, h);
+      ctx.drawImage(a, 0, 0); const A = ctx.getImageData(0, 0, w, h);
+      for (let i = 0; i < A.data.length; i += 4) {
+        const d = (Math.abs(A.data[i] - B.data[i]) + Math.abs(A.data[i + 1] - B.data[i + 1]) + Math.abs(A.data[i + 2] - B.data[i + 2])) / 3;
+        A.data[i] = d * 2; A.data[i + 1] = d * 0.6; A.data[i + 2] = 0;
+      }
+      ctx.putImageData(A, 0, 0);
+    }
+    img.removeAttribute("src"); cv.hidden = false; msg.style.display = "none";
+  }, () => say(S.replay?.done ? "no frame for this tick" : "waiting for the original's screen…"));
 }
 function drawPlots() {
   const r = S.rec, n = r.ticks.length, fails = r.check?.failures || [];
