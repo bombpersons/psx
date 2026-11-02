@@ -39,6 +39,7 @@ mod provenance;
 mod ram;
 mod replay;
 mod reports;
+mod stats;
 mod run;
 mod run_native;
 mod scenario;

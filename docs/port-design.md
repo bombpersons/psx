@@ -340,7 +340,12 @@ review brief asks for (`psx report`): a few paragraphs for the person
 alone on how the port looks as a game in the making and what worries
 the reviewer. psx keeps them outside the project
 (`reports/<key>/` in its data directory) and never returns them in a
-result, so the writer's work is not shaped by them. The template's report keeps the port's values for a recording
+result, so the writer's work is not shaped by them. The Stats tab
+shows how the port came along, from what the project already keeps:
+the features by stage over time (`.psx/progress.jsonl`), the agents'
+calls by hour or day and the code's lines by day, each feature's commits
+(those whose subject names it) on one timeline coloured by its stage
+now, and the time spent per tool and per agent session. The template's report keeps the port's values for a recording
 that failed for that.
 
 Messages (`.psx/messages.jsonl`) never interrupt the agent: what the

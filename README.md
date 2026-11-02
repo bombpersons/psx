@@ -157,7 +157,8 @@ the agent that reaches it with its next call without interrupting it, the agent'
 play a part of the game (played in the page or a window, or declined with a note), and each
 recording replayed frame by frame with its values plotted beside the port's, and the port
 playing the same recording beside it. Its Reviews tab has every review round, each finding
-with its answer and the changes it read, and the reviewers' reports written for you alone. `psx play` answers
+with its answer and the changes it read, and the reviewers' reports written for you alone; its Stats tab, the features by stage over
+time, the agents' activity, each feature's commits on a timeline and where the time went. `psx play` answers
 the same requests from a terminal.
 
 ## Honest limits

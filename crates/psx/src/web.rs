@@ -325,6 +325,7 @@ fn route(req: &Request, st: &State) -> Reply {
             Some(d) => Reply::Bytes("text/plain; charset=utf-8", d.into_bytes()),
             None => Reply::Missing("no diff between those commits (or too large to show)".into()),
         },
+        "stats" => Reply::Json(crate::stats::of(root)),
         "file" => project_file(root, q("path")),
         _ => {
             let id = what.strip_prefix("call/").unwrap_or("");

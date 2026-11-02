@@ -204,6 +204,14 @@ body.logv main { padding-bottom: 0; }
 .recent .t { color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .recent .x { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12px; }
 /* reviews */
+.gantt { display: grid; grid-template-columns: 72px minmax(0, 1fr) 110px; gap: 3px 8px; align-items: center; font-size: 12px; }
+.gantt .lane { position: relative; height: 14px; background: var(--chip); border-radius: 3px; }
+.gantt .lane i { position: absolute; top: 3px; height: 8px; border-radius: 4px; opacity: .55; }
+.gantt .lane b { position: absolute; top: 1px; width: 2px; height: 12px; border-radius: 1px; }
+.gantt .axis { grid-column: 2; display: flex; justify-content: space-between; color: var(--dim); }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--dim); margin: 2px 0 6px; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; background: var(--c); }
+canvas.chart.tall { height: 170px; }
 .revgrid { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 12px; align-items: start; }
 @media (max-width: 1150px) { .revgrid { grid-template-columns: 1fr; } .revgrid .rounds { max-height: 240px; overflow: auto; } }
 .rounds .rd { padding: 7px 9px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
@@ -330,7 +338,7 @@ async function start() {
   // A link: #/PROJECT/VIEW, or #/PROJECT/recordings/SCENARIO/NAME/TICK.
   const [i, view, scenario, name, tick] = location.hash.slice(2).split("/").map(decodeURIComponent);
   if (i === "requests") S.view = "requests";
-  else if (+i < S.projects.length && ["overview", "log", "calls", "recordings", "reviews"].includes(view)) {
+  else if (+i < S.projects.length && ["overview", "log", "calls", "recordings", "reviews", "stats"].includes(view)) {
     S.cur = +i; S.view = view === "calls" ? "log" : view;
     if (view === "recordings" && name) { S.rec = {scenario, name}; S.tick = +tick || 0; }
   }
@@ -420,7 +428,7 @@ function render(refresh) {
   const m = $("#main");
   if (S.view !== "requests" && S.player) stopPlayer();
   if (S.view === "requests") { chatView(); m.innerHTML = `<div id="view"></div>`; S.player ? playerView() : requestsView(); return; }
-  const views = [["overview", "Overview"], ["log", "Log"], ["recordings", "Recordings"], ["reviews", "Reviews"]];
+  const views = [["overview", "Overview"], ["log", "Log"], ["recordings", "Recordings"], ["reviews", "Reviews"], ["stats", "Stats"]];
   if (!refresh || !$("nav.sub", m)) {
     m.innerHTML = `<nav class="sub">${views.map(([k, l]) => `<button class="tab ${k === S.view ? "on" : ""}" data-v="${k}">${l}</button>`).join("")}</nav><div id="view"></div>`;
     for (const b of m.querySelectorAll("nav.sub .tab")) b.onclick = () => { S.view = b.dataset.v; save(); render(); };
@@ -431,6 +439,7 @@ function render(refresh) {
   if (S.view === "overview") overview();
   else if (S.view === "log") logView();
   else if (S.view === "reviews") reviewsView(refresh);
+  else if (S.view === "stats") statsView(refresh);
   else recordingsView(refresh);
 }
 
@@ -1719,6 +1728,147 @@ function drawReviews() {
     S.revs.diff = res.ok ? t.split("\n").map(l => { const c = /^(\+\+\+|---|diff |index )/.test(l) ? "h" : l[0] === "+" ? "a" : l[0] === "-" ? "r" : l.startsWith("@@") ? "h" : ""; return c ? `<span class="${c}">${esc(l)}</span>` : esc(l); }).join("\n") : esc(t);
     drawReviews();
   };
+}
+
+// ------------------------------------------------------------ stats
+// How the port came along: its standing over time (progress.jsonl), the
+// agents' calls by hour, the commits by day and by feature, and where the
+// time went (tools, sessions).
+const STAGES = [["catalogued", "--dim"], ["located", "--info"], ["recorded", "--violet"], ["matching", "--accent"], ["reviewed", "--warn"], ["done", "--ok"]];
+const DAY = 86400000, HOUR = 3600000;
+async function statsView(refresh) {
+  const i = S.cur;
+  if (!S.stats || S.stats.i !== i || (refresh && Date.now() - S.stats.at > 30000)) {
+    if (!S.stats || S.stats.i !== i) $("#view").innerHTML = `<div class="quiet">Loading…</div>`;
+    let d;
+    try { d = await api(`/api/p/${i}/stats`); } catch (e) { $("#view").innerHTML = `<div class="card">${esc(e.message || e)}</div>`; return; }
+    if (i !== S.cur || S.view !== "stats") return;
+    const same = S.stats && S.stats.i === i && JSON.stringify(S.stats.data) === JSON.stringify(d);
+    S.stats = {i, at: Date.now(), data: d};
+    if (same && refresh) return;
+  }
+  drawStats();
+}
+const dur = ms => ms < 1000 ? `${Math.round(ms)} ms` : ms < 60000 ? `${Math.round(ms / 1000)} s` : ms < HOUR ? `${Math.round(ms / 60000)} min` : `${(ms / HOUR).toFixed(ms < 10 * HOUR ? 1 : 0)} h`;
+function dayOf(t) { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function drawStats() {
+  const d = S.stats.data, c = d.calls, git = d.git || [], prog = d.progress || [];
+  const st = S.overview[S.cur]?.status;
+  const feats = new Map((st ? featuresOf(st) : []).map(f => [f.id, f]));
+  const sum = (xs, k) => xs.reduce((a, x) => a + (x[k] || 0), 0);
+  const calls = sum(c.hours, "calls"), failed = sum(c.hours, "failed");
+  const code = git.reduce((a, g) => a + g.code[0] - g.code[1], 0);
+  const t0 = Math.min(git[0]?.t ?? Infinity, c.hours[0]?.t ?? Infinity, prog[0]?.t ?? Infinity);
+  const tiles = [
+    [isFinite(t0) ? Math.max(1, Math.ceil((d.now - t0) / DAY)) : "–", "days", isFinite(t0) ? "since " + fmtDate(t0) : ""],
+    [num(git.length), "commits", `${git.filter(g => g.features.length).length} name a feature`],
+    [num(code), "lines of code", "added less removed in game/ and tools/"],
+    [num(calls), "psx calls", `${num(failed)} failed`],
+    [num(c.hours.length), "hours with calls"],
+    [dur(sum(c.tools, "ms")), "in psx calls"],
+  ];
+  let h = `<div class="card"><h2>Stats</h2><div class="tiles">${tiles.map(([n, l, t]) => `<div class="tile" title="${esc(t || "")}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join("")}</div></div>`;
+  // The standing over time.
+  h += `<div class="card"><h2>Features by stage</h2>${prog.length > 1
+    ? `<div class="legend">${STAGES.map(([k, v]) => `<span style="--c:var(${v})">${k}</span>`).join("")}</div><canvas class="chart tall" id="st-stage"></canvas>
+       <div class="grid2" style="margin-top:8px"><div><div class="quiet">recordings passing, of all</div><canvas class="chart" id="st-rec"></canvas></div><div><div class="quiet">branches resolved, of all</div><canvas class="chart" id="st-br"></canvas></div></div>
+       <div class="quiet" style="margin-top:4px">${prog.length} changes since ${fmtDate(prog[0].t)}, as port status and port next saw them</div>`
+    : `<div class="quiet">This builds up as port status and port next see the standing change (from this version of psx on). The commits below go back to the start.</div>`}</div>`;
+  // Activity.
+  h += `<div class="card"><h2>Activity</h2><div class="grid2"><div><div class="legend"><span style="--c:var(--accent)">psx calls</span><span style="--c:var(--act)">failed</span></div><canvas class="chart" id="st-calls"></canvas></div>
+    <div><div class="legend"><span style="--c:var(--ok)">code lines added</span><span style="--c:var(--act)">removed</span><span>commits over each day</span></div><canvas class="chart" id="st-code"></canvas></div></div></div>`;
+  // Features by their commits.
+  const byF = new Map();
+  for (const g of git) for (const f of g.features) { if (!byF.has(f)) byF.set(f, []); byF.get(f).push(g); }
+  for (const id of feats.keys()) if (!byF.has(id)) byF.set(id, []);
+  const ids = [...byF.keys()].sort((a, b) => (byF.get(a)[0]?.t ?? Infinity) - (byF.get(b)[0]?.t ?? Infinity) || a.localeCompare(b));
+  if (ids.length && git.length) {
+    const a = git[0].t, b = Math.max(d.now, git.at(-1).t), X = t => (100 * (t - a) / Math.max(1, b - a)).toFixed(2);
+    const color = f => `var(${(STAGES.find(([k]) => k === feats.get(f)?.stage) || [0, "--dim"])[1]})`;
+    const rows = ids.map(id => {
+      const gs = byF.get(id), f = feats.get(id), col = color(id);
+      const lines = gs.reduce((s, g) => s + g.code[0] + g.code[1], 0);
+      const bar = gs.length ? `<i style="left:${X(gs[0].t)}%;width:max(2px,${(X(gs.at(-1).t) - X(gs[0].t)).toFixed(2)}%);background:${col}"></i>` : "";
+      const ticks = gs.map(g => `<b style="left:${X(g.t)}%;background:${col}" title="${esc(g.h)} ${fmtDate(g.t)}: ${esc(g.subject)}"></b>`).join("");
+      return `<span class="mono" title="${esc(f?.title || "")}">${esc(id)}</span><div class="lane">${bar}${ticks}</div>
+        <span class="quiet" title="${num(lines)} code lines changed${f ? "" : "; not among the port's features now"}">${gs.length} commit${gs.length === 1 ? "" : "s"}${f ? "" : ", gone"}</span>`;
+    }).join("");
+    h += `<div class="card"><h2>Features over time</h2><div class="quiet" style="margin-bottom:6px">Each mark a commit naming the feature (hover for it), coloured by the feature's stage now. ${git.length - git.filter(g => g.features.length).length} commits name none.</div>
+      <div class="legend">${STAGES.map(([k, v]) => `<span style="--c:var(${v})">${k}</span>`).join("")}</div>
+      <div class="gantt">${rows}<span></span><div class="axis"><span>${fmtDate(a)}</span><span>${fmtDate(b)}</span></div></div></div>`;
+  }
+  // Where the time went.
+  const tools = [...c.tools].sort((x, y) => y.ms - x.ms);
+  const ses = [...c.sessions].sort((x, y) => y.last - x.last);
+  h += `<div class="grid2"><div class="card"><h2>Tools</h2><div style="overflow-x:auto"><table><tr><th>tool</th><th class="num">calls</th><th class="num">failed</th><th class="num">time</th><th class="num">each</th></tr>
+    ${tools.map(x => `<tr><td>${esc(TOOLS[x.tool] || x.tool)}</td><td class="num">${num(x.calls)}</td><td class="num">${x.failed || ""}</td><td class="num">${dur(x.ms)}</td><td class="num">${dur(x.ms / x.calls)}</td></tr>`).join("")}</table></div></div>
+    <div class="card"><h2>Sessions</h2><div style="overflow-x:auto"><table><tr><th>who</th><th>from</th><th>to</th><th class="num">calls</th><th class="num">failed</th><th class="num">time</th></tr>
+    ${ses.map(x => `<tr><td class="mono">${esc(x.session)}</td><td style="white-space:nowrap">${fmtDate(x.first)}</td><td style="white-space:nowrap">${fmtDate(x.last)}</td><td class="num">${num(x.calls)}</td><td class="num">${x.failed || ""}</td><td class="num">${dur(x.ms)}</td></tr>`).join("")}</table></div>
+    <div class="quiet" style="margin-top:4px">From the call log kept (.psx/calls.jsonl and the one before it).</div></div></div>`;
+  const inv = d.inventory || [];
+  if (inv.length) h += `<div class="card"><h2>Inventory</h2>${kv(Object.entries(inv.at(-1).totals || {}).map(([k, v]) => [k, num(v)]))}<div class="quiet" style="margin-top:4px">${inv.length} inventor${inv.length === 1 ? "y" : "ies"} made, the last ${fmtDate(Date.parse(inv.at(-1).made) || 0)}</div></div>`;
+  $("#view").innerHTML = h;
+
+  if (prog.length > 1) {
+    const ts = prog.map(x => x.t);
+    statStacked($("#st-stage"), ts, d.now, STAGES.map(([k, v]) => [x => x.stages?.[k] || 0, css(v)]), prog);
+    statLines($("#st-rec"), ts, d.now, prog, [[x => x.recordings?.pass, css("--ok")], [x => x.recordings?.total, css("--dim")]]);
+    statLines($("#st-br"), ts, d.now, prog, [[x => x.branches?.resolved, css("--accent")], [x => x.branches?.total, css("--dim")]]);
+  }
+  // Hours while the log is short, days once it spans more than three.
+  const span = c.hours.length ? c.hours.at(-1).t - c.hours[0].t : 0, step = span > 3 * DAY ? DAY : HOUR;
+  const bucket = (xs, t, add) => { const m = new Map(); for (const x of xs) { const k = step === DAY ? dayOf(t(x)) : Math.floor(t(x) / HOUR) * HOUR; add(m.get(k) || m.set(k, {}).get(k), x); } return m; };
+  const cm = bucket(c.hours, x => x.t, (o, x) => { o.a = (o.a || 0) + x.calls - x.failed; o.b = (o.b || 0) + x.failed; });
+  statBars($("#st-calls"), cm, step, [["a", css("--accent")], ["b", css("--act")]], null, d.now);
+  const gm = new Map();
+  for (const g of git) { const k = dayOf(g.t), o = gm.get(k) || gm.set(k, {a: 0, b: 0, n: 0}).get(k); o.a += g.code[0]; o.b += g.code[1]; o.n++; }
+  statBars($("#st-code"), gm, DAY, [["a", css("--ok")], ["b", css("--act")]], "n", d.now);
+}
+// The time axis and value scale every chart here shares.
+function statFrame(canvas, t0, t1, max) {
+  const ctx = setup(canvas), W = canvas.clientWidth, H = canvas.clientHeight;
+  const X = t => 34 + (W - 40) * (t - t0) / Math.max(1, t1 - t0), Y = v => H - 16 - (H - 24) * v / Math.max(1, max);
+  ctx.fillStyle = css("--dim"); ctx.font = "11px system-ui";
+  ctx.fillText(num(Math.round(max)), 2, 12); ctx.fillText("0", 2, H - 16);
+  ctx.fillText(fmtDate(t0), 34, H - 2); const e = fmtDate(t1); ctx.fillText(e, W - ctx.measureText(e).width - 4, H - 2);
+  return {ctx, W, H, X, Y};
+}
+function statStacked(canvas, ts, now, layers, rows) {
+  if (!canvas) return;
+  const tot = r => layers.reduce((s, [g]) => s + g(r), 0);
+  const t1 = Math.max(now, ts.at(-1)), {ctx, X, Y} = statFrame(canvas, ts[0], t1, Math.max(...rows.map(tot)));
+  const ends = rows.map((r, i) => [X(ts[i]), X(i + 1 < ts.length ? ts[i + 1] : t1)]);
+  const base = rows.map(() => 0);
+  for (const [get, color] of layers) {
+    ctx.fillStyle = color;
+    rows.forEach((r, i) => { const v = get(r); if (v) { ctx.fillRect(ends[i][0], Y(base[i] + v), ends[i][1] - ends[i][0] + .5, Y(base[i]) - Y(base[i] + v)); base[i] += v; } });
+  }
+}
+function statLines(canvas, ts, now, rows, ls) {
+  if (!canvas) return;
+  const t1 = Math.max(now, ts.at(-1)), {ctx, X, Y} = statFrame(canvas, ts[0], t1, Math.max(...rows.flatMap(r => ls.map(([g]) => g(r) ?? 0))));
+  for (const [get, color] of ls) {
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    rows.forEach((r, i) => { const v = get(r) ?? 0; if (i) ctx.lineTo(X(ts[i]), Y(get(rows[i - 1]) ?? 0)); i ? ctx.lineTo(X(ts[i]), Y(v)) : ctx.moveTo(X(ts[i]), Y(v)); });
+    ctx.lineTo(X(t1), Y(get(rows.at(-1)) ?? 0)); ctx.stroke(); ctx.lineWidth = 1;
+  }
+}
+// Stacked bars per bucket (a Map of start -> {key: n}) up to now, over
+// at least two weeks of days or a day of hours, with each bucket's `count`
+// written over its bar when given.
+function statBars(canvas, m, step, keys, count, now) {
+  if (!canvas) return;
+  if (!m.size) { const ctx = setup(canvas); ctx.fillStyle = css("--dim"); ctx.font = "12px system-ui"; ctx.fillText("Nothing yet.", 4, 16); return; }
+  const ks = [...m.keys()].sort((a, b) => a - b), t1 = Math.max(ks.at(-1) + step, now), t0 = Math.min(ks[0], t1 - (step === DAY ? 7 : 24) * step);
+  const max = Math.max(...ks.map(k => keys.reduce((s, [n]) => s + (m.get(k)[n] || 0), 0)));
+  const {ctx, X, Y} = statFrame(canvas, t0, t1, max * (count ? 1.15 : 1));
+  const room = X(t0 + step) - X(t0), w = Math.max(1, Math.min(28, room - 1)), pad = (room - w) / 2;
+  for (const k of ks) {
+    let base = 0;
+    for (const [n, color] of keys) { const v = m.get(k)[n] || 0; if (v) { ctx.fillStyle = color; ctx.fillRect(X(k) + pad, Y(base + v), w, Y(base) - Y(base + v)); base += v; } }
+    const c = count && m.get(k)[count];
+    if (c && room > 12) { ctx.fillStyle = css("--dim"); const t = String(c); ctx.fillText(t, X(k) + pad + (w - ctx.measureText(t).width) / 2, Y(base) - 3); }
+  }
 }
 
 // ------------------------------------------------------------ recordings
