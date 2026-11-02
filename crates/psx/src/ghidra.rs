@@ -1137,9 +1137,18 @@ impl Op for DecompileArgs {
             let deadline = budget(&self.input)?;
             let addr = ram_address(hex(&self.addr)?)?;
             let mut a = prepare(&self.input, Some(addr), self.decompile_timeout, deadline, ctx)?;
+            let (names, problems) = names_for(&ctx.root, &a.manifest);
             let dir = a.manifest.index.parent().unwrap();
-            let result_path = dir.join(format!("decompile-{addr:08X}.json"));
-            let mut result = if let Some(result) = a.fresh_query.take() {
+            let result_path = match &names {
+                Value::Null => dir.join(format!("decompile-{addr:08X}.json")),
+                n => dir.join(format!(
+                    "decompile-{addr:08X}-{}.json",
+                    &sha256_bytes(&serde_json::to_vec(n).unwrap())[..16]
+                )),
+            };
+            // The analysis's own first decompile is without names.
+            let fresh = a.fresh_query.take().filter(|_| names.is_null());
+            let mut result = if let Some(result) = fresh {
                 result
             } else if result_path.is_file() {
                 read_json(&result_path)?
@@ -1153,7 +1162,7 @@ impl Op for DecompileArgs {
                 let output = request.with_extension("result.json");
                 save_json(
                     &request,
-                    &json!({"mode":"query","addr":addr,"decompile_timeout":self.decompile_timeout,"query_result":output}),
+                    &json!({"mode":"query","addr":addr,"decompile_timeout":self.decompile_timeout,"query_result":output,"names":names}),
                 )?;
                 let mut cmd = command(&install, attempt, &a.manifest.language, ctx)?;
                 cmd.arg(&a.manifest.project_dir)
@@ -1205,6 +1214,28 @@ impl Op for DecompileArgs {
             if let Some(note) = unset_registers(&a, out["pseudocode"].as_str().unwrap_or(""), entry_addr) {
                 out["note"] = json!(note);
             }
+            if !names.is_null() {
+                let mut guesses = Vec::new();
+                guessed(&names, &mut guesses);
+                out["pseudocode"] = json!(mark_guesses(out["pseudocode"].as_str().unwrap_or(""), &guesses));
+            }
+            if !names.is_null() || !problems.is_empty() {
+                let mut n = result["names"].take();
+                if n.is_null() {
+                    n = json!({});
+                }
+                // A line the files' check already reported is not reported again.
+                let line = |e: &str| e.splitn(3, ':').take(2).collect::<Vec<_>>().join(":");
+                let reported: Vec<String> = problems.iter().map(|p| line(p)).collect();
+                let errors = n["errors"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|e| !e.as_str().is_some_and(|e| reported.contains(&line(e))));
+                n["errors"] = json!(problems.into_iter().map(Value::from).chain(errors).collect::<Vec<_>>());
+                out["names"] = n;
+            }
             // One line a call: where it is, and the function it is in or calls.
             let call = |r: &Value, other: &str, sep: &str| {
                 let kind = r["type"].as_str().filter(|t| *t != "UNCONDITIONAL_CALL");
@@ -1222,6 +1253,105 @@ impl Op for DecompileArgs {
             Ok(out)
         })())
     }
+}
+
+/// The project's names that apply to an analysis, as the query script
+/// takes them (Null when there are none), and the names files' problems as
+/// `file:line: message`. Names of an overlay (`in RACE.OVL`) apply to an
+/// analysis of that file; the others to any analysis whose memory holds
+/// them, which the script checks.
+fn names_for(root: &Path, manifest: &Manifest) -> (Value, Vec<String>) {
+    use crate::names_bind::{Bind, Code, Inventory};
+    use psx_symbols::names::{Type, TypeBody};
+    let names = psx_symbols::names::load(root);
+    let mut problems: Vec<String> = names.problems.iter().map(|p| format!("{}: {}", p.at, p.message)).collect();
+    let input = std::fs::read(&manifest.input).unwrap_or_default();
+    let code =
+        Code { base: manifest.mapping.base, bytes: input.get(manifest.mapping.file_offset..).unwrap_or_default() };
+    let mut functions = Vec::new();
+    let mut globals = Vec::new();
+    match Inventory::load(root) {
+        // Bound by content: a name applies where the code is the code it names.
+        Some(mut inv) => {
+            for f in &names.functions {
+                match inv.function(&code, f.address, f.module.as_deref()) {
+                    Bind::Apply => functions.push(f),
+                    Bind::Elsewhere => {}
+                    Bind::Skip(why) => problems.push(format!("{}: {}: {why}", f.at, f.name.text)),
+                }
+            }
+            for g in &names.globals {
+                if g.module.as_deref().is_none_or(|m| inv.holds(&code, m)) {
+                    globals.push(g);
+                }
+            }
+        }
+        // No inventory: a module is the analysed executable's file name.
+        None => {
+            let module = manifest.exe.as_ref().and_then(|_| manifest.source.rsplit(['/', '\\']).next());
+            let applies = |m: &Option<String>| match m {
+                None => true,
+                Some(m) => module.is_some_and(|x| x.eq_ignore_ascii_case(m)),
+            };
+            globals = names.globals.iter().filter(|g| applies(&g.module)).collect();
+            functions = names.functions.iter().filter(|f| applies(&f.module)).collect();
+        }
+    }
+    if names.types.is_empty() && globals.is_empty() && functions.is_empty() {
+        return (Value::Null, problems);
+    }
+    let types: Vec<Value> = names
+        .types
+        .iter()
+        .map(|t| {
+            let mut v = json!(t);
+            if matches!(t.body, TypeBody::Struct { .. } | TypeBody::Union { .. }) {
+                v["size"] = json!(names.size_of(&Type::Named { name: t.name.text.clone() }).unwrap_or(0));
+            }
+            v
+        })
+        .collect();
+    (json!({"types": types, "globals": globals, "functions": functions}), problems)
+}
+
+/// The names marked as guesses (`name?`) anywhere in the names JSON.
+fn guessed(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(o) => {
+            if let (Some(t), Some(true)) =
+                (o.get("text").and_then(Value::as_str), o.get("guess").and_then(Value::as_bool))
+            {
+                out.push(t.to_owned());
+            }
+            o.values().for_each(|x| guessed(x, out));
+        }
+        Value::Array(a) => a.iter().for_each(|x| guessed(x, out)),
+        _ => {}
+    }
+}
+
+/// Ghidra prints a guess's `?` as `_`; puts the mark back on each whole
+/// word `name_` for a guessed name.
+fn mark_guesses(code: &str, guesses: &[String]) -> String {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(code.len());
+    let mut rest = code;
+    while let Some(start) = rest.find(|c: char| ident(c)) {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let end = rest.find(|c: char| !ident(c)).unwrap_or(rest.len());
+        let word = &rest[..end];
+        match word.strip_suffix('_').filter(|w| guesses.iter().any(|g| g == w)) {
+            Some(w) => {
+                out.push_str(w);
+                out.push('?');
+            }
+            None => out.push_str(word),
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Explains pseudocode that reads registers no path in the function sets
@@ -1522,6 +1652,18 @@ fn export(analysis: &Path, out: Option<PathBuf>, deadline: Instant, ctx: &Ctx) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guesses_get_their_mark_back() {
+        let names = json!({"functions": [{"name": {"text": "sqr12", "guess": true}}, {"name": {"text": "rsin"}}]});
+        let mut g = Vec::new();
+        guessed(&names, &mut g);
+        assert_eq!(g, ["sqr12"]);
+        assert_eq!(
+            mark_guesses("x = sqr12_(a) + my_sqr12_(b) + sqr12__;", &g),
+            "x = sqr12?(a) + my_sqr12_(b) + sqr12__;"
+        );
+    }
 
     fn context() -> Ctx {
         let root = std::env::temp_dir().join(format!("psx-ghidra-unit-{}", crate::stamp()));

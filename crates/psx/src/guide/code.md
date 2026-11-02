@@ -45,7 +45,13 @@ reuse its analysis handle. For overlays give ram with ranges, entries and
 gp. GTE operations read as calls by register and command
 (gte_set_VXY0(v), gte_RTPS(sf,lm), gte_get_SXY2()), without their
 arithmetic. A note says why the pseudocode reads registers nothing sets
-(unaff_, in_): a start inside a function, or code that does so on purpose. A project open in the Ghidra GUI is an error until closed. A query cut
+(unaff_, in_): a start inside a function, or code that does so on purpose.
+The project's names files (names/ and .psx/names/, *.names) apply to every
+decompile; its names field counts what applied and lists what did not, by
+file and line. A function's name applies where the code at its address is
+the inventory's function there, by its bytes: `in MODULE` (an overlay's or
+executable's file) names one of several loaded at one address, and a name
+for code not in the analysis is left out without a word. A project open in the Ghidra GUI is an error until closed. A query cut
 short (a deadline, a killed psx) is recovered by the next one; a lock left
 by a dead process (psx.lock under .psx/ghidra/) is removed by hand only
 after checking its pid is gone. code_annotate applies names and comments

@@ -30,6 +30,7 @@ mod mcp;
 mod media_cmd;
 mod messages;
 mod moved;
+mod names_bind;
 mod native;
 mod page;
 mod parser;

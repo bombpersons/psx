@@ -186,11 +186,17 @@ of the game's instructions that ran in the agent's C.
 - **The agent edits with its own file tools.** No psx call writes names or
   C. Feedback comes from the next decompile or check: what did not parse
   (with what was expected) and what did not apply, by file and line.
-- **Nothing in the files is machine-written.** The first time psx applies
-  a function's name it records the function's bytes in
-  `.psx/names-bound.json`; when they later differ (an overlay loading
-  other code there) the name is reported, not applied, and the function's
-  C is not used.
+- **Nothing in the files is machine-written; names bind by content.** The
+  inventory knows each function of the executables and overlays by the
+  sha256 of its bytes. A function's name applies where the analysed code at
+  its address hashes to the function's, so overlays loaded at one address
+  are told apart by what they hold, and a name for code that is not there
+  (another overlay, or the executable under an overlay) is left out
+  quietly. `in MODULE` picks the overlay or executable by its file; a name
+  without it is the executable's, and is reported when only overlays have
+  a function there and more than one does. A module's globals apply where
+  its code is loaded. Later phases use the same check before replacing a
+  function with its C.
 - **The build is detected from the code, not assumed.** The PsyQ library
   version (from signatures) dates the SDK. `code symbols` adds what the
   code shows: the gp its startup code sets (small data addressed from gp,
@@ -313,6 +319,22 @@ whether the next is worth building.
    *Done when* Croc's 0x80031F64, with a names file written from walls.md
    on a scratch copy, decompiles as the trial's did (no more than 58 raw
    offsets, every call named), and a planted typo is reported by line.
+
+   *Done (2026-11-02):* the query script applies the names in its
+   read-only session, so nothing stays in the Ghidra project, and the
+   result's `names` counts what applied and lists what did not. On scratch
+   Croc, walls.names gives 0x80031F64 64 raw offsets (the trial's 67 by the
+   same count), no `FUN_`, 10 functions, 14 locals, 7 types and 3 globals
+   applied; a planted `Probehint` is reported once, at its line. Ghidra
+   prints names as identifiers, so a guess's `?` is put back by psx and the
+   offset pointer reads `Object_ptr_0x38` (with `ADJ(obj_38)->field`); a
+   typed global past the EXE's image gets memory for the query alone. Names
+   bind by content against the inventory (above): on GT2, three names `in
+   GT2.OVL` apply in a RAM analysis with the overlay loaded and not in the
+   executable's, and the executable's name at an address the overlay shares
+   applies only in the executable's; `in` with a module the inventory has
+   no function of at that address is reported by line. Without an
+   inventory, `in` matches the analysed executable's file name.
 
 4. **Names everywhere.** Function and address arguments take names
    (`world_collide`, `croc+0x370`, `RACE.OVL:race_update`). `code disasm`,
