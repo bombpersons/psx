@@ -237,7 +237,8 @@ pub fn pad_state(b: &Bindings, analog: bool, keys: &[String], pad: &[String], st
     let mut buttons = b.buttons(keys.iter().map(String::as_str), pad.iter().map(String::as_str));
     let [lx, ly, rx, ry] = sticks;
     let dz = b.stick_deadzone;
-    let sticks = [stick_byte(lx, dz, false), stick_byte(ly, dz, true), stick_byte(rx, dz, false), stick_byte(ry, dz, true)];
+    let sticks =
+        [stick_byte(lx, dz, false), stick_byte(ly, dz, true), stick_byte(rx, dz, false), stick_byte(ry, dz, true)];
     if analog {
         (buttons, sticks)
     } else {

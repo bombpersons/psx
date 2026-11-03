@@ -346,6 +346,28 @@ whether the next is worth building.
    *Done when* a traced run on scratch Croc prints `world_collide` with
    no `--symbols` given, and nothing refers to the old annotate.
 
+   *Done (2026-11-02):* an address argument is hex or
+   `[MODULE:]name[+OFFSET]` from the names files (run's trace ranges,
+   watches, samples and pokes, `code disasm`, `code xrefs`, `code decompile`'s
+   address, ranges and entries, and `ram view`); hex wins unless
+   a name is spelled the same and no `0x` is given, and a name several
+   modules give different addresses asks for its module. Views name a
+   function where its bytes are the inventory's, checked once and then
+   compared, and a name the inventory does not place up to the next
+   function it knows; globals print as `name+0xOFF` within their type. On
+   scratch Croc from level_1_1, `--trace-range world_collide` traces
+   `-> 80031f64 world_collide` with no `--symbols`, a watch on `STEP`
+   writes `"global":"STEP"`, reads name `world_collide+0x3F34`
+   (body_match) and calls.json names 10 functions; `code disasm --function
+   world_collide` notes `OBJ_STEP`, `floor_find` and `area_record`; `code
+   xrefs STEP` finds its 4 references in world_collide; `code coverage`
+   names 10 rows and `code functions --filter world` finds world_collide.
+   `code annotate`, manifests' `annotations`, revisions and
+   `export.symbols.json` are gone, with bound_symbols.rs; the Ghidra test
+   names through a names file. `code inventory` writes no names: its
+   inventory.json is rewritten rarely, and names given after would be
+   stale, so the views that read it name its rows instead.
+
 5. **What to name next.** The decompile lists unnamed callees, `DAT_`
    globals and offsets on typed pointers that fall in no field, by how
    often each appears. `code names` with no query does the same over the

@@ -69,7 +69,10 @@ pub fn main(a: PlayArgs, here: &Path) -> ExitCode {
     let all = gather(&roots);
     if a.list || (all.is_empty() && a.request.is_none()) {
         if all.is_empty() {
-            println!("No play requests wait ({} projects: psx web DIR or psx play --project DIR adds one).", roots.len());
+            println!(
+                "No play requests wait ({} projects: psx web DIR or psx play --project DIR adds one).",
+                roots.len()
+            );
         } else {
             print_list(&all);
         }
@@ -118,7 +121,8 @@ pub fn main(a: PlayArgs, here: &Path) -> ExitCode {
             Ok((_, v)) => match v["status"].as_str() {
                 Some("queued") => println!("Closed without an answer: the request is back in the queue."),
                 Some(s) if v.get("error").is_none() => {
-                    let rec = v["recording"]["status"].as_str().map(|r| format!(" (recording {r})")).unwrap_or_default();
+                    let rec =
+                        v["recording"]["status"].as_str().map(|r| format!(" (recording {r})")).unwrap_or_default();
                     println!("Answered: {s}{rec}.");
                 }
                 _ => println!("The play failed: {}", v["error"]["message"].as_str().unwrap_or("")),

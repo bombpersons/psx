@@ -274,8 +274,8 @@ importers read the original's formats; the game reads the port's own.
 - run: the game for N fields from power-on or a state, with input,
   watches, samples, traces, GPU captures and states (run).
 - ram_diff, ram_search, ram_view: values across snapshots (code).
-- code_disasm, code_xrefs, code_decompile, code_functions,
-  code_annotate, code_symbols: reading code (code).
+- code_disasm, code_xrefs, code_decompile, code_functions, code_symbols:
+  reading code (code).
 - code_inventory, code_coverage, code_coverage_diff: every function, and
   what runs and recordings executed (code).
 - assets_scan, assets_extract, assets_textures, assets_diff,

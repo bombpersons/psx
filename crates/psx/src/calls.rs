@@ -101,7 +101,10 @@ pub fn start(root: &Path, tool: &str, args: Value, caller: Value) -> Option<Call
     }
     let size = serde_json::to_string(&args).map_or(0, |s| s.len());
     let args = if size > ARGS_LIMIT { json!({"omitted_bytes": size}) } else { args };
-    append(&log, &json!({"id": id, "t": crate::now_ms() as u64, "event": "start", "tool": tool, "args": args, "caller": caller}));
+    append(
+        &log,
+        &json!({"id": id, "t": crate::now_ms() as u64, "event": "start", "tool": tool, "args": args, "caller": caller}),
+    );
     Some(Call { root: root.to_path_buf(), id, started: std::time::Instant::now() })
 }
 
@@ -129,7 +132,10 @@ impl Call {
         }
         if text.len() <= RESULT_LIMIT {
             let dir = self.root.join(RESULTS);
-            if std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(format!("{}.json", self.id)), &text)).is_ok() {
+            if std::fs::create_dir_all(&dir)
+                .and_then(|_| std::fs::write(dir.join(format!("{}.json", self.id)), &text))
+                .is_ok()
+            {
                 line["kept"] = json!(true);
             }
             // Now and then, not on every call.
@@ -241,7 +247,10 @@ mod tests {
         assert_eq!(lines[1]["summary"], "status: work; item: record; [facts]");
         assert!(root.join(RESULTS).join(format!("{id}.json")).is_file());
         assert_eq!(summary(&json!({"error": {"code": "timeout", "message": "too slow"}})), "timeout: too slow");
-        assert_eq!(summary(&json!({"git": {}, "next": {"item": "Fix", "feature": "F-0002"}})), "next: Fix F-0002; [git]");
+        assert_eq!(
+            summary(&json!({"git": {}, "next": {"item": "Fix", "feature": "F-0002"}})),
+            "next: Fix F-0002; [git]"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

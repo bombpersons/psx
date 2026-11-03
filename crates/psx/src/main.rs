@@ -14,7 +14,6 @@ mod artifact;
 mod assets_cmd;
 mod binding;
 mod bios;
-mod bound_symbols;
 mod calls;
 mod code;
 mod commands;
@@ -24,8 +23,8 @@ mod error;
 mod ghidra;
 mod guide;
 mod handoff;
-mod live;
 mod inventory;
+mod live;
 mod mcp;
 mod media_cmd;
 mod messages;
@@ -40,7 +39,6 @@ mod provenance;
 mod ram;
 mod replay;
 mod reports;
-mod stats;
 mod run;
 mod run_native;
 mod scenario;
@@ -48,6 +46,7 @@ mod script_cover;
 mod stall;
 mod stamp;
 mod states;
+mod stats;
 mod str_cmd;
 mod symbols_io;
 mod template;
@@ -177,9 +176,6 @@ enum CodeAction {
     Decompile(ghidra::DecompileArgs),
     /// Ghidra's functions, with optional name filtering and pagination.
     Functions(ghidra::FunctionsArgs),
-    /// Apply function renames and comments from a JSON patch to a Ghidra analysis, and
-    /// export the new revision's names as a .symbols.json for run, disasm and xrefs.
-    Annotate(ghidra::AnnotateArgs),
     /// Name library functions in a PS-X EXE by PsyQ signature matching.
     /// Writes <out>.symbols.json, <out>.ghidra.txt (ImportSymbolsScript.py) and <out>.sym.
     Symbols(symbols_io::SymbolsArgs),
@@ -292,7 +288,6 @@ impl CodeAction {
             Self::Xrefs(a) => a.exec(ctx),
             Self::Decompile(a) => a.exec(ctx),
             Self::Functions(a) => a.exec(ctx),
-            Self::Annotate(a) => a.exec(ctx),
             Self::Symbols(a) => a.exec(ctx),
             Self::Inventory(a) => a.exec(ctx),
             Self::Coverage(CoverageCmd { action: Some(CoverageAction::Diff(a)), .. }) => a.exec(ctx),
@@ -340,16 +335,28 @@ fn main() -> ExitCode {
     let ctx = Ctx { root: std::env::current_dir().unwrap_or_default(), cancel: None };
     // An MCP server logs its own calls (its project workers' included); a
     // handoff's child is part of the play that started it; web only reads.
-    let logged = !matches!(cli.command, Command::McpCall | Command::Mcp(_) | Command::HandoffChild { .. } | Command::Web(_) | Command::WebReplay { .. } | Command::Play(_));
+    let logged = !matches!(
+        cli.command,
+        Command::McpCall
+            | Command::Mcp(_)
+            | Command::HandoffChild { .. }
+            | Command::Web(_)
+            | Command::WebReplay { .. }
+            | Command::Play(_)
+    );
     let call = logged
-        .then(|| calls::start(&ctx.root, &tool, serde_json::json!(std::env::args().skip(1).collect::<Vec<_>>()), calls::caller("cli", None)))
+        .then(|| {
+            calls::start(
+                &ctx.root,
+                &tool,
+                serde_json::json!(std::env::args().skip(1).collect::<Vec<_>>()),
+                calls::caller("cli", None),
+            )
+        })
         .flatten();
     // The screen of a game this call runs, for psx web (a worker's from its MCP server).
-    let _live = call
-        .as_ref()
-        .map(|c| c.live_path())
-        .or_else(|| std::env::var_os(live::ENV).map(Into::into))
-        .map(live::publish);
+    let _live =
+        call.as_ref().map(|c| c.live_path()).or_else(|| std::env::var_os(live::ENV).map(Into::into)).map(live::publish);
     let out = match cli.command {
         Command::McpCall => mcp::project::worker(&ctx),
         Command::HandoffChild { run_dir } => handoff::child(&ctx, &run_dir),
@@ -396,7 +403,11 @@ fn main() -> ExitCode {
                 let mut t = out.value["text"].as_str().unwrap_or_default().trim_end().to_string();
                 t.push_str("\n\nFrom the person (in psx web; reply now in a line or two with psx message --text ... --reply-to ID, then go on):");
                 for x in m["from_person"].as_array().into_iter().flatten() {
-                    t.push_str(&format!("\n  [{}] {}", x["id"].as_str().unwrap_or(""), x["text"].as_str().unwrap_or("")));
+                    t.push_str(&format!(
+                        "\n  [{}] {}",
+                        x["id"].as_str().unwrap_or(""),
+                        x["text"].as_str().unwrap_or("")
+                    ));
                 }
                 out.value["text"] = serde_json::json!(t);
             }

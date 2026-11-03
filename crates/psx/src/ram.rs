@@ -517,7 +517,7 @@ pub fn parse_sample(s: &str) -> Result<Sample, String> {
 /// Shared by the `ADDR:FMT[:NAME]` text and typed forms. A bare byte width
 /// (1, 2, 4, as in watches) reads unsigned.
 fn sample(a: &str, f: &str, name: Option<&str>, label: &str) -> Result<Sample, String> {
-    let addr = parse_hex(a).ok_or_else(|| format!("{label}: bad hex address {a:?}"))?;
+    let addr = crate::names_bind::address(a).map_err(|e| format!("{label}: {e}"))?;
     sample_at(addr, f, name, label)
 }
 
@@ -836,7 +836,7 @@ pub fn parse_poke(s: &str) -> Result<Poke, String> {
     };
     let (a, rest) = body.split_once('=').ok_or_else(|| format!("--poke {s:?}: expected ADDR=VALUE[:WIDTH][@FRAME]"))?;
     let (at, val) = {
-        let addr = parse_hex(a).ok_or_else(|| format!("--poke {s:?}: bad hex address {a:?}"))?;
+        let addr = crate::names_bind::address(a).map_err(|e| format!("--poke {s:?}: {e}"))?;
         let (val, ty) = match rest.rsplit_once(':') {
             Some((v, t)) => (v, t),
             None => (rest, "4"),
@@ -910,10 +910,7 @@ fn parse_width(w: u8) -> crate::Result<usize> {
 fn parse_range(r: Option<&str>) -> crate::Result<(usize, usize)> {
     let Some(r) = r else { return Ok((0, RAM_SIZE)) };
     let (lo, hi) = r.split_once('-').ok_or_else(|| Error::invalid(format!("range {r:?}: expected LO-HI in hex")))?;
-    let (lo, hi) = (
-        parse_hex(lo).ok_or_else(|| Error::invalid(format!("bad range start {lo:?}")))?,
-        parse_hex(hi).ok_or_else(|| Error::invalid(format!("bad range end {hi:?}")))?,
-    );
+    let (lo, hi) = (crate::commands::addr_arg(lo, "range start")?, crate::commands::addr_arg(hi, "range end")?);
     let l = match locate(lo, 0) {
         Some(Mem::Ram(o)) => o,
         _ => return Err(Error::invalid(format!("range start 0x{lo:08X} is not main RAM"))),
@@ -1207,7 +1204,7 @@ pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str, same: bool) ->
     if snaps.is_empty() {
         return Err(Error::invalid("give at least one snapshot"));
     }
-    let a = parse_hex(addr).ok_or_else(|| Error::invalid(format!("bad hex address {addr:?}")))?;
+    let a = crate::commands::addr_arg(addr, "address")?;
     let Some(Mem::Ram(start)) = locate(a, 0) else { return Err(Error::invalid(format!("0x{a:08X} is not main RAM"))) };
     let end = (start + len.min(64 * 1024)).min(RAM_SIZE);
     let mut rows = Vec::new();
@@ -1226,15 +1223,24 @@ pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str, same: bool) ->
             off += w;
             continue;
         }
-        rows.push(json!({
+        let global = crate::names_bind::global_at(crate::names_bind::project_names(), addr_of(off));
+        let mut row = json!({
             "address": hex(addr_of(off)), "offset": format!("+0x{:X}", off - start),
             "values": vals.iter().map(|&v| fmt.json(v)).collect::<Vec<_>>(), "differs": differs,
-        }));
+        });
+        if let Some(g) = &global {
+            row["global"] = json!(g);
+        }
+        rows.push(row);
         text += &format!("{:<12}{:<8}", format!("{:08X}", addr_of(off)), format!("+{:X}", off - start));
         for &v in &vals {
             text += &format!("{:>16}", fmt.render(v));
         }
-        text += if differs { "  *\n" } else { "\n" };
+        text += if differs { "  *" } else { "" };
+        if let Some(g) = &global {
+            text += &format!("  {g}");
+        }
+        text += "\n";
         off += w;
     }
     let legend: Vec<String> = snaps.iter().enumerate().map(|(i, s)| format!("[{i}] {}", s.path.display())).collect();
@@ -1351,7 +1357,7 @@ mod tests {
         assert!(parse_poke("80010010=a name too long:str8").unwrap_err().contains("at most 8 bytes"));
         assert!(parse_poke("8015E8AC=1@5..2").is_err());
         assert!(parse_poke("1F000000=1").is_err());
-        assert!(parse_poke("lara.x=1").unwrap_err().contains("bad hex address"));
+        assert!(parse_poke("lara.x=1").unwrap_err().contains("neither a hex address nor a name"));
     }
 
     #[test]
@@ -1380,7 +1386,7 @@ mod tests {
         // A name that is also a hex address is the address.
         assert!(matches!(col("a0010000"), Column::Memory(c) if c.addr == 0xA001_0000));
         assert!(matches!(col("8015e8a8:i16"), Column::Memory(_)));
-        assert!(SampleSpec::Text("Croc_x".into()).parse().unwrap_err().contains("bad hex address"));
+        assert!(SampleSpec::Text("Croc_x".into()).parse().unwrap_err().contains("neither a hex address nor a name"));
     }
 
     #[test]

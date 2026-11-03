@@ -892,6 +892,7 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
             "calls": img.count.get(k(f.entry)).copied().unwrap_or(0),
             "runs": img.runs[fi].iter().collect::<Vec<_>>(),
         });
+        crate::names_bind::name_row(&mut row, &img.name, f.entry);
         if blocks_executed > 0 && !unexecuted.is_empty() {
             row["unexecuted"] = json!(unexecuted);
         }
@@ -1256,12 +1257,16 @@ fn compare(a: &[Image], b: &[Image]) -> (Vec<Value>, Vec<Value>, [u64; 3]) {
             let instructions = f.words().count() as u64;
             if !in_b.contains(&true) {
                 only_instructions += instructions;
-                only.push(json!({
-                    "image": ia.name, "entry": hex(f.entry), "instructions": instructions,
-                    "blocks": spans.len(), "blocks_executed": in_a.iter().filter(|x| **x).count(),
-                    "calls": ia.count.get(((f.entry - ia.base) / 4) as usize).copied().unwrap_or(0),
-                    "runs": runs,
-                }));
+                only.push(crate::names_bind::named(
+                    json!({
+                        "image": ia.name, "entry": hex(f.entry), "instructions": instructions,
+                        "blocks": spans.len(), "blocks_executed": in_a.iter().filter(|x| **x).count(),
+                        "calls": ia.count.get(((f.entry - ia.base) / 4) as usize).copied().unwrap_or(0),
+                        "runs": runs,
+                    }),
+                    &ia.name,
+                    f.entry,
+                ));
                 continue;
             }
             // The blocks only the runs executed, adjacent ones joined.
@@ -1286,6 +1291,7 @@ fn compare(a: &[Image], b: &[Image]) -> (Vec<Value>, Vec<Value>, [u64; 3]) {
             blocks_only += spans.iter().zip(in_a.iter().zip(&in_b)).filter(|(_, (x, y))| **x && !**y).count() as u64;
             ways_count += ways.len() as u64;
             let mut row = json!({"image": ia.name, "entry": hex(f.entry), "runs": runs});
+            crate::names_bind::name_row(&mut row, &ia.name, f.entry);
             if !blocks.is_empty() {
                 row["blocks"] = json!(blocks);
             }
@@ -1336,7 +1342,13 @@ impl CoverageDiffArgs {
         std::fs::write(&out, text).map_err(|e| Error::io(&out, e))?;
         let mut r = json!({
             "out": out, "totals": doc["totals"],
-            "only": doc["only"].as_array().into_iter().flatten().take(20).map(|f| json!({"image": f["image"], "entry": f["entry"], "instructions": f["instructions"]})).collect::<Vec<_>>(),
+            "only": doc["only"].as_array().into_iter().flatten().take(20).map(|f| {
+                let mut r = json!({"image": f["image"], "entry": f["entry"], "instructions": f["instructions"]});
+                if !f["name"].is_null() {
+                    r["name"] = f["name"].clone();
+                }
+                r
+            }).collect::<Vec<_>>(),
             "next": "read out for every function, block and branch way: these are the candidates for the feature's code; disassemble or decompile them, and keep what a run without the feature also reaches out of the feature",
         });
         if let Some(hint) = unheld(&inv, &json!(null), no_image.len() as u64) {

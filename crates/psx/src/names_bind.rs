@@ -8,7 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
+use psx_symbols::names::{Name, Names};
 use serde_json::Value;
+use std::sync::OnceLock;
 
 /// The analysed memory: its bytes from `base`.
 pub(crate) struct Code<'a> {
@@ -113,40 +115,50 @@ impl Inventory {
         Some(Inventory { by_entry, present: HashMap::new() })
     }
 
+    /// The inventory's functions a name at `addr` (of `module`, or the
+    /// executable's) may be: empty when the inventory has none there and no
+    /// module was said, an error when the name cannot be placed.
+    fn candidates(&self, addr: u32, module: Option<&str>) -> Result<Vec<&Known>, String> {
+        let all = self.by_entry.get(&addr).map(Vec::as_slice).unwrap_or_default();
+        let Some(m) = module else {
+            let exe: Vec<_> = all.iter().filter(|k| k.executable).collect();
+            let known: Vec<_> = if exe.is_empty() { all.iter().collect() } else { exe };
+            let modules: BTreeSet<&str> = known.iter().map(|k| k.module.as_str()).collect();
+            if modules.len() > 1 {
+                return Err(format!(
+                    "several overlays have a function at {addr:08X} ({}): say which with `in`",
+                    modules.into_iter().collect::<Vec<_>>().join(", ")
+                ));
+            }
+            return Ok(known);
+        };
+        let lower = m.to_lowercase();
+        let known: Vec<_> = all.iter().filter(|k| k.labels.contains(&lower)).collect();
+        if known.is_empty() {
+            return Err(format!("the inventory has no function of {m} at {addr:08X}"));
+        }
+        Ok(known)
+    }
+
     /// Whether a function name at `addr` (of `module`, or the executable's)
     /// applies to the analysed code.
     pub(crate) fn function(&self, code: &Code, addr: u32, module: Option<&str>) -> Bind {
-        let all = self.by_entry.get(&addr).map(Vec::as_slice).unwrap_or_default();
-        let known: Vec<&Known> = match module {
-            Some(m) => {
-                let m = m.to_lowercase();
-                let k: Vec<_> = all.iter().filter(|k| k.labels.contains(&m)).collect();
-                if k.is_empty() {
-                    return Bind::Skip(format!("the inventory has no function of {} at {addr:08X}", module.unwrap()));
-                }
-                k
-            }
-            None => {
-                let exe: Vec<_> = all.iter().filter(|k| k.executable).collect();
-                if exe.is_empty() { all.iter().collect() } else { exe }
-            }
-        };
-        if known.is_empty() {
+        match self.candidates(addr, module) {
+            Err(why) => Bind::Skip(why),
             // A function the inventory missed: by its address.
-            return Bind::Apply;
+            Ok(known) if known.is_empty() => Bind::Apply,
+            Ok(known) if known.iter().any(|k| code.sha(&k.chunks).is_some_and(|s| s == k.sha)) => Bind::Apply,
+            Ok(_) => Bind::Elsewhere,
         }
-        let modules: BTreeSet<&str> = known.iter().map(|k| k.module.as_str()).collect();
-        if module.is_none() && modules.len() > 1 {
-            return Bind::Skip(format!(
-                "several overlays have a function at {addr:08X} ({}): say which with `in`",
-                modules.into_iter().collect::<Vec<_>>().join(", ")
-            ));
-        }
-        if known.iter().any(|k| code.sha(&k.chunks).is_some_and(|s| s == k.sha)) {
-            Bind::Apply
-        } else {
-            Bind::Elsewhere
-        }
+    }
+
+    /// The name of the inventory's function at `entry` in `module` (as the
+    /// inventory names it), from the project's names.
+    fn name_of(&self, names: &Names, module: &str, entry: u32) -> Option<String> {
+        names.functions.iter().filter(|f| f.address == entry).find_map(|f| {
+            let known = self.candidates(entry, f.module.as_deref()).ok()?;
+            known.iter().any(|k| k.module == module).then(|| label(&f.name))
+        })
     }
 
     /// Whether the analysis holds `module`'s code: most of its functions in
@@ -168,6 +180,246 @@ impl Inventory {
         self.present.insert(m, p);
         p
     }
+}
+
+/// `addr` in main RAM as KSEG0 (0x80xxxxxx), whatever mirror it is given in.
+pub(crate) fn canonical(addr: u32) -> Option<u32> {
+    use psx_media::memmap::{Region, resolve};
+    let r = resolve(addr);
+    (r.region == Region::MainRam).then_some(0x8000_0000 | r.offset)
+}
+
+/// A name as views show it: a guess keeps its `?`.
+pub(crate) fn label(n: &Name) -> String {
+    if n.guess { format!("{}?", n.text) } else { n.text.clone() }
+}
+
+/// One code a named function may be: its chunks and their sha256. Bytes
+/// that once hashed right are kept, so later checks compare instead.
+struct Alt {
+    name: String,
+    entry: u32,
+    chunks: Vec<(u32, u32)>,
+    sha: String,
+    seen: OnceLock<Vec<u8>>,
+}
+
+impl Alt {
+    fn holds(&self, image_base: u32, image: &[u8]) -> bool {
+        let part = |&(s, e): &(u32, u32)| -> Option<&[u8]> {
+            let o = s.checked_sub(image_base)? as usize;
+            image.get(o..o + e.checked_sub(s)? as usize)
+        };
+        if let Some(seen) = self.seen.get() {
+            let mut at = 0;
+            let same = self.chunks.iter().all(|c| {
+                part(c).is_some_and(|b| {
+                    at += b.len();
+                    seen.get(at - b.len()..at) == Some(b)
+                })
+            });
+            if same {
+                return true;
+            }
+        }
+        let Some(bytes) = self.chunks.iter().map(part).collect::<Option<Vec<_>>>().map(|p| p.concat()) else {
+            return false;
+        };
+        let ok = crate::stamp::sha256(&bytes) == self.sha;
+        if ok {
+            let _ = self.seen.set(bytes);
+        }
+        ok
+    }
+}
+
+/// The project's function names as views use them: a name the inventory
+/// places is given where its function's bytes are, others by address.
+pub(crate) struct Scope {
+    alts: Vec<Alt>,
+    /// Chunk ranges by start: (start, end, alt).
+    intervals: Vec<(u32, u32, usize)>,
+    /// Names the inventory does not place, each up to the next function it knows.
+    unplaced: psx_symbols::SymbolTable,
+    /// Every name, for lookups without the code at hand.
+    pub table: psx_symbols::SymbolTable,
+}
+
+impl Scope {
+    pub(crate) fn new(names: &Names, inv: Option<&Inventory>) -> Option<Scope> {
+        if names.functions.is_empty() {
+            return None;
+        }
+        let mut alts = Vec::new();
+        let mut unplaced = String::new();
+        let mut all = String::new();
+        let mut bodies = Vec::new();
+        let mut unplaced_bodies = Vec::new();
+        for f in &names.functions {
+            let name = label(&f.name);
+            all.push_str(&format!("{:08X} {name}\n", f.address));
+            let known = inv.map(|i| i.candidates(f.address, f.module.as_deref()));
+            match known {
+                Some(Ok(k)) if !k.is_empty() => {
+                    bodies.push((f.address, k[0].chunks.clone()));
+                    for k in k {
+                        alts.push(Alt {
+                            name: name.clone(),
+                            entry: f.address,
+                            chunks: k.chunks.clone(),
+                            sha: k.sha.clone(),
+                            seen: OnceLock::new(),
+                        });
+                    }
+                }
+                // A name the inventory cannot place is the decompile's to report.
+                Some(Err(_)) => {}
+                _ => {
+                    unplaced.push_str(&format!("{:08X} {name}\n", f.address));
+                    let next = inv.and_then(|i| i.by_entry.range(f.address + 1..).next().map(|(&a, _)| a));
+                    if let Some(next) = next {
+                        unplaced_bodies.push((f.address, vec![(f.address, next)]));
+                    }
+                }
+            }
+        }
+        let mut intervals: Vec<_> =
+            alts.iter().enumerate().flat_map(|(i, a)| a.chunks.iter().map(move |&(s, e)| (s, e, i))).collect();
+        intervals.sort_unstable();
+        let mut table = psx_symbols::SymbolTable::from_sym_text(&all);
+        for (entry, body) in bodies {
+            table.set_body(entry, body);
+        }
+        let mut unplaced = psx_symbols::SymbolTable::from_sym_text(&unplaced);
+        for (entry, body) in unplaced_bodies {
+            unplaced.set_body(entry, body);
+        }
+        Some(Scope { alts, intervals, unplaced, table })
+    }
+
+    /// The project's names, read once a process.
+    pub(crate) fn project() -> Option<&'static Scope> {
+        static SCOPE: OnceLock<Option<Scope>> = OnceLock::new();
+        SCOPE.get_or_init(|| Scope::new(project_names(), project_inventory())).as_ref()
+    }
+
+    /// `name` or `name+0xOFF` for `pc` in `image` (loaded at `image_base`),
+    /// and whether the name was checked against the function's bytes.
+    pub(crate) fn describe(&self, pc: u32, image_base: u32, image: &[u8], distance: u32) -> Option<(String, bool)> {
+        let pc = canonical(pc)?;
+        let i = self.intervals.partition_point(|r| r.0 <= pc);
+        for &(_, end, a) in self.intervals[..i].iter().rev() {
+            let alt = &self.alts[a];
+            if pc < end && alt.holds(image_base, image) {
+                let off = pc.wrapping_sub(alt.entry);
+                return Some((if off == 0 { alt.name.clone() } else { format!("{}+0x{off:X}", alt.name) }, true));
+            }
+        }
+        self.unplaced.describe(pc, distance).map(|n| (n, false))
+    }
+}
+
+/// The project's inventory, read once a process.
+fn project_inventory() -> Option<&'static Inventory> {
+    static INVENTORY: OnceLock<Option<Inventory>> = OnceLock::new();
+    INVENTORY.get_or_init(|| Inventory::load(Path::new("."))).as_ref()
+}
+
+/// The project's name for the inventory's function at `entry` in `module`
+/// (an executable's path or an overlay's name, as the inventory has them).
+pub(crate) fn function_name(module: &str, entry: u32) -> Option<String> {
+    project_inventory()?.name_of(project_names(), module, entry)
+}
+
+/// `row` with the project's name for its function, when there is one.
+pub(crate) fn name_row(row: &mut Value, module: &str, entry: u32) {
+    if let Some(n) = function_name(module, entry) {
+        row["name"] = Value::String(n);
+    }
+}
+
+pub(crate) fn named(mut row: Value, module: &str, entry: u32) -> Value {
+    name_row(&mut row, module, entry);
+    row
+}
+
+/// The project's names (names/ and .psx/names/ under the current
+/// directory, which psx makes the project root), read once a process.
+pub(crate) fn project_names() -> &'static Names {
+    static NAMES: OnceLock<Names> = OnceLock::new();
+    NAMES.get_or_init(|| psx_symbols::names::load(Path::new(".")))
+}
+
+/// An address argument: hex, or a name from the project's names files,
+/// `[MODULE:]name[+OFFSET]` (a function's or a global's). Hex wins unless
+/// a name is spelled the same and no `0x` is given.
+pub(crate) fn address(spec: &str) -> Result<u32, String> {
+    let spec = spec.trim();
+    let hex = psx_media::memmap::parse_hex(spec);
+    let names = project_names();
+    if let Some(h) = hex {
+        if spec.starts_with("0x") || spec.starts_with("0X") || find(names, spec).is_empty() {
+            return Ok(h);
+        }
+    }
+    let (base, off) = match spec.split_once('+') {
+        Some((b, o)) => (
+            b.trim(),
+            parse_offset(o.trim()).ok_or_else(|| format!("bad offset {o:?} in {spec:?} (hex 0x.. or decimal)"))?,
+        ),
+        None => (spec, 0),
+    };
+    let found = find(names, base);
+    match found.as_slice() {
+        [a] => Ok(a.wrapping_add(off)),
+        [] => Err(format!("{base:?} is neither a hex address nor a name in names/")),
+        many => Err(format!(
+            "{base:?} names several addresses ({}): say which with MODULE:{base}",
+            many.iter().map(|a| format!("{a:08X}")).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
+fn parse_offset(s: &str) -> Option<u32> {
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(h) => u32::from_str_radix(h, 16).ok(),
+        None => s.parse().ok(),
+    }
+}
+
+/// The addresses `[MODULE:]name` names, without repeats.
+fn find(names: &Names, spec: &str) -> Vec<u32> {
+    let (module, name) = match spec.rsplit_once(':') {
+        Some((m, n)) => (Some(m), n),
+        None => (None, spec),
+    };
+    let name = name.trim_end_matches('?');
+    let module_ok = |m: &Option<String>| module.is_none_or(|x| m.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(x)));
+    let mut out: Vec<u32> = names
+        .functions
+        .iter()
+        .filter(|f| f.name.text == name && module_ok(&f.module))
+        .map(|f| f.address)
+        .chain(names.globals.iter().filter(|g| g.name.text == name && module_ok(&g.module)).map(|g| g.address))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The global holding `addr`, as `name` or `name+0xOFF` within its type's size.
+pub(crate) fn global_at(names: &Names, addr: u32) -> Option<String> {
+    let addr = canonical(addr).unwrap_or(addr);
+    names
+        .globals
+        .iter()
+        .filter(|g| g.address <= addr)
+        .filter_map(|g| {
+            let size = g.ty.as_ref().and_then(|t| names.size_of(t)).unwrap_or(1).max(1);
+            let off = addr - g.address;
+            (off < size).then(|| if off == 0 { label(&g.name) } else { format!("{}+0x{off:X}", label(&g.name)) })
+        })
+        .next()
 }
 
 #[cfg(test)]
@@ -229,5 +481,49 @@ mod tests {
         let ovl = Code { base: 0x8001_0000, bytes: &b };
         assert!(matches!(inv.function(&ovl, 0x8001_0000, None), Bind::Elsewhere));
         assert!(matches!(inv.function(&ovl, 0x8001_0000, Some("gt2.ovl")), Bind::Apply));
+    }
+    fn names(text: &str) -> Names {
+        psx_symbols::names::from_texts(&[("names/a.names".into(), text.into())], &[])
+    }
+
+    #[test]
+    fn views_name_a_function_where_its_bytes_are() {
+        let a = [1u8, 0, 0, 0, 2, 0, 0, 0];
+        let b = [3u8, 0, 0, 0, 4, 0, 0, 0];
+        let f = |sha: &[u8]| json!([{"entry": "0x80100000", "end": "0x80100008", "sha256": crate::stamp::sha256(sha)}]);
+        let mut inv = inventory(json!([
+            {"name": "0x80100000 /RACE.OVL", "file": "/RACE.OVL", "functions": f(&a)},
+            {"name": "0x80100000 /MENU.OVL", "file": "/MENU.OVL", "functions": f(&b)},
+        ]));
+        inv.by_entry.entry(0x8020_0000).or_default();
+        let n = names("function 0x80100000 in RACE.OVL race_update?\nfunction 0x80180000 loose\n");
+        let scope = Scope::new(&n, Some(&inv)).unwrap();
+        assert_eq!(scope.describe(0x8010_0004, 0x8010_0000, &a, 0x1000), Some(("race_update?+0x4".into(), true)));
+        // Twice, the second from the kept bytes.
+        assert_eq!(scope.describe(0xA010_0000, 0x8010_0000, &a, 0x1000), Some(("race_update?".into(), true)));
+        assert_eq!(scope.describe(0x8010_0004, 0x8010_0000, &b, 0x1000), None);
+        // A name the inventory does not place reaches up to its next function.
+        assert_eq!(scope.describe(0x8018_0010, 0x8010_0000, &a, 0x1000), Some(("loose+0x10".into(), false)));
+        assert_eq!(scope.describe(0x8020_0000, 0x8010_0000, &a, 0x10_0000), None);
+    }
+
+    #[test]
+    fn names_resolve_to_addresses_and_globals_cover_their_type() {
+        let n = names(
+            "struct Pos {\n 0x0 int x\n 0x4 int y\n}\nglobal 0x80075000 Pos croc_pos\nglobal 0x80075010 STEP\n\
+             function 0x80031F64 world_collide\nfunction 0x80100000 in RACE.OVL update\nfunction 0x80100000 in MENU.OVL update\n",
+        );
+        assert_eq!(find(&n, "world_collide"), vec![0x8003_1F64]);
+        assert_eq!(find(&n, "croc_pos"), vec![0x8007_5000]);
+        assert_eq!(find(&n, "update"), vec![0x8010_0000], "one address, though two modules");
+        assert_eq!(find(&n, "race.ovl:update"), vec![0x8010_0000]);
+        assert!(find(&n, "CAR.OVL:update").is_empty());
+        assert_eq!((parse_offset("0x370"), parse_offset("16"), parse_offset("x")), (Some(0x370), Some(16), None));
+        assert_eq!(global_at(&n, 0x8007_5000).as_deref(), Some("croc_pos"));
+        assert_eq!(global_at(&n, 0xA007_5004).as_deref(), Some("croc_pos+0x4"));
+        assert_eq!(global_at(&n, 0x8007_5008), None);
+        // An untyped global covers its first byte.
+        assert_eq!(global_at(&n, 0x8007_5010).as_deref(), Some("STEP"));
+        assert_eq!(global_at(&n, 0x8007_5011), None);
     }
 }

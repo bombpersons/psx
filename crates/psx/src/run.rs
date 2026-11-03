@@ -76,7 +76,7 @@ pub struct RunCmdArgs {
     pub timeout: u64,
     /// Log CD-ROM controller and CD DMA register writes (cd.jsonl), and decode them into
     /// loads.json: each transfer's disc file and offset, where in RAM it went, and
-    /// whether the final RAM still holds it (names the reading code with --symbols).
+    /// whether the final RAM still holds it (names the reading code from names/ and --symbols).
     #[arg(long)]
     #[serde(default)]
     pub trace_cd: bool,
@@ -95,11 +95,11 @@ pub struct RunCmdArgs {
     #[serde(default)]
     pub audio: bool,
     /// Native: profile the CPU's cycles (Mednafen's timing) by function into
-    /// profile.json: functions are call targets, named from --symbols.
+    /// profile.json: functions are call targets, named from names/ and --symbols.
     #[arg(long)]
     #[serde(default)]
     pub profile: bool,
-    /// `.symbols.json` (verified against RAM) or `.sym` files used to name PCs; repeatable.
+    /// `.sym` or code symbols' `.symbols.json` files naming PCs beside the names files; repeatable.
     #[arg(long = "symbols")]
     #[serde(default)]
     pub symbols: Vec<PathBuf>,
@@ -355,17 +355,17 @@ pub fn fold(addr: u32) -> u32 {
 
 /// `LO-HI` or `ADDR[:WIDTH]` (hex) as a folded `[lo, hi)` range.
 pub fn parse_range_spec(s: &str) -> Result<(u32, u32), String> {
-    let h = |x: &str| psx_media::memmap::parse_hex(x).ok_or_else(|| format!("bad hex address {x:?} in {s:?}"));
+    let h = |x: &str| crate::names_bind::address(x).map_err(|e| format!("{e} in {s:?}"));
     let (lo, len) = match s.split_once('-') {
         Some((a, b)) => {
             let (a, b) = (h(a)?, h(b)?);
             (a, b.checked_sub(a).filter(|&n| n > 0).ok_or_else(|| format!("empty range {s:?}"))?)
         }
-        None => match s.split_once(':') {
-            Some((a, w)) => {
+        None => match crate::commands::split_width(s) {
+            (a, Some(w)) => {
                 (h(a)?, w.parse::<u32>().ok().filter(|&n| n > 0).ok_or_else(|| format!("bad width in {s:?}"))?)
             }
-            None => (h(s)?, 4),
+            (_, None) => (h(s)?, 4),
         },
     };
     let lo = fold(lo);
@@ -442,13 +442,13 @@ pub struct TraceArgs {
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub trace_from_frame: u64,
-    /// Start tracing at the first execution of ADDR (hex) or a --symbols function.
+    /// Start tracing at the first execution of ADDR (hex, or a name from names/ or --symbols).
     #[arg(long)]
     pub trace_start: Option<String>,
     /// Stop tracing after N frames.
     #[arg(long)]
     pub trace_frames: Option<u64>,
-    /// Only write lines for LO-HI (hex) or a --symbols function; repeatable.
+    /// Only write lines for LO-HI (hex), or a function named in names/ or --symbols; repeatable.
     #[arg(long = "trace-range")]
     #[serde(default, rename = "trace_range")]
     pub trace_ranges: Vec<String>,
@@ -515,12 +515,10 @@ fn diagnose(ctx: &Ctx, a: RunCmdArgs, bios: &Path, media: Option<&Path>) -> crat
         psx_media::disc::Disc::open(m)
             .map_err(|e| Error::invalid(format!("diagnose boots a disc or the BIOS: {e}")))?;
     }
-    let hex = |s: &str, what: &str| {
-        psx_media::memmap::parse_hex(s).ok_or_else(|| Error::invalid(format!("bad {what} {s:?} (hex)")))
-    };
+    let hex = crate::commands::addr_arg;
     let watch = match a.watches.as_slice() {
         [] => None,
-        [w] => Some(hex(w.split(':').next().unwrap_or(w), "watch")?),
+        [w] => Some(hex(crate::commands::split_width(w).0, "watch")?),
         _ => return Err(Error::invalid("diagnose watches one address")),
     };
     let brk = a.brk.as_deref().map(|b| hex(b, "break")).transpose()?;

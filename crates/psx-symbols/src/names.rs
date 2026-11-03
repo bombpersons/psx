@@ -65,7 +65,9 @@ pub struct Name {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Type {
     /// A base type (`int`, `u16`), or a struct, union, enum or typedef by name.
-    Named { name: String },
+    Named {
+        name: String,
+    },
     /// A pointer; `offset` is non-zero for a pointer into the middle of the
     /// pointee (`Object *+0x38`), as the compiler keeps `&obj->field`.
     Pointer {
@@ -73,7 +75,10 @@ pub enum Type {
         #[serde(skip_serializing_if = "is_zero")]
         offset: u32,
     },
-    Array { of: Box<Type>, len: u32 },
+    Array {
+        of: Box<Type>,
+        len: u32,
+    },
     Function(Signature),
 }
 
@@ -120,9 +125,15 @@ pub struct EnumValue {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TypeBody {
-    Struct { fields: Vec<Field> },
-    Union { fields: Vec<Field> },
-    Enum { values: Vec<EnumValue> },
+    Struct {
+        fields: Vec<Field>,
+    },
+    Union {
+        fields: Vec<Field>,
+    },
+    Enum {
+        values: Vec<EnumValue>,
+    },
     Typedef {
         #[serde(rename = "type")]
         ty: Type,
@@ -392,10 +403,8 @@ fn join_type(first: &mut TypeDef, more: TypeDef, problems: &mut Vec<Problem>) {
         (TypeBody::Struct { .. }, TypeBody::Struct { .. }) | (TypeBody::Union { .. }, TypeBody::Union { .. })
     );
     if !same_kind {
-        problems.push(Problem {
-            message: format!("{} is already declared at {}", more.name.text, first.at),
-            at: more.at,
-        });
+        problems
+            .push(Problem { message: format!("{} is already declared at {}", more.name.text, first.at), at: more.at });
         return;
     }
     match (first.size, more.size) {
@@ -581,7 +590,8 @@ impl Names {
             .chain(self.globals.iter().map(|g| (g.module.as_deref(), g.name.text.as_str(), &g.at)))
         {
             if let Some(first) = by_name.insert((module, name), at) {
-                problems.push(Problem { at: at.clone(), message: format!("{name} already names something at {first}") });
+                problems
+                    .push(Problem { at: at.clone(), message: format!("{name} already names something at {first}") });
             }
         }
     }
@@ -950,11 +960,8 @@ fn parse(file: &str, text: &str) -> (Vec<Item>, Vec<Problem>) {
                         open = Open::None;
                         return end(&c);
                     }
-                    let offset = if union && !matches!(c.peek(), Some(Tok::Num(_))) {
-                        0
-                    } else {
-                        c.unsigned("a field offset")?
-                    };
+                    let offset =
+                        if union && !matches!(c.peek(), Some(Tok::Num(_))) { 0 } else { c.unsigned("a field offset")? };
                     let (ty, name) = declaration(&mut c, true)?;
                     end(&c)?;
                     let Item::Type(t) = &mut items[ix] else { unreachable!() };
@@ -1101,7 +1108,9 @@ fn parse(file: &str, text: &str) -> (Vec<Item>, Vec<Problem>) {
                             }));
                             Ok(())
                         }
-                        other => Err(format!("expected struct, union, enum, typedef, global or function, found {other:?}")),
+                        other => {
+                            Err(format!("expected struct, union, enum, typedef, global or function, found {other:?}"))
+                        }
                     }
                 }
             }
@@ -1297,10 +1306,7 @@ struct Area 0x74 {
         let n = one("struct ProbeHint 8 {\n}\nglobal 0x80070000 Probehint *h\nfunction 0x80070100 Thing *f(int)\n");
         assert_eq!(
             messages(&n),
-            [
-                "names/a.names:3: unknown type \"Probehint\" (ProbeHint?)",
-                "names/a.names:4: unknown type \"Thing\"",
-            ]
+            ["names/a.names:3: unknown type \"Probehint\" (ProbeHint?)", "names/a.names:4: unknown type \"Thing\"",]
         );
     }
 
@@ -1330,10 +1336,7 @@ struct Area 0x74 {
         let n = one("function 0x80000000 f\n  local_10 a\n  local_10 b\nstruct L {\n  0 L next\n}\n");
         assert_eq!(
             messages(&n),
-            [
-                "names/a.names:3: f already names this local at names/a.names:2",
-                "names/a.names:4: L contains itself",
-            ]
+            ["names/a.names:3: f already names this local at names/a.names:2", "names/a.names:4: L contains itself",]
         );
     }
 
@@ -1351,7 +1354,8 @@ struct Area 0x74 {
         std::fs::create_dir_all(root.join(".psx/names")).unwrap();
         std::fs::write(root.join("names/walls/object.names"), "global 0x80000000 int a\n").unwrap();
         std::fs::write(root.join("names/notes.txt"), "not names").unwrap();
-        std::fs::write(root.join(".psx/names/sym.names"), "global 0x80000000 int b\nglobal 0x80000004 c\nbad\n").unwrap();
+        std::fs::write(root.join(".psx/names/sym.names"), "global 0x80000000 int b\nglobal 0x80000004 c\nbad\n")
+            .unwrap();
         let n = load(&root);
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(n.globals.iter().map(|g| g.name.text.as_str()).collect::<Vec<_>>(), ["a", "c"]);

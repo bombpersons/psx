@@ -632,7 +632,7 @@ const TOOLS = {
   run: "Run", read: "Read", ram_diff: "RAM diff", ram_view: "RAM view", ram_search: "RAM search",
   assets_diff: "Image diff", assets_scan: "Asset scan", assets_extract: "Asset extract", assets_textures: "Textures", assets_memcard: "Memory card",
   code_disasm: "Disassembly", code_decompile: "Decompile", code_xrefs: "References", code_functions: "Functions", code_symbols: "Library symbols",
-  code_inventory: "Code inventory", code_coverage: "Coverage", code_coverage_diff: "Coverage diff", code_annotate: "Annotate",
+  code_inventory: "Code inventory", code_coverage: "Coverage", code_coverage_diff: "Coverage diff",
   scenario_show: "Recording", scenario_play: "Play request", scenario_record: "Record", scenario_check: "Determinism check",
   port_status: "Port status", port_next: "Next", port_check: "Port check", port_init: "Port init", port_update: "Template update",
 };
@@ -657,7 +657,6 @@ const TITLE = {
   code_disasm: x => `${srcName(arg(x, "source"))} @ ${hex(arg(x, "function") || arg(x, "addr"))}`, code_decompile: x => `${srcName(arg(x, "source"))} @ ${hex(arg(x, "addr"))}`,
   code_xrefs: x => `${srcName(arg(x, "source"))} → ${hex(arg(x, "target"))}`, code_functions: x => srcName(arg(x, "source")), code_symbols: x => srcName(arg(x, "source")),
   code_coverage: x => list(arg(x, "runs")).map(unroot).join(", "), code_coverage_diff: x => `${list(arg(x, "runs")).map(unroot).join(", ")} vs ${list(arg(x, "against")).map(unroot).join(", ")}`,
-  code_annotate: x => unroot(arg(x, "file")),
   scenario_show: x => `${arg(x, "id") || ""}/${arg(x, "name") || ""}`, scenario_record: x => `${arg(x, "id") || ""}/${arg(x, "name") || ""}`,
   scenario_check: x => list(arg(x, "ids")).join(", ") || "every scenario",
   scenario_play: x => arg(x, "status") ? "status of " + unroot(arg(x, "status")).replace(/^\.psx\/(handoffs|plays)\//, "") : arg(x, "request") || "",
@@ -933,11 +932,6 @@ const CARDS = {
     return stats([stat(t.functions_only, "functions only here"), stat(t.blocks_only, "blocks"), stat(t.branch_ways_only, "branch ways"), stat(t.instructions_only, "instructions")]) +
       tbl(["function", "image", "instructions only here"], (r.only || []).map(o => [mono(o.entry), mono(o.image), num(o.instructions)])) +
       (r.programs || []).map(p => (p.routines_only || []).length ? h4(`${p.name}: routines only here`) + `<div class="chips">${p.routines_only.map(n => `<span class="pill mono">${esc(n)}</span>`).join("")}</div>` : "").join("") + note(r.next);
-  },
-  code_annotate(r) {
-    return lead(`${pill(r.status, r.status === "complete" ? "ok" : "warn")} revision ${num(r.revision)}`) +
-      tbl(["address", "name", "comment"], (r.patches || []).map(p => [mono(p.address), `<b>${esc(p.name || "")}</b>`, esc(p.comment || "")])) +
-      ((r.conflicts || []).length ? `<div class="warnbox">${r.conflicts.map(c => esc(unroot(JSON.stringify(c)))).join("<br>")}</div>` : "");
   },
   scenario_show(r, x) {
     const head = lead(`${esc(r.description || "")}`) + note(`${unroot(r.recording)} · ${r.ticks} ticks`) + footage(r.scenario || arg(x, "id"), String(r.recording || "").split("/").pop().replace(/\.jsonl$/, ""));

@@ -122,9 +122,7 @@ impl Op for XrefsArgs {
                 if let Some(g) = crate::commands::opt_hex(&gp, "gp")? {
                     code.gp = Some(g);
                 }
-                let addr = |s: &str| {
-                    psx_media::memmap::parse_hex(s).ok_or_else(|| Error::invalid(format!("bad hex address {s:?}")))
-                };
+                let addr = |s: &str| crate::commands::addr_arg(s, "address");
                 let (lo, hi) = match target.split_once('-') {
                     Some((l, h)) => (addr(l)?, addr(h)?),
                     None => {
@@ -513,6 +511,7 @@ pub struct ListOpts<'a> {
 pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, String) {
     let label = |a: u32| code.name(o.scopes, a, 0);
     let name = |a: u32| code.name(o.scopes, a, 0x4000);
+    let global = |a: u32| crate::names_bind::global_at(crate::names_bind::project_names(), a);
     let mut targets = BTreeSet::new();
     let mut a = lo;
     while a < hi {
@@ -549,7 +548,7 @@ pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, Stri
                     "{} 0x{:08X}{}",
                     r.kind,
                     r.target,
-                    name(r.target).map(|n| format!(" {n}")).unwrap_or_default()
+                    global(r.target).or_else(|| name(r.target)).map(|n| format!(" {n}")).unwrap_or_default()
                 )),
             }
         }
@@ -557,7 +556,13 @@ pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, Stri
         let data_refs: Vec<Value> = refs
             .iter()
             .filter(|r| !matches!(r.kind, "branch" | "call" | "jump"))
-            .map(|r| json!({"kind": r.kind, "via": r.via, "target": format!("0x{:08X}", r.target)}))
+            .map(|r| {
+                let mut d = json!({"kind": r.kind, "via": r.via, "target": format!("0x{:08X}", r.target)});
+                if let Some(g) = global(r.target) {
+                    d["global"] = json!(g);
+                }
+                d
+            })
             .collect();
         if !data_refs.is_empty() {
             v["refs"] = json!(data_refs);
@@ -797,7 +802,7 @@ pub(crate) fn disasm_cmd(a: DisasmArgs) -> crate::Result<Value> {
         Some(s) => Some(PsxExe::parse(&psx_media::source::read(s)?)?.pc),
         None => None,
     };
-    let (start, end, func) = if let Some(f) = crate::commands::opt_hex(&function, "function address")? {
+    let (start, end, func) = if let Some(f) = crate::commands::opt_addr(&function, "function address")? {
         let jal = code.jal_targets();
         let extent = function_extent(&code, f, &jal, function_budget)
             .ok_or_else(|| Error::invalid(format!("0x{f:08X} is outside the code ({})", code.origin)))?;
@@ -813,7 +818,7 @@ pub(crate) fn disasm_cmd(a: DisasmArgs) -> crate::Result<Value> {
                 "listing_truncated":listed_end<e})),
         )
     } else {
-        let start = match crate::commands::opt_hex(&addr, "address")? {
+        let start = match crate::commands::opt_addr(&addr, "address")? {
             Some(a) => a,
             None => entry.ok_or_else(|| {
                 Error::invalid("give --addr or --function (there is no EXE entry point with --ram alone)")

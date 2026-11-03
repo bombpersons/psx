@@ -51,13 +51,21 @@ decompile; its names field counts what applied and lists what did not, by
 file and line. A function's name applies where the code at its address is
 the inventory's function there, by its bytes: `in MODULE` (an overlay's or
 executable's file) names one of several loaded at one address, and a name
-for code not in the analysis is left out without a word. A project open in the Ghidra GUI is an error until closed. A query cut
-short (a deadline, a killed psx) is recovered by the next one; a lock left
-by a dead process (psx.lock under .psx/ghidra/) is removed by hand only
-after checking its pid is gone. code_annotate applies names and comments
-and exports them as symbols for run, disasm and xrefs. code_symbols names
-PsyQ library code by signature, not the game's own functions, and reports
-the build: gp, GCC's division checks, scheduling, hand-written library code.
+for code not in the analysis is left out without a word. A project open
+in the Ghidra GUI is an error until closed. A query cut short (a deadline,
+a killed psx) is recovered by the next one; a lock left by a dead process
+(psx.lock under .psx/ghidra/) is removed by hand only after checking its
+pid is gone. code_symbols names PsyQ library code by signature, not the
+game's own functions, and reports the build: gp, GCC's division checks,
+scheduling, hand-written library code.
+
+The names files are also every view's names. An address argument (run's
+trace ranges and watches, samples, disasm, xrefs, decompile, ram_view)
+takes a function's or global's name as well as hex: world_collide,
+croc+0x370, RACE.OVL:race_update when overlays share a name. Traces,
+watch hits, calls, disasm, xrefs, coverage and ram_view rows print them,
+a function's where its bytes are the inventory's (body_match) and a
+global's as name+0xOFF within its type. symbols adds other symbol files.
 
 Functions reached only through a table (state handlers, object updates, a
 jump table's cases) are often missing from an analysis of the EXE. Seed one

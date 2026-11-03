@@ -17,7 +17,7 @@ About 33 top-level commands become 13, `mcp` to serve them, and two for the pers
 | `read` | | `artifact-read` (for MCP clients without a shell) |
 | `disc` | `info`, `ls`, `extract`, `sector`, `exe` | `disc`, `ls`, `extract`, `sector`, `exe` |
 | `assets` | `scan`, `extract`, `textures`, `diff`, `memcard` | `assets scan/extract`, `xa`, `str`, `textures`, `vram-diff`, `memcard`; `extract` picks the decoder by format (TIM, TMD, VAB, XA, STR) |
-| `code` | `disasm`, `xrefs`, `decompile`, `functions`, `annotate`, `symbols`, `inventory`, `coverage` | `disasm`, `xrefs`, `symbols`, `ghidra *`, `inventory`, `coverage`; Ghidra becomes the engine behind `decompile` and `functions` (`analyze` is automatic, `export-symbols` part of `annotate`) |
+| `code` | `disasm`, `xrefs`, `decompile`, `functions`, `symbols`, `inventory`, `coverage` | `disasm`, `xrefs`, `symbols`, `ghidra *`, `inventory`, `coverage`; Ghidra becomes the engine behind `decompile` and `functions` (`analyze` is automatic; `annotate` and `export-symbols` gave way to names files, docs/decomp-plan.md) |
 | `ram` | `diff`, `search`, `view` | `ram *`, `addr` (every address psx prints comes classified) |
 | `run` | | `run`, `loads` (`--trace-cd` writes the decoded loads), `native` (`--diagnose`, for psx development), `states make` (`--save-as NAME`) |
 | `states` | `list`, `save`, `rebuild` | `states` without `make` |

@@ -1276,7 +1276,6 @@ fn mcp_tools_match_cli() {
         "code_xrefs",
         "code_decompile",
         "code_functions",
-        "code_annotate",
         "code_symbols",
         "code_inventory",
         "code_coverage",
@@ -1726,7 +1725,7 @@ fn ghidra_single_call_and_cached_cli_mcp_parity() {
 
 #[test]
 #[ignore = "requires installed Ghidra/Java; authored runtime RAM and native state only"]
-fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
+fn ghidra_runtime_names_and_identity() {
     let root = std::env::temp_dir().join(format!("psx ghidra runtime {}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let bios = vec![0; 512 * 1024];
@@ -1781,28 +1780,17 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
     let (same, error, _) = rpc.tool("code_decompile", alias);
     assert!(!error);
     assert_eq!(same["analysis"], first["analysis"], "input filenames must not control identity");
-    let collision = json!({"functions":[{"addr":"80010000","name":first["function"]["name"]}]});
-    std::fs::write(root.join("generated-conflict.json"), serde_json::to_vec(&collision).unwrap()).unwrap();
-    let (displaced, error, _) =
-        rpc.tool("code_annotate", json!({"analysis":manifest,"file":"generated-conflict.json"}));
-    assert!(!error && displaced["conflicts"].as_array().unwrap().len() == 1, "{displaced}");
-    let patch = json!({"functions":[{"addr":"a0010040","name":"studied_writer","comment":"Authored GP-relative counter writer."}]});
-    std::fs::write(root.join("patch.json"), serde_json::to_vec(&patch).unwrap()).unwrap();
-    let (annotated, error, _) = rpc.tool("code_annotate", json!({"analysis":manifest,"file":"patch.json"}));
-    assert!(!error && annotated["revision"] == 2, "{annotated}");
-    assert_eq!(annotated["symbols"]["revision"], 2, "{annotated}");
-    assert_ne!(annotated["project"], first["project"]);
-    assert!(!Path::new(first["project"].as_str().unwrap()).exists(), "annotating removes the project it supersedes");
+    // A names file names the function in every view, with no --symbols.
+    std::fs::create_dir_all(root.join("names")).unwrap();
+    std::fs::write(
+        root.join("names/test.names"),
+        "// Authored GP-relative counter writer.\nfunction 0x80010040 studied_writer\nglobal 0x800100C0 int counter\n",
+    )
+    .unwrap();
     let (named, error, _) = rpc.tool("code_decompile", json!({"analysis":manifest,"addr":"8001004c"}));
-    assert!(!error && named["function"]["name"] == "studied_writer", "{named}");
-    assert!(named["pseudocode"].as_str().unwrap().contains("studied_writer"));
-    assert_eq!(named["function"]["comment"], patch["functions"][0]["comment"]);
-    assert_ne!(first["artifact"], named["artifact"], "annotation revision invalidates cached pseudocode");
-    std::fs::write(root.join("user-conflict.json"), br#"{"functions":[{"addr":"80010000","name":"studied_writer"}]}"#)
-        .unwrap();
-    let (conflict, error, _) = rpc.tool("code_annotate", json!({"analysis":manifest,"file":"user-conflict.json"}));
-    assert!(error && conflict["error"]["code"] == "symbol_conflict", "{conflict}");
-    let symbols = annotated["symbols"]["symbols"].as_str().unwrap();
+    assert!(!error && named["pseudocode"].as_str().unwrap().contains("studied_writer"), "{named}");
+    assert_eq!(named["names"]["applied"]["functions"], 1, "{named}");
+    assert_ne!(first["artifact"], named["artifact"], "names change the cached pseudocode");
     let trace_args = [
         "run",
         "--bios",
@@ -1813,13 +1801,11 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
         "1",
         "--trace",
         "--trace-range",
-        "studied_writer",
-        "--symbols",
-        symbols,
+        "80010040-80010058",
         "--max-events",
         "100",
         "--watch",
-        "800100c0:4",
+        "counter",
         "--out",
         "trace-a",
     ];
@@ -1827,38 +1813,11 @@ fn ghidra_runtime_annotations_symbols_and_overlay_residency() {
     assert!(ok, "{run}");
     assert!(std::fs::read_to_string(root.join("trace-a/trace.txt")).unwrap().contains("studied_writer"));
     let writes = std::fs::read_to_string(root.join("trace-a/writes.jsonl")).unwrap();
-    assert!(writes.contains("studied_writer") && writes.contains("body_match"), "{writes}");
-    let (dis, ok) =
-        cli(&root, &["code", "disasm", "--ram", "ram.bin", "--addr", "80010040", "--count", "6", "--symbols", symbols]);
+    assert!(writes.contains("\"global\":\"counter\""), "{writes}");
+    let (dis, ok) = cli(&root, &["code", "disasm", "--ram", "ram.bin", "--addr", "studied_writer", "--count", "6"]);
     assert!(ok && dis.to_string().contains("studied_writer"), "{dis}");
-    let (refs, ok) =
-        cli(&root, &["code", "xrefs", "800100c0", "--ram", "ram.bin", "--gp", "800100c0", "--symbols", symbols]);
+    let (refs, ok) = cli(&root, &["code", "xrefs", "counter", "--ram", "ram.bin", "--gp", "800100c0"]);
     assert!(ok && refs.to_string().contains("studied_writer"), "{refs}");
-    // The same address now contains a different function; no name from snapshot A may label it.
-    machine.bus.ram[0x10048..0x1004c].copy_from_slice(&0x24420004u32.to_le_bytes());
-    std::fs::write(root.join("ram.bin"), &machine.bus.ram).unwrap();
-    std::fs::write(root.join("changed.bin"), machine.save_state(None)).unwrap();
-    let (second, error, _) = rpc.tool("code_decompile", args);
-    assert!(!error && second["status"] == "complete", "{second}");
-    assert_ne!(first["analysis"], second["analysis"]);
-    assert_ne!(first["project"], second["project"]);
-    let (dis, ok) =
-        cli(&root, &["code", "disasm", "--ram", "ram.bin", "--addr", "80010040", "--count", "6", "--symbols", symbols]);
-    assert!(ok && !dis.to_string().contains("studied_writer"), "{dis}");
-    let (refs, ok) =
-        cli(&root, &["code", "xrefs", "800100c0", "--ram", "ram.bin", "--gp", "800100c0", "--symbols", symbols]);
-    assert!(ok && !refs.to_string().contains("studied_writer"), "{refs}");
-    let mut changed_args = trace_args;
-    let state = changed_args.iter().position(|a| *a == "start.bin").unwrap();
-    changed_args[state] = "changed.bin";
-    changed_args[changed_args.len() - 1] = "trace-b";
-    let (run, ok) = cli(&root, &changed_args);
-    assert!(ok, "{run}");
-    assert!(!std::fs::read_to_string(root.join("trace-b/trace.txt")).unwrap().contains("studied_writer"));
-    assert!(!std::fs::read_to_string(root.join("trace-b/writes.jsonl")).unwrap().contains("studied_writer"));
-    // Re-importing snapshot A still retains its annotations and cached analysis.
-    let (old, error, _) = rpc.tool("code_decompile", json!({"analysis":manifest,"addr":"8001004c"}));
-    assert!(!error && old["function"]["name"] == "studied_writer", "{old}");
     drop(rpc);
     std::fs::remove_dir_all(root).unwrap();
 }

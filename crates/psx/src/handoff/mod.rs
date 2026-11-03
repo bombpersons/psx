@@ -327,8 +327,11 @@ fn status(dir: &Path, wait: u64) -> crate::Result<(bool, Value)> {
             // From before the queue: its report, or nothing more will come.
             return Ok(match read_json(&dir.join("report.json")) {
                 Some(report) => (report.get("error").is_none(), report),
-                None => (false, json!({"status": "abandoned", "run_dir": dir,
-                    "message": "a play from before the play queue that never finished: ask again"})),
+                None => (
+                    false,
+                    json!({"status": "abandoned", "run_dir": dir,
+                    "message": "a play from before the play queue that never finished: ask again"}),
+                ),
             });
         };
         if let queue::State::Answered(report) = r.state {
@@ -342,7 +345,8 @@ fn status(dir: &Path, wait: u64) -> crate::Result<(bool, Value)> {
                 queue::State::Playing(live) => v["live"] = json!(live),
                 _ => {
                     let queue = dir.parent().map(queue::list_in).unwrap_or_default();
-                    let ahead = queue.iter().filter(|q| q.state == queue::State::Queued && q.queued_unix_ms < r.queued_unix_ms);
+                    let ahead =
+                        queue.iter().filter(|q| q.state == queue::State::Queued && q.queued_unix_ms < r.queued_unix_ms);
                     v["position"] = json!(ahead.count() + 1);
                 }
             }
@@ -968,7 +972,11 @@ mod tests {
     fn replay_file_is_valid_run_input() {
         let events = [
             Input { frame: 0, buttons: 0, sticks: [0x80; 4] },
-            Input { frame: 3, buttons: u32::from(psx_core::sio0::button::CROSS) | crate::replay::ANALOG, sticks: [0x80; 4] },
+            Input {
+                frame: 3,
+                buttons: u32::from(psx_core::sio0::button::CROSS) | crate::replay::ANALOG,
+                sticks: [0x80; 4],
+            },
             Input { frame: 9, buttons: 0, sticks: [0, 0x80, 0x80, 0x80] },
         ];
         let text = replay_json(&events);
@@ -1049,7 +1057,8 @@ mod tests {
                 .unwrap();
         let (mut s, p) = scenario_start(&ctx, &mut a).unwrap();
         let up = psx_core::sio0::button::UP;
-        let press = |s: &mut Session, frames: u64, buttons: u16| (0..frames).for_each(|_| s.frame(buttons.into(), [0x80; 4]));
+        let press =
+            |s: &mut Session, frames: u64, buttons: u16| (0..frames).for_each(|_| s.frame(buttons.into(), [0x80; 4]));
         press(&mut s, 3, up);
         s.quick_save();
         press(&mut s, 20, 0);
@@ -1115,7 +1124,8 @@ mod tests {
         let mut s = start(&a).unwrap();
         let cross = psx_core::sio0::button::CROSS;
         let start_btn = psx_core::sio0::button::START;
-        let press = |s: &mut Session, frames: u64, buttons: u16| (0..frames).for_each(|_| s.frame(buttons.into(), [0x80; 4]));
+        let press =
+            |s: &mut Session, frames: u64, buttons: u16| (0..frames).for_each(|_| s.frame(buttons.into(), [0x80; 4]));
         press(&mut s, 300, 0);
         press(&mut s, 5, start_btn);
         press(&mut s, 100, 0);

@@ -127,7 +127,10 @@ pub fn follows_function_end(code: &[u8], base: u32, entry: u32) -> bool {
             return true;
         }
         let slot = at - 4;
-        if slot >= base + 4 && word(slot - 4).is_some_and(|j| j & 0xFC1F_FFFF == 0x0000_0008 || j >> 26 == 2 || j & 0xFC00_003F == 0x0000_000D) {
+        if slot >= base + 4
+            && word(slot - 4)
+                .is_some_and(|j| j & 0xFC1F_FFFF == 0x0000_0008 || j >> 26 == 2 || j & 0xFC00_003F == 0x0000_000D)
+        {
             return true;
         }
         if word(slot) != Some(0) {

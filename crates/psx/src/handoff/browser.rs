@@ -114,7 +114,8 @@ impl Live {
         }
         let (keys, pad) = (names("keys"), names("pad"));
         let mut h = self.held.lock().unwrap();
-        let new = |now: &[String], before: &[String]| now.iter().filter(|k| !before.contains(k)).cloned().collect::<Vec<_>>();
+        let new =
+            |now: &[String], before: &[String]| now.iter().filter(|k| !before.contains(k)).cloned().collect::<Vec<_>>();
         let (tk, tp) = (new(&keys, &h.keys), new(&pad, &h.pad));
         h.tapped.0.extend(tk);
         h.tapped.1.extend(tp);
@@ -181,7 +182,9 @@ impl Live {
                 out.write_all(&(b.len() as u32).to_le_bytes())?;
                 out.write_all(b)
             };
-            let sent = frame.map_or(Ok(()), |f| send(b'F', &f)).and_then(|_| status.map_or(Ok(()), |s| send(b'S', s.as_bytes())));
+            let sent = frame
+                .map_or(Ok(()), |f| send(b'F', &f))
+                .and_then(|_| status.map_or(Ok(()), |s| send(b'S', s.as_bytes())));
             if sent.and_then(|_| out.flush()).is_err() || ended {
                 return;
             }

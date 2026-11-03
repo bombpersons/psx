@@ -143,29 +143,6 @@ public class PsxGhidra extends HeadlessScript {
         index.addProperty("rfe_instructions", rfe);
         write("index", index);
     }
-    private void annotate() throws Exception {
-        int transaction = currentProgram.startTransaction("psx annotations");
-        boolean committed = false;
-        try {
-            // Vacate all names first so swaps and generated-name displacement are deterministic.
-            for (var item : request.getAsJsonArray("patches")) {
-                var p = item.getAsJsonObject();
-                var f = getFunctionAt(toAddr(p.get("address").getAsLong()));
-                if (f == null) throw new IOException("annotation function entry missing");
-                if (p.has("name")) f.setName(null, SourceType.DEFAULT);
-            }
-            for (var item : request.getAsJsonArray("patches")) {
-                var p = item.getAsJsonObject();
-                var f = getFunctionAt(toAddr(p.get("address").getAsLong()));
-                if (p.has("name")) f.setName(p.get("name").getAsString(),
-                    p.has("generated") ? SourceType.ANALYSIS : SourceType.USER_DEFINED);
-                if (p.has("comment")) f.setComment(p.get("comment").getAsString());
-            }
-            committed = true;
-        } finally { currentProgram.endTransaction(transaction, committed); }
-        exportIndex();
-    }
-
     // Names (psx_symbols::names, as JSON): applied for one query in the
     // read-only session, so nothing stays in the project.
     private JsonObject names;
@@ -474,7 +451,6 @@ public class PsxGhidra extends HeadlessScript {
         }
         String mode = request.get("mode").getAsString();
         if (mode.equals("setup")) { setup(); return; }
-        if (mode.equals("annotate")) { annotate(); return; }
         if (mode.equals("export")) exportIndex();
         if (request.has("addr")) decompile();
     }

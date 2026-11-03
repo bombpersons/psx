@@ -557,7 +557,18 @@ impl Facts {
         }
         let (review_features, review_finished) = review::features(root);
         let plays = crate::handoff::queue::list(root);
-        Ok(Facts { port, git, features, unpack, assets, needs: goal_needs, review, review_features, review_finished, plays })
+        Ok(Facts {
+            port,
+            git,
+            features,
+            unpack,
+            assets,
+            needs: goal_needs,
+            review,
+            review_features,
+            review_finished,
+            plays,
+        })
     }
 
     /// How many never-ran code branches each wont_reach range answers
@@ -659,12 +670,15 @@ impl Facts {
     pub fn next(&self) -> Item {
         // An answer to a play request, read before anything else: the
         // recording is there to use, or the note says why not.
-        if let Some(r) = self.plays.iter().find(|r| !r.read && matches!(r.state, crate::handoff::queue::State::Answered(_))) {
+        if let Some(r) =
+            self.plays.iter().find(|r| !r.read && matches!(r.state, crate::handoff::queue::State::Answered(_)))
+        {
             let crate::handoff::queue::State::Answered(report) = &r.state else { unreachable!() };
             let answer = match report["status"].as_str() {
                 Some("declined") => format!("declined: {}", report["note"].as_str().unwrap_or("").trim()),
                 Some(s) if report.get("error").is_none() => {
-                    let rec = report["recording"]["status"].as_str().map(|r| format!(", recording {r}")).unwrap_or_default();
+                    let rec =
+                        report["recording"]["status"].as_str().map(|r| format!(", recording {r}")).unwrap_or_default();
                     format!("{s}{rec}")
                 }
                 _ => format!("failed: {}", report["error"]["message"].as_str().unwrap_or("")),
@@ -672,7 +686,10 @@ impl Facts {
             return Item::agent(
                 "Read",
                 self.play_feature(r).map(|f| f.id.as_str()),
-                format!("the person answered the play request \"{}\": {answer}", one_line(r.args["request"].as_str().unwrap_or(""))),
+                format!(
+                    "the person answered the play request \"{}\": {answer}",
+                    one_line(r.args["request"].as_str().unwrap_or(""))
+                ),
                 "the answer is read (scenario play --status returns it and marks it read)",
                 &format!(
                     "read the answer: psx scenario play --status {}. When it is a recording, name it under the feature's recordings and go on; when declined, the note says why: ask again in other words or from another start, list the branch under wont_reach with the note as why, or go on without it",
@@ -900,7 +917,11 @@ impl Facts {
             return Item::person(
                 "Wait",
                 plays.iter().find_map(|r| self.play_feature(r)).map(|f| f.id.as_str()),
-                format!("{n} play {} for the person: {}", if n == 1 { "request waits" } else { "requests wait" }, first_lines(&asks).join("; ")),
+                format!(
+                    "{n} play {} for the person: {}",
+                    if n == 1 { "request waits" } else { "requests wait" },
+                    first_lines(&asks).join("; ")
+                ),
                 "the person answers them",
                 "the person answers them from psx web or psx play; the agent waits (port next gives a Read item for each answer)",
             );
@@ -1366,9 +1387,9 @@ pub const PROGRESS: &str = ".psx/progress.jsonl";
 fn progress(root: &Path, status: &Value) {
     let line = standing(status);
     let path = root.join(PROGRESS);
-    let last = std::fs::read_to_string(&path).ok().and_then(|t| {
-        t.lines().last().and_then(|l| serde_json::from_str::<Value>(l).ok())
-    });
+    let last = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| t.lines().last().and_then(|l| serde_json::from_str::<Value>(l).ok()));
     if last.is_some_and(|mut l| {
         l.as_object_mut().map(|o| o.remove("t"));
         l == line
@@ -1391,7 +1412,12 @@ fn standing(status: &Value) -> Value {
     let mut verdicts: BTreeMap<String, u64> = BTreeMap::new();
     let (mut resolved, mut branches, mut passing, mut recordings, mut questions) = (0, 0, 0, 0, 0);
     let mut features = 0;
-    for f in status["areas"].as_object().into_iter().flat_map(|a| a.values()).flat_map(|v| v.as_array().into_iter().flatten()) {
+    for f in status["areas"]
+        .as_object()
+        .into_iter()
+        .flat_map(|a| a.values())
+        .flat_map(|v| v.as_array().into_iter().flatten())
+    {
         if f["in_goal"] != json!(true) {
             continue;
         }
@@ -1645,7 +1671,11 @@ mod tests {
         };
         f.plays = vec![play(crate::handoff::queue::State::Queued, false)];
         assert_eq!(next(&f), ("Wait", "person", "F-0001".into()));
-        assert!(f.next().why.starts_with("1 play request waits for the person: walk off the ledge"), "{}", f.next().why);
+        assert!(
+            f.next().why.starts_with("1 play request waits for the person: walk off the ledge"),
+            "{}",
+            f.next().why
+        );
         let declined = json!({"status": "declined", "note": "there is no ledge there"});
         f.plays = vec![play(crate::handoff::queue::State::Answered(declined.clone()), false)];
         assert_eq!(next(&f), ("Read", "agent", "F-0001".into()));

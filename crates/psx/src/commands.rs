@@ -101,6 +101,26 @@ pub(crate) fn addr_value(v: &serde_json::Value) -> Option<u32> {
     v.as_u64().and_then(|n| u32::try_from(n).ok()).or_else(|| v.as_str().and_then(psx_media::memmap::parse_hex))
 }
 
+/// An address argument: hex, or a name from the project's names files
+/// (`[MODULE:]name[+OFFSET]`).
+pub(crate) fn addr_arg(s: &str, what: &str) -> crate::Result<u32> {
+    crate::names_bind::address(s).map_err(|e| Error::invalid(format!("bad {what}: {e}")))
+}
+
+/// An optional address argument (hex or a name).
+pub(crate) fn opt_addr(s: &Option<String>, what: &str) -> crate::Result<Option<u32>> {
+    s.as_deref().map(|a| addr_arg(a, what)).transpose()
+}
+
+/// `ADDR[:WIDTH]` with ADDR possibly `MODULE:name`: the width is a trailing
+/// decimal after the last colon.
+pub(crate) fn split_width(s: &str) -> (&str, Option<&str>) {
+    match s.rsplit_once(':') {
+        Some((a, w)) if !w.is_empty() && w.bytes().all(|b| b.is_ascii_digit()) => (a, Some(w)),
+        _ => (s, None),
+    }
+}
+
 /// An optional hex argument (`what` names it in the error).
 pub(crate) fn opt_hex(s: &Option<String>, what: &str) -> crate::Result<Option<u32>> {
     s.as_deref()

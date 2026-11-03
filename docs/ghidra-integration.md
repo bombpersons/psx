@@ -6,6 +6,12 @@ See [runtime validation](../research/ghidra-runtime.md) for the snapshot, annota
 and byte-bound symbol roundtrip gates. Current commands and limitations
 are documented in `psx guide code` and `psx code --help`.
 
+Since 2026-11-02 names come from the project's names files
+([decomp plan](decomp-plan.md)), applied in each decompile's read-only
+session and shown by every view; `code annotate`, its revisions and its
+exported symbols are gone. G2's annotation and G3's typed annotations below
+are history.
+
 ## Outcome
 
 An agent should be able to follow a watched write to its enclosing function,
@@ -54,7 +60,7 @@ MCP server or third-party bridge is not required for this first implementation.
 Proposed implementation homes:
 
 - `crates/psx/src/ghidra.rs`: configuration, manifests, supervision and queries.
-- `tools/ghidra/*.java`: import setup, analysis export, decompilation and annotations.
+- `tools/ghidra/*.java`: import setup, analysis export, decompilation with the project's names.
 - `main.rs`, `mcp.rs`: CLI and MCP registration of the argument types in `ghidra.rs`.
 - `crates/psx-symbols`: source-bound symbols and function body ranges.
 - `.psx/ghidra/`: ignored input copies, manifests, logs and query artifacts.
@@ -74,7 +80,6 @@ remain proposed in G3. All operations retain the existing CLI/MCP JSON contract.
 | `psx context` | `context` | Report whether Ghidra and Java are found |
 | `psx code functions --source SOURCE` (or `--ram RUN --range LO-HI --entry ADDR`) | `code_functions` | Ensure analysis, then return a filtered, paginated function index |
 | `psx code decompile --source SOURCE --addr ADDR` | `code_decompile` | Ensure analysis, then return the enclosing function, pseudocode, callers, body ranges and diagnostics |
-| `psx code annotate ANALYSIS --file PATCH.json` | `code_annotate` | Apply explicit names/comments, then export the new revision's source-bound names to psx |
 
 Analysis is automatic on the first query; Ghidra's own references are not served
 (`code xrefs` is psx's static scanner).

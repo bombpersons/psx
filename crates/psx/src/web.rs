@@ -67,7 +67,10 @@ pub fn main(a: WebArgs) -> ExitCode {
         .into_iter()
         .filter(|r| r.is_dir())
         .map(|root| {
-            let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| root.display().to_string());
+            let name = root
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.display().to_string());
             Project { root, name }
         })
         .collect();
@@ -85,7 +88,13 @@ pub fn main(a: WebArgs) -> ExitCode {
     if projects.is_empty() {
         eprintln!("  no projects yet: psx web <ROOT>... adds them");
     }
-    let state = Arc::new(State { projects, port: a.port, token: token(), replays: Mutex::new(HashMap::new()), plays: Mutex::new(HashMap::new()) });
+    let state = Arc::new(State {
+        projects,
+        port: a.port,
+        token: token(),
+        replays: Mutex::new(HashMap::new()),
+        plays: Mutex::new(HashMap::new()),
+    });
     for stream in listener.incoming().flatten() {
         let state = state.clone();
         std::thread::spawn(move || handle(stream, &state));
@@ -225,7 +234,9 @@ fn handle(stream: TcpStream, st: &State) {
         events(out, st);
         return;
     }
-    if let Some(live) = req.path.strip_suffix("/stream").and_then(|p| request_dir(p, st).ok()).and_then(|(_, d)| st.live(&d)) {
+    if let Some(live) =
+        req.path.strip_suffix("/stream").and_then(|p| request_dir(p, st).ok()).and_then(|(_, d)| st.live(&d))
+    {
         let head = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
         let _ = out.set_nodelay(true);
         if out.write_all(head.as_bytes()).is_ok() {
@@ -236,7 +247,9 @@ fn handle(stream: TcpStream, st: &State) {
     let _ = match route(&req, st) {
         Reply::Json(v) => send(&mut out, "200 OK", "application/json", v.to_string().as_bytes()),
         Reply::Bytes(ct, b) => send(&mut out, "200 OK", ct, &b),
-        Reply::Missing(why) => send(&mut out, "404 Not Found", "application/json", json!({"error": why}).to_string().as_bytes()),
+        Reply::Missing(why) => {
+            send(&mut out, "404 Not Found", "application/json", json!({"error": why}).to_string().as_bytes())
+        }
     };
 }
 
@@ -292,9 +305,15 @@ fn route(req: &Request, st: &State) -> Reply {
         return Reply::Json(bindings());
     }
     if path == "/api/projects" {
-        return Reply::Json(json!(st.projects.iter().enumerate().map(|(i, p)| json!({
-            "i": i, "name": p.name, "root": p.root, "port": p.root.join(crate::port::GOAL).is_file(),
-        })).collect::<Vec<_>>()));
+        return Reply::Json(json!(
+            st.projects
+                .iter()
+                .enumerate()
+                .map(|(i, p)| json!({
+                    "i": i, "name": p.name, "root": p.root, "port": p.root.join(crate::port::GOAL).is_file(),
+                }))
+                .collect::<Vec<_>>()
+        ));
     }
     let Some(rest) = path.strip_prefix("/api/p/") else { return Reply::Missing(format!("{path}: no such page")) };
     let (i, what) = rest.split_once('/').unwrap_or((rest, ""));
@@ -441,7 +460,12 @@ fn bindings() -> Value {
         _ => Bindings::default(),
     };
     let map = |slots: &[Option<String>; 17]| -> Value {
-        ACTIONS.iter().zip(slots).filter_map(|(a, s)| s.as_ref().map(|s| (a.to_string(), json!(s)))).collect::<serde_json::Map<_, _>>().into()
+        ACTIONS
+            .iter()
+            .zip(slots)
+            .filter_map(|(a, s)| s.as_ref().map(|s| (a.to_string(), json!(s))))
+            .collect::<serde_json::Map<_, _>>()
+            .into()
     };
     json!({"keyboard": map(&b.keyboard), "gamepad": map(&b.gamepad), "stick_deadzone": b.stick_deadzone})
 }
@@ -502,7 +526,12 @@ fn act(req: &Request, st: &State) -> crate::Result<Value> {
         let p = i.parse::<usize>().ok().and_then(|i| st.projects.get(i));
         let p = p.ok_or_else(|| crate::Error::invalid(format!("project {i}: not shown")))?;
         return match what {
-            "send" => crate::messages::post(&p.root, "person", req.body["text"].as_str().unwrap_or(""), req.body["reply_to"].as_str()),
+            "send" => crate::messages::post(
+                &p.root,
+                "person",
+                req.body["text"].as_str().unwrap_or(""),
+                req.body["reply_to"].as_str(),
+            ),
             "seen" => {
                 crate::messages::mark_seen(&p.root, "person", req.body["n"].as_u64().unwrap_or(0) as usize);
                 Ok(json!({"status": "ok"}))
@@ -522,7 +551,8 @@ fn act(req: &Request, st: &State) -> crate::Result<Value> {
         "cmd" => return playing()?.command(&req.body),
         _ => {}
     }
-    let r = crate::handoff::queue::load(&dir).ok_or_else(|| crate::Error::invalid(format!("{id}: no such play request")))?;
+    let r = crate::handoff::queue::load(&dir)
+        .ok_or_else(|| crate::Error::invalid(format!("{id}: no such play request")))?;
     match what {
         "play" => {
             if st.live(&dir).is_some() {
@@ -665,7 +695,9 @@ fn attention(root: &Path, status: &Value, progress: &[Value], calls: &[Value]) -
             "title": format!("{n} play request{} for you", if n == 1 { "" } else { "s" }),
             "detail": queued.iter().take(3).map(|r| r.text().lines().next().unwrap_or("").to_string()).collect::<Vec<_>>().join("; ")}));
     }
-    let mut add = |level: &str, title: String, detail: String| out.push(json!({"level": level, "title": title, "detail": detail}));
+    let mut add = |level: &str, title: String, detail: String| {
+        out.push(json!({"level": level, "title": title, "detail": detail}))
+    };
     let next = &status["next"];
     if let Some(e) = status.get("error") {
         add("act", "port status fails".into(), e["message"].as_str().unwrap_or("").into());
@@ -678,20 +710,29 @@ fn attention(root: &Path, status: &Value, progress: &[Value], calls: &[Value]) -
     if let Some(g) = status.get("guard") {
         let (count, limit) = (g["count"].as_u64().unwrap_or(0), g["limit"].as_u64().unwrap_or(3));
         if count >= 2 && count < limit && next["who"] == "agent" {
-            add("warn", format!("port next gave {} {count} times unchanged", g["item"].as_str().unwrap_or("").trim()),
-                format!("at {limit} it reports Stuck"));
+            add(
+                "warn",
+                format!("port next gave {} {count} times unchanged", g["item"].as_str().unwrap_or("").trim()),
+                format!("at {limit} it reports Stuck"),
+            );
         }
     }
     if let Some(p) = status["problems"].as_array().filter(|p| !p.is_empty()) {
-        add("warn", format!("{} problem{} in the port", p.len(), if p.len() == 1 { "" } else { "s" }),
-            p.iter().take(3).filter_map(|x| x["problem"].as_str()).collect::<Vec<_>>().join("; "));
+        add(
+            "warn",
+            format!("{} problem{} in the port", p.len(), if p.len() == 1 { "" } else { "s" }),
+            p.iter().take(3).filter_map(|x| x["problem"].as_str()).collect::<Vec<_>>().join("; "),
+        );
     }
     // The most passing recordings the port had, against now.
     let pass = |l: &Value| l["recordings"]["pass"].as_u64();
     let (best, now) = (progress.iter().filter_map(pass).max(), progress.last().and_then(pass));
     if let (Some(best), Some(now)) = (best.zip(now).filter(|(b, n)| n < b).map(|x| x.0), now) {
-        add("warn", format!("passing recordings fell from {best} to {now}"),
-            "a change broke recordings that passed before: the progress history shows where".into());
+        add(
+            "warn",
+            format!("passing recordings fell from {best} to {now}"),
+            "a change broke recordings that passed before: the progress history shows where".into(),
+        );
     }
     let questions: usize = status["areas"]
         .as_object()
@@ -701,8 +742,11 @@ fn attention(root: &Path, status: &Value, progress: &[Value], calls: &[Value]) -
         .map(|f| f["questions"].as_array().map_or(0, Vec::len))
         .sum();
     if questions > 0 {
-        add("info", format!("{questions} open question{}", if questions == 1 { "" } else { "s" }),
-            "in the catalogue's features".into());
+        add(
+            "info",
+            format!("{questions} open question{}", if questions == 1 { "" } else { "s" }),
+            "in the catalogue's features".into(),
+        );
     }
     // The same call failing again and again.
     let mut failing: HashMap<String, (usize, String)> = HashMap::new();
@@ -718,19 +762,28 @@ fn attention(root: &Path, status: &Value, progress: &[Value], calls: &[Value]) -
         let tool = key.split_once(' ').map_or(key.as_str(), |(t, _)| t);
         add("warn", format!("{tool} failed {n} times with the same arguments"), summary);
     }
-    for c in calls.iter().rev().filter(|c| {
-        matches!(c["error"].as_str(), Some("internal" | "worker_failed" | "panic" | "worker_crashed"))
-    }).take(2) {
-        add("warn", format!("psx failed inside: {}", c["tool"].as_str().unwrap_or("")),
-            c["summary"].as_str().unwrap_or("").into());
+    for c in calls
+        .iter()
+        .rev()
+        .filter(|c| matches!(c["error"].as_str(), Some("internal" | "worker_failed" | "panic" | "worker_crashed")))
+        .take(2)
+    {
+        add(
+            "warn",
+            format!("psx failed inside: {}", c["tool"].as_str().unwrap_or("")),
+            c["summary"].as_str().unwrap_or("").into(),
+        );
     }
     let now = crate::now_ms() as u64;
     let last = calls.iter().rev().find_map(|c| c["t"].as_u64());
     if let (Some(last), Some(commit)) = (last, last_commit(root)) {
         let since_commit = calls.iter().filter(|c| c["t"].as_u64().is_some_and(|t| t > commit)).count();
         if now - last < 30 * 60 * 1000 && last > commit && last - commit > 3 * 3600 * 1000 && since_commit >= 20 {
-            add("info", format!("{since_commit} calls since the last commit, {} ago", ago(now - commit)),
-                "work going on long without a commit".into());
+            add(
+                "info",
+                format!("{since_commit} calls since the last commit, {} ago", ago(now - commit)),
+                "work going on long without a commit".into(),
+            );
         }
     }
     if let Some(last) = last.filter(|l| now - l > 3600 * 1000) {
@@ -741,11 +794,20 @@ fn attention(root: &Path, status: &Value, progress: &[Value], calls: &[Value]) -
 
 fn ago(ms: u64) -> String {
     let m = ms / 60_000;
-    if m < 60 { format!("{m} min") } else if m < 48 * 60 { format!("{} h", m / 60) } else { format!("{} days", m / 1440) }
+    if m < 60 {
+        format!("{m} min")
+    } else if m < 48 * 60 {
+        format!("{} h", m / 60)
+    } else {
+        format!("{} days", m / 1440)
+    }
 }
 
 fn last_check(root: &Path) -> Value {
-    std::fs::read(root.join(".psx/port/last.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    std::fs::read(root.join(".psx/port/last.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 /// The scenarios and their recordings, each with what the last check said.
@@ -817,9 +879,17 @@ const KEEP_REPLAYS: usize = 12;
 /// How far the recording's replay is; with `start`, start it unless it ran
 /// or runs (again, when it failed: the state may be back).
 fn replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Value {
-    let Some(dir) = replay_dir(root, id, name) else { return json!({"error": "no data directory for the replay cache"}) };
+    let Some(dir) = replay_dir(root, id, name) else {
+        return json!({"error": "no data directory for the replay cache"});
+    };
     let key = dir.display().to_string();
-    let job = st.replays.lock().unwrap().entry(key).or_insert_with(|| Arc::new(Mutex::new(Replay { dir: dir.clone(), ..Default::default() }))).clone();
+    let job = st
+        .replays
+        .lock()
+        .unwrap()
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(Replay { dir: dir.clone(), ..Default::default() })))
+        .clone();
     let mut j = job.lock().unwrap();
     if start && !j.running && j.done.as_ref().is_some_and(|d| d.get("error").is_some()) {
         j.done = None;
@@ -854,7 +924,8 @@ fn replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Value {
             });
         }
     }
-    let frames = std::fs::read_dir(&j.dir).map_or(0, |d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count());
+    let frames = std::fs::read_dir(&j.dir)
+        .map_or(0, |d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count());
     json!({"running": j.running, "frames": frames, "done": j.done})
 }
 
@@ -891,7 +962,18 @@ fn port_key(root: &Path, id: &str, name: &str) -> String {
     };
     all.extend(git(&["rev-parse", "HEAD"]));
     // Uncommitted changes to the code, not to the project's notes or scenarios.
-    all.extend(git(&["diff", "HEAD", "--", "game", "psx-bevy", "tools", "vendor", "glossary", "Cargo.toml", "Cargo.lock"]));
+    all.extend(git(&[
+        "diff",
+        "HEAD",
+        "--",
+        "game",
+        "psx-bevy",
+        "tools",
+        "vendor",
+        "glossary",
+        "Cargo.toml",
+        "Cargo.lock",
+    ]));
     crate::stamp::sha256(&all)[..16].to_string()
 }
 
@@ -911,7 +993,10 @@ fn port_replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Va
     let job = st.replays.lock().unwrap().get(&jobs_key).cloned();
     // A job running; otherwise the key is worked out again, for the code now.
     let drawn = |dir: &Path| {
-        std::fs::read(dir.join("frames.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).filter(|v| v.get("error").is_none())
+        std::fs::read(dir.join("frames.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .filter(|v| v.get("error").is_none())
     };
     let job = match job {
         Some(j) if j.lock().unwrap().running => j,
@@ -941,7 +1026,8 @@ fn port_replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Va
                 let _ = std::fs::remove_dir_all(&j.dir);
                 j.running = true;
                 j.progress = "building the port".into();
-                let (root, rec, job) = (root.to_path_buf(), format!("{}/{id}/{name}.jsonl", crate::scenario::SCENARIOS), job.clone());
+                let (root, rec, job) =
+                    (root.to_path_buf(), format!("{}/{id}/{name}.jsonl", crate::scenario::SCENARIOS), job.clone());
                 std::thread::spawn(move || run_port_replay(&root, &rec, &job));
             }
         }
@@ -950,7 +1036,8 @@ fn port_replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Va
 }
 
 fn port_state(j: &Replay) -> Value {
-    let frames = std::fs::read_dir(&j.dir).map_or(0, |d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count());
+    let frames = std::fs::read_dir(&j.dir)
+        .map_or(0, |d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count());
     let key = j.dir.file_name().map(|n| n.to_string_lossy().into_owned());
     json!({"key": key, "running": j.running, "progress": j.progress, "frames": frames, "done": j.done})
 }
@@ -987,11 +1074,13 @@ fn run_port_replay(root: &Path, recording: &str, job: &Arc<Mutex<Replay>>) {
                 let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
             });
             // stderr is read beside stdout, so neither pipe fills.
-            let err = c.stderr.take().map(|e| std::thread::spawn(move || {
-                let mut s = String::new();
-                let _ = BufReader::new(e).read_to_string(&mut s);
-                s
-            }));
+            let err = c.stderr.take().map(|e| {
+                std::thread::spawn(move || {
+                    let mut s = String::new();
+                    let _ = BufReader::new(e).read_to_string(&mut s);
+                    s
+                })
+            });
             if let Some(out) = c.stdout.take() {
                 for line in BufReader::new(out).lines().map_while(Result::ok) {
                     if line.starts_with("tick ") {
@@ -1002,14 +1091,19 @@ fn run_port_replay(root: &Path, recording: &str, job: &Arc<Mutex<Replay>>) {
             let status = c.wait();
             ended.store(true, std::sync::atomic::Ordering::Release);
             let stderr = err.and_then(|t| t.join().ok()).unwrap_or_default();
-            let summary = std::fs::read(dir.join("frames.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+            let summary =
+                std::fs::read(dir.join("frames.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
             match (status, summary) {
                 (Ok(s), Some(v)) if s.success() || v.get("error").is_some() => v,
                 (status, _) => {
                     // The build failed, or the game before it drew: cargo's errors, or the end of what it said.
                     let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
                     let errors: Vec<&str> = lines.iter().copied().filter(|l| l.starts_with("error")).take(5).collect();
-                    let why = if errors.is_empty() { lines[lines.len().saturating_sub(6)..].join("\n") } else { errors.join("\n") };
+                    let why = if errors.is_empty() {
+                        lines[lines.len().saturating_sub(6)..].join("\n")
+                    } else {
+                        errors.join("\n")
+                    };
                     let code = status.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
                     json!({"error": format!("the port did not draw it ({code}): {why}")})
                 }
@@ -1131,7 +1225,12 @@ mod tests {
         let a = attention(Path::new("/nonexistent"), &Value::Null, &[], &calls);
         assert!(a.iter().any(|x| x["title"] == "run failed 3 times with the same arguments"), "{a:?}");
         let progress = [json!({"recordings": {"pass": 5}}), json!({"recordings": {"pass": 3}})];
-        let a = attention(Path::new("/nonexistent"), &json!({"next": {"who": "person", "item": "Confirm"}}), &progress, &[]);
+        let a = attention(
+            Path::new("/nonexistent"),
+            &json!({"next": {"who": "person", "item": "Confirm"}}),
+            &progress,
+            &[],
+        );
         let titles: Vec<&str> = a.iter().filter_map(|x| x["title"].as_str()).collect();
         assert_eq!(titles, ["Confirm: the port waits for you", "passing recordings fell from 5 to 3"]);
     }

@@ -108,37 +108,6 @@ pub struct FunctionsArgs {
     #[serde(default = "limit")]
     pub limit: usize,
 }
-#[derive(Args, Deserialize, JsonSchema)]
-pub struct AnnotateArgs {
-    /// Existing analysis manifest.
-    pub analysis: PathBuf,
-    /// JSON {"functions":[{"addr":"80010000","name":"writer","comment":"Evidence..."}]}.
-    #[arg(long)]
-    pub file: PathBuf,
-    /// Where to write the new revision's names as a .symbols.json, bound to the input's
-    /// function bytes, for run, disasm and xrefs (default: beside the revision's index).
-    #[arg(long)]
-    pub symbols_out: Option<PathBuf>,
-    #[arg(long)]
-    pub ghidra_home: Option<PathBuf>,
-    #[arg(long, default_value_t = timeout())]
-    #[serde(default = "timeout")]
-    pub timeout: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Patch {
-    functions: Vec<FunctionPatch>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionPatch {
-    addr: String,
-    name: Option<String>,
-    comment: Option<String>,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 struct Installation {
     home: PathBuf,
@@ -451,7 +420,6 @@ struct Manifest {
     mapping: Mapping,
     provenance: Value,
     revision: u64,
-    annotations: Vec<Value>,
     installation: Installation,
     language: String,
     compiler: String,
@@ -488,8 +456,8 @@ fn import(input: &Input) -> Result<Import> {
         let mut ranges = Vec::new();
         for spec in &input.ranges {
             let (lo, hi) = spec.split_once('-').ok_or_else(|| Error::invalid("range must be LO-HI (end exclusive)"))?;
-            let lo = ram_address(hex(lo)?)?;
-            let raw_hi = hex(hi)?;
+            let lo = ram_address(crate::commands::addr_arg(lo, "range start")?)?;
+            let raw_hi = crate::commands::addr_arg(hi, "range end")?;
             let hi = ram_address(raw_hi.checked_sub(1).ok_or_else(|| Error::invalid("invalid range end"))?)? + 1;
             if lo >= hi || lo & 3 != 0 || hi & 3 != 0 {
                 return Err(Error::invalid("empty, wrapping or unaligned code range"));
@@ -500,7 +468,11 @@ fn import(input: &Input) -> Result<Import> {
         if ranges.is_empty() || ranges.windows(2).any(|r| r[0].1 > r[1].0) {
             return Err(Error::invalid("RAM requires non-overlapping candidate code ranges"));
         }
-        let mut entries = input.entries.iter().map(|s| ram_address(hex(s)?)).collect::<Result<Vec<_>>>()?;
+        let mut entries = input
+            .entries
+            .iter()
+            .map(|s| ram_address(crate::commands::addr_arg(s, "entry")?))
+            .collect::<Result<Vec<_>>>()?;
         entries.sort_unstable();
         entries.dedup();
         if entries.is_empty()
@@ -716,7 +688,10 @@ fn language(install: &Installation, cache: &Path) -> Result<PathBuf> {
     let ext_tmp = tmp.join("PsxGte");
     fs::write(
         ext_tmp.join("extension.properties"),
-        format!("name=PsxGte\ndescription=PlayStation MIPS for psx\nauthor=psx\ncreatedOn=\nversion={}\n", install.version),
+        format!(
+            "name=PsxGte\ndescription=PlayStation MIPS for psx\nauthor=psx\ncreatedOn=\nversion={}\n",
+            install.version
+        ),
     )?;
     fs::write(ext_tmp.join("Module.manifest"), "")?;
     let log = tmp.join("sleigh.log");
@@ -746,7 +721,8 @@ fn language(install: &Installation, cache: &Path) -> Result<PathBuf> {
     Ok(ext)
 }
 /// The user name Java reports (from the password database), which Ghidra puts
-/// in its settings directory's name when XDG_CONFIG_HOME is set.
+/// in its settings directory's name when XDG_CONFIG_HOME is set outside the
+/// user's home (Ghidra's ApplicationUtilities.getUserSpecificDirName).
 fn java_user_name() -> String {
     let uid = fs::read_to_string("/proc/self/status")
         .ok()
@@ -759,6 +735,36 @@ fn java_user_name() -> String {
     });
     let name = from_passwd.or_else(|| std::env::var("USER").ok()).unwrap_or_else(|| "?".into());
     name.split_whitespace().collect()
+}
+/// Java's `user.home` (`ApplicationUtilities.getJavaUserHomeDir`): the HOME
+/// environment variable, which the JVM on Linux hands to `user.home`.
+fn java_user_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from)
+}
+/// The settings directory Ghidra computes for a run whose XDG_CONFIG_HOME is
+/// `attempt/config`: `ghidra_<version>_<release>` under `<config>/ghidra`
+/// when `<config>` lies within the user's home, else under
+/// `<config>/<user>-ghidra` (Ghidra 12.1.4's ApplicationUtilities
+/// .getUserSpecificDirName, which prefixes the name unless
+/// FileUtilities.isPathContainedWithin holds between the home and the
+/// parent). Projects under the user's home take the plain name; without a
+/// HOME Ghidra itself fails, and the prefixed name is as good as any.
+fn ghidra_settings_dir(attempt: &Path, home: Option<&Path>, user: &str, versioned: &str) -> PathBuf {
+    let config = attempt.join("config");
+    let name = if home.is_some_and(|home| path_contains(home, &config)) {
+        "ghidra".to_owned()
+    } else {
+        format!("{user}-ghidra")
+    };
+    config.join(name).join(versioned)
+}
+/// FileUtilities.isPathContainedWithin: whether `child` is `parent` or
+/// beneath it, by canonical path.
+fn path_contains(parent: &Path, child: &Path) -> bool {
+    match (parent.canonicalize(), child.canonicalize()) {
+        (Ok(parent), Ok(child)) => child.starts_with(parent),
+        _ => false,
+    }
 }
 fn command(install: &Installation, attempt: &Path, language_id: &str, ctx: &Ctx) -> Result<Command> {
     let mut cmd = Command::new(&install.launcher);
@@ -786,12 +792,13 @@ fn command(install: &Installation, attempt: &Path, language_id: &str, ctx: &Ctx)
     let prop = |key: &str| {
         props.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix('=')).unwrap_or_default().trim().to_owned()
     };
-    let settings = attempt.join("config").join(format!("{}-ghidra", java_user_name())).join(format!(
+    let versioned = format!(
         "{}_{}_{}",
         prop("application.name").to_lowercase(),
         prop("application.version"),
         prop("application.release.name")
-    ));
+    );
+    let settings = ghidra_settings_dir(attempt, java_user_home().as_deref(), &java_user_name(), &versioned);
     let installed = settings.join("Extensions/PsxGte");
     if !installed.join("data/languages/psx.sla").is_file() {
         copy_dir(&ext, &installed)?;
@@ -860,20 +867,6 @@ fn analysis_symbols(input: &Input, bytes: &[u8], mapping: &Mapping, warnings: &m
         if path.to_string_lossy().ends_with(".symbols.json") {
             let value: Value =
                 serde_json::from_str(&text).map_err(|e| Error::malformed(format!("{}: {e}", path.display())))?;
-            if value["format"] == 2 {
-                let doc =
-                    serde_json::from_value(value).map_err(|e| Error::malformed(format!("{}: {e}", path.display())))?;
-                let bound = crate::bound_symbols::Loaded::load(doc, path.parent().unwrap_or(Path::new(".")))
-                    .map_err(Error::invalid)?;
-                let image = &bytes[mapping.file_offset..mapping.file_offset + mapping.size as usize];
-                for f in &bound.document.functions {
-                    if bound.describe(f.address, base, image).is_none() {
-                        return Err(Error::invalid("bound symbol function differs from analysis input"));
-                    }
-                    symbols.push(json!({"address":f.address,"name":f.name,"kind":"function"}));
-                }
-                continue;
-            }
             let original = psx_media::source::read(
                 value["source"].as_str().ok_or_else(|| Error::invalid("symbols report lacks source"))?,
             )?;
@@ -1042,7 +1035,6 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
         mapping,
         provenance,
         revision: 0,
-        annotations: vec![],
         installation: install,
         language: LANGUAGE.into(),
         compiler: "default".into(),
@@ -1105,7 +1097,7 @@ pub fn status() -> Value {
         Ok(i) => json!({"available": java.is_some(), "home": i.home, "version": i.version, "java": java,
             "validated_version": "12.1.4", "language": LANGUAGE}),
         Err(e) => json!({"available": false, "reason": e.to_value()["error"]["message"], "java": java,
-            "setup": "set PSX_GHIDRA_HOME to a Ghidra installation (or put analyzeHeadless on PATH); code decompile, functions and annotate need it"}),
+            "setup": "set PSX_GHIDRA_HOME to a Ghidra installation (or put analyzeHeadless on PATH); code decompile and functions need it"}),
     }
 }
 impl Op for FunctionsArgs {
@@ -1115,12 +1107,33 @@ impl Op for FunctionsArgs {
             let deadline = budget(&self.input)?;
             let a = prepare(&self.input, None, function_timeout(), deadline, ctx)?;
             let filter = self.filter.unwrap_or_default().to_lowercase();
+            // The project's names that bind to this analysis name its rows.
+            let (names, _) = names_for(&ctx.root, &a.manifest);
+            let named: std::collections::HashMap<u32, String> = names["functions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|f| {
+                    let text = f["name"]["text"].as_str()?;
+                    let guess = if f["name"]["guess"] == true { "?" } else { "" };
+                    Some((psx_media::memmap::parse_hex(f["address"].as_str()?)?, format!("{text}{guess}")))
+                })
+                .collect();
             let rows: Vec<Value> = a.index["functions"]
                 .as_array()
                 .ok_or_else(|| Error::new("invalid_artifact", "missing functions index"))?
                 .iter()
+                .map(|f| {
+                    let mut f = f.clone();
+                    if let Some(n) =
+                        f["entry"].as_str().and_then(psx_media::memmap::parse_hex).and_then(|e| named.get(&e))
+                    {
+                        f["name"] = json!(n);
+                        f["name_source"] = json!("names");
+                    }
+                    f
+                })
                 .filter(|f| f["name"].as_str().unwrap_or("").to_lowercase().contains(&filter))
-                .cloned()
                 .collect();
             let mut out = summary(&a);
             out["functions"] = page(&rows, self.offset, self.limit);
@@ -1135,7 +1148,7 @@ impl Op for DecompileArgs {
                 return Err(Error::invalid("decompile_timeout must be 1..=300"));
             }
             let deadline = budget(&self.input)?;
-            let addr = ram_address(hex(&self.addr)?)?;
+            let addr = ram_address(crate::commands::addr_arg(&self.addr, "address")?)?;
             let mut a = prepare(&self.input, Some(addr), self.decompile_timeout, deadline, ctx)?;
             let (names, problems) = names_for(&ctx.root, &a.manifest);
             let dir = a.manifest.index.parent().unwrap();
@@ -1364,9 +1377,7 @@ fn unset_registers(a: &Analysis, pseudocode: &str, entry: Option<u32>) -> Option
     ];
     let mut names: Vec<&str> = pseudocode
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|w| {
-            w.strip_prefix("unaff_").or_else(|| w.strip_prefix("in_")).is_some_and(|r| REGISTERS.contains(&r))
-        })
+        .filter(|w| w.strip_prefix("unaff_").or_else(|| w.strip_prefix("in_")).is_some_and(|r| REGISTERS.contains(&r)))
         .collect();
     names.sort_unstable();
     names.dedup();
@@ -1387,88 +1398,6 @@ fn unset_registers(a: &Analysis, pseudocode: &str, entry: Option<u32>) -> Option
     })
 }
 
-fn open_analysis(path: &Path, deadline: Instant, ctx: &Ctx) -> Result<Analysis> {
-    let path = path.canonicalize().map_err(|e| Error::io(path, e))?;
-    let lock = Lock::queued(path.parent().ok_or_else(|| Error::invalid("invalid analysis path"))?, deadline, ctx)?;
-    cached(path, lock)
-}
-
-fn patches(index: &Value, patch: Patch) -> Result<(Vec<Value>, Vec<Value>)> {
-    if patch.functions.is_empty() || patch.functions.len() > 1000 {
-        return Err(Error::invalid("patch requires 1..=1000 functions"));
-    }
-    let functions = index["functions"].as_array().ok_or_else(|| Error::new("invalid_artifact", "missing functions"))?;
-    let mut rows = std::collections::BTreeMap::new();
-    for p in patch.functions {
-        let addr = ram_address(hex(&p.addr)?)?;
-        if !functions.iter().any(|f| same_address(&f["entry"], addr)) {
-            return Err(Error::invalid(format!("0x{addr:08X} is not a function entry")));
-        }
-        if p.name.is_none() && p.comment.is_none() {
-            return Err(Error::invalid("empty function patch"));
-        }
-        let mut row = json!({"address":addr});
-        if let Some(name) = p.name {
-            if name.is_empty()
-                || name.len() > 128
-                || !name
-                    .bytes()
-                    .enumerate()
-                    .all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || (i > 0 && b.is_ascii_digit()))
-            {
-                return Err(Error::invalid("names must be ASCII identifiers, at most 128 characters"));
-            }
-            row["name"] = json!(name);
-        }
-        if let Some(comment) = p.comment {
-            if comment.len() > 16384 || comment.contains('\0') {
-                return Err(Error::invalid("comment exceeds 16 KiB or contains NUL"));
-            }
-            row["comment"] = json!(comment);
-        }
-        if rows.insert(addr, row).is_some() {
-            return Err(Error::invalid("duplicate function in patch"));
-        }
-    }
-    let mut names = std::collections::BTreeMap::new();
-    for f in functions {
-        let addr = hex(f["entry"].as_str().ok_or_else(|| Error::invalid("invalid indexed entry"))?)?;
-        let name = rows.get(&addr).and_then(|r| r["name"].as_str()).unwrap_or_else(|| f["name"].as_str().unwrap_or(""));
-        names.entry(name.to_string()).or_insert_with(Vec::new).push(addr);
-    }
-    let mut conflicts = Vec::new();
-    for (name, addrs) in &names {
-        if addrs.len() < 2 {
-            continue;
-        }
-        let claimed: Vec<_> = addrs.iter().filter(|a| rows.get(a).is_some_and(|p| p["name"].is_string())).collect();
-        if claimed.is_empty() {
-            continue;
-        }
-        if claimed.len() != 1 {
-            return Err(Error::new("symbol_conflict", format!("name {name:?} is ambiguous")));
-        }
-        for addr in addrs.iter().filter(|a| *a != claimed[0]) {
-            let f = functions.iter().find(|f| same_address(&f["entry"], *addr)).unwrap();
-            if matches!(f["name_source"].as_str(), Some("USER_DEFINED" | "IMPORTED")) {
-                return Err(Error::new(
-                    "symbol_conflict",
-                    format!("name {name:?} belongs to user/imported function 0x{addr:08X}"),
-                ));
-            }
-            let mut replacement = format!("psx_generated_{addr:08X}");
-            while names.contains_key(&replacement) {
-                replacement.push('_');
-            }
-            let row = rows.entry(*addr).or_insert_with(|| json!({"address":addr}));
-            row["name"] = json!(replacement);
-            row["generated"] = json!(true);
-            conflicts.push(json!({"name":name,"displaced_entry":format!("0x{addr:08X}"),"replacement":replacement}));
-        }
-    }
-    Ok((rows.into_values().collect(), conflicts))
-}
-
 fn copy_dir(source: &Path, target: &Path) -> Result<()> {
     fs::create_dir_all(target).map_err(|e| Error::io(target, e))?;
     for entry in fs::read_dir(source).map_err(|e| Error::io(source, e))? {
@@ -1482,173 +1411,6 @@ fn copy_dir(source: &Path, target: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn copy_project(source: &Path, target: &Path) -> Result<()> {
-    fs::create_dir(target).map_err(|e| Error::io(target, e))?;
-    for entry in fs::read_dir(source).map_err(|e| Error::io(source, e))? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let name = entry.file_name();
-        if ty.is_symlink() {
-            return Err(Error::new("invalid_artifact", "project contains a symlink"));
-        }
-        if name.to_string_lossy().ends_with(".lock") || name.to_string_lossy().ends_with(".lock~") {
-            continue;
-        }
-        let dest = target.join(name);
-        if ty.is_dir() {
-            copy_project(&entry.path(), &dest)?;
-        } else {
-            fs::copy(entry.path(), dest)?;
-        }
-    }
-    Ok(())
-}
-impl Op for AnnotateArgs {
-    fn exec(self, ctx: &Ctx) -> Outcome {
-        outcome((|| {
-            if !(1..=3600).contains(&self.timeout) {
-                return Err(Error::invalid("timeout must be 1..=3600"));
-            }
-            let deadline = Instant::now() + Duration::from_secs(self.timeout);
-            let mut a = open_analysis(&self.analysis, deadline, ctx)?;
-            let patch: Patch = serde_json::from_value(read_json(&self.file)?).map_err(Error::invalid)?;
-            let (patches, conflicts) = patches(&a.index, patch)?;
-            let install = installation(self.ghidra_home.as_deref().or(Some(&a.manifest.installation.home)))?;
-            if install.build_sha256 != a.manifest.installation.build_sha256 {
-                return Err(Error::new("stale_analysis", "Ghidra version changed"));
-            }
-            // Work on a copy: timeout, cancellation or script failure cannot leave the
-            // published manifest pointing at a partially annotated database.
-            let attempt = a.path.parent().unwrap().join(crate::stamp());
-            fs::create_dir(&attempt).map_err(|e| Error::io(&attempt, e))?;
-            let project =
-                a.manifest.project_dir.with_file_name(format!("{}-{}", &a.manifest.key[..16], crate::stamp()));
-            let mut pending = PendingProject(Some(project.clone()));
-            copy_project(&a.manifest.project_dir, &project)?;
-            let index = attempt.join("index.json");
-            let request = attempt.join("annotations.json");
-            save_json(&request, &json!({"mode":"annotate","patches":patches,"index":index}))?;
-            let mut cmd = command(&install, &attempt, &a.manifest.language, ctx)?;
-            cmd.arg(&project)
-                .arg("project")
-                .args(["-process", "payload.bin", "-noanalysis", "-max-cpu", "2"])
-                .arg("-scriptPath")
-                .arg(script_dir(&attempt)?)
-                .arg("-postScript")
-                .arg("PsxGhidra.java")
-                .arg(&request);
-            run_worker(&mut cmd, &attempt.join("worker.log"), deadline, ctx, None)?;
-            a.index = read_json(&index)?;
-            if !a.index["functions"].is_array() {
-                return Err(Error::new("ghidra_failed", "annotation index missing"));
-            }
-            a.manifest.revision += 1;
-            a.manifest.annotations.push(json!({"revision":a.manifest.revision,"patch":request,"conflicts":conflicts}));
-            a.manifest.index = index;
-            let old = std::mem::replace(&mut a.manifest.project_dir, project);
-            let old_fingerprint =
-                std::mem::replace(&mut a.manifest.project_fingerprint, fingerprint(&a.manifest.project_dir)?);
-            save_json(&a.path, &a.manifest)?;
-            pending.keep();
-            discard_project(&old, Some(&old_fingerprint));
-            let mut out = summary(&a);
-            out["status"] = json!("complete");
-            out["conflicts"] = json!(conflicts);
-            // Ghidra's script takes numbers; the result shows them as hex.
-            out["patches"] = patches
-                .iter()
-                .map(|p| {
-                    let mut p = p.clone();
-                    p["address"] = json!(crate::commands::addr_value(&p["address"]).map(psx_media::memmap::hex));
-                    p
-                })
-                .collect();
-            let manifest = a.path.clone();
-            drop(a);
-            out["symbols"] = export(&manifest, self.symbols_out, deadline, ctx)?;
-            Ok(out)
-        })())
-    }
-}
-/// The analysis's function names as a `.symbols.json` bound to its input's bytes:
-/// `out`, or one beside the revision's index.
-fn export(analysis: &Path, out: Option<PathBuf>, deadline: Instant, ctx: &Ctx) -> Result<Value> {
-    {
-        {
-            use crate::bound_symbols::{Document, Function, Range};
-            let a = open_analysis(analysis, deadline, ctx)?;
-            let m = &a.manifest;
-            let bytes = fs::read(&m.input).map_err(|e| Error::io(&m.input, e))?;
-            let mapping = &m.mapping;
-            let image = bytes
-                .get(mapping.file_offset..mapping.file_offset + mapping.size as usize)
-                .ok_or_else(|| Error::new("invalid_artifact", "invalid input mapping"))?;
-            let mut functions = Vec::new();
-            let mut names = std::collections::HashSet::new();
-            for f in
-                a.index["functions"].as_array().ok_or_else(|| Error::new("invalid_artifact", "missing functions"))?
-            {
-                let address = hex(f["entry"].as_str().ok_or_else(|| Error::invalid("invalid indexed entry"))?)?;
-                let mut body = Vec::new();
-                for r in f["body"].as_array().ok_or_else(|| Error::invalid("missing function body"))? {
-                    let start = hex(r["start"].as_str().ok_or_else(|| Error::invalid("invalid body start"))?)?;
-                    let end = hex(r["end_inclusive"].as_str().ok_or_else(|| Error::invalid("invalid body end"))?)?
-                        .checked_add(1)
-                        .ok_or_else(|| Error::invalid("body end overflow"))?;
-                    let lo =
-                        start.checked_sub(mapping.base).ok_or_else(|| Error::invalid("body outside mapped input"))?
-                            as usize;
-                    let hi = end.checked_sub(mapping.base).ok_or_else(|| Error::invalid("body outside mapped input"))?
-                        as usize;
-                    let data = image
-                        .get(lo..hi)
-                        .filter(|_| start < end)
-                        .ok_or_else(|| Error::invalid("body outside mapped input"))?;
-                    body.push(Range { start, end, sha256: sha256_bytes(data) });
-                }
-                let name = f["name"].as_str().ok_or_else(|| Error::invalid("missing function name"))?;
-                if name.chars().any(char::is_whitespace) || !names.insert(name.to_owned()) {
-                    return Err(Error::new(
-                        "symbol_conflict",
-                        "Export requires unique names without whitespace; rename conflicting functions first.",
-                    ));
-                }
-                functions.push(Function { address, name: name.into(), body });
-            }
-            let document = Document {
-                format: 2,
-                analysis: a.path.clone(),
-                revision: m.revision,
-                input: m.input.clone(),
-                input_sha256: m.source_sha256.clone(),
-                base: mapping.base,
-                file_offset: mapping.file_offset,
-                size: mapping.size as usize,
-                functions,
-            };
-            crate::bound_symbols::Loaded::load(document.clone(), Path::new(".")).map_err(Error::invalid)?;
-            let path = out.unwrap_or_else(|| m.index.parent().unwrap().join("export.symbols.json"));
-            if !path.to_string_lossy().ends_with(".symbols.json") {
-                return Err(Error::invalid("output must end in .symbols.json"));
-            }
-            // Preserve the copied input, manifest, project and indexes even with an explicit output path.
-            if path.exists() {
-                if read_json(&path)? != serde_json::to_value(&document).unwrap() {
-                    return Err(Error::new(
-                        "output_exists",
-                        "symbol output exists with different content; choose a new path",
-                    ));
-                }
-            } else {
-                save_json(&path, &document)?;
-            }
-            Ok(
-                json!({"analysis":a.path,"revision":m.revision,"symbols":path,"function_count":document.functions.len(),"verification":"all function body bytes; names are withheld without matching code context"}),
-            )
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1747,119 +1509,6 @@ mod tests {
         let imported = import(&a).unwrap();
         assert_eq!(imported.mapping.gp, 0x80018000);
         assert_eq!(imported.provenance["frames"]["end"], 123);
-        fs::remove_dir_all(ctx.root).unwrap();
-    }
-
-    #[test]
-    fn annotations_prioritize_user_names_and_report_collisions() {
-        let index = json!({"functions":[{"entry":"80010000","name":"FUN_80010000","name_source":"DEFAULT"},
-            {"entry":"80010040","name":"named_writer","name_source":"USER_DEFINED"},
-            {"entry":"80010080","name":"FUN_80010080","name_source":"DEFAULT"}]});
-        let patch = |v| serde_json::from_value(v).unwrap();
-        let (rows, conflicts) = patches(
-            &index,
-            patch(json!({"functions":[{"addr":"a0010040","name":"FUN_80010000","comment":"observed"}]})),
-        )
-        .unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(conflicts.len(), 1);
-        assert_eq!(rows[0]["generated"], true);
-        let err =
-            patches(&index, patch(json!({"functions":[{"addr":"80010000","name":"named_writer"}]}))).err().unwrap();
-        assert_eq!(err.code, "symbol_conflict");
-        assert!(patches(&index, patch(json!({"functions":[{"addr":"80010004","name":"interior"}]}))).is_err());
-        assert!(
-            patches(
-                &index,
-                patch(json!({"functions":[{"addr":"80010000","name":"same"},{"addr":"80010080","name":"same"}]}))
-            )
-            .is_err()
-        );
-        let (rows, _) = patches(
-            &index,
-            patch(json!({"functions":[{"addr":"80010000","name":"named_writer"},{"addr":"80010040","name":"FUN_80010000"}]})),
-        )
-        .unwrap();
-        assert_eq!(rows.len(), 2); // name swaps are valid
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn annotation_timeout_preserves_the_published_project_and_revision() {
-        use std::os::unix::fs::PermissionsExt;
-        let ctx = context();
-        let home = ctx.root.join("fake-ghidra");
-        fs::create_dir_all(home.join("support")).unwrap();
-        fs::create_dir_all(home.join("Ghidra")).unwrap();
-        let props = "application.version=fake\n";
-        fs::write(home.join("Ghidra/application.properties"), props).unwrap();
-        let launcher = home.join("support/analyzeHeadless");
-        fs::write(&launcher, "#!/bin/sh\nsleep 30\n").unwrap();
-        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
-        // The psx language is built with the installation's sleigh from its MIPS sources.
-        fs::create_dir_all(home.join("Ghidra/Processors/MIPS/data/languages")).unwrap();
-        let sleigh = home.join("support/sleigh");
-        fs::write(&sleigh, "#!/bin/sh\necho sla > \"$2\"\n").unwrap();
-        fs::set_permissions(&sleigh, fs::Permissions::from_mode(0o755)).unwrap();
-        let project = ctx.root.join("original-project");
-        fs::create_dir(&project).unwrap();
-        fs::write(project.join("project.gpr"), "original database").unwrap();
-        let copy = ctx.root.join("input.bin");
-        fs::write(&copy, [0; 8]).unwrap();
-        let index = ctx.root.join("index.json");
-        save_json(&index, &json!({"functions":[{"entry":"80010000","name":"original","name_source":"USER_DEFINED"}]}))
-            .unwrap();
-        let manifest = Manifest {
-            format: FORMAT,
-            key: "0123456789abcdef".repeat(4),
-            source: "authored".into(),
-            source_sha256: sha256_bytes(&[0; 8]),
-            input: copy,
-            payload_sha256: sha256_bytes(&[0; 8]),
-            exe: None,
-            mapping: Mapping {
-                base: 0x80010000,
-                size: 8,
-                file_offset: 0,
-                entry: 0x80010000,
-                gp: 0,
-                sp: 0,
-                bss_addr: 0,
-                bss_size: 0,
-                code_ranges: vec![(0x80010000, 0x80010008)],
-                entries: vec![0x80010000],
-            },
-            provenance: Value::Null,
-            revision: 0,
-            annotations: vec![],
-            installation: installation(Some(&home)).unwrap(),
-            language: LANGUAGE.into(),
-            compiler: "default".into(),
-            script_sha256: sha256_bytes(SCRIPT.as_bytes()),
-            project_fingerprint: fingerprint(&project).unwrap(),
-            project_dir: project.clone(),
-            index,
-            warnings: vec![],
-        };
-        let path = ctx.root.join("analysis.json");
-        save_json(&path, &manifest).unwrap();
-        let before = fs::read(&path).unwrap();
-        let patch = ctx.root.join("patch.json");
-        save_json(&patch, &json!({"functions":[{"addr":"80010000","name":"renamed"}]})).unwrap();
-        let out = AnnotateArgs {
-            analysis: path.clone(),
-            file: patch,
-            symbols_out: None,
-            ghidra_home: Some(home),
-            timeout: 1,
-        }
-        .exec(&ctx);
-        assert_eq!(out.value["error"]["code"], "timeout", "{}", out.value);
-        assert_eq!(fs::read(&path).unwrap(), before);
-        assert_eq!(fs::read_to_string(project.join("project.gpr")).unwrap(), "original database");
-        let original = open_analysis(&path, Instant::now() + Duration::from_secs(5), &ctx).unwrap();
-        assert_eq!(original.index["functions"][0]["name"], "original");
-        drop(original);
         fs::remove_dir_all(ctx.root).unwrap();
     }
 
@@ -1964,6 +1613,34 @@ mod tests {
         let again = Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(2), &ctx).unwrap();
         assert!(again.interrupted.is_none(), "recovered once");
         fs::remove_dir_all(ctx.root).unwrap();
+    }
+
+    #[test]
+    fn settings_dir_follows_ghidras_user_home_rule() {
+        // Ghidra keeps the plain settings name when the XDG parent is inside
+        // the user's home (GT2's project is), and prefixes it with the user
+        // when it is not (ApplicationUtilities.getUserSpecificDirName).
+        let root = std::env::temp_dir().join(format!("psx-ghidra-settings-{}", crate::stamp()));
+        let attempt = root.join("home/project/.psx/ghidra/key/stamp");
+        fs::create_dir_all(attempt.join("config")).unwrap();
+        let home = root.join("home");
+        let versioned = "ghidra_12.1.4_PUBLIC";
+        assert_eq!(
+            ghidra_settings_dir(&attempt, Some(&home), "maisy", versioned),
+            attempt.join("config/ghidra").join(versioned),
+            "inside the home the name is plain"
+        );
+        assert_eq!(
+            ghidra_settings_dir(&attempt, Some(&root.join("elsewhere")), "maisy", versioned),
+            attempt.join("config/maisy-ghidra").join(versioned),
+            "outside the home the name carries the user"
+        );
+        assert_eq!(
+            ghidra_settings_dir(&attempt, None, "maisy", versioned),
+            attempt.join("config/maisy-ghidra").join(versioned),
+            "no HOME, no plain name"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(target_os = "linux")]

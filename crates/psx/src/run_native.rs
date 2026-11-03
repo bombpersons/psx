@@ -147,8 +147,6 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     let mut termination = "frames_reached";
     let mut met = None;
     let mut steps: u64 = 0;
-    let bound_watches = scopes.iter().any(|s| s.bound.is_some()) && !a.watches.is_empty();
-    let mut hit_names: Vec<Value> = Vec::new();
     let observed_name = |pc, ram: &[u8]| {
         crate::name_pc(&scopes, pc, Some(ram))
             .map(|(name, check, source)| json!({"name":name,"exe":source,"check":check.as_str()}))
@@ -199,7 +197,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         // Everything above acts only when the frame counter changes, so without
         // per-instruction observers (tracer, read watches) the machine can run the
         // rest of the frame in one call (stopping at the next timeout check).
-        if tracer.is_some() || !read_ranges.is_empty() || bound_watches || profiler.is_some() || tick.is_some() {
+        if tracer.is_some() || !read_ranges.is_empty() || profiler.is_some() || tick.is_some() {
             let info = m.step();
             if let (Some(t), Some(s)) = (&tick, &mut sampler) {
                 if t.ended_by(&info) {
@@ -208,11 +206,6 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             }
             if let Some(p) = &mut profiler {
                 p.after_step(&info, m.cpu.cycles);
-            }
-            if bound_watches {
-                for hit in &m.bus.obs.hits[hit_names.len()..] {
-                    hit_names.push(hit.pc.map(|pc| observed_name(pc, &m.bus.ram)).unwrap_or(Value::Null));
-                }
             }
             if let Some(t) = &mut tracer {
                 t.after_step(&info, &m.cpu, &m.bus);
@@ -314,15 +307,8 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         .obs
         .hits
         .iter()
-        .enumerate()
-        .filter(|(_, h)| !(obs.watch_changes_only && h.old.is_some() && h.old == h.value))
-        .map(|(i, h)| {
-            let mut v = with_run_frame(annotate_hit(h));
-            if let Some(name) = hit_names.get(i).filter(|v| !v.is_null()) {
-                v["function"] = name.clone();
-            }
-            v
-        })
+        .filter(|h| !(obs.watch_changes_only && h.old.is_some() && h.old == h.value))
+        .map(|h| with_run_frame(annotate_hit(h)))
         .collect();
     if !a.watches.is_empty() {
         put("writes.jsonl", jsonl(hits.clone()).as_bytes());
@@ -415,6 +401,15 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     let reads_report = if read_ranges.is_empty() {
         Value::Null
     } else {
+        for r in &mut reads {
+            let global = r["address"]
+                .as_str()
+                .and_then(psx_media::memmap::parse_hex)
+                .and_then(|a| crate::names_bind::global_at(crate::names_bind::project_names(), a));
+            if let Some(g) = global {
+                r["global"] = json!(g);
+            }
+        }
         put("reads.jsonl", jsonl(std::mem::take(&mut reads)).as_bytes());
         let mut top: Vec<(u32, u64)> = readers.into_iter().collect();
         top.sort_by_key(|&(pc, n)| (std::cmp::Reverse(n), pc));
@@ -471,7 +466,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         .map(|v| {
             let mut v = v.clone();
             if let Some(pc) = addr_value(&v["pc"]) {
-                if v["function"].is_null() && !bound_watches {
+                if v["function"].is_null() {
                     v["function"] = crate::final_name(&scopes, pc, Some(&m.bus.ram));
                 }
             }
@@ -630,10 +625,9 @@ fn apply_due(m: &mut Machine, events: &[crate::replay::Input], next: &mut usize,
 /// Write watches and the CD/BIOS/SPU event logs the run asked for.
 fn attach_observers(m: &mut Machine, a: &RunArgs) -> crate::Result<()> {
     for w in &a.watches {
-        let (addr, width) = w.split_once(':').unwrap_or((w, "4"));
-        let Some(addr) = psx_media::memmap::parse_hex(addr) else {
-            return Err(Error::invalid(format!("bad watch address {addr}")));
-        };
+        let (addr, width) = crate::commands::split_width(w);
+        let width = width.unwrap_or("4");
+        let addr = crate::commands::addr_arg(addr, "watch address")?;
         // Any byte length: the native watch covers [ADDR, ADDR+WIDTH).
         let width: u32 = match width.parse() {
             Ok(w) if w >= 1 => w,
@@ -659,6 +653,9 @@ fn attach_observers(m: &mut Machine, a: &RunArgs) -> crate::Result<()> {
 fn annotate_hit(h: &psx_core::observe::WriteHit) -> Value {
     let mut v = serde_json::to_value(h).unwrap();
     v["region"] = json!(region(h.address));
+    if let Some(g) = crate::names_bind::global_at(crate::names_bind::project_names(), h.address) {
+        v["global"] = json!(g);
+    }
     let w = h.width as usize;
     if w <= 4 {
         for (key, val) in [("value", h.value), ("old", h.old)] {
@@ -700,16 +697,19 @@ fn frame_outputs(
     Ok(())
 }
 
-/// Hex address (optionally 0x-prefixed) or a function name from --symbols:
+/// Hex address (optionally 0x-prefixed), or a function's name from the
+/// project's names or --symbols, or any name `address` takes:
 /// `(start, end of the function if known)`.
 fn resolve(spec: &str, scopes: &[crate::ScopedSymbols]) -> crate::Result<(u32, Option<u32>)> {
-    if let Some(v) = psx_media::memmap::parse_hex(spec) {
-        return Ok((v, None));
+    let bare = spec.trim_end_matches('?');
+    if !spec.starts_with("0x") {
+        if let Some(f) = scopes.iter().find_map(|s| s.table.find(bare).or_else(|| s.table.find(&format!("{bare}?")))) {
+            return Ok(f);
+        }
     }
-    scopes
-        .iter()
-        .find_map(|s| s.table.find(spec))
-        .ok_or_else(|| Error::invalid(format!("{spec:?} is neither a hex address nor a function in --symbols")))
+    crate::names_bind::address(spec)
+        .map(|v| (v, None))
+        .map_err(|e| Error::invalid(format!("{e} (nor a function in --symbols)")))
 }
 
 fn make_tracer(
