@@ -128,6 +128,15 @@ pub struct Cpu {
     #[serde(skip)]
     int_pending: bool,
     t: Timing,
+    /// Instruction issue and fetch cost this fraction of their clocks (0 and
+    /// 1: the real CPU's), so the CPU does more work in a field: psx's
+    /// `steady` adjustment. Loads, stores, multiplies, divides, the GTE and
+    /// the devices keep their timing. Not saved.
+    #[serde(skip)]
+    pub overclock: u32,
+    /// The clocks owed below one whole, while overclocked.
+    #[serde(skip)]
+    overclock_owed: u32,
 }
 
 /// [`Cpu::spin_key`]: fields in the order compared, what differs most often
@@ -238,6 +247,8 @@ impl Cpu {
             irq_line: false,
             int_pending: false,
             t: Timing::default(),
+            overclock: 0,
+            overclock_owed: 0,
         }
     }
 
@@ -370,7 +381,20 @@ impl Cpu {
         if self.t.read_absorb[w] != 0 {
             self.t.read_absorb[w] -= 1;
         } else {
-            self.cycles += 1;
+            self.spend(1);
+        }
+    }
+
+    /// `n` clocks of the CPU's own work: a fraction of them when
+    /// [`Cpu::overclock`]ed.
+    #[inline(always)]
+    fn spend(&mut self, n: u32) {
+        if self.overclock <= 1 {
+            self.cycles += n as u64;
+        } else {
+            self.overclock_owed += n;
+            self.cycles += (self.overclock_owed / self.overclock) as u64;
+            self.overclock_owed %= self.overclock;
         }
     }
 
@@ -463,7 +487,7 @@ impl Cpu {
         }
         self.cancel_absorb();
         if pc >= 0xA000_0000 || !enabled {
-            self.cycles += 4;
+            self.spend(4);
             return bus.read(pc, Width::Word);
         }
         bus.spin_breaks += 1;
@@ -471,9 +495,9 @@ impl Cpu {
         for w in 0..4 {
             self.t.icache[(i & !3) + w].0 = line | (w as u32) << 2 | 2;
         }
-        self.cycles += 3;
+        self.spend(3);
         for w in (i & 3)..4 {
-            self.cycles += 1;
+            self.spend(1);
             let a = line | (w as u32) << 2;
             self.t.icache[(i & !3) + w] = (a, bus.read(a, Width::Word)?);
         }

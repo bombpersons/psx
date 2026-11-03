@@ -15,6 +15,14 @@
 //! loop does between polls. Ticks in which no game code read the pad are
 //! counted as lag frames; a tick ending inside an exception handler is
 //! counted too (the binding's tick is then not the game's loop).
+//!
+//! **steady**: no tick overruns its fields. The CPU's own work (instruction
+//! issue and fetch) costs a quarter of its clocks ([`STEADY_OVERCLOCK`]),
+//! and the GPU draws without taking time, so the game's work for a tick
+//! fits in its fields where the console slowed down. Timers, the CD, the
+//! SPU and video timing keep the real clock. Emulators offer the same to
+//! players (DuckStation's CPU overclock), and it breaks some games, which
+//! is why it is measured per game.
 
 use psx_core::Machine;
 use psx_core::cpu::StepInfo;
@@ -26,6 +34,8 @@ use serde_json::{Value as Json, json};
 pub(crate) struct Adjustments {
     /// The pad changes only where a tick ends.
     pub latch: bool,
+    /// No tick overruns its fields.
+    pub steady: bool,
     /// Test adjustments: one that does nothing, and one that adds 1 to the
     /// word at an address when a tick ends.
     #[cfg(test)]
@@ -44,7 +54,10 @@ pub(crate) enum TestAdjust {
 }
 
 /// The names of the adjustments this psx knows.
-const KNOWN: &[&str] = &["latch"];
+const KNOWN: &[&str] = &["latch", "steady"];
+
+/// `steady`'s clock multiplier for the CPU's own work.
+pub(crate) const STEADY_OVERCLOCK: u32 = 4;
 
 impl Adjustments {
     /// None: the stock game.
@@ -55,7 +68,7 @@ impl Adjustments {
     /// What `scenario record` and `scenario play` use unless `stock`: every
     /// adjustment this psx has.
     pub fn default_set() -> Adjustments {
-        Adjustments { latch: true, ..Adjustments::default() }
+        Adjustments { latch: true, steady: true, ..Adjustments::default() }
     }
 
     pub fn is_stock(&self) -> bool {
@@ -67,6 +80,9 @@ impl Adjustments {
         let mut out = Vec::new();
         if self.latch {
             out.push("latch");
+        }
+        if self.steady {
+            out.push("steady");
         }
         #[cfg(test)]
         match self.test {
@@ -91,6 +107,7 @@ impl Adjustments {
         for n in names {
             match n {
                 "latch" => a.latch = true,
+                "steady" => a.steady = true,
                 #[cfg(test)]
                 "test_nothing" => a.test = Some(TestAdjust::Nothing),
                 _ => {
@@ -109,8 +126,11 @@ impl Adjustments {
         (!self.is_stock()).then(|| json!(self.names()))
     }
 
-    /// What they keep while a run goes, made where the recording starts.
-    pub fn start(&self) -> Running {
+    /// What they keep while a run goes, made where the recording starts;
+    /// `steady` takes effect on `m` from here.
+    pub fn start(&self, m: &mut Machine) -> Running {
+        m.cpu.overclock = if self.steady { STEADY_OVERCLOCK } else { 0 };
+        m.bus.gpu.timed = !self.steady;
         Running {
             a: *self,
             flow: self.latch.then(PadFlow::new),
@@ -287,10 +307,10 @@ mod tests {
         assert_eq!(Adjustments::from_details(&details(a.detail().unwrap())), Ok(a));
         assert_eq!(Adjustments::stock().detail(), None);
         let d = Adjustments::default_set();
-        assert_eq!(d.detail(), Some(json!(["latch"])));
+        assert_eq!(d.detail(), Some(json!(["latch", "steady"])));
         assert_eq!(Adjustments::from_details(&details(d.detail().unwrap())), Ok(d));
         let e = Adjustments::from_details(&details(json!(["latch_v9"]))).unwrap_err();
-        assert!(e.contains("\"latch_v9\"") && e.contains("knows latch"), "{e}");
+        assert!(e.contains("\"latch_v9\"") && e.contains("knows latch, steady"), "{e}");
         assert!(Adjustments::from_details(&details(json!("latch"))).is_err());
     }
 

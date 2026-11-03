@@ -354,7 +354,7 @@ fn record(
     // the port's launcher builds, before any input. The recording's fields
     // (and the input's frames) count from the field after that tick.
     crate::replay::apply(m, &crate::replay::Input { frame: 0, buttons: 0, sticks: [128; 4] });
-    let mut adjust = q.adjust.start();
+    let mut adjust = q.adjust.start(m);
     let mut start: Option<u64> = None;
     let mut target = u64::MAX;
     let tick = &q.binding.described().tick;
@@ -488,6 +488,17 @@ fn record(
     }
     out.adjusted = adjust.report();
     out
+}
+
+/// How many ticks took each number of fields, from the field each ended in
+/// and the one the tick before ended in (so not the first): `{"2": 118,
+/// "3": 4}` for a game at 30 Hz that slowed down 4 times.
+fn fields_per_tick(ticks: &[Full]) -> Json {
+    let mut h: BTreeMap<u64, u64> = BTreeMap::new();
+    for w in ticks.windows(2) {
+        *h.entry(w[1].field - w[0].field).or_default() += 1;
+    }
+    json!(h.into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect::<serde_json::Map<_, _>>())
 }
 
 /// The pad held when each tick ended, from `events` by field: the last event
@@ -765,6 +776,7 @@ impl Prepared {
         if let Some(a) = &r.adjusted {
             details["adjusted"] = a.clone();
         }
+        details["fields_per_tick"] = fields_per_tick(&r.ticks);
         let header = Header {
             format: format::RECORDING_FORMAT.into(),
             format_version: format::RECORDING_FORMAT_VERSION,
@@ -805,6 +817,7 @@ impl Prepared {
         let last = r.ticks.last();
         let mut result = json!({"status": "recorded", "recording": rel(root, out), "written": true,
                "adjust": self.adjust.names(), "adjusted": r.adjusted,
+               "fields_per_tick": fields_per_tick(&r.ticks),
                "ticks": r.ticks.len(), "fields": last.map(|t| t.field), "coverage": rel(root, &kept_path),
                "next": "psx scenario check runs the determinism check on the scenario's recordings"});
         if let Some(f) = &self.from {
@@ -1826,6 +1839,61 @@ pub struct Quantities {
         assert_eq!(a["lag_frames"], 0);
         assert_eq!(a["buffer"][0], json!({"address": "0x80020000", "byte": "buttons_lo", "mask": "0x00"}));
         assert_eq!(a["by"], "the pad buffer and the controller");
+    }
+
+    /// A game whose work for a tick takes `n` passes of a loop, then waits
+    /// for vblank, recorded for `fields` fields with Demo's binding.
+    fn slow_game(n: u32, adjust: Adjustments, fields: u32) -> Recorded {
+        use psx_core::padflow::test_program::asm::*;
+        const T2: u32 = 10;
+        const T3: u32 = 11;
+        const T4: u32 = 12;
+        const S0: u32 = 16;
+        const S1: u32 = 17;
+        let main = [
+            ori(T2, 0, n),          // 80010000: the work
+            addiu(T2, T2, 0xFFFF),  // 80010004: one pass
+            i(0x05, T2, 0, 0xFFFE), // bne t2, zero, the pass
+            NOP,
+            i(0x2B, S1, 8, 0x10), // 80010010: sw t0, 0x10(s1): the tick ends
+            addiu(T4, 0, 0xFFFE),
+            i(0x2B, S0, T4, 0x70), // clear vblank in I_STAT
+            i(0x23, S0, T3, 0x70), // 8001001C: lw t3, I_STAT
+            NOP,
+            andi(T3, T3, 1),
+            i(0x04, T3, 0, 0xFFFC), // beq t3, zero, 8001001C: wait for the next vblank
+            NOP,
+            j(0x8001_0000),
+            NOP,
+            NOP,
+            NOP,
+            lui(S1, 0x8002), // 80010040
+            lui(S0, 0x1F80),
+            ori(S0, S0, 0x1000),
+            j(0x8001_0000),
+            NOP,
+        ];
+        let mut m = Machine::new(vec![0; 0x8_0000]);
+        psx_core::padflow::test_program::load(&mut m, 0x8001_0000, &main);
+        m.cpu.set_pc(0x8001_0040);
+        let b: Plugin<Described> = Plugin::new(demo_call, None).unwrap();
+        let types: BTreeMap<String, Type> =
+            [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
+        let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust };
+        record(&mut m, &q, fields, &[], None, Duration::from_secs(120), None, None)
+    }
+
+    #[test]
+    fn steady_ticks_do_not_overrun_their_fields() {
+        // About a field and a half of work on the console: each tick takes two.
+        let n = 56_000;
+        let stock = slow_game(n, Adjustments::stock(), 12);
+        let h = fields_per_tick(&stock.ticks);
+        assert_eq!(h.as_object().unwrap().keys().collect::<Vec<_>>(), ["2"], "{h}");
+        let steady = slow_game(n, Adjustments { steady: true, ..Adjustments::stock() }, 12);
+        let h = fields_per_tick(&steady.ticks);
+        assert_eq!(h.as_object().unwrap().keys().collect::<Vec<_>>(), ["1"], "{h}");
+        assert!(steady.ticks.len() > stock.ticks.len());
     }
 
     #[test]
