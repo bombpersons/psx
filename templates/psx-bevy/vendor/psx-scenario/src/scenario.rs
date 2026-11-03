@@ -85,6 +85,13 @@ pub struct Scenario {
     /// How the port gets there: what its launcher builds the world from.
     #[serde(default)]
     pub parameters: serde_json::Map<String, serde_json::Value>,
+    /// Functions of the original that return at once while it is recorded
+    /// (psx's `off` adjustment), each with the value it returns: systems
+    /// the port does not have yet, so the original's recordings hold only
+    /// what it ports. By the name the producer's names give it (for psx,
+    /// `[MODULE:]name` in names/), or its address in hex.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub off: BTreeMap<String, i64>,
 }
 
 impl Scenario {

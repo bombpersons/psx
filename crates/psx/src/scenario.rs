@@ -401,6 +401,7 @@ fn record(
                 break;
             }
         }
+        adjust.before_step(m);
         let info = m.step();
         adjust.step(&info, m);
         if let Some(c) = cover.as_deref_mut() {
@@ -634,7 +635,10 @@ pub(crate) fn prepare(ctx: &Ctx, id: &str, name: &str, from: Option<&str>, repla
         Error::invalid(format!("{e}: scenario record keeps what the original ran as the inventory's functions"))
     })?;
     let b = binding(root, l.glossary.as_ref().unwrap())?;
-    let adjust = Adjustments::default_set();
+    let mut adjust = Adjustments::default_set();
+    adjust.off = crate::adjust::Off::resolve(&s.off).map_err(|p| {
+        Error::invalid(format!("scenarios/{id}.toml: [off] does not resolve")).with("problems", json!(p))
+    })?;
     Ok(Prepared { id: id.into(), name: name.into(), from: from.map(Into::into), l, inv, b, out, state, chain, adjust })
 }
 
@@ -699,7 +703,7 @@ impl Prepared {
             binding: &self.b,
             types: g.types(),
             kept: self.l.compared().keys().cloned().collect(),
-            adjust: self.adjust,
+            adjust: self.adjust.clone(),
         }
     }
 
@@ -772,6 +776,9 @@ impl Prepared {
         }
         if let Some(a) = self.adjust.detail() {
             details["adjust"] = a;
+        }
+        if let Some(o) = self.adjust.off_detail() {
+            details["off"] = o;
         }
         if let Some(a) = &r.adjusted {
             details["adjusted"] = a.clone();
@@ -884,7 +891,7 @@ fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
         crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64).map_err(Error::invalid)?;
     let mut p = prepare(ctx, &a.id, &a.name, a.from.as_deref(), a.replace)?;
     if a.stock {
-        p.adjust = Adjustments::stock();
+        p.adjust = p.adjust.without_timing();
     }
     let timeout = Duration::from_secs(a.timeout);
     let mut b = p.start(ctx, timeout)?;
@@ -1062,9 +1069,15 @@ fn adjusted_differences(stock: &Recorded, adjusted: &Recorded) -> Vec<Json> {
 /// same ticks, and compared.
 fn adjust_check(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
     let root = &ctx.root;
-    let adjust = Adjustments::default_set();
+    let mut adjust = Adjustments::default_set();
     let l = Loaded::load(root, id);
     let mut problems = l.problems.clone();
+    if let Some(s) = &l.scenario {
+        match crate::adjust::Off::resolve(&s.off) {
+            Ok(off) => adjust.off = off,
+            Err(p) => problems.extend(p.into_iter().map(|p| format!("{SCENARIOS}/{id}.toml: {p}"))),
+        }
+    }
     let captured: Vec<(&String, &Recording)> = l
         .recordings
         .iter()
@@ -1098,7 +1111,7 @@ fn adjust_check(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
             }
             Ok(record(&mut m, &q, frames, &events, Some(&pads), timeout, None, None))
         };
-        let (stock, adjusted) = (run(Adjustments::stock())?, run(adjust)?);
+        let (stock, adjusted) = (run(Adjustments::stock())?, run(adjust.clone())?);
         let differences = match (unrecorded(&stock), unrecorded(&adjusted)) {
             (Some(why), _) => vec![json!({"stock": why})],
             (_, Some(why)) => vec![json!({"adjusted": why})],
@@ -1881,6 +1894,58 @@ pub struct Quantities {
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust };
         record(&mut m, &q, fields, &[], None, Duration::from_secs(120), None, None)
+    }
+
+    /// A game that calls a function returning 7 each tick and keeps what
+    /// it returned as x, recorded with Demo's binding and `adjust`.
+    fn calls_seven(adjust: Adjustments) -> Recorded {
+        use psx_core::padflow::test_program::asm::*;
+        const V0: u32 = 2;
+        const S1: u32 = 17;
+        const RA: u32 = 31;
+        let main = [
+            0x0C00_400C, // 80010000: jal 80010030
+            NOP,
+            i(0x2B, S1, V0, 0), // sw v0, 0(s1): x
+            NOP,
+            i(0x2B, S1, V0, 0x10), // 80010010: the tick ends
+            j(0x8001_0000),
+            NOP,
+            NOP,
+            NOP,
+            NOP,
+            NOP,
+            NOP,
+            addiu(V0, 0, 7), // 80010030: the function
+            jr(RA),
+            NOP,
+            NOP,
+            lui(S1, 0x8002), // 80010040
+            j(0x8001_0000),
+            NOP,
+        ];
+        let mut m = Machine::new(vec![0; 0x8_0000]);
+        psx_core::padflow::test_program::load(&mut m, 0x8001_0000, &main);
+        m.cpu.set_pc(0x8001_0040);
+        let b: Plugin<Described> = Plugin::new(demo_call, None).unwrap();
+        let types: BTreeMap<String, Type> =
+            [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
+        let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust };
+        record(&mut m, &q, 1, &[], None, Duration::from_secs(60), None, None)
+    }
+
+    #[test]
+    fn a_function_turned_off_returns_its_value_at_once() {
+        use psx_scenario::Value as V;
+        let stock = calls_seven(Adjustments::stock());
+        assert!(stock.ticks.iter().all(|t| t.values["x"] == V::Int(7)));
+        let table = [("0x80010030".to_string(), 42i64)].into();
+        let off = Adjustments { off: crate::adjust::Off::resolve(&table).unwrap(), ..Adjustments::stock() };
+        let r = calls_seven(off);
+        assert!(!r.ticks.is_empty() && r.ticks.iter().all(|t| t.values["x"] == V::Int(42)));
+        let calls = &r.adjusted.as_ref().unwrap()["off_calls"][0];
+        assert_eq!(calls["name"], "0x80010030");
+        assert!(calls["calls"].as_u64().unwrap() >= r.ticks.len() as u64);
     }
 
     #[test]

@@ -622,7 +622,7 @@ fn scenario_start(ctx: &Ctx, a: &mut HandoffArgs) -> crate::Result<(Session, cra
         a.replace,
     )?;
     if a.stock {
-        p.adjust = crate::adjust::Adjustments::stock();
+        p.adjust = p.adjust.without_timing();
     }
     let mut b = p.start(ctx, RECORD_TIMEOUT)?;
     if !p.lead_in(&mut b.m, LEAD_FIELDS) {

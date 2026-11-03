@@ -64,6 +64,14 @@
       "description": "The moment it starts at, in game terms.",
       "type": "string"
     },
+    "off": {
+      "additionalProperties": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "description": "Functions of the original that return at once while it is recorded\n(psx's `off` adjustment), each with the value it returns: systems\nthe port does not have yet, so the original's recordings hold only\nwhat it ports. By the name the producer's names give it (for psx,\n`[MODULE:]name` in names/), or its address in hex.",
+      "type": "object"
+    },
     "parameters": {
       "additionalProperties": true,
       "default": {},

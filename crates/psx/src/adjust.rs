@@ -23,6 +23,12 @@
 //! SPU and video timing keep the real clock. Emulators offer the same to
 //! players (DuckStation's CPU overclock), and it breaks some games, which
 //! is why it is measured per game.
+//!
+//! **off**: functions the scenario names (`[off]` in its `.toml`) return at
+//! once, with the value given, when the CPU reaches their entry: systems
+//! the port does not have yet (enemies, a cutscene trigger), so a feature's
+//! recordings hold only what it ports. Unlike latch and steady it changes
+//! the game itself, which the recording says (`producer.details.off`).
 
 use psx_core::Machine;
 use psx_core::cpu::StepInfo;
@@ -30,12 +36,14 @@ use psx_core::padflow::{BufferByte, PadFlow};
 use serde_json::{Value as Json, json};
 
 /// The adjustments a run is made with.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Adjustments {
     /// The pad changes only where a tick ends.
     pub latch: bool,
     /// No tick overruns its fields.
     pub steady: bool,
+    /// Functions that return at once.
+    pub off: Vec<Off>,
     /// Test adjustments: one that does nothing, and one that adds 1 to the
     /// word at an address when a tick ends.
     #[cfg(test)]
@@ -53,8 +61,50 @@ pub(crate) enum TestAdjust {
     },
 }
 
+/// A function that returns at once (`off`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Off {
+    /// As the scenario names it.
+    pub name: String,
+    /// Its entry.
+    pub address: u32,
+    /// What it returns, in v0.
+    pub returns: u32,
+}
+
+impl Off {
+    /// A scenario's `[off]` table, each name resolved by the project's names
+    /// (or hex): what does not resolve, by name, with a spelling the names
+    /// files have when one is close.
+    pub fn resolve(table: &std::collections::BTreeMap<String, i64>) -> Result<Vec<Off>, Vec<String>> {
+        let (mut out, mut problems) = (Vec::new(), Vec::new());
+        for (name, v) in table {
+            match crate::names_bind::address(name) {
+                Ok(address) => out.push(Off { name: name.clone(), address, returns: *v as u32 }),
+                Err(e) => problems.push(match spelling(crate::names_bind::project_names(), name) {
+                    Some(k) => format!("off {name:?}: {e} ({k}?)"),
+                    None => format!("off {name:?}: {e}"),
+                }),
+            }
+        }
+        if problems.is_empty() { Ok(out) } else { Err(problems) }
+    }
+}
+
+/// A function in `names` spelled as `name` is, but for case and
+/// underscores.
+fn spelling(names: &psx_symbols::names::Names, name: &str) -> Option<String> {
+    let key = |s: &str| s.to_ascii_lowercase().replace('_', "");
+    let (module, bare) = name.rsplit_once(':').map_or((None, name), |(m, n)| (Some(m), n));
+    let near = names.functions.iter().find(|f| key(&f.name.text) == key(bare))?;
+    Some(match module {
+        Some(m) => format!("{m}:{}", near.name.text),
+        None => near.name.text.clone(),
+    })
+}
+
 /// The names of the adjustments this psx knows.
-const KNOWN: &[&str] = &["latch", "steady"];
+const KNOWN: &[&str] = &["latch", "steady", "off"];
 
 /// `steady`'s clock multiplier for the CPU's own work.
 pub(crate) const STEADY_OVERCLOCK: u32 = 4;
@@ -84,6 +134,9 @@ impl Adjustments {
         if self.steady {
             out.push("steady");
         }
+        if !self.off.is_empty() {
+            out.push("off");
+        }
         #[cfg(test)]
         match self.test {
             Some(TestAdjust::Nothing) => out.push("test_nothing"),
@@ -108,6 +161,16 @@ impl Adjustments {
             match n {
                 "latch" => a.latch = true,
                 "steady" => a.steady = true,
+                "off" => {
+                    let bad = || "off: a list of {name, address, returns}".to_string();
+                    let list = details.get("off").and_then(Json::as_array).ok_or_else(bad)?;
+                    for o in list {
+                        let address = o["address"].as_str().and_then(psx_media::memmap::parse_hex).ok_or_else(bad)?;
+                        let returns = o["returns"].as_u64().ok_or_else(bad)? as u32;
+                        let name = o["name"].as_str().ok_or_else(bad)?.to_string();
+                        a.off.push(Off { name, address, returns });
+                    }
+                }
                 #[cfg(test)]
                 "test_nothing" => a.test = Some(TestAdjust::Nothing),
                 _ => {
@@ -126,13 +189,34 @@ impl Adjustments {
         (!self.is_stock()).then(|| json!(self.names()))
     }
 
+    /// The functions turned off, for the recording's details (`off`), by
+    /// address as well as name, so a check later runs the same ones.
+    pub fn off_detail(&self) -> Option<Json> {
+        (!self.off.is_empty()).then(|| {
+            json!(
+                self.off
+                    .iter()
+                    .map(|o| json!({"name": o.name, "address": format!("0x{:08X}", o.address),
+                                                  "returns": o.returns}))
+                    .collect::<Vec<_>>()
+            )
+        })
+    }
+
+    /// These without latch and steady: `--stock` keeps what the scenario
+    /// turns off, which is its scope, not its timing.
+    pub fn without_timing(&self) -> Adjustments {
+        Adjustments { latch: false, steady: false, ..self.clone() }
+    }
+
     /// What they keep while a run goes, made where the recording starts;
     /// `steady` takes effect on `m` from here.
     pub fn start(&self, m: &mut Machine) -> Running {
         m.cpu.overclock = if self.steady { STEADY_OVERCLOCK } else { 0 };
         m.bus.gpu.timed = !self.steady;
         Running {
-            a: *self,
+            off: self.off.iter().map(|o| (o.address & 0x1FFF_FFFF, (o.returns, 0))).collect(),
+            a: self.clone(),
             flow: self.latch.then(PadFlow::new),
             held: None,
             latched: Vec::new(),
@@ -165,6 +249,9 @@ pub(crate) struct Running {
     /// A buffer byte the game stores other than as a copy (or an inverted
     /// one) of the controller's: the latch could not write it.
     unmasked: bool,
+    /// `off`: by entry (physical), what each returns and how often it was
+    /// called.
+    off: std::collections::BTreeMap<u32, (u32, u64)>,
 }
 
 /// The reply byte at `pos` for buttons `held` and `sticks` (as psx-core's
@@ -188,6 +275,21 @@ fn poke(m: &mut Machine, addr: u32, v: u8) {
 }
 
 impl Running {
+    /// Before the CPU's next step on `m`: a function turned off returns at
+    /// once, with its value in v0, to where it was called from.
+    #[inline]
+    pub fn before_step(&mut self, m: &mut Machine) {
+        if self.off.is_empty() {
+            return;
+        }
+        if let Some((v, n)) = self.off.get_mut(&(m.cpu.pc & 0x1FFF_FFFF)) {
+            *n += 1;
+            m.cpu.regs[2] = *v;
+            let ra = m.cpu.regs[31];
+            m.cpu.set_pc(ra);
+        }
+    }
+
     /// Input from the recording's events or ticks: on the controller at
     /// once, or with `latch`, where the tick ends.
     pub fn input(&mut self, m: &mut Machine, i: &crate::replay::Input) {
@@ -261,6 +363,20 @@ impl Running {
 
     /// What they did, for the recording's details; None for a stock run.
     pub fn report(&self) -> Option<Json> {
+        let mut r = self.latch_report().unwrap_or_else(|| json!({}));
+        if !self.a.off.is_empty() {
+            let calls: Vec<Json> = self
+                .a
+                .off
+                .iter()
+                .map(|o| json!({"name": o.name, "calls": self.off.get(&(o.address & 0x1FFF_FFFF)).map_or(0, |c| c.1)}))
+                .collect();
+            r["off_calls"] = json!(calls);
+        }
+        (r != json!({})).then_some(r)
+    }
+
+    fn latch_report(&self) -> Option<Json> {
         let f = self.flow.as_ref()?;
         let buffer: Vec<Json> = f
             .buffer()
@@ -312,6 +428,32 @@ mod tests {
         let e = Adjustments::from_details(&details(json!(["latch_v9"]))).unwrap_err();
         assert!(e.contains("\"latch_v9\"") && e.contains("knows latch, steady"), "{e}");
         assert!(Adjustments::from_details(&details(json!("latch"))).is_err());
+    }
+
+    #[test]
+    fn off_is_kept_by_address_and_a_misspelt_name_gets_a_spelling() {
+        let a = Adjustments {
+            off: vec![Off { name: "enemy_update".into(), address: 0x8003_1F64, returns: 0 }],
+            ..Adjustments::stock()
+        };
+        assert_eq!(a.detail(), Some(json!(["off"])));
+        let mut d = details(a.detail().unwrap());
+        d.insert("off".into(), a.off_detail().unwrap());
+        assert_eq!(Adjustments::from_details(&d), Ok(a.clone()));
+        assert_eq!(a.without_timing(), a);
+        let dir = std::env::temp_dir().join(format!("psx-off-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("names")).unwrap();
+        std::fs::write(dir.join("names/a.names"), "function 0x80031F64 void enemy_update()\n").unwrap();
+        let names = psx_symbols::names::load(&dir);
+        assert_eq!(spelling(&names, "EnemyUpdate").as_deref(), Some("enemy_update"));
+        assert_eq!(spelling(&names, "ENEMY:enemyupdate").as_deref(), Some("ENEMY:enemy_update"));
+        assert_eq!(spelling(&names, "player_update"), None);
+        let _ = std::fs::remove_dir_all(dir);
+        let table = [("0x80010030".to_string(), 42i64)].into();
+        assert_eq!(
+            Off::resolve(&table),
+            Ok(vec![Off { name: "0x80010030".into(), address: 0x8001_0030, returns: 42 }])
+        );
     }
 
     #[test]
