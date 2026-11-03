@@ -1,0 +1,461 @@
+# Master plan
+
+Everything left to do on psx, in one order. It sequences the work on
+input and timing, designed on 2026-11-03, with what is left of
+[decomp-plan.md](decomp-plan.md).
+
+One commit per step, `cargo test --workspace` passing after each. Each
+step says what it changes and the fact that shows it done. When a step is
+done, add a line under it (`*Done (date):* …`) with what was measured.
+
+## Where things stand (2026-11-03)
+
+- **Recordings** ([recordings-plan.md](recordings-plan.md)): done,
+  through step 25 (analog sticks in recordings).
+- **Names** ([decomp-plan.md](decomp-plan.md), phase 1): steps 1 to 4
+  done. Names files are read into one model, the build is detected and
+  Ghidra set up for it, decompiles apply the names, and every view and
+  address argument uses them. `code annotate` is gone.
+- **The recorded pad**: `f919bde` let a binding answer an `INPUT`
+  question with the game's own input word, which recordings then keep in
+  place of the controller's buttons; `91dafa9` made that all or nothing
+  and named the source in each recording (`"pad": "game"` or
+  `"controller"`). The sticks still come from the controller. Track A
+  replaces this, and A5 removes `INPUT`.
+- **[inventory-timeline-plan.md](inventory-timeline-plan.md)**: status
+  unknown; some of it is in the code (`code inventory --unpacked`). E3
+  asks its author to mark what is done.
+- **[PLAN.md](../PLAN.md)**: historical, by its own note.
+
+## The problem
+
+Recordings compare the port with the original tick by tick. The port is
+written to a simple model: one tick at a time at a steady rate, its input
+sampled once at the start of each tick, and only the features ported so
+far running. The original is not:
+
+- **Input arrives by field.** The pad is polled every field, from the
+  vblank interrupt, into a buffer; the game reads the buffer at some
+  point in its tick. Which poll a tick saw depends on where the read
+  falls against the field, and that differs by the game's phase: a race
+  and a menu read a field apart. At 30 or 20 Hz a tick spans two or three
+  polls, and a game that does not copy its pad once per tick can read two
+  different polls in one tick.
+- **Ticks stretch.** When the original slows down a tick spans more
+  fields, and a game that scales movement by the fields elapsed moves
+  further.
+- **Every system runs at once**, while a port early on has one feature.
+
+Each shows up in a recording as a difference that is not in the rules
+being ported.
+
+## The approach
+
+psx runs the original on its own core, so it **adjusts the original to
+the port's model** where they meet the machine, and nowhere else:
+
+| Adjustment | What changes | What it removes |
+|---|---|---|
+| `latch` | The pad buffer changes only at tick boundaries, to the tick's input | Input timing, all of it |
+| `steady` | The CPU and GPU run fast enough that no tick overruns its fields | Slowdown |
+| `off` | Named functions return at once | Systems the port does not have yet |
+
+With them the original runs one tick at a time, at a steady rate, with
+input that changes only between ticks: the port's model. Recordings then
+hold only the game's rules, and the port replays them with nothing but
+its normal tick and the recorded input.
+
+## Principles
+
+- **Adjust boundaries, never rules.** An adjustment changes what reaches
+  the game from outside (input, time, the hardware), never the game's
+  own code or data. `off` is the one exception, and recordings say so.
+- **Measure.** The same input recorded stock and adjusted, compared:
+  what differs is the adjustment's cost for that game, or a rule that
+  depends on timing which the port needs to know.
+- **Name what was done.** A recording lists the adjustments it was made
+  with, and the determinism check runs with them.
+- **The stock game is one flag away** (`--stock`), and the disc is never
+  modified: adjustments are made while the game runs, so overlays cannot
+  undo them.
+- **The port never emulates.** What the original's timing decides
+  reaches the port as recorded input, not as behaviour it imitates.
+- **The port is deterministic too.** Replay compares two programs; both
+  must give the same result for the same input every time. The port
+  seeds its own random numbers and no rule depends on the order a query
+  returns entities.
+- **Sony's code is never redistributed.** The PsyQ SDK and decompiled
+  versions of it are copyrighted. psx and the template may consult them
+  and test against them where the person supplies them, but never ship
+  them, as the game decompilation projects that use them do not.
+
+## What exists to build on
+
+- **Pad and serial port**: `psx-core`'s `pad.rs` builds a poll's reply
+  (the ID byte `41` or `73`, `5A`, two button bytes, and four stick bytes
+  in analog mode); `sio0.rs` is the serial port.
+- **Observation**: each step's `StepInfo` (`cpu.rs`) has its data access
+  (`mem`: address, value, width, load or store) and, for an I/O load, the
+  register loaded (`io_load`).
+- **Timing**: the CPU counts cycles and hands them to the bus
+  (`Cpu::cycles`); video timing makes fields and vblank from them
+  (`video.rs`). The GPU's FIFO holds DMA back (`dma.rs`).
+- **Ticks**: the glossary's binding names the tick store that ends each
+  tick; `scenario record` (`crates/psx/src/scenario.rs`) ends ticks
+  there, keeps each tick's `field`, and can already be driven by tick
+  (the determinism check's second route).
+- **Names** bind to code by content, so a scenario can name a function
+  to turn off and have it found in an overlay wherever it loads. `code
+  symbols` identifies the PsyQ library's functions, `VSync` among them.
+- **The template's tick**: rules run in `FixedUpdate` in
+  `GameSystems::Game` at the game's `TickRate`; `begin_tick`
+  (`psx-bevy/src/shell.rs`) samples input into `ControllerState` once per
+  tick; replays inject a `TickInput` (`psx-bevy/src/testing.rs`) and run
+  exactly one tick per update. Two flaws: replayed input is OR-ed with
+  live devices, and `frames.rs` copies the injection (dropping the mouse)
+  instead of sharing it with the scenario runner.
+
+## Decisions
+
+- **The pad buffer is found from the library first, by data flow
+  always.** A game that uses Sony's pad routines tells psx where its
+  buffer is: the buffers it passes to the BIOS's `InitPAD` or the PsyQ
+  library's `PadInitDirect`, or the library's own buffer for `PadInit`
+  and `PadRead`, at the place the decompiled library
+  ([psy-q-decomp](https://github.com/sozud/psy-q-decomp)) shows it,
+  for the library version `code symbols` identifies. Data flow, below,
+  finds the buffer for every game and confirms the library's answer.
+  Where a game has a known GameShark joker code, its address is a third,
+  independent check: a joker code is built on the game's pad word.
+- **Data flow.** A load from the serial
+  port's data register marks its destination register with the reply
+  byte it returned (which byte of the exchange). Moves, and the shifts
+  and masks a pad library assembles a halfword with, carry the mark;
+  other writes clear it; a store of a marked register marks the RAM bytes
+  it writes. The bytes marked with the button and stick bytes of the last
+  complete poll (a `42` read command answered on port 1) are the buffer.
+  This finds the PsyQ library's, the BIOS's (`InitPAD`, `StartPAD`) and a
+  game's own handler's buffer alike, with no scripted presses. Memory
+  card exchanges (`81`) and config mode (`43` to `4F`) are ignored.
+- **Lag frames.** A tick in which no game code reads the pad is a *lag
+  frame*, the term TAS tools use for a frame where the game did not poll
+  input; its input has no effect. psx reports them by that name, and the
+  port gets the released pad on them.
+- **The latch.** At each tick boundary psx writes the next tick's input
+  into the buffer's button and stick bytes and sets the emulated
+  controller to it; until the next boundary it drops stores to those
+  bytes made in an exception handler. The pad's ID, its connected status
+  and the exchanges that switch analog mode, configure the pad or drive
+  its motors are left alone. A game with no buffer (one that reads the
+  serial port from its main loop) is latched by setting the controller
+  only at boundaries.
+- **A latched recording's pad is the input written.** Nothing is
+  observed; rows keep their shape and meaning ("the tick's input"), so
+  the recording format does not change.
+- **Two modes, to start.** Once `latch` and `steady` exist, `scenario
+  record`, `scenario play` and `run` use both by default, and `--stock`
+  uses neither. `off` is the only adjustment with arguments: the
+  scenario's `[off]` table. A recording names what it was made with in
+  `producer.details.adjust` (`["latch", "steady"]`, and what was off); no
+  field means stock. Choosing adjustments one by one per scenario comes
+  when a scenario needs it.
+- **States stay stock.** The states a scenario starts from are made
+  without adjustments, so they can be shared; adjustments start where the
+  recording starts.
+- **The measurement is a plain comparison.** `scenario adjust-check ID`
+  records the scenario's recordings again, stock and adjusted, driven by
+  the same ticks, and reports for each quantity the first tick it
+  differs, with both values. The agent judges whether a difference is a
+  harmless shift (a press taking effect a tick earlier) or a rule.
+- **`INPUT` is retired.** It is used once, as a cross-check while `latch`
+  is measured on the race game, then removed from `psx-capture` and psx,
+  with the `"pad"` detail it added. A game with no buffer needs no word
+  from its binding: `latch` sets the controller at boundaries.
+
+## Track A: input and timing (the critical path)
+
+A1. **Find the pad buffer.** The serial port says which reply byte each
+    data-register load returned; a `PadFlow` observer fed each step's
+    `StepInfo` keeps the marks, tracks exceptions (entry to `rfe`), and
+    reports the buffer: its RAM bytes, and which reply byte each holds.
+    For a game whose pad routines `code symbols` identifies, the
+    library's buffer (decided above) is reported beside it, and the two
+    must agree; a joker code given for the game is checked the same way.
+
+    *Done when* on Croc, GT2 and TRC from a state in play the buffer is
+    found within 2 fields and stable across 600, each byte matches the
+    poll's reply every field, the library's buffer agrees for each game
+    that uses Sony's pad routines, and a test EXE that branches on the
+    reply in a register without storing it reports no buffer.
+
+A2. **Naming adjustments, and the measurement.** `--stock`,
+    `producer.details.adjust`, the determinism check running with the
+    recording's adjustments, and `scenario adjust-check`. A recording
+    naming an adjustment psx does not know is refused when checked.
+
+    *Done when* a do-nothing test adjustment is named in a recording,
+    rerun by `scenario check`, and measures the same on Croc's scenarios,
+    and a test adjustment that moves Croc one unit on one tick is
+    reported at that tick.
+
+A3. **`latch`, and its check.** The latch as decided, with recording
+    driven by tick. Its risk is a binding whose tick store comes after the
+    game's pad read in its loop: the latch then lands a tick late. With
+    `latch`, `scenario record` watches the buffer's reads by code outside
+    a handler, and refuses a recording in which one falls between the
+    tick boundary and the game's wait for the next field (its call to the
+    PsyQ library's `VSync`, or where it spins on vblank), naming the
+    read's function. What `VSync` waits on, and the library's other
+    waits, are taken from the decompiled library, not assumed. A
+    recording reports its lag frames.
+
+    *Done when* on Croc and GT2 every read of the buffer during a tick
+    sees that tick's input; a test EXE reading the buffer twice across a
+    vblank sees the same bytes both times with `latch` and different
+    bytes without; and a test binding whose tick store follows the pad
+    read is refused with the read's function named.
+
+A4. **Replayed input is the only input.** An exclusive mode on
+    `InjectedInput` in the template: the tick's pad, sticks and mode are
+    the injected ones; live devices and the held-tap memory are ignored.
+    The scenario runner and `--frames` share one `apply(&TickInput)`. The
+    developer MCP's injected input still adds to live input. The runner
+    also replays each recording twice in fresh apps and fails a port
+    whose observed values differ between the two runs, naming the first
+    tick and quantity: the port's own determinism, checked where it is
+    cheap. `AGENTS.md` gains the rules behind it (seeded random numbers,
+    no dependence on query order).
+
+    *Done when* a test holding a live key while replaying gets only the
+    recording's buttons, both replay drivers use one input path, and a
+    test rule that picks an entity by query order is reported as
+    nondeterministic.
+
+A5. **Measure `latch`, then retire `INPUT`.** `adjust-check` on every
+    scenario of Croc and of the game `f919bde` was made for (its race and
+    its menu), and each latched tick's pad compared with that game's
+    `INPUT` answer. Then remove `INPUT` (the question in `psx-capture`'s
+    `abi.rs`, `Glossary::input`, `Plugin::input` and its parsing,
+    `scenario record`'s game pad and the `"pad"` detail) from psx and
+    the template's vendored copy; that game's binding drops its `input`.
+
+    *Done when* the results are recorded here with any difference
+    explained, that game's port passes its recordings made with `latch`
+    with no input delay fitted, and nothing named `INPUT` is left.
+
+A6. **`steady`.** A clock multiplier on the CPU (its cycles count for a
+    fraction of the bus's, 4× to start) and the GPU's drawing taking no
+    time against the FIFO, so a tick's work fits its fields. Timers, the
+    CD, the SPU and video timing keep the real clock. `run` reports
+    fields per tick as a histogram. Measured with `adjust-check` as
+    `latch` was. Emulators already offer this to players (DuckStation's
+    CPU overclock), and it is known to break some games, which is why
+    it is measured per game rather than trusted.
+
+    *Done when* a Croc or GT2 stretch that slows down stock runs every
+    tick in its normal fields with `steady`, audio and video timing are
+    unchanged, and the measurement is recorded here (a game that does
+    more per tick when it has time shows there).
+
+A7. **Fields elapsed, only if needed.** If A6 leaves ticks that overrun,
+    or a game changes its tick rate on purpose (30 Hz in play, 60 Hz in
+    menus), the template's `TickInput` gains `fields` and rules read it
+    from a `TickTiming` resource (the game's `FIELDS_PER_TICK` live, the
+    recording's fields in replay), never from `Res<Time>`. Otherwise
+    this step is closed with the reason.
+
+    *Done when* either a template test replays a two-field tick with a
+    rule scaling by `fields`, or this file says why no game needs it.
+
+A8. **The proof, and the docs.** Re-record Croc's and the race game's
+    scenarios adjusted, run both ports, and record the verdicts before
+    and after and the workarounds removed. Update `docs/scenarios.md`,
+    the guide overview's Recordings section, `port-design.md` and the
+    template's `AGENTS.md` (and a line in `game/AGENTS.md`: check whether
+    the original keeps a tap shorter than a tick, which live play does).
+
+    *Done when* the numbers are recorded here and the docs describe
+    adjusted recordings as the default.
+
+## Track B: the library's rules, exactly
+
+Most of Sony's library is hardware plumbing (graphics, the CD, sound,
+the memory card) that the port replaces and never copies. A few of its
+functions decide game rules, and a port matching recordings must
+compute them exactly: the GTE math library's sine and cosine tables,
+`ratan2` and square roots, its fixed-point helpers, and the C library's
+`rand`. The template's `psx_bevy::num` and `psx_gte` compute "as the
+compiled C does"; this track proves it against the original functions.
+
+B1. **The library's functions, checked.** For each library math function
+    a game in use calls (from `code symbols`), a psx test runs the
+    original function in psx-core over a sweep of inputs (every angle;
+    a spread of values and the edges for the rest) and writes the
+    results as a table, once per SDK version, from the person's own
+    disc. The template's tests compare `num` and `gte` against those
+    tables. Each template function cites its library counterpart, and
+    the decompiled source where it helped.
+
+    *Done when* `rsin`, `rcos`, `ratan2`, `SquareRoot0` and `rand` (as
+    Croc and GT2 call them) match their tables exactly, or the
+    differences are fixed, and the tables are generated from the disc,
+    not committed.
+
+## Track C: systems the port does not have yet
+
+C1. **`off`.** A scenario's `[off]` table names functions by their
+    `names/` names with a return value (`enemy_update = 0`); when the CPU
+    reaches one's entry, psx returns to the caller with it. This is the
+    smallest case of the decomp plan's call redirection (D10), built here
+    first and shared with it. A name not in the running code is left
+    alone, as names are.
+
+    *Done when* a Croc scenario with the enemies' update off records
+    Croc's movement with no enemy moving, `adjust-check` reports only the
+    enemies' quantities and what touched them, and a misspelt name gets
+    the names file's spelling suggestion.
+
+C2. **Turning systems back on.** `port next` gives a Restore item for a
+    scenario with something off once the port has the feature it belongs
+    to (from the catalogue), and the feature is not done until its
+    scenarios pass with nothing off that it owns.
+
+    *Done when* the item appears on scratch Croc once an enemy feature
+    exists.
+
+## Track D: the original's code (decomp plan, in parallel)
+
+Independent of tracks A to C except that C1 builds the first piece of
+D10's call redirection and B1 runs library functions the way D10 runs
+the game's. Details, decisions and "done when" for each are in
+[decomp-plan.md](decomp-plan.md), with one addition to D10: besides the
+calls taken from recordings, each function is also checked from
+randomized starting states (arguments and the memory they point to
+varied within their types), to reach branches no recording does, as
+[cnc-ddraw's difftest](https://github.com/jake-bliss/cnc-ddraw/pull/3)
+does. Library functions the agent's C calls are never rewritten: the C
+calls them by name.
+
+| Step | What |
+|---|---|
+| D5 | What to name next: unnamed callees, `DAT_` globals and stray offsets, by how often they appear |
+| D6 | Coverage on the C, and the gaps grouped |
+| D7 | The disc's own names: debug files left on the disc |
+| D8 | The flow (`port init` runs the scan) and a measure |
+| D9 | The header and the build: `names.h` and the linker script |
+| D10 | One call, compared, in psx-core (shares C1's redirection) |
+| D11 | Checks over recordings: `code check` |
+| D12 | The decompile shows the C |
+| D13 | Replacement for whole runs: `--decomp` |
+| D14 | The person sees it: psx web's Code view |
+| D15 | Measure it on scratch Croc |
+
+## Track E: housekeeping
+
+E1. **The cloud environment's setup script** installs `libudev-dev` and
+    `libasound2-dev`, without which `psx` does not build in a new cloud
+    session (gilrs and cpal need them through pkg-config).
+
+E2. **The other agent pulls `psx-web`** and knows: a binding whose
+    `INPUT` answers for some ticks and not others is now refused, and A5
+    will remove `INPUT` in favour of `latch`.
+
+E3. **The inventory timeline plan's status** is marked step by step by
+    whoever knows it, so this plan can place what is left of it.
+
+## Order
+
+1. **E1 and E2**: minutes, and they unblock others.
+2. **A1 to A5**: the buffer, the measurement, `latch`, the template's
+   replay input, and the proof on the race game. This ends the
+   input-timing problem: five steps.
+3. **A6 to A8**: `steady`, fields elapsed if needed, the proof and docs.
+4. **B1** before a port's rules need exact library math: soon for any
+   3D game.
+5. **C1 and C2** when ports start needing scenarios with systems off.
+6. **Track D** throughout, in parallel, by another session or agent.
+
+## If needed later
+
+Each of these was designed and then left out because nothing needs it
+yet. The first scenario or game that does brings it in.
+
+- **Recording by read**, for a game `latch` does not suit (A3 refuses
+  its tick point, or A5 shows its rules change when latched). Each tick's
+  pad is the poll its first read by game code outside a handler saw. A
+  tick whose reads saw different polls keeps a note per read site
+  (function), which the port can model with a second, later pad for the
+  systems that read later (empty in live play); polls skipped between
+  reads with different buttons, a tap the game never read, are noted, not
+  replayed; a tick with no read replays as released. Rows would gain
+  fields, so the recording format would go to version 2.
+- **`quick_disc`**: data reads complete in a fixed time (seeks at once,
+  no random part), audio and movie sectors keeping real timing, for a
+  scenario that crosses a load. DuckStation's read and seek speedups
+  are the precedent, with its warnings: faster seeks crash some games
+  that expect the drive's timing, so this too is measured per game.
+- **`seed`**: the game's random state (a `names/` global, or the PsyQ
+  `rand` state) written at the recording's start, for a determinism check
+  that fails on random outcomes.
+- **Choosing adjustments per scenario**: an `adjust` list in the
+  scenario's `.toml`, for a scenario that needs a set other than the
+  default.
+- **Live tap memory as a setting**, for a game whose original drops taps
+  shorter than a tick and where that is felt in play.
+
+## Not in this plan
+
+- Port 2, multitaps and other devices (the mouse, light guns, the
+  NeGcon): one buffer per device, found the same way.
+- Settling the vblank handler's other work at tick boundaries (timers
+  counted per vblank, a sequencer's tempo, animation counters).
+- Feeding the original's random numbers to the port as tick input.
+- Adjustments for presentation (widescreen, precision, filtering).
+- Everything decomp-plan.md lists as outside it.
+
+## Related work
+
+A survey on 2026-11-03 found the pieces of this plan established
+separately, and the combination (a native port checked tick by tick
+against an adjusted original) not established anywhere:
+
+- **TAS tools** (BizHawk and others) record input per frame and detect
+  frames where the game did not poll it (lag frames). They replay into
+  the same emulator, so they never map input to a port's ticks.
+- **Cheat devices**: GameShark joker codes are built on each game's pad
+  word in RAM, found by hand per game; a cross-check for A1.
+- **Emulators for players** (DuckStation) overclock the CPU and speed up
+  CD reads and seeks, with known breakage; the precedent for `steady`
+  and `quick_disc`. Nothing found latches the pad buffer at a game's
+  tick boundary.
+- **Deterministic game loops** (a fixed timestep, one input snapshot per
+  tick, replays compared to catch divergence, as League of Legends
+  does): the model the template already follows.
+- **Ports checked against the original in an emulator**:
+  [Rrecreate](https://github.com/MrMethor/Rrecreate) (an AI agent ports
+  DOS games, compared tick by tick with the original in a deterministic
+  emulator; early, its comparison not yet built) is the closest project,
+  worth comparing notes with on input timing. sf2ww runs an arcade port
+  in lockstep with MAME.
+- **Checking rewritten functions**: re3 replaced a game's functions one
+  by one; the Crash Bandicoot 2 project runs the original in an
+  emulator with decompiled functions swapped in (D13); cnc-ddraw's
+  difftest compares a function and its C rewrite from the same state,
+  with mutant controls and randomized states (D10).
+- **Sony's library**: [psy-q-decomp](https://github.com/sozud/psy-q-decomp)
+  and PSY-Z are matching decompilations of PsyQ (B1, A1, A3);
+  PSn00bSDK is an open SDK written from scratch, which shows the
+  hardware but not how Sony's library behaved; lab313ru's signatures
+  are what `code symbols` already uses to find library code.
+
+## Open questions
+
+- **Is the tick store always before the pad read?** A3 checks, using
+  the game's wait for the next field to tell where a tick's loop ends. A
+  game that waits without `VSync` and without a recognisable spin may
+  need its binding to name the wait.
+- **Does the data flow survive every pad library?** A handler that
+  inverts the buttons (`nor`, `xori`) before storing loses the mark; A1
+  can carry it through those if a game needs it.
+- **How fast is fast enough for `steady`?** Fixed (4×) first; adaptive
+  if overruns remain.
