@@ -58,6 +58,61 @@ pub fn button_from_name(name: &str) -> Option<u16> {
 /// One exchanged byte: (time, JOY_CTRL, tx, rx, DSR pending).
 pub type ByteLog = (u64, u16, u8, u8, bool);
 
+/// The byte a read of JOY_DATA returned, placed in its exchange: the
+/// exchange's number (counted from 1, one per selection of port 1), the
+/// byte's position in it (0 is the address byte), and the exchange's first
+/// two bytes sent, which say what it is (`01 42` a pad poll, `81` a card).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DataRead {
+    pub exchange: u64,
+    pub pos: u8,
+    pub sent: [u8; 2],
+}
+
+impl DataRead {
+    /// Part of a pad poll: `01` then the read command `42`.
+    pub fn is_poll(&self) -> bool {
+        self.sent == [0x01, 0x42]
+    }
+}
+
+/// A completed pad poll on port 1: the `42` read command answered with the
+/// buttons, and with the sticks in analog mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Poll {
+    pub exchange: u64,
+    /// When its last byte came back.
+    pub t: u64,
+    /// The pad's ID byte: `41` digital, `73` analog.
+    pub id: u8,
+    /// Buttons held, in [`button`]'s bits (the wire's are inverted).
+    pub buttons: u16,
+    /// lx, ly, rx, ry, when the reply had them.
+    pub sticks: Option<[u8; 4]>,
+}
+
+/// The exchange on port 1 so far, for [`DataRead`] and [`Poll`].
+#[derive(Clone, Copy, Debug, Default)]
+struct Exchange {
+    number: u64,
+    selected: bool,
+    /// Bytes completed.
+    len: u8,
+    sent: [u8; 2],
+    replies: [u8; 9],
+}
+
+impl Exchange {
+    fn poll(&self, t: u64) -> Option<Poll> {
+        let (r, n) = (&self.replies, self.len);
+        if self.sent != [0x01, 0x42] || n < 5 {
+            return None;
+        }
+        let sticks = (n >= 9).then(|| [r[7], r[8], r[5], r[6]]);
+        Some(Poll { exchange: self.number, t, id: r[1], buttons: !(r[3] as u16 | (r[4] as u16) << 8), sticks })
+    }
+}
+
 const SCALE_SHIFT: [u32; 4] = [0, 0, 4, 6];
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -101,6 +156,14 @@ pub struct Sio0 {
     /// When `Some`, every byte exchanged.
     #[serde(skip)]
     pub log: Option<Vec<ByteLog>>,
+    /// When `Some`, every pad poll completed on port 1, for the caller to drain.
+    #[serde(skip)]
+    pub polls: Option<Vec<Poll>>,
+    /// The byte the last read of JOY_DATA returned.
+    #[serde(skip)]
+    pub last_read: Option<DataRead>,
+    #[serde(skip)]
+    exchange: Exchange,
 }
 
 impl Sio0 {
@@ -217,6 +280,17 @@ impl Sio0 {
                         if let Some(log) = &mut self.log {
                             log.push((t, self.ctrl, self.tx_buf, self.rx_buf, self.dsr_delay.iter().any(|&d| d > 0)));
                         }
+                        let x = &mut self.exchange;
+                        if x.selected {
+                            let n = x.len as usize;
+                            if n < 2 {
+                                x.sent[n] = self.tx_buf;
+                            }
+                            if n < x.replies.len() {
+                                x.replies[n] = self.rx_buf;
+                            }
+                            x.len = x.len.saturating_add(1);
+                        }
                         if self.ctrl & 0x800 != 0 {
                             self.assert_irq();
                         }
@@ -232,9 +306,26 @@ impl Sio0 {
         self.next_event(t, 0x1000_0000)
     }
 
-    fn set_dtr(&mut self) {
+    /// Port 1 selected or deselected at `t`: an exchange ends, or begins.
+    fn track_exchange(&mut self, t: u64, selected: bool) {
+        let x = &mut self.exchange;
+        if selected == x.selected {
+            return;
+        }
+        if x.selected {
+            if let (Some(polls), Some(p)) = (&mut self.polls, x.poll(t)) {
+                polls.push(p);
+            }
+        } else {
+            *x = Exchange { number: x.number + 1, ..Exchange::default() };
+        }
+        x.selected = selected;
+    }
+
+    fn set_dtr(&mut self, t: u64) {
         let sel = self.ctrl & 2 != 0;
         let port2 = self.ctrl & 0x2000 != 0;
+        self.track_exchange(t, sel && !port2);
         self.pad.set_dtr(sel && !port2);
         self.card_ports[0].set_dtr(sel && !port2);
         self.card_ports[1].set_dtr(sel && port2);
@@ -255,6 +346,9 @@ impl Sio0 {
             0x0 | 0x2 => {
                 let b = self.rx_buf as u32;
                 let v = b * 0x0101_0101;
+                let x = &self.exchange;
+                self.last_read =
+                    (x.selected && x.len > 0).then(|| DataRead { exchange: x.number, pos: x.len - 1, sent: x.sent });
                 self.rx_avail = false;
                 self.rx_pending = true;
                 self.rx_busy = false;
@@ -318,7 +412,7 @@ impl Sio0 {
                     self.ctrl = 0;
                     self.baud = 0;
                 }
-                self.set_dtr();
+                self.set_dtr(t);
             }
             0xE => self.baud = v as u16,
             _ => {}

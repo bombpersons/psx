@@ -31,6 +31,7 @@ mod messages;
 mod moved;
 mod names_bind;
 mod native;
+mod pad_reads;
 mod page;
 mod parser;
 mod play;

@@ -345,6 +345,12 @@ pub struct ObserveArgs {
     #[arg(long = "watch-reads")]
     #[serde(default)]
     pub watch_reads: Vec<String>,
+    /// Find where the game keeps its pad: the controller's reply followed from the serial
+    /// port into RAM. Reports the pad buffer an interrupt handler fills, the copies the game
+    /// makes of it, the polls, the code that reads it and the fields it read nothing in.
+    #[arg(long = "pad-reads")]
+    #[serde(default)]
+    pub pad_reads: bool,
 }
 
 /// Physical address with main RAM mirrors folded (what read watches compare).
@@ -603,6 +609,7 @@ pub(crate) fn brief(v: &Value) -> Value {
         "saved_as",
         "loads",
         "read_watch",
+        "pad_reads",
         "spu",
         "audio",
         "profile",
@@ -680,8 +687,9 @@ pub(crate) fn summary(v: &Value) -> Value {
     if v["trace"].is_object() {
         s["trace"] = trace_counts(&v["trace"]);
     }
-    let sections: [(&str, &[&str]); 10] = [
+    let sections: [(&str, &[&str]); 11] = [
         ("until", &["met", "run_frame", "values"]),
+        ("pad_reads", &["buffer", "polls", "fields", "fields_without_read"]),
         ("tick_finder", &["file", "fields", "pairs"]),
         ("profile", &["file", "cycles", "functions", "top"]),
         ("read_watch", &["hits", "recorded", "complete", "file"]),

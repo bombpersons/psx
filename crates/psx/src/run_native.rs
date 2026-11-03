@@ -97,6 +97,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             Ok(r) => r,
             Err(e) => return Err(Error::invalid(format!("--watch-reads: {e}"))),
         };
+    let mut pad_flow = obs.pad_reads.then(crate::pad_reads::PadReads::new);
     let mut reads: Vec<Value> = Vec::new();
     let mut read_hits: u64 = 0;
     let mut readers: std::collections::HashMap<u32, u64> = Default::default();
@@ -197,8 +198,11 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         // Everything above acts only when the frame counter changes, so without
         // per-instruction observers (tracer, read watches) the machine can run the
         // rest of the frame in one call (stopping at the next timeout check).
-        if tracer.is_some() || !read_ranges.is_empty() || profiler.is_some() || tick.is_some() {
+        if tracer.is_some() || !read_ranges.is_empty() || profiler.is_some() || tick.is_some() || pad_flow.is_some() {
             let info = m.step();
+            if let Some(p) = &mut pad_flow {
+                p.step(&info, &mut m);
+            }
             if let (Some(t), Some(s)) = (&tick, &mut sampler) {
                 if t.ended_by(&info) {
                     s.tick(m.bus.frames - start_frame, &m);
@@ -488,62 +492,62 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     let from_state_sha256 = a.from_state.as_deref().and_then(|p| std::fs::read(p).ok()).map(|b| sha256(&b));
     // How the machine was set up at power-on (a state carries its cards and pad).
     let cards_at_power_on = if a.from_state.is_some() { Value::Null } else { json!(a.cards) };
-    Ok((
-        complete,
-        json!({
-            "status": if complete { "complete" } else { "partial" },
-            "run_dir": dir,
-            "termination": termination,
-            "warnings": crate::stall::warnings(&m),
-            "frames": {"requested": a.frames, "reached": m.bus.frames - start_frame, "unit": "vsync", "start": start_frame, "end": m.bus.frames,
-                "numbering": "run frames (--frames, --replay, --poke, --gpu-frame, --trace-from-frame, samples run_frame) count from the run start; `frame` in writes.jsonl, trace.txt, samples.csv and the other logs is absolute (vblanks since power-on) = run_frame + start"},
-            "cpu_cycles": m.bus.now,
-            "instructions": steps,
-            "input":{"application":{"observed":true,"scheduled_events":events.len(),"applied_events":next,
-                "pending_events":events.len()-next,"file":(!events.is_empty()).then(||dir.join("input.jsonl")),
-                "note":"Actual scheduler applications, including boundary releases; does not prove the game polled the controller."}},
-            "registers": registers,
-            "screen": {"width": w, "height": h, "bpp": if m.bus.gpu.display.rgb24() {24} else {16}},
-            "video": {"region_at_capture":if m.bus.pal(){"PAL"}else{"NTSC"},"mode":m.bus.gpu.display.mode,
-                "cycles_per_vblank_at_capture":m.bus.frame_cycles(),"interlaced":m.bus.gpu.display.interlaced_480(),
-                "display_start":m.bus.gpu.display.start,"horizontal_range":m.bus.gpu.display.h_range,"vertical_range":m.bus.gpu.display.v_range,
-                "note":"GPU mode at capture; raw raster dimensions may change during boot."},
-            "watch": {"enabled":!a.watches.is_empty(),"hits": m.bus.obs.hit_count, "recorded": m.bus.obs.hits.len(), "shown": shown.len(), "first": shown,
-                "emitted":hits.len(),"complete":m.bus.obs.hit_count==m.bus.obs.hits.len() as u64,
-                "truncated":m.bus.obs.hit_count>m.bus.obs.hits.len() as u64,
-                "file":(!a.watches.is_empty()).then(||dir.join("writes.jsonl")),"changes_only":obs.watch_changes_only},
-            "event_logs": event_logs,
-            "trace": trace_report,
-            "gpu_frame": gpu_report,
-            "samples": samples_report,
-            "tick_finder": tick_report,
-            "until": if until.is_empty() { Value::Null } else {
-                crate::until::report(&until, met, &m.bus.ram, &m.bus.scratch)
-            },
-            "read_watch": reads_report,
-            "spu": spu_report,
-            "audio": audio_report,
-            "profile": profile_report,
-            "pokes": if pokes.is_empty() { Value::Null } else { json!(pokes.iter().map(|p| p.report()).collect::<Vec<_>>()) },
-            "screens": if obs.snapshot_every.is_some() { json!({"dir": dir.join("screens"), "count": screens.len(), "first": screens.first(), "last": screens.last()}) } else { Value::Null },
-            "states": if obs.save_state_at.is_empty() { Value::Null } else { json!(states) },
-            "memcards": cards,
-            "pad": {"kind": format!("{:?}", m.bus.sio0.pad.kind).to_lowercase(), "analog": m.bus.sio0.pad.analog, "locked": m.bus.sio0.pad.locked,
-                "buttons":crate::replay::button_names(m.bus.sio0.buttons.into()),
-                "sticks":m.bus.sio0.pad.axes(),
-                "motors": [m.bus.sio0.pad.motors.0, m.bus.sio0.pad.motors.1]},
-            "bios_call_counts": m.bus.obs.bios_counts,
-            "files": files,
-            "identity": {
-                "backend": "psx-core", "backend_version": env!("CARGO_PKG_VERSION"),
-                "timing_model": "Mednafen's video, CPU, DMA, CD-ROM, GPU command, timer, controller port, SPU and MDEC timing",
-                "bios": a.bios, "bios_sha256": bios_sha, "media": a.media, "media_identity": media_id,
-                "from_state": a.from_state, "state_format": psx_core::state::FORMAT,
-                "from_state_sha256": from_state_sha256, "cards": cards_at_power_on,
-            },
-            "wall_ms": wall_ms,
-        }),
-    ))
+    let pad_reads = pad_flow.map_or(Value::Null, |p| p.report(&scopes, &m));
+    let mut report = json!({
+        "status": if complete { "complete" } else { "partial" },
+        "run_dir": dir,
+        "termination": termination,
+        "warnings": crate::stall::warnings(&m),
+        "frames": {"requested": a.frames, "reached": m.bus.frames - start_frame, "unit": "vsync", "start": start_frame, "end": m.bus.frames,
+            "numbering": "run frames (--frames, --replay, --poke, --gpu-frame, --trace-from-frame, samples run_frame) count from the run start; `frame` in writes.jsonl, trace.txt, samples.csv and the other logs is absolute (vblanks since power-on) = run_frame + start"},
+        "cpu_cycles": m.bus.now,
+        "instructions": steps,
+        "input":{"application":{"observed":true,"scheduled_events":events.len(),"applied_events":next,
+            "pending_events":events.len()-next,"file":(!events.is_empty()).then(||dir.join("input.jsonl")),
+            "note":"Actual scheduler applications, including boundary releases; does not prove the game polled the controller."}},
+        "registers": registers,
+        "screen": {"width": w, "height": h, "bpp": if m.bus.gpu.display.rgb24() {24} else {16}},
+        "video": {"region_at_capture":if m.bus.pal(){"PAL"}else{"NTSC"},"mode":m.bus.gpu.display.mode,
+            "cycles_per_vblank_at_capture":m.bus.frame_cycles(),"interlaced":m.bus.gpu.display.interlaced_480(),
+            "display_start":m.bus.gpu.display.start,"horizontal_range":m.bus.gpu.display.h_range,"vertical_range":m.bus.gpu.display.v_range,
+            "note":"GPU mode at capture; raw raster dimensions may change during boot."},
+        "watch": {"enabled":!a.watches.is_empty(),"hits": m.bus.obs.hit_count, "recorded": m.bus.obs.hits.len(), "shown": shown.len(), "first": shown,
+            "emitted":hits.len(),"complete":m.bus.obs.hit_count==m.bus.obs.hits.len() as u64,
+            "truncated":m.bus.obs.hit_count>m.bus.obs.hits.len() as u64,
+            "file":(!a.watches.is_empty()).then(||dir.join("writes.jsonl")),"changes_only":obs.watch_changes_only},
+        "event_logs": event_logs,
+        "trace": trace_report,
+        "gpu_frame": gpu_report,
+        "samples": samples_report,
+        "tick_finder": tick_report,
+        "until": if until.is_empty() { Value::Null } else {
+            crate::until::report(&until, met, &m.bus.ram, &m.bus.scratch)
+        },
+        "read_watch": reads_report,
+        "spu": spu_report,
+        "audio": audio_report,
+        "profile": profile_report,
+        "pokes": if pokes.is_empty() { Value::Null } else { json!(pokes.iter().map(|p| p.report()).collect::<Vec<_>>()) },
+        "screens": if obs.snapshot_every.is_some() { json!({"dir": dir.join("screens"), "count": screens.len(), "first": screens.first(), "last": screens.last()}) } else { Value::Null },
+        "states": if obs.save_state_at.is_empty() { Value::Null } else { json!(states) },
+        "memcards": cards,
+        "pad": {"kind": format!("{:?}", m.bus.sio0.pad.kind).to_lowercase(), "analog": m.bus.sio0.pad.analog, "locked": m.bus.sio0.pad.locked,
+            "buttons":crate::replay::button_names(m.bus.sio0.buttons.into()),
+            "sticks":m.bus.sio0.pad.axes(),
+            "motors": [m.bus.sio0.pad.motors.0, m.bus.sio0.pad.motors.1]},
+        "bios_call_counts": m.bus.obs.bios_counts,
+        "files": files,
+        "identity": {
+            "backend": "psx-core", "backend_version": env!("CARGO_PKG_VERSION"),
+            "timing_model": "Mednafen's video, CPU, DMA, CD-ROM, GPU command, timer, controller port, SPU and MDEC timing",
+            "bios": a.bios, "bios_sha256": bios_sha, "media": a.media, "media_identity": media_id,
+            "from_state": a.from_state, "state_format": psx_core::state::FORMAT,
+            "from_state_sha256": from_state_sha256, "cards": cards_at_power_on,
+        },
+        "wall_ms": wall_ms,
+    });
+    report["pad_reads"] = pad_reads;
+    Ok((complete, report))
 }
 
 /// A write hit as JSON with hex strings next to the numbers and signed views

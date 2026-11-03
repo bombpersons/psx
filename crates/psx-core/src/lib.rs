@@ -15,6 +15,7 @@ pub mod mdec;
 pub mod memcard;
 pub mod observe;
 pub mod pad;
+pub mod padflow;
 pub mod profile;
 pub mod sio0;
 pub mod spu;
