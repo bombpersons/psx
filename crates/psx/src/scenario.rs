@@ -288,6 +288,26 @@ struct Recorded {
     /// The first tick that ended with the sticks moved on a pad not in
     /// analog mode, which the game does not read.
     unread_sticks: Option<u64>,
+    /// Where the ticks' pads came from: None before the first recorded tick.
+    pad_from: Option<PadFrom>,
+}
+
+/// Where a recording's pads came from, which its details name as `pad`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PadFrom {
+    /// The game's own input word, from the binding's answer to INPUT.
+    Game,
+    /// The controller's buttons, a field ahead of or behind the game's.
+    Controller,
+}
+
+impl PadFrom {
+    fn name(self) -> &'static str {
+        match self {
+            PadFrom::Game => "game",
+            PadFrom::Controller => "controller",
+        }
+    }
 }
 
 /// What the glossary's binding is asked, and which quantities are kept.
@@ -339,6 +359,7 @@ fn record(
         refusal_count: 0,
         timed_out: false,
         unread_sticks: None,
+        pad_from: None,
     };
     let (mut next_event, mut last_frame) = (0, m.bus.frames);
     let lead_limit = m.bus.frames + frames as u64;
@@ -386,6 +407,31 @@ fn record(
         }
         // A tick ended: its quantities, as the store left them.
         let n = out.ticks.len() as u64 + out.initial.is_some() as u64;
+        // The pad as the game's rules read it, when the binding says where
+        // that is; otherwise the controller's, which leads or trails the
+        // game's by a field that depends on the game's phase. One recording
+        // keeps one or the other: a binding that fails, or changes its
+        // answer's kind, is refused rather than mixing them.
+        let (mut game_pad, mut pad_problem) = (None, None);
+        if out.initial.is_some() {
+            match q.binding.input(m) {
+                Ok(p) => {
+                    let from = if p.is_some() { PadFrom::Game } else { PadFrom::Controller };
+                    match out.pad_from {
+                        Some(was) if was != from => {
+                            pad_problem = Some(format!(
+                                "the binding gave the {} pad here and the {} pad on earlier ticks",
+                                from.name(),
+                                was.name()
+                            ));
+                        }
+                        _ => out.pad_from = Some(from),
+                    }
+                    game_pad = p;
+                }
+                Err(e) => pad_problem = Some(e),
+            }
+        }
         let mut values = Values::new();
         let mut refuse = |quantity: &str, problem: String| {
             out.refusal_count += 1;
@@ -404,6 +450,9 @@ fn record(
             }
             Err(e) => refuse("", e),
         }
+        if let Some(problem) = pad_problem {
+            refuse("pad", problem);
+        }
         if out.initial.is_none() {
             out.initial = Some(values);
         } else {
@@ -416,13 +465,7 @@ fn record(
             if !pad.analog && pad.axes() != format::CENTRED {
                 out.unread_sticks.get_or_insert(n);
             }
-            // The pad as the game's rules read it, when the binding says
-            // where that is; otherwise the controller's, which leads or
-            // trails the game's by a field that depends on the game's phase.
-            let bits = match q.binding.input(m) {
-                Ok(Some(bits)) => bits as u32,
-                _ => m.bus.sio0.buttons.into(),
-            };
+            let bits = game_pad.map_or_else(|| m.bus.sio0.buttons.into(), u32::from);
             let buttons = crate::replay::button_names(bits);
             out.ticks.push(Full { tick: n, field, pad: buttons, analog: pad.analog, sticks, values });
             if let Some(f) = on_tick.as_deref_mut() {
@@ -680,6 +723,7 @@ impl Prepared {
             "from_state_sha256": self.chain["state_sha256"],
             "frames": frames,
             "input": crate::replay::report(events),
+            "pad": r.pad_from.unwrap_or(PadFrom::Controller).name(),
         });
         if let Some(f) = &self.from {
             details["from"] = json!(f);
@@ -1506,6 +1550,110 @@ pub struct Quantities {
     unsafe extern "C" fn demo_call(what: u32, host: *const psx_capture::abi::Host) -> i32 {
         // SAFETY: the caller's.
         unsafe { psx_capture::abi::call(&Demo, what, host) }
+    }
+
+    /// Demo, whose game keeps its pad at 0x80020030 (psx's button bits):
+    /// once x, which counts the ticks, reaches `from`.
+    struct Padded {
+        from: i32,
+    }
+
+    impl psx_capture::Glossary for Padded {
+        type Glue = Glue;
+        const TITLE: &'static str = "Padded";
+        const IMAGE_SHA256: &'static str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        fn tick(&self, t: &mut psx_capture::Tick) {
+            Demo.tick(t)
+        }
+
+        fn quantities(&self, m: &psx_capture::Machine) -> Q {
+            Demo.quantities(m)
+        }
+
+        fn input(&self, m: &psx_capture::Machine) -> Option<u16> {
+            (m.i32(0x8002_0000) >= self.from).then(|| m.u16(0x8002_0030))
+        }
+    }
+
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn padded_call(what: u32, host: *const psx_capture::abi::Host) -> i32 {
+        // SAFETY: the caller's.
+        unsafe { psx_capture::abi::call(&Padded { from: 0 }, what, host) }
+    }
+
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn padded_late_call(what: u32, host: *const psx_capture::abi::Host) -> i32 {
+        // SAFETY: the caller's.
+        unsafe { psx_capture::abi::call(&Padded { from: 5 }, what, host) }
+    }
+
+    /// A machine running Demo's loop: x counts up, and each pass ends a
+    /// tick; the game's pad word holds `pad`.
+    fn looping(pad: u16) -> Machine {
+        let mut m = Machine::new(vec![0; 0x8_0000]);
+        #[rustfmt::skip]
+        let loop_ = [
+            0x3C09_8002u32, // lui t1, 0x8002
+            0x8D28_0000, // lw t0, 0(t1)
+            0x2508_0001, // addiu t0, t0, 1
+            0xAD28_0000, // sw t0, 0(t1): x
+            0xAD28_0010, // sw t0, 0x10(t1): the tick ends
+            0x0800_4000, // j 0x80010000
+            0x0000_0000, // nop
+        ];
+        for (i, w) in loop_.iter().enumerate() {
+            m.bus.ram[0x1_0000 + 4 * i..][..4].copy_from_slice(&w.to_le_bytes());
+        }
+        m.bus.ram[0x2_0030..][..2].copy_from_slice(&pad.to_le_bytes());
+        m.cpu.set_pc(0x8001_0000);
+        m
+    }
+
+    fn recorded_with(call: binding::Call, m: &mut Machine) -> Recorded {
+        let b: Plugin<Described> = Plugin::new(call, None).unwrap();
+        let types: BTreeMap<String, Type> =
+            [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
+        let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
+        record(m, &q, 1, &[], None, Duration::from_secs(60), None, None)
+    }
+
+    #[test]
+    fn a_binding_that_keeps_the_games_pad_records_it() {
+        let held = (1 << 4) | (1 << 14);
+        let r = recorded_with(padded_call, &mut looping(held));
+        assert_eq!(r.refusal_count, 0, "{:?}", r.refusals);
+        assert_eq!(r.pad_from, Some(PadFrom::Game));
+        assert!(!r.ticks.is_empty());
+        let names = crate::replay::button_names(held as u32);
+        assert_eq!(names.len(), 2);
+        assert!(r.ticks.iter().all(|t| t.pad == names), "{:?}", r.ticks[0].pad);
+    }
+
+    #[test]
+    fn a_binding_without_the_games_pad_records_the_controllers() {
+        // The controller is released: the word in RAM is not read.
+        let r = recorded_with(demo_call, &mut looping(1 << 4));
+        assert_eq!(r.refusal_count, 0, "{:?}", r.refusals);
+        assert_eq!(r.pad_from, Some(PadFrom::Controller));
+        assert!(r.ticks.iter().all(|t| t.pad.is_empty()));
+    }
+
+    #[test]
+    fn a_binding_that_starts_answering_partway_is_refused() {
+        let r = recorded_with(padded_late_call, &mut looping(1 << 4));
+        assert!(r.refusal_count > 0);
+        assert_eq!(r.refusals[0]["quantity"], "pad");
+        assert!(r.refusals[0]["problem"].as_str().unwrap().contains("the game pad here and the controller pad"));
+    }
+
+    #[test]
+    fn the_input_answer_is_null_or_buttons() {
+        assert_eq!(binding::input_answer("null"), Ok(None));
+        assert_eq!(binding::input_answer(r#"{"buttons":16}"#), Ok(Some(16)));
+        assert!(binding::input_answer(r#"{"buttons":70000}"#).is_err());
+        assert!(binding::input_answer(r#"{"pad":16}"#).is_err());
+        assert!(binding::input_answer("16").is_err());
     }
 
     #[test]

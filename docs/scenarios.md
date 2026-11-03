@@ -161,6 +161,18 @@ while it is not are refused. A recording's `pad` keeps only what the game
 reads, so `ANALOG` is not in it; its effect is, in the pad's mode and the
 sticks.
 
+Each tick's `pad` is the controller's buttons unless the glossary's
+binding says where the game keeps its own input word (`Glossary::input`):
+then it is that word, the buttons as the game's rules read them on that
+tick. The controller's view leads or trails the game's by a field that
+depends on the game's phase, so a port replaying the controller's pads
+cannot fit every phase with one delay, and one replaying the game's
+needs none. The word must be the buttons held, not those pressed that
+tick only. A recording's details say which it keeps (`"pad": "game"` or
+`"controller"`), and a binding that fails to answer, or answers for some
+ticks and not others, is refused. The sticks are always the
+controller's.
+
 It also traces the run and keeps what the original executed beside the
 recording, in `scenarios/<id>/<name>.coverage.json`, credited to the
 workspace's inventory (`psx code inventory`, which must exist first) as
