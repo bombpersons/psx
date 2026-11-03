@@ -1288,6 +1288,7 @@ fn mcp_tools_match_cli() {
         "states_list",
         "states_rebuild",
         "scenario_record",
+        "scenario_adjust_check",
         "scenario_check",
         "scenario_show",
         "scenario_play",

@@ -20,6 +20,7 @@ use crate::Error;
 /// What sees the machine at the end of each recorded tick (the web viewer's
 /// frames).
 pub(crate) type OnTick<'a> = &'a mut dyn FnMut(&Full, &Machine);
+use crate::adjust::Adjustments;
 use crate::binding::{self, Plugin, Tick};
 use crate::commands::{Ctx, Op, Outcome};
 use crate::port::Entry;
@@ -317,6 +318,8 @@ struct Quantities<'a> {
     types: BTreeMap<String, Type>,
     /// The quantities the recording keeps: the scenario's compared ones.
     kept: Vec<String>,
+    /// What psx changes in how the original meets the machine.
+    adjust: Adjustments,
 }
 
 /// What a recording keeps of what the original ran: its machine code
@@ -349,6 +352,7 @@ fn record(
     // the port's launcher builds, before any input. The recording's fields
     // (and the input's frames) count from the field after that tick.
     crate::replay::apply(m, &crate::replay::Input { frame: 0, buttons: 0, sticks: [128; 4] });
+    let mut adjust = q.adjust.start(m);
     let mut start: Option<u64> = None;
     let mut target = u64::MAX;
     let tick = &q.binding.described().tick;
@@ -455,6 +459,7 @@ fn record(
         }
         if out.initial.is_none() {
             out.initial = Some(values);
+            adjust.tick_ended(n, m);
         } else {
             // A second tick in the first tick's field belongs to the lead-in
             // field, which the recording counts as field 0.
@@ -471,6 +476,7 @@ fn record(
             if let Some(f) = on_tick.as_deref_mut() {
                 f(out.ticks.last().unwrap(), m);
             }
+            adjust.tick_ended(n, m);
             if ticks.is_some_and(|t| out.ticks.len() >= t.len()) {
                 break;
             }
@@ -553,6 +559,11 @@ pub struct ScenarioRecordArgs {
     #[arg(long)]
     #[serde(default)]
     pub replace: bool,
+    /// Record the stock game: none of the adjustments psx makes to how the original meets
+    /// the machine (docs/master-plan.md), which recordings otherwise get and name.
+    #[arg(long)]
+    #[serde(default)]
+    pub stock: bool,
     /// Wall-clock limit in seconds.
     #[arg(long, default_value_t = 600)]
     #[serde(default = "d_timeout")]
@@ -576,6 +587,8 @@ pub(crate) struct Prepared {
     out: PathBuf,
     pub state: PathBuf,
     chain: Json,
+    /// What the recording is made with: every adjustment unless stock.
+    pub adjust: Adjustments,
 }
 
 /// Everything a recording needs that can fail before anything runs.
@@ -605,7 +618,8 @@ pub(crate) fn prepare(ctx: &Ctx, id: &str, name: &str, from: Option<&str>, repla
         Error::invalid(format!("{e}: scenario record keeps what the original ran as the inventory's functions"))
     })?;
     let b = binding(root, l.glossary.as_ref().unwrap())?;
-    Ok(Prepared { id: id.into(), name: name.into(), from: from.map(Into::into), l, inv, b, out, state, chain })
+    let adjust = Adjustments::default_set();
+    Ok(Prepared { id: id.into(), name: name.into(), from: from.map(Into::into), l, inv, b, out, state, chain, adjust })
 }
 
 /// A recording's frames and input, as its producer kept them.
@@ -618,13 +632,17 @@ fn kept_input(name: &str, rec: &Recording) -> Result<(u32, Vec<crate::replay::In
     Ok((frames, events))
 }
 
+/// One of the recordings that lead to another's end: its name, frames,
+/// input and adjustments.
+type Continued = (String, u32, Vec<crate::replay::Input>, Adjustments);
+
 /// The recordings that lead to the end of `name`, earliest first: `name`
-/// and those it continues, each with its frames and input.
-fn continued(l: &Loaded, name: &str) -> Result<Vec<(String, u32, Vec<crate::replay::Input>)>, String> {
+/// and those it continues, each with its frames, input and adjustments.
+fn continued(l: &Loaded, name: &str) -> Result<Vec<Continued>, String> {
     let mut out = Vec::new();
     let mut next = Some(name.to_string());
     while let Some(n) = next {
-        if out.iter().any(|(m, _, _)| *m == n) {
+        if out.iter().any(|(m, _, _, _)| *m == n) {
             return Err(format!("{n} continues from itself, through the recordings it continues"));
         }
         let rec = match l.recordings.iter().find(|(m, _, _)| *m == n) {
@@ -634,8 +652,9 @@ fn continued(l: &Loaded, name: &str) -> Result<Vec<(String, u32, Vec<crate::repl
             None => return Err(format!("{n}: no recording of that name in {SCENARIOS}/{}/", l.id)),
         };
         let (frames, events) = kept_input(&n, rec)?;
+        let adjust = Adjustments::from_details(&rec.header.producer.details).map_err(|e| format!("{n}: {e}"))?;
         next = rec.header.producer.details.get("from").and_then(Json::as_str).map(Into::into);
-        out.push((n, frames, events));
+        out.push((n, frames, events, adjust));
     }
     out.reverse();
     Ok(out)
@@ -643,8 +662,10 @@ fn continued(l: &Loaded, name: &str) -> Result<Vec<(String, u32, Vec<crate::repl
 
 /// Run `m` on to the end of recording `from` (and those it continues).
 fn reach_end(m: &mut Machine, l: &Loaded, q: &Quantities, from: &str, deadline: Duration) -> crate::Result<()> {
-    for (n, frames, events) in continued(l, from).map_err(Error::invalid)? {
-        let r = record(m, q, frames, &events, None, deadline, None, None);
+    for (n, frames, events, adjust) in continued(l, from).map_err(Error::invalid)? {
+        // Each as it was recorded.
+        let q = Quantities { binding: q.binding, types: q.types.clone(), kept: q.kept.clone(), adjust };
+        let r = record(m, &q, frames, &events, None, deadline, None, None);
         if let Some(why) = unrecorded(&r) {
             return Err(Error::invalid(format!(
                 "replaying {n} to continue from its end gave no recording: {}",
@@ -658,7 +679,12 @@ fn reach_end(m: &mut Machine, l: &Loaded, q: &Quantities, from: &str, deadline: 
 impl Prepared {
     fn quantities(&self) -> Quantities<'_> {
         let g = self.l.glossary.as_ref().unwrap();
-        Quantities { binding: &self.b, types: g.types(), kept: self.l.compared().keys().cloned().collect() }
+        Quantities {
+            binding: &self.b,
+            types: g.types(),
+            kept: self.l.compared().keys().cloned().collect(),
+            adjust: self.adjust,
+        }
     }
 
     /// The machine where the recording starts: the scenario's state, or the
@@ -728,6 +754,9 @@ impl Prepared {
         if let Some(f) = &self.from {
             details["from"] = json!(f);
         }
+        if let Some(a) = self.adjust.detail() {
+            details["adjust"] = a;
+        }
         let header = Header {
             format: format::RECORDING_FORMAT.into(),
             format_version: format::RECORDING_FORMAT_VERSION,
@@ -767,6 +796,7 @@ impl Prepared {
         std::fs::write(&kept_path, text).map_err(|e| Error::io(&kept_path, e))?;
         let last = r.ticks.last();
         let mut result = json!({"status": "recorded", "recording": rel(root, out), "written": true,
+               "adjust": self.adjust.names(),
                "ticks": r.ticks.len(), "fields": last.map(|t| t.field), "coverage": rel(root, &kept_path),
                "next": "psx scenario check runs the determinism check on the scenario's recordings"});
         if let Some(f) = &self.from {
@@ -831,7 +861,10 @@ fn catalogue_note(root: &Path, id: &str, name: &str) -> Option<String> {
 fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
     let events =
         crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64).map_err(Error::invalid)?;
-    let p = prepare(ctx, &a.id, &a.name, a.from.as_deref(), a.replace)?;
+    let mut p = prepare(ctx, &a.id, &a.name, a.from.as_deref(), a.replace)?;
+    if a.stock {
+        p.adjust = Adjustments::stock();
+    }
     let timeout = Duration::from_secs(a.timeout);
     let mut b = p.start(ctx, timeout)?;
     p.write(ctx, &mut b.m, a.frames, &events, a.description.clone(), timeout)
@@ -929,6 +962,11 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
     if captured.is_empty() && problems.is_empty() {
         problems.push(format!("{SCENARIOS}/{id}/: no captured recording (psx scenario record)"));
     }
+    for (name, rec) in &captured {
+        if let Err(e) = Adjustments::from_details(&rec.header.producer.details) {
+            problems.push(format!("{SCENARIOS}/{id}/{name}.jsonl: {e}"));
+        }
+    }
     if !problems.is_empty() {
         return Ok(json!({"id": id, "status": "problems", "problems": problems}));
     }
@@ -937,10 +975,12 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
     let (_, chain) = crate::states::chain_state(ctx, &chain_file)?;
     let second = crate::states::reach_idling(ctx, &chain_file, s.idle())?;
     let b = binding(root, g)?;
-    let q = Quantities { binding: &b, types: g.types(), kept: l.compared().keys().cloned().collect() };
     let mut recordings = Vec::new();
     let mut same = true;
     for (name, rec) in captured {
+        // As it was recorded: checked above.
+        let adjust = Adjustments::from_details(&rec.header.producer.details).unwrap_or_default();
+        let q = Quantities { binding: &b, types: g.types(), kept: l.compared().keys().cloned().collect(), adjust };
         let (frames, events) = kept_input(name, rec).map_err(Error::malformed)?;
         let mut m = machine(ctx, &chain, &second, &b.described().source)?.m;
         if let Some(from) = rec.header.producer.details.get("from").and_then(Json::as_str) {
@@ -967,6 +1007,128 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
     }
     Ok(json!({"id": id, "status": if same { "deterministic" } else { "differs" }, "idle": s.idle(),
               "recordings": recordings}))
+}
+
+/// What an adjustment changed: each quantity's first tick where the
+/// adjusted run's value differs from the stock run's, with both values.
+fn adjusted_differences(stock: &Recorded, adjusted: &Recorded) -> Vec<Json> {
+    let mut out = Vec::new();
+    let (a, b) = (stock.initial.clone().unwrap_or_default(), adjusted.initial.clone().unwrap_or_default());
+    for (q, v) in &a {
+        if b.get(q) != Some(v) {
+            out.push(json!({"quantity": q, "tick": 0, "stock": v, "adjusted": b.get(q)}));
+        }
+    }
+    let names: Vec<&String> = a.keys().collect();
+    for q in names {
+        if out.iter().any(|d| d["quantity"] == json!(q)) {
+            continue;
+        }
+        let first = stock.ticks.iter().zip(&adjusted.ticks).find(|(s, t)| s.values.get(q) != t.values.get(q));
+        if let Some((s, t)) = first {
+            out.push(json!({"quantity": q, "tick": s.tick, "stock": s.values.get(q), "adjusted": t.values.get(q)}));
+        }
+    }
+    if stock.ticks.len() != adjusted.ticks.len() {
+        out.push(json!({"ticks": {"stock": stock.ticks.len(), "adjusted": adjusted.ticks.len()}}));
+    }
+    out.sort_by_key(|d| d["tick"].as_u64().unwrap_or(u64::MAX));
+    out
+}
+
+/// One scenario's measurement of the adjustments: each captured recording
+/// made again from the scenario's state, stock and adjusted, driven by the
+/// same ticks, and compared.
+fn adjust_check(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
+    let root = &ctx.root;
+    let adjust = Adjustments::default_set();
+    let l = Loaded::load(root, id);
+    let mut problems = l.problems.clone();
+    let captured: Vec<(&String, &Recording)> = l
+        .recordings
+        .iter()
+        .filter_map(|(n, _, r)| {
+            r.as_ref().ok().filter(|r| r.header.source.kind == SourceKind::Captured).map(|r| (n, r))
+        })
+        .collect();
+    if captured.is_empty() && problems.is_empty() {
+        problems.push(format!("{SCENARIOS}/{id}/: no captured recording (psx scenario record)"));
+    }
+    if !problems.is_empty() {
+        return Ok(json!({"id": id, "status": "problems", "problems": problems}));
+    }
+    if adjust.is_stock() {
+        return Ok(json!({"id": id, "status": "nothing_to_measure", "adjust": adjust.names(),
+                         "why": "this psx makes no adjustments yet"}));
+    }
+    let (s, g) = (l.scenario.as_ref().unwrap(), l.glossary.as_ref().unwrap());
+    let (state, chain) = crate::states::chain_state(ctx, &root.join(&s.chain))?;
+    let b = binding(root, g)?;
+    let mut recordings = Vec::new();
+    let mut same = true;
+    for (name, rec) in captured {
+        let (frames, events) = kept_input(name, rec).map_err(Error::malformed)?;
+        let pads = held_by_tick(&events, &rec.expand());
+        let run = |adjust| -> crate::Result<Recorded> {
+            let q = Quantities { binding: &b, types: g.types(), kept: l.compared().keys().cloned().collect(), adjust };
+            let mut m = machine(ctx, &chain, &state, &b.described().source)?.m;
+            if let Some(from) = rec.header.producer.details.get("from").and_then(Json::as_str) {
+                reach_end(&mut m, &l, &q, from, timeout)?;
+            }
+            Ok(record(&mut m, &q, frames, &events, Some(&pads), timeout, None, None))
+        };
+        let (stock, adjusted) = (run(Adjustments::stock())?, run(adjust)?);
+        let differences = match (unrecorded(&stock), unrecorded(&adjusted)) {
+            (Some(why), _) => vec![json!({"stock": why})],
+            (_, Some(why)) => vec![json!({"adjusted": why})],
+            _ => adjusted_differences(&stock, &adjusted),
+        };
+        same &= differences.is_empty();
+        recordings.push(json!({"name": name, "differences": differences}));
+    }
+    Ok(json!({"id": id, "status": if same { "same" } else { "differs" }, "adjust": adjust.names(),
+              "recordings": recordings}))
+}
+
+#[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ScenarioAdjustCheckArgs {
+    /// Scenario ids; default every one.
+    #[serde(default)]
+    pub ids: Vec<String>,
+    /// Wall-clock limit per run, in seconds.
+    #[arg(long, default_value_t = 600)]
+    #[serde(default = "d_timeout")]
+    pub timeout: u64,
+}
+
+fn adjust_check_cmd(ctx: &Ctx, a: ScenarioAdjustCheckArgs) -> crate::Result<(bool, Json)> {
+    let ids = if a.ids.is_empty() { ids(&ctx.root) } else { a.ids.clone() };
+    if ids.is_empty() {
+        return Err(Error::invalid("no scenarios: write scenarios/<id>.toml"));
+    }
+    let mut results = Vec::new();
+    for id in ids {
+        check_name("id", &id)?;
+        let mut r = adjust_check(ctx, &id, Duration::from_secs(a.timeout))?;
+        let kept = json!({"at": crate::stamp::utc_now(), "psx": crate::context::version(), "result": r.clone()});
+        let p = ctx.root.join(CHECKS).join(format!("{id}.adjust.json"));
+        std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| Error::io(&p, e))?;
+        crate::write_atomic(&p, &serde_json::to_vec_pretty(&kept).unwrap_or_default()).map_err(|e| Error::io(&p, e))?;
+        if r["status"] == "differs" {
+            r["how"] = json!(
+                "an adjustment changed what the original did: a shift (the same values a tick or two earlier or later, as a press taking effect sooner under latch) is the adjustment's expected cost; a value the stock run never reaches is a rule that depends on what was adjusted: record that scenario --stock, and say why in the feature's notes"
+            );
+        }
+        results.push(r);
+    }
+    let ok = results.iter().all(|r| r["status"] != "problems");
+    Ok((ok, json!({"ok": ok, "scenarios": results})))
+}
+
+impl Op for ScenarioAdjustCheckArgs {
+    fn exec(self, ctx: &Ctx) -> Outcome {
+        Outcome::report(adjust_check_cmd(ctx, self))
+    }
 }
 
 /// A value as a number to plot: in the quantity's units, a bool as 0 or 1,
@@ -1099,7 +1261,8 @@ pub(crate) fn replay(
     let (s, g) = (l.scenario.as_ref().unwrap(), l.glossary.as_ref().unwrap());
     let (state, chain) = crate::states::chain_state(ctx, &root.join(&s.chain))?;
     let b = binding(root, g)?;
-    let q = Quantities { binding: &b, types: g.types(), kept: l.compared().keys().cloned().collect() };
+    let adjust = Adjustments::from_details(&rec.header.producer.details).map_err(Error::malformed)?;
+    let q = Quantities { binding: &b, types: g.types(), kept: l.compared().keys().cloned().collect(), adjust };
     let (frames, events) = kept_input(name, rec).map_err(Error::malformed)?;
     let mut m = machine(ctx, &chain, &state, &b.described().source)?.m;
     if let Some(from) = rec.header.producer.details.get("from").and_then(Json::as_str) {
@@ -1614,7 +1777,7 @@ pub struct Quantities {
         let b: Plugin<Described> = Plugin::new(call, None).unwrap();
         let types: BTreeMap<String, Type> =
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
-        let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
+        let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust: Adjustments::stock() };
         record(m, &q, 1, &[], None, Duration::from_secs(60), None, None)
     }
 
@@ -1656,6 +1819,50 @@ pub struct Quantities {
         assert!(binding::input_answer("16").is_err());
     }
 
+    /// A loop for Demo's binding that counts x up a tick at a time from
+    /// what RAM holds (a `nop` after the load, so the count reads it),
+    /// recorded with `adjust`.
+    fn demo_recorded(adjust: Adjustments) -> Recorded {
+        let b: Plugin<Described> = Plugin::new(demo_call, None).unwrap();
+        let mut m = Machine::new(vec![0; 0x8_0000]);
+        #[rustfmt::skip]
+        let loop_ = [
+            0x8D28_0000u32, // 80010000: lw t0, 0(t1)
+            0x0000_0000, // nop
+            0x2508_0001, // addiu t0, t0, 1
+            0xAD28_0000, // sw t0, 0(t1): x
+            0xAD28_0010, // 80010010: sw t0, 0x10(t1): the tick ends
+            0x0800_4000, // j 0x80010000
+            0x0000_0000, // nop
+            0x0000_0000,
+            0x3C09_8002, // 80010020: lui t1, 0x8002
+            0x0800_4000, // j 0x80010000
+            0x0000_0000, // nop
+        ];
+        for (i, w) in loop_.iter().enumerate() {
+            m.bus.ram[0x1_0000 + 4 * i..][..4].copy_from_slice(&w.to_le_bytes());
+        }
+        m.cpu.set_pc(0x8001_0020);
+        let types: BTreeMap<String, Type> =
+            [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
+        let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust };
+        record(&mut m, &q, 1, &[], None, Duration::from_secs(60), None, None)
+    }
+
+    #[test]
+    fn an_adjustment_is_measured_against_the_stock_game() {
+        use crate::adjust::TestAdjust;
+        let stock = demo_recorded(Adjustments::stock());
+        let nothing = demo_recorded(Adjustments { test: Some(TestAdjust::Nothing) });
+        assert_eq!(adjusted_differences(&stock, &nothing), Vec::<Json>::new());
+        // One more on x when tick 3 ends: tick 4 is the first to differ.
+        let nudged = demo_recorded(Adjustments { test: Some(TestAdjust::Nudge { tick: 3, addr: 0x8002_0000 }) });
+        let d = adjusted_differences(&stock, &nudged);
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!((d[0]["quantity"].as_str(), d[0]["tick"].as_u64()), (Some("x"), Some(4)));
+        assert_eq!(d[0]["adjusted"].as_i64(), d[0]["stock"].as_i64().map(|v| v + 1));
+    }
+
     #[test]
     fn a_recording_holds_the_kept_quantities_at_each_tick() {
         let b: Plugin<Described> = Plugin::new(demo_call, None).unwrap();
@@ -1677,7 +1884,7 @@ pub struct Quantities {
         m.cpu.set_pc(0x8001_0000);
         let types: BTreeMap<String, Type> =
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
-        let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
+        let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust: Adjustments::stock() };
         let mut c = Cover { tracer: tracer(&mut m), scripts: crate::script_cover::Scripts::new(&Default::default()) };
         let r = record(&mut m, &q, 1, &[], None, Duration::from_secs(60), Some(&mut c), None);
         let t = &c.tracer;
@@ -1779,7 +1986,7 @@ pub struct Quantities {
         m.cpu.set_pc(0x8001_0000);
         let types: BTreeMap<String, Type> =
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
-        let q = Quantities { binding: &b, types, kept: vec!["x".into()] };
+        let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust: Adjustments::stock() };
         let mut c = Cover { tracer: tracer(&mut m), scripts: crate::script_cover::Scripts::new(&b.described().hooks) };
         let r = record(&mut m, &q, 2, &[], None, Duration::from_secs(60), Some(&mut c), None);
         assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);

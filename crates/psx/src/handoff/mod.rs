@@ -72,6 +72,11 @@ pub struct HandoffArgs {
     #[arg(long, requires = "id")]
     #[serde(default, skip_serializing_if = "is_false")]
     pub replace: bool,
+    /// With a scenario: record the play on the stock game, without psx's adjustments
+    /// (docs/master-plan.md), as scenario record --stock does.
+    #[arg(long, requires = "id")]
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stock: bool,
     /// A play's run_dir (the ticket's): report its progress or result instead of starting one.
     #[arg(long, conflicts_with_all = ["request", "id", "media", "bios", "from_state", "out", "verify", "expect"])]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,8 +196,9 @@ impl HandoffArgs {
                     "with a scenario the recording is made by replaying the input, which checks it: drop verify",
                 ));
             }
-        } else if self.name.is_some() || self.from.is_some() || self.description.is_some() || self.replace {
-            return Err(Error::invalid("name, from, description and replace go with a scenario id"));
+        } else if self.name.is_some() || self.from.is_some() || self.description.is_some() || self.replace || self.stock
+        {
+            return Err(Error::invalid("name, from, description, replace and stock go with a scenario id"));
         }
         Ok(())
     }
@@ -608,13 +614,16 @@ const RECORD_TIMEOUT: Duration = Duration::from_secs(3600);
 /// recording it continues), run on to where a recording's fields count
 /// from, so the person's input has `scenario record`'s frame origin.
 fn scenario_start(ctx: &Ctx, a: &mut HandoffArgs) -> crate::Result<(Session, crate::scenario::Prepared)> {
-    let p = crate::scenario::prepare(
+    let mut p = crate::scenario::prepare(
         ctx,
         a.id.as_deref().unwrap(),
         a.name.as_deref().unwrap(),
         a.from.as_deref(),
         a.replace,
     )?;
+    if a.stock {
+        p.adjust = crate::adjust::Adjustments::stock();
+    }
     let mut b = p.start(ctx, RECORD_TIMEOUT)?;
     if !p.lead_in(&mut b.m, LEAD_FIELDS) {
         return Err(Error::invalid(format!(
@@ -738,6 +747,9 @@ fn scenario_report(
         "description": a.description.clone().unwrap_or_else(|| a.request.clone())});
     if let Some(f) = &p.from {
         args["from"] = json!(f);
+    }
+    if a.stock {
+        args["stock"] = json!(true);
     }
     v["input"]["frame_origin"] = json!("scenario_record");
     v["input"]["note"] = json!(
@@ -1111,6 +1123,7 @@ mod tests {
             from: None,
             description: None,
             replace: false,
+            stock: false,
             media: r.media,
             bios: r.bios,
             from_state: None,
