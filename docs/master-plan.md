@@ -22,6 +22,11 @@ done, add a line under it (`*Done (date):* …`) with what was measured.
   and named the source in each recording (`"pad": "game"` or
   `"controller"`). The sticks still come from the controller. Track A
   replaces this, and A5 removes `INPUT`.
+- **Track A without the discs** (2026-11-03): A1 to A4 and A6 are
+  built and tested on hand-written test programs (each step's *Done*
+  line says what); their real-game checks, A5, A7's decision and the
+  proof in A8 need a BIOS and the discs. Recordings are now made
+  latched and steady unless `--stock`.
 - **[inventory-timeline-plan.md](inventory-timeline-plan.md)**: status
   unknown; some of it is in the code (`code inventory --unpacked`). E3
   asks its author to mark what is done.
@@ -188,6 +193,16 @@ A1. **Find the pad buffer.** The serial port says which reply byte each
     that uses Sony's pad routines, and a test EXE that branches on the
     reply in a register without storing it reports no buffer.
 
+    *Done (2026-11-03), on test programs only:* `psx_core::padflow`
+    (with each JOY_DATA read placed in its exchange, and completed polls
+    logged, by `Sio0`) and `run --pad-reads`. Hand-written programs: a
+    handler storing the button bytes, one assembling them into a halfword
+    and inverting it, and a main loop polling into registers (no buffer;
+    its serial loads are its reads). Each buffer byte also keeps its mask
+    (0 for a copy, 0xFF inverted), which `latch` needs. **Still to do:**
+    the real-game check (Croc, GT2, TRC, with a BIOS and the discs), and
+    the library cross-check and joker codes (with the PsyQ signatures).
+
 A2. **Naming adjustments, and the measurement.** `--stock`,
     `producer.details.adjust`, the determinism check running with the
     recording's adjustments, and `scenario adjust-check`. A recording
@@ -197,6 +212,17 @@ A2. **Naming adjustments, and the measurement.** `--stock`,
     rerun by `scenario check`, and measures the same on Croc's scenarios,
     and a test adjustment that moves Croc one unit on one tick is
     reported at that tick.
+
+    *Done (2026-11-03), on test programs only:* `psx::adjust`,
+    `--stock` on `scenario record` and `scenario play`,
+    `producer.details.adjust`, the determinism check, replays and
+    continued recordings running with each recording's own, and
+    `scenario adjust-check` (MCP `scenario_adjust_check`), which keeps
+    its result in `.psx/scenarios/<id>.adjust.json` rather than in the
+    recordings, which are committed data. Tests: a do-nothing adjustment,
+    and one adding 1 to a word when tick 3 ends, reported at tick 4.
+    **Still to do:** "measures the same on Croc's scenarios" (needs the
+    disc); `--adjust` on `run` is not built.
 
 A3. **`latch`, and its check.** The latch as decided, with recording
     driven by tick. Its risk is a binding whose tick store comes after the
@@ -215,6 +241,23 @@ A3. **`latch`, and its check.** The latch as decided, with recording
     bytes without; and a test binding whose tick store follows the pad
     read is refused with the read's function named.
 
+    *Done (2026-11-03), on test programs only, with one change:* the
+    latch as decided (input held to the tick's end; the buffer written
+    through each byte's mask and put back after the handler's stores; the
+    controller alone where no buffer is found or a byte has no mask).
+    On a test game that polls between two reads of its buffer in one
+    tick, stock ticks sometimes read two pads and latched ones never do,
+    through a copied buffer and an inverted one. Lag frames are reported,
+    and so are ticks ending inside an exception handler. **The change:**
+    the refusal above is not built. A read between the tick boundary and
+    the game's wait belongs to the next tick by the binding's own
+    definition, and with `latch` it gets that tick's input, so the check
+    would refuse sound bindings (a tick store at the top of the loop).
+    The hazards that remain are reported instead: lag frames (a tick
+    store on a render loop that outpaces the logic) and ticks ending in a
+    handler (a tick store in vblank's). **Still to do:** the real-game
+    check on Croc and GT2.
+
 A4. **Replayed input is the only input.** An exclusive mode on
     `InjectedInput` in the template: the tick's pad, sticks and mode are
     the injected ones; live devices and the held-tap memory are ignored.
@@ -230,6 +273,12 @@ A4. **Replayed input is the only input.** An exclusive mode on
     recording's buttons, both replay drivers use one input path, and a
     test rule that picks an entity by query order is reported as
     nondeterministic.
+
+    *Done (2026-11-03):* `InjectedInput::exclusive`, set by
+    `testing::apply`, which `run_input` and `--frames` share (so `--frames`
+    now replays the mouse too); the scenario runner replays each recording
+    a second time and reports where the two runs part; `AGENTS.md` gains
+    the determinism rules. 78 psx-bevy tests and the workspace's pass.
 
 A5. **Measure `latch`, then retire `INPUT`.** `adjust-check` on every
     scenario of Croc and of the game `f919bde` was made for (its race and
@@ -257,6 +306,17 @@ A6. **`steady`.** A clock multiplier on the CPU (its cycles count for a
     unchanged, and the measurement is recorded here (a game that does
     more per tick when it has time shows there).
 
+    *Done (2026-11-03), on test programs only:* `Cpu::overclock` in
+    psx-core (instruction issue and fetch cost a quarter of their clocks;
+    loads, multiplies, divides and the GTE keep theirs; off, timing is
+    unchanged and psx-core's tests pass), the GPU untimed, and every
+    recording's `fields_per_tick`. On a test game whose work takes a
+    field and a half before it waits for vblank, every stock tick takes
+    two fields and every steady tick one. **Still to do:** the real-game
+    check (a stretch of Croc or GT2 that slows down, with audio and video
+    timing compared), and `run` reporting fields per tick (it has no
+    ticks without a binding).
+
 A7. **Fields elapsed, only if needed.** If A6 leaves ticks that overrun,
     or a game changes its tick rate on purpose (30 Hz in play, 60 Hz in
     menus), the template's `TickInput` gains `fields` and rules read it
@@ -276,6 +336,13 @@ A8. **The proof, and the docs.** Re-record Croc's and the race game's
 
     *Done when* the numbers are recorded here and the docs describe
     adjusted recordings as the default.
+
+    *Partly done (2026-11-03):* `docs/scenarios.md` and the guide's run
+    topic ("Adjusted recordings") describe them as the default. The
+    guide's overview is at its size limit (a test holds each topic under
+    16 KiB), so it does not mention them yet: trim it, then add a line.
+    `port-design.md` and the tap line in `game/AGENTS.md` are still to
+    do, and the proof needs the discs.
 
 ## Track B: the library's rules, exactly
 
