@@ -30,6 +30,8 @@ use crate::sio0::Sio0;
 pub struct Mark {
     pub exchange: u64,
     pub pos: u8,
+    /// The byte the controller sent.
+    pub value: u8,
 }
 
 type Lanes = [Option<Mark>; 4];
@@ -41,6 +43,9 @@ pub struct Held {
     /// Written by an exception handler (the poll's own copy), not the game's
     /// main code (a copy the game made of it).
     pub by_handler: bool,
+    /// The byte stored, XOR the byte the controller sent: 0 for a copy,
+    /// 0xFF for one inverted.
+    pub mask: u8,
 }
 
 /// A read of the pad by code outside an exception handler.
@@ -59,6 +64,10 @@ pub struct BufferByte {
     /// KSEG0 for main RAM, the physical address for the scratchpad.
     pub addr: u32,
     pub pos: u8,
+    /// The byte stored XOR the byte sent, when every store of it so far
+    /// kept the same: 0 for a copy, 0xFF inverted. None when the game
+    /// changes the byte in other ways.
+    pub mask: Option<u8>,
 }
 
 /// Follows reply bytes from the serial port; feed it every step.
@@ -68,6 +77,8 @@ pub struct PadFlow {
     /// By physical address (main RAM's mirrors folded).
     ram: BTreeMap<u32, Held>,
     in_handler: bool,
+    /// Each handler-written byte's mask, while every store of it kept one.
+    masks: BTreeMap<u32, Option<u8>>,
     /// Reads not yet taken by [`PadFlow::take_reads`].
     reads: Vec<PadRead>,
 }
@@ -134,7 +145,7 @@ impl PadFlow {
             self.regs[reg] = [None; 4];
             let read = sio.last_read.filter(|r| r.is_poll());
             if let (true, Some(r)) = ((JOY_DATA..JOY_DATA + 4).contains(&fold(addr)), read) {
-                let mark = Mark { exchange: r.exchange, pos: r.pos };
+                let mark = Mark { exchange: r.exchange, pos: r.pos, value: r.value };
                 // A narrow load's byte lands in lane 0; a word repeats the byte.
                 let width = info.mem.map_or(1, |m| m.width as usize);
                 for lane in self.regs[reg].iter_mut().take(width) {
@@ -221,7 +232,14 @@ impl PadFlow {
             let a = p + k as u32;
             match l.get(k).copied().flatten() {
                 Some(mark) => {
-                    self.ram.insert(a, Held { mark, by_handler: self.in_handler });
+                    let mask = (m.value >> (8 * k)) as u8 ^ mark.value;
+                    self.ram.insert(a, Held { mark, by_handler: self.in_handler, mask });
+                    if self.in_handler {
+                        let kept = self.masks.entry(a).or_insert(Some(mask));
+                        if *kept != Some(mask) {
+                            *kept = None;
+                        }
+                    }
                 }
                 None => {
                     self.ram.remove(&a);
@@ -239,7 +257,7 @@ impl PadFlow {
         };
         held(true)
             .filter(|(_, h)| h.mark.exchange == latest)
-            .map(|(a, h)| BufferByte { addr: shown(*a), pos: h.mark.pos })
+            .map(|(a, h)| BufferByte { addr: shown(*a), pos: h.mark.pos, mask: self.masks.get(a).copied().flatten() })
             .collect()
     }
 
@@ -252,7 +270,7 @@ impl PadFlow {
         };
         main()
             .filter(|(_, h)| h.mark.exchange == latest)
-            .map(|(a, h)| BufferByte { addr: shown(*a), pos: h.mark.pos })
+            .map(|(a, h)| BufferByte { addr: shown(*a), pos: h.mark.pos, mask: self.masks.get(a).copied().flatten() })
             .collect()
     }
 
@@ -391,27 +409,38 @@ pub mod test_program {
     /// (entered by `syscall`), the main code reading what it kept, in a
     /// loop; or, for [`Keep::Registers`], the main code polling itself.
     pub fn machine(keep: Keep, buttons: u16) -> Machine {
-        let mut m = Machine::new(vec![0; 0x8_0000]);
-        let put = |m: &mut Machine, at: usize, code: &[u32]| {
-            for (k, w) in code.iter().enumerate() {
-                m.bus.ram[at + 4 * k..][..4].copy_from_slice(&w.to_le_bytes());
-            }
-        };
-        let main = if keep == Keep::Registers {
+        let mut m = if keep == Keep::Registers {
             let mut p = poll(keep);
             p.extend([j(0x8001_0000), NOP]);
-            p
+            with_main(Keep::Bytes, &p, 0x8001_0000)
         } else {
-            let mut handler = poll(keep);
-            handler.extend([mfc0(K0, 14), NOP, addiu(K0, K0, 4), jr(K0), RFE]);
-            put(&mut m, 0x80, &handler);
-            vec![lui(S1, 0x8002), SYSCALL, lbu(T5, 0, S1), lbu(T6, 1, S1), j(0x8001_0004), NOP]
+            let main = [lui(S1, 0x8002), SYSCALL, lbu(T5, 0, S1), lbu(T6, 1, S1), j(0x8001_0004), NOP];
+            with_main(keep, &main, 0x8001_0000)
         };
-        put(&mut m, 0x1_0000, &main);
-        m.cpu.cop0[crate::cpu::cop0::SR] = 0;
-        m.cpu.set_pc(0x8001_0000);
         m.bus.sio0.buttons = buttons;
         m
+    }
+
+    /// A machine whose exception handler (entered by `syscall`) polls the
+    /// pad, keeping it as `keep` says, and whose main code is `main` at
+    /// 0x80010000, starting at `pc`.
+    pub fn with_main(keep: Keep, main: &[u32], pc: u32) -> Machine {
+        let mut m = Machine::new(vec![0; 0x8_0000]);
+        let mut handler = poll(keep);
+        handler.extend([mfc0(K0, 14), NOP, addiu(K0, K0, 4), jr(K0), RFE]);
+        load(&mut m, 0x8000_0080, &handler);
+        load(&mut m, 0x8001_0000, main);
+        m.cpu.cop0[crate::cpu::cop0::SR] = 0;
+        m.cpu.set_pc(pc);
+        m
+    }
+
+    /// `code` into RAM at `at`.
+    pub fn load(m: &mut Machine, at: u32, code: &[u32]) {
+        let at = (at & 0x1F_FFFF) as usize;
+        for (k, w) in code.iter().enumerate() {
+            m.bus.ram[at + 4 * k..][..4].copy_from_slice(&w.to_le_bytes());
+        }
     }
 
     /// Runs `m` with a [`PadFlow`] until `polls` polls completed.
@@ -453,7 +482,14 @@ mod tests {
         let mut m = machine(Keep::Bytes, button::CROSS);
         let (f, reads) = run(&mut m, 3);
         let b = f.buffer();
-        assert_eq!(b, [BufferByte { addr: 0x8002_0000, pos: 3 }, BufferByte { addr: 0x8002_0001, pos: 4 }]);
+        let copy = Some(0);
+        assert_eq!(
+            b,
+            [
+                BufferByte { addr: 0x8002_0000, pos: 3, mask: copy },
+                BufferByte { addr: 0x8002_0001, pos: 4, mask: copy }
+            ]
+        );
         assert!(f.copies().is_empty());
         // The main code's two loads read it, each poll.
         let main: Vec<_> = reads.iter().map(|r| (r.pc, r.addr, r.marks[0].pos)).collect();
@@ -467,7 +503,14 @@ mod tests {
     fn a_halfword_assembled_and_inverted_keeps_its_bytes() {
         let mut m = machine(Keep::Inverted, button::CROSS);
         let (f, _) = run(&mut m, 3);
-        assert_eq!(f.buffer(), [BufferByte { addr: 0x8002_0000, pos: 3 }, BufferByte { addr: 0x8002_0001, pos: 4 }]);
+        let inverted = Some(0xFF);
+        assert_eq!(
+            f.buffer(),
+            [
+                BufferByte { addr: 0x8002_0000, pos: 3, mask: inverted },
+                BufferByte { addr: 0x8002_0001, pos: 4, mask: inverted }
+            ]
+        );
     }
 
     #[test]
@@ -482,7 +525,7 @@ mod tests {
 
     #[test]
     fn shifts_move_marks_between_lanes() {
-        let m = Mark { exchange: 1, pos: 3 };
+        let m = Mark { exchange: 1, pos: 3, value: 0xFF };
         assert_eq!(shift([Some(m), None, None, None], 8, true), [None, Some(m), None, None]);
         assert_eq!(shift([None, Some(m), None, None], 8, false), [Some(m), None, None, None]);
         assert_eq!(shift([Some(m), None, None, None], 4, true), [Some(m), Some(m), None, None]);

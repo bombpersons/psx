@@ -4,13 +4,28 @@
 //! was made with (`producer.details.adjust`; none means stock), the
 //! determinism check runs with them, and `scenario adjust-check` measures
 //! them against the stock game.
+//!
+//! **latch**: the game's pad changes only where a tick ends, to that tick's
+//! input. The controller takes new input only there (input that arrives
+//! mid-tick waits), and where psx has found the pad buffer
+//! ([`psx_core::padflow`]) it writes the tick's input into the buffer at
+//! once, through each byte's mask, and puts the buffer back whenever the
+//! interrupt handler stores into it before the next tick ends. Every read
+//! the game makes during a tick then sees that tick's input, whatever its
+//! loop does between polls. Ticks in which no game code read the pad are
+//! counted as lag frames; a tick ending inside an exception handler is
+//! counted too (the binding's tick is then not the game's loop).
 
 use psx_core::Machine;
+use psx_core::cpu::StepInfo;
+use psx_core::padflow::{BufferByte, PadFlow};
 use serde_json::{Value as Json, json};
 
 /// The adjustments a run is made with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Adjustments {
+    /// The pad changes only where a tick ends.
+    pub latch: bool,
     /// Test adjustments: one that does nothing, and one that adds 1 to the
     /// word at an address when a tick ends.
     #[cfg(test)]
@@ -28,6 +43,9 @@ pub(crate) enum TestAdjust {
     },
 }
 
+/// The names of the adjustments this psx knows.
+const KNOWN: &[&str] = &["latch"];
+
 impl Adjustments {
     /// None: the stock game.
     pub fn stock() -> Adjustments {
@@ -37,7 +55,7 @@ impl Adjustments {
     /// What `scenario record` and `scenario play` use unless `stock`: every
     /// adjustment this psx has.
     pub fn default_set() -> Adjustments {
-        Adjustments::default()
+        Adjustments { latch: true, ..Adjustments::default() }
     }
 
     pub fn is_stock(&self) -> bool {
@@ -46,8 +64,10 @@ impl Adjustments {
 
     /// Their names, as recordings keep them.
     pub fn names(&self) -> Vec<&'static str> {
-        #[allow(unused_mut)]
         let mut out = Vec::new();
+        if self.latch {
+            out.push("latch");
+        }
         #[cfg(test)]
         match self.test {
             Some(TestAdjust::Nothing) => out.push("test_nothing"),
@@ -67,16 +87,16 @@ impl Adjustments {
             }
             Some(_) => return Err("adjust: a list of names".into()),
         };
-        #[allow(unused_mut)]
         let mut a = Adjustments::stock();
         for n in names {
             match n {
+                "latch" => a.latch = true,
                 #[cfg(test)]
                 "test_nothing" => a.test = Some(TestAdjust::Nothing),
                 _ => {
                     return Err(format!(
-                        "adjust: this psx does not know the adjustment {n:?}{}: update psx, or record again",
-                        known()
+                        "adjust: this psx does not know the adjustment {n:?} (it knows {}): update psx, or record again",
+                        KNOWN.join(", ")
                     ));
                 }
             }
@@ -90,34 +110,164 @@ impl Adjustments {
     }
 
     /// What they keep while a run goes, made where the recording starts.
-    pub fn start(&self, _m: &mut Machine) -> Running {
-        Running { a: *self }
+    pub fn start(&self) -> Running {
+        Running {
+            a: *self,
+            flow: self.latch.then(PadFlow::new),
+            held: None,
+            latched: Vec::new(),
+            read: false,
+            ticks: 0,
+            lag: Vec::new(),
+            in_handler: 0,
+            unmasked: false,
+        }
     }
-}
-
-fn known() -> String {
-    let names: Vec<&str> = Vec::new();
-    if names.is_empty() { String::new() } else { format!(" (it knows {})", names.join(", ")) }
 }
 
 /// Adjustments while a run goes.
 pub(crate) struct Running {
-    #[allow(dead_code)]
     a: Adjustments,
+    /// `latch`: the pad buffer's search, and the game's reads.
+    flow: Option<PadFlow>,
+    /// `latch`: input that arrived during the tick, for where it ends.
+    held: Option<crate::replay::Input>,
+    /// `latch`: the buffer bytes written where the last tick ended, and
+    /// their values, to put back over the interrupt handler's stores.
+    latched: Vec<(u32, u8)>,
+    /// `latch`: some game code read the pad during this tick.
+    read: bool,
+    ticks: u64,
+    /// `latch`: the ticks in which no game code read the pad.
+    lag: Vec<u64>,
+    /// Ticks that ended inside an exception handler.
+    in_handler: u64,
+    /// A buffer byte the game stores other than as a copy (or an inverted
+    /// one) of the controller's: the latch could not write it.
+    unmasked: bool,
+}
+
+/// The reply byte at `pos` for buttons `held` and `sticks` (as psx-core's
+/// pad keeps them: rx, ry, lx, ly), in analog mode or not.
+fn reply_byte(pos: u8, held: u16, sticks: [u8; 4], analog: bool) -> Option<u8> {
+    match pos {
+        3 => Some(!(held as u8)),
+        4 => Some(!((held >> 8) as u8)),
+        5..=8 if analog => Some(sticks[pos as usize - 5]),
+        _ => None,
+    }
+}
+
+fn poke(m: &mut Machine, addr: u32, v: u8) {
+    let p = addr & 0x1FFF_FFFF;
+    if p < 0x0080_0000 {
+        m.bus.ram[(p & 0x1F_FFFF) as usize] = v;
+    } else if (0x1F80_0000..0x1F80_0400).contains(&p) {
+        m.bus.scratch[(p - 0x1F80_0000) as usize] = v;
+    }
 }
 
 impl Running {
+    /// Input from the recording's events or ticks: on the controller at
+    /// once, or with `latch`, where the tick ends.
+    pub fn input(&mut self, m: &mut Machine, i: &crate::replay::Input) {
+        if self.a.latch {
+            self.held = Some(*i);
+        } else {
+            crate::replay::apply(m, i);
+        }
+    }
+
+    /// The step `info` just ran on `m`.
+    pub fn step(&mut self, info: &StepInfo, m: &mut Machine) {
+        let Some(f) = &mut self.flow else { return };
+        f.step(info, &m.bus.sio0);
+        self.read |= !f.take_reads().is_empty();
+        // The interrupt handler stored over the latched buffer: put it back.
+        if let Some(acc) = info.mem.filter(|a| a.store && f.in_handler()) {
+            let p = acc.addr & 0x1FFF_FFFF;
+            let hit = |a: u32| (p..p + acc.width as u32).contains(&(a & 0x1FFF_FFFF));
+            for (a, v) in self.latched.iter().filter(|(a, _)| hit(*a)) {
+                poke(m, *a, *v);
+            }
+        }
+    }
+
     /// Tick `n` ended (its quantities read) on `m`.
-    pub fn tick_ended(&mut self, _n: u64, _m: &mut Machine) {
+    pub fn tick_ended(&mut self, n: u64, m: &mut Machine) {
+        if let Some(f) = &self.flow {
+            if f.in_handler() {
+                self.in_handler += 1;
+            }
+            if n > 0 {
+                self.ticks += 1;
+                if !self.read {
+                    self.lag.push(n);
+                }
+            }
+            self.read = false;
+            if let Some(i) = self.held.take() {
+                crate::replay::apply(m, &i);
+            }
+            self.latch(f.buffer(), m);
+        }
         #[cfg(test)]
         if let Some(TestAdjust::Nudge { tick, addr }) = self.a.test {
-            if _n == tick {
+            if n == tick {
                 let a = (addr & 0x1F_FFFF) as usize;
-                let ram = &mut _m.bus.ram;
+                let ram = &mut m.bus.ram;
                 let v = u32::from_le_bytes(ram[a..a + 4].try_into().unwrap()).wrapping_add(1);
                 ram[a..a + 4].copy_from_slice(&v.to_le_bytes());
             }
         }
+    }
+
+    /// Writes the controller's state into the pad buffer, through each
+    /// byte's mask.
+    fn latch(&mut self, buffer: Vec<BufferByte>, m: &mut Machine) {
+        let (held, sticks, analog) = (m.bus.sio0.buttons, m.bus.sio0.pad.sticks, m.bus.sio0.pad.analog);
+        self.latched.clear();
+        for b in buffer {
+            let Some(v) = reply_byte(b.pos, held, sticks, analog) else { continue };
+            match b.mask {
+                Some(mask) => {
+                    poke(m, b.addr, v ^ mask);
+                    self.latched.push((b.addr, v ^ mask));
+                }
+                None => self.unmasked = true,
+            }
+        }
+    }
+
+    /// What they did, for the recording's details; None for a stock run.
+    pub fn report(&self) -> Option<Json> {
+        let f = self.flow.as_ref()?;
+        let buffer: Vec<Json> = f
+            .buffer()
+            .iter()
+            .map(|b| {
+                json!({"address": format!("0x{:08X}", b.addr), "byte": crate::pad_reads::byte_name(b.pos),
+                       "mask": b.mask.map(|m| format!("0x{m:02X}"))})
+            })
+            .collect();
+        let mut r = json!({
+            "buffer": buffer,
+            "by": if buffer.is_empty() { "the controller, set where each tick ends: no pad buffer found" }
+                  else if self.unmasked { "the controller, and the buffer bytes the game stores as the controller sent them" }
+                  else { "the pad buffer and the controller" },
+            "ticks": self.ticks,
+            "lag_frames": self.lag.len(),
+        });
+        if !self.lag.is_empty() {
+            r["lag_frame_ticks"] = json!(self.lag.iter().take(20).collect::<Vec<_>>());
+        }
+        if self.in_handler > 0 {
+            r["ticks_ended_in_handler"] = json!(self.in_handler);
+            r["note"] = json!(
+                "the binding's tick store ran inside an exception handler: its ticks are the handler's (vblank's), not the game's loop; move the tick to the store that ends the game's logic step"
+            );
+        }
+        Some(r)
     }
 }
 
@@ -132,12 +282,25 @@ mod tests {
     #[test]
     fn a_recording_names_its_adjustments_and_unknown_ones_are_refused() {
         assert_eq!(Adjustments::from_details(&serde_json::Map::new()), Ok(Adjustments::stock()));
-        let a = Adjustments { test: Some(TestAdjust::Nothing) };
+        let a = Adjustments { test: Some(TestAdjust::Nothing), ..Adjustments::stock() };
         assert_eq!(a.detail(), Some(json!(["test_nothing"])));
         assert_eq!(Adjustments::from_details(&details(a.detail().unwrap())), Ok(a));
         assert_eq!(Adjustments::stock().detail(), None);
+        let d = Adjustments::default_set();
+        assert_eq!(d.detail(), Some(json!(["latch"])));
+        assert_eq!(Adjustments::from_details(&details(d.detail().unwrap())), Ok(d));
         let e = Adjustments::from_details(&details(json!(["latch_v9"]))).unwrap_err();
-        assert!(e.contains("\"latch_v9\""), "{e}");
+        assert!(e.contains("\"latch_v9\"") && e.contains("knows latch"), "{e}");
         assert!(Adjustments::from_details(&details(json!("latch"))).is_err());
+    }
+
+    #[test]
+    fn reply_bytes_are_the_wire_s() {
+        let sticks = [1, 2, 3, 4];
+        assert_eq!(reply_byte(3, 0x4000, sticks, false), Some(0xFF));
+        assert_eq!(reply_byte(4, 0x4000, sticks, false), Some(0xBF));
+        assert_eq!(reply_byte(5, 0, sticks, false), None);
+        assert_eq!(reply_byte(8, 0, sticks, true), Some(4));
+        assert_eq!(reply_byte(1, 0, sticks, true), None);
     }
 }

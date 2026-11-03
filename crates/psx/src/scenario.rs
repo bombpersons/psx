@@ -289,6 +289,8 @@ struct Recorded {
     /// The first tick that ended with the sticks moved on a pad not in
     /// analog mode, which the game does not read.
     unread_sticks: Option<u64>,
+    /// What the adjustments did (`latch`: the pad buffer, lag frames).
+    adjusted: Option<Json>,
     /// Where the ticks' pads came from: None before the first recorded tick.
     pad_from: Option<PadFrom>,
 }
@@ -352,7 +354,7 @@ fn record(
     // the port's launcher builds, before any input. The recording's fields
     // (and the input's frames) count from the field after that tick.
     crate::replay::apply(m, &crate::replay::Input { frame: 0, buttons: 0, sticks: [128; 4] });
-    let mut adjust = q.adjust.start(m);
+    let mut adjust = q.adjust.start();
     let mut start: Option<u64> = None;
     let mut target = u64::MAX;
     let tick = &q.binding.described().tick;
@@ -363,6 +365,7 @@ fn record(
         refusal_count: 0,
         timed_out: false,
         unread_sticks: None,
+        adjusted: None,
         pad_from: None,
     };
     let (mut next_event, mut last_frame) = (0, m.bus.frames);
@@ -383,10 +386,10 @@ fn record(
             if let Some(start) = start {
                 let field = m.bus.frames - start;
                 if let Some(pad) = ticks.and_then(|t| t.get(out.ticks.len())) {
-                    crate::replay::apply(m, pad);
+                    adjust.input(m, pad);
                 }
                 while ticks.is_none() && next_event < events.len() && events[next_event].frame <= field {
-                    crate::replay::apply(m, &events[next_event]);
+                    adjust.input(m, &events[next_event]);
                     next_event += 1;
                 }
             } else if m.bus.frames >= lead_limit {
@@ -399,6 +402,7 @@ fn record(
             }
         }
         let info = m.step();
+        adjust.step(&info, m);
         if let Some(c) = cover.as_deref_mut() {
             c.tracer.after_step(&info, &m.cpu, &m.bus);
             c.scripts.step(&info, q.binding, m);
@@ -482,6 +486,7 @@ fn record(
             }
         }
     }
+    out.adjusted = adjust.report();
     out
 }
 
@@ -757,6 +762,9 @@ impl Prepared {
         if let Some(a) = self.adjust.detail() {
             details["adjust"] = a;
         }
+        if let Some(a) = &r.adjusted {
+            details["adjusted"] = a.clone();
+        }
         let header = Header {
             format: format::RECORDING_FORMAT.into(),
             format_version: format::RECORDING_FORMAT_VERSION,
@@ -796,7 +804,7 @@ impl Prepared {
         std::fs::write(&kept_path, text).map_err(|e| Error::io(&kept_path, e))?;
         let last = r.ticks.last();
         let mut result = json!({"status": "recorded", "recording": rel(root, out), "written": true,
-               "adjust": self.adjust.names(),
+               "adjust": self.adjust.names(), "adjusted": r.adjusted,
                "ticks": r.ticks.len(), "fields": last.map(|t| t.field), "coverage": rel(root, &kept_path),
                "next": "psx scenario check runs the determinism check on the scenario's recordings"});
         if let Some(f) = &self.from {
@@ -1715,6 +1723,136 @@ pub struct Quantities {
         unsafe { psx_capture::abi::call(&Demo, what, host) }
     }
 
+    /// A game that polls its pad from an interrupt handler (here entered by
+    /// `syscall`) into a buffer at 0x80020000, and reads the buffer twice
+    /// in each tick, with a poll between: x is the first read, dead whether
+    /// the second read saw anything else. Ticks end at the store to
+    /// 0x80020010 by 0x80010020.
+    struct TwoReads;
+
+    impl psx_capture::Glossary for TwoReads {
+        type Glue = Glue;
+        const TITLE: &'static str = "TwoReads";
+        const IMAGE_SHA256: &'static str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        fn tick(&self, t: &mut psx_capture::Tick) {
+            t.store(0x8002_0010, 4).by(0x8001_0020);
+        }
+
+        fn quantities(&self, m: &psx_capture::Machine) -> Q {
+            Q { x: m.u16(0x8002_0030) as i32, dead: m.u16(0x8002_0030) != m.u16(0x8002_0034) }
+        }
+    }
+
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn two_reads_call(what: u32, host: *const psx_capture::abi::Host) -> i32 {
+        // SAFETY: the caller's.
+        unsafe { psx_capture::abi::call(&TwoReads, what, host) }
+    }
+
+    /// TwoReads' game, keeping its buffer as `keep` says, recorded for
+    /// `fields` fields with CROSS pressed and released at each field.
+    fn two_reads(keep: psx_core::padflow::test_program::Keep, adjust: Adjustments, fields: u32) -> Recorded {
+        use psx_core::padflow::test_program::asm::*;
+        const S1: u32 = 17;
+        const T0: u32 = 8;
+        const T1: u32 = 9;
+        let main = [
+            SYSCALL,        // 80010000: a poll
+            lhu(T0, 0, S1), // the first read
+            NOP,
+            sh(T0, 0x30, S1),
+            SYSCALL,        // 80010010: another poll
+            lhu(T1, 0, S1), // the second read
+            NOP,
+            sh(T1, 0x34, S1),
+            i(0x2B, S1, T0, 0x10), // 80010020: sw t0, 0x10(s1): the tick ends
+            j(0x8001_0000),
+            NOP,
+            NOP,
+            lui(S1, 0x8002), // 80010030
+            j(0x8001_0000),
+            NOP,
+        ];
+        let mut m = psx_core::padflow::test_program::with_main(keep, &main, 0x8001_0030);
+        let b: Plugin<Described> = Plugin::new(two_reads_call, None).unwrap();
+        let types: BTreeMap<String, Type> =
+            [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
+        let q = Quantities { binding: &b, types, kept: vec!["x".into(), "dead".into()], adjust };
+        let cross = psx_core::sio0::button::CROSS;
+        let events: Vec<crate::replay::Input> = (0..fields as u64)
+            .map(|f| crate::replay::Input {
+                frame: f,
+                buttons: if f % 2 == 0 { cross as u32 } else { 0 },
+                sticks: [128; 4],
+            })
+            .collect();
+        record(&mut m, &q, fields, &events, None, Duration::from_secs(120), None, None)
+    }
+
+    fn reads(r: &Recorded) -> Vec<(i128, bool)> {
+        use psx_scenario::Value as V;
+        r.ticks
+            .iter()
+            .map(|t| match (&t.values["x"], &t.values["dead"]) {
+                (V::Int(x), V::Bool(d)) => (*x, *d),
+                v => panic!("{v:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn latched_every_read_in_a_tick_sees_the_tick_s_input() {
+        use psx_core::padflow::test_program::Keep;
+        let cross = psx_core::sio0::button::CROSS as i128;
+        // Stock, a poll between the two reads sometimes brings new input.
+        let stock = two_reads(Keep::Bytes, Adjustments::stock(), 30);
+        assert_eq!(stock.refusal_count, 0, "{:?}", stock.refusals);
+        assert!(reads(&stock).iter().any(|(_, d)| *d), "the stock game never read two pads in a tick");
+        assert!(stock.adjusted.is_none());
+        // Latched, never; and what the game read is the tick's recorded pad
+        // (the buffer keeps the wire's bytes, inverted).
+        let latched = two_reads(Keep::Bytes, Adjustments::default_set(), 30);
+        assert_eq!(latched.refusal_count, 0, "{:?}", latched.refusals);
+        let r = reads(&latched);
+        assert!(r.len() > 100, "{} ticks", r.len());
+        assert!(r.iter().all(|(_, d)| !d), "a latched tick read two pads");
+        for (t, (x, _)) in latched.ticks.iter().zip(&r) {
+            let held = if t.pad.is_empty() { 0 } else { cross };
+            assert_eq!(*x, !held & 0xFFFF, "tick {}: pad {:?}", t.tick, t.pad);
+        }
+        assert!(latched.ticks.iter().any(|t| t.pad.is_empty()) && latched.ticks.iter().any(|t| !t.pad.is_empty()));
+        let a = latched.adjusted.as_ref().unwrap();
+        assert_eq!(a["lag_frames"], 0);
+        assert_eq!(a["buffer"][0], json!({"address": "0x80020000", "byte": "buttons_lo", "mask": "0x00"}));
+        assert_eq!(a["by"], "the pad buffer and the controller");
+    }
+
+    #[test]
+    fn a_game_that_never_reads_its_pad_is_all_lag_frames() {
+        let r = demo_recorded(Adjustments::default_set());
+        let a = r.adjusted.as_ref().unwrap();
+        assert_eq!(a["buffer"], json!([]));
+        assert!(a["by"].as_str().unwrap().contains("no pad buffer found"));
+        assert_eq!(a["lag_frames"], a["ticks"]);
+        assert_eq!(a["ticks"].as_u64(), Some(r.ticks.len() as u64));
+        assert!(a.get("ticks_ended_in_handler").is_none());
+    }
+
+    #[test]
+    fn latched_through_an_inverted_buffer() {
+        use psx_core::padflow::test_program::Keep;
+        let cross = psx_core::sio0::button::CROSS as i128;
+        let latched = two_reads(Keep::Inverted, Adjustments::default_set(), 20);
+        let r = reads(&latched);
+        assert!(r.iter().all(|(_, d)| !d), "a latched tick read two pads");
+        // This game keeps the buttons held, as bits set.
+        for (t, (x, _)) in latched.ticks.iter().zip(&r) {
+            assert_eq!(*x, if t.pad.is_empty() { 0 } else { cross }, "tick {}", t.tick);
+        }
+        assert_eq!(latched.adjusted.as_ref().unwrap()["buffer"][1]["mask"], "0xFF");
+    }
+
     /// Demo, whose game keeps its pad at 0x80020030 (psx's button bits):
     /// once x, which counts the ticks, reaches `from`.
     struct Padded {
@@ -1853,10 +1991,13 @@ pub struct Quantities {
     fn an_adjustment_is_measured_against_the_stock_game() {
         use crate::adjust::TestAdjust;
         let stock = demo_recorded(Adjustments::stock());
-        let nothing = demo_recorded(Adjustments { test: Some(TestAdjust::Nothing) });
+        let nothing = demo_recorded(Adjustments { test: Some(TestAdjust::Nothing), ..Adjustments::stock() });
         assert_eq!(adjusted_differences(&stock, &nothing), Vec::<Json>::new());
         // One more on x when tick 3 ends: tick 4 is the first to differ.
-        let nudged = demo_recorded(Adjustments { test: Some(TestAdjust::Nudge { tick: 3, addr: 0x8002_0000 }) });
+        let nudged = demo_recorded(Adjustments {
+            test: Some(TestAdjust::Nudge { tick: 3, addr: 0x8002_0000 }),
+            ..Adjustments::stock()
+        });
         let d = adjusted_differences(&stock, &nudged);
         assert_eq!(d.len(), 1, "{d:?}");
         assert_eq!((d[0]["quantity"].as_str(), d[0]["tick"].as_u64()), (Some("x"), Some(4)));

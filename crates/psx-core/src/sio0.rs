@@ -67,6 +67,8 @@ pub struct DataRead {
     pub exchange: u64,
     pub pos: u8,
     pub sent: [u8; 2],
+    /// The byte read.
+    pub value: u8,
 }
 
 impl DataRead {
@@ -347,8 +349,12 @@ impl Sio0 {
                 let b = self.rx_buf as u32;
                 let v = b * 0x0101_0101;
                 let x = &self.exchange;
-                self.last_read =
-                    (x.selected && x.len > 0).then(|| DataRead { exchange: x.number, pos: x.len - 1, sent: x.sent });
+                self.last_read = (x.selected && x.len > 0).then(|| DataRead {
+                    exchange: x.number,
+                    pos: x.len - 1,
+                    sent: x.sent,
+                    value: self.rx_buf,
+                });
                 self.rx_avail = false;
                 self.rx_pending = true;
                 self.rx_busy = false;
