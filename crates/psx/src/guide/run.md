@@ -31,6 +31,31 @@ and release 4 before the next; a game that ignores that is not taking input
 yet (a fade, a load): wait on a state, not more fields. A menu's cursor is a
 variable like any other (topic code): until on it waits on the item.
 
+## Adjusted recordings
+
+scenario_record and scenario_play adjust the original to the port's model
+unless stock is given, and the recording names what they did:
+
+- latch: the game's pad changes only where a tick ends, to that tick's
+  input. Input waits for the tick's end; psx writes it into the game's pad
+  buffer at once and puts the buffer back when the interrupt handler polls
+  into it mid-tick. Every read in a tick sees that tick's input, as the
+  port's tick does. adjusted keeps the buffer it found and the lag frames:
+  ticks in which no game code read the pad.
+- steady: no tick overruns its fields. The CPU's own work costs a quarter
+  of its clocks and the GPU draws without taking time; timers, the CD, the
+  SPU and video keep the real clock. fields_per_tick shows how many ticks
+  took each number of fields.
+
+Either can change what a game does. scenario_adjust_check records a
+scenario again from its state, stock and adjusted, and gives each
+quantity's first tick where they differ: a press taking effect a tick
+sooner is latch's cost; a value the stock game never reaches is a rule
+that depends on timing, so record that scenario stock and say why in the
+feature's notes. run with pad_reads shows where a game keeps its pad (the
+buffer its handler fills, the copies it makes), the code that reads it,
+and the fields in which nothing read it.
+
 ## Memory formats
 
 sample, until and poke read memory as ADDR:FMT. FMT is u8 i8 x8 u16 i16 x16

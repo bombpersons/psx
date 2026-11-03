@@ -161,17 +161,47 @@ while it is not are refused. A recording's `pad` keeps only what the game
 reads, so `ANALOG` is not in it; its effect is, in the pad's mode and the
 sticks.
 
-Each tick's `pad` is the controller's buttons unless the glossary's
-binding says where the game keeps its own input word (`Glossary::input`):
-then it is that word, the buttons as the game's rules read them on that
-tick. The controller's view leads or trails the game's by a field that
-depends on the game's phase, so a port replaying the controller's pads
-cannot fit every phase with one delay, and one replaying the game's
-needs none. The word must be the buttons held, not those pressed that
-tick only. A recording's details say which it keeps (`"pad": "game"` or
-`"controller"`), and a binding that fails to answer, or answers for some
-ticks and not others, is refused. The sticks are always the
-controller's.
+A recording is made of the original adjusted to the port's model
+(docs/master-plan.md), unless `--stock`; it names the adjustments in
+`producer.details.adjust` and keeps what they did in
+`producer.details.adjusted`:
+
+- **latch**: the game's pad changes only where a tick ends, to that tick's
+  input. Input waits for the tick to end before it reaches the
+  controller, and psx writes it into the game's pad buffer at once (the
+  buffer it finds by following the controller's reply from the serial
+  port into RAM, through each byte's mask: a copy, or an inverted one),
+  and puts the buffer back when the interrupt handler polls into it
+  during the tick. Every read the game makes in a tick then sees that
+  tick's input, however its loop and the polls fall, so a tick's `pad`
+  is exactly what the port's tick gets. `adjusted` keeps the buffer, the
+  ticks and the lag frames: ticks in which no game code read the pad.
+- **steady**: no tick overruns its fields. The CPU's own work costs a
+  quarter of its clocks and the GPU draws without taking time, so where
+  the console slowed down every tick still takes its usual fields;
+  timers, the CD, the SPU and video timing keep the real clock.
+
+Every recording keeps `fields_per_tick`, how many ticks took each number
+of fields (stock, a game that slowed down shows more than one). Both
+adjustments can change what a game does: `psx scenario adjust-check`
+records a scenario's recordings again from its state, stock and adjusted,
+driven by the same ticks, and reports each quantity's first tick where
+they differ. A press taking effect a tick sooner under latch is its
+expected cost; a value the stock game never reaches is a rule that
+depends on timing, and that scenario is recorded `--stock`.
+
+Without latch (`--stock`), each tick's `pad` is the controller's buttons
+when the tick ended, unless the glossary's binding says where the game
+keeps its own input word (`Glossary::input`): then it is that word.
+The controller's view leads or trails the game's by a field that depends
+on the game's phase. A binding that fails to answer, or answers for some
+ticks and not others, is refused, and the recording's details say which
+it keeps (`"pad": "game"` or `"controller"`). latch replaces this, and
+`INPUT` will go once latch is measured on the games in use.
+
+`psx run --pad-reads` shows where a game keeps its pad: the buffer an
+interrupt handler fills, the copies the game makes, the polls, the code
+that reads it and the fields it read nothing in.
 
 It also traces the run and keeps what the original executed beside the
 recording, in `scenarios/<id>/<name>.coverage.json`, credited to the
