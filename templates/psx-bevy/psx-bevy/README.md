@@ -341,7 +341,11 @@ the same path. Synchronous loads use `assets::find` (the psx template's
 - Tests and tools inject the mouse through `InjectedInput::mouse`
   (`InjectedMouse`): its buttons add to the real ones and press the actions
   they are bound to, `position` replaces the cursor, and `motion` and `wheel`
-  are added on every tick. A replay event may carry
+  are added on every tick. The developer MCP's input adds to live play;
+  a replay's (`TickApp::run_input`, scenarios, `--replay`, all through
+  `testing::apply`) is the tick's only input, with
+  `InjectedInput::exclusive`: devices and their held taps are ignored and
+  unset sticks are centred. A replay event may carry
   `"mouse": {"buttons": ["left"], "position": [x, y], "motion": [dx, dy], "wheel": n}`
   (every field optional); read such replays with `Replay::ticks`, which gives
   `TickInput`s for `Trajectory::record` or `TickApp::run_input`

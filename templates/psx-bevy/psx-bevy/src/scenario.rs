@@ -53,7 +53,14 @@
 //! (their raw bytes, in [`crate::controller::ControllerState::sticks`]) and
 //! compares again. Each quantity is compared within the scenario's
 //! tolerance (`compare`, raw units); the first tick each one differs is
-//! reported.
+//! reported. The tick's input is the recording's alone: live devices are
+//! ignored ([`crate::testing::apply`]).
+//!
+//! Each recording then runs again in another fresh app, and where the two
+//! runs' quantities first part (the tick and quantity) is a failure too: the
+//! port must be deterministic, its random numbers seeded and its rules
+//! independent of query and hash-map iteration order. A port's difference
+//! from the recording after that tick may be chance.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -277,26 +284,40 @@ impl Scenarios {
         rec: &Recording,
         observed: &mut std::collections::BTreeSet<String>,
     ) -> RecordingReport {
-        let mut at = String::from("the launcher");
-        let run =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.replay(name, s, rec, observed, &mut at)));
-        run.unwrap_or_else(|p| {
-            let why = p
-                .downcast_ref::<&str>()
-                .map(|m| m.to_string())
-                .or_else(|| p.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "no message".into());
-            RecordingReport {
-                name: name.into(),
-                captured: rec.header.source.kind == SourceKind::Captured,
-                ticks: rec.rows.len(),
-                failures: vec![format!("{at} panicked: {why}")],
-                ..default()
+        let run = |observed: &mut std::collections::BTreeSet<String>| {
+            let mut at = String::from("the launcher");
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.replay(name, s, rec, observed, &mut at)))
+                .map_err(|p| (at, panic_message(&p)))
+        };
+        let (mut out, first) = match run(observed) {
+            Ok(r) => r,
+            Err((at, why)) => {
+                return RecordingReport {
+                    name: name.into(),
+                    captured: rec.header.source.kind == SourceKind::Captured,
+                    ticks: rec.rows.len(),
+                    failures: vec![format!("{at} panicked: {why}")],
+                    ..default()
+                };
             }
-        })
+        };
+        // Again in a fresh app: the port's own determinism. The differences
+        // from the recording stay the first run's; this adds where the two
+        // runs part (a difference after it may be chance).
+        let line = match run(&mut Default::default()) {
+            Err((at, why)) => Some(format!("{at}: the port is not deterministic: only the second run panicked: {why}")),
+            Ok((_, second)) => parting(&first, &second),
+        };
+        if let Some(line) = line {
+            out.failures.insert(0, line);
+            out.failures.sort_by_key(|l| tick_of(l));
+        }
+        out
     }
 
-    /// `at` says where the replay is, for a panic's failure.
+    /// `at` says where the replay is, for a panic's failure. Also gives
+    /// every quantity the port had at each moment it ran, for
+    /// [`parting`].
     fn replay(
         &self,
         name: &str,
@@ -304,7 +325,7 @@ impl Scenarios {
         rec: &Recording,
         observed: &mut std::collections::BTreeSet<String>,
         at: &mut String,
-    ) -> RecordingReport {
+    ) -> (RecordingReport, Trail) {
         let mut out = RecordingReport {
             name: name.into(),
             captured: rec.header.source.kind == SourceKind::Captured,
@@ -316,7 +337,7 @@ impl Scenarios {
         let registry = registry(&mut app);
         if let Err(e) = (registry.launchers[&s.kind])(&mut app, &s.parameters) {
             out.failures.push(format!("the launcher failed: {e}"));
-            return out;
+            return (out, Trail::new());
         }
         let compared: Vec<(&String, i128)> = rec
             .header
@@ -332,6 +353,7 @@ impl Scenarios {
             .collect();
         let mut differed: BTreeMap<String, String> = BTreeMap::new();
         let mut trail: Vec<psx_scenario::Values> = Vec::new();
+        let mut had = Trail::new();
         let mut check =
             |app: &mut App, at: &str, values: &psx_scenario::Values, differed: &mut BTreeMap<String, String>| {
                 let now = match registry.observe(app.world_mut()) {
@@ -342,6 +364,7 @@ impl Scenarios {
                 trail.push(
                     compared.iter().filter_map(|(q, _)| Some(((*q).clone(), now.get(q.as_str())?.clone()))).collect(),
                 );
+                had.push((at.to_string(), now.clone()));
                 for (q, tol) in &compared {
                     if differed.contains_key(q.as_str()) {
                         continue;
@@ -361,7 +384,7 @@ impl Scenarios {
         *at = "initial".into();
         if let Some(e) = check(&mut app, "initial", &rec.header.initial, &mut differed) {
             out.failures.push(e);
-            return out;
+            return (out, had);
         }
         for t in rec.expand() {
             if differed.len() == compared.len() {
@@ -372,12 +395,12 @@ impl Scenarios {
                 Ok(input) => app.run_input(&input),
                 Err(e) => {
                     out.failures.push(e);
-                    return out;
+                    return (out, had);
                 }
             }
             if let Some(e) = check(&mut app, &format!("tick {}", t.tick), &t.values, &mut differed) {
                 out.failures.push(e);
-                return out;
+                return (out, had);
             }
         }
         if !differed.is_empty() {
@@ -387,7 +410,7 @@ impl Scenarios {
         let mut lines: Vec<String> = differed.into_values().collect();
         lines.sort_by_key(|l| tick_of(l));
         out.failures = lines;
-        out
+        (out, had)
     }
 
     /// Runs every scenario, prints the results, writes them to
@@ -424,6 +447,26 @@ pub(crate) fn tick_input(t: &psx_scenario::scenario::Full) -> Result<crate::test
         .map(|b| crate::testing::trajectory::button(b).ok_or(format!("tick {}: no button {b:?}", t.tick)))
         .collect::<Result<Vec<_>, String>>()?;
     Ok(crate::testing::TickInput { buttons, analog: Some(t.analog), sticks: Some(t.sticks), ..default() })
+}
+
+/// Every quantity the port had at each moment of a replay: `initial`,
+/// `tick N`.
+type Trail = Vec<(String, BTreeMap<&'static str, Value>)>;
+
+/// Where two runs of one recording first part: the moment and the first
+/// quantity (by name) that differs.
+fn parting(first: &Trail, second: &Trail) -> Option<String> {
+    let (at, a, b) = first.iter().zip(second).find(|((_, a), (_, b))| a != b).map(|((at, a), (_, b))| (at, a, b))?;
+    let q = a.keys().chain(b.keys()).filter(|q| a.get(*q) != b.get(*q)).min()?;
+    let had = |m: &BTreeMap<&str, Value>| m.get(q).map_or("none".into(), show);
+    Some(format!("{at} {q}: the port is not deterministic: first run {}, second run {}", had(a), had(b)))
+}
+
+fn panic_message(p: &Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<&str>()
+        .map(|m| m.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".into())
 }
 
 pub(crate) fn registry(app: &mut App) -> ScenarioRegistry {
@@ -573,6 +616,67 @@ mod tests {
         for d in [root, root2, root3, root4] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    /// A key held on the keyboard all along: the replay has only the
+    /// recording's pad.
+    #[test]
+    fn a_held_key_does_not_reach_the_replay() {
+        let header = RECORDING.lines().next().unwrap();
+        let root = workspace(SCENARIO, &format!("{header}\n{}\n", r#"{"tick":1,"field":1,"values":{"x":4096}}"#));
+        let held = || {
+            let mut a = app();
+            a.init_resource::<ButtonInput<KeyCode>>();
+            a.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::ArrowRight);
+            a
+        };
+        let s = &Scenarios::new(&root, held).report().scenarios[0];
+        assert!(s.passed(), "{s:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[derive(Component)]
+    struct Tracked;
+
+    /// Nudges whichever walker the query gives first: the order the
+    /// launcher spawned them in, which `LAUNCHES` turns each app.
+    fn nudge_first(mut q: Query<&mut Walker>) {
+        if let Some(mut w) = q.iter_mut().next() {
+            w.0 += 1;
+        }
+    }
+
+    #[test]
+    fn a_rule_picking_by_query_order_is_not_deterministic() {
+        static LAUNCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = workspace(&SCENARIO.replace("\"level\"", "\"crowd\""), RECORDING);
+        let crowd = || {
+            let mut a = headless_app(TickRate::every_field(Region::Ntsc));
+            a.add_systems(FixedUpdate, (walk, nudge_first).chain().in_set(GameSystems::Game));
+            a.register_scenario("crowd", |app, _| {
+                let n = LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let tracked = (Walker(4096), Tracked);
+                if n.is_multiple_of(2) {
+                    app.world_mut().spawn(tracked);
+                    app.world_mut().spawn(Walker(4096));
+                } else {
+                    app.world_mut().spawn(Walker(4096));
+                    app.world_mut().spawn(tracked);
+                }
+                Ok(())
+            })
+            .observe(|w: &mut World| Observed {
+                x: w.query_filtered::<&Walker, With<Tracked>>().iter(w).next().map(|c| c.0),
+            });
+            a
+        };
+        let r = Scenarios::new(&root, crowd).report();
+        let failures = &r.scenarios[0].recordings[0].failures;
+        // The walker the observer follows is nudged in one run, not the other.
+        let parted = ["first run 4197, second run 4196", "first run 4196, second run 4197"]
+            .map(|runs| format!("tick 1 x: the port is not deterministic: {runs}"));
+        assert!(parted.contains(&failures[0]), "{failures:?}");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[derive(Component)]

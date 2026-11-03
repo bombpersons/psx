@@ -59,6 +59,13 @@ there is yours to decide. What the tools rely on:
   web` (`--replay`, `psx_bevy::frames`): the launcher builds the world,
   so the game's own opening skips itself while
   `psx_bevy::frames::Replaying` is in the world.
+- **Deterministic.** A replayed tick's pad is its only input (live devices
+  are ignored), and each recording runs twice in fresh apps: where the two
+  runs part, the runner names the tick and quantity. So seed random numbers
+  (as the original seeds its own), never from the clock or the OS; never
+  let a rule depend on query iteration order (pick an entity by what it
+  is: a component, an id, a slot) or on `HashMap`/`HashSet` iteration
+  order (`BTreeMap`, or sort first).
 - **Only importers read the original's formats** (`tools/import`); the
   game reads the port's own (RON, glTF, PNG, WAV/OGG).
 

@@ -7,8 +7,8 @@
 //!
 //! The launcher builds the whole game, headless, with [`Replaying`] in the
 //! world, runs the scenario's launcher (as the scenario tests do) and then
-//! each of the recording's ticks with its pad, mode and sticks. The game's
-//! own opening (a title screen, its first level) must not run while
+//! each of the recording's ticks with its pad, mode and sticks alone,
+//! through [`crate::testing::apply`] as the tests do. The game's own opening (a title screen, its first level) must not run while
 //! [`Replaying`] is present (`run_if(not(resource_exists::<Replaying>))`), or
 //! it shares the screen with the scenario's world.
 //!
@@ -30,7 +30,7 @@ use psx_scenario::scenario::{Recording, Scenario};
 use serde_json::{Value, json};
 
 use crate::psx::PsxScreen;
-use crate::shell::{GameClock, InjectedInput, TickRate};
+use crate::shell::{GameClock, TickRate};
 
 /// In the world while the app draws a recording: the game skips its own
 /// opening, as the scenario's launcher builds the world.
@@ -70,7 +70,9 @@ fn draw(app: &mut App, recording: &Path, out: &Path, summary: &mut Value) -> Res
     app.finish();
     app.cleanup();
     let registry = crate::scenario::registry(app);
-    let launch = registry.launcher(&scenario.kind).ok_or(format!("no launcher registered for scenario kind {}", scenario.kind))?;
+    let launch = registry
+        .launcher(&scenario.kind)
+        .ok_or(format!("no launcher registered for scenario kind {}", scenario.kind))?;
     // Nothing ticks until the renderer is ready.
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
     launch(app, &scenario.parameters).map_err(|e| format!("the launcher failed: {e}"))?;
@@ -96,12 +98,7 @@ fn draw(app: &mut App, recording: &Path, out: &Path, summary: &mut Value) -> Res
                 break;
             }
         };
-        {
-            let mut injected = app.world_mut().resource_mut::<InjectedInput>();
-            injected.set(&input.buttons);
-            injected.sticks = input.sticks;
-            injected.analog = input.analog;
-        }
+        crate::testing::apply(app.world_mut(), &input);
         // Spawned before the update, so its render draws this tick.
         shoot(app, t.tick, out, &captured);
         shots += 1;

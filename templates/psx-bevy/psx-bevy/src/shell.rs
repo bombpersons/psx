@@ -91,7 +91,8 @@ impl InputFocus {
 }
 
 /// Buttons held on by tools rather than devices: the developer MCP and the
-/// [`crate::testing`] helpers write here. OR-ed with physical input.
+/// [`crate::testing`] helpers write here. OR-ed with physical input, unless
+/// `exclusive`.
 #[derive(Resource, Default, Debug, Clone, Copy)]
 pub struct InjectedInput {
     pub buttons: u16,
@@ -102,6 +103,10 @@ pub struct InjectedInput {
     /// play's analog, when set.
     pub analog: Option<bool>,
     pub mouse: InjectedMouse,
+    /// The tick's whole input: the devices and their held taps are ignored,
+    /// and unset sticks are centred. Replays set it
+    /// ([`crate::testing::apply`]); the developer MCP adds to live play.
+    pub exclusive: bool,
 }
 
 impl InjectedInput {
@@ -177,7 +182,7 @@ impl InjectedMouse {
 /// Physical input, sampled every rendered frame. `tapped` remembers every
 /// button seen held since the last tick, so a tap shorter than one tick (easy
 /// at 25 Hz) still reaches the game as one tick of press.
-#[derive(Resource, Debug)]
+#[derive(Resource, Debug, Clone, Copy)]
 struct DeviceInput {
     held: u16,
     tapped: u16,
@@ -307,15 +312,15 @@ fn begin_tick(
     }
     if clock.ticking {
         let mouse = injected.mouse;
-        let buttons =
-            device.held | device.tapped | injected.buttons | controller::mouse_actions(mouse.buttons, &bindings);
-        state.update(buttons, injected.sticks.unwrap_or(device.sticks));
+        let live = if injected.exclusive { DeviceInput::default() } else { *device };
+        let buttons = live.held | live.tapped | injected.buttons | controller::mouse_actions(mouse.buttons, &bindings);
+        state.update(buttons, injected.sticks.unwrap_or(live.sticks));
         state.analog = injected.analog.unwrap_or(true);
         state.mouse.update(
-            device.mouse_tapped | mouse.buttons,
-            mouse.position.or(device.mouse_position),
-            device.mouse_motion + mouse.motion,
-            device.wheel + mouse.wheel,
+            live.mouse_tapped | mouse.buttons,
+            mouse.position.or(live.mouse_position),
+            live.mouse_motion + mouse.motion,
+            live.wheel + mouse.wheel,
         );
     }
     device.tapped = 0;
