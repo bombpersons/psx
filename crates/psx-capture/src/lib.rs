@@ -353,6 +353,16 @@ pub trait Glossary {
     /// The quantities, read when a tick ends.
     fn quantities(&self, m: &Machine) -> <Self::Glue as Quantities>::Quantities;
 
+    /// The game's own pad, as the game's rules read it, in psx's
+    /// `replay::Button` bit order (a button's mask is its bit). A recording
+    /// whose binding answers this records it as each tick's pad; the
+    /// controller's own view, which recordings otherwise keep, leads or
+    /// trails the game's by a field that depends on the game's phase.
+    /// None by default: the recording's pads are the controller's.
+    fn input(&self, _m: &Machine) -> Option<u16> {
+        None
+    }
+
     /// The programs a script interpreter is running, each by a name that
     /// stays the same across runs, read where a recording starts and when
     /// each tick ends. The bytes the game reads of them count as coverage

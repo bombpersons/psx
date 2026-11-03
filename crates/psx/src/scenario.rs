@@ -416,7 +416,14 @@ fn record(
             if !pad.analog && pad.axes() != format::CENTRED {
                 out.unread_sticks.get_or_insert(n);
             }
-            let buttons = crate::replay::button_names(m.bus.sio0.buttons.into());
+            // The pad as the game's rules read it, when the binding says
+            // where that is; otherwise the controller's, which leads or
+            // trails the game's by a field that depends on the game's phase.
+            let bits = match q.binding.input(m) {
+                Ok(Some(bits)) => bits as u32,
+                _ => m.bus.sio0.buttons.into(),
+            };
+            let buttons = crate::replay::button_names(bits);
             out.ticks.push(Full { tick: n, field, pad: buttons, analog: pad.analog, sticks, values });
             if let Some(f) = on_tick.as_deref_mut() {
                 f(out.ticks.last().unwrap(), m);

@@ -284,6 +284,15 @@ impl<D: serde::de::DeserializeOwned> Plugin<D> {
         invoke(self.call, what, Some(m), args)
     }
 
+    /// The game's own pad ([`abi::INPUT`]), in psx's button bits: None when
+    /// the binding keeps none (an older binding), so the recording keeps
+    /// the controller's pad.
+    pub fn input(&self, m: &Machine) -> Result<Option<u16>, String> {
+        let text = self.call(abi::INPUT, m)?;
+        let answer: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("the binding's input: {e}"))?;
+        Ok(answer.get("buttons").and_then(|b| b.as_u64()).map(|b| b as u16))
+    }
+
     /// What the binding says of itself.
     pub fn described(&self) -> &D {
         &self.described
