@@ -277,6 +277,32 @@ pub(crate) fn disc_summary(image: &Path, hash: bool) -> R {
     Ok(out)
 }
 
+/// Where a disc file goes under `out`. Names come from the disc's directory
+/// records, so a component that could leave `out` (`..`, `.`, empty, or one
+/// holding a separator or drive prefix) is refused rather than joined.
+fn disc_dest(out: &Path, disc_path: &str) -> crate::Result<std::path::PathBuf> {
+    let mut dest = out.to_path_buf();
+    let mut any = false;
+    for c in disc_path.split('/').filter(|c| !c.is_empty()) {
+        if c == "." || c == ".." || c.contains(['\\', ':', '\0']) {
+            return Err(Error::invalid(format!("{disc_path}: the disc names a path that would leave the output folder")));
+        }
+        dest.push(c);
+        any = true;
+    }
+    if !any {
+        return Err(Error::invalid(format!("{disc_path}: an empty file name")));
+    }
+    Ok(dest)
+}
+
+/// `p` with `suffix` added to its file name.
+fn suffixed(p: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut s = p.as_os_str().to_os_string();
+    s.push(suffix);
+    s.into()
+}
+
 pub(crate) fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -> R {
     let disc = Disc::open(image)?;
     let fs = FileSystem::read(&disc)?;
@@ -302,8 +328,14 @@ pub(crate) fn extract(image: &Path, path: Option<&str>, all: bool, out: &Path) -
                 continue;
             }
         };
-        let rel = e.path.trim_start_matches('/');
-        let dest = out.join(if raw { format!("{rel}.raw") } else { rel.to_string() });
+        let dest = match disc_dest(out, &e.path) {
+            Ok(d) => d,
+            Err(err) => {
+                failed.push(json!({"path": e.path, "error": err.to_string()}));
+                continue;
+            }
+        };
+        let dest = if raw { suffixed(&dest, ".raw") } else { dest };
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|err| Error::io(parent, err))?;
         }
@@ -368,8 +400,7 @@ pub(crate) fn extract_window(image: &Path, path: &str, offset: u32, length: u32,
         json!({"file": disc.files[file].name, "sector_offset": format!("0x{sector:X}"),
                "offset": format!("0x{:X}", sector + header + start as u64)})
     });
-    let rel = e.path.trim_start_matches('/');
-    let dest = out.join(format!("{rel}@0x{offset:X}+0x{length:X}"));
+    let dest = suffixed(&disc_dest(out, &e.path)?, &format!("@0x{offset:X}+0x{length:X}"));
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|err| Error::io(parent, err))?;
     }
@@ -410,4 +441,19 @@ pub(crate) fn sectors(image: &Path, lba: u32, count: u32, preview: usize) -> R {
         out.push(v);
     }
     Ok(json!({"sectors": out}))
+}
+
+#[cfg(test)]
+mod disc_dest_tests {
+    use super::*;
+
+    #[test]
+    fn disc_names_stay_under_the_output_folder() {
+        let out = Path::new("/tmp/out");
+        assert_eq!(disc_dest(out, "/DATA/A.BIN").unwrap(), Path::new("/tmp/out/DATA/A.BIN"));
+        for bad in ["/../x", "/DATA/../../x", "/./x", "/", "/a\\..\\b", "/C:x"] {
+            assert!(disc_dest(out, bad).is_err(), "{bad}");
+        }
+        assert_eq!(suffixed(Path::new("/o/A.XA"), ".raw"), Path::new("/o/A.XA.raw"));
+    }
 }
