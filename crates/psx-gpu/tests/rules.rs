@@ -71,6 +71,17 @@ fn rect_x_flip_walks_texels_backwards() {
 }
 
 #[test]
+fn rect_x_flip_starts_at_an_odd_texel() {
+    // From u=0 a flipped sprite samples texels 1, 0, 255, ... (Mednafen's u | 1).
+    let mut g = gpu();
+    g.gp0_all(&[0xA000_0000, xy(640, 0), xy(2, 1), 1 | (2 << 16)]);
+    g.gp0_all(&[0xE100_0000 | 10 | (2 << 7) | 0x1000]);
+    g.gp0_all(&[0x6500_0000, xy(0, 10), 0, xy(2, 1)]);
+    let row: Vec<u16> = (0..2).map(|x| g.vram.lock().get(x, 10)).collect();
+    assert_eq!(row, [2, 1]);
+}
+
+#[test]
 fn rect_texture_window_repeats_texels() {
     let mut g = gpu();
     let texels: Vec<u32> = (0..16).map(|i| (2 * i + 1) | ((2 * i + 2) << 16)).collect();

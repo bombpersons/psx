@@ -611,6 +611,12 @@ pub fn line<S: Surface + ?Sized>(surface: &mut S, r: &Raster, sh: &Shade, a: Vtx
     }
 }
 
+/// A sprite's first texel: an X-flipped sprite starts at `u | 1`, as
+/// Mednafen's `DrawSprite` (and [`crate::Gpu`]'s sprite timing) does.
+fn flipped_origin(origin: Vtx, flip: (bool, bool)) -> Vtx {
+    if flip.0 { Vtx { u: origin.u | 1, ..origin } } else { origin }
+}
+
 /// Axis-aligned sprite: never dithered, UVs step one texel per pixel
 /// (backwards when flipped).
 #[allow(clippy::too_many_arguments)]
@@ -624,6 +630,7 @@ pub fn rect<S: Surface + ?Sized, T: TexelSource<S> + ?Sized>(
     h: i32,
     flip: (bool, bool),
 ) {
+    let origin = flipped_origin(origin, flip);
     let x0 = origin.x.max(r.clip.0);
     let x1 = (origin.x + w - 1).min(r.clip.2);
     let y0 = origin.y.max(r.clip.1);
@@ -721,6 +728,7 @@ pub(crate) mod reference {
         flip: (bool, bool),
     ) {
         let sh = Shade { dither: false, gouraud: false, ..*sh };
+        let origin = flipped_origin(origin, flip);
         let x0 = origin.x.max(r.clip.0);
         let x1 = (origin.x + w - 1).min(r.clip.2);
         let y0 = origin.y.max(r.clip.1);
