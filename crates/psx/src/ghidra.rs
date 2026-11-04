@@ -926,6 +926,19 @@ fn analysis_symbols(input: &Input, bytes: &[u8], mapping: &Mapping, warnings: &m
     Ok(symbols)
 }
 
+/// The psx language's sleigh/pspec sources: an analysis made with an older
+/// spec disassembled differently, so a change to them is a new analysis.
+fn language_files_sha256() -> String {
+    let mut all = Vec::new();
+    for (name, text) in LANGUAGE_FILES {
+        all.extend_from_slice(name.as_bytes());
+        all.push(0);
+        all.extend_from_slice(text.as_bytes());
+        all.push(0);
+    }
+    sha256_bytes(&all)
+}
+
 fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: Instant, ctx: &Ctx) -> Result<Analysis> {
     if let Some(path) = &input.analysis {
         let path = path.canonicalize().map_err(|e| Error::io(path, e))?;
@@ -941,7 +954,7 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
     let install = installation(input.ghidra_home.as_deref())?;
     let symbols = analysis_symbols(input, &bytes, &mapping, &mut warnings)?;
     let source_hash = sha256_bytes(&bytes);
-    let identity = json!({"format":FORMAT,"source":source_hash,"ghidra":install.build_sha256,"language":LANGUAGE,"compiler":"default","script":sha256_bytes(SCRIPT.as_bytes()),"symbols":symbols,"mapping":mapping,"capture":{"frames":provenance["frames"],"identity":provenance["identity"],"registers":provenance["registers"]}});
+    let identity = json!({"format":FORMAT,"source":source_hash,"ghidra":install.build_sha256,"language":LANGUAGE,"language_files":language_files_sha256(),"compiler":"default","script":sha256_bytes(SCRIPT.as_bytes()),"symbols":symbols,"mapping":mapping,"capture":{"frames":provenance["frames"],"identity":provenance["identity"],"registers":provenance["registers"]}});
     let key = sha256_bytes(&serde_json::to_vec(&identity).unwrap());
     let dir = ctx.root.join(".psx/ghidra").join(&key);
     fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
