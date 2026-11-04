@@ -154,6 +154,9 @@ pub struct Feature {
     pub code_reviewed: bool,
     /// The disc's assets its entry names, as the inventory has them.
     pub assets: assets::Needs,
+    /// Its code a scenario turns off (`[off]`), as `scenario: function`:
+    /// it is not done while the original's recordings run without it.
+    pub off: Vec<String>,
 }
 
 /// Every recording passed.
@@ -205,7 +208,7 @@ impl Feature {
             self.unrecorded.is_empty(),
             self.matching(),
             self.branches_resolved() && self.questions.is_empty() && self.code_reviewed && self.assets.settled(),
-            all_pass(&self.held_out),
+            all_pass(&self.held_out) && self.off.is_empty(),
         ];
         Some(Stage::ALL[checks.iter().take_while(|c| **c).count()])
     }
@@ -310,6 +313,26 @@ impl Feature {
         }
         parts.join(" · ")
     }
+}
+
+/// Each scenario's functions turned off (`[off]` in `scenarios/<id>.toml`),
+/// as (scenario, name, address); a name that does not resolve is left out
+/// (recording that scenario reports it).
+fn turned_off(root: &Path) -> Vec<(String, String, u32)> {
+    let mut out = Vec::new();
+    for id in crate::scenario::ids(root) {
+        let p = root.join(crate::scenario::SCENARIOS).join(format!("{id}.toml"));
+        let Some(s) = std::fs::read_to_string(&p).ok().and_then(|t| psx_scenario::scenario::Scenario::parse(&t).ok())
+        else {
+            continue;
+        };
+        for name in s.off.keys() {
+            if let Ok(a) = crate::names_bind::address(name) {
+                out.push((id.clone(), name.clone(), a));
+            }
+        }
+    }
+    out
 }
 
 /// Each feature's work recordings that pass at HEAD, by id (`of` gives
@@ -443,6 +466,7 @@ impl Facts {
         });
         let path =
             |r: &String| r.split_once('/').map(|(s, n)| root.join("scenarios").join(s).join(format!("{n}.jsonl")));
+        let turned_off = turned_off(root);
         let features: Vec<Feature> = closure
             .into_iter()
             .map(|id| {
@@ -462,6 +486,7 @@ impl Facts {
                         questions: Vec::new(),
                         code_reviewed: false,
                         assets: Default::default(),
+                        off: Vec::new(),
                         id,
                     };
                 };
@@ -547,6 +572,11 @@ impl Facts {
                     questions: e.questions.clone(),
                     code_reviewed: review.holds(),
                     assets: needs(&e.assets, false, &e.file, &mut problems),
+                    off: turned_off
+                        .iter()
+                        .filter(|(_, _, a)| code.iter().any(|c| c & 0x1FFF_FFFF == a & 0x1FFF_FFFF))
+                        .map(|(s, n, _)| format!("{s}: {n}"))
+                        .collect(),
                     id,
                 }
             })
@@ -835,6 +865,21 @@ impl Facts {
                 format!("{r} fails: {first}"),
                 "each of its recordings it is checked against passes at HEAD",
                 "find the rule the port gets wrong at that tick, reading the original's code there (psx scenario show gives the recording per tick); fix the port's code, commit, and run psx port check",
+            );
+        }
+        // 3b. A system turned off that the port now has: the original's
+        // recordings run with it again.
+        if let Some(f) = find(&|f| f.matching() && !f.off.is_empty()) {
+            return Item::agent(
+                "Restore",
+                Some(&f.id),
+                format!(
+                    "{} matches its recordings, and a scenario still turns off its code: {}",
+                    f.id,
+                    f.off.join(", ")
+                ),
+                "no scenario turns off the feature's code",
+                "take the function out of the scenario's [off] (scenarios/<id>.toml), record that scenario's recordings again (psx scenario record ... --replace) and check the port against them: they now run with the system the feature ports",
             );
         }
         // 4. An open question.
@@ -1161,6 +1206,9 @@ impl Facts {
             }
             if !f.unbuilt.is_empty() {
                 row["unbuilt"] = json!(f.unbuilt);
+            }
+            if !f.off.is_empty() {
+                row["off"] = json!(f.off);
             }
             if !f.assets.is_empty() {
                 row["assets"] = f.assets.json();
@@ -1591,6 +1639,52 @@ mod tests {
 
     fn results(rs: &[(&str, &[&str])]) -> Vec<(String, Option<Vec<String>>)> {
         rs.iter().map(|(n, f)| (n.to_string(), Some(f.iter().map(|l| l.to_string()).collect()))).collect()
+    }
+
+    #[test]
+    fn a_system_turned_off_comes_back_once_its_feature_matches() {
+        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        for id in ["F-0001", "F-0002"] {
+            set(&mut f, id, |x| {
+                x.located = true;
+                x.unrecorded.clear();
+                x.verdict = current();
+                x.work = results(&[("walk/a", &[])]);
+                x.held_out = results(&[("walk/h", &[])]);
+                x.code_reviewed = true;
+            });
+        }
+        f.review_features = vec!["F-0001".into(), "F-0002".into()];
+        f.review_finished = vec!["F-0001".into(), "F-0002".into()];
+        assert_eq!(f.stage("F-0002"), Some(Stage::Done));
+        set(&mut f, "F-0002", |x| x.off = vec!["walk: enemy_update".into()]);
+        // Not done while the original's recordings run without its code.
+        assert_eq!(f.stage("F-0002"), Some(Stage::Reviewed));
+        let item = f.next();
+        assert_eq!((item.item, item.feature.as_deref()), ("Restore", Some("F-0002")));
+        assert!(item.why.contains("walk: enemy_update"), "{}", item.why);
+        // Before it matches, the feature's own work comes first.
+        set(&mut f, "F-0002", |x| x.work = results(&[("walk/a", &["tick 2 x: expected 1, got 2"])]));
+        assert_eq!(f.next().item, "Fix");
+    }
+
+    #[test]
+    fn the_feature_whose_code_a_scenario_turns_off_owns_it() {
+        let entry =
+            feature("F-0001", "").replace("area = \"driving\"\n", "area = \"driving\"\ncode = [\"0x80031F64\"]\n");
+        let (dir, _) = workspace(CONFIRMED, &[("F-0001.md", &entry), ("F-0002.md", &feature("F-0002", ""))]);
+        std::fs::create_dir_all(dir.0.join("scenarios")).unwrap();
+        std::fs::write(
+            dir.0.join("scenarios/walk.toml"),
+            "moment = \"m\"\nchain = \"c\"\nkind = \"level\"\n[compare]\nx = 0\n[off]\n\"0x80031F64\" = 0\n\"0x80040000\" = 1\n",
+        )
+        .unwrap();
+        let f = Facts::gather(&dir.0).unwrap();
+        let off = |id: &str| f.features.iter().find(|x| x.id == id).unwrap().off.clone();
+        assert_eq!(off("F-0001"), ["walk: 0x80031F64"]);
+        assert!(off("F-0002").is_empty());
+        let status = f.status().to_string();
+        assert!(status.contains(r#""off":["walk: 0x80031F64"]"#), "{status}");
     }
 
     #[test]

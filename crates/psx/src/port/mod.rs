@@ -316,7 +316,7 @@ pub enum Stage {
     /// Every branch of its code covered or confirmed won't-reach, no question
     /// open, and the code's review holds.
     Reviewed,
-    /// Its held-out recordings pass.
+    /// Its held-out recordings pass, and no scenario turns off its code.
     Done,
 }
 
