@@ -118,25 +118,31 @@ pub struct Compared {
 /// [`crate::bus::HIDDEN`]), each from `m`'s state, for at most `max_steps`
 /// steps; the first `returns` of `v0` and `v1` are compared (0 for a
 /// function returning nothing, 2 for a 64-bit value). `m` is left as it
-/// was.
+/// was; its disc (a save state holds none) is lent to each run in turn, so
+/// a call that reads the CD sees the drive the game sees.
 pub fn compare(
-    m: &Machine,
+    m: &mut Machine,
     build: &[u8],
     replacement: u32,
     returns: usize,
     max_steps: u64,
 ) -> Result<Compared, String> {
     let state = m.save_state(None);
-    let fresh = || -> Result<Machine, String> {
+    let mut disc = m.bus.cdrom.disc.take();
+    let mut run = |pc: Option<u32>| -> Result<Effects, String> {
         let (_, mut c) = Machine::load_state(&state, m.bus.bios.clone()).map_err(|e| format!("{e:?}"))?;
         c.bus.hidden = Some(build.to_vec());
-        Ok(c)
+        c.bus.cdrom.disc = disc.take();
+        if let Some(pc) = pc {
+            c.cpu.set_pc(pc);
+        }
+        let e = run_call(&mut c, max_steps);
+        disc = c.bus.cdrom.disc.take();
+        Ok(e)
     };
-    let mut a = fresh()?;
-    let original = run_call(&mut a, max_steps);
-    let mut b = fresh()?;
-    b.cpu.set_pc(replacement);
-    let replacement = run_call(&mut b, max_steps);
+    let both = run(None).and_then(|a| Ok((a, run(Some(replacement))?)));
+    m.bus.cdrom.disc = disc;
+    let (original, replacement) = both?;
     let differences = differences(&original, &replacement, returns, max_steps);
     Ok(Compared { original, replacement, differences })
 }
@@ -301,7 +307,20 @@ mod tests {
     }
 
     fn check(code: &[u32]) -> Compared {
-        compare(&at_call(), &build(code), crate::bus::HIDDEN, 1, 10_000).unwrap()
+        compare(&mut at_call(), &build(code), crate::bus::HIDDEN, 1, 10_000).unwrap()
+    }
+
+    #[test]
+    fn the_disc_is_lent_to_both_runs_and_given_back() {
+        let dir = std::env::temp_dir().join(format!("psx-callcheck-disc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let iso = dir.join("blank.iso");
+        std::fs::write(&iso, vec![0u8; 2048 * 32]).unwrap();
+        let mut m = at_call();
+        m.bus.cdrom.disc = Some(psx_media::Disc::open(&iso).unwrap());
+        compare(&mut m, &build(&[0]), crate::bus::HIDDEN, 1, 10).unwrap();
+        assert!(m.bus.cdrom.disc.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

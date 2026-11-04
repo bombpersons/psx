@@ -468,7 +468,7 @@ pub fn check(
             m.step();
             continue;
         }
-        let c = psx_core::callcheck::compare(&m, &build.image, replacement, returns, steps)?;
+        let c = psx_core::callcheck::compare(&mut m, &build.image, replacement, returns, steps)?;
         let mut theirs = c.replacement.clone();
         for call in &mut theirs.calls {
             if let Some(o) = aliases.get(&call.0) {
@@ -868,15 +868,16 @@ static int helper(int x)\n{\n    return x + 1;\n}\n\nvoid world_collide(Actor *a
         let b = b.unwrap();
         let entry = b.functions["twice"];
         let (_n_dir, n) = names(NAMES);
-        let m = psx_core::callcheck::tests_support::at_call();
-        let c = psx_core::callcheck::compare(&m, &b.image, entry, returns(&n, "twice"), 10_000).unwrap();
+        let mut m = psx_core::callcheck::tests_support::at_call();
+        let c = psx_core::callcheck::compare(&mut m, &b.image, entry, returns(&n, "twice"), 10_000).unwrap();
         assert!(c.replacement.returned, "{:?}", c.replacement);
         assert_eq!(c.differences, Vec::<String>::new());
         // And a wrong one is caught.
         let wrong = c_with("counter = a + 2;");
         let Some((_d, b)) = built(&wrong) else { return };
         let b = b.unwrap();
-        let c = psx_core::callcheck::compare(&m, &b.image, b.functions["twice"], returns(&n, "twice"), 10_000).unwrap();
+        let c =
+            psx_core::callcheck::compare(&mut m, &b.image, b.functions["twice"], returns(&n, "twice"), 10_000).unwrap();
         assert_eq!(c.differences, ["byte 0x80020000: original 0x15, replacement 0x16"]);
     }
 
