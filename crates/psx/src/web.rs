@@ -258,7 +258,8 @@ fn handle(stream: TcpStream, st: &State) {
 }
 
 /// No other site may show the page in a frame and steer clicks onto it.
-const NO_FRAMING: &str = "X-Frame-Options: DENY\r\nContent-Security-Policy: frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\n";
+const NO_FRAMING: &str =
+    "X-Frame-Options: DENY\r\nContent-Security-Policy: frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\n";
 
 /// A scenario id (`a/b`, a path under scenarios/) and a recording name are
 /// joined onto project paths: neither may climb out or name a drive.
@@ -1292,7 +1293,16 @@ mod recording_name_tests {
     fn recording_names_cannot_climb_out_of_the_project() {
         assert!(recording_ok("start_1_1", "jump_tap"));
         assert!(recording_ok("world/start_1_1", "jump_tap"));
-        for (id, name) in [("..", "x"), ("a/../..", "x"), ("a", ".."), ("a", "b/c"), ("", "x"), ("a", ""), ("C:", "x"), ("a\\..", "x")] {
+        for (id, name) in [
+            ("..", "x"),
+            ("a/../..", "x"),
+            ("a", ".."),
+            ("a", "b/c"),
+            ("", "x"),
+            ("a", ""),
+            ("C:", "x"),
+            ("a\\..", "x"),
+        ] {
             assert!(!recording_ok(id, name), "{id} {name}");
         }
     }

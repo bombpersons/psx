@@ -285,7 +285,9 @@ fn disc_dest(out: &Path, disc_path: &str) -> crate::Result<std::path::PathBuf> {
     let mut any = false;
     for c in disc_path.split('/').filter(|c| !c.is_empty()) {
         if c == "." || c == ".." || c.contains(['\\', ':', '\0']) {
-            return Err(Error::invalid(format!("{disc_path}: the disc names a path that would leave the output folder")));
+            return Err(Error::invalid(format!(
+                "{disc_path}: the disc names a path that would leave the output folder"
+            )));
         }
         dest.push(c);
         any = true;
