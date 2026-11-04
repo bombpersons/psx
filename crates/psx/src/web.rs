@@ -326,6 +326,7 @@ fn route(req: &Request, st: &State) -> Reply {
         "overview" => Reply::Json(overview(root)),
         "calls" => Reply::Json(calls(root, q("since").parse().ok())),
         "recordings" => Reply::Json(recordings(root)),
+        "code" => Reply::Json(crate::decomp::overview(root)),
         "recording" => match crate::scenario::plot(root, q("scenario"), q("name"), &last_check(root)) {
             Ok(v) => Reply::Json(v),
             Err(e) => Reply::Json(e.to_value()),
@@ -538,6 +539,25 @@ fn act(req: &Request, st: &State) -> crate::Result<Value> {
             }
             _ => Err(crate::Error::invalid(format!("{}: no such action", req.path))),
         };
+    }
+    // Play now: the person starts a play of their own, queued and claimed
+    // at once so it is answered, recorded and reported as a request is.
+    if let Some(i) = req.path.strip_prefix("/api/p/").and_then(|r| r.strip_suffix("/play")) {
+        let p = i.parse::<usize>().ok().and_then(|i| st.projects.get(i));
+        let p = p.ok_or_else(|| crate::Error::invalid(format!("project {i}: not shown")))?;
+        let text = |k: &str| req.body[k].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+        let ctx = crate::commands::Ctx { root: p.root.clone(), cancel: None };
+        let dir = crate::handoff::person_play(
+            &ctx,
+            req.body["what"].as_str().unwrap_or(""),
+            text("scenario"),
+            text("name"),
+            text("from"),
+        )?;
+        let live = crate::handoff::browser::Live::start(&p.root, &dir)?;
+        st.plays.lock().unwrap().insert(dir.clone(), live);
+        let id = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        return Ok(json!({"status": "playing", "id": id}));
     }
     let (head, what) = req.path.rsplit_once('/').unwrap_or(("", ""));
     let (root, dir) = request_dir(head, st)?;

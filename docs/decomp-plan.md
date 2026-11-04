@@ -526,6 +526,16 @@ whether the next is worth building.
     *Done when* the view shows scratch Croc's checked functions and a
     recording plays with them replaced.
 
+    *Partly done (2026-11-04):* psx web has a Code tab: functions named,
+    the functions decomp/ defines with their address and last check
+    (cases passed, the first failing case's differences and saved state,
+    flagged when the C changed since), the functions scenarios turn off,
+    and the checks over time. `code check` keeps each function's last
+    result in `.psx/decomp/checks/<function>.json` and a line per check
+    in `checks.jsonl`. **Still to do:** the toggle beside recordings and
+    in play, a check's card in the live log, the share of a run in the C
+    (needs step 13), and the Fix item in `port next`.
+
 15. **Measure it.** One agent session on a scratch copy of Croc with all
     of the above: functions checked, cases failed before passing (each a
     mistake caught before the port), and whether the feature's recordings

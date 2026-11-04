@@ -716,10 +716,17 @@ impl Facts {
             return Item::agent(
                 "Read",
                 self.play_feature(r).map(|f| f.id.as_str()),
-                format!(
-                    "the person answered the play request \"{}\": {answer}",
-                    one_line(r.args["request"].as_str().unwrap_or(""))
-                ),
+                if r.args["person"] == true {
+                    format!(
+                        "the person played on their own (\"{}\"): {answer}",
+                        one_line(r.args["request"].as_str().unwrap_or(""))
+                    )
+                } else {
+                    format!(
+                        "the person answered the play request \"{}\": {answer}",
+                        one_line(r.args["request"].as_str().unwrap_or(""))
+                    )
+                },
                 "the answer is read (scenario play --status returns it and marks it read)",
                 &format!(
                     "read the answer: psx scenario play --status {}. When it is a recording, name it under the feature's recordings and go on; when declined, the note says why: ask again in other words or from another start, list the branch under wont_reach with the note as why, or go on without it",

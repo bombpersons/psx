@@ -74,7 +74,7 @@ impl Request {
             "id": self.id(), "run_dir": self.dir, "request": self.args["request"],
             "queued_unix_ms": self.queued_unix_ms, "state": self.state.name(), "read": self.read,
         });
-        for k in ["id", "name", "from", "expect"] {
+        for k in ["id", "name", "from", "expect", "person"] {
             if !self.args[k].is_null() {
                 v[if k == "id" { "scenario" } else { k }] = self.args[k].clone();
             }

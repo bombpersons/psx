@@ -110,6 +110,49 @@ pub struct HandoffArgs {
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect: Vec<String>,
+    /// Started by the person (psx web's Play now), not asked for by an agent.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "is_false")]
+    #[schemars(skip)]
+    pub person: bool,
+}
+
+/// What the person starts from psx web without a request: a scenario's
+/// recording (`id`, `name`, from its state or the end of `from`), or with no
+/// scenario a play from power-on whose run directory keeps the state and
+/// input. Queued and claimed as a request is, so it is answered, recorded and
+/// reported the same way; `port next` tells the agent the person played.
+pub fn person_play(
+    ctx: &Ctx,
+    what: &str,
+    id: Option<String>,
+    name: Option<String>,
+    from: Option<String>,
+) -> crate::Result<PathBuf> {
+    let what = what.trim();
+    let request = if what.is_empty() { "Free play".to_string() } else { what.to_string() };
+    let a = HandoffArgs {
+        request,
+        description: id.as_ref().filter(|_| !what.is_empty()).map(|_| what.to_string()),
+        id,
+        name,
+        from,
+        replace: false,
+        stock: false,
+        status: None,
+        wait: 0,
+        media: None,
+        bios: None,
+        from_state: None,
+        cards: Default::default(),
+        out: None,
+        verify: false,
+        expect: Vec::new(),
+        person: true,
+    };
+    a.check_scenario()?;
+    let (_, v) = a.start(ctx)?;
+    v["run_dir"].as_str().map(PathBuf::from).ok_or_else(|| Error::new("io_error", "the play was not queued"))
 }
 
 /// The expect conditions.
@@ -1133,6 +1176,7 @@ mod tests {
             expect: vec!["80000000:u32>=0".into(), "80000000:u32<0".into()],
             status: None,
             wait: 0,
+            person: false,
         };
         let mut s = start(&a).unwrap();
         let cross = psx_core::sio0::button::CROSS;

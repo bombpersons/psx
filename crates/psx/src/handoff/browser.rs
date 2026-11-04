@@ -1,7 +1,8 @@
 //! Playing a queued request in the browser (`psx web`): the session runs on a
 //! thread of the server, the page reads its frames from [`Live::stream`] and
 //! posts the person's input and commands. Done, decline, marks, rewind and
-//! the quick save are the window's; leaving (or no page watching for
+//! the quick save are the window's, and as there the game waits while the
+//! person writes the note or labels a mark; leaving (or no page watching for
 //! [`IDLE`]) gives the request back to the queue.
 
 use std::io::Write;
@@ -47,6 +48,8 @@ enum Cmd {
     QuickLoad,
     Restart,
     Pause(bool),
+    /// Writing the note before handing back: the game waits, as in the window.
+    Writing(bool),
 }
 
 #[derive(Default)]
@@ -88,7 +91,12 @@ impl Live {
             .name("psx-web-play".into())
             .spawn(move || {
                 let ctx = Ctx { root, cancel: None };
+                let person = a.person;
                 let (_, v) = super::run(&ctx, a, &text, &dir, |s, text, dir| play(s, text, dir, &l));
+                // The person's own play left without an answer is gone, not queued for someone.
+                if person && v["status"] == "queued" {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
                 let mut o = l.out.lock().unwrap();
                 o.ended = true;
                 o.status = json!({"state": "ended", "result": v});
@@ -123,7 +131,8 @@ impl Live {
     }
 
     /// A command from the page: done, decline (each with a note), leave,
-    /// mark, label (n, label), rewind, quick_save, quick_load, restart, pause.
+    /// mark, label (n, label), rewind, quick_save, quick_load, restart, pause,
+    /// writing (on: the person is writing the note; the game waits).
     pub fn command(&self, v: &Value) -> crate::Result<Value> {
         if self.ended() {
             return Err(Error::new("ended", "this play has ended"));
@@ -143,6 +152,7 @@ impl Live {
             "quick_load" => Cmd::QuickLoad,
             "restart" => Cmd::Restart,
             "pause" => Cmd::Pause(v["paused"] == true),
+            "writing" => Cmd::Writing(v["on"] == true),
             c => return Err(Error::invalid(format!("{c}: no such command"))),
         };
         self.cmds.lock().unwrap().push(cmd);
@@ -239,6 +249,8 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
     };
     *live.left.lock().unwrap() = Instant::now();
     let mut paused = false;
+    // The note being written before handing back: the game waits.
+    let mut writing = false;
     // A mark waiting for its label: the game waits too.
     let mut labelling: Option<usize> = None;
     let mut message_seq = 0u64;
@@ -299,11 +311,12 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
                     Err(e) => say(format!("Could not start over: {e}")),
                 },
                 Cmd::Pause(p) => paused = p,
+                Cmd::Writing(w) => writing = w,
             }
             changed = true;
         }
 
-        let running = !paused && labelling.is_none();
+        let running = !paused && !writing && labelling.is_none();
         // Taps while the game waits are dropped.
         let mut held = std::mem::take(&mut live.held.lock().unwrap().tapped);
         if running {
@@ -315,10 +328,11 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
                 s.frame(buttons, sticks);
             }
         }
-        let state = match (labelling, paused) {
-            (Some(_), _) => "labelling_mark",
-            (None, true) => "paused",
-            (None, false) => "playing",
+        let state = match (labelling, writing, paused) {
+            (Some(_), _, _) => "labelling_mark",
+            (None, true, _) => "writing_note",
+            (None, false, true) => "paused",
+            (None, false, false) => "playing",
         };
         let status = |s: &Session| {
             let mode = match (s.dualshock(), s.analog()) {
@@ -327,7 +341,7 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
                 (true, true) => "DualShock, analog mode",
             };
             json!({"state": state, "request": text, "message": message, "message_seq": message_seq,
-                "labelling": labelling, "mode": mode, "run_frame": s.rel(), "quick_save": s.quick.is_some(),
+                "labelling": labelling, "writing": writing, "paused": paused, "mode": mode, "run_frame": s.rel(), "quick_save": s.quick.is_some(),
                 "marks": s.marks.iter().map(|m| json!({"n": m.n, "label": m.label})).collect::<Vec<_>>()})
         };
         let second = live_at.elapsed() >= Duration::from_secs(1);

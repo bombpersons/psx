@@ -10,6 +10,10 @@
   --bg: #f6f6f3; --panel: #ffffff; --ink: #1d1d1b; --dim: #6b6b66; --line: #e2e1dc;
   --accent: #2f6fdb; --port: #e07a1f; --act: #c6362f; --warn: #b7791f; --info: #4a7a5c; --ok: #2e8b57;
   --chip: #efeee9; --sel: #e8f0fd; --violet: #8a5cd0; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* The charts' own series colours, apart from the status colours above:
+     neighbours in a stack stay apart for colour-blind eyes too (checked
+     per theme against its panel). st0 is the stage before any colour. */
+  --st0: #a3a29c; --st1: #2a78d6; --st2: #e87ba4; --st3: #eda100; --st4: #6250d6; --st5: #1baf7a; --st-neg: #e34948;
 }
 /* Themes: the system's light or dark unless one is picked (data-theme). */
 @media (prefers-color-scheme: dark) {
@@ -17,12 +21,14 @@
     --bg: #151515; --panel: #1e1e1e; --ink: #e8e8e4; --dim: #9a9a94; --line: #2f2f2d;
     --accent: #6ea0ff; --port: #f0a050; --act: #ff6b61; --warn: #e3b04b; --info: #79b591; --ok: #5cc28a;
     --chip: #2a2a28; --sel: #23324a; --violet: #a888e8;
+    --st0: #6b6b66; --st1: #3987e5; --st2: #d55181; --st3: #c98500; --st4: #9085e9; --st5: #199e70; --st-neg: #e66767;
   }
 }
 :root[data-theme=dark] {
   --bg: #151515; --panel: #1e1e1e; --ink: #e8e8e4; --dim: #9a9a94; --line: #2f2f2d;
   --accent: #6ea0ff; --port: #f0a050; --act: #ff6b61; --warn: #e3b04b; --info: #79b591; --ok: #5cc28a;
   --chip: #2a2a28; --sel: #23324a; --violet: #a888e8;
+  --st0: #6b6b66; --st1: #3987e5; --st2: #d55181; --st3: #c98500; --st4: #9085e9; --st5: #199e70; --st-neg: #e66767;
   color-scheme: dark;
 }
 :root[data-theme=light] { color-scheme: light; }
@@ -32,6 +38,7 @@
   --bg: #0a0d26; --panel: #13183a; --ink: #e7e9f7; --dim: #8e94c4; --line: #262c5c;
   --accent: #6f9cf0; --port: #f0a050; --act: #f0525a; --warn: #e8c15a; --info: #e58fd0; --ok: #41c49a;
   --chip: #1d2350; --sel: #232c6a; --violet: #e58fd0;
+  --st0: #75787f; --st1: #3987e5; --st2: #d55181; --st3: #c98500; --st4: #9085e9; --st5: #199e70; --st-neg: #e66767;
   color-scheme: dark;
 }
 :root[data-theme=ps] body { background: radial-gradient(ellipse at top, #18205a 0%, var(--bg) 60%) fixed; }
@@ -290,6 +297,18 @@ div.err:not(.call) { color: var(--act); font-size: 13px; }
 .player .msg:empty { visibility: hidden; }
 .player .keys { font-family: var(--mono); font-size: 11px; color: var(--dim); display: grid; grid-template-columns: auto 1fr 1fr; gap: 0 8px; }
 .player button.b.on { background: var(--sel); }
+/* The note before handing back: the game waits under it. */
+.player .handback { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--accent); border-radius: 8px; padding: 8px; background: var(--sel); }
+.player .handback textarea { min-height: 7em; }
+.player.waiting canvas { opacity: .55; }
+/* Code view */
+.meter { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); margin-top: 10px; gap: 2px; }
+.meter i { display: block; height: 100%; }
+tr.crow { cursor: pointer; } tr.crow:hover, tr.crow.on { background: var(--chip); }
+/* Play now: a play of the person's own. */
+.playnow { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; align-items: center; max-width: 720px; }
+.playnow select, .playnow input[type=text] { font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); width: 100%; box-sizing: border-box; }
+.playnow label { color: var(--dim); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -338,7 +357,7 @@ async function start() {
   // A link: #/PROJECT/VIEW, or #/PROJECT/recordings/SCENARIO/NAME/TICK.
   const [i, view, scenario, name, tick] = location.hash.slice(2).split("/").map(decodeURIComponent);
   if (i === "requests") S.view = "requests";
-  else if (+i < S.projects.length && ["overview", "log", "calls", "recordings", "reviews", "stats"].includes(view)) {
+  else if (+i < S.projects.length && ["overview", "log", "calls", "recordings", "reviews", "stats", "code"].includes(view)) {
     S.cur = +i; S.view = view === "calls" ? "log" : view;
     if (view === "recordings" && name) { S.rec = {scenario, name}; S.tick = +tick || 0; }
   }
@@ -388,7 +407,7 @@ function tabs() {
       ${n?.item ? `<div class="pi">next: ${esc(n.item)}${n.feature ? " " + esc(n.feature) : ""}${n.who === "person" ? " · yours" : ""}</div>` : ""}
       ${att.map(a => `<div class="pa ${a.level}" data-v="${esc(a.view || "overview")}" title="${esc(a.detail)}">${esc(a.title)}</div>`).join("")}</div>`;
   };
-  $("#side").innerHTML = `<button class="proj ${S.view === "requests" ? "on" : ""}" id="reqtab" title="the agents' play requests, across projects"><div class="pn"><b>Play requests</b><span class="n">${queued || ""}</span></div></button>
+  $("#side").innerHTML = `<button class="proj ${S.view === "requests" ? "on" : ""}" id="reqtab" title="play the game, and the agents' play requests across projects"><div class="pn"><b>Play</b><span class="n">${queued || ""}</span></div></button>
     <div class="sh">Projects</div>${S.projects.map(proj).join("")}`;
   $("#reqtab").onclick = () => { S.view = "requests"; save(); tabs(); render(); };
   for (const b of document.querySelectorAll("#side .proj[data-i]")) b.onclick = ev => {
@@ -428,7 +447,7 @@ function render(refresh) {
   const m = $("#main");
   if (S.view !== "requests" && S.player) stopPlayer();
   if (S.view === "requests") { chatView(); m.innerHTML = `<div id="view"></div>`; S.player ? playerView() : requestsView(); return; }
-  const views = [["overview", "Overview"], ["log", "Log"], ["recordings", "Recordings"], ["reviews", "Reviews"], ["stats", "Stats"]];
+  const views = [["overview", "Overview"], ["log", "Log"], ["recordings", "Recordings"], ["reviews", "Reviews"], ["code", "Code"], ["stats", "Stats"]];
   if (!refresh || !$("nav.sub", m)) {
     m.innerHTML = `<nav class="sub">${views.map(([k, l]) => `<button class="tab ${k === S.view ? "on" : ""}" data-v="${k}">${l}</button>`).join("")}</nav><div id="view"></div>`;
     for (const b of m.querySelectorAll("nav.sub .tab")) b.onclick = () => { S.view = b.dataset.v; save(); render(); };
@@ -440,6 +459,7 @@ function render(refresh) {
   else if (S.view === "log") logView();
   else if (S.view === "reviews") reviewsView(refresh);
   else if (S.view === "stats") statsView(refresh);
+  else if (S.view === "code") codeView(refresh);
   else recordingsView(refresh);
 }
 
@@ -519,8 +539,8 @@ function drawProgress(o) {
   const p = o.progress || [];
   if (p.length < 2) return;
   const series = (c, get) => chart(c, p.map(x => x.t), get);
-  series($("#ch-rec"), [[x => x.recordings?.pass, css("--ok")], [x => x.recordings?.total, css("--dim")]]);
-  series($("#ch-br"), [[x => x.branches?.resolved, css("--accent")], [x => x.branches?.total, css("--dim")]]);
+  series($("#ch-rec"), [[x => x.recordings?.pass, css("--st5")], [x => x.recordings?.total, css("--st0")]]);
+  series($("#ch-br"), [[x => x.branches?.resolved, css("--st1")], [x => x.branches?.total, css("--st0")]]);
   function chart(canvas, ts, lines) {
     if (!canvas) return;
     const ctx = setup(canvas), W = canvas.clientWidth, H = canvas.clientHeight;
@@ -1163,7 +1183,7 @@ function feedBox() {
   const box = $(".feedbox"), feed = $("#feed");
   const size = () => { if (box.isConnected) box.style.height = Math.max(240, innerHeight - box.getBoundingClientRect().top - 12) + "px"; };
   size();
-  box.onscroll = () => { if (box.scrollTop !== S.lastTop) { S.pinned = box.scrollTop + box.clientHeight >= box.scrollHeight - 40; S.lastTop = box.scrollTop; S.lastHeight = box.scrollHeight; S.anchor = anchorOf(box); } };
+  box.onscroll = () => { if (box.scrollTop !== S.lastTop) { S.pinned = atEnd(box); S.lastTop = box.scrollTop; S.lastHeight = box.scrollHeight; S.anchor = anchorOf(box); } };
   // Cards grow as their results and images arrive.
   new ResizeObserver(keepPlace).observe(feed);
   const hd = new ResizeObserver(() => box.isConnected ? size() : hd.disconnect());
@@ -1174,11 +1194,16 @@ function anchorOf(box) {
   for (const c of $("#feed").querySelectorAll(":scope > .call")) { const r = c.getBoundingClientRect(); if (r.bottom > top) return {el: c, off: r.top - top}; }
   return null;
 }
+// Whether the box shows the end of the log. Measured against the shorter of
+// the height last seen and the height now: a card that grew since was not
+// yet there to scroll to, and one that shrank pulled scrollTop up with it
+// (the browser clamps it), which is not the person scrolling away.
+const atEnd = box => box.scrollTop + box.clientHeight >= Math.min(S.lastHeight || Infinity, box.scrollHeight) - 40;
 function keepPlace() {
   const box = $(".feedbox");
   if (!box) return;
   // Scrolled since: the scroll event may not have come yet.
-  if (box.scrollTop !== S.lastTop) { S.pinned = box.scrollTop + box.clientHeight >= S.lastHeight - 40; S.anchor = anchorOf(box); }
+  if (box.scrollTop !== S.lastTop) { S.pinned = atEnd(box); S.anchor = anchorOf(box); }
   if (S.pinned) box.scrollTop = box.scrollHeight;
   else if (S.anchor?.el.isConnected) box.scrollTop += S.anchor.el.getBoundingClientRect().top - box.getBoundingClientRect().top - S.anchor.off;
   S.anchor = anchorOf(box); S.lastTop = box.scrollTop; S.lastHeight = box.scrollHeight;
@@ -1423,11 +1448,12 @@ function requestsView() {
   };
   const notify = "Notification" in window && Notification.permission === "default"
     ? `<button class="b" id="notify">Notify me of new requests</button>` : "";
-  $("#view").innerHTML = `<div class="filters"><span class="quiet">The agents' play requests across ${S.projects.length === 1 ? "the project" : "the projects"}, oldest first. Answer here, or in a terminal with <span class="mono">psx play</span>.</span>${notify}</div>
+  $("#view").innerHTML = `${playNowCard()}<div class="filters"><span class="quiet">The agents' play requests across ${S.projects.length === 1 ? "the project" : "the projects"}, oldest first. Answer here, or in a terminal with <span class="mono">psx play</span>.</span>${notify}</div>
     ${!win.available ? `<div class="warnbox">The window cannot open here: ${esc(win.reason || "")}</div>` : ""}
     ${R.waiting.length ? R.waiting.map(card).join("") : `<div class="card quiet">No play requests wait.</div>`}
     ${R.answered.length ? `<h2 class="quiet" style="font-size:13px;margin:18px 0 8px">Answered</h2>` + R.answered.map(card).join("") : ""}`;
   if ($("#notify")) $("#notify").onclick = async () => { await Notification.requestPermission(); requestsView(); };
+  playNowWire();
   for (const t of document.querySelectorAll(".req textarea")) t.oninput = () => S.drafts[t.dataset.k] = t.value;
   for (const b of document.querySelectorAll(".req button[data-act]")) b.onclick = async () => {
     const [p, id] = b.dataset.k.split("/");
@@ -1444,10 +1470,55 @@ function requestsView() {
   clearTimeout(requestPoll);
   const poll = () => requestPoll = setTimeout(async () => {
     if (S.view !== "requests" || S.player) return;
-    if (document.activeElement?.tagName === "TEXTAREA") { poll(); return; }
+    if (document.activeElement?.tagName === "TEXTAREA" || document.activeElement?.closest?.(".playnow")) { poll(); return; }
     await loadRequests(); tabs(); requestsView();
   }, 3000);
   if (R.waiting.some(r => r.state === "playing")) poll();
+}
+
+// ------------------------------------------------------------ play now
+// A play of the person's own, at any time: from a scenario's state (or the
+// end of one of its recordings) it becomes a recording of that scenario, as
+// an agent's request would; with no scenario it starts at power-on and its
+// run keeps the end state and the input.
+const stamp = () => { const d = new Date(), z = n => String(n).padStart(2, "0"); return `play-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}`; };
+function playNowCard() {
+  const N = S.playnow = S.playnow || {p: S.cur, scenario: "", from: "", name: stamp(), what: "", scens: {}};
+  const sc = N.scens[N.p];
+  if (!sc) loadPlayNow(N.p);
+  const list = sc?.scenarios || [];
+  if (N.scenario && sc && !list.some(x => x.id === N.scenario)) N.scenario = "";
+  const recs = list.find(x => x.id === N.scenario)?.recordings || [];
+  if (N.from && !recs.some(r => r.name === N.from)) N.from = "";
+  const opt = (v, l, on) => `<option value="${esc(v)}" ${on ? "selected" : ""}>${esc(l)}</option>`;
+  return `<div class="card"><h2>Play now</h2><div class="playnow">
+    ${S.projects.length > 1 ? `<label for="pn-p">project</label><select id="pn-p">${S.projects.map((x, i) => opt(i, x.name, i === N.p)).join("")}</select>` : ""}
+    <label for="pn-s">scenario</label><select id="pn-s">${opt("", sc ? "none: from power-on, no recording" : "loading…", !N.scenario)}${list.map(x => opt(x.id, x.id, x.id === N.scenario)).join("")}</select>
+    ${N.scenario ? `<label for="pn-f">start at</label><select id="pn-f">${opt("", "the scenario's state", !N.from)}${recs.map(r => opt(r.name, "the end of " + r.name, r.name === N.from)).join("")}</select>
+      <label for="pn-n">recording</label><input type="text" id="pn-n" value="${esc(N.name)}" placeholder="its name">` : ""}
+    <label for="pn-w">what you'll do</label><input type="text" id="pn-w" value="${esc(N.what)}" placeholder="${N.scenario ? "a sentence: the recording's description, and what the agent reads" : "optional, for the agent"}">
+    <span></span><div class="row" style="display:flex;gap:8px;align-items:center"><button class="b primary" id="pn-go">Play</button><span class="quiet">${N.scenario ? `becomes ${esc(N.scenario)}/${esc(N.name || "…")}; F12 to finish, as for a request` : "F12 to finish; the run keeps the state and your input"}</span></div>
+    <span></span><div class="err" id="pn-err"></div></div></div>`;
+}
+async function loadPlayNow(p) {
+  const N = S.playnow;
+  try { N.scens[p] = await api(`/api/p/${p}/recordings`); } catch (e) { N.scens[p] = {scenarios: []}; }
+  if (S.view === "requests" && !S.player && !document.activeElement?.closest?.(".playnow")) requestsView();
+}
+function playNowWire() {
+  const N = S.playnow; if (!N || !$("#pn-go")) return;
+  const on = (id, k, redraw) => { const e = $(id); if (e) e[e.tagName === "SELECT" ? "onchange" : "oninput"] = () => { N[k] = k === "p" ? +e.value : e.value; if (redraw) requestsView(); }; };
+  on("#pn-p", "p", true); on("#pn-s", "scenario", true); on("#pn-f", "from", false); on("#pn-n", "name", false); on("#pn-w", "what", false);
+  $("#pn-go").onclick = async () => {
+    const err = $("#pn-err"); err.textContent = "";
+    if (N.scenario && !/^[A-Za-z0-9_.-]+$/.test(N.name || "")) { err.textContent = "Name the recording: letters, digits, - _ ."; return; }
+    $("#pn-go").disabled = true;
+    const r = await post(`/api/p/${N.p}/play`, {scenario: N.scenario, name: N.scenario ? N.name : "", from: N.from, what: N.what});
+    if (r.error) { $("#pn-go").disabled = false; err.textContent = r.error.message; return; }
+    N.name = stamp(); N.what = "";
+    await loadRequests(); tabs();
+    startPlayer(N.p, r.id);
+  };
 }
 
 // ------------------------------------------------------------ browser play
@@ -1552,51 +1623,76 @@ function playerView() {
   const keys = Object.keys(ACTION_LABEL).filter(a => B.keyboard[a] || B.gamepad[a])
     .map(a => `<span>${ACTION_LABEL[a]}</span><span>${esc(B.keyboard[a] || "")}</span><span>${esc(B.gamepad[a] || "")}</span>`).join("");
   const labelling = st.labelling != null;
-  v.innerHTML = `<div class="player">
+  const person = !!r?.person;
+  v.innerHTML = `<div class="player ${P.compose || labelling ? "waiting" : ""}">
     <div><canvas id="pscreen" width="320" height="240" tabindex="0" title="click to play: the keys go to the game"></canvas>
       <div class="padline" id="pline" style="margin-top:6px"></div></div>
     <div class="side">
-      <div class="what" style="white-space:pre-wrap;font-size:14px">${esc(req)}</div>
+      <div class="what" style="white-space:pre-wrap;font-size:14px">${person ? `<span class="quiet">Your play:</span> ` : ""}${esc(req)}</div>
       <div class="msg">${esc(st.message || "")}</div>
       ${labelling ? `<div><b>Label mark ${st.labelling}</b> (the game waits): <input type="text" id="plabel" value="${esc(label)}" placeholder="what this moment is, for the agent"><div class="row" style="margin-top:4px"><button class="b primary" id="plabelok">Save label</button></div></div>` : ""}
-      <div class="row">
-        <button class="b" data-c="mark" title="F6: its state, RAM and screen go to the agent">Mark</button>
+      ${P.compose ? `<div class="handback">
+        <div><b>${P.compose === "decline" ? "Decline" : "Hand back"}</b> <span class="quiet">· the game waits; Enter sends, Esc goes back</span></div>
+        <textarea id="pnote" placeholder="${P.compose === "decline" ? "Why not, for the agent: what went wrong, or what to ask instead" : "A note for the agent: what you did, what to look at (optional)"}">${esc(note)}</textarea>
+        <div class="row">
+          <button class="b primary" data-c="send" title="Enter (Shift+Enter: a new line)">${P.compose === "decline" ? "Decline with this note" : person ? "Save the play" : "Hand back"}</button>
+          <button class="b" data-c="back" title="Esc">Back to the game</button>
+          ${P.compose === "done" && !person ? `<button class="b" data-c="decline" title="F10">Decline instead</button>` : ""}
+        </div>
+        <div class="quiet">${P.compose === "decline" ? "The note is what the agent gets." : r?.scenario ? `The play becomes the recording ${esc(r.scenario + "/" + (r.name || ""))}, made by replaying your input.` : "The run keeps the end state and your input."}</div>
+      </div>` : `<div class="row">
+        <button class="b" data-c="mark" title="F6: its state, RAM and screen go to the agent; the game waits for its label">Mark</button>
         <button class="b" data-c="rewind" title="F2: about 5 s back (again: further)">Rewind</button>
         <button class="b" data-c="quick_save" title="F5">Quick save</button>
         <button class="b" data-c="quick_load" title="F7">Quick load</button>
         <button class="b" id="ppause" data-c="pause" title="F3">Pause</button>
         <button class="b" id="pfast" title="Tab (hold)">Fast</button>
-        <button class="b" data-c="restart" title="F8: from the beginning of the request">Start over</button>
+        <button class="b" data-c="restart" title="F8: from the beginning">Start over</button>
       </div>
-      <textarea id="pnote" placeholder="A note for the agent: what you did, or why you could not">${esc(note)}</textarea>
       <div class="row">
-        <button class="b primary" data-c="done" title="F12: done; with an id the play becomes the recording">Done</button>
-        <button class="b" data-c="decline" title="F10: could not or would not; the note goes to the agent">Decline with note</button>
-        <button class="b" data-c="leave" title="stop without answering: the request goes back to the queue">Leave</button>
-      </div>
+        <button class="b primary" data-c="done" title="F12: pause and write the note, then hand back${person ? "" : "; with a scenario the play becomes the recording"}">${person ? "Finish…" : "Done…"}</button>
+        ${person ? "" : `<button class="b" data-c="decline" title="F10: could not or would not; pause and write why">Decline…</button>`}
+        <button class="b" data-c="leave" title="${person ? "stop and keep nothing" : "stop without answering: the request goes back to the queue"}">${person ? "Discard" : "Leave"}</button>
+      </div>`}
       <div class="err" id="perr"></div>
-      <div class="quiet">Click the screen, then play with your keys or a gamepad (sound plays only in the window).</div>
+      <div class="quiet">Click the screen, then play with your keys or a gamepad (sound plays only in the window). F12 pauses for the note, as in the window.</div>
       <div class="keys"><span></span><b>key</b><b>gamepad</b>${keys}</div>
     </div></div>`;
   playerLine(P);
   if (P.frame) drawPlayFrame(P, P.frame);
   for (const b of v.querySelectorAll("button[data-c]")) b.onclick = () => playerCmd(P, b.dataset.c);
   const fast = $("#pfast");
-  fast.onpointerdown = () => { P.fast = true; sendInput(P); }; fast.onpointerup = fast.onpointerleave = () => { if (P.fast) { P.fast = false; sendInput(P); } };
+  if (fast) { fast.onpointerdown = () => { P.fast = true; sendInput(P); }; fast.onpointerup = fast.onpointerleave = () => { if (P.fast) { P.fast = false; sendInput(P); } }; }
+  // The note: Enter sends it, Shift+Enter is a new line, Esc goes back to the game.
+  if ($("#pnote")) $("#pnote").onkeydown = e => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); playerCmd(P, "send"); }
+    else if (e.key === "Escape" || e.code === "F12" && P.compose === "done") { e.preventDefault(); playerCmd(P, e.key === "Escape" ? "back" : "send"); }
+  };
   if ($("#plabelok")) {
     const save = () => playerCmdBody(P, {cmd: "label", n: st.labelling, label: $("#plabel").value});
     $("#plabelok").onclick = save; $("#plabel").onkeydown = e => { if (e.key === "Enter") save(); };
     $("#plabel").focus();
-  } else if (writing) { $("#pnote").focus(); $("#pnote").setSelectionRange(...writing); }
+  } else if (P.compose) { const t = $("#pnote"); t.focus(); writing ? t.setSelectionRange(...writing) : t.setSelectionRange(t.value.length, t.value.length); }
   else if (st.state !== "lost") $("#pscreen").focus();
 }
+// Done and decline first pause the game for the note (P.compose), as the
+// window does; send hands back with it, back returns to the game.
+function compose(P, kind) {
+  if (P.compose !== kind) { P.compose = kind; if (kind) { P.keys.clear(); P.fast = false; sendInput(P); } playerCmdBody(P, {cmd: "writing", on: !!kind}); }
+  playerView();
+}
 function playerCmd(P, c) {
-  const note = ($("#pnote")?.value || "").trim();
-  if (c === "decline" && !note) { $("#perr").textContent = "Write a note first: it is what the agent gets."; $("#pnote").focus(); return; }
-  if (c === "restart" && !confirm("Start over from the beginning of the request? Progress since then is lost (the quick save is kept).")) return;
-  if (c === "leave" && !confirm("Leave without answering? The request goes back to the queue.")) return;
+  const note = ($("#pnote")?.value ?? P.note ?? "").trim();
+  if (c === "done" || c === "decline") return compose(P, c);
+  if (c === "back") { P.note = $("#pnote")?.value ?? P.note; return compose(P, null); }
+  if (c === "send") {
+    if (P.compose === "decline" && !note) { $("#perr").textContent = "Write a note first: it is what the agent gets."; $("#pnote")?.focus(); return; }
+    return playerCmdBody(P, {cmd: P.compose, note});
+  }
+  const person = (S.requests?.waiting || []).some(x => x.p === P.p && x.id === P.id && x.person);
+  if (c === "restart" && !confirm("Start over from the beginning? Progress since then is lost (the quick save is kept).")) return;
+  if (c === "leave" && !confirm(person ? "Discard this play? Nothing is kept." : "Leave without answering? The request goes back to the queue.")) return;
   const body = {cmd: c};
-  if (c === "done" || c === "decline") body.note = note;
   if (c === "pause") body.paused = P.status.state !== "paused";
   playerCmdBody(P, body);
 }
@@ -1728,7 +1824,7 @@ function drawReviews() {
 // How the port came along: its standing over time (progress.jsonl), the
 // agents' calls by hour, the commits by day and by feature, and where the
 // time went (tools, sessions).
-const STAGES = [["catalogued", "--dim"], ["located", "--info"], ["recorded", "--violet"], ["matching", "--accent"], ["reviewed", "--warn"], ["done", "--ok"]];
+const STAGES = [["catalogued", "--st0"], ["located", "--st1"], ["recorded", "--st2"], ["matching", "--st3"], ["reviewed", "--st4"], ["done", "--st5"]];
 const DAY = 86400000, HOUR = 3600000;
 async function statsView(refresh) {
   const i = S.cur;
@@ -1769,8 +1865,8 @@ function drawStats() {
        <div class="quiet" style="margin-top:4px">${prog.length} changes since ${fmtDate(prog[0].t)}, as port status and port next saw them</div>`
     : `<div class="quiet">This builds up as port status and port next see the standing change (from this version of psx on). The commits below go back to the start.</div>`}</div>`;
   // Activity.
-  h += `<div class="card"><h2>Activity</h2><div class="grid2"><div><div class="legend"><span style="--c:var(--accent)">psx calls</span><span style="--c:var(--act)">failed</span></div><canvas class="chart" id="st-calls"></canvas></div>
-    <div><div class="legend"><span style="--c:var(--ok)">code lines added</span><span style="--c:var(--act)">removed</span><span>commits over each day</span></div><canvas class="chart" id="st-code"></canvas></div></div></div>`;
+  h += `<div class="card"><h2>Activity</h2><div class="grid2"><div><div class="legend"><span style="--c:var(--st1)">psx calls</span><span style="--c:var(--st-neg)">failed</span></div><canvas class="chart" id="st-calls"></canvas></div>
+    <div><div class="legend"><span style="--c:var(--st1)">code lines added</span><span style="--c:var(--st-neg)">removed</span><span>commits over each day</span></div><canvas class="chart" id="st-code"></canvas></div></div></div>`;
   // Features by their commits.
   const byF = new Map();
   for (const g of git) for (const f of g.features) { if (!byF.has(f)) byF.set(f, []); byF.get(f).push(g); }
@@ -1806,17 +1902,23 @@ function drawStats() {
   if (prog.length > 1) {
     const ts = prog.map(x => x.t);
     statStacked($("#st-stage"), ts, d.now, STAGES.map(([k, v]) => [x => x.stages?.[k] || 0, css(v)]), prog);
-    statLines($("#st-rec"), ts, d.now, prog, [[x => x.recordings?.pass, css("--ok")], [x => x.recordings?.total, css("--dim")]]);
-    statLines($("#st-br"), ts, d.now, prog, [[x => x.branches?.resolved, css("--accent")], [x => x.branches?.total, css("--dim")]]);
+    statLines($("#st-rec"), ts, d.now, prog, [[x => x.recordings?.pass, css("--st5")], [x => x.recordings?.total, css("--st0")]]);
+    statLines($("#st-br"), ts, d.now, prog, [[x => x.branches?.resolved, css("--st1")], [x => x.branches?.total, css("--st0")]]);
   }
   // Hours while the log is short, days once it spans more than three.
   const span = c.hours.length ? c.hours.at(-1).t - c.hours[0].t : 0, step = span > 3 * DAY ? DAY : HOUR;
   const bucket = (xs, t, add) => { const m = new Map(); for (const x of xs) { const k = step === DAY ? dayOf(t(x)) : Math.floor(t(x) / HOUR) * HOUR; add(m.get(k) || m.set(k, {}).get(k), x); } return m; };
   const cm = bucket(c.hours, x => x.t, (o, x) => { o.a = (o.a || 0) + x.calls - x.failed; o.b = (o.b || 0) + x.failed; });
-  statBars($("#st-calls"), cm, step, [["a", css("--accent")], ["b", css("--act")]], null, d.now);
+  statBars($("#st-calls"), cm, step, [["a", css("--st1")], ["b", css("--st-neg")]], null, d.now);
   const gm = new Map();
   for (const g of git) { const k = dayOf(g.t), o = gm.get(k) || gm.set(k, {a: 0, b: 0, n: 0}).get(k); o.a += g.code[0]; o.b += g.code[1]; o.n++; }
-  statBars($("#st-code"), gm, DAY, [["a", css("--ok")], ["b", css("--act")]], "n", d.now);
+  statBars($("#st-code"), gm, DAY, [["a", css("--st1")], ["b", css("--st-neg")]], "n", d.now);
+}
+// A stacked segment, with a gap of the panel's colour below it where it
+// sits on another, so neighbouring colours never touch.
+function seg(ctx, x, y, w, h, onTop) {
+  const g = onTop && h > 3 ? 2 : 0;
+  ctx.fillRect(x, y, w, h - g);
 }
 // The time axis and value scale every chart here shares.
 function statFrame(canvas, t0, t1, max) {
@@ -1835,7 +1937,7 @@ function statStacked(canvas, ts, now, layers, rows) {
   const base = rows.map(() => 0);
   for (const [get, color] of layers) {
     ctx.fillStyle = color;
-    rows.forEach((r, i) => { const v = get(r); if (v) { ctx.fillRect(ends[i][0], Y(base[i] + v), ends[i][1] - ends[i][0] + .5, Y(base[i]) - Y(base[i] + v)); base[i] += v; } });
+    rows.forEach((r, i) => { const v = get(r); if (v) { seg(ctx, ends[i][0], Y(base[i] + v), ends[i][1] - ends[i][0] + .5, Y(base[i]) - Y(base[i] + v), base[i] > 0); base[i] += v; } });
   }
 }
 function statLines(canvas, ts, now, rows, ls) {
@@ -1859,10 +1961,75 @@ function statBars(canvas, m, step, keys, count, now) {
   const room = X(t0 + step) - X(t0), w = Math.max(1, Math.min(28, room - 1)), pad = (room - w) / 2;
   for (const k of ks) {
     let base = 0;
-    for (const [n, color] of keys) { const v = m.get(k)[n] || 0; if (v) { ctx.fillStyle = color; ctx.fillRect(X(k) + pad, Y(base + v), w, Y(base) - Y(base + v)); base += v; } }
+    for (const [n, color] of keys) { const v = m.get(k)[n] || 0; if (v) { ctx.fillStyle = color; seg(ctx, X(k) + pad, Y(base + v), w, Y(base) - Y(base + v), base > 0); base += v; } }
     const c = count && m.get(k)[count];
     if (c && room > 12) { ctx.fillStyle = css("--dim"); const t = String(c); ctx.fillText(t, X(k) + pad + (w - ctx.measureText(t).width) / 2, Y(base) - 3); }
   }
+}
+
+// ------------------------------------------------------------ code
+// The agent's C for the original's functions (docs/decomp-plan.md): what
+// is named, which functions have C and how their last check went, and what
+// scenarios turn off. How much of a run the C carries comes with --decomp.
+async function codeView(refresh) {
+  const i = S.cur;
+  if (!S.code || S.code.i !== i || (refresh && Date.now() - S.code.at > 15000)) {
+    if (!S.code || S.code.i !== i) $("#view").innerHTML = `<div class="quiet">Loading…</div>`;
+    let d;
+    try { d = await api(`/api/p/${i}/code`); } catch (e) { $("#view").innerHTML = `<div class="card">${esc(e.message || e)}</div>`; return; }
+    if (i !== S.cur || S.view !== "code") return;
+    const same = S.code && S.code.i === i && JSON.stringify(S.code.data) === JSON.stringify(d);
+    S.code = {i, at: Date.now(), data: d, open: S.code?.i === i ? S.code.open : null};
+    if (same && refresh) return;
+  }
+  drawCode();
+}
+function checkPill(k) {
+  if (!k) return pill("not checked", "warn");
+  const p = {passed: ["passed", "ok"], failed: ["failed", "bad"], no_calls: ["not called", "warn"], build_failed: ["build failed", "bad"]}[k.status] || [k.status, "warn"];
+  return pill(p[0], p[1]) + (k.stale ? ` ${pill("C changed since", "warn")}` : "");
+}
+function drawCode() {
+  const d = S.code.data, cs = d.c || [], n = d.names || {};
+  const named = cs.filter(f => f.names);
+  const pass = named.filter(f => f.check?.status === "passed" && !f.check.stale).length;
+  const fail = named.filter(f => f.check && (f.check.status === "failed" || f.check.status === "build_failed")).length;
+  const tiles = [
+    [num(n.functions), "functions named", `${num(n.guessed)} of them guesses`],
+    [num(named.length), "in C", cs.length - named.length ? `${cs.length - named.length} more are the C's own helpers` : "each a named function"],
+    [num(pass), "checked, passing", "the last check passed, on the C as it is now"],
+    [num(fail), "failing"],
+    [num(named.filter(f => !f.check).length), "not checked"],
+    [num((d.off || []).length), "turned off", "by scenarios' [off]"],
+  ];
+  let h = `<div class="card"><h2>Code</h2><div class="tiles">${tiles.map(([v, l, t]) => `<div class="tile" title="${esc(t || "")}"><div class="n">${esc(v)}</div><div class="l">${esc(l)}</div></div>`).join("")}</div>
+    ${n.functions ? `<div class="meter" title="${num(named.length)} of ${num(n.functions)} named functions have C; ${num(pass)} pass"><i style="width:${(100 * pass / n.functions).toFixed(2)}%;background:var(--st5)"></i><i style="width:${(100 * (named.length - pass) / n.functions).toFixed(2)}%;background:var(--st3)"></i></div>
+      <div class="legend"><span style="--c:var(--st5)">in C, passing</span><span style="--c:var(--st3)">in C, not passing yet</span><span style="--c:var(--line)">named, no C</span></div>` : ""}
+    <div class="quiet" style="margin-top:6px">${d.compiler ? `Built with <span class="mono">${esc(d.compiler)}</span>.` : "No MIPS GCC here: code check cannot build the C."} How much of a run the C carries comes with <span class="mono">--decomp</span> (decomp plan, step 13).</div></div>`;
+  const row = f => {
+    const k = f.check, on = S.code.open === f.name;
+    const cases = k && k.passed != null ? `${num(k.passed)} / ${num((k.passed || 0) + (k.failed || 0))}` : "";
+    return `<tr class="crow ${on ? "on" : ""}" data-f="${esc(f.name)}"><td class="mono">${esc(f.name)}${f.names ? "" : ` <span class="quiet">helper</span>`}</td><td class="mono">${esc(f.names?.address || "")}</td>
+      <td class="mono quiet">${esc(f.file)}:${f.line}</td><td>${checkPill(k)}</td><td class="num">${cases}</td><td style="white-space:nowrap">${k ? fmtDate(k.at) : ""}</td><td>${(f.off || []).map(esc).join(", ")}</td></tr>`
+      + (on ? `<tr><td colspan="7">${codeDetail(f)}</td></tr>` : "");
+  };
+  h += `<div class="card"><h2>Functions in C</h2>${cs.length ? `<div style="overflow-x:auto"><table><tr><th>function</th><th>address</th><th>where</th><th>last check</th><th class="num">cases</th><th>when</th><th>off in</th></tr>${cs.map(row).join("")}</table></div>`
+    : `<div class="quiet">No C yet: the agent writes a function's C as <span class="mono">decomp/&lt;name&gt;.c</span> and checks it with <span class="mono">code check</span>.</div>`}</div>`;
+  if ((d.off || []).length) h += `<div class="card"><h2>Turned off</h2><table><tr><th>function</th><th>address</th><th>in scenarios</th></tr>${d.off.map(o => `<tr><td class="mono">${esc(o.function)}</td><td class="mono">${esc(o.names?.address || "")}</td><td>${o.scenarios.map(esc).join(", ")}</td></tr>`).join("")}</table></div>`;
+  const ks = (d.checks || []).slice().reverse();
+  if (ks.length) h += `<div class="card"><h2>Checks</h2><div class="scroll"><table class="recent">${ks.slice(0, 60).map(k => `<tr><td class="t">${fmtDate(k.t)}</td><td>${checkPill(k)}</td><td class="mono">${esc(k.function)}</td><td class="num">${k.passed != null ? `${num(k.passed)} / ${num((k.passed || 0) + (k.failed || 0))}` : ""}</td><td class="mono quiet">${esc((k.commit || "").slice(0, 7))}</td></tr>`).join("")}</table></div></div>`;
+  $("#view").innerHTML = h;
+  for (const r of $("#view").querySelectorAll(".crow")) r.onclick = () => { S.code.open = S.code.open === r.dataset.f ? null : r.dataset.f; drawCode(); };
+}
+function codeDetail(f) {
+  const k = f.check;
+  if (!k) return `<div class="quiet">Not checked yet: <span class="mono">psx code check ${esc(f.name)} --state STATE</span> runs the game from a state and compares each call with the original.</div>`;
+  const ff = k.first_failure;
+  return kv([["state", k.state ? mono(unroot(k.state)) : null], ["commit", k.commit ? mono(k.commit.slice(0, 10)) : null],
+    ["C", k.stale ? "changed since this check: check again" : "as checked"],
+    ["first failing case", ff ? `call ${num(ff.hit)}${ff.args ? ` · args ${ff.args.map(esc).join(", ")}` : ""}${ff.state ? ` · rerun from ${mono(unroot(ff.state))}` : ""}` : null],
+    ["differences", ff?.differences ? `<div class="code">${ff.differences.slice(0, 20).map(x => esc(typeof x === "string" ? x : JSON.stringify(x))).join("\n")}</div>` : null],
+    ["build messages", (k.messages || []).length ? `<div class="code">${k.messages.slice(0, 20).map(m => esc(typeof m === "string" ? m : `${m.file || ""}:${m.line || ""}: ${m.text || m.message || JSON.stringify(m)}`)).join("\n")}</div>` : null]]);
 }
 
 // ------------------------------------------------------------ recordings

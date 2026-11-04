@@ -587,7 +587,174 @@ fn check_cmd(ctx: &Ctx, a: CodeCheckArgs) -> crate::Result<(bool, Value)> {
     if cases.is_empty() {
         v["why"] = json!(format!("the game did not call it within {} fields of the state", a.fields));
     }
+    save_check(root, &a.function, &a.state, &v);
     Ok((ok, v))
+}
+
+/// Where each function's last check is kept (`<function>.json`), and the
+/// log of every check (`checks.jsonl`), for psx web's Code view.
+pub const CHECKS: &str = ".psx/decomp/checks";
+
+/// A hash of decomp/'s C, to tell a check made on other C (FNV-1a over
+/// the files' names and bytes, in order).
+pub fn sources_hash(root: &Path) -> String {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("decomp"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "c" || x == "h"))
+        .collect();
+    files.sort();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for f in files {
+        let name = f.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        for b in name.bytes().chain([0]).chain(std::fs::read(&f).unwrap_or_default()) {
+            h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    format!("{h:016x}")
+}
+
+/// The file a function's last check is kept in.
+fn check_file(root: &Path, function: &str) -> PathBuf {
+    let safe: String = function.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '-' }).collect();
+    root.join(CHECKS).join(format!("{safe}.json"))
+}
+
+/// Keep a check's result: the function's last, and a line in the log.
+fn save_check(root: &Path, function: &str, state: &Path, v: &Value) {
+    let commit = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["rev-parse", "--verify", "-q", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let first = v["cases"].as_array().and_then(|c| c.iter().find(|c| c["passed"] == false)).cloned();
+    let kept = json!({
+        "function": function, "status": v["status"], "passed": v["passed"], "failed": v["failed"],
+        "at": crate::now_ms() as u64, "commit": commit, "sources": sources_hash(root),
+        "state": state, "first_failure": first, "messages": v["messages"],
+    });
+    let p = check_file(root, function);
+    if std::fs::create_dir_all(p.parent().unwrap()).is_err() {
+        return;
+    }
+    let _ = crate::write_atomic(&p, serde_json::to_vec_pretty(&kept).unwrap().as_slice());
+    let line = json!({"t": kept["at"], "function": function, "status": kept["status"],
+        "passed": kept["passed"], "failed": kept["failed"], "commit": kept["commit"]});
+    if let Ok(mut f) =
+        std::fs::OpenOptions::new().create(true).append(true).open(root.join(CHECKS).join("checks.jsonl"))
+    {
+        let _ = std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes());
+    }
+}
+
+/// The functions decomp/'s C defines, as `(name, file, line)`: a line at
+/// the left margin that names a function and does not end in `;` (a
+/// prototype), with its body's `{` there or on the next line.
+pub fn c_functions(root: &Path) -> Vec<(String, String, usize)> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("decomp"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "c"))
+        .collect();
+    files.sort();
+    let mut out = Vec::new();
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap_or_default();
+        let file = f.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let lines: Vec<&str> = text.lines().collect();
+        let mut comment = false;
+        for (i, l) in lines.iter().enumerate() {
+            let t = l.trim_end();
+            // Block comments that span lines.
+            if comment {
+                comment = !t.contains("*/");
+                continue;
+            }
+            if t.trim_start().starts_with("/*") && !t.contains("*/") {
+                comment = true;
+                continue;
+            }
+            let first = t.chars().next();
+            if !first.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') || t.ends_with(';') {
+                continue;
+            }
+            let word = t.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).next().unwrap_or("");
+            if ["typedef", "struct", "union", "enum", "return", "if", "for", "while", "switch", "extern"]
+                .contains(&word)
+            {
+                continue;
+            }
+            let Some(paren) = t.find('(') else { continue };
+            let name: String = t[..paren]
+                .trim_end()
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let body = t.ends_with('{') || lines.get(i + 1).is_some_and(|n| n.trim_start().starts_with('{'));
+            if !name.is_empty() && body && !t[..paren].contains('=') {
+                out.push((name, file.clone(), i + 1));
+            }
+        }
+    }
+    out
+}
+
+/// psx web's Code view: the names, the functions in C with their last
+/// checks, and those scenarios turn off (docs/decomp-plan.md, step 14).
+pub fn overview(root: &Path) -> Value {
+    let names = psx_symbols::names::load(root);
+    let guessed = names.functions.iter().filter(|f| f.name.guess).count();
+    let addr = |n: &str| {
+        names
+            .functions
+            .iter()
+            .find(|f| f.name.text == n)
+            .map(|f| json!({"address": format!("0x{:08X}", f.address), "module": f.module, "guess": f.name.guess}))
+    };
+    // Functions scenarios turn off, with the scenarios.
+    let mut off: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for id in crate::scenario::ids(root) {
+        let Ok(text) = std::fs::read_to_string(root.join(format!("scenarios/{id}.toml"))) else { continue };
+        if let Ok(s) = psx_scenario::scenario::Scenario::parse(&text) {
+            for f in s.off.keys() {
+                off.entry(f.clone()).or_default().push(id.clone());
+            }
+        }
+    }
+    let now = sources_hash(root);
+    let read = |p: PathBuf| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let c: Vec<Value> = c_functions(root)
+        .into_iter()
+        .map(|(name, file, line)| {
+            let mut v = json!({"name": name, "file": format!("decomp/{file}"), "line": line,
+                "names": addr(&name), "off": off.get(&name)});
+            if let Some(mut k) = read(check_file(root, &name)) {
+                k["stale"] = json!(k["sources"].as_str() != Some(now.as_str()));
+                v["check"] = k;
+            }
+            v
+        })
+        .collect();
+    let log = std::fs::read_to_string(root.join(CHECKS).join("checks.jsonl")).unwrap_or_default();
+    let checks: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    json!({
+        "names": {"functions": names.functions.len(), "guessed": guessed, "globals": names.globals.len(), "types": names.types.len()},
+        "c": c,
+        "off": off.iter().map(|(f, s)| json!({"function": f, "scenarios": s, "names": addr(f)})).collect::<Vec<_>>(),
+        "checks": checks.iter().rev().take(200).rev().collect::<Vec<_>>(),
+        "compiler": compiler().map(|p| p.display().to_string()),
+        "replaced_runs": Value::Null,
+    })
 }
 
 impl Op for CodeCheckArgs {
@@ -612,6 +779,23 @@ fn message(l: &str) -> Option<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Code view finds the functions the C defines, not its prototypes,
+    /// types, comments or calls, and tells a check made on other C.
+    #[test]
+    fn c_functions_are_the_definitions() {
+        let root = std::env::temp_dir().join(format!("psx-c-functions-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("decomp")).unwrap();
+        let c = "#include \"names.h\"\n/* world_collide(a)\n   {\n*/\nint helper(int x);\ntypedef struct { int a; } T;\n\
+static int helper(int x)\n{\n    return x + 1;\n}\n\nvoid world_collide(Actor *a) {\n    helper(a->x);\n}\nint table[2] = {1, 2};\n";
+        std::fs::write(root.join("decomp/world.c"), c).unwrap();
+        let fs = c_functions(&root);
+        assert_eq!(fs, vec![("helper".into(), "world.c".into(), 7), ("world_collide".into(), "world.c".into(), 12)]);
+        let h = sources_hash(&root);
+        std::fs::write(root.join("decomp/world.c"), format!("{c}\n")).unwrap();
+        assert_ne!(h, sources_hash(&root), "a change to the C changes the hash");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn names(text: &str) -> (PathBuf, Names) {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
