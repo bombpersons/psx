@@ -36,7 +36,7 @@ behave differently from what their comments say.
 | M4 | `crates/psx/src/ghidra.rs:944` | The analysis cache key leaves out the contents of the language spec files. | fixed |
 | M5 | `crates/psx/src/calls.rs:92-107`, `reports.rs` | Reviewer reports, meant for the person only, are copied into `.psx/calls.jsonl`. | fixed |
 | M6 | `crates/psx/src/states.rs:318,642` | Concurrent rebuilds `remove_dir_all` each other's output folder. | fixed |
-| M7 | `crates/psx-assets/src/adpcm.rs:46-52` vs `psx-core/src/spu.rs:739` | The offline ADPCM decoder says it matches the SPU but clamps filters/shifts and rounds differently. | open |
+| M7 | `crates/psx-assets/src/adpcm.rs:46-52` vs `psx-core/src/spu.rs:739` | The offline ADPCM decoder says it matches the SPU but clamps filters/shifts and rounds differently. | fixed |
 | M8 | `crates/psx-core/src/bus.rs:859,938` | Byte/halfword reads of timers and cache control are not masked to the access width. | open |
 | M9 | `crates/psx-core/src/cpu.rs:1050-1059,1208-1237` | COP0 moves: EPC writable, SR/DCIC unmasked, no reserved-instruction exception for registers 0/1/2/4/10, MFC0 from 16-31 writes rt, BC0x/BC2x raise RI. | open |
 | M10 | `crates/psx-gte/src/gte.rs:61-74` | The opcode alias table runs commands Mednafen treats as no-ops. | open |
