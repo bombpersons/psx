@@ -305,6 +305,11 @@ div.err:not(.call) { color: var(--act); font-size: 13px; }
 .player .pmark button { border: 0; background: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0 3px; border-radius: 6px; }
 .player .pmark button:hover { color: var(--act); background: var(--panel); }
 .player.waiting canvas { opacity: .55; }
+/* Gamepad setup */
+#padsetup { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: grid; place-items: center; z-index: 50; }
+#padsetup .card { width: min(440px, calc(100vw - 32px)); }
+#padsetup .ask { font-size: 20px; margin: 14px 0 6px; }
+#padsetup .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 /* Code view */
 .meter { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); margin-top: 10px; gap: 2px; }
 .meter i { display: block; height: 100%; }
@@ -1502,8 +1507,12 @@ function playNowCard() {
       <label for="pn-n">recording</label><input type="text" id="pn-n" value="${esc(N.name)}" placeholder="its name">` : ""}
     <label for="pn-w">what you'll do</label><input type="text" id="pn-w" value="${esc(N.what)}" placeholder="${N.scenario ? "a sentence: the recording's description, and what the agent reads" : "optional, for the agent"}">
     <span></span><div class="row" style="display:flex;gap:8px;align-items:center"><button class="b primary" id="pn-go">Play</button><span class="quiet">${N.scenario ? `becomes ${esc(N.scenario)}/${esc(N.name || "…")}; F12 to finish, as for a request` : "F12 to finish; the run keeps the state and your input"}</span></div>
-    <span></span><div class="err" id="pn-err"></div></div></div>`;
+    <span></span><div class="err" id="pn-err"></div>
+    <label>gamepad</label><div class="quiet">${padsNow()} <button class="b" id="pn-pad">Set up a gamepad</button></div></div></div>`;
 }
+const padsNow = () => { const ps = connectedPads(); return ps.length ? ps.map(g => `${esc(g.id.replace(/\s*\(.*$/, "").slice(0, 40))} (${padKind(g)})`).join(", ") : "none seen yet (press a button on it)"; };
+// A pad connecting (the browser tells once a button is pressed): the Play page says so.
+addEventListener("gamepadconnected", () => { if (S.view === "requests" && !S.player && !S.padSetup && !document.activeElement?.closest?.(".playnow")) requestsView(); });
 async function loadPlayNow(p) {
   const N = S.playnow;
   try { N.scens[p] = await api(`/api/p/${p}/recordings`); } catch (e) { N.scens[p] = {scenarios: []}; }
@@ -1513,6 +1522,7 @@ function playNowWire() {
   const N = S.playnow; if (!N || !$("#pn-go")) return;
   const on = (id, k, redraw) => { const e = $(id); if (e) e[e.tagName === "SELECT" ? "onchange" : "oninput"] = () => { N[k] = k === "p" ? +e.value : e.value; if (redraw) requestsView(); }; };
   on("#pn-p", "p", true); on("#pn-s", "scenario", true); on("#pn-f", "from", false); on("#pn-n", "name", false); on("#pn-w", "what", false);
+  $("#pn-pad").onclick = () => padSetup();
   $("#pn-go").onclick = async () => {
     const err = $("#pn-err"); err.textContent = "";
     if (N.scenario && !/^[A-Za-z0-9_.-]+$/.test(N.name || "")) { err.textContent = "Name the recording: letters, digits, - _ ."; return; }
@@ -1630,7 +1640,7 @@ function playerView() {
   const person = !!r?.person;
   v.innerHTML = `<div class="player ${P.compose || labelling ? "waiting" : ""}">
     <div><canvas id="pscreen" width="320" height="240" tabindex="0" title="click to play: the keys go to the game"></canvas>
-      <div class="padline" id="pline" style="margin-top:6px"></div></div>
+      <div class="padline" id="pline" style="margin-top:6px"></div><div class="padline quiet" id="ppad" style="margin-top:4px"></div></div>
     <div class="side">
       <div class="what" style="white-space:pre-wrap;font-size:14px">${person ? `<span class="quiet">Your play:</span> ` : ""}${esc(req)}</div>
       <div class="msg">${esc(st.message || "")}</div>
@@ -1723,19 +1733,148 @@ function playerKey(ev, P) {
   P.keys.add(k);
   sendInput(P);
 }
+// Gamepads. The browser maps pads it knows to the standard layout; others
+// come with buttons and axes in their own order (a d-pad as a hat axis,
+// say), and so does a pad whose standard mapping is wrong. For those the
+// person teaches the page the layout once (padSetup), kept in this browser
+// by the pad's id. What is sent is the window's names (gilrs), so the
+// controls file's bindings apply as in the window.
+const PAD_KEY = "psx-pad-layouts";
+function padLayouts() { try { return JSON.parse(localStorage.getItem(PAD_KEY) || "{}") || {}; } catch (e) { return {}; } }
+function savePadLayout(id, layout) {
+  try { const l = padLayouts(); if (layout) l[id] = layout; else delete l[id]; localStorage.setItem(PAD_KEY, JSON.stringify(l)); } catch (e) {}
+}
+// A hat switch: one axis, -1 for up then clockwise in steps of 2/7; at rest it reads above 1.
+const HAT = [["DPadUp"], ["DPadUp", "DPadRight"], ["DPadRight"], ["DPadRight", "DPadDown"], ["DPadDown"], ["DPadDown", "DPadLeft"], ["DPadLeft"], ["DPadLeft", "DPadUp"]];
+const hatDirs = v => v >= -1.05 && v <= 1.05 ? HAT[Math.round((v + 1) * 3.5) % 8] : [];
+// Axes seen resting above 1: hats, on pads not set up.
+const seenHats = {};
+// A learned control: a button index, or an axis pushed past half one way.
+const srcOn = (g, c) => c.b != null ? !!g.buttons[c.b]?.pressed : (g.axes[c.a] || 0) * c.s > 0.5;
+const padKind = g => padLayouts()[g.id] ? "set up" : g.mapping === "standard" ? "standard" : "not set up";
+// One pad as the window's names and its sticks (-1..1, +y up).
+function readPad(g) {
+  const L = padLayouts()[g.id], pad = new Set();
+  if (L) {
+    for (const [name, c] of Object.entries(L.buttons || {})) if (srcOn(g, c)) pad.add(name);
+    for (const h of L.hats || []) for (const d of hatDirs(g.axes[h])) pad.add(d);
+    const ax = c => c ? (g.axes[c.a] || 0) * c.s : 0, k = L.sticks || {};
+    return {pad, sticks: [ax(k.lx), -ax(k.ly), ax(k.rx), -ax(k.ry)]};
+  }
+  g.buttons.forEach((b, i) => { if (b.pressed && PAD_NAMES[i]) pad.add(PAD_NAMES[i]); });
+  if (g.mapping !== "standard") {
+    // A guess until it is set up: buttons in the standard order, a hat for the d-pad.
+    const hats = seenHats[g.id] = seenHats[g.id] || new Set();
+    g.axes.forEach((v, i) => { if (v > 1.05) hats.add(i); });
+    for (const h of hats) for (const d of hatDirs(g.axes[h])) pad.add(d);
+  }
+  return {pad, sticks: [g.axes[0] || 0, -(g.axes[1] || 0), g.axes[2] || 0, -(g.axes[3] || 0)]};
+}
+const connectedPads = () => [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(g => g && g.connected);
 function pollPads(P) {
-  const pads = [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(g => g && g.connected);
-  const pad = new Set();
+  const pads = connectedPads(), pad = new Set();
   let sticks = [0, 0, 0, 0];
-  for (const g of pads) {
-    if (g.mapping !== "standard") continue;
-    g.buttons.forEach((b, i) => { if (b.pressed && PAD_NAMES[i]) pad.add(PAD_NAMES[i]); });
-    // The pad whose sticks moved steers (+y up, as gamepads report it to the window).
-    const a = [g.axes[0] || 0, -(g.axes[1] || 0), g.axes[2] || 0, -(g.axes[3] || 0)].map(x => Math.round(x * 100) / 100);
+  if (!S.padSetup) for (const g of pads) {
+    const r = readPad(g);
+    r.pad.forEach(n => pad.add(n));
+    // The pad whose sticks moved steers.
+    const a = r.sticks.map(x => Math.round(x * 100) / 100);
     if (a.some(x => Math.abs(x) > 0.15) || pads.length === 1) sticks = a;
   }
   P.pad = [...pad].sort(); P.sticks = sticks;
+  padLine(P, pads);
   sendInput(P);
+}
+// Under the screen: which gamepads the page sees, and what they press now.
+function padLine(P, pads) {
+  const el = $("#ppad"); if (!el) return;
+  const t = !pads.length ? "No gamepad seen: press a button on it (browsers show a pad only after one)."
+    : pads.map(g => `${g.id.replace(/\s*\(.*$/, "").slice(0, 40)} (${padKind(g)})`).join(", ") + (P.pad.length ? " · pressing " + P.pad.join(" ") : "");
+  if (el._t !== t) {
+    el._t = t;
+    const unknown = pads.some(g => padKind(g) === "not set up");
+    el.innerHTML = `${esc(t)} <button class="b" data-act="padsetup">${unknown ? "Set up gamepad" : "Set up again"}</button>${unknown ? `<div class="warnbox">The browser does not know this pad's layout: buttons are guessed. Set it up so each one is right.</div>` : ""}`;
+    el.querySelector("[data-act=padsetup]").onclick = () => padSetup();
+  }
+}
+
+// Teach the page a pad: each control in turn, pressed once. The pad is the
+// first one that moves; a hat d-pad is taken whole from its first press.
+const SETUP_STEPS = [
+  ["DPadUp", "D-pad up"], ["DPadDown", "D-pad down"], ["DPadLeft", "D-pad left"], ["DPadRight", "D-pad right"],
+  ["South", "the bottom face button (✕)"], ["East", "the right face button (○)"], ["West", "the left face button (□)"], ["North", "the top face button (△)"],
+  ["LeftTrigger", "L1"], ["RightTrigger", "R1"], ["LeftTrigger2", "L2"], ["RightTrigger2", "R2"],
+  ["Select", "Select (Share, Back)"], ["Start", "Start (Options)"], ["LeftThumb", "L3: press the left stick in"], ["RightThumb", "R3: press the right stick in"],
+  ["lx", "the left stick: push it right", 1], ["ly", "the left stick: push it down", 1], ["rx", "the right stick: push it right", 1], ["ry", "the right stick: push it down", 1],
+];
+function padSetup() {
+  if (S.padSetup) return;
+  const P = S.player, was = P && P.status.state === "paused";
+  if (P && !was) playerCmdBody(P, {cmd: "pause", paused: true});
+  const U = S.padSetup = {step: 0, id: null, base: null, layout: {buttons: {}, hats: [], sticks: {}}, used: new Set(), release: false};
+  const box = document.createElement("div"); box.id = "padsetup";
+  document.body.append(box);
+  const done = save => {
+    if (save && U.id) savePadLayout(U.id, U.layout);
+    cancelAnimationFrame(U.raf); box.remove(); removeEventListener("keydown", U.key, true); S.padSetup = null;
+    if (P && S.player === P && !was) playerCmdBody(P, {cmd: "pause", paused: false});
+    if (P && S.player === P) { const el = $("#ppad"); if (el) el._t = null; }
+    else if (S.view === "requests") requestsView();
+  };
+  const draw = () => {
+    const st = SETUP_STEPS[U.step];
+    box.innerHTML = `<div class="card"><h2>Set up gamepad</h2>
+      <div class="quiet">${U.id ? esc(U.id) : "Press D-pad up on the gamepad to set up."}</div>
+      ${st ? `<div class="ask">${U.release ? "Let go…" : `Press <b>${esc(st[1])}</b>`}</div><div class="quiet">${U.step + 1} of ${SETUP_STEPS.length}${U.layout.hats.length ? " · d-pad: a hat switch" : ""}</div>
+        <div class="row"><button class="b" data-a="skip">Skip (it has none)</button><button class="b" data-a="cancel">Cancel (Esc)</button></div>`
+      : `<div class="ask">All set.</div><div class="row"><button class="b primary" data-a="save">Save for this pad</button><button class="b" data-a="cancel">Cancel</button></div>`}
+      ${U.id && padLayouts()[U.id] ? `<div class="row" style="margin-top:6px"><button class="b" data-a="forget">Forget this pad's setup</button></div>` : ""}</div>`;
+    for (const b of box.querySelectorAll("[data-a]")) b.onclick = () => {
+      const a = b.dataset.a;
+      if (a === "skip") { U.step++; draw(); } else if (a === "save") done(true); else if (a === "cancel") done(false);
+      else if (a === "forget") { savePadLayout(U.id, null); done(false); }
+    };
+  };
+  U.key = e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(false); } };
+  addEventListener("keydown", U.key, true);
+  const snap = g => ({b: g.buttons.map(b => b.pressed), a: [...g.axes]});
+  const moved = (g, base) => {
+    for (let i = 0; i < g.buttons.length; i++) if (g.buttons[i].pressed && !base.b[i] && !U.used.has("b" + i)) return {b: i};
+    for (let i = 0; i < g.axes.length; i++) {
+      const v = g.axes[i], d = v - (base.a[i] || 0);
+      if (Math.abs(d) > 0.6 && !U.used.has("a" + i + (v > 0 ? "+" : "-"))) return {a: i, s: Math.sign(v) || 1, hat: base.a[i] > 1.05};
+    }
+    return null;
+  };
+  const still = (g, base) => g.buttons.every((b, i) => b.pressed === base.b[i]) && g.axes.every((v, i) => Math.abs(v - (base.a[i] || 0)) < 0.3);
+  const bases = {};
+  const tick = () => {
+    U.raf = requestAnimationFrame(tick);
+    const pads = connectedPads();
+    for (const g of pads) if (!bases[g.id]) bases[g.id] = snap(g);
+    const g = U.id ? pads.find(x => x.id === U.id) : pads.find(x => !still(x, bases[x.id]));
+    if (!g) return;
+    if (!U.id) { U.id = g.id; U.base = bases[g.id]; draw(); }
+    if (U.release) { if (still(g, U.base)) { U.release = false; draw(); } return; }
+    const st = SETUP_STEPS[U.step]; if (!st) return;
+    const c = moved(g, U.base); if (!c) return;
+    const [name, , stick] = st;
+    if (stick) {
+      if (c.b != null || c.hat) return;
+      U.layout.sticks[name] = {a: c.a, s: c.s}; U.used.add("a" + c.a + "+"); U.used.add("a" + c.a + "-");
+    } else if (c.hat) {
+      // A hat gives the whole d-pad.
+      if (!name.startsWith("DPad")) return;
+      U.layout.hats.push(c.a); U.used.add("a" + c.a + "+"); U.used.add("a" + c.a + "-");
+      while (SETUP_STEPS[U.step + 1]?.[0].startsWith("DPad")) U.step++;
+    } else {
+      U.layout.buttons[name] = c.b != null ? {b: c.b} : {a: c.a, s: c.s};
+      U.used.add(c.b != null ? "b" + c.b : "a" + c.a + (c.s > 0 ? "+" : "-"));
+    }
+    U.step++; U.release = true; draw();
+  };
+  draw();
+  U.raf = requestAnimationFrame(tick);
 }
 async function sendInput(P) {
   const body = {keys: [...P.keys].sort(), pad: P.pad || [], sticks: P.sticks || [0, 0, 0, 0], fast: P.fast};
