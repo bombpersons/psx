@@ -345,6 +345,7 @@ impl ArgsContext {
                 "layout":"<version>/<LIB>.json","override":"symbols.sigs / --sigs; shared default: PSX_SIGS_DIR (use an absolute path)"},
             "resolved":{"media":r.media,"media_from":r.media_from,"image_sha256":image_sha256,"bios":r.bios,"bios_selection":r.bios_reason,"disc_region_hint":r.region.map(|r|r.hint())},
             "selected_bios":selected_info,"bios_candidates":candidates,"ghidra":crate::ghidra::status(),
+            "mips_gcc":crate::decomp::compiler(),
             "state":r.state,"setup":setup,"capabilities":capabilities(),"warnings":r.warnings,
             "next_calls":next_calls});
         if !chosen {

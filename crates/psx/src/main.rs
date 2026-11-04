@@ -19,7 +19,9 @@ mod calls;
 mod code;
 mod commands;
 mod context;
+
 mod coverage;
+mod decomp;
 mod error;
 mod ghidra;
 mod guide;

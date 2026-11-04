@@ -5,7 +5,8 @@
 //! A call runs from its entry until the CPU is back at the return address
 //! with `sp` as it was, or a step limit. Its effects are what a caller could
 //! see: the RAM and scratchpad bytes it left changed (its own stack frame,
-//! below `sp`, is scratch and left out), `v0` and `v1`, `sp` and the
+//! below `sp`, is scratch and left out), the return registers it uses (`v0`,
+//! and `v1` for a 64-bit value: otherwise `v1` is scratch), `sp` and the
 //! registers a call keeps (`s0`..`s7`, `gp`, `fp`), the GTE's registers,
 //! the hardware register writes in order, and the functions it called with
 //! their first four arguments, in order. What an exception handler does
@@ -115,8 +116,16 @@ pub struct Compared {
 /// The call `m` is at the entry of, run as the original does it and with
 /// the CPU sent to `replacement` instead (code in `build`, loaded at
 /// [`crate::bus::HIDDEN`]), each from `m`'s state, for at most `max_steps`
-/// steps. `m` is left as it was.
-pub fn compare(m: &Machine, build: &[u8], replacement: u32, max_steps: u64) -> Result<Compared, String> {
+/// steps; the first `returns` of `v0` and `v1` are compared (0 for a
+/// function returning nothing, 2 for a 64-bit value). `m` is left as it
+/// was.
+pub fn compare(
+    m: &Machine,
+    build: &[u8],
+    replacement: u32,
+    returns: usize,
+    max_steps: u64,
+) -> Result<Compared, String> {
     let state = m.save_state(None);
     let fresh = || -> Result<Machine, String> {
         let (_, mut c) = Machine::load_state(&state, m.bus.bios.clone()).map_err(|e| format!("{e:?}"))?;
@@ -128,7 +137,7 @@ pub fn compare(m: &Machine, build: &[u8], replacement: u32, max_steps: u64) -> R
     let mut b = fresh()?;
     b.cpu.set_pc(replacement);
     let replacement = run_call(&mut b, max_steps);
-    let differences = differences(&original, &replacement, max_steps);
+    let differences = differences(&original, &replacement, returns, max_steps);
     Ok(Compared { original, replacement, differences })
 }
 
@@ -136,8 +145,9 @@ fn hex(v: u32) -> String {
     format!("0x{v:08X}")
 }
 
-/// How `b` (the replacement) differs from `a` (the original).
-pub fn differences(a: &Effects, b: &Effects, max_steps: u64) -> Vec<String> {
+/// How `b` (the replacement) differs from `a` (the original), comparing
+/// the first `returns` return registers.
+pub fn differences(a: &Effects, b: &Effects, returns: usize, max_steps: u64) -> Vec<String> {
     let mut out = Vec::new();
     for (e, who) in [(a, "the original"), (b, "the replacement")] {
         if !e.returned {
@@ -147,7 +157,7 @@ pub fn differences(a: &Effects, b: &Effects, max_steps: u64) -> Vec<String> {
     if !out.is_empty() {
         return out;
     }
-    for (k, name) in ["v0", "v1"].iter().enumerate() {
+    for (k, name) in ["v0", "v1"].iter().enumerate().take(returns) {
         if a.ret[k] != b.ret[k] {
             out.push(format!("{name}: original {}, replacement {}", hex(a.ret[k]), hex(b.ret[k])));
         }
@@ -208,9 +218,10 @@ pub fn differences(a: &Effects, b: &Effects, max_steps: u64) -> Vec<String> {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// The function the tests check, for psx-core's tests and psx's.
+#[doc(hidden)]
+pub mod tests_support {
+    use crate::Machine;
     use crate::padflow::test_program::asm::*;
     use crate::padflow::test_program::load;
 
@@ -221,20 +232,20 @@ mod tests {
     const SP: u32 = 29;
     const RA: u32 = 31;
 
-    fn sw(rt: u32, off: u32, base: u32) -> u32 {
+    pub fn sw(rt: u32, off: u32, base: u32) -> u32 {
         i(0x2B, base, rt, off)
     }
-    fn lw(rt: u32, off: u32, base: u32) -> u32 {
+    pub fn lw(rt: u32, off: u32, base: u32) -> u32 {
         i(0x23, base, rt, off)
     }
-    fn jal(target: u32) -> u32 {
+    pub fn jal(target: u32) -> u32 {
         0x03 << 26 | (target >> 2 & 0x03FF_FFFF)
     }
 
     /// The original, at 0x80010100: f(a0) stores a0 + 1 at 0x80020000 and
     /// returns a0 * 2, keeping s0 on the stack, and calls 0x80010200
     /// (which returns at once) with a0 = 5.
-    fn original() -> Vec<u32> {
+    pub fn original() -> Vec<u32> {
         vec![
             addiu(SP, SP, 0xFFF0), // 80010100
             sw(RA, 12, SP),
@@ -256,7 +267,7 @@ mod tests {
 
     /// A machine at the call of the original with a0 = 20 (s0 = 0x5050),
     /// returning to 0x80010000 (a loop).
-    fn at_call() -> Machine {
+    pub fn at_call() -> Machine {
         let mut m = Machine::new(vec![0; 0x8_0000]);
         load(&mut m, 0x8001_0000, &[j(0x8001_0000), NOP]);
         load(&mut m, 0x8001_0100, &original());
@@ -268,6 +279,20 @@ mod tests {
         m.cpu.set_pc(0x8001_0100);
         m
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tests_support::*;
+    use super::*;
+    use crate::padflow::test_program::asm::*;
+
+    const V0: u32 = 2;
+    const A0: u32 = 4;
+    const T0: u32 = 8;
+    const S0: u32 = 16;
+    const SP: u32 = 29;
+    const RA: u32 = 31;
 
     /// A replacement assembled to run at HIDDEN, as bytes.
     fn build(code: &[u32]) -> Vec<u8> {
@@ -275,7 +300,7 @@ mod tests {
     }
 
     fn check(code: &[u32]) -> Compared {
-        compare(&at_call(), &build(code), crate::bus::HIDDEN, 10_000).unwrap()
+        compare(&at_call(), &build(code), crate::bus::HIDDEN, 1, 10_000).unwrap()
     }
 
     #[test]
