@@ -547,7 +547,9 @@ impl Session {
 
     /// Mark this moment: its state, RAM and screen go to `marks/<n>/` in `dir`.
     pub fn mark(&mut self, dir: &Path) -> Result<usize, String> {
-        let n = self.marks.len() + 1;
+        // After the highest kept: a discarded mark's number is not reused
+        // while a later one keeps its own.
+        let n = self.marks.iter().map(|m| m.n).max().unwrap_or(0) + 1;
         let mdir = dir.join("marks").join(n.to_string());
         let mark = Mark {
             n,
@@ -572,9 +574,16 @@ impl Session {
 
     /// Give mark `n` a label.
     pub fn label_mark(&mut self, n: usize, label: &str) -> Result<(), String> {
-        let mark = &mut self.marks[n - 1];
+        let mark = self.marks.iter_mut().find(|m| m.n == n).ok_or_else(|| format!("no mark {n}"))?;
         mark.label = label.to_string();
         std::fs::write(mark.dir.join("mark.json"), mark.json().to_string()).map_err(|e| format!("mark.json: {e}"))
+    }
+
+    /// Discard mark `n`: it leaves the report and its files go.
+    pub fn discard_mark(&mut self, n: usize) -> Result<(), String> {
+        let i = self.marks.iter().position(|m| m.n == n).ok_or_else(|| format!("no mark {n}"))?;
+        let mark = self.marks.remove(i);
+        std::fs::remove_dir_all(&mark.dir).map_err(|e| format!("{}: {e}", mark.dir.display()))
     }
 
     fn write_screen(&self, p: &Path) -> std::io::Result<()> {
@@ -1209,7 +1218,11 @@ mod tests {
         // Back to the save made on the first route: its input comes back too.
         s.quick_load().unwrap();
         press(&mut s, 40, cross);
-        s.mark(&dir).unwrap();
+        // A mark discarded: its files go, and the next takes a new number.
+        assert_eq!(s.mark(&dir).unwrap(), 3);
+        s.discard_mark(3).unwrap();
+        assert!(!dir.join("marks/3").exists());
+        assert_eq!(s.mark(&dir).unwrap(), 3, "the highest kept is 2");
         // Rewind past input: it is dropped, and play goes on from there.
         press(&mut s, 330, 0);
         press(&mut s, 20, start_btn);

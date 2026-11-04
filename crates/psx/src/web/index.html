@@ -300,6 +300,10 @@ div.err:not(.call) { color: var(--act); font-size: 13px; }
 /* The note before handing back: the game waits under it. */
 .player .handback { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--accent); border-radius: 8px; padding: 8px; background: var(--sel); }
 .player .handback textarea { min-height: 7em; }
+.player .pmarks { display: flex; flex-wrap: wrap; gap: 4px; }
+.player .pmark { background: var(--chip); border-radius: 10px; padding: 1px 4px 1px 8px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; }
+.player .pmark button { border: 0; background: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0 3px; border-radius: 6px; }
+.player .pmark button:hover { color: var(--act); background: var(--panel); }
 .player.waiting canvas { opacity: .55; }
 /* Code view */
 .meter { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); margin-top: 10px; gap: 2px; }
@@ -1630,9 +1634,9 @@ function playerView() {
     <div class="side">
       <div class="what" style="white-space:pre-wrap;font-size:14px">${person ? `<span class="quiet">Your play:</span> ` : ""}${esc(req)}</div>
       <div class="msg">${esc(st.message || "")}</div>
-      ${labelling ? `<div><b>Label mark ${st.labelling}</b> (the game waits): <input type="text" id="plabel" value="${esc(label)}" placeholder="what this moment is, for the agent"><div class="row" style="margin-top:4px"><button class="b primary" id="plabelok">Save label</button></div></div>` : ""}
+      ${labelling ? `<div><b>Label mark ${st.labelling}</b> (the game waits): <input type="text" id="plabel" value="${esc(label)}" placeholder="what this moment is, for the agent"><div class="row" style="margin-top:4px"><button class="b primary" id="plabelok" title="Enter">Save label</button><button class="b" id="plabelskip" title="Esc">No label</button><button class="b" id="pdiscard" title="Delete it: the agent never sees it">Discard mark</button></div></div>` : ""}
       ${P.compose ? `<div class="handback">
-        <div><b>${P.compose === "decline" ? "Decline" : "Hand back"}</b> <span class="quiet">· the game waits; Enter sends, Esc goes back</span></div>
+        <div><b>${P.compose === "decline" ? "Decline" : "Hand back"}</b> <span class="quiet">· the game waits; Enter sends, Esc or ${P.compose === "decline" ? "F10" : "F12"} goes back</span></div>
         <textarea id="pnote" placeholder="${P.compose === "decline" ? "Why not, for the agent: what went wrong, or what to ask instead" : "A note for the agent: what you did, what to look at (optional)"}">${esc(note)}</textarea>
         <div class="row">
           <button class="b primary" data-c="send" title="Enter (Shift+Enter: a new line)">${P.compose === "decline" ? "Decline with this note" : person ? "Save the play" : "Hand back"}</button>
@@ -1654,6 +1658,7 @@ function playerView() {
         ${person ? "" : `<button class="b" data-c="decline" title="F10: could not or would not; pause and write why">Decline…</button>`}
         <button class="b" data-c="leave" title="${person ? "stop and keep nothing" : "stop without answering: the request goes back to the queue"}">${person ? "Discard" : "Leave"}</button>
       </div>`}
+      ${(st.marks || []).length && !labelling ? `<div class="pmarks">${st.marks.map(m => `<span class="pmark">mark ${m.n}${m.label ? ": " + esc(m.label) : ""}<button data-discard="${m.n}" title="discard mark ${m.n}">✕</button></span>`).join("")}</div>` : ""}
       <div class="err" id="perr"></div>
       <div class="quiet">Click the screen, then play with your keys or a gamepad (sound plays only in the window). F12 pauses for the note, as in the window.</div>
       <div class="keys"><span></span><b>key</b><b>gamepad</b>${keys}</div>
@@ -1666,11 +1671,15 @@ function playerView() {
   // The note: Enter sends it, Shift+Enter is a new line, Esc goes back to the game.
   if ($("#pnote")) $("#pnote").onkeydown = e => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); playerCmd(P, "send"); }
-    else if (e.key === "Escape" || e.code === "F12" && P.compose === "done") { e.preventDefault(); playerCmd(P, e.key === "Escape" ? "back" : "send"); }
+    // Esc, or the key that opened it again (F12, F10), goes back to the game.
+    else if (e.key === "Escape" || e.code === (P.compose === "done" ? "F12" : "F10")) { e.preventDefault(); playerCmd(P, "back"); }
   };
+  for (const b of v.querySelectorAll("button[data-discard]")) b.onclick = () => { if (confirm(`Discard mark ${b.dataset.discard}? Its files go and the agent never sees it.`)) playerCmdBody(P, {cmd: "discard", n: +b.dataset.discard}); };
   if ($("#plabelok")) {
-    const save = () => playerCmdBody(P, {cmd: "label", n: st.labelling, label: $("#plabel").value});
-    $("#plabelok").onclick = save; $("#plabel").onkeydown = e => { if (e.key === "Enter") save(); };
+    const save = (label = $("#plabel").value) => playerCmdBody(P, {cmd: "label", n: st.labelling, label});
+    $("#plabelok").onclick = () => save(); $("#plabelskip").onclick = () => save("");
+    $("#pdiscard").onclick = () => playerCmdBody(P, {cmd: "discard", n: st.labelling});
+    $("#plabel").onkeydown = e => { if (e.key === "Enter") save(); else if (e.key === "Escape") { e.preventDefault(); save(""); } };
     $("#plabel").focus();
   } else if (P.compose) { const t = $("#pnote"); t.focus(); writing ? t.setSelectionRange(...writing) : t.setSelectionRange(t.value.length, t.value.length); }
   else if (st.state !== "lost") $("#pscreen").focus();

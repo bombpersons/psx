@@ -43,6 +43,7 @@ enum Cmd {
     Leave,
     Mark,
     Label(usize, String),
+    Discard(usize),
     Rewind,
     QuickSave,
     QuickLoad,
@@ -131,7 +132,7 @@ impl Live {
     }
 
     /// A command from the page: done, decline (each with a note), leave,
-    /// mark, label (n, label), rewind, quick_save, quick_load, restart, pause,
+    /// mark, label (n, label), discard (n: a mark), rewind, quick_save, quick_load, restart, pause,
     /// writing (on: the person is writing the note; the game waits).
     pub fn command(&self, v: &Value) -> crate::Result<Value> {
         if self.ended() {
@@ -147,6 +148,7 @@ impl Live {
             "leave" => Cmd::Leave,
             "mark" => Cmd::Mark,
             "label" => Cmd::Label(v["n"].as_u64().unwrap_or(0) as usize, v["label"].as_str().unwrap_or("").to_string()),
+            "discard" => Cmd::Discard(v["n"].as_u64().unwrap_or(0) as usize),
             "rewind" => Cmd::Rewind,
             "quick_save" => Cmd::QuickSave,
             "quick_load" => Cmd::QuickLoad,
@@ -278,8 +280,17 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
                     }
                     Err(e) => say(format!("Could not mark: {e}")),
                 },
+                Cmd::Discard(n) => {
+                    match s.discard_mark(n) {
+                        Ok(()) => say(format!("Mark {n} discarded.")),
+                        Err(e) => say(format!("Could not discard mark {n}: {e}")),
+                    }
+                    if labelling == Some(n) {
+                        labelling = None;
+                    }
+                }
                 Cmd::Label(n, label) => {
-                    if (1..=s.marks.len()).contains(&n) {
+                    if s.marks.iter().any(|m| m.n == n) {
                         match s.label_mark(n, label.trim()) {
                             Ok(()) => say(format!("Mark {n} labelled.")),
                             Err(e) => say(format!("Could not label mark {n}: {e}")),

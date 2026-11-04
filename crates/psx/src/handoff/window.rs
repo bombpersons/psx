@@ -239,7 +239,13 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                 }
             }
             Screen::Label(n) => {
-                if has("Enter") || has("NumPadEnter") || has("Escape") {
+                if has("Delete") {
+                    match s.discard_mark(n) {
+                        Ok(()) => msg.show(format!("Mark {n} discarded.")),
+                        Err(e) => msg.show(format!("Could not discard mark {n}: {e}")),
+                    }
+                    screen = Screen::Play;
+                } else if has("Enter") || has("NumPadEnter") || has("Escape") {
                     let text = if has("Escape") { "" } else { label.trim() };
                     match s.label_mark(n, text) {
                         Ok(()) => msg.show(format!("Mark {n} saved.")),
@@ -254,7 +260,8 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                 }
             }
             Screen::Note(end) => {
-                if has("Escape") {
+                // Esc, or the key that opened it again, goes back to the game.
+                if has("Escape") || has(if end == End::Done { "F12" } else { "F10" }) {
                     screen = Screen::Play;
                 } else if has("Enter") || has("NumPadEnter") {
                     return Ok((end, note.trim().to_string()));
@@ -350,6 +357,7 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                 p.wrapped("What is happening here? A few words help the agent (optional).", WHITE);
                 p.line("Enter: done", GREY);
                 p.line("Esc: no label", GREY);
+                p.line("Delete: discard this mark", GREY);
                 p.gap();
                 for l in wrap(&format!("{label}_"), COLS) {
                     p.line(&l, WHITE);
@@ -364,7 +372,7 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                 p.gap();
                 p.wrapped(prompt, WHITE);
                 p.line("Enter: hand back now", GREY);
-                p.line("Esc: keep playing", GREY);
+                p.line(&format!("Esc or {}: keep playing", if end == End::Done { "F12" } else { "F10" }), GREY);
                 p.gap();
                 // A long note shows its end, where the typing is.
                 let lines = wrap(&format!("{note}_"), COLS);
