@@ -504,6 +504,14 @@ fn execute_decoding() {
     assert_eq!(g.execute(0x4A28_0030), 22);
     // Aliases: 0x00 is RTPS.
     assert_eq!(g.execute(0x00), 14);
+    // Opcodes Mednafen leaves commented out do nothing, whatever neighbour
+    // they sit beside (0x2C next to AVSZ3, 0x15 next to NCDT).
+    for code in [0x04, 0x15, 0x18, 0x19, 0x1D, 0x1F, 0x21, 0x23, 0x27, 0x2B, 0x2C] {
+        g.write_ctrl(31, 0x7FFF_F000);
+        let otz = g.read_data(7);
+        assert_eq!(g.execute(code), 0, "{code:#04X}");
+        assert_eq!((g.read_ctrl(31), g.read_data(7)), (0, otz), "{code:#04X}");
+    }
 }
 
 // --- math ---------------------------------------------------------------------------

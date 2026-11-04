@@ -56,19 +56,14 @@ pub mod op {
     pub const GPL: u32 = 0x3E;
     pub const NCCT: u32 = 0x3F;
 
-    /// The command a command word runs: unassigned opcodes alias the
-    /// nearest command, or name none (they only clear FLAG).
+    /// The command a command word runs. As Mednafen's `GTE_Instruction`:
+    /// 0x00/0x01 run RTPS and 0x1A runs DCPL; every other unassigned opcode
+    /// names none (it only clears FLAG). Hardware tests suggest some of those
+    /// partly behave like a neighbour, but the oracle treats them as no-ops.
     pub const fn alias(cmd: u32) -> u32 {
         match cmd & 0x3F {
             0x00 | 0x01 => RTPS,
-            0x04 | 0x06 => NCLIP,
-            0x15 | 0x16 => NCDT,
-            0x18 | 0x19 | 0x1B => NCCS,
-            0x1D | 0x1E => NCS,
-            0x1F | 0x20 => NCT,
-            0x21 | 0x23..=0x28 => SQR,
-            0x1A | 0x29 => DCPL,
-            0x2B..=0x2D => AVSZ3,
+            0x1A => DCPL,
             o => o,
         }
     }
