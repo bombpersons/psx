@@ -509,7 +509,7 @@ impl PsxServer {
             Err(e) => return respond(e.to_value(), None),
         };
         let cap =
-            args.get("timeout").and_then(Value::as_u64).map(|s| Duration::from_secs(s) + GRACE).unwrap_or(DEFAULT_CAP);
+            args.get("timeout").and_then(Value::as_u64).map(|s| Duration::from_secs(s).saturating_add(GRACE)).unwrap_or(DEFAULT_CAP);
         let queued_at = std::time::Instant::now();
         let permit = if tool.heavy {
             tokio::select! {

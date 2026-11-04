@@ -32,7 +32,7 @@ behave differently from what their comments say.
 |---|---|---|---|
 | M1 | `crates/psx/src/template.rs:611,359` | Template update deletes any manifest key whose hash matches, with no check against `..`/absolute paths. | fixed |
 | M2 | `crates/psx/src/code.rs:247,526,594,827` | Disassembly ranges near 0xFFFFFFFF overflow the loop counter: panic in dev, endless loop in release. | fixed |
-| M3 | `crates/psx/src/mcp.rs:512`, `run.rs:561` | A huge `timeout` panics when added to a `Duration`/`Instant`. | open |
+| M3 | `crates/psx/src/mcp.rs:512`, `run.rs:561` | A huge `timeout` panics when added to a `Duration`/`Instant`. | fixed |
 | M4 | `crates/psx/src/ghidra.rs:944` | The analysis cache key leaves out the contents of the language spec files. | open |
 | M5 | `crates/psx/src/calls.rs:92-107`, `reports.rs` | Reviewer reports, meant for the person only, are copied into `.psx/calls.jsonl`. | open |
 | M6 | `crates/psx/src/states.rs:318,642` | Concurrent rebuilds `remove_dir_all` each other's output folder. | open |

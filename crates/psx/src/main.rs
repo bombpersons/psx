@@ -444,6 +444,20 @@ pub(crate) fn instance_suffix() -> String {
     }
 }
 
+/// `secs` from now. A timeout argument can be any u64, and `Instant + Duration`
+/// panics past what the clock can hold: such a deadline is a century away.
+pub(crate) fn deadline_in(secs: u64) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    let far = std::time::Duration::from_secs(100 * 365 * 24 * 3600);
+    now.checked_add(std::time::Duration::from_secs(secs).min(far)).unwrap_or(now)
+}
+
+#[cfg(test)]
+#[test]
+fn any_timeout_gives_a_deadline() {
+    assert!(deadline_in(u64::MAX) > std::time::Instant::now());
+}
+
 /// Milliseconds since the Unix epoch (0 if the clock is set before it).
 pub(crate) fn now_ms() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)

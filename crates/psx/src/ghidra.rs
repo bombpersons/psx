@@ -204,7 +204,7 @@ fn budget(input: &Input) -> Result<Instant> {
     if input.analysis.is_some() && (!input.symbols.is_empty() || input.reanalyze) {
         return Err(Error::invalid("symbols/reanalyze require source or ram, not an analysis handle"));
     }
-    Ok(Instant::now() + Duration::from_secs(input.timeout))
+    Ok(crate::deadline_in(input.timeout))
 }
 
 /// One owner per analysis, including cached readers: an flock on psx.lock,

@@ -558,7 +558,7 @@ fn diagnose(ctx: &Ctx, a: RunCmdArgs, bios: &Path, media: Option<&Path>) -> crat
         snapshot_every: a.observe.snapshot_every,
         wav: wav.as_deref(),
         pad: a.cards.pad.as_deref().unwrap_or("digital"),
-        deadline: Some(std::time::Instant::now() + std::time::Duration::from_secs(a.timeout)),
+        deadline: Some(crate::deadline_in(a.timeout)),
     })?;
     v["run_dir"] = json!(dir);
     v["screen"] = v["dump"]["screen"].clone();

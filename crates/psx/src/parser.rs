@@ -88,7 +88,7 @@ pub fn run(
     let output = child.stdout.take().unwrap();
     let error = child.stderr.take().unwrap();
     let overflow = AtomicBool::new(false);
-    let deadline = Instant::now() + Duration::from_secs(spec.timeout);
+    let deadline = crate::deadline_in(spec.timeout);
     let result = std::thread::scope(|scope| {
         let writer = scope.spawn(move || {
             let mut input = input;
