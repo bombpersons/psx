@@ -32,6 +32,7 @@ pub enum Exception {
 
 /// COP0 register numbers used here.
 pub mod cop0 {
+    pub const DCIC: usize = 7;
     pub const BADVADDR: usize = 8;
     pub const SR: usize = 12;
     pub const CAUSE: usize = 13;
@@ -1205,33 +1206,53 @@ impl Cpu {
         Ok(())
     }
 
+    /// Mednafen's `COP0`, case for case.
     fn cop0_op(&mut self, i: u32, pc: u32, t: u32) -> Result<(), Exception> {
         let rt = ((i >> 16) & 31) as usize;
         let rd = ((i >> 11) & 31) as usize;
+        // Registers 0-2, 4 and 10 do not exist on the R3000A's COP0.
+        let missing = matches!(rd, 0 | 1 | 2 | 4 | 0x0A);
         match (i >> 21) & 31 {
+            // MFC0: a delayed load; registers 16-31 are NOP-ish.
             0x00 => {
-                let v = if rd == cop0::CAUSE { self.cause_ip() } else { self.cop0[rd] };
-                self.load = (rt, v);
+                if missing {
+                    return self.fail(Exception::ReservedInstruction, pc);
+                }
                 if matches!(rd, 3 | 5..=9 | 0x0B..=0x0F) {
+                    let v = if rd == cop0::CAUSE { self.cause_ip() } else { self.cop0[rd] };
+                    self.load = (rt, v);
                     self.t.ld_absorb = 0;
                     self.t.ld_which = rt as u8;
                 }
             }
+            // CFC0, CTC0.
+            0x02 | 0x06 => return self.fail(Exception::ReservedInstruction, pc),
+            // MTC0: only the breakpoint registers, DCIC, Cause's software
+            // interrupt bits and SR (less its unused bits) take writes.
             0x04 => {
-                let v = t;
                 match rd {
-                    cop0::CAUSE => self.cop0[rd] = (self.cop0[rd] & !0x300) | (v & 0x300),
-                    cop0::PRID | cop0::BADVADDR => {}
-                    _ => self.cop0[rd] = v,
+                    _ if missing => return self.fail(Exception::ReservedInstruction, pc),
+                    3 | 5 | 9 | 0x0B => self.cop0[rd] = t,
+                    cop0::DCIC => self.cop0[rd] = t & 0xFF80_003F,
+                    cop0::CAUSE => self.cop0[rd] = (self.cop0[rd] & !0x300) | (t & 0x300),
+                    cop0::SR => self.cop0[rd] = t & !((3 << 26) | (3 << 23) | (3 << 6)),
+                    _ => {}
                 }
                 self.refresh_int();
             }
-            0x10 if i & 0x3F == 0x10 => {
-                let sr = self.cop0[cop0::SR];
-                self.cop0[cop0::SR] = (sr & !0xF) | ((sr >> 2) & 0xF);
-                self.refresh_int();
-            }
-            _ => return self.fail(Exception::ReservedInstruction, pc),
+            // BC0F/BC0T: COP0's condition line reads false.
+            0x08 | 0x0C => self.cond_branch(i & (1 << 16) == 0, i & 0xFFFF),
+            0x10..=0x1F => match i & 0x1F {
+                0x10 => {
+                    let sr = self.cop0[cop0::SR];
+                    self.cop0[cop0::SR] = (sr & !0xF) | ((sr >> 2) & 0xF);
+                    self.refresh_int();
+                }
+                // TLBR, TLBWI, TLBWR, TLBP: no TLB.
+                0x01 | 0x02 | 0x06 | 0x08 => return self.fail(Exception::ReservedInstruction, pc),
+                _ => {}
+            },
+            _ => {}
         }
         Ok(())
     }

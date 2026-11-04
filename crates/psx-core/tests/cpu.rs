@@ -129,3 +129,52 @@ fn isolated_cache_drops_stores() {
     run(&mut m, 1);
     assert_eq!(m.bus.read(0x2000, Width::Word).unwrap(), 0);
 }
+
+// COP0 moves as Mednafen's `COP0` (rt, rd).
+fn mtc0(rt: u32, rd: u32) -> u32 {
+    0x4080_0000 | (rt << 16) | (rd << 11)
+}
+fn mfc0(rt: u32, rd: u32) -> u32 {
+    0x4000_0000 | (rt << 16) | (rd << 11)
+}
+
+#[test]
+fn mtc0_ignores_read_only_registers_and_masks_sr_and_dcic() {
+    let mut m = machine(&[mtc0(T0, cop0::EPC as u32), mtc0(T1, 7), mtc0(T1, cop0::SR as u32), NOP]);
+    m.cpu.cop0[cop0::EPC] = 0x1111;
+    m.cpu.regs[T0 as usize] = 0x2222;
+    m.cpu.regs[T1 as usize] = 0xFFFF_FFFF;
+    run(&mut m, 4);
+    assert_eq!(m.cpu.cop0[cop0::EPC], 0x1111, "EPC is read-only");
+    assert_eq!(m.cpu.cop0[7], 0xFF80_003F, "DCIC keeps its writable bits");
+    assert_eq!(m.cpu.cop0[cop0::SR], !((3 << 26) | (3 << 23) | (3 << 6)));
+}
+
+#[test]
+fn missing_cop0_registers_raise_reserved_instruction() {
+    for code in [mfc0(T0, 4), mtc0(T0, 10)] {
+        let mut m = machine(&[code, NOP]);
+        run(&mut m, 1);
+        assert_eq!((m.cpu.cop0[cop0::CAUSE] >> 2) & 31, 10, "{code:08X}: RI");
+        assert_eq!(m.cpu.cop0[cop0::EPC], 0x8000_1000);
+    }
+    // MFC0 from 16-31 leaves rt alone.
+    let mut m = machine(&[mfc0(T0, 20), NOP, NOP]);
+    m.cpu.regs[T0 as usize] = 5;
+    run(&mut m, 3);
+    assert_eq!(m.cpu.regs[T0 as usize], 5);
+}
+
+#[test]
+fn bc0f_branches() {
+    let mut m = machine(&[
+        0x4100_0002,            // bc0f +2 (taken: COP0's condition is false)
+        i_type(0x09, 0, T0, 1), // addiu t0, zero, 1 (delay slot)
+        i_type(0x09, 0, T1, 1), // skipped
+        i_type(0x09, 0, T2, 1), // target
+    ]);
+    run(&mut m, 3);
+    assert_eq!(m.cpu.regs[T0 as usize], 1);
+    assert_eq!(m.cpu.regs[T1 as usize], 0);
+    assert_eq!(m.cpu.regs[T2 as usize], 1);
+}
