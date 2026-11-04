@@ -286,6 +286,7 @@ mod tests {
     use super::tests_support::*;
     use super::*;
     use crate::padflow::test_program::asm::*;
+    use crate::padflow::test_program::load;
 
     const V0: u32 = 2;
     const A0: u32 = 4;
@@ -373,6 +374,42 @@ mod tests {
         code[13] = j(crate::bus::HIDDEN + 4 * at);
         let c = check(&code);
         assert_eq!(c.differences, ["the replacement did not return within 10000 steps"]);
+    }
+
+    /// A loop calling the test function with a0 = 20, keeping v0 at
+    /// 0x80030000, at 0x80010400.
+    fn caller() -> Machine {
+        let mut m = at_call();
+        load(
+            &mut m,
+            0x8001_0400,
+            &[addiu(A0, 0, 20), jal(0x8001_0100), NOP, lui(1, 0x8003), sw(V0, 0, 1), j(0x8001_0400), NOP],
+        );
+        m.cpu.set_pc(0x8001_0400);
+        m
+    }
+
+    #[test]
+    fn a_redirected_call_returns_at_once_or_runs_its_replacement() {
+        // Returned at once, through the run loop's fast path too.
+        let mut m = caller();
+        m.redirects.insert(0x8001_0100, crate::Redirect::Return(99));
+        m.run_frame_steps(5_000);
+        assert_eq!(m.bus.ram[0x3_0000], 99);
+        assert!(m.redirects.hits(0x8001_0100) > 1);
+        assert_eq!(m.bus.ram[0x2_0000], 0, "the original never ran");
+        // Sent to a replacement at HIDDEN that returns 7.
+        let mut m = caller();
+        m.bus.hidden = Some(build(&[jr(RA), addiu(V0, 0, 7)]));
+        m.redirects.insert(0x8001_0100, crate::Redirect::To(crate::bus::HIDDEN));
+        for _ in 0..200 {
+            m.step();
+        }
+        assert_eq!(m.bus.ram[0x3_0000], 7);
+        // Without one, the original runs: 20 * 2.
+        let mut m = caller();
+        m.run_frame_steps(5_000);
+        assert_eq!(m.bus.ram[0x3_0000], 40);
     }
 
     #[test]

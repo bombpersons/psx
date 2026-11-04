@@ -35,6 +35,44 @@ pub struct Machine {
     pub bus: Bus,
     #[serde(skip)]
     spin: Spin,
+    /// Calls sent elsewhere when the CPU reaches their entry. Not saved.
+    #[serde(skip)]
+    pub redirects: Redirects,
+}
+
+/// What a call does instead of running the original's code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Redirect {
+    /// Return at once to the caller, with this in `v0` (a system turned off).
+    Return(u32),
+    /// Run this code instead (a replacement, at [`bus::HIDDEN`]).
+    To(u32),
+}
+
+/// [`Machine::redirects`]: by entry (physical), what the call does instead,
+/// and how many times it was reached.
+#[derive(Clone, Debug, Default)]
+pub struct Redirects {
+    map: std::collections::BTreeMap<u32, (Redirect, u64)>,
+}
+
+impl Redirects {
+    pub fn insert(&mut self, entry: u32, r: Redirect) {
+        self.map.insert(entry & 0x1FFF_FFFF, (r, 0));
+    }
+
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// How many times the CPU reached `entry` and was sent elsewhere.
+    pub fn hits(&self, entry: u32) -> u64 {
+        self.map.get(&(entry & 0x1FFF_FFFF)).map_or(0, |(_, n)| *n)
+    }
 }
 
 /// The last I/O accesses' states, for [`Machine::skip_spin`].
@@ -80,7 +118,7 @@ struct SpinSlot {
 impl Machine {
     /// Power-on state: CPU at the BIOS reset vector.
     pub fn new(bios: Vec<u8>) -> Self {
-        Machine { cpu: Cpu::new(), bus: Bus::new(bios), spin: Spin::default() }
+        Machine { cpu: Cpu::new(), bus: Bus::new(bios), spin: Spin::default(), redirects: Redirects::default() }
     }
 
     pub fn step(&mut self) -> StepInfo {
@@ -91,6 +129,9 @@ impl Machine {
 
     #[inline(always)]
     fn step_with<I: cpu::StepSink>(&mut self, info: &mut I) {
+        if !self.redirects.is_empty() {
+            self.redirect();
+        }
         if self.bus.obs.bios.is_some() {
             self.observe_bios_call();
         }
@@ -101,6 +142,23 @@ impl Machine {
             self.bus.end_instruction();
         }
         self.finish_step();
+    }
+
+    /// At a redirected call's entry: return at once, or go to its
+    /// replacement.
+    #[inline]
+    fn redirect(&mut self) {
+        if let Some((r, n)) = self.redirects.map.get_mut(&(self.cpu.pc & 0x1FFF_FFFF)) {
+            *n += 1;
+            match *r {
+                Redirect::Return(v) => {
+                    self.cpu.regs[2] = v;
+                    let ra = self.cpu.regs[31];
+                    self.cpu.set_pc(ra);
+                }
+                Redirect::To(at) => self.cpu.set_pc(at),
+            }
+        }
     }
 
     /// After an instruction: due events, a frame's end, and the time a DMA
@@ -123,7 +181,7 @@ impl Machine {
     #[inline(always)]
     fn run_steps(&mut self, max_steps: u64, until_cycle: u64, go: impl Fn(&Machine) -> bool) -> u64 {
         let mut n = 0;
-        if self.bus.obs.bios.is_some() || self.bus.obs.active() {
+        if self.bus.obs.bios.is_some() || self.bus.obs.active() || !self.redirects.is_empty() {
             while n < max_steps && go(self) {
                 self.step_with(&mut ());
                 n += 1;

@@ -214,8 +214,11 @@ impl Adjustments {
     pub fn start(&self, m: &mut Machine) -> Running {
         m.cpu.overclock = if self.steady { STEADY_OVERCLOCK } else { 0 };
         m.bus.gpu.timed = !self.steady;
+        m.redirects.clear();
+        for o in &self.off {
+            m.redirects.insert(o.address, psx_core::Redirect::Return(o.returns));
+        }
         Running {
-            off: self.off.iter().map(|o| (o.address & 0x1FFF_FFFF, (o.returns, 0))).collect(),
             a: self.clone(),
             flow: self.latch.then(PadFlow::new),
             held: None,
@@ -249,9 +252,6 @@ pub(crate) struct Running {
     /// A buffer byte the game stores other than as a copy (or an inverted
     /// one) of the controller's: the latch could not write it.
     unmasked: bool,
-    /// `off`: by entry (physical), what each returns and how often it was
-    /// called.
-    off: std::collections::BTreeMap<u32, (u32, u64)>,
 }
 
 /// The reply byte at `pos` for buttons `held` and `sticks` (as psx-core's
@@ -275,21 +275,6 @@ fn poke(m: &mut Machine, addr: u32, v: u8) {
 }
 
 impl Running {
-    /// Before the CPU's next step on `m`: a function turned off returns at
-    /// once, with its value in v0, to where it was called from.
-    #[inline]
-    pub fn before_step(&mut self, m: &mut Machine) {
-        if self.off.is_empty() {
-            return;
-        }
-        if let Some((v, n)) = self.off.get_mut(&(m.cpu.pc & 0x1FFF_FFFF)) {
-            *n += 1;
-            m.cpu.regs[2] = *v;
-            let ra = m.cpu.regs[31];
-            m.cpu.set_pc(ra);
-        }
-    }
-
     /// Input from the recording's events or ticks: on the controller at
     /// once, or with `latch`, where the tick ends.
     pub fn input(&mut self, m: &mut Machine, i: &crate::replay::Input) {
@@ -361,16 +346,12 @@ impl Running {
         }
     }
 
-    /// What they did, for the recording's details; None for a stock run.
-    pub fn report(&self) -> Option<Json> {
+    /// What they did on `m`, for the recording's details; None for a stock run.
+    pub fn report(&self, m: &Machine) -> Option<Json> {
         let mut r = self.latch_report().unwrap_or_else(|| json!({}));
         if !self.a.off.is_empty() {
-            let calls: Vec<Json> = self
-                .a
-                .off
-                .iter()
-                .map(|o| json!({"name": o.name, "calls": self.off.get(&(o.address & 0x1FFF_FFFF)).map_or(0, |c| c.1)}))
-                .collect();
+            let calls: Vec<Json> =
+                self.a.off.iter().map(|o| json!({"name": o.name, "calls": m.redirects.hits(o.address)})).collect();
             r["off_calls"] = json!(calls);
         }
         (r != json!({})).then_some(r)

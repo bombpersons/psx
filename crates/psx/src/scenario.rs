@@ -401,7 +401,6 @@ fn record(
                 break;
             }
         }
-        adjust.before_step(m);
         let info = m.step();
         adjust.step(&info, m);
         if let Some(c) = cover.as_deref_mut() {
@@ -487,7 +486,7 @@ fn record(
             }
         }
     }
-    out.adjusted = adjust.report();
+    out.adjusted = adjust.report(m);
     out
 }
 
