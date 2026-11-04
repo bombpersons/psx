@@ -190,6 +190,14 @@ they differ. A press taking effect a tick sooner under latch is its
 expected cost; a value the stock game never reaches is a rule that
 depends on timing, and that scenario is recorded `--stock`.
 
+A person's play (`scenario play`) runs the adjustments while they play,
+as `scenario record` runs them, so they play the game the recording is
+made of. `adjust` chooses which (`latch`, `steady`, `off`; none is the
+stock game), so a person can feel what one changes: psx web's Play now
+has a checkbox for each. The recording is made with the same set; one
+`scenario record` cannot name (latch without steady, say) is reported as
+such.
+
 Without latch (`--stock`), each tick's `pad` is the controller's buttons
 when the tick ended, unless the glossary's binding says where the game
 keeps its own input word (`Glossary::input`): then it is that word.

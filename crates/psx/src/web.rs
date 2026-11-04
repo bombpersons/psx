@@ -553,6 +553,8 @@ fn act(req: &Request, st: &State) -> crate::Result<Value> {
             text("scenario"),
             text("name"),
             text("from"),
+            // The adjustments to play with: a list (none checked: the stock game), or absent for the default.
+            req.body["adjust"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()),
         )?;
         let live = crate::handoff::browser::Live::start(&p.root, &dir)?;
         st.plays.lock().unwrap().insert(dir.clone(), live);

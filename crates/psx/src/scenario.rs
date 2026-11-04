@@ -716,6 +716,11 @@ impl Prepared {
         Ok(b)
     }
 
+    /// What ends one of the game's ticks, as the glossary binding says.
+    pub(crate) fn tick(&self) -> crate::binding::Tick {
+        self.b.described().tick.clone()
+    }
+
     /// Run `m` from where the recording starts to where its fields count
     /// from: the pad released until the first tick ends, then on to the
     /// next field. False when no tick ended within `fields`.

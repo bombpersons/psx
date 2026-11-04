@@ -68,6 +68,12 @@ pub struct HandoffArgs {
     #[arg(long, requires = "id")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// With a scenario: the adjustments to play and record with, of latch, steady and off
+    /// (default all three; stock is off alone). The person plays with them, so what they
+    /// feel is what is recorded.
+    #[arg(long, requires = "id", conflicts_with = "stock", value_delimiter = ',')]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjust: Option<Vec<String>>,
     /// With a scenario: write over an existing recording of that name.
     #[arg(long, requires = "id")]
     #[serde(default, skip_serializing_if = "is_false")]
@@ -128,6 +134,7 @@ pub fn person_play(
     id: Option<String>,
     name: Option<String>,
     from: Option<String>,
+    adjust: Option<Vec<String>>,
 ) -> crate::Result<PathBuf> {
     let what = what.trim();
     let request = if what.is_empty() { "Free play".to_string() } else { what.to_string() };
@@ -139,6 +146,7 @@ pub fn person_play(
         from,
         replace: false,
         stock: false,
+        adjust,
         status: None,
         wait: 0,
         media: None,
@@ -239,9 +247,19 @@ impl HandoffArgs {
                     "with a scenario the recording is made by replaying the input, which checks it: drop verify",
                 ));
             }
-        } else if self.name.is_some() || self.from.is_some() || self.description.is_some() || self.replace || self.stock
+            for x in self.adjust.iter().flatten() {
+                if !["latch", "steady", "off"].contains(&x.as_str()) {
+                    return Err(Error::invalid(format!("adjust: {x} is not one of latch, steady, off")));
+                }
+            }
+        } else if self.name.is_some()
+            || self.from.is_some()
+            || self.description.is_some()
+            || self.replace
+            || self.stock
+            || self.adjust.is_some()
         {
-            return Err(Error::invalid("name, from, description, replace and stock go with a scenario id"));
+            return Err(Error::invalid("name, from, description, replace, stock and adjust go with a scenario id"));
         }
         Ok(())
     }
@@ -428,6 +446,17 @@ pub(crate) struct Session {
     /// States every [`REWIND_EVERY`] frames along the current route, with
     /// the number of input events that reached each, for [`Session::rewind`].
     history: std::collections::VecDeque<(u64, Vec<u8>, usize)>,
+    /// The adjustments the person plays with (a scenario's), run as
+    /// `scenario record` runs them.
+    adjust: Option<LiveAdjust>,
+}
+
+/// Adjustments running in a play: the set, the game's tick, and their state.
+struct LiveAdjust {
+    set: crate::adjust::Adjustments,
+    tick: crate::binding::Tick,
+    run: crate::adjust::Running,
+    ticks: u64,
 }
 
 /// Frames between rewind states (about 5 s), and how many are kept (2 minutes).
@@ -465,6 +494,11 @@ impl Mark {
 
 #[cfg_attr(not(feature = "window"), allow(dead_code))]
 impl Session {
+    /// The adjustments being played with, by name (none: the stock game).
+    pub fn adjustments(&self) -> Vec<&'static str> {
+        self.adjust.as_ref().map(|a| a.set.names()).unwrap_or_default()
+    }
+
     pub fn rel(&self) -> u64 {
         self.m.bus.frames - self.start_frame
     }
@@ -485,11 +519,29 @@ impl Session {
         let input = Input { frame: rel, buttons, sticks };
         if self.events.last().is_none_or(|l| (l.buttons, l.sticks) != (buttons, sticks)) {
             self.events.push(input);
-            crate::replay::apply(&mut self.m, &input);
+            match &mut self.adjust {
+                Some(a) => a.run.input(&mut self.m, &input),
+                None => crate::replay::apply(&mut self.m, &input),
+            }
         }
         let f = self.m.bus.frames;
-        while self.m.bus.frames == f {
-            self.m.run_frame_steps(1 << 22);
+        match &mut self.adjust {
+            // Step by step, as scenario record runs them.
+            Some(a) => {
+                while self.m.bus.frames == f {
+                    let info = self.m.step();
+                    a.run.step(&info, &mut self.m);
+                    if a.tick.ended_by(&info) {
+                        a.ticks += 1;
+                        a.run.tick_ended(a.ticks, &mut self.m);
+                    }
+                }
+            }
+            None => {
+                while self.m.bus.frames == f {
+                    self.m.run_frame_steps(1 << 22);
+                }
+            }
         }
         let rel = self.rel();
         if self.history.back().is_none_or(|h| rel >= h.0 + REWIND_EVERY) {
@@ -542,6 +594,10 @@ impl Session {
         m.bus.spu.capture = self.m.bus.spu.capture;
         self.m = m;
         self.events = events;
+        // A loaded machine is stock: the adjustments start again from here.
+        if let Some(a) = &mut self.adjust {
+            a.run = a.set.start(&mut self.m);
+        }
         Ok(())
     }
 
@@ -653,6 +709,7 @@ impl Session {
             media_id,
             marks: Vec::new(),
             history: Default::default(),
+            adjust: None,
         }
     }
 }
@@ -676,8 +733,28 @@ fn scenario_start(ctx: &Ctx, a: &mut HandoffArgs) -> crate::Result<(Session, cra
     if a.stock {
         p.adjust = p.adjust.without_timing();
     }
+    if let Some(chosen) = &a.adjust {
+        let has = |x: &str| chosen.iter().any(|c| c == x);
+        p.adjust.latch = has("latch");
+        p.adjust.steady = has("steady");
+        if !has("off") {
+            p.adjust.off.clear();
+        }
+    }
     let mut b = p.start(ctx, RECORD_TIMEOUT)?;
-    if !p.lead_in(&mut b.m, LEAD_FIELDS) {
+    // The adjustments from where the recording starts, as scenario record
+    // starts them: the person plays the game the recording is made of.
+    let mut live = (!p.adjust.is_stock()).then(|| LiveAdjust {
+        set: p.adjust.clone(),
+        tick: p.tick(),
+        run: p.adjust.start(&mut b.m),
+        ticks: 0,
+    });
+    let reached = match &mut live {
+        None => p.lead_in(&mut b.m, LEAD_FIELDS),
+        Some(l) => lead_in(&mut b.m, l, LEAD_FIELDS),
+    };
+    if !reached {
         return Err(Error::invalid(format!(
             "the glossary binding's tick did not end within {LEAD_FIELDS} fields of the start: check its tick, and that the scenario's state is in the game's logic"
         )));
@@ -687,7 +764,40 @@ fn scenario_start(ctx: &Ctx, a: &mut HandoffArgs) -> crate::Result<(Session, cra
     a.bios = Some(std::path::absolute(&b.bios_path).unwrap_or_default());
     a.from_state = Some(std::path::absolute(&p.state).unwrap_or_default());
     let frames = b.m.bus.frames;
-    Ok((Session::new(b.m, b.bios, b.media_id, frames), p))
+    let mut s = Session::new(b.m, b.bios, b.media_id, frames);
+    s.adjust = live;
+    Ok((s, p))
+}
+
+/// [`crate::scenario::Prepared::lead_in`] with the adjustments running: the
+/// pad released until the first tick ends, then on to the next field.
+fn lead_in(m: &mut Machine, l: &mut LiveAdjust, fields: u64) -> bool {
+    l.run.input(m, &Input { frame: 0, buttons: 0, sticks: [128; 4] });
+    let (mut ticked, mut last_frame) = (false, m.bus.frames);
+    let limit = m.bus.frames + fields;
+    loop {
+        if m.bus.frames != last_frame {
+            last_frame = m.bus.frames;
+            if ticked {
+                return true;
+            }
+            if m.bus.frames >= limit {
+                return false;
+            }
+        }
+        let info = m.step();
+        l.run.step(&info, m);
+        if l.tick.ended_by(&info) {
+            // The first tick is the recording's initial moment (0); the play's count from 1.
+            if !ticked {
+                l.run.tick_ended(0, m);
+            } else {
+                l.ticks += 1;
+                l.run.tick_ended(l.ticks, m);
+            }
+            ticked = true;
+        }
+    }
 }
 
 /// Run `f` while keeping `live.json` fresh with `state`, so the status
@@ -800,7 +910,7 @@ fn scenario_report(
     if let Some(f) = &p.from {
         args["from"] = json!(f);
     }
-    if a.stock {
+    if a.stock || !p.adjust.latch && !p.adjust.steady {
         args["stock"] = json!(true);
     }
     v["input"]["frame_origin"] = json!("scenario_record");
@@ -809,6 +919,17 @@ fn scenario_report(
     );
     v["reproduce"] = json!({"tool": "scenario_record", "arguments": args.clone(),
         "note": "Records the person's input again from the same start, as the recording was made."});
+    // A set scenario record cannot name: every adjustment, or stock's (off alone).
+    v["adjust"] = json!(p.adjust.names());
+    // Turning off the scenario's [off] is a set scenario record cannot make either.
+    let partial = p.adjust.latch != p.adjust.steady
+        || a.adjust.as_ref().is_some_and(|c| !c.iter().any(|x| x == "off")) && p.adjust.off.is_empty();
+    if partial {
+        v["reproduce"]["note"] = json!(format!(
+            "Played and recorded with {}: scenario record makes every adjustment, or stock (latch and steady both off), so it cannot make this set again; scenario play with adjust can.",
+            if p.adjust.is_stock() { "no adjustments".to_string() } else { p.adjust.names().join(", ") }
+        ));
+    }
     v["recording"] = if end == End::Done {
         alive(dir, "recording", || record_play(ctx, a, p, events, frames, state)).unwrap_or_else(|e| e.to_value())
     } else {
@@ -1079,6 +1200,20 @@ mod tests {
         assert!(e.message.starts_with("--expect") && e.message.contains("stage"), "{}", e.message);
     }
 
+    /// A play's adjustments go with a scenario and are latch, steady and off.
+    #[test]
+    fn adjustments_are_checked_before_the_play_is_queued() {
+        let args = |v: Value| -> HandoffArgs { serde_json::from_value(v).unwrap() };
+        let ok = args(json!({"request": "x", "id": "s", "name": "n", "adjust": ["latch", "off"]}));
+        assert!(ok.check_scenario().is_ok());
+        let none = args(json!({"request": "x", "id": "s", "name": "n", "adjust": []}));
+        assert!(none.check_scenario().is_ok(), "none checked: the stock game");
+        let bad = args(json!({"request": "x", "id": "s", "name": "n", "adjust": ["fast"]}));
+        assert!(bad.check_scenario().unwrap_err().message.contains("fast"));
+        let alone = args(json!({"request": "x", "adjust": ["latch"]}));
+        assert!(alone.check_scenario().unwrap_err().message.contains("adjust"));
+    }
+
     #[test]
     fn status_reports_queued_then_playing_then_the_answer() {
         let root = std::env::temp_dir().join(format!("psx-handoff-status-{}", std::process::id()));
@@ -1186,6 +1321,7 @@ mod tests {
             status: None,
             wait: 0,
             person: false,
+            adjust: None,
         };
         let mut s = start(&a).unwrap();
         let cross = psx_core::sio0::button::CROSS;

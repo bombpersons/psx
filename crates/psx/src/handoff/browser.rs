@@ -33,8 +33,11 @@ struct Held {
     pad: Vec<String>,
     sticks: [f32; 4],
     fast: bool,
+    /// PlayStation buttons by name (`CROSS`, `UP`, ...): a gamepad the page
+    /// was taught to read gives these, past the controls file's bindings.
+    actions: Vec<String>,
     /// Pressed since the last field, so a tap shorter than one still counts.
-    tapped: (Vec<String>, Vec<String>),
+    tapped: (Vec<String>, Vec<String>, Vec<String>),
 }
 
 enum Cmd {
@@ -121,14 +124,15 @@ impl Live {
         for (i, s) in sticks.iter_mut().enumerate() {
             *s = v["sticks"][i].as_f64().unwrap_or(0.0).clamp(-1.0, 1.0) as f32;
         }
-        let (keys, pad) = (names("keys"), names("pad"));
+        let (keys, pad, actions) = (names("keys"), names("pad"), names("actions"));
         let mut h = self.held.lock().unwrap();
         let new =
             |now: &[String], before: &[String]| now.iter().filter(|k| !before.contains(k)).cloned().collect::<Vec<_>>();
-        let (tk, tp) = (new(&keys, &h.keys), new(&pad, &h.pad));
+        let (tk, tp, ta) = (new(&keys, &h.keys), new(&pad, &h.pad), new(&actions, &h.actions));
         h.tapped.0.extend(tk);
         h.tapped.1.extend(tp);
-        (h.keys, h.pad, h.sticks, h.fast) = (keys, pad, sticks, v["fast"] == true);
+        h.tapped.2.extend(ta);
+        (h.keys, h.pad, h.actions, h.sticks, h.fast) = (keys, pad, actions, sticks, v["fast"] == true);
     }
 
     /// A command from the page: done, decline (each with a note), leave,
@@ -334,9 +338,15 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
             let h = live.held.lock().unwrap().clone();
             held.0.extend(h.keys);
             held.1.extend(h.pad);
+            held.2.extend(h.actions);
+            let direct = held
+                .2
+                .iter()
+                .filter_map(|a| bindings::ACTIONS.iter().position(|x| x == a))
+                .fold(0, |m, i| m | bindings::bit(i));
             for _ in 0..if h.fast { FAST } else { 1 } {
                 let (buttons, sticks) = bindings::pad_state(&b, s.analog(), &held.0, &held.1, h.sticks);
-                s.frame(buttons, sticks);
+                s.frame(buttons | direct, sticks);
             }
         }
         let state = match (labelling, writing, paused) {
@@ -352,7 +362,7 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
                 (true, true) => "DualShock, analog mode",
             };
             json!({"state": state, "request": text, "message": message, "message_seq": message_seq,
-                "labelling": labelling, "writing": writing, "paused": paused, "mode": mode, "run_frame": s.rel(), "quick_save": s.quick.is_some(),
+                "labelling": labelling, "writing": writing, "paused": paused, "mode": mode, "adjust": s.adjustments(), "run_frame": s.rel(), "quick_save": s.quick.is_some(),
                 "marks": s.marks.iter().map(|m| json!({"n": m.n, "label": m.label})).collect::<Vec<_>>()})
         };
         let second = live_at.elapsed() >= Duration::from_secs(1);
@@ -380,5 +390,37 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
         } else if now - next > Duration::from_millis(250) {
             next = now;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PlayStation buttons the page sends are held and tapped like keys,
+    /// and a tap shorter than a field still counts.
+    #[test]
+    fn the_page_sends_playstation_buttons_past_the_bindings() {
+        let live = Live {
+            held: Mutex::default(),
+            cmds: Mutex::default(),
+            out: Mutex::default(),
+            cv: Condvar::new(),
+            clients: AtomicUsize::new(0),
+            left: Mutex::new(Instant::now()),
+        };
+        live.input(&json!({"keys": [], "pad": [], "actions": ["CROSS", "UP"]}));
+        live.input(&json!({"keys": [], "pad": [], "actions": ["UP"]}));
+        let h = live.held.lock().unwrap();
+        assert_eq!(h.actions, ["UP"]);
+        assert_eq!(h.tapped.2, ["CROSS", "UP"], "CROSS was let go before a field ran: still pressed once");
+        let bits = h
+            .tapped
+            .2
+            .iter()
+            .filter_map(|a| bindings::ACTIONS.iter().position(|x| x == a))
+            .fold(0, |m, i| m | bindings::bit(i));
+        use psx_core::sio0::button::{CROSS, UP};
+        assert_eq!(bits, u32::from(CROSS | UP));
     }
 }
