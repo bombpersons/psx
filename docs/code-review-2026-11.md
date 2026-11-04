@@ -34,7 +34,7 @@ behave differently from what their comments say.
 | M2 | `crates/psx/src/code.rs:247,526,594,827` | Disassembly ranges near 0xFFFFFFFF overflow the loop counter: panic in dev, endless loop in release. | fixed |
 | M3 | `crates/psx/src/mcp.rs:512`, `run.rs:561` | A huge `timeout` panics when added to a `Duration`/`Instant`. | fixed |
 | M4 | `crates/psx/src/ghidra.rs:944` | The analysis cache key leaves out the contents of the language spec files. | fixed |
-| M5 | `crates/psx/src/calls.rs:92-107`, `reports.rs` | Reviewer reports, meant for the person only, are copied into `.psx/calls.jsonl`. | open |
+| M5 | `crates/psx/src/calls.rs:92-107`, `reports.rs` | Reviewer reports, meant for the person only, are copied into `.psx/calls.jsonl`. | fixed |
 | M6 | `crates/psx/src/states.rs:318,642` | Concurrent rebuilds `remove_dir_all` each other's output folder. | open |
 | M7 | `crates/psx-assets/src/adpcm.rs:46-52` vs `psx-core/src/spu.rs:739` | The offline ADPCM decoder says it matches the SPU but clamps filters/shifts and rounds differently. | open |
 | M8 | `crates/psx-core/src/bus.rs:859,938` | Byte/halfword reads of timers and cache control are not masked to the access width. | open |

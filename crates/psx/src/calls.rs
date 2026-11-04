@@ -100,7 +100,15 @@ pub fn start(root: &Path, tool: &str, args: Value, caller: Value) -> Option<Call
         let _ = std::fs::rename(&log, root.join(".psx/calls.1.jsonl"));
     }
     let size = serde_json::to_string(&args).map_or(0, |s| s.len());
-    let args = if size > ARGS_LIMIT { json!({"omitted_bytes": size}) } else { args };
+    // A reviewer's report is for the person alone (see `reports`): the log is
+    // in the project, where the port's writer reads it.
+    let args = if tool == "report" {
+        json!({"omitted": "the report, for the person only"})
+    } else if size > ARGS_LIMIT {
+        json!({"omitted_bytes": size})
+    } else {
+        args
+    };
     append(
         &log,
         &json!({"id": id, "t": crate::now_ms() as u64, "event": "start", "tool": tool, "args": args, "caller": caller}),
@@ -226,6 +234,18 @@ pub fn projects_file() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_report_is_not_copied_into_the_project_log() {
+        let root = std::env::temp_dir().join(format!("psx-calls-report-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".psx")).unwrap();
+        start(&root, "report", json!({"text": "secret verdict"}), json!({})).unwrap();
+        start(&root, "report", json!(["report", "--text", "secret verdict"]), json!({})).unwrap();
+        let log = std::fs::read_to_string(root.join(LOG)).unwrap();
+        assert!(!log.contains("secret verdict"), "{log}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn calls_are_logged_only_in_a_project() {
