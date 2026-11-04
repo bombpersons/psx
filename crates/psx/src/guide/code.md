@@ -67,6 +67,20 @@ watch hits, calls, disasm, xrefs, coverage and ram_view rows print them,
 a function's where its bytes are the inventory's (body_match) and a
 global's as name+0xOFF within its type. symbols adds other symbol files.
 
+The agent's C for a function goes in decomp/<name>.c, including
+"names.h": every struct of the names files at its offsets (each offset
+and size asserted), the globals and every function's prototype, so the C
+reads the game's data and calls the original's functions by name.
+code_check function state builds decomp/ with a MIPS GCC (context's
+mips_gcc) and runs the game from the state: each call it makes to the
+function (cases, 3 by default) runs as the original and as the C, from
+the same moment, and their effects are compared: the return value, sp
+and the registers a call keeps, the bytes left stored (named by the
+globals that hold them), the GTE's registers, hardware writes and the
+calls made with their arguments. Time is not compared. A failed case is
+saved as a state (.psx/decomp/cases/); code_check from it reruns that
+call. Compiler errors come back by file and line.
+
 Functions reached only through a table (state handlers, object updates, a
 jump table's cases) are often missing from an analysis of the EXE. Seed one
 from RAM:

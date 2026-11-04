@@ -482,6 +482,18 @@ whether the next is worth building.
    *Done when* a correct Croc helper passes over its recordings and one
    with a flipped sign fails with the field named.
 
+   *Partly done (2026-11-04):* `code check FN --state STATE` (MCP
+   `code_check`) builds `decomp/`, runs the game from a state and checks
+   each call it makes to the function (`--cases`), as step 10 compares
+   them; differences in bytes are named by the global holding them; a
+   failed case is saved as a state (`.psx/decomp/cases/`) that reruns
+   that call; calls the C makes to its own functions are mapped back to
+   the originals of the same names before comparing. Tested on psx-core's
+   test function, and by hand on a scratch project through the CLI.
+   **Still to do:** cases taken from recordings (`--scenario`,
+   `--recording`), the branches the cases reached, checking every
+   function whose C or names changed, and the Croc check.
+
 12. **The decompile shows the C.** `code decompile` on a function with C
     returns it with its last check (cases, result, commit, recordings),
     Ghidra's below. `code inventory`, `port status` and the Stats tab

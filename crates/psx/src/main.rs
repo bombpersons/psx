@@ -189,6 +189,9 @@ enum CodeAction {
     /// What traced runs executed, per function of the inventory: blocks executed and not,
     /// and the runs reaching each. `coverage diff`: what some runs reach that others do not.
     Coverage(CoverageCmd),
+    /// Check the agent's C for a function (decomp/) against the original: build it with the
+    /// names' header, run the game from a state, and compare each call's effects.
+    Check(decomp::CodeCheckArgs),
 }
 
 #[derive(clap::Args)]
@@ -294,6 +297,7 @@ impl CodeAction {
         match self {
             Self::Disasm(a) => a.exec(ctx),
             Self::Xrefs(a) => a.exec(ctx),
+            Self::Check(a) => a.exec(ctx),
             Self::Decompile(a) => a.exec(ctx),
             Self::Functions(a) => a.exec(ctx),
             Self::Symbols(a) => a.exec(ctx),

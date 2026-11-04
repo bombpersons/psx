@@ -1280,6 +1280,7 @@ fn mcp_tools_match_cli() {
         "code_inventory",
         "code_coverage",
         "code_coverage_diff",
+        "code_check",
         "ram_diff",
         "ram_search",
         "ram_view",

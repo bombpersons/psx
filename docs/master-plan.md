@@ -392,9 +392,9 @@ C1. **`off`.** A scenario's `[off]` table names functions by their
     differs only in case or underscores; the recording keeps each
     function's name, address and value and how often it was called;
     `--stock` keeps `off`. On a test program whose function returns 7,
-    the recording holds the value given. The redirection is a check
-    before each recorded step, not yet psx-core's (D10's compare redirects
-    one call by setting the PC). **Still to do:** the Croc check.
+    the recording holds the value given. Since moved into psx-core
+    (`Machine::redirects`), which `code check` and later whole runs share.
+    **Still to do:** the Croc check.
 
 C2. **Turning systems back on.** `port next` gives a Restore item for a
     scenario with something off once the port has the feature it belongs
@@ -430,7 +430,7 @@ calls them by name.
 | D8 | The flow (`port init` runs the scan) and a measure |
 | D9 | The header and the build: `names.h` and the linker script. *Done 2026-11-04 on test names; the command comes with D11* |
 | D10 | One call, compared, in psx-core. *Done 2026-11-04 (`psx_core::callcheck`); GCC-built C checked against hand-written code end to end* |
-| D11 | Checks over recordings: `code check` |
+| D11 | Checks over recordings: `code check`. *Partly done 2026-11-04: from a state, not yet from recordings* |
 | D12 | The decompile shows the C |
 | D13 | Replacement for whole runs: `--decomp` |
 | D14 | The person sees it: psx web's Code view |
