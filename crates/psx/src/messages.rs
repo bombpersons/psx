@@ -16,6 +16,7 @@ use crate::commands::{Ctx, Op, Outcome};
 
 pub const LOG: &str = ".psx/messages.jsonl";
 pub const SEEN: &str = ".psx/messages.seen.json";
+const LOCK: &str = ".psx/messages.lock";
 
 /// Longest message kept.
 const TEXT_LIMIT: usize = 8 * 1024;
@@ -58,8 +59,24 @@ pub fn seen(root: &Path, side: &str) -> usize {
         .unwrap_or(0) as usize
 }
 
+/// Serialises everything that reads the log and then writes the log or the
+/// seen counts: the web page, MCP calls and CLI calls run in different
+/// processes. Without the lock (an older filesystem without flock) it runs
+/// unlocked, as before.
+fn locked<T>(root: &Path, f: impl FnOnce() -> T) -> T {
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(root.join(LOCK));
+    let _guard = file.ok().filter(|f| f.lock().is_ok());
+    f()
+}
+
 /// `side` has seen the first `n` messages (never fewer than before).
 pub fn mark_seen(root: &Path, side: &str, n: usize) {
+    if root.join(".psx").is_dir() {
+        locked(root, || mark_seen_unlocked(root, side, n));
+    }
+}
+
+fn mark_seen_unlocked(root: &Path, side: &str, n: usize) {
     let p = root.join(SEEN);
     let mut v = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).unwrap_or(json!({}));
     if v[side].as_u64().unwrap_or(0) as usize >= n {
@@ -81,6 +98,10 @@ pub fn post(root: &Path, from: &str, text: &str, reply_to: Option<&str>) -> crat
     if !root.join(".psx").is_dir() {
         return Err(Error::invalid(format!("{}: not a project (no .psx)", root.display())));
     }
+    locked(root, || post_unlocked(root, from, text, reply_to))
+}
+
+fn post_unlocked(root: &Path, from: &str, text: &str, reply_to: Option<&str>) -> crate::Result<Value> {
     let msgs = all(root);
     let thread = match reply_to {
         None => None,
@@ -104,8 +125,14 @@ pub fn post(root: &Path, from: &str, text: &str, reply_to: Option<&str>) -> crat
         .open(&p)
         .and_then(|mut f| f.write_all(line.as_bytes()))
         .map_err(|e| Error::io(&p, e))?;
-    // A side has seen what it wrote, and everything before it.
-    mark_seen(root, from, msgs.len() + 1);
+    // A side has seen what it wrote, and everything before it. The person
+    // writes in the page, where everything is on screen; the agent may write
+    // before a call has handed it the person's newest messages, so those stay
+    // unseen and are still delivered.
+    let unread = (from == "agent")
+        .then(|| msgs.iter().enumerate().skip(seen(root, from)).find(|(_, m)| m["from"] != from).map(|(i, _)| i))
+        .flatten();
+    mark_seen_unlocked(root, from, unread.unwrap_or(msgs.len() + 1));
     Ok(m)
 }
 
@@ -137,11 +164,15 @@ pub fn deliver(root: &Path) -> Option<Value> {
     if !root.join(LOG).is_file() {
         return None;
     }
+    locked(root, || deliver_unlocked(root))
+}
+
+fn deliver_unlocked(root: &Path) -> Option<Value> {
     let msgs = all(root);
     let from = seen(root, "agent");
     let new: Vec<Value> =
         msgs.iter().skip(from).filter(|m| m["from"] == "person").map(|m| for_agent(m, &msgs)).collect();
-    mark_seen(root, "agent", msgs.len());
+    mark_seen_unlocked(root, "agent", msgs.len());
     (!new.is_empty()).then(|| {
         json!({"from_person": new,
             "note": "From the person, who reads what you send in psx web. Reply now, before your next step: a line or two with message (text, reply_to: its id; psx message --text ... --reply-to ID) that answers, or says what you will do and when. Then go on with your work, changed only if what they wrote changes it."})
@@ -154,6 +185,9 @@ impl Op for MessageArgs {
         if self.reply_to.is_some() && self.text.is_none() {
             return Outcome::from(Error::invalid("reply_to needs text"));
         }
+        // Callers skip the usual delivery for this tool, so the person's
+        // unseen messages are handed over here, before anything is marked seen.
+        let pending = deliver(root);
         let sent = match &self.text {
             None => None,
             Some(text) => match post(root, "agent", text, self.reply_to.as_deref()) {
@@ -162,15 +196,24 @@ impl Op for MessageArgs {
             },
         };
         if let Some(secs) = self.wait {
+            if let Some(m) = pending {
+                let mut v = json!({"status": "message", "messages": m});
+                if let Some(s) = sent {
+                    v["sent"] = s;
+                }
+                return Outcome::ok(v);
+            }
             return wait(root, secs.min(WAIT_LIMIT), sent);
         }
         if let Some(mut v) = sent {
             v["status"] = json!("sent");
             v["note"] = json!("The person sees it in psx web; their answer arrives with a later psx call's result.");
+            if let Some(m) = pending {
+                v["messages"] = m;
+            }
             return Outcome::ok(v);
         }
         let msgs = all(root);
-        mark_seen(root, "agent", msgs.len());
         let starts: Vec<&Value> = msgs.iter().filter(|m| m["thread"].is_null()).collect();
         let threads: Vec<Value> = starts
             .iter()
@@ -186,8 +229,12 @@ impl Op for MessageArgs {
                 json!({"id": s["id"], "from": s["from"], "text": s["text"], "at": ago(s["t"].as_u64().unwrap_or(0)), "replies": replies})
             })
             .collect();
-        Outcome::ok(json!({"threads": threads, "count": starts.len(),
-            "note": if starts.is_empty() { "No messages yet." } else { "Oldest first; reply with text and reply_to." }}))
+        let mut v = json!({"threads": threads, "count": starts.len(),
+            "note": if starts.is_empty() { "No messages yet." } else { "Oldest first; reply with text and reply_to." }});
+        if let Some(m) = pending {
+            v["messages"] = m;
+        }
+        Outcome::ok(v)
     }
 }
 
@@ -237,6 +284,26 @@ mod tests {
         assert_eq!(got["from_person"][0]["in_reply_to"]["text"], "How is the jump going?");
         assert_eq!(seen(&dir, "person"), 3);
         assert!(post(&dir, "agent", "x", Some("nope")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sending_does_not_swallow_the_persons_unread_messages() {
+        let dir = std::env::temp_dir().join(format!("psx-messages-swallow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".psx")).unwrap();
+        post(&dir, "person", "Stop, wrong approach", None).unwrap();
+        post(&dir, "agent", "Status: still searching", None).unwrap();
+        let got = deliver(&dir).expect("the person's message is still delivered");
+        assert_eq!(got["from_person"][0]["text"], "Stop, wrong approach");
+        assert_eq!(seen(&dir, "agent"), 2);
+        // The message tool itself hands over what is pending.
+        post(&dir, "person", "Did you see that?", None).unwrap();
+        let ctx = Ctx { root: dir.clone(), cancel: None };
+        let out = MessageArgs { text: Some("Yes".into()), reply_to: None, wait: None }.exec(&ctx);
+        assert_eq!(out.value["status"], "sent");
+        assert_eq!(out.value["messages"]["from_person"][0]["text"], "Did you see that?");
+        assert!(deliver(&dir).is_none(), "delivered once");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -22,7 +22,7 @@ behave differently from what their comments say.
 | # | Where | Defect | Status |
 |---|---|---|---|
 | H1 | `crates/psx-media/src/iso9660.rs:163-171`, `crates/psx/src/media_cmd.rs:305,371` | Disc directory names containing `..` or `/` are joined onto the output folder, so `psx media extract` can write anywhere. | fixed |
-| H2 | `crates/psx/src/messages.rs:108,62,173`, `mcp.rs:496`, `main.rs:413` | Sending a message marks every earlier message as seen by the agent, and the `message` tool never delivers pending ones, so the person's messages can be lost. `mark_seen` is not locked; listing shows 12 threads but marks all seen. | open |
+| H2 | `crates/psx/src/messages.rs:108,62,173`, `mcp.rs:496`, `main.rs:413` | Sending a message marks every earlier message as seen by the agent, and the `message` tool never delivers pending ones, so the person's messages can be lost. `mark_seen` is not locked; listing shows 12 threads but marks all seen. | fixed |
 | H3 | `crates/psx/src/web.rs:334,903-1056,256` | `replay?start=1` and `port_replay?start=1` start processes from a GET with no token; `scenario`/`name` are not checked for `..`; no frame-blocking header. | open |
 | H4 | `crates/psx-assets/src/tmd.rs:202-264`; `psx-media/src/disc.rs:379`, `iso9660.rs:142,213`, `str_video.rs:443` | A 1.6 MB TMD whose objects share one large table expands to hundreds of millions of polygons. Other parsers reserve memory from untrusted size fields. | open |
 
