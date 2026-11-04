@@ -315,10 +315,7 @@ pub(crate) fn reach_idling(ctx: &Ctx, chain_file: &Path, idle: u32) -> crate::Re
             Some(n) => out.join(format!("state_f{n:06}.bin")),
             None => out.join("state.bin"),
         };
-        if !(file.is_file() && out.join("report.json").is_file()) {
-            let _ = std::fs::remove_dir_all(&out);
-            run_step(ctx, &chain["media"], step, parent, &out)?;
-        }
+        cached_step(&out, &file, || run_step(ctx, &chain["media"], step, parent, &out))?;
         Ok(file)
     };
     for step in before {
@@ -637,13 +634,13 @@ fn rebuild(ctx: &Ctx, a: StatesRebuildArgs) -> crate::Result<(bool, Value)> {
                 Some(n) => out.join(format!("state_f{n:06}.bin")),
                 None => out.join("state.bin"),
             };
-            if file.is_file() && out.join("report.json").is_file() {
-                reused += 1;
-            } else {
-                let _ = std::fs::remove_dir_all(&out);
+            if cached_step(&out, &file, || {
                 run_step(ctx, &chain["media"], step, parent.as_deref(), &out)
-                    .map_err(|e| e.with("at", json!({"state": &name, "step": i})))?;
+                    .map_err(|e| e.with("at", json!({"state": &name, "step": i})))
+            })? {
                 ran += 1;
+            } else {
+                reused += 1;
             }
             let report = read_json(&out.join("report.json"))?;
             if bios.is_none() {
@@ -736,6 +733,29 @@ fn rebuild(ctx: &Ctx, a: StatesRebuildArgs) -> crate::Result<(bool, Value)> {
         });
     }
     Ok((all_same, out))
+}
+
+/// A rebuild step's cached output in `out`, made by `run` unless `file` and
+/// its report are there; true when it ran. Jobs share `.psx/rebuild` (two
+/// chains, or a check beside a rebuild), so the step is made under a lock
+/// beside its folder and the cache is checked again once it is held: a
+/// second job waits and reuses the first one's output instead of deleting it.
+fn cached_step<T>(out: &Path, file: &Path, run: impl FnOnce() -> crate::Result<T>) -> crate::Result<bool> {
+    let ready = || file.is_file() && out.join("report.json").is_file();
+    if ready() {
+        return Ok(false);
+    }
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+    }
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(out.with_extension("lock"));
+    let _held = lock.ok().filter(|f| f.lock().is_ok());
+    if ready() {
+        return Ok(false);
+    }
+    let _ = std::fs::remove_dir_all(out);
+    run()?;
+    Ok(true)
 }
 
 #[cfg(test)]
