@@ -339,7 +339,7 @@ tr.crow { cursor: pointer; } tr.crow:hover, tr.crow.on { background: var(--chip)
 "use strict";
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-const api = async path => { const r = await fetch(path); return r.json(); };
+const api = async path => { const r = await fetch(path, {headers: {"X-PSX-Token": TOKEN}}); return r.json(); };
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const fmtTime = t => new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
 const fmtDate = t => new Date(t).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});

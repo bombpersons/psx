@@ -151,6 +151,10 @@ struct Request {
     query: HashMap<String, String>,
     /// A POST's body, as JSON.
     body: Value,
+    /// Sent by the page this server gave out (its token, and its origin when
+    /// the browser names one). Anything that starts work needs it, a GET too:
+    /// any website can make the browser send a GET to 127.0.0.1.
+    ours: bool,
 }
 
 /// Largest POST body read.
@@ -191,12 +195,12 @@ fn handle(stream: TcpStream, st: &State) {
         return;
     }
     let mut body = Value::Null;
+    let ours = origin.as_ref().is_none_or(|o| hosts.iter().any(|h| o == &format!("http://{h}"))) && token == st.token;
     match method {
         "GET" => {}
         "POST" => {
             // Only the page this server gave out acts.
-            let ours = origin.as_ref().is_none_or(|o| hosts.iter().any(|h| o == &format!("http://{h}")));
-            if !ours || token != st.token {
+            if !ours {
                 let _ = send(&mut out, "403 Forbidden", "text/plain", b"psx web acts only for the page it serves");
                 return;
             }
@@ -222,7 +226,7 @@ fn handle(stream: TcpStream, st: &State) {
         .filter(|(k, _)| !k.is_empty())
         .map(|(k, v)| (decode(k), decode(v)))
         .collect();
-    let req = Request { path: decode(path), query, body };
+    let req = Request { path: decode(path), query, body, ours };
     if method == "POST" {
         let _ = match act(&req, st) {
             Ok(v) => send(&mut out, "200 OK", "application/json", v.to_string().as_bytes()),
@@ -253,9 +257,19 @@ fn handle(stream: TcpStream, st: &State) {
     };
 }
 
+/// No other site may show the page in a frame and steer clicks onto it.
+const NO_FRAMING: &str = "X-Frame-Options: DENY\r\nContent-Security-Policy: frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\n";
+
+/// A scenario id (`a/b`, a path under scenarios/) and a recording name are
+/// joined onto project paths: neither may climb out or name a drive.
+fn recording_ok(id: &str, name: &str) -> bool {
+    let part = |c: &str| !c.is_empty() && c != "." && c != ".." && !c.contains(['\\', ':', '\0']);
+    id.split('/').all(part) && part(name) && !name.contains('/')
+}
+
 fn send(s: &mut TcpStream, status: &str, ctype: &str, body: &[u8]) -> std::io::Result<()> {
     let head = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{NO_FRAMING}Connection: close\r\n\r\n",
         body.len()
     );
     s.write_all(head.as_bytes())?;
@@ -322,6 +336,14 @@ fn route(req: &Request, st: &State) -> Reply {
     };
     let root = &p.root;
     let q = |k: &str| req.query.get(k).map(String::as_str).unwrap_or("");
+    if matches!(what, "recording" | "replay" | "frame" | "port_replay") && !recording_ok(q("scenario"), q("name")) {
+        return Reply::Missing(format!("{}/{}: not a recording", q("scenario"), q("name")));
+    }
+    // Starting a replay runs psx or cargo: only for the page's own requests.
+    let start = q("start") == "1";
+    if start && !req.ours {
+        return Reply::Missing("starting a replay needs the page's token".into());
+    }
     match what {
         "overview" => Reply::Json(overview(root)),
         "calls" => Reply::Json(calls(root, q("since").parse().ok())),
@@ -331,9 +353,9 @@ fn route(req: &Request, st: &State) -> Reply {
             Ok(v) => Reply::Json(v),
             Err(e) => Reply::Json(e.to_value()),
         },
-        "replay" => Reply::Json(replay(st, root, q("scenario"), q("name"), q("start") == "1")),
+        "replay" => Reply::Json(replay(st, root, q("scenario"), q("name"), start)),
         "frame" => frame(st, root, q("scenario"), q("name"), q("tick")),
-        "port_replay" => Reply::Json(port_replay(st, root, q("scenario"), q("name"), q("start") == "1")),
+        "port_replay" => Reply::Json(port_replay(st, root, q("scenario"), q("name"), start)),
         "port_frame" => port_frame(root, q("key"), q("tick")),
         "messages" => Reply::Json(messages(root)),
         "reviews" => {
@@ -1012,7 +1034,10 @@ fn port_replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Va
         return json!({"error": {"code": "invalid", "message": "the port's psx-bevy has no --replay yet: psx port update brings it"}});
     }
     let jobs_key = format!("port:{}:{id}:{name}", root.display());
-    let job = st.replays.lock().unwrap().get(&jobs_key).cloned();
+    // Held until this request has its job and has marked it running, so two
+    // quick requests cannot both start a build into the same folder.
+    let mut jobs = st.replays.lock().unwrap();
+    let job = jobs.get(&jobs_key).cloned();
     // A job running; otherwise the key is worked out again, for the code now.
     let drawn = |dir: &Path| {
         std::fs::read(dir.join("frames.json"))
@@ -1034,7 +1059,7 @@ fn port_replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Va
                 return json!({"running": false, "frames": 0, "done": null});
             }
             let j = Arc::new(Mutex::new(Replay { dir, done, ..Default::default() }));
-            st.replays.lock().unwrap().insert(jobs_key, j.clone());
+            jobs.insert(jobs_key, j.clone());
             j
         }
     };
@@ -1054,6 +1079,7 @@ fn port_replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Va
             }
         }
     }
+    drop(jobs);
     port_state(&j)
 }
 
@@ -1255,5 +1281,19 @@ mod tests {
         );
         let titles: Vec<&str> = a.iter().filter_map(|x| x["title"].as_str()).collect();
         assert_eq!(titles, ["Confirm: the port waits for you", "passing recordings fell from 5 to 3"]);
+    }
+}
+
+#[cfg(test)]
+mod recording_name_tests {
+    use super::recording_ok;
+
+    #[test]
+    fn recording_names_cannot_climb_out_of_the_project() {
+        assert!(recording_ok("start_1_1", "jump_tap"));
+        assert!(recording_ok("world/start_1_1", "jump_tap"));
+        for (id, name) in [("..", "x"), ("a/../..", "x"), ("a", ".."), ("a", "b/c"), ("", "x"), ("a", ""), ("C:", "x"), ("a\\..", "x")] {
+            assert!(!recording_ok(id, name), "{id} {name}");
+        }
     }
 }
