@@ -68,10 +68,11 @@ pub struct HandoffArgs {
     #[arg(long, requires = "id")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// With a scenario: the adjustments to play and record with, of latch, steady and off
-    /// (default all three; stock is off alone). The person plays with them, so what they
-    /// feel is what is recorded.
-    #[arg(long, requires = "id", conflicts_with = "stock", value_delimiter = ',')]
+    /// The adjustments to play with, of latch, steady and off. With a scenario they are
+    /// recorded with too (default all three; stock is off alone), so what the person feels
+    /// is what is recorded. Without one (default none) latch takes the glossary binding's
+    /// tick and lets input through where no tick ends (boot, menus); off needs a scenario.
+    #[arg(long, conflicts_with = "stock", value_delimiter = ',')]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adjust: Option<Vec<String>>,
     /// With a scenario: write over an existing recording of that name.
@@ -247,19 +248,19 @@ impl HandoffArgs {
                     "with a scenario the recording is made by replaying the input, which checks it: drop verify",
                 ));
             }
-            for x in self.adjust.iter().flatten() {
-                if !["latch", "steady", "off"].contains(&x.as_str()) {
-                    return Err(Error::invalid(format!("adjust: {x} is not one of latch, steady, off")));
-                }
-            }
-        } else if self.name.is_some()
-            || self.from.is_some()
-            || self.description.is_some()
-            || self.replace
-            || self.stock
-            || self.adjust.is_some()
+        } else if self.name.is_some() || self.from.is_some() || self.description.is_some() || self.replace || self.stock
         {
-            return Err(Error::invalid("name, from, description, replace, stock and adjust go with a scenario id"));
+            return Err(Error::invalid("name, from, description, replace and stock go with a scenario id"));
+        }
+        for x in self.adjust.iter().flatten() {
+            if !["latch", "steady", "off"].contains(&x.as_str()) {
+                return Err(Error::invalid(format!("adjust: {x} is not one of latch, steady, off")));
+            }
+            if x == "off" && self.id.is_none() {
+                return Err(Error::invalid(
+                    "adjust: off turns off what a scenario's [off] names: it goes with a scenario id",
+                ));
+            }
         }
         Ok(())
     }
@@ -282,6 +283,10 @@ impl HandoffArgs {
         a.from_state = a.from_state.map(|p| std::path::absolute(p).unwrap_or_default());
         // A bad condition fails now, not after the person has played.
         expectations(&a)?;
+        // So does latch without the glossary binding's tick.
+        if a.adjust.iter().flatten().any(|x| x == "latch") {
+            let _ = latch_tick(ctx)?;
+        }
         a.open(ctx)
     }
 
@@ -454,9 +459,32 @@ pub(crate) struct Session {
 /// Adjustments running in a play: the set, the game's tick, and their state.
 struct LiveAdjust {
     set: crate::adjust::Adjustments,
-    tick: crate::binding::Tick,
+    /// What ends a tick: latch needs it, steady and off do not.
+    tick: Option<crate::binding::Tick>,
     run: crate::adjust::Running,
     ticks: u64,
+    /// Fields since a tick last ended.
+    since_tick: u64,
+    /// Whether latch lets input through where no tick ends (a play from
+    /// power-on, whose boot and menus may not run the binding's tick).
+    fallback: bool,
+    /// Letting input through now.
+    passing: bool,
+}
+
+/// Fields without a tick before a play's latch lets input through.
+const STALL_FIELDS: u64 = 10;
+
+impl LiveAdjust {
+    fn new(
+        set: crate::adjust::Adjustments,
+        tick: Option<crate::binding::Tick>,
+        m: &mut Machine,
+        fallback: bool,
+    ) -> Self {
+        let run = set.start(m);
+        LiveAdjust { set, tick, run, ticks: 0, since_tick: 0, fallback, passing: false }
+    }
 }
 
 /// Frames between rewind states (about 5 s), and how many are kept (2 minutes).
@@ -499,6 +527,13 @@ impl Session {
         self.adjust.as_ref().map(|a| a.set.names()).unwrap_or_default()
     }
 
+    /// Where latch stands: holding input for ticks, or letting it through
+    /// where none end (or None without latch).
+    pub fn latch_state(&self) -> Option<&'static str> {
+        let a = self.adjust.as_ref().filter(|a| a.set.latch)?;
+        Some(if a.passing { "no ticks, passing through" } else { "holding for ticks" })
+    }
+
     pub fn rel(&self) -> u64 {
         self.m.bus.frames - self.start_frame
     }
@@ -517,27 +552,43 @@ impl Session {
     pub fn frame(&mut self, buttons: u32, sticks: [u8; 4]) {
         let rel = self.rel();
         let input = Input { frame: rel, buttons, sticks };
-        if self.events.last().is_none_or(|l| (l.buttons, l.sticks) != (buttons, sticks)) {
+        let changed = self.events.last().is_none_or(|l| (l.buttons, l.sticks) != (buttons, sticks));
+        if changed {
             self.events.push(input);
-            match &mut self.adjust {
-                Some(a) => a.run.input(&mut self.m, &input),
-                None => crate::replay::apply(&mut self.m, &input),
-            }
         }
         let f = self.m.bus.frames;
         match &mut self.adjust {
-            // Step by step, as scenario record runs them.
-            Some(a) => {
+            // Latch: step by step, as scenario record runs it.
+            Some(a) if a.set.latch && a.tick.is_some() => {
+                if changed {
+                    if a.passing {
+                        a.run.pass_through(&mut self.m, Some(&input));
+                    } else {
+                        a.run.input(&mut self.m, &input);
+                    }
+                }
+                let tick = a.tick.clone().unwrap();
                 while self.m.bus.frames == f {
                     let info = self.m.step();
                     a.run.step(&info, &mut self.m);
-                    if a.tick.ended_by(&info) {
+                    if tick.ended_by(&info) {
                         a.ticks += 1;
+                        a.since_tick = 0;
+                        a.passing = false;
                         a.run.tick_ended(a.ticks, &mut self.m);
                     }
                 }
+                a.since_tick += 1;
+                if a.fallback && !a.passing && a.since_tick > STALL_FIELDS {
+                    a.passing = true;
+                    a.run.pass_through(&mut self.m, None);
+                }
             }
-            None => {
+            // Steady and off are the machine's own settings.
+            _ => {
+                if changed {
+                    crate::replay::apply(&mut self.m, &input);
+                }
                 while self.m.bus.frames == f {
                     self.m.run_frame_steps(1 << 22);
                 }
@@ -596,7 +647,7 @@ impl Session {
         self.events = events;
         // A loaded machine is stock: the adjustments start again from here.
         if let Some(a) = &mut self.adjust {
-            a.run = a.set.start(&mut self.m);
+            *a = LiveAdjust::new(a.set.clone(), a.tick.take(), &mut self.m, a.fallback);
         }
         Ok(())
     }
@@ -744,12 +795,7 @@ fn scenario_start(ctx: &Ctx, a: &mut HandoffArgs) -> crate::Result<(Session, cra
     let mut b = p.start(ctx, RECORD_TIMEOUT)?;
     // The adjustments from where the recording starts, as scenario record
     // starts them: the person plays the game the recording is made of.
-    let mut live = (!p.adjust.is_stock()).then(|| LiveAdjust {
-        set: p.adjust.clone(),
-        tick: p.tick(),
-        run: p.adjust.start(&mut b.m),
-        ticks: 0,
-    });
+    let mut live = (!p.adjust.is_stock()).then(|| LiveAdjust::new(p.adjust.clone(), Some(p.tick()), &mut b.m, false));
     let reached = match &mut live {
         None => p.lead_in(&mut b.m, LEAD_FIELDS),
         Some(l) => lead_in(&mut b.m, l, LEAD_FIELDS),
@@ -769,9 +815,33 @@ fn scenario_start(ctx: &Ctx, a: &mut HandoffArgs) -> crate::Result<(Session, cra
     Ok((s, p))
 }
 
+/// A play from power-on or a state: the adjustments asked for, latch with
+/// the glossary binding's tick and the fallback where no tick ends.
+fn power_on_adjust(ctx: &Ctx, a: &HandoffArgs, m: &mut Machine) -> crate::Result<Option<LiveAdjust>> {
+    let Some(chosen) = a.adjust.as_ref().filter(|c| !c.is_empty()) else { return Ok(None) };
+    let has = |x: &str| chosen.iter().any(|c| c == x);
+    let set = crate::adjust::Adjustments { latch: has("latch"), steady: has("steady"), ..Default::default() };
+    let tick = if set.latch { Some(latch_tick(ctx)?) } else { None };
+    Ok(Some(LiveAdjust::new(set, tick, m, true)))
+}
+
+/// The glossary binding's tick, for latch in a play without a scenario.
+fn latch_tick(ctx: &Ctx) -> crate::Result<crate::binding::Tick> {
+    let (_, b) = crate::scenario::glossary_binding(&ctx.root).map_err(|e| {
+        let problems = e.to_value()["problems"].clone();
+        Error::invalid(format!(
+            "latch needs the game's tick from the glossary binding ({}): play without latch, or from a scenario",
+            e.message
+        ))
+        .with("problems", problems)
+    })?;
+    Ok(b.described().tick.clone())
+}
+
 /// [`crate::scenario::Prepared::lead_in`] with the adjustments running: the
 /// pad released until the first tick ends, then on to the next field.
 fn lead_in(m: &mut Machine, l: &mut LiveAdjust, fields: u64) -> bool {
+    let Some(tick) = l.tick.clone() else { return false };
     l.run.input(m, &Input { frame: 0, buttons: 0, sticks: [128; 4] });
     let (mut ticked, mut last_frame) = (false, m.bus.frames);
     let limit = m.bus.frames + fields;
@@ -787,7 +857,7 @@ fn lead_in(m: &mut Machine, l: &mut LiveAdjust, fields: u64) -> bool {
         }
         let info = m.step();
         l.run.step(&info, m);
-        if l.tick.ended_by(&info) {
+        if tick.ended_by(&info) {
             // The first tick is the recording's initial moment (0); the play's count from 1.
             if !ticked {
                 l.run.tick_ended(0, m);
@@ -859,7 +929,11 @@ fn run(
     let result = (|| -> crate::Result<Value> {
         let (mut s, scenario) = match a.id {
             Some(_) => alive(dir, "starting", || scenario_start(ctx, &mut a)).map(|(s, p)| (s, Some(p)))?,
-            None => (start(&a)?, None),
+            None => {
+                let mut s = start(&a)?;
+                s.adjust = power_on_adjust(ctx, &a, &mut s.m)?;
+                (s, None)
+            }
         };
         let (end, note) = play(&mut s, text, dir).map_err(|e| Error::new("window_failed", e))?;
         if end == End::Closed {
@@ -870,7 +944,11 @@ fn run(
         s.write_live(dir, "finishing");
         let (events, frames) = (s.events.clone(), s.rel());
         let state = s.m.save_state(s.media_id.clone());
+        let adjust = s.adjustments();
         let mut v = finish(&a, s, end, note, dir)?;
+        if scenario.is_none() && !adjust.is_empty() {
+            v["adjust"] = json!(adjust);
+        }
         if let Some(p) = scenario {
             scenario_report(ctx, &a, &p, &mut v, end, &events, frames, &state, dir);
         }
@@ -1200,7 +1278,32 @@ mod tests {
         assert!(e.message.starts_with("--expect") && e.message.contains("stage"), "{}", e.message);
     }
 
-    /// A play's adjustments go with a scenario and are latch, steady and off.
+    /// Latch in a play from power-on: a press waits for a tick, and where no
+    /// tick ends (the boot, a menu) it reaches the controller after
+    /// STALL_FIELDS fields, then at once until a tick ends again.
+    #[test]
+    fn a_plays_latch_lets_input_through_where_no_tick_ends() {
+        use psx_core::sio0::button::{CROSS, START};
+        let bios = vec![0; 0x8_0000];
+        let mut s = Session::new(Machine::new(bios.clone()), bios, None, 0);
+        let set = crate::adjust::Adjustments { latch: true, ..Default::default() };
+        // A tick no code ends: a store to the last word of RAM, from no instruction there is.
+        let tick = crate::binding::Tick { at: 0x801F_FFFC, bytes: 4, pc: Some(0xBFC0_0000) };
+        s.adjust = Some(LiveAdjust::new(set, Some(tick), &mut s.m, true));
+        assert_eq!(s.latch_state(), Some("holding for ticks"));
+        s.frame(CROSS.into(), [0x80; 4]);
+        assert_eq!(s.m.bus.sio0.buttons & CROSS, 0, "held for the tick's end");
+        for _ in 0..STALL_FIELDS {
+            s.frame(CROSS.into(), [0x80; 4]);
+        }
+        assert_eq!(s.latch_state(), Some("no ticks, passing through"));
+        assert_ne!(s.m.bus.sio0.buttons & CROSS, 0, "let through");
+        s.frame(START.into(), [0x80; 4]);
+        assert_eq!(s.m.bus.sio0.buttons & (CROSS | START), START, "at once while no tick ends");
+        assert_eq!(s.events.len(), 2, "the input is kept as pressed");
+    }
+
+    /// A play's adjustments are latch, steady and off; off goes with a scenario.
     #[test]
     fn adjustments_are_checked_before_the_play_is_queued() {
         let args = |v: Value| -> HandoffArgs { serde_json::from_value(v).unwrap() };
@@ -1210,8 +1313,10 @@ mod tests {
         assert!(none.check_scenario().is_ok(), "none checked: the stock game");
         let bad = args(json!({"request": "x", "id": "s", "name": "n", "adjust": ["fast"]}));
         assert!(bad.check_scenario().unwrap_err().message.contains("fast"));
-        let alone = args(json!({"request": "x", "adjust": ["latch"]}));
-        assert!(alone.check_scenario().unwrap_err().message.contains("adjust"));
+        let alone = args(json!({"request": "x", "adjust": ["latch", "steady"]}));
+        assert!(alone.check_scenario().is_ok(), "from power-on: latch and steady");
+        let off = args(json!({"request": "x", "adjust": ["off"]}));
+        assert!(off.check_scenario().unwrap_err().message.contains("scenario"));
     }
 
     #[test]

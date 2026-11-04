@@ -331,6 +331,11 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                     if paused { YELLOW } else { GREY },
                 );
                 p.line(&format!("{mode}; {n} gamepad{}", if n == 1 { "" } else { "s" }), GREY);
+                let adjust = s.adjustments();
+                if !adjust.is_empty() {
+                    let latch = s.latch_state().map(|l| format!(" (latch: {l})")).unwrap_or_default();
+                    p.line(&format!("adjusted: {}{latch}", adjust.join(", ")), GREY);
+                }
                 match (&audio, muted) {
                     (Some(a), false) => p.line(&format!("sound: {}", a.name), GREY),
                     (Some(_), true) => p.line("sound: off (F4)", YELLOW),

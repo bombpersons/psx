@@ -362,7 +362,7 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
                 (true, true) => "DualShock, analog mode",
             };
             json!({"state": state, "request": text, "message": message, "message_seq": message_seq,
-                "labelling": labelling, "writing": writing, "paused": paused, "mode": mode, "adjust": s.adjustments(), "run_frame": s.rel(), "quick_save": s.quick.is_some(),
+                "labelling": labelling, "writing": writing, "paused": paused, "mode": mode, "adjust": s.adjustments(), "latch": s.latch_state(), "run_frame": s.rel(), "quick_save": s.quick.is_some(),
                 "marks": s.marks.iter().map(|m| json!({"n": m.n, "label": m.label})).collect::<Vec<_>>()})
         };
         let second = live_at.elapsed() >= Duration::from_secs(1);

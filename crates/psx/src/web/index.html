@@ -1496,7 +1496,9 @@ function requestsView() {
 // run keeps the end state and the input.
 const stamp = () => { const d = new Date(), z = n => String(n).padStart(2, "0"); return `play-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}`; };
 function playNowCard() {
-  const N = S.playnow = S.playnow || {p: S.cur, scenario: "", from: "", name: stamp(), what: "", scens: {}, adj: {latch: true, steady: true, off: true}};
+  // A scenario's play has every adjustment unless unchecked (as recordings
+  // are made); one from power-on has none unless checked (no recording).
+  const N = S.playnow = S.playnow || {p: S.cur, scenario: "", from: "", name: stamp(), what: "", scens: {}, adj: {latch: true, steady: true, off: true}, adjOn: {latch: false, steady: false}};
   const sc = N.scens[N.p];
   if (!sc) loadPlayNow(N.p);
   const list = sc?.scenarios || [];
@@ -1508,9 +1510,8 @@ function playNowCard() {
     ${S.projects.length > 1 ? `<label for="pn-p">project</label><select id="pn-p">${S.projects.map((x, i) => opt(i, x.name, i === N.p)).join("")}</select>` : ""}
     <label for="pn-s">scenario</label><select id="pn-s">${opt("", sc ? "none: from power-on, no recording" : "loading…", !N.scenario)}${list.map(x => opt(x.id, x.id, x.id === N.scenario)).join("")}</select>
     ${N.scenario ? `<label for="pn-f">start at</label><select id="pn-f">${opt("", "the scenario's state", !N.from)}${recs.map(r => opt(r.name, "the end of " + r.name, r.name === N.from)).join("")}</select>
-      <label for="pn-n">recording</label><input type="text" id="pn-n" value="${esc(N.name)}" placeholder="its name">
-      <label>adjustments</label><div class="adj">${ADJUSTMENTS.map(([k, l, t]) => `<label title="${esc(t)}"><input type="checkbox" data-adj="${k}" ${N.adj[k] ? "checked" : ""}> ${l}</label>`).join("")}
-        <span class="quiet">${N.adj.latch && N.adj.steady && N.adj.off ? "as recordings are made" : !N.adj.latch && !N.adj.steady ? "the stock game's timing" : "a mix: to feel what one changes"}</span></div>` : ""}
+      <label for="pn-n">recording</label><input type="text" id="pn-n" value="${esc(N.name)}" placeholder="its name">` : ""}
+    <label>adjustments</label><div class="adj">${adjBoxes(N)}</div>
     <label for="pn-w">what you'll do</label><input type="text" id="pn-w" value="${esc(N.what)}" placeholder="${N.scenario ? "a sentence: the recording's description, and what the agent reads" : "optional, for the agent"}">
     <span></span><div class="row" style="display:flex;gap:8px;align-items:center"><button class="b primary" id="pn-go">Play</button><span class="quiet">${N.scenario ? `becomes ${esc(N.scenario)}/${esc(N.name || "…")}; F12 to finish, as for a request` : "F12 to finish; the run keeps the state and your input"}</span></div>
     <span></span><div class="err" id="pn-err"></div>
@@ -1525,6 +1526,14 @@ const ADJUSTMENTS = [
   ["steady", "steady", "no tick overruns its fields: the game does not slow down where the console did"],
   ["off", "off", "the functions the scenario's [off] names return at once (systems the port does not have yet)"],
 ];
+function adjBoxes(N) {
+  const adj = N.scenario ? N.adj : N.adjOn;
+  const boxes = ADJUSTMENTS.filter(([k]) => N.scenario || k !== "off").map(([k, l, t]) => `<label title="${esc(t)}"><input type="checkbox" data-adj="${k}" ${adj[k] ? "checked" : ""}> ${l}</label>`).join("");
+  const hint = N.scenario
+    ? N.adj.latch && N.adj.steady && N.adj.off ? "as recordings are made" : !N.adj.latch && !N.adj.steady ? "the stock game's timing" : "a mix: to feel what one changes"
+    : N.adjOn.latch ? "latch takes the glossary binding's tick, and lets input through where none ends (boot, menus)" : N.adjOn.steady ? "" : "the stock game";
+  return boxes + `<span class="quiet">${esc(hint)}</span>`;
+}
 async function loadPlayNow(p) {
   const N = S.playnow;
   try { N.scens[p] = await api(`/api/p/${p}/recordings`); } catch (e) { N.scens[p] = {scenarios: []}; }
@@ -1533,14 +1542,15 @@ async function loadPlayNow(p) {
 function playNowWire() {
   const N = S.playnow; if (!N || !$("#pn-go")) return;
   const on = (id, k, redraw) => { const e = $(id); if (e) e[e.tagName === "SELECT" ? "onchange" : "oninput"] = () => { N[k] = k === "p" ? +e.value : e.value; if (redraw) requestsView(); }; };
-  for (const c of document.querySelectorAll(".playnow [data-adj]")) c.onchange = () => { N.adj[c.dataset.adj] = c.checked; requestsView(); };
+  for (const c of document.querySelectorAll(".playnow [data-adj]")) c.onchange = () => { (N.scenario ? N.adj : N.adjOn)[c.dataset.adj] = c.checked; requestsView(); };
   on("#pn-p", "p", true); on("#pn-s", "scenario", true); on("#pn-f", "from", false); on("#pn-n", "name", false); on("#pn-w", "what", false);
   $("#pn-pad").onclick = () => padSetup();
   $("#pn-go").onclick = async () => {
     const err = $("#pn-err"); err.textContent = "";
     if (N.scenario && !/^[A-Za-z0-9_.-]+$/.test(N.name || "")) { err.textContent = "Name the recording: letters, digits, - _ ."; return; }
     $("#pn-go").disabled = true;
-    const adjust = N.scenario ? Object.keys(N.adj).filter(k => N.adj[k]) : undefined;
+    const adj = N.scenario ? N.adj : N.adjOn;
+    const adjust = Object.keys(adj).filter(k => adj[k] && (N.scenario || k !== "off"));
     const r = await post(`/api/p/${N.p}/play`, {scenario: N.scenario, name: N.scenario ? N.name : "", from: N.from, what: N.what, adjust});
     if (r.error) { $("#pn-go").disabled = false; err.textContent = r.error.message; return; }
     N.name = stamp(); N.what = "";
@@ -1628,7 +1638,7 @@ function playerStatus(P, st) {
 }
 function playerLine(P) {
   const st = P.status, l = $("#pline"); if (!l) return;
-  l.textContent = [st.state, st.mode, st.adjust ? (st.adjust.length ? "adjusted: " + st.adjust.join(", ") : "stock game") : "", st.run_frame != null ? `field ${st.run_frame}` : "", st.quick_save ? "quick save kept" : "", P.fast ? "fast forward" : ""].filter(Boolean).join(" · ");
+  l.textContent = [st.state, st.mode, st.adjust ? (st.adjust.length ? "adjusted: " + st.adjust.join(", ") + (st.latch ? ` (latch: ${st.latch})` : "") : "stock game") : "", st.run_frame != null ? `field ${st.run_frame}` : "", st.quick_save ? "quick save kept" : "", P.fast ? "fast forward" : ""].filter(Boolean).join(" · ");
   const pz = $("#ppause"); if (pz) pz.classList.toggle("on", st.state === "paused");
 }
 function playerView() {

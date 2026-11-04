@@ -285,6 +285,19 @@ impl Running {
         }
     }
 
+    /// `latch` where the game's tick is not running (a menu, the boot):
+    /// input reaches the controller at once, as on the stock game, and the
+    /// buffer latched where the last tick ended is no longer put back over
+    /// the game's own polls. The next tick to end latches again. Only for a
+    /// person's play: a recording refuses a tick that does not end instead.
+    pub fn pass_through(&mut self, m: &mut Machine, i: Option<&crate::replay::Input>) {
+        if let Some(i) = i.or(self.held.as_ref()).copied() {
+            crate::replay::apply(m, &i);
+        }
+        self.held = None;
+        self.latched.clear();
+    }
+
     /// The step `info` just ran on `m`.
     pub fn step(&mut self, info: &StepInfo, m: &mut Machine) {
         let Some(f) = &mut self.flow else { return };

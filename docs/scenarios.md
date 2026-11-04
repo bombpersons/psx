@@ -198,6 +198,14 @@ has a checkbox for each. The recording is made with the same set; one
 `scenario record` cannot name (latch without steady, say) is reported as
 such.
 
+A play without a scenario (from power-on or a state) has no adjustment
+unless asked; it can ask for steady, and for latch, which then takes the
+glossary binding's tick. The boot and the menus may not run that tick (it
+was found in the game's main loop), so there a play's latch lets input
+through once ten fields pass without one, as on the stock game, and holds
+it for ticks again when one ends; the play's status says which. Only a
+play does this: a recording refuses a tick that does not end.
+
 Without latch (`--stock`), each tick's `pad` is the controller's buttons
 when the tick ended, unless the glossary's binding says where the game
 keeps its own input word (`Glossary::input`): then it is that word.
