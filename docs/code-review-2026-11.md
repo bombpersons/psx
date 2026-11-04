@@ -41,7 +41,7 @@ behave differently from what their comments say.
 | M9 | `crates/psx-core/src/cpu.rs:1050-1059,1208-1237` | COP0 moves: EPC writable, SR/DCIC unmasked, no reserved-instruction exception for registers 0/1/2/4/10, MFC0 from 16-31 writes rt, BC0x/BC2x raise RI. | fixed |
 | M10 | `crates/psx-gte/src/gte.rs:61-74` | The opcode alias table runs commands Mednafen treats as no-ops. | fixed |
 | M11 | `crates/psx-gpu/src/raster.rs:669` | X-flipped sprites start sampling at `u`, Mednafen and this crate's timing at `u\|1`. | fixed |
-| M12 | `crates/psx-core/src/memcard.rs:135` | A corrupt card's block link indexes past the image and panics. | open |
+| M12 | `crates/psx-core/src/memcard.rs:135` | A corrupt card's block link indexes past the image and panics. | fixed |
 | M13 | `crates/psx-core/src/callcheck.rs:129` | `compare()` reloads state without reattaching the disc. | open |
 | M14 | `templates/psx-bevy/psx-bevy/src/scenario.rs:342`, `game/src/disc.rs:83`, `dev_mcp.rs:596` | A replay passes after zero ticks when no compared quantities overlap; ticks count while the game waits for data; `game_step` max does not fit the 120 s reply limit. | open |
 | M15 | `.github/workflows/release.yml:20` | `contents: write` for every job; actions pinned to movable tags. | open |

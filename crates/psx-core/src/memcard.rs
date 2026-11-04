@@ -133,7 +133,9 @@ impl MemCard {
             }
             let mut blocks = vec![slot];
             let mut next = u16::from_le_bytes([d[8], d[9]]);
-            while next != 0xFFFF && blocks.len() < 15 {
+            // Links name blocks 0-14 (directory frames 1-15); anything else is
+            // a corrupt or foreign card and ends the chain.
+            while next < 15 && blocks.len() < 15 {
                 let b = next as usize + 1;
                 blocks.push(b);
                 next = u16::from_le_bytes([self.sector(b as u16)[8], self.sector(b as u16)[9]]);
@@ -304,6 +306,17 @@ impl CardPort {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_corrupt_block_link_ends_the_chain() {
+        let mut data = MemCard::formatted().data;
+        let f = &mut data[SECTOR..2 * SECTOR]; // directory frame 1
+        f[0] = 0x51;
+        f[8..10].copy_from_slice(&0x03FFu16.to_le_bytes());
+        let saves = MemCard::from_image(data).saves();
+        assert_eq!(saves.len(), 1);
+        assert_eq!(saves[0].blocks, vec![1]);
+    }
 
     /// A command after 81h; returns every byte received and checks DSR
     /// follows all but the last.
