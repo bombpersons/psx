@@ -16,6 +16,9 @@ use crate::error::{MediaError, Result, malformed};
 
 pub const SYNC: [u8; 12] = [0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0];
 pub const LEAD_IN_SECTORS: u32 = 150;
+/// Most sectors reserved ahead of a read whose length a disc record gives
+/// (16 MiB of payload); longer reads grow as they go.
+pub const PREALLOC_SECTORS: usize = 8192;
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ImageFile {
@@ -376,9 +379,14 @@ impl Disc {
 
     /// Read `count` consecutive 2048-byte Form 1 payloads (file system view).
     pub fn read_form1(&self, lba: u32, count: u32) -> Result<Vec<u8>> {
-        let mut out = Vec::with_capacity(count as usize * 2048);
+        // `count` comes from the disc's own records: reserve what is plausible,
+        // let a real read grow it.
+        let mut out = Vec::with_capacity((count as usize).min(PREALLOC_SECTORS) * 2048);
         for i in 0..count {
-            let s = self.read_data(lba + i)?;
+            let at = lba
+                .checked_add(i)
+                .ok_or_else(|| MediaError::Malformed(format!("sector {lba}+{i} past the end of the address space")))?;
+            let s = self.read_data(at)?;
             out.extend_from_slice(&s.data[..2048]);
         }
         Ok(out)

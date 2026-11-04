@@ -315,6 +315,14 @@ fn parse_toml_like(text: &str) -> Result<Manifest, String> {
             serde_json::from_str::<String>(s).or_else(|_| Ok::<_, String>(s.to_string()))
         };
         let (key, value) = (unquote(key)?, unquote(value)?);
+        // File keys become paths that update writes and deletes: a manifest
+        // from a cloned workspace must not reach outside it.
+        if table.is_some() && !tracked_path_ok(&key) {
+            return Err(format!("line {}: {key:?} is not a relative path inside the workspace", n + 1));
+        }
+        if table.as_deref() == Some("owned") && !is_owned(&key) {
+            return Err(format!("line {}: {key:?} is not a template-owned path", n + 1));
+        }
         match table.as_deref() {
             None => drop(top.insert(key, value)),
             Some("owned") => drop(owned.insert(key, value)),
@@ -349,6 +357,12 @@ fn psx_version() -> String {
 fn sha256(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("sha256:{}", digest.iter().map(|b| format!("{b:02x}")).collect::<String>())
+}
+
+/// A manifest path: relative, `/`-separated, with no `.`, `..`, empty or
+/// drive-like component.
+fn tracked_path_ok(rel: &str) -> bool {
+    !rel.is_empty() && rel.split('/').all(|c| !c.is_empty() && c != "." && c != ".." && !c.contains(['\\', ':', '\0']))
 }
 
 fn is_owned(rel: &str) -> bool {
@@ -921,6 +935,29 @@ mod tests {
             seeded: BTreeMap::from([("game/src/lib.rs".into(), "sha256:11".into())]),
         };
         assert_eq!(parse_toml_like(&toml_like(&m)).unwrap(), m);
+    }
+
+    #[test]
+    fn manifest_paths_stay_inside_the_workspace() {
+        let base = |m: &mut Manifest| m.owned.clear();
+        let mut m = Manifest {
+            template: "psx-bevy".into(),
+            psx: "0.1.0+abc".into(),
+            package: "my-game".into(),
+            region: TemplateRegion::Pal,
+            fields_per_tick: 2,
+            owned: BTreeMap::new(),
+            seeded: BTreeMap::new(),
+        };
+        for bad in ["vendor/../../.ssh/config", "/etc/passwd", "../x", "game/src/lib.rs", "vendor//x", "vendor\\..\\x"]
+        {
+            base(&mut m);
+            m.owned.insert(bad.into(), "sha256:00".into());
+            assert!(parse_toml_like(&toml_like(&m)).is_err(), "{bad}");
+        }
+        base(&mut m);
+        m.seeded.insert("../outside".into(), "sha256:00".into());
+        assert!(parse_toml_like(&toml_like(&m)).is_err());
     }
 
     /// Every file under templates/psx-bevy (except build output) must be

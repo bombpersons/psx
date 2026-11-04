@@ -443,7 +443,9 @@ pub fn decode_bs(frame: &[u8], width: u16, height: u16) -> Result<(BsHeader, Rle
     let total = width.div_ceil(16) as usize * height.div_ceil(16) as usize;
     let mut b = Bits { data: &frame[8..], pos: 0 };
     let mut rle = Rle::default();
-    rle.halfwords.reserve(total * 6 * 8);
+    // The size comes from the sector header; the bitstream bounds what can
+    // really be decoded (a halfword takes at least a bit or two).
+    rle.halfwords.reserve((total * 6 * 8).min(frame.len() * 8));
     // v3 DC predictors: Cr, Cb, Y.
     let mut prev = [0i32; 3];
     for mb in 0..total {
