@@ -858,7 +858,9 @@ impl Bus {
             }
             0x1F80_1100..=0x1F80_113F => {
                 let now = self.now;
-                let v = self.timers.read(now, p - TIMERS);
+                // Mednafen's `TIMER_Read` result narrowed to the access width
+                // (`PSX_MemRead8/16` return uint8/uint16), not shifted.
+                let v = self.timers.read(now, p - TIMERS) & (u32::MAX >> (32 - 8 * n));
                 self.after_timers();
                 self.log_access(IoAccess { addr: p, width, write: false, value: v });
                 v
@@ -935,7 +937,7 @@ impl Bus {
                 v
             }
             0x1FC0_0000..=0x1FC7_FFFF => le(&self.bios, (p - 0x1FC0_0000) as usize),
-            0xFFFE_0130 => self.cache_control,
+            0xFFFE_0130 => self.cache_control & (u32::MAX >> (32 - 8 * n)),
             _ if self.hidden_at(p, n).is_some() => {
                 let o = self.hidden_at(p, n).unwrap();
                 le(self.hidden.as_ref().unwrap(), o)
@@ -1132,6 +1134,17 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn narrow_reads_of_timers_and_cache_control_are_narrowed() {
+        let mut b = Bus::new(vec![]);
+        b.write(0x1F80_1108, Width::Half, 0x1234).unwrap(); // timer 0 target
+        assert_eq!(b.read(0x1F80_1108, Width::Byte).unwrap(), 0x34);
+        assert_eq!(b.read(0x1F80_1108, Width::Half).unwrap(), 0x1234);
+        b.write(0xFFFE_0130, Width::Word, 0x0001_E988).unwrap();
+        assert_eq!(b.read(0xFFFE_0130, Width::Byte).unwrap(), 0x88);
+        assert_eq!(b.read(0xFFFE_0130, Width::Word).unwrap(), 0x0001_E988);
+    }
 
     #[test]
     fn spu_trace_records_uploads_key_on_off_and_the_first_end_of_keyed_voices() {
