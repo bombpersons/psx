@@ -4,6 +4,9 @@
 //! writes and returns them on reads, and every I/O access is recorded so a
 //! harness can see (and override) what the CPU exchanged with hardware.
 
+/// Where [`Bus::hidden`] is mapped (KSEG0): physical 16 MiB, which the
+/// console leaves unmapped, so no game reads or writes it.
+pub const HIDDEN: u32 = 0x8100_0000;
 pub const RAM_SIZE: usize = 2 * 1024 * 1024;
 pub const BIOS_SIZE: usize = 512 * 1024;
 pub const SCRATCH_SIZE: usize = 1024;
@@ -56,6 +59,11 @@ pub struct Bus {
     /// Not saved: restored from the BIOS file (its hash is in the state header).
     #[serde(skip)]
     pub bios: Vec<u8>,
+    /// Memory at [`HIDDEN`], an address range the console leaves unmapped,
+    /// when code the game cannot see is loaded there (an agent's C checked
+    /// against the original, `psx_core::callcheck`). Not saved.
+    #[serde(skip)]
+    pub hidden: Option<Vec<u8>>,
     /// Physical 0x1F801000..0x1F803000 as a register file.
     pub io: Vec<u8>,
     pub cache_control: u32,
@@ -169,6 +177,7 @@ impl Bus {
             page_writes: Vec::new(),
             scratch: [0; SCRATCH_SIZE],
             bios: b,
+            hidden: None,
             io: vec![0; 0x2000],
             cache_control: 0,
             io_log: Vec::new(),
@@ -725,6 +734,14 @@ impl Bus {
     }
 
     /// True when a virtual address decodes to the I/O region.
+    /// The offset in [`Bus::hidden`] of `n` bytes at physical `p`, when it
+    /// is mapped and holds them.
+    fn hidden_at(&self, p: u32, n: usize) -> Option<usize> {
+        let h = self.hidden.as_ref()?;
+        let o = p.checked_sub(HIDDEN & 0x1FFF_FFFF)? as usize;
+        (o + n <= h.len()).then_some(o)
+    }
+
     pub fn is_io(addr: u32) -> bool {
         let p = physical(addr);
         (0x1F80_1000..0x1F80_3000).contains(&p)
@@ -919,6 +936,10 @@ impl Bus {
             }
             0x1FC0_0000..=0x1FC7_FFFF => le(&self.bios, (p - 0x1FC0_0000) as usize),
             0xFFFE_0130 => self.cache_control,
+            _ if self.hidden_at(p, n).is_some() => {
+                let o = self.hidden_at(p, n).unwrap();
+                le(self.hidden.as_ref().unwrap(), o)
+            }
             _ => return Err(BusError::Unmapped(p)),
         })
     }
@@ -1061,6 +1082,10 @@ impl Bus {
             0x1FC0_0000..=0x1FC7_FFFF => {}
             // Bits 6 and 10 don't stick (Mednafen's SetBIU).
             0xFFFE_0130 => self.cache_control = value & !0x440,
+            _ if self.hidden_at(p, n).is_some() => {
+                let o = self.hidden_at(p, n).unwrap();
+                put(self.hidden.as_mut().unwrap(), o);
+            }
             _ => return Err(BusError::Unmapped(p)),
         }
         Ok(())

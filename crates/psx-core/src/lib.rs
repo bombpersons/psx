@@ -6,6 +6,7 @@
 //! comparison against Mednafen (`psx-oracle lockstep`), not assumed.
 
 pub mod bus;
+pub mod callcheck;
 pub mod cdrom;
 pub mod cpu;
 pub mod disasm;
