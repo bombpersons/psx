@@ -244,7 +244,9 @@ impl Code {
                 checked += 1;
                 differ += (u32::from_le_bytes(e.try_into().unwrap()) != r) as u32;
             }
-            a += 4;
+            // The range may end at the top of the address space.
+            let Some(next) = a.checked_add(4) else { break };
+            a = next;
         }
         Some((checked, differ))
     }
@@ -523,7 +525,9 @@ pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, Stri
                 targets.insert(jump_target(a, i));
             }
         }
-        a += 4;
+        // The range may end at the top of the address space.
+        let Some(next) = a.checked_add(4) else { break };
+        a = next;
     }
     let mut res = Resolver::new(code.gp);
     let mut lines = Vec::new();
@@ -591,7 +595,9 @@ pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, Stri
             res.reset();
         }
         after_return = i == JR_RA;
-        a += 4;
+        // The range may end at the top of the address space.
+        let Some(next) = a.checked_add(4) else { break };
+        a = next;
     }
     (lines, text.lines().map(|l| l.trim_end().to_string() + "\n").collect())
 }
@@ -917,6 +923,14 @@ mod tests {
             0x0000_0000, //
             0x8001_0030, // a pointer to g
         ])
+    }
+
+    #[test]
+    fn a_listing_can_end_at_the_top_of_the_address_space() {
+        let c = sample();
+        let (lines, _) = listing(&c, 0xFFFF_FFC0, 0xFFFF_FFFF, &ListOpts { scopes: &[], text: false, words: false });
+        // Nothing is loaded there; what matters is that the walk ends.
+        assert!(lines.is_empty());
     }
 
     #[test]
