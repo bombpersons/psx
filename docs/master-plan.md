@@ -343,6 +343,10 @@ A8. **The proof, and the docs.** Re-record Croc's and the race game's
     16 KiB), so it does not mention them yet: trim it, then add a line.
     `port-design.md` and the tap line in `game/AGENTS.md` are still to
     do, and the proof needs the discs.
+    *Since (2026-11-04):* `port-design.md` has the tick as the boundary,
+    `game/AGENTS.md` the tap line, and the overview one line (its sticks
+    passage shortened to fit); `run --adjust steady` exists (`latch` is
+    refused there, needing a recording's ticks). The proof needs the discs.
 
 ## Track B: the library's rules, exactly
 
@@ -382,6 +386,16 @@ C1. **`off`.** A scenario's `[off]` table names functions by their
     enemies' quantities and what touched them, and a misspelt name gets
     the names file's spelling suggestion.
 
+    *Done (2026-11-04), on test programs only:* `[off]` in the scenario
+    format (and its schema; the template's vendored copy too), resolved
+    by `[MODULE:]name` or hex, refused at prepare with a spelling that
+    differs only in case or underscores; the recording keeps each
+    function's name, address and value and how often it was called;
+    `--stock` keeps `off`. On a test program whose function returns 7,
+    the recording holds the value given. The redirection is a check
+    before each recorded step, not yet psx-core's (D10's compare redirects
+    one call by setting the PC). **Still to do:** the Croc check.
+
 C2. **Turning systems back on.** `port next` gives a Restore item for a
     scenario with something off once the port has the feature it belongs
     to (from the catalogue), and the feature is not done until its
@@ -389,6 +403,11 @@ C2. **Turning systems back on.** `port next` gives a Restore item for a
 
     *Done when* the item appears on scratch Croc once an enemy feature
     exists.
+
+    *Done (2026-11-04), on fixtures:* a function turned off belongs to
+    the feature whose entry lists it in `code`; Restore comes once that
+    feature matches (its failing recordings first), the Done stage waits
+    for it, and `port status` shows each feature's code turned off.
 
 ## Track D: the original's code (decomp plan, in parallel)
 
@@ -409,8 +428,8 @@ calls them by name.
 | D6 | Coverage on the C, and the gaps grouped |
 | D7 | The disc's own names: debug files left on the disc |
 | D8 | The flow (`port init` runs the scan) and a measure |
-| D9 | The header and the build: `names.h` and the linker script |
-| D10 | One call, compared, in psx-core (shares C1's redirection) |
+| D9 | The header and the build: `names.h` and the linker script. *Done 2026-11-04 on test names; the command comes with D11* |
+| D10 | One call, compared, in psx-core. *Done 2026-11-04 (`psx_core::callcheck`); GCC-built C checked against hand-written code end to end* |
 | D11 | Checks over recordings: `code check` |
 | D12 | The decompile shows the C |
 | D13 | Replacement for whole runs: `--decomp` |
@@ -421,7 +440,9 @@ calls them by name.
 
 E1. **The cloud environment's setup script** installs `libudev-dev` and
     `libasound2-dev`, without which `psx` does not build in a new cloud
-    session (gilrs and cpal need them through pkg-config).
+    session (gilrs and cpal need them through pkg-config), and
+    `gcc-mipsel-linux-gnu` for the agent's C (D9 on; its tests skip
+    without it).
 
 E2. **The other agent pulls `psx-web`** and knows: a binding whose
     `INPUT` answers for some ticks and not others is now refused, and A5

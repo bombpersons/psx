@@ -443,6 +443,16 @@ whether the next is worth building.
    *Done when* the scratch Croc names compile into a header with every
    offset asserted, and a C version of a small Croc helper builds.
 
+   *Done (2026-11-04), on test names:* `psx::decomp` writes the header
+   (structs and unions at their offsets, padded, packed only where
+   alignment cannot reach an offset, every offset and size asserted;
+   enums, typedefs, externs, prototypes) and a linker script of
+   `PROVIDE`s, and builds C with `mipsel-linux-gnu-gcc` (or
+   `mipsel-none-elf-gcc`) at `-O2 -G0 -march=r3000`, linked at the hidden
+   range, with errors by file and line; `psx context` reports the
+   compiler. The command around it is `code check` (step 11). Still to
+   check: scratch Croc's names.
+
 10. **One call, compared, in psx-core.** Keep and restore a machine state
    in memory, map the hidden range, send one call to the build, run to the
    return (the return address reached with `sp` restored, or a step
@@ -451,6 +461,15 @@ whether the next is worth building.
    *Done when* tests on a test EXE pass an equivalent function and report
    a wrong byte, a wrong return value, a missing call, a clobbered saved
    register and a loop that never returns.
+
+   *Done (2026-11-04):* `psx_core::callcheck`, with the hidden range at
+   KSEG0 0x81000000 (`Bus::hidden`, mapped only when used). Each case
+   above is a test on hand-assembled code, and a GCC build of the same
+   function's C passes against the hand-written original (psx's
+   `decomp` tests). Return registers are compared as the signature uses
+   them (`v1` only for a 64-bit value). Calls the C makes to its own
+   functions land in the hidden range: step 11 maps them back to the
+   original's addresses before comparing.
 
 11. **Checks over recordings.** `code check` replays the recordings
    (`--scenario`, `--recording`, `--state` choose others), runs up to
