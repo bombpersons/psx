@@ -351,6 +351,13 @@ pub struct ObserveArgs {
     #[arg(long = "pad-reads")]
     #[serde(default)]
     pub pad_reads: bool,
+    /// Adjust the original to the port's model while it runs (docs/master-plan.md):
+    /// `steady`, no tick overruns its fields (the CPU's own work costs a quarter of its
+    /// clocks, the GPU draws without taking time). Repeatable. latch needs a recording's
+    /// ticks: scenario record makes recordings latched.
+    #[arg(long = "adjust")]
+    #[serde(default)]
+    pub adjust: Vec<String>,
 }
 
 /// Physical address with main RAM mirrors folded (what read watches compare).

@@ -53,6 +53,20 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     // Open the medium first: a restored state needs it to check identity.
     let Medium { exe, disc, id: media_id } = open_media(a.media.as_deref())?;
     let mut m = boot(a.from_state.as_deref(), &a.cards, bios, exe.as_deref(), disc, &media_id)?;
+    for name in &a.observe.adjust {
+        match name.as_str() {
+            "steady" => {
+                m.cpu.overclock = crate::adjust::STEADY_OVERCLOCK;
+                m.bus.gpu.timed = false;
+            }
+            "latch" => {
+                return Err(Error::invalid(
+                    "adjust latch: the pad changes where a tick ends, so it needs the glossary binding's ticks and a recording's input: psx scenario record makes recordings latched",
+                ));
+            }
+            other => return Err(Error::invalid(format!("adjust {other:?}: run knows steady"))),
+        }
+    }
     // Replay events: pad state from each frame (frames counted from the run start).
     if crate::replay::uses_sticks(&events) && m.bus.sio0.pad.kind != psx_core::pad::PadKind::DualShock {
         return Err(Error::new(
@@ -547,6 +561,9 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         "wall_ms": wall_ms,
     });
     report["pad_reads"] = pad_reads;
+    if !obs.adjust.is_empty() {
+        report["adjust"] = json!(obs.adjust);
+    }
     Ok((complete, report))
 }
 

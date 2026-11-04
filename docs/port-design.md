@@ -63,6 +63,19 @@ the behaviour is the same, however the port implements it.
   stand-in world (a flat floor), and only recordings that fit the stand-in
   count for it. A full port loads the original's level and starts from the
   recording's state; that is work of its own, tracked as a feature.
+- **The tick is the boundary.** The port's rules run one tick at a time,
+  and everything from outside the game reaches a tick as its input: in
+  live play from the devices, sampled once at the tick's start; in a
+  replay from the recording alone (live devices are ignored), and each
+  recording replays twice, so a port that is not deterministic fails. The
+  port never imitates the console's timing. The original is adjusted to
+  this model instead ([master-plan.md](master-plan.md)): recordings are
+  made latched (the game's pad changes only where a tick ends, so every
+  read in a tick sees that tick's input) and steady (no tick overruns its
+  fields), and a scenario can turn off the original's systems the port
+  does not have yet (`[off]`) until the feature that ports them matches.
+  `scenario adjust-check` measures what the adjustments change against the
+  stock game.
 
 ## 3. The model
 

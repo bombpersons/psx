@@ -47,6 +47,10 @@ from `GamePlugins`, and replacing or removing the tests that use it
   `PsxMaterial`, never `StandardMaterial`.
 - Import `psx_bevy::controller::Button` explicitly: Bevy's prelude has a
   `Button` too.
+- Live play keeps a press shorter than a tick for one tick (psx-bevy's
+  shell). Check that the original does: a game that reads its pad only
+  where its tick starts never sees such a tap. Recordings replay each
+  tick's pad as the game read it, so this shows only in live play.
 - Name important entities (`Name::new("Player")`) and derive `Reflect` with
   `#[reflect(Component)]`, so the developer MCP's `game_query` can read them
   and `game_set_component` edit them.
