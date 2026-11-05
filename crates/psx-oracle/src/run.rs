@@ -126,13 +126,15 @@ fn store_hit(pc: u32, watches: &[(u32, u32)], frame: u32) -> Option<Value> {
     let (rs, rt) = ((instr >> 21 & 31) as usize, (instr >> 16 & 31) as usize);
     let address = r.gpr[rs].wrapping_add(instr as u16 as i16 as u32);
     let (start, end) = if matches!(instr >> 26, 0x2A | 0x2E) {
-        (address & !3, (address & !3) + 4)
+        (address & !3, (address & !3).wrapping_add(4))
     } else {
-        (address, address + width)
+        (address, address.wrapping_add(width))
     };
+    // In u64: a store at the top of the address space must not overflow
+    // inside Mednafen's hook, where a panic cannot unwind.
     let phys = |a: u32| a & 0x1FFF_FFFF;
-    let (lo, hi) = (phys(start), phys(start) + (end - start));
-    let watched = watches.iter().find(|&&(a, w)| lo < a + w && a < hi)?;
+    let (lo, hi) = (phys(start) as u64, phys(start) as u64 + end.wrapping_sub(start) as u64);
+    let watched = watches.iter().find(|&&(a, w)| lo < a as u64 + w as u64 && (a as u64) < hi)?;
     let old = (phys(address) < 0x80_0000).then(|| ffi::peek(0x8000_0000 | (phys(address) & 0x1F_FFFC), 4));
     Some(json!({
         "frame": frame,

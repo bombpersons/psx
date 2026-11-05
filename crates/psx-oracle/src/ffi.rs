@@ -93,6 +93,14 @@ pub struct Mednafen {
     hook: Option<Hook>,
 }
 
+/// Mednafen's state is global: one emulator per process, and the free
+/// functions below only while it is open (they would read null otherwise).
+static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn assert_open() {
+    assert!(OPEN.load(std::sync::atomic::Ordering::SeqCst), "the Mednafen oracle is not open");
+}
+
 /// Console regions as Mednafen names them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Region {
@@ -138,11 +146,15 @@ impl Mednafen {
         let (base, bios) = (c_path(base)?, c_path(bios)?);
         let media = media.map(c_path).transpose()?;
         let region = CString::new(region.name()).unwrap();
-        // SAFETY: valid C strings; called once per process.
+        if OPEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Err("Mednafen is already open in this process (its state is global)".into());
+        }
+        // SAFETY: valid C strings; `OPEN` makes this the only open emulator.
         unsafe {
             mdh_verbose(verbose as c_int);
             let media = media.as_ref().map_or(std::ptr::null(), |m| m.as_ptr());
             if mdh_open(base.as_ptr(), bios.as_ptr(), media, region.as_ptr(), dualshock as c_int) != 0 {
+                OPEN.store(false, std::sync::atomic::Ordering::SeqCst);
                 return Err(last_error("mednafen can't start"));
             }
         }
@@ -245,6 +257,7 @@ impl Mednafen {
 
 /// The CPU registers; inside a hook, before the instruction at `pc` runs.
 pub fn regs() -> Regs {
+    assert_open();
     let mut r = Regs::default();
     // SAFETY: the emulator is open (only called while a `Mednafen` exists).
     unsafe { mdh_regs(&mut r) };
@@ -253,6 +266,7 @@ pub fn regs() -> Regs {
 
 /// The GTE's data registers (0-31) then control registers (32-63).
 pub fn gte() -> [u32; 64] {
+    assert_open();
     let mut r = [0; 64];
     // SAFETY: the emulator is open; `r` holds 64 words.
     unsafe { mdh_gte(r.as_mut_ptr()) };
@@ -261,12 +275,14 @@ pub fn gte() -> [u32; 64] {
 
 /// The interlaced field the GPU reads out for display, latched at vblank.
 pub fn gpu_readout_field() -> bool {
+    assert_open();
     // SAFETY: a plain read of the GPU's state.
     unsafe { mdh_gpu_readout_field() != 0 }
 }
 
 /// CPU cycles since power-on, before the instruction the step hook is at.
 pub fn cpu_time() -> u64 {
+    assert_open();
     // SAFETY: a plain read of the harness's clock.
     unsafe { mdh_cpu_time() }
 }
@@ -274,24 +290,28 @@ pub fn cpu_time() -> u64 {
 /// CPU cycles since power-on at the end of the last frame, where the next
 /// instruction starts (unless DMA holds the CPU there).
 pub fn frame_time() -> u64 {
+    assert_open();
     // SAFETY: a plain read of the harness's clock.
     unsafe { mdh_frame_time() }
 }
 
 /// DMA holds the CPU: the next instruction hasn't started.
 pub fn cpu_halted() -> bool {
+    assert_open();
     // SAFETY: a plain read of the CPU's state.
     unsafe { mdh_cpu_halted() != 0 }
 }
 
 /// A side-effect-free read of the CPU's logical address space.
 pub fn peek(address: u32, bytes: u32) -> u32 {
+    assert_open();
     // SAFETY: as for `regs`.
     unsafe { mdh_peek(address, bytes) }
 }
 
 /// One of the debugger's address spaces ("cpu", "ram", "spu", "gpu").
 pub fn read(space: &str, address: u32, length: u32) -> Result<Vec<u8>, String> {
+    assert_open();
     let mut buf = vec![0u8; length as usize];
     let name = CString::new(space).unwrap();
     // SAFETY: `buf` holds `length` bytes.
@@ -308,6 +328,7 @@ impl Drop for Mednafen {
             mdh_step_hook(None, std::ptr::null_mut());
             mdh_close();
         }
+        OPEN.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
