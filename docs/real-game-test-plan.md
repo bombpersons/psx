@@ -96,6 +96,29 @@ scenarios, GT2: 5). They are a free regression corpus.
 *Done when* every stock check passes and both ports pass what they
 passed before, or each new failure is a real one the new checks found.
 
+*Done (2026-11-05):* `scenario check`: croc's 5 scenarios (42
+recordings) and GT2's 8 (24) all deterministic, no differences. `port
+update` to `ef06b04`'s template in both (croc keeps its own
+`psx-bevy/src/gte.rs`; GT2's `frames.rs` conflict was an older template
+copy brought in by hand in its `2b840db`, replaced by the new one). The
+seeded changes applied by hand, keeping each game's own content: the
+determinism rules (`AGENTS.md`), the tap line (`game/AGENTS.md`), and
+`--replay` refusing to start without an import (`game/src/disc.rs`,
+`replay: false` in `game/tests/disc.rs`). Ports' tests, before → after:
+croc 97 → 100 passed, GT2 98 → 101 (the template's new tests), and the
+one failing target in each is the same `scenarios` test with the same
+failures: croc's `platforms_1_1 onto_the_rim` from tick 91 (41 of 42
+recordings pass), and every GT2 scenario (93 failing quantities, and the
+port's own panic at `game/src/car/wheels.rs:155`, an index past a
+two-wheel array). Those are the ports' unfinished work, not psx. Neither
+port's two replays of a recording part.
+
+Found on the way: GT2 already has `measure_latch`/`measure_stock`
+recordings in every scenario and `notes/pad-words.md` (2026-11-04), so
+A5's measurement was started there; its menus read the pad from a
+different place than the race's word `0x800A95B4`. Step 4 starts from
+that.
+
 ## 4. Track A on real games
 
 In the master plan's order; each step's *Done when* is already written.
