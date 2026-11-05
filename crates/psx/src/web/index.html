@@ -1583,6 +1583,8 @@ async function startPlayer(p, id) {
   const P = S.player = {p, id, status: {state: "starting"}, keys: new Set(), fast: false, sent: "", busy: false, dirty: false, msgSeq: -1};
   P.base = `/api/p/${p}/request/${encodeURIComponent(id)}`;
   S.bindings = S.bindings || await api("/api/bindings");
+  // Started again or stopped while the bindings loaded: this play is over.
+  if (S.player !== P) return;
   playerView();
   P.abort = new AbortController();
   P.onkey = ev => playerKey(ev, P);
@@ -1745,8 +1747,10 @@ async function playerCmdBody(P, body) {
 }
 function typing(ev) { const t = ev.target?.tagName; return t === "TEXTAREA" || t === "INPUT"; }
 function playerKey(ev, P) {
-  if (S.player !== P || typing(ev)) return;
   const down = ev.type === "keydown";
+  // A key let go while typing (a mark's label, the note) was held before
+  // focus moved there: its release still reaches the game.
+  if (S.player !== P || (down && typing(ev))) return;
   if (down && SHORTCUTS[ev.code]) { ev.preventDefault(); if (!ev.repeat) playerCmd(P, SHORTCUTS[ev.code]); return; }
   if (ev.code === "Tab") { ev.preventDefault(); P.fast = down; sendInput(P); return; }
   const k = keyName(ev.code);
@@ -1923,8 +1927,8 @@ async function sendInput(P) {
   if (j === P.sent || S.player !== P || P.ended) return;
   if (P.busy) { P.dirty = true; return; }
   P.busy = true; P.sent = j;
-  await post(P.base + "/input", body);
-  P.busy = false;
+  // A failed send must not leave busy set, or no input is sent again.
+  try { await post(P.base + "/input", body); } catch (e) { P.sent = ""; } finally { P.busy = false; }
   if (P.dirty) { P.dirty = false; sendInput(P); }
   playerLine(P);
 }
@@ -2287,8 +2291,12 @@ function viewer() {
   if ($("#jump")) $("#jump").onclick = () => setTick(fd);
   for (const c of document.querySelectorAll("#plots canvas")) {
     const at = e => { const b = c.getBoundingClientRect(); setTick(Math.round((e.clientX - b.left) / b.width * n)); };
-    c.onmousedown = e => { stop(); at(e); c.onmousemove = at; };
-    window.addEventListener("mouseup", () => c.onmousemove = null);
+    // The release is listened for per drag, so redrawing adds no listeners.
+    c.onmousedown = e => {
+      stop(); at(e); c.onmousemove = at;
+      const up = () => { c.onmousemove = null; removeEventListener("mouseup", up); };
+      addEventListener("mouseup", up);
+    };
   }
   drawPlots(); setTick(S.tick);
 }
