@@ -271,10 +271,11 @@ pub fn match_code(code: &[u8], base: u32, sigs: &[ObjectSig], min_concrete: usiz
                 size: s.pattern.len() as u32,
                 concrete_bytes: s.concrete,
             });
-            for l in &s.labels {
+            // A label outside the object it was matched with is a bad signature.
+            for l in s.labels.iter().filter(|l| (l.offset as usize) < s.pattern.len()) {
                 let local = l.name.starts_with("loc_") || l.name.starts_with("text_");
                 symbols.push(Symbol {
-                    address: base.wrapping_add(lo + l.offset),
+                    address: base.wrapping_add(lo.wrapping_add(l.offset)),
                     name: l.name.clone(),
                     kind: if local { Kind::Local } else { Kind::Function },
                     source: s.source(),

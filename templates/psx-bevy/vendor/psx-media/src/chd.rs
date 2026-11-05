@@ -84,7 +84,7 @@ impl ChdImage {
         }
         let tracks = parse_tracks(&texts)?;
         let total = chd.header().hunk_count() as u64 * (hunk_bytes / FRAME_BYTES) as u64;
-        if tracks.last().is_some_and(|t| (t.chd_frame + t.frames) as u64 > total) {
+        if tracks.last().is_some_and(|t| t.chd_frame as u64 + t.frames as u64 > total) {
             return Err(MediaError::Malformed(format!("{}: tracks extend past the end of the CHD", path.display())));
         }
         let cache = Cache {
@@ -144,7 +144,11 @@ pub(crate) fn parse_tracks(texts: &[String]) -> Result<Vec<ChdTrack>> {
             return Err(bad(t, "track out of order or pregap larger than the track"));
         }
         tracks.push(ChdTrack { number: number as u8, mode, frames, pregap, pregap_stored, chd_frame });
-        chd_frame += frames.div_ceil(TRACK_PADDING) * TRACK_PADDING;
+        chd_frame = frames
+            .div_ceil(TRACK_PADDING)
+            .checked_mul(TRACK_PADDING)
+            .and_then(|n| chd_frame.checked_add(n))
+            .ok_or_else(|| bad(t, "track frames past the end of the address space"))?;
     }
     if tracks.is_empty() {
         return Err(MediaError::Unsupported("CHD has no CD-ROM track metadata".into()));

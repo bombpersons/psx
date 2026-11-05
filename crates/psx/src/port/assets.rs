@@ -433,7 +433,7 @@ fn loads(root: &Path) -> Option<BTreeMap<String, Vec<(u64, u64)>>> {
             else {
                 continue;
             };
-            out.entry(disc_path(f)).or_default().push((off, off + n));
+            out.entry(disc_path(f)).or_default().push((off, off.saturating_add(n)));
         }
     }
     any.then_some(out)

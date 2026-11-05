@@ -228,6 +228,11 @@ impl Type {
             other => Err(format!("expected an integer, got {}", other.describe())),
         };
         let ints = |bits: u32, signed: bool| {
+            // The header is the recording's: a width of 0 or past what an
+            // i128 holds is a problem with it, not a shift overflow.
+            if !(1..=120).contains(&bits) {
+                return Err(format!("a {bits}-bit integer is not supported (1 to 120 bits)"));
+            }
             if signed {
                 range(-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
             } else {
@@ -240,7 +245,7 @@ impl Type {
                 other => Err(format!("expected true or false, got {}", other.describe())),
             },
             Type::Int { bits, signed } => ints(*bits, *signed),
-            Type::Fixed { signed, int_bits, frac_bits } => ints(int_bits + frac_bits, *signed),
+            Type::Fixed { signed, int_bits, frac_bits } => ints(int_bits.saturating_add(*frac_bits), *signed),
             Type::Float { bits } => ints(*bits, false),
             Type::Enum(variants) => match v {
                 Value::Variant(n) if variants.contains(n) => Ok(()),
@@ -429,6 +434,14 @@ pub(crate) fn check_values(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wild_integer_widths_are_problems_not_panics() {
+        let t = Type::Fixed { signed: true, int_bits: u32::MAX, frac_bits: 1 };
+        assert!(t.check(&Value::Int(0)).is_err());
+        assert!(Type::Int { bits: 0, signed: true }.check(&Value::Int(0)).is_err());
+        assert!(Type::Int { bits: 16, signed: true }.check(&Value::Int(-32768)).is_ok());
+    }
 
     fn field(s: &str) -> Field {
         toml::from_str(s).unwrap()

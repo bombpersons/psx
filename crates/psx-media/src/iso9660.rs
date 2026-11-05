@@ -54,7 +54,7 @@ impl Entry {
     }
 
     pub fn contains_lba(&self, lba: u32) -> bool {
-        lba >= self.lba && lba < self.lba + self.sectors().max(1)
+        lba >= self.lba && (lba as u64) < self.lba as u64 + self.sectors().max(1) as u64
     }
 
     /// True when the directory declares Form 2 or interleaved (XA/STR) content.

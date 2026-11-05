@@ -45,8 +45,8 @@ impl Op for VramDiffArgs {
         Outcome::result((|| -> crate::Result<Value> {
             let region = match region {
                 Some(r) => {
-                    let v: Vec<usize> = r.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-                    if v.len() != 4 {
+                    let v: Vec<usize> = r.split(',').map_while(|s| s.trim().parse().ok()).collect();
+                    if v.len() != 4 || r.split(',').count() != 4 {
                         return Err(Error::invalid(format!("bad region {r}, expected X,Y,W,H")));
                     }
                     Some((v[0], v[1], v[2], v[3]))
@@ -94,8 +94,8 @@ pub fn diff(args: DiffArgs) -> Result<Value> {
     let mut bbox = (usize::MAX, usize::MAX, 0usize, 0usize);
     let mut samples = Vec::new();
     let mut img = args.png.map(|_| vec![0u8; W * H * 4]);
-    for y in ry..(ry + rh).min(H) {
-        for x in rx..(rx + rw).min(W) {
+    for y in ry..ry.saturating_add(rh).min(H) {
+        for x in rx..rx.saturating_add(rw).min(W) {
             let (pa, pb) = (a[y * W + x], b[y * W + x]);
             if let Some(img) = img.as_mut() {
                 let [r, g, bl] = psx_gpu::vram::rgb15_to_rgb8(pa);
