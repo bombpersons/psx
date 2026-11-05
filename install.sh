@@ -37,6 +37,11 @@ else
 fi
 asset=psx-$target.tar.gz
 dir=${PSX_INSTALL_DIR:-$HOME/.local/bin}
+# Absolute, since it is printed into the `claude mcp add` line below.
+case $dir in
+    /*) ;;
+    *) dir=$(pwd)/$dir ;;
+esac
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
@@ -53,13 +58,9 @@ fi
 
 tar -xzf "$tmp/$asset" -C "$tmp"
 mkdir -p "$dir"
-for bin in psx psx-clean; do
-    # psx-clean is clean mode, for a port's implementer; older releases lack it.
-    [ -f "$tmp/$bin" ] || continue
-    cp "$tmp/$bin" "$dir/$bin.new"
-    chmod 755 "$dir/$bin.new"
-    mv -f "$dir/$bin.new" "$dir/$bin"
-done
+cp "$tmp/psx" "$dir/psx.new"
+chmod 755 "$dir/psx.new"
+mv -f "$dir/psx.new" "$dir/psx"
 say "Installed $("$dir/psx" --version) to $dir/psx"
 
 # PsyQ library signatures for `psx symbols`, in the shared data directory psx

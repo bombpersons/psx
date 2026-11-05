@@ -19,7 +19,9 @@ if (-not [Environment]::Is64BitOperatingSystem) { throw 'psx install: only 64-bi
 $base = if ($env:PSX_DOWNLOAD_BASE) { $env:PSX_DOWNLOAD_BASE } elseif ($env:PSX_VERSION) { "https://github.com/$repo/releases/download/$env:PSX_VERSION" } else { "https://github.com/$repo/releases/latest/download" }
 $asset = 'psx-x86_64-pc-windows-msvc.zip'
 $data = Join-Path $env:LOCALAPPDATA 'psx'
-$dir = if ($env:PSX_INSTALL_DIR) { $env:PSX_INSTALL_DIR } else { Join-Path $data 'bin' }
+# Absolute: it is saved to the user PATH, where a relative entry would
+# resolve against whatever folder each later shell starts in.
+$dir = if ($env:PSX_INSTALL_DIR) { [IO.Path]::GetFullPath($env:PSX_INSTALL_DIR) } else { Join-Path $data 'bin' }
 
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("psx-install-" + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp | Out-Null
@@ -36,9 +38,6 @@ try {
     Expand-Archive -Path (Join-Path $tmp $asset) -DestinationPath (Join-Path $tmp 'x')
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     Copy-Item -Force (Join-Path $tmp 'x\psx.exe') (Join-Path $dir 'psx.exe')
-    # psx-clean is clean mode, for a port's implementer; older releases lack it.
-    $clean = Join-Path $tmp 'x\psx-clean.exe'
-    if (Test-Path $clean) { Copy-Item -Force $clean (Join-Path $dir 'psx-clean.exe') }
 } finally {
     Remove-Item -Recurse -Force $tmp
 }
