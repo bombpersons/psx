@@ -110,7 +110,9 @@ fn post_unlocked(root: &Path, from: &str, text: &str, reply_to: Option<&str>) ->
             Some(m["thread"].as_str().or(m["id"].as_str()).unwrap_or(r).to_string())
         }
     };
-    let id = format!("m{}-{}", crate::now_ms(), std::process::id());
+    // The message's place in the log keeps ids apart when one process (the
+    // page's) posts twice in a millisecond.
+    let id = format!("m{}-{}-{}", crate::now_ms(), std::process::id(), msgs.len());
     let mut m = json!({"id": id, "t": crate::now_ms() as u64, "from": from, "text": text});
     if let Some(t) = &thread {
         m["thread"] = json!(t);
@@ -284,6 +286,17 @@ mod tests {
         assert_eq!(got["from_person"][0]["in_reply_to"]["text"], "How is the jump going?");
         assert_eq!(seen(&dir, "person"), 3);
         assert!(post(&dir, "agent", "x", Some("nope")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn messages_posted_together_get_their_own_ids() {
+        let dir = std::env::temp_dir().join(format!("psx-messages-ids-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".psx")).unwrap();
+        let ids: std::collections::HashSet<_> =
+            (0..20).map(|i| post(&dir, "person", &format!("m {i}"), None).unwrap()["id"].to_string()).collect();
+        assert_eq!(ids.len(), 20);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

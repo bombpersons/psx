@@ -194,6 +194,51 @@ times faster than a recording.
   original, from a state. Needs the MIPS GCC.
 - `code inventory` without `--unpacked` on a packed game (the user note).
 
+*psx web done (2026-11-05), on a scratch Croc copy, except the gamepad
+(none to hand):* the user played from the page and the recording was
+written with their description, the request answered.
+- **Token:** starting a replay or the port's replay is refused without
+  the page's token, with a wrong one, and from another origin. Reading
+  works.
+- **Replays:** the page's replay matched the recording tick for tick;
+  its first ticks are black because Croc fades in. The port's replay
+  built the game with cargo (about 3 minutes from nothing) and drew its
+  stand-in Croc.
+- **Oddities:** the Play form shows an `off` box, ticked, though Croc
+  has no `[off]`. The name it proposes is not the one written (a later
+  minute). The recording panel is wider than the space left beside
+  Messages.
+- **Auto-scroll:** not reproduced. Over six long runs and many short
+  calls, with scrolling up and back down mid-run, it stayed at the
+  newest call and picked up again once scrolled to the bottom (the
+  pane was hidden, so the page drew a few frames a second and caught
+  up within one). Still the user's to confirm.
+- **Colours:**
+  - "Features over time" colours every mark by the feature's stage
+    now. On GT2 and Croc every feature is `located`, so every row is
+    the same blue.
+  - Activity draws calls and lines added in that same blue, and
+    failures in a red near `recorded`'s pink.
+  - The closest palette pairs are `located`/`reviewed` (ΔE 21 in dark
+    and PlayStation, 36 in light) and `recorded`/failed (25, 41).
+  - **Changed:**
+    - Each feature in "Features over time" now has its own hue, a golden
+      angle on from the row above, and its stage is written at the end
+      of the row.
+    - Activity uses grey and red for calls, and green and red for lines.
+    - "Recorded" and "reviewed" have new colours, so no stage pair is
+      under CIEDE2000 22 in light and dark (it was 16–18). The closest
+      is now in PlayStation: catalogued against located, 21.8, unchanged.
+    - Checked on GT2 in all three themes.
+
+*Messages done (2026-11-05):* the page sent 40 messages at once while
+40 agent processes each sent one and then made a call. All 80 were
+kept, each of the person's reached the agent exactly once, and both
+seen counts ended at 80. But the page's messages sent within one
+millisecond shared an id (60 distinct of 80), so a reply could join
+the wrong thread. Ids now carry the message's place in the log as well:
+80 of 80 distinct.
+
 ## 7. What the discs now make possible
 
 - **L2**: LWL/LWR/SWL/SWR as narrow accesses with a 24-bit width, then

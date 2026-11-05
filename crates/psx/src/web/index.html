@@ -12,8 +12,10 @@
   --chip: #efeee9; --sel: #e8f0fd; --violet: #8a5cd0; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   /* The charts' own series colours, apart from the status colours above:
      neighbours in a stack stay apart for colour-blind eyes too (checked
-     per theme against its panel). st0 is the stage before any colour. */
-  --st0: #a3a29c; --st1: #2a78d6; --st2: #e87ba4; --st3: #eda100; --st4: #6250d6; --st5: #1baf7a; --st-neg: #e34948;
+     per theme against its panel), no pair under CIEDE2000 21.
+     st0 is the stage before any colour. lane-l: the lightness of the
+     features' own hues in "Features over time". */
+  --st0: #a3a29c; --st1: #2a78d6; --st2: #ec93bf; --st3: #eda100; --st4: #b128bd; --st5: #1baf7a; --lane-l: 42%;
 }
 /* Themes: the system's light or dark unless one is picked (data-theme). */
 @media (prefers-color-scheme: dark) {
@@ -21,14 +23,14 @@
     --bg: #151515; --panel: #1e1e1e; --ink: #e8e8e4; --dim: #9a9a94; --line: #2f2f2d;
     --accent: #6ea0ff; --port: #f0a050; --act: #ff6b61; --warn: #e3b04b; --info: #79b591; --ok: #5cc28a;
     --chip: #2a2a28; --sel: #23324a; --violet: #a888e8;
-    --st0: #6b6b66; --st1: #3987e5; --st2: #d55181; --st3: #c98500; --st4: #9085e9; --st5: #199e70; --st-neg: #e66767;
+    --st0: #6b6b66; --st1: #3987e5; --st2: #dd3cc2; --st3: #c98500; --st4: #d9c3ff; --st5: #199e70; --lane-l: 62%;
   }
 }
 :root[data-theme=dark] {
   --bg: #151515; --panel: #1e1e1e; --ink: #e8e8e4; --dim: #9a9a94; --line: #2f2f2d;
   --accent: #6ea0ff; --port: #f0a050; --act: #ff6b61; --warn: #e3b04b; --info: #79b591; --ok: #5cc28a;
   --chip: #2a2a28; --sel: #23324a; --violet: #a888e8;
-  --st0: #6b6b66; --st1: #3987e5; --st2: #d55181; --st3: #c98500; --st4: #9085e9; --st5: #199e70; --st-neg: #e66767;
+  --st0: #6b6b66; --st1: #3987e5; --st2: #dd3cc2; --st3: #c98500; --st4: #d9c3ff; --st5: #199e70; --lane-l: 62%;
   color-scheme: dark;
 }
 :root[data-theme=light] { color-scheme: light; }
@@ -38,7 +40,7 @@
   --bg: #0a0d26; --panel: #13183a; --ink: #e7e9f7; --dim: #8e94c4; --line: #262c5c;
   --accent: #6f9cf0; --port: #f0a050; --act: #f0525a; --warn: #e8c15a; --info: #e58fd0; --ok: #41c49a;
   --chip: #1d2350; --sel: #232c6a; --violet: #e58fd0;
-  --st0: #75787f; --st1: #3987e5; --st2: #d55181; --st3: #c98500; --st4: #9085e9; --st5: #199e70; --st-neg: #e66767;
+  --st0: #75787f; --st1: #3987e5; --st2: #dd3cc2; --st3: #c98500; --st4: #d9c3ff; --st5: #199e70; --lane-l: 62%;
   color-scheme: dark;
 }
 :root[data-theme=ps] body { background: radial-gradient(ellipse at top, #18205a 0%, var(--bg) 60%) fixed; }
@@ -211,7 +213,7 @@ body.logv main { padding-bottom: 0; }
 .recent .t { color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .recent .x { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12px; }
 /* reviews */
-.gantt { display: grid; grid-template-columns: 72px minmax(0, 1fr) 110px; gap: 3px 8px; align-items: center; font-size: 12px; }
+.gantt { display: grid; grid-template-columns: 72px minmax(0, 1fr) 150px; gap: 3px 8px; align-items: center; font-size: 12px; }
 .gantt .lane { position: relative; height: 14px; background: var(--chip); border-radius: 3px; }
 .gantt .lane i { position: absolute; top: 3px; height: 8px; border-radius: 4px; opacity: .55; }
 .gantt .lane b { position: absolute; top: 1px; width: 2px; height: 12px; border-radius: 1px; }
@@ -2058,8 +2060,8 @@ function drawStats() {
        <div class="quiet" style="margin-top:4px">${prog.length} changes since ${fmtDate(prog[0].t)}, as port status and port next saw them</div>`
     : `<div class="quiet">This builds up as port status and port next see the standing change (from this version of psx on). The commits below go back to the start.</div>`}</div>`;
   // Activity.
-  h += `<div class="card"><h2>Activity</h2><div class="grid2"><div><div class="legend"><span style="--c:var(--st1)">psx calls</span><span style="--c:var(--st-neg)">failed</span></div><canvas class="chart" id="st-calls"></canvas></div>
-    <div><div class="legend"><span style="--c:var(--st1)">code lines added</span><span style="--c:var(--st-neg)">removed</span><span>commits over each day</span></div><canvas class="chart" id="st-code"></canvas></div></div></div>`;
+  h += `<div class="card"><h2>Activity</h2><div class="grid2"><div><div class="legend"><span style="--c:var(--dim)">psx calls</span><span style="--c:var(--act)">failed</span></div><canvas class="chart" id="st-calls"></canvas></div>
+    <div><div class="legend"><span style="--c:var(--ok)">code lines added</span><span style="--c:var(--act)">removed</span><span>commits over each day</span></div><canvas class="chart" id="st-code"></canvas></div></div></div>`;
   // Features by their commits.
   const byF = new Map();
   for (const g of git) for (const f of g.features) { if (!byF.has(f)) byF.set(f, []); byF.get(f).push(g); }
@@ -2067,17 +2069,18 @@ function drawStats() {
   const ids = [...byF.keys()].sort((a, b) => (byF.get(a)[0]?.t ?? Infinity) - (byF.get(b)[0]?.t ?? Infinity) || a.localeCompare(b));
   if (ids.length && git.length) {
     const a = git[0].t, b = Math.max(d.now, git.at(-1).t), X = t => (100 * (t - a) / Math.max(1, b - a)).toFixed(2);
-    const color = f => `var(${(STAGES.find(([k]) => k === feats.get(f)?.stage) || [0, "--dim"])[1]})`;
-    const rows = ids.map(id => {
-      const gs = byF.get(id), f = feats.get(id), col = color(id);
+    // Each feature its own hue, a golden angle on from the row above, so
+    // neighbours differ however many there are and whatever their stages.
+    const color = n => `hsl(${(n * 137.508 + 210) % 360} 65% var(--lane-l))`;
+    const rows = ids.map((id, n) => {
+      const gs = byF.get(id), f = feats.get(id), col = color(n);
       const lines = gs.reduce((s, g) => s + g.code[0] + g.code[1], 0);
       const bar = gs.length ? `<i style="left:${X(gs[0].t)}%;width:max(2px,${(X(gs.at(-1).t) - X(gs[0].t)).toFixed(2)}%);background:${col}"></i>` : "";
       const ticks = gs.map(g => `<b style="left:${X(g.t)}%;background:${col}" title="${esc(g.h)} ${fmtDate(g.t)}: ${esc(g.subject)}"></b>`).join("");
       return `<span class="mono" title="${esc(f?.title || "")}">${esc(id)}</span><div class="lane">${bar}${ticks}</div>
-        <span class="quiet" title="${num(lines)} code lines changed${f ? "" : "; not among the port's features now"}">${gs.length} commit${gs.length === 1 ? "" : "s"}${f ? "" : ", gone"}</span>`;
+        <span class="quiet" title="${num(lines)} code lines changed${f ? "" : "; not among the port's features now"}">${gs.length} commit${gs.length === 1 ? "" : "s"}, ${f ? esc(f.stage || "") : "gone"}</span>`;
     }).join("");
-    h += `<div class="card"><h2>Features over time</h2><div class="quiet" style="margin-bottom:6px">Each mark a commit naming the feature (hover for it), coloured by the feature's stage now. ${git.length - git.filter(g => g.features.length).length} commits name none.</div>
-      <div class="legend">${STAGES.map(([k, v]) => `<span style="--c:var(${v})">${k}</span>`).join("")}</div>
+    h += `<div class="card"><h2>Features over time</h2><div class="quiet" style="margin-bottom:6px">Each mark a commit naming the feature (hover for it), each feature in its own colour, with its stage now at the end. ${git.length - git.filter(g => g.features.length).length} commits name none.</div>
       <div class="gantt">${rows}<span></span><div class="axis"><span>${fmtDate(a)}</span><span>${fmtDate(b)}</span></div></div></div>`;
   }
   // Where the time went.
@@ -2102,10 +2105,10 @@ function drawStats() {
   const span = c.hours.length ? c.hours.at(-1).t - c.hours[0].t : 0, step = span > 3 * DAY ? DAY : HOUR;
   const bucket = (xs, t, add) => { const m = new Map(); for (const x of xs) { const k = step === DAY ? dayOf(t(x)) : Math.floor(t(x) / HOUR) * HOUR; add(m.get(k) || m.set(k, {}).get(k), x); } return m; };
   const cm = bucket(c.hours, x => x.t, (o, x) => { o.a = (o.a || 0) + x.calls - x.failed; o.b = (o.b || 0) + x.failed; });
-  statBars($("#st-calls"), cm, step, [["a", css("--st1")], ["b", css("--st-neg")]], null, d.now);
+  statBars($("#st-calls"), cm, step, [["a", css("--dim")], ["b", css("--act")]], null, d.now);
   const gm = new Map();
   for (const g of git) { const k = dayOf(g.t), o = gm.get(k) || gm.set(k, {a: 0, b: 0, n: 0}).get(k); o.a += g.code[0]; o.b += g.code[1]; o.n++; }
-  statBars($("#st-code"), gm, DAY, [["a", css("--st1")], ["b", css("--st-neg")]], "n", d.now);
+  statBars($("#st-code"), gm, DAY, [["a", css("--ok")], ["b", css("--act")]], "n", d.now);
 }
 // A stacked segment, with a gap of the panel's colour below it where it
 // sits on another, so neighbouring colours never touch.
