@@ -1569,13 +1569,16 @@ mod tests {
 
     #[test]
     fn queued_project_owners_wait_cancel_and_respect_deadlines() {
+        // Deadlines that only bound a hang are long, so a loaded machine cannot
+        // turn a pass into a timeout; the one whose expiry is tested is short.
+        let hang = Duration::from_secs(30);
         let ctx = context();
         let first = Lock::acquire(&ctx.root).unwrap();
         let root = ctx.root.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let waiter = std::thread::spawn(move || {
             let ctx = Ctx { root, cancel: None };
-            let next = Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(3), &ctx).unwrap();
+            let next = Lock::queued(&ctx.root, Instant::now() + hang, &ctx).unwrap();
             tx.send(()).unwrap();
             drop(next);
         });
@@ -1583,9 +1586,9 @@ mod tests {
         // Another analysis remains independently usable.
         let other = ctx.root.join("other");
         fs::create_dir(&other).unwrap();
-        drop(Lock::queued(&other, Instant::now() + Duration::from_secs(1), &ctx).unwrap());
+        drop(Lock::queued(&other, Instant::now() + hang, &ctx).unwrap());
         drop(first);
-        rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        rx.recv_timeout(hang).unwrap();
         waiter.join().unwrap();
         let held = Lock::acquire(&ctx.root).unwrap();
         let error = Lock::queued(&ctx.root, Instant::now() + Duration::from_millis(75), &ctx).err().unwrap();
@@ -1599,7 +1602,7 @@ mod tests {
         });
         let waiting = Ctx { root: ctx.root.clone(), cancel: Some(token) };
         assert_eq!(
-            Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(2), &waiting).err().unwrap().code,
+            Lock::queued(&ctx.root, Instant::now() + hang, &waiting).err().unwrap().code,
             "cancelled"
         );
         thread.join().unwrap();
@@ -1607,7 +1610,7 @@ mod tests {
         drop(held);
         // A lock file whose owner is gone (an older psx's, or one killed) holds nothing.
         fs::write(ctx.root.join("psx.lock"), "psx-query-lock-v1\npid=1\n").unwrap();
-        drop(Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(2), &ctx).unwrap());
+        drop(Lock::queued(&ctx.root, Instant::now() + hang, &ctx).unwrap());
         fs::remove_dir_all(ctx.root).unwrap();
     }
 
