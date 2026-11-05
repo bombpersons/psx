@@ -63,6 +63,25 @@ much further. For each of the 19 games in `docs/compatibility.md`:
 *Done when* every game reaches its row's furthest point and each
 difference is explained in the table.
 
+*Done (2026-11-05):* nothing to explain. Each of the 19 discs in
+`media/` ran from power-on with its survey replay (`.psx/native/`, the
+frames in `research/native-core.md`; Ridge Racer needs 6300, its replay
+ends at 6200) on `ef06b04` and on `3da95b6`: final RAM, scratchpad,
+VRAM, screen, registers and cycle count are identical for every game,
+and each screen is the table row's furthest point (Ape Escape, not in
+the table, at its title menu). `states rebuild` in the three workspaces:
+all 18 states (croc 6, GT2 8, TRC 4) the same as saved. `disc extract
+--all` of Croc (41 files), FF7 (3381) and MGS (11) and `assets scan` of
+Croc, Crash and Spyro are identical on both builds. So the review's
+emulation changes (M7 to M11, L10, L11) change nothing these games do
+in these stretches; step 1 shows they agree with Mednafen where the
+suite reaches.
+
+Noted in passing: `/tmp` here is a 16 GB tmpfs, mostly in use, and
+filled during the extractions; runs writing at that moment died with
+exit 101 and empty output, and passed when rerun. Keep large outputs
+(whole-disc extractions) off `/tmp`.
+
 ## 3. The existing recordings still replay
 
 The workspaces hold recordings made before any of this (croc: 5
