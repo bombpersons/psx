@@ -567,7 +567,28 @@ C1. **`off`.** A scenario's `[off]` table names functions by their
     `--stock` keeps `off`. On a test program whose function returns 7,
     the recording holds the value given. Since moved into psx-core
     (`Machine::redirects`), which `code check` and later whole runs share.
-    **Still to do:** the Croc check.
+
+    *Done (2026-11-05), on Tomb Raider Chronicles:* Croc cannot take
+    it: its objects are bytecode scripts run by one dispatch loop
+    (0x8002C790), with no per-kind update to turn off, and returning
+    early from an opcode handler leaves the loop spinning. A game that
+    runs its objects as scripts needs the interpreter's own switch (a
+    script's flag, say), which is D13's code replacement, not a return
+    value. On TRC, the Old Mill's two attackers (object 89, items 2
+    and 3) have their control routine in their object entry: 0x801D543C
+    in the GAMEWAD.OBJ overlay, named `attacker_control` in a scratch
+    copy of the port, whose glossary gained the attackers' x, z and
+    animation. The port's own route (2400 fields from
+    `old-mill-navigation-start`) recorded with `attacker_control = 0`:
+    neither attacker moves (stock, both run at Lara from tick 838), it
+    was called 726 times, and Lara's quantities and the pad are the
+    same tick for tick. `adjust-check --adjust off` (new: `off` alone,
+    and each recording's `off_calls` in the report) differs in the six
+    attacker quantities only, from tick 837, with `attacker_control`
+    called 728 times. `Attacker_Control` and `attackercontrol` are
+    refused with `attacker_control?`; `attacker_ctrl` with no
+    suggestion. The A9 fix (GT2's pad routine made to poll every field)
+    needs code replacement too, not a returned value.
 
 C2. **Turning systems back on.** `port next` gives a Restore item for a
     scenario with something off once the port has the feature it belongs

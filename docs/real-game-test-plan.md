@@ -158,6 +158,23 @@ matters.
 - **C2** on a scratch Croc workspace: Restore appears once an enemy
   feature exists.
 
+*C1 done (2026-11-05), on TRC instead:* Croc's objects are bytecode
+scripts with no update function to turn off. On Tomb Raider Chronicles'
+Old Mill attackers all three conditions hold (the master plan's C1).
+`adjust-check` gained `--adjust off`, and reports `off_calls`.
+
+Found on the way: TRC recordings took time growing with the square of
+their length (200 fields 100 s, 2400 did not finish in 600 s; a plain run
+of 200 takes 1.2 s). Coverage tracing walked each code page's chain of
+changed copies back to its whole copy for every instruction run and for
+every word reported, and TRC writes data beside its code each frame, so
+the chains grow as the run does. The latest copy's bytes are now read
+directly, and the report applies each page's copies in order. 200 fields
+take 5.7 s, 2400 take 100 s, with coverage and recordings byte for byte
+the same. **Still slow, to address after the master plan:** 2400 fields
+should take about 70 s at 200's rate, and a plain run is about five
+times faster than a recording.
+
 ## 6. Tools that touch real games
 
 - **psx web** (H3, L3, the play queue): play Croc from the page, record,

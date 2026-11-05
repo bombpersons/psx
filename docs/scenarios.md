@@ -197,8 +197,10 @@ of fields (stock, a game that slowed down shows more than one). Both
 adjustments can change what a game does: `psx scenario adjust-check`
 records a scenario's recordings again from its state, stock and adjusted,
 driven by the same ticks, and reports each quantity's first tick where
-they differ; `--adjust latch` or `--adjust steady` measures one alone,
-to tell which a difference comes from. A press taking effect a tick
+they differ; `--adjust latch`, `--adjust steady` or `--adjust off` (the
+scenario's `[off]` table) measures one alone, to tell which a difference
+comes from, and each recording's `off_calls` names what was turned off
+and how often it was called. A press taking effect a tick
 sooner under latch is its expected cost; a value the stock game never
 reaches is a rule that depends on timing, and that scenario is recorded
 `--stock`.

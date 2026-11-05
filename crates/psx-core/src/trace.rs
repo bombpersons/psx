@@ -808,7 +808,10 @@ impl Tracer {
         let p = 4 * k / CODE_PAGE;
         let o = 4 * k % CODE_PAGE;
         let Some(c) = self.page_now(p, bus) else { return NO_COPY };
-        if self.copy_word(c, o) == i {
+        // The latest copy's bytes are kept whole: no walk back through
+        // its chain on every instruction.
+        let latest = self.page_copy[p].as_ref().map(|(_, b, ..)| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()));
+        if latest == Some(i) {
             return c;
         }
         if u32::from_le_bytes(bus.ram[4 * k..4 * k + 4].try_into().unwrap()) == i {
@@ -913,8 +916,27 @@ impl Tracer {
                 all.entry((*c, (p * CODE_PAGE / 4 + j) as u32)).or_default().add(*r);
             }
         }
-        let word = |c: u32, k: u32| self.copy_word(c, 4 * k as usize % CODE_PAGE);
-        let mut out: Vec<_> = all.into_iter().map(|((c, k), r)| (c, 0x8000_0000 + 4 * k, word(c, k), r)).collect();
+        // Each page's copies in order, applied to the page as it stands, so
+        // a word is read without walking its copy's chain (a game writing
+        // data beside its code makes chains as long as the run).
+        let mut pages: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut applied = 0usize;
+        let mut out = Vec::with_capacity(all.len());
+        for ((c, k), r) in all {
+            while applied <= c as usize {
+                let copy = &self.code_pages[applied];
+                let page = pages.entry(copy.addr).or_default();
+                match &copy.data {
+                    CopyData::Whole(b) => {
+                        *page = b.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect();
+                    }
+                    CopyData::Changed(_, w) => w.iter().for_each(|&(j, v)| page[j as usize] = v),
+                }
+                applied += 1;
+            }
+            let word = pages[&self.code_pages[c as usize].addr][k as usize % (CODE_PAGE / 4)];
+            out.push((c, 0x8000_0000 + 4 * k, word, r));
+        }
         out.extend(self.uncopied.iter().map(|(&(k, i), r)| (NO_COPY, 0x8000_0000 + 4 * k, i, *r)));
         out
     }

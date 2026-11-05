@@ -1017,14 +1017,14 @@ fn adjusted_differences(stock: &Recorded, adjusted: &Recorded) -> Vec<Json> {
     out
 }
 
-/// One scenario's measurement of `adjust` (with the scenario's `off`):
-/// each captured recording made again from the scenario's state, stock and
-/// adjusted, driven by the same ticks, and compared.
-fn adjust_check(ctx: &Ctx, id: &str, mut adjust: Adjustments, timeout: Duration) -> crate::Result<Json> {
+/// One scenario's measurement of `adjust` (with the scenario's `off` when
+/// `off`): each captured recording made again from the scenario's state,
+/// stock and adjusted, driven by the same ticks, and compared.
+fn adjust_check(ctx: &Ctx, id: &str, mut adjust: Adjustments, off: bool, timeout: Duration) -> crate::Result<Json> {
     let root = &ctx.root;
     let l = Loaded::load(root, id);
     let mut problems = l.problems.clone();
-    if let Some(s) = &l.scenario {
+    if let Some(s) = l.scenario.as_ref().filter(|_| off) {
         match crate::adjust::Off::resolve(&s.off) {
             Ok(off) => adjust.off = off,
             Err(p) => problems.extend(p.into_iter().map(|p| format!("{SCENARIOS}/{id}.toml: {p}"))),
@@ -1074,6 +1074,9 @@ fn adjust_check(ctx: &Ctx, id: &str, mut adjust: Adjustments, timeout: Duration)
         if let Some(late) = adjusted.adjusted.as_ref().and_then(|a| a.get("late_input")) {
             entry["late_input"] = late.clone();
         }
+        if let Some(calls) = adjusted.adjusted.as_ref().and_then(|a| a.get("off_calls")) {
+            entry["off_calls"] = calls.clone();
+        }
         recordings.push(entry);
     }
     Ok(json!({"id": id, "status": if same { "same" } else { "differs" }, "adjust": adjust.names(),
@@ -1089,10 +1092,10 @@ pub struct ScenarioAdjustCheckArgs {
     #[arg(long, default_value_t = 600)]
     #[serde(default = "d_timeout")]
     pub timeout: u64,
-    /// Measure only these adjustments (`latch`, `steady`), to tell which one a
-    /// difference comes from; repeatable. Default: all of them, as recordings
-    /// are made.
-    #[arg(long = "adjust", value_parser = ["latch", "steady"])]
+    /// Measure only these adjustments (`latch`, `steady`, `off`: the
+    /// scenario's `[off]` table), to tell which one a difference comes from;
+    /// repeatable. Default: all of them, as recordings are made.
+    #[arg(long = "adjust", value_parser = ["latch", "steady", "off"])]
     #[serde(default)]
     pub adjust: Vec<String>,
 }
@@ -1102,23 +1105,24 @@ fn adjust_check_cmd(ctx: &Ctx, a: ScenarioAdjustCheckArgs) -> crate::Result<(boo
     if ids.is_empty() {
         return Err(Error::invalid("no scenarios: write scenarios/<id>.toml"));
     }
-    let adjust = if a.adjust.is_empty() {
-        Adjustments::default_set()
+    let (adjust, off) = if a.adjust.is_empty() {
+        (Adjustments::default_set(), true)
     } else {
-        let mut only = Adjustments::stock();
+        let (mut only, mut off) = (Adjustments::stock(), false);
         for n in &a.adjust {
             match n.as_str() {
                 "latch" => only.latch = true,
                 "steady" => only.steady = true,
-                _ => return Err(Error::invalid(format!("adjust: {n:?} is not latch or steady"))),
+                "off" => off = true,
+                _ => return Err(Error::invalid(format!("adjust: {n:?} is not latch, steady or off"))),
             }
         }
-        only
+        (only, off)
     };
     let mut results = Vec::new();
     for id in ids {
         check_name("id", &id)?;
-        let mut r = adjust_check(ctx, &id, adjust.clone(), Duration::from_secs(a.timeout))?;
+        let mut r = adjust_check(ctx, &id, adjust.clone(), off, Duration::from_secs(a.timeout))?;
         let kept = json!({"at": crate::stamp::utc_now(), "psx": crate::context::version(), "result": r.clone()});
         let p = ctx.root.join(CHECKS).join(format!("{id}.adjust.json"));
         std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| Error::io(&p, e))?;
@@ -2098,10 +2102,10 @@ pub struct Quantities {
         let ctx = Ctx { root: PathBuf::from(root), cancel: None };
         let timeout = Duration::from_secs(600);
         let nothing = Adjustments { test: Some(TestAdjust::Nothing), ..Adjustments::stock() };
-        let r = adjust_check(&ctx, &id, nothing, timeout).unwrap();
+        let r = adjust_check(&ctx, &id, nothing, true, timeout).unwrap();
         assert_eq!(r["status"], "same", "{r:#}");
         let nudged = Adjustments { test: Some(TestAdjust::Nudge { tick: 3, addr }), ..Adjustments::stock() };
-        let r = adjust_check(&ctx, &id, nudged, timeout).unwrap();
+        let r = adjust_check(&ctx, &id, nudged, true, timeout).unwrap();
         assert_eq!(r["status"], "differs", "{r:#}");
         for rec in r["recordings"].as_array().unwrap() {
             let first = &rec["differences"][0];
