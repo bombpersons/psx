@@ -293,7 +293,8 @@ fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
-        if p.is_dir() {
+        // Not through symlinked folders: a link back up would recurse forever.
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
             walk(&p, out);
         } else if p.extension().is_some_and(|x| x == "names") {
             out.push(p);
@@ -437,7 +438,8 @@ impl Names {
         match ty {
             Type::Pointer { .. } => Some(4),
             Type::Function(_) => Some(1),
-            Type::Array { of, len } => self.size_guarded(of, seen).map(|s| s * len),
+            // Unknown past u32, rather than an overflow.
+            Type::Array { of, len } => self.size_guarded(of, seen).and_then(|s| s.checked_mul(*len)),
             Type::Named { name } => {
                 if let Some(s) = base_size(name) {
                     return Some(s);
@@ -1128,6 +1130,20 @@ fn parse(file: &str, text: &str) -> (Vec<Item>, Vec<Problem>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_loop_in_names_is_not_followed() {
+        let dir = std::env::temp_dir().join(format!("psx-names-loop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/a.names"), "").unwrap();
+        std::os::unix::fs::symlink(&dir, dir.join("sub/loop")).unwrap();
+        let mut out = Vec::new();
+        walk(&dir, &mut out);
+        assert_eq!(out, vec![dir.join("sub/a.names")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn one(text: &str) -> Names {
         from_texts(&[("names/a.names".into(), text.into())], &[])
