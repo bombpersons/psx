@@ -51,7 +51,7 @@ behave differently from what their comments say.
 | # | Where | Defect | Status |
 |---|---|---|---|
 | L1 | `psx-media` cue/chd/disc/iso9660, `psx-scenario/src/value.rs:243`, `psx-symbols/src/lib.rs:277`, `psx/src/vram_diff.rs`, `psx/src/port/assets.rs:436` | Unchecked integer arithmetic on file data. | fixed |
-| L2 | `crates/psx-core/src/cpu.rs:1098,1138` | SWL/SWR/LWL/LWR use full-word accesses on I/O. | open |
+| L2 | `crates/psx-core/src/cpu.rs:1098,1138` | SWL/SWR/LWL/LWR use full-word accesses on I/O. | deferred |
 | L3 | `crates/psx/src/web/index.html:1746,1920,2291,1581` | Held key stuck after labelling; one failed POST stops input; leaked `mouseup` listeners; racing `startPlayer`. | fixed |
 | L4 | `install.sh:57`, `install.ps1:40,22` | Installers look for a `psx-clean` binary the release does not ship; relative `PSX_INSTALL_DIR` saved to PATH. | fixed |
 | L5 | `examples/croc-movement/psx-bevy` | Missing template fixes, including the two-run determinism check. | open |
@@ -65,3 +65,17 @@ behave differently from what their comments say.
 | L13 | `crates/psx-symbols/src/names.rs:293,441` | Symlink cycles recurse forever; `s * len` unchecked. | fixed |
 | L14 | `crates/psx-fixed/src/mode.rs:153` | Shift counts of 64 or more panic in debug; 32-63 differ from MIPS `& 31`. | fixed |
 | L15 | `crates/psx/src/parser.rs:118` | A forked child holding the pipes makes a finished parser time out. | fixed |
+
+## Notes on the fixes
+
+- **L2 (deferred).** Mednafen issues LWL/LWR/SWL/SWR as 8-, 16-, 24- or 32-bit accesses at the
+  real address (`ReadMemory<T>(…, DS24)`), and its I/O handlers see those widths. Matching it
+  needs a 24-bit access width on the bus and narrow I/O accesses from these four instructions,
+  which changes access timing. That has to be checked in lockstep against the oracle with a
+  BIOS and games, which the review machine did not have. The current code is right for RAM,
+  scratchpad and BIOS, where games use these instructions.
+- **Formatting.** `crates/psx/src/scenario.rs` was already unformatted before the review, which
+  would fail the Format workflow; it was formatted with the other changes.
+- **Not verifiable here:** the Ghidra cleanup (L8) has no Ghidra install to run against, and the
+  COP0, GTE alias and sprite changes (M9-M11) are checked by unit tests against Mednafen's
+  source, not by lockstep runs.
