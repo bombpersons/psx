@@ -329,8 +329,7 @@ pub fn build(names: &Names, sources: &[PathBuf], work: &Path) -> Result<Build, V
     write(
         "build.ld",
         &format!(
-            "INCLUDE \"{}\"\nSECTIONS {{\n  . = 0x{BASE:08X};\n  .text : {{ *(.text*) }}\n  .rodata : {{ *(.rodata*) }}\n  .data : {{ *(.data*) *(.sdata*) }}\n  .bss : {{ *(.bss*) *(.sbss*) *(COMMON) }}\n  /DISCARD/ : {{ *(.MIPS.*) *(.reginfo) *(.comment) *(.pdr) *(.gnu.*) }}\n}}\n",
-            work.join("names.ld").display()
+            "INCLUDE names.ld\nSECTIONS {{\n  . = 0x{BASE:08X};\n  .text : {{ *(.text*) }}\n  .rodata : {{ *(.rodata*) }}\n  .data : {{ *(.data*) *(.sdata*) }}\n  .bss : {{ *(.bss*) *(.sbss*) *(COMMON) }}\n  /DISCARD/ : {{ *(.MIPS.*) *(.reginfo) *(.comment) *(.pdr) *(.gnu.*) }}\n}}\n",
         ),
     )?;
     write("names.ld", &ld)?;
@@ -354,7 +353,12 @@ pub fn build(names: &Names, sources: &[PathBuf], work: &Path) -> Result<Build, V
         ])
         .arg("-I")
         .arg(work)
-        .arg(format!("-Wl,-T,{}", work.join("build.ld").display()))
+        // As separate arguments: `-Wl,` splits at commas, and the script's
+        // INCLUDE finds names.ld through -L, so no path is quoted anywhere.
+        .arg("-L")
+        .arg(work)
+        .arg("-T")
+        .arg(work.join("build.ld"))
         .arg("-o")
         .arg(&elf)
         .args(sources)
@@ -368,7 +372,7 @@ pub fn build(names: &Names, sources: &[PathBuf], work: &Path) -> Result<Build, V
         }
         return Err(msgs);
     }
-    let tool = |t: &str| gcc.with_file_name(gcc.file_name().unwrap().to_string_lossy().replace("gcc", t));
+    let tool = |t: &str| binutil(&gcc, t);
     let bin = work.join("decomp.bin");
     let ok = std::process::Command::new(tool("objcopy"))
         .args(["-O", "binary"])
@@ -776,9 +780,33 @@ fn message(l: &str) -> Option<Message> {
     })
 }
 
+/// The binutils `tool` beside `gcc`: `mipsel-linux-gnu-gcc-12` →
+/// `mipsel-linux-gnu-objcopy` (binutils carry no compiler version).
+fn binutil(gcc: &Path, tool: &str) -> PathBuf {
+    let name = gcc.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let (stem, exe) = match name.strip_suffix(".exe") {
+        Some(s) => (s.to_string(), ".exe"),
+        None => (name.clone(), ""),
+    };
+    let Some(at) = stem.rfind("gcc") else { return gcc.with_file_name(format!("{tool}{exe}")) };
+    let rest = &stem[at + 3..];
+    let versioned =
+        rest.strip_prefix('-').is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.'));
+    let rest = if versioned { "" } else { rest };
+    gcc.with_file_name(format!("{}{tool}{rest}{exe}", &stem[..at]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binutils_sit_beside_the_compiler() {
+        let t = |g: &str| binutil(Path::new(g), "objcopy");
+        assert_eq!(t("/usr/bin/mipsel-linux-gnu-gcc"), Path::new("/usr/bin/mipsel-linux-gnu-objcopy"));
+        assert_eq!(t("/usr/bin/mipsel-linux-gnu-gcc-12"), Path::new("/usr/bin/mipsel-linux-gnu-objcopy"));
+        assert_eq!(t("C:/x/mipsel-none-elf-gcc.exe"), Path::new("C:/x/mipsel-none-elf-objcopy.exe"));
+    }
 
     /// The Code view finds the functions the C defines, not its prototypes,
     /// types, comments or calls, and tells a check made on other C.
