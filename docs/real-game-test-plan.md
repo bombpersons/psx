@@ -158,6 +158,10 @@ matters.
 - **C2** on a scratch Croc workspace: Restore appears once an enemy
   feature exists.
 
+*C2 done (2026-11-05), on a scratch TRC copy:* Restore appears once
+the attackers' feature matches, and after it the port fails where the
+attackers move (the master plan's C2).
+
 *C1 done (2026-11-05), on TRC instead:* Croc's objects are bytecode
 scripts with no update function to turn off. On Tomb Raider Chronicles'
 Old Mill attackers all three conditions hold (the master plan's C1).

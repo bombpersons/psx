@@ -603,6 +603,20 @@ C2. **Turning systems back on.** `port next` gives a Restore item for a
     feature matches (its failing recordings first), the Done stage waits
     for it, and `port status` shows each feature's code turned off.
 
+    *Done (2026-11-05), on Tomb Raider Chronicles:* a scratch copy of
+    the TRC port with one goal feature, F-0026 "Old Mill attackers"
+    (`code` the attackers' control routine, 0x801D543C), whose scenario
+    compares only the attackers over C1's route with the routine off,
+    and a plugin that holds them where they stand. It passes `port
+    check`; once the review holds, `port next` gives Restore F-0026,
+    naming both scenarios that turn the routine off, and `port status`
+    lists them under the feature. Following it (the `[off]` taken out,
+    recorded again) the port fails at tick 838, where the attackers
+    start running, and the item is Fix. Found on the way: the TRC port
+    had not been updated since `[off]` was added, so its vendored
+    scenario reader refused the scenario ("unknown field `off`") until
+    `port update`; the error does not say to update.
+
 ## Track D: the original's code (decomp plan, in parallel)
 
 Independent of tracks A to C except that C1 builds the first piece of
