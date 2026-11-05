@@ -44,7 +44,7 @@ behave differently from what their comments say.
 | M12 | `crates/psx-core/src/memcard.rs:135` | A corrupt card's block link indexes past the image and panics. | fixed |
 | M13 | `crates/psx-core/src/callcheck.rs:129` | `compare()` reloads state without reattaching the disc. | fixed |
 | M14 | `templates/psx-bevy/psx-bevy/src/scenario.rs:342`, `game/src/disc.rs:83`, `dev_mcp.rs:596` | A replay passes after zero ticks when no compared quantities overlap; ticks count while the game waits for data; `game_step` max does not fit the 120 s reply limit. | fixed |
-| M15 | `.github/workflows/release.yml:20` | `contents: write` for every job; actions pinned to movable tags. | open |
+| M15 | `.github/workflows/release.yml:20` | `contents: write` for every job; actions pinned to movable tags. | fixed |
 
 ## Low
 
