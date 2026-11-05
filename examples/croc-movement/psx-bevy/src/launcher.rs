@@ -22,8 +22,9 @@
 //! `--software`, `--region ntsc|pal`, `--scene PATH` [`--painter`],
 //! `--controls`,
 //! `--bindings PATH`, `--display`, `--display-settings PATH`, `--fullscreen`,
-//! `--aspect fixed|window`, `--no-dither`, `--no-quantize`. F11 toggles
-//! borderless fullscreen.
+//! `--aspect fixed|window`, `--no-dither`, `--no-quantize`,
+//! `--replay scenarios/<id>/<name>.jsonl --frames DIR` (draws a recording,
+//! headless: [`crate::frames`]). F11 toggles borderless fullscreen.
 use crate::controller::BindingStore;
 use crate::controls::ControlsPlugin;
 use crate::display::{self, DisplayOverrides, DisplayPlugin, DisplayStore};
@@ -85,15 +86,24 @@ pub fn screen_choices(native: UVec2) -> Vec<UVec2> {
 
 /// Builds the app from the command line and runs it.
 pub fn run<F: FnOnce(&mut App)>(game: Game<F>) -> AppExit {
-    app(game, &Args::from_env()).run()
+    let args = Args::from_env();
+    match args.value("--replay") {
+        Some(recording) => {
+            let out = args.value("--frames").unwrap_or_else(|| "frames".into());
+            crate::frames::run(app(game, &args), recording.as_ref(), out.as_ref())
+        }
+        None => app(game, &args).run(),
+    }
 }
 
 /// Builds the app without running it: window or headless runner, renderer,
 /// [`PsxPlugin`], [`ShellPlugin`], then either a viewer or the game with the
 /// controls and display menus, then the developer MCP when `--mcp` is given.
 pub fn app<F: FnOnce(&mut App)>(game: Game<F>, args: &Args) -> App {
-    let mcp = args.flag("--mcp");
-    let headless = args.flag("--headless");
+    // --replay: draws a recording (crate::frames), headless; [`run`] drives the updates.
+    let replay = args.value("--replay").map(std::path::PathBuf::from);
+    let mcp = args.flag("--mcp") && replay.is_none();
+    let headless = args.flag("--headless") || replay.is_some();
     #[cfg(not(feature = "dev-mcp"))]
     if mcp {
         eprintln!("--mcp requires a developer build: cargo run --features dev-mcp -- --mcp");
@@ -158,8 +168,14 @@ pub fn app<F: FnOnce(&mut App)>(game: Game<F>, args: &Args) -> App {
             synchronous_pipeline_compilation: true,
             ..default()
         });
+    if replay.is_some() {
+        // One update draws the tick it ran, for the screenshots.
+        plugins = plugins.disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>();
+    }
     if headless {
         plugins = plugins.disable::<bevy::winit::WinitPlugin>();
+    }
+    if headless && replay.is_none() {
         app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::from_secs_f64(
             1.0 / region.hz(),
         )));
@@ -179,11 +195,17 @@ pub fn app<F: FnOnce(&mut App)>(game: Game<F>, args: &Args) -> App {
             app.add_plugins(SceneViewerPlugin { path, depth });
         }
         None => {
+            // Drawn with the defaults, not the player's settings.
+            let settings = replay.is_none();
+            if let Some(recording) = replay {
+                app.insert_resource(crate::frames::Replaying { recording });
+            }
             app.add_plugins(ControlsPlugin {
                 path: args
                     .value("--bindings")
                     .map(std::path::PathBuf::from)
-                    .or_else(|| BindingStore::default_path(game.name)),
+                    .or_else(|| BindingStore::default_path(game.name))
+                    .filter(|_| settings),
                 initially_open: args.flag("--controls"),
                 ..default()
             });
@@ -192,7 +214,8 @@ pub fn app<F: FnOnce(&mut App)>(game: Game<F>, args: &Args) -> App {
                 path: args
                     .value("--display-settings")
                     .map(std::path::PathBuf::from)
-                    .or_else(|| DisplayStore::default_path(game.name)),
+                    .or_else(|| DisplayStore::default_path(game.name))
+                    .filter(|_| settings),
                 screens: screen_choices(game.screen),
                 overrides: DisplayOverrides {
                     aspect,

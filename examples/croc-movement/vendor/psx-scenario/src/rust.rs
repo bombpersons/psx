@@ -629,7 +629,7 @@ pub fn observed(c: &Crate) -> Result<String, Vec<String>> {
          #[derive(Default)]\n\
          pub struct Observed {{\n{}\n}}\n\n\
          impl Observed {{\n    \
-         /// Nothing observed: the start of `Observed {{ croc_x: …, ..Observed::none() }}`.\n    \
+         /// Nothing observed: the start of `Observed {{ player_x: …, ..Observed::none() }}`.\n    \
          pub fn none() -> Observed {{\n        Observed {{\n{}\n        }}\n    }}\n}}\n\n\
          #[allow(unused_variables, unused_parens, clippy::all)]\n\
          impl psx_bevy::scenario::Observation for Observed {{\n    \

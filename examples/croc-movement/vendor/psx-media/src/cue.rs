@@ -91,7 +91,7 @@ pub fn parse_msf(text: &str) -> Option<u32> {
     if parts.next().is_some() || s >= 60 || f >= FRAMES_PER_SECOND {
         return None;
     }
-    Some((m * 60 + s) * FRAMES_PER_SECOND + f)
+    m.checked_mul(60)?.checked_add(s)?.checked_mul(FRAMES_PER_SECOND)?.checked_add(f)
 }
 
 /// Split a CUE line into words, keeping double-quoted strings together.
@@ -205,6 +205,12 @@ mod tests {
         assert_eq!(t2.mode, TrackMode::Audio);
         assert_eq!(t2.first_stored(), parse_msf("27:47:11").unwrap());
         assert_eq!(t2.index(1), Some(parse_msf("27:49:11").unwrap()));
+    }
+
+    #[test]
+    fn huge_times_are_rejected_not_wrapped() {
+        assert_eq!(parse_msf("99999999:00:00"), None);
+        assert_eq!(parse_msf("74:59:74"), Some((74 * 60 + 59) * 75 + 74));
     }
 
     #[test]

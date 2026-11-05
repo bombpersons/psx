@@ -32,6 +32,7 @@ fn app(disc: Option<&Path>, out: &Path) -> bevy::app::App {
         disc: disc.map(Path::to_path_buf),
         screens: false,
         out: Some(out.into()),
+        replay: false,
     });
     app
 }

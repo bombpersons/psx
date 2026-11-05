@@ -81,6 +81,7 @@ impl Alignment {
 struct Event {
     frame: u64,
     buttons: Vec<Button>,
+    sticks: Option<[u8; 4]>,
     mouse: Option<InjectedMouse>,
     until: Option<u64>,
 }
@@ -89,7 +90,9 @@ struct Event {
 /// complete held state from its `frame`, until the next event or its exclusive
 /// `until`. Frames count video fields from the start of the run.
 ///
-/// The rebuild also reads an optional `"mouse"` per event, in
+/// `"sticks"` are the analog sticks as
+/// [`crate::controller::ControllerState::sticks`] holds them (centred when
+/// absent). The rebuild also reads an optional `"mouse"` per event, in
 /// [`InjectedMouse::from_json`]'s form: its buttons and position are held like
 /// pad buttons, and its motion and wheel apply on every tick of the event. The
 /// original had no mouse, so `psx run` refuses replays that use it; they are
@@ -124,9 +127,11 @@ impl Replay {
                     Some(v.as_u64().filter(|&u| u > frame).ok_or(format!("event {i}: until must exceed frame"))?)
                 }
             };
-            if object.get("sticks").is_some_and(|s| *s != serde_json::json!([128, 128, 128, 128])) {
-                return Err(format!("event {i}: analog sticks have no template controller equivalent"));
-            }
+            let sticks = object
+                .get("sticks")
+                .map(|s| serde_json::from_value::<[u8; 4]>(s.clone()))
+                .transpose()
+                .map_err(|_| format!("event {i}: sticks are four bytes, left x, left y, right x, right y"))?;
             let mut buttons = Vec::new();
             for name in object.get("buttons").and_then(|v| v.as_array()).into_iter().flatten() {
                 let name = name.as_str().ok_or(format!("event {i}: button names are strings"))?;
@@ -145,7 +150,7 @@ impl Replay {
             }
             let mouse =
                 object.get("mouse").map(InjectedMouse::from_json).transpose().map_err(|e| format!("event {i}: {e}"))?;
-            events.push(Event { frame, buttons, mouse, until });
+            events.push(Event { frame, buttons, sticks, mouse, until });
         }
         Ok(Self { events })
     }
@@ -161,6 +166,16 @@ impl Replay {
         self.active(frame).and_then(|e| e.mouse).unwrap_or_default()
     }
 
+    /// The sticks during `frame`: centred before the first event.
+    pub fn sticks(&self, frame: u64) -> [u8; 4] {
+        self.active(frame).and_then(|e| e.sticks).unwrap_or(crate::controller::CENTRED)
+    }
+
+    /// Whether any event moves a stick.
+    pub fn uses_sticks(&self) -> bool {
+        self.events.iter().any(|e| e.sticks.is_some_and(|s| s != crate::controller::CENTRED))
+    }
+
     /// Whether any event drives the mouse.
     pub fn uses_mouse(&self) -> bool {
         self.events.iter().any(|e| e.mouse.is_some())
@@ -174,8 +189,8 @@ impl Replay {
     /// boundary; an edge inside a tick is an error rather than a guess about
     /// which field the original read the pad on.
     pub fn tick_inputs(&self, align: Alignment, ticks: usize) -> Result<Vec<Vec<Button>>, String> {
-        if self.uses_mouse() {
-            return Err("this replay drives the mouse; read it with Replay::ticks".into());
+        if self.uses_mouse() || self.uses_sticks() {
+            return Err("this replay drives the mouse or the sticks; read it with Replay::ticks".into());
         }
         Ok(self.ticks(align, ticks)?.into_iter().map(|input| input.buttons).collect())
     }
@@ -197,7 +212,16 @@ impl Replay {
             }
         }
         Ok((0..ticks)
-            .map(|k| TickInput { buttons: self.held(align.field(k)).to_vec(), mouse: self.mouse(align.field(k)) })
+            .map(|k| {
+                let field = align.field(k);
+                TickInput {
+                    buttons: self.held(field).to_vec(),
+                    sticks: Some(self.sticks(field)),
+                    // A replay file has no mode: live play's.
+                    analog: None,
+                    mouse: self.mouse(field),
+                }
+            })
             .collect())
     }
 }
@@ -536,7 +560,7 @@ mod tests {
         assert_eq!(replay.held(9), &[Button::Triangle]);
         for bad in [
             r#"[{"frame":0,"buttons":["L3"]}]"#,
-            r#"[{"frame":0,"buttons":[],"sticks":[0,128,128,128]}]"#,
+            r#"[{"frame":0,"buttons":[],"sticks":[0,128,128]}]"#,
             r#"[{"frame":2,"buttons":[]},{"frame":2,"buttons":[]}]"#,
             r#"[{"frame":0,"buttons":[],"until":5},{"frame":3,"buttons":[]}]"#,
             r#"[{"frame":0,"buttons":[],"hold":5}]"#,
@@ -544,7 +568,11 @@ mod tests {
         ] {
             assert!(Replay::parse(bad).is_err(), "{bad}");
         }
-        assert!(Replay::parse(r#"[{"frame":0,"buttons":[],"sticks":[128,128,128,128]}]"#).is_ok());
+        let sticks =
+            Replay::parse(r#"[{"frame":0,"buttons":[],"sticks":[0,128,128,128]},{"frame":2,"buttons":[]}]"#).unwrap();
+        assert_eq!((sticks.sticks(1), sticks.sticks(2)), ([0, 128, 128, 128], [128; 4]));
+        assert!(sticks.tick_inputs(Alignment::new(1, 0), 3).is_err());
+        assert_eq!(sticks.ticks(Alignment::new(1, 0), 3).unwrap()[0].sticks, Some([0, 128, 128, 128]));
     }
 
     #[test]

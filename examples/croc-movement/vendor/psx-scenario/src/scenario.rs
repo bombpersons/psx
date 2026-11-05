@@ -85,6 +85,13 @@ pub struct Scenario {
     /// How the port gets there: what its launcher builds the world from.
     #[serde(default)]
     pub parameters: serde_json::Map<String, serde_json::Value>,
+    /// Functions of the original that return at once while it is recorded
+    /// (psx's `off` adjustment), each with the value it returns: systems
+    /// the port does not have yet, so the original's recordings hold only
+    /// what it ports. By the name the producer's names give it (for psx,
+    /// `[MODULE:]name` in names/), or its address in hex.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub off: BTreeMap<String, i64>,
 }
 
 impl Scenario {
@@ -203,18 +210,72 @@ pub struct Row {
     /// previous tick's (none are held at the initial moment).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pad: Option<Vec<String>>,
+    /// Whether the pad is in analog mode (a DualShock answering with its
+    /// sticks, ID 73h), when it differs from the previous tick's (digital at
+    /// the initial moment). It is what the game read, whatever switched it:
+    /// the game itself or the player's ANALOG button.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analog: Option<bool>,
+    /// The analog sticks' axes that differ from the previous tick's (all
+    /// centred at the initial moment, and on a pad not in analog mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sticks: Option<Sticks>,
     /// The quantities that changed, with their values at the tick's end.
     #[serde(default, skip_serializing_if = "Values::is_empty")]
     pub values: Values,
 }
 
+/// The analog sticks' raw bytes, as the game read them in the field: 0
+/// is left or up, 0xFF right or down, [`CENTRED`] the stick at rest. In a
+/// row, only the axes that changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Sticks {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lx: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ly: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rx: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ry: Option<u8>,
+}
+
+impl Sticks {
+    /// The axes of `now` that differ from `before` (lx, ly, rx, ry).
+    pub fn changed(before: [u8; 4], now: [u8; 4]) -> Option<Sticks> {
+        let axis = |i: usize| (before[i] != now[i]).then_some(now[i]);
+        let s = Sticks { lx: axis(0), ly: axis(1), rx: axis(2), ry: axis(3) };
+        (s != Sticks::default()).then_some(s)
+    }
+
+    /// `before` with these axes set.
+    pub fn apply(&self, before: [u8; 4]) -> [u8; 4] {
+        let [lx, ly, rx, ry] = before;
+        [self.lx.unwrap_or(lx), self.ly.unwrap_or(ly), self.rx.unwrap_or(rx), self.ry.unwrap_or(ry)]
+    }
+}
+
+/// Both sticks at rest (lx, ly, rx, ry).
+pub const CENTRED: [u8; 4] = [0x80; 4];
+
 /// One tick with everything filled in.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Full {
     pub tick: u64,
     pub field: u64,
     pub pad: Vec<String>,
+    /// The pad in analog mode.
+    pub analog: bool,
+    /// lx, ly, rx, ry.
+    pub sticks: [u8; 4],
     pub values: Values,
+}
+
+impl Default for Full {
+    fn default() -> Full {
+        Full { tick: 0, field: 0, pad: Vec::new(), analog: false, sticks: CENTRED, values: Values::new() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -248,13 +309,16 @@ impl Recording {
     /// The lines for full ticks: only what changed since the header's
     /// `initial` and the ticks before.
     pub fn encode(header: Header, full: &[Full]) -> Recording {
-        let (mut pad, mut values) = (Vec::<String>::new(), header.initial.clone());
+        let (mut pad, mut sticks, mut values) = (Vec::<String>::new(), CENTRED, header.initial.clone());
+        let mut analog = false;
         let mut rows = Vec::new();
         for f in full {
             rows.push(Row {
                 tick: f.tick,
                 field: f.field,
                 pad: (f.pad != pad).then(|| f.pad.clone()),
+                analog: (f.analog != analog).then_some(f.analog),
+                sticks: Sticks::changed(sticks, f.sticks),
                 values: f
                     .values
                     .iter()
@@ -263,22 +327,29 @@ impl Recording {
                     .collect(),
             });
             pad = f.pad.clone();
+            analog = f.analog;
+            sticks = f.sticks;
             values = f.values.clone();
         }
         Recording { header, rows }
     }
 
-    /// Every tick with its pad and values filled in.
+    /// Every tick with its pad, mode, sticks and values filled in.
     pub fn expand(&self) -> Vec<Full> {
-        let (mut pad, mut values) = (Vec::new(), self.header.initial.clone());
+        let (mut pad, mut sticks, mut values) = (Vec::new(), CENTRED, self.header.initial.clone());
+        let mut analog = false;
         self.rows
             .iter()
             .map(|r| {
                 if let Some(p) = &r.pad {
                     pad = p.clone();
                 }
+                analog = r.analog.unwrap_or(analog);
+                if let Some(s) = &r.sticks {
+                    sticks = s.apply(sticks);
+                }
                 values.extend(r.values.clone());
-                Full { tick: r.tick, field: r.field, pad: pad.clone(), values: values.clone() }
+                Full { tick: r.tick, field: r.field, pad: pad.clone(), analog, sticks, values: values.clone() }
             })
             .collect()
     }
@@ -313,6 +384,7 @@ impl Recording {
         }
         check_values("header: initial", &h.initial, &types, false, &[], &mut p);
         let mut field = 0;
+        let (mut analog, mut sticks, mut unread) = (false, CENTRED, false);
         for (i, r) in self.rows.iter().enumerate() {
             let at = format!("tick {}", i + 1);
             if r.tick != i as u64 + 1 {
@@ -322,6 +394,13 @@ impl Recording {
                 p.push(format!("{at}: field {} is before the previous tick's {field}", r.field));
             }
             field = r.field;
+            analog = r.analog.unwrap_or(analog);
+            sticks = r.sticks.map_or(sticks, |s| s.apply(sticks));
+            // Once for each stretch of ticks it lasts.
+            if !analog && sticks != CENTRED && !unread {
+                p.push(format!("{at}: sticks off centre on a pad not in analog mode, which does not send them"));
+            }
+            unread = !analog && sticks != CENTRED;
             check_values(&format!("{at}: values"), &r.values, &types, true, &[], &mut p);
         }
         p
@@ -365,8 +444,8 @@ level = { asset = "level/1-1" }
 
     const RECORDING: &str = r#"{"format":"scenario-recording","format_version":1,"scenario":"level_start","source":{"kind":"captured","platform":"psx","image_sha256":"00"},"producer":{"name":"psx","version":"0.8.0"},"quantities":{"croc_mode":{"type":"enum","variants":["idle","walk"]},"croc_x":{"type":"fixed","signed":true,"int_bits":20,"frac_bits":12}},"initial":{"croc_mode":"idle","croc_x":4096}}
 {"tick":1,"field":2,"pad":["RIGHT"],"values":{"croc_mode":"walk","croc_x":4196}}
-{"tick":2,"field":4,"values":{"croc_x":4296}}
-{"tick":3,"field":4,"pad":[]}
+{"tick":2,"field":4,"analog":true,"sticks":{"lx":143},"values":{"croc_x":4296}}
+{"tick":3,"field":4,"pad":[],"sticks":{"lx":128,"ry":0}}
 "#;
 
     fn glossary() -> Glossary {
@@ -424,6 +503,12 @@ level = { asset = "level/1-1" }
             (vec!["RIGHT".to_string()], Value::Int(4296))
         );
         assert_eq!((full[2].field, full[2].pad.len()), (4, 0));
+        assert_eq!((full[0].analog, full[1].analog, full[2].analog), (false, true, true));
+        // Sticks: the axes that changed, centred before.
+        assert_eq!(
+            (full[0].sticks, full[1].sticks, full[2].sticks),
+            ([128; 4], [143, 128, 128, 128], [128, 128, 128, 0])
+        );
         assert_eq!(Recording::encode(r.header.clone(), &full).to_jsonl(), RECORDING);
         let bad = RECORDING.replace(r#""tick":2,"field":4"#, r#""tick":5,"field":1"#).replace("4296", "\"walk\"");
         assert_eq!(
@@ -434,6 +519,11 @@ level = { asset = "level/1-1" }
                 "tick 2: field 1 is before the previous tick's 2",
                 "tick 2: values: croc_x: expected an integer, got \"walk\"",
             ]
+        );
+        let digital = RECORDING.replace(r#""analog":true,"#, "");
+        assert_eq!(
+            Recording::parse(&digital).unwrap().check("level_start"),
+            vec!["tick 2: sticks off centre on a pad not in analog mode, which does not send them"]
         );
     }
 }

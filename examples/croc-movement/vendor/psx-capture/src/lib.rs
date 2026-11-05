@@ -4,6 +4,30 @@
 //! machine. `psx scenario record` builds it, loads it, and asks it for the
 //! quantities at the end of every tick; the emulator is psx's.
 //!
+//! In a port's workspace it is `glossary/binding/`, a member of the
+//! workspace (root `Cargo.toml`), built with `cargo build -p glossary-binding`:
+//!
+//! ```toml
+//! [package]
+//! name = "glossary-binding"
+//! version.workspace = true
+//! edition.workspace = true
+//!
+//! [lib]
+//! crate-type = ["cdylib"]
+//!
+//! [dependencies]
+//! glossary = { path = ".." }
+//! psx-capture = { path = "../../vendor/psx-capture" }
+//!
+//! [build-dependencies]
+//! psx-scenario = { path = "../../vendor/psx-scenario" }
+//! ```
+//!
+//! Its `build.rs` writes the glue from the glossary's source:
+//! `psx_scenario::rust::write_glossary_glue(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))`.
+//! `src/lib.rs`:
+//!
 //! ```ignore
 //! use glossary::Quantities;
 //! use psx_capture::prelude::*;
@@ -12,24 +36,68 @@
 //!     include!(concat!(env!("OUT_DIR"), "/glue.rs"));
 //! }
 //!
-//! struct Croc;
+//! struct Game;
 //!
-//! impl Glossary for Croc {
+//! impl Glossary for Game {
 //!     type Glue = glue::Glossary;
-//!     const TITLE: &str = "Croc - Legend of the Gobbos (Europe) SLES-00593";
-//!     const IMAGE_SHA256: &str = "b30a…";
+//!     const TITLE: &str = "A Game (Europe) SLES-01234";
+//!     const IMAGE_SHA256: &str = "9f1c…";
 //!
 //!     fn tick(&self, t: &mut Tick) {
-//!         t.store(0x8007_5240, 4).by(0x8001_3CA8);
+//!         t.store(0x800A_1C30, 4).by(0x8001_52A4);
 //!     }
 //!
 //!     fn quantities(&self, m: &Machine) -> Quantities {
-//!         let croc = m.u32(0x8007_528C);
-//!         Quantities { croc_x: m.i32(croc + 0x370) }
+//!         let player = m.u32(0x800A_2F18);
+//!         Quantities { player_x: m.i32(player + 0x24) }
 //!     }
 //! }
 //!
-//! psx_capture::export_glossary!(Croc);
+//! psx_capture::export_glossary!(Game);
+//! ```
+//!
+//! When the game's rules live in a script its own interpreter runs, the
+//! binding can also say where the programs are ([`Glossary::programs`]),
+//! so the bytes the game read of them count as coverage, and run code at
+//! points of the interpreter ([`Glossary::hooks`], [`Glossary::hook`]) that
+//! names the script position running and the way each decision went
+//! (docs/script-coverage-design.md):
+//!
+//! ```ignore
+//! fn programs(&self, p: &mut Programs, m: &Machine) {
+//!     let base = m.u32(0x800D_8A20);
+//!     p.program("croc", base, m.u32(base - 4));
+//! }
+//!
+//! fn hooks(&self, h: &mut Hooks) {
+//!     h.at(0x8002_CFF8).branch(0x8002_8190);
+//! }
+//!
+//! fn hook(&self, at: Hook, m: &Machine, s: &mut Script) {
+//!     let obj = m.reg(S0);
+//!     let position = m.u32(obj) - m.u32(obj + 4);
+//!     match at {
+//!         Hook::At(_) => s.site("croc", position),
+//!         Hook::Branch { taken, .. } => s.way("croc", position, taken as u32, 2),
+//!     }
+//! }
+//! ```
+//!
+//! Once the script's format is decoded, the binding can also give each
+//! program's map ([`Glossary::map`]): its statements, which of them decide
+//! and between how many ways, and names for routines. Coverage then counts
+//! statements run instead of bytes read, and decisions no hook reported:
+//!
+//! ```ignore
+//! fn map(&self, name: &str, code: &[u8], map: &mut Map) {
+//!     for s in decode(code) {
+//!         map.statement(s.start, s.end);
+//!         if let Some(ways) = s.ways {
+//!             map.decision(s.start, ways);
+//!         }
+//!     }
+//!     map.routine("jump_test", 0x1803, 0x18F1);
+//! }
 //! ```
 //!
 //! The boundary with psx is two C functions ([`abi`]), so a binding built
@@ -41,11 +109,11 @@ pub mod abi;
 /// The version of the boundary with psx. psx refuses a binding built
 /// against another; `psx template update` brings the vendored crate to
 /// psx's.
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 6;
 
 pub mod prelude {
     pub use crate::reg::*;
-    pub use crate::{Glossary, Machine, Tick};
+    pub use crate::{Glossary, Hook, Hooks, Machine, Map, Programs, Script, Tick};
 }
 
 /// A CPU register, numbered as the R3000 numbers them; `HI` and `LO` are 32
@@ -277,13 +345,178 @@ pub trait Glossary {
     type Glue: Quantities;
     /// The release, in words.
     const TITLE: &'static str;
-    /// The image's identity, as `psx context` reports the media.
+    /// The image's identity: `psx context`'s `resolved.image_sha256` for the media.
     const IMAGE_SHA256: &'static str;
 
     fn tick(&self, t: &mut Tick);
 
     /// The quantities, read when a tick ends.
     fn quantities(&self, m: &Machine) -> <Self::Glue as Quantities>::Quantities;
+
+    /// The game's own pad, as the game's rules read it, in psx's
+    /// `replay::Button` bit order (a button's mask is its bit). A recording
+    /// whose binding answers this records it as each tick's pad, and says
+    /// so (`"pad": "game"` in its details); the controller's own view,
+    /// which recordings otherwise keep, leads or trails the game's by a
+    /// field that depends on the game's phase.
+    ///
+    /// The answer is the buttons held, as the controller would report
+    /// them: not a word of buttons pressed this tick only, repeated or
+    /// remapped by the game's options, which a port replaying held buttons
+    /// could not reproduce. Answer for every tick or none: a recording
+    /// that gets Some on one tick and None on another is refused. The
+    /// sticks stay the controller's.
+    ///
+    /// None by default: the recording's pads are the controller's.
+    fn input(&self, _m: &Machine) -> Option<u16> {
+        None
+    }
+
+    /// The programs a script interpreter is running, each by a name that
+    /// stays the same across runs, read where a recording starts and when
+    /// each tick ends. The bytes the game reads of them count as coverage
+    /// until the next tick says otherwise. None by default.
+    fn programs(&self, _p: &mut Programs, _m: &Machine) {}
+
+    /// The interpreter's instructions where [`Glossary::hook`] runs. None by
+    /// default.
+    fn hooks(&self, _h: &mut Hooks) {}
+
+    /// At a hook: the script position running, and the way a decision went,
+    /// worked out from the registers and memory as they are.
+    fn hook(&self, _at: Hook, _m: &Machine, _s: &mut Script) {}
+
+    /// The program `name`'s structure, decoded from its bytes `code`: asked
+    /// once per recording for each program and bytes [`Glossary::programs`]
+    /// names. Positions are offsets into `code`. None by default.
+    fn map(&self, _name: &str, _code: &[u8], _map: &mut Map) {}
+}
+
+/// A program's structure ([`Glossary::map`]).
+#[derive(Default)]
+pub struct Map {
+    statements: Vec<(u32, u32)>,
+    decisions: Vec<(u32, u32)>,
+    routines: Vec<(String, u32, u32)>,
+}
+
+impl Map {
+    /// A statement (an instruction of the script) is the bytes `start` to
+    /// `end`, `end` excluded. It ran when a recording read any of them, or
+    /// a hook named `start`; bytes in no statement are not coverage.
+    pub fn statement(&mut self, start: u32, end: u32) -> &mut Self {
+        self.statements.push((start, end));
+        self
+    }
+
+    /// The statement at `at` decides between `ways` ways, which hooks name
+    /// with [`Script::way`].
+    pub fn decision(&mut self, at: u32, ways: u32) -> &mut Self {
+        self.decisions.push((at, ways));
+        self
+    }
+
+    /// The bytes `start` to `end` (excluded) are the routine `name`.
+    pub fn routine(&mut self, name: &str, start: u32, end: u32) -> &mut Self {
+        self.routines.push((name.to_string(), start, end));
+        self
+    }
+
+    fn json(&self) -> String {
+        let pairs = |v: &[(u32, u32)]| v.iter().map(|(a, b)| format!("[{a},{b}]")).collect::<Vec<_>>().join(",");
+        let routines: Vec<String> = self.routines.iter().map(|(n, s, e)| format!("[{},{s},{e}]", string(n))).collect();
+        format!(
+            "{{\"statements\":[{}],\"decisions\":[{}],\"routines\":[{}]}}",
+            pairs(&self.statements),
+            pairs(&self.decisions),
+            routines.join(",")
+        )
+    }
+}
+
+/// The programs running ([`Glossary::programs`]).
+#[derive(Default)]
+pub struct Programs {
+    list: Vec<(String, u32, u32)>,
+}
+
+impl Programs {
+    /// The program `name` is the `bytes` bytes at `address`. Positions in it
+    /// are offsets from `address`.
+    pub fn program(&mut self, name: &str, address: u32, bytes: u32) -> &mut Self {
+        self.list.push((name.to_string(), address, bytes));
+        self
+    }
+
+    fn json(&self) -> String {
+        let items: Vec<String> = self.list.iter().map(|(n, a, b)| format!("[{},{a},{b}]", string(n))).collect();
+        format!("[{}]", items.join(","))
+    }
+}
+
+/// Where [`Glossary::hook`] runs ([`Glossary::hooks`]).
+#[derive(Default)]
+pub struct Hooks {
+    at: Vec<u32>,
+    branch: Vec<u32>,
+}
+
+impl Hooks {
+    /// Once the instruction at `pc` has run.
+    pub fn at(&mut self, pc: u32) -> &mut Self {
+        self.at.push(pc);
+        self
+    }
+
+    /// Once the conditional branch at `pc` has gone one way or the other,
+    /// after its delay slot.
+    pub fn branch(&mut self, pc: u32) -> &mut Self {
+        self.branch.push(pc);
+        self
+    }
+
+    fn json(&self) -> String {
+        let list = |v: &[u32]| v.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        format!("{{\"at\":[{}],\"branch\":[{}]}}", list(&self.at), list(&self.branch))
+    }
+}
+
+/// The hook that ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hook {
+    /// The instruction at this pc ran ([`Hooks::at`]).
+    At(u32),
+    /// The branch at `pc` went: taken, or fell through ([`Hooks::branch`]).
+    Branch { pc: u32, taken: bool },
+}
+
+/// What a hook says ran ([`Glossary::hook`]).
+#[derive(Default)]
+pub struct Script {
+    out: String,
+}
+
+impl Script {
+    /// The script position `position` of the program `name` ran.
+    pub fn site(&mut self, name: &str, position: u32) {
+        self.push(format!("[{},{position}]", string(name)));
+    }
+
+    /// The decision at `position` of the program `name`, one of `of` ways,
+    /// went way `way` (from 0).
+    pub fn way(&mut self, name: &str, position: u32, way: u32, of: u32) {
+        assert!(way < of, "way {way} of {of}: a way is counted from 0, below of");
+        self.push(format!("[{},{position},{way},{of}]", string(name)));
+    }
+
+    fn push(&mut self, item: String) {
+        self.out.push(if self.out.is_empty() { '[' } else { ',' });
+        self.out.push_str(&item);
+    }
+
+    fn json(self) -> String {
+        if self.out.is_empty() { "[]".into() } else { self.out + "]" }
+    }
 }
 
 /// Exports the glossary's binding, a unit struct implementing
@@ -323,7 +556,26 @@ mod tests {
 
         let mut t = Tick::default();
         assert!(t.json().is_err());
-        t.store(0x8007_5240, 4).by(0x8001_3CA8);
-        assert_eq!(t.json().unwrap(), format!(r#"{{"at":{},"bytes":4,"pc":{}}}"#, 0x8007_5240u32, 0x8001_3CA8u32));
+        t.store(0x800A_1C30, 4).by(0x8001_52A4);
+        assert_eq!(t.json().unwrap(), format!(r#"{{"at":{},"bytes":4,"pc":{}}}"#, 0x800A_1C30u32, 0x8001_52A4u32));
+    }
+
+    #[test]
+    fn programs_hooks_and_script_marks_are_json() {
+        let mut p = Programs::default();
+        p.program("croc", 16, 4);
+        assert_eq!(p.json(), r#"[["croc",16,4]]"#);
+        let mut h = Hooks::default();
+        assert_eq!(h.json(), r#"{"at":[],"branch":[]}"#);
+        h.at(8).branch(12);
+        assert_eq!(h.json(), r#"{"at":[8],"branch":[12]}"#);
+        let mut s = Script::default();
+        s.site("croc", 3);
+        s.way("croc", 3, 1, 2);
+        assert_eq!(s.json(), r#"[["croc",3],["croc",3,1,2]]"#);
+        assert_eq!(Script::default().json(), "[]");
+        let mut m = Map::default();
+        m.statement(0, 3).statement(3, 4).decision(0, 2).routine("go", 0, 4);
+        assert_eq!(m.json(), r#"{"statements":[[0,3],[3,4]],"decisions":[[0,2]],"routines":[["go",0,4]]}"#);
     }
 }

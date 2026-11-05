@@ -54,7 +54,7 @@ impl Entry {
     }
 
     pub fn contains_lba(&self, lba: u32) -> bool {
-        lba >= self.lba && lba < self.lba + self.sectors().max(1)
+        lba >= self.lba && (lba as u64) < self.lba as u64 + self.sectors().max(1) as u64
     }
 
     /// True when the directory declares Form 2 or interleaved (XA/STR) content.
@@ -210,9 +210,13 @@ impl FileSystem {
     /// File contents as 2048-byte Form 1 payloads, trimmed to the recorded size.
     /// Fails on Form 2 sectors rather than silently dropping their extra bytes.
     pub fn read_file(&self, disc: &Disc, entry: &Entry) -> Result<Vec<u8>> {
-        let mut out = Vec::with_capacity(entry.size as usize);
+        // The size is the directory record's: reserve what is plausible.
+        let mut out = Vec::with_capacity((entry.size as usize).min(crate::disc::PREALLOC_SECTORS * SECTOR as usize));
         for i in 0..entry.sectors() {
-            let s = disc.read_data(entry.lba + i)?;
+            let at = entry.lba.checked_add(i).ok_or_else(|| {
+                MediaError::Malformed(format!("{}: extent past the end of the address space", entry.path))
+            })?;
+            let s = disc.read_data(at)?;
             if s.form == SectorForm::Form2 {
                 return Err(MediaError::Unsupported(format!(
                     "{} contains Form 2 sectors (LBA {}); extract raw sectors instead",

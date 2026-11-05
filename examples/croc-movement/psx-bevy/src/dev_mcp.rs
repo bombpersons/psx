@@ -666,6 +666,12 @@ impl ServerHandler for GameServer {
             _ => return Err(ErrorData::invalid_params("unknown game tool", None)),
         };
         let validation_error = matches!(&command, Command::SetComponent(_) | Command::Screenshot(Target::Window));
+        // Steps run at the game's real tick rate: allow for the slowest one
+        // (and a slow renderer), 100 ms a tick past the usual two minutes.
+        let limit = match &command {
+            Command::Step(args, _) => Duration::from_secs(120) + Duration::from_millis(100 * args.frames as u64),
+            _ => Duration::from_secs(120),
+        };
         let _permit = tokio::select! {
             permit=self.slots.acquire()=>permit.map_err(|_|ErrorData::internal_error("game queue closed",None))?,
             _=context.ct.cancelled()=>return Err(ErrorData::internal_error("request cancelled",None)),
@@ -675,7 +681,7 @@ impl ServerHandler for GameServer {
             .try_send(Request { command, reply })
             .map_err(|error| ErrorData::internal_error(format!("game queue unavailable: {error}"), None))?;
         let response = tokio::select! {
-            result=tokio::time::timeout(Duration::from_secs(120),receiver)=>result
+            result=tokio::time::timeout(limit,receiver)=>result
                 .map_err(|_|ErrorData::internal_error("game/render response timed out",None))?
                 .map_err(|_|ErrorData::internal_error("game stopped before replying",None))?
                 .map_err(|error|if validation_error {ErrorData::invalid_params(error,None)} else {ErrorData::internal_error(error,None)})?,

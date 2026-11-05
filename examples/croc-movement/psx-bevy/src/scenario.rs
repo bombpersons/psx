@@ -15,30 +15,30 @@
 //! use crate::observed::Observed;
 //!
 //! #[derive(Component)]
-//! struct Croc {
+//! struct Player {
 //!     x: i32,
 //! }
 //!
 //! fn level(app: &mut App, p: &Parameters) -> Result<(), String> {
 //!     let level = p.get("level").and_then(|l| l.as_str()).ok_or("level: a name")?;
-//!     // In a game: load the level by name, then place Croc at its start.
+//!     // In a game: load the level by name, then place the player at its start.
 //!     let _ = level;
-//!     app.world_mut().spawn(Croc { x: 4096 });
+//!     app.world_mut().spawn(Player { x: 4096 });
 //!     Ok(())
 //! }
 //!
-//! struct CrocPlugin;
+//! struct PlayerPlugin;
 //!
-//! impl Plugin for CrocPlugin {
+//! impl Plugin for PlayerPlugin {
 //!     fn build(&self, app: &mut App) {
 //!         app.register_scenario("level", level).observe(|w: &mut World| Observed {
-//!             croc_x: w.query::<&Croc>().iter(w).next().map(|c| c.x),
+//!             player_x: w.query::<&Player>().iter(w).next().map(|c| c.x),
 //!             ..Observed::none()
 //!         });
 //!     }
 //! }
 //!
-//! // #[test] fn scenarios() { Scenarios::new(root, || { /* a headless app with CrocPlugin */ }).run(); }
+//! // #[test] fn scenarios() { Scenarios::new(root, || { /* a headless app with PlayerPlugin */ }).run(); }
 //! ```
 //!
 //! A misspelt or removed quantity is a compile error. Several plugins may
@@ -48,10 +48,19 @@
 //! For each recording (`scenarios/<id>/<name>.jsonl`, made by `psx scenario
 //! record`) the runner makes a fresh app, launches the scenario, compares
 //! the quantities with the recording's initial values (the end of the
-//! original's first tick), then runs one tick per line with the line's pad
-//! and compares again. Each quantity is compared within the scenario's
+//! original's first tick), then runs one tick per line with the line's pad,
+//! the pad's mode ([`crate::controller::ControllerState::analog`]) and sticks
+//! (their raw bytes, in [`crate::controller::ControllerState::sticks`]) and
+//! compares again. Each quantity is compared within the scenario's
 //! tolerance (`compare`, raw units); the first tick each one differs is
-//! reported.
+//! reported. The tick's input is the recording's alone: live devices are
+//! ignored ([`crate::testing::apply`]).
+//!
+//! Each recording then runs again in another fresh app, and where the two
+//! runs' quantities first part (the tick and quantity) is a failure too: the
+//! port must be deterministic, its random numbers seeded and its rules
+//! independent of query and hash-map iteration order. A port's difference
+//! from the recording after that tick may be chance.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -88,6 +97,10 @@ pub struct ScenarioRegistry {
 impl ScenarioRegistry {
     pub fn kinds(&self) -> Vec<String> {
         self.launchers.keys().cloned().collect()
+    }
+
+    pub(crate) fn launcher(&self, kind: &str) -> Option<Launcher> {
+        self.launchers.get(kind).cloned()
     }
 
     /// Every quantity some observer has now: by name, or why not.
@@ -172,6 +185,11 @@ pub struct RecordingReport {
     pub ticks: usize,
     /// The first tick each quantity differs at, or why the run stopped.
     pub failures: Vec<String>,
+    /// When a quantity differed: the compared quantities the port had,
+    /// initially and after each tick it ran (`psx web` plots them beside
+    /// the recording's).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<psx_scenario::Values>,
 }
 
 /// The scenarios of a workspace, run against apps `app` makes.
@@ -248,6 +266,7 @@ impl Scenarios {
                     captured: rec.header.source.kind == SourceKind::Captured,
                     ticks: rec.rows.len(),
                     failures: vec!["not run: the scenario has problems".into()],
+                    ..default()
                 },
                 Err(e) => RecordingReport { name, failures: vec![e], ..default() },
             });
@@ -255,6 +274,9 @@ impl Scenarios {
         r
     }
 
+    /// Replays one recording. A panic in the port (its launcher, a tick or
+    /// an observer) fails this recording, at the tick it happened, and the
+    /// rest still run and reach the report.
     fn recording(
         &self,
         name: &str,
@@ -262,17 +284,60 @@ impl Scenarios {
         rec: &Recording,
         observed: &mut std::collections::BTreeSet<String>,
     ) -> RecordingReport {
+        let run = |observed: &mut std::collections::BTreeSet<String>| {
+            let mut at = String::from("the launcher");
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.replay(name, s, rec, observed, &mut at)))
+                .map_err(|p| (at, panic_message(&p)))
+        };
+        let (mut out, first) = match run(observed) {
+            Ok(r) => r,
+            Err((at, why)) => {
+                return RecordingReport {
+                    name: name.into(),
+                    captured: rec.header.source.kind == SourceKind::Captured,
+                    ticks: rec.rows.len(),
+                    failures: vec![format!("{at} panicked: {why}")],
+                    ..default()
+                };
+            }
+        };
+        // Again in a fresh app: the port's own determinism. The differences
+        // from the recording stay the first run's; this adds where the two
+        // runs part (a difference after it may be chance).
+        let line = match run(&mut Default::default()) {
+            Err((at, why)) => Some(format!("{at}: the port is not deterministic: only the second run panicked: {why}")),
+            Ok((_, second)) => parting(&first, &second),
+        };
+        if let Some(line) = line {
+            out.failures.insert(0, line);
+            out.failures.sort_by_key(|l| tick_of(l));
+        }
+        out
+    }
+
+    /// `at` says where the replay is, for a panic's failure. Also gives
+    /// every quantity the port had at each moment it ran, for
+    /// [`parting`].
+    fn replay(
+        &self,
+        name: &str,
+        s: &Scenario,
+        rec: &Recording,
+        observed: &mut std::collections::BTreeSet<String>,
+        at: &mut String,
+    ) -> (RecordingReport, Trail) {
         let mut out = RecordingReport {
             name: name.into(),
             captured: rec.header.source.kind == SourceKind::Captured,
             ticks: rec.rows.len(),
             failures: Vec::new(),
+            values: Vec::new(),
         };
         let mut app = (self.app)();
         let registry = registry(&mut app);
         if let Err(e) = (registry.launchers[&s.kind])(&mut app, &s.parameters) {
             out.failures.push(format!("the launcher failed: {e}"));
-            return out;
+            return (out, Trail::new());
         }
         let compared: Vec<(&String, i128)> = rec
             .header
@@ -286,7 +351,23 @@ impl Scenarios {
                 Some((q, tol))
             })
             .collect();
+        // A quantity [compare] names that the recording lacks would never be
+        // compared, and with none in common the replay would pass unrun.
+        let unrecorded: Vec<&String> = s.compare.keys().filter(|q| !rec.header.quantities.contains_key(*q)).collect();
+        if !unrecorded.is_empty() || compared.is_empty() {
+            out.failures.push(if unrecorded.is_empty() {
+                "none of the quantities in [compare] is in the recording".to_string()
+            } else {
+                format!(
+                    "[compare] names {}, which the recording does not hold: record it again",
+                    unrecorded.iter().map(|q| q.as_str()).collect::<Vec<_>>().join(", ")
+                )
+            });
+            return (out, Trail::new());
+        }
         let mut differed: BTreeMap<String, String> = BTreeMap::new();
+        let mut trail: Vec<psx_scenario::Values> = Vec::new();
+        let mut had = Trail::new();
         let mut check =
             |app: &mut App, at: &str, values: &psx_scenario::Values, differed: &mut BTreeMap<String, String>| {
                 let now = match registry.observe(app.world_mut()) {
@@ -294,6 +375,10 @@ impl Scenarios {
                     Err(e) => return Some(format!("{at}: {e}")),
                 };
                 observed.extend(now.keys().map(|q| q.to_string()));
+                trail.push(
+                    compared.iter().filter_map(|(q, _)| Some(((*q).clone(), now.get(q.as_str())?.clone()))).collect(),
+                );
+                had.push((at.to_string(), now.clone()));
                 for (q, tol) in &compared {
                     if differed.contains_key(q.as_str()) {
                         continue;
@@ -310,36 +395,36 @@ impl Scenarios {
                 }
                 None
             };
+        *at = "initial".into();
         if let Some(e) = check(&mut app, "initial", &rec.header.initial, &mut differed) {
             out.failures.push(e);
-            return out;
+            return (out, had);
         }
         for t in rec.expand() {
             if differed.len() == compared.len() {
                 break;
             }
-            let pad: Result<Vec<_>, String> = t
-                .pad
-                .iter()
-                .map(|b| crate::testing::trajectory::button(b).ok_or(format!("tick {}: no button {b:?}", t.tick)))
-                .collect();
-            match pad {
-                Ok(pad) => app.run_tick(&pad),
+            *at = format!("tick {}", t.tick);
+            match tick_input(&t) {
+                Ok(input) => app.run_input(&input),
                 Err(e) => {
                     out.failures.push(e);
-                    return out;
+                    return (out, had);
                 }
             }
             if let Some(e) = check(&mut app, &format!("tick {}", t.tick), &t.values, &mut differed) {
                 out.failures.push(e);
-                return out;
+                return (out, had);
             }
+        }
+        if !differed.is_empty() {
+            out.values = trail;
         }
         // In the order they first differed.
         let mut lines: Vec<String> = differed.into_values().collect();
         lines.sort_by_key(|l| tick_of(l));
         out.failures = lines;
-        out
+        (out, had)
     }
 
     /// Runs every scenario, prints the results, writes them to
@@ -368,7 +453,44 @@ impl Scenarios {
     }
 }
 
-fn registry(app: &mut App) -> ScenarioRegistry {
+/// A recording's tick as input: its pad, mode and sticks.
+pub(crate) fn tick_input(t: &psx_scenario::scenario::Full) -> Result<crate::testing::TickInput, String> {
+    let buttons = t
+        .pad
+        .iter()
+        .map(|b| crate::testing::trajectory::button(b).ok_or(format!("tick {}: no button {b:?}", t.tick)))
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(crate::testing::TickInput { buttons, analog: Some(t.analog), sticks: Some(t.sticks), ..default() })
+}
+
+/// Every quantity the port had at each moment of a replay: `initial`,
+/// `tick N`.
+type Trail = Vec<(String, BTreeMap<&'static str, Value>)>;
+
+/// Where two runs of one recording first part: the moment and the first
+/// quantity (by name) that differs.
+fn parting(first: &Trail, second: &Trail) -> Option<String> {
+    let Some((at, a, b)) = first.iter().zip(second).find(|((_, a), (_, b))| a != b).map(|((at, a), (_, b))| (at, a, b))
+    else {
+        // The same as far as both went: one stopping sooner is a parting too.
+        let end = |t: &Trail| t.last().map_or("before initial".to_string(), |(at, _)| format!("after {at}"));
+        return (first.len() != second.len()).then(|| {
+            format!("the port is not deterministic: the first run stopped {}, the second {}", end(first), end(second))
+        });
+    };
+    let q = a.keys().chain(b.keys()).filter(|q| a.get(*q) != b.get(*q)).min()?;
+    let had = |m: &BTreeMap<&str, Value>| m.get(q).map_or("none".into(), show);
+    Some(format!("{at} {q}: the port is not deterministic: first run {}, second run {}", had(a), had(b)))
+}
+
+fn panic_message(p: &Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<&str>()
+        .map(|m| m.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".into())
+}
+
+pub(crate) fn registry(app: &mut App) -> ScenarioRegistry {
     app.world_mut().get_resource_or_insert_with(ScenarioRegistry::default).clone()
 }
 
@@ -417,9 +539,12 @@ mod tests {
 
     fn walk(pad: Res<ControllerState>, mut q: Query<&mut Walker>) {
         for mut w in &mut q {
+            // Slower on an analog pad, as a game can act on the mode.
             if pad.held(Button::Right) {
-                w.0 += 100;
+                w.0 += if pad.analog { 50 } else { 100 };
             }
+            // The left stick's raw byte, from centre.
+            w.0 += i32::from(pad.sticks[0]) - 128;
         }
     }
 
@@ -467,6 +592,20 @@ mod tests {
     }
 
     #[test]
+    fn the_mode_and_sticks_replay_tick_for_tick() {
+        let header = RECORDING.lines().next().unwrap();
+        let rows = [
+            r#"{"tick":1,"field":1,"analog":true,"sticks":{"lx":160},"values":{"x":4128}}"#,
+            r#"{"tick":2,"field":2,"pad":["RIGHT"],"sticks":{"lx":0},"values":{"x":4050}}"#,
+            r#"{"tick":3,"field":3,"analog":false,"sticks":{"lx":128},"values":{"x":4150}}"#, // RIGHT still held
+        ];
+        let root = workspace(SCENARIO, &format!("{header}\n{}\n", rows.join("\n")));
+        let s = &Scenarios::new(&root, app).report().scenarios[0];
+        assert!(s.passed(), "{s:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn a_difference_names_the_tick_and_quantity() {
         let root = workspace(&SCENARIO.replace("x = 4096", "x = 4095 "), &RECORDING.replace("4296", "4300"));
         let r = Scenarios::new(&root, app).report();
@@ -476,6 +615,9 @@ mod tests {
         let root2 = workspace(&tolerant, &RECORDING.replace("4296", "4300"));
         let r = Scenarios::new(&root2, app).report();
         assert_eq!(r.scenarios[0].recordings[0].failures, ["tick 2 x: expected 4300, got 4295"]);
+        // What the port had, initially and after each tick it ran.
+        let had: Vec<_> = r.scenarios[0].recordings[0].values.iter().map(|v| v["x"].clone()).collect();
+        assert_eq!(had, [Value::Int(4095), Value::Int(4195), Value::Int(4295)]);
         let missing = SCENARIO.replace("kind = \"level\"", "kind = \"race\"");
         let root3 = workspace(&missing, RECORDING);
         let r = Scenarios::new(&root3, app).report();
@@ -495,5 +637,97 @@ mod tests {
         for d in [root, root2, root3, root4] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    /// A key held on the keyboard all along: the replay has only the
+    /// recording's pad.
+    #[test]
+    fn a_held_key_does_not_reach_the_replay() {
+        let header = RECORDING.lines().next().unwrap();
+        let root = workspace(SCENARIO, &format!("{header}\n{}\n", r#"{"tick":1,"field":1,"values":{"x":4096}}"#));
+        let held = || {
+            let mut a = app();
+            a.init_resource::<ButtonInput<KeyCode>>();
+            a.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::ArrowRight);
+            a
+        };
+        let s = &Scenarios::new(&root, held).report().scenarios[0];
+        assert!(s.passed(), "{s:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[derive(Component)]
+    struct Tracked;
+
+    /// Nudges whichever walker the query gives first: the order the
+    /// launcher spawned them in, which `LAUNCHES` turns each app.
+    fn nudge_first(mut q: Query<&mut Walker>) {
+        if let Some(mut w) = q.iter_mut().next() {
+            w.0 += 1;
+        }
+    }
+
+    #[test]
+    fn a_rule_picking_by_query_order_is_not_deterministic() {
+        static LAUNCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = workspace(&SCENARIO.replace("\"level\"", "\"crowd\""), RECORDING);
+        let crowd = || {
+            let mut a = headless_app(TickRate::every_field(Region::Ntsc));
+            a.add_systems(FixedUpdate, (walk, nudge_first).chain().in_set(GameSystems::Game));
+            a.register_scenario("crowd", |app, _| {
+                let n = LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let tracked = (Walker(4096), Tracked);
+                if n.is_multiple_of(2) {
+                    app.world_mut().spawn(tracked);
+                    app.world_mut().spawn(Walker(4096));
+                } else {
+                    app.world_mut().spawn(Walker(4096));
+                    app.world_mut().spawn(tracked);
+                }
+                Ok(())
+            })
+            .observe(|w: &mut World| Observed {
+                x: w.query_filtered::<&Walker, With<Tracked>>().iter(w).next().map(|c| c.0),
+            });
+            a
+        };
+        let r = Scenarios::new(&root, crowd).report();
+        let failures = &r.scenarios[0].recordings[0].failures;
+        // The walker the observer follows is nudged in one run, not the other.
+        let parted = ["first run 4197, second run 4196", "first run 4196, second run 4197"]
+            .map(|runs| format!("tick 1 x: the port is not deterministic: {runs}"));
+        assert!(parted.contains(&failures[0]), "{failures:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[derive(Component)]
+    struct Fragile;
+
+    fn break_at(q: Query<&Walker, With<Fragile>>) {
+        if q.iter().any(|w| w.0 > 4196) {
+            panic!("walked off the floor");
+        }
+    }
+
+    #[test]
+    fn a_panic_fails_its_recording_and_the_rest_still_run() {
+        let root = workspace(SCENARIO, RECORDING);
+        std::fs::create_dir_all(root.join("scenarios/fragile")).unwrap();
+        std::fs::write(root.join("scenarios/fragile.toml"), SCENARIO.replace("\"level\"", "\"fragile\"")).unwrap();
+        std::fs::write(root.join("scenarios/fragile/a.jsonl"), RECORDING.replace("\"walk\"", "\"fragile\"")).unwrap();
+        let fragile = || {
+            let mut a = app();
+            a.add_systems(FixedUpdate, break_at.in_set(GameSystems::Game).after(walk));
+            a.register_scenario("fragile", |app, _| {
+                app.world_mut().spawn((Walker(4096), Fragile));
+                Ok(())
+            });
+            a
+        };
+        let r = Scenarios::new(&root, fragile).report();
+        let by_id = |id: &str| r.scenarios.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(by_id("fragile").recordings[0].failures, ["tick 2 panicked: walked off the floor"]);
+        assert!(by_id("walk").passed(), "{:?}", by_id("walk"));
+        let _ = std::fs::remove_dir_all(root);
     }
 }

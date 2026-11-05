@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::{Glossary, Machine, Quantities, Tick, string};
+use crate::{Glossary, Hook, Hooks, Machine, Map, Programs, Quantities, Script, Tick, string};
 
 /// psx's side, valid for one call.
 #[repr(C)]
@@ -27,13 +27,31 @@ pub struct Host {
     pub gte: unsafe extern "C" fn(ctx: *mut c_void, which: u32) -> u32,
     /// The answer, or a panic's message.
     pub out: unsafe extern "C" fn(ctx: *mut c_void, data: *const u8, len: usize),
+    /// The question's arguments: for [`HOOK`], the pc, then 0 for
+    /// `Hooks::at` or 1 for `Hooks::branch`, then 1 when the branch was
+    /// taken; for [`MAP`], the program's index in [`PROGRAMS`]' answer.
+    pub args: [u32; 4],
 }
 
-/// `what`: the binding (JSON: `glossary`, the fingerprint; `source`; and
-/// `tick`).
+/// `what`: the binding (JSON: `glossary`, the fingerprint; `source`;
+/// `tick`; and `hooks`, `{"at": [pc], "branch": [pc]}`).
 pub const DESCRIBE: u32 = 0;
 /// `what`: the quantities (a JSON object, quantity to value).
 pub const QUANTITIES: u32 = 1;
+/// `what`: the programs running (JSON: `[[name, address, bytes]]`).
+pub const PROGRAMS: u32 = 2;
+/// `what`: a hook ran ([`Host::args`]); what it says ran (JSON: `[[name,
+/// position]]` for a site, `[[name, position, way, of]]` for a decision's
+/// way).
+pub const HOOK: u32 = 3;
+/// `what`: the map of a program ([`Host::args`]: its index in the programs
+/// the binding names now), read from the machine (JSON: `{"statements":
+/// [[start, end]], "decisions": [[at, ways]], "routines": [[name, start,
+/// end]]}`).
+pub const MAP: u32 = 4;
+/// `what`: the game's own pad, as its rules read it, in psx's button bits
+/// (JSON: `{"buttons": u16}`, or `null` when the game keeps none).
+pub const INPUT: u32 = 5;
 
 /// Returned: the answer was written.
 pub const OK: i32 = 0;
@@ -66,16 +84,57 @@ pub unsafe fn call<G: Glossary>(glossary: &G, what: u32, host: *const Host) -> i
                     Ok(t) => t,
                     Err(e) => panic!("{e}"),
                 };
+                let mut h = Hooks::default();
+                glossary.hooks(&mut h);
                 *out = format!(
-                    "{{\"glossary\":{},\"source\":{{\"platform\":\"psx\",\"title\":{},\"image_sha256\":{}}},\"tick\":{tick}}}",
+                    "{{\"glossary\":{},\"source\":{{\"platform\":\"psx\",\"title\":{},\"image_sha256\":{}}},\"tick\":{tick},\"hooks\":{}}}",
                     string(G::Glue::FINGERPRINT),
                     string(G::TITLE),
                     string(G::IMAGE_SHA256),
+                    h.json(),
                 );
                 true
             }
             QUANTITIES => {
                 G::Glue::quantities(&glossary.quantities(m)).json(out);
+                true
+            }
+            PROGRAMS => {
+                let mut p = Programs::default();
+                glossary.programs(&mut p, m);
+                *out = p.json();
+                true
+            }
+            HOOK => {
+                // `host` is the caller's, valid for the call.
+                let args = (*host).args;
+                let at =
+                    if args[1] == 0 { Hook::At(args[0]) } else { Hook::Branch { pc: args[0], taken: args[2] != 0 } };
+                let mut s = Script::default();
+                glossary.hook(at, m, &mut s);
+                *out = s.json();
+                true
+            }
+            MAP => {
+                let mut p = Programs::default();
+                glossary.programs(&mut p, m);
+                // `host` is the caller's, valid for the call.
+                let index = (*host).args[0] as usize;
+                let Some((name, address, bytes)) = p.list.get(index) else {
+                    panic!("map: the binding names {} programs now, not one at {index}", p.list.len())
+                };
+                let mut code = vec![0; *bytes as usize];
+                m.bytes(*address, &mut code);
+                let mut map = Map::default();
+                glossary.map(name, &code, &mut map);
+                *out = map.json();
+                true
+            }
+            INPUT => {
+                match glossary.input(m) {
+                    Some(buttons) => *out = format!("{{\"buttons\":{buttons}}}"),
+                    None => *out = "null".into(),
+                }
                 true
             }
             _ => false,

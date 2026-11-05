@@ -312,15 +312,19 @@ the same path. Synchronous loads use `assets::find` (the psx template's
   The tick rate is the game's, not the display's: the game's `lib.rs` sets `REGION`
   (60 Hz NTSC / 50 Hz PAL fields) and `FIELDS_PER_TICK`, giving
   `TickRate::every_nth_field(REGION, FIELDS_PER_TICK)`. Many PS1 games run their
-  logic every second field (Croc PAL: 25 Hz); Mega Man 8 PAL runs every field
-  (50 Hz). Changing the `TickRate` resource at run time retunes `Time<Fixed>`.
+  logic every second field (25 Hz on PAL), others every field (50 Hz). Changing the `TickRate` resource at run time retunes `Time<Fixed>`.
   `GameClock.frame` counts ticks. `psx port init --region pal
   --fields-per-tick 2` writes both constants when creating a project.
 - `Res<Time>` in `FixedUpdate` is one tick long, so speeds can be written per
   second (`speed * time.delta_secs()`) or, when the original's per-tick values
   matter, per tick.
 - Read input from `ControllerState::{held, pressed, released}(Button::..)`,
-  `direction()` and `left_stick`/`right_stick`. Edges are per logic tick.
+  `direction()` and `left_stick`/`right_stick`. `sticks` holds the sticks'
+  raw bytes as the PlayStation's pad sends them (lx, ly, rx, ry; 128 at
+  rest), which a port reads to apply the original's own deadzone and curve;
+  `left_stick`/`right_stick` are a -1..=1 view of them. `analog` is the
+  pad's mode, which a game can act on: always on live, the original's in a
+  scenario's recording. Edges are per logic tick.
   Devices are sampled every rendered frame and a press is kept until the next
   tick, so a tap shorter than one tick still counts as held for one tick.
   Do not skip ticks by counting `GameClock.frame`: presses on skipped ticks
@@ -337,7 +341,11 @@ the same path. Synchronous loads use `assets::find` (the psx template's
 - Tests and tools inject the mouse through `InjectedInput::mouse`
   (`InjectedMouse`): its buttons add to the real ones and press the actions
   they are bound to, `position` replaces the cursor, and `motion` and `wheel`
-  are added on every tick. A replay event may carry
+  are added on every tick. The developer MCP's input adds to live play;
+  a replay's (`TickApp::run_input`, scenarios, `--replay`, all through
+  `testing::apply`) is the tick's only input, with
+  `InjectedInput::exclusive`: devices and their held taps are ignored and
+  unset sticks are centred. A replay event may carry
   `"mouse": {"buttons": ["left"], "position": [x, y], "motion": [dx, dy], "wheel": n}`
   (every field optional); read such replays with `Replay::ticks`, which gives
   `TickInput`s for `Trajectory::record` or `TickApp::run_input`

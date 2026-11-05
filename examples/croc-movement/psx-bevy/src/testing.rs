@@ -42,17 +42,22 @@ pub mod trajectory;
 pub use crate::shell::InjectedMouse;
 pub use trajectory::{Alignment, Comparison, Replay, Trajectory, compare, compare_from};
 
-/// One tick of injected input: pad buttons and the mouse. `Vec<Button>`
-/// converts into one with the mouse left alone.
+/// One tick of injected input: pad buttons, the sticks and the mouse.
+/// `Vec<Button>` converts into one with the sticks and mouse left alone.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TickInput {
     pub buttons: Vec<Button>,
+    /// As [`crate::controller::ControllerState::sticks`]; None centres them.
+    pub sticks: Option<[u8; 4]>,
+    /// As [`crate::controller::ControllerState::analog`]; None is analog,
+    /// as live play.
+    pub analog: Option<bool>,
     pub mouse: InjectedMouse,
 }
 
 impl From<Vec<Button>> for TickInput {
     fn from(buttons: Vec<Button>) -> Self {
-        Self { buttons, mouse: default() }
+        Self { buttons, ..default() }
     }
 }
 
@@ -60,6 +65,19 @@ impl From<&[Button]> for TickInput {
     fn from(buttons: &[Button]) -> Self {
         buttons.to_vec().into()
     }
+}
+
+/// Makes `input` the next tick's whole input: live devices, and taps they
+/// held since the last tick, are ignored ([`InjectedInput::exclusive`]).
+/// [`TickApp::run_input`] and `--replay` ([`crate::frames`]) feed every
+/// tick through here.
+pub fn apply(world: &mut World, input: &TickInput) {
+    let mut injected = world.resource_mut::<InjectedInput>();
+    injected.set(&input.buttons);
+    injected.sticks = input.sticks;
+    injected.analog = input.analog;
+    injected.mouse = input.mouse;
+    injected.exclusive = true;
 }
 
 /// An app with Bevy's minimal plugins and psx-bevy's tick loop. Each
@@ -83,7 +101,8 @@ pub trait TickApp {
         }
     }
 
-    /// Runs one logic tick with exactly this input, mouse included.
+    /// Runs one logic tick with exactly this input, mouse included; live
+    /// devices are ignored ([`apply`]).
     fn run_input(&mut self, input: &TickInput);
 }
 
@@ -93,11 +112,7 @@ impl TickApp for App {
     }
 
     fn run_input(&mut self, input: &TickInput) {
-        {
-            let mut injected = self.world_mut().resource_mut::<InjectedInput>();
-            injected.set(&input.buttons);
-            injected.mouse = input.mouse;
-        }
+        apply(self.world_mut(), input);
         let start = self.world().resource::<GameClock>().frame;
         // The very first update only starts the clock; later ones each
         // advance exactly one tick.
@@ -135,5 +150,31 @@ mod tests {
         app.run_tick(&[]);
         let pad = app.world().resource::<crate::controller::ControllerState>();
         assert!(pad.released(Button::Cross));
+    }
+
+    /// A key held on the keyboard while replaying: the tick has only the
+    /// replay's buttons and sticks. The developer MCP's input still adds.
+    #[test]
+    fn replayed_input_is_the_only_input() {
+        use crate::controller::{CENTRED, ControllerState};
+        let mut app = headless_app(TickRate::default());
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyX);
+        app.run_input(&TickInput { buttons: vec![Button::Right], analog: Some(false), ..default() });
+        let pad = app.world().resource::<ControllerState>();
+        assert_eq!(pad.buttons(), [Button::Right], "{pad:?}");
+        assert_eq!((pad.sticks, pad.analog), (CENTRED, false));
+        app.run_tick(&[]);
+        assert!(app.world().resource::<ControllerState>().buttons().is_empty());
+        // The developer MCP's buttons add to the keyboard's.
+        let mut injected = app.world_mut().resource_mut::<InjectedInput>();
+        injected.release();
+        injected.set(&[Button::Right]);
+        let start = app.world().resource::<GameClock>().frame;
+        while app.world().resource::<GameClock>().frame == start {
+            app.update();
+        }
+        let pad = app.world().resource::<ControllerState>();
+        assert!(pad.held(Button::Right) && pad.held(Button::Cross), "{pad:?}");
     }
 }

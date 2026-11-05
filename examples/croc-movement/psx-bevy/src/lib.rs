@@ -18,6 +18,7 @@ pub mod controls;
 #[cfg(feature = "dev-mcp")]
 pub mod dev_mcp;
 pub mod display;
+pub mod frames;
 pub mod gte;
 pub mod launcher;
 /// Numbers for exact rules: `vendor/psx-fixed`.

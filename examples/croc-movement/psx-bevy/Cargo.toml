@@ -15,7 +15,7 @@ default = ["dynamic"]
 # Bevy as a shared library for iteration builds (workspace Cargo.toml). A
 # release build without it: `cargo build --release --no-default-features`.
 dynamic = ["bevy/dynamic_linking"]
-dev-mcp = ["dep:rmcp", "dep:tokio", "dep:image"]
+dev-mcp = ["dep:rmcp", "dep:tokio"]
 
 [dependencies]
 bevy.workspace = true
@@ -39,4 +39,5 @@ serde_json.workspace = true
 futures = { version = "0.3", default-features = false, features = ["std"] }
 futures-sink = "0.3"
 base64 = "0.23"
-image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+# PNG screens: the developer MCP's screenshots and `--replay` frames.
+image = { version = "0.25", default-features = false, features = ["png"] }

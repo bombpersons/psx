@@ -17,6 +17,14 @@ use crate::error::{MediaError, Result, malformed};
 pub const SYNC: [u8; 12] = [0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0];
 pub const LEAD_IN_SECTORS: u32 = 150;
 
+/// `lba + shift + sectors`, or `None` past u32.
+fn at_end(lba: u32, shift: u32, sectors: u32) -> Option<u32> {
+    lba.checked_add(shift)?.checked_add(sectors)
+}
+/// Most sectors reserved ahead of a read whose length a disc record gives
+/// (16 MiB of payload); longer reads grow as they go.
+pub const PREALLOC_SECTORS: usize = 8192;
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ImageFile {
     pub name: String,
@@ -46,7 +54,7 @@ pub struct Track {
 
 impl Track {
     pub fn contains(&self, lba: u32) -> bool {
-        lba >= self.first_lba && lba < self.first_lba + self.sectors
+        lba >= self.first_lba && (lba as u64) < self.first_lba as u64 + self.sectors as u64
     }
 }
 
@@ -193,26 +201,38 @@ impl Disc {
                 return malformed(format!("{} is not a whole number of {ss}-byte sectors", cf.name));
             }
             let file_sectors = (bytes / ss) as u32;
-            let mut shift = 0;
+            let mut shift: u32 = 0;
             for (i, t) in cf.tracks.iter().enumerate() {
-                shift += t.pregap;
+                let Some(s) = shift.checked_add(t.pregap) else {
+                    return malformed(format!("track {}: pregap past the end of the address space", t.number));
+                };
+                shift = s;
                 let first = t.first_stored();
                 let end = cf.tracks.get(i + 1).map_or(file_sectors, |n| n.first_stored());
                 if end < first || end > file_sectors {
                     return malformed(format!("track {} lies outside {}", t.number, cf.name));
                 }
+                // CUE times and pregaps are the sheet's: a wild one is malformed,
+                // not a wrapped address.
+                let at = |n: u32| lba.checked_add(shift)?.checked_add(n);
+                let (Some(first_lba), Some(start_lba)) = (at(first), at(t.index(1).unwrap_or(first))) else {
+                    return malformed(format!("track {} lies past the end of the address space", t.number));
+                };
                 tracks.push(Track {
                     number: t.number,
                     mode: t.mode,
                     file: fi,
                     file_sector: first,
-                    first_lba: lba + shift + first,
-                    start_lba: lba + shift + t.index(1).unwrap_or(first),
+                    first_lba,
+                    start_lba,
                     sectors: end - first,
                     unstored_pregap: t.pregap,
                 });
             }
-            lba += shift + file_sectors;
+            lba = match at_end(lba, shift, file_sectors) {
+                Some(l) => l,
+                None => return malformed(format!("{} lies past the end of the address space", cf.name)),
+            };
             handles.push(File::open(&fpath).map_err(|e| MediaError::io(&fpath, e))?);
             files.push(ImageFile { name: cf.name.clone(), path: fpath, bytes });
         }
@@ -267,7 +287,7 @@ impl Disc {
 
     /// Total addressable sectors (end of the last stored sector).
     pub fn end_lba(&self) -> u32 {
-        self.tracks.iter().map(|t| t.first_lba + t.sectors).max().unwrap_or(0)
+        self.tracks.iter().map(|t| t.first_lba.saturating_add(t.sectors)).max().unwrap_or(0)
     }
 
     /// Where a sector's stored bytes start: (index into [`Disc::files`], byte
@@ -376,9 +396,14 @@ impl Disc {
 
     /// Read `count` consecutive 2048-byte Form 1 payloads (file system view).
     pub fn read_form1(&self, lba: u32, count: u32) -> Result<Vec<u8>> {
-        let mut out = Vec::with_capacity(count as usize * 2048);
+        // `count` comes from the disc's own records: reserve what is plausible,
+        // let a real read grow it.
+        let mut out = Vec::with_capacity((count as usize).min(PREALLOC_SECTORS) * 2048);
         for i in 0..count {
-            let s = self.read_data(lba + i)?;
+            let at = lba
+                .checked_add(i)
+                .ok_or_else(|| MediaError::Malformed(format!("sector {lba}+{i} past the end of the address space")))?;
+            let s = self.read_data(at)?;
             out.extend_from_slice(&s.data[..2048]);
         }
         Ok(out)

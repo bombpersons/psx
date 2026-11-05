@@ -42,14 +42,20 @@ pub fn sample_sha256(data: &[u8], start: usize) -> String {
 /// `hist` is the filter history `[newest, older]`, carried between blocks.
 pub fn decode_block(block: &[u8], hist: &mut [i32; 2], out: &mut [i16; 28]) {
     let header = block[0];
-    // Shifts 13-15 are clamped to 12 (the SPU core's rule).
-    let shift = (header & 0xF).min(12) as i32;
-    let filter = ((header >> 4) & 7).min(4) as usize;
+    // As psx-core's SPU voice decoder (spu.rs): shifts 13-15 decode as shift
+    // 8 with only each nibble's sign bit kept; filters 5-15 have no weights;
+    // each weighted term is shifted down on its own (rounding toward -inf).
+    let (shift, mask) = match (header & 0xF) as u32 {
+        s @ 0..=12 => (s, 0xF),
+        _ => (8, 0x8),
+    };
+    let filter = ((header >> 4) & 0xF) as usize;
+    let (w1, w2) = if filter < FILTER_POS.len() { (FILTER_POS[filter], FILTER_NEG[filter]) } else { (0, 0) };
     for (n, o) in out.iter_mut().enumerate() {
         let byte = block[2 + n / 2];
-        let nib = if n & 1 == 0 { byte & 0xF } else { byte >> 4 };
+        let nib = if n & 1 == 0 { byte & 0xF } else { byte >> 4 } & mask;
         let raw = (((nib as i16) << 12) >> shift) as i32;
-        let s = raw + (hist[0] * FILTER_POS[filter] + hist[1] * FILTER_NEG[filter] + 32) / 64;
+        let s = raw + ((hist[1] * w2) >> 6) + ((hist[0] * w1) >> 6);
         let s = s.clamp(-0x8000, 0x7FFF);
         hist[1] = hist[0];
         hist[0] = s;
@@ -143,6 +149,24 @@ mod tests {
         assert_eq!(sample_extent(&data[..40], 16), 16..32, "partial blocks are not read");
         assert_eq!(sample_sha256(&data, 16), sample_sha256(&data[16..48], 0));
         assert_ne!(sample_sha256(&data, 16), sample_sha256(&data, 0));
+    }
+
+    #[test]
+    fn reserved_values_decode_as_the_spu_does() {
+        let mut nib = [0u8; 28];
+        nib[0] = 0x7; // sign bit clear: masked to 0 with shift 13-15
+        nib[1] = 0xF; // sign bit set: (0x8 << 12) as i16 >> 8 = -0x80
+        let b = block(0x5D, 0, &nib); // filter 5 (no weights), shift 13
+        let mut hist = [0x4000, 0x4000];
+        let mut out = [0; 28];
+        decode_block(&b, &mut hist, &mut out);
+        assert_eq!(&out[..3], &[0, -0x80, 0]);
+        // Each term rounds toward -inf on its own: filter 2 from [-1, -1]
+        // is (-1*115 >> 6) + (-1*-52 >> 6) = -2 + 0.
+        let b = block(0x2C, 0, &[0; 28]);
+        let mut hist = [-1, -1];
+        decode_block(&b, &mut hist, &mut out);
+        assert_eq!(out[0], -2);
     }
 
     #[test]

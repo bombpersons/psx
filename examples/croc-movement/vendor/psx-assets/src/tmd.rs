@@ -218,6 +218,16 @@ impl Tmd {
                 .ok_or_else(|| format!("pointer 0x{p:08X} below the RAM base"))
         };
         let mut tmd = Tmd { fixp, objects: Vec::with_capacity(nobj), size: table - offset + nobj * 28 };
+        // Objects may point at the same tables, so the counts alone allow a
+        // small file to decode into gigabytes. What is decoded is bounded by
+        // twice the bytes it could have come from (sharing a little is fine).
+        let mut budget = 2 * (buf.len() - offset);
+        let mut spend = |bytes: usize, k: usize| -> Result<(), String> {
+            budget = budget
+                .checked_sub(bytes)
+                .ok_or_else(|| format!("object {k}: more data than the file holds (shared tables?)"))?;
+            Ok(())
+        };
         for k in 0..nobj {
             let o = table + k * 28;
             let f = |i: usize| u32_at(buf, o + 4 * i).unwrap_or(0);
@@ -230,6 +240,7 @@ impl Tmd {
                 return Err(format!("object {k}: unaligned table pointer"));
             }
             let (va, na, pa) = (resolve(vert_top)?, resolve(normal_top)?, resolve(prim_top)?);
+            spend(8 * (n_vert + n_normal) + 4 * n_prim, k)?;
             let mut obj = TmdObject {
                 vertices: svectors(buf, va, n_vert, "vertex")?,
                 normals: svectors(buf, na, n_normal, "normal")?,
@@ -245,6 +256,7 @@ impl Tmd {
                     .collect::<Option<_>>()
                     .ok_or_else(|| format!("object {k}: primitive {i} truncated"))?;
                 at += 4 + 4 * ilen;
+                spend(4 * ilen, k)?;
                 if mode >> 5 != 1 {
                     obj.skipped += 1;
                     continue;
@@ -285,6 +297,22 @@ impl Tmd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn objects_sharing_tables_cannot_blow_up() {
+        // 4096 objects all pointing at one table of 0x10000 vertices.
+        let nobj = 4096u32;
+        let mut b: Vec<u8> = [0x41u32, 0, nobj].iter().flat_map(|w| w.to_le_bytes()).collect();
+        let tables = nobj * 28;
+        for _ in 0..nobj {
+            for w in [tables, 0x10000, tables, 0, tables, 0, 0] {
+                b.extend_from_slice(&w.to_le_bytes());
+            }
+        }
+        b.resize(b.len() + 0x10000 * 8, 0);
+        let err = Tmd::parse(&b).unwrap_err();
+        assert!(err.contains("more data than the file holds"), "{err}");
+    }
 
     fn word(lo: u16, hi: u16) -> u32 {
         lo as u32 | (hi as u32) << 16

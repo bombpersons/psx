@@ -28,8 +28,8 @@ impl TickRate {
         Self::every_nth_field(region, 1)
     }
 
-    /// One logic tick per `fields` video fields (vblanks). Croc (PAL) waits
-    /// for two vblanks per game frame: `every_nth_field(Region::Pal, 2)` = 25 Hz.
+    /// One logic tick per `fields` video fields (vblanks). A PAL game waiting
+    /// for two vblanks per game frame is `every_nth_field(Region::Pal, 2)` = 25 Hz.
     pub fn every_nth_field(region: Region, fields: u32) -> Self {
         Self { hz: region.hz() / f64::from(fields.max(1)) }
     }
@@ -91,11 +91,22 @@ impl InputFocus {
 }
 
 /// Buttons held on by tools rather than devices: the developer MCP and the
-/// [`crate::testing`] helpers write here. OR-ed with physical input.
+/// [`crate::testing`] helpers write here. OR-ed with physical input, unless
+/// `exclusive`.
 #[derive(Resource, Default, Debug, Clone, Copy)]
 pub struct InjectedInput {
     pub buttons: u16,
+    /// The sticks (as [`ControllerState::sticks`]) in place of the
+    /// gamepad's, when set.
+    pub sticks: Option<[u8; 4]>,
+    /// The pad's mode (as [`ControllerState::analog`]) in place of live
+    /// play's analog, when set.
+    pub analog: Option<bool>,
     pub mouse: InjectedMouse,
+    /// The tick's whole input: the devices and their held taps are ignored,
+    /// and unset sticks are centred. Replays set it
+    /// ([`crate::testing::apply`]); the developer MCP adds to live play.
+    pub exclusive: bool,
 }
 
 impl InjectedInput {
@@ -171,17 +182,30 @@ impl InjectedMouse {
 /// Physical input, sampled every rendered frame. `tapped` remembers every
 /// button seen held since the last tick, so a tap shorter than one tick (easy
 /// at 25 Hz) still reaches the game as one tick of press.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Debug, Clone, Copy)]
 struct DeviceInput {
     held: u16,
     tapped: u16,
-    left_stick: Vec2,
-    right_stick: Vec2,
+    sticks: [u8; 4],
     /// Mouse buttons, latched like `tapped`; motion and wheel summed.
     mouse_tapped: u8,
     mouse_position: Option<Vec2>,
     mouse_motion: Vec2,
     wheel: f32,
+}
+
+impl Default for DeviceInput {
+    fn default() -> Self {
+        Self {
+            held: 0,
+            tapped: 0,
+            sticks: controller::CENTRED,
+            mouse_tapped: 0,
+            mouse_position: None,
+            mouse_motion: Vec2::ZERO,
+            wheel: 0.0,
+        }
+    }
 }
 
 /// Fixed-rate logic, controller input and the tick clock.
@@ -254,11 +278,10 @@ fn sample_devices(
         }
         return;
     }
-    let (held, left, right) = controller::sample(&keys, pad, pointer.held_bits(), &bindings);
+    let (held, sticks) = controller::sample(&keys, pad, pointer.held_bits(), &bindings);
     input.held = held;
     input.tapped |= held;
-    input.left_stick = left;
-    input.right_stick = right;
+    input.sticks = sticks;
     input.mouse_tapped |= pointer.held_bits();
     input.mouse_position = pointer.position;
     input.mouse_motion += motion.map_or(Vec2::ZERO, |m| m.delta);
@@ -289,14 +312,15 @@ fn begin_tick(
     }
     if clock.ticking {
         let mouse = injected.mouse;
-        let buttons =
-            device.held | device.tapped | injected.buttons | controller::mouse_actions(mouse.buttons, &bindings);
-        state.update(buttons, device.left_stick, device.right_stick);
+        let live = if injected.exclusive { DeviceInput::default() } else { *device };
+        let buttons = live.held | live.tapped | injected.buttons | controller::mouse_actions(mouse.buttons, &bindings);
+        state.update(buttons, injected.sticks.unwrap_or(live.sticks));
+        state.analog = injected.analog.unwrap_or(true);
         state.mouse.update(
-            device.mouse_tapped | mouse.buttons,
-            mouse.position.or(device.mouse_position),
-            device.mouse_motion + mouse.motion,
-            device.wheel + mouse.wheel,
+            live.mouse_tapped | mouse.buttons,
+            mouse.position.or(live.mouse_position),
+            live.mouse_motion + mouse.motion,
+            live.wheel + mouse.wheel,
         );
     }
     device.tapped = 0;
