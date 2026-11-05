@@ -21,7 +21,7 @@ done, add a line under it (`*Done (date):* …`) with what was measured.
   place of the controller's buttons; `91dafa9` made that all or nothing
   and named the source in each recording (`"pad": "game"` or
   `"controller"`). The sticks still come from the controller. Track A
-  replaces this, and A5 removes `INPUT`.
+  replaced this, and A5 removed `INPUT` (2026-11-05).
 - **Track A without the discs** (2026-11-03): A1 to A4 and A6 are
   built and tested on hand-written test programs (each step's *Done*
   line says what); their real-game checks, A5, A7's decision and the
@@ -74,7 +74,16 @@ its normal tick and the recorded input.
 
 - **Adjust boundaries, never rules.** An adjustment changes what reaches
   the game from outside (input, time, the hardware), never the game's
-  own code or data. `off` is the one exception, and recordings say so.
+  own code or data. `off` and input fixes (next) are the exceptions,
+  and recordings say so.
+- **Input reaches the game every tick.** A port is told each tick's
+  buttons and nothing else, so it never copies the console's input
+  quirks. Where the original's own driver delays input for the
+  console's sake (GT2's pad library skips its poll while the serial
+  port is busy, and a release then lands a tick late), the agent
+  replaces that function in the running game so the tick's input
+  arrives every tick. psx finds such ticks without knowing the game
+  (A9); the guide states the rule, never the fix.
 - **Measure.** The same input recorded stock and adjusted, compared:
   what differs is the adjustment's cost for that game, or a rule that
   depends on timing which the port needs to know.
@@ -203,6 +212,28 @@ A1. **Find the pad buffer.** The serial port says which reply byte each
     the real-game check (Croc, GT2, TRC, with a BIOS and the discs), and
     the library cross-check and joker codes (with the PsyQ signatures).
 
+    *Done (2026-11-05), on the discs:* `run --from-state --frames 600
+    --pad-reads` with the same ten presses on each (Croc `level_1_1`,
+    GT2 `b1_start`, TRC `level-probe`). Each buffer is found from the
+    first poll: Croc `0x8007C199` (id) and `0x8007C19A`/`B`
+    (buttons); GT2 `0x801C97A8` to `AB` (id, ready, buttons); TRC
+    `0x801FEE70` to `73`, with copies at `0x800A6018`/`9`. Write
+    watches on the button bytes over the 600 fields: every byte is the
+    held buttons, active-low, from the field the press starts (GT2: the
+    next poll), never anything else. Croc and TRC poll every field; GT2
+    two fields in three (409 polls in 600), and Mednafen from power-on
+    with the same replay does the same (411, same pattern), so that is
+    the game's own driver, not a lost interrupt. The game reads
+    the buffer every second field in Croc and GT2 (301 fields without a
+    read), every field in TRC. GT2's race word `0x800A95B4` is not
+    reported as a copy, and cannot be: the driver remaps the buttons
+    through a 16-entry table one bit at a time (`0x80083A4C`, branch on
+    the bit then `or`), into the pressed/held words at `0x800A9590` to
+    `9C` that the race reads. That is control flow, not an inversion,
+    so carrying the mark through `nor`/`xori` would not help it; `latch`
+    still works, because it latches the buffer the remap reads. **Still
+    to do:** the library cross-check and joker codes (PsyQ signatures).
+
 A2. **Naming adjustments, and the measurement.** `--stock`,
     `producer.details.adjust`, the determinism check running with the
     recording's adjustments, and `scenario adjust-check`. A recording
@@ -223,6 +254,14 @@ A2. **Naming adjustments, and the measurement.** `--stock`,
     and one adding 1 to a word when tick 3 ends, reported at tick 4.
     **Still to do:** "measures the same on Croc's scenarios" (needs the
     disc); `--adjust` on `run` is not built.
+
+    *Done (2026-11-05), on the disc:* `scenario::tests::adjust_check_on_a_game`
+    (ignored; `PSX_TEST_WORKSPACE`, `PSX_TEST_SCENARIO`,
+    `PSX_TEST_NUDGE=ADDR:QUANTITY`) runs `adjust-check`'s measurement
+    with the test adjustments. On all five of Croc's scenarios (42
+    recordings, 12 min): `test_nothing` measures the same, and adding 1
+    to Croc's x (`0x800D8D8C`, his object's `+0x370`) when tick 3 ends
+    is first reported as `croc_x` at tick 4 in every recording.
 
 A3. **`latch`, and its check.** The latch as decided, with recording
     driven by tick. Its risk is a binding whose tick store comes after the
@@ -258,6 +297,31 @@ A3. **`latch`, and its check.** The latch as decided, with recording
     handler (a tick store in vblank's). **Still to do:** the real-game
     check on Croc and GT2.
 
+    *Done (2026-11-05), on the discs:* a latched recording now also
+    reports `buffer_reads`, the game's loads (outside a handler) of a
+    latched byte, and `stale_reads`, those that read anything but the
+    tick's latch (absent when none). 600 fields with ten presses, latched
+    and steady, in Croc's `ground_1_1` and GT2's `b1_launch` (probe
+    recordings, since removed): no lag frames, no tick ending in a
+    handler, 2 fields per tick throughout. Croc: 12,225 loads of its
+    button bytes in 300 ticks, none stale. GT2's game code never loads
+    its buffer (0 reads): its vblank handler remaps it into words that
+    OR together every poll since the race last copied them (`0x800838B4`,
+    copied by `0x80083998`), and the race packs its pad word
+    `0x800A95B4` from that copy. That word, which GT2's recordings keep
+    as the pad, follows the latch: a press latched at the end of tick k
+    is in tick k+1's word, always (53 of 53 in the 8 `measure_latch`
+    recordings). A release is in tick k+1's word too, except when the
+    first field of tick k+1 has no poll (the driver skips about 3
+    fields in 10): that field's handler still accumulates, with the
+    pad it decoded at its last poll, so the release shows in tick
+    k+2's (10 of 47 releases; in lsd_test exactly the ticks whose field
+    is 3 mod 10). Stock, the same input reaches the word at the same
+    tick or one earlier, never later. The skipped polls are the game's
+    driver (Mednafen skips the same), not psx's, and a port told only
+    each tick's buttons cannot tell when they happen. It should not have
+    to: A9 has the game patched so they never happen.
+
 A4. **Replayed input is the only input.** An exclusive mode on
     `InjectedInput` in the template: the tick's pad, sticks and mode are
     the injected ones; live devices and the held-tap memory are ignored.
@@ -292,6 +356,31 @@ A5. **Measure `latch`, then retire `INPUT`.** `adjust-check` on every
     explained, that game's port passes its recordings made with `latch`
     with no input delay fitted, and nothing named `INPUT` is left.
 
+    *Done (2026-11-05), but for the port's run (A8):* `adjust-check`
+    on all of Croc's 42 recordings and GT2's 24, which gained
+    `--adjust latch|steady` to measure one alone. With both, every
+    recording differs from stock. **Croc:** `steady` alone changes
+    nothing (42 of 42 the same), so all its differences are the latch's
+    input timing, from the first presses (ticks 3 to 6 in most). **GT2:**
+    the latch alone gives the same first differences as both in 6 of 8
+    scenarios (b1_brake 61, b1_chase 62, b1_launch 2, b1_steer 61,
+    fr_test 25, mt_test 415). In the other two `steady` adds to it:
+    b1_course's yaw first differs at tick 171 with both and 241 with the
+    latch alone, and lsd_test's values at 41 against 39. That is A3's
+    skipped polls again: from lsd_test's state, 300 fields of the same
+    input poll 205 times stock and 207 steady, so steady moves which
+    fields skip (the card's transfer ends elsewhere against vblank) and
+    so which releases land late. A9 removes them. (`steady` alone, with
+    stock input, also differs in three GT2 scenarios, from the same
+    cause: input crossing a tick boundary when the tick ends earlier in
+    its field.) No difference was found that is not input timing, but
+    GT2 is a running simulation where a press a tick sooner changes
+    every later value, so "a value stock never reaches" cannot be told
+    from a shift by comparing values; A8's port runs are the test.
+    `INPUT` is gone from psx-capture, psx, the template, the croc
+    example and GT2's binding (its measured bits are in GT2's
+    `notes/pad-words.md`); question 5 is marked retired, not reused.
+
 A6. **`steady`.** A clock multiplier on the CPU (its cycles count for a
     fraction of the bus's, 4× to start) and the GPU's drawing taking no
     time against the FIFO, so a tick's work fits its fields. Timers, the
@@ -317,6 +406,25 @@ A6. **`steady`.** A clock multiplier on the CPU (its cycles count for a
     timing compared), and `run` reporting fields per tick (it has no
     ticks without a binding).
 
+    *Done (2026-11-05), on the disc:* Croc and GT2 barely slow down.
+    Every stock recording in both workspaces is 2 fields a tick, except
+    one 3-field tick (fields 587 to 590) in Croc's 1-1 play-throughs
+    `play_running` and `play_jumping`. `start_1_1/play_running`
+    recorded again from its input: stock reproduces that tick; latched
+    and steady, all 706 ticks take 2 fields (29,694 buffer loads, none
+    stale, no lag frames). Croc does not do more per tick when it has
+    time: stock tick t and steady tick t+1 (the latch's tick) hold the
+    same quantities through the slow tick up to tick 321, where stock,
+    now a field behind, gets a replayed press a tick later. Timing, with
+    `run --adjust steady` against stock over the same 1415 fields and
+    input: the same CPU cycles (4,821,932,199 against …201), the same
+    28.4358 s of audio, the same sound effects keyed on (same samples
+    and counts, each at most a field earlier or later, from where the
+    game's work now ends within its tick); only a silent 32-byte sample
+    the sound library keys to reset voices comes 8 times more. Neither
+    game gives a long slowdown to measure here; a busier stretch (GT2
+    with a full grid, a later Croc level) would test it harder.
+
 A7. **Fields elapsed, only if needed.** If A6 leaves ticks that overrun,
     or a game changes its tick rate on purpose (30 Hz in play, 60 Hz in
     menus), the template's `TickInput` gains `fields` and rules read it
@@ -326,6 +434,14 @@ A7. **Fields elapsed, only if needed.** If A6 leaves ticks that overrun,
 
     *Done when* either a template test replays a two-field tick with a
     rule scaling by `fields`, or this file says why no game needs it.
+
+    *Closed (2026-11-05):* no game in use needs it. A6 found one tick in
+    all of Croc's and GT2's stock recordings that took 3 fields, and
+    `steady` runs it in 2; neither game's ticks change rate on purpose
+    where a port is compared (both glossaries' ticks are the play loop's;
+    menus have no ticks in a recording). A8's re-recordings, all made
+    with `steady`, recheck it from their `fields_per_tick`. A game that
+    ticks at two rates, or overruns under `steady`, reopens it.
 
 A8. **The proof, and the docs.** Re-record Croc's and the race game's
     scenarios adjusted, run both ports, and record the verdicts before
@@ -347,6 +463,42 @@ A8. **The proof, and the docs.** Re-record Croc's and the race game's
     `game/AGENTS.md` the tap line, and the overview one line (its sticks
     passage shortened to fit); `run --adjust steady` exists (`latch` is
     refused there, needing a recording's ticks). The proof needs the discs.
+    *Done (2026-11-05), on the discs:* every tracked recording of both
+    workspaces (Croc's 42, GT2's 8) recorded again from its own input,
+    latched and steady: no lag frames, no stale buffer reads, and every
+    tick 2 fields (6,884 in Croc, 3,718 in GT2). The ports, stock
+    recordings → adjusted: **Croc** passes 41 of 42 → 40 of 42.
+    `onto_the_rim` fails as before, a tick later (91 → 92, the same
+    values: the latch's shift). `play_running` (in `start_1_1` and
+    `croc_animations`) is new: without the stock run's one 3-field
+    tick, a later press lands a tick sooner and Croc's route parts by
+    about 440 units by tick 664; at tick 672 the original climbs
+    (`croc_y` −202) where the port stays at −225, ground the old route
+    never reached. That is the port's, not the adjustment's. **GT2**
+    fails the same 93 (now 94) lines, all before input matters (tick 2,
+    tick 60, or the port's own panic in `wheels.rs`), so its
+    `INPUT_DELAY` of one tick cannot be judged yet and stays; its
+    agent removes it once the port gets far enough to show it, with
+    A9's late releases in mind. Neither game needed a workaround
+    removed in psx.
+
+A9. **Late input, found and fixed.** The serial port knows each field's
+    pad exchanges. A recording (and `adjust-check`) reports the fields
+    with no exchange between fields that had one, and the ticks whose
+    latched change could not reach the game in the next tick because of
+    them: a finding, with no guess at the cause. The guide states the
+    rule (input reaches the game every tick; replace the function that
+    delays it) and nothing game-specific. The fix is the agent's
+    replacement of a game function, through C1's call redirection, and
+    recordings list it as they list `off`.
+
+    *Done when* GT2's skipped polls are reported on its recordings
+    without psx knowing GT2, a replacement made as an agent would make it
+    (in its pad library's interrupt routine, or the race's
+    accumulation, keeping the skip that protects the memory card's
+    transfer but handing over the latched buttons) has every release
+    land in the next tick (47 of 47 in `measure_latch`), and the
+    recordings name it.
 
 ## Track B: the library's rules, exactly
 
@@ -446,7 +598,9 @@ E1. **The cloud environment's setup script** installs `libudev-dev` and
 
 E2. **The other agent pulls `psx-web`** and knows: a binding whose
     `INPUT` answers for some ticks and not others is now refused, and A5
-    will remove `INPUT` in favour of `latch`.
+    will remove `INPUT` in favour of `latch`. *Since (2026-11-05):*
+    `INPUT` is gone; a binding that still has `fn input` no longer
+    builds against the template, and drops it.
 
 E3. **The inventory timeline plan's status** is marked step by step by
     whoever knows it, so this plan can place what is left of it.
@@ -461,6 +615,8 @@ E3. **The inventory timeline plan's status** is marked step by step by
 4. **B1** before a port's rules need exact library math: soon for any
    3D game.
 5. **C1 and C2** when ports start needing scenarios with systems off.
+   A9 follows C1's call redirection: GT2's late releases until then
+   are known and listed.
 6. **Track D** throughout, in parallel, by another session or agent.
 
 ## If needed later

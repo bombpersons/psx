@@ -139,6 +139,17 @@ In the master plan's order; each step's *Done when* is already written.
 7. **A8** re-record both games adjusted, run both ports, record the
    verdicts before and after.
 
+*Done (2026-11-05):* A1, A2, A3, A6, A5, A7 and A8 each have their
+real-game results under them in the master plan. Found on the way: GT2's
+pad library skips its poll while the serial port is busy (about 3 fields
+in 10), so a fifth of its releases reach the game a tick late, latched or
+not. The decision is that ports never copy such quirks: A9 (new) has psx
+report late input and the agent patch the game. `INPUT` is retired, and
+`adjust-check` gained `--adjust` to measure one adjustment alone. The
+ports' new failures are their own: Croc's re-recorded `play_running`
+reaches ground its port does not match, and GT2's port fails before input
+matters.
+
 ## 5. Track C on Croc
 
 - **C1** a Croc scenario with the enemies' update off (needs a `names/`

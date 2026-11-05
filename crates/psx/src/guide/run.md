@@ -49,10 +49,11 @@ unless stock is given, and the recording names what they did:
 
 Either can change what a game does. scenario_adjust_check records a
 scenario again from its state, stock and adjusted, and gives each
-quantity's first tick where they differ: a press taking effect a tick
-sooner is latch's cost; a value the stock game never reaches is a rule
-that depends on timing, so record that scenario stock and say why in the
-feature's notes. run with pad_reads shows where a game keeps its pad (the
+quantity's first tick where they differ (adjust names one alone, to
+tell which caused it): a press taking effect a tick sooner is latch's
+cost; a value the stock game never reaches is a rule that depends on
+timing, so record that scenario stock and say why in the feature's
+notes. run with pad_reads shows where a game keeps its pad (the
 buffer its handler fills, the copies it makes), the code that reads it,
 and the fields in which nothing read it.
 

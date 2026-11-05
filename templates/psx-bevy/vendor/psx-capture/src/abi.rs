@@ -49,9 +49,7 @@ pub const HOOK: u32 = 3;
 /// [[start, end]], "decisions": [[at, ways]], "routines": [[name, start,
 /// end]]}`).
 pub const MAP: u32 = 4;
-/// `what`: the game's own pad, as its rules read it, in psx's button bits
-/// (JSON: `{"buttons": u16}`, or `null` when the game keeps none).
-pub const INPUT: u32 = 5;
+// 5 was INPUT, the game's own pad, retired for `latch`: not reused.
 
 /// Returned: the answer was written.
 pub const OK: i32 = 0;
@@ -128,13 +126,6 @@ pub unsafe fn call<G: Glossary>(glossary: &G, what: u32, host: *const Host) -> i
                 let mut map = Map::default();
                 glossary.map(name, &code, &mut map);
                 *out = map.json();
-                true
-            }
-            INPUT => {
-                match glossary.input(m) {
-                    Some(buttons) => *out = format!("{{\"buttons\":{buttons}}}"),
-                    None => *out = "null".into(),
-                }
                 true
             }
             _ => false,

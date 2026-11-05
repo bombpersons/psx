@@ -228,6 +228,8 @@ impl Adjustments {
             lag: Vec::new(),
             in_handler: 0,
             unmasked: false,
+            buffer_reads: 0,
+            stale_reads: 0,
         }
     }
 }
@@ -252,6 +254,10 @@ pub(crate) struct Running {
     /// A buffer byte the game stores other than as a copy (or an inverted
     /// one) of the controller's: the latch could not write it.
     unmasked: bool,
+    /// `latch`: loads by game code (outside a handler) of a latched byte,
+    /// and those that read anything but the tick's latched value.
+    buffer_reads: u64,
+    stale_reads: u64,
 }
 
 /// The reply byte at `pos` for buttons `held` and `sticks` (as psx-core's
@@ -303,12 +309,19 @@ impl Running {
         let Some(f) = &mut self.flow else { return };
         f.step(info, &m.bus.sio0);
         self.read |= !f.take_reads().is_empty();
-        // The interrupt handler stored over the latched buffer: put it back.
-        if let Some(acc) = info.mem.filter(|a| a.store && f.in_handler()) {
-            let p = acc.addr & 0x1FFF_FFFF;
-            let hit = |a: u32| (p..p + acc.width as u32).contains(&(a & 0x1FFF_FFFF));
+        let Some(acc) = info.mem else { return };
+        let p = acc.addr & 0x1FFF_FFFF;
+        let hit = |a: u32| (p..p + acc.width as u32).contains(&(a & 0x1FFF_FFFF));
+        if acc.store && f.in_handler() {
+            // The interrupt handler stored over the latched buffer: put it back.
             for (a, v) in self.latched.iter().filter(|(a, _)| hit(*a)) {
                 poke(m, *a, *v);
+            }
+        } else if !acc.store && !f.in_handler() && self.latched.iter().any(|(a, _)| hit(*a)) {
+            self.buffer_reads += 1;
+            let byte = |a: u32| (acc.value >> (8 * ((a & 0x1FFF_FFFF) - p))) as u8;
+            if self.latched.iter().any(|(a, v)| hit(*a) && byte(*a) != *v) {
+                self.stale_reads += 1;
             }
         }
     }
@@ -387,7 +400,11 @@ impl Running {
                   else { "the pad buffer and the controller" },
             "ticks": self.ticks,
             "lag_frames": self.lag.len(),
+            "buffer_reads": self.buffer_reads,
         });
+        if self.stale_reads > 0 {
+            r["stale_reads"] = json!(self.stale_reads);
+        }
         if !self.lag.is_empty() {
             r["lag_frame_ticks"] = json!(self.lag.iter().take(20).collect::<Vec<_>>());
         }

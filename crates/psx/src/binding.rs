@@ -284,44 +284,14 @@ impl<D: serde::de::DeserializeOwned> Plugin<D> {
         invoke(self.call, what, Some(m), args)
     }
 
-    /// The game's own pad ([`abi::INPUT`]), in psx's button bits: None when
-    /// the binding keeps none (it answers `null`, or is older than the
-    /// question), so the recording keeps the controller's pad. A binding
-    /// that fails, or answers anything else, is an error.
-    pub fn input(&self, m: &Machine) -> Result<Option<u16>, String> {
-        let text = match ask(self.call, abi::INPUT, Some(m), [0; 4]) {
-            Ok(text) => text,
-            Err((abi::UNKNOWN, _)) => return Ok(None),
-            Err((_, e)) => return Err(e),
-        };
-        input_answer(&text).map_err(|e| format!("the binding's input: {e}"))
-    }
-
     /// What the binding says of itself.
     pub fn described(&self) -> &D {
         &self.described
     }
 }
 
-/// The binding's answer to [`abi::INPUT`]: `null`, or `{"buttons": u16}`.
-pub(crate) fn input_answer(text: &str) -> Result<Option<u16>, String> {
-    let answer: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    if answer.is_null() {
-        return Ok(None);
-    }
-    match answer.get("buttons").and_then(serde_json::Value::as_u64) {
-        Some(b) => u16::try_from(b).map(Some).map_err(|_| format!("buttons {b} do not fit in 16 bits")),
-        None => Err(format!("expected null or {{\"buttons\": u16}}, got {text}")),
-    }
-}
-
 /// Calls the binding's `psx_capture_call` with psx's side of the boundary.
 fn invoke(call: Call, what: u32, m: Option<&Machine>, args: [u32; 4]) -> Result<String, String> {
-    ask(call, what, m, args).map_err(|(_, e)| e)
-}
-
-/// [`invoke`], with the boundary's code beside a failure's message.
-fn ask(call: Call, what: u32, m: Option<&Machine>, args: [u32; 4]) -> Result<String, (i32, String)> {
     let mut ctx = Ctx { m, refused: None, out: Vec::new() };
     let host = abi::Host {
         ctx: &mut ctx as *mut Ctx as *mut c_void,
@@ -336,9 +306,9 @@ fn ask(call: Call, what: u32, m: Option<&Machine>, args: [u32; 4]) -> Result<Str
     let out = String::from_utf8_lossy(&ctx.out).into_owned();
     match code {
         abi::OK => Ok(out),
-        abi::PANICKED => Err((code, format!("the binding panicked: {out}"))),
-        abi::READ_REFUSED => Err((code, ctx.refused.take().unwrap_or_else(|| "a read was refused".into()))),
-        c => Err((c, format!("the binding gave code {c} for question {what}"))),
+        abi::PANICKED => Err(format!("the binding panicked: {out}")),
+        abi::READ_REFUSED => Err(ctx.refused.take().unwrap_or_else(|| "a read was refused".into())),
+        c => Err(format!("the binding gave code {c} for question {what}")),
     }
 }
 

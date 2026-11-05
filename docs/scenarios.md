@@ -186,9 +186,11 @@ of fields (stock, a game that slowed down shows more than one). Both
 adjustments can change what a game does: `psx scenario adjust-check`
 records a scenario's recordings again from its state, stock and adjusted,
 driven by the same ticks, and reports each quantity's first tick where
-they differ. A press taking effect a tick sooner under latch is its
-expected cost; a value the stock game never reaches is a rule that
-depends on timing, and that scenario is recorded `--stock`.
+they differ; `--adjust latch` or `--adjust steady` measures one alone,
+to tell which a difference comes from. A press taking effect a tick
+sooner under latch is its expected cost; a value the stock game never
+reaches is a rule that depends on timing, and that scenario is recorded
+`--stock`.
 
 A person's play (`scenario play`) runs the adjustments while they play,
 as `scenario record` runs them, so they play the game the recording is
@@ -206,14 +208,10 @@ through once ten fields pass without one, as on the stock game, and holds
 it for ticks again when one ends; the play's status says which. Only a
 play does this: a recording refuses a tick that does not end.
 
-Without latch (`--stock`), each tick's `pad` is the controller's buttons
-when the tick ended, unless the glossary's binding says where the game
-keeps its own input word (`Glossary::input`): then it is that word.
-The controller's view leads or trails the game's by a field that depends
-on the game's phase. A binding that fails to answer, or answers for some
-ticks and not others, is refused, and the recording's details say which
-it keeps (`"pad": "game"` or `"controller"`). latch replaces this, and
-`INPUT` will go once latch is measured on the games in use.
+Each tick's `pad` is the controller's buttons when the tick ended. With
+latch, that is what the game's buffer holds from then on; without it
+(`--stock`), the controller's view leads or trails the game's by a field
+that depends on the game's phase.
 
 `psx run --pad-reads` shows where a game keeps its pad: the buffer an
 interrupt handler fills, the copies the game makes, the polls, the code
