@@ -1205,10 +1205,8 @@ pub(crate) fn plot(root: &Path, id: &str, name: &str, last: &Json) -> crate::Res
         .flatten()
         .find(|s| s["id"] == id)
         .and_then(|s| s["recordings"].as_array()?.iter().find(|r| r["name"] == name).cloned());
-    let port_values: Vec<psx_scenario::Values> = reported
-        .as_ref()
-        .and_then(|r| serde_json::from_value(r["values"].clone()).ok())
-        .unwrap_or_default();
+    let port_values: Vec<psx_scenario::Values> =
+        reported.as_ref().and_then(|r| serde_json::from_value(r["values"].clone()).ok()).unwrap_or_default();
     let mut quantities = Vec::new();
     let mut types = BTreeMap::new();
     for (q, f) in &rec.header.quantities {
@@ -1217,8 +1215,9 @@ pub(crate) fn plot(root: &Path, id: &str, name: &str, last: &Json) -> crate::Res
         let text = |v: Option<&psx_scenario::Value>| v.map(|v| shown(&t, v, false)).unwrap_or(Json::Null);
         let values: Vec<Option<f64>> =
             std::iter::once(at(rec.header.initial.get(q))).chain(full.iter().map(|x| at(x.values.get(q)))).collect();
-        let shown_values: Vec<Json> =
-            std::iter::once(text(rec.header.initial.get(q))).chain(full.iter().map(|x| text(x.values.get(q)))).collect();
+        let shown_values: Vec<Json> = std::iter::once(text(rec.header.initial.get(q)))
+            .chain(full.iter().map(|x| text(x.values.get(q))))
+            .collect();
         let g = declared.get(q);
         let mut row = json!({
             "name": q, "type": f.kind, "unit": g.and_then(|g| g.unit.clone()).or(f.unit.clone()),
@@ -1537,8 +1536,9 @@ fn show_cmd(ctx: &Ctx, a: &ScenarioShowArgs) -> crate::Result<Json> {
         "rows": rows,
     });
     if sticks {
-        out["sticks"] =
-            json!("the stick axes away from centre (128), as the game read them: 0 is left or up, 255 right or down; digital: the pad not in analog mode, so it sends no sticks");
+        out["sticks"] = json!(
+            "the stick axes away from centre (128), as the game read them: 0 is left or up, 255 right or down; digital: the pad not in analog mode, so it sends no sticks"
+        );
     }
     if let Some(d) = &rec.header.description {
         out["description"] = json!(d);
@@ -2423,7 +2423,8 @@ pub struct Quantities {
         let root = d.0.as_path();
         write_scenario(root);
         let header = r#"{"format":"scenario-recording","format_version":1,"scenario":"walk","source":{"kind":"captured","platform":"psx","image_sha256":"00"},"producer":{"name":"psx","version":"0"},"quantities":{"x":{"type":"fixed","signed":true,"int_bits":20,"frac_bits":12},"m":{"type":"enum","variants":["idle","walk"]}},"initial":{"x":-6144,"m":"idle"}}"#;
-        let rows = [r#"{"tick":1,"field":2,"pad":["RIGHT"],"values":{"x":-4096,"m":"walk"}}"#, r#"{"tick":2,"field":4}"#];
+        let rows =
+            [r#"{"tick":1,"field":2,"pad":["RIGHT"],"values":{"x":-4096,"m":"walk"}}"#, r#"{"tick":2,"field":4}"#];
         std::fs::write(root.join("scenarios/walk/w.jsonl"), format!("{header}\n{}\n", rows.join("\n"))).unwrap();
         let last = json!({"commit": "c0", "at": "t", "scenarios": {"scenarios": [{"id": "walk", "recordings": [{"name": "w",
             "failures": ["tick 2 x: expected -4096, got -2048"],
@@ -2433,7 +2434,10 @@ pub struct Quantities {
         let q = |n: &str| v["quantities"].as_array().unwrap().iter().find(|q| q["name"] == n).unwrap().clone();
         assert_eq!(q("x")["values"], json!([-1.5, -1.0, -1.0]));
         assert_eq!(q("x")["port"], json!([-1.5, -1.0, -0.5]));
-        assert_eq!((q("m")["values"].clone(), q("m")["variants"].clone()), (json!([0.0, 1.0, 1.0]), json!(["idle", "walk"])));
+        assert_eq!(
+            (q("m")["values"].clone(), q("m")["variants"].clone()),
+            (json!([0.0, 1.0, 1.0]), json!(["idle", "walk"]))
+        );
         assert_eq!(
             v["check"]["failures"][0],
             json!({"text": "tick 2 x: expected -4096, got -2048", "tick": 2, "quantity": "x", "expected": -1.0, "got": -0.5})
