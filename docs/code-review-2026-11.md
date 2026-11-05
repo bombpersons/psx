@@ -64,4 +64,4 @@ behave differently from what their comments say.
 | L12 | `crates/psx-oracle/src/ffi.rs:129,247`, `run.rs:131` | Safe FFI wrappers assume an open emulator; unchecked add inside an `extern "C"` callback. | fixed |
 | L13 | `crates/psx-symbols/src/names.rs:293,441` | Symlink cycles recurse forever; `s * len` unchecked. | fixed |
 | L14 | `crates/psx-fixed/src/mode.rs:153` | Shift counts of 64 or more panic in debug; 32-63 differ from MIPS `& 31`. | fixed |
-| L15 | `crates/psx/src/parser.rs:118` | A forked child holding the pipes makes a finished parser time out. | open |
+| L15 | `crates/psx/src/parser.rs:118` | A forked child holding the pipes makes a finished parser time out. | fixed |

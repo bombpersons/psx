@@ -105,6 +105,11 @@ pub fn run(
         let stdout = scope.spawn(move || collect(Box::new(output), OUTPUT_LIMIT));
         let stderr = scope.spawn(move || collect(Box::new(error), STDERR_LIMIT));
         let mut status = None;
+        // When the parser exited but a process it left behind still holds its
+        // pipes open; after a grace period that group is stopped, so the pipes
+        // close and its output (already complete) is read to the end.
+        let mut exited_at: Option<Instant> = None;
+        let mut stopped_group = false;
         let outcome = loop {
             if overflow.load(Ordering::Acquire) {
                 break Err(Error::parser("parser stdout exceeds 16 MiB or stderr exceeds 64 KiB"));
@@ -124,6 +129,16 @@ pub fn run(
             if let Some(status) = status {
                 if stdout.is_finished() && stderr.is_finished() && writer.is_finished() {
                     break Ok(status);
+                }
+                let at = *exited_at.get_or_insert_with(Instant::now);
+                if !stopped_group && at.elapsed() >= Duration::from_secs(2) {
+                    stopped_group = true;
+                    #[cfg(unix)]
+                    let _ = Command::new("kill")
+                        .args(["-KILL", "--", &format!("-{}", child.id())])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
                 }
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -243,6 +258,17 @@ mod tests {
                 .unwrap()
                 .to_string();
         assert!(error.contains("bad format") && error.contains('7'), "{error}");
+    }
+
+    #[test]
+    fn a_helper_left_holding_the_pipes_does_not_time_the_parser_out() {
+        // Prints its answer, starts a helper that keeps stdout open, exits 0.
+        let code =
+            "import subprocess,sys; sys.stdout.write('ok'); sys.stdout.flush(); subprocess.Popen(['sleep','30'])";
+        let started = Instant::now();
+        let output = run(&spec(code, 20), &[], "model", &[], None).unwrap();
+        assert_eq!(output.bytes, b"ok");
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
     }
 
     #[test]
