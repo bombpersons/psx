@@ -248,6 +248,21 @@ at once, from an empty `.psx/rebuild`, both reported all six states
 the second waited for each step's lock and reused it, and all six step
 folders were left whole.
 
+*Ghidra done (2026-11-05), on a scratch Croc copy:* Ghidra refuses any
+project path with a folder starting with '.', and there is no switch to
+allow one, so the usual `.scratch` copy failed with only "Ghidra exited
+1". psx now stops before starting Ghidra and names the folder. In
+`external_agent_tests/scratch-ghidra`, the first analysis found 915
+functions and 1153 GTE instructions, and decompiled 8005A6CC in full.
+Ghidra's settings went to `config/ghidra`. `--reanalyze` took 21 s and
+gave the same counts, and only its new project was left in
+`ghidra-projects/`. In a copy outside the home folder (the scratchpad),
+the preferences, tools and PsxGte extension went to
+`config/maisy-ghidra`, as Ghidra expects there. Only the launcher's
+`java_home.save` is in `config/ghidra`, because the launcher script
+always writes that name. The cache key includes the language files'
+hash (M4).
+
 ## 7. What the discs now make possible
 
 - **L2**: LWL/LWR/SWL/SWR as narrow accesses with a 24-bit width, then

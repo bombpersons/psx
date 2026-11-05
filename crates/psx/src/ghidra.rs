@@ -72,7 +72,7 @@ pub struct Input {
     #[arg(long, default_value_t = timeout())]
     #[serde(default = "timeout")]
     pub timeout: u64,
-    /// Build a fresh project from source/ram, preserving previous projects and artifacts.
+    /// Build a fresh project from source/ram in place of the cached analysis; its old project is removed unless open in Ghidra or edited outside psx.
     #[arg(long)]
     #[serde(default)]
     pub reanalyze: bool,
@@ -637,6 +637,15 @@ fn gui_lock(dir: &Path) -> bool {
 }
 /// Removes a project psx created and has superseded. Projects open in the
 /// GUI or edited outside psx (fingerprint mismatch) are left alone.
+/// The first folder in `path` whose name starts with '.', which Ghidra's
+/// project paths may not have.
+fn hidden_component(path: &Path) -> Option<String> {
+    path.components().find_map(|c| match c {
+        std::path::Component::Normal(n) if n.to_string_lossy().starts_with('.') => Some(n.to_string_lossy().into_owned()),
+        _ => None,
+    })
+}
+
 fn discard_project(dir: &Path, expected_fingerprint: Option<&str>) {
     if gui_lock(dir) || expected_fingerprint.is_some_and(|f| fingerprint(dir).ok().as_deref() != Some(f)) {
         return;
@@ -965,11 +974,17 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
         return cached(path, lock);
     }
     lock.recover()?;
-    let attempt = dir.join(crate::stamp());
-    fs::create_dir(&attempt).map_err(|e| Error::io(&attempt, e))?;
     // Ghidra 12 rejects project paths with any hidden path component, so its
     // database cannot live beneath .psx. Inputs/indexes remain there.
     let project_dir = ctx.root.join("ghidra-projects").join(format!("{}-{}", &key[..16], crate::stamp()));
+    if let Some(hidden) = hidden_component(&project_dir) {
+        return Err(Error::invalid(format!(
+            "Ghidra refuses a project under a folder whose name starts with '.' ({hidden} in {}): move the workspace out of it",
+            ctx.root.display()
+        )));
+    }
+    let attempt = dir.join(crate::stamp());
+    fs::create_dir(&attempt).map_err(|e| Error::io(&attempt, e))?;
     fs::create_dir_all(&project_dir).map_err(|e| Error::io(&project_dir, e))?;
     let mut pending = PendingProject(Some(project_dir.clone()));
     let scripts = script_dir(&attempt)?;
@@ -1640,6 +1655,12 @@ mod tests {
         let again = Lock::queued(&ctx.root, Instant::now() + Duration::from_secs(2), &ctx).unwrap();
         assert!(again.interrupted.is_none(), "recovered once");
         fs::remove_dir_all(ctx.root).unwrap();
+    }
+
+    #[test]
+    fn a_project_under_a_dot_folder_is_named() {
+        assert_eq!(hidden_component(Path::new("/w/.scratch/croc/ghidra-projects/k-1")).as_deref(), Some(".scratch"));
+        assert_eq!(hidden_component(Path::new("/w/croc/ghidra-projects/k-1")), None);
     }
 
     #[test]
