@@ -441,7 +441,7 @@ fn region_by_system_cnf(d: &Disc) -> Option<[u8; 4]> {
         return None;
     }
     let mut dir = Vec::new();
-    for l in root..root + root_len.div_ceil(2048) {
+    for l in root..root.checked_add(root_len.div_ceil(2048))? {
         dir.extend_from_slice(&d.read_data(l).ok()?.data);
     }
     let mut at = 0;

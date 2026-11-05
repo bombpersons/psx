@@ -601,13 +601,16 @@ impl Machine {
             let a = (exe.text_addr as usize + i) & 0x1F_FFFF;
             self.bus.ram[a] = *b;
         }
-        for i in 0..exe.bss_size {
+        // Header sizes are the file's: past 2 MiB they would only wrap
+        // around RAM again (or loop for billions of bytes).
+        let bss_size = exe.bss_size.min(0x20_0000);
+        for i in 0..bss_size {
             let a = (exe.bss_addr.wrapping_add(i) as usize) & 0x1F_FFFF;
             self.bus.ram[a] = 0;
         }
         let text = exe.payload(bytes).len();
         self.bus.ram_written_range(exe.text_addr as usize & 0x1F_FFFF, text);
-        self.bus.ram_written_range(exe.bss_addr as usize & 0x1F_FFFF, exe.bss_size as usize);
+        self.bus.ram_written_range(exe.bss_addr as usize & 0x1F_FFFF, bss_size as usize);
         self.cpu.set_pc(exe.pc);
         if exe.gp != 0 {
             self.cpu.regs[28] = exe.gp;

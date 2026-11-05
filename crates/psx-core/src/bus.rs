@@ -155,8 +155,12 @@ pub enum BusError {
     Unmapped(u32),
 }
 
+/// Mednafen's `addr_mask`: KSEG0/KSEG1 fold onto the low 512 MiB; KUSEG
+/// past it (0x20000000-0x7FFFFFFF) and KSEG2 keep their addresses, so a
+/// stray pointer there is unmapped rather than a RAM mirror.
+#[inline(always)]
 fn physical(addr: u32) -> u32 {
-    if addr >= 0xC000_0000 { addr } else { addr & 0x1FFF_FFFF }
+    crate::cpu::segment_mask(addr)
 }
 
 /// The scratchpad offset of a virtual address that reaches it (not through KSEG1).
@@ -611,6 +615,9 @@ impl Bus {
         } else {
             (bcr & 0xFFFF) * (bcr >> 16).max(1)
         };
+        // Up to 0xFFFF blocks of 0xFFFF words: in bytes, past u32. What is
+        // observed is clipped to RAM's size anyway.
+        let words = words.min(0x20_0000 / 4);
         match ch {
             6 => self.observe_dma(6, madr.wrapping_sub(4 * (words - 1)) & 0x1F_FFFC, words * 4),
             1 => self.observe_dma(1, madr & 0x1F_FFFC, words * 4),
@@ -1134,6 +1141,15 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn kuseg_past_512_mib_is_not_a_ram_mirror() {
+        let mut b = Bus::new(vec![]);
+        b.write(0x8000_1000, Width::Word, 0x1234_5678).unwrap();
+        assert_eq!(b.read(0x0000_1000, Width::Word), Ok(0x1234_5678));
+        assert_eq!(b.read(0xA000_1000, Width::Word), Ok(0x1234_5678));
+        assert_eq!(b.read(0x2000_1000, Width::Word), Err(BusError::Unmapped(0x2000_1000)));
+    }
 
     #[test]
     fn narrow_reads_of_timers_and_cache_control_are_narrowed() {
