@@ -57,7 +57,7 @@ behave differently from what their comments say.
 | L5 | `examples/croc-movement/psx-bevy` | Missing template fixes, including the two-run determinism check. | open |
 | L6 | `crates/psx/src/tickfind.rs:21` | Wrapped 8/16-bit counters misranked (mask applied to one side only). | fixed |
 | L7 | `crates/psx/src/decomp.rs:332,357,371` | Linker script path breaks on `,`/`"`; versioned gcc names give wrong binutils names. | fixed |
-| L8 | `crates/psx/src/ghidra.rs:951-1048` | `reanalyze` leaves the old Ghidra project behind. | open |
+| L8 | `crates/psx/src/ghidra.rs:951-1048` | `reanalyze` leaves the old Ghidra project behind. | fixed |
 | L9 | `crates/psx/src/coverage.rs:193` | Chunks before a function's entry underflow. | open |
 | L10 | `crates/psx-core/src/bus.rs:158,609`, `lib.rs:600`, `cdrom.rs:444` | Addresses 0x20000000-0x7FFFFFFF mirror RAM; `words*4` overflow; unvalidated BSS size; unchecked root LBA. | open |
 | L11 | `crates/psx-gpu/src/lib.rs:654,706`, `vram.rs:6`, `prim.rs:254` | Untimed `draw_time` underflows; draw area Y masked to 9 bits; VRAM deserialize unchecked; zero-size upload encodes as 1024x512. | open |

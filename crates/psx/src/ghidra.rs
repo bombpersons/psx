@@ -1057,8 +1057,19 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
         index: index_path,
         warnings,
     };
+    // A reanalysis replaces the cached one: its project is superseded.
+    let previous = read_json(&path).ok().and_then(|old| {
+        let dir = PathBuf::from(old["project_dir"].as_str()?);
+        Some((dir, old["project_fingerprint"].as_str()?.to_string()))
+    });
     save_json(&path, &manifest)?;
     pending.keep();
+    if let Some((dir, fp)) = previous {
+        // Only a project psx made, in this project's ghidra-projects/.
+        if dir != manifest.project_dir && dir.parent() == manifest.project_dir.parent() {
+            discard_project(&dir, Some(&fp));
+        }
+    }
     let fresh_query = if let Some(a) = addr {
         let value = read_json(&attempt.join("query.json"))?;
         if value["status"] == "complete" {
