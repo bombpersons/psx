@@ -59,6 +59,10 @@ pub struct GameDataPlugin {
     pub screens: bool,
     /// Where imported files go; `None` is [`imported_dir`]. Tests use a scratch folder.
     pub out: Option<PathBuf>,
+    /// `--replay`: every update is a tick of the recording, so the game
+    /// cannot wait for a disc or an import; it needs an import made earlier
+    /// and stops at once without one.
+    pub replay: bool,
 }
 
 impl GameDataPlugin {
@@ -71,6 +75,7 @@ impl GameDataPlugin {
             disc: args.value("--disc").map(PathBuf::from),
             screens: !args.flag("--headless"),
             out: None,
+            replay: args.value("--replay").is_some(),
         }
     }
 }
@@ -82,6 +87,17 @@ impl Plugin for GameDataPlugin {
         }
         app.configure_sets(FixedUpdate, GameSystems::Game.run_if(in_state(GameData::Ready)));
         if !self.import {
+            app.insert_state(GameData::Ready);
+            return;
+        }
+        if self.replay {
+            let out = self.out.clone().unwrap_or_else(imported_dir);
+            if !read_stamp(&out).is_some_and(|stamp| stamp.version == import::VERSION) {
+                panic!(
+                    "--replay needs the game's data imported by this version (in {}): run the game once to import it, or pass --skip-import",
+                    out.display()
+                );
+            }
             app.insert_state(GameData::Ready);
             return;
         }

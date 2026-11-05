@@ -351,6 +351,20 @@ impl Scenarios {
                 Some((q, tol))
             })
             .collect();
+        // A quantity [compare] names that the recording lacks would never be
+        // compared, and with none in common the replay would pass unrun.
+        let unrecorded: Vec<&String> = s.compare.keys().filter(|q| !rec.header.quantities.contains_key(*q)).collect();
+        if !unrecorded.is_empty() || compared.is_empty() {
+            out.failures.push(if unrecorded.is_empty() {
+                "none of the quantities in [compare] is in the recording".to_string()
+            } else {
+                format!(
+                    "[compare] names {}, which the recording does not hold: record it again",
+                    unrecorded.iter().map(|q| q.as_str()).collect::<Vec<_>>().join(", ")
+                )
+            });
+            return (out, Trail::new());
+        }
         let mut differed: BTreeMap<String, String> = BTreeMap::new();
         let mut trail: Vec<psx_scenario::Values> = Vec::new();
         let mut had = Trail::new();
@@ -456,7 +470,14 @@ type Trail = Vec<(String, BTreeMap<&'static str, Value>)>;
 /// Where two runs of one recording first part: the moment and the first
 /// quantity (by name) that differs.
 fn parting(first: &Trail, second: &Trail) -> Option<String> {
-    let (at, a, b) = first.iter().zip(second).find(|((_, a), (_, b))| a != b).map(|((at, a), (_, b))| (at, a, b))?;
+    let Some((at, a, b)) = first.iter().zip(second).find(|((_, a), (_, b))| a != b).map(|((at, a), (_, b))| (at, a, b))
+    else {
+        // The same as far as both went: one stopping sooner is a parting too.
+        let end = |t: &Trail| t.last().map_or("before initial".to_string(), |(at, _)| format!("after {at}"));
+        return (first.len() != second.len()).then(|| {
+            format!("the port is not deterministic: the first run stopped {}, the second {}", end(first), end(second))
+        });
+    };
     let q = a.keys().chain(b.keys()).filter(|q| a.get(*q) != b.get(*q)).min()?;
     let had = |m: &BTreeMap<&str, Value>| m.get(q).map_or("none".into(), show);
     Some(format!("{at} {q}: the port is not deterministic: first run {}, second run {}", had(a), had(b)))
