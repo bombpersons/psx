@@ -41,7 +41,12 @@ unless stock is given, and the recording names what they did:
   buffer at once and puts the buffer back when the interrupt handler polls
   into it mid-tick. Every read in a tick sees that tick's input, as the
   port's tick does. adjusted keeps the buffer it found and the lag frames:
-  ticks in which no game code read the pad.
+  ticks in which no game code read the pad. late_input lists the ticks
+  in which a whole field passed with no poll into the buffer and no game
+  code read it before the tick ended: the game ran that field on the
+  last poll's buttons, so the original's own driver delays the input. Input must reach the game every tick, so a port never
+  copies the delay: find the function that holds it back and replace it
+  in the running game.
 - steady: no tick overruns its fields. The CPU's own work costs a quarter
   of its clocks and the GPU draws without taking time; timers, the CD, the
   SPU and video keep the real clock. fields_per_tick shows how many ticks

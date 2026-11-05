@@ -176,6 +176,17 @@ A recording is made of the original adjusted to the port's model
   tick's input, however its loop and the polls fall, so a tick's `pad`
   is exactly what the port's tick gets. `adjusted` keeps the buffer, the
   ticks and the lag frames: ticks in which no game code read the pad.
+  `late_input` (only when there are any) lists the ticks in which a
+  latched change waited a whole field (after the one it was latched in)
+  with no poll into the buffer, and no game code read the buffer before
+  the tick ended (a read sees the latch, so a game that reads its buffer
+  itself is never late), with the count of such fields. A game that
+  reads the pad only through its polls ran that field on the last poll's
+  buttons, so the change can reach its rules a tick late: the original's driver
+  delays it (GT2's pad library skips its poll while the serial port is
+  busy). The port never copies that; the game is patched so input
+  arrives every tick. `adjust-check` repeats each recording's
+  `late_input`.
 - **steady**: no tick overruns its fields. The CPU's own work costs a
   quarter of its clocks and the GPU draws without taking time, so where
   the console slowed down every tick still takes its usual fields;

@@ -230,6 +230,11 @@ impl Adjustments {
             unmasked: false,
             buffer_reads: 0,
             stale_reads: 0,
+            pending: Pending::No,
+            field: 0,
+            waited: 0,
+            late_fields: 0,
+            late_ticks: Vec::new(),
         }
     }
 }
@@ -258,6 +263,30 @@ pub(crate) struct Running {
     /// and those that read anything but the tick's latched value.
     buffer_reads: u64,
     stale_reads: u64,
+    /// `latch`: whether the game has taken in the buttons latched where the
+    /// last tick ended, by a poll (the handler storing into the buffer) or
+    /// a read of the buffer by its own code.
+    pending: Pending,
+    /// The field the last step ran in, to see each one end.
+    field: u64,
+    /// `latch`: whole fields of this tick that passed with its latched
+    /// change not taken in; late unless game code reads the buffer before
+    /// the tick ends (its reads see the latch).
+    waited: u64,
+    /// `latch`: the fields of ticks that ended late, and those ticks.
+    late_fields: u64,
+    late_ticks: Vec<u64>,
+}
+
+/// Where a latched change stands (`latch`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pending {
+    /// Taken in, or nothing changed.
+    No,
+    /// Latched in the field now running: a poll may yet come in the next.
+    Latched,
+    /// Not taken in through a whole field.
+    Waiting,
 }
 
 /// The reply byte at `pos` for buttons `held` and `sticks` (as psx-core's
@@ -302,6 +331,8 @@ impl Running {
         }
         self.held = None;
         self.latched.clear();
+        self.pending = Pending::No;
+        self.waited = 0;
     }
 
     /// The step `info` just ran on `m`.
@@ -309,6 +340,16 @@ impl Running {
         let Some(f) = &mut self.flow else { return };
         f.step(info, &m.bus.sio0);
         self.read |= !f.take_reads().is_empty();
+        if m.bus.frames != self.field {
+            self.field = m.bus.frames;
+            // A field ended: a change latched before it began and still
+            // not taken in waited a whole field for the game.
+            match self.pending {
+                Pending::Latched => self.pending = Pending::Waiting,
+                Pending::Waiting => self.waited += 1,
+                Pending::No => {}
+            }
+        }
         let Some(acc) = info.mem else { return };
         let p = acc.addr & 0x1FFF_FFFF;
         let hit = |a: u32| (p..p + acc.width as u32).contains(&(a & 0x1FFF_FFFF));
@@ -316,8 +357,11 @@ impl Running {
             // The interrupt handler stored over the latched buffer: put it back.
             for (a, v) in self.latched.iter().filter(|(a, _)| hit(*a)) {
                 poke(m, *a, *v);
+                self.pending = Pending::No;
             }
         } else if !acc.store && !f.in_handler() && self.latched.iter().any(|(a, _)| hit(*a)) {
+            self.pending = Pending::No;
+            self.waited = 0;
             self.buffer_reads += 1;
             let byte = |a: u32| (acc.value >> (8 * ((a & 0x1FFF_FFFF) - p))) as u8;
             if self.latched.iter().any(|(a, v)| hit(*a) && byte(*a) != *v) {
@@ -339,6 +383,10 @@ impl Running {
                 }
             }
             self.read = false;
+            if self.waited > 0 {
+                self.late_fields += std::mem::take(&mut self.waited);
+                self.late_ticks.push(self.ticks);
+            }
             if let Some(i) = self.held.take() {
                 crate::replay::apply(m, &i);
             }
@@ -359,7 +407,7 @@ impl Running {
     /// byte's mask.
     fn latch(&mut self, buffer: Vec<BufferByte>, m: &mut Machine) {
         let (held, sticks, analog) = (m.bus.sio0.buttons, m.bus.sio0.pad.sticks, m.bus.sio0.pad.analog);
-        self.latched.clear();
+        let before = std::mem::take(&mut self.latched);
         for b in buffer {
             let Some(v) = reply_byte(b.pos, held, sticks, analog) else { continue };
             match b.mask {
@@ -369,6 +417,9 @@ impl Running {
                 }
                 None => self.unmasked = true,
             }
+        }
+        if !before.is_empty() && self.latched != before {
+            self.pending = Pending::Latched;
         }
     }
 
@@ -404,6 +455,14 @@ impl Running {
         });
         if self.stale_reads > 0 {
             r["stale_reads"] = json!(self.stale_reads);
+        }
+        if self.late_fields > 0 {
+            r["late_input"] = json!({
+                "fields": self.late_fields,
+                "ticks": self.late_ticks.iter().take(20).collect::<Vec<_>>(),
+                "tick_count": self.late_ticks.len(),
+                "note": "ticks in which a whole field passed with the tick's latched input not taken in (no poll into the pad buffer) and no game code read the buffer before the tick ended: the game ran that field on the last poll's buttons, so a change can reach its rules a tick late. The original's driver delays it; a port never copies that. Find what stops the poll (the pad library's interrupt routine) and replace that function so the tick's input arrives every field",
+            });
         }
         if !self.lag.is_empty() {
             r["lag_frame_ticks"] = json!(self.lag.iter().take(20).collect::<Vec<_>>());

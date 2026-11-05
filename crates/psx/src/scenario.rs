@@ -1070,7 +1070,11 @@ fn adjust_check(ctx: &Ctx, id: &str, mut adjust: Adjustments, timeout: Duration)
             _ => adjusted_differences(&stock, &adjusted),
         };
         same &= differences.is_empty();
-        recordings.push(json!({"name": name, "differences": differences}));
+        let mut entry = json!({"name": name, "differences": differences});
+        if let Some(late) = adjusted.adjusted.as_ref().and_then(|a| a.get("late_input")) {
+            entry["late_input"] = late.clone();
+        }
+        recordings.push(entry);
     }
     Ok(json!({"id": id, "status": if same { "same" } else { "differs" }, "adjust": adjust.names(),
               "recordings": recordings}))
@@ -1824,6 +1828,7 @@ pub struct Quantities {
         // Its two loads a tick of the latched byte, none of them stale.
         assert!(a["buffer_reads"].as_u64().unwrap() >= 2 * r.len() as u64, "{a}");
         assert!(a.get("stale_reads").is_none(), "{a}");
+        assert!(a.get("late_input").is_none(), "{a}");
         assert_eq!(a["buffer"][0], json!({"address": "0x80020000", "byte": "buttons_lo", "mask": "0x00"}));
         assert_eq!(a["by"], "the pad buffer and the controller");
     }
@@ -1960,6 +1965,67 @@ pub struct Quantities {
         let a = latched.adjusted.as_ref().unwrap();
         assert_eq!(a["buffer"][1]["mask"], "0xFF");
         assert!(a["buffer_reads"].as_u64().unwrap() > 0 && a.get("stale_reads").is_none(), "{a}");
+        assert!(a.get("late_input").is_none(), "{a}");
+    }
+
+    /// A game that polls every other tick (the run up to the first tick's
+    /// end, tick 0, polls), each tick spinning for a few fields, and with
+    /// `reads` loads its buffer where the tick ends; recorded latched for
+    /// 60 fields with CROSS held for 3 and released for 3.
+    fn skipping(reads: bool) -> Recorded {
+        use psx_core::padflow::test_program::{Keep, asm::*};
+        const S1: u32 = 17;
+        const T0: u32 = 8;
+        const S2: u32 = 18;
+        const T3: u32 = 11;
+        let main = [
+            i(0x0E, T3, T3, 1), // 80010000: xori t3, t3, 1
+            beq(T3, 0, 1, 4),   // no poll in every other tick
+            lui(S2, 0x0002),
+            SYSCALL,
+            addiu(S2, S2, 0xFFFF),          // 80010010
+            i(0x05, S2, 0, (-2i32) as u32), // bne t2, zero, back
+            NOP,
+            if reads { lhu(T0, 0, S1) } else { NOP },
+            i(0x2B, S1, T0, 0x10), // 80010020: sw t0, 0x10(s1): the tick ends
+            j(0x8001_0000),
+            NOP,
+            NOP,
+            lui(S1, 0x8002), // 80010030
+            j(0x8001_0000),
+            NOP,
+        ];
+        let mut m = psx_core::padflow::test_program::with_main(Keep::Bytes, &main, 0x8001_0030);
+        let b: Plugin<Described> = Plugin::new(two_reads_call, None).unwrap();
+        let types: BTreeMap<String, Type> =
+            [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
+        let adjust = Adjustments { latch: true, ..Adjustments::stock() };
+        let q = Quantities { binding: &b, types, kept: vec!["x".into(), "dead".into()], adjust };
+        let cross = psx_core::sio0::button::CROSS as u32;
+        let events: Vec<crate::replay::Input> = (0..60)
+            .map(|f| crate::replay::Input { frame: f, buttons: if f % 6 < 3 { cross } else { 0 }, sticks: [128; 4] })
+            .collect();
+        let r = record(&mut m, &q, 60, &events, None, Duration::from_secs(120), None, None);
+        assert_eq!(r.refusal_count, 0, "{:?}", r.refusals);
+        r
+    }
+
+    #[test]
+    fn a_game_that_skips_polls_is_reported_late() {
+        let r = skipping(false);
+        let a = r.adjusted.as_ref().unwrap();
+        let late = &a["late_input"];
+        assert!(late["fields"].as_u64().unwrap() > 0, "{a}");
+        // Only ticks without a poll: the odd ones.
+        let ticks: Vec<u64> = late["ticks"].as_array().unwrap().iter().map(|t| t.as_u64().unwrap()).collect();
+        assert!(ticks.len() >= 3 && ticks.iter().all(|t| t % 2 == 1), "{a}");
+        assert_eq!(late["tick_count"], ticks.len());
+        // The same game reading its buffer before the tick ends sees the
+        // latch: nothing late.
+        let r = skipping(true);
+        let a = r.adjusted.as_ref().unwrap();
+        assert!(a["buffer_reads"].as_u64().unwrap() > 0 && a.get("stale_reads").is_none(), "{a}");
+        assert!(a.get("late_input").is_none(), "{a}");
     }
 
     /// A loop for Demo's binding that counts x up a tick at a time from

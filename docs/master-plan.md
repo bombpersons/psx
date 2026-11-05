@@ -500,6 +500,27 @@ A9. **Late input, found and fixed.** The serial port knows each field's
     land in the next tick (47 of 47 in `measure_latch`), and the
     recordings name it.
 
+    *Partly done (2026-11-05), the finding:* a latched recording reports
+    `late_input`: the ticks in which a latched change waited a whole
+    field with no poll into the buffer and no game code read the buffer
+    before the tick ended (a read sees the latch), and the count of those
+    fields; `adjust-check` repeats it per recording. It does not look at
+    the serial port's exchanges, as planned above, but at what the plan
+    cares about: whether the game took the tick's input in. A test
+    program that polls every other tick is reported in exactly its
+    unpolled ticks, and not at all when it reads its buffer before the
+    tick ends. On the discs, from the 8 `measure_latch` inputs re-recorded
+    latched and steady: GT2 reports 23 ticks, one field each (b1_course
+    1, lsd_test 17, mt_test 5, the other five none). 10 of them are
+    releases, exactly A3's 10 of 47 late releases; the other 13 are
+    presses, which GT2's handler ORs into its words at the next poll, so
+    they reach the race word on time: psx cannot tell that without
+    knowing the game, and reports them as the same finding. Croc, 12
+    recordings: none. Its own driver skipped a poll once (`play_running`
+    tick 463), but its game reads the buffer itself later in that tick
+    and sees the latch, so it is not reported. The fix, and the 47 of 47,
+    wait for C1's call redirection.
+
 ## Track B: the library's rules, exactly
 
 Most of Sony's library is hardware plumbing (graphics, the CD, sound,
