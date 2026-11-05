@@ -78,12 +78,14 @@ impl<M: Mode, W: Word, const F: u32> Num<M, W, F> {
     }
 
     /// Divided by 2^`k`, rounding toward minus infinity: the original's
-    /// arithmetic shift right (`x >> k`).
+    /// arithmetic shift right (`x >> k`). As the R3000's `srav`, only `k`'s
+    /// low 5 bits count.
     pub fn div_pow2_floor(self, k: u32) -> Self {
         Num(M::div_pow2_floor::<W, F>(self.0, k))
     }
 
-    /// Divided by 2^`k`, truncating toward zero: the original's `x / 2^k`.
+    /// Divided by 2^`k`, truncating toward zero: the original's `x / 2^k`
+    /// (`k`'s low 5 bits, as [`Num::div_pow2_floor`]).
     pub fn div_pow2_trunc(self, k: u32) -> Self {
         Num(M::div_pow2_trunc::<W, F>(self.0, k))
     }
