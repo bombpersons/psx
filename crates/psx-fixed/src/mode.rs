@@ -150,12 +150,13 @@ impl Mode for Exact {
         W2::wrap(if G >= F { v << (G - F) } else { v >> (F - G) })
     }
 
+    // The R3000's variable shifts (srav, sllv) use the count's low 5 bits.
     fn div_pow2_floor<W: Word, const F: u32>(a: W, k: u32) -> W {
-        W::wrap(a.get() >> k)
+        W::wrap(a.get() >> (k & 31))
     }
 
     fn div_pow2_trunc<W: Word, const F: u32>(a: W, k: u32) -> W {
-        W::wrap(a.get() / (1i64 << k))
+        W::wrap(a.get() / (1i64 << (k & 31)))
     }
 
     fn settle_to_zero<W: Word, const F: u32>(a: W) -> W {
@@ -247,11 +248,11 @@ impl Mode for Float {
     }
 
     fn div_pow2_floor<W: Word, const F: u32>(a: f32, k: u32) -> f32 {
-        a / (1u64 << k) as f32
+        a / (1u64 << (k & 31)) as f32
     }
 
     fn div_pow2_trunc<W: Word, const F: u32>(a: f32, k: u32) -> f32 {
-        a / (1u64 << k) as f32
+        a / (1u64 << (k & 31)) as f32
     }
 
     fn settle_to_zero<W: Word, const F: u32>(a: f32) -> f32 {

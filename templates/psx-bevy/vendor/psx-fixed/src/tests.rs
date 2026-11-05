@@ -91,6 +91,9 @@ fn named_operations() {
     assert_eq!(x.snap_to_unit().bits(), -0x2000);
     assert_eq!(x.div_pow2_floor(4).bits(), -0x181);
     assert_eq!(x.div_pow2_trunc(4).bits(), -0x180);
+    // Shift counts wrap at 32, as srav's: 36 shifts by 4, 64 by 0.
+    assert_eq!(x.div_pow2_floor(36).bits(), -0x181);
+    assert_eq!(x.div_pow2_trunc(64).bits(), -0x1801);
     assert_eq!(x.rescale::<i16, 8>().bits(), -0x181);
     assert_eq!(x.rescale::<i32, 16>().bits(), -0x18010);
     assert_eq!(Fixed::<i32, 12>::from_bits(i32::MIN).abs().bits(), i32::MIN);
