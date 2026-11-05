@@ -239,6 +239,15 @@ millisecond shared an id (60 distinct of 80), so a reply could join
 the wrong thread. Ids now carry the message's place in the log as well:
 80 of 80 distinct.
 
+*States done (2026-11-05), on the scratch Croc copy:* `states rebuild
+level_1_1` beside `states rebuild level_1_1_idle` both reported `same`
+in 22 s. The first ran the five steps, and the second reused the four
+it shares and ran its own last one. Two `states rebuild` of every chain
+at once, from an empty `.psx/rebuild`, both reported all six states
+`same` in 23 s, about one rebuild's time. The first ran each step and
+the second waited for each step's lock and reused it, and all six step
+folders were left whole.
+
 ## 7. What the discs now make possible
 
 - **L2**: LWL/LWR/SWL/SWR as narrow accesses with a 24-bit width, then
