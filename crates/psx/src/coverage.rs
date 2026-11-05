@@ -185,17 +185,20 @@ fn to_words(bytes: &[u8]) -> Vec<u32> {
     bytes.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect()
 }
 
-/// A function's code from its entry, from the bytes the inventory kept:
-/// its chunks' bytes in order, placed each at its own address. None when
-/// they are not as long as its chunks.
-fn placed(f: &Function, bytes: &[u8]) -> Option<Vec<Option<u32>>> {
+/// A function's code, from the bytes the inventory kept: its chunks' bytes
+/// in order, placed each at its own address, with the address of the first
+/// word. That is its entry unless a chunk lies below it (a loop body placed
+/// before the entry). None when the bytes are not as long as its chunks.
+fn placed(f: &Function, bytes: &[u8]) -> Option<(u32, Vec<Option<u32>>)> {
     let words = to_words(bytes);
-    let mut out = vec![None; ((f.end - f.entry) / 4) as usize];
+    let lo = f.chunks.iter().map(|c| c.0).chain([f.entry]).min()?;
+    let hi = f.chunks.iter().map(|c| c.1).chain([f.end]).max()?;
+    let mut out = vec![None; (hi.checked_sub(lo)? / 4) as usize];
     let mut next = words.iter();
     for a in f.words() {
-        *out.get_mut(((a - f.entry) / 4) as usize)? = Some(*next.next()?);
+        *out.get_mut((a.checked_sub(lo)? / 4) as usize)? = Some(*next.next()?);
     }
-    next.next().is_none().then_some(out)
+    next.next().is_none().then_some((lo, out))
 }
 
 /// coverage.json's format: 4 adds each function's branch ways; 3 credits code two functions of an overlay hold
@@ -270,7 +273,8 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
                         f.entry
                     ))
                 })?;
-            out.push(image(kind, name.into(), f.entry, words, vec![f]));
+            let (base, words) = words;
+            out.push(image(kind, name.into(), base, words, vec![f]));
         }
     }
     Ok(out)
@@ -1488,8 +1492,13 @@ mod tests {
             sha: None,
         };
         let kept: Vec<u8> = [1u32, 2, 4, 5].iter().flat_map(|w| w.to_le_bytes()).collect();
-        let words = placed(&f(), &kept).unwrap();
+        let (at, words) = placed(&f(), &kept).unwrap();
+        assert_eq!(at, base);
         assert_eq!(words, vec![Some(1), Some(2), None, Some(4), Some(5)]);
+        // A chunk below the entry moves the image's base down to it.
+        let below = Function { entry: base + 8, chunks: vec![(base, base + 8), (base + 8, base + 16)], ..f() };
+        let (at, w) = placed(&below, &kept).unwrap();
+        assert_eq!((at, w.len()), (base, 5));
         assert_eq!(placed(&f(), &kept[..12]), None);
         let mut images = vec![img("a", base, vec![], vec![f()])];
         images[0].words = words;
