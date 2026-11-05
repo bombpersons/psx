@@ -159,18 +159,23 @@ impl Op for RunCmdArgs {
     }
 }
 
+/// A named state's file under the states directory; any other path as given.
+pub(crate) fn named_state(states: &std::path::Path, p: PathBuf) -> PathBuf {
+    if let Some(name) = p.to_str() {
+        let named = states.join(format!("{name}.bin"));
+        if !name.contains(['/', '\\', '.']) && named.is_file() {
+            return named;
+        }
+    }
+    p
+}
+
 impl RunCmdArgs {
     pub(crate) fn run(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
         let mut a = self;
         let dirs = crate::states::Dirs::default();
         let (states, chains) = dirs.get(ctx);
-        // A named state: its file under .psx/states.
-        if let Some(name) = a.from_state.as_deref().and_then(|p| p.to_str()) {
-            let named = states.join(format!("{name}.bin"));
-            if !name.contains(['/', '\\', '.']) && named.is_file() {
-                a.from_state = Some(named);
-            }
-        }
+        a.from_state = a.from_state.map(|p| named_state(&states, p));
         if let Some(name) = &a.save_as {
             crate::states::check_name(name)?;
             if a.description.as_deref().is_none_or(|d| d.trim().is_empty()) {

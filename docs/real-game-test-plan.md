@@ -263,6 +263,22 @@ the preferences, tools and PsxGte extension went to
 always writes that name. The cache key includes the language files'
 hash (M4).
 
+*code check done (2026-11-05), on the scratch Croc copy, with
+mipsel-linux-gnu-gcc:* 8002817C (26 instructions, called each frame
+in level 1-1) was named `counter_step(int *counter)`, with its two
+callees, and written in C. From `level_1_1`, all three calls passed in
+0.2 s.
+- **A wrong increment (+2):** all three cases failed, each saved under
+  `.psx/decomp/cases/`. The differences named the stores and the
+  callee that went another way.
+- **A wrong final value only:** reported as the one byte of the
+  counter that differed.
+- **A saved case:** rerunning from it with the right C passed.
+- **A syntax error:** came back as `counter_step.c` lines 8 and 10.
+- **`--state` by name:** it took only a file. It now takes a state's
+  name as well, as `run --from-state` does.
+D11 from recordings is still to come.
+
 ## 7. What the discs now make possible
 
 - **L2**: LWL/LWR/SWL/SWR as narrow accesses with a 24-bit width, then

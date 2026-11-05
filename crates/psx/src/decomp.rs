@@ -505,7 +505,7 @@ pub fn check(
 pub struct CodeCheckArgs {
     /// The function: its name in names/ (`[MODULE:]name`), and the name of its C in decomp/.
     pub function: String,
-    /// The state to run from: the game's calls of the function from there are the cases.
+    /// The state to run from, named (`states list`) or a state file: the game's calls of the function from there are the cases.
     #[arg(long)]
     pub state: PathBuf,
     /// The BIOS (default: as run resolves it).
@@ -536,8 +536,10 @@ fn messages_json(m: &[Message]) -> Value {
     json!(m.iter().map(|m| json!({"file": m.file, "line": m.line, "message": m.text})).collect::<Vec<_>>())
 }
 
-fn check_cmd(ctx: &Ctx, a: CodeCheckArgs) -> crate::Result<(bool, Value)> {
+fn check_cmd(ctx: &Ctx, mut a: CodeCheckArgs) -> crate::Result<(bool, Value)> {
     let root = &ctx.root;
+    let (states, _) = crate::states::Dirs::default().get(ctx);
+    a.state = crate::run::named_state(&states, a.state);
     let mut sources: Vec<PathBuf> = std::fs::read_dir(root.join("decomp"))
         .into_iter()
         .flatten()
