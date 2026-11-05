@@ -18,7 +18,10 @@ const FILED: (usize, usize) = (40, 5000);
 /// other code resets (a flag set once a pass, an accumulator).
 fn kind(key: u64, p: &Pair) -> (u8, &'static str) {
     let steady = p.same_step == p.stores && p.first_step != 0;
-    let moved = p.last.wrapping_sub(p.first_old) == p.first_step.wrapping_mul(p.stores as u32) & mask(key);
+    // Both sides at the store's width: a byte or halfword counter that
+    // wrapped during the run moved by the same steps as one that did not.
+    let m = mask(key);
+    let moved = p.last.wrapping_sub(p.first_old) & m == p.first_step.wrapping_mul(p.stores as u32) & m;
     if steady && moved && p.first_step == 1 {
         (0, "counter")
     } else if steady && moved {
@@ -120,6 +123,29 @@ mod tests {
         let (frame, cycle, width, dma_channel) = (0, 0, 4, None);
         let (pc, value, old) = (Some(pc), Some(value), Some(old));
         o.record(WriteHit { frame, cycle, writer: Writer::Cpu, address, width, pc, value, old, dma_channel });
+    }
+
+    #[test]
+    fn a_byte_counter_that_wraps_is_still_a_counter() {
+        let mut o = Observer { census: Some(Default::default()), ..Default::default() };
+        for field in 0..300u32 {
+            // From 0xF0, so the last value ends below the first.
+            let (old, value) = ((field + 0xF0) & 0xFF, (field + 0xF1) & 0xFF);
+            o.record(WriteHit {
+                frame: 0,
+                cycle: 0,
+                writer: Writer::Cpu,
+                address: 0x8008_0000,
+                width: 1,
+                pc: Some(0x8001_0000),
+                value: Some(value),
+                old: Some(old),
+                dma_channel: None,
+            });
+            o.census.as_mut().unwrap().end_field();
+        }
+        let (section, _) = super::report(o.census.as_ref().unwrap());
+        assert_eq!(section["groups"][0]["candidates"][0]["kind"], "counter");
     }
 
     #[test]

@@ -55,7 +55,7 @@ behave differently from what their comments say.
 | L3 | `crates/psx/src/web/index.html:1746,1920,2291,1581` | Held key stuck after labelling; one failed POST stops input; leaked `mouseup` listeners; racing `startPlayer`. | fixed |
 | L4 | `install.sh:57`, `install.ps1:40,22` | Installers look for a `psx-clean` binary the release does not ship; relative `PSX_INSTALL_DIR` saved to PATH. | fixed |
 | L5 | `examples/croc-movement/psx-bevy` | Missing template fixes, including the two-run determinism check. | open |
-| L6 | `crates/psx/src/tickfind.rs:21` | Wrapped 8/16-bit counters misranked (mask applied to one side only). | open |
+| L6 | `crates/psx/src/tickfind.rs:21` | Wrapped 8/16-bit counters misranked (mask applied to one side only). | fixed |
 | L7 | `crates/psx/src/decomp.rs:332,357,371` | Linker script path breaks on `,`/`"`; versioned gcc names give wrong binutils names. | open |
 | L8 | `crates/psx/src/ghidra.rs:951-1048` | `reanalyze` leaves the old Ghidra project behind. | open |
 | L9 | `crates/psx/src/coverage.rs:193` | Chunks before a function's entry underflow. | open |
