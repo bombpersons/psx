@@ -248,13 +248,13 @@ fn decode_one(st: &mut DrawState, index: usize, p: &[u32]) -> Command {
         0xE3 => {
             c.kind = "area_tl";
             st.area.0 = (p[0] & 0x3FF) as i32;
-            st.area.1 = ((p[0] >> 10) & 0x1FF) as i32;
+            st.area.1 = ((p[0] >> 10) & 0x3FF) as i32;
             c.value = Some([st.area.0, st.area.1, 0, 0]);
         }
         0xE4 => {
             c.kind = "area_br";
             st.area.2 = (p[0] & 0x3FF) as i32;
-            st.area.3 = ((p[0] >> 10) & 0x1FF) as i32;
+            st.area.3 = ((p[0] >> 10) & 0x3FF) as i32;
             c.value = Some([st.area.2, st.area.3, 0, 0]);
         }
         0xE5 => {

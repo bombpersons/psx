@@ -60,7 +60,7 @@ behave differently from what their comments say.
 | L8 | `crates/psx/src/ghidra.rs:951-1048` | `reanalyze` leaves the old Ghidra project behind. | fixed |
 | L9 | `crates/psx/src/coverage.rs:193` | Chunks before a function's entry underflow. | fixed |
 | L10 | `crates/psx-core/src/bus.rs:158,609`, `lib.rs:600`, `cdrom.rs:444` | Addresses 0x20000000-0x7FFFFFFF mirror RAM; `words*4` overflow; unvalidated BSS size; unchecked root LBA. | fixed |
-| L11 | `crates/psx-gpu/src/lib.rs:654,706`, `vram.rs:6`, `prim.rs:254` | Untimed `draw_time` underflows; draw area Y masked to 9 bits; VRAM deserialize unchecked; zero-size upload encodes as 1024x512. | open |
+| L11 | `crates/psx-gpu/src/lib.rs:654,706`, `vram.rs:6`, `prim.rs:254` | Untimed `draw_time` underflows; draw area Y masked to 9 bits; VRAM deserialize unchecked; zero-size upload encodes as 1024x512. | fixed |
 | L12 | `crates/psx-oracle/src/ffi.rs:129,247`, `run.rs:131` | Safe FFI wrappers assume an open emulator; unchecked add inside an `extern "C"` callback. | open |
 | L13 | `crates/psx-symbols/src/names.rs:293,441` | Symlink cycles recurse forever; `s * len` unchecked. | open |
 | L14 | `crates/psx-fixed/src/mode.rs:153` | Shift counts of 64 or more panic in debug; 32-63 differ from MIPS `& 31`. | open |

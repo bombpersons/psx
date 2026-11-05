@@ -5,7 +5,17 @@ pub const HEIGHT: usize = 512;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Vram {
+    #[serde(deserialize_with = "full")]
     data: Vec<u16>,
+}
+
+/// A saved state's VRAM: exactly 1024×512 halfwords, or the state is refused.
+fn full<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Error> {
+    let v = <Vec<u16> as serde::Deserialize>::deserialize(d)?;
+    if v.len() != WIDTH * HEIGHT {
+        return Err(serde::de::Error::invalid_length(v.len(), &"1024x512 halfwords"));
+    }
+    Ok(v)
 }
 
 impl Default for Vram {

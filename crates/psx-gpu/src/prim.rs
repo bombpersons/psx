@@ -253,6 +253,8 @@ impl Env {
             }
             Env::Upload { x, y, w, h, data } => {
                 assert_eq!(data.len(), *w as usize * *h as usize, "upload size mismatch");
+                // GP0(A0h) sizes are 1-1024 by 1-512; 0 would mean the whole of VRAM.
+                assert!((1..=1024).contains(&(*w as u32)) && (1..=512).contains(&(*h as u32)), "upload size {w}x{h}");
                 out.push(0xA0 << 24);
                 out.push(*x as u32 | (*y as u32) << 16);
                 out.push(*w as u32 | (*h as u32) << 16);

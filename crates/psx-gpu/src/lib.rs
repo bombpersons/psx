@@ -366,6 +366,16 @@ impl TexAddr {
 /// (`gpu.cpp`): GP0 words go through a FIFO, and a command runs when it is
 /// complete and, in timed mode, when drawing time is left.
 ///
+/// A saved state's texture cache tags: one per cache block, or the state is
+/// refused (a short list would be indexed past its end).
+fn tex_tags<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u32>, D::Error> {
+    let v = <Vec<u32> as serde::Deserialize>::deserialize(d)?;
+    if v.len() != 256 {
+        return Err(serde::de::Error::invalid_length(v.len(), &"256 texture cache tags"));
+    }
+    Ok(v)
+}
+
 /// Drawing time ([`Gpu::draw_time`], Mednafen's `DrawTimeAvail`) is in
 /// half system clocks: [`Gpu::credit`] adds two per clock up to 256, and each
 /// command takes Mednafen's estimate of its cost (per triangle, span, sprite
@@ -400,6 +410,7 @@ pub struct Gpu {
     /// Commands wait for drawing time (the console core); see [`Gpu`].
     pub timed: bool,
     /// Texture cache tags (block addresses, `!0` when invalid).
+    #[serde(deserialize_with = "tex_tags")]
     tex_tags: Vec<u32>,
     /// The CLUT cached, with its depth (`!0` when invalid).
     clut_vb: u32,
@@ -650,6 +661,11 @@ impl Gpu {
         if let Some(log) = &mut self.log {
             log.push(cb.to_vec());
         }
+        // Untimed, nothing credits drawing time back: keep the running total
+        // (tests read it) from reaching i32's end over a long session.
+        if !self.timed && self.draw_time < -(1 << 28) {
+            self.draw_time = 0;
+        }
         if !ss {
             self.draw_time -= 2;
         }
@@ -703,12 +719,13 @@ impl Gpu {
             0xE3 => {
                 self.clip_raw.0 = p[0] & 0xF_FFFF;
                 self.state.area.0 = (p[0] & 0x3FF) as i32;
-                self.state.area.1 = ((p[0] >> 10) & 0x1FF) as i32;
+                // 10 bits, as Mednafen's Command_Clip0/1; rows past 511 wrap.
+                self.state.area.1 = ((p[0] >> 10) & 0x3FF) as i32;
             }
             0xE4 => {
                 self.clip_raw.1 = p[0] & 0xF_FFFF;
                 self.state.area.2 = (p[0] & 0x3FF) as i32;
-                self.state.area.3 = ((p[0] >> 10) & 0x1FF) as i32;
+                self.state.area.3 = ((p[0] >> 10) & 0x3FF) as i32;
             }
             0xE5 => self.state.offset = (sext11(p[0]), sext11(p[0] >> 11)),
             0xE6 => {

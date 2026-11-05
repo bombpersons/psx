@@ -131,3 +131,12 @@ fn overlapping_vram_copy_reads_each_row_before_writing() {
     let row: Vec<u16> = (0..11).map(|x| g.vram.lock().get(x, 0)).collect();
     assert_eq!(row, [1, 2, 3, 1, 2, 3, 4, 5, 6, 7, 8]);
 }
+
+#[test]
+fn drawing_area_y_has_ten_bits() {
+    // E4 with y2 = 512 (Mednafen keeps 10 bits): the area still covers rows
+    // 0-511, so a fill-free rect at row 10 is drawn.
+    let mut g = gpu();
+    g.gp0_all(&[0xE400_0000 | 1023 | (512 << 10), 0x6000_00F8, xy(0, 10), xy(4, 1)]);
+    assert!(lit(&g, 0, 10));
+}
