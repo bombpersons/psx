@@ -265,7 +265,7 @@ leave Bevy without psx noticing.
 
 ## After this plan: any executable as a port
 
-Phases (a) and (b) are done; the design below is agreed. psx treats any program that keeps a
+Phases (a), (b) and (c) are done; the design below is agreed. psx treats any program that keeps a
 contract as a port, in any language, and tests it as it tests a Rust one.
 
 ### What ties a port to Rust
@@ -476,6 +476,13 @@ About phase 1 and phase 2 of this plan together, mostly on psx's side.
   psx's tests (crates/psx/tests/c_port.rs); its recording is synthetic.
 - **(c) The wording and the key.** The port key without cargo; the guide,
   the tool descriptions and port next's items no longer assume cargo.
+  Done: psx web's port key is the git tree of the workspace as it is
+  (written from an index of its own, so committed, uncommitted and new
+  files count and ignored ones do not), the project's notes left out; the
+  replay needs `psx-port.toml` (or a cargo game). The overview says "a
+  modern program" and points the template's other languages to topic
+  languages; check's and port next's messages lose the `cargo test` hint,
+  which the Rust template's AGENTS.md keeps.
 - **(d) Move the test ports.** The psx-bevy ports under
   `external_agent_tests` (GT2, Croc and Tomb Raider Chronicles) own their
   `psx-bevy/`, released before phase 1, with its own runner

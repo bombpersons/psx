@@ -340,7 +340,7 @@ fn route(req: &Request, st: &State) -> Reply {
     if matches!(what, "recording" | "replay" | "frame" | "port_replay") && !recording_ok(q("scenario"), q("name")) {
         return Reply::Missing(format!("{}/{}: not a recording", q("scenario"), q("name")));
     }
-    // Starting a replay runs psx or cargo: only for the page's own requests.
+    // Starting a replay builds and runs code: only for the page's own requests.
     let start = q("start") == "1";
     if start && !req.ours {
         return Reply::Missing("starting a replay needs the page's token".into());
@@ -1004,42 +1004,55 @@ fn prune_replays(keep: &Path) {
 // ----------------------------------------------------------- port replay
 
 /// Where the port's frames for a recording are kept, in the project: by the
-/// recording, its scenario and the port's code (HEAD and what changed since).
+/// recording, its scenario and the port's code (the workspace as it is now).
 const PORT_FRAMES: &str = ".psx/port-frames";
+
+/// The project's notes and recordings: not the port's code.
+const NOT_CODE: [&str; 8] =
+    ["scenarios", "catalogue", "notes", "formats", "goal.toml", "review.md", "README.md", "AGENTS.md"];
 
 fn port_key(root: &Path, id: &str, name: &str) -> String {
     let read = |p: &Path| std::fs::read(p).unwrap_or_default();
     let scen = root.join(crate::scenario::SCENARIOS);
     let mut all = read(&scen.join(format!("{id}.toml")));
     all.extend(read(&scen.join(id).join(format!("{name}.jsonl"))));
-    let git = |args: &[&str]| {
-        std::process::Command::new("git").args(args).current_dir(root).output().map(|o| o.stdout).unwrap_or_default()
-    };
-    all.extend(git(&["rev-parse", "HEAD"]));
-    // Uncommitted changes to the code, not to the project's notes or scenarios.
-    all.extend(git(&[
-        "diff",
-        "HEAD",
-        "--",
-        "game",
-        "addons",
-        "psx-bevy",
-        "tools",
-        "vendor",
-        "glossary",
-        "Cargo.toml",
-        "Cargo.lock",
-    ]));
+    all.extend(code_tree(root).unwrap_or_default());
     crate::stamp::sha256(&all)[..16].to_string()
 }
 
-/// The port drawing the recording, as `replay` the original: the port's
-/// game with `--replay` (psx_scenario::replay), built and run with cargo in the
-/// project, a PNG a tick into `.psx/port-frames/<key>/`. `key` names the
-/// frames for `port_frame`.
+/// The git tree of the workspace's files as they are, committed or not
+/// (what .gitignore leaves), the notes left out: whatever the port is
+/// written in, a change to it is a change to the tree. Staged in an index
+/// of its own, so the project's index is untouched.
+fn code_tree(root: &Path) -> Option<Vec<u8>> {
+    let index = root.join(".psx/port-key.index");
+    std::fs::create_dir_all(index.parent()?).ok()?;
+    let _ = std::fs::remove_file(&index);
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_INDEX_FILE", &index)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| o.stdout)
+    };
+    let mut add = vec!["add", "-A", "--", "."];
+    let excludes: Vec<String> = NOT_CODE.iter().map(|p| format!(":(exclude){p}")).collect();
+    add.extend(excludes.iter().map(String::as_str));
+    let tree = git(&add).and_then(|_| git(&["write-tree"]));
+    let _ = std::fs::remove_file(&index);
+    tree
+}
+
+/// The port drawing the recording, as `replay` the original: the port
+/// built and run by its psx-port.toml (psx_scenario::replay drives it), a
+/// PNG a tick into `.psx/port-frames/<key>/`. `key` names the frames for
+/// `port_frame`.
 fn port_replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Value {
-    if !root.join("game/Cargo.toml").is_file() {
-        return json!({"error": {"code": "invalid", "message": "no port here (game/Cargo.toml)"}});
+    if !root.join(crate::port::manifest::FILE).is_file() && !root.join("game/Cargo.toml").is_file() {
+        return json!({"error": {"code": "invalid", "message": "no port here (psx-port.toml)"}});
     }
     let jobs_key = format!("port:{}:{id}:{name}", root.display());
     // Held until this request has its job and has marked it running, so two
@@ -1225,6 +1238,55 @@ pub fn replay_child(ctx: &Ctx, id: &str, name: &str, dir: &Path, decomp: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_port_key_follows_the_code_whatever_its_language() {
+        let dir = crate::port::tests::tempdir::Dir::new();
+        let root = dir.0.as_path();
+        let write = |p: &str, text: &str| {
+            std::fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+            std::fs::write(root.join(p), text).unwrap();
+        };
+        write(".gitignore", ".psx/\nbuild/\n");
+        write("game/main.c", "int main(void) { return 0; }\n");
+        write("notes/a.md", "a\n");
+        write("scenarios/s/r.jsonl", "{}\n");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=t"])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "c"]);
+        let key = || port_key(root, "s", "r");
+        let first = key();
+        assert_eq!(key(), first);
+        // Notes and what .gitignore leaves out are not the code.
+        write("notes/a.md", "b\n");
+        write("build/game", "binary");
+        assert_eq!(key(), first);
+        // An edit, committed or not, and a new file are.
+        write("game/main.c", "int main(void) { return 1; }\n");
+        let edited = key();
+        assert_ne!(edited, first);
+        git(&["commit", "-qam", "d"]);
+        assert_eq!(key(), edited);
+        write("game/new.c", "\n");
+        assert_ne!(key(), edited);
+        // The recording is part of the key.
+        assert_ne!(port_key(root, "s", "other"), key());
+        // The project's own index is untouched.
+        let status =
+            std::process::Command::new("git").args(["status", "--porcelain"]).current_dir(root).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&status.stdout), "?? game/new.c\n");
+    }
 
     #[test]
     fn queries_are_decoded() {

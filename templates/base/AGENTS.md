@@ -53,7 +53,8 @@ project's code once added. A port of one feature's rules needs none.
   tick from `screen`, for psx web to show beside the original. Keep the
   call to `psx_scenario::replay::main` first in `main`.
 - **Importers** are `tools/import`: `psx port check` runs `cargo run -p
-  import -- DISC OUT` and `cargo test -p import`.
+  import -- DISC OUT` and `cargo test -p import`, as `psx-port.toml`
+  names them.
 
 ## The code
 

@@ -1056,7 +1056,7 @@ impl Facts {
             let (why, how) = match &f.verdict {
                 State::Stale { commit } if self.git.head.as_deref() == Some(commit.as_str()) => (
                     "its verdict is from HEAD, and the workspace has changed since (uncommitted changes besides notes and the review)".into(),
-                    "commit the changes and run psx port check (for a quick look first, cargo test -p <game> --test scenarios)",
+                    "commit the changes and run psx port check",
                 ),
                 State::Stale { commit } => (
                     format!(

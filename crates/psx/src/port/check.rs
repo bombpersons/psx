@@ -235,9 +235,7 @@ impl PortCheckArgs {
         let decomp = self.decomp.as_ref().map(|w| crate::decomp::Replacement::new(root, w)).transpose()?;
         let git = Git::read(root);
         let Some(head) = git.head.clone().filter(|_| git.clean) else {
-            return Err(Error::invalid(
-                "commit first: a verdict counts only for a commit with no uncommitted changes (for a quick look, cargo test -p <game> --test scenarios)",
-            ));
+            return Err(Error::invalid("commit first: a verdict counts only for a commit with no uncommitted changes"));
         };
         let features: Vec<&Entry> = match &self.feature {
             Some(id) => vec![port.entries.get(id).ok_or_else(|| Error::invalid(format!("{id} is not catalogued")))?],
@@ -257,7 +255,7 @@ impl PortCheckArgs {
         let after = Git::read(root);
         if after.head != git.head || !after.clean {
             return Err(Error::invalid(
-                "the workspace changed while the check ran (cargo may have updated Cargo.lock): commit and check again",
+                "the workspace changed while the check ran (a build may have changed a tracked file): commit and check again",
             ));
         }
         let kept =

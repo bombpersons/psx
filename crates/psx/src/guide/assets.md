@@ -57,8 +57,8 @@ run) finds which run loads a file and where it lands in RAM; a watch on that
 RAM finds the parser; its disassembly is the layout, written in the format's
 doc. assets_scan and assets_extract also take external parsers
 (--archive-parser, --asset-parser, --model-parser, --frame-parser; see their
-help) for a quick look while investigating; the port's importers are Rust
-in tools/import.
+help) for a quick look while investigating; the port's importers are its
+own (tools/import on the template).
 
 ## What the game built
 
