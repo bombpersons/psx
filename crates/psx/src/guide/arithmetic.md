@@ -1,81 +1,10 @@
-## A port in any language
-
-The port is any program that keeps the port protocol. psx builds it, runs
-it and drives the recordings through it; the comparison and the verdicts
-stay psx's. The glossary (`glossary/`) stays Rust in every port: it
-describes the original's RAM and runs inside psx, never in the port.
-
-### psx-port.toml
-
-The workspace root's `psx-port.toml` names the commands, run in the root:
-
-```toml
-[port]
-build = ["make", "-C", "game"]                       # optional
-run = ["game/build/game", "--psx"]                   # speaks the protocol
-import = ["game/build/import"]                       # optional
-import_test = ["make", "-C", "game", "test-import"]  # optional
-```
-
-- `build` runs before each check; a failure is the check's failure.
-- `run` starts the port in protocol mode. A program named by a relative
-  path is in the workspace.
-- `import` is run as `import DISC OUT` (write the imported files and their
-  `*.provenance.json` into OUT) and `import index DISC ARCHIVE...` (print
-  each archive's entries as JSON).
-- `import_test` runs the importers' tests with `PSX_IMPORT_REPORT` set: a
-  passing test appends the disc paths it checked, one a line.
-- Without the file, the commands are cargo's (the base template's).
-
-### The port protocol
-
-JSON lines: psx writes one request a line on stdin; the port answers each
-with one line on stdout and flushes. stdout carries only the protocol (a
-line that is not a JSON object is skipped); logs go to stderr.
-
-```
--> {"hello":1}                                     <- {"kinds":["level"]}
--> {"launch":{"kind":"level","parameters":{...}}}  <- {"ok":true} | {"error":"..."}
--> {"tick":{"buttons":["CROSS","UP"],"analog":false,"sticks":[128,128,128,128]}}
-                                                   <- {}
--> {"observe":{}}                                  <- {"values":{"croc_x":1234,"croc_gait":"walking"}}
--> {"screen":{"path":"/tmp/f/12.rgba"}}            <- {"width":320,"height":240} | {"none":true}
-```
-
-- `hello` carries the protocol version (1); answer with the scenario kinds
-  the port launches.
-- `launch` starts a fresh game from the scenario's kind and parameters:
-  nothing of the last game is kept.
-- `tick` runs one tick with that pad: the buttons held by name (SELECT,
-  L3, R3, START, UP, RIGHT, DOWN, LEFT, L2, R2, L1, R1, TRIANGLE, CIRCLE,
-  CROSS, SQUARE; any case), the analog flag and the sticks lx, ly, rx, ry
-  as raw bytes (128 centred).
-- `observe` gives the glossary's quantities after the last tick, in the
-  recordings' encoding: integers as the raw word (a fixed-point quantity's
-  underlying integer, a float's bit pattern), as decimal strings outside
-  ±2^53; bools; an enum's variant by name; lists and records as arrays and
-  objects. psx checks each value against its glossary type (a value out of
-  range is a port that forgot to wrap). Leave out a quantity the port does
-  not have yet; a name the glossary lacks is a failure.
-- `screen` writes the frame after the last tick as `width * height` RGBA
-  bytes, rows top to bottom, at the original's display size, or answers
-  `none`.
-- Any request may be answered `{"error":"..."}` (it could not be done) or
-  `{"panic":"..."}` (the port failed: the recording fails at that tick).
-  A port that exits or takes over two minutes on a reply is started again
-  for the next recording.
-
-Only the requests drive the game: no clock, no unseeded randomness, no
-files that change between runs. psx runs each recording twice and reports
-where the runs part. Without `--psx` the same program can be the game,
-with its own window and pad.
-
-### The original's integer arithmetic
+## The original's integer arithmetic
 
 The comparison is exact, so the port computes what the original's
-compiled C computed. psx checks only the numbers, not how they were made.
-Rust ports use psx-fixed's `Exact` mode and psx-gte (vendor/); in another
-language, follow these rules and test them with `psx port vectors`.
+compiled code computed. psx checks only the numbers, not how they were
+made. The Rust template's vendor/ has psx-fixed (its `Exact` mode) and
+psx-gte, which keep these rules; whatever computes them, `psx port
+vectors` tests it.
 
 A number is a raw word of a stated width (i8, u8, i16, u16, i32, u32) and
 fraction bits F (0 to 31): the real value is raw / 2^F. Arithmetic is on
@@ -111,12 +40,10 @@ and `b` of (W2, G); results are of `a`'s format unless said.
   < 2048: T[2048 - a']; < 3072: -T[a' - 2048]; else -T[4096 - a']. The
   result is 1.3.12. `cos_quarter`: `sin_quarter` of wrap(a + 1024).
 
-In C: signed overflow is undefined, and right shifts of negative numbers
-are implementation-defined. Compute in `uint32_t` and convert, or build
-with `-fwrapv` and an arithmetic `>>`; never let the compiler assume no
-overflow.
+Where integers do not wrap on overflow, or a right shift of a negative
+number is not arithmetic, compute in unsigned 32 bits and convert.
 
-### The GTE
+## The GTE
 
 The GTE is psx-spx's "Geometry Transformation Engine" (problemkaputt.de/
 psx-spx.htm), register for register. Where it leaves room, psx-gte pins:
@@ -150,7 +77,7 @@ mul_matrix(rot_y(r.y), rot_z(r.z)))` with rot_x = [1 0 0; 0 c -s; 0 s c],
 rot_y = [c 0 s; 0 1 0; -s 0 c], rot_z = [c -s 0; s c 0; 0 0 1] (1 is
 0x1000).
 
-### Test vectors
+## Test vectors
 
 `psx port vectors` writes, into `.psx/port/vectors/` (or `--out`):
 
@@ -165,5 +92,5 @@ rot_y = [c 0 s; 0 1 0; -s 0 c], rot_z = [c -s 0; s c 0; 0 0 1] (1 is
 - `sin_quarter.json` and `unr_table.json`: the tables.
 
 They are made by psx-fixed and psx-gte, so they match this psx. Run them
-in the port's own tests (`make test`): a case that differs names the rule
+in the port's own tests: a case that differs names the rule
 to fix before any recording does.

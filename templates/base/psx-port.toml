@@ -1,6 +1,6 @@
 # The commands psx runs the port with, in the workspace root. Any program
 # can be the port: `run` must speak the port protocol on stdin and stdout
-# (psx guide --topic languages; psx_scenario::replay::main answers it
+# (psx guide --topic setup; psx_scenario::replay::main answers it
 # for a Rust game). psx port check runs `build`, then `run`; with assets in
 # the goal, `import DISC OUT` and `import_test`.
 [port]

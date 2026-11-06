@@ -13,11 +13,11 @@ pub enum Topic {
     Code,
     Assets,
     Setup,
-    Languages,
+    Arithmetic,
 }
 
 impl Topic {
-    const ALL: [Self; 6] = [Self::Overview, Self::Run, Self::Code, Self::Assets, Self::Setup, Self::Languages];
+    const ALL: [Self; 6] = [Self::Overview, Self::Run, Self::Code, Self::Assets, Self::Setup, Self::Arithmetic];
 
     fn title(self) -> &'static str {
         match self {
@@ -25,10 +25,10 @@ impl Topic {
             Self::Run => "Run the game: input, memory formats, observations, the tick, asking the person",
             Self::Code => "Find and read the game's code: RAM search, disassembly, decompilation, coverage, unpacking",
             Self::Assets => "The disc and its data: standard formats, streams, archives, what the game built",
-            Self::Setup => "The project, BIOS, named states, template updates, and results that look wrong",
-            Self::Languages => {
-                "A port in any language: psx-port.toml, the port protocol, the original's integer arithmetic and the GTE, test vectors"
+            Self::Setup => {
+                "The project, BIOS, named states, the port's commands and protocol, the template, and results that look wrong"
             }
+            Self::Arithmetic => "The original's integer arithmetic and the GTE, exactly, and test vectors for them",
         }
     }
 
@@ -39,7 +39,7 @@ impl Topic {
             Self::Code => include_str!("guide/code.md"),
             Self::Assets => include_str!("guide/assets.md"),
             Self::Setup => include_str!("guide/setup.md"),
-            Self::Languages => include_str!("guide/languages.md"),
+            Self::Arithmetic => include_str!("guide/arithmetic.md"),
         }
     }
 }

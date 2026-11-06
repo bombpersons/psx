@@ -14,10 +14,11 @@ recorded, not that the game reached gameplay or that a hypothesis holds.
 
 ## A port
 
-psx port init DEST --media GAME.cue writes the workspace: the Rust template
+psx port init DEST --media GAME.cue writes the workspace: a template in Rust
 (game/, a psx_scenario Port with no engine; tools/import/, glossary/,
-vendor/, psx-port.toml; another language: topic languages), goal.toml, catalogue/, formats/, the disc and BIOS linked in,
-.mcp.json for psx, and git. Pass fields_per_tick from the original's main
+vendor/), which the port may use or replace (psx-port.toml names its
+commands; topic setup), goal.toml, catalogue/, formats/, the disc and BIOS
+linked in, .mcp.json for psx, and git. Pass fields_per_tick from the original's main
 loop; the region comes from the disc. Its AGENTS.md says what the port's
 code is held to; this guide says how the work goes.
 
@@ -249,7 +250,7 @@ original's formats; the game reads the port's own.
 
 - context: the build, project root, media, BIOS and capabilities (setup).
 - bios_install: a local BIOS, or a pinned download for a region (setup).
-- guide: this text, or a topic: run, code, assets, setup, languages.
+- guide: this text, or a topic: run, code, assets, setup, arithmetic.
 - read: a returned file, by pointer, rows, hex or image.
 - disc_info, disc_ls, disc_extract, disc_sector, disc_exe: the disc's
   tracks, files, sectors and executables (assets).
@@ -268,5 +269,5 @@ original's formats; the game reads the port's own.
   recordings.
 - port_init, port_update, port_add, port_status, port_next, port_check:
   the port (port_update, port_add: setup). psx port confirm is the
-  person's. port_vectors: arithmetic test vectors (languages).
+  person's. port_vectors: arithmetic test vectors (arithmetic).
 - message: talk with the person (run).

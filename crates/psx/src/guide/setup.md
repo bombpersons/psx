@@ -46,6 +46,75 @@ replays chains from power-on (shared steps once) and reports per state the
 first step that differs and status same, differs or restored; after a psx
 update, rebuild, then replace=true, then scenario_check.
 
+## The port's commands
+
+The port is any program that keeps the port protocol, written in any
+language. port init writes a ready-made template in Rust (port_add's
+add-ons are Rust too), its commands filled in; a port written otherwise
+replaces the template's game/ and tools/import/ and names its own. The
+workspace root's `psx-port.toml` names the commands, run in the root:
+
+```toml
+[port]
+build = ["make", "-C", "game"]                       # optional
+run = ["game/build/game", "--psx"]                   # speaks the protocol
+import = ["game/build/import"]                       # optional
+import_test = ["make", "-C", "game", "test-import"]  # optional
+```
+
+- `build` runs before each check; a failure is the check's failure.
+- `run` starts the port in protocol mode. A program named by a relative
+  path is in the workspace.
+- `import` is run as `import DISC OUT` (write the imported files and their
+  `*.provenance.json` into OUT) and `import index DISC ARCHIVE...` (print
+  each archive's entries as JSON).
+- `import_test` runs the importers' tests with `PSX_IMPORT_REPORT` set: a
+  passing test appends the disc paths it checked, one a line.
+- Without the file, the commands are the Rust template's (cargo's).
+
+## The port protocol
+
+JSON lines: psx writes one request a line on stdin; the port answers each
+with one line on stdout and flushes. stdout carries only the protocol (a
+line that is not a JSON object is skipped); logs go to stderr.
+
+```
+-> {"hello":1}                                     <- {"kinds":["level"]}
+-> {"launch":{"kind":"level","parameters":{...}}}  <- {"ok":true} | {"error":"..."}
+-> {"tick":{"buttons":["CROSS","UP"],"analog":false,"sticks":[128,128,128,128]}}
+                                                   <- {}
+-> {"observe":{}}                                  <- {"values":{"croc_x":1234,"croc_gait":"walking"}}
+-> {"screen":{"path":"/tmp/f/12.rgba"}}            <- {"width":320,"height":240} | {"none":true}
+```
+
+- `hello` carries the protocol version (1); answer with the scenario kinds
+  the port launches.
+- `launch` starts a fresh game from the scenario's kind and parameters:
+  nothing of the last game is kept.
+- `tick` runs one tick with that pad: the buttons held by name (SELECT,
+  L3, R3, START, UP, RIGHT, DOWN, LEFT, L2, R2, L1, R1, TRIANGLE, CIRCLE,
+  CROSS, SQUARE; any case), the analog flag and the sticks lx, ly, rx, ry
+  as raw bytes (128 centred).
+- `observe` gives the glossary's quantities after the last tick, in the
+  recordings' encoding: integers as the raw word (a fixed-point quantity's
+  underlying integer, a float's bit pattern), as decimal strings outside
+  ±2^53; bools; an enum's variant by name; lists and records as arrays and
+  objects. psx checks each value against its glossary type (a value out of
+  range is a port that forgot to wrap). Leave out a quantity the port does
+  not have yet; a name the glossary lacks is a failure.
+- `screen` writes the frame after the last tick as `width * height` RGBA
+  bytes, rows top to bottom, at the original's display size, or answers
+  `none`.
+- Any request may be answered `{"error":"..."}` (it could not be done) or
+  `{"panic":"..."}` (the port failed: the recording fails at that tick).
+  A port that exits or takes over two minutes on a reply is started again
+  for the next recording.
+
+Only the requests drive the game: no clock, no unseeded randomness, no
+files that change between runs. psx runs each recording twice and reports
+where the runs part. Without `--psx` the same program can be the game,
+with its own window and pad.
+
 ## The template
 
 port_update replaces untouched vendor/ files with this build's, writes

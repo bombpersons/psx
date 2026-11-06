@@ -3,7 +3,7 @@
 The smallest port psx checks that is not Rust: a sled on a hill, written in
 C, with one feature (catalogue/F-0001.md), one scenario and one recording.
 It shows the contract a port in any language keeps (psx guide --topic
-languages):
+setup, and --topic arithmetic for the numbers):
 
 - **psx-port.toml** names the commands: `make` builds `game/build/sled`,
   and `game/build/sled --psx` speaks the port protocol on stdin and stdout

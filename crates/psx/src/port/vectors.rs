@@ -1,6 +1,6 @@
 //! `psx port vectors`: test vectors for ports in any language, made by the
 //! crates Rust ports use (psx-fixed's `Exact` mode and psx-gte) as the
-//! reference. The rules they test are the guide's topic `languages`.
+//! reference. The rules they test are the guide's topic `arithmetic`.
 //!
 //! Each file is JSON lines, one case a line:
 //!
@@ -65,7 +65,7 @@ fn write(dir: &Path) -> crate::Result<Value> {
     Ok(json!({
         "dir": dir,
         "files": files,
-        "rules": "psx guide --topic languages",
+        "rules": "psx guide --topic arithmetic",
         "next": ["run them in the port's own tests: each case's out is what the original computes"],
     }))
 }

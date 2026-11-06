@@ -464,10 +464,10 @@ About phase 1 and phase 2 of this plan together, mostly on psx's side.
   `import` rather than filling placeholders, so one command serves both.
   Without the file the commands are cargo's, and the base template seeds
   the file with them. The check reads the glossary's quantities alone; the
-  binding is recording's. The spec is the guide topic `languages` (the
-  manifest, the protocol, the integer rules, the GTE's pinned points and
-  the libgte-style helpers) rather than `arithmetic`, since it holds all a
-  port in another language needs. `psx port vectors` (and the `port_vectors`
+  binding is recording's. The guide says nothing of the port's
+  language beyond the Rust templates being there to use: topic `setup`
+  holds the manifest and the protocol, topic `arithmetic` the integer
+  rules, the GTE's pinned points and the libgte-style helpers. `psx port vectors` (and the `port_vectors`
   tool) writes `fixed.jsonl` (about 15,000 cases over eleven formats,
   thirteen pairs and the angle helpers), `gte.jsonl` (every command with
   each `sf` and `lm`, at register level, and the helpers) and the two
