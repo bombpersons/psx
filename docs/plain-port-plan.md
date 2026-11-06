@@ -224,9 +224,10 @@ The Croc example and GT2 are Bevy workspaces with their own copy of
 the new runner, keeping `register_scenario`, `.observe(...)` and
 `Scenarios::new(root, || App)`. They take that with `port update` and
 change no code. After that, psx stops shipping psx-bevy, and those
-workspaces keep theirs as their own code. The Croc example moves to the
-base template plus the shell and renderer once those exist, since it is
-the showcase.
+workspaces keep theirs as their own code. The Croc example has moved to
+the base template plus `full`, since it is the showcase: its rules are
+plain functions `Game::tick` calls in the Bevy phases' order, and every
+quantity of every recording matches the Bevy version's at every tick.
 
 ## Phases
 
@@ -253,7 +254,8 @@ Each phase ends with psx's tests and the templates' tests passing.
    passing verdict, and what the review stage says about the engine it
    wrote.
 5. **The other add-ons**, in the order ports ask for them, starting with
-   dev-mcp. The Croc example moves to `full` here.
+   dev-mcp. (The Croc example moved to `full` before the
+   any-executable phases below.)
 
 After this plan: ports in other languages (designed in the section below).
 Not started.

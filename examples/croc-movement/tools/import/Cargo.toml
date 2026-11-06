@@ -1,7 +1,6 @@
-# Importers: the player's disc -> the port's asset formats. A library the game
-# runs on first start (game/src/disc.rs) and a command for running it by
-# hand. The original's raw formats live only here. No Bevy: it stays quick to
-# build and test.
+# Importers: the player's disc -> the port's asset formats. A library (the
+# game, or the disc-import add-on, runs it on the player's disc) and a command
+# for running it by hand. The original's raw formats live only here.
 [package]
 name = "import"
 version.workspace = true

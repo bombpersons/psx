@@ -54,12 +54,14 @@ next` gave one item at a time, in this order:
 | `catalogue/` | One entry per feature: what it is in game terms, its code in the original, its recordings |
 | `glossary/` | The quantities compared (`croc_x`, `croc_vertical_speed`, ...) and where the original keeps them |
 | `scenarios/` | The start state's scenario and its recordings: Croc's quantities and the pad per tick (`.jsonl`), and the branches each run took (`.coverage.json`) |
-| `game/src/tick.rs` | The tick's phases, at the original's 25 Hz |
+| `game/src/lib.rs` | `Game`, the port psx drives: the tick's steps in the original's order, at its 25 Hz |
 | `game/src/character/` | A character's body: position, facing, rising and falling, the floor |
 | `game/src/croc/` | Croc, the player: running and turning, the jump, the stomp |
 | `game/src/world.rs` | Levels as placements, and the floor |
 | `game/assets/` | Tuning and the start level in RON, with each constant's source |
-| `game/tests/scenarios.rs` | Replays each recording through the game's logic, headless |
+| `game/src/main.rs`, `view.rs` | The game in a window, and the frames psx web shows: Croc as a stand-in shape on the floor |
+| `game/tests/scenarios.rs` | Replays each recording through the game's logic |
+| `addons/` | The window, renderer, disc import and menus `psx port add full` wrote |
 | `review.md` | The code review and its answers |
 | `notes/` | The agent's notes: the script map, coverage work, held-out plays, feedback on psx |
 
@@ -73,6 +75,8 @@ coverage files hold the addresses of branches and which way they went, and
 BIOS in `bios/`, and rebuild the states from `notes/states/` with `psx
 states rebuild`.
 
-The template this workspace started from is documented in
-[`psx-bevy/README.md`](psx-bevy/README.md) and
-[`docs/template.md`](docs/template.md).
+The agent wrote the port on Bevy, from psx's former Bevy template; it was
+later moved to the plain base template with the `full` add-on, keeping
+every rule and every recording's result. `review.md` reviews the Bevy
+version, so its plugins, systems and phases are now plain functions that
+`Game::tick` calls in the same order.

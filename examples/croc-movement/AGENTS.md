@@ -1,10 +1,10 @@
 # Working in this project
 
-A native Bevy port of a PlayStation game. It should read as ordinary, modern
-Rust and Bevy that a person could pick up and change; never an emulator in
-disguise. What the game does is measured from the original with the psx
-toolkit (its MCP server is in `.mcp.json`); everything here is backed by that
-evidence.
+A native port of a PlayStation game, in plain Rust. It should read as
+ordinary, modern code that a person could pick up and change; never an
+emulator in disguise. What the game does is measured from the original with
+the psx toolkit (its MCP server is in `.mcp.json`); everything here is
+backed by that evidence.
 
 ## The loop
 
@@ -12,50 +12,75 @@ When the workspace has `goal.toml`, psx leads the work. Call `port_next`: it
 gives one item (what, for which feature, why, and the fact that will show it
 done). Do it until that fact holds, commit, and call `port_next` again.
 Name the feature's id in each of its commits (`F-0003: stomp hang`).
-`port_status` shows every
-feature of the goal by stage. An item for the person (Confirm, Play,
-Stuck) waits for them: tell them and stop. psx's `guide`
-tool explains each item; `catalogue/README.md` has the feature
+`port_status` shows every feature of the goal by stage. An item for the
+person (Confirm, Stuck, Wait) waits for them: tell them and stop. A play
+request does not: it queues and `port_next` goes on to other work. psx's
+`guide` tool explains each item; `catalogue/README.md` has the feature
 format. psx writes `.psx/verdicts/`; never edit them.
 
 ## Layout
 
 ```
-game/          the port, its assets/ and tests/ (game/AGENTS.md)
-tools/import/  importers: the player's disc -> the port's asset formats
+game/          the port: src/lib.rs (Game, a psx_scenario::Port), src/main.rs (--replay, the game's own loop), tests/
+tools/import/  importers: the player's disc -> the port's formats
 glossary/      the quantities scenarios compare, and binding/, where the original keeps them (psx's guide, Recordings)
-psx-bevy/      the PS1 look, ticks, input, menus, testing, numbers (num, gte), scenarios and launcher; yours to change (psx-bevy/AGENTS.md)
-vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-scenario (the scenario formats and generated glue), psx-capture (the glossary binding's API); don't edit (fix upstream in psx)
-docs/          template.md: your changes to psx-bevy/
+vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gte (the GTE), psx-scenario (Port, the runner, --replay, the scenario formats), psx-capture (the glossary binding's API); don't edit (fix upstream in psx)
 ```
+
+The template has no window, renderer or engine: the game's architecture is
+yours to choose. `psx port add` adds ready-made crates under `addons/` when
+the port wants them (`psx port add full`: a window, a renderer with a PS1
+and a modern look, the disc import on start-up, menus); they are this
+project's code once added. A port of one feature's rules needs none.
+
+## What psx relies on
+
+- **`Game` implements `psx_scenario::Port`**: `kinds` lists the scenario
+  kinds it can launch; `launch` builds the world for one from the
+  scenario's parameters with the port's own loading; `tick` runs one logic
+  tick with exactly that pad; `observe` gives the glossary quantities it
+  keeps, `Observed { player_x: …, ..Observed::none() }`, in the original's
+  raw units (`game::observed`, generated from `glossary/`); `screen` gives
+  the picture once the port draws one.
+- **Scenarios are the port's test.** `game/tests/scenarios.rs` replays each
+  recording of the original (`scenarios/<id>/`) tick by tick in a fresh
+  `Game::headless()`. `psx port check` runs it for the verdicts; `cargo
+  test -p game --test scenarios` while working.
+- **`--replay`.** `cargo run -p game -- --replay
+  scenarios/<id>/<name>.jsonl --frames DIR` draws a recording a PNG per
+  tick from `screen`, for psx web to show beside the original. Keep the
+  call to `psx_scenario::replay::main` first in `main`.
+- **Importers** are `tools/import`: `psx port check` runs `cargo run -p
+  import -- DISC OUT` and `cargo test -p import`.
 
 ## The code
 
 Write the port as code someone would write for a new game today, not a
-translation of the original: clean, idiomatic Rust and Bevy, reusable in
-another game with its own content, with little duplication. How to get
-there is yours to decide. What the tools rely on:
+translation of the original: clean, idiomatic Rust, reusable in another
+game with its own content, with little duplication. How to get there is
+yours to decide. What the tools rely on besides the above:
 
-- **Logic apart from rendering.** Logic runs in `FixedUpdate`
-  (`GameSystems::Game`) at the game's tick rate, reads `ControllerState`, and
-  never reads the window, the camera's pixels or the frame rate, so it runs
-  headless. Rules the original ties to the screen ("wakes when on screen",
-  HUD layout) are defined against its 4:3 view; `PsxAspect` widens what is
-  shown and `PsxAnchor` anchors the HUD.
+- **Logic apart from presentation.** The rules run in `tick` and read
+  only the pad they are given, never a window, the clock or the frame
+  rate, so they run headless. Rules the original ties to the screen
+  ("wakes when on screen", HUD layout) are defined against its 4:3 view.
 - **The tick stays fixed** at the original's rate (`REGION`,
-  `FIELDS_PER_TICK` in `game/src/lib.rs`).
-- **Scenarios are the port's test.** The port registers a launcher for
-  each scenario kind, which builds the world from the
-  scenario's parameters with the port's own loading, and observes the
-  glossary quantities it keeps: `app.observe(|w: &mut World| Observed {
-  croc_x: …, ..Observed::none() })`, in the original's raw units
-  (`game::observed`, generated from `glossary/`; `psx_bevy::scenario`).
-  `game/tests/scenarios.rs` replays each recording of the original
-  (`scenarios/<id>/`) tick by tick with its pad, in a headless `app` with
-  the game's logic. `psx port check` runs it for the verdicts; `cargo
-  test -p game --test scenarios` while working.
+  `FIELDS_PER_TICK` in `game/src/lib.rs`, set from how many vblanks the
+  original's main loop waits per game frame). Never run logic every Nth
+  tick by counting frames: button edges would fall on skipped ticks.
+- **Deterministic.** A tick's pad is its only input, and each recording
+  runs twice in fresh games: where the two runs part, the runner names the
+  tick and quantity. Seed random numbers (as the original seeds its own),
+  never from the clock or the OS; never let a rule depend on
+  `HashMap`/`HashSet` iteration order (`BTreeMap`, or sort first).
 - **Only importers read the original's formats** (`tools/import`); the
-  game reads the port's own (RON, glTF, PNG, WAV/OGG).
+  game reads modern ones (glTF, PNG, common audio and video formats, its
+  own data files). The importers write them, record where each output came
+  from (`Provenance::of_disc`, which `psx port check` counts as the file
+  imported), and bump `import::VERSION` whenever their output changes. Set
+  `import::SERIALS` to the disc revisions they support and `import::GAME`
+  to the original's name. Their tests use a disc made with
+  `import::test_disc::iso`; the repository never holds the original's data.
 
 ## The original as evidence
 
@@ -64,18 +89,23 @@ there is yours to decide. What the tools rely on:
   wants it: the original's routines, state bytes and RAM layout are not a
   structure to copy. A constant tuned until a recording matches fails the
   next one.
+- **Name** what you learn about the original's code (functions, globals,
+  struct fields, locals) in `names/*.names` (psx guide, topic code):
+  every decompile, disassembly and trace then reads with those names.
 - **Cite** where each constant and non-obvious rule came from: the address,
   the instruction that writes or tests it, or the recording that showed
   it, and what was not verified, so someone can re-check it with psx.
-- Where a recording needs the original's exact arithmetic,
-  `psx_bevy::num` computes as its compiled C does (`Num`, `Fixed`,
-  `Angle`) and `psx_bevy::gte` as its GTE does.
+- Where a recording needs the original's exact arithmetic, `psx_fixed`
+  computes as its compiled C does and `psx_gte` as its GTE does.
 
 ## The review
 
-Once the goal's features work, the code is reviewed as a whole by someone
-who did not write it: a sub-agent or a fresh session, given the brief
-`port_next` prints. The recordings already check what the code does; the
+Each time a feature comes to match its recordings, again when it is
+finished (its branches resolved), and when much of the code has changed
+since the last review, the code is reviewed by someone who did not
+write it: a sub-agent or a fresh session, given the brief
+`port_next` prints (the whole code the first time, then what changed
+since). The recordings already check what the code does; the
 review asks whether you would write a new game like this, and its
 findings say how to restructure it. They go in `review.md`; answer each
 one: done (with `port_check` passing again), or kept and why.
@@ -84,19 +114,22 @@ one: done (with `port_check` passing again), or kept and why.
 
 A goal may ask for more than the game's features: the original's whole
 front end (menus, saves, options), an editor for the port's formats, or
-mod support (`game` is a library, and psx-bevy's asset folders layer).
-Add them when it does.
+mod support (`game` is a library). Add them when it does.
 
 ## Checks
 
 ```sh
-cargo test --workspace --all-features    # the routine check
+cargo test --workspace     # the routine check
 cargo fmt --all
-cargo clippy --workspace --all-targets --all-features
-cargo build --release --no-default-features   # shipping build
+cargo clippy --workspace --all-targets
 ```
 
-Iteration builds link Bevy as a shared library (default feature `dynamic`);
-a debug build finds it, and the game's `assets/`, when started from
-`target/` too (an MCP client running `target/debug/<game> --mcp`, the
-executable named after the game; the package is `game`).
+## Add-ons
+
+Crates `psx port add` wrote. They are this project's code: use them as they are, change them, or move what you want into game/ and delete the rest. `psx port update` offers newer versions beside them as `.psx-new` files.
+
+- `addons/shell/` (`psx port add shell`): the window (windowed or borderless fullscreen, any size), the fixed-step loop at the port's tick rate, and the pad from keyboard and gamepads with psx play's bindings
+- `addons/renderer/` (`psx port add renderer`): wgpu drawing in a PS1 look and a modern look: glTF models, textures, a camera, lights, fog and sprites (`cargo run -p renderer --example view -- MODEL.gltf`)
+- `addons/disc-import/` (`psx port add disc-import`): the player's disc imported by tools/import on first start, with a screen that asks for it
+- `addons/menus/` (`psx port add menus`): F1 controls and F2 display menus over the game, saved to the player's settings
+- `full` (`psx port add full`): the four above wired in game/src/main.rs; game/src/demo.rs stands in for the game's drawing

@@ -6,16 +6,14 @@
 //! Not ported: falling underwater (0x8002D824, level+0x6E == 1: v >> 4),
 //! walking off a ledge into a fall (script 0x1956: no ledge on the flat
 //! floor), and falling to death.
-use bevy::prelude::*;
 use serde::Deserialize;
 
-use super::{Ground, Position};
-use crate::config::{Tuning, TuningPlugin};
-use crate::tick::TickPhase;
+use super::{Character, Ground, Position};
+use crate::config::Tuning;
 
 /// Design numbers of the rise and the fall, read from
 /// `assets/character/vertical.ron`.
-#[derive(Resource, Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct VerticalTuning {
     /// With less height left than this the rise slows (700, 0x8002D8D4).
     pub slow_below: i32,
@@ -63,7 +61,7 @@ impl Tuning for VerticalTuning {
 /// Where a body is vertically: the object's flags +0x174 (0x200 rising,
 /// 0x400 falling) and +0x178 bit 1 (standing). Neither rising nor falling
 /// and off the ground is a hang (Croc's stomp's pause in mid-air).
-#[derive(Reflect, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VerticalState {
     #[default]
     Grounded,
@@ -75,9 +73,7 @@ pub enum VerticalState {
 /// A body's vertical motion. The speed and the height left are kept across
 /// states, as the original keeps its fields (+0x150, +0x14C): a hang keeps
 /// the speed it stopped at, and a drop from it the height left of the jump.
-#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
-#[reflect(Component)]
-#[require(RiseHeld)]
+#[derive(Default, Clone, Copy, Debug)]
 pub struct Vertical {
     pub state: VerticalState,
     /// World units per tick: upward while rising, downward while falling.
@@ -120,57 +116,16 @@ impl Vertical {
     }
 }
 
-/// Whether what lifts a rising body still pushes. Let go, a rise near its
-/// top is cut short. The controller sets it in [`TickPhase::Input`]; a body
-/// with no controller keeps it held, so its rise is never cut.
-#[derive(Component, Reflect, Clone, Copy, Debug)]
-#[reflect(Component)]
-pub struct RiseHeld(pub bool);
-
-impl Default for RiseHeld {
-    fn default() -> Self {
-        RiseHeld(true)
-    }
-}
-
-/// The body landed this tick (+0x174 bit 0x1000): present from the fall
-/// that lands until the next tick's physics (0x8002CCD0 clears it), so
-/// [`TickPhase::Reactions`] can handle it.
-#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
-#[reflect(Component)]
-pub struct Landed;
-
-pub(super) struct VerticalPlugin;
-
-impl Plugin for VerticalPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_plugins(TuningPlugin::<VerticalTuning>::new(VerticalTuning::PATH))
-            .add_systems(FixedUpdate, move_vertically.in_set(TickPhase::Physics));
-    }
-}
-
 /// Rising or falling, each tick before the controller: one or the other,
 /// the fall tested first (0x8002CCF0..0x8002CD24), so a rise that peaks
 /// this tick falls from the next.
-fn move_vertically(
-    mut commands: Commands,
-    tuning: Res<VerticalTuning>,
-    landed: Query<Entity, With<Landed>>,
-    mut q: Query<(Entity, &mut Vertical, &mut Position, &Ground, &RiseHeld)>,
-) {
-    for entity in &landed {
-        commands.entity(entity).remove::<Landed>();
-    }
-    for (entity, mut v, mut position, ground, held) in &mut q {
-        match v.state {
-            VerticalState::Falling => {
-                if fall(&tuning, &mut v, &mut position, ground) {
-                    commands.entity(entity).insert(Landed);
-                }
-            }
-            VerticalState::Rising => rise(&tuning, held.0, &mut v, &mut position),
-            VerticalState::Grounded | VerticalState::Hanging => {}
-        }
+pub fn move_vertically(tuning: &VerticalTuning, body: &mut Character) {
+    let Character { vertical: v, position, ground, rise_held, landed, .. } = body;
+    *landed = false;
+    match v.state {
+        VerticalState::Falling => *landed = fall(tuning, v, position, ground),
+        VerticalState::Rising => rise(tuning, *rise_held, v, position),
+        VerticalState::Grounded | VerticalState::Hanging => {}
     }
 }
 

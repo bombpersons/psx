@@ -338,8 +338,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("disc-import-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let cnf = b"BOOT = cdrom:\\SLUS_123.45;1\r\n";
-        std::fs::write(dir.join("game.iso"), import::test_disc::iso("GAME", &[("SYSTEM.CNF", cnf)])).unwrap();
+        // A disc of a serial the importers accept, if they name any.
+        let serial = import::SERIALS.first().copied().unwrap_or("SLUS_123.45");
+        let cnf = format!("BOOT = cdrom:\\{serial};1\r\n");
+        let files: [(&str, &[u8]); 2] = [("SYSTEM.CNF", cnf.as_bytes()), (serial, &[0; 2048])];
+        std::fs::write(dir.join("game.iso"), import::test_disc::iso("GAME", &files)).unwrap();
         let options = Options { name: "test".into(), disc: None, search: vec![dir.clone()], out: dir.join("imported") };
         let mut d = DiscImport::new(options.clone());
         wait(&mut d);

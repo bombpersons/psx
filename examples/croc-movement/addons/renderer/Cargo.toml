@@ -1,0 +1,24 @@
+# Written by `psx port add renderer`; yours to change (`psx port update`
+# leaves newer versions beside your files as .psx-new).
+[package]
+name = "renderer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Frame, which --replay writes.
+psx-scenario.workspace = true
+serde.workspace = true
+wgpu = "30"
+glam = "0.33"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+png = "0.18"
+gltf = "1.4"
+
+[dev-dependencies]
+serde_json.workspace = true
+# The example opens a window through the shell.
+shell = { path = "../shell" }

@@ -1,7 +1,7 @@
 //! Importers: the player's disc -> the port's assets under
-//! `game/assets/imported/`. The game runs [`import`] itself on first start
-//! when it finds the disc (`game/src/disc.rs`); `cargo run -p import -- DISC`
-//! runs the same code by hand.
+//! `game/assets/imported/`. The game runs [`import`] on the player's disc
+//! (`psx port add disc-import` adds a start-up flow for it); `cargo run -p
+//! import -- DISC` runs the same code by hand.
 //!
 //! The original's raw formats (fixed-point units, packed bitfields, offsets
 //! into word arrays, CLUT/VRAM layouts) live only here. Each importer converts

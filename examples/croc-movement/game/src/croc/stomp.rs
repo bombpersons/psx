@@ -16,21 +16,16 @@
 //! the script's settle stops the animation and goes back to its hang step,
 //! whose check, later in the same tick, finds the animation over and drops
 //! him.
-use bevy::ecs::query::QueryData;
-use bevy::prelude::*;
-use psx_bevy::controller::Button;
-use psx_bevy::prelude::*;
+use psx_scenario::Button;
 use serde::Deserialize;
 
-use super::jump::{JumpState, JumpTest};
-use super::running::{Motion, RunningSet};
-use super::{Action, ActionKind, Croc};
-use crate::character::{Clip, Ground, Landed, Position, Vertical};
-use crate::config::{Tuning, TuningPlugin};
-use crate::tick::TickPhase;
+use super::{ActionKind, Croc};
+use crate::Controls;
+use crate::character::Clip;
+use crate::config::Tuning;
 
 /// Design numbers, read from `assets/croc/stomp.ron`.
-#[derive(Resource, Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct StompTuning {
     /// A stomp needs Croc more than this above the floor (0x3D7, script 0x18C0).
     pub min_height: i32,
@@ -71,7 +66,7 @@ impl Tuning for StompTuning {
 }
 
 /// Where a stomp is (script local L104): the step of [`ActionKind::Stomp`].
-#[derive(Reflect, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stomp {
     /// Stop and hang (L104 0).
     #[default]
@@ -88,95 +83,61 @@ pub enum Stomp {
     Recover(u8),
 }
 
-/// The stomp test in [`TickPhase::Control`]: after the jump test in the
-/// same sub (script 0x18B9), as it clears the press the jump test kept.
-#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct StompTest;
-
-pub struct StompPlugin;
-
-impl Plugin for StompPlugin {
-    fn build(&self, app: &mut App) {
-        app.configure_sets(FixedUpdate, StompTest.in_set(TickPhase::Control).after(JumpTest).before(RunningSet::Turn))
-            .add_plugins(TuningPlugin::<StompTuning>::new(StompTuning::PATH))
-            .add_systems(FixedUpdate, (start_stomp.in_set(StompTest), stomp.in_set(TickPhase::Actions)));
-    }
-}
-
 /// The stomp test (script 0x18B9): a press in a jump, high enough, starts a
 /// stomp from the next tick.
-fn start_stomp(
-    pad: Res<ControllerState>,
-    tuning: Res<StompTuning>,
-    mut q: Query<(&mut Action, &mut JumpState, &Position, &Ground), With<Croc>>,
-) {
-    for (mut action, mut jump, position, ground) in &mut q {
-        if action.is_free()
-            && jump.from_jump
-            && pad.pressed(Button::Cross)
-            && ground.clearance(position.y) > tuning.min_height
-        {
-            jump.buffer = 0;
-            jump.from_jump = false;
-            action.start(ActionKind::Stomp(Stomp::Begin));
-        }
+/// It runs after the jump test in the same sub (script 0x18B9), as it
+/// clears the press the jump test kept.
+pub fn start_stomp(pad: &Controls, tuning: &StompTuning, croc: &mut Croc) {
+    let Croc { body, action, jump, .. } = croc;
+    if action.is_free()
+        && jump.from_jump
+        && pad.pressed(Button::Cross)
+        && body.ground.clearance(body.position.y) > tuning.min_height
+    {
+        jump.buffer = 0;
+        jump.from_jump = false;
+        action.start(ActionKind::Stomp(Stomp::Begin));
     }
-}
-
-/// What a stomp's body works on.
-#[derive(QueryData)]
-#[query_data(mutable)]
-struct Stomper {
-    action: &'static mut Action,
-    vertical: &'static mut Vertical,
-    motion: &'static mut Motion,
-    clip: &'static mut Clip,
-    position: &'static mut Position,
-    ground: &'static Ground,
-    landed: Has<Landed>,
 }
 
 /// The stomp's body (the script's action 4, 0x2732): one step a tick.
-fn stomp(pad: Res<ControllerState>, tuning: Res<StompTuning>, mut q: Query<Stomper, With<Croc>>) {
-    for c in &mut q {
-        let StomperItem { mut action, vertical: mut v, mut motion, mut clip, mut position, ground, landed } = c;
-        let action = &mut *action;
-        let ActionKind::Stomp(step) = &mut action.current else { continue };
-        match *step {
-            Stomp::Begin => {
-                v.hang();
-                motion.stop();
-                *clip = Clip::play(tuning.hang_frames);
-                *step = Stomp::Hang;
-            }
-            Stomp::Hang if !clip.playing => {
-                v.fall(tuning.drop_speed);
-                *step = Stomp::Drop;
-            }
-            Stomp::Drop if landed => {
-                position.y = ground.height;
-                *step = Stomp::Landed;
-            }
-            Stomp::Landed => {
-                *clip = Clip::play(tuning.land_frames);
-                *step = Stomp::Settle;
-            }
-            // Jump held and still high: stomp again, straight into the drop
-            // with no hang (the one step that moves twice in a tick).
-            Stomp::Settle
-                if !clip.playing
-                    && pad.held(Button::Cross)
-                    && ground.clearance(position.y) > tuning.again_min_height =>
-            {
-                clip.stop();
-                v.fall(tuning.drop_speed);
-                *step = Stomp::Drop;
-            }
-            Stomp::Settle if !clip.playing => *step = Stomp::Recover(0),
-            Stomp::Recover(ticks) if ticks == tuning.recovery_ticks => action.start(ActionKind::Free),
-            Stomp::Recover(ticks) => *step = Stomp::Recover(ticks + 1),
-            // Waiting for the animation, or for the landing.
-            Stomp::Hang | Stomp::Drop | Stomp::Settle => {}
+pub fn stomp(pad: &Controls, tuning: &StompTuning, croc: &mut Croc) {
+    let Croc { body, action, motion, .. } = croc;
+    let (v, clip, position, ground, landed) =
+        (&mut body.vertical, &mut body.clip, &mut body.position, &body.ground, body.landed);
+    let ActionKind::Stomp(step) = &mut action.current else { return };
+    match *step {
+        Stomp::Begin => {
+            v.hang();
+            motion.stop();
+            *clip = Clip::play(tuning.hang_frames);
+            *step = Stomp::Hang;
         }
+        Stomp::Hang if !clip.playing => {
+            v.fall(tuning.drop_speed);
+            *step = Stomp::Drop;
+        }
+        Stomp::Drop if landed => {
+            position.y = ground.height;
+            *step = Stomp::Landed;
+        }
+        Stomp::Landed => {
+            *clip = Clip::play(tuning.land_frames);
+            *step = Stomp::Settle;
+        }
+        // Jump held and still high: stomp again, straight into the drop
+        // with no hang (the one step that moves twice in a tick).
+        Stomp::Settle
+            if !clip.playing && pad.held(Button::Cross) && ground.clearance(position.y) > tuning.again_min_height =>
+        {
+            clip.stop();
+            v.fall(tuning.drop_speed);
+            *step = Stomp::Drop;
+        }
+        Stomp::Settle if !clip.playing => *step = Stomp::Recover(0),
+        Stomp::Recover(ticks) if ticks == tuning.recovery_ticks => action.start(ActionKind::Free),
+        Stomp::Recover(ticks) => *step = Stomp::Recover(ticks + 1),
+        // Waiting for the animation, or for the landing.
+        Stomp::Hang | Stomp::Drop | Stomp::Settle => {}
     }
 }

@@ -1,35 +1,32 @@
-//! Hand-editable data: RON files under the running crate's `assets/` (or a
-//! layered asset folder, see [`psx_bevy::assets`]).
+//! Hand-editable data: RON files under `assets/`, built into the game so
+//! the scenarios, `--replay` and a release build all see the same values.
 //!
 //! Design numbers inside a controller (speeds, damage, timers) live in a
-//! per-type tuning file, so they can be modded without code changes; the
-//! controller reads them from a resource. Structural details (update order,
-//! rounding) stay in code.
-//!
-//! Files load synchronously when the app is built, so headless tests see the
-//! same values as the game. Move to Bevy asset loaders when content needs
-//! streaming or hot reload.
-use bevy::prelude::*;
+//! per-type tuning file, so they can be changed without touching code; the
+//! controller reads them from [`crate::Tunings`]. Structural details
+//! (update order, rounding) stay in code.
 use serde::de::DeserializeOwned;
-use std::marker::PhantomData;
-use std::path::PathBuf;
 
-/// `assets/<relative>` from the same folders Bevy's asset server reads: the
-/// running crate's `assets/` (under `BEVY_ASSET_ROOT`, else the crate being
-/// run, else the executable's folder), then any folders added with
-/// [`psx_bevy::assets::add_root`] (a mod's base game).
-pub fn asset_path(relative: &str) -> PathBuf {
-    psx_bevy::assets::find(relative)
-}
+/// The files under `assets/`, by their path there.
+const FILES: &[(&str, &str)] = &[
+    ("character/body.ron", include_str!("../assets/character/body.ron")),
+    ("character/vertical.ron", include_str!("../assets/character/vertical.ron")),
+    ("croc/running.ron", include_str!("../assets/croc/running.ron")),
+    ("croc/jump.ron", include_str!("../assets/croc/jump.ron")),
+    ("croc/stomp.ron", include_str!("../assets/croc/stomp.ron")),
+    ("levels/start.ron", include_str!("../assets/levels/start.ron")),
+];
 
-/// Reads and parses `assets/<relative>` as RON.
+/// Parses `assets/<relative>` as RON.
 pub fn load_ron<T: DeserializeOwned>(relative: &str) -> Result<T, String> {
-    let path = asset_path(relative);
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    ron::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+    let (_, text) = FILES
+        .iter()
+        .find(|(path, _)| *path == relative)
+        .ok_or_else(|| format!("assets/{relative}: not one of config::FILES"))?;
+    ron::from_str(text).map_err(|e| format!("assets/{relative}: {e}"))
 }
 
-/// A tuning file's own checks: values a modder could write that the rules
+/// A tuning file's own checks: values someone could write that the rules
 /// cannot run with.
 pub trait Tuning {
     /// Why the values cannot be used, if they cannot.
@@ -38,24 +35,10 @@ pub trait Tuning {
     }
 }
 
-/// Inserts resource `T` from `assets/<path>` (RON) when added. Panics with
-/// the file and parse error if it is missing, invalid or fails
-/// [`Tuning::validate`]: a game without its tuning is not worth running.
-pub struct TuningPlugin<T> {
-    pub path: &'static str,
-    marker: PhantomData<fn() -> T>,
-}
-
-impl<T> TuningPlugin<T> {
-    pub const fn new(path: &'static str) -> Self {
-        Self { path, marker: PhantomData }
-    }
-}
-
-impl<T: Resource + DeserializeOwned + Tuning> Plugin for TuningPlugin<T> {
-    fn build(&self, app: &mut App) {
-        let value: T = load_ron(self.path).unwrap_or_else(|e| panic!("tuning {}: {e}", self.path));
-        value.validate().unwrap_or_else(|e| panic!("tuning {}: {e}", self.path));
-        app.insert_resource(value);
-    }
+/// Reads tuning `T` from `assets/<path>`. Panics with the file and the
+/// error if it is invalid or fails [`Tuning::validate`].
+pub fn load_tuning<T: DeserializeOwned + Tuning>(path: &str) -> T {
+    let value: T = load_ron(path).unwrap_or_else(|e| panic!("tuning {e}"));
+    value.validate().unwrap_or_else(|e| panic!("tuning assets/{path}: {e}"));
+    value
 }

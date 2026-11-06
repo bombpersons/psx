@@ -1,5 +1,6 @@
 //! F-0002: Croc's jump. A press of jump starts it (script sub 0x1803 and
-//! the JUMP opcode 0x80028688), a rise that the body's [`crate::character::vertical`] carries:
+//! the JUMP opcode 0x80028688), a rise that the body's
+//! [`crate::character::vertical`] carries:
 //! it slows near the top, and sooner when jump is let go, then falls and
 //! lands. The script's landing handler (0x119E) resets the jump. A press
 //! while Croc cannot jump yet is kept for a few ticks.
@@ -12,19 +13,15 @@
 //! surface of type 8 (MOVESTATE 5, `Gait::SlidingSteep`; sub 0x1803), so
 //! sliding neither jumps nor keeps a press. No such surface on the flat
 //! floor. The fall's own unported cases are listed there.
-use bevy::prelude::*;
-use psx_bevy::controller::Button;
-use psx_bevy::prelude::*;
+use psx_scenario::Button;
 use serde::Deserialize;
 
-use super::running::RunningSet;
-use super::{Action, Croc};
-use crate::character::{Clip, Ground, Landed, Position, RiseHeld, Vertical};
-use crate::config::{Tuning, TuningPlugin};
-use crate::tick::TickPhase;
+use super::Croc;
+use crate::Controls;
+use crate::config::Tuning;
 
 /// Design numbers, read from `assets/croc/jump.ron`.
-#[derive(Resource, Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct JumpTuning {
     /// How high a jump may take Croc, world units (script 0x188F: JUMP 2300).
     pub height: i32,
@@ -55,8 +52,7 @@ impl Tuning for JumpTuning {
 }
 
 /// What the jump keeps between ticks: the script's locals for it.
-#[derive(Component, Reflect, Clone, Copy, Debug)]
-#[reflect(Component)]
+#[derive(Clone, Copy, Debug)]
 pub struct JumpState {
     /// No jump while non-zero: set on landing (L151).
     pub lockout: u8,
@@ -76,48 +72,23 @@ impl Default for JumpState {
     }
 }
 
-/// The jump test in [`TickPhase::Control`], after MOVE (script sub 0x1803).
-#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct JumpTest;
-
-pub struct JumpPlugin;
-
-impl Plugin for JumpPlugin {
-    fn build(&self, app: &mut App) {
-        app.configure_sets(
-            FixedUpdate,
-            JumpTest.in_set(TickPhase::Control).after(RunningSet::Walk).before(RunningSet::Turn),
-        )
-        .add_plugins(TuningPlugin::<JumpTuning>::new(JumpTuning::PATH))
-        .add_systems(
-            FixedUpdate,
-            (
-                hold_rise.in_set(TickPhase::Input),
-                land.in_set(TickPhase::Reactions),
-                take_off.in_set(JumpTest),
-                count_down.in_set(TickPhase::Timers),
-            ),
-        );
-    }
-}
-
 /// Holding jump keeps the rise going; let go, a variable-height jump is cut
 /// short near its top (0x8002D8D4 tests the pad and +0x174 bit 0x2000000).
-fn hold_rise(pad: Res<ControllerState>, mut q: Query<(&JumpState, &mut RiseHeld), With<Croc>>) {
-    for (jump, mut held) in &mut q {
-        held.0 = !jump.variable_height || pad.held(Button::Cross);
-    }
+pub fn hold_rise(pad: &Controls, croc: &mut Croc) {
+    croc.body.rise_held = !croc.jump.variable_height || pad.held(Button::Cross);
 }
 
 /// The landing's handler (script 0x119E), the tick Croc lands, before the
 /// script resumes.
-fn land(tuning: Res<JumpTuning>, mut q: Query<(&mut JumpState, &mut Position, &Ground), With<Landed>>) {
-    for (mut jump, mut position, ground) in &mut q {
-        jump.variable_height = true;
-        position.y = ground.height;
-        jump.lockout = tuning.landing_lockout;
-        jump.from_jump = false;
+pub fn land(tuning: &JumpTuning, croc: &mut Croc) {
+    let Croc { body, jump, .. } = croc;
+    if !body.landed {
+        return;
     }
+    jump.variable_height = true;
+    body.position.y = body.ground.height;
+    jump.lockout = tuning.landing_lockout;
+    jump.from_jump = false;
 }
 
 /// The jump test (script sub 0x1803, after MOVE): a press, or one kept
@@ -125,33 +96,27 @@ fn land(tuning: Res<JumpTuning>, mut q: Query<(&mut JumpState, &mut Position, &G
 /// tests the JUMPING and FALLING flags, not on-ground) and not just landed;
 /// otherwise a press is kept. Any later state that leaves Croc off the
 /// ground in the free action without rising or falling could jump from it.
-fn take_off(
-    pad: Res<ControllerState>,
-    tuning: Res<JumpTuning>,
-    mut q: Query<(&Action, &mut Vertical, &mut JumpState, &mut Clip), With<Croc>>,
-) {
-    for (action, mut v, mut jump, mut clip) in &mut q {
-        if !action.is_free() {
-            continue;
-        }
-        let pressed = pad.pressed(Button::Cross);
-        if !pressed && jump.buffer == 0 {
-            continue;
-        }
-        if !v.rising_or_falling() && jump.lockout == 0 {
-            v.jump(tuning.height, tuning.speed);
-            jump.from_jump = true;
-            clip.stop();
-        } else if pressed {
-            jump.buffer = tuning.buffer_ticks;
-        }
+pub fn take_off(pad: &Controls, tuning: &JumpTuning, croc: &mut Croc) {
+    let Croc { body, action, jump, .. } = croc;
+    if !action.is_free() {
+        return;
+    }
+    let pressed = pad.pressed(Button::Cross);
+    if !pressed && jump.buffer == 0 {
+        return;
+    }
+    if !body.vertical.rising_or_falling() && jump.lockout == 0 {
+        body.vertical.jump(tuning.height, tuning.speed);
+        jump.from_jump = true;
+        body.clip.stop();
+    } else if pressed {
+        jump.buffer = tuning.buffer_ticks;
     }
 }
 
 /// The countdowns at the end of every tick (script 0x3649..0x3687).
-fn count_down(mut q: Query<&mut JumpState>) {
-    for mut jump in &mut q {
-        jump.lockout = jump.lockout.saturating_sub(1);
-        jump.buffer = jump.buffer.saturating_sub(1);
-    }
+pub fn count_down(croc: &mut Croc) {
+    let jump = &mut croc.jump;
+    jump.lockout = jump.lockout.saturating_sub(1);
+    jump.buffer = jump.buffer.saturating_sub(1);
 }

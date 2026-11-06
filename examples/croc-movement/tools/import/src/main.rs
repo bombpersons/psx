@@ -1,5 +1,5 @@
 //! `cargo run -p import -- DISC [OUT]`: imports from a disc image into OUT
-//! (default `game/assets/imported`), as the game does on first start.
+//! (default `game/assets/imported`), as the game does.
 //! `cargo run -p import -- provenance <source> <output>` records where a file
 //! came from. `cargo run -p import -- index DISC PATH...` lists archives'
 //! entries ([`import::index`]) as JSON, for psx.

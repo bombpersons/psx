@@ -89,7 +89,8 @@ One worked example goes through the whole port loop:
 [**Croc's movement**](examples/croc-movement/README.md). Croc's running, jump and stomp were
 found with coverage diff, recorded from the original, ported until every recording passed
 (three of them played by a person and held out from the agent), and reviewed as code for a new
-game. It's the workspace as the agent left it, with no disc data in it.
+game. It's the workspace as the agent left it, since moved from Bevy to the plain template
+with the `full` add-on, with no disc data in it.
 
 ## Get started
 

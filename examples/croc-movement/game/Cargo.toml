@@ -5,9 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-# The port is a library so that integration tests in `tests/`, sandboxes
-# and tools can drive it; `src/main.rs` is the thin executable, named after
-# the game.
+# The port is a library so that the scenarios in `tests/` and any tools can
+# drive it; `src/main.rs` is the thin executable, named after the game.
 [lib]
 path = "src/lib.rs"
 
@@ -15,24 +14,22 @@ path = "src/lib.rs"
 name = "croc-legend-of-the-gobbos"
 path = "src/main.rs"
 
-[features]
-default = ["dynamic"]
-dynamic = ["psx-bevy/dynamic"]
-dev-mcp = ["psx-bevy/dev-mcp"]
-
 [dependencies]
-psx-bevy.workspace = true
-bevy.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-# Hand-editable tables and tuning (src/config.rs).
-ron.workspace = true
-# The importers and disc reader (tools/import), run in the game on first start.
-import.workspace = true
+# Crates psx port add wrote (addons/).
+shell = { path = "../addons/shell" }
+renderer = { path = "../addons/renderer" }
+disc-import = { path = "../addons/disc-import" }
+menus = { path = "../addons/menus" }
 # The glossary's quantities (glossary/), which the port observes for the
 # scenarios as `Observed` (src/lib.rs, build.rs).
 glossary = { path = "../glossary" }
 psx-scenario.workspace = true
+psx-fixed.workspace = true
+psx-gte.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Hand-editable tables and tuning (src/config.rs).
+ron.workspace = true
 
 [build-dependencies]
 psx-scenario.workspace = true
