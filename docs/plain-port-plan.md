@@ -255,13 +255,197 @@ Each phase ends with psx's tests and the templates' tests passing.
 5. **The other add-ons**, in the order ports ask for them, starting with
    dev-mcp. The Croc example moves to `full` here.
 
-After this plan, maybe: ports in other languages. What ties a port to
-Rust is that the runner and `--replay` run inside it through cargo, that
-`Observed` is generated as Rust, and that psx-fixed and psx-gte are Rust
-libraries. The way out would be psx running the runner itself and driving
-the port as a process (JSON lines on stdin and stdout: launch, tick,
-observe, screen), with the manifest naming the build, run and import
-commands. Not planned yet.
+After this plan: ports in other languages (designed in the section below).
+Not started.
 
 Phase 1 is a refactor on its own and worth doing first: it lets a port
 leave Bevy without psx noticing.
+
+## After this plan: any executable as a port
+
+Not started; the design below is agreed. psx treats any program that keeps a
+contract as a port, in any language, and tests it as it tests a Rust one.
+
+### What ties a port to Rust
+
+- The runner runs inside the port: `port check` runs `cargo test --test
+  scenarios`, and psx web's replay runs `cargo run -- --replay`.
+- `Observed` is generated as Rust from the glossary (the game's
+  `build.rs`).
+- The importers are run with `cargo run -p import`, and the build is
+  cargo's.
+- psx-fixed and psx-gte, which give a port the original's exact
+  arithmetic, are Rust libraries.
+- The port key hashes the cargo workspace, and the guide and port next's
+  items speak of cargo.
+
+### What stays Rust: the glossary and its binding
+
+The glossary (`glossary/src/lib.rs`) and its binding (`glossary/binding/`,
+a cdylib `scenario record` loads) stay Rust, by decision. They describe the
+original, not the port: where its RAM keeps each quantity, which takes
+following pointers, indexing and conditions, so a data format would grow
+into a language of its own. They run inside psx and never reach the port;
+a C port and a Rust port of one game share the same glossary. Ports in any
+language see only the glossary's names and types, over the protocol. A
+port in another language therefore keeps a small cargo workspace holding
+just the glossary.
+
+### The contract
+
+Phase 1 put the runner behind the `Port` trait (`kinds`, `launch`, `tick`,
+`observe`, `screen`). psx implements that trait itself as a `ProcessPort`
+that drives a child process, and runs the runner, the comparison and the
+verdicts on its own side, unchanged.
+
+A manifest, `psx-port.toml`, names the commands:
+
+```toml
+[port]
+build  = ["make", "-C", "game"]
+run    = ["game/build/game", "--psx"]   # speaks the protocol on stdin/stdout
+import = ["game/build/import", "{disc}", "{out}"]
+```
+
+The protocol is JSON lines on stdin and stdout, one reply per request, with
+a protocol version in `hello`. stdout carries only the protocol; logs go to
+stderr.
+
+```
+-> {"hello":1}                                     <- {"kinds":["level","menu"]}
+-> {"launch":{"kind":"level","parameters":{...}}}  <- {"ok":true} | {"error":"..."}
+-> {"tick":{"buttons":["Cross","Up"],"analog":false,"sticks":[128,128,128,128]}}
+                                                   <- {}
+-> {"observe":{}}                                  <- {"values":{"croc_x":1234,"croc_mode":"Walk"}}
+-> {"screen":{"path":"/tmp/f/12.rgba"}}            <- {"width":320,"height":240} | {"none":true}
+```
+
+- **Pads** are psx-scenario's `Pad` as it is: button names from `Button`
+  (`Cross`, `L1`, `Start`, ...), the analog flag, and the four stick bytes.
+  Not the raw 16-bit mask, which is active-low and easy to get the bit
+  order of wrong; a misspelt name is refused outright.
+- **Observations** use the encoding recordings already use
+  (psx-scenario's `Value`): raw integers as JSON numbers, or decimal
+  strings outside ±2^53; a fixed-point quantity as its underlying integer,
+  never a real; a float as its bit pattern; bools; a variant by name; lists
+  and records as JSON arrays and objects. psx checks each value against its
+  glossary type with the checks that exist (a value outside its type's
+  range is reported as that, which catches a port that forgot to wrap),
+  then compares as the runner does today, with `[compare]` and its
+  tolerances unchanged.
+- **A quantity the port leaves out** is one it has none of, as `None` in
+  `Observed` is today ("expected X, the port has none"), so a port grows a
+  quantity at a time. A name the glossary does not have is a protocol
+  error.
+- **Screens**: the port writes the tick's frame as RGBA bytes to the path,
+  at the original's display size, or answers `none` when it does not draw
+  yet.
+
+Rust ports take the same path: psx-scenario gains `serve(Game)`, which
+speaks the protocol and turns `Observed` into values, so existing ports
+keep their code. `cargo test` stays a quick local check, and psx keeps a
+single runner rather than two.
+
+### Help for exact numbers: the arithmetic spec
+
+The comparison is exact (GT2's steering fails on one unit of `car_speed`),
+so a port must compute what the original's integer code computed. Rust
+ports get psx-fixed and psx-gte. Ports in other languages get a spec and
+test vectors instead; psx never checks how a port reaches its numbers,
+only that they match, so the spec is help, not part of the contract.
+
+- **The integer rules** (psx-fixed's `Exact` mode), a couple of pages: a
+  number is a raw word of a stated width and fraction bits; arithmetic in
+  32-bit `int` (`unsigned` with a `u32` operand), kept to the word's width
+  as a store keeps it; `a * b` is the product's low 32 bits shifted right
+  arithmetically by `b`'s fraction bits; `a / b` is `(a << G) / b`,
+  truncating toward zero, with the R3000's results for a zero divisor; and
+  each named operation (`rescale`, `settle_to_zero`, `snap_to_unit`, the
+  angle helpers) in pseudocode. It warns C ports that signed overflow is
+  undefined and right shifts of negatives implementation-defined:
+  `-fwrapv` or small helpers. The `Float` mode is left out; it is for
+  drawing.
+- **The GTE**: psx-spx's description, plus what psx-gte pins down (the
+  44-bit MAC, `sf` and `lm`, saturation into IR, SX/SY and SZ/OTZ, the FLAG
+  bits, UNR division) and the libgte-style helpers ports call. The
+  `SIN_QUARTER` and UNR tables ship as data files.
+- **Test vectors**, made by the Rust crates as the reference: JSON lines,
+  hand-picked edge cases (−2^31 / −1, a zero divisor, overflow and
+  saturation at each limit, negative shifts) and a seeded batch of random
+  cases per operation. psx prints the spec (`psx guide arithmetic`) and the
+  vectors (`psx port vectors`), so they match the installed psx. A port
+  runs them in its own tests.
+
+A spec rather than a C ABI: other languages write these rules natively in
+an afternoon and the vectors catch mistakes, where an ABI means
+per-platform builds and an interface to keep stable.
+
+### A C port, end to end
+
+1. **The workspace**: `psx-port.toml`; `glossary/` in Rust as now;
+   `scenarios/`, the recordings, `fixes/`, `decomp/`, `names/` and `notes/`
+   unchanged; `game/` with a Makefile and C sources; optionally
+   `tools/import/` in any language.
+2. **Recording** does not change: `scenario record` runs the original on
+   psx-core and the binding reads each tick's quantities.
+3. **The game** is ordinary C: the state a struct, a tick a function, the
+   original's numbers `int32_t` with helpers that follow the spec, tested
+   against `psx port vectors` in `make test`.
+4. **The protocol mode** (`--psx`): `main` reads a request a line, answers
+   it, flushes stdout. A vendored JSON library such as cJSON is enough.
+5. **`port check`** runs `build`, starts `run`, and drives each recording
+   through `ProcessPort`: launch, then tick and observe each tick. The
+   verdicts are today's. Held-out recordings run the same way. Coverage,
+   review and the decompile tools work on the original and do not change.
+6. **psx web's replay** asks for screens; a port that draws writes them.
+7. **Playing**: without `--psx` the same program is the game, with its own
+   window and pad (SDL, raylib, ...). The add-ons stay Rust; ports in
+   other languages bring their own engine.
+8. **Assets**: the manifest's `import` writes modern formats (glTF, PNG)
+   from the player's disc, which the game loads at run time.
+
+### The hard parts
+
+- **Speed.** One round trip per tick is fine at 60 Hz for recordings of a
+  few thousand ticks. If not, the protocol batches: run these N pads and
+  observe after each.
+- **Determinism.** Only the pad drives the port: no clock, no unseeded
+  randomness. The rule is as now, but psx no longer sees the code. A cheap
+  check is running each recording twice and comparing the two.
+- **Robustness.** Timeouts, crashes, and the protocol version.
+- **The port key.** A hash of the git tree, or of the files the manifest
+  names, instead of the cargo workspace.
+
+### What it gains
+
+- **The port never receives the expected values**, held-out or not: it is
+  sent pads and asked for values. Nothing in the port can lean on a
+  recording, by construction. The held-out recordings stay readable in the
+  workspace (the agent runs as the same user, so no storage hides them);
+  the guide's rule against reading them stays the safeguard. `port check`
+  can also report a held-out failure by tick and quantity without the
+  expected value.
+- **Unusual ports become testable**, since anything that keeps the
+  contract can be checked against the recordings:
+  - a recompiled decompilation, which connects to the annotated decompile
+    (docs/decomp-plan.md);
+  - a patched emulator;
+  - the original itself on psx-core. That is a self-test of the harness:
+    the original playing its own recordings always passes.
+
+### Phases
+
+About phase 1 and phase 2 of this plan together, mostly on psx's side.
+
+- **(a) One runner, Rust only.** `ProcessPort` in psx, `serve(Game)` in
+  psx-scenario, observations read as values by glossary name; `port check`
+  and web replay drive Rust ports through the protocol. Croc's and GT2's
+  reports stay byte for byte the same.
+- **(b) Any executable.** The manifest; `port check` and web replay running
+  its commands; the arithmetic spec and `psx port vectors`; a tiny C port
+  (one quantity) in CI as the conformance test.
+- **(c) The wording and the key.** The port key without cargo; the guide,
+  the tool descriptions and port next's items no longer assume cargo.
+
+Start with the contract and the C example alone; templates for other
+languages can come later if ports ask for them.
