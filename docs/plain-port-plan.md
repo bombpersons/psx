@@ -439,13 +439,26 @@ About phase 1 and phase 2 of this plan together, mostly on psx's side.
 
 - **(a) One runner, Rust only.** `ProcessPort` in psx, `serve(Game)` in
   psx-scenario, observations read as values by glossary name; `port check`
-  and web replay drive Rust ports through the protocol. Croc's and GT2's
-  reports stay byte for byte the same.
+  and web replay drive Rust ports through the protocol, which replaces the
+  `cargo test --test scenarios` route and its report file. Ports on the
+  base template need no change: `serve` answers `--psx` inside
+  `psx_scenario::replay::main`, which their `main` already calls, so a
+  `port update` is enough. The in-repo Croc example's reports stay byte
+  for byte the same.
 - **(b) Any executable.** The manifest; `port check` and web replay running
   its commands; the arithmetic spec and `psx port vectors`; a tiny C port
   (one quantity) in CI as the conformance test.
 - **(c) The wording and the key.** The port key without cargo; the guide,
   the tool descriptions and port next's items no longer assume cargo.
+- **(d) Move the test ports.** The psx-bevy ports under
+  `external_agent_tests` (GT2, Croc and Tomb Raider Chronicles) own their
+  `psx-bevy/`, released before phase 1, with its own runner
+  (`psx-bevy/src/scenario.rs`); psx cannot reach into it, and (a) removes
+  the route it answers. We move them ourselves: their scenario test and
+  `main` go through the shared runner (psx-bevy's `AppPort`, behind
+  `serve`), with a `--psx` branch in `main`. Done when each one's
+  `port check` verdicts are the same as before the move. Done between
+  agent runs, not during one.
 
 Start with the contract and the C example alone; templates for other
 languages can come later if ports ask for them.
