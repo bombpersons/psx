@@ -1013,7 +1013,8 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
         }
         if fix_changed {
             // Checked with the fixes it was made with; new recordings take fixes/ as it is.
-            r["fix_changed"] = json!("fixes/ differs from what this recording was made with: record it again to take fixes/ as it is");
+            r["fix_changed"] =
+                json!("fixes/ differs from what this recording was made with: record it again to take fixes/ as it is");
         }
         recordings.push(r);
     }
@@ -1383,14 +1384,23 @@ pub(crate) fn with_c(
                 ok = false;
                 r["status"] = json!("diverges_with_c");
                 r["first_tick"] = json!(first_tick(&diffs));
-                r["how"] = json!("the replay differs with the C and not without it: psx code check the functions it replaces, from a state at that tick (states save, then code check --state)");
+                r["how"] = json!(
+                    "the replay differs with the C and not without it: psx code check the functions it replaces, from a state at that tick (states save, then code check --state)"
+                );
             } else {
                 r["status"] = json!("differs_without_c_too");
                 r["without_c"] = json!(without);
             }
             r["differences"] = json!(diffs);
         }
-        crate::decomp::log_run(&ctx.root, id, r["name"].as_str().unwrap_or(""), r["status"].as_str().unwrap_or(""), &r["share_in_c"], &r["replaced"]);
+        crate::decomp::log_run(
+            &ctx.root,
+            id,
+            r["name"].as_str().unwrap_or(""),
+            r["status"].as_str().unwrap_or(""),
+            &r["share_in_c"],
+            &r["replaced"],
+        );
         out.push(r);
     }
     let share = if steps == 0 { 0.0 } else { ((in_c as f64 / steps as f64) * 1e6).round() / 1e6 };
@@ -1768,7 +1778,8 @@ fn late_input(root: &Path, id: &str, fixes_now: Option<&str>) -> Vec<(Late, Stri
         let Some(late) = details.get("adjusted").and_then(|a| a.get("late_input")) else {
             continue;
         };
-        let ticks: Vec<String> = late["ticks"].as_array().into_iter().flatten().take(5).map(|t| t.to_string()).collect();
+        let ticks: Vec<String> =
+            late["ticks"].as_array().into_iter().flatten().take(5).map(|t| t.to_string()).collect();
         let mut line = format!(
             "{}: the game ran {} ticks on input a tick old (ticks {}{})",
             rel(root, f),
@@ -1780,7 +1791,11 @@ fn late_input(root: &Path, id: &str, fixes_now: Option<&str>) -> Vec<(Late, Stri
         let kind = match fixes_now {
             None => Late::Unfixed,
             Some(now) if made != Some(now) => {
-                line.push_str(if made.is_none() { ", made without fixes/" } else { ", made with fixes/ as it was before" });
+                line.push_str(if made.is_none() {
+                    ", made without fixes/"
+                } else {
+                    ", made with fixes/ as it was before"
+                });
                 Late::Before
             }
             Some(_) => {
@@ -2542,22 +2557,29 @@ pub struct Quantities {
             ]
         );
         // A latched recording from before psx measured late input.
-        let latched = |adjusted: &str| recording(1).replace("\"version\":\"0\"}", &format!("\"version\":\"0\",\"details\":{{\"adjusted\":{adjusted}}}}}"));
+        let latched = |adjusted: &str| {
+            recording(1)
+                .replace("\"version\":\"0\"}", &format!("\"version\":\"0\",\"details\":{{\"adjusted\":{adjusted}}}}}"))
+        };
         std::fs::write(root.join("scenarios/walk/a.jsonl"), latched(r#"{"buffer":[]}"#)).unwrap();
         assert_eq!(
             unready(root, "walk"),
-            ["scenarios/walk/a.jsonl: recorded before psx measured whether the game takes its input every tick; record it again"]
+            [
+                "scenarios/walk/a.jsonl: recorded before psx measured whether the game takes its input every tick; record it again"
+            ]
         );
         assert!(late_input(root, "walk", None).is_empty());
         std::fs::write(root.join("scenarios/walk/a.jsonl"), latched(r#"{"buffer":[],"late_fields":0}"#)).unwrap();
         assert_eq!(unready(root, "walk"), ["walk: changed since its determinism check (psx scenario check walk)"]);
         assert!(late_input(root, "walk", None).is_empty());
-        let late = r#"{"buffer":[],"late_fields":7,"late_input":{"fields":7,"ticks":[3,5,8,9,11,14,20],"tick_count":7}}"#;
+        let late =
+            r#"{"buffer":[],"late_fields":7,"late_input":{"fields":7,"ticks":[3,5,8,9,11,14,20],"tick_count":7}}"#;
         std::fs::write(root.join("scenarios/walk/a.jsonl"), latched(late)).unwrap();
         let line = "scenarios/walk/a.jsonl: the game ran 7 ticks on input a tick old (ticks 3, 5, 8, 9, 11, ..)";
         assert_eq!(late_input(root, "walk", None), [(Late::Unfixed, line.to_string())]);
         // An adjusted recording is made with fixes/ as it is.
-        let adjusted = latched(r#"{"buffer":[],"late_fields":0}"#).replace("\"details\":{", "\"details\":{\"adjust\":[\"latch\"],");
+        let adjusted = latched(r#"{"buffer":[],"late_fields":0}"#)
+            .replace("\"details\":{", "\"details\":{\"adjust\":[\"latch\"],");
         std::fs::write(root.join("scenarios/walk/a.jsonl"), &adjusted).unwrap();
         let without = "scenarios/walk/a.jsonl: made without fixes/; record it again";
         assert!(!unready(root, "walk").iter().any(|p| p.contains("fixes/")));
@@ -2569,7 +2591,10 @@ pub struct Quantities {
         std::fs::write(root.join("scenarios/walk/a.jsonl"), &with).unwrap();
         assert!(!unready(root, "walk").iter().any(|p| p.contains("fixes/")));
         std::fs::write(root.join("fixes/poll.c"), "int poll(void) { return 1; }\n").unwrap();
-        assert!(unready(root, "walk").contains(&"scenarios/walk/a.jsonl: made with fixes/ as it was before; record it again".to_string()));
+        assert!(
+            unready(root, "walk")
+                .contains(&"scenarios/walk/a.jsonl: made with fixes/ as it was before; record it again".to_string())
+        );
         std::fs::remove_dir_all(root.join("fixes")).unwrap();
         std::fs::write(root.join("scenarios/walk/a.jsonl"), latched(late)).unwrap();
         assert_eq!(late_input(root, "walk", Some("f1")), [(Late::Before, format!("{line}, made without fixes/"))]);
@@ -2587,7 +2612,10 @@ pub struct Quantities {
             late_input(root, "walk", Some("f1")),
             [(Late::Fails, format!("{line}, made with fixes/ as it is (poll ran 40 times)"))]
         );
-        assert_eq!(late_input(root, "walk", Some("f2")), [(Late::Before, format!("{line}, made with fixes/ as it was before"))]);
+        assert_eq!(
+            late_input(root, "walk", Some("f2")),
+            [(Late::Before, format!("{line}, made with fixes/ as it was before"))]
+        );
         std::fs::write(root.join("scenarios/walk/a.jsonl"), fixed("f1", 0)).unwrap();
         assert_eq!(
             late_input(root, "walk", Some("f1")),

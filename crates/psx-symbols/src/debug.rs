@@ -422,7 +422,10 @@ pub fn parse_map(text: &str) -> DebugNames {
         let mut w = line.split_whitespace();
         let (Some(a), Some(n), None) = (w.next(), w.next(), w.next()) else { continue };
         let Ok(address) = u32::from_str_radix(a, 16) else { continue };
-        if a.len() == 8 && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !n.starts_with(|c: char| c.is_ascii_digit()) {
+        if a.len() == 8
+            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !n.starts_with(|c: char| c.is_ascii_digit())
+        {
             seen.entry(address).or_insert_with(|| n.to_string());
         }
     }
@@ -475,9 +478,8 @@ impl DebugNames {
     /// Moves globals that start a function to the functions (MAP and SYM
     /// symbols do not say which names are code).
     pub fn split_functions(&mut self, is_start: impl Fn(u32) -> bool) {
-        let (code, data): (Vec<_>, Vec<_>) = std::mem::take(&mut self.globals)
-            .into_iter()
-            .partition(|(a, t, _)| t.is_none() && is_start(*a));
+        let (code, data): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.globals).into_iter().partition(|(a, t, _)| t.is_none() && is_start(*a));
         self.globals = data;
         for (address, _, name) in code {
             self.functions.push(DebugFunction { address, name, ..Default::default() });
@@ -532,7 +534,12 @@ impl DebugNames {
                 Some(ret) => {
                     let params: Vec<String> = f.params.iter().map(|(t, n)| format!("{} {n}", t.trim_end())).collect();
                     let params = if params.is_empty() { "void".into() } else { params.join(", ") };
-                    out.push_str(&format!("function 0x{:08X}{m} {} {}({params}){at}\n", f.address, ret.trim_end(), ident(&f.name)));
+                    out.push_str(&format!(
+                        "function 0x{:08X}{m} {} {}({params}){at}\n",
+                        f.address,
+                        ret.trim_end(),
+                        ident(&f.name)
+                    ));
                 }
                 None => out.push_str(&format!("function 0x{:08X}{m} {}{at}\n", f.address, ident(&f.name))),
             }
@@ -603,8 +610,8 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::testing::planted_sym;
+    use super::*;
 
     #[test]
     fn a_sym_file_reads_into_names_that_parse() {

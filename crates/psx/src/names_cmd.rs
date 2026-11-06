@@ -54,7 +54,9 @@ fn run(ctx: &Ctx, a: CodeNamesArgs) -> crate::Result<Value> {
         }
         None => {
             if a.input.source.is_none() && a.input.analysis.is_none() && a.input.ram.is_none() {
-                return Err(Error::invalid("give source (the EXE or disc.cue::/PATH) or analysis for what to name next"));
+                return Err(Error::invalid(
+                    "give source (the EXE or disc.cue::/PATH) or analysis for what to name next",
+                ));
             }
             let exe = a.input.source.as_deref().and_then(|s| s.rsplit_once("::").map(|(_, p)| p.to_string()));
             let runs = runs(&ctx.root, exe.as_deref());
@@ -144,7 +146,8 @@ fn next_to_name(got: &[Value], weight: &BTreeMap<u32, u64>) -> (Vec<Value>, Vec<
     let mut functions = Vec::new();
     for f in got {
         let name = f["function"]["name"].as_str().unwrap_or("?").to_string();
-        let entry = f["function"]["entry"].as_str().and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+        let entry =
+            f["function"]["entry"].as_str().and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
         let w = entry.and_then(|e| weight.get(&e).copied()).unwrap_or(1);
         functions.push(json!({"function": name, "entry": f["function"]["entry"], "runs": w, "status": f["status"]}));
         for (k, n) in f["unnamed"].as_object().into_iter().flatten() {
@@ -202,13 +205,18 @@ fn look_up(names: &Names, q: &str) -> Vec<Value> {
             Some(a) => {
                 crate::names_bind::canonical(f.address) == Some(a)
                     || body.as_ref().is_some_and(|b| {
-                        b.iter().any(|&(s, e)| crate::names_bind::canonical(s).is_some_and(|c| a >= c && a < c + (e - s)))
+                        b.iter()
+                            .any(|&(s, e)| crate::names_bind::canonical(s).is_some_and(|c| a >= c && a < c + (e - s)))
                     })
             }
-            None => bare(&f.name.text) == bare(q) || f.module.as_ref().is_some_and(|m| format!("{m}:{}", bare(&f.name.text)) == q),
+            None => {
+                bare(&f.name.text) == bare(q)
+                    || f.module.as_ref().is_some_and(|m| format!("{m}:{}", bare(&f.name.text)) == q)
+            }
         };
         if hit {
-            let mut j = json!({"kind": "function", "name": f.name.text, "at": f.at.to_string(), "address": hex(f.address)});
+            let mut j =
+                json!({"kind": "function", "name": f.name.text, "at": f.at.to_string(), "address": hex(f.address)});
             if let Some(m) = &f.module {
                 j["module"] = json!(m);
             }
@@ -322,7 +330,10 @@ mod tests {
         assert_eq!(f[0]["at"], "names/a.names:6");
         assert_eq!(f[0]["declaration"], "void world_collide(int *obj)");
         let f = look_up(&n, "Poly");
-        assert_eq!((f[0]["kind"].as_str(), f[0]["size"].as_str(), f[0]["bytes_in_no_field"].as_u64()), (Some("struct"), Some("0x2C"), Some(41)));
+        assert_eq!(
+            (f[0]["kind"].as_str(), f[0]["size"].as_str(), f[0]["bytes_in_no_field"].as_u64()),
+            (Some("struct"), Some("0x2C"), Some(41))
+        );
         let f = look_up(&n, "Poly.bits");
         assert_eq!((f[0]["offset"].as_str(), f[0]["at"].as_str()), (Some("0x2"), Some("names/a.names:3")));
         let f = look_up(&n, "world_collide.rec");

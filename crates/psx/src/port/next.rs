@@ -339,7 +339,8 @@ impl Feature {
                 "first": first_lines(&self.borrowed)});
         }
         if uncovered.len() < groups.len() {
-            v["more"] = json!(format!("{} more groups: port_status feature {}", groups.len() - uncovered.len(), self.id));
+            v["more"] =
+                json!(format!("{} more groups: port_status feature {}", groups.len() - uncovered.len(), self.id));
         }
         v
     }
@@ -419,12 +420,7 @@ fn passing(ids: &[String], of: impl Fn(&str) -> Option<Vec<String>>) -> Vec<(Str
 /// The wont_reach key that answers for the code branch at `pc` its
 /// recordings took `ways` (0 never ran): its own address, else a range
 /// holding it when it never ran.
-fn code_key<'a>(
-    wont_reach: &'a BTreeMap<String, String>,
-    pc: u32,
-    ways: u8,
-    test: Option<&str>,
-) -> Option<&'a String> {
+fn code_key<'a>(wont_reach: &'a BTreeMap<String, String>, pc: u32, ways: u8, test: Option<&str>) -> Option<&'a String> {
     let within = |k: &String| super::entry_range(k).is_some_and(|(start, end)| start <= pc && pc < end);
     wont_reach
         .keys()
@@ -617,7 +613,8 @@ impl Facts {
                             .branches
                             .into_iter()
                             .map(|c| {
-                                let key = code_key(&e.wont_reach, c.pc, c.ways, c.test.as_ref().map(|t| t.key.as_str()));
+                                let key =
+                                    code_key(&e.wont_reach, c.pc, c.ways, c.test.as_ref().map(|t| t.key.as_str()));
                                 Branch {
                                     test: c.test,
                                     behind: c.behind,
@@ -889,9 +886,14 @@ impl Facts {
             return Item::agent(
                 "Fix",
                 None,
-                format!("{f}'s C passed its check{} and now fails: {first}", commit.as_deref().map(|c| format!(" at {}", &c[..c.len().min(10)])).unwrap_or_default()),
+                format!(
+                    "{f}'s C passed its check{} and now fails: {first}",
+                    commit.as_deref().map(|c| format!(" at {}", &c[..c.len().min(10)])).unwrap_or_default()
+                ),
                 &format!("psx code check {f} passes"),
-                &format!("a change to its C or the names since it passed broke it: compare them with then (git diff), fix the C or names, and run psx code check {f}"),
+                &format!(
+                    "a change to its C or the names since it passed broke it: compare them with then (git diff), fix the C or names, and run psx code check {f}"
+                ),
             );
         }
         // Until the person confirms the goal, the agent only investigates
@@ -1021,7 +1023,10 @@ impl Facts {
             return Item::agent(
                 "Fix input",
                 Some(&f.id),
-                format!("the original's own driver delays its input: {}", first_lines(&lines(f, Late::Unfixed)).join("; ")),
+                format!(
+                    "the original's own driver delays its input: {}",
+                    first_lines(&lines(f, Late::Unfixed)).join("; ")
+                ),
                 "its recordings report no late_input",
                 "the port takes its input every tick, so its recordings must too: find what keeps the poll or the game's read of the buttons back on those ticks (run with pad_reads, watch and trace around them), replace that function in fixes/ so the game takes the tick's input every field (guide topic code, the fixes/ paragraphs), then record the scenarios again; late_input left out with fix on is the fix working",
             );
@@ -1030,7 +1035,10 @@ impl Facts {
             return Item::agent(
                 "Record",
                 Some(&f.id),
-                format!("recorded with input late and before fixes/ as it is: {}", first_lines(&lines(f, Late::Before)).join("; ")),
+                format!(
+                    "recorded with input late and before fixes/ as it is: {}",
+                    first_lines(&lines(f, Late::Before)).join("; ")
+                ),
                 "its recordings report no late_input",
                 "record those scenarios again (psx scenario record): a recording takes fixes/ as it is. late_input left out then is the fix working; still there, port next says the fix does not work",
             );
@@ -1841,8 +1849,13 @@ mod tests {
         std::fs::create_dir_all(d.0.join("decomp")).unwrap();
         std::fs::write(d.0.join("decomp/step.c"), "void step(void)\n{\n}\n").unwrap();
         let last = |status: &str| {
-            std::fs::write(checks.join("step.json"), json!({"function": "step", "status": status,
-                "first_failure": {"differences": ["v0: original 0x1, yours 0x2"]}}).to_string()).unwrap();
+            std::fs::write(
+                checks.join("step.json"),
+                json!({"function": "step", "status": status,
+                "first_failure": {"differences": ["v0: original 0x1, yours 0x2"]}})
+                .to_string(),
+            )
+            .unwrap();
         };
         // Failing, never passed: not a regression.
         last("failed");
@@ -1942,7 +1955,10 @@ mod tests {
         assert_eq!(f.stage("F-0001"), Some(Stage::Located));
         let item = f.next();
         assert_eq!((item.item, item.feature.as_deref()), ("Fix input", Some("F-0001")));
-        assert!(item.why.contains("ticks 4, 9, 12") && item.how.contains("replace that function in fixes/"), "{item:?}");
+        assert!(
+            item.why.contains("ticks 4, 9, 12") && item.how.contains("replace that function in fixes/"),
+            "{item:?}"
+        );
         // A fix written: recorded again, the recording takes it.
         at(&mut f, Late::Before);
         let item = f.next();
@@ -1952,7 +1968,10 @@ mod tests {
         at(&mut f, Late::Fails);
         let item = f.next();
         assert_eq!(item.item, "Fix input");
-        assert!(item.why.starts_with("fixes/ does not stop the delay") && item.how.contains("change fixes/"), "{item:?}");
+        assert!(
+            item.why.starts_with("fixes/ does not stop the delay") && item.how.contains("change fixes/"),
+            "{item:?}"
+        );
         // One recording still to take the fix waits on the fix that fails.
         set(&mut f, "F-0001", |x| x.late.push((Late::Before, line.to_string())));
         assert!(f.next().why.starts_with("fixes/ does not stop the delay"));
@@ -2345,9 +2364,15 @@ mod tests {
         // A test answers for every branch testing it, whichever way it missed.
         let mut tested = wont.clone();
         tested.insert("[0x8007529C] == 2".into(), "no analog pad".into());
-        assert_eq!(code_key(&tested, 0x8002_D900, 1, Some("[0x8007529C] == 2")).map(String::as_str), Some("[0x8007529C] == 2"));
+        assert_eq!(
+            code_key(&tested, 0x8002_D900, 1, Some("[0x8007529C] == 2")).map(String::as_str),
+            Some("[0x8007529C] == 2")
+        );
         assert_eq!(code_key(&tested, 0x8002_D900, 1, Some("[0x8007529C] == 3")), None);
-        let b = Branch { test: Some(crate::flow::Test { key: "[0x8007529C] == 2".into(), taken: false }), ..Branch::code(0x8002_D900, 0x8002_D810, 1, None) };
+        let b = Branch {
+            test: Some(crate::flow::Test { key: "[0x8007529C] == 2".into(), taken: false }),
+            ..Branch::code(0x8002_D900, 0x8002_D810, 1, None)
+        };
         assert!(tests_unmatched(&tested, std::slice::from_ref(&b)).is_empty());
         assert_eq!(tests_unmatched(&tested, &[]).len(), 1);
         assert_eq!(b.never_test().as_deref(), Some("[0x8007529C] == 2 never true"));

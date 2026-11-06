@@ -11,8 +11,8 @@
 //! (`min_concrete`) and objects that match in more than one place are reported
 //! as ambiguous instead of guessed.
 
-pub mod debug;
 pub mod build;
+pub mod debug;
 pub mod names;
 
 use std::collections::HashMap;

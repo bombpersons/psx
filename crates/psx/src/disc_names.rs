@@ -29,7 +29,8 @@ impl Starts {
         for e in inv.iter().flat_map(|i| i["executables"].as_array().into_iter().flatten()) {
             if exe_path.is_some_and(|p| e["path"].as_str() == Some(p)) {
                 for f in e["functions"].as_array().into_iter().flatten() {
-                    if let Some(a) = f["entry"].as_str().and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                    if let Some(a) =
+                        f["entry"].as_str().and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok())
                     {
                         known.insert(a);
                     }
@@ -93,7 +94,12 @@ pub(crate) fn scan(
         gcc.extend(g);
         for h in debug::scan(bytes) {
             // A debug file found inside another runs to the end of that one.
-            found.push(Found { at: format!("{at}+0x{:X}", h.offset), kind: h.kind, by: "content", bytes: bytes[h.offset..].to_vec() });
+            found.push(Found {
+                at: format!("{at}+0x{:X}", h.offset),
+                kind: h.kind,
+                by: "content",
+                bytes: bytes[h.offset..].to_vec(),
+            });
         }
     };
     for e in fs.entries.iter().filter(|e| !e.is_dir) {
@@ -203,18 +209,22 @@ pub(crate) fn scan(
                 row["types"] = json!(d.types.len());
                 row["functions_at_function_starts"] = json!(format!("{start} of {inside} in {exe}"));
                 if inside > 0 && start * 2 > inside {
-                    let file = format!("{}.names", debug::ident(f.at.replace(['/', '\\'], "_").trim_start_matches('_')));
+                    let file =
+                        format!("{}.names", debug::ident(f.at.replace(['/', '\\'], "_").trim_start_matches('_')));
                     let path = out_dir.join(&file);
                     std::fs::create_dir_all(out_dir).map_err(|e| Error::io(out_dir, e))?;
-                    let text = d.to_names(&format!("Imported by psx code symbols from {} on the disc", f.at), None, &|a| {
-                        named.contains(&a)
-                    });
+                    let text =
+                        d.to_names(&format!("Imported by psx code symbols from {} on the disc", f.at), None, &|a| {
+                            named.contains(&a)
+                        });
                     std::fs::write(&path, text).map_err(|e| Error::io(&path, e))?;
                     named.extend(d.functions.iter().map(|f| f.address).chain(d.globals.iter().map(|g| g.0)));
                     row["imported"] = json!(path);
                 } else {
                     row["imported"] = json!(null);
-                    row["why_not"] = json!("it describes none of the disc's executables: most of its functions are not at function starts");
+                    row["why_not"] = json!(
+                        "it describes none of the disc's executables: most of its functions are not at function starts"
+                    );
                 }
                 row["sources"] = json!(d.sources.iter().take(20).collect::<Vec<_>>());
             }
@@ -236,7 +246,12 @@ pub(crate) fn scan(
 
 /// The PsyQ signatures' function names as a names file, leaving out what a
 /// debug file named.
-pub(crate) fn psyq_names(report: &psx_symbols::MatchReport, source: &str, out: &Path, named: &BTreeSet<u32>) -> crate::Result<Option<std::path::PathBuf>> {
+pub(crate) fn psyq_names(
+    report: &psx_symbols::MatchReport,
+    source: &str,
+    out: &Path,
+    named: &BTreeSet<u32>,
+) -> crate::Result<Option<std::path::PathBuf>> {
     let mut d = DebugNames::default();
     let mut seen = BTreeSet::new();
     for s in &report.symbols {
@@ -250,9 +265,11 @@ pub(crate) fn psyq_names(report: &psx_symbols::MatchReport, source: &str, out: &
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
     }
-    let text = d.to_names(&format!("PsyQ library functions in {source}, named by signature by psx code symbols"), None, &|a| {
-        named.contains(&a)
-    });
+    let text = d.to_names(
+        &format!("PsyQ library functions in {source}, named by signature by psx code symbols"),
+        None,
+        &|a| named.contains(&a),
+    );
     std::fs::write(out, text).map_err(|e| Error::io(out, e))?;
     Ok(Some(out.to_path_buf()))
 }
@@ -390,7 +407,11 @@ mod tests {
         wad.extend(psx_symbols::debug::testing::planted_sym(0x8001_0008));
         let map = b"  Address  Names in address order\r\n  80010100 draw_all\r\n  80010000 main\r\n".to_vec();
         let image = iso(
-            &[("GAME.EXE", exe()), ("GAME.SYM", psx_symbols::debug::testing::planted_sym(0x8001_0000)), ("WAD.DAT", wad)],
+            &[
+                ("GAME.EXE", exe()),
+                ("GAME.SYM", psx_symbols::debug::testing::planted_sym(0x8001_0000)),
+                ("WAD.DAT", wad),
+            ],
             &map,
         );
         let media = dir.join("planted.iso");

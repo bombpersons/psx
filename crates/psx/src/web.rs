@@ -919,7 +919,9 @@ fn replay_dir(root: &Path, id: &str, name: &str, decomp: bool) -> Option<PathBuf
     all.extend(crate::context::version().to_string().bytes());
     if decomp {
         // With the agent's C: that C and the names it is built with.
-        all.extend(format!("\ndecomp {} {}", crate::decomp::sources_hash(root), crate::decomp::names_hash(root)).bytes());
+        all.extend(
+            format!("\ndecomp {} {}", crate::decomp::sources_hash(root), crate::decomp::names_hash(root)).bytes(),
+        );
     }
     let key = crate::stamp::sha256(&all);
     Some(crate::bios::data_dir()?.join("web-replays").join(&key[..16]))
@@ -1229,13 +1231,20 @@ pub fn replay_child(ctx: &Ctx, id: &str, name: &str, dir: &Path, decomp: bool) -
         }
     };
     let mut failed = None;
-    let r = crate::scenario::replay(ctx, id, name, Duration::from_secs(600), &mut |t, m| {
-        let (w, h, rgba) = m.bus.gpu.display_rgba();
-        let p = dir.join(format!("{}.png", t.tick));
-        if let Err(e) = crate::run::write_png(&p, w, h, &rgba, png::ColorType::Rgba) {
-            failed.get_or_insert(format!("{}: {e}", p.display()));
-        }
-    }, Some(&mut install));
+    let r = crate::scenario::replay(
+        ctx,
+        id,
+        name,
+        Duration::from_secs(600),
+        &mut |t, m| {
+            let (w, h, rgba) = m.bus.gpu.display_rgba();
+            let p = dir.join(format!("{}.png", t.tick));
+            if let Err(e) = crate::run::write_png(&p, w, h, &rgba, png::ColorType::Rgba) {
+                failed.get_or_insert(format!("{}: {e}", p.display()));
+            }
+        },
+        Some(&mut install),
+    );
     let v = match (r, failed) {
         (Ok((diffs, m)), None) => {
             let mut v = json!({"differences": diffs});

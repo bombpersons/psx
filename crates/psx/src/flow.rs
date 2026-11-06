@@ -49,7 +49,8 @@ impl Flow {
                 Some((t, i)) if branch(t, i).is_some() => {
                     let (target, call) = branch(t, i).unwrap();
                     let (rs, rt) = ((i >> 21) & 31, (i >> 16) & 31);
-                    let always = matches!(i >> 26, 0x04 | 0x06) && rs == rt || (i >> 26 == 0x01 && rs == 0 && rt & 1 == 1);
+                    let always =
+                        matches!(i >> 26, 0x04 | 0x06) && rs == rt || (i >> 26 == 0x01 && rs == 0 && rt & 1 == 1);
                     let never = i >> 26 == 0x05 && rs == rt;
                     if !call && !never {
                         to.extend(at(target));
@@ -89,8 +90,7 @@ impl Flow {
             }
         }
         let idom = dominators(entry, &succ, &pred);
-        let mut f =
-            Flow { blocks, succ, pred, idom, check_block: vec![false; n], check_branch: Vec::new() };
+        let mut f = Flow { blocks, succ, pred, idom, check_block: vec![false; n], check_branch: Vec::new() };
         f.division_checks(&word);
         f
     }
@@ -127,9 +127,8 @@ impl Flow {
             // The way on from here tests again with the same target, and
             // its other way traps.
             let chain = |w: Option<usize>| {
-                w.and_then(|w| self.branch_of(w, word)).is_some_and(|(p, j)| {
-                    branch(p, j).is_some_and(|(t, _)| t == target) && trap(self.block(p + 8))
-                })
+                w.and_then(|w| self.branch_of(w, word))
+                    .is_some_and(|(p, j)| branch(p, j).is_some_and(|(t, _)| t == target) && trap(self.block(p + 8)))
             };
             if trap(taken) || trap(fell) || chain(fell) {
                 checks.push((b, pc));
@@ -284,8 +283,8 @@ fn saved(r: u32) -> bool {
 }
 
 const REGS: [&str; 32] = [
-    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "s0", "s1",
-    "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra",
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "s0", "s1", "s2",
+    "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra",
 ];
 
 /// The register instruction `i` writes, when it is a plain computation or
@@ -543,11 +542,23 @@ mod tests {
         // 10: li at,-1; 14: bne a1,at,+4 (to 0x28); 18: lui at,0x8000;
         // 1C: bne a0,at,+2 (to 0x28); 20: nop; 24: break 6; 28: mflo v0; 2C: jr ra; 30: nop
         let w = [
-            0x0085_001A, 0x14A0_0002, 0, 0x0007_000D, 0x2401_FFFF, 0x14A1_0004, 0x3C01_8000, 0x1481_0002, 0,
-            0x0006_000D, 0x0000_1012, 0x03E0_0008, 0,
+            0x0085_001A,
+            0x14A0_0002,
+            0,
+            0x0007_000D,
+            0x2401_FFFF,
+            0x14A1_0004,
+            0x3C01_8000,
+            0x1481_0002,
+            0,
+            0x0006_000D,
+            0x0000_1012,
+            0x03E0_0008,
+            0,
         ];
         let base = 0x8001_0000;
-        let f = Flow::new(base, spans(&[0, 0xC, 0x10, 0x1C, 0x24, 0x28].map(|o| base + o), base + 0x34), code(base, &w));
+        let f =
+            Flow::new(base, spans(&[0, 0xC, 0x10, 0x1C, 0x24, 0x28].map(|o| base + o), base + 0x34), code(base, &w));
         assert_eq!(f.check_branch, [base + 4, base + 0x14, base + 0x1C]);
         assert_eq!(f.check_block, [false, true, false, true, true, false]);
     }

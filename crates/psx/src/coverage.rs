@@ -1317,7 +1317,8 @@ impl Op for CoverageArgs {
 /// each condition no run saw.
 fn marked(ctx: &Ctx, inv: &Value, images: &[Image], spec: &str, runs: usize) -> crate::Result<Value> {
     let addr = crate::names_bind::address(spec).map_err(Error::invalid)?;
-    let Some((img, fi)) = images.iter().find_map(|i| Some((i, i.function(addr)?))).filter(|(i, _)| i.kind == "executable")
+    let Some((img, fi)) =
+        images.iter().find_map(|i| Some((i, i.function(addr)?))).filter(|(i, _)| i.kind == "executable")
     else {
         return Err(Error::invalid(format!(
             "{spec}: in no function of the inventory's executables (Ghidra decompiles the executable's code)"
@@ -1362,8 +1363,11 @@ fn marked(ctx: &Ctx, inv: &Value, images: &[Image], spec: &str, runs: usize) -> 
         // Ghidra's comments carry the function's address.
         let comment = line.trim_start().starts_with("/*");
         let Some(addrs) = lines.get(&n).filter(|_| !comment) else {
-            out.push_str(&format!("{:>9} {line}
-", ""));
+            out.push_str(&format!(
+                "{:>9} {line}
+",
+                ""
+            ));
             continue;
         };
         let runs = addrs.iter().filter_map(|&a| count(a)).max();

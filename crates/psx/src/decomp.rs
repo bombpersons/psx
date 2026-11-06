@@ -468,8 +468,8 @@ fn named(names: &Names, params: &[(String, Type, u32)], line: &str) -> String {
     let Some(rest) = line.strip_prefix("byte 0x") else { return line.to_string() };
     let Some((hex, tail)) = rest.split_once(':') else { return line.to_string() };
     let Ok(addr) = u32::from_str_radix(hex, 16) else { return line.to_string() };
-    let name = crate::names_bind::global_at(names, addr)
-        .or_else(|| crate::names_bind::through_params(names, params, addr));
+    let name =
+        crate::names_bind::global_at(names, addr).or_else(|| crate::names_bind::through_params(names, params, addr));
     match name {
         Some(g) => format!("byte 0x{hex} ({g}):{tail}"),
         None => line.to_string(),
@@ -514,8 +514,15 @@ fn resident(ram: &[u8], entry: u32) -> Option<String> {
 
 /// `difference` with a note when it is a call whose callee has no
 /// signature in names/, so all four argument registers were compared.
-fn unsigned_callee(names: &Names, ram: &[u8], difference: &str, a: &psx_core::callcheck::Effects, b: &psx_core::callcheck::Effects) -> String {
-    let Some(k) = difference.strip_prefix("call ").and_then(|r| r.split(':').next()).and_then(|n| n.parse::<usize>().ok())
+fn unsigned_callee(
+    names: &Names,
+    ram: &[u8],
+    difference: &str,
+    a: &psx_core::callcheck::Effects,
+    b: &psx_core::callcheck::Effects,
+) -> String {
+    let Some(k) =
+        difference.strip_prefix("call ").and_then(|r| r.split(':').next()).and_then(|n| n.parse::<usize>().ok())
     else {
         return difference.to_string();
     };
@@ -664,7 +671,8 @@ pub fn check(
                 vary(m, names, bare, &mut rng);
                 out.push(one(m, real, Some(k), branches)?);
                 let disc = m.bus.cdrom.disc.take();
-                let (_, back) = psx_core::Machine::load_state(&state, m.bus.bios.clone()).map_err(|e| format!("{e:?}"))?;
+                let (_, back) =
+                    psx_core::Machine::load_state(&state, m.bus.bios.clone()).map_err(|e| format!("{e:?}"))?;
                 *m = back;
                 m.bus.cdrom.disc = disc;
             }
@@ -1009,7 +1017,15 @@ fn check_one(
             psx_core::Machine::load_state(&bytes, bios.to_vec()).map_err(|e| Error::new("invalid_state", e))?;
         m.bus.cdrom.disc = crate::run_native::open_media(media)?.disc;
         let n = a.cases.unwrap_or(3);
-        let opts = CheckOpts { cases: n, fields: a.fields, steps: CALL_STEPS, save: Some(&save), tag: bare, body: body.as_deref(), varied: a.varied };
+        let opts = CheckOpts {
+            cases: n,
+            fields: a.fields,
+            steps: CALL_STEPS,
+            save: Some(&save),
+            tag: bare,
+            body: body.as_deref(),
+            varied: a.varied,
+        };
         cases = check(&mut m, names, build, function, &opts, &mut branches).map_err(Error::invalid)?;
         if !cases.is_empty() {
             held = entry_bytes(&m, original, body.as_deref());
@@ -1053,7 +1069,15 @@ fn check_one(
                 held = entry_bytes(&m, original, body.as_deref());
             }
             let tag = format!("{bare}-{}-{}-{call}", r.id, r.name);
-            let opts = CheckOpts { cases: 1, fields: 1, steps: CALL_STEPS, save: Some(&save), tag: &tag, body: body.as_deref(), varied: a.varied };
+            let opts = CheckOpts {
+                cases: 1,
+                fields: 1,
+                steps: CALL_STEPS,
+                save: Some(&save),
+                tag: &tag,
+                body: body.as_deref(),
+                varied: a.varied,
+            };
             let got = check(&mut m, names, build, function, &opts, &mut branches);
             disc = m.bus.cdrom.disc.take();
             for mut c in got.map_err(Error::invalid)? {
@@ -1077,7 +1101,13 @@ fn check_one(
     cases.retain(|c| !c.dropped);
     let failed = cases.iter().filter(|c| !c.differences.is_empty()).count();
     let ok = !cases.is_empty() && failed == 0;
-    v["status"] = json!(if cases.is_empty() { "no_calls" } else if ok { "passed" } else { "failed" });
+    v["status"] = json!(if cases.is_empty() {
+        "no_calls"
+    } else if ok {
+        "passed"
+    } else {
+        "failed"
+    });
     v["passed"] = json!(cases.len() - failed);
     v["failed"] = json!(failed);
     v["cases"] = json!(cases.iter().map(case_json).collect::<Vec<_>>());
@@ -1091,7 +1121,8 @@ fn check_one(
                 }
             }
         }
-        v["branch_ways"] = json!({"reached": 2 * branches.len() - missed.len(), "of": 2 * branches.len(), "missed": missed});
+        v["branch_ways"] =
+            json!({"reached": 2 * branches.len() - missed.len(), "of": 2 * branches.len(), "missed": missed});
     }
     for (k, x) in from.as_object().unwrap() {
         v[k] = x.clone();
@@ -1275,7 +1306,8 @@ pub fn c_functions(root: &Path) -> Vec<(String, String, usize)> {
 pub fn last_check(root: &Path, function: &str) -> Option<Value> {
     let mut k: Value = serde_json::from_slice(&std::fs::read(check_file(root, function)).ok()?).ok()?;
     k["stale"] = json!(
-        k["sources"].as_str() != Some(sources_hash(root).as_str()) || k["names"].as_str() != Some(names_hash(root).as_str())
+        k["sources"].as_str() != Some(sources_hash(root).as_str())
+            || k["names"].as_str() != Some(names_hash(root).as_str())
     );
     Some(k)
 }
@@ -1402,13 +1434,19 @@ impl Replacement {
                     continue;
                 }
             }
-            let guard = check.as_ref().and_then(|k| k["entry_bytes"].as_str()).filter(|h| !h.is_empty()).and_then(|h| {
-                (0..h.len() / 2).map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok()).collect::<Option<Vec<u8>>>()
-            });
+            let guard =
+                check.as_ref().and_then(|k| k["entry_bytes"].as_str()).filter(|h| !h.is_empty()).and_then(|h| {
+                    (0..h.len() / 2)
+                        .map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok())
+                        .collect::<Option<Vec<u8>>>()
+                });
             let module = f.rsplit_once(':').is_some()
                 || names.functions.iter().any(|n| n.address == entry && n.module.is_some());
             if guard.is_none() && module {
-                left_out.push((f, "an overlay's function with no check to say what its entry holds: check it first".into()));
+                left_out.push((
+                    f,
+                    "an overlay's function with no check to say what its entry holds: check it first".into(),
+                ));
                 continue;
             }
             functions.push(Replaced { name: f, entry, at, guard });
@@ -1631,9 +1669,8 @@ pub const FIXES: &str = "fixes";
 pub fn fixes(root: &Path) -> crate::Result<Option<crate::adjust::Fixes>> {
     let Some(sources_hash) = fixes_hash(root) else { return Ok(None) };
     let names = &psx_symbols::names::load(root);
-    let build = build_at(names, &c_files_in(root, FIXES), &root.join(".psx/fixes"), FIX_BASE).map_err(|m| {
-        Error::invalid("fixes/: the C does not build").with("messages", messages_json(&m))
-    })?;
+    let build = build_at(names, &c_files_in(root, FIXES), &root.join(".psx/fixes"), FIX_BASE)
+        .map_err(|m| Error::invalid("fixes/: the C does not build").with("messages", messages_json(&m)))?;
     let mut functions = Vec::new();
     for (name, &at) in &build.functions {
         let Ok(address) = entry(names, name) else { continue };
@@ -1805,14 +1842,23 @@ static int helper(int x)\n{\n    return x + 1;\n}\n\nvoid world_collide(Actor *a
         let Some((dir, b)) = built(right) else { return };
         let (_n_dir, n) = names(NAMES);
         let saved = dir.join("cases");
-        let opts = |cases| CheckOpts { cases, fields: 10, steps: 10_000, save: Some(&saved), tag: "twice", body: None, varied: 0 };
+        let opts = |cases| CheckOpts {
+            cases,
+            fields: 10,
+            steps: 10_000,
+            save: Some(&saved),
+            tag: "twice",
+            body: None,
+            varied: 0,
+        };
         let mut br = BTreeSet::new();
         let cases = check(&mut game(), &n, &b.unwrap(), "twice", &opts(3), &mut br).unwrap();
         assert_eq!(cases.iter().map(|c| c.args[0]).collect::<Vec<_>>(), [20, 21, 22]);
         assert!(cases.iter().all(|c| c.differences.is_empty()), "{cases:?}");
         let Some((dir, b)) = built(&c_with("counter = a + 2;")) else { return };
         let saved = dir.join("cases");
-        let opts = CheckOpts { cases: 2, fields: 10, steps: 10_000, save: Some(&saved), tag: "twice", body: None, varied: 0 };
+        let opts =
+            CheckOpts { cases: 2, fields: 10, steps: 10_000, save: Some(&saved), tag: "twice", body: None, varied: 0 };
         let cases = check(&mut game(), &n, &b.unwrap(), "twice", &opts, &mut br).unwrap();
         assert_eq!(cases[1].differences, ["byte 0x80020000 (counter): original 0x16, replacement 0x17"]);
         assert!(cases[1].saved.as_ref().unwrap().ends_with("twice-2.state"));
@@ -1824,7 +1870,8 @@ static int helper(int x)\n{\n    return x + 1;\n}\n\nvoid world_collide(Actor *a
         let Some((dir, b)) = built(&c_with("counter = a < 100 ? a + 1 : a;")) else { return };
         let b = b.unwrap();
         let saved = dir.join("cases");
-        let plain = CheckOpts { cases: 3, fields: 10, steps: 10_000, save: Some(&saved), tag: "twice", body: None, varied: 0 };
+        let plain =
+            CheckOpts { cases: 3, fields: 10, steps: 10_000, save: Some(&saved), tag: "twice", body: None, varied: 0 };
         assert!(check(&mut game(), &n, &b, "twice", &plain, &mut br).unwrap().iter().all(|c| c.differences.is_empty()));
         let varied = CheckOpts { varied: 4, ..plain };
         let cases = check(&mut game(), &n, &b, "twice", &varied, &mut br).unwrap();
@@ -1865,7 +1912,8 @@ function 0x80030000 in MENU.OVL int three(int a, int b, int c)\n",
         let (_d, n) = names("enum Slot 0x1 {\n  FIRST = 0\n  SECOND = 1\n  FIFTH = 4\n}\n");
         let mut rng = Rng(7);
         let ty = Type::Named { name: "Slot".into() };
-        let seen: BTreeSet<u32> = (0..64).map(|_| rng.of(&n, &ty).unwrap()).inspect(|v| assert_eq!(v.0, 1)).map(|v| v.1).collect();
+        let seen: BTreeSet<u32> =
+            (0..64).map(|_| rng.of(&n, &ty).unwrap()).inspect(|v| assert_eq!(v.0, 1)).map(|v| v.1).collect();
         assert_eq!(seen, BTreeSet::from([0, 1, 4]));
         let int = Type::Named { name: "int".into() };
         assert!((0..64).any(|_| rng.of(&n, &int).unwrap().1 > 4));

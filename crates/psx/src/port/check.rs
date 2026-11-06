@@ -317,7 +317,8 @@ impl PortCheckArgs {
         if let Some(d) = &decomp {
             let (mut ok, mut scenarios) = (true, Vec::new());
             for (id, names) in &work_recordings {
-                let (same, mut c) = crate::scenario::with_c(ctx, id, Some(names), d, std::time::Duration::from_secs(600))?;
+                let (same, mut c) =
+                    crate::scenario::with_c(ctx, id, Some(names), d, std::time::Duration::from_secs(600))?;
                 ok &= same;
                 c["id"] = json!(id);
                 scenarios.push(c);

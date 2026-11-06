@@ -208,7 +208,11 @@ impl Adjustments {
                     let mut functions = Vec::new();
                     for f in d["functions"].as_array().ok_or_else(bad)? {
                         let name = f["name"].as_str().ok_or_else(bad)?.to_string();
-                        functions.push(Fixed { name, address: hex(&f["address"]).ok_or_else(bad)?, at: hex(&f["at"]).ok_or_else(bad)? });
+                        functions.push(Fixed {
+                            name,
+                            address: hex(&f["address"]).ok_or_else(bad)?,
+                            at: hex(&f["at"]).ok_or_else(bad)?,
+                        });
                     }
                     let text = d["image"].as_str().ok_or_else(bad)?;
                     let image = (0..text.len() / 2)

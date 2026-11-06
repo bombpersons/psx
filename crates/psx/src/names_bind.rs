@@ -304,7 +304,8 @@ impl Scope {
         static SCOPE: Mutex<Option<(Key, Option<Arc<Scope>>)>> = Mutex::new(None);
         let key = (project_names(), project_inventory());
         let mut cache = SCOPE.lock().unwrap_or_else(|e| e.into_inner());
-        let same = |k: &Key| Arc::ptr_eq(&k.0, &key.0) && k.1.as_ref().map(Arc::as_ptr) == key.1.as_ref().map(Arc::as_ptr);
+        let same =
+            |k: &Key| Arc::ptr_eq(&k.0, &key.0) && k.1.as_ref().map(Arc::as_ptr) == key.1.as_ref().map(Arc::as_ptr);
         if let Some((_, scope)) = cache.as_ref().filter(|(k, _)| same(k)) {
             return scope.clone();
         }
@@ -471,10 +472,7 @@ pub(crate) fn path_in(names: &Names, ty: &psx_symbols::names::Type, off: u32) ->
             Some(TypeBody::Struct { fields } | TypeBody::Union { fields }) => fields
                 .iter()
                 .find(|f| f.offset <= off && off < f.offset + names.size_of(&f.ty).unwrap_or(1).max(1))
-                .map_or_else(
-                    || rest(off),
-                    |f| format!(".{}{}", label(&f.name), path_in(names, &f.ty, off - f.offset)),
-                ),
+                .map_or_else(|| rest(off), |f| format!(".{}{}", label(&f.name), path_in(names, &f.ty, off - f.offset))),
             Some(TypeBody::Typedef { ty }) => path_in(names, ty, off),
             _ => rest(off),
         },
@@ -488,7 +486,11 @@ pub(crate) fn path_in(names: &Names, ty: &psx_symbols::names::Type, off: u32) ->
 
 /// `addr` named through a pointer argument: `params` are each pointer
 /// parameter's name, type and value at the call.
-pub(crate) fn through_params(names: &Names, params: &[(String, psx_symbols::names::Type, u32)], addr: u32) -> Option<String> {
+pub(crate) fn through_params(
+    names: &Names,
+    params: &[(String, psx_symbols::names::Type, u32)],
+    addr: u32,
+) -> Option<String> {
     use psx_symbols::names::Type;
     let addr = canonical(addr)?;
     params.iter().find_map(|(name, ty, value)| {

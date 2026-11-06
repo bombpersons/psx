@@ -149,7 +149,8 @@ impl PortInitArgs {
         // to read them.
         let debug = {
             let mut named = Default::default();
-            match crate::disc_names::scan(&dest, &media, &[], &dest.join(psx_symbols::names::IMPORTED_DIR), &mut named) {
+            match crate::disc_names::scan(&dest, &media, &[], &dest.join(psx_symbols::names::IMPORTED_DIR), &mut named)
+            {
                 Ok(scan) => {
                     crate::disc_names::record(&dest, &scan, false)?;
                     let found = crate::disc_names::unread(&dest);

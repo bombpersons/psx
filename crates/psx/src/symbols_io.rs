@@ -256,8 +256,12 @@ pub(crate) fn symbols_cmd(
         }
         None => None,
     };
-    let psyq_names =
-        crate::disc_names::psyq_names(&report, source, &names_dir.join(format!("psyq_{}.names", psx_symbols::debug::ident(&stem))), &named)?;
+    let psyq_names = crate::disc_names::psyq_names(
+        &report,
+        source,
+        &names_dir.join(format!("psyq_{}.names", psx_symbols::debug::ident(&stem))),
+        &named,
+    )?;
     let functions = report.symbols.iter().filter(|s| s.kind == psx_symbols::Kind::Function).count();
     let mut libs: std::collections::BTreeMap<String, usize> = Default::default();
     for o in &report.objects {

@@ -641,7 +641,9 @@ fn gui_lock(dir: &Path) -> bool {
 /// project paths may not have.
 fn hidden_component(path: &Path) -> Option<String> {
     path.components().find_map(|c| match c {
-        std::path::Component::Normal(n) if n.to_string_lossy().starts_with('.') => Some(n.to_string_lossy().into_owned()),
+        std::path::Component::Normal(n) if n.to_string_lossy().starts_with('.') => {
+            Some(n.to_string_lossy().into_owned())
+        }
         _ => None,
     })
 }
@@ -1681,10 +1683,7 @@ mod tests {
             cancel.cancel();
         });
         let waiting = Ctx { root: ctx.root.clone(), cancel: Some(token) };
-        assert_eq!(
-            Lock::queued(&ctx.root, Instant::now() + hang, &waiting).err().unwrap().code,
-            "cancelled"
-        );
+        assert_eq!(Lock::queued(&ctx.root, Instant::now() + hang, &waiting).err().unwrap().code, "cancelled");
         thread.join().unwrap();
         assert_eq!(Lock::acquire(&ctx.root).err().unwrap().code, "analysis_busy");
         drop(held);
