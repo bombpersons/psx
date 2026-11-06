@@ -42,10 +42,12 @@ project's code once added. A port of one feature's rules needs none.
   keeps, `Observed { player_x: …, ..Observed::none() }`, in the original's
   raw units (`game::observed`, generated from `glossary/`); `screen` gives
   the picture once the port draws one.
-- **Scenarios are the port's test.** `game/tests/scenarios.rs` replays each
-  recording of the original (`scenarios/<id>/`) tick by tick in a fresh
-  `Game::headless()`. `psx port check` runs it for the verdicts; `cargo
-  test -p game --test scenarios` while working.
+- **Scenarios are the port's test.** Each recording of the original
+  (`scenarios/<id>/`) is replayed tick by tick in a fresh
+  `Game::headless()`. `psx port check` runs them against the game's
+  program, which `src/main.rs` serves with `--psx`, for the verdicts;
+  `cargo test -p game --test scenarios` (`game/tests/scenarios.rs`) runs
+  them the same way while working.
 - **`--replay`.** `cargo run -p game -- --replay
   scenarios/<id>/<name>.jsonl --frames DIR` draws a recording a PNG per
   tick from `screen`, for psx web to show beside the original. Keep the

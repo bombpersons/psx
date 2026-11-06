@@ -13,14 +13,17 @@ The files:
   binding's glue and the port's `Observed`, their checks, JSON Schemas
   in `crates/psx-scenario/schemas/`, and the runner (`runner.rs`): the
   `Port` trait a port implements and the replay of each recording against
-  it, used by the game's `tests/scenarios.rs`.
+  it; and the port protocol (`protocol.rs`): `serve`, the port's side, and
+  `ProcessPort`, psx's, which `psx port check` and psx web drive the
+  port's program through.
 - `crates/psx-capture`: the `Glossary` trait the glossary's binding
   implements.
 - `crates/psx/src/scenario.rs`: `psx scenario record`, `psx scenario check`,
   `psx scenario show` and the facts `port next` reads; `crates/psx/src/binding.rs` builds and
   loads the glossary's binding.
-- `crates/psx-scenario/src/replay.rs`: `--replay`, a recording drawn by
-  the port a PNG per tick for `psx web`.
+- `crates/psx-scenario/src/replay.rs`: a recording drawn by the port a
+  PNG per tick for `psx web`, and the game's `main`'s `--psx` and
+  `--replay`.
 
 ## 1. The glossary: `glossary/`
 
@@ -363,25 +366,64 @@ impl Port for Game {
 - A quantity given twice in the observation is a failure. (A Bevy port's
   `psx_bevy::scenario` is a `Port` whose plugins each observe their own.)
 
-The game's `tests/scenarios.rs` gives the runner a function that makes a
-fresh headless game with every feature's rules. For each recording, the
-runner:
+The game's `main` hands its arguments to `psx_scenario::replay::main`
+first, with a function that makes a fresh headless game with every
+feature's rules. With `--psx` it serves the port protocol (below) on stdin
+and stdout. `psx port check` builds the game (`cargo build -p game`),
+starts it with `--psx` and runs psx_scenario's runner against it on psx's
+side. For each recording, the runner:
 
-1. makes a game and launches the scenario;
+1. launches the scenario in a fresh game;
 2. compares the observed quantities with `initial`;
 3. runs one tick per line with the line's pad, and compares again.
 
-Each quantity's first tick out of tolerance is reported.
+Each quantity's first tick out of tolerance is reported. Each recording
+then runs again in another fresh game, and where the two runs part is a
+failure too. The game's `tests/scenarios.rs` runs the same runner in
+process (`cargo test -p game --test scenarios`), with the same results: the
+quick check while working.
 
-The game draws the same replay with its renderer for the person to watch:
-`cargo run -p game -- --replay scenarios/<id>/<name>.jsonl --frames DIR`
-(`psx_scenario::replay`, called first in the game's `main`) makes a
-headless game, launches the scenario, runs the recording's ticks and saves
-`Port::screen` after each as `DIR/<tick>.png`. `psx web` runs it beside
-the original's replay. A port that draws nothing yet writes `frames.json`
-with `no_screen`, and psx web says so.
+psx web draws the same replay with the game's renderer for the person to
+watch: through the protocol, it launches the scenario, runs the
+recording's ticks and asks for `Port::screen` after each, saved as
+`<tick>.png`. A port that draws nothing yet writes `frames.json` with
+`no_screen`, and psx web says so. `cargo run -p game -- --replay
+scenarios/<id>/<name>.jsonl --frames DIR` draws it into `DIR` without psx.
 
-`psx port check` runs that test and writes each feature's scenario verdict.
+### The port protocol
+
+JSON lines: psx writes one request a line to the port's stdin and reads
+one reply a line from its stdout. stdout carries the protocol alone; logs
+go to stderr (a stdout line that is not a JSON object is skipped as a
+log).
+
+```
+-> {"hello":1}                                     <- {"kinds":["level"]}
+-> {"launch":{"kind":"level","parameters":{...}}}  <- {"ok":true} | {"error":"..."}
+-> {"tick":{"buttons":["CROSS","UP"],"analog":false,"sticks":[128,128,128,128]}}
+                                                   <- {}
+-> {"observe":{}}                                  <- {"values":{"croc_x":1234,"croc_gait":"walking"}}
+-> {"screen":{"path":"/tmp/f/12.rgba"}}            <- {"width":320,"height":240} | {"none":true}
+```
+
+- `hello` gives the protocol version (1) and is answered with the kinds the
+  port launches.
+- `launch` starts a fresh game: nothing of the last one is kept.
+- A tick's `buttons` are the recordings' names (any case); `sticks` are
+  lx, ly, rx, ry, raw bytes.
+- Values are in the recordings' encoding: raw integers (a fixed-point
+  quantity's underlying integer, a float's bit pattern), as decimal
+  strings outside ±2^53; bools; an enum's variant by name. psx checks each
+  against its glossary type. A quantity left out is one the port has none
+  of; a name the glossary lacks is a failure.
+- `screen` writes `width * height` RGBA pixels, rows top to bottom, to the
+  path.
+- Any request may be answered `{"error":"..."}` (it could not be done) or
+  `{"panic":"..."}` (the port panicked: the recording fails at that tick,
+  and the next launch starts afresh). A port that exits or takes over two
+  minutes on a reply is stopped and started again for the next recording.
+
+`psx port check` writes each feature's scenario verdict.
 **A feature passes when:**
 
 - its entry names at least one recording;

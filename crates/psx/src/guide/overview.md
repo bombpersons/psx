@@ -149,7 +149,7 @@ field it ended in, the pad, its mode and sticks when they changed and
 the quantities that changed. The sticks are the raw bytes the game read
 (128 at rest), so they need pad dualshock in the chain and analog mode
 (the game's switch, or ANALOG) before they move; the port reads them as
-ControllerState::sticks and the mode as ControllerState::analog.
+Pad::sticks and Pad::analog.
 Recordings are latched and steady unless stock (topic run).
 Beside it, <name>.coverage.json keeps what the
 original ran as the inventory's code (no instructions, so it is committed):
@@ -173,11 +173,10 @@ Write the request in game terms: the spot, the way to face, what should
 have happened. Without a scenario, a play reaches a hard place for
 investigation (topic run).
 
-In the port, each feature's plugin registers a launcher per scenario kind
-and observes the quantities it keeps (AGENTS.md, The code); game/tests/
-scenarios.rs replays each recording tick by tick with its pad. port_check
-runs it and writes the verdicts; cargo test -p game --test scenarios gives
-the same result while working.
+In the port, Game launches each scenario kind and observes the quantities
+it keeps (AGENTS.md). port_check runs the game (--psx), replays each
+recording over the port protocol and writes the verdicts; cargo test -p
+game --test scenarios gives the same result while working.
 
 ## Status and next
 

@@ -1,6 +1,7 @@
-//! The executable: the game in a window (`cargo run`), or a scenario
-//! recording drawn for psx web (`--replay REC --frames DIR`,
-//! psx_scenario::replay).
+//! The executable: the game in a window (`cargo run`), or the port as psx
+//! drives it (`--psx`, the port protocol, for `psx port check` and psx web)
+//! and a scenario recording drawn here (`--replay REC --frames DIR`), both
+//! psx_scenario::replay.
 //!
 //! At the start it imports the player's disc (disc-import), then runs
 //! [`game::Game`] at the original's tick rate with the pad from the keyboard
@@ -137,28 +138,21 @@ impl App for Play {
     }
 }
 
-/// The game drawn headless, for `--replay`: the port's ticks, and each
-/// screen at [`SCREEN`] in the PS1 look.
+/// The game as psx drives it (`--psx`, `--replay`): the port's ticks, and
+/// each screen at [`SCREEN`] in the PS1 look. The renderer starts at the
+/// first screen asked for, so runs that only observe (`psx port check`)
+/// draw nothing.
 struct Shown {
     game: game::Game,
-    renderer: Option<Renderer>,
-    demo: Option<demo::Demo>,
+    software: bool,
+    /// None until a screen is asked for; then the renderer and what it
+    /// draws, or None when there is no adapter.
+    drawn: Option<Option<(Renderer, demo::Demo)>>,
 }
 
 impl Shown {
     fn new(software: bool) -> Self {
-        let renderer = match Renderer::headless(Options { game: SCREEN, software, ..Default::default() }) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                eprintln!("replay: {e}; frames are not drawn");
-                None
-            }
-        };
-        let mut shown = Self { game: game::Game::headless(), renderer, demo: None };
-        if let Some(r) = &mut shown.renderer {
-            shown.demo = Some(demo::Demo::new(r, &imported()));
-        }
-        shown
+        Self { game: game::Game::headless(), software, drawn: None }
     }
 }
 
@@ -175,7 +169,7 @@ impl Port for Shown {
 
     fn tick(&mut self, pad: &Pad) {
         self.game.tick(pad);
-        if let Some(demo) = &mut self.demo {
+        if let Some(Some((_, demo))) = &mut self.drawn {
             demo.tick(pad);
         }
     }
@@ -185,7 +179,20 @@ impl Port for Shown {
     }
 
     fn screen(&mut self) -> Option<psx_scenario::Frame> {
-        let (renderer, demo) = (self.renderer.as_mut()?, self.demo.as_ref()?);
+        let software = self.software;
+        let (renderer, demo) = self
+            .drawn
+            .get_or_insert_with(|| match Renderer::headless(Options { game: SCREEN, software, ..Default::default() }) {
+                Ok(mut r) => {
+                    let demo = demo::Demo::new(&mut r, &imported());
+                    Some((r, demo))
+                }
+                Err(e) => {
+                    eprintln!("replay: {e}; frames are not drawn");
+                    None
+                }
+            })
+            .as_mut()?;
         match renderer.capture(&demo.scene(None)) {
             Ok(frame) => Some(frame),
             Err(e) => {

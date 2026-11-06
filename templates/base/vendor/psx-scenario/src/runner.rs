@@ -1,7 +1,7 @@
 //! Running a port against its scenarios: the port against the original in
 //! situations both can reach, tick by tick. psx's `docs/scenarios.md`
-//! defines the files; `psx port check` runs the game's `tests/scenarios.rs`
-//! and records the verdicts.
+//! defines the files; `psx port check` runs them against the port over the
+//! port protocol ([`crate::protocol`]) and records the verdicts.
 //!
 //! The port is a value implementing [`Port`]: it launches each scenario
 //! kind (`kind` in `scenarios/<id>.toml`), building its world from the
@@ -219,7 +219,7 @@ pub trait Port {
     }
 }
 
-/// The scenarios' results, written to `$PSX_SCENARIO_REPORT` for psx.
+/// The scenarios' results: what `psx port check` records.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
     /// The scenario kinds the port can launch.
@@ -478,13 +478,9 @@ impl<P: Port> Scenarios<P> {
         (out, had)
     }
 
-    /// Runs every scenario, prints the results, writes them to
-    /// `$PSX_SCENARIO_REPORT` when it is set, and panics when one fails.
+    /// Runs every scenario, prints the results and panics when one fails.
     pub fn run(self) {
         let report = self.report();
-        if let Some(p) = std::env::var_os("PSX_SCENARIO_REPORT") {
-            std::fs::write(&p, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
-        }
         let mut failed = Vec::new();
         for s in &report.scenarios {
             let ticks: usize = s.recordings.iter().map(|r| r.ticks).sum();
@@ -505,7 +501,7 @@ impl<P: Port> Scenarios<P> {
 }
 
 /// The quantities the port has, by name; a name given twice is an error.
-fn gather(values: Vec<(&'static str, Option<Value>)>) -> Result<BTreeMap<&'static str, Value>, String> {
+pub(crate) fn gather(values: Vec<(&'static str, Option<Value>)>) -> Result<BTreeMap<&'static str, Value>, String> {
     let mut out = BTreeMap::new();
     for (name, v) in values {
         let Some(v) = v else { continue };
@@ -536,7 +532,8 @@ fn parting(first: &Trail, second: &Trail) -> Option<String> {
     Some(format!("{at} {q}: the port is not deterministic: first run {}, second run {}", had(a), had(b)))
 }
 
-fn panic_message(p: &Box<dyn std::any::Any + Send>) -> String {
+/// A caught panic's message.
+pub fn panic_message(p: &Box<dyn std::any::Any + Send>) -> String {
     p.downcast_ref::<&str>()
         .map(|m| m.to_string())
         .or_else(|| p.downcast_ref::<String>().cloned())

@@ -7,6 +7,7 @@
 //! This is the platform-free side: what a binding reads on the PlayStation
 //! is psx's. The formats are defined in psx's `docs/scenarios.md`.
 
+pub mod protocol;
 pub mod release;
 pub mod replay;
 pub mod runner;

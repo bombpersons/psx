@@ -59,7 +59,7 @@ jobs:
       # The add-ons, in the base template with `psx port add full` (not --locked:
       # the add-ons bring their own dependencies).
       - run: |
-          PSX_ADDONS_WORKSPACE="$RUNNER_TEMP/full" cargo test -p psx --lib write_full_workspace -- --ignored
+          PSX_ADDONS_WORKSPACE="$RUNNER_TEMP/full" cargo test -p psx --bin psx write_full_workspace -- --ignored
           cargo fmt --all --check --manifest-path "$RUNNER_TEMP/full/Cargo.toml"
           cargo test --workspace --manifest-path "$RUNNER_TEMP/full/Cargo.toml"
 

@@ -254,7 +254,7 @@ enum PortAction {
     /// The one item due now: what, for which feature, why, and the fact that will show it done.
     /// An agent item handed out three times with nothing changed is reported as stuck instead.
     Next(port::PortNextArgs),
-    /// Run the features' scenarios against the port (the game's tests/scenarios.rs) and
+    /// Run the features' scenarios against the port (its program, over the port protocol) and
     /// write their scenario verdicts for HEAD, which must have no uncommitted changes.
     Check(port::PortCheckArgs),
 }

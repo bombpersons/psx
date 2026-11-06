@@ -265,7 +265,7 @@ leave Bevy without psx noticing.
 
 ## After this plan: any executable as a port
 
-Not started; the design below is agreed. psx treats any program that keeps a
+Phase (a) is done; the design below is agreed. psx treats any program that keeps a
 contract as a port, in any language, and tests it as it tests a Rust one.
 
 ### What ties a port to Rust
@@ -447,6 +447,15 @@ About phase 1 and phase 2 of this plan together, mostly on psx's side.
   `psx_scenario::replay::main`, which their `main` already calls, so a
   `port update` is enough. The in-repo Croc example's reports stay byte
   for byte the same.
+  Done: `psx_scenario::protocol` holds `serve` and `Process`/`ProcessPort`
+  (one child for a whole check, a fresh game per launch, a child that dies
+  or takes over two minutes on a reply started again; panics replied and
+  raised again on psx's side, so failures read as before). `port check`
+  builds with `cargo build`, starts `cargo run -- --psx` and writes the
+  runner's report itself; `$PSX_SCENARIO_REPORT` is gone. The full
+  add-on's `Shown` starts its renderer at the first screen asked for, so
+  a check draws nothing. The Croc example's report is byte for byte the
+  same, in about a second.
 - **(b) Any executable.** The manifest; `port check` and web replay running
   its commands; the arithmetic spec and `psx port vectors`; a tiny C port
   (one quantity) in CI as the conformance test.

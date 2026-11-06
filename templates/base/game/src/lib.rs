@@ -1,7 +1,8 @@
 //! The port, as a library: [`Game`] is the whole game, and psx drives it
-//! through [`Port`]. `tests/scenarios.rs` replays the original's
-//! recordings against it; `src/main.rs` draws them for psx web
-//! (`--replay`) and runs the game itself.
+//! through [`Port`]: `src/main.rs` serves it to psx (`--psx`), which runs
+//! the original's recordings against it and draws them for psx web, and
+//! runs the game itself. `tests/scenarios.rs` runs the recordings here, a
+//! quick check while working.
 //!
 //! The rules live in modules of their own, one per catalogue feature, named
 //! after it; `Game` holds their state and runs them once a tick.
@@ -54,7 +55,7 @@ pub struct Game {}
 
 impl Game {
     /// A game with every feature's rules and nothing on screen, as the
-    /// scenarios and `--replay` use it.
+    /// scenarios and psx's replays use it.
     pub fn headless() -> Game {
         Game::default()
     }

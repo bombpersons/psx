@@ -1,6 +1,7 @@
-//! The executable. `--replay REC --frames DIR` draws a scenario recording
-//! for psx web (psx_scenario::replay); anything else is the game's own to
-//! run.
+//! The executable. `--psx` serves the port to psx over the port protocol
+//! (`psx port check`, psx web's replays), and `--replay REC --frames DIR`
+//! draws a scenario recording here (psx_scenario::replay); anything else is
+//! the game's own to run.
 use std::process::ExitCode;
 
 fn main() -> ExitCode {

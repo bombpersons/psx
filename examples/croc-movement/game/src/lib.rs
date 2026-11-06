@@ -1,7 +1,8 @@
 //! Croc: Legend of the Gobbos, ported, as a library: [`Game`] is the whole
-//! game, and psx drives it through [`Port`]. `tests/scenarios.rs` replays
-//! the original's recordings against it; `src/main.rs` draws it, in a
-//! window or for psx web (`--replay`).
+//! game, and psx drives it through [`Port`]: `src/main.rs` serves it to psx
+//! (`--psx`), which runs the original's recordings against it and draws
+//! them for psx web, and runs it in a window. `tests/scenarios.rs` runs the
+//! recordings here, a quick check while working.
 //!
 //! Layout: the world and its levels ([`world`]), characters' bodies
 //! ([`character`]) and Croc, the player, with his abilities ([`croc`]).

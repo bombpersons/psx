@@ -1,5 +1,7 @@
 //! A scenario recording as the port draws it, one PNG per tick, for `psx
-//! web` to show beside the original's screens:
+//! web` to show beside the original's screens. psx web draws it through the
+//! port protocol (`--psx`, [`crate::protocol`]); the game draws it itself
+//! with
 //!
 //! ```text
 //! cargo run -p game -- --replay scenarios/<id>/<name>.jsonl --frames DIR
@@ -64,12 +66,24 @@ impl Frame {
     }
 }
 
-/// `--replay REC --frames DIR` among `args`: draws the recording with a
-/// port from `port` and gives the exit code. None when `--replay` is not
-/// there. Other arguments (`--software`, `--skip-import`) are left to the
-/// game.
-pub fn main<P: Port>(args: impl IntoIterator<Item = String>, port: impl FnOnce() -> P) -> Option<ExitCode> {
+/// What the game's `main` hands its arguments to first. `--psx` serves the
+/// port protocol on stdin and stdout, with a fresh port from `port` for
+/// each launch ([`crate::protocol`]): `psx port check` and psx web drive the
+/// port that way. `--replay REC --frames DIR` draws the recording here.
+/// None when neither is there. Other arguments (`--software`,
+/// `--skip-import`) are left to the game.
+pub fn main<P: Port>(args: impl IntoIterator<Item = String>, port: impl Fn() -> P) -> Option<ExitCode> {
     let args: Vec<String> = args.into_iter().collect();
+    if args.iter().any(|a| a == "--psx") {
+        let stdin = std::io::stdin().lock();
+        return Some(match crate::protocol::serve(port, stdin, std::io::stdout().lock()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("psx: {e}");
+                ExitCode::FAILURE
+            }
+        });
+    }
     let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).map(PathBuf::from);
     let recording = value("--replay")?;
     let Some(out) = value("--frames") else {
@@ -79,12 +93,23 @@ pub fn main<P: Port>(args: impl IntoIterator<Item = String>, port: impl FnOnce()
     Some(if run(port(), &recording, &out).is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
-/// Draws `recording` into `out` and writes `out/frames.json`.
-pub fn run<P: Port>(mut port: P, recording: &Path, out: &Path) -> Result<(), String> {
+/// Draws `recording` into `out` and writes `out/frames.json`; progress goes
+/// to stdout.
+pub fn run<P: Port>(port: P, recording: &Path, out: &Path) -> Result<(), String> {
+    run_with(port, recording, out, |line| println!("{line}"))
+}
+
+/// [`run`], with progress (`tick N/M`) to `progress`.
+pub fn run_with<P: Port>(
+    mut port: P,
+    recording: &Path,
+    out: &Path,
+    mut progress: impl FnMut(&str),
+) -> Result<(), String> {
     let mut summary = json!({"recording": recording, "drawn": 0});
     let result = std::fs::create_dir_all(out)
         .map_err(|e| format!("{}: {e}", out.display()))
-        .and_then(|_| draw(&mut port, recording, out, &mut summary));
+        .and_then(|_| draw(&mut port, recording, out, &mut summary, &mut progress));
     if let Err(e) = &result {
         summary["error"] = json!(e);
         eprintln!("replay: {e}");
@@ -93,7 +118,13 @@ pub fn run<P: Port>(mut port: P, recording: &Path, out: &Path) -> Result<(), Str
     result
 }
 
-fn draw<P: Port>(port: &mut P, recording: &Path, out: &Path, summary: &mut Value) -> Result<(), String> {
+fn draw<P: Port>(
+    port: &mut P,
+    recording: &Path,
+    out: &Path,
+    summary: &mut Value,
+    progress: &mut impl FnMut(&str),
+) -> Result<(), String> {
     let (scenario, rec) = load(recording)?;
     if !port.kinds().contains(&scenario.kind) {
         return Err(format!("no launcher registered for scenario kind {}", scenario.kind));
@@ -104,7 +135,7 @@ fn draw<P: Port>(port: &mut P, recording: &Path, out: &Path, summary: &mut Value
     let Some(first) = port.screen() else {
         // Nothing to draw: said once, not a tick at a time.
         summary["no_screen"] = json!(true);
-        println!("the port draws no screen");
+        progress("the port draws no screen");
         return Ok(());
     };
     summary["width"] = json!(first.width);
@@ -138,11 +169,11 @@ fn draw<P: Port>(port: &mut P, recording: &Path, out: &Path, summary: &mut Value
         drawn += 1;
         summary["drawn"] = json!(drawn);
         if t.tick % 60 == 0 {
-            println!("tick {}/{}", t.tick, ticks.len());
+            progress(&format!("tick {}/{}", t.tick, ticks.len()));
         }
     }
     summary["drawn"] = json!(drawn);
-    println!("tick {}/{} drawn {drawn}", ticks.len(), ticks.len());
+    progress(&format!("tick {}/{} drawn {drawn}", ticks.len(), ticks.len()));
     failure.map_or(Ok(()), Err)
 }
 

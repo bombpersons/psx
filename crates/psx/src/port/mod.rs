@@ -20,6 +20,7 @@ pub mod check;
 mod confirm;
 mod init;
 pub mod next;
+pub mod process;
 pub mod review;
 pub mod verdict;
 

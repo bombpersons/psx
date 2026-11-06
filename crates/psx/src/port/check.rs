@@ -1,6 +1,6 @@
 //! `port check`, which runs the features' scenarios against the port (the
-//! game's `tests/scenarios.rs`, `psx_scenario::runner`) and writes their
-//! scenario verdicts.
+//! port's program over the port protocol, `psx_scenario::runner`) and
+//! writes their scenario verdicts.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -51,7 +51,7 @@ fn recording_results(e: &Entry, report: &ScenarioReport) -> BTreeMap<String, Vec
             None => vec![format!("not run: no scenarios/{id}.toml")],
             Some(s) if !s.problems.is_empty() => s.problems.clone(),
             Some(s) => match s.recordings.iter().find(|r| r.name == rec) {
-                None => vec!["not run: the scenario test has no such recording".into()],
+                None => vec!["not run: the scenarios have no such recording".into()],
                 Some(r) => r.failures.clone(),
             },
         };
@@ -213,27 +213,20 @@ pub struct PortCheckArgs {
 /// A test's report, or why the test wrote none.
 type Ran<T> = Result<T, String>;
 
-/// The game's scenario test: `cargo test --locked --test scenarios`, with
-/// its report written to `scenarios`. A test that wrote none gets the
-/// output's error lines.
+/// The scenarios against the port: built, started in protocol mode and
+/// driven by psx_scenario's runner ([`super::process`]), with the report
+/// written to `scenarios`. A port that could not be built or started gets
+/// why.
 fn run_tests(root: &Path, scenarios: &Path) -> crate::Result<Ran<ScenarioReport>> {
     let _ = std::fs::remove_file(scenarios);
-    let out = std::process::Command::new("cargo")
-        .args(["test", "--locked", "--no-fail-fast", "--manifest-path", "game/Cargo.toml", "--test", "scenarios"])
-        .env("PSX_SCENARIO_REPORT", scenarios)
-        .current_dir(root)
-        .output()
-        .map_err(|e| Error::invalid(format!("cargo: {e}")))?;
-    let text = String::from_utf8_lossy(&out.stderr);
-    let errors: Vec<&str> = text.lines().filter(|l| l.starts_with("error")).take(5).collect();
-    let why =
-        if errors.is_empty() { text.lines().last().unwrap_or("no output").to_string() } else { errors.join("; ") };
-    match std::fs::read(scenarios) {
-        Ok(b) => {
-            serde_json::from_slice(&b).map(Ok).map_err(|e| Error::invalid(format!("{}: {e}", scenarios.display())))
-        }
-        Err(_) => Ok(Err(format!("the scenario test did not run: {why}"))),
-    }
+    let process = match super::process::start(root) {
+        Ok(p) => p,
+        Err(why) => return Ok(Err(why)),
+    };
+    let report = psx_scenario::Scenarios::new(root, move || process.port()).report();
+    let bytes = serde_json::to_vec_pretty(&report).unwrap_or_default();
+    crate::write_atomic(scenarios, &bytes).map_err(|e| Error::io(scenarios, e))?;
+    serde_json::from_slice(&bytes).map(Ok).map_err(|e| Error::invalid(format!("{}: {e}", scenarios.display())))
 }
 
 impl PortCheckArgs {
@@ -355,7 +348,7 @@ mod tests {
         let r = recording_results(&e, &report);
         assert_eq!(r["jump/stomp"], Vec::<String>::new());
         assert_eq!(r["jump/long"], ["tick 4 croc_y: expected 3, got 2"]);
-        assert_eq!(r["jump/gone"], ["not run: the scenario test has no such recording"]);
+        assert_eq!(r["jump/gone"], ["not run: the scenarios have no such recording"]);
         assert_eq!(r["swim/lap"], ["no launcher registered for scenario kind water"]);
         assert_eq!(r["walk/a"], ["not run: no scenarios/walk.toml"]);
     }
