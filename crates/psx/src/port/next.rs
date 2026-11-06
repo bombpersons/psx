@@ -177,8 +177,9 @@ pub struct Feature {
     /// count.
     pub unrecorded: Vec<String>,
     /// Its recordings in which the original's driver kept the tick's input
-    /// from the game: the game is to be fixed and they recorded again.
-    pub late: Vec<String>,
+    /// from the game, each with what it asks for (fix, record again, or
+    /// change a fix that does not work).
+    pub late: Vec<(crate::scenario::Late, String)>,
     pub verdict: State,
     /// Launchers and observers the port lacks for its scenarios, by the
     /// last check at HEAD.
@@ -995,13 +996,40 @@ impl Facts {
                 "trace or record runs doing the thing and runs from the same state not doing it, run psx code coverage diff on them, read what only the first ran (code disasm, decompile), and list the feature's functions by entry address under code",
             );
         }
-        if let Some(f) = find(&|f| f.located && !f.late.is_empty()) {
+        // Input the original delays: fixed in fixes/, then recorded again.
+        // A recording made with fixes/ as it is and still late says the fix
+        // does not work; only a change to fixes/ asks for it again, so a fix
+        // that does not work is changed, not recorded over and over.
+        use crate::scenario::Late;
+        let late = |k: Late| move |f: &Feature| f.located && f.late.iter().any(|(x, _)| *x == k);
+        let lines = |f: &Feature, k: Late| -> Vec<String> {
+            f.late.iter().filter(|(x, _)| *x == k).map(|(_, l)| l.clone()).collect()
+        };
+        if let Some(f) = find(&late(Late::Fails)) {
             return Item::agent(
                 "Fix input",
                 Some(&f.id),
-                format!("the original's own driver delays its input: {}", first_lines(&f.late).join("; ")),
+                format!("fixes/ does not stop the delay: {}", first_lines(&lines(f, Late::Fails)).join("; ")),
+                "its recordings report no late_input",
+                "the recording ran with fixes/ as it is and its input still came late on those ticks. A replacement that never ran is not what the game calls there (another function, or another address than names/ gives); one that ran leaves another path that holds the input back. Read those ticks again (run with pad_reads, watch and trace there), change fixes/, and record the scenarios again (guide topic code, the fixes/ paragraphs)",
+            );
+        }
+        if let Some(f) = find(&late(Late::Unfixed)) {
+            return Item::agent(
+                "Fix input",
+                Some(&f.id),
+                format!("the original's own driver delays its input: {}", first_lines(&lines(f, Late::Unfixed)).join("; ")),
                 "its recordings report no late_input",
                 "the port takes its input every tick, so its recordings must too: find what keeps the poll or the game's read of the buttons back on those ticks (run with pad_reads, watch and trace around them), replace that function in fixes/ so the game takes the tick's input every field (guide topic code, the fixes/ paragraphs), then record the scenarios again; late_input left out with fix on is the fix working",
+            );
+        }
+        if let Some(f) = find(&late(Late::Before)) {
+            return Item::agent(
+                "Record",
+                Some(&f.id),
+                format!("recorded with input late and before fixes/ as it is: {}", first_lines(&lines(f, Late::Before)).join("; ")),
+                "its recordings report no late_input",
+                "record those scenarios again (psx scenario record): a recording takes fixes/ as it is. late_input left out then is the fix working; still there, port next says the fix does not work",
             );
         }
         if let Some(f) = find(&|f| f.located && !f.unrecorded.is_empty()) {
@@ -1384,7 +1412,7 @@ impl Facts {
                 row["unrecorded"] = json!(f.unrecorded);
             }
             if !f.late.is_empty() {
-                row["late_input"] = json!(f.late);
+                row["late_input"] = json!(f.late.iter().map(|(_, l)| l).collect::<Vec<_>>());
             }
             if !f.unbuilt.is_empty() {
                 row["unbuilt"] = json!(f.unbuilt);
@@ -1893,6 +1921,7 @@ mod tests {
 
     #[test]
     fn input_the_original_delays_is_fixed_before_the_port_is_written() {
+        use crate::scenario::Late;
         let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
         for id in ["F-0001", "F-0002"] {
             set(&mut f, id, |x| {
@@ -1900,15 +1929,28 @@ mod tests {
                 x.unrecorded.clear();
             });
         }
-        set(&mut f, "F-0001", |x| {
-            x.late = vec!["scenarios/walk/a.jsonl: the game ran 3 ticks on input a tick old (ticks 4, 9, 12)".into()];
-        });
+        let line = "scenarios/walk/a.jsonl: the game ran 3 ticks on input a tick old (ticks 4, 9, 12)";
+        let at = |f: &mut Facts, k: Late| set(f, "F-0001", |x| x.late = vec![(k, line.to_string())]);
+        at(&mut f, Late::Unfixed);
         assert_eq!(f.stage("F-0001"), Some(Stage::Located));
         let item = f.next();
         assert_eq!((item.item, item.feature.as_deref()), ("Fix input", Some("F-0001")));
-        assert!(item.why.contains("ticks 4, 9, 12") && item.how.contains("fixes/"), "{item:?}");
+        assert!(item.why.contains("ticks 4, 9, 12") && item.how.contains("replace that function in fixes/"), "{item:?}");
+        // A fix written: recorded again, the recording takes it.
+        at(&mut f, Late::Before);
+        let item = f.next();
+        assert_eq!((item.item, item.feature.as_deref()), ("Record", Some("F-0001")));
+        assert!(item.how.contains("record those scenarios again"), "{item:?}");
+        // Recorded with it and still late: the fix is changed, not recorded again.
+        at(&mut f, Late::Fails);
+        let item = f.next();
+        assert_eq!(item.item, "Fix input");
+        assert!(item.why.starts_with("fixes/ does not stop the delay") && item.how.contains("change fixes/"), "{item:?}");
+        // One recording still to take the fix waits on the fix that fails.
+        set(&mut f, "F-0001", |x| x.late.push((Late::Before, line.to_string())));
+        assert!(f.next().why.starts_with("fixes/ does not stop the delay"));
         set(&mut f, "F-0001", |x| x.late.clear());
-        assert_ne!(f.next().item, "Fix input");
+        assert!(!["Fix input", "Record"].contains(&f.next().item));
     }
 
     #[test]

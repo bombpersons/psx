@@ -1728,31 +1728,66 @@ pub fn unready(root: &Path, id: &str) -> Vec<String> {
     out
 }
 
-/// The recordings of the feature's scenarios in which the original's own
-/// driver kept the tick's input from the game (`late_input`), each with
-/// how often.
-pub fn feature_late_input(root: &Path, e: &Entry) -> Vec<String> {
-    e.scenarios().iter().flat_map(|s| late_input(root, s)).collect()
+/// What a recording whose original took its input late asks for, by
+/// what it was made with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Late {
+    /// fixes/ holds no C: the delay is to be found and fixed.
+    Unfixed,
+    /// Made without fixes/ as it is now: recorded again, it takes them.
+    Before,
+    /// Made with fixes/ as it is and still late: the fix does not work.
+    Fails,
 }
 
-fn late_input(root: &Path, id: &str) -> Vec<String> {
+/// The recordings of the feature's scenarios in which the original's own
+/// driver kept the tick's input from the game (`late_input`), each with
+/// how often and what it asks for.
+pub fn feature_late_input(root: &Path, e: &Entry) -> Vec<(Late, String)> {
+    let now = crate::decomp::fixes_hash(root);
+    e.scenarios().iter().flat_map(|s| late_input(root, s, now.as_deref())).collect()
+}
+
+fn late_input(root: &Path, id: &str, fixes_now: Option<&str>) -> Vec<(Late, String)> {
     let mut out = Vec::new();
-    {
-        let l = Loaded::load(root, id);
-        for (_, f, r) in &l.recordings {
-            let Ok(r) = r else { continue };
-            let Some(late) = r.header.producer.details.get("adjusted").and_then(|a| a.get("late_input")) else {
-                continue;
-            };
-            let ticks: Vec<String> = late["ticks"].as_array().into_iter().flatten().take(5).map(|t| t.to_string()).collect();
-            out.push(format!(
-                "{}: the game ran {} ticks on input a tick old (ticks {}{})",
-                rel(root, f),
-                late["tick_count"],
-                ticks.join(", "),
-                if late["tick_count"].as_u64().unwrap_or(0) > ticks.len() as u64 { ", .." } else { "" }
-            ));
-        }
+    let l = Loaded::load(root, id);
+    for (_, f, r) in &l.recordings {
+        let Ok(r) = r else { continue };
+        let details = &r.header.producer.details;
+        let Some(late) = details.get("adjusted").and_then(|a| a.get("late_input")) else {
+            continue;
+        };
+        let ticks: Vec<String> = late["ticks"].as_array().into_iter().flatten().take(5).map(|t| t.to_string()).collect();
+        let mut line = format!(
+            "{}: the game ran {} ticks on input a tick old (ticks {}{})",
+            rel(root, f),
+            late["tick_count"],
+            ticks.join(", "),
+            if late["tick_count"].as_u64().unwrap_or(0) > ticks.len() as u64 { ", .." } else { "" }
+        );
+        let made = details.get("fix").and_then(|f| f["sources"].as_str());
+        let kind = match fixes_now {
+            None => Late::Unfixed,
+            Some(now) if made != Some(now) => {
+                line.push_str(if made.is_none() { ", made without fixes/" } else { ", made with fixes/ as it was before" });
+                Late::Before
+            }
+            Some(_) => {
+                let calls: Vec<String> = details
+                    .get("adjusted")
+                    .and_then(|a| a["fix_calls"].as_array())
+                    .into_iter()
+                    .flatten()
+                    .map(|c| match c["calls"].as_u64() {
+                        Some(0) | None => format!("{} never ran", c["name"].as_str().unwrap_or("?")),
+                        Some(n) => format!("{} ran {n} times", c["name"].as_str().unwrap_or("?")),
+                    })
+                    .collect();
+                line.push_str(&format!(", made with fixes/ as it is ({})", calls.join(", ")));
+                Late::Fails
+            }
+        };
+        out.push((kind, line));
     }
     out
 }
@@ -2502,15 +2537,34 @@ pub struct Quantities {
             unready(root, "walk"),
             ["scenarios/walk/a.jsonl: recorded before psx measured whether the game takes its input every tick; record it again"]
         );
-        assert!(late_input(root, "walk").is_empty());
+        assert!(late_input(root, "walk", None).is_empty());
         std::fs::write(root.join("scenarios/walk/a.jsonl"), latched(r#"{"buffer":[],"late_fields":0}"#)).unwrap();
         assert_eq!(unready(root, "walk"), ["walk: changed since its determinism check (psx scenario check walk)"]);
-        assert!(late_input(root, "walk").is_empty());
+        assert!(late_input(root, "walk", None).is_empty());
         let late = r#"{"buffer":[],"late_fields":7,"late_input":{"fields":7,"ticks":[3,5,8,9,11,14,20],"tick_count":7}}"#;
         std::fs::write(root.join("scenarios/walk/a.jsonl"), latched(late)).unwrap();
+        let line = "scenarios/walk/a.jsonl: the game ran 7 ticks on input a tick old (ticks 3, 5, 8, 9, 11, ..)";
+        assert_eq!(late_input(root, "walk", None), [(Late::Unfixed, line.to_string())]);
+        assert_eq!(late_input(root, "walk", Some("f1")), [(Late::Before, format!("{line}, made without fixes/"))]);
+        // Made with the fix as it is and still late: the fix does not work,
+        // and only a change to fixes/ asks for it again.
+        let fixed = |sources: &str, calls: u64| {
+            latched(&late.replace(
+                "\"late_fields\"",
+                &format!("\"fix_calls\":[{{\"name\":\"poll\",\"calls\":{calls}}}],\"late_fields\""),
+            ))
+            .replace("\"details\":{", &format!("\"details\":{{\"fix\":{{\"sources\":\"{sources}\"}},"))
+        };
+        std::fs::write(root.join("scenarios/walk/a.jsonl"), fixed("f1", 40)).unwrap();
         assert_eq!(
-            late_input(root, "walk"),
-            ["scenarios/walk/a.jsonl: the game ran 7 ticks on input a tick old (ticks 3, 5, 8, 9, 11, ..)"]
+            late_input(root, "walk", Some("f1")),
+            [(Late::Fails, format!("{line}, made with fixes/ as it is (poll ran 40 times)"))]
+        );
+        assert_eq!(late_input(root, "walk", Some("f2")), [(Late::Before, format!("{line}, made with fixes/ as it was before"))]);
+        std::fs::write(root.join("scenarios/walk/a.jsonl"), fixed("f1", 0)).unwrap();
+        assert_eq!(
+            late_input(root, "walk", Some("f1")),
+            [(Late::Fails, format!("{line}, made with fixes/ as it is (poll never ran)"))]
         );
     }
 

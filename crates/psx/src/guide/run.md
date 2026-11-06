@@ -55,7 +55,10 @@ unless stock is given, and the recording names what they did:
   replace it in fixes/ (topic code); port next asks for it.
 - fix: the functions of fixes/ run in place of the game's own, so the
   game takes its input every tick. late_input empty with fix and latch on
-  is the fix working; fix_calls counts the replacement's calls.
+  is the fix working; fix_calls counts the replacement's calls. A
+  recording keeps the fixes/ it was made with: one made before fixes/
+  changed is recorded again, and one made with fixes/ as it is that
+  still has late_input says the fix does not work.
 - steady: no tick overruns its fields. The CPU's own work costs a quarter
   of its clocks and the GPU draws without taking time; timers, the CD, the
   SPU and video keep the real clock. fields_per_tick shows how many ticks
