@@ -284,6 +284,7 @@ importers read the original's formats; the game reads the port's own.
   chains (setup).
 - scenario_record, scenario_check, scenario_show, scenario_play:
   recordings.
-- port_init, port_update, port_status, port_next, port_check: the port
-  (port_update: setup). psx port confirm is the person's.
+- port_init, port_update, port_add, port_status, port_next, port_check:
+  the port (port_update, port_add: setup). psx port confirm is the
+  person's.
 - message: talk with the person (run).

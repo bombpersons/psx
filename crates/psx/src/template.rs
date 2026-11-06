@@ -16,6 +16,9 @@
 //! their `psx-bevy/` as their own code: `update` stops tracking it and
 //! brings only `vendor/` up to date.
 
+mod addon;
+pub use addon::PortAddArgs;
+
 use crate::Error;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -206,6 +209,8 @@ struct Manifest {
     owned: BTreeMap<String, String>,
     /// Seeded files and the sha256 of the template's version of them.
     seeded: BTreeMap<String, String>,
+    /// Add-ons `psx port add` wrote, in the order added.
+    addons: Vec<String>,
 }
 
 impl Manifest {
@@ -244,6 +249,9 @@ fn toml_like(m: &Manifest) -> String {
         m.region.name(),
         m.fields_per_tick
     );
+    if !m.addons.is_empty() {
+        out.push_str(&format!("addons = {:?}\n", m.addons.join(",")));
+    }
     for (table, entries) in [("owned", &m.owned), ("seeded", &m.seeded)] {
         out.push_str(&format!("\n[{table}]\n"));
         for (path, hash) in entries {
@@ -303,6 +311,7 @@ fn parse_toml_like(text: &str) -> Result<Manifest, String> {
         fields_per_tick: get("fields_per_tick")?.parse().map_err(|e| format!("fields_per_tick: {e}"))?,
         owned,
         seeded,
+        addons: top.get("addons").map(|a| a.split(',').map(str::to_string).collect()).unwrap_or_default(),
     })
 }
 
@@ -454,6 +463,7 @@ pub fn create(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crat
         fields_per_tick: options.fields_per_tick,
         owned: BTreeMap::new(),
         seeded: BTreeMap::new(),
+        addons: Vec::new(),
     };
     let (mut owned, mut seeded) = (0, 0);
     for (rel, contents) in &files {
@@ -602,9 +612,17 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
         }
     }
 
+    // Add-ons' files: newer versions beside the project's copies.
+    let addon_paths: Vec<String> = addon::files(&manifest.addons).into_iter().map(|(_, rel, _)| rel).collect();
+    let (addon_added, addon_conflicts) = addon::update(dest, &mut manifest, dry_run)?;
+    added.extend(addon_added);
+    conflicts.extend(addon_conflicts);
+
     // Seeded files belong to the project: only report template changes.
     let mut seeded_changes = Vec::new();
-    for (rel, contents) in files.iter().filter(|(rel, _)| !is_owned(rel) && !bevy) {
+    for (rel, contents) in
+        files.iter().filter(|(rel, _)| !is_owned(rel) && !bevy && !addon_paths.iter().any(|p| p == rel))
+    {
         let new_hash = sha256(contents.as_bytes());
         if manifest.seeded.get(*rel) != Some(&new_hash) {
             let copy = format!("{SEEDED_UPDATES}/{rel}");
@@ -616,8 +634,12 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
         }
     }
     // Seeded files the template no longer has: the project decides.
-    let dropped: Vec<String> =
-        manifest.seeded.keys().filter(|rel| !bevy && !files.iter().any(|(r, _)| r == rel)).cloned().collect();
+    let dropped: Vec<String> = manifest
+        .seeded
+        .keys()
+        .filter(|rel| !bevy && !files.iter().any(|(r, _)| r == rel) && !addon_paths.contains(rel))
+        .cloned()
+        .collect();
     for rel in dropped {
         if dest.join(&rel).exists() {
             seeded_changes.push(json!({"path": rel, "removed_upstream": true}));
@@ -680,6 +702,7 @@ pub fn adopt(dest: &Path, name: Option<&str>, options: TemplateOptions) -> crate
         fields_per_tick: options.fields_per_tick,
         owned: BTreeMap::new(),
         seeded: BTreeMap::new(),
+        addons: Vec::new(),
     };
     let mut missing = Vec::new();
     for (rel, contents) in &files {
@@ -918,6 +941,7 @@ mod tests {
             fields_per_tick: 2,
             owned: BTreeMap::from([("vendor/README.md".into(), "sha256:00".into())]),
             seeded: BTreeMap::from([("game/src/lib.rs".into(), "sha256:11".into())]),
+            addons: vec!["shell".into(), "renderer".into()],
         };
         assert_eq!(parse_toml_like(&toml_like(&m)).unwrap(), m);
     }
@@ -933,6 +957,7 @@ mod tests {
             fields_per_tick: 2,
             owned: BTreeMap::new(),
             seeded: BTreeMap::new(),
+            addons: Vec::new(),
         };
         for bad in ["vendor/../../.ssh/config", "/etc/passwd", "../x", "game/src/lib.rs", "vendor//x", "vendor\\..\\x"]
         {

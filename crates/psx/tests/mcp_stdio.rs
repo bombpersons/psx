@@ -1296,6 +1296,7 @@ fn mcp_tools_match_cli() {
         "scenario_play",
         "port_init",
         "port_update",
+        "port_add",
         "port_status",
         "port_next",
         "port_check",

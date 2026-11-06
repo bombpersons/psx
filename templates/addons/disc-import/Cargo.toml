@@ -1,0 +1,16 @@
+# Written by `psx port add disc-import`; yours to change (`psx port update`
+# leaves newer versions beside your files as .psx-new).
+[package]
+name = "disc-import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The importers it runs on the player's disc.
+import.workspace = true
+# The import screen.
+renderer = { path = "../renderer" }
+serde.workspace = true
+serde_json.workspace = true

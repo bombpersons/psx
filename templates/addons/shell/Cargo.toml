@@ -1,0 +1,16 @@
+# Written by `psx port add shell`; yours to change (`psx port update`
+# leaves newer versions beside your files as .psx-new).
+[package]
+name = "shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Pad and Button, as the port's ticks take them.
+psx-scenario.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+winit = "0.30"
+gilrs = "0.11"

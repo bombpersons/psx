@@ -243,6 +243,9 @@ enum PortAction {
     /// Replace untouched vendor/ files with this build's; report edits and
     /// seeded changes.
     Update(template::TemplateUpdateArgs),
+    /// Add a ready-made crate under addons/ (full: a window, a renderer with a PS1 and a
+    /// modern look, the disc import and menus, wired into game/src/main.rs).
+    Add(template::PortAddArgs),
     /// Show the goal's features, their closure and any problems; with --yes, record the
     /// person's confirmation of the list in goal.toml.
     Confirm(port::PortConfirmArgs),
@@ -412,6 +415,7 @@ fn main() -> ExitCode {
         Command::Port { action } => match action {
             PortAction::Init(a) => a.exec(&ctx),
             PortAction::Update(a) => a.exec(&ctx),
+            PortAction::Add(a) => a.exec(&ctx),
             PortAction::Confirm(a) => a.exec(&ctx),
             PortAction::Status(a) => a.exec(&ctx),
             PortAction::Next(a) => a.exec(&ctx),

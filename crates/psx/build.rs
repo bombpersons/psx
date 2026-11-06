@@ -18,7 +18,7 @@ fn main() {
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let root = manifest.parent().unwrap().parent().unwrap();
     let mut files = Vec::new();
-    for item in ["Cargo.toml", "Cargo.lock", "crates", "tools/ghidra", "templates/base"] {
+    for item in ["Cargo.toml", "Cargo.lock", "crates", "tools/ghidra", "templates/base", "templates/addons"] {
         let path = root.join(item);
         println!("cargo:rerun-if-changed={}", path.display());
         collect(&path, &mut files);

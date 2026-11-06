@@ -1,6 +1,7 @@
 # rustfmt on every push and pull request: the psx workspace and the game
 # template (rustfmt.toml in each: 120 columns). Fix with `cargo fmt --all`
-# at the root and in templates/base.
+# at the root and in templates/base; the add-ons (templates/addons) are checked
+# in a workspace with them added (release.yml).
 name: Format
 
 on:

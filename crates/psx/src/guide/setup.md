@@ -56,6 +56,32 @@ template dropped. A workspace from the older Bevy template keeps its
 psx-bevy/ as its own code (released counts the files no longer tracked).
 Keep each project's cargo target directory to itself.
 
+## Add-ons
+
+port_add NAME writes a ready-made crate under addons/NAME/, a workspace
+member game/ depends on, with the add-ons it needs. None is required: a
+port of one feature's rules passes its scenarios on the template alone.
+
+- shell: the window (windowed or borderless fullscreen, any size and
+  aspect), the fixed-step loop at the port's tick rate, and the pad from
+  keyboard and gamepads with psx play's bindings.
+- renderer: wgpu drawing in a PS1 look (the PS1's resolution, affine
+  textures, snapped vertices, dither, 15-bit colour) and a modern look,
+  switched at run time: glTF models, textures, a camera, lights, fog and
+  sprites; capture() draws a frame for --replay. Its example shows a model:
+  cargo run -p renderer --example view -- MODEL.gltf.
+- disc-import: tools/import run on the player's disc at first start, with
+  a screen that asks for it.
+- menus: F1 controls and F2 display menus.
+- full: the four, wired into game/src/main.rs (an untouched one is
+  replaced; an edited one gets main.rs.psx-new), with game/src/demo.rs
+  standing in for the game's drawing. cargo run imports the disc and plays
+  the demo.
+
+Once added they are the port's code, to change or move into game/.
+port_update writes a newer version of an add-on's file beside it as
+<file>.psx-new.
+
 ## When results look wrong
 
 - A missing file is resolved against the server's root, not the client's
