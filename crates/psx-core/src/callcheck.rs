@@ -10,9 +10,11 @@
 //! registers a call keeps (`s0`..`s7`, `gp`, `fp`), the GTE's registers,
 //! the hardware register writes in order, and the functions it called with
 //! their first four arguments, in order. What an exception handler does
-//! meanwhile is left out, and time is not compared.
+//! meanwhile is left out, and time is not compared. The conditional
+//! branches it ran, and which way each went, are kept beside the effects,
+//! not compared.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Machine;
 use crate::cpu::StepInfo;
@@ -39,6 +41,23 @@ pub struct Effects {
     pub io: Vec<(u32, u8, u32)>,
     /// Calls it made: the callee's entry and `a0`..`a3`.
     pub calls: Vec<(u32, [u32; 4])>,
+    /// Conditional branches it ran (their address) and whether each was
+    /// taken, outside an exception handler.
+    pub branches: BTreeSet<(u32, bool)>,
+}
+
+/// Where the conditional branch `word` at `pc` goes when taken; `None` for
+/// any other instruction, and for a branch whose way cannot change
+/// (`beq r, r`, `bgez zero`).
+pub fn conditional_branch(word: u32, pc: u32) -> Option<u32> {
+    let (op, rs, rt) = (word >> 26, (word >> 21) & 31, (word >> 16) & 31);
+    let conditional = match op {
+        1 => rs != 0 && matches!(rt, 0 | 1 | 0x10 | 0x11),
+        4 | 5 => rs != rt,
+        6 | 7 => rs != 0,
+        _ => false,
+    };
+    conditional.then(|| pc.wrapping_add(4).wrapping_add(((word as i16) as i32 as u32) << 2))
 }
 
 /// The names of the registers a call keeps, as [`Effects::kept`] has them.
@@ -57,11 +76,15 @@ pub fn run_call(m: &mut Machine, max_steps: u64) -> Effects {
     let mut in_handler = false;
     // A jal or jalr ran: after its delay slot, the CPU is at the callee.
     let mut calling = 0u8;
+    // A conditional branch ran: its address and target, and the steps
+    // until its delay slot has run.
+    let mut branch: Option<(u32, u32, u8)> = None;
     while e.steps < max_steps {
         let info: StepInfo = m.step();
         e.steps += 1;
         if info.exception.is_some() {
             in_handler = true;
+            branch = None;
             continue;
         }
         if info.instruction == 0x4200_0010 {
@@ -83,6 +106,17 @@ pub fn run_call(m: &mut Machine, max_steps: u64) -> Effects {
         }
         e.low_sp = e.low_sp.min(m.cpu.regs[29]);
         let i = info.instruction;
+        match branch {
+            Some((at, target, 1)) => {
+                e.branches.insert((at, m.cpu.pc == target));
+                branch = None;
+            }
+            Some((at, target, n)) => branch = Some((at, target, n - 1)),
+            None => {}
+        }
+        if let Some(target) = conditional_branch(i, info.pc) {
+            branch = Some((info.pc, target, 1));
+        }
         if calling == 1 {
             e.calls.push((m.cpu.pc, [m.cpu.regs[4], m.cpu.regs[5], m.cpu.regs[6], m.cpu.regs[7]]));
         }
@@ -429,6 +463,63 @@ mod tests {
         let mut m = caller();
         m.run_frame_steps(5_000);
         assert_eq!(m.bus.ram[0x3_0000], 40);
+    }
+
+    #[test]
+    fn a_guarded_redirect_applies_only_while_the_entry_holds_its_bytes() {
+        let held = |m: &Machine| m.bus.ram[0x1_0100..0x1_0108].to_vec();
+        let replaced = |guard: Vec<u8>| {
+            let mut m = caller();
+            m.bus.hidden = Some(build(&[jr(RA), addiu(V0, 0, 7)]));
+            m.redirects.insert_guarded(0x8001_0100, crate::Redirect::To(crate::bus::HIDDEN), guard);
+            for _ in 0..200 {
+                m.step();
+            }
+            m
+        };
+        let m = replaced(held(&caller()));
+        assert_eq!(m.bus.ram[0x3_0000], 7);
+        assert!(m.redirects.hits(0x8001_0100) > 0 && m.redirects.passed_over(0x8001_0100) == 0);
+        assert!(m.redirects.hidden_steps > 0 && m.redirects.hidden_steps < m.redirects.steps);
+        // Other bytes there (another overlay): the code there runs.
+        let m = replaced(vec![0xAA; 8]);
+        assert_ne!(m.bus.ram[0x3_0000], 7);
+        assert_eq!(m.redirects.hits(0x8001_0100), 0);
+        assert!(m.redirects.passed_over(0x8001_0100) > 0);
+        assert_eq!(m.redirects.hidden_steps, 0);
+    }
+
+    #[test]
+    fn kept_calls_spread_over_all_the_calls() {
+        let mut m = caller();
+        m.redirects.insert(0x8001_0100, crate::Redirect::Keep(4));
+        while m.redirects.hits(0x8001_0100) < 20 {
+            m.step();
+        }
+        let kept = m.redirects.kept(0x8001_0100);
+        let calls: Vec<u64> = kept.iter().map(|k| k.0).collect();
+        // 20 calls, four at most: every eighth after doubling twice.
+        assert_eq!(calls, [1, 9, 17]);
+        // Each is the machine at the call's entry, and the original ran.
+        let (_, at) = Machine::load_state(&kept[1].1, m.bus.bios.clone()).unwrap();
+        assert_eq!(at.cpu.pc, 0x8001_0100);
+        assert_eq!(at.cpu.regs[A0 as usize], 20);
+        assert_eq!(m.bus.ram[0x3_0000], 40);
+        assert!(m.redirects.kept(0x8001_0100).is_empty(), "taken out");
+    }
+
+    #[test]
+    fn branches_are_kept_with_their_ways() {
+        // bne a0, zero, +2 at the entry: taken for a0 = 20, then returns.
+        let mut m = at_call();
+        let mut code = vec![i(0x05, A0, 0, 2), NOP, NOP, NOP];
+        code.extend(original());
+        load(&mut m, 0x8001_0100, &code);
+        m.cpu.regs[A0 as usize] = 20;
+        let e = run_call(&mut m, 10_000);
+        assert!(e.branches.contains(&(0x8001_0100, true)));
+        assert_eq!(conditional_branch(i(0x04, 3, 3, 1), 0), None, "beq r, r always goes");
+        assert_eq!(conditional_branch(i(0x05, 4, 0, 0xFFFF), 0x100), Some(0x100));
     }
 
     #[test]

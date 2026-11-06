@@ -21,6 +21,7 @@ mod commands;
 mod context;
 
 mod coverage;
+mod flow;
 mod decomp;
 mod error;
 mod ghidra;
@@ -33,6 +34,7 @@ mod media_cmd;
 mod messages;
 mod moved;
 mod names_bind;
+mod names_cmd;
 mod native;
 mod pad_reads;
 mod page;
@@ -53,6 +55,7 @@ mod states;
 mod stats;
 mod str_cmd;
 mod symbols_io;
+mod disc_names;
 mod template;
 mod textures;
 mod tickfind;
@@ -81,7 +84,13 @@ enum Command {
     #[command(name = "__handoff-child", hide = true)]
     HandoffChild { run_dir: PathBuf },
     #[command(name = "__web-replay", hide = true)]
-    WebReplay { id: String, name: String, dir: PathBuf },
+    WebReplay {
+        id: String,
+        name: String,
+        dir: PathBuf,
+        #[arg(long)]
+        decomp: bool,
+    },
     /// Discover build, project defaults, BIOS candidates and downloads, Ghidra and capabilities.
     Context(context::ArgsContext),
     /// Install a BIOS: a local image, or an explicit download of a verified one.
@@ -189,9 +198,14 @@ enum CodeAction {
     /// What traced runs executed, per function of the inventory: blocks executed and not,
     /// and the runs reaching each. `coverage diff`: what some runs reach that others do not.
     Coverage(CoverageCmd),
-    /// Check the agent's C for a function (decomp/) against the original: build it with the
-    /// names' header, run the game from a state, and compare each call's effects.
+    /// Check the agent's C for functions (decomp/) against the original: build it with the
+    /// names' header, replay the recordings that reach each (or run from a state), and compare
+    /// each call's effects, also with its arguments varied.
     Check(decomp::CodeCheckArgs),
+    /// Where a name (function, global, type, field, local) or address is defined in the names
+    /// files and what it resolves to; with no query, the files' problems and what the functions
+    /// the recordings run most leave unnamed.
+    Names(names_cmd::CodeNamesArgs),
 }
 
 #[derive(clap::Args)]
@@ -298,6 +312,7 @@ impl CodeAction {
             Self::Disasm(a) => a.exec(ctx),
             Self::Xrefs(a) => a.exec(ctx),
             Self::Check(a) => a.exec(ctx),
+            Self::Names(a) => a.exec(ctx),
             Self::Decompile(a) => a.exec(ctx),
             Self::Functions(a) => a.exec(ctx),
             Self::Symbols(a) => a.exec(ctx),
@@ -372,7 +387,7 @@ fn main() -> ExitCode {
     let out = match cli.command {
         Command::McpCall => mcp::project::worker(&ctx),
         Command::HandoffChild { run_dir } => handoff::child(&ctx, &run_dir),
-        Command::WebReplay { id, name, dir } => web::replay_child(&ctx, &id, &name, &dir),
+        Command::WebReplay { id, name, dir, decomp } => web::replay_child(&ctx, &id, &name, &dir, decomp),
         Command::Guide(a) => a.exec(&ctx),
         Command::Message(a) => a.exec(&ctx),
         Command::Report(a) => a.exec(&ctx),

@@ -363,6 +363,13 @@ pub struct ObserveArgs {
     #[arg(long = "adjust")]
     #[serde(default)]
     pub adjust: Vec<String>,
+    /// Run with the agent's C (decomp/) in place of the functions it
+    /// defines: alone, those whose last code check passed on this C and
+    /// names; `--decomp=all` every one; `--decomp=a,b` those named. The
+    /// result names them and the share of instructions run in the C.
+    #[arg(long, num_args = 0..=1, require_equals = true, value_delimiter = ',')]
+    #[serde(default)]
+    pub decomp: Option<Vec<String>>,
 }
 
 /// Physical address with main RAM mirrors folded (what read watches compare).

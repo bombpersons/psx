@@ -588,6 +588,7 @@ pub(crate) fn prepare(ctx: &Ctx, id: &str, name: &str, from: Option<&str>, repla
     adjust.off = crate::adjust::Off::resolve(&s.off).map_err(|p| {
         Error::invalid(format!("scenarios/{id}.toml: [off] does not resolve")).with("problems", json!(p))
     })?;
+    adjust.fix = crate::decomp::fixes(root)?;
     Ok(Prepared { id: id.into(), name: name.into(), from: from.map(Into::into), l, inv, b, out, state, chain, adjust })
 }
 
@@ -732,6 +733,9 @@ impl Prepared {
         }
         if let Some(o) = self.adjust.off_detail() {
             details["off"] = o;
+        }
+        if let Some(f) = self.adjust.fix_detail() {
+            details["fix"] = f;
         }
         if let Some(a) = &r.adjusted {
             details["adjusted"] = a.clone();
@@ -958,9 +962,11 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
     let b = binding(root, g)?;
     let mut recordings = Vec::new();
     let mut same = true;
+    let fixes_now = crate::decomp::fixes_hash(root);
     for (name, rec) in captured {
         // As it was recorded: checked above.
         let adjust = Adjustments::from_details(&rec.header.producer.details).unwrap_or_default();
+        let fix_changed = adjust.fix.as_ref().map(|f| f.sources.clone()) != fixes_now;
         let q = Quantities { binding: &b, types: g.types(), kept: l.compared().keys().cloned().collect(), adjust };
         let (frames, events) = kept_input(name, rec).map_err(Error::malformed)?;
         let mut m = machine(ctx, &chain, &second, &b.described().source)?.m;
@@ -983,6 +989,10 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
         let mut r = json!({"name": name, "differences": diffs});
         if !schedule.is_empty() {
             r["schedule"] = json!(schedule);
+        }
+        if fix_changed {
+            // Checked with the fixes it was made with; new recordings take fixes/ as it is.
+            r["fix_changed"] = json!("fixes/ differs from what this recording was made with: record it again to take fixes/ as it is");
         }
         recordings.push(r);
     }
@@ -1074,8 +1084,10 @@ fn adjust_check(ctx: &Ctx, id: &str, mut adjust: Adjustments, off: bool, timeout
         if let Some(late) = adjusted.adjusted.as_ref().and_then(|a| a.get("late_input")) {
             entry["late_input"] = late.clone();
         }
-        if let Some(calls) = adjusted.adjusted.as_ref().and_then(|a| a.get("off_calls")) {
-            entry["off_calls"] = calls.clone();
+        for k in ["off_calls", "fix_calls"] {
+            if let Some(calls) = adjusted.adjusted.as_ref().and_then(|a| a.get(k)) {
+                entry[k] = calls.clone();
+            }
         }
         recordings.push(entry);
     }
@@ -1093,9 +1105,10 @@ pub struct ScenarioAdjustCheckArgs {
     #[serde(default = "d_timeout")]
     pub timeout: u64,
     /// Measure only these adjustments (`latch`, `steady`, `off`: the
-    /// scenario's `[off]` table), to tell which one a difference comes from;
-    /// repeatable. Default: all of them, as recordings are made.
-    #[arg(long = "adjust", value_parser = ["latch", "steady", "off"])]
+    /// scenario's `[off]` table, `fix`: fixes/), to tell which one a
+    /// difference comes from; repeatable. Default: all of them, as
+    /// recordings are made.
+    #[arg(long = "adjust", value_parser = ["latch", "steady", "off", "fix"])]
     #[serde(default)]
     pub adjust: Vec<String>,
 }
@@ -1106,7 +1119,7 @@ fn adjust_check_cmd(ctx: &Ctx, a: ScenarioAdjustCheckArgs) -> crate::Result<(boo
         return Err(Error::invalid("no scenarios: write scenarios/<id>.toml"));
     }
     let (adjust, off) = if a.adjust.is_empty() {
-        (Adjustments::default_set(), true)
+        (Adjustments { fix: crate::decomp::fixes(&ctx.root)?, ..Adjustments::default_set() }, true)
     } else {
         let (mut only, mut off) = (Adjustments::stock(), false);
         for n in &a.adjust {
@@ -1114,7 +1127,13 @@ fn adjust_check_cmd(ctx: &Ctx, a: ScenarioAdjustCheckArgs) -> crate::Result<(boo
                 "latch" => only.latch = true,
                 "steady" => only.steady = true,
                 "off" => off = true,
-                _ => return Err(Error::invalid(format!("adjust: {n:?} is not latch, steady or off"))),
+                "fix" => {
+                    only.fix = crate::decomp::fixes(&ctx.root)?;
+                    if only.fix.is_none() {
+                        return Err(Error::invalid("adjust: fix measures fixes/, which holds no C"));
+                    }
+                }
+                _ => return Err(Error::invalid(format!("adjust: {n:?} is not latch, steady, off or fix"))),
             }
         }
         (only, off)
@@ -1247,16 +1266,18 @@ pub(crate) fn plot(root: &Path, id: &str, name: &str, last: &Json) -> crate::Res
 }
 
 /// Replay a captured recording from the scenario's state, following its
-/// ticks as the port's replay does; `on_tick` sees the machine at the end of
-/// each. What differs from the recording comes back (nothing when the replay
-/// is the recording).
+/// ticks as the port's replay does; `prepare` sees the machine once it is
+/// at the recording's start, and `on_tick` at the end of each tick. What
+/// differs from the recording comes back (nothing when the replay is the
+/// recording), with the machine as the replay left it.
 pub(crate) fn replay(
     ctx: &Ctx,
     id: &str,
     name: &str,
     timeout: Duration,
     on_tick: OnTick<'_>,
-) -> crate::Result<Vec<String>> {
+    prepare: Option<&mut dyn FnMut(&mut Machine)>,
+) -> crate::Result<(Vec<String>, Machine)> {
     let root = &ctx.root;
     check_name("id", id)?;
     check_name("name", name)?;
@@ -1281,8 +1302,11 @@ pub(crate) fn replay(
         reach_end(&mut m, &l, &q, from, timeout)?;
     }
     let pads = held_by_tick(&events, &rec.expand());
+    if let Some(prepare) = prepare {
+        prepare(&mut m);
+    }
     let r = record(&mut m, &q, frames, &events, Some(&pads), timeout, None, Some(on_tick));
-    Ok(match unrecorded(&r) {
+    let d = match unrecorded(&r) {
         Some(why) => vec![format!("the replay gave no recording: {}", why["status"].as_str().unwrap_or(""))],
         None => {
             let again = Header { initial: r.initial.clone().unwrap(), ..rec.header.clone() };
@@ -1290,7 +1314,66 @@ pub(crate) fn replay(
             d.extend(schedule);
             d
         }
-    })
+    };
+    Ok((d, m))
+}
+
+/// The first tick a difference line names (`tick N ...`).
+fn first_tick(diffs: &[String]) -> Option<u64> {
+    diffs.iter().filter_map(|d| d.strip_prefix("tick ")?.split([' ', ':']).next()?.parse().ok()).min()
+}
+
+/// Each captured recording of scenario `id` (or those of `only`) replayed
+/// on the original with the agent's C replacing `d`'s functions
+/// (docs/decomp-plan.md, step 13). A recording that differs is replayed
+/// again without the C: one that then replays as recorded diverges with
+/// the C, from the first tick it differs. False when one diverges.
+pub(crate) fn with_c(
+    ctx: &Ctx,
+    id: &str,
+    only: Option<&[String]>,
+    d: &crate::decomp::Replacement,
+    timeout: Duration,
+) -> crate::Result<(bool, Json)> {
+    let l = Loaded::load(&ctx.root, id);
+    let names: Vec<String> = l
+        .recordings
+        .iter()
+        .filter(|(n, _, r)| {
+            r.as_ref().is_ok_and(|r| r.header.source.kind == SourceKind::Captured)
+                && only.is_none_or(|o| o.iter().any(|x| x == n))
+        })
+        .map(|(n, _, _)| n.clone())
+        .collect();
+    let (mut ok, mut out) = (true, Vec::new());
+    let (mut steps, mut in_c) = (0u64, 0u64);
+    for name in names {
+        let mut prepare = |m: &mut Machine| d.install(m);
+        let (diffs, m) = replay(ctx, id, &name, timeout, &mut |_, _| {}, Some(&mut prepare))?;
+        let report = d.report(&m);
+        steps += report["steps"].as_u64().unwrap_or(0);
+        in_c += report["steps_in_c"].as_u64().unwrap_or(0);
+        let mut r = json!({"name": name, "replaced": report["replaced"], "share_in_c": report["share_in_c"]});
+        if diffs.is_empty() {
+            r["status"] = json!("same");
+        } else {
+            let (without, _) = replay(ctx, id, &name, timeout, &mut |_, _| {}, None)?;
+            if without.is_empty() {
+                ok = false;
+                r["status"] = json!("diverges_with_c");
+                r["first_tick"] = json!(first_tick(&diffs));
+                r["how"] = json!("the replay differs with the C and not without it: psx code check the functions it replaces, from a state at that tick (states save, then code check --state)");
+            } else {
+                r["status"] = json!("differs_without_c_too");
+                r["without_c"] = json!(without);
+            }
+            r["differences"] = json!(diffs);
+        }
+        crate::decomp::log_run(&ctx.root, id, r["name"].as_str().unwrap_or(""), r["status"].as_str().unwrap_or(""), &r["share_in_c"], &r["replaced"]);
+        out.push(r);
+    }
+    let share = if steps == 0 { 0.0 } else { ((in_c as f64 / steps as f64) * 1e6).round() / 1e6 };
+    Ok((ok, json!({"ok": ok, "share_in_c": share, "recordings": out})))
 }
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1302,6 +1385,13 @@ pub struct ScenarioCheckArgs {
     #[arg(long, default_value_t = 600)]
     #[serde(default = "d_timeout")]
     pub timeout: u64,
+    /// Also replay each captured recording on the original with the
+    /// agent's C (decomp/) in place of the functions it defines: alone,
+    /// those whose last code check passed on this C and names;
+    /// `--decomp=all` every one; `--decomp=a,b` those named.
+    #[arg(long, num_args = 0..=1, require_equals = true, value_delimiter = ',')]
+    #[serde(default)]
+    pub decomp: Option<Vec<String>>,
 }
 
 fn check_cmd(ctx: &Ctx, a: ScenarioCheckArgs) -> crate::Result<(bool, Json)> {
@@ -1309,12 +1399,18 @@ fn check_cmd(ctx: &Ctx, a: ScenarioCheckArgs) -> crate::Result<(bool, Json)> {
     if ids.is_empty() {
         return Err(Error::invalid("no scenarios: write scenarios/<id>.toml"));
     }
+    let decomp = a.decomp.as_ref().map(|w| crate::decomp::Replacement::new(&ctx.root, w)).transpose()?;
     let mut results = Vec::new();
     let mut ok = true;
     for id in ids {
         check_name("id", &id)?;
         let mut r = determinism(ctx, &id, Duration::from_secs(a.timeout))?;
         ok &= r["status"] == "deterministic";
+        if let Some(d) = &decomp {
+            let (same, c) = with_c(ctx, &id, None, d, Duration::from_secs(a.timeout))?;
+            ok &= same;
+            r["decomp"] = c;
+        }
         let l = Loaded::load(&ctx.root, &id);
         let kept = json!({"key": key(&ctx.root, &l), "at": crate::stamp::utc_now(), "psx": crate::context::version(),
                           "result": r.clone()});
@@ -1328,7 +1424,12 @@ fn check_cmd(ctx: &Ctx, a: ScenarioCheckArgs) -> crate::Result<(bool, Json)> {
         }
         results.push(r);
     }
-    Ok((ok, json!({"ok": ok, "scenarios": results})))
+    let mut out = json!({"ok": ok, "scenarios": results});
+    if let Some(d) = &decomp {
+        out["decomp"] = json!({"functions": d.functions.iter().map(|f| &f.name).collect::<Vec<_>>(),
+            "left_out": d.left_out.iter().map(|(f, why)| json!({"function": f, "why": why})).collect::<Vec<_>>()});
+    }
+    Ok((ok, out))
 }
 
 impl Op for ScenarioCheckArgs {
@@ -1915,6 +2016,14 @@ pub struct Quantities {
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust };
         record(&mut m, &q, 1, &[], None, Duration::from_secs(60), None, None)
+    }
+
+    #[test]
+    fn the_first_tick_a_difference_names() {
+        let d = ["initial x: recorded 1, the replay 2", "tick 40 y: recorded 1, the replay 2", "tick 7 pad mode: ..."]
+            .map(String::from);
+        assert_eq!(super::first_tick(&d), Some(7));
+        assert_eq!(super::first_tick(&d[..1]), None);
     }
 
     #[test]

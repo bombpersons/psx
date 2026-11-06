@@ -6,7 +6,8 @@ import ghidra.app.util.headless.HeadlessScript;
 import ghidra.app.cmd.disassemble.DisassembleCommand;
 import ghidra.program.disassemble.Disassembler;
 import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
-import ghidra.app.decompiler.DecompInterface;
+import ghidra.app.decompiler.*;
+import ghidra.app.decompiler.component.DecompilerUtils;
 import ghidra.program.model.data.*;
 import ghidra.program.model.pcode.*;
 import ghidra.program.model.address.*;
@@ -408,31 +409,74 @@ public class PsxGhidra extends HeadlessScript {
             nameErrors.add("locals of " + f.getName() + ": " + e.getMessage());
         } finally { currentProgram.endTransaction(transaction, true); }
     }
+    private void decompileInto(DecompInterface decompiler, Function f, JsonObject result) throws Exception {
+        if (names != null) applyLocals(decompiler, f);
+        var output = decompiler.decompileFunction(f, request.get("decompile_timeout").getAsInt(), monitor);
+        result.addProperty("status", output.decompileCompleted() ? "complete" : output.isTimedOut() ? "timeout" : "decompile_failed");
+        result.addProperty("diagnostic", output.getErrorMessage());
+        if (!output.decompileCompleted()) return;
+        result.addProperty("pseudocode", output.getDecompiledFunction().getC());
+        result.getAsJsonObject("function").addProperty("signature", output.getDecompiledFunction().getSignature());
+        // Each line's instruction addresses, and what is still unnamed: callees
+        // and globals by Ghidra's default names, struct offsets in no field.
+        var lines = new JsonArray();
+        var unnamed = new TreeMap<String, Integer>();
+        for (var line : DecompilerUtils.toLines(output.getCCodeMarkup())) {
+            var at = new TreeSet<Long>();
+            for (var t : line.getAllTokens()) {
+                if (t.getMinAddress() != null) at.add(t.getMinAddress().getOffset());
+                String text = t.getText(), key = null;
+                if (t instanceof ClangFuncNameToken && text.startsWith("FUN_") && !text.equals(f.getName())) key = text;
+                else if (t instanceof ClangVariableToken && text.matches("_*(DAT|PTR)_[0-9A-Za-z_]+")) key = text.replaceFirst("^_+", "");
+                else if (t instanceof ClangFieldToken ft && text.startsWith("field_0x") && ft.getDataType() != null)
+                    key = ft.getDataType().getName() + "+" + text.substring("field_".length());
+                if (key != null) unnamed.merge(key, 1, Integer::sum);
+            }
+            if (at.isEmpty()) continue;
+            var l = new JsonArray();
+            l.add(line.getLineNumber());
+            for (long a : at) l.add(a);
+            lines.add(l);
+        }
+        result.add("lines", lines);
+        var u = new JsonObject();
+        unnamed.forEach(u::addProperty);
+        result.add("unnamed", u);
+    }
     private void decompile() throws Exception {
         var result = new JsonObject();
-        var at = address("addr");
+        var at = request.has("addr") ? address("addr") : null;
         if (request.has("names") && request.get("names").isJsonObject()) {
             names = request.getAsJsonObject("names");
             applyNames();
         }
-        var f = getFunctionContaining(at);
-        if (f == null) {
-            result.addProperty("status", "function_not_found");
-            result.addProperty("diagnostic", "No analysed function contains this address; use a known entry or supply symbols to seed analysis.");
-            write("query_result", result);
-            return;
-        }
-        result.add("function", function(f));
         var decompiler = new DecompInterface();
         try {
             if (!decompiler.openProgram(currentProgram)) throw new IOException(decompiler.getLastMessage());
-            if (names != null) applyLocals(decompiler, f);
-            var output = decompiler.decompileFunction(f, request.get("decompile_timeout").getAsInt(), monitor);
-            result.addProperty("status", output.decompileCompleted() ? "complete" : output.isTimedOut() ? "timeout" : "decompile_failed");
-            result.addProperty("diagnostic", output.getErrorMessage());
-            if (output.decompileCompleted()) {
-                result.addProperty("pseudocode", output.getDecompiledFunction().getC());
-                result.getAsJsonObject("function").addProperty("signature", output.getDecompiledFunction().getSignature());
+            if (request.has("addrs")) {
+                // Several functions in one launch; an address in none is left out.
+                var all = new JsonArray();
+                var done = new HashSet<Address>();
+                for (var item : request.getAsJsonArray("addrs")) {
+                    var f = getFunctionContaining(toAddr(item.getAsLong()));
+                    if (f == null || !done.add(f.getEntryPoint())) continue;
+                    var one = new JsonObject();
+                    one.add("function", function(f));
+                    decompileInto(decompiler, f, one);
+                    all.add(one);
+                }
+                result.addProperty("status", "complete");
+                result.add("functions", all);
+            } else {
+                var f = getFunctionContaining(at);
+                if (f == null) {
+                    result.addProperty("status", "function_not_found");
+                    result.addProperty("diagnostic", "No analysed function contains this address; use a known entry or supply symbols to seed analysis.");
+                    write("query_result", result);
+                    return;
+                }
+                result.add("function", function(f));
+                decompileInto(decompiler, f, result);
             }
         } finally {
             decompiler.dispose();
@@ -452,6 +496,6 @@ public class PsxGhidra extends HeadlessScript {
         String mode = request.get("mode").getAsString();
         if (mode.equals("setup")) { setup(); return; }
         if (mode.equals("export")) exportIndex();
-        if (request.has("addr")) decompile();
+        if (request.has("addr") || request.has("addrs")) decompile();
     }
 }

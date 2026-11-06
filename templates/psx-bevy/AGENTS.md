@@ -76,6 +76,9 @@ there is yours to decide. What the tools rely on:
   wants it: the original's routines, state bytes and RAM layout are not a
   structure to copy. A constant tuned until a recording matches fails the
   next one.
+- **Name** what you learn about the original's code (functions, globals,
+  struct fields, locals) in `names/*.names` (psx guide, topic code):
+  every decompile, disassembly and trace then reads with those names.
 - **Cite** where each constant and non-obvious rule came from: the address,
   the instruction that writes or tests it, or the recording that showed
   it, and what was not verified, so someone can re-check it with psx.

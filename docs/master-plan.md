@@ -521,6 +521,35 @@ A9. **Late input, found and fixed.** The serial port knows each field's
     and sees the latch, so it is not reported. The fix, and the 47 of 47,
     wait for C1's call redirection.
 
+    *Done (2026-11-06), the fix:* C in `fixes/` replaces the game's
+    function of the same name (an executable's, not an overlay's) as the
+    `fix` adjustment, in every recording, play and check unless
+    `--stock` (and in psx web's play, as a choice beside latch and
+    steady). It builds like `decomp/`, with `names.h`, at its own place in
+    the hidden region, so a run can have both. A recording keeps the build
+    it was made with and replays with it; `scenario check` gives
+    `fix_changed` for one whose `fixes/` changed since; `fix_calls`
+    counts the replacement's calls, and `adjust-check --adjust fix`
+    measures it alone. `late_input` now counts a handler's load of the
+    latched buttons as the game taking them in, as a poll is (a fix that
+    hands them over is seen working), and a change is the controller's
+    state latched, not the buffer the game is seen to keep. On a scratch
+    copy of GT2, as an agent would: `0x800876D0`, libpad's vsync handler,
+    finds the last exchange still selected (JOY_CTRL bit 1) about 3
+    fields in 10, aborts it and returns before `0x80089B9C` copies the
+    received bytes into the game's buffer, which the race decodes every
+    field. The fix (`pad_vsync`, 40 lines of C, names for libpad's port
+    state) keeps the abort and copies each port's received buttons on a
+    skipped field. The 8 `measure_latch` inputs re-recorded with the
+    race word as a quantity: without it 37 of 47 releases reach the word
+    in the next tick (A3's 10 late, the same ticks) and 23 ticks are
+    `late_input`; with it 47 of 47 and none, presses 55 of 55 both ways,
+    `pad_vsync` named on each recording with its calls. GT2's names had
+    a field named twice (`Car.shift_request`), which `names.h` declared
+    twice and no C built; the second is now left out, as reported. Not
+    done: a fix in an overlay, and a fix and `--decomp` replacing one
+    function.
+
 ## Track B: the library's rules, exactly
 
 Most of Sony's library is hardware plumbing (graphics, the CD, sound,
@@ -587,8 +616,9 @@ C1. **`off`.** A scenario's `[off]` table names functions by their
     attacker quantities only, from tick 837, with `attacker_control`
     called 728 times. `Attacker_Control` and `attackercontrol` are
     refused with `attacker_control?`; `attacker_ctrl` with no
-    suggestion. The A9 fix (GT2's pad routine made to poll every field)
-    needs code replacement too, not a returned value.
+    suggestion. The A9 fix (GT2's pad routine made to hand over the
+    buttons every field) needed code replacement too, not a returned
+    value: `fixes/`.
 
 C2. **Turning systems back on.** `port next` gives a Restore item for a
     scenario with something off once the port has the feature it belongs
@@ -632,16 +662,16 @@ calls them by name.
 
 | Step | What |
 |---|---|
-| D5 | What to name next: unnamed callees, `DAT_` globals and stray offsets, by how often they appear |
-| D6 | Coverage on the C, and the gaps grouped |
-| D7 | The disc's own names: debug files left on the disc |
-| D8 | The flow (`port init` runs the scan) and a measure |
-| D9 | The header and the build: `names.h` and the linker script. *Done 2026-11-04 on test names; the command comes with D11* |
+| D5 | What to name next: unnamed callees, `DAT_` globals and stray offsets, by how often they appear. *Done 2026-11-05: `unnamed` in the decompile, `code names`* |
+| D6 | Coverage on the C, and the gaps grouped. *Done 2026-11-06 but the sampled values: division checks out, frontier ways, tests read back, port next's groups, wont_reach by test, `code coverage --function`* |
+| D7 | The disc's own names: debug files left on the disc. *Done 2026-11-06 but DWARF types and overlay modules: whole-disc scan (files, decompressed files, unowned sectors), SYM/MAP/ELF import to `.psx/names/`, PsyQ names there too; none on the three discs* |
+| D8 | The flow (`port init` runs the scan) and a measure. *Built 2026-11-06: init scans, port next's Read item, the guide's example, AGENTS.md; the measure (an agent session) not run* |
+| D9 | The header and the build: `names.h` and the linker script. *Done 2026-11-04 on test names; built on scratch Croc's with D11* |
 | D10 | One call, compared, in psx-core. *Done 2026-11-04 (`psx_core::callcheck`); GCC-built C checked against hand-written code end to end* |
-| D11 | Checks over recordings: `code check`. *Partly done 2026-11-04: from a state, not yet from recordings* |
-| D12 | The decompile shows the C |
-| D13 | Replacement for whole runs: `--decomp` |
-| D14 | The person sees it: psx web's Code view |
+| D11 | Checks over recordings: `code check`. *Done 2026-11-05: from recordings or a state, branch ways, varied calls (the D10 addition), every changed function; tried on scratch Croc* |
+| D12 | The decompile shows the C. *Done 2026-11-06: C and its last check (stale on change) in the decompile, counts in inventory, port status and Stats; tried on Croc's counter_step, world collision has no C yet* |
+| D13 | Replacement for whole runs: `--decomp`. *Done 2026-11-06: guarded redirects and steps in the C in psx-core, `--decomp` on run, scenario check and port check, diverges_with_c from the first tick; tried on Croc's counter_step (same on platforms_1_1, a planted mistake diverges at tick 4)* |
+| D14 | The person sees it: psx web's Code view. *Done 2026-11-06: replays "with the agent's C", a try with the C in Play now (kept apart from the queue and never recorded, since a play becomes a recording), a code check card in the live log, the agent's C beside Ghidra's, "Runs with the C" over time, `port next` Fix for a function that passed and now fails* |
 | D15 | Measure it on scratch Croc |
 
 ## Track E: housekeeping
@@ -671,8 +701,7 @@ E3. **The inventory timeline plan's status** is marked step by step by
 4. **B1** before a port's rules need exact library math: soon for any
    3D game.
 5. **C1 and C2** when ports start needing scenarios with systems off.
-   A9 follows C1's call redirection: GT2's late releases until then
-   are known and listed.
+   A9 followed C1's call redirection: `fixes/`.
 6. **Track D** throughout, in parallel, by another session or agent.
 
 ## If needed later

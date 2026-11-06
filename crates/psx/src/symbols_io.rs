@@ -42,6 +42,12 @@ pub struct SymbolsArgs {
     #[arg(long, default_value_t = d_min_concrete())]
     #[serde(default = "d_min_concrete")]
     pub min_concrete: usize,
+    /// With a disc: a directory of decompressed disc data with unpacked.json
+    /// (as code inventory takes), searched for debug files too. Default: the
+    /// files the project's inventory was taken with.
+    #[arg(long)]
+    #[serde(default)]
+    pub unpacked: Option<PathBuf>,
     /// Output path prefix (default .psx/symbols/<exe name>).
     #[arg(long)]
     pub out: Option<PathBuf>,
@@ -49,7 +55,7 @@ pub struct SymbolsArgs {
 
 impl Op for SymbolsArgs {
     fn exec(self, _: &Ctx) -> Outcome {
-        Outcome::result(symbols_cmd(&self.source, &self.sigs, self.min_concrete, self.out))
+        Outcome::result(symbols_cmd(&self.source, &self.sigs, self.min_concrete, self.unpacked.as_deref(), self.out))
     }
 }
 
@@ -190,8 +196,31 @@ pub(crate) fn symbols_cmd(
     source: &str,
     sigs_dir: &Path,
     min_concrete: usize,
+    unpacked: Option<&Path>,
     out: Option<PathBuf>,
 ) -> crate::Result<Value> {
+    // A disc means its boot executable, and the disc is scanned for debug files.
+    let (media, exe_path) = match source.split_once("::") {
+        Some((m, p)) => (Some(m.to_string()), Some(p.to_string())),
+        None if psx_media::disc::is_image_path(Path::new(source)) => {
+            use psx_media::iso9660::FileSystem;
+            let disc = psx_media::disc::Disc::open(source)?;
+            let fs = FileSystem::read(&disc)?;
+            let cnf = fs.find("/SYSTEM.CNF").and_then(|e| fs.read_file(&disc, e).ok());
+            let boot = cnf
+                .as_deref()
+                .map(psx_media::system_cnf::SystemCnf::parse)
+                .and_then(|c| c.boot)
+                .unwrap_or_else(|| psx_media::system_cnf::DEFAULT_BOOT.into());
+            (Some(source.to_string()), Some(crate::inventory::boot_path(&boot)))
+        }
+        None => (None, None),
+    };
+    let exe_source = match (&media, &exe_path) {
+        (Some(m), Some(p)) => format!("{m}::{p}"),
+        _ => source.to_string(),
+    };
+    let source = exe_source.as_str();
     let bytes = psx_media::source::read(source)?;
     let exe = PsxExe::parse(&bytes)?;
     let sigs = psx_symbols::load_dir(sigs_dir).map_err(|e| {
@@ -214,6 +243,21 @@ pub(crate) fn symbols_cmd(
     let json_path = write(with_ext("symbols.json"), serde_json::to_string_pretty(&doc).unwrap())?;
     let ghidra = write(with_ext("ghidra.txt"), psx_symbols::to_ghidra(&report.symbols))?;
     let sym = write(with_ext("sym"), psx_symbols::to_sym(&report.symbols))?;
+    // Names into .psx/names: the disc's debug files first, then the PsyQ
+    // signatures' where no debug file named the address.
+    let names_dir = PathBuf::from(psx_symbols::names::IMPORTED_DIR);
+    let mut named = std::collections::BTreeSet::new();
+    let disc = match &media {
+        Some(m) => {
+            let unpacked = crate::disc_names::unpacked(Path::new(m), unpacked)?;
+            let scan = crate::disc_names::scan(Path::new("."), Path::new(m), &unpacked, &names_dir, &mut named)?;
+            crate::disc_names::record(Path::new("."), &scan, true)?;
+            Some(scan)
+        }
+        None => None,
+    };
+    let psyq_names =
+        crate::disc_names::psyq_names(&report, source, &names_dir.join(format!("psyq_{}.names", psx_symbols::debug::ident(&stem))), &named)?;
     let functions = report.symbols.iter().filter(|s| s.kind == psx_symbols::Kind::Function).count();
     let mut libs: std::collections::BTreeMap<String, usize> = Default::default();
     for o in &report.objects {
@@ -266,9 +310,11 @@ pub(crate) fn symbols_cmd(
             "scope":"PsyQ library signatures, not a catalogue of game-specific functions; low coverage alone is not a failure.",
             "chosen_version":"Best-scoring installed signature set, not proof of a game's exact SDK version.",
             "ambiguous":"Signatures with multiple matches are skipped, never arbitrarily selected.",
+            "disc":"With a disc, every file (archives included, as bytes), each decompressed file the inventory was taken with (or unpacked gives), and every sector no file owns are searched for debug files (SN SYM, psylink MAP, ELF, CPE) by name and by content, and for source paths and GCC ident strings. A debug file most of whose functions are at the executable's function starts is imported to .psx/names/, in the names files' format; an ELF's DWARF is not read. Compressed data is searched only as decompressed files given.",
             "next_step":"Use runtime observations and Ghidra for game-specific functions; verify pseudocode against instructions."
         },
-        "files": {"report": json_path, "ghidra": ghidra, "sym": sym},
+        "files": {"report": json_path, "ghidra": ghidra, "sym": sym, "names": psyq_names},
+        "disc": disc,
     }))
 }
 

@@ -95,10 +95,10 @@ impl Live {
             .name("psx-web-play".into())
             .spawn(move || {
                 let ctx = Ctx { root, cancel: None };
-                let person = a.person;
+                let (person, with_c) = (a.person, a.with_c);
                 let (_, v) = super::run(&ctx, a, &text, &dir, |s, text, dir| play(s, text, dir, &l));
-                // The person's own play left without an answer is gone, not queued for someone.
-                if person && v["status"] == "queued" {
+                // The person's own play left without an answer is gone, not queued for someone; a try always is.
+                if with_c || person && v["status"] == "queued" {
                     let _ = std::fs::remove_dir_all(&dir);
                 }
                 let mut o = l.out.lock().unwrap();
@@ -362,7 +362,7 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
                 (true, true) => "DualShock, analog mode",
             };
             json!({"state": state, "request": text, "message": message, "message_seq": message_seq,
-                "labelling": labelling, "writing": writing, "paused": paused, "mode": mode, "adjust": s.adjustments(), "latch": s.latch_state(), "run_frame": s.rel(), "quick_save": s.quick.is_some(),
+                "labelling": labelling, "writing": writing, "paused": paused, "mode": mode, "adjust": s.adjustments(), "with_c": s.with_c(), "latch": s.latch_state(), "run_frame": s.rel(), "quick_save": s.quick.is_some(),
                 "marks": s.marks.iter().map(|m| json!({"n": m.n, "label": m.label})).collect::<Vec<_>>()})
         };
         let second = live_at.elapsed() >= Duration::from_secs(1);

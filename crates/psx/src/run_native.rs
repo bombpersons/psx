@@ -75,6 +75,10 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         ));
     }
     attach_observers(&mut m, &a)?;
+    let decomp = a.observe.decomp.as_ref().map(|w| crate::decomp::Replacement::new(root, w)).transpose()?;
+    if let Some(d) = &decomp {
+        d.install(&mut m);
+    }
     let obs = &a.observe;
     let cols = obs.samples.iter().map(|spec| spec.parse()).collect::<Result<Vec<_>, _>>().map_err(Error::invalid)?;
     let until = obs.until.iter().map(|s| crate::until::parse(s)).collect::<Result<Vec<_>, _>>();
@@ -563,6 +567,9 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     report["pad_reads"] = pad_reads;
     if !obs.adjust.is_empty() {
         report["adjust"] = json!(obs.adjust);
+    }
+    if let Some(d) = &decomp {
+        report["decomp"] = d.report(&m);
     }
     Ok((complete, report))
 }

@@ -200,6 +200,14 @@ pub struct PortCheckArgs {
     /// closure.
     #[serde(default)]
     pub feature: Option<String>,
+    /// Also replay the features' work recordings on the original with the
+    /// agent's C (decomp/) in place of the functions it defines: alone,
+    /// those whose last code check passed on this C and names;
+    /// `--decomp=all` every one; `--decomp=a,b` those named. The verdicts
+    /// are the port's either way.
+    #[arg(long, num_args = 0..=1, require_equals = true, value_delimiter = ',')]
+    #[serde(default)]
+    pub decomp: Option<Vec<String>>,
 }
 
 /// A test's report, or why the test wrote none.
@@ -229,8 +237,10 @@ fn run_tests(root: &Path, scenarios: &Path) -> crate::Result<Ran<ScenarioReport>
 }
 
 impl PortCheckArgs {
-    fn run(&self, root: &Path) -> crate::Result<Value> {
+    fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
+        let root = &ctx.root;
         let port = Port::load(root)?;
+        let decomp = self.decomp.as_ref().map(|w| crate::decomp::Replacement::new(root, w)).transpose()?;
         let git = Git::read(root);
         let Some(head) = git.head.clone().filter(|_| git.clean) else {
             return Err(Error::invalid(
@@ -265,6 +275,14 @@ impl PortCheckArgs {
         let p = root.join(LAST);
         crate::write_atomic(&p, &serde_json::to_vec_pretty(&last).unwrap_or_default()).map_err(|e| Error::io(&p, e))?;
         let mut verdicts = Vec::new();
+        let mut work_recordings: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for e in &features {
+            for r in &e.recordings.work {
+                if let Some((id, name)) = r.split_once('/') {
+                    work_recordings.entry(id.to_string()).or_default().push(name.to_string());
+                }
+            }
+        }
         for e in features {
             let (failures, recordings) = match &ran {
                 Ok(r) => (Vec::new(), recording_results(e, r)),
@@ -296,13 +314,25 @@ impl PortCheckArgs {
                 .map_err(|e| Error::io(&p, e))?;
             out["assets"] = json!({"imported": r.imported.len(), "checked": r.checked.len(), "failures": r.failures});
         }
+        if let Some(d) = &decomp {
+            let (mut ok, mut scenarios) = (true, Vec::new());
+            for (id, names) in &work_recordings {
+                let (same, mut c) = crate::scenario::with_c(ctx, id, Some(names), d, std::time::Duration::from_secs(600))?;
+                ok &= same;
+                c["id"] = json!(id);
+                scenarios.push(c);
+            }
+            out["decomp"] = json!({"ok": ok, "functions": d.functions.iter().map(|f| &f.name).collect::<Vec<_>>(),
+                "left_out": d.left_out.iter().map(|(f, why)| json!({"function": f, "why": why})).collect::<Vec<_>>(),
+                "scenarios": scenarios});
+        }
         Ok(out)
     }
 }
 
 impl Op for PortCheckArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        Outcome::result(self.run(&ctx.root))
+        Outcome::result(self.run(ctx))
     }
 }
 

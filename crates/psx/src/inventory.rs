@@ -41,16 +41,16 @@ pub struct InventoryArgs {
 
 /// A file decompressed from part of a disc file: the name code from it is
 /// grouped under, its bytes, and where it was read from.
-struct Unpacked {
-    name: String,
-    bytes: Vec<u8>,
+pub(crate) struct Unpacked {
+    pub(crate) name: String,
+    pub(crate) bytes: Vec<u8>,
     info: Value,
 }
 
 /// The files `dir`'s unpacked.json lists: `{"files": [{"file", "source",
 /// "offset", "length"}]}`, each the bytes decompressed from `length` bytes
 /// of disc file `source` at `offset`. `size` gives a disc file's size.
-fn read_unpacked(dir: &Path, size: impl Fn(&str) -> Option<u64>) -> crate::Result<Vec<Unpacked>> {
+pub(crate) fn read_unpacked(dir: &Path, size: impl Fn(&str) -> Option<u64>) -> crate::Result<Vec<Unpacked>> {
     let manifest = dir.join("unpacked.json");
     let text = std::fs::read_to_string(&manifest).map_err(|e| Error::io(&manifest, e))?;
     let v: Value = serde_json::from_str(&text).map_err(|e| Error::invalid(format!("{}: {e}", manifest.display())))?;
@@ -2753,6 +2753,7 @@ impl InventoryArgs {
         }
         Ok(json!({
             "out": out, "history": history, "totals": summary, "previous": previous,
+            "decomp": crate::decomp::counts(&ctx.root),
             "executables": executables.iter().map(|x| json!({"path": x["path"], "boot": x["boot"], "totals": x["totals"]})).collect::<Vec<_>>(),
             "overlays": per(&overlays, "start"),
             "overlays_bounded_by_found_code": found_code,
@@ -2798,7 +2799,7 @@ impl Op for InventoryArgs {
 }
 
 /// The boot path in SYSTEM.CNF as an ISO path (`cdrom:\SLUS_005.67;1` is `/SLUS_005.67`).
-fn boot_path(boot: &str) -> String {
+pub(crate) fn boot_path(boot: &str) -> String {
     let p = boot.trim_start_matches("cdrom:").trim_start_matches("cdrom0:");
     let p = p.split(';').next().unwrap_or(p).replace('\\', "/");
     format!("/{}", p.trim_start_matches('/')).to_ascii_uppercase()

@@ -27,6 +27,7 @@ pub fn of(root: &Path) -> Value {
         "inventory": jsonl(&root.join(".psx/inventory_history.jsonl")),
         "calls": calls(root),
         "git": git(root),
+        "decomp": crate::decomp::counts(root),
         "messages": crate::messages::all(root).iter()
             .map(|m| json!({"t": m["t"], "from": m["from"]})).collect::<Vec<_>>(),
     })

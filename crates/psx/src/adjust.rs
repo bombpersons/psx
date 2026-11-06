@@ -29,6 +29,12 @@
 //! the port does not have yet (enemies, a cutscene trigger), so a feature's
 //! recordings hold only what it ports. Unlike latch and steady it changes
 //! the game itself, which the recording says (`producer.details.off`).
+//!
+//! **fix**: the agent's replacements (`fixes/`, built for the R3000) of the
+//! game's functions that keep the tick's input from the game, such as a pad
+//! driver that skips its poll: a port is told each tick's input and never
+//! copies such a delay (docs/master-plan.md, A9). The recording keeps the
+//! build (`producer.details.fix`), so a check runs what it was made with.
 
 use psx_core::Machine;
 use psx_core::cpu::StepInfo;
@@ -44,6 +50,8 @@ pub(crate) struct Adjustments {
     pub steady: bool,
     /// Functions that return at once.
     pub off: Vec<Off>,
+    /// The agent's replacements of functions that delay input.
+    pub fix: Option<Fixes>,
     /// Test adjustments: one that does nothing, and one that adds 1 to the
     /// word at an address when a tick ends.
     #[cfg(test)]
@@ -59,6 +67,25 @@ pub(crate) enum TestAdjust {
         tick: u64,
         addr: u32,
     },
+}
+
+/// fixes/ built (`fix`): the functions replaced and the build they go to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Fixes {
+    pub functions: Vec<Fixed>,
+    /// Loaded at [`crate::decomp::FIX_BASE`].
+    pub image: Vec<u8>,
+    /// fixes/'s hash when it was built.
+    pub sources: String,
+}
+
+/// A game function the fixes replace: its entry, and where its
+/// replacement is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Fixed {
+    pub name: String,
+    pub address: u32,
+    pub at: u32,
 }
 
 /// A function that returns at once (`off`).
@@ -104,7 +131,7 @@ fn spelling(names: &psx_symbols::names::Names, name: &str) -> Option<String> {
 }
 
 /// The names of the adjustments this psx knows.
-const KNOWN: &[&str] = &["latch", "steady", "off"];
+const KNOWN: &[&str] = &["latch", "steady", "off", "fix"];
 
 /// `steady`'s clock multiplier for the CPU's own work.
 pub(crate) const STEADY_OVERCLOCK: u32 = 4;
@@ -136,6 +163,9 @@ impl Adjustments {
         }
         if !self.off.is_empty() {
             out.push("off");
+        }
+        if self.fix.is_some() {
+            out.push("fix");
         }
         #[cfg(test)]
         match self.test {
@@ -171,6 +201,23 @@ impl Adjustments {
                         a.off.push(Off { name, address, returns });
                     }
                 }
+                "fix" => {
+                    let bad = || "fix: {functions: [{name, address, at}], image, sources}".to_string();
+                    let d = details.get("fix").ok_or_else(bad)?;
+                    let hex = |v: &Json| v.as_str().and_then(psx_media::memmap::parse_hex);
+                    let mut functions = Vec::new();
+                    for f in d["functions"].as_array().ok_or_else(bad)? {
+                        let name = f["name"].as_str().ok_or_else(bad)?.to_string();
+                        functions.push(Fixed { name, address: hex(&f["address"]).ok_or_else(bad)?, at: hex(&f["at"]).ok_or_else(bad)? });
+                    }
+                    let text = d["image"].as_str().ok_or_else(bad)?;
+                    let image = (0..text.len() / 2)
+                        .map(|i| text.get(2 * i..2 * i + 2).and_then(|b| u8::from_str_radix(b, 16).ok()))
+                        .collect::<Option<Vec<u8>>>()
+                        .ok_or_else(bad)?;
+                    let sources = d["sources"].as_str().unwrap_or_default().to_string();
+                    a.fix = Some(Fixes { functions, image, sources });
+                }
                 #[cfg(test)]
                 "test_nothing" => a.test = Some(TestAdjust::Nothing),
                 _ => {
@@ -203,10 +250,23 @@ impl Adjustments {
         })
     }
 
-    /// These without latch and steady: `--stock` keeps what the scenario
-    /// turns off, which is its scope, not its timing.
+    /// The fixes, for the recording's details (`fix`): the build itself,
+    /// so a check runs what the recording was made with.
+    pub fn fix_detail(&self) -> Option<Json> {
+        self.fix.as_ref().map(|f| {
+            json!({
+                "functions": f.functions.iter().map(|x| json!({"name": x.name, "address": format!("0x{:08X}", x.address),
+                    "at": format!("0x{:08X}", x.at)})).collect::<Vec<_>>(),
+                "image": f.image.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                "sources": f.sources,
+            })
+        })
+    }
+
+    /// These without latch, steady and the fixes: `--stock` keeps what the
+    /// scenario turns off, which is its scope, not its timing.
     pub fn without_timing(&self) -> Adjustments {
-        Adjustments { latch: false, steady: false, ..self.clone() }
+        Adjustments { latch: false, steady: false, fix: None, ..self.clone() }
     }
 
     /// What they keep while a run goes, made where the recording starts;
@@ -214,15 +274,22 @@ impl Adjustments {
     pub fn start(&self, m: &mut Machine) -> Running {
         m.cpu.overclock = if self.steady { STEADY_OVERCLOCK } else { 0 };
         m.bus.gpu.timed = !self.steady;
-        m.redirects.clear();
+        m.redirects.clear_returns();
         for o in &self.off {
             m.redirects.insert(o.address, psx_core::Redirect::Return(o.returns));
+        }
+        if let Some(f) = &self.fix {
+            crate::decomp::load_hidden(m, crate::decomp::FIX_BASE, &f.image);
+            for x in &f.functions {
+                m.redirects.insert(x.address, psx_core::Redirect::To(x.at));
+            }
         }
         Running {
             a: self.clone(),
             flow: self.latch.then(PadFlow::new),
             held: None,
             latched: Vec::new(),
+            latched_pad: None,
             read: false,
             ticks: 0,
             lag: Vec::new(),
@@ -249,6 +316,9 @@ pub(crate) struct Running {
     /// `latch`: the buffer bytes written where the last tick ended, and
     /// their values, to put back over the interrupt handler's stores.
     latched: Vec<(u32, u8)>,
+    /// `latch`: the controller's state written there (buttons, sticks,
+    /// analog), to tell a change from the buffer the game is seen to keep.
+    latched_pad: Option<(u16, [u8; 4], bool)>,
     /// `latch`: some game code read the pad during this tick.
     read: bool,
     ticks: u64,
@@ -265,7 +335,7 @@ pub(crate) struct Running {
     stale_reads: u64,
     /// `latch`: whether the game has taken in the buttons latched where the
     /// last tick ended, by a poll (the handler storing into the buffer) or
-    /// a read of the buffer by its own code.
+    /// a load of them (its code's, or a handler's copying them).
     pending: Pending,
     /// The field the last step ran in, to see each one end.
     field: u64,
@@ -331,6 +401,7 @@ impl Running {
         }
         self.held = None;
         self.latched.clear();
+        self.latched_pad = None;
         self.pending = Pending::No;
         self.waited = 0;
     }
@@ -359,13 +430,18 @@ impl Running {
                 poke(m, *a, *v);
                 self.pending = Pending::No;
             }
-        } else if !acc.store && !f.in_handler() && self.latched.iter().any(|(a, _)| hit(*a)) {
+        } else if !acc.store && self.latched.iter().any(|(a, _)| hit(*a)) {
+            // A load of the latched buttons takes them in, by a handler handing
+            // them to the game (as a poll does) or by the game's code, whose
+            // read before the tick ends also sees them in time.
             self.pending = Pending::No;
-            self.waited = 0;
-            self.buffer_reads += 1;
-            let byte = |a: u32| (acc.value >> (8 * ((a & 0x1FFF_FFFF) - p))) as u8;
-            if self.latched.iter().any(|(a, v)| hit(*a) && byte(*a) != *v) {
-                self.stale_reads += 1;
+            if !f.in_handler() {
+                self.waited = 0;
+                self.buffer_reads += 1;
+                let byte = |a: u32| (acc.value >> (8 * ((a & 0x1FFF_FFFF) - p))) as u8;
+                if self.latched.iter().any(|(a, v)| hit(*a) && byte(*a) != *v) {
+                    self.stale_reads += 1;
+                }
             }
         }
     }
@@ -418,8 +494,12 @@ impl Running {
                 None => self.unmasked = true,
             }
         }
-        if !before.is_empty() && self.latched != before {
+        let pad = Some((held, if analog { sticks } else { [0; 4] }, analog));
+        if !before.is_empty() && !self.latched.is_empty() && self.latched_pad != pad {
             self.pending = Pending::Latched;
+        }
+        if !self.latched.is_empty() {
+            self.latched_pad = pad;
         }
     }
 
@@ -430,6 +510,11 @@ impl Running {
             let calls: Vec<Json> =
                 self.a.off.iter().map(|o| json!({"name": o.name, "calls": m.redirects.hits(o.address)})).collect();
             r["off_calls"] = json!(calls);
+        }
+        if let Some(f) = &self.a.fix {
+            let calls: Vec<Json> =
+                f.functions.iter().map(|x| json!({"name": x.name, "calls": m.redirects.hits(x.address)})).collect();
+            r["fix_calls"] = json!(calls);
         }
         (r != json!({})).then_some(r)
     }
@@ -461,7 +546,7 @@ impl Running {
                 "fields": self.late_fields,
                 "ticks": self.late_ticks.iter().take(20).collect::<Vec<_>>(),
                 "tick_count": self.late_ticks.len(),
-                "note": "ticks in which a whole field passed with the tick's latched input not taken in (no poll into the pad buffer) and no game code read the buffer before the tick ended: the game ran that field on the last poll's buttons, so a change can reach its rules a tick late. The original's driver delays it; a port never copies that. Find what stops the poll (the pad library's interrupt routine) and replace that function so the tick's input arrives every field",
+                "note": "ticks in which a whole field passed with the tick's latched input not taken in (no poll into the pad buffer) and no code read the buttons from it before the tick ended: the game ran that field on the last poll's buttons, so a change can reach its rules a tick late. The original's driver delays it; a port never copies that. Find what stops the poll and replace that function in fixes/ (guide topic code) so the tick's input arrives every field",
             });
         }
         if !self.lag.is_empty() {
@@ -498,6 +583,28 @@ mod tests {
         let e = Adjustments::from_details(&details(json!(["latch_v9"]))).unwrap_err();
         assert!(e.contains("\"latch_v9\"") && e.contains("knows latch, steady"), "{e}");
         assert!(Adjustments::from_details(&details(json!("latch"))).is_err());
+    }
+
+    #[test]
+    fn a_fix_is_kept_with_its_build_and_stock_leaves_it_out() {
+        let a = Adjustments {
+            latch: true,
+            fix: Some(Fixes {
+                functions: vec![Fixed { name: "pad_poll".into(), address: 0x8004_1200, at: crate::decomp::FIX_BASE }],
+                image: vec![0x08, 0x00, 0xE0, 0x03, 0x00, 0x00, 0x00, 0x00],
+                sources: "0123456789abcdef".into(),
+            }),
+            ..Adjustments::stock()
+        };
+        assert_eq!(a.detail(), Some(json!(["latch", "fix"])));
+        let mut d = details(a.detail().unwrap());
+        d.insert("fix".into(), a.fix_detail().unwrap());
+        assert_eq!(Adjustments::from_details(&d), Ok(a.clone()));
+        assert_eq!(a.without_timing(), Adjustments::stock());
+        d.insert("fix".into(), json!({"functions": [], "image": "0g"}));
+        assert!(Adjustments::from_details(&d).is_err());
+        d.remove("fix");
+        assert!(Adjustments::from_details(&d).is_err());
     }
 
     #[test]

@@ -68,8 +68,8 @@ pub struct HandoffArgs {
     #[arg(long, requires = "id")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// The adjustments to play with, of latch, steady and off. With a scenario they are
-    /// recorded with too (default all three; stock is off alone), so what the person feels
+    /// The adjustments to play with, of latch, steady, off and fix (fixes/). With a scenario
+    /// they are recorded with too (default all; stock is off alone), so what the person feels
     /// is what is recorded. Without one (default none) latch takes the glossary binding's
     /// tick and lets input through where no tick ends (boot, menus); off needs a scenario.
     #[arg(long, conflicts_with = "stock", value_delimiter = ',')]
@@ -122,7 +122,18 @@ pub struct HandoffArgs {
     #[serde(default, skip_serializing_if = "is_false")]
     #[schemars(skip)]
     pub person: bool,
+    /// A try with the agent's C in place of the functions whose checks
+    /// passed (psx web's Play now): nothing is kept or answered, since a play
+    /// with the C is not the original game's.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "is_false")]
+    #[schemars(skip)]
+    pub with_c: bool,
 }
+
+/// Where tries with the C wait, apart from the queue: a play queued for a
+/// recording replaces a request for it, and a try must not.
+pub const TRIES: &str = ".psx/handoffs/tries";
 
 /// What the person starts from psx web without a request: a scenario's
 /// recording (`id`, `name`, from its state or the end of `from`), or with no
@@ -136,6 +147,7 @@ pub fn person_play(
     name: Option<String>,
     from: Option<String>,
     adjust: Option<Vec<String>>,
+    with_c: bool,
 ) -> crate::Result<PathBuf> {
     let what = what.trim();
     let request = if what.is_empty() { "Free play".to_string() } else { what.to_string() };
@@ -154,10 +166,13 @@ pub fn person_play(
         bios: None,
         from_state: None,
         cards: Default::default(),
-        out: None,
+        out: with_c.then(|| {
+            ctx.root.join(TRIES).join(format!("{}-{}{}", crate::now_ms(), std::process::id(), crate::instance_suffix()))
+        }),
         verify: false,
         expect: Vec::new(),
         person: true,
+        with_c,
     };
     a.check_scenario()?;
     let (_, v) = a.start(ctx)?;
@@ -253,8 +268,8 @@ impl HandoffArgs {
             return Err(Error::invalid("name, from, description, replace and stock go with a scenario id"));
         }
         for x in self.adjust.iter().flatten() {
-            if !["latch", "steady", "off"].contains(&x.as_str()) {
-                return Err(Error::invalid(format!("adjust: {x} is not one of latch, steady, off")));
+            if !["latch", "steady", "off", "fix"].contains(&x.as_str()) {
+                return Err(Error::invalid(format!("adjust: {x} is not one of latch, steady, off, fix")));
             }
             if x == "off" && self.id.is_none() {
                 return Err(Error::invalid(
@@ -454,6 +469,8 @@ pub(crate) struct Session {
     /// The adjustments the person plays with (a scenario's), run as
     /// `scenario record` runs them.
     adjust: Option<LiveAdjust>,
+    /// The agent's C, in a try with it.
+    decomp: Option<crate::decomp::Replacement>,
 }
 
 /// Adjustments running in a play: the set, the game's tick, and their state.
@@ -525,6 +542,12 @@ impl Session {
     /// The adjustments being played with, by name (none: the stock game).
     pub fn adjustments(&self) -> Vec<&'static str> {
         self.adjust.as_ref().map(|a| a.set.names()).unwrap_or_default()
+    }
+
+    /// In a try with the agent's C: the functions replaced, their calls and
+    /// the share of the play run in the C.
+    pub fn with_c(&self) -> Option<Value> {
+        self.decomp.as_ref().map(|d| d.report(&self.m))
     }
 
     /// Where latch stands: holding input for ticks, or letting it through
@@ -645,6 +668,9 @@ impl Session {
         m.bus.spu.capture = self.m.bus.spu.capture;
         self.m = m;
         self.events = events;
+        if let Some(d) = &self.decomp {
+            d.install(&mut self.m);
+        }
         // A loaded machine is stock: the adjustments start again from here.
         if let Some(a) = &mut self.adjust {
             *a = LiveAdjust::new(a.set.clone(), a.tick.take(), &mut self.m, a.fallback);
@@ -761,6 +787,7 @@ impl Session {
             marks: Vec::new(),
             history: Default::default(),
             adjust: None,
+            decomp: None,
         }
     }
 }
@@ -791,6 +818,9 @@ fn scenario_start(ctx: &Ctx, a: &mut HandoffArgs) -> crate::Result<(Session, cra
         if !has("off") {
             p.adjust.off.clear();
         }
+        if !has("fix") {
+            p.adjust.fix = None;
+        }
     }
     let mut b = p.start(ctx, RECORD_TIMEOUT)?;
     // The adjustments from where the recording starts, as scenario record
@@ -820,7 +850,8 @@ fn scenario_start(ctx: &Ctx, a: &mut HandoffArgs) -> crate::Result<(Session, cra
 fn power_on_adjust(ctx: &Ctx, a: &HandoffArgs, m: &mut Machine) -> crate::Result<Option<LiveAdjust>> {
     let Some(chosen) = a.adjust.as_ref().filter(|c| !c.is_empty()) else { return Ok(None) };
     let has = |x: &str| chosen.iter().any(|c| c == x);
-    let set = crate::adjust::Adjustments { latch: has("latch"), steady: has("steady"), ..Default::default() };
+    let fix = if has("fix") { crate::decomp::fixes(&ctx.root)? } else { None };
+    let set = crate::adjust::Adjustments { latch: has("latch"), steady: has("steady"), fix, ..Default::default() };
     let tick = if set.latch { Some(latch_tick(ctx)?) } else { None };
     Ok(Some(LiveAdjust::new(set, tick, m, true)))
 }
@@ -935,7 +966,21 @@ fn run(
                 (s, None)
             }
         };
+        if a.with_c {
+            let d = crate::decomp::Replacement::new(&ctx.root, &[])?;
+            if d.functions.is_empty() {
+                return Err(Error::invalid("no function's C has passed its check: psx code check one first")
+                    .with("left_out", d.report(&s.m)["left_out"].clone()));
+            }
+            d.install(&mut s.m);
+            s.decomp = Some(d);
+        }
         let (end, note) = play(&mut s, text, dir).map_err(|e| Error::new("window_failed", e))?;
+        if let Some(d) = &s.decomp {
+            // Nothing is kept: what the try ran is all it reports.
+            return Ok(json!({"status": "tried", "frames": s.rel(), "decomp": d.report(&s.m),
+                "note": "a try with the agent's C: nothing was recorded, kept or answered"}));
+        }
         if end == End::Closed {
             return Err(Error::new("closed", "the window was closed without an answer"));
         }
@@ -1001,7 +1046,8 @@ fn scenario_report(
     v["adjust"] = json!(p.adjust.names());
     // Turning off the scenario's [off] is a set scenario record cannot make either.
     let partial = p.adjust.latch != p.adjust.steady
-        || a.adjust.as_ref().is_some_and(|c| !c.iter().any(|x| x == "off")) && p.adjust.off.is_empty();
+        || a.adjust.as_ref().is_some_and(|c| !c.iter().any(|x| x == "off")) && p.adjust.off.is_empty()
+        || p.adjust.latch && p.adjust.fix.is_none() && crate::decomp::fixes_hash(&ctx.root).is_some();
     if partial {
         v["reproduce"]["note"] = json!(format!(
             "Played and recorded with {}: scenario record makes every adjustment, or stock (latch and steady both off), so it cannot make this set again; scenario play with adjust can.",
@@ -1426,6 +1472,7 @@ mod tests {
             status: None,
             wait: 0,
             person: false,
+            with_c: false,
             adjust: None,
         };
         let mut s = start(&a).unwrap();

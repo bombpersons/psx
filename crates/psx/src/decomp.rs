@@ -46,7 +46,7 @@ fn base_c(name: &str) -> &'static str {
 }
 
 /// `ty` declaring `decl` (a name, or empty for a type alone), in C.
-fn declare(ty: &Type, decl: &str) -> String {
+pub(crate) fn declare(ty: &Type, decl: &str) -> String {
     match ty {
         Type::Named { name } => format!("{name} {decl}").trim_end().to_string(),
         Type::Pointer { to, offset } if *offset != 0 => {
@@ -316,6 +316,11 @@ pub struct Message {
 /// [`BASE`], in `work` (made if missing), at `-O2 -G0`. Errors come back by
 /// file and line.
 pub fn build(names: &Names, sources: &[PathBuf], work: &Path) -> Result<Build, Vec<Message>> {
+    build_at(names, sources, work, BASE)
+}
+
+/// [`build`], linked at `base` (in the hidden region).
+fn build_at(names: &Names, sources: &[PathBuf], work: &Path, base: u32) -> Result<Build, Vec<Message>> {
     let fail = |text: String| vec![Message { file: String::new(), line: 0, text }];
     let gcc = compiler().ok_or_else(|| {
         fail("no MIPS GCC: install mipsel-none-elf-gcc or mipsel-linux-gnu-gcc (psx guide setup)".into())
@@ -329,7 +334,7 @@ pub fn build(names: &Names, sources: &[PathBuf], work: &Path) -> Result<Build, V
     write(
         "build.ld",
         &format!(
-            "INCLUDE names.ld\nSECTIONS {{\n  . = 0x{BASE:08X};\n  .text : {{ *(.text*) }}\n  .rodata : {{ *(.rodata*) }}\n  .data : {{ *(.data*) *(.sdata*) }}\n  .bss : {{ *(.bss*) *(.sbss*) *(COMMON) }}\n  /DISCARD/ : {{ *(.MIPS.*) *(.reginfo) *(.comment) *(.pdr) *(.gnu.*) }}\n}}\n",
+            "INCLUDE names.ld\nSECTIONS {{\n  . = 0x{base:08X};\n  .text : {{ *(.text*) }}\n  .rodata : {{ *(.rodata*) }}\n  .data : {{ *(.data*) *(.sdata*) }}\n  .bss : {{ *(.bss*) *(.sbss*) *(COMMON) }}\n  /DISCARD/ : {{ *(.MIPS.*) *(.reginfo) *(.comment) *(.pdr) *(.gnu.*) }}\n}}\n",
         ),
     )?;
     write("names.ld", &ld)?;
@@ -391,7 +396,7 @@ pub fn build(names: &Names, sources: &[PathBuf], work: &Path) -> Result<Build, V
             let mut w = l.split_whitespace();
             let (a, kind, name) = (w.next()?, w.next()?, w.next()?);
             let a = u32::from_str_radix(a, 16).ok()?;
-            (matches!(kind, "T" | "t") && a >= BASE).then(|| (name.to_string(), a))
+            (matches!(kind, "T" | "t") && a >= base).then(|| (name.to_string(), a))
         })
         .collect();
     Ok(Build { image, functions })
@@ -400,13 +405,42 @@ pub fn build(names: &Names, sources: &[PathBuf], work: &Path) -> Result<Build, V
 /// One call of the function the game made, checked.
 #[derive(Debug, Clone)]
 pub struct Case {
-    /// Which of its calls (1: the first from the state).
+    /// Which of its calls (1: the first from the state or the recording).
     pub hit: u64,
+    /// The scenario and recording it came from.
+    pub from: Option<(String, String)>,
+    /// A varied call (k of the call's): its arguments and what they point
+    /// to set at random within their types.
+    pub varied: Option<u64>,
+    /// A varied call the original did not return from: one the game could
+    /// not make, so nothing was compared.
+    pub dropped: bool,
     /// `a0`..`a3` at the call.
     pub args: [u32; 4],
     pub differences: Vec<String>,
+    /// The original's conditional branches on this call, with their ways.
+    pub branches: BTreeSet<(u32, bool)>,
     /// Where the state at the call was saved, when the case failed.
     pub saved: Option<PathBuf>,
+}
+
+/// How [`check`] runs.
+pub struct CheckOpts<'a> {
+    /// Calls to check.
+    pub cases: usize,
+    /// Fields to wait for a call.
+    pub fields: u64,
+    /// Steps one call may take.
+    pub steps: u64,
+    /// Where failed cases' states go (`<tag>-<hit>.state`, or `<tag>.state`
+    /// for one case).
+    pub save: Option<&'a Path>,
+    pub tag: &'a str,
+    /// The function's code (the inventory's chunks): its conditional
+    /// branches are read from RAM at the first call.
+    pub body: Option<&'a [(u32, u32)]>,
+    /// Varied calls after each call (see [`Case::varied`]).
+    pub varied: usize,
 }
 
 /// The original's entry of `function` in `names` (`[MODULE:]name`).
@@ -427,34 +461,54 @@ fn entry(names: &Names, function: &str) -> Result<u32, String> {
     }
 }
 
-/// `line` with each `byte 0xADDR` a global in `names` holds named.
-fn named(names: &Names, line: &str) -> String {
+/// `line` with each `byte 0xADDR` named: by the global in `names` that
+/// holds it, else through a pointer argument (`params`, see
+/// [`crate::names_bind::through_params`]).
+fn named(names: &Names, params: &[(String, Type, u32)], line: &str) -> String {
     let Some(rest) = line.strip_prefix("byte 0x") else { return line.to_string() };
     let Some((hex, tail)) = rest.split_once(':') else { return line.to_string() };
     let Ok(addr) = u32::from_str_radix(hex, 16) else { return line.to_string() };
-    match crate::names_bind::global_at(names, addr) {
+    let name = crate::names_bind::global_at(names, addr)
+        .or_else(|| crate::names_bind::through_params(names, params, addr));
+    match name {
         Some(g) => format!("byte 0x{hex} ({g}):{tail}"),
         None => line.to_string(),
     }
 }
 
+/// The pointer parameters among the first four of `function`'s signature,
+/// with their names (`a0`.. when unnamed) and values in `regs`.
+fn pointer_params(names: &Names, function: &str, regs: &[u32; 32]) -> Vec<(String, Type, u32)> {
+    let Some(sig) = names.functions.iter().find(|f| f.name.text == function).and_then(|f| f.signature.as_ref()) else {
+        return Vec::new();
+    };
+    sig.params
+        .iter()
+        .take(4)
+        .enumerate()
+        .filter(|(_, p)| matches!(p.ty, Type::Pointer { .. }))
+        .map(|(k, p)| {
+            let name = p.name.as_ref().map_or_else(|| format!("a{k}"), crate::names_bind::label);
+            (name, p.ty.clone(), regs[4 + k])
+        })
+        .collect()
+}
+
 /// From `m`, runs the game until it calls `function` (the original's) and
-/// checks each call, up to `cases` of them, against `build`'s function of
+/// checks each call, up to `o.cases` of them, against `build`'s function of
 /// that name: the original and the build each run from the moment of the
-/// call (at most `steps` steps), and their effects are compared. Calls the
+/// call (at most `o.steps` steps), and their effects are compared. Calls the
 /// build makes to its own functions count as calls to the originals of
-/// the same names. Gives up waiting for a call after `fields` fields. A
-/// failed case's state is saved in `save` when given.
-#[allow(clippy::too_many_arguments)]
+/// the same names. Gives up waiting for a call after `o.fields` fields. A
+/// failed case's state is saved in `o.save` when given. The function's
+/// conditional branches (from `o.body`) are added to `branches`.
 pub fn check(
-    mut m: psx_core::Machine,
+    m: &mut psx_core::Machine,
     names: &Names,
     build: &Build,
     function: &str,
-    cases: usize,
-    fields: u64,
-    steps: u64,
-    save: Option<&Path>,
+    o: &CheckOpts,
+    branches: &mut BTreeSet<u32>,
 ) -> Result<Vec<Case>, String> {
     let original = entry(names, function)?;
     let bare = function.rsplit_once(':').map_or(function, |(_, n)| n);
@@ -464,68 +518,252 @@ pub fn check(
     let aliases: BTreeMap<u32, u32> =
         build.functions.iter().filter_map(|(n, a)| entry(names, n).ok().map(|o| (*a, o))).collect();
     let returns = returns(names, bare);
-    let limit = m.bus.frames + fields;
+    let limit = m.bus.frames + o.fields;
     let mut out = Vec::new();
+    let mut real = 0u64;
     let at = |m: &psx_core::Machine| m.cpu.pc & 0x1FFF_FFFF == original & 0x1FFF_FFFF;
-    while out.len() < cases && m.bus.frames < limit {
-        if !at(&m) {
-            m.step();
-            continue;
+    // The call `m` is at, compared.
+    let one = |m: &mut psx_core::Machine, hit: u64, varied: Option<u64>, branches: &BTreeSet<u32>| {
+        let c = psx_core::callcheck::compare(m, &build.image, replacement, returns, o.steps)?;
+        let r = &m.cpu.regs;
+        if varied.is_some() && !c.original.returned {
+            return Ok::<_, String>(Case {
+                hit,
+                from: None,
+                varied,
+                dropped: true,
+                args: [r[4], r[5], r[6], r[7]],
+                differences: Vec::new(),
+                branches: BTreeSet::new(),
+                saved: None,
+            });
         }
-        let c = psx_core::callcheck::compare(&mut m, &build.image, replacement, returns, steps)?;
         let mut theirs = c.replacement.clone();
         for call in &mut theirs.calls {
             if let Some(o) = aliases.get(&call.0) {
                 call.0 = *o;
             }
         }
-        let differences: Vec<String> = psx_core::callcheck::differences(&c.original, &theirs, returns, steps)
+        let params = pointer_params(names, bare, &m.cpu.regs);
+        let differences: Vec<String> = psx_core::callcheck::differences(&c.original, &theirs, returns, o.steps)
             .iter()
-            .map(|d| named(names, d))
+            .map(|d| named(names, &params, d))
             .collect();
-        let hit = out.len() as u64 + 1;
-        let saved = match (differences.is_empty(), save) {
+        let tag = match (varied, o.cases) {
+            (None, 1) => o.tag.to_string(),
+            (None, _) => format!("{}-{hit}", o.tag),
+            (Some(k), 1) => format!("{}-varied-{k}", o.tag),
+            (Some(k), _) => format!("{}-{hit}-varied-{k}", o.tag),
+        };
+        let saved = match (differences.is_empty(), o.save) {
             (false, Some(dir)) => {
                 std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-                let p = dir.join(format!("{bare}-{hit}.state"));
+                let p = dir.join(format!("{tag}.state"));
                 std::fs::write(&p, m.save_state(None)).map_err(|e| format!("{}: {e}", p.display()))?;
                 Some(p)
             }
             _ => None,
         };
-        let r = &m.cpu.regs;
-        out.push(Case { hit, args: [r[4], r[5], r[6], r[7]], differences, saved });
+        let mine = c.original.branches.iter().copied().filter(|(b, _)| branches.contains(b) || o.body.is_none());
+        Ok(Case {
+            hit,
+            from: None,
+            varied,
+            dropped: false,
+            args: [r[4], r[5], r[6], r[7]],
+            differences,
+            branches: mine.collect(),
+            saved,
+        })
+    };
+    while real < o.cases as u64 && m.bus.frames < limit {
+        if !at(m) {
+            m.step();
+            continue;
+        }
+        if real == 0 {
+            for &(s, e) in o.body.unwrap_or_default() {
+                for pc in (s..e).step_by(4) {
+                    let p = (pc & 0x1F_FFFF) as usize;
+                    let Some(w) = m.bus.ram.get(p..p + 4) else { continue };
+                    let w = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                    if psx_core::callcheck::conditional_branch(w, pc).is_some() {
+                        branches.insert(pc);
+                    }
+                }
+            }
+        }
+        real += 1;
+        out.push(one(m, real, None, branches)?);
+        // The same call with its arguments and what they point to varied,
+        // each from the call's own state.
+        if o.varied > 0 {
+            let state = m.save_state(None);
+            for k in 1..=o.varied as u64 {
+                let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ (real << 20) ^ k);
+                vary(m, names, bare, &mut rng);
+                out.push(one(m, real, Some(k), branches)?);
+                let disc = m.bus.cdrom.disc.take();
+                let (_, back) = psx_core::Machine::load_state(&state, m.bus.bios.clone()).map_err(|e| format!("{e:?}"))?;
+                *m = back;
+                m.bus.cdrom.disc = disc;
+            }
+        }
         // On past this call's entry, to the next.
         m.step();
     }
     Ok(out)
 }
 
+/// A small, seeded random source (xorshift64*).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u32 {
+        let mut x = self.0.max(1);
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
+    }
+
+    /// A value for a `size`-byte integer: half the time a small one
+    /// (-16..16), else any.
+    fn value(&mut self, size: u32, signed: bool) -> u32 {
+        let v = if self.next() & 1 == 0 { (self.next() % 33) as i32 - 16 } else { self.next() as i32 };
+        let bits = 8 * size.min(4);
+        if bits == 32 {
+            return v as u32;
+        }
+        let low = (v as u32) & ((1u32 << bits) - 1);
+        if signed && low >> (bits - 1) == 1 { low | !((1u32 << bits) - 1) } else { low }
+    }
+}
+
+/// A base type's size and whether it is signed; None for any other type.
+fn integer(names: &Names, ty: &Type) -> Option<(u32, bool)> {
+    let Type::Named { name } = ty else { return None };
+    if let Some(TypeDef { body: TypeBody::Typedef { ty }, .. }) = names.type_named(name) {
+        return integer(names, ty);
+    }
+    if let Some(TypeDef { body: TypeBody::Enum { .. }, .. }) = names.type_named(name) {
+        return Some((4, true));
+    }
+    let &(_, size) = BASE_TYPES.iter().find(|(n, _)| n == name)?;
+    let unsigned = name.starts_with('u') || ["byte", "bool"].contains(&name.as_str());
+    (size > 0 && name != "float" && name != "double").then_some((size, !unsigned))
+}
+
+/// Writes random values of `ty`'s integers at `addr` in main RAM: each
+/// field of a struct and element of an array in turn; pointers, floats
+/// and types of unknown layout are left as they are.
+fn vary_memory(m: &mut psx_core::Machine, names: &Names, ty: &Type, addr: u32, rng: &mut Rng, depth: u32) {
+    if depth > 8 {
+        return;
+    }
+    if let Some((size, signed)) = integer(names, ty) {
+        let v = rng.value(size, signed);
+        for k in 0..size {
+            if let Some(p) = crate::names_bind::canonical(addr + k) {
+                m.bus.ram[(p & 0x1F_FFFF) as usize] = (v >> (8 * k)) as u8;
+            }
+        }
+        return;
+    }
+    match ty {
+        Type::Named { name } => match names.type_named(name).map(|t| &t.body) {
+            Some(TypeBody::Struct { fields }) => {
+                for f in fields {
+                    vary_memory(m, names, &f.ty, addr + f.offset, rng, depth + 1);
+                }
+            }
+            Some(TypeBody::Typedef { ty }) => vary_memory(m, names, ty, addr, rng, depth + 1),
+            _ => {}
+        },
+        Type::Array { of, len } => {
+            let size = names.size_of(of).unwrap_or(0);
+            for k in 0..(*len).min(64) {
+                if size > 0 {
+                    vary_memory(m, names, of, addr + k * size, rng, depth + 1);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The call `m` is at the entry of, with its integer arguments and the
+/// memory its pointer arguments point to varied within their types, by
+/// `function`'s signature in `names` (nothing without one).
+fn vary(m: &mut psx_core::Machine, names: &Names, function: &str, rng: &mut Rng) {
+    let Some(sig) = names.functions.iter().find(|f| f.name.text == function).and_then(|f| f.signature.as_ref()) else {
+        return;
+    };
+    for (k, p) in sig.params.iter().take(4).enumerate() {
+        match &p.ty {
+            Type::Pointer { to, offset } => {
+                let base = m.cpu.regs[4 + k].wrapping_sub(*offset);
+                if crate::names_bind::canonical(base).is_some() {
+                    vary_memory(m, names, to, base, rng, 0);
+                }
+            }
+            ty => {
+                if let Some((size, signed)) = integer(names, ty) {
+                    m.cpu.regs[4 + k] = rng.value(size, signed);
+                }
+            }
+        }
+    }
+}
+
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CodeCheckArgs {
-    /// The function: its name in names/ (`[MODULE:]name`), and the name of its C in decomp/.
-    pub function: String,
-    /// The state to run from, named (`states list`) or a state file: the game's calls of the function from there are the cases.
+    /// Functions: each one's name in names/ (`[MODULE:]name`), and the name of its C in decomp/. Default: every function decomp/ defines whose C or names changed since its last check.
+    #[serde(default)]
+    pub functions: Vec<String>,
+    /// Run from this state instead of the recordings, named (`states list`) or a state file: the game's calls of the function from there are the cases.
     #[arg(long)]
-    pub state: PathBuf,
+    #[serde(default)]
+    pub state: Option<PathBuf>,
+    /// Take the cases from these scenarios' recordings. Default: every scenario's recordings that reach the function (by the coverage kept beside each).
+    #[arg(long = "scenario")]
+    #[serde(default)]
+    pub scenarios: Vec<String>,
+    /// Take the cases from these recordings: NAME, or ID/NAME for one scenario's.
+    #[arg(long = "recording")]
+    #[serde(default)]
+    pub recordings: Vec<String>,
     /// The BIOS (default: as run resolves it).
     #[arg(long)]
     #[serde(default)]
     pub bios: Option<PathBuf>,
-    /// Calls to check.
-    #[arg(long, default_value_t = 3)]
-    #[serde(default = "d_cases")]
-    pub cases: usize,
-    /// Fields to wait for each call.
+    /// Calls to check per function (default 3 from a state, 8 over recordings, spread over all the calls made).
+    #[arg(long)]
+    #[serde(default)]
+    pub cases: Option<usize>,
+    /// From a state: fields to wait for each call.
     #[arg(long, default_value_t = 600)]
     #[serde(default = "d_fields")]
     pub fields: u64,
+    /// Wall-clock limit per recording's replay, in seconds.
+    #[arg(long, default_value_t = 600)]
+    #[serde(default = "d_timeout")]
+    pub timeout: u64,
+    /// Varied calls after each call: its integer arguments, and the memory its pointer arguments point to, set at random within their types (by its signature in names/), to reach branches no recording does.
+    #[arg(long, default_value_t = 2)]
+    #[serde(default = "d_varied")]
+    pub varied: usize,
 }
 
-fn d_cases() -> usize {
-    3
+fn d_varied() -> usize {
+    2
 }
+
 fn d_fields() -> u64 {
+    600
+}
+fn d_timeout() -> u64 {
     600
 }
 
@@ -536,65 +774,278 @@ fn messages_json(m: &[Message]) -> Value {
     json!(m.iter().map(|m| json!({"file": m.file, "line": m.line, "message": m.text})).collect::<Vec<_>>())
 }
 
-fn check_cmd(ctx: &Ctx, mut a: CodeCheckArgs) -> crate::Result<(bool, Value)> {
+/// The C files in decomp/, in order.
+fn c_files(root: &Path) -> Vec<PathBuf> {
+    c_files_in(root, "decomp")
+}
+
+fn check_cmd(ctx: &Ctx, a: CodeCheckArgs) -> crate::Result<(bool, Value)> {
     let root = &ctx.root;
-    let (states, _) = crate::states::Dirs::default().get(ctx);
-    a.state = crate::run::named_state(&states, a.state);
-    let mut sources: Vec<PathBuf> = std::fs::read_dir(root.join("decomp"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "c"))
-        .collect();
-    sources.sort();
+    let sources = c_files(root);
     if sources.is_empty() {
         return Err(Error::invalid("decomp/ holds no C: write the function's C as decomp/<name>.c"));
     }
     let names = crate::names_bind::project_names();
+    let one = (a.functions.len() == 1).then(|| a.functions[0].clone());
     let build = match build(names, &sources, &root.join(".psx/decomp")) {
         Ok(b) => b,
         Err(m) => {
-            return Ok((
-                false,
-                json!({"function": a.function, "status": "build_failed", "messages": messages_json(&m)}),
-            ));
+            let mut v = json!({"status": "build_failed", "messages": messages_json(&m)});
+            match &one {
+                Some(f) => v["function"] = json!(f),
+                None => v["functions"] = json!(a.functions),
+            }
+            return Ok((false, v));
         }
     };
-    let resolved = crate::context::resolve(root, None, a.bios.clone(), Some(&a.state), false)?;
+    let wanted = if a.functions.is_empty() { changed(root, names) } else { a.functions.clone() };
+    if wanted.is_empty() {
+        return Ok((
+            true,
+            json!({"status": "unchanged", "functions": [],
+                   "why": "every function decomp/ defines and names/ names was checked on this C and these names"}),
+        ));
+    }
+    let resolved = crate::context::resolve(root, None, a.bios.clone(), None, false)?;
     if let Some(e) = resolved.setup_error() {
         return Err(e);
     }
-    let bios_path = resolved.bios.unwrap();
+    let bios_path = resolved.bios.clone().unwrap();
     let bios = std::fs::read(&bios_path).map_err(|e| Error::io(&bios_path, e))?;
-    let bytes = std::fs::read(&a.state).map_err(|e| Error::io(&a.state, e))?;
-    let (_, mut m) = psx_core::Machine::load_state(&bytes, bios).map_err(|e| Error::new("invalid_state", e))?;
-    m.bus.cdrom.disc = crate::run_native::open_media(resolved.media.as_deref())?.disc;
+    let media = resolved.media.clone();
+    if let Some(f) = one {
+        return check_one(ctx, &a, names, &build, &f, &bios, media.as_deref());
+    }
+    let mut ok = true;
+    let mut out = Vec::new();
+    for f in &wanted {
+        let v = match check_one(ctx, &a, names, &build, f, &bios, media.as_deref()) {
+            Ok((pass, v)) => {
+                ok &= pass;
+                v
+            }
+            Err(e) => {
+                ok = false;
+                json!({"function": f, "status": "error", "error": e.to_value()["error"]})
+            }
+        };
+        out.push(v);
+    }
+    Ok((ok, json!({"status": if ok { "passed" } else { "failed" }, "functions": out})))
+}
+
+/// decomp/'s functions that names/ names whose last check was on other C
+/// or other names, or that have none.
+fn changed(root: &Path, names: &Names) -> Vec<String> {
+    let (c, n) = (sources_hash(root), names_hash(root));
+    let read = |p: PathBuf| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let mut out: Vec<String> = c_functions(root)
+        .into_iter()
+        .map(|(f, _, _)| f)
+        .filter(|f| entry(names, f).is_ok())
+        .filter(|f| {
+            read(check_file(root, f))
+                .is_none_or(|k| k["sources"].as_str() != Some(c.as_str()) || k["names"].as_str() != Some(n.as_str()))
+        })
+        .collect();
+    out.dedup();
+    out
+}
+
+/// A recording a check takes cases from: its scenario and name.
+struct Rec {
+    id: String,
+    name: String,
+}
+
+/// The captured recordings `a` asks for, or by default every one whose
+/// kept coverage reaches `entry` (one with no coverage kept is tried).
+fn recordings(root: &Path, a: &CodeCheckArgs, entry: u32) -> Vec<Rec> {
+    let ids = if a.scenarios.is_empty() { crate::scenario::ids(root) } else { a.scenarios.clone() };
+    let mut out = Vec::new();
+    for id in ids {
+        let l = crate::scenario::Loaded::load(root, &id);
+        for (name, file, r) in &l.recordings {
+            let Ok(r) = r else { continue };
+            if r.header.source.kind != psx_scenario::scenario::SourceKind::Captured {
+                continue;
+            }
+            if !a.recordings.is_empty() && !a.recordings.iter().any(|x| x == name || *x == format!("{id}/{name}")) {
+                continue;
+            }
+            if a.scenarios.is_empty() && a.recordings.is_empty() && !reaches(file, entry) {
+                continue;
+            }
+            out.push(Rec { id: id.clone(), name: name.clone() });
+        }
+    }
+    out
+}
+
+/// Whether the coverage kept beside `recording` executed `entry`; true
+/// when none is kept.
+fn reaches(recording: &Path, entry: u32) -> bool {
+    let p = recording.with_extension("coverage.json");
+    let Some(v) = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { return true };
+    let hex = |v: &Value| v.as_str().and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+    let want = entry & 0x1FFF_FFFF;
+    v["images"].as_array().into_iter().flatten().flat_map(|i| i["executed"].as_array().into_iter().flatten()).any(|r| {
+        matches!((hex(&r[0]), hex(&r[1])), (Some(s), Some(e)) if (s & 0x1FFF_FFFF..e & 0x1FFF_FFFF).contains(&want))
+    })
+}
+
+/// `n` of `items`, spread evenly over them, in order.
+fn spread<T>(items: Vec<T>, n: usize) -> Vec<T> {
+    let len = items.len();
+    if len <= n {
+        return items;
+    }
+    let pick: BTreeSet<usize> = (0..n).map(|k| k * len / n).collect();
+    items.into_iter().enumerate().filter(|(k, _)| pick.contains(k)).map(|(_, t)| t).collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_one(
+    ctx: &Ctx,
+    a: &CodeCheckArgs,
+    names: &Names,
+    build: &Build,
+    function: &str,
+    bios: &[u8],
+    media: Option<&Path>,
+) -> crate::Result<(bool, Value)> {
+    let root = &ctx.root;
+    let original = entry(names, function).map_err(Error::invalid)?;
+    let bare = function.rsplit_once(':').map_or(function, |(_, n)| n);
+    let module = function.rsplit_once(':').map(|(m, _)| m);
+    let body = crate::names_bind::body(original, module);
     let save = root.join(".psx/decomp/cases");
-    let cases =
-        check(m, names, &build, &a.function, a.cases, a.fields, CALL_STEPS, Some(&save)).map_err(Error::invalid)?;
+    let mut branches = BTreeSet::new();
+    let mut cases = Vec::new();
+    let mut held = String::new();
+    let mut v = json!({"function": function});
+    let from: Value;
+    if let Some(state) = &a.state {
+        let (states, _) = crate::states::Dirs::default().get(ctx);
+        let state = crate::run::named_state(&states, state.clone());
+        let bytes = std::fs::read(&state).map_err(|e| Error::io(&state, e))?;
+        let (_, mut m) =
+            psx_core::Machine::load_state(&bytes, bios.to_vec()).map_err(|e| Error::new("invalid_state", e))?;
+        m.bus.cdrom.disc = crate::run_native::open_media(media)?.disc;
+        let n = a.cases.unwrap_or(3);
+        let opts = CheckOpts { cases: n, fields: a.fields, steps: CALL_STEPS, save: Some(&save), tag: bare, body: body.as_deref(), varied: a.varied };
+        cases = check(&mut m, names, build, function, &opts, &mut branches).map_err(Error::invalid)?;
+        if !cases.is_empty() {
+            held = entry_bytes(&m, original, body.as_deref());
+        }
+        if cases.is_empty() {
+            v["why"] = json!(format!("the game did not call it within {} fields of the state", a.fields));
+        }
+        from = json!({"state": state});
+    } else {
+        let n = a.cases.unwrap_or(8);
+        let recs = recordings(root, a, original);
+        let mut kept = Vec::new();
+        let mut replays = Vec::new();
+        let mut disc = None;
+        for r in &recs {
+            let mut prepare = |m: &mut psx_core::Machine| m.redirects.insert(original, psx_core::Redirect::Keep(n));
+            let (diffs, mut m) = crate::scenario::replay(
+                ctx,
+                &r.id,
+                &r.name,
+                std::time::Duration::from_secs(a.timeout),
+                &mut |_, _| {},
+                Some(&mut prepare),
+            )?;
+            let calls = m.redirects.hits(original);
+            for (call, state) in m.redirects.kept(original) {
+                kept.push((r, call, state));
+            }
+            disc = m.bus.cdrom.disc.take().or(disc);
+            let mut j = json!({"scenario": r.id, "recording": r.name, "calls": calls});
+            if !diffs.is_empty() {
+                j["replay_differs"] = json!(diffs);
+            }
+            replays.push(j);
+        }
+        for (r, call, state) in spread(kept, n) {
+            let (_, mut m) =
+                psx_core::Machine::load_state(&state, bios.to_vec()).map_err(|e| Error::new("invalid_state", e))?;
+            m.bus.cdrom.disc = disc.take();
+            if held.is_empty() {
+                held = entry_bytes(&m, original, body.as_deref());
+            }
+            let tag = format!("{bare}-{}-{}-{call}", r.id, r.name);
+            let opts = CheckOpts { cases: 1, fields: 1, steps: CALL_STEPS, save: Some(&save), tag: &tag, body: body.as_deref(), varied: a.varied };
+            let got = check(&mut m, names, build, function, &opts, &mut branches);
+            disc = m.bus.cdrom.disc.take();
+            for mut c in got.map_err(Error::invalid)? {
+                c.hit = call;
+                c.from = Some((r.id.clone(), r.name.clone()));
+                cases.push(c);
+            }
+        }
+        if cases.is_empty() {
+            v["why"] = json!(if recs.is_empty() {
+                "no captured recording reaches it (by the coverage kept beside each): record one that does, or pass state".to_string()
+            } else {
+                "the recordings made no call to it".to_string()
+            });
+        }
+        from = json!({"recordings": replays});
+    }
+    if a.varied > 0 {
+        v["varied_dropped"] = json!(cases.iter().filter(|c| c.dropped).count());
+    }
+    cases.retain(|c| !c.dropped);
     let failed = cases.iter().filter(|c| !c.differences.is_empty()).count();
     let ok = !cases.is_empty() && failed == 0;
-    let mut v = json!({
-        "function": a.function,
-        "status": if cases.is_empty() { "no_calls" } else if ok { "passed" } else { "failed" },
-        "passed": cases.len() - failed, "failed": failed,
-        "cases": cases.iter().map(|c| {
-            let mut j = json!({"hit": c.hit, "args": c.args.map(|a| format!("0x{a:08X}")), "passed": c.differences.is_empty()});
-            if !c.differences.is_empty() {
-                j["differences"] = json!(c.differences);
+    v["status"] = json!(if cases.is_empty() { "no_calls" } else if ok { "passed" } else { "failed" });
+    v["passed"] = json!(cases.len() - failed);
+    v["failed"] = json!(failed);
+    v["cases"] = json!(cases.iter().map(case_json).collect::<Vec<_>>());
+    if !branches.is_empty() || body.is_some() {
+        let reached: BTreeSet<(u32, bool)> = cases.iter().flat_map(|c| c.branches.iter().copied()).collect();
+        let mut missed = Vec::new();
+        for &b in &branches {
+            for (way, word) in [(true, "taken"), (false, "fell through")] {
+                if !reached.contains(&(b, way)) {
+                    missed.push(format!("0x{b:08X} {word}"));
+                }
             }
-            if let Some(p) = &c.saved {
-                j["state"] = json!(p);
-            }
-            j
-        }).collect::<Vec<_>>(),
-    });
-    if cases.is_empty() {
-        v["why"] = json!(format!("the game did not call it within {} fields of the state", a.fields));
+        }
+        v["branch_ways"] = json!({"reached": 2 * branches.len() - missed.len(), "of": 2 * branches.len(), "missed": missed});
     }
-    save_check(root, &a.function, &a.state, &v);
+    for (k, x) in from.as_object().unwrap() {
+        v[k] = x.clone();
+    }
+    v["entry_bytes"] = json!(held);
+    save_check(root, function, &from, &v);
+    v.as_object_mut().unwrap().remove("entry_bytes");
     Ok((ok, v))
+}
+
+fn case_json(c: &Case) -> Value {
+    let mut j = json!({"args": c.args.map(|a| format!("0x{a:08X}")), "passed": c.differences.is_empty()});
+    match &c.from {
+        Some((id, name)) => {
+            j["scenario"] = json!(id);
+            j["recording"] = json!(name);
+            j["call"] = json!(c.hit);
+        }
+        None => j["hit"] = json!(c.hit),
+    }
+    if let Some(k) = c.varied {
+        j["varied"] = json!(k);
+    }
+    if !c.differences.is_empty() {
+        j["differences"] = json!(c.differences);
+    }
+    if let Some(p) = &c.saved {
+        j["state"] = json!(p);
+    }
+    j
 }
 
 /// Where each function's last check is kept (`<function>.json`), and the
@@ -628,8 +1079,35 @@ fn check_file(root: &Path, function: &str) -> PathBuf {
     root.join(CHECKS).join(format!("{safe}.json"))
 }
 
+/// A hash of the names files (names/ and .psx/names/), to tell a check
+/// made on other names.
+pub fn names_hash(root: &Path) -> String {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "names") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&root.join("names"), &mut files);
+    walk(&root.join(".psx/names"), &mut files);
+    files.sort();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for f in files {
+        let name = f.strip_prefix(root).unwrap_or(&f).to_string_lossy().into_owned();
+        for b in name.bytes().chain([0]).chain(std::fs::read(&f).unwrap_or_default()) {
+            h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    format!("{h:016x}")
+}
+
 /// Keep a check's result: the function's last, and a line in the log.
-fn save_check(root: &Path, function: &str, state: &Path, v: &Value) {
+fn save_check(root: &Path, function: &str, from: &Value, v: &Value) {
     let commit = std::process::Command::new("git")
         .current_dir(root)
         .args(["rev-parse", "--verify", "-q", "HEAD"])
@@ -640,8 +1118,10 @@ fn save_check(root: &Path, function: &str, state: &Path, v: &Value) {
     let first = v["cases"].as_array().and_then(|c| c.iter().find(|c| c["passed"] == false)).cloned();
     let kept = json!({
         "function": function, "status": v["status"], "passed": v["passed"], "failed": v["failed"],
-        "at": crate::now_ms() as u64, "commit": commit, "sources": sources_hash(root),
-        "state": state, "first_failure": first, "messages": v["messages"],
+        "at": crate::now_ms() as u64, "commit": commit, "sources": sources_hash(root), "names": names_hash(root),
+        "state": from["state"], "recordings": from["recordings"], "branch_ways": v["branch_ways"],
+        "first_failure": first, "messages": v["messages"],
+        "entry_bytes": v["entry_bytes"],
     });
     let p = check_file(root, function);
     if std::fs::create_dir_all(p.parent().unwrap()).is_err() {
@@ -715,6 +1195,223 @@ pub fn c_functions(root: &Path) -> Vec<(String, String, usize)> {
     out
 }
 
+/// A function's last check, with `stale` when the C or names changed since.
+pub fn last_check(root: &Path, function: &str) -> Option<Value> {
+    let mut k: Value = serde_json::from_slice(&std::fs::read(check_file(root, function)).ok()?).ok()?;
+    k["stale"] = json!(
+        k["sources"].as_str() != Some(sources_hash(root).as_str()) || k["names"].as_str() != Some(names_hash(root).as_str())
+    );
+    Some(k)
+}
+
+/// The function's C as decomp/ defines it: its file, line and text, from
+/// its first line to the brace that closes its body.
+pub fn c_of(root: &Path, function: &str) -> Option<(String, usize, String)> {
+    let (_, file, line) = c_functions(root).into_iter().find(|(n, _, _)| n == function)?;
+    let text = std::fs::read_to_string(root.join("decomp").join(&file)).ok()?;
+    let mut depth = 0i32;
+    let mut out = Vec::new();
+    let mut opened = false;
+    for l in text.lines().skip(line - 1) {
+        out.push(l);
+        for c in l.chars() {
+            match c {
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        if opened && depth <= 0 {
+            break;
+        }
+    }
+    Some((format!("decomp/{file}"), line, out.join("\n")))
+}
+
+/// Functions named, in C, and passing their last check on the current C
+/// and names, for code inventory, port status and psx web's Stats.
+pub fn counts(root: &Path) -> Value {
+    let names = psx_symbols::names::load(root);
+    let c = c_functions(root);
+    let passing = c
+        .iter()
+        .filter(|(n, _, _)| last_check(root, n).is_some_and(|k| k["status"] == "passed" && k["stale"] == false))
+        .count();
+    json!({"named": names.functions.len(), "in_c": c.len(), "passing": passing})
+}
+
+/// The bytes a replaced function's entry must hold: up to this many, from
+/// the entry to the end of its first chunk.
+const GUARD: u32 = 64;
+
+/// The bytes at `entry` in `m`'s RAM, as a check keeps them (hex) so a
+/// whole run replaces the function only while they are there.
+fn entry_bytes(m: &psx_core::Machine, entry: u32, body: Option<&[(u32, u32)]>) -> String {
+    let end = body.and_then(|b| b.iter().find(|(s, e)| (*s..*e).contains(&entry))).map_or(entry + GUARD, |c| c.1);
+    let at = (entry & 0x1F_FFFF) as usize;
+    let n = end.saturating_sub(entry).min(GUARD) as usize;
+    m.bus.ram.get(at..at + n).map(|b| b.iter().map(|x| format!("{x:02x}")).collect()).unwrap_or_default()
+}
+
+/// One function a whole run sends to the agent's C.
+#[derive(Debug, Clone)]
+pub struct Replaced {
+    pub name: String,
+    pub entry: u32,
+    pub at: u32,
+    /// What the entry must hold (from its last check), else replaced
+    /// wherever the CPU reaches it.
+    pub guard: Option<Vec<u8>>,
+}
+
+/// The agent's C for a whole run (`--decomp`, docs/decomp-plan.md, step
+/// 13): the build, the functions it replaces, and those left out with why.
+#[derive(Debug, Clone)]
+pub struct Replacement {
+    pub image: Vec<u8>,
+    pub functions: Vec<Replaced>,
+    pub left_out: Vec<(String, String)>,
+}
+
+impl Replacement {
+    /// `which` empty: the functions whose last check passed on this C and
+    /// these names; `all`: every function decomp/ defines and names/
+    /// names; otherwise those named.
+    pub fn new(root: &Path, which: &[String]) -> crate::Result<Replacement> {
+        let sources = c_files(root);
+        if sources.is_empty() {
+            return Err(Error::invalid("--decomp: decomp/ holds no C"));
+        }
+        // The root's names, not the process's: psx web plays with the C in its own process.
+        let names = &psx_symbols::names::load(root);
+        let build = build(names, &sources, &root.join(".psx/decomp/run")).map_err(|m| {
+            Error::invalid("--decomp: the C does not build (psx code check gives the messages)")
+                .with("messages", messages_json(&m))
+        })?;
+        let all = which.iter().any(|w| w == "all");
+        let wanted: Vec<String> = if which.is_empty() || all {
+            let mut c: Vec<String> = c_functions(root).into_iter().map(|(f, _, _)| f).collect();
+            c.dedup();
+            c
+        } else {
+            which.to_vec()
+        };
+        let (mut functions, mut left_out) = (Vec::new(), Vec::new());
+        for f in wanted {
+            let bare = f.rsplit_once(':').map_or(f.as_str(), |(_, n)| n).to_string();
+            let entry = match entry(names, &f) {
+                Ok(e) => e,
+                Err(e) => {
+                    left_out.push((f, e));
+                    continue;
+                }
+            };
+            let Some(&at) = build.functions.get(&bare) else {
+                left_out.push((f, "decomp/ does not define it".into()));
+                continue;
+            };
+            let check = last_check(root, &f);
+            if which.is_empty() {
+                let why = match &check {
+                    None => Some("never checked"),
+                    Some(k) if k["status"] != "passed" => Some("its last check did not pass"),
+                    Some(k) if k["stale"] == true => Some("the C or names changed since its last check"),
+                    _ => None,
+                };
+                if let Some(why) = why {
+                    left_out.push((f, why.into()));
+                    continue;
+                }
+            }
+            let guard = check.as_ref().and_then(|k| k["entry_bytes"].as_str()).filter(|h| !h.is_empty()).and_then(|h| {
+                (0..h.len() / 2).map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok()).collect::<Option<Vec<u8>>>()
+            });
+            let module = f.rsplit_once(':').is_some()
+                || names.functions.iter().any(|n| n.address == entry && n.module.is_some());
+            if guard.is_none() && module {
+                left_out.push((f, "an overlay's function with no check to say what its entry holds: check it first".into()));
+                continue;
+            }
+            functions.push(Replaced { name: f, entry, at, guard });
+        }
+        if build.image.len() > (FIX_BASE - BASE) as usize {
+            return Err(Error::invalid("--decomp: the C's build runs into where fixes/ loads"));
+        }
+        Ok(Replacement { image: build.image, functions, left_out })
+    }
+
+    /// Loads the build where the game cannot see it and sends the calls
+    /// there; counts start from here.
+    pub fn install(&self, m: &mut psx_core::Machine) {
+        load_hidden(m, BASE, &self.image);
+        for f in &self.functions {
+            let to = psx_core::Redirect::To(f.at);
+            match &f.guard {
+                Some(g) => m.redirects.insert_guarded(f.entry, to, g.clone()),
+                None => m.redirects.insert(f.entry, to),
+            }
+        }
+        m.redirects.count_from_here();
+    }
+
+    /// What the replacement did on `m` since [`Replacement::install`].
+    pub fn report(&self, m: &psx_core::Machine) -> Value {
+        let r = &m.redirects;
+        let share = if r.steps == 0 { 0.0 } else { r.hidden_steps as f64 / r.steps as f64 };
+        json!({
+            "replaced": self.functions.iter().map(|f| {
+                let mut j = json!({"function": f.name, "address": format!("0x{:08X}", f.entry), "calls": r.hits(f.entry)});
+                if f.guard.is_some() {
+                    j["calls_elsewhere"] = json!(r.passed_over(f.entry));
+                }
+                j
+            }).collect::<Vec<_>>(),
+            "left_out": self.left_out.iter().map(|(f, why)| json!({"function": f, "why": why})).collect::<Vec<_>>(),
+            "steps": r.steps, "steps_in_c": r.hidden_steps, "share_in_c": (share * 1e6).round() / 1e6,
+        })
+    }
+}
+
+/// Functions whose C passed a check and whose last check fails, with the
+/// last pass's commit and the first failing case's first difference
+/// (port next's Fix).
+pub fn regressed(root: &Path) -> Vec<(String, Option<String>, String)> {
+    let log = std::fs::read_to_string(root.join(CHECKS).join("checks.jsonl")).unwrap_or_default();
+    let lines: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let mut out = Vec::new();
+    for (f, _, _) in c_functions(root) {
+        let Some(k) = last_check(root, &f) else { continue };
+        if k["status"] != "failed" {
+            continue;
+        }
+        let Some(pass) = lines.iter().rev().find(|l| l["function"] == json!(f) && l["status"] == "passed") else {
+            continue;
+        };
+        let first = k["first_failure"]["differences"][0].as_str().unwrap_or("a case differs").to_string();
+        out.push((f, pass["commit"].as_str().map(String::from), first));
+    }
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
+/// The log of replays with the C (`--decomp`): a line per recording.
+const RUNS: &str = ".psx/decomp/runs.jsonl";
+
+/// Keeps a replay with the C in [`RUNS`], for the Code view's share of the
+/// game in the C over time.
+pub fn log_run(root: &Path, scenario: &str, recording: &str, status: &str, share: &Value, replaced: &Value) {
+    let line = json!({"t": crate::now_ms() as u64, "scenario": scenario, "recording": recording, "status": status,
+        "share_in_c": share, "functions": replaced.as_array().map(|a| a.len()).unwrap_or(0)});
+    let p = root.join(RUNS);
+    let _ = std::fs::create_dir_all(p.parent().unwrap());
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+        let _ = std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes());
+    }
+}
+
 /// psx web's Code view: the names, the functions in C with their last
 /// checks, and those scenarios turn off (docs/decomp-plan.md, step 14).
 pub fn overview(root: &Path) -> Value {
@@ -737,7 +1434,7 @@ pub fn overview(root: &Path) -> Value {
             }
         }
     }
-    let now = sources_hash(root);
+    let (now, names_now) = (sources_hash(root), names_hash(root));
     let read = |p: PathBuf| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
     let c: Vec<Value> = c_functions(root)
         .into_iter()
@@ -745,7 +1442,9 @@ pub fn overview(root: &Path) -> Value {
             let mut v = json!({"name": name, "file": format!("decomp/{file}"), "line": line,
                 "names": addr(&name), "off": off.get(&name)});
             if let Some(mut k) = read(check_file(root, &name)) {
-                k["stale"] = json!(k["sources"].as_str() != Some(now.as_str()));
+                k["stale"] = json!(
+                    k["sources"].as_str() != Some(now.as_str()) || k["names"].as_str() != Some(names_now.as_str())
+                );
                 v["check"] = k;
             }
             v
@@ -759,7 +1458,8 @@ pub fn overview(root: &Path) -> Value {
         "off": off.iter().map(|(f, s)| json!({"function": f, "scenarios": s, "names": addr(f)})).collect::<Vec<_>>(),
         "checks": checks.iter().rev().take(200).rev().collect::<Vec<_>>(),
         "compiler": compiler().map(|p| p.display().to_string()),
-        "replaced_runs": Value::Null,
+        "replaced_runs": std::fs::read_to_string(root.join(RUNS)).unwrap_or_default().lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect::<Vec<_>>().into_iter().rev().take(400).rev().collect::<Vec<_>>(),
     })
 }
 
@@ -798,6 +1498,84 @@ fn binutil(gcc: &Path, tool: &str) -> PathBuf {
     gcc.with_file_name(format!("{}{tool}{rest}{exe}", &stem[..at]))
 }
 
+/// Where fixes/ loads in the hidden region: after decomp/'s build, so a run
+/// can have both.
+pub const FIX_BASE: u32 = BASE + 0x0010_0000;
+
+/// Put `image` in the hidden region at `base`, keeping what else is there.
+pub fn load_hidden(m: &mut psx_core::Machine, base: u32, image: &[u8]) {
+    let o = (base - BASE) as usize;
+    let h = m.bus.hidden.get_or_insert_with(Vec::new);
+    if h.len() < o + image.len() {
+        h.resize(o + image.len(), 0);
+    }
+    h[o..o + image.len()].copy_from_slice(image);
+}
+
+/// The C files in `root/dir`, sorted.
+fn c_files_in(root: &Path, dir: &str) -> Vec<PathBuf> {
+    let mut sources: Vec<PathBuf> = std::fs::read_dir(root.join(dir))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "c"))
+        .collect();
+    sources.sort();
+    sources
+}
+
+/// A hash of fixes/'s C and headers, which a recording keeps.
+pub fn fixes_hash(root: &Path) -> Option<String> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(root.join(FIXES))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "c" || x == "h"))
+        .collect();
+    if !files.iter().any(|f| f.extension().is_some_and(|x| x == "c")) {
+        return None;
+    }
+    files.sort();
+    let mut bytes = Vec::new();
+    for f in files {
+        bytes.extend(f.file_name().unwrap_or_default().to_string_lossy().bytes());
+        bytes.push(0);
+        bytes.extend(std::fs::read(&f).unwrap_or_default());
+    }
+    Some(psx_media::disc::sha256_bytes(&bytes)[..16].to_string())
+}
+
+/// Where the agent's fixes are: C replacing the game's functions that
+/// keep input from the game every tick (docs/master-plan.md, A9).
+pub const FIXES: &str = "fixes";
+
+/// fixes/ built: each function it defines that names/ names replaces the
+/// game's; the rest are its helpers. None when fixes/ holds no C.
+pub fn fixes(root: &Path) -> crate::Result<Option<crate::adjust::Fixes>> {
+    let Some(sources_hash) = fixes_hash(root) else { return Ok(None) };
+    let names = &psx_symbols::names::load(root);
+    let build = build_at(names, &c_files_in(root, FIXES), &root.join(".psx/fixes"), FIX_BASE).map_err(|m| {
+        Error::invalid("fixes/: the C does not build").with("messages", messages_json(&m))
+    })?;
+    let mut functions = Vec::new();
+    for (name, &at) in &build.functions {
+        let Ok(address) = entry(names, name) else { continue };
+        if names.functions.iter().any(|f| f.address == address && f.module.is_some()) {
+            return Err(Error::invalid(format!(
+                "fixes/: {name} is an overlay's function: a fix replaces a function of the main executable"
+            )));
+        }
+        functions.push(crate::adjust::Fixed { name: name.clone(), address, at });
+    }
+    if functions.is_empty() {
+        return Err(Error::invalid(
+            "fixes/: its C defines no function names/ names: a fix is a game function's replacement, under the function's name",
+        ));
+    }
+    Ok(Some(crate::adjust::Fixes { functions, image: build.image, sources: sources_hash }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,9 +1599,20 @@ static int helper(int x)\n{\n    return x + 1;\n}\n\nvoid world_collide(Actor *a
         std::fs::write(root.join("decomp/world.c"), c).unwrap();
         let fs = c_functions(&root);
         assert_eq!(fs, vec![("helper".into(), "world.c".into(), 7), ("world_collide".into(), "world.c".into(), 12)]);
+        assert_eq!(
+            c_of(&root, "helper").unwrap(),
+            ("decomp/world.c".into(), 7, "static int helper(int x)\n{\n    return x + 1;\n}".into())
+        );
+        // A check kept on this C passes until the C changes.
+        assert_eq!(counts(&root)["passing"], 0);
+        save_check(&root, "helper", &json!({}), &json!({"status": "passed", "passed": 3, "failed": 0}));
+        assert_eq!(counts(&root), json!({"named": 0, "in_c": 2, "passing": 1}));
+        assert_eq!(last_check(&root, "helper").unwrap()["stale"], false);
         let h = sources_hash(&root);
         std::fs::write(root.join("decomp/world.c"), format!("{c}\n")).unwrap();
         assert_ne!(h, sources_hash(&root), "a change to the C changes the hash");
+        assert_eq!(last_check(&root, "helper").unwrap()["stale"], true);
+        assert_eq!(counts(&root)["passing"], 0);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -939,14 +1728,52 @@ static int helper(int x)\n{\n    return x + 1;\n}\n\nvoid world_collide(Actor *a
         let right = "#include \"names.h\"\nint twice(int a) {\n  counter = a + 1;\n  helper(5);\n  return a * 2;\n}\n";
         let Some((dir, b)) = built(right) else { return };
         let (_n_dir, n) = names(NAMES);
-        let cases = check(game(), &n, &b.unwrap(), "twice", 3, 10, 10_000, Some(&dir.join("cases"))).unwrap();
+        let saved = dir.join("cases");
+        let opts = |cases| CheckOpts { cases, fields: 10, steps: 10_000, save: Some(&saved), tag: "twice", body: None, varied: 0 };
+        let mut br = BTreeSet::new();
+        let cases = check(&mut game(), &n, &b.unwrap(), "twice", &opts(3), &mut br).unwrap();
         assert_eq!(cases.iter().map(|c| c.args[0]).collect::<Vec<_>>(), [20, 21, 22]);
         assert!(cases.iter().all(|c| c.differences.is_empty()), "{cases:?}");
         let Some((dir, b)) = built(&c_with("counter = a + 2;")) else { return };
-        let cases = check(game(), &n, &b.unwrap(), "twice", 2, 10, 10_000, Some(&dir.join("cases"))).unwrap();
+        let saved = dir.join("cases");
+        let opts = CheckOpts { cases: 2, fields: 10, steps: 10_000, save: Some(&saved), tag: "twice", body: None, varied: 0 };
+        let cases = check(&mut game(), &n, &b.unwrap(), "twice", &opts, &mut br).unwrap();
         assert_eq!(cases[1].differences, ["byte 0x80020000 (counter): original 0x16, replacement 0x17"]);
+        assert!(cases[1].saved.as_ref().unwrap().ends_with("twice-2.state"));
         assert!(cases[1].saved.as_ref().unwrap().is_file());
-        assert!(check(game(), &n, &b_none(), "nobody", 1, 1, 10, None).unwrap_err().contains("no function"));
+        let none = CheckOpts { cases: 1, fields: 1, steps: 10, save: None, tag: "nobody", body: None, varied: 0 };
+        assert!(check(&mut game(), &n, &b_none(), "nobody", &none, &mut br).unwrap_err().contains("no function"));
+        // Right for every argument the game passes, wrong for others: only
+        // a varied call finds it.
+        let Some((dir, b)) = built(&c_with("counter = a < 100 ? a + 1 : a;")) else { return };
+        let b = b.unwrap();
+        let saved = dir.join("cases");
+        let plain = CheckOpts { cases: 3, fields: 10, steps: 10_000, save: Some(&saved), tag: "twice", body: None, varied: 0 };
+        assert!(check(&mut game(), &n, &b, "twice", &plain, &mut br).unwrap().iter().all(|c| c.differences.is_empty()));
+        let varied = CheckOpts { varied: 4, ..plain };
+        let cases = check(&mut game(), &n, &b, "twice", &varied, &mut br).unwrap();
+        assert_eq!(cases.len(), 15);
+        assert_eq!(cases.iter().filter(|c| c.varied.is_none()).map(|c| c.args[0]).collect::<Vec<_>>(), [20, 21, 22]);
+        let failed: Vec<_> = cases.iter().filter(|c| !c.differences.is_empty()).collect();
+        assert!(!failed.is_empty() && failed.iter().all(|c| c.varied.is_some() && c.saved.is_some()), "{cases:?}");
+        assert!(failed[0].saved.as_ref().unwrap().to_str().unwrap().contains("-varied-"));
+    }
+
+    #[test]
+    fn cases_spread_over_the_calls() {
+        assert_eq!(spread((1..=10).collect(), 4), [1, 3, 6, 8]);
+        assert_eq!(spread(vec![1, 2], 4), [1, 2]);
+    }
+
+    #[test]
+    fn a_recording_reaches_what_its_coverage_executed() {
+        let (dir, _) = names("");
+        let rec = dir.join("walk.jsonl");
+        assert!(reaches(&rec, 0x8002_817C), "no coverage kept: tried");
+        let cov = r#"{"images": [{"executed": [["0x80028100", "0x80028180", 3]]}]}"#;
+        std::fs::write(dir.join("walk.coverage.json"), cov).unwrap();
+        assert!(reaches(&rec, 0x8002_817C));
+        assert!(!reaches(&rec, 0x8002_8180));
     }
 
     fn b_none() -> Build {

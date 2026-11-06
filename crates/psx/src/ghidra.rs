@@ -823,6 +823,23 @@ fn script_dir(dir: &Path) -> Result<PathBuf> {
     }
     Ok(p)
 }
+/// What a decompile leaves unnamed (Ghidra's default names for callees and
+/// globals, `Type+0xOFF` for offsets in no field of a struct), most often
+/// seen first, as `NAME (COUNT)`.
+pub(crate) fn unnamed(u: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut v: Vec<(&String, u64)> = u.iter().map(|(k, n)| (k, n.as_u64().unwrap_or(0))).collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    v.into_iter().map(|(k, n)| format!("{} ({n})", offset_upper(k))).collect()
+}
+
+/// `Type+0x36a` as `Type+0x36A`, as psx prints offsets.
+pub(crate) fn offset_upper(k: &str) -> String {
+    match k.split_once("+0x") {
+        Some((t, o)) => format!("{t}+0x{}", o.to_ascii_uppercase()),
+        None => k.to_string(),
+    }
+}
+
 fn cached(path: PathBuf, mut lock: Lock) -> Result<Analysis> {
     let value = read_json(&path)?;
     if value["format"] != FORMAT {
@@ -1205,38 +1222,8 @@ impl Op for DecompileArgs {
             } else if result_path.is_file() {
                 read_json(&result_path)?
             } else {
-                let install = installation(self.input.ghidra_home.as_deref().or(Some(&a.manifest.installation.home)))?;
-                if install.build_sha256 != a.manifest.installation.build_sha256 {
-                    return Err(Error::new("stale_analysis", "Ghidra version changed; query source to reanalyse"));
-                }
-                let attempt = a.manifest.index.parent().unwrap();
-                let request = attempt.join(format!("query-{}.json", crate::stamp()));
-                let output = request.with_extension("result.json");
-                save_json(
-                    &request,
-                    &json!({"mode":"query","addr":addr,"decompile_timeout":self.decompile_timeout,"query_result":output,"names":names}),
-                )?;
-                let mut cmd = command(&install, attempt, &a.manifest.language, ctx)?;
-                cmd.arg(&a.manifest.project_dir)
-                    .arg("project")
-                    .args(["-process", "payload.bin", "-noanalysis", "-readOnly", "-max-cpu", "2"])
-                    .arg("-scriptPath")
-                    .arg(script_dir(attempt)?)
-                    .arg("-postScript")
-                    .arg("PsxGhidra.java")
-                    .arg(&request);
-                let project = a.manifest.project_dir.clone();
-                run_worker(&mut cmd, &request.with_extension("log"), deadline, ctx, Some((&mut a.lock, &project)))?;
-                let result = read_json(&output).map_err(|e| {
-                    Error::new(
-                        "ghidra_failed",
-                        format!("{}; inspect {}", e.message, request.with_extension("log").display()),
-                    )
-                })?;
-                // Ghidra may touch project metadata even in read-only mode.
-                a.manifest.project_fingerprint = fingerprint(&a.manifest.project_dir)?;
-                save_json(&a.path, &a.manifest)?;
-                a.lock.worker(None)?;
+                let request = json!({"addr":addr,"decompile_timeout":self.decompile_timeout,"names":names});
+                let result = query(&mut a, &self.input, request, deadline, ctx)?;
                 if result["status"] == "complete" {
                     save_json(&result_path, &result)?;
                 }
@@ -1263,6 +1250,9 @@ impl Op for DecompileArgs {
             out["function"] = result["function"].take();
             out["pseudocode"] = result["pseudocode"].take();
             out["diagnostic"] = result["diagnostic"].take();
+            if let Some(u) = result["unnamed"].as_object() {
+                out["unnamed"] = json!(unnamed(u));
+            }
             if let Some(note) = unset_registers(&a, out["pseudocode"].as_str().unwrap_or(""), entry_addr) {
                 out["note"] = json!(note);
             }
@@ -1302,6 +1292,24 @@ impl Op for DecompileArgs {
             out["callers"] = page(&callers, 0, 100);
             out["callees"] = page(&callees, 0, 100);
             out["artifact"] = if result_path.exists() { json!(result_path) } else { Value::Null };
+            // The agent's C for the function, with its last check; Ghidra's
+            // pseudocode stays the original's.
+            let name = out["function"]["name"].as_str().map(String::from);
+            if let Some((file, line, text)) = name.as_deref().and_then(|n| crate::decomp::c_of(&ctx.root, n)) {
+                let check = crate::decomp::last_check(&ctx.root, name.as_deref().unwrap_or(""));
+                let passes = check.as_ref().is_some_and(|k| k["status"] == "passed" && k["stale"] == false);
+                out["c"] = json!({
+                    "file": file, "line": line, "text": text,
+                    "check": check.map(|k| json!({"status": k["status"], "passed": k["passed"], "failed": k["failed"],
+                        "stale": k["stale"], "commit": k["commit"], "at": k["at"], "recordings": k["recordings"],
+                        "first_failure": k["first_failure"]})),
+                    "shows": if passes {
+                        "the agent's C, which passed its last check on this C and names; pseudocode is Ghidra's of the original"
+                    } else {
+                        "the agent's C, not passing on this C and names (code check it); pseudocode is Ghidra's of the original"
+                    },
+                });
+            }
             Ok(out)
         })())
     }
@@ -1312,6 +1320,63 @@ impl Op for DecompileArgs {
 /// `file:line: message`. Names of an overlay (`in RACE.OVL`) apply to an
 /// analysis of that file; the others to any analysis whose memory holds
 /// them, which the script checks.
+/// Runs the query script on `a`'s project with `request` (addr or addrs,
+/// decompile_timeout, names) and returns its result.
+fn query(a: &mut Analysis, input: &Input, mut request: Value, deadline: Instant, ctx: &Ctx) -> Result<Value> {
+    let install = installation(input.ghidra_home.as_deref().or(Some(&a.manifest.installation.home)))?;
+    if install.build_sha256 != a.manifest.installation.build_sha256 {
+        return Err(Error::new("stale_analysis", "Ghidra version changed; query source to reanalyse"));
+    }
+    let attempt = a.manifest.index.parent().unwrap().to_path_buf();
+    let path = attempt.join(format!("query-{}.json", crate::stamp()));
+    let output = path.with_extension("result.json");
+    request["mode"] = json!("query");
+    request["query_result"] = json!(output);
+    save_json(&path, &request)?;
+    let mut cmd = command(&install, &attempt, &a.manifest.language, ctx)?;
+    cmd.arg(&a.manifest.project_dir)
+        .arg("project")
+        .args(["-process", "payload.bin", "-noanalysis", "-readOnly", "-max-cpu", "2"])
+        .arg("-scriptPath")
+        .arg(script_dir(&attempt)?)
+        .arg("-postScript")
+        .arg("PsxGhidra.java")
+        .arg(&path);
+    let project = a.manifest.project_dir.clone();
+    run_worker(&mut cmd, &path.with_extension("log"), deadline, ctx, Some((&mut a.lock, &project)))?;
+    let result = read_json(&output).map_err(|e| {
+        Error::new("ghidra_failed", format!("{}; inspect {}", e.message, path.with_extension("log").display()))
+    })?;
+    // Ghidra may touch project metadata even in read-only mode.
+    a.manifest.project_fingerprint = fingerprint(&a.manifest.project_dir)?;
+    save_json(&a.path, &a.manifest)?;
+    a.lock.worker(None)?;
+    Ok(result)
+}
+
+/// The functions containing `addrs` decompiled in one Ghidra launch, with
+/// the project's names applied: the query script's result for each
+/// (function, status, pseudocode, unnamed, lines), kept per address set and
+/// names. Addresses in no analysed function are left out.
+pub(crate) fn decompile_many(input: &Input, addrs: &[u32], decompile_timeout: u32, ctx: &Ctx) -> Result<Vec<Value>> {
+    let deadline = budget(input)?;
+    let mut a = prepare(input, None, decompile_timeout, deadline, ctx)?;
+    let (names, _) = names_for(&ctx.root, &a.manifest);
+    let key = sha256_bytes(&serde_json::to_vec(&json!([addrs, names])).unwrap());
+    let path = a.manifest.index.parent().unwrap().join(format!("decompile-many-{}.json", &key[..16]));
+    let result = if path.is_file() {
+        read_json(&path)?
+    } else {
+        let request = json!({"addrs":addrs,"decompile_timeout":decompile_timeout,"names":names});
+        let result = query(&mut a, input, request, deadline, ctx)?;
+        if result["status"] == "complete" {
+            save_json(&path, &result)?;
+        }
+        result
+    };
+    Ok(result["functions"].as_array().cloned().unwrap_or_default())
+}
+
 fn names_for(root: &Path, manifest: &Manifest) -> (Value, Vec<String>) {
     use crate::names_bind::{Bind, Code, Inventory};
     use psx_symbols::names::{Type, TypeBody};

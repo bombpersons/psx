@@ -145,6 +145,19 @@ impl PortInitArgs {
             &serde_json::to_string_pretty(&project).unwrap_or_default(),
             &mut written,
         )?;
+        // Debug files the build left on the disc; port next asks the agent
+        // to read them.
+        let debug = {
+            let mut named = Default::default();
+            match crate::disc_names::scan(&dest, &media, &[], &dest.join(psx_symbols::names::IMPORTED_DIR), &mut named) {
+                Ok(scan) => {
+                    crate::disc_names::record(&dest, &scan, false)?;
+                    let found = crate::disc_names::unread(&dest);
+                    json!({"debug_files": found, "source_paths": scan["source_paths"]["count"], "compilers": scan["compilers"]})
+                }
+                Err(e) => json!({"error": e.message}),
+            }
+        };
         let git = std::process::Command::new("git")
             .args(["init", "-q"])
             .current_dir(&dest)
@@ -162,7 +175,7 @@ impl PortInitArgs {
             "game": game, "package": name, "workspace": dest,
             "template": {"owned_files": template["owned_files"], "seeded_files": template["seeded_files"],
                          "region": template["region"], "region_from": if self.existing { "workspace" } else { region_from }, "tick_hz": template["tick_hz"]},
-            "written": written, "media": linked, "bios": bios, "git_init": git,
+            "written": written, "media": linked, "bios": bios, "git_init": git, "disc_debug": debug,
             "next": next,
         }))
     }

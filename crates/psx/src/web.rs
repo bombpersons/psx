@@ -354,8 +354,8 @@ fn route(req: &Request, st: &State) -> Reply {
             Ok(v) => Reply::Json(v),
             Err(e) => Reply::Json(e.to_value()),
         },
-        "replay" => Reply::Json(replay(st, root, q("scenario"), q("name"), start)),
-        "frame" => frame(st, root, q("scenario"), q("name"), q("tick")),
+        "replay" => Reply::Json(replay(st, root, q("scenario"), q("name"), start, q("decomp") == "1")),
+        "frame" => frame(st, root, q("scenario"), q("name"), q("tick"), q("decomp") == "1"),
         "port_replay" => Reply::Json(port_replay(st, root, q("scenario"), q("name"), start)),
         "port_frame" => port_frame(root, q("key"), q("tick")),
         "messages" => Reply::Json(messages(root)),
@@ -530,8 +530,10 @@ fn request_dir(path: &str, st: &State) -> crate::Result<(PathBuf, PathBuf)> {
     let (i, kind, id) = (parts.next(), parts.next(), parts.next());
     let p = i.and_then(|i| i.parse::<usize>().ok()).and_then(|i| st.projects.get(i)).ok_or_else(bad)?;
     let ok = |id: &&str| !id.is_empty() && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_');
-    let id = id.filter(|id| kind == Some("request") && ok(id)).ok_or_else(bad)?;
-    Ok((p.root.clone(), p.root.join(crate::handoff::queue::DIR).join(id)))
+    let id = id.filter(|id| matches!(kind, Some("request" | "try")) && ok(id)).ok_or_else(bad)?;
+    // A try with the agent's C waits apart from the queue.
+    let queue = if kind == Some("try") { crate::handoff::TRIES } else { crate::handoff::queue::DIR };
+    Ok((p.root.clone(), p.root.join(queue).join(id)))
 }
 
 impl State {
@@ -578,11 +580,12 @@ fn act(req: &Request, st: &State) -> crate::Result<Value> {
             text("from"),
             // The adjustments to play with: a list (none checked: the stock game), or absent for the default.
             req.body["adjust"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()),
+            req.body["with_c"] == true,
         )?;
         let live = crate::handoff::browser::Live::start(&p.root, &dir)?;
         st.plays.lock().unwrap().insert(dir.clone(), live);
         let id = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        return Ok(json!({"status": "playing", "id": id}));
+        return Ok(json!({"status": "playing", "id": id, "try": req.body["with_c"] == true}));
     }
     let (head, what) = req.path.rsplit_once('/').unwrap_or(("", ""));
     let (root, dir) = request_dir(head, st)?;
@@ -897,7 +900,7 @@ fn recordings(root: &Path) -> Value {
 
 /// Where a recording's replay is cached: by what it replays (the scenario,
 /// its chain, the recording, the glossary's binding sources) and psx's build.
-fn replay_dir(root: &Path, id: &str, name: &str) -> Option<PathBuf> {
+fn replay_dir(root: &Path, id: &str, name: &str, decomp: bool) -> Option<PathBuf> {
     let read = |p: &Path| std::fs::read(p).unwrap_or_default();
     let scen = root.join(crate::scenario::SCENARIOS);
     let toml = read(&scen.join(format!("{id}.toml")));
@@ -914,6 +917,10 @@ fn replay_dir(root: &Path, id: &str, name: &str) -> Option<PathBuf> {
         }
     }
     all.extend(crate::context::version().to_string().bytes());
+    if decomp {
+        // With the agent's C: that C and the names it is built with.
+        all.extend(format!("\ndecomp {} {}", crate::decomp::sources_hash(root), crate::decomp::names_hash(root)).bytes());
+    }
     let key = crate::stamp::sha256(&all);
     Some(crate::bios::data_dir()?.join("web-replays").join(&key[..16]))
 }
@@ -923,8 +930,8 @@ const KEEP_REPLAYS: usize = 12;
 
 /// How far the recording's replay is; with `start`, start it unless it ran
 /// or runs (again, when it failed: the state may be back).
-fn replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Value {
-    let Some(dir) = replay_dir(root, id, name) else {
+fn replay(st: &State, root: &Path, id: &str, name: &str, start: bool, decomp: bool) -> Value {
+    let Some(dir) = replay_dir(root, id, name, decomp) else {
         return json!({"error": "no data directory for the replay cache"});
     };
     let key = dir.display().to_string();
@@ -954,6 +961,7 @@ fn replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Value {
                         .arg(&root)
                         .args(["__web-replay", &id, &name])
                         .arg(&dir)
+                        .args(decomp.then_some("--decomp"))
                         .stdin(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .output()
@@ -1196,9 +1204,9 @@ fn project_file(root: &Path, path: &str) -> Reply {
     }
 }
 
-fn frame(st: &State, root: &Path, id: &str, name: &str, tick: &str) -> Reply {
+fn frame(st: &State, root: &Path, id: &str, name: &str, tick: &str, decomp: bool) -> Reply {
     let _ = st;
-    let (Some(dir), Ok(tick)) = (replay_dir(root, id, name), tick.parse::<u64>()) else {
+    let (Some(dir), Ok(tick)) = (replay_dir(root, id, name, decomp), tick.parse::<u64>()) else {
         return Reply::Missing("no such frame".into());
     };
     match std::fs::read(dir.join(format!("{tick}.png"))) {
@@ -1207,12 +1215,22 @@ fn frame(st: &State, root: &Path, id: &str, name: &str, tick: &str) -> Reply {
     }
 }
 
-/// `psx __web-replay ID NAME DIR`: replay the recording, the screen at the
+/// `psx __web-replay ID NAME DIR [--decomp]`: replay the recording (with
+/// the agent's C for the functions whose check passed), the screen at the
 /// end of each tick to `DIR/<tick>.png`, then (when it ran) `DIR/done.json`.
-pub fn replay_child(ctx: &Ctx, id: &str, name: &str, dir: &Path) -> Outcome {
+pub fn replay_child(ctx: &Ctx, id: &str, name: &str, dir: &Path, decomp: bool) -> Outcome {
     if let Err(e) = std::fs::create_dir_all(dir) {
         return Outcome::result(Err(crate::Error::io(dir, e)));
     }
+    let c = match decomp.then(|| crate::decomp::Replacement::new(&ctx.root, &[])).transpose() {
+        Ok(c) => c,
+        Err(e) => return Outcome::result(Err(e)),
+    };
+    let mut install = |m: &mut psx_core::Machine| {
+        if let Some(c) = &c {
+            c.install(m);
+        }
+    };
     let mut failed = None;
     let r = crate::scenario::replay(ctx, id, name, Duration::from_secs(600), &mut |t, m| {
         let (w, h, rgba) = m.bus.gpu.display_rgba();
@@ -1220,9 +1238,15 @@ pub fn replay_child(ctx: &Ctx, id: &str, name: &str, dir: &Path) -> Outcome {
         if let Err(e) = crate::run::write_png(&p, w, h, &rgba, png::ColorType::Rgba) {
             failed.get_or_insert(format!("{}: {e}", p.display()));
         }
-    });
+    }, Some(&mut install));
     let v = match (r, failed) {
-        (Ok(diffs), None) => json!({"differences": diffs}),
+        (Ok((diffs, m)), None) => {
+            let mut v = json!({"differences": diffs});
+            if let Some(c) = &c {
+                v["decomp"] = c.report(&m);
+            }
+            v
+        }
         (Ok(_), Some(e)) => crate::Error::invalid(e).to_value(),
         (Err(e), _) => e.to_value(),
     };

@@ -46,9 +46,27 @@ gp. GTE operations read as calls by register and command
 (gte_set_VXY0(v), gte_RTPS(sf,lm), gte_get_SXY2()), without their
 arithmetic. A note says why the pseudocode reads registers nothing sets
 (unaff_, in_): a start inside a function, or code that does so on purpose.
+Names files hold one fact per line, read as C, `//` for evidence and a
+trailing `?` for a guess; fields by offset, parts nobody knows left out:
+
+    struct Object 0x988 {
+      0x038 int floor_height   // written by world_collide
+      0x370 int x
+    }
+    global 0x8007528C Object *croc
+    function 0x80031F64 void world_collide(Object *obj, int unk, int area)
+      local_150 Object *+0x38 obj_38
+    function 0x80100000 in RACE.OVL race_update?
+
 The project's names files (names/ and .psx/names/, *.names) apply to every
 decompile; its names field counts what applied and lists what did not, by
-file and line. A function's name applies where the code at its address is
+file and line, and unnamed lists what the decompile still leaves unnamed,
+most often seen first: callees and globals by Ghidra's names (FUN_, DAT_)
+and offsets in no field of a named struct (Poly+0x24). code_names QUERY
+gives where a function, global, type, Type.field or function.local is
+defined and what it resolves to (a hex address: the names covering it);
+with no query and a source, the files' problems and what the functions
+the captured recordings call most leave unnamed, weighted by those calls. A function's name applies where the code at its address is
 the inventory's function there, by its bytes: `in MODULE` (an overlay's or
 executable's file) names one of several loaded at one address, and a name
 for code not in the analysis is left out without a word. A project open
@@ -57,7 +75,12 @@ a killed psx) is recovered by the next one; a lock left by a dead process
 (psx.lock under .psx/ghidra/) is removed by hand only after checking its
 pid is gone. code_symbols names PsyQ library code by signature, not the
 game's own functions, and reports the build: gp, GCC's division checks,
-scheduling, hand-written library code.
+scheduling, hand-written library code. Given a disc it searches every
+file, the decompressed files the inventory was taken with (or unpacked=)
+and the sectors no file owns for debug files (SN SYM, psylink MAP, ELF),
+source paths and GCC strings; a debug file most of whose functions start
+an executable's functions is imported to .psx/names/ with the PsyQ names,
+both rebuilt on each run, and the agent's names win over them.
 
 The names files are also every view's names. An address argument (run's
 trace ranges and watches, samples, disasm, xrefs, decompile, ram_view)
@@ -71,15 +94,46 @@ The agent's C for a function goes in decomp/<name>.c, including
 "names.h": every struct of the names files at its offsets (each offset
 and size asserted), the globals and every function's prototype, so the C
 reads the game's data and calls the original's functions by name.
-code_check function state builds decomp/ with a MIPS GCC (context's
-mips_gcc) and runs the game from the state: each call it makes to the
-function (cases, 3 by default) runs as the original and as the C, from
-the same moment, and their effects are compared: the return value, sp
-and the registers a call keeps, the bytes left stored (named by the
-globals that hold them), the GTE's registers, hardware writes and the
-calls made with their arguments. Time is not compared. A failed case is
-saved as a state (.psx/decomp/cases/); code_check from it reruns that
-call. Compiler errors come back by file and line.
+code_check function builds decomp/ with a MIPS GCC (context's mips_gcc)
+and replays the captured recordings that reach the function (by the
+coverage kept beside each; scenario and recording choose others, state
+runs the game from a state instead). Calls to it spread over those
+recordings (cases, 8 by default; 3 from a state) each run as the original
+and as the C, from the same moment, and their effects are compared: the
+return value, sp and the registers a call keeps, the bytes left stored
+(named by the globals, or the pointer arguments' fields, that hold
+them), the GTE's registers, hardware writes and the calls made with
+their arguments. Time is not compared. Each call is also run varied
+(varied, 2 by default): its integer arguments and the integers its
+pointer arguments point to set at random within their types in names/,
+to reach what no recording does; varied_dropped counts those the
+original did not return from, calls the game could not make.
+branch_ways lists the original's branch ways no case took. A failed
+case is saved as a state (.psx/decomp/cases/); code_check from it
+reruns that call. With no function, code_check checks each function of
+decomp/ whose C or names changed since its last check. Compiler errors
+come back by file and line.
+
+decomp= on run, scenario_check and port_check runs the game with the C in
+place of the functions it defines for the whole run (decomp=[] those
+whose last check passed on this C and names, ["all"] every one, or a
+list; on the CLI --decomp, --decomp=all, --decomp=a,b). An overlay's
+function is replaced only while its entry holds what its check saw.
+The result names the functions replaced with their calls, those left out
+and why, and share_in_c, the instructions run in the C. scenario_check
+and port_check replay each recording with it: diverges_with_c, with
+first_tick, is a recording that replays as recorded without the C and
+not with it.
+
+fixes/ holds C that changes what the game does on purpose: a function
+there replaces the game's function of that name (in the executable, not
+an overlay) in every recording, play and check, as the fix adjustment
+(topic run). It builds like decomp/, with "names.h", and is not checked
+against the original, since it differs from it; scenario_adjust_check
+with adjust fix measures what it changes. Each recording keeps the build
+it was recorded with and replays with it; scenario_check gives
+fix_changed for a recording whose fixes/ has changed since, to record
+again.
 
 Functions reached only through a table (state handlers, object updates, a
 jump table's cases) are often missing from an analysis of the EXE. Seed one
@@ -98,7 +152,18 @@ the overlays in RAM snapshots (traced runs), with blocks and instruction
 counts. Take it before recording: recordings credit their coverage to it.
 
 code_coverage reads traced runs and recordings (.jsonl): per function, the
-blocks run and not, and branch_ways_missed. code_coverage_diff runs=[...]
+blocks run and not, and branch_ways_missed. GCC's division checks (the
+branches to break 6 and break 7) are left out. A missed way gives what the
+branch tests, read back through the code before it ([0x8007529C] == 2,
+([arg0 + 0x178] & 0x2) == 0 in 0x80043234), the outcome no run saw, and
+the blocks only that way reaches; a branch behind it that never ran is
+counted under branches_behind_missed_ways, not listed. With function=
+(an address or a name) it gives that function's C from Ghidra instead,
+each line with how often the runs ran it and each condition marked never
+true or never false. port next groups a feature's open branches by test
+and outcome, and a wont_reach key may be a test as it gives them: it
+answers for every branch of the feature's code testing it.
+code_coverage_diff runs=[...]
 against=[...]: only lists the functions only the first set ran, further the
 blocks and branch ways (taken, fell through) only they took in functions
 both reached. To find a feature's code, diff runs or recordings doing it

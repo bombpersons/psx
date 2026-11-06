@@ -20,6 +20,7 @@
 //! each function lists the ways of its branches no run took.
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
+use crate::flow::{Flow, Gaps};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -42,6 +43,12 @@ pub struct CoverageArgs {
     #[arg(long)]
     #[serde(default)]
     pub out: Option<PathBuf>,
+    /// A function of the executable (an address in it, or its name): its C
+    /// as Ghidra gives it, each line with how often the runs ran it and each
+    /// condition with the outcome no run saw.
+    #[arg(long, conflicts_with = "check")]
+    #[serde(default)]
+    pub function: Option<String>,
 }
 
 /// `code coverage diff`: what traced runs reach that other traced runs do
@@ -119,6 +126,8 @@ struct Image {
     ways: Vec<u8>,
     /// The runs that executed each function.
     runs: Vec<BTreeSet<usize>>,
+    /// The gp its program's startup sets, for reading gp-relative loads.
+    gp: Option<u32>,
 }
 
 impl Image {
@@ -131,6 +140,19 @@ impl Image {
         let i = self.chunks.partition_point(|c| c.0 <= addr).checked_sub(1)?;
         let (_, end, f) = self.chunks[i];
         (addr < end).then_some(f)
+    }
+
+    fn ways_at(&self, a: u32) -> u8 {
+        self.ways.get(((a - self.base) / 4) as usize).copied().unwrap_or(0)
+    }
+
+    /// Function `f`'s flow and its gaps as the corpus ran it.
+    fn gaps(&self, f: &Function) -> (Flow, Gaps) {
+        let flow = Flow::new(f.entry, f.block_spans().collect(), |a| self.word(a));
+        let branches: Vec<(u32, u8)> =
+            f.words().filter(|&a| self.word(a).is_some_and(conditional)).map(|a| (a, self.ways_at(a))).collect();
+        let gaps = crate::flow::gaps(&flow, f.entry, self.gp, |a| self.word(a), &branches);
+        (flow, gaps)
     }
 
     /// Every function with a chunk holding addr: one's chunk can hold
@@ -235,6 +257,7 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
             credited_in: vec![0; n],
             ways: vec![0; n],
             runs: vec![BTreeSet::new(); f],
+            gp: None,
         }
     };
     let exes = inv["executables"].as_array().cloned().unwrap_or_default();
@@ -248,6 +271,9 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
             let bytes = fs.read_file(&disc, entry)?;
             let exe = psx_media::PsxExe::parse(&bytes)?;
             let base = 0x8000_0000 | (exe.text_addr & 0x1F_FFFF);
+            let gp = Some(exe.gp)
+                .filter(|&g| g != 0)
+                .or_else(|| psx_symbols::build::startup_gp(exe.payload(&bytes), base, exe.pc));
             out.push(image(
                 "executable",
                 path.into(),
@@ -255,8 +281,11 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
                 to_words(exe.payload(&bytes)).into_iter().map(Some).collect(),
                 functions(&e["functions"])?,
             ));
+            out.last_mut().unwrap().gp = gp;
         }
     }
+    // Overlays run with the executable's gp.
+    let gp = out.first().and_then(|i| i.gp);
     let overlays = inv["overlays"].as_array().into_iter().flatten().map(|o| ("overlay", o));
     let bios = inv["bios_code"].as_array().into_iter().flatten().map(|o| ("bios", o));
     for (kind, o) in overlays.chain(bios) {
@@ -275,6 +304,7 @@ fn images(root: &Path, inv: &Value) -> crate::Result<Vec<Image>> {
                 })?;
             let (base, words) = words;
             out.push(image(kind, name.into(), base, words, vec![f]));
+            out.last_mut().unwrap().gp = gp;
         }
     }
     Ok(out)
@@ -550,13 +580,28 @@ impl Functions {
     }
 }
 
+/// A conditional branch of a feature's code, as its recordings ran it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodeBranch {
+    pub pc: u32,
+    /// Its function's entry.
+    pub function: u32,
+    /// The ways its recordings took: 1 taken, 2 fell through.
+    pub ways: u8,
+    /// How often it ran.
+    pub runs: u64,
+    /// What it tests, when the code before it says.
+    pub test: Option<crate::flow::Test>,
+    /// When it never ran: the branch whose missed way alone leads to it.
+    pub behind: Option<u32>,
+}
+
 /// A feature's branches, as its recordings ran them.
 #[derive(Debug, Default)]
 pub(crate) struct FeatureBranches {
-    /// Each conditional branch in the feature's functions: its address,
-    /// its function's entry, and the ways its recordings took (1 taken,
-    /// 2 fell through).
-    pub branches: Vec<(u32, u32, u8)>,
+    /// Each conditional branch in the feature's functions, but GCC's
+    /// division checks.
+    pub branches: Vec<CodeBranch>,
     /// What keeps the count from being whole: recordings whose coverage
     /// is missing or no longer credited.
     pub problems: Vec<String>,
@@ -599,15 +644,22 @@ pub(crate) fn feature_branches(ctx: &Ctx, inv: &Value, recordings: &[PathBuf], c
     let mut seen = BTreeSet::new();
     for img in &c.images {
         for f in img.functions.iter().filter(|f| code.contains(&f.entry)) {
+            let (_, mut gaps) = img.gaps(f);
             for a in f.words() {
-                if img.word(a).is_some_and(conditional) && seen.insert(a) {
-                    let w = img.ways.get(((a - img.base) / 4) as usize).copied().unwrap_or(0);
-                    out.branches.push((a, f.entry, w));
+                if img.word(a).is_some_and(conditional) && !gaps.checks.contains(&a) && seen.insert(a) {
+                    out.branches.push(CodeBranch {
+                        pc: a,
+                        function: f.entry,
+                        ways: img.ways_at(a),
+                        runs: img.count.get(((a - img.base) / 4) as usize).copied().unwrap_or(0),
+                        test: gaps.tests.remove(&a),
+                        behind: gaps.behind.get(&a).copied(),
+                    });
                 }
             }
         }
     }
-    out.branches.sort_unstable();
+    out.branches.sort_unstable_by_key(|b| b.pc);
     out
 }
 
@@ -851,32 +903,53 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
                 *x = true;
             }
         }
+        // GCC's division checks are the compiler's: no gap.
+        let (flow, gaps) = img.gaps(f);
         let mut unexecuted = Vec::new();
-        let mut blocks_executed = 0u64;
-        for (s, e) in f.block_spans() {
+        let (mut blocks, mut blocks_executed) = (0u64, 0u64);
+        for (bi, &(s, e)) in flow.blocks.iter().enumerate() {
+            if flow.check_block[bi] {
+                continue;
+            }
+            blocks += 1;
             if (s..e).step_by(4).any(ran) {
                 blocks_executed += 1;
             } else {
                 unexecuted.push(json!([hex(s), hex(e)]));
             }
         }
-        // Each conditional branch's two ways: the ones no run took.
+        // Each conditional branch's two ways: the ones no run took, each
+        // once: a branch behind a way no run took is that way's.
         let mut ways_missed = Vec::new();
-        let (mut branches, mut ways_taken) = (0u64, 0u64);
+        let (mut branches, mut ways_taken, mut behind) = (0u64, 0u64, 0u64);
         for a in f.words() {
-            if !img.word(a).is_some_and(conditional) {
+            if !img.word(a).is_some_and(conditional) || gaps.checks.contains(&a) {
                 continue;
             }
             let w = img.ways.get(k(a)).copied().unwrap_or(0);
             branches += 1;
             ways_taken += (w & 1) as u64 + (w >> 1) as u64;
+            if gaps.behind.contains_key(&a) {
+                behind += 1;
+                continue;
+            }
             let never = match w {
                 3 => continue,
                 0 => "ran",
                 1 => "fell through",
                 _ => "taken",
             };
-            ways_missed.push(json!({"pc": hex(a), "never": never}));
+            let mut way = json!({"pc": hex(a), "never": never});
+            if let Some(t) = gaps.tests.get(&a) {
+                way["tests"] = json!(t.key);
+                if w != 0 {
+                    way["never_test"] = json!(if (w == 2) == t.taken { "true" } else { "false" });
+                }
+            }
+            if let Some(&n) = gaps.blocks_behind.get(&a) {
+                way["blocks_behind"] = json!(n);
+            }
+            ways_missed.push(way);
         }
         t.branches += branches;
         t.branch_ways_taken += ways_taken;
@@ -885,13 +958,13 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
         t.functions += 1;
         t.exercised += (blocks_executed > 0) as u64;
         t.complete += (unexecuted.is_empty()) as u64;
-        t.blocks += f.blocks.len() as u64;
+        t.blocks += blocks;
         t.blocks_executed += blocks_executed;
         t.instructions += instructions;
         t.instructions_executed += executed;
         let mut row = json!({
             "entry": hex(f.entry), "instructions": instructions, "executed": executed,
-            "blocks": f.blocks.len(), "blocks_executed": blocks_executed,
+            "blocks": blocks, "blocks_executed": blocks_executed,
             "branches": branches, "branch_ways_taken": ways_taken,
             "calls": img.count.get(k(f.entry)).copied().unwrap_or(0),
             "runs": img.runs[fi].iter().collect::<Vec<_>>(),
@@ -902,6 +975,9 @@ fn report(img: &Image) -> (Vec<Value>, Vec<Value>, Totals) {
         }
         if blocks_executed > 0 && !ways_missed.is_empty() {
             row["branch_ways_missed"] = json!(ways_missed);
+        }
+        if blocks_executed > 0 && behind > 0 {
+            row["branches_behind_missed_ways"] = json!(behind);
         }
         if let Some(sha) = &f.sha {
             row["sha256"] = json!(sha);
@@ -1056,6 +1132,9 @@ impl CoverageArgs {
     fn run(&self, ctx: &Ctx) -> crate::Result<Value> {
         let (inv_path, inv) = inventory(ctx, self.inventory.as_deref())?;
         let Corpus { images, runs, calls, missing, scripts } = corpus(ctx, &inv, &self.runs)?;
+        if let Some(spec) = &self.function {
+            return marked(ctx, &inv, &images, spec, runs.len());
+        }
 
         // An overlay's functions are an image each: reported together.
         let mut totals = Totals::default();
@@ -1234,6 +1313,104 @@ impl Op for CoverageArgs {
     }
 }
 
+/// A function's C with the corpus's runs of each line and the outcome of
+/// each condition no run saw.
+fn marked(ctx: &Ctx, inv: &Value, images: &[Image], spec: &str, runs: usize) -> crate::Result<Value> {
+    let addr = crate::names_bind::address(spec).map_err(Error::invalid)?;
+    let Some((img, fi)) = images.iter().find_map(|i| Some((i, i.function(addr)?))).filter(|(i, _)| i.kind == "executable")
+    else {
+        return Err(Error::invalid(format!(
+            "{spec}: in no function of the inventory's executables (Ghidra decompiles the executable's code)"
+        )));
+    };
+    let f = &img.functions[fi];
+    let media = inv["media"].as_str().ok_or_else(|| Error::malformed("inventory without media"))?;
+    let input = crate::ghidra::Input {
+        source: Some(format!("{media}::{}", img.name)),
+        analysis: None,
+        ram: None,
+        ranges: vec![],
+        entries: vec![],
+        gp: None,
+        symbols: vec![],
+        ghidra_home: None,
+        timeout: 600,
+        reanalyze: false,
+    };
+    let done = crate::ghidra::decompile_many(&input, &[f.entry], 60, ctx)?;
+    let d = done
+        .iter()
+        .find(|d| d["status"] == "complete")
+        .ok_or_else(|| Error::invalid(format!("Ghidra did not decompile 0x{:08X}", f.entry)))?;
+    let text = d["pseudocode"].as_str().unwrap_or_default();
+    let lines: BTreeMap<u64, Vec<u32>> = d["lines"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|l| {
+            let l = l.as_array()?;
+            Some((l.first()?.as_u64()?, l[1..].iter().filter_map(|a| a.as_u64().map(|a| a as u32)).collect()))
+        })
+        .collect();
+    let (flow, gaps) = img.gaps(f);
+    let k = |a: u32| a.checked_sub(img.base).map(|o| (o / 4) as usize);
+    let count = |a: u32| k(a).and_then(|k| img.count.get(k).copied());
+    let mut out = String::new();
+    let mut marks = 0;
+    for (n, line) in text.lines().enumerate() {
+        let n = n as u64 + 1;
+        // Ghidra's comments carry the function's address.
+        let comment = line.trim_start().starts_with("/*");
+        let Some(addrs) = lines.get(&n).filter(|_| !comment) else {
+            out.push_str(&format!("{:>9} {line}
+", ""));
+            continue;
+        };
+        let runs = addrs.iter().filter_map(|&a| count(a)).max();
+        // The body after the line: the way into it makes the condition true.
+        let next = lines.range(n + 1..).next().map(|(_, a)| a);
+        let mut notes = Vec::new();
+        for &a in addrs.iter().filter(|&&a| f.chunk(a).is_some()) {
+            let Some(i) = img.word(a).filter(|&i| conditional(i)) else { continue };
+            if gaps.checks.contains(&a) {
+                continue;
+            }
+            let w = img.ways_at(a);
+            if w == 3 || w == 0 {
+                continue;
+            }
+            let target = a.wrapping_add(4).wrapping_add(((i & 0xFFFF) as i16 as i32 as u32) << 2);
+            // The way whose code the body is: its block dominates the body's.
+            let into = |to: u32| {
+                flow.block(to).is_some_and(|s| {
+                    next.is_some_and(|n| n.iter().any(|&b| flow.block(b).is_some_and(|b| flow.dominates(s, b))))
+                })
+            };
+            let taken_true = match (into(target), into(a + 8)) {
+                (true, false) => Some(true),
+                (false, true) => Some(false),
+                _ => None,
+            };
+            notes.push(match taken_true {
+                Some(t) => format!("never {}", if (w == 2) == t { "true" } else { "false" }),
+                None => format!("0x{a:08X} never {}", if w == 1 { "fell through" } else { "taken" }),
+            });
+        }
+        marks += notes.len();
+        let gutter = runs.map_or(String::new(), |r| r.to_string());
+        let notes = if notes.is_empty() { String::new() } else { format!("  // {}", notes.join(", ")) };
+        out.push_str(&format!("{gutter:>9} {line}{notes}\n"));
+    }
+    let mut v = json!({
+        "function": hex(f.entry), "runs": runs, "calls": count(f.entry).unwrap_or(0),
+        "conditions_with_an_outcome_never_seen": marks,
+        "how": "each line's count is the most any of its instructions ran over the runs (blank: no instruction of its own); a condition marked never true or never false is one whose branch no run took that way; when the C does not say which way is which, the branch's address and the way are given",
+        "c": out,
+    });
+    crate::names_bind::name_row(&mut v, &img.name, f.entry);
+    Ok(v)
+}
+
 /// A conditional branch's ways in `ways` and not in `not` (1 taken, 2 fell
 /// through), named.
 fn ways_only(ways: u8, not: u8) -> impl Iterator<Item = &'static str> {
@@ -1400,6 +1577,7 @@ mod tests {
             credited_in: vec![0; n],
             ways: vec![0; n],
             runs: vec![BTreeSet::new(); f],
+            gp: None,
         }
     }
 
@@ -1587,14 +1765,19 @@ mod tests {
         credit(&mut images, 0, &ran);
         let (rows, _, t) = report(&images[0]);
         assert_eq!((t.branches, t.branch_ways_taken), (1, 0));
-        assert_eq!(rows[0]["branch_ways_missed"], json!([{"pc": "0x80100004", "never": "ran"}]));
+        let tests = "(arg0 + 1) == 0 in 0x80100000";
+        assert_eq!(rows[0]["branch_ways_missed"], json!([{"pc": "0x80100004", "never": "ran", "tests": tests}]));
         // Always taken, past the addiu: it never fell through.
         let mut images = vec![img("a", base, code.clone(), f())];
         credit(&mut images, 0, &ran);
         credit_branches(&mut images, 0, &[(base + 4, code[1], 1, 0)]);
         let (rows, _, t) = report(&images[0]);
         assert_eq!((t.branches, t.branch_ways_taken), (1, 1));
-        assert_eq!(rows[0]["branch_ways_missed"], json!([{"pc": "0x80100004", "never": "fell through"}]));
+        // What it tests read back, and the code only the missed way reaches.
+        assert_eq!(
+            rows[0]["branch_ways_missed"],
+            json!([{"pc": "0x80100004", "never": "fell through", "tests": tests, "never_test": "true", "blocks_behind": 1}])
+        );
         // A second run falls through: both ways, nothing listed.
         let fell = [(base + 4, code[1], 1), (base + 8, 0, 1), (base + 12, code[3], 1)];
         credit(&mut images, 1, &fell);

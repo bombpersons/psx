@@ -1278,6 +1278,7 @@ fn mcp_tools_match_cli() {
         "code_functions",
         "code_symbols",
         "code_inventory",
+        "code_names",
         "code_coverage",
         "code_coverage_diff",
         "code_check",

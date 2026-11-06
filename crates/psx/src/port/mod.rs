@@ -437,10 +437,10 @@ fn entry_problems(e: &Entry, out: &mut Vec<Problem>) {
     let script: Vec<Stretch> = e.code.iter().filter_map(|c| Stretch::parse(c)).collect();
     for (a, why) in &e.wont_reach {
         match (entry_addr(a).or(entry_range(a).map(|r| r.0)), Stretch::parse(a)) {
-            (None, None) => out.push(problem(
+            (None, None) if !crate::flow::is_test(a) => out.push(problem(
                 f,
                 format!(
-                    "wont_reach: {a:?} is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded) or a script position or stretch (croc+0x18F0)"
+                    "wont_reach: {a:?} is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded), a test as port next gives it ([0x8007529C] == 2) or a script position or stretch (croc+0x18F0)"
                 ),
             )),
             (None, Some(w)) if !script.iter().any(|s| s.contains(&w)) => {
@@ -941,7 +941,7 @@ pub(crate) mod tests {
                 "code: \"jump\" is not an address (0x8002D810) or a script stretch (croc+0x1803..0x18A0)",
                 "code: 0x8002D810 is listed twice",
                 "wont_reach.0x8002D820: no reason: why no recording can reach it",
-                "wont_reach: \"0x8002D860..0x8002D800\" is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded) or a script position or stretch (croc+0x18F0)",
+                "wont_reach: \"0x8002D860..0x8002D800\" is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded), a test as port next gives it ([0x8007529C] == 2) or a script position or stretch (croc+0x18F0)",
                 "questions: an empty question",
                 "recordings: no scenarios/jump/stomp.jsonl (psx scenario record, or play)",
                 "code and wont_reach are checked against the inventory: .psx/inventory.json: no inventory; take one with inventory first",
@@ -958,7 +958,7 @@ pub(crate) mod tests {
         assert_eq!(
             p,
             [
-                "wont_reach: \"croc+\" is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded) or a script position or stretch (croc+0x18F0)",
+                "wont_reach: \"croc+\" is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded), a test as port next gives it ([0x8007529C] == 2) or a script position or stretch (croc+0x18F0)",
                 "wont_reach: croc+0x2000 is in no script stretch code lists",
             ]
         );

@@ -377,6 +377,27 @@ whether the next is worth building.
 
    *Done when* 0x80031F64's decompile lists the polygon record's offsets.
 
+   *Done (2026-11-05):* the query script walks the decompile's tokens and
+   returns what is left unnamed (`FUN_` callees, `DAT_`/`PTR_` globals,
+   and `field_0x..` on a struct, kept as `Type+0xOFF`) with each line's
+   instruction addresses (for step 6); `code decompile` shows the first
+   as `unnamed`, most often seen first. On scratch Croc with a names file
+   that types world_collide's mesh local (`Mesh *`, its polygon records
+   `Poly *` at +0x64, Poly with only its flags), 0x80031F64 lists
+   `Poly+0x6 (41)`, `Poly+0x4 (39)`, `Poly+0x8 (21)`, `Poly+0x2 (10)`,
+   `Poly+0x24 (5)`, `Poly+0x26 (5)` beside its callees (`FUN_800544fc
+   (44)`), globals and `Object+0x..`. `code names QUERY` (MCP
+   `code_names`) gives a function's, global's, type's, `Type.field`'s or
+   `function.local`'s file and line, declaration, body or size, and for a
+   hex address the names covering it. With no query and a source it
+   decompiles the 20 functions captured recordings call most (`--functions`;
+   calls are the runs of each function's entry block, summed over the
+   recordings' coverage) in one Ghidra launch and ranks what they leave
+   unnamed by occurrences times calls: on Croc, 5 s with the analysis made,
+   `DAT_80075498` (149 uses in the script interpreter) first. The query
+   script changed, so analyses made before are made again (30 s for
+   Croc's EXE).
+
 6. **Coverage on the C, and the gaps grouped.** Finding why a branch no
    recording took cannot be reached is where Croc's agent spent much of
    its time: 183 wont_reach entries, written one branch at a time, with
@@ -408,6 +429,28 @@ whether the next is worth building.
    whose count is near its 48 causes, its analog stick entries fold into
    one, and 0x80031F64's coverage reads as marked C.
 
+   *Done (2026-11-06), but the values:* `flow.rs` builds each function's
+   graph from the inventory's blocks, finds GCC's division checks (left
+   out of coverage's blocks and branches and of port next) and the
+   dominators, and reads each branch's test back through the code before
+   it: absolute and gp-relative loads, masks, compares, calls' results,
+   arguments and saved registers (a test naming those holds `in` its
+   function). Coverage gives each missed way its test, the outcome never
+   seen and the blocks only it reaches; a never-run branch behind one is
+   counted, not listed. port next groups a feature's open branches by
+   test and outcome, the largest first, and wont_reach takes a test as a
+   key (a test no branch has is a problem). `code coverage --function`
+   gives the marked C. On scratch Croc with F-0001's 90 wont_reach entries
+   emptied: 169 branches, 89 open in 25 groups (the entries had about 40
+   distinct reasons; the floor-type ones fold into `[arg0 + 60] == N`),
+   the 37 analog stick entries are one group, `[0x8007529C] == 2 never
+   true`, of 2 missed ways with 35 branches behind them. world_collide's
+   marked C gives 44 of its 65 conditions as never true or never false,
+   the rest by branch address where the C does not say which way is
+   which (`||` chains, loop tests). Not built: the values a group tests,
+   sampled at the branch; that needs psx-core to sample memory at chosen
+   branches while it traces a recording.
+
 7. **The disc's own names.** `code symbols` scans the whole disc for
    debug leftovers: files by name (`.SYM`, `.MAP`, `.ELF`, `.CPE`,
    sources) and by content (SN SYM's `MND` header, ELF headers, psylink
@@ -423,6 +466,26 @@ whether the next is worth building.
    *Done when* the three discs report no debug files, and test images
    with planted files are imported, matching and not matching.
 
+   *Done (2026-11-06), with gaps:* `code symbols` given a disc (or
+   `disc::/EXE`) searches every file, the decompressed files the
+   inventory was taken with (or `--unpacked`), and the sectors no file
+   owns; a debug file is checked against every PS-X EXE on the disc and
+   imported to `.psx/names/` when over half of its functions inside one
+   start functions there (the inventory's, or a frame opening or a
+   `jr ra` two words before). The PsyQ names go to
+   `.psx/names/psyq_<exe>.names`, leaving out what a debug file named.
+   A planted test disc imports a SYM found by name and a MAP in unowned
+   sectors, and leaves a SYM inside a data file naming mid-function
+   addresses. The three discs report no debug files; TRC's GAMEWAD.OBJ
+   holds 8 source paths from asserts (`../game/TwoGun.c`,
+   `C:\PSX\lib.47\include\libgpu.h`), and no disc has `GCC:` strings.
+   **Gaps:** ghidra_psx_ldr has no SYM reader any more, so the SYM layout
+   was checked against its OBJ debug records (the same def, def2 and
+   function fields), not a SYM parser; ELF symbols are read but not
+   DWARF; imported names carry no `in MODULE`, so a debug file's overlay
+   functions are named as the executable's; compressed data is searched
+   only through decompressed files the agent gives.
+
 8. **The flow, and a measure.** `port init` runs the scan; a found debug
    file gives a Read item in `port next`. The guide's code topic shows the
    format with one example and sets no naming rules; the template's
@@ -432,6 +495,13 @@ whether the next is worth building.
    agent moved its field maps into `names/`.
 
    *Done when* the numbers are in front of the person.
+
+   *Built (2026-11-06), the measure not run:* `port init` scans the disc
+   (its result in the workspace's `.psx/disc_debug.json`, imports in
+   `.psx/names/`) and `port next` gives a Read item naming the debug files
+   found until `code symbols` on the disc reports them. The code topic
+   shows the format in one example; the template's AGENTS.md says to keep
+   names in `names/`. The agent session is still to run.
 
 ### Phase 2: checked C
 
@@ -482,17 +552,37 @@ whether the next is worth building.
    *Done when* a correct Croc helper passes over its recordings and one
    with a flipped sign fails with the field named.
 
-   *Partly done (2026-11-04):* `code check FN --state STATE` (MCP
-   `code_check`) builds `decomp/`, runs the game from a state and checks
-   each call it makes to the function (`--cases`), as step 10 compares
-   them; differences in bytes are named by the global holding them; a
-   failed case is saved as a state (`.psx/decomp/cases/`) that reruns
-   that call; calls the C makes to its own functions are mapped back to
-   the originals of the same names before comparing. Tested on psx-core's
-   test function, and by hand on a scratch project through the CLI.
-   **Still to do:** cases taken from recordings (`--scenario`,
-   `--recording`), the branches the cases reached, checking every
-   function whose C or names changed, and the Croc check.
+   *Done (2026-11-05):* `code check FN` (MCP `code_check`) builds
+   `decomp/` and replays the captured recordings whose coverage reaches
+   the function (`--scenario`, `--recording` choose others, `--state`
+   runs from a state instead). During each replay psx-core keeps states
+   at calls to it, spread over all its calls (`Redirect::Keep`); the
+   cases are spread over every recording's (`--cases`, 8; 3 from a
+   state) and each is compared as step 10 does. Differences in bytes are
+   named by the global holding them, or through the pointer arguments
+   (`s->pc`, `(*p)+0x4`). A failed case is saved as a state
+   (`.psx/decomp/cases/`) that reruns that call. The original's
+   conditional branches in the function's body (from the inventory) are
+   reported as `branch_ways`, with the ways no case took. Each case is
+   also rerun varied, the addition to D10 in the master plan (`--varied`,
+   2): integer arguments and the integers behind pointer arguments set at
+   random within their types, pointers left alone; a varied call the
+   original does not return from is dropped and counted. With no
+   function it checks each function whose C or names changed since its
+   last check (hashes kept with the check), and says "unchanged"
+   otherwise.
+
+   On scratch Croc, 0x8002817C (a script step, `counter_step` in the
+   test names) over the 43 recordings of walls_1_1: the right C passed
+   8 of 8 with both ways of its one branch taken, in 91 s; with `-=` for
+   `+=` 5 of 8 failed with `byte 0x800D2ED4 (*counter): original 0xEF,
+   replacement 0x83` (the other 3 added zero), each saved and rerun from
+   its state. Varied calls were dropped there until the names said what
+   the argument is (a pointer to the script's position, which the
+   variation leaves alone); a test on hand-written code fails only a
+   varied call, for C wrong on arguments the game never passes. Replays
+   with a redirect set run about a quarter slower (psx-core's fast path is
+   off while any is).
 
 12. **The decompile shows the C.** `code decompile` on a function with C
     returns it with its last check (cases, result, commit, recordings),
@@ -500,6 +590,15 @@ whether the next is worth building.
     count functions named, in C, and passing.
 
     *Done when* 0x80031F64 decompiles to the agent's C once it passes.
+
+    *Done (2026-11-06), on another function:* the decompile's `c` holds
+    the file, line, text and last check (stale once the C or the names
+    change since), with what it shows; `code inventory`, `port status`,
+    `port next` and the Stats tab count named, in C and passing. World
+    collision has no agent C yet (that is step 15's session), so it was
+    tried on scratch Croc's counter_step (0x8002817C): its check passed 24
+    of 24 cases, and the decompile returned its C with that check above
+    Ghidra's pseudocode.
 
 ### Phase 3: the game running on it
 
@@ -514,6 +613,21 @@ whether the next is worth building.
     *Done when* a scenario on scratch Croc checks the same with
     world_collide replaced as without, and a planted mistake in its C
     makes it diverge.
+
+    *Done (2026-11-06), on another function:* psx-core's redirects take a
+    guard (the bytes the entry must hold, which a check now keeps) and
+    count the steps run at HIDDEN. `--decomp` (passing functions),
+    `--decomp=all` or `--decomp=a,b` on `run`, `scenario check` and
+    `port check` replaces them for the whole run; the result names them
+    with their calls, those left out and why, and the share in the C. A
+    recording that differs is replayed without the C, and one that then
+    replays as recorded is `diverges_with_c` from its first tick. With
+    no C for world collision yet, it was tried with scratch Croc's
+    counter_step: `run` 300 fields from level_1_1 replaced 11,583 calls
+    (0.31% of instructions in the C); platforms_1_1's four recordings
+    checked the same with it; `s->pc += delta + 1` made all four diverge
+    at tick 4. `port check --decomp` was not tried there (it needs a
+    clean commit).
 
 14. **The person sees it.** psx web plays the original with the agent's C
     (a toggle beside each recording and in play), draws a check's card in
@@ -535,6 +649,27 @@ whether the next is worth building.
     in `checks.jsonl`. **Still to do:** the toggle beside recordings and
     in play, a check's card in the live log, the share of a run in the C
     (needs step 13), and the Fix item in `port next`.
+
+    *Done (2026-11-06):* beside "original · psx-core" a
+    recording's replay can run "with the agent's C" (every function whose
+    last check passed, as `--decomp`); its frames and done note come from
+    that replay, which names the functions replaced, their calls and the
+    share in the C. On scratch Croc, platforms_1_1/onto_the_lid replayed
+    tick for tick with counter_step in C (7,371 calls, 0.21%). The live
+    log draws `code check` as a strip of cases with the first failure's
+    differences and saved state. The Code view shows the agent's C above
+    Ghidra's in a decompile, and a "Runs with the C" card: each recording
+    replayed with `--decomp`, its share in the C, red where it diverged
+    (`.psx/decomp/runs.jsonl`). `port next` gives a Fix item when a
+    function whose C passed now fails, with the commit it passed at.
+    In play, Play now has "with the agent's C": a try, not a play. A
+    play becomes a recording and a try's would not be the original
+    game's, so a try waits apart from the queue (`.psx/handoffs/tries`,
+    where it cannot replace a request for the same recording), answers
+    nothing, and its folder goes when it ends; the status line and the
+    end name the functions replaced, their calls and the share in the C.
+    Starting over or loading a state puts the C back. Tried on scratch
+    Croc from platforms_1_1: counter_step in C, 0.22%, nothing left.
 
 15. **Measure it.** One agent session on a scratch copy of Croc with all
     of the above: functions checked, cases failed before passing (each a

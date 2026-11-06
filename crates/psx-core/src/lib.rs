@@ -47,6 +47,9 @@ pub enum Redirect {
     Return(u32),
     /// Run this code instead (a replacement, at [`bus::HIDDEN`]).
     To(u32),
+    /// Run the original, keeping the machine's state at the call: at most
+    /// this many, spread over the calls made (see [`Redirects::kept`]).
+    Keep(usize),
 }
 
 /// [`Machine::redirects`]: by entry (physical), what the call does instead,
@@ -54,6 +57,17 @@ pub enum Redirect {
 #[derive(Clone, Debug, Default)]
 pub struct Redirects {
     map: std::collections::BTreeMap<u32, (Redirect, u64)>,
+    kept: Vec<(u32, u64, Vec<u8>)>,
+    /// Of a [`Redirect::Keep`]'s calls, every this many is kept.
+    stride: std::collections::BTreeMap<u32, u64>,
+    /// Bytes a redirect's entry must hold for it to apply (an overlay's
+    /// function, only while that overlay is loaded), and the calls passed
+    /// over because they did not.
+    guards: std::collections::BTreeMap<u32, (Vec<u8>, u64)>,
+    /// Steps run since [`Redirects::count_from_here`], and of them those
+    /// run at [`bus::HIDDEN`] (a replacement's code).
+    pub steps: u64,
+    pub hidden_steps: u64,
 }
 
 impl Redirects {
@@ -61,17 +75,59 @@ impl Redirects {
         self.map.insert(entry & 0x1FFF_FFFF, (r, 0));
     }
 
+    /// [`Redirects::insert`], applying only while main RAM at `entry` holds
+    /// `bytes`; a call reached otherwise runs the code there.
+    pub fn insert_guarded(&mut self, entry: u32, r: Redirect, bytes: Vec<u8>) {
+        self.insert(entry, r);
+        self.guards.insert(entry & 0x1FFF_FFFF, (bytes, 0));
+    }
+
     pub fn clear(&mut self) {
         self.map.clear();
+        self.kept.clear();
+        self.stride.clear();
+        self.guards.clear();
+    }
+
+    /// How many calls to `entry` ran the code there because it did not hold
+    /// the guard's bytes.
+    pub fn passed_over(&self, entry: u32) -> u64 {
+        self.guards.get(&(entry & 0x1FFF_FFFF)).map_or(0, |(_, n)| *n)
+    }
+
+    /// Zeroes the hits and the step counts.
+    pub fn count_from_here(&mut self) {
+        self.map.values_mut().for_each(|(_, n)| *n = 0);
+        self.guards.values_mut().for_each(|(_, n)| *n = 0);
+        self.steps = 0;
+        self.hidden_steps = 0;
     }
 
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 
+    /// Removes the [`Redirect::Return`]s (systems turned off), keeping the
+    /// others.
+    pub fn clear_returns(&mut self) {
+        self.map.retain(|_, (r, _)| !matches!(r, Redirect::Return(_)));
+    }
+
     /// How many times the CPU reached `entry` and was sent elsewhere.
     pub fn hits(&self, entry: u32) -> u64 {
         self.map.get(&(entry & 0x1FFF_FFFF)).map_or(0, |(_, n)| *n)
+    }
+
+    /// The states kept at a [`Redirect::Keep`]'s calls to `entry`, as
+    /// `(call, state)` (call 1 the first reached), taken out. Calls 1,
+    /// 1 + k, 1 + 2k, ... are kept, k doubling whenever more than the
+    /// limit would be, so they spread over all the calls made: between
+    /// half the limit and the limit of them, once that many calls ran.
+    pub fn kept(&mut self, entry: u32) -> Vec<(u64, Vec<u8>)> {
+        let entry = entry & 0x1FFF_FFFF;
+        let (mine, rest) = std::mem::take(&mut self.kept).into_iter().partition(|(e, _, _)| *e == entry);
+        self.kept = rest;
+        mine.into_iter().map(|(_, n, s)| (n, s)).collect::<Vec<_>>()
     }
 }
 
@@ -131,6 +187,10 @@ impl Machine {
     fn step_with<I: cpu::StepSink>(&mut self, info: &mut I) {
         if !self.redirects.is_empty() {
             self.redirect();
+            self.redirects.steps += 1;
+            if self.cpu.pc & 0x1FFF_FFFF >= bus::HIDDEN & 0x1FFF_FFFF {
+                self.redirects.hidden_steps += 1;
+            }
         }
         if self.bus.obs.bios.is_some() {
             self.observe_bios_call();
@@ -148,7 +208,15 @@ impl Machine {
     /// replacement.
     #[inline]
     fn redirect(&mut self) {
-        if let Some((r, n)) = self.redirects.map.get_mut(&(self.cpu.pc & 0x1FFF_FFFF)) {
+        let entry = self.cpu.pc & 0x1FFF_FFFF;
+        if let Some((r, n)) = self.redirects.map.get_mut(&entry) {
+            if let Some((bytes, over)) = self.redirects.guards.get_mut(&entry) {
+                let at = (entry & 0x1F_FFFF) as usize;
+                if self.bus.ram.get(at..at + bytes.len()) != Some(bytes.as_slice()) {
+                    *over += 1;
+                    return;
+                }
+            }
             *n += 1;
             match *r {
                 Redirect::Return(v) => {
@@ -157,6 +225,19 @@ impl Machine {
                     self.cpu.set_pc(ra);
                 }
                 Redirect::To(at) => self.cpu.set_pc(at),
+                Redirect::Keep(limit) => {
+                    let call = *n;
+                    let stride = *self.redirects.stride.entry(entry).or_insert(1);
+                    if (call - 1) % stride == 0 {
+                        let state = self.save_state(None);
+                        let r = &mut self.redirects;
+                        r.kept.push((entry, call, state));
+                        if r.kept.iter().filter(|k| k.0 == entry).count() > limit.max(1) {
+                            r.kept.retain(|k| k.0 != entry || ((k.1 - 1) / stride).is_multiple_of(2));
+                            r.stride.insert(entry, stride * 2);
+                        }
+                    }
+                }
             }
         }
     }

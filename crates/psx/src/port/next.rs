@@ -69,6 +69,13 @@ pub struct Branch {
     pub never: String,
     /// Listed under wont_reach: whether the person confirmed it as it stands.
     pub wont_reach: Option<bool>,
+    /// What a code branch tests, when the code before it says.
+    pub test: Option<crate::flow::Test>,
+    /// A code branch no recording reached behind another's way none took:
+    /// that branch, which answers for it.
+    pub behind: Option<u32>,
+    /// How often its recordings ran it.
+    pub runs: u64,
 }
 
 impl Branch {
@@ -81,18 +88,46 @@ impl Branch {
             2 => "taken",
             _ => "",
         };
-        Branch { at: Place::Code { pc, function }, never: never.into(), wont_reach }
+        Branch { at: Place::Code { pc, function }, never: never.into(), wont_reach, test: None, behind: None, runs: 0 }
     }
 
     pub fn resolved(&self) -> bool {
         self.never.is_empty() || self.wont_reach == Some(true)
     }
 
+    /// Unresolved and answered for by no other branch: one the gaps list.
+    pub fn open(&self) -> bool {
+        !self.resolved() && self.behind.is_none()
+    }
+
+    fn pc(&self) -> Option<u32> {
+        match self.at {
+            Place::Code { pc, .. } => Some(pc),
+            Place::Script { .. } => None,
+        }
+    }
+
+    /// What it tests and the outcome no recording saw: `[0x8007529C] == 2`
+    /// never true.
+    fn never_test(&self) -> Option<String> {
+        let t = self.test.as_ref()?;
+        let held = match self.never.as_str() {
+            "taken" => !t.taken,
+            "fell through" => t.taken,
+            _ => return Some(format!("{} (never ran)", t.key)),
+        };
+        Some(format!("{} never {}", t.key, if held { "false" } else { "true" }))
+    }
+
     /// What no recording did, and where.
     pub fn describe(&self) -> String {
         match &self.at {
             Place::Code { pc, function } => {
-                format!("the branch at {} (in {}) never {}", hex(*pc), hex(*function), self.never)
+                let mut s = format!("the branch at {} (in {}) never {}", hex(*pc), hex(*function), self.never);
+                if let Some(t) = self.never_test() {
+                    s += &format!(": {t}");
+                }
+                s
             }
             Place::Script { at, routine } => {
                 let at = match routine {
@@ -110,7 +145,13 @@ impl Branch {
 
     fn json(&self) -> Value {
         match &self.at {
-            Place::Code { pc, function } => json!({"pc": hex(*pc), "function": hex(*function), "never": self.never}),
+            Place::Code { pc, function } => {
+                let mut v = json!({"pc": hex(*pc), "function": hex(*function), "never": self.never, "runs": self.runs});
+                if let Some(t) = self.never_test() {
+                    v["tests"] = json!(t);
+                }
+                v
+            }
             Place::Script { at, routine: None } => json!({"at": at.to_string(), "never": self.never}),
             Place::Script { at, routine: Some(r) } => {
                 json!({"at": at.to_string(), "routine": r, "never": self.never})
@@ -241,30 +282,60 @@ impl Feature {
         v
     }
 
-    /// The branches, with the first five unresolved, or all of them.
+    /// Its open branches by what they test and the outcome no recording
+    /// saw, the largest group first; a branch whose test psx cannot read
+    /// is a group of its own.
+    pub fn groups(&self) -> Vec<Vec<&Branch>> {
+        let mut out: Vec<(Option<String>, Vec<&Branch>)> = Vec::new();
+        for b in self.branches.iter().filter(|b| b.open()) {
+            let key = b.never_test();
+            match key.as_ref().and_then(|k| out.iter_mut().find(|g| g.0.as_ref() == Some(k))) {
+                Some(g) => g.1.push(b),
+                None => out.push((key, vec![b])),
+            }
+        }
+        out.sort_by_key(|g| std::cmp::Reverse(g.1.len()));
+        out.into_iter().map(|g| g.1).collect()
+    }
+
+    /// The branches, with the first five groups of open ones, or all of them.
     fn branches_json(&self, all: bool) -> Value {
         let unresolved = self.branches.iter().filter(|b| !b.resolved()).count();
-        let uncovered: Vec<Value> = self
-            .branches
+        let one = |b: &Branch| {
+            let mut v = b.json();
+            if b.wont_reach == Some(false) {
+                v["wont_reach"] = json!("not confirmed by the person");
+            }
+            let behind = self.branches.iter().filter(|x| x.behind.is_some() && x.behind == b.pc()).count();
+            if behind > 0 {
+                v["behind"] = json!(behind);
+            }
+            v
+        };
+        let groups = self.groups();
+        let uncovered: Vec<Value> = groups
             .iter()
-            .filter(|b| !b.resolved())
             .take(if all { usize::MAX } else { 5 })
-            .map(|b| {
-                let mut v = b.json();
-                if b.wont_reach == Some(false) {
-                    v["wont_reach"] = json!("not confirmed by the person");
+            .map(|g| match g.as_slice() {
+                [b] => one(b),
+                g => {
+                    let t = g[0].test.as_ref().map(|t| t.key.clone());
+                    json!({"tests": g[0].never_test(), "branches": g.len(),
+                        "runs": g.iter().map(|b| b.runs).sum::<u64>(),
+                        "behind": g.iter().map(|b| self.branches.iter().filter(|x| x.behind.is_some() && x.behind == b.pc()).count()).sum::<usize>(),
+                        "wont_reach_key": t,
+                        "first": g.iter().take(3).map(|b| one(b)).collect::<Vec<_>>()})
                 }
-                v
             })
             .collect();
         let mut v = json!({"total": self.branches.len(), "resolved": self.branches.len() - unresolved,
-               "unresolved": uncovered});
+               "open_groups": groups.len(), "unresolved": uncovered});
         if self.borrowed_resolved > 0 {
             v["resolved_by_others"] = json!({"branches": self.borrowed_resolved, "recordings": self.borrowed.len(),
                 "first": first_lines(&self.borrowed)});
         }
-        if uncovered.len() < unresolved {
-            v["more"] = json!(format!("{} more: port_status feature {}", unresolved - uncovered.len(), self.id));
+        if uncovered.len() < groups.len() {
+            v["more"] = json!(format!("{} more groups: port_status feature {}", groups.len() - uncovered.len(), self.id));
         }
         v
     }
@@ -344,12 +415,28 @@ fn passing(ids: &[String], of: impl Fn(&str) -> Option<Vec<String>>) -> Vec<(Str
 /// The wont_reach key that answers for the code branch at `pc` its
 /// recordings took `ways` (0 never ran): its own address, else a range
 /// holding it when it never ran.
-fn code_key(wont_reach: &BTreeMap<String, String>, pc: u32, ways: u8) -> Option<&String> {
+fn code_key<'a>(
+    wont_reach: &'a BTreeMap<String, String>,
+    pc: u32,
+    ways: u8,
+    test: Option<&str>,
+) -> Option<&'a String> {
     let within = |k: &String| super::entry_range(k).is_some_and(|(start, end)| start <= pc && pc < end);
     wont_reach
         .keys()
         .find(|k| super::entry_addr(k) == Some(pc))
         .or_else(|| (ways == 0).then(|| wont_reach.keys().find(|k| within(k))).flatten())
+        .or_else(|| test.and_then(|t| wont_reach.keys().find(|k| k.as_str() == t)))
+}
+
+/// The wont_reach tests no branch of the code tests.
+fn tests_unmatched(wont_reach: &BTreeMap<String, String>, branches: &[Branch]) -> Vec<String> {
+    wont_reach
+        .keys()
+        .filter(|k| crate::flow::is_test(k))
+        .filter(|k| !branches.iter().any(|b| b.test.as_ref().is_some_and(|t| &t.key == *k)))
+        .map(|k| format!("wont_reach: {k} is the test of no branch of its code (port next gives each group's test as psx reads it)"))
+        .collect()
 }
 
 /// The wont_reach ranges holding code branches a recording ran: a range
@@ -428,6 +515,13 @@ pub struct Facts {
     pub review_finished: Vec<String>,
     /// The play requests in the queue (`scenario play`), oldest first.
     pub plays: Vec<crate::handoff::queue::Request>,
+    /// Debug files `port init`'s scan found on the disc, until `code
+    /// symbols` reports them to the agent.
+    pub debug_files: Vec<String>,
+    /// Functions named, in C and passing ([`crate::decomp::counts`]).
+    pub decomp: Value,
+    /// Functions whose C passed and now fails ([`crate::decomp::regressed`]).
+    pub regressed: Vec<(String, Option<String>, String)>,
 }
 
 impl Facts {
@@ -511,9 +605,34 @@ impl Facts {
                     if let (Some(inv), false) = (&inv, code.is_empty()) {
                         let fb = crate::coverage::feature_branches(&ctx, inv, paths, &code);
                         problems.extend(fb.problems);
-                        branches.extend(fb.branches.into_iter().map(|(pc, function, ways)| {
-                            Branch::code(pc, function, ways, code_key(&e.wont_reach, pc, ways).map(agreed))
-                        }));
+                        let mut found: Vec<Branch> = fb
+                            .branches
+                            .into_iter()
+                            .map(|c| {
+                                let key = code_key(&e.wont_reach, c.pc, c.ways, c.test.as_ref().map(|t| t.key.as_str()));
+                                Branch {
+                                    test: c.test,
+                                    behind: c.behind,
+                                    runs: c.runs,
+                                    ..Branch::code(c.pc, c.function, c.ways, key.map(agreed))
+                                }
+                            })
+                            .collect();
+                        // A branch behind another's missed way is answered
+                        // as that way is, unless listed itself.
+                        let answered: BTreeMap<u32, Option<bool>> = found
+                            .iter()
+                            .filter_map(|b| match b.at {
+                                Place::Code { pc, .. } => Some((pc, b.wont_reach)),
+                                _ => None,
+                            })
+                            .collect();
+                        for b in found.iter_mut().filter(|b| b.wont_reach.is_none()) {
+                            if let Some(p) = b.behind {
+                                b.wont_reach = answered.get(&p).copied().flatten();
+                            }
+                        }
+                        branches.extend(found);
                     }
                     if !script.is_empty() {
                         let (items, p) = crate::script_cover::items(&crate::script_cover::merged(paths), &script);
@@ -525,6 +644,9 @@ impl Facts {
                                 at: Place::Script { at: i.at, routine: i.routine },
                                 never: i.never,
                                 wont_reach: key.map(agreed),
+                                test: None,
+                                behind: None,
+                                runs: 0,
                             }
                         }));
                     }
@@ -544,6 +666,11 @@ impl Facts {
                     borrowed_resolved = branches.iter().filter(|b| b.resolved()).count().saturating_sub(own);
                 }
                 problems.extend(ranges_run(&e.wont_reach, &branches).into_iter().map(|p| super::problem(&e.file, p)));
+                if !code.is_empty() && inv.is_some() && !e.recordings.work.is_empty() {
+                    problems.extend(
+                        tests_unmatched(&e.wont_reach, &branches).into_iter().map(|p| super::problem(&e.file, p)),
+                    );
+                }
                 let verdict = verdict::state(root, &id, head);
                 let results = |names: &[String]| -> Vec<(String, Option<Vec<String>>)> {
                     names
@@ -598,6 +725,9 @@ impl Facts {
             review_features,
             review_finished,
             plays,
+            debug_files: crate::disc_names::unread(root),
+            decomp: crate::decomp::counts(root),
+            regressed: crate::decomp::regressed(root),
         })
     }
 
@@ -609,7 +739,7 @@ impl Facts {
             let Some(e) = self.port.entries.get(&f.id) else { continue };
             for k in e.wont_reach.keys().filter(|k| super::entry_range(k).is_some()) {
                 let answers = |b: &&Branch| match b.at {
-                    Place::Code { pc, .. } => code_key(&e.wont_reach, pc, (b.never != "ran") as u8) == Some(k),
+                    Place::Code { pc, .. } => code_key(&e.wont_reach, pc, (b.never != "ran") as u8, None) == Some(k),
                     _ => false,
                 };
                 out.entry(f.id.clone()).or_default().insert(k.clone(), f.branches.iter().filter(answers).count());
@@ -732,6 +862,27 @@ impl Facts {
                     "read the answer: psx scenario play --status {}. When it is a recording, name it under the feature's recordings and go on; when declined, the note says why: ask again in other words or from another start, list the branch under wont_reach with the note as why, or go on without it",
                     r.dir.display()
                 ),
+            );
+        }
+        // Debug files the build left on the disc name what the agent would.
+        if !self.debug_files.is_empty() {
+            return Item::agent(
+                "Read",
+                None,
+                format!("the disc holds debug files its build left: {}", self.debug_files.join(", ")),
+                "code symbols on the disc has reported them",
+                "run psx code symbols on the disc: it imports those that describe an executable to .psx/names/ (every decompile and view then uses their names) and says why the others were not",
+            );
+        }
+        // The agent's C for a function, passing once, failing since a change
+        // to it or the names: the change just made broke it.
+        if let Some((f, commit, first)) = self.regressed.first() {
+            return Item::agent(
+                "Fix",
+                None,
+                format!("{f}'s C passed its check{} and now fails: {first}", commit.as_deref().map(|c| format!(" at {}", &c[..c.len().min(10)])).unwrap_or_default()),
+                &format!("psx code check {f} passes"),
+                &format!("a change to its C or the names since it passed broke it: compare them with then (git diff), fix the C or names, and run psx code check {f}"),
             );
         }
         // Until the person confirms the goal, the agent only investigates
@@ -902,23 +1053,30 @@ impl Facts {
         // 5. An uncovered branch: a recording that reaches it.
         // Not one waiting on a play request: its answer may cover it.
         let uncovered = |f: &Feature| {
-            f.branches.iter().find(|b| !b.resolved() && b.wont_reach.is_none()).filter(|_| !self.waits(f)).cloned()
+            let g = f.groups().into_iter().find(|g| g.iter().any(|b| b.wont_reach.is_none()))?;
+            let b = g.iter().find(|b| b.wont_reach.is_none())?;
+            (!self.waits(f)).then(|| ((*b).clone(), g.len()))
         };
-        if let Some((f, b)) = self.features.iter().find_map(|f| Some((f, uncovered(f)?))) {
+        if let Some((f, (b, like))) = self.features.iter().find_map(|f| Some((f, uncovered(f)?))) {
             let n = f.branches.iter().filter(|b| !b.resolved()).count();
+            let groups = f.groups().len();
             return Item::agent(
                 "Cover",
                 Some(&f.id),
                 format!(
-                    "{} in its recordings{}; {n} branches of its code are unresolved",
+                    "{} in its recordings{}{}; {n} branches of its code are unresolved, in {groups} groups by what they test",
                     b.describe(),
                     match f.borrowed.len() {
                         0 => String::new(),
                         k => format!(" or the {k} of other features that pass"),
+                    },
+                    match like {
+                        1 => String::new(),
+                        k => format!(", as {} other open branches", k - 1),
                     }
                 ),
                 "every branch of its code is taken both ways by its recordings (or the other features' that pass at HEAD), or listed under wont_reach",
-                "read the branch's condition (code disasm; for a script's stretch or decision, your own reading of the program) and work out what reaches the other way in game terms; record that (psx scenario record) and name it under recordings, or when it cannot be scripted ask the person to play it (psx scenario play queues the request; go on with other work meanwhile); when no recording can reach it, list it under wont_reach with why; a script decision no hook named needs a hook in the glossary binding that names its way, then the recordings made again",
+                "read the branch's condition (code disasm; for a script's stretch or decision, your own reading of the program) and work out what reaches the other way in game terms; record that (psx scenario record) and name it under recordings, or when it cannot be scripted ask the person to play it (psx scenario play queues the request; go on with other work meanwhile); when no recording can reach it, list it under wont_reach with why (by its address, or by its group's test, which answers every branch testing it); a script decision no hook named needs a hook in the glossary binding that names its way, then the recordings made again",
             );
         }
         if let Some(f) = find(&|f| f.branches.iter().any(|b| !b.resolved() && b.wont_reach.is_some())) {
@@ -1232,6 +1390,7 @@ impl Facts {
             "review": self.review_json(),
             "complete": self.complete(),
             "git": {"head": self.git.head, "clean": self.git.clean},
+            "decomp": self.decomp,
         });
         v["assets"] = match &self.assets {
             Ok(a) => {
@@ -1342,7 +1501,7 @@ impl Facts {
             let mark = if f.in_goal { "" } else { "  (needed by the goal)" };
             s.push_str(&format!("  {title:<width$}  {stage:<10} {}{mark}\n", f.summary()));
             let indent = " ".repeat(width + 4);
-            if let Some(b) = f.branches.iter().find(|b| !b.resolved()) {
+            if let Some(b) = f.groups().first().map(|g| g[0]) {
                 s.push_str(&format!("{indent}uncovered: {}\n", b.describe()));
             }
             for q in f.questions.iter().take(2) {
@@ -1495,6 +1654,7 @@ fn standing(status: &Value) -> Value {
         "problems": status["problems"].as_array().map_or(0, Vec::len),
         "questions": questions,
         "review": status["review"]["state"],
+        "decomp": status["decomp"],
         "next": {"item": next["item"], "feature": next["feature"], "who": next["who"], "times": next["times"]},
     })
 }
@@ -1606,6 +1766,45 @@ mod tests {
     }
 
     const CONFIRMED: &str = "description = \"x\"\nfeatures = [\"F-0001\", \"F-0002\"]\nconfirmed = { at = \"t\", features = [\"F-0001\", \"F-0002\"] }\n";
+
+    #[test]
+    fn debug_files_on_the_disc_are_read_first_until_code_symbols_reports_them() {
+        let (d, _) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        let scan = json!({"debug_files": [{"at": "/GAME.SYM", "kind": "sym"}], "files_by_name": [
+            {"path": "/GAME.SYM", "kind": "sym"}, {"path": "/README.C", "kind": "source"}]});
+        crate::disc_names::record(&d.0, &scan, false).unwrap();
+        let f = Facts::gather(&d.0).unwrap();
+        let item = f.next();
+        assert_eq!((item.item, item.who), ("Read", "agent"));
+        assert!(item.why.ends_with("/GAME.SYM (sym), /README.C (source)"), "{}", item.why);
+        crate::disc_names::record(&d.0, &scan, true).unwrap();
+        assert_ne!(Facts::gather(&d.0).unwrap().next().item, "Read");
+    }
+
+    #[test]
+    fn a_function_whose_c_passed_and_now_fails_is_fixed() {
+        let (d, _) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        let checks = d.0.join(crate::decomp::CHECKS);
+        std::fs::create_dir_all(&checks).unwrap();
+        std::fs::create_dir_all(d.0.join("decomp")).unwrap();
+        std::fs::write(d.0.join("decomp/step.c"), "void step(void)\n{\n}\n").unwrap();
+        let last = |status: &str| {
+            std::fs::write(checks.join("step.json"), json!({"function": "step", "status": status,
+                "first_failure": {"differences": ["v0: original 0x1, yours 0x2"]}}).to_string()).unwrap();
+        };
+        // Failing, never passed: not a regression.
+        last("failed");
+        std::fs::write(checks.join("checks.jsonl"), "{\"function\":\"step\",\"status\":\"failed\"}\n").unwrap();
+        assert!(Facts::gather(&d.0).unwrap().regressed.is_empty());
+        std::fs::write(checks.join("checks.jsonl"),
+            "{\"function\":\"step\",\"status\":\"passed\",\"commit\":\"abcdef0123456\"}\n{\"function\":\"step\",\"status\":\"failed\"}\n").unwrap();
+        let f = Facts::gather(&d.0).unwrap();
+        let item = f.next();
+        assert_eq!((item.item, item.who, item.feature.as_deref()), ("Fix", "agent", None));
+        assert_eq!(item.why, "step's C passed its check at abcdef0123 and now fails: v0: original 0x1, yours 0x2");
+        last("passed");
+        assert!(Facts::gather(&d.0).unwrap().regressed.is_empty());
+    }
 
     #[test]
     fn the_catalogue_comes_before_the_person_confirms() {
@@ -1755,7 +1954,7 @@ mod tests {
         let short = f.features[0].branches_json(false);
         assert_eq!(
             (short["unresolved"].as_array().unwrap().len(), &short["more"]),
-            (5, &json!("2 more: port_status feature F-0001"))
+            (5, &json!("2 more groups: port_status feature F-0001"))
         );
         assert_eq!(f.features[0].branches_json(true)["unresolved"].as_array().unwrap().len(), 7);
         set(&mut f, "F-0001", |x| x.branches = vec![branch(None)]);
@@ -1790,6 +1989,9 @@ mod tests {
             at: Place::Script { at: Stretch::parse("croc+0x3..0x8").unwrap(), routine: None },
             never: "read".into(),
             wont_reach: None,
+            test: None,
+            behind: None,
+            runs: 0,
         };
         set(&mut f, "F-0001", |x| x.branches = vec![script]);
         assert_eq!(next(&f), ("Cover", "agent", "F-0001".into()));
@@ -2012,10 +2214,19 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .into();
         // Never ran, inside: the range. Ran one way: no key. Its own address wins.
-        assert_eq!(code_key(&wont, 0x8002_D820, 0).map(String::as_str), Some("0x8002D800..0x8002D840"));
-        assert_eq!(code_key(&wont, 0x8002_D820, 1), None);
-        assert_eq!(code_key(&wont, 0x8002_D830, 0).map(String::as_str), Some("0x8002D830"));
-        assert_eq!(code_key(&wont, 0x8002_D840, 0), None);
+        assert_eq!(code_key(&wont, 0x8002_D820, 0, None).map(String::as_str), Some("0x8002D800..0x8002D840"));
+        assert_eq!(code_key(&wont, 0x8002_D820, 1, None), None);
+        assert_eq!(code_key(&wont, 0x8002_D830, 0, None).map(String::as_str), Some("0x8002D830"));
+        assert_eq!(code_key(&wont, 0x8002_D840, 0, None), None);
+        // A test answers for every branch testing it, whichever way it missed.
+        let mut tested = wont.clone();
+        tested.insert("[0x8007529C] == 2".into(), "no analog pad".into());
+        assert_eq!(code_key(&tested, 0x8002_D900, 1, Some("[0x8007529C] == 2")).map(String::as_str), Some("[0x8007529C] == 2"));
+        assert_eq!(code_key(&tested, 0x8002_D900, 1, Some("[0x8007529C] == 3")), None);
+        let b = Branch { test: Some(crate::flow::Test { key: "[0x8007529C] == 2".into(), taken: false }), ..Branch::code(0x8002_D900, 0x8002_D810, 1, None) };
+        assert!(tests_unmatched(&tested, std::slice::from_ref(&b)).is_empty());
+        assert_eq!(tests_unmatched(&tested, &[]).len(), 1);
+        assert_eq!(b.never_test().as_deref(), Some("[0x8007529C] == 2 never true"));
         // A recording that ran a branch in it says the range is wrong.
         let never_ran = Branch::code(0x8002_D820, 0x8002_D810, 0, Some(true));
         assert_eq!(ranges_run(&wont, std::slice::from_ref(&never_ran)), Vec::<String>::new());

@@ -325,6 +325,12 @@ fn project_inventory() -> Option<&'static Inventory> {
     INVENTORY.get_or_init(|| Inventory::load(Path::new("."))).as_ref()
 }
 
+/// The code of the inventory's function at `entry` (of `module`, or the
+/// executable's), as its chunks.
+pub(crate) fn body(entry: u32, module: Option<&str>) -> Option<Vec<(u32, u32)>> {
+    project_inventory()?.candidates(entry, module).ok()?.first().map(|k| k.chunks.clone())
+}
+
 /// The project's name for the inventory's function at `entry` in `module`
 /// (an executable's path or an overlay's name, as the inventory has them).
 pub(crate) fn function_name(module: &str, entry: u32) -> Option<String> {
@@ -408,6 +414,50 @@ fn find(names: &Names, spec: &str) -> Vec<u32> {
 }
 
 /// The global holding `addr`, as `name` or `name+0xOFF` within its type's size.
+/// Where `off` falls within a `ty`: `.field`, `[k]` and `+0xN` steps
+/// (empty at the start of a base type).
+pub(crate) fn path_in(names: &Names, ty: &psx_symbols::names::Type, off: u32) -> String {
+    use psx_symbols::names::{Type, TypeBody};
+    let rest = |off: u32| if off == 0 { String::new() } else { format!("+0x{off:X}") };
+    match ty {
+        Type::Named { name } => match names.type_named(name).map(|t| &t.body) {
+            Some(TypeBody::Struct { fields } | TypeBody::Union { fields }) => fields
+                .iter()
+                .find(|f| f.offset <= off && off < f.offset + names.size_of(&f.ty).unwrap_or(1).max(1))
+                .map_or_else(
+                    || rest(off),
+                    |f| format!(".{}{}", label(&f.name), path_in(names, &f.ty, off - f.offset)),
+                ),
+            Some(TypeBody::Typedef { ty }) => path_in(names, ty, off),
+            _ => rest(off),
+        },
+        Type::Array { of, .. } => {
+            let size = names.size_of(of).unwrap_or(1).max(1);
+            format!("[{}]{}", off / size, path_in(names, of, off % size))
+        }
+        _ => rest(off),
+    }
+}
+
+/// `addr` named through a pointer argument: `params` are each pointer
+/// parameter's name, type and value at the call.
+pub(crate) fn through_params(names: &Names, params: &[(String, psx_symbols::names::Type, u32)], addr: u32) -> Option<String> {
+    use psx_symbols::names::Type;
+    let addr = canonical(addr)?;
+    params.iter().find_map(|(name, ty, value)| {
+        let Type::Pointer { to, offset } = ty else { return None };
+        let base = canonical(value.wrapping_sub(*offset))?;
+        let size = names.size_of(to)?.max(1);
+        let off = addr.checked_sub(base).filter(|o| *o < size)?;
+        let path = path_in(names, to, off);
+        Some(match path.strip_prefix('.') {
+            Some(p) => format!("{name}->{p}"),
+            None if path.is_empty() => format!("*{name}"),
+            None => format!("(*{name}){path}"),
+        })
+    })
+}
+
 pub(crate) fn global_at(names: &Names, addr: u32) -> Option<String> {
     let addr = canonical(addr).unwrap_or(addr);
     names

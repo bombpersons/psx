@@ -46,7 +46,10 @@ unless stock is given, and the recording names what they did:
   code read it before the tick ended: the game ran that field on the
   last poll's buttons, so the original's own driver delays the input. Input must reach the game every tick, so a port never
   copies the delay: find the function that holds it back and replace it
-  in the running game.
+  in fixes/ (topic code).
+- fix: the functions of fixes/ run in place of the game's own, so the
+  game takes its input every tick. late_input empty with fix and latch on
+  is the fix working; fix_calls counts the replacement's calls.
 - steady: no tick overruns its fields. The CPU's own work costs a quarter
   of its clocks and the GPU draws without taking time; timers, the CD, the
   SPU and video keep the real clock. fields_per_tick shows how many ticks

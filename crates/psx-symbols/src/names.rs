@@ -534,15 +534,22 @@ impl Names {
             let (TypeBody::Struct { fields } | TypeBody::Union { fields }) = &mut t.body else { continue };
             let mut sized: Vec<(Field, Option<u32>)> = std::mem::take(fields).into_iter().zip(sizes).collect();
             sized.sort_by_key(|(f, _)| f.offset);
-            let mut names_seen: HashMap<&str, &At> = HashMap::new();
-            for (f, _) in &sized {
-                if let Some(at) = names_seen.insert(&f.name.text, &f.at) {
+            // A second field of one name is left out, so the struct stays one
+            // C can declare.
+            let mut names_seen: HashMap<String, At> = HashMap::new();
+            sized.retain(|(f, _)| match names_seen.get(&f.name.text) {
+                Some(at) => {
                     problems.push(Problem {
                         at: f.at.clone(),
                         message: format!("{}.{} is already a field at {at}", t.name.text, f.name.text),
                     });
+                    false
                 }
-            }
+                None => {
+                    names_seen.insert(f.name.text.clone(), f.at.clone());
+                    true
+                }
+            });
             for (i, (f, size)) in sized.iter().enumerate() {
                 let end = f.offset + size.unwrap_or(1);
                 if let Some(total) = t.size.filter(|&total| end > total) {
@@ -1253,6 +1260,14 @@ struct Area 0x74 {
                 "names/a.names:4: S.c ends at 0xA, past the size 0x8",
             ]
         );
+    }
+
+    #[test]
+    fn a_field_name_used_twice_keeps_the_first() {
+        let n = one("struct S {\n  0x10 u16 shift\n  0x4 u16 shift\n}\n");
+        assert_eq!(messages(&n), ["names/a.names:2: S.shift is already a field at names/a.names:3"]);
+        let TypeBody::Struct { fields } = &n.type_named("S").unwrap().body else { panic!() };
+        assert_eq!(fields.iter().map(|f| f.offset).collect::<Vec<_>>(), [0x4]);
     }
 
     #[test]

@@ -926,10 +926,31 @@ const CARDS = {
       : (r.lines || []).map(l => `${l.label ? `<span class="lb">${esc(l.label)}:</span>\n` : ""}  <span class="ad">${esc(String(l.addr).replace(/^0x/, ""))}</span>  <span class="wd">${esc(l.word || "")}</span>  ${asmHtml(l.asm || "")}${l.comment ? `  <span class="cm">; ${esc(l.comment)}</span>` : ""}`).join("\n");
     return lead(`${mono(srcName(r.source))} · ${esc(L.start)}..${esc(L.end)}`) + `<div class="code">${body}</div>` + (L.next_addr ? note(`continues at ${L.next_addr}`) : "");
   },
+  code_check(r) {
+    // One function's cases as a strip of passes and failures, the first
+    // failure's differences below; several functions, one strip each.
+    const one = f => {
+      const cases = f.cases || [];
+      const strip = cases.map((c, k) => `<span title="case ${k + 1}${c.scenario ? ` · ${esc(c.scenario)}/${esc(c.recording)} call ${c.call}` : ""}${c.varied != null ? " · varied" : ""}" style="display:inline-block;width:7px;height:14px;margin-right:1px;border-radius:1px;background:var(${c.passed ? "--ok" : "--act"})"></span>`).join("");
+      const first = cases.find(c => !c.passed);
+      const bw = f.branch_ways;
+      return lead(`<b class="mono">${esc(f.function)}</b> ${pill(f.status, f.status === "passed" ? "ok" : f.status === "failed" || f.status === "build_failed" || f.status === "error" ? "bad" : "warn")}${cases.length ? ` ${num(f.passed)} of ${num(cases.length)} cases pass` : ""}`)
+        + (strip ? `<div style="margin:4px 0">${strip}</div>` : "")
+        + (first ? `<div class="att act"><div class="quiet">first failure${first.scenario ? `: ${esc(first.scenario)}/${esc(first.recording)}, call ${first.call}` : ""}</div>${(first.differences || []).slice(0, 6).map(d => `<div class="mono">${esc(d)}</div>`).join("")}${first.state ? note(`state: ${first.state}`) : ""}</div>` : "")
+        + kv([["branch ways", bw ? `${num(bw.reached)} of ${num(bw.of)}${bw.missed?.length ? ` <span class="quiet">not: ${bw.missed.slice(0, 4).map(esc).join(", ")}${bw.missed.length > 4 ? ", …" : ""}</span>` : ""}` : null],
+              ["why", f.why ? esc(f.why) : null], ["error", f.error ? esc(f.error.message || JSON.stringify(f.error)) : null]])
+        + ((f.messages || []).length ? `<div class="code">${f.messages.slice(0, 8).map(m => esc(`${m.file}:${m.line}: ${m.text}`)).join("\n")}</div>` : "");
+    };
+    if (Array.isArray(r.functions) && r.functions.length && typeof r.functions[0] === "object") return r.functions.map(one).join("");
+    if (r.status === "unchanged") return lead(`${pill("unchanged", "ok")} ${esc(r.why || "")}`);
+    return one(r);
+  },
   code_decompile(r) {
     const f = r.function || {};
     const calls = (r.callees?.items || []).map(c => String(c).split("->").pop().trim());
-    return lead(`<b class="mono">${esc(f.name)}</b> <span class="quiet">${esc(f.entry)} · ${esc(r.decompile_status || r.status)}</span>`) +
+    const c = r.c, k = c?.check;
+    const mine = c ? `<div class="quiet">the agent's C, ${mono(c.file)}:${c.line} · ${!k ? "never checked" : `last check ${esc(k.status)}${k.passed != null ? ` (${num(k.passed)} of ${num((k.passed || 0) + (k.failed || 0))} cases)` : ""}${k.stale ? ", on other C or names" : ""}`}</div><div class="code">${cHtml(String(c.text || "").trim())}</div><div class="quiet">Ghidra's, of the original</div>` : "";
+    return lead(`<b class="mono">${esc(f.name)}</b> <span class="quiet">${esc(f.entry)} · ${esc(r.decompile_status || r.status)}</span>`) + mine +
       `<div class="code">${cHtml(String(r.pseudocode || "").trim())}</div>` + kv([
         ["called from", (r.callers?.items || []).length ? (r.callers.items).map(c => mono(c)).join(", ") : "no direct callers"],
         ["calls", calls.length ? calls.map(c => mono(c)).join(", ") : "nothing"],
@@ -1500,7 +1521,7 @@ const stamp = () => { const d = new Date(), z = n => String(n).padStart(2, "0");
 function playNowCard() {
   // A scenario's play has every adjustment unless unchecked (as recordings
   // are made); one from power-on has none unless checked (no recording).
-  const N = S.playnow = S.playnow || {p: S.cur, scenario: "", from: "", name: stamp(), what: "", scens: {}, adj: {latch: true, steady: true, off: true}, adjOn: {latch: false, steady: false}};
+  const N = S.playnow = S.playnow || {p: S.cur, scenario: "", from: "", name: stamp(), what: "", scens: {}, adj: {latch: true, steady: true, off: true, fix: true}, adjOn: {latch: false, steady: false, fix: false}};
   const sc = N.scens[N.p];
   if (!sc) loadPlayNow(N.p);
   const list = sc?.scenarios || [];
@@ -1512,10 +1533,11 @@ function playNowCard() {
     ${S.projects.length > 1 ? `<label for="pn-p">project</label><select id="pn-p">${S.projects.map((x, i) => opt(i, x.name, i === N.p)).join("")}</select>` : ""}
     <label for="pn-s">scenario</label><select id="pn-s">${opt("", sc ? "none: from power-on, no recording" : "loading…", !N.scenario)}${list.map(x => opt(x.id, x.id, x.id === N.scenario)).join("")}</select>
     ${N.scenario ? `<label for="pn-f">start at</label><select id="pn-f">${opt("", "the scenario's state", !N.from)}${recs.map(r => opt(r.name, "the end of " + r.name, r.name === N.from)).join("")}</select>
-      <label for="pn-n">recording</label><input type="text" id="pn-n" value="${esc(N.name)}" placeholder="its name">` : ""}
+      ${N.withC ? "" : `<label for="pn-n">recording</label><input type="text" id="pn-n" value="${esc(N.name)}" placeholder="its name">`}` : ""}
     <label>adjustments</label><div class="adj">${adjBoxes(N)}</div>
+    <label>code</label><div class="adj"><label title="every function whose C passed its last check runs in place of the original's"><input type="checkbox" id="pn-c" ${N.withC ? "checked" : ""}> with the agent's C</label><span class="quiet">${N.withC ? "a try: nothing is recorded, kept or sent to the agent" : "the original game"}</span></div>
     <label for="pn-w">what you'll do</label><input type="text" id="pn-w" value="${esc(N.what)}" placeholder="${N.scenario ? "a sentence: the recording's description, and what the agent reads" : "optional, for the agent"}">
-    <span></span><div class="row" style="display:flex;gap:8px;align-items:center"><button class="b primary" id="pn-go">Play</button><span class="quiet">${N.scenario ? `becomes ${esc(N.scenario)}/${esc(N.name || "…")}; F12 to finish, as for a request` : "F12 to finish; the run keeps the state and your input"}</span></div>
+    <span></span><div class="row" style="display:flex;gap:8px;align-items:center"><button class="b primary" id="pn-go">${N.withC ? "Try it" : "Play"}</button><span class="quiet">${N.withC ? "a play with the C is not the original game's, so it never becomes a recording" : N.scenario ? `becomes ${esc(N.scenario)}/${esc(N.name || "…")}; F12 to finish, as for a request` : "F12 to finish; the run keeps the state and your input"}</span></div>
     <span></span><div class="err" id="pn-err"></div>
     <label>gamepad</label><div class="quiet">${padsNow()} <button class="b" id="pn-pad">Set up a gamepad</button></div></div></div>`;
 }
@@ -1527,12 +1549,13 @@ const ADJUSTMENTS = [
   ["latch", "latch", "the game's pad changes only where a tick ends: a press lands on the tick it was made in"],
   ["steady", "steady", "no tick overruns its fields: the game does not slow down where the console did"],
   ["off", "off", "the functions the scenario's [off] names return at once (systems the port does not have yet)"],
+  ["fix", "fix", "the agent's replacements in fixes/ of the game's functions that keep input from it every tick"],
 ];
 function adjBoxes(N) {
   const adj = N.scenario ? N.adj : N.adjOn;
   const boxes = ADJUSTMENTS.filter(([k]) => N.scenario || k !== "off").map(([k, l, t]) => `<label title="${esc(t)}"><input type="checkbox" data-adj="${k}" ${adj[k] ? "checked" : ""}> ${l}</label>`).join("");
   const hint = N.scenario
-    ? N.adj.latch && N.adj.steady && N.adj.off ? "as recordings are made" : !N.adj.latch && !N.adj.steady ? "the stock game's timing" : "a mix: to feel what one changes"
+    ? N.adj.latch && N.adj.steady && N.adj.off && N.adj.fix ? "as recordings are made" : !N.adj.latch && !N.adj.steady ? "the stock game's timing" : "a mix: to feel what one changes"
     : N.adjOn.latch ? "latch takes the glossary binding's tick, and lets input through where none ends (boot, menus)" : N.adjOn.steady ? "" : "the stock game";
   return boxes + `<span class="quiet">${esc(hint)}</span>`;
 }
@@ -1545,19 +1568,23 @@ function playNowWire() {
   const N = S.playnow; if (!N || !$("#pn-go")) return;
   const on = (id, k, redraw) => { const e = $(id); if (e) e[e.tagName === "SELECT" ? "onchange" : "oninput"] = () => { N[k] = k === "p" ? +e.value : e.value; if (redraw) requestsView(); }; };
   for (const c of document.querySelectorAll(".playnow [data-adj]")) c.onchange = () => { (N.scenario ? N.adj : N.adjOn)[c.dataset.adj] = c.checked; requestsView(); };
+  $("#pn-c").onchange = () => { N.withC = $("#pn-c").checked; requestsView(); };
   on("#pn-p", "p", true); on("#pn-s", "scenario", true); on("#pn-f", "from", false); on("#pn-n", "name", false); on("#pn-w", "what", false);
   $("#pn-pad").onclick = () => padSetup();
   $("#pn-go").onclick = async () => {
     const err = $("#pn-err"); err.textContent = "";
-    if (N.scenario && !/^[A-Za-z0-9_.-]+$/.test(N.name || "")) { err.textContent = "Name the recording: letters, digits, - _ ."; return; }
+    if (N.scenario && !N.withC && !/^[A-Za-z0-9_.-]+$/.test(N.name || "")) { err.textContent = "Name the recording: letters, digits, - _ ."; return; }
     $("#pn-go").disabled = true;
     const adj = N.scenario ? N.adj : N.adjOn;
     const adjust = Object.keys(adj).filter(k => adj[k] && (N.scenario || k !== "off"));
-    const r = await post(`/api/p/${N.p}/play`, {scenario: N.scenario, name: N.scenario ? N.name : "", from: N.from, what: N.what, adjust});
+    // A try still names a recording, as a scenario play must; it is never written.
+    const name = N.scenario ? (N.withC ? "try-" + stamp() : N.name) : "";
+    const r = await post(`/api/p/${N.p}/play`, {scenario: N.scenario, name, from: N.from, what: N.what || (N.withC ? "Try with the agent's C" : ""), adjust, with_c: !!N.withC});
     if (r.error) { $("#pn-go").disabled = false; err.textContent = r.error.message; return; }
-    N.name = stamp(); N.what = "";
+    if (!N.withC) N.name = stamp();
+    N.what = "";
     await loadRequests(); tabs();
-    startPlayer(N.p, r.id);
+    startPlayer(N.p, r.id, r.try);
   };
 }
 
@@ -1580,10 +1607,10 @@ const PAD_NAMES = ["South", "East", "West", "North", "LeftTrigger", "RightTrigge
 // The window's keys, kept here too where the browser lets go of them.
 const SHORTCUTS = {F2: "rewind", F3: "pause", F5: "quick_save", F6: "mark", F7: "quick_load", F8: "restart", F12: "done", F10: "decline"};
 
-async function startPlayer(p, id) {
+async function startPlayer(p, id, isTry) {
   stopPlayer();
-  const P = S.player = {p, id, status: {state: "starting"}, keys: new Set(), fast: false, sent: "", busy: false, dirty: false, msgSeq: -1};
-  P.base = `/api/p/${p}/request/${encodeURIComponent(id)}`;
+  const P = S.player = {p, id, isTry: !!isTry, status: {state: "starting"}, keys: new Set(), fast: false, sent: "", busy: false, dirty: false, msgSeq: -1};
+  P.base = `/api/p/${p}/${P.isTry ? "try" : "request"}/${encodeURIComponent(id)}`;
   S.bindings = S.bindings || await api("/api/bindings");
   // Started again or stopped while the bindings loaded: this play is over.
   if (S.player !== P) return;
@@ -1642,7 +1669,8 @@ function playerStatus(P, st) {
 }
 function playerLine(P) {
   const st = P.status, l = $("#pline"); if (!l) return;
-  l.textContent = [st.state, st.mode, st.adjust ? (st.adjust.length ? "adjusted: " + st.adjust.join(", ") + (st.latch ? ` (latch: ${st.latch})` : "") : "stock game") : "", st.run_frame != null ? `field ${st.run_frame}` : "", st.quick_save ? "quick save kept" : "", P.fast ? "fast forward" : ""].filter(Boolean).join(" · ");
+  const c = st.with_c;
+  l.textContent = [st.state, st.mode, c ? `with the agent's C: ${(c.replaced || []).map(f => `${f.function} ×${f.calls}`).join(", ")} · ${(100 * (c.share_in_c || 0)).toFixed(2)}% in the C` : "", st.adjust ? (st.adjust.length ? "adjusted: " + st.adjust.join(", ") + (st.latch ? ` (latch: ${st.latch})` : "") : "stock game") : "", st.run_frame != null ? `field ${st.run_frame}` : "", st.quick_save ? "quick save kept" : "", P.fast ? "fast forward" : ""].filter(Boolean).join(" · ");
   const pz = $("#ppause"); if (pz) pz.classList.toggle("on", st.state === "paused");
 }
 function playerView() {
@@ -1655,7 +1683,9 @@ function playerView() {
   const req = st.request || r?.request || "";
   if (st.state === "ended") {
     const a = st.result || {};
-    const what = a.error ? `It failed: ${esc(a.error.message)}` : a.status === "queued" ? "Left without an answer: the request is back in the queue."
+    const d = a.decomp;
+    const what = a.error ? `It failed: ${esc(a.error.message)}` : a.status === "tried" ? `A try with the agent's C, ${num(a.frames)} fields: ${(d?.replaced || []).map(f => `${mono(f.function)} (${num(f.calls)} calls)`).join(", ")}; ${(100 * (d?.share_in_c || 0)).toFixed(2)}% of instructions ran in the C. Nothing was recorded or kept.`
+      : a.status === "queued" ? "Left without an answer: the request is back in the queue."
       : `Answered: ${esc(a.status)}${a.recording ? ` · recording ${a.recording.written === false ? "not written" : esc(a.recording.status || a.recording.name || "written")}` : ""}.`;
     v.innerHTML = `<div class="card"><div class="what" style="white-space:pre-wrap">${esc(req)}</div><p>${what}</p><button class="b primary" id="pback">Back to requests</button></div>`;
     $("#pback").onclick = () => { stopPlayer(); requestsView(); };
@@ -1665,12 +1695,12 @@ function playerView() {
   const keys = Object.keys(ACTION_LABEL).filter(a => B.keyboard[a] || B.gamepad[a])
     .map(a => `<span>${ACTION_LABEL[a]}</span><span>${esc(B.keyboard[a] || "")}</span><span>${esc(B.gamepad[a] || "")}</span>`).join("");
   const labelling = st.labelling != null;
-  const person = !!r?.person;
+  const person = !!r?.person || P.isTry;
   v.innerHTML = `<div class="player ${P.compose || labelling ? "waiting" : ""}">
     <div><canvas id="pscreen" width="320" height="240" tabindex="0" title="click to play: the keys go to the game"></canvas>
       <div class="padline" id="pline" style="margin-top:6px"></div><div class="padline quiet" id="ppad" style="margin-top:4px"></div></div>
     <div class="side">
-      <div class="what" style="white-space:pre-wrap;font-size:14px">${person ? `<span class="quiet">Your play:</span> ` : ""}${esc(req)}</div>
+      <div class="what" style="white-space:pre-wrap;font-size:14px">${person ? `<span class="quiet">${P.isTry ? "Your try with the agent's C:" : "Your play:"}</span> ` : ""}${esc(req)}</div>
       <div class="msg">${esc(st.message || "")}</div>
       ${labelling ? `<div><b>Label mark ${st.labelling}</b> (the game waits): <input type="text" id="plabel" value="${esc(label)}" placeholder="what this moment is, for the agent"><div class="row" style="margin-top:4px"><button class="b primary" id="plabelok" title="Enter">Save label</button><button class="b" id="plabelskip" title="Esc">No label</button><button class="b" id="pdiscard" title="Delete it: the agent never sees it">Discard mark</button></div></div>` : ""}
       ${P.compose ? `<div class="handback">
@@ -1692,9 +1722,9 @@ function playerView() {
         <button class="b" data-c="restart" title="F8: from the beginning">Start over</button>
       </div>
       <div class="row">
-        <button class="b primary" data-c="done" title="F12: pause and write the note, then hand back${person ? "" : "; with a scenario the play becomes the recording"}">${person ? "Finish…" : "Done…"}</button>
+        ${P.isTry ? "" : `<button class="b primary" data-c="done" title="F12: pause and write the note, then hand back${person ? "" : "; with a scenario the play becomes the recording"}">${person ? "Finish…" : "Done…"}</button>`}
         ${person ? "" : `<button class="b" data-c="decline" title="F10: could not or would not; pause and write why">Decline…</button>`}
-        <button class="b" data-c="leave" title="${person ? "stop and keep nothing" : "stop without answering: the request goes back to the queue"}">${person ? "Discard" : "Leave"}</button>
+        <button class="b${P.isTry ? " primary" : ""}" data-c="leave" title="${person ? "stop and keep nothing" : "stop without answering: the request goes back to the queue"}">${P.isTry ? "End the try" : person ? "Discard" : "Leave"}</button>
       </div>`}
       ${(st.marks || []).length && !labelling ? `<div class="pmarks">${st.marks.map(m => `<span class="pmark">mark ${m.n}${m.label ? ": " + esc(m.label) : ""}<button data-discard="${m.n}" title="discard mark ${m.n}">✕</button></span>`).join("")}</div>` : ""}
       <div class="err" id="perr"></div>
@@ -1738,7 +1768,7 @@ function playerCmd(P, c) {
   }
   const person = (S.requests?.waiting || []).some(x => x.p === P.p && x.id === P.id && x.person);
   if (c === "restart" && !confirm("Start over from the beginning? Progress since then is lost (the quick save is kept).")) return;
-  if (c === "leave" && !confirm(person ? "Discard this play? Nothing is kept." : "Leave without answering? The request goes back to the queue.")) return;
+  if (c === "leave" && !confirm(P.isTry ? "End the try? Nothing is kept." : person ? "Discard this play? Nothing is kept." : "Leave without answering? The request goes back to the queue.")) return;
   const body = {cmd: c};
   if (c === "pause") body.paused = P.status.state !== "paused";
   playerCmdBody(P, body);
@@ -2051,6 +2081,8 @@ function drawStats() {
     [num(calls), "psx calls", `${num(failed)} failed`],
     [num(c.hours.length), "hours with calls"],
     [dur(sum(c.tools, "ms")), "in psx calls"],
+    ...(d.decomp ? [[num(d.decomp.named), "functions named", "in names/ and .psx/names/"],
+      [`${num(d.decomp.passing)} of ${num(d.decomp.in_c)}`, "functions in C pass", "their last code check, on the current C and names"]] : []),
   ];
   let h = `<div class="card"><h2>Stats</h2><div class="tiles">${tiles.map(([n, l, t]) => `<div class="tile" title="${esc(t || "")}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join("")}</div></div>`;
   // The standing over time.
@@ -2201,7 +2233,7 @@ function drawCode() {
   let h = `<div class="card"><h2>Code</h2><div class="tiles">${tiles.map(([v, l, t]) => `<div class="tile" title="${esc(t || "")}"><div class="n">${esc(v)}</div><div class="l">${esc(l)}</div></div>`).join("")}</div>
     ${n.functions ? `<div class="meter" title="${num(named.length)} of ${num(n.functions)} named functions have C; ${num(pass)} pass"><i style="width:${(100 * pass / n.functions).toFixed(2)}%;background:var(--st5)"></i><i style="width:${(100 * (named.length - pass) / n.functions).toFixed(2)}%;background:var(--st3)"></i></div>
       <div class="legend"><span style="--c:var(--st5)">in C, passing</span><span style="--c:var(--st3)">in C, not passing yet</span><span style="--c:var(--line)">named, no C</span></div>` : ""}
-    <div class="quiet" style="margin-top:6px">${d.compiler ? `Built with <span class="mono">${esc(d.compiler)}</span>.` : "No MIPS GCC here: code check cannot build the C."} How much of a run the C carries comes with <span class="mono">--decomp</span> (decomp plan, step 13).</div></div>`;
+    <div class="quiet" style="margin-top:6px">${d.compiler ? `Built with <span class="mono">${esc(d.compiler)}</span>.` : "No MIPS GCC here: code check cannot build the C."} How much of a run the C carries: <span class="mono">scenario check --decomp</span> (Runs with the C, below).</div></div>`;
   const row = f => {
     const k = f.check, on = S.code.open === f.name;
     const cases = k && k.passed != null ? `${num(k.passed)} / ${num((k.passed || 0) + (k.failed || 0))}` : "";
@@ -2212,6 +2244,14 @@ function drawCode() {
   h += `<div class="card"><h2>Functions in C</h2>${cs.length ? `<div style="overflow-x:auto"><table><tr><th>function</th><th>address</th><th>where</th><th>last check</th><th class="num">cases</th><th>when</th><th>off in</th></tr>${cs.map(row).join("")}</table></div>`
     : `<div class="quiet">No C yet: the agent writes a function's C as <span class="mono">decomp/&lt;name&gt;.c</span> and checks it with <span class="mono">code check</span>.</div>`}</div>`;
   if ((d.off || []).length) h += `<div class="card"><h2>Turned off</h2><table><tr><th>function</th><th>address</th><th>in scenarios</th></tr>${d.off.map(o => `<tr><td class="mono">${esc(o.function)}</td><td class="mono">${esc(o.names?.address || "")}</td><td>${o.scenarios.map(esc).join(", ")}</td></tr>`).join("")}</table></div>`;
+  const runs = d.replaced_runs || [];
+  if (runs.length) {
+    const pct = x => +(100 * (x.share_in_c || 0)).toFixed(2);
+    const hi = Math.max(...runs.map(pct), 0.01);
+    h += `<div class="card"><h2>Runs with the C</h2><div class="quiet">Each recording replayed with <span class="mono">--decomp</span>: the share of its instructions that ran in the agent's C, oldest first; red where it diverged with the C.</div>
+      <div style="display:flex;align-items:flex-end;gap:1px;height:60px;margin:8px 0">${runs.map(x => `<span title="${esc(fmtDate(x.t))} · ${esc(x.scenario)}/${esc(x.recording)} · ${pct(x)}% in C · ${x.functions} functions · ${esc(x.status)}" style="flex:1;min-width:2px;height:${Math.max(2, 60 * pct(x) / hi)}px;background:var(${x.status === "diverges_with_c" ? "--act" : x.status === "same" ? "--ok" : "--warn"})"></span>`).join("")}</div>
+      <div class="quiet">last: ${pct(runs[runs.length - 1])}% in the C (${esc(runs[runs.length - 1].scenario)}/${esc(runs[runs.length - 1].recording)}), up to ${hi}%</div></div>`;
+  }
   const ks = (d.checks || []).slice().reverse();
   if (ks.length) h += `<div class="card"><h2>Checks</h2><div class="scroll"><table class="recent">${ks.slice(0, 60).map(k => `<tr><td class="t">${fmtDate(k.t)}</td><td>${checkPill(k)}</td><td class="mono">${esc(k.function)}</td><td class="num">${k.passed != null ? `${num(k.passed)} / ${num((k.passed || 0) + (k.failed || 0))}` : ""}</td><td class="mono quiet">${esc((k.commit || "").slice(0, 7))}</td></tr>`).join("")}</table></div></div>`;
   $("#view").innerHTML = h;
@@ -2274,7 +2314,7 @@ function viewer() {
   $("#viewer").innerHTML = `<div class="card"><h2>${esc(r.scenario)} / ${esc(r.name)}</h2>
     <div>${esc(r.description || "")}</div><div class="quiet">${esc(r.moment || "")}${r.from ? ` · continues ${esc(r.from)}` : ""} · ${n} ticks${r.captured ? "" : " · an example, not captured"}</div>${checkLine}
     <div class="viewer-top" style="margin-top:8px"><div class="screens">
-      <div><div class="slab">original · psx-core</div><div class="screen"><img id="frame" alt=""><div class="msg" id="fmsg">replaying…</div></div></div>
+      <div><div class="slab">original · psx-core <select id="omode" title="the original's own code, or the agent's C (decomp/) in place of the functions whose last code check passed"><option value="">its own code</option><option value="c">with the agent's C</option></select></div><div class="screen"><img id="frame" alt=""><div class="msg" id="fmsg">replaying…</div></div></div>
       <div><div class="slab">port <select id="pmode" title="how the port's screen is shown"><option value="side">its own screen</option><option value="blend">over the original</option><option value="diff">difference</option></select><button class="b" id="pagain" hidden title="draw it again with the port's code now">draw again</button></div>
         <div class="screen" id="pscreen"><img id="pframe" alt=""><canvas id="pcanvas" hidden></canvas><div class="msg" id="pmsg"></div></div></div></div>
     <div><div class="controls"><button class="b" id="play">▶</button><button class="b" id="prev" title="previous tick (←)">‹</button><button class="b" id="nextb" title="next tick (→)">›</button>
@@ -2285,6 +2325,8 @@ function viewer() {
     </div></div></div>
     <div class="card plots" id="plots">${r.quantities.map((q, k) => `<div class="q ${(ch?.failures || []).some(f => f.quantity === q.name) ? "diff" : ""}"><div class="lab"><div class="nm" title="${esc(q.description || "")}">${esc(q.name)}</div><div class="quiet">${esc(q.type)}${q.unit ? " · " + esc(q.unit) : ""}${q.tolerance ? " · ±" + esc(q.tolerance) : ""}</div><div class="v" id="v${k}"></div></div><div class="pl"><canvas data-k="${k}"></canvas><div class="cur"></div></div></div>`).join("")}</div>`;
   $("#pmode").value = S.portMode;
+  $("#omode").value = S.withC ? "c" : "";
+  $("#omode").onchange = e => { S.withC = e.target.value === "c"; S.replay = null; save(); pollReplay(S.recKey); showFrame(Math.max(1, S.tick)); };
   $("#pmode").onchange = e => { S.portMode = e.target.value; showPort(S.tick); };
   $("#pagain").onclick = () => pollPort(S.recKey, 1);
   $("#play").onclick = () => S.playing ? stop() : play();
@@ -2337,7 +2379,7 @@ function setTick(t) {
 function fmtVal(v) { return v == null ? "–" : typeof v === "number" ? (Number.isInteger(v) ? v : +v.toFixed(4)) : typeof v === "object" ? JSON.stringify(v) : v; }
 function showFrame(t) {
   const img = $("#frame"), msg = $("#fmsg"); if (!img) return;
-  const url = `/api/p/${S.cur}/frame?scenario=${encodeURIComponent(S.rec.scenario)}&name=${encodeURIComponent(S.rec.name)}&tick=${t}`;
+  const url = `/api/p/${S.cur}/frame?scenario=${encodeURIComponent(S.rec.scenario)}&name=${encodeURIComponent(S.rec.name)}&tick=${t}${S.withC ? "&decomp=1" : ""}`;
   const have = S.replay?.frames ?? 0;
   if (S.replay && !S.replay.done && t > have) { msg.textContent = `replaying… ${have} of ${S.rec.ticks.length} ticks`; msg.style.display = ""; return; }
   img.onload = () => msg.style.display = "none";
@@ -2346,18 +2388,20 @@ function showFrame(t) {
 }
 async function pollReplay(key) {
   let start = 1;
-  while (S.recKey === key) {
-    const r = await api(`/api/p/${S.cur}/replay?scenario=${encodeURIComponent(S.rec.scenario)}&name=${encodeURIComponent(S.rec.name)}&start=${start}`);
+  const withC = !!S.withC;
+  while (S.recKey === key && !!S.withC === withC) {
+    const r = await api(`/api/p/${S.cur}/replay?scenario=${encodeURIComponent(S.rec.scenario)}&name=${encodeURIComponent(S.rec.name)}&start=${start}${withC ? "&decomp=1" : ""}`);
     start = 0;
-    if (S.recKey !== key) return;
+    if (S.recKey !== key || !!S.withC !== withC) return;
     const first = !S.replay;
     S.replay = r;
     const note = $("#replaynote");
     if (r.error) { note.textContent = r.error; return; }
     if (r.done?.error) { note.textContent = ""; const m = $("#fmsg"); m.textContent = "The replay failed: " + r.done.error.message; m.style.display = ""; return; }
     if (r.done) {
-      const d = r.done.differences || [];
-      note.innerHTML = d.length ? `<div class="warnbox">The replay is not the recording, so the screen may not show what was recorded:<br>${d.map(esc).join("<br>")}</div>` : "psx-core replayed the recording tick for tick.";
+      const d = r.done.differences || [], c = r.done.decomp;
+      const inC = c ? `With the agent's C for ${c.replaced.length ? c.replaced.map(f => `${esc(f.function)} (${f.calls} calls)`).join(", ") : "no function"}: ${+(100 * c.share_in_c).toFixed(2)}% of instructions ran in the C${c.left_out.length ? `; left out ${c.left_out.map(f => `${esc(f.function)} (${esc(f.why)})`).join(", ")}` : ""}.<br>` : "";
+      note.innerHTML = inC + (d.length ? `<div class="warnbox">The replay is not the recording${c ? " (switch to its own code to see whether the C is why)" : ""}, so the screen may not show what was recorded:<br>${d.map(esc).join("<br>")}</div>` : "psx-core replayed the recording tick for tick.");
       if (first || $("#fmsg").style.display !== "none") showFrame(Math.max(1, S.tick));
       return;
     }
