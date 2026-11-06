@@ -1300,6 +1300,7 @@ fn mcp_tools_match_cli() {
         "port_status",
         "port_next",
         "port_check",
+        "port_vectors",
     ];
     want.sort_unstable();
     assert_eq!(names, want);

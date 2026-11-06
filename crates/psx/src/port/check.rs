@@ -96,45 +96,42 @@ fn last_report(root: &Path, head: Option<&str>) -> Result<ScenarioReport, &'stat
         .map_err(|_| "the last psx port check ran no scenarios")
 }
 
-/// Runs the importers on the workspace's disc into `.psx/port/import/`
-/// (a file is imported when an output's provenance names it) and their
-/// tests with `PSX_IMPORT_REPORT` set (a file is checked when a passing
-/// test marked it with `import::checking`).
+/// Runs the importer (the manifest's `import`) on the workspace's disc into
+/// `.psx/port/import/` (a file is imported when an output's provenance names
+/// it) and its tests (`import_test`) with `PSX_IMPORT_REPORT` set (a file is
+/// checked when a passing test marked it, as `import::checking` does).
 fn run_importers(root: &Path, head: &str, archives: &[String]) -> crate::Result<assets::Report> {
     let mut r = assets::Report { commit: head.into(), clean: true, at: crate::stamp::utc_now(), ..Default::default() };
     let media = crate::context::resolve(root, None, None, None, false)
         .ok()
         .and_then(|r| r.media)
         .map(|m| std::path::absolute(&m).unwrap_or(m));
-    let errors = |out: &std::process::Output| -> String {
-        let text = String::from_utf8_lossy(&out.stderr);
-        let e: Vec<&str> = text.lines().filter(|l| l.starts_with("error") || l.contains("panicked")).take(5).collect();
-        if e.is_empty() { text.lines().last().unwrap_or("no output").to_string() } else { e.join("; ") }
-    };
-    let cargo = |args: &[&str], env: Option<(&str, &Path)>| {
-        let mut c = std::process::Command::new("cargo");
-        c.args(args).current_dir(root);
+    let commands = super::manifest::Commands::read(root).map_err(Error::invalid)?;
+    let errors = super::process::why;
+    let run = |command: &[String], args: &[&str], env: Option<(&str, &Path)>| {
+        let mut c = super::manifest::command(root, command, args);
         if let Some((k, v)) = env {
             c.env(k, v);
         }
-        c.output().map_err(|e| Error::invalid(format!("cargo: {e}")))
+        c.output().map_err(|e| Error::invalid(format!("{}: {e}", command[0])))
     };
     let out_dir = root.join(".psx/port/import");
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).map_err(|e| Error::io(&out_dir, e))?;
-    match &media {
-        None => r.failures.push("no media: the workspace's disc image (psx context --image ... --save)".into()),
-        Some(m) => {
+    match (&media, &commands.import) {
+        (_, None) => r.failures.push(format!("no importer: {} names no import command", super::manifest::FILE)),
+        (None, _) => r.failures.push("no media: the workspace's disc image (psx context --image ... --save)".into()),
+        (Some(m), Some(import)) => {
             let disc = m.to_string_lossy().into_owned();
-            let o = cargo(&["run", "--locked", "-q", "-p", "import", "--", &disc, &out_dir.to_string_lossy()], None)?;
+            let o = run(import, &[&disc, &out_dir.to_string_lossy()], None)?;
             if !o.status.success() {
                 r.failures.push(format!("the importers on the disc: {}", errors(&o)));
             }
             r.imported = provenance_sources(&out_dir);
             if !archives.is_empty() {
-                let mut args = vec!["run", "--locked", "-q", "-p", "import", "--", "index", disc.as_str()];
+                let mut args = vec!["index", disc.as_str()];
                 args.extend(archives.iter().map(String::as_str));
-                let o = cargo(&args, None)?;
+                let o = run(import, &args, None)?;
                 let listed: Value = serde_json::from_slice(&o.stdout).unwrap_or_default();
                 if !o.status.success() || !listed.is_object() {
                     r.failures.push(format!("the importer's index: {}", errors(&o)));
@@ -158,9 +155,11 @@ fn run_importers(root: &Path, head: &str, archives: &[String]) -> crate::Result<
     }
     let marks = root.join(".psx/port/import-checked.txt");
     let _ = std::fs::remove_file(&marks);
-    let o = cargo(&["test", "--locked", "--no-fail-fast", "-q", "-p", "import"], Some(("PSX_IMPORT_REPORT", &marks)))?;
-    if !o.status.success() {
-        r.failures.push(format!("the importers' tests: {}", errors(&o)));
+    if let Some(test) = &commands.import_test {
+        let o = run(test, &[], Some(("PSX_IMPORT_REPORT", &marks)))?;
+        if !o.status.success() {
+            r.failures.push(format!("the importers' tests: {}", errors(&o)));
+        }
     }
     let text = std::fs::read_to_string(&marks).unwrap_or_default();
     let mut checked: Vec<String> = text.lines().filter(|l| !l.trim().is_empty()).map(assets::disc_path).collect();

@@ -1,0 +1,9 @@
+[package]
+name = "glossary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The glossary: the quantities scenarios compare, plain Rust with no
+# dependencies. psx reads src/lib.rs from source.

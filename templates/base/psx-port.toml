@@ -1,0 +1,10 @@
+# The commands psx runs the port with, in the workspace root. Any program
+# can be the port: `run` must speak the port protocol on stdin and stdout
+# (psx guide --topic languages; psx_scenario::replay::main answers it
+# for a Rust game). psx port check runs `build`, then `run`; with assets in
+# the goal, `import DISC OUT` and `import_test`.
+[port]
+build = ["cargo", "build", "--locked", "-q", "--manifest-path", "game/Cargo.toml"]
+run = ["cargo", "run", "--locked", "-q", "--manifest-path", "game/Cargo.toml", "--", "--psx"]
+import = ["cargo", "run", "--locked", "-q", "-p", "import", "--"]
+import_test = ["cargo", "test", "--locked", "--no-fail-fast", "-q", "-p", "import"]

@@ -44,8 +44,9 @@ fn check_name(what: &str, name: &str) -> crate::Result<()> {
     Ok(())
 }
 
-/// The glossary, or what is wrong with it.
-pub fn glossary(root: &Path) -> Result<Glossary, Vec<String>> {
+/// The glossary's quantities (glossary/src/lib.rs), or what is wrong with
+/// it: what checking a port needs.
+pub fn quantities(root: &Path) -> Result<Glossary, Vec<String>> {
     let mut problems = Vec::new();
     if root.join("glossary.toml").is_file() {
         problems.push(
@@ -77,17 +78,33 @@ pub fn glossary(root: &Path) -> Result<Glossary, Vec<String>> {
     if psx_scenario::rust::package_name(&cargo_toml).as_deref() != Some(GLOSSARY) {
         problems.push(at("Cargo.toml: the package is named \"glossary\"".into()));
     }
+    if problems.is_empty() { Ok(g) } else { Err(problems) }
+}
+
+/// [`quantities`], and the glossary's binding written: what recording needs.
+pub fn glossary(root: &Path) -> Result<Glossary, Vec<String>> {
+    let (g, mut problems) = match quantities(root) {
+        Ok(g) => (Some(g), Vec::new()),
+        Err(p) => (None, p),
+    };
+    let dir = root.join(GLOSSARY);
+    if !binding::is_crate(&dir) {
+        return Err(problems);
+    }
     let binding = dir.join("binding/Cargo.toml");
     match std::fs::read_to_string(&binding) {
         Err(_) => problems.push(format!(
             "{GLOSSARY}/binding: not written yet (a cdylib package named glossary-binding, a member of the workspace; vendor/psx-capture's crate docs show it)"
         )),
         Ok(t) if psx_scenario::rust::package_name(&t).as_deref() != Some("glossary-binding") => {
-            problems.push(at("binding/Cargo.toml: the package is named \"glossary-binding\"".into()))
+            problems.push(format!("{GLOSSARY}/binding/Cargo.toml: the package is named \"glossary-binding\""))
         }
         Ok(_) => {}
     }
-    if problems.is_empty() { Ok(g) } else { Err(problems) }
+    match g {
+        Some(g) if problems.is_empty() => Ok(g),
+        _ => Err(problems),
+    }
 }
 
 /// The glossary binding's answer to `DESCRIBE`.

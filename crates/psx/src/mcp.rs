@@ -182,6 +182,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::template::PortAddArgs>("port_add", "Add a ready-made crate to the port's workspace under addons/: full (a window, a renderer with a PS1 and a modern look, the disc import and menus, wired into game/src/main.rs), shell, renderer, disc-import or menus. None is required. See guide topic setup."),
         def::<crate::port::PortStatusArgs>("port_status", "In a port's workspace: the goal's features by area and stage, with their recordings, branches of their code resolved, open questions and review, problems in the goal or catalogue, and the item due now. plain=true: text for the person. See the guide.").read_only(),
         def::<crate::port::PortNextArgs>("port_next", "In a port's workspace: the one item due now (what, which feature, why, and the fact that shows it done). Start every session with it, and call it again after each item. See the guide."),
+        def::<crate::port::vectors::PortVectorsArgs>("port_vectors", "Write test vectors (JSON lines) for the original's integer arithmetic and the GTE, made by the crates Rust ports use, for a port in another language to test its arithmetic against. See guide topic languages."),
         def::<crate::port::PortCheckArgs>("port_check", "In a port's workspace, at a clean commit: replay the recordings each feature names against the port and write their verdicts (held-out results are counted, not shown). See the guide.").heavy(),
     ]
 }

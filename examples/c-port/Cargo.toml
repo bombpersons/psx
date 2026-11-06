@@ -1,0 +1,10 @@
+# The glossary is the one Rust crate of a port in another language: psx
+# reads glossary/src/lib.rs from source (psx guide, Recordings).
+[workspace]
+resolver = "2"
+members = ["glossary"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"

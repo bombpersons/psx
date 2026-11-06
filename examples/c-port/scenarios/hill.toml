@@ -1,0 +1,10 @@
+moment = "The sled at rest at the top of the hill"
+chain = "notes/states/hill.json"
+kind = "hill"
+
+[compare]
+sled_x = 0
+sled_speed = 0
+
+[parameters]
+start_x = 4096

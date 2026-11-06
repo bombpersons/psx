@@ -174,9 +174,8 @@ have happened. Without a scenario, a play reaches a hard place for
 investigation (topic run).
 
 In the port, Game launches each scenario kind and observes the quantities
-it keeps (AGENTS.md). port_check runs the game (--psx), replays each
-recording over the port protocol and writes the verdicts; cargo test -p
-game --test scenarios gives the same result while working.
+it keeps (AGENTS.md). port_check builds and runs the port by its
+psx-port.toml, replays each recording through it and writes the verdicts.
 
 ## Status and next
 
@@ -239,34 +238,18 @@ port_check (optionally one feature).
 
 ## Assets
 
-Each disc file but the code is:
-- unknown;
-- format found: a formats/<id>.md doc names it (TOML front matter: files
-  as globs, loader as the code that parses it; then the layout;
-  formats/README.md), or assets_scan finds it whole as TIM, TMD, VAB or VAG,
-  or it is a stream of XA and STR sectors only;
-- imported: the last port_check ran the importers (tools/import) on the disc,
-  and an output's Provenance::of_disc names it;
-- checked: a passing importer test marked it with import::checking after
-  comparing the import with what the game built (RAM after loading, VRAM
-  uploads, a GPU capture);
-- or unused: formats/unused.toml, with the runs that never load it.
-
-An archive's format doc says archive = true: the importer lists its entries
-(import::index), which are then the assets, named /ARCHIVE:NAME (with @0xOFF
-where names repeat) or /ARCHIVE@0xOFF. port_status counts them always, with
-how many no traced run (trace_cd) loaded.
-
-Asset names pick what is extracted (topic assets): goal.toml's for the
-person's choice, an entry's for what its recordings need, which port_next
-gives before the feature's work: Format, Index, Import, Check. Only the
-importers read the original's formats; the game reads the port's own.
+Each disc file but the code is unknown, format found, imported, checked or
+unused (topic assets has each state, and archives). Asset names pick what
+is extracted (topic assets): goal.toml's for the person's choice, an
+entry's for what its recordings need, which port_next gives before the
+feature's work: Format, Index, Import, Check. Only the importers read the
+original's formats; the game reads the port's own.
 
 ## Commands
 
 - context: the build, project root, media, BIOS and capabilities (setup).
 - bios_install: a local BIOS, or a pinned download for a region (setup).
-- guide: this text, or a topic: run, code, assets, setup.
+- guide: this text, or a topic: run, code, assets, setup, languages.
 - read: a returned file, by pointer, rows, hex or image.
 - disc_info, disc_ls, disc_extract, disc_sector, disc_exe: the disc's
   tracks, files, sectors and executables (assets).
@@ -285,5 +268,5 @@ importers read the original's formats; the game reads the port's own.
   recordings.
 - port_init, port_update, port_add, port_status, port_next, port_check:
   the port (port_update, port_add: setup). psx port confirm is the
-  person's.
+  person's. port_vectors: arithmetic test vectors (languages).
 - message: talk with the person (run).

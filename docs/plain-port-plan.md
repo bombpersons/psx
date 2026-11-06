@@ -265,7 +265,7 @@ leave Bevy without psx noticing.
 
 ## After this plan: any executable as a port
 
-Phase (a) is done; the design below is agreed. psx treats any program that keeps a
+Phases (a) and (b) are done; the design below is agreed. psx treats any program that keeps a
 contract as a port, in any language, and tests it as it tests a Rust one.
 
 ### What ties a port to Rust
@@ -459,6 +459,21 @@ About phase 1 and phase 2 of this plan together, mostly on psx's side.
 - **(b) Any executable.** The manifest; `port check` and web replay running
   its commands; the arithmetic spec and `psx port vectors`; a tiny C port
   (one quantity) in CI as the conformance test.
+  Done: `psx-port.toml` names `build` (optional), `run`, `import` and
+  `import_test`; psx appends `DISC OUT` or `index DISC ARCHIVE...` to
+  `import` rather than filling placeholders, so one command serves both.
+  Without the file the commands are cargo's, and the base template seeds
+  the file with them. The check reads the glossary's quantities alone; the
+  binding is recording's. The spec is the guide topic `languages` (the
+  manifest, the protocol, the integer rules, the GTE's pinned points and
+  the libgte-style helpers) rather than `arithmetic`, since it holds all a
+  port in another language needs. `psx port vectors` (and the `port_vectors`
+  tool) writes `fixed.jsonl` (about 15,000 cases over eleven formats,
+  thirteen pairs and the angle helpers), `gte.jsonl` (every command with
+  each `sf` and `lm`, at register level, and the helpers) and the two
+  tables. examples/c-port is a sled in C with two quantities, its
+  arithmetic tested against the vectors and checked by `port check` in
+  psx's tests (crates/psx/tests/c_port.rs); its recording is synthetic.
 - **(c) The wording and the key.** The port key without cargo; the guide,
   the tool descriptions and port next's items no longer assume cargo.
 - **(d) Move the test ports.** The psx-bevy ports under

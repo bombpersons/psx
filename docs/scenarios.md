@@ -369,9 +369,12 @@ impl Port for Game {
 The game's `main` hands its arguments to `psx_scenario::replay::main`
 first, with a function that makes a fresh headless game with every
 feature's rules. With `--psx` it serves the port protocol (below) on stdin
-and stdout. `psx port check` builds the game (`cargo build -p game`),
-starts it with `--psx` and runs psx_scenario's runner against it on psx's
-side. For each recording, the runner:
+and stdout. `psx port check` builds the game and starts it with `--psx`,
+by the commands the workspace's `psx-port.toml` names (cargo's without
+one), and runs psx_scenario's runner against it on psx's side. Any program
+that speaks the protocol is a port: examples/c-port is one in C, and psx's
+guide topic `languages` gives the manifest, the protocol and the original's
+integer arithmetic, which `psx port vectors` writes test vectors for. For each recording, the runner:
 
 1. launches the scenario in a fresh game;
 2. compares the observed quantities with `initial`;

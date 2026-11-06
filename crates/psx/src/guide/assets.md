@@ -1,6 +1,26 @@
-The port's assets come from the player's disc through tools/import (the
-overview's Assets: formats, importers, checks). These commands find and read
-what the disc holds.
+The port's assets come from the player's disc through tools/import: each
+file's state is below, and the overview's Assets says when port_next gives
+them. These commands find and read what the disc holds.
+
+## Asset states
+
+Each disc file but the code is:
+- unknown;
+- format found: a formats/<id>.md doc names it (TOML front matter: files
+  as globs, loader as the code that parses it; then the layout;
+  formats/README.md), or assets_scan finds it whole as TIM, TMD, VAB or VAG,
+  or it is a stream of XA and STR sectors only;
+- imported: the last port_check ran the importers (tools/import) on the disc,
+  and an output's Provenance::of_disc names it;
+- checked: a passing importer test marked it with import::checking after
+  comparing the import with what the game built (RAM after loading, VRAM
+  uploads, a GPU capture);
+- or unused: formats/unused.toml, with the runs that never load it.
+
+An archive's format doc says archive = true: the importer lists its entries
+(import::index), which are then the assets, named /ARCHIVE:NAME (with @0xOFF
+where names repeat) or /ARCHIVE@0xOFF. port_status counts them always, with
+how many no traced run (trace_cd) loaded.
 
 ## The disc
 

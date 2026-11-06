@@ -1,0 +1,5 @@
+# The commands psx runs the port with, in the workspace root (psx guide
+# --topic languages). The port is a C program; the glossary stays Rust.
+[port]
+build = ["make", "-s", "-C", "game"]
+run = ["game/build/sled", "--psx"]

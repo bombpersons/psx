@@ -257,6 +257,9 @@ enum PortAction {
     /// Run the features' scenarios against the port (its program, over the port protocol) and
     /// write their scenario verdicts for HEAD, which must have no uncommitted changes.
     Check(port::PortCheckArgs),
+    /// Write test vectors for the original's integer arithmetic and the GTE, made by
+    /// psx-fixed and psx-gte, for a port in any language to test its own against.
+    Vectors(port::vectors::PortVectorsArgs),
 }
 
 #[derive(clap::Subcommand)]
@@ -420,6 +423,7 @@ fn main() -> ExitCode {
             PortAction::Status(a) => a.exec(&ctx),
             PortAction::Next(a) => a.exec(&ctx),
             PortAction::Check(a) => a.exec(&ctx),
+            PortAction::Vectors(a) => a.exec(&ctx),
         },
         Command::States { action } => match action {
             StatesAction::Save(a) => a.exec(&ctx),
