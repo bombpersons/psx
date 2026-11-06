@@ -176,6 +176,9 @@ pub struct Feature {
     /// scenarios' problems or determinism checks, coverage psx cannot
     /// count.
     pub unrecorded: Vec<String>,
+    /// Its recordings in which the original's driver kept the tick's input
+    /// from the game: the game is to be fixed and they recorded again.
+    pub late: Vec<String>,
     pub verdict: State,
     /// Launchers and observers the port lacks for its scenarios, by the
     /// last check at HEAD.
@@ -246,7 +249,7 @@ impl Feature {
         }
         let checks = [
             self.located,
-            self.unrecorded.is_empty(),
+            self.unrecorded.is_empty() && self.late.is_empty(),
             self.matching(),
             self.branches_resolved() && self.questions.is_empty() && self.code_reviewed && self.assets.settled(),
             all_pass(&self.held_out) && self.off.is_empty(),
@@ -570,6 +573,7 @@ impl Facts {
                         catalogued: false,
                         located: false,
                         unrecorded: Vec::new(),
+                        late: Vec::new(),
                         verdict: State::Missing,
                         unbuilt: Vec::new(),
                         work: Vec::new(),
@@ -689,6 +693,7 @@ impl Facts {
                     catalogued: true,
                     located: !e.code.is_empty(),
                     unrecorded,
+                    late: crate::scenario::feature_late_input(root, e),
                     verdict,
                     unbuilt,
                     work,
@@ -988,6 +993,15 @@ impl Facts {
                 "its entry names no code".into(),
                 "its catalogue entry lists the original's functions that are the feature under code",
                 "trace or record runs doing the thing and runs from the same state not doing it, run psx code coverage diff on them, read what only the first ran (code disasm, decompile), and list the feature's functions by entry address under code",
+            );
+        }
+        if let Some(f) = find(&|f| f.located && !f.late.is_empty()) {
+            return Item::agent(
+                "Fix input",
+                Some(&f.id),
+                format!("the original's own driver delays its input: {}", first_lines(&f.late).join("; ")),
+                "its recordings report no late_input",
+                "the port takes its input every tick, so its recordings must too: find what keeps the poll or the game's read of the buttons back on those ticks (run with pad_reads, watch and trace around them), replace that function in fixes/ so the game takes the tick's input every field (guide topic code, the fixes/ paragraphs), then record the scenarios again; late_input left out with fix on is the fix working",
             );
         }
         if let Some(f) = find(&|f| f.located && !f.unrecorded.is_empty()) {
@@ -1368,6 +1382,9 @@ impl Facts {
             });
             if !f.unrecorded.is_empty() && f.located {
                 row["unrecorded"] = json!(f.unrecorded);
+            }
+            if !f.late.is_empty() {
+                row["late_input"] = json!(f.late);
             }
             if !f.unbuilt.is_empty() {
                 row["unbuilt"] = json!(f.unbuilt);
@@ -1872,6 +1889,26 @@ mod tests {
         // Before it matches, the feature's own work comes first.
         set(&mut f, "F-0002", |x| x.work = results(&[("walk/a", &["tick 2 x: expected 1, got 2"])]));
         assert_eq!(f.next().item, "Fix");
+    }
+
+    #[test]
+    fn input_the_original_delays_is_fixed_before_the_port_is_written() {
+        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        for id in ["F-0001", "F-0002"] {
+            set(&mut f, id, |x| {
+                x.located = true;
+                x.unrecorded.clear();
+            });
+        }
+        set(&mut f, "F-0001", |x| {
+            x.late = vec!["scenarios/walk/a.jsonl: the game ran 3 ticks on input a tick old (ticks 4, 9, 12)".into()];
+        });
+        assert_eq!(f.stage("F-0001"), Some(Stage::Located));
+        let item = f.next();
+        assert_eq!((item.item, item.feature.as_deref()), ("Fix input", Some("F-0001")));
+        assert!(item.why.contains("ticks 4, 9, 12") && item.how.contains("fixes/"), "{item:?}");
+        set(&mut f, "F-0001", |x| x.late.clear());
+        assert_ne!(f.next().item, "Fix input");
     }
 
     #[test]

@@ -222,6 +222,16 @@ impl Loaded {
             self.compared().iter().map(|(n, f)| (n.clone(), typed(f))).collect();
         let recorded: BTreeMap<String, psx_scenario::Field> =
             r.header.quantities.iter().map(|(n, f)| (n.clone(), typed(f))).collect();
+        // A latched recording measures whether input reached the game in
+        // time (late_fields); one from before that cannot say.
+        let adjusted = r.header.producer.details.get("adjusted");
+        if r.header.source.kind == SourceKind::Captured
+            && adjusted.is_some_and(|a| a.get("buffer").is_some() && a.get("late_fields").is_none())
+        {
+            p.push(format!(
+                "{at}: recorded before psx measured whether the game takes its input every tick; record it again"
+            ));
+        }
         if self.scenario.is_some() && self.glossary.is_some() && recorded != declared {
             p.push(format!(
                 "{at}: recorded for other quantities than the scenario compares, or with other types than the glossary declares; record it again"
@@ -1718,6 +1728,35 @@ pub fn unready(root: &Path, id: &str) -> Vec<String> {
     out
 }
 
+/// The recordings of the feature's scenarios in which the original's own
+/// driver kept the tick's input from the game (`late_input`), each with
+/// how often.
+pub fn feature_late_input(root: &Path, e: &Entry) -> Vec<String> {
+    e.scenarios().iter().flat_map(|s| late_input(root, s)).collect()
+}
+
+fn late_input(root: &Path, id: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    {
+        let l = Loaded::load(root, id);
+        for (_, f, r) in &l.recordings {
+            let Ok(r) = r else { continue };
+            let Some(late) = r.header.producer.details.get("adjusted").and_then(|a| a.get("late_input")) else {
+                continue;
+            };
+            let ticks: Vec<String> = late["ticks"].as_array().into_iter().flatten().take(5).map(|t| t.to_string()).collect();
+            out.push(format!(
+                "{}: the game ran {} ticks on input a tick old (ticks {}{})",
+                rel(root, f),
+                late["tick_count"],
+                ticks.join(", "),
+                if late["tick_count"].as_u64().unwrap_or(0) > ticks.len() as u64 { ", .." } else { "" }
+            ));
+        }
+    }
+    out
+}
+
 /// What stops the feature's scenarios (those its recordings come from)
 /// from counting toward stage 2; empty when it names a recording and each
 /// scenario is deterministic.
@@ -2455,6 +2494,23 @@ pub struct Quantities {
             [
                 "scenarios/walk/a.jsonl: recorded for other quantities than the scenario compares, or with other types than the glossary declares; record it again"
             ]
+        );
+        // A latched recording from before psx measured late input.
+        let latched = |adjusted: &str| recording(1).replace("\"version\":\"0\"}", &format!("\"version\":\"0\",\"details\":{{\"adjusted\":{adjusted}}}}}"));
+        std::fs::write(root.join("scenarios/walk/a.jsonl"), latched(r#"{"buffer":[]}"#)).unwrap();
+        assert_eq!(
+            unready(root, "walk"),
+            ["scenarios/walk/a.jsonl: recorded before psx measured whether the game takes its input every tick; record it again"]
+        );
+        assert!(late_input(root, "walk").is_empty());
+        std::fs::write(root.join("scenarios/walk/a.jsonl"), latched(r#"{"buffer":[],"late_fields":0}"#)).unwrap();
+        assert_eq!(unready(root, "walk"), ["walk: changed since its determinism check (psx scenario check walk)"]);
+        assert!(late_input(root, "walk").is_empty());
+        let late = r#"{"buffer":[],"late_fields":7,"late_input":{"fields":7,"ticks":[3,5,8,9,11,14,20],"tick_count":7}}"#;
+        std::fs::write(root.join("scenarios/walk/a.jsonl"), latched(late)).unwrap();
+        assert_eq!(
+            late_input(root, "walk"),
+            ["scenarios/walk/a.jsonl: the game ran 7 ticks on input a tick old (ticks 3, 5, 8, 9, 11, ..)"]
         );
     }
 

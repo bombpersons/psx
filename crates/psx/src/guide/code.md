@@ -90,7 +90,9 @@ watch hits, calls, disasm, xrefs, coverage and ram_view rows print them,
 a function's where its bytes are the inventory's (body_match) and a
 global's as name+0xOFF within its type. symbols adds other symbol files.
 
-The agent's C for a function goes in decomp/<name>.c, including
+When reading a function leaves doubt about what it does, write it as C
+and check it: checked C is a way to be sure of a rule, not a step a
+feature needs. The agent's C for a function goes in decomp/<name>.c, including
 "names.h": every struct of the names files at its offsets (each offset
 and size asserted), the globals and every function's prototype, so the C
 reads the game's data and calls the original's functions by name.
@@ -130,8 +132,9 @@ and port_check replay each recording with it: diverges_with_c, with
 first_tick, is a recording that replays as recorded without the C and
 not with it.
 
-fixes/ holds C that changes what the game does on purpose: a function
-there replaces the game's function of that name (in the executable, not
+fixes/ holds C that changes what the game does on purpose, most often so
+the game takes its input every tick where its driver delays it
+(late_input, topic run; port next asks for it): a function there replaces the game's function of that name (in the executable, not
 an overlay) in every recording, play and check, as the fix adjustment
 (topic run). It builds like decomp/, with "names.h", and is not checked
 against the original, since it differs from it; scenario_adjust_check

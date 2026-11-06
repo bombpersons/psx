@@ -45,13 +45,14 @@ unless stock is given, and the recording names what they did:
   other ways) and the lag frames: ticks in which no game code read the
   pad. buffer_reads counts reads outside an exception handler: a game
   that reads its pad in a callback the VSync handler runs has none, and
-  latch still holds. late_input, left out when no tick was late, lists
-  the ticks in which a whole field passed with no poll into the buffer
+  latch still holds. late_fields counts the fields that came
+  late (0: input reached the game every tick); late_input, left out
+  when none did, lists the ticks in which a whole field passed with no poll into the buffer
   and no code read the buttons from it before the tick ended: the game
   ran that field on the last poll's buttons, so the original's own
   driver delays the input. Input must reach the game every tick, so a
   port never copies the delay: find the function that holds it back and
-  replace it in fixes/ (topic code).
+  replace it in fixes/ (topic code); port next asks for it.
 - fix: the functions of fixes/ run in place of the game's own, so the
   game takes its input every tick. late_input empty with fix and latch on
   is the fix working; fix_calls counts the replacement's calls.

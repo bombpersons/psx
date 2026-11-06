@@ -479,32 +479,48 @@ fn named(names: &Names, params: &[(String, Type, u32)], line: &str) -> String {
 /// How many argument registers the executable's function at `entry` takes
 /// by its signature in `names` (a 64-bit value takes an even pair, a
 /// struct its words); None without a signature, or with varargs.
-fn argument_slots(names: &Names, entry: u32) -> Option<usize> {
-    let f = names
-        .functions
-        .iter()
-        .find(|f| f.module.is_none() && f.address & 0x1FFF_FFFF == entry & 0x1FFF_FFFF)?;
-    let sig = f.signature.as_ref().filter(|s| !s.varargs)?;
-    let mut slots = 0usize;
-    for p in &sig.params {
-        let size = names.size_of(&p.ty).unwrap_or(4).max(1) as usize;
-        if size == 8 {
-            slots += slots % 2;
+fn argument_slots(names: &Names, entry: u32, here: impl Fn() -> Option<String>) -> Option<usize> {
+    let slots = |f: &psx_symbols::names::Function| {
+        let sig = f.signature.as_ref().filter(|s| !s.varargs)?;
+        let mut slots = 0usize;
+        for p in &sig.params {
+            let size = names.size_of(&p.ty).unwrap_or(4).max(1) as usize;
+            if size == 8 {
+                slots += slots % 2;
+            }
+            slots += size.div_ceil(4);
         }
-        slots += size.div_ceil(4);
+        Some(slots)
+    };
+    // Each module may name its own function at the address: the one whose
+    // code is there when they disagree.
+    let at: Vec<_> = names.functions.iter().filter(|f| f.address & 0x1FFF_FFFF == entry & 0x1FFF_FFFF).collect();
+    let counts: BTreeSet<Option<usize>> = at.iter().map(|f| slots(f)).collect();
+    match counts.len() {
+        0 => None,
+        1 => *counts.first().unwrap(),
+        _ => {
+            let here = here()?;
+            at.iter().find(|f| crate::names_bind::label(&f.name) == here).and_then(|f| slots(f))
+        }
     }
-    Some(slots)
+}
+
+/// The checked name of the code at `entry` in `ram`.
+fn resident(ram: &[u8], entry: u32) -> Option<String> {
+    let scope = crate::names_bind::Scope::project()?;
+    scope.describe(entry, 0x8000_0000, ram, 0).filter(|(n, checked)| *checked && !n.contains('+')).map(|(n, _)| n)
 }
 
 /// `difference` with a note when it is a call whose callee has no
 /// signature in names/, so all four argument registers were compared.
-fn unsigned_callee(names: &Names, difference: &str, a: &psx_core::callcheck::Effects, b: &psx_core::callcheck::Effects) -> String {
+fn unsigned_callee(names: &Names, ram: &[u8], difference: &str, a: &psx_core::callcheck::Effects, b: &psx_core::callcheck::Effects) -> String {
     let Some(k) = difference.strip_prefix("call ").and_then(|r| r.split(':').next()).and_then(|n| n.parse::<usize>().ok())
     else {
         return difference.to_string();
     };
     let (Some(x), Some(y)) = (a.calls.get(k - 1), b.calls.get(k - 1)) else { return difference.to_string() };
-    if x.0 != y.0 || argument_slots(names, x.0).is_some() {
+    if x.0 != y.0 || argument_slots(names, x.0, || resident(ram, x.0)).is_some() {
         return difference.to_string();
     }
     format!("{difference} (0x{:08X} has no signature in names/: all four argument registers are compared)", x.0)
@@ -583,7 +599,7 @@ pub fn check(
         let mut ours = c.original.clone();
         for e in [&mut ours, &mut theirs] {
             for call in &mut e.calls {
-                if let Some(n) = argument_slots(names, call.0) {
+                if let Some(n) = argument_slots(names, call.0, || resident(&m.bus.ram, call.0)) {
                     call.1[n.min(4)..].fill(0);
                 }
             }
@@ -591,7 +607,7 @@ pub fn check(
         let params = pointer_params(names, bare, &m.cpu.regs);
         let differences: Vec<String> = psx_core::callcheck::differences(&ours, &theirs, returns, o.steps)
             .iter()
-            .map(|d| unsigned_callee(names, &named(names, &params, d), &ours, &theirs))
+            .map(|d| unsigned_callee(names, &m.bus.ram, &named(names, &params, d), &ours, &theirs))
             .collect();
         let tag = match (varied, o.cases) {
             (None, 1) => o.tag.to_string(),
@@ -1825,13 +1841,23 @@ static int helper(int x)\n{\n    return x + 1;\n}\n\nvoid world_collide(Actor *a
             "function 0x80010000 int two(int a, int b)\nfunction 0x80010100 longlong wide(int a, longlong b)\n\
 function 0x80010200 void none(void)\nfunction 0x80010300 unknown\nfunction 0x80010400 int many(int, int, int, int, int)\n",
         );
-        assert_eq!(argument_slots(&n, 0x8001_0000), Some(2));
-        assert_eq!(argument_slots(&n, 0xA001_0000), Some(2), "by the physical address");
-        assert_eq!(argument_slots(&n, 0x8001_0100), Some(4), "a 64-bit value takes an even pair");
-        assert_eq!(argument_slots(&n, 0x8001_0200), Some(0));
-        assert_eq!(argument_slots(&n, 0x8001_0300), None);
-        assert_eq!(argument_slots(&n, 0x8001_0400), Some(5));
-        assert_eq!(argument_slots(&n, 0x8001_0500), None);
+        assert_eq!(argument_slots(&n, 0x8001_0000, || None), Some(2));
+        assert_eq!(argument_slots(&n, 0xA001_0000, || None), Some(2), "by the physical address");
+        assert_eq!(argument_slots(&n, 0x8001_0100, || None), Some(4), "a 64-bit value takes an even pair");
+        assert_eq!(argument_slots(&n, 0x8001_0200, || None), Some(0));
+        assert_eq!(argument_slots(&n, 0x8001_0300, || None), None);
+        assert_eq!(argument_slots(&n, 0x8001_0400, || None), Some(5));
+        assert_eq!(argument_slots(&n, 0x8001_0500, || None), None);
+        // A module's name is its signature too; two modules disagreeing
+        // take the one whose code is there.
+        let (_d, n) = names(
+            "function 0x80020000 in RACE.OVL int one(int a)\nfunction 0x80030000 in RACE.OVL int one2(int a)\n\
+function 0x80030000 in MENU.OVL int three(int a, int b, int c)\n",
+        );
+        assert_eq!(argument_slots(&n, 0x8002_0000, || None), Some(1));
+        assert_eq!(argument_slots(&n, 0x8003_0000, || None), None, "unknown which is there");
+        assert_eq!(argument_slots(&n, 0x8003_0000, || Some("three".into())), Some(3));
+        assert_eq!(argument_slots(&n, 0x8003_0000, || Some("one2".into())), Some(1));
     }
 
     #[test]

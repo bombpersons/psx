@@ -537,6 +537,7 @@ impl Running {
             "ticks": self.ticks,
             "lag_frames": self.lag.len(),
             "buffer_reads": self.buffer_reads,
+            "late_fields": self.late_fields,
         });
         if self.stale_reads > 0 {
             r["stale_reads"] = json!(self.stale_reads);
