@@ -232,6 +232,17 @@ impl Loaded {
                 "{at}: recorded before psx measured whether the game takes its input every tick; record it again"
             ));
         }
+        // An adjusted recording is made with fixes/ as it is: the fixes
+        // change what the game does, as the port's recordings must.
+        if r.header.source.kind == SourceKind::Captured && r.header.producer.details.contains_key("adjust") {
+            let made = r.header.producer.details.get("fix").and_then(|f| f["sources"].as_str());
+            if made != crate::decomp::fixes_hash(root).as_deref() {
+                p.push(format!(
+                    "{at}: {}; record it again",
+                    if made.is_none() { "made without fixes/" } else { "made with fixes/ as it was before" }
+                ));
+            }
+        }
         if self.scenario.is_some() && self.glossary.is_some() && recorded != declared {
             p.push(format!(
                 "{at}: recorded for other quantities than the scenario compares, or with other types than the glossary declares; record it again"
@@ -2545,6 +2556,22 @@ pub struct Quantities {
         std::fs::write(root.join("scenarios/walk/a.jsonl"), latched(late)).unwrap();
         let line = "scenarios/walk/a.jsonl: the game ran 7 ticks on input a tick old (ticks 3, 5, 8, 9, 11, ..)";
         assert_eq!(late_input(root, "walk", None), [(Late::Unfixed, line.to_string())]);
+        // An adjusted recording is made with fixes/ as it is.
+        let adjusted = latched(r#"{"buffer":[],"late_fields":0}"#).replace("\"details\":{", "\"details\":{\"adjust\":[\"latch\"],");
+        std::fs::write(root.join("scenarios/walk/a.jsonl"), &adjusted).unwrap();
+        let without = "scenarios/walk/a.jsonl: made without fixes/; record it again";
+        assert!(!unready(root, "walk").iter().any(|p| p.contains("fixes/")));
+        std::fs::create_dir_all(root.join("fixes")).unwrap();
+        std::fs::write(root.join("fixes/poll.c"), "int poll(void) { return 0; }\n").unwrap();
+        assert!(unready(root, "walk").contains(&without.to_string()), "{:?}", unready(root, "walk"));
+        let now = crate::decomp::fixes_hash(root).unwrap();
+        let with = adjusted.replace("\"details\":{", &format!("\"details\":{{\"fix\":{{\"sources\":\"{now}\"}},"));
+        std::fs::write(root.join("scenarios/walk/a.jsonl"), &with).unwrap();
+        assert!(!unready(root, "walk").iter().any(|p| p.contains("fixes/")));
+        std::fs::write(root.join("fixes/poll.c"), "int poll(void) { return 1; }\n").unwrap();
+        assert!(unready(root, "walk").contains(&"scenarios/walk/a.jsonl: made with fixes/ as it was before; record it again".to_string()));
+        std::fs::remove_dir_all(root.join("fixes")).unwrap();
+        std::fs::write(root.join("scenarios/walk/a.jsonl"), latched(late)).unwrap();
         assert_eq!(late_input(root, "walk", Some("f1")), [(Late::Before, format!("{line}, made without fixes/"))]);
         // Made with the fix as it is and still late: the fix does not work,
         // and only a change to fixes/ asks for it again.

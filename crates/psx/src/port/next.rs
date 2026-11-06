@@ -543,6 +543,9 @@ impl Facts {
             .collect();
         let confirmed = port.goal.confirmed.as_ref().map(|c| c.wont_reach.clone()).unwrap_or_default();
         let head = git.head.as_deref();
+        // A check judges HEAD as committed: uncommitted changes to what it
+        // reads (a recording made again, the port's code) leave it stale.
+        let judged = head.filter(|_| git.clean);
         let review = review::read(root);
         let assets = assets::inventory(root, &port, inv.as_ref(), head);
         let needs = |names: &[String], all: bool, file: &str, problems: &mut Vec<super::Problem>| {
@@ -557,7 +560,7 @@ impl Facts {
         let closure = port.closure();
         let passing = passing(&closure, |id| {
             let e = port.entries.get(id)?;
-            match verdict::state(root, id, head) {
+            match verdict::state(root, id, judged) {
                 State::Current(v) => Some(e.recordings.work.iter().filter(|n| v.of(n).is_empty()).cloned().collect()),
                 _ => None,
             }
@@ -676,7 +679,7 @@ impl Facts {
                         tests_unmatched(&e.wont_reach, &branches).into_iter().map(|p| super::problem(&e.file, p)),
                     );
                 }
-                let verdict = verdict::state(root, &id, head);
+                let verdict = verdict::state(root, &id, judged);
                 let results = |names: &[String]| -> Vec<(String, Option<Vec<String>>)> {
                     names
                         .iter()
@@ -1043,6 +1046,10 @@ impl Facts {
         }
         if let Some(f) = find(&|f| at(f, Stage::Recorded) && !matches!(f.verdict, State::Current(_))) {
             let (why, how) = match &f.verdict {
+                State::Stale { commit } if self.git.head.as_deref() == Some(commit.as_str()) => (
+                    "its verdict is from HEAD, and the workspace has changed since (uncommitted changes besides notes and the review)".into(),
+                    "commit the changes and run psx port check (for a quick look first, cargo test -p <game> --test scenarios)",
+                ),
                 State::Stale { commit } => (
                     format!(
                         "its verdict is from {commit}, not HEAD with no uncommitted changes (notes and the review aside)"
@@ -1951,6 +1958,44 @@ mod tests {
         assert!(f.next().why.starts_with("fixes/ does not stop the delay"));
         set(&mut f, "F-0001", |x| x.late.clear());
         assert!(!["Fix input", "Record"].contains(&f.next().item));
+    }
+
+    #[test]
+    fn uncommitted_changes_leave_a_verdict_at_head_stale() {
+        let (dir, _) = workspace(CONFIRMED, &[("F-0001.md", &feature("F-0001", ""))]);
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&dir.0)
+                .output()
+                .is_ok_and(|o| o.status.success());
+            assert!(ok, "git {args:?}");
+        };
+        std::fs::write(dir.0.join(".gitignore"), ".psx/\n").unwrap();
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "c"]);
+        let head = Git::read(&dir.0).head.unwrap();
+        let v = verdict::Verdict {
+            feature: "F-0001".into(),
+            commit: head.clone(),
+            clean: true,
+            at: "t".into(),
+            failures: vec![],
+            recordings: Default::default(),
+        };
+        verdict::write(&dir.0, &v).unwrap();
+        let state = || Facts::gather(&dir.0).unwrap().features[0].verdict.clone();
+        assert!(matches!(state(), State::Current(_)), "{:?}", state());
+        // Notes change nothing a check reads.
+        std::fs::create_dir_all(dir.0.join("notes")).unwrap();
+        std::fs::write(dir.0.join("notes/a.md"), "x").unwrap();
+        assert!(matches!(state(), State::Current(_)));
+        // A recording made again does.
+        std::fs::create_dir_all(dir.0.join("scenarios/walk")).unwrap();
+        std::fs::write(dir.0.join("scenarios/walk/a.jsonl"), "{}").unwrap();
+        assert_eq!(state(), State::Stale { commit: head });
     }
 
     #[test]
