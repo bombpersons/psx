@@ -12,8 +12,9 @@
 //! marks the RAM bytes it writes, and remembers whether an exception handler
 //! wrote them. The bytes an exception handler wrote from the latest poll are
 //! the **pad buffer**: the PsyQ library's, the BIOS's or the game's own,
-//! found with no presses scripted. A load of the buffer outside a handler is
-//! a **read**: the game consuming its pad. A game that keeps the reply in
+//! found with no presses scripted. A load of the buffer is a **read**: the
+//! game consuming its pad, or inside a handler the driver copying it on or
+//! a game reading it in a callback (the two look alike). A game that keeps the reply in
 //! registers has no buffer; its loads from JOY_DATA outside a handler are
 //! its reads.
 //!
@@ -48,7 +49,8 @@ pub struct Held {
     pub mask: u8,
 }
 
-/// A read of the pad by code outside an exception handler.
+/// A read of the pad: a load of the bytes a handler stored from a poll, or
+/// of JOY_DATA outside a handler.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PadRead {
     pub pc: u32,
@@ -56,6 +58,9 @@ pub struct PadRead {
     pub addr: u32,
     /// The reply bytes it read.
     pub marks: Vec<Mark>,
+    /// Made inside an exception handler: the driver copying the bytes on,
+    /// or a game reading its pad in a callback the handler runs (VSync's).
+    pub in_handler: bool,
 }
 
 /// One byte of the pad buffer.
@@ -152,7 +157,7 @@ impl PadFlow {
                     *lane = Some(mark);
                 }
                 if !self.in_handler {
-                    self.reads.push(PadRead { pc: info.pc, addr: JOY_DATA, marks: vec![mark] });
+                    self.reads.push(PadRead { pc: info.pc, addr: JOY_DATA, marks: vec![mark], in_handler: false });
                 }
             }
             return;
@@ -219,8 +224,8 @@ impl PadFlow {
                 }
             }
         }
-        if !self.in_handler && !buffer.is_empty() {
-            self.reads.push(PadRead { pc: info.pc, addr: shown(p), marks: buffer });
+        if !buffer.is_empty() {
+            self.reads.push(PadRead { pc: info.pc, addr: shown(p), marks: buffer, in_handler: self.in_handler });
         }
         self.set(rt, l);
     }
@@ -257,6 +262,20 @@ impl PadFlow {
         };
         held(true)
             .filter(|(_, h)| h.mark.exchange == latest)
+            .map(|(a, h)| BufferByte { addr: shown(*a), pos: h.mark.pos, mask: self.masks.get(a).copied().flatten() })
+            .collect()
+    }
+
+    /// Bytes a handler stored from the few polls before the buffer's: a
+    /// copy the driver makes of a reply a poll later, often the one the
+    /// game reads. By address.
+    pub fn handler_copies(&self) -> Vec<BufferByte> {
+        let Some(latest) = self.ram.values().filter(|h| h.by_handler).map(|h| h.mark.exchange).max() else {
+            return Vec::new();
+        };
+        self.ram
+            .iter()
+            .filter(|(_, h)| h.by_handler && h.mark.exchange < latest && h.mark.exchange + 4 >= latest)
             .map(|(a, h)| BufferByte { addr: shown(*a), pos: h.mark.pos, mask: self.masks.get(a).copied().flatten() })
             .collect()
     }
@@ -435,6 +454,22 @@ pub mod test_program {
         m
     }
 
+    /// A machine whose handler copies the last poll's buttons_lo from
+    /// 0x80020000 to 0x80020100, then polls into 0x80020000 (`Keep::Bytes`);
+    /// its main code never reads.
+    pub fn copied_a_poll_later(buttons: u16) -> Machine {
+        let mut m = Machine::new(vec![0; 0x8_0000]);
+        let mut handler = vec![lui(S1, 0x8002), lbu(T2, 0, S1), NOP, sb(T2, 0x100, S1)];
+        handler.extend(poll(Keep::Bytes));
+        handler.extend([mfc0(K0, 14), NOP, addiu(K0, K0, 4), jr(K0), RFE]);
+        load(&mut m, 0x8000_0080, &handler);
+        load(&mut m, 0x8001_0000, &[SYSCALL, j(0x8001_0000), NOP]);
+        m.cpu.cop0[crate::cpu::cop0::SR] = 0;
+        m.cpu.set_pc(0x8001_0000);
+        m.bus.sio0.buttons = buttons;
+        m
+    }
+
     /// `code` into RAM at `at`.
     pub fn load(m: &mut Machine, at: u32, code: &[u32]) {
         let at = (at & 0x1F_FFFF) as usize;
@@ -497,6 +532,17 @@ mod tests {
         assert!(main.contains(&(0x8001_000C, 0x8002_0001, 4)), "{main:x?}");
         // The handler's own loads from JOY_DATA are not reads.
         assert!(reads.iter().all(|r| r.addr != JOY_DATA));
+    }
+
+    #[test]
+    fn a_copy_the_handler_makes_a_poll_later_is_kept_and_its_loads_are_handler_reads() {
+        // The handler copies the last poll's buttons_lo to 0x80020100, then
+        // polls into 0x80020000; the main code never reads.
+        let mut m = copied_a_poll_later(button::CROSS);
+        let (f, reads) = run(&mut m, 3);
+        assert_eq!(f.buffer().iter().map(|b| b.addr).collect::<Vec<_>>(), [0x8002_0000, 0x8002_0001]);
+        assert_eq!(f.handler_copies(), [BufferByte { addr: 0x8002_0100, pos: 3, mask: Some(0) }]);
+        assert!(!reads.is_empty() && reads.iter().all(|r| r.in_handler && r.pc == 0x8000_0084), "{reads:x?}");
     }
 
     #[test]

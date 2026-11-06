@@ -5,7 +5,8 @@
 //! A call runs from its entry until the CPU is back at the return address
 //! with `sp` as it was, or a step limit. Its effects are what a caller could
 //! see: the RAM and scratchpad bytes it left changed (its own stack frame,
-//! below `sp`, is scratch and left out), the return registers it uses (`v0`,
+//! below `sp`, is scratch and left out, as are the 16 bytes above `sp` the
+//! caller keeps for its four argument registers), the return registers it uses (`v0`,
 //! and `v1` for a 64-bit value: otherwise `v1` is scratch), `sp` and the
 //! registers a call keeps (`s0`..`s7`, `gp`, `fp`), the GTE's registers,
 //! the hardware register writes in order, and the functions it called with
@@ -211,8 +212,10 @@ pub fn differences(a: &Effects, b: &Effects, returns: usize, max_steps: u64) -> 
         }
     }
     // Bytes below the entry sp, down to the lower of the two frames, are the
-    // calls' own scratch.
-    let frame = physical(a.low_sp.min(b.low_sp))..physical(a.sp);
+    // calls' own scratch, and so are the 16 above it: the caller keeps them
+    // for the callee to store its argument registers in (o32), and the
+    // callee may or may not.
+    let frame = physical(a.low_sp.min(b.low_sp))..physical(a.sp) + 16;
     let left = |e: &Effects| -> BTreeMap<u32, u8> {
         e.stores.iter().filter(|(p, _)| !frame.contains(p)).map(|(p, v)| (*p, *v)).collect()
     };
@@ -388,6 +391,17 @@ mod tests {
         let mut code = original();
         change(&mut code);
         check(&code)
+    }
+
+    #[test]
+    fn the_callers_argument_slots_are_the_callees_scratch() {
+        // Its frame is 16 bytes: 16(sp) is the entry sp, a0's slot.
+        let c = the_original_but(|c| c.insert(1, sw(A0, 16, SP)));
+        assert_eq!(c.differences, Vec::<String>::new());
+        // 16 bytes above the entry sp is the caller's, past the four slots.
+        let c = the_original_but(|c| c.insert(1, sw(A0, 32, SP)));
+        assert_eq!(c.differences.len(), 4, "{:?}", c.differences);
+        assert!(c.differences[0].starts_with("byte 0x801FFF10: original not stored"), "{:?}", c.differences);
     }
 
     #[test]

@@ -40,13 +40,18 @@ unless stock is given, and the recording names what they did:
   input. Input waits for the tick's end; psx writes it into the game's pad
   buffer at once and puts the buffer back when the interrupt handler polls
   into it mid-tick. Every read in a tick sees that tick's input, as the
-  port's tick does. adjusted keeps the buffer it found and the lag frames:
-  ticks in which no game code read the pad. late_input lists the ticks
-  in which a whole field passed with no poll into the buffer and no game
-  code read it before the tick ended: the game ran that field on the
-  last poll's buttons, so the original's own driver delays the input. Input must reach the game every tick, so a port never
-  copies the delay: find the function that holds it back and replace it
-  in fixes/ (topic code).
+  port's tick does. adjusted keeps the buffer it found (each byte's mask:
+  0x00 stored as the controller sent it, 0xFF inverted, null changed in
+  other ways) and the lag frames: ticks in which no game code read the
+  pad. buffer_reads counts reads outside an exception handler: a game
+  that reads its pad in a callback the VSync handler runs has none, and
+  latch still holds. late_input, left out when no tick was late, lists
+  the ticks in which a whole field passed with no poll into the buffer
+  and no code read the buttons from it before the tick ended: the game
+  ran that field on the last poll's buttons, so the original's own
+  driver delays the input. Input must reach the game every tick, so a
+  port never copies the delay: find the function that holds it back and
+  replace it in fixes/ (topic code).
 - fix: the functions of fixes/ run in place of the game's own, so the
   game takes its input every tick. late_input empty with fix and latch on
   is the fix working; fix_calls counts the replacement's calls.
@@ -61,9 +66,15 @@ quantity's first tick where they differ (adjust names one alone, to
 tell which caused it): a press taking effect a tick sooner is latch's
 cost; a value the stock game never reaches is a rule that depends on
 timing, so record that scenario stock and say why in the feature's
-notes. run with pad_reads shows where a game keeps its pad (the
-buffer its handler fills, the copies it makes), the code that reads it,
-and the fields in which nothing read it.
+notes. run with pad_reads shows where a game keeps its pad: buffer, the
+bytes a handler stored from the latest poll; handler_copies, those it
+stored from the polls before (a driver copying a reply on a poll later,
+often the copy the game reads); copies, those the game's main code
+made. readers lists the code that loads them, the main code's first;
+in_handler marks a load inside an exception handler, the driver copying
+the bytes on or a game reading its pad in a VSync callback, which look
+alike: a reader of handler_copies is usually the game.
+fields_without_read counts the fields with no read by main code.
 
 ## Memory formats
 

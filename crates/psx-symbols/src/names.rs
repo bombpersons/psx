@@ -268,6 +268,18 @@ const REGISTERS: &[&str] = &[
 ];
 
 /// Reads `names/` and `.psx/names/` under `root` and checks them together.
+/// The names files under `root` (names/ and .psx/names/), as `load` reads them.
+pub fn files(root: &Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for dir in [AGENT_DIR, IMPORTED_DIR] {
+        let mut more = Vec::new();
+        walk(&root.join(dir), &mut more);
+        more.sort();
+        files.extend(more);
+    }
+    files
+}
+
 pub fn load(root: &Path) -> Names {
     let mut agent = Vec::new();
     let mut imported = Vec::new();

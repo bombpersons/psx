@@ -10,7 +10,8 @@ use std::path::Path;
 
 use psx_symbols::names::{Name, Names};
 use serde_json::Value;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 /// The analysed memory: its bytes from `base`.
 pub(crate) struct Code<'a> {
@@ -297,10 +298,19 @@ impl Scope {
         Some(Scope { alts, intervals, unplaced, table })
     }
 
-    /// The project's names, read once a process.
-    pub(crate) fn project() -> Option<&'static Scope> {
-        static SCOPE: OnceLock<Option<Scope>> = OnceLock::new();
-        SCOPE.get_or_init(|| Scope::new(project_names(), project_inventory())).as_ref()
+    /// The project's names, read again when its names or inventory change.
+    pub(crate) fn project() -> Option<Arc<Scope>> {
+        type Key = (Arc<Names>, Option<Arc<Inventory>>);
+        static SCOPE: Mutex<Option<(Key, Option<Arc<Scope>>)>> = Mutex::new(None);
+        let key = (project_names(), project_inventory());
+        let mut cache = SCOPE.lock().unwrap_or_else(|e| e.into_inner());
+        let same = |k: &Key| Arc::ptr_eq(&k.0, &key.0) && k.1.as_ref().map(Arc::as_ptr) == key.1.as_ref().map(Arc::as_ptr);
+        if let Some((_, scope)) = cache.as_ref().filter(|(k, _)| same(k)) {
+            return scope.clone();
+        }
+        let scope = Scope::new(&key.0, key.1.as_deref()).map(Arc::new);
+        *cache = Some((key, scope.clone()));
+        scope
     }
 
     /// `name` or `name+0xOFF` for `pc` in `image` (loaded at `image_base`),
@@ -319,10 +329,45 @@ impl Scope {
     }
 }
 
-/// The project's inventory, read once a process.
-fn project_inventory() -> Option<&'static Inventory> {
-    static INVENTORY: OnceLock<Option<Inventory>> = OnceLock::new();
-    INVENTORY.get_or_init(|| Inventory::load(Path::new("."))).as_ref()
+/// What a cached read depends on: the project root and each file's size
+/// and time, so an edit or another project reads again.
+type Stamp = (std::path::PathBuf, Vec<(std::path::PathBuf, u64, Option<SystemTime>)>);
+
+fn stamp(files: Vec<std::path::PathBuf>) -> Stamp {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let files = files
+        .into_iter()
+        .map(|p| {
+            let m = std::fs::metadata(&p).ok();
+            let len = m.as_ref().map_or(0, |m| m.len());
+            let time = m.and_then(|m| m.modified().ok());
+            (p, len, time)
+        })
+        .collect();
+    (cwd, files)
+}
+
+/// `make`'s value, kept in `cache` until `key` changes.
+fn fresh<T>(cache: &Mutex<Option<(Stamp, T)>>, key: Stamp, make: impl FnOnce() -> T) -> T
+where
+    T: Clone,
+{
+    let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((k, v)) = c.as_ref() {
+        if *k == key {
+            return v.clone();
+        }
+    }
+    let v = make();
+    *c = Some((key, v.clone()));
+    v
+}
+
+/// The project's inventory, read again when it changes.
+fn project_inventory() -> Option<Arc<Inventory>> {
+    static INVENTORY: Mutex<Option<(Stamp, Option<Arc<Inventory>>)>> = Mutex::new(None);
+    let key = stamp(vec![Path::new(".psx/inventory.json").to_path_buf()]);
+    fresh(&INVENTORY, key, || Inventory::load(Path::new(".")).map(Arc::new))
 }
 
 /// The code of the inventory's function at `entry` (of `module`, or the
@@ -334,7 +379,7 @@ pub(crate) fn body(entry: u32, module: Option<&str>) -> Option<Vec<(u32, u32)>> 
 /// The project's name for the inventory's function at `entry` in `module`
 /// (an executable's path or an overlay's name, as the inventory has them).
 pub(crate) fn function_name(module: &str, entry: u32) -> Option<String> {
-    project_inventory()?.name_of(project_names(), module, entry)
+    project_inventory()?.name_of(&project_names(), module, entry)
 }
 
 /// `row` with the project's name for its function, when there is one.
@@ -350,10 +395,12 @@ pub(crate) fn named(mut row: Value, module: &str, entry: u32) -> Value {
 }
 
 /// The project's names (names/ and .psx/names/ under the current
-/// directory, which psx makes the project root), read once a process.
-pub(crate) fn project_names() -> &'static Names {
-    static NAMES: OnceLock<Names> = OnceLock::new();
-    NAMES.get_or_init(|| psx_symbols::names::load(Path::new(".")))
+/// directory, which psx makes the project root), read again when a file
+/// there changes: one MCP process sees the agent's edits.
+pub(crate) fn project_names() -> Arc<Names> {
+    static NAMES: Mutex<Option<(Stamp, Arc<Names>)>> = Mutex::new(None);
+    let key = stamp(psx_symbols::names::files(Path::new(".")));
+    fresh(&NAMES, key, || Arc::new(psx_symbols::names::load(Path::new("."))))
 }
 
 /// An address argument: hex, or a name from the project's names files,
@@ -364,7 +411,7 @@ pub(crate) fn address(spec: &str) -> Result<u32, String> {
     let hex = psx_media::memmap::parse_hex(spec);
     let names = project_names();
     if let Some(h) = hex {
-        if spec.starts_with("0x") || spec.starts_with("0X") || find(names, spec).is_empty() {
+        if spec.starts_with("0x") || spec.starts_with("0X") || find(&names, spec).is_empty() {
             return Ok(h);
         }
     }
@@ -375,7 +422,7 @@ pub(crate) fn address(spec: &str) -> Result<u32, String> {
         ),
         None => (spec, 0),
     };
-    let found = find(names, base);
+    let found = find(&names, base);
     match found.as_slice() {
         [a] => Ok(a.wrapping_add(off)),
         [] => Err(format!("{base:?} is neither a hex address nor a name in names/")),
@@ -476,6 +523,28 @@ pub(crate) fn global_at(names: &Names, addr: u32) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_names_file_edited_is_read_again() {
+        let dir = std::env::temp_dir().join(format!("psx-names-fresh-{}", std::process::id()));
+        let file = dir.join("names/a.names");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "function 0x80010000 one\n").unwrap();
+        let cache = Mutex::new(None);
+        let read = || {
+            let key = stamp(psx_symbols::names::files(&dir));
+            fresh(&cache, key, || Arc::new(psx_symbols::names::load(&dir)))
+        };
+        let first = read();
+        assert!(Arc::ptr_eq(&first, &read()), "unchanged files are not read again");
+        std::fs::write(&file, "function 0x80010000 one\nfunction 0x80020000 two\n").unwrap();
+        std::fs::write(dir.join("names/b.names"), "global 0x80030000 u32 three\n").unwrap();
+        let second = read();
+        assert_eq!(first.functions.len(), 1);
+        assert_eq!(second.functions.len(), 2);
+        assert_eq!(second.globals.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn inventory(overlays: Value) -> Inventory {
         let mut by_entry: BTreeMap<u32, Vec<Known>> = BTreeMap::new();

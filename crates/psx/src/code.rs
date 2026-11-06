@@ -513,7 +513,7 @@ pub struct ListOpts<'a> {
 pub fn listing(code: &Code, lo: u32, hi: u32, o: &ListOpts) -> (Vec<Value>, String) {
     let label = |a: u32| code.name(o.scopes, a, 0);
     let name = |a: u32| code.name(o.scopes, a, 0x4000);
-    let global = |a: u32| crate::names_bind::global_at(crate::names_bind::project_names(), a);
+    let global = |a: u32| crate::names_bind::global_at(&crate::names_bind::project_names(), a);
     let mut targets = BTreeSet::new();
     let mut a = lo;
     while a < hi {

@@ -708,7 +708,7 @@ pub(crate) fn summary(v: &Value) -> Value {
     }
     let sections: [(&str, &[&str]); 11] = [
         ("until", &["met", "run_frame", "values"]),
-        ("pad_reads", &["buffer", "polls", "fields", "fields_without_read"]),
+        ("pad_reads", &["buffer", "handler_copies", "polls", "fields", "fields_without_read"]),
         ("tick_finder", &["file", "fields", "pairs"]),
         ("profile", &["file", "cycles", "functions", "top"]),
         ("read_watch", &["hits", "recorded", "complete", "file"]),

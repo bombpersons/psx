@@ -67,13 +67,13 @@ pub(crate) struct ScopedSymbols {
     /// `(text_addr, payload)` from a `.symbols.json` report; `None` for bare `.sym` files.
     pub code: Option<(u32, Vec<u8>)>,
     /// The project's names files, checked by the inventory's hashes.
-    pub names: Option<&'static crate::names_bind::Scope>,
+    pub names: Option<std::sync::Arc<crate::names_bind::Scope>>,
 }
 
 impl ScopedSymbols {
     /// Resolve names against the exact code image used by the caller.
     pub fn describe_image(&self, pc: u32, image_base: u32, image: &[u8], distance: u32) -> Option<String> {
-        if let Some(names) = self.names {
+        if let Some(names) = &self.names {
             return names.describe(pc, image_base, image, distance).map(|(n, _)| n);
         }
         let canonical = crate::names_bind::canonical(pc).unwrap_or(pc);
@@ -159,7 +159,7 @@ pub(crate) fn load_symbols(paths: &[PathBuf]) -> crate::Result<Vec<ScopedSymbols
 /// (2 MiB main RAM image). Without RAM, or for bare `.sym` files, the name is unverified.
 pub(crate) fn name_pc(scopes: &[ScopedSymbols], pc: u32, ram: Option<&[u8]>) -> Option<(String, SymbolCheck, String)> {
     for s in scopes {
-        if let (Some(names), Some(ram)) = (s.names, ram) {
+        if let (Some(names), Some(ram)) = (&s.names, ram) {
             if let Some((n, checked)) = names.describe(pc, 0x8000_0000, ram, 0x4000) {
                 let check = if checked { SymbolCheck::BodyMatch } else { SymbolCheck::Unverified };
                 return Some((n, check, s.name.clone()));

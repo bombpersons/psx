@@ -106,8 +106,13 @@ them), the GTE's registers, hardware writes and the calls made with
 their arguments. Time is not compared. Each call is also run varied
 (varied, 2 by default): its integer arguments and the integers its
 pointer arguments point to set at random within their types in names/,
-to reach what no recording does; varied_dropped counts those the
-original did not return from, calls the game could not make.
+to reach what no recording does; an enum's are set to its values only,
+so an argument the game passes from a few (a slot, a mode) is an enum.
+varied_dropped counts those the original did not return from, calls the
+game could not make. A call's arguments are compared as many as its
+callee's signature in names/ takes (all four without one), and the 16
+bytes above sp, where a function may store its argument registers, are
+its own.
 branch_ways lists the original's branch ways no case took. A failed
 case is saved as a state (.psx/decomp/cases/); code_check from it
 reruns that call. With no function, code_check checks each function of

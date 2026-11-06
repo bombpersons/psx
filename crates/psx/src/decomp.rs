@@ -476,6 +476,40 @@ fn named(names: &Names, params: &[(String, Type, u32)], line: &str) -> String {
     }
 }
 
+/// How many argument registers the executable's function at `entry` takes
+/// by its signature in `names` (a 64-bit value takes an even pair, a
+/// struct its words); None without a signature, or with varargs.
+fn argument_slots(names: &Names, entry: u32) -> Option<usize> {
+    let f = names
+        .functions
+        .iter()
+        .find(|f| f.module.is_none() && f.address & 0x1FFF_FFFF == entry & 0x1FFF_FFFF)?;
+    let sig = f.signature.as_ref().filter(|s| !s.varargs)?;
+    let mut slots = 0usize;
+    for p in &sig.params {
+        let size = names.size_of(&p.ty).unwrap_or(4).max(1) as usize;
+        if size == 8 {
+            slots += slots % 2;
+        }
+        slots += size.div_ceil(4);
+    }
+    Some(slots)
+}
+
+/// `difference` with a note when it is a call whose callee has no
+/// signature in names/, so all four argument registers were compared.
+fn unsigned_callee(names: &Names, difference: &str, a: &psx_core::callcheck::Effects, b: &psx_core::callcheck::Effects) -> String {
+    let Some(k) = difference.strip_prefix("call ").and_then(|r| r.split(':').next()).and_then(|n| n.parse::<usize>().ok())
+    else {
+        return difference.to_string();
+    };
+    let (Some(x), Some(y)) = (a.calls.get(k - 1), b.calls.get(k - 1)) else { return difference.to_string() };
+    if x.0 != y.0 || argument_slots(names, x.0).is_some() {
+        return difference.to_string();
+    }
+    format!("{difference} (0x{:08X} has no signature in names/: all four argument registers are compared)", x.0)
+}
+
 /// The pointer parameters among the first four of `function`'s signature,
 /// with their names (`a0`.. when unnamed) and values in `regs`.
 fn pointer_params(names: &Names, function: &str, regs: &[u32; 32]) -> Vec<(String, Type, u32)> {
@@ -544,10 +578,20 @@ pub fn check(
                 call.0 = *o;
             }
         }
+        // A callee's argument registers past its parameters hold whatever
+        // the caller left there: compared only by a signature's count.
+        let mut ours = c.original.clone();
+        for e in [&mut ours, &mut theirs] {
+            for call in &mut e.calls {
+                if let Some(n) = argument_slots(names, call.0) {
+                    call.1[n.min(4)..].fill(0);
+                }
+            }
+        }
         let params = pointer_params(names, bare, &m.cpu.regs);
-        let differences: Vec<String> = psx_core::callcheck::differences(&c.original, &theirs, returns, o.steps)
+        let differences: Vec<String> = psx_core::callcheck::differences(&ours, &theirs, returns, o.steps)
             .iter()
-            .map(|d| named(names, &params, d))
+            .map(|d| unsigned_callee(names, &named(names, &params, d), &ours, &theirs))
             .collect();
         let tag = match (varied, o.cases) {
             (None, 1) => o.tag.to_string(),
@@ -630,6 +674,23 @@ impl Rng {
 
     /// A value for a `size`-byte integer: half the time a small one
     /// (-16..16), else any.
+    /// A value of `ty` when it is an integer: one of an enum's values, or
+    /// any within a base type's size; with the size.
+    fn of(&mut self, names: &Names, ty: &Type) -> Option<(u32, u32)> {
+        if let Type::Named { name } = ty {
+            match names.type_named(name).map(|t| &t.body) {
+                Some(TypeBody::Typedef { ty }) => return self.of(names, ty),
+                Some(TypeBody::Enum { values }) if !values.is_empty() => {
+                    let v = values[self.next() as usize % values.len()].value;
+                    return Some((names.size_of(ty).unwrap_or(4).clamp(1, 4), v as u32));
+                }
+                _ => {}
+            }
+        }
+        let (size, signed) = integer(names, ty)?;
+        Some((size, self.value(size, signed)))
+    }
+
     fn value(&mut self, size: u32, signed: bool) -> u32 {
         let v = if self.next() & 1 == 0 { (self.next() % 33) as i32 - 16 } else { self.next() as i32 };
         let bits = 8 * size.min(4);
@@ -662,8 +723,7 @@ fn vary_memory(m: &mut psx_core::Machine, names: &Names, ty: &Type, addr: u32, r
     if depth > 8 {
         return;
     }
-    if let Some((size, signed)) = integer(names, ty) {
-        let v = rng.value(size, signed);
+    if let Some((size, v)) = rng.of(names, ty) {
         for k in 0..size {
             if let Some(p) = crate::names_bind::canonical(addr + k) {
                 m.bus.ram[(p & 0x1F_FFFF) as usize] = (v >> (8 * k)) as u8;
@@ -709,8 +769,8 @@ fn vary(m: &mut psx_core::Machine, names: &Names, function: &str, rng: &mut Rng)
                 }
             }
             ty => {
-                if let Some((size, signed)) = integer(names, ty) {
-                    m.cpu.regs[4 + k] = rng.value(size, signed);
+                if let Some((_, v)) = rng.of(names, ty) {
+                    m.cpu.regs[4 + k] = v;
                 }
             }
         }
@@ -785,7 +845,7 @@ fn check_cmd(ctx: &Ctx, a: CodeCheckArgs) -> crate::Result<(bool, Value)> {
     if sources.is_empty() {
         return Err(Error::invalid("decomp/ holds no C: write the function's C as decomp/<name>.c"));
     }
-    let names = crate::names_bind::project_names();
+    let names = &*crate::names_bind::project_names();
     let one = (a.functions.len() == 1).then(|| a.functions[0].clone());
     let build = match build(names, &sources, &root.join(".psx/decomp")) {
         Ok(b) => b,
@@ -1757,6 +1817,32 @@ static int helper(int x)\n{\n    return x + 1;\n}\n\nvoid world_collide(Actor *a
         let failed: Vec<_> = cases.iter().filter(|c| !c.differences.is_empty()).collect();
         assert!(!failed.is_empty() && failed.iter().all(|c| c.varied.is_some() && c.saved.is_some()), "{cases:?}");
         assert!(failed[0].saved.as_ref().unwrap().to_str().unwrap().contains("-varied-"));
+    }
+
+    #[test]
+    fn a_callees_arguments_are_its_signatures_registers() {
+        let (_d, n) = names(
+            "function 0x80010000 int two(int a, int b)\nfunction 0x80010100 longlong wide(int a, longlong b)\n\
+function 0x80010200 void none(void)\nfunction 0x80010300 unknown\nfunction 0x80010400 int many(int, int, int, int, int)\n",
+        );
+        assert_eq!(argument_slots(&n, 0x8001_0000), Some(2));
+        assert_eq!(argument_slots(&n, 0xA001_0000), Some(2), "by the physical address");
+        assert_eq!(argument_slots(&n, 0x8001_0100), Some(4), "a 64-bit value takes an even pair");
+        assert_eq!(argument_slots(&n, 0x8001_0200), Some(0));
+        assert_eq!(argument_slots(&n, 0x8001_0300), None);
+        assert_eq!(argument_slots(&n, 0x8001_0400), Some(5));
+        assert_eq!(argument_slots(&n, 0x8001_0500), None);
+    }
+
+    #[test]
+    fn an_enum_argument_varies_within_its_values() {
+        let (_d, n) = names("enum Slot 0x1 {\n  FIRST = 0\n  SECOND = 1\n  FIFTH = 4\n}\n");
+        let mut rng = Rng(7);
+        let ty = Type::Named { name: "Slot".into() };
+        let seen: BTreeSet<u32> = (0..64).map(|_| rng.of(&n, &ty).unwrap()).inspect(|v| assert_eq!(v.0, 1)).map(|v| v.1).collect();
+        assert_eq!(seen, BTreeSet::from([0, 1, 4]));
+        let int = Type::Named { name: "int".into() };
+        assert!((0..64).any(|_| rng.of(&n, &int).unwrap().1 > 4));
     }
 
     #[test]

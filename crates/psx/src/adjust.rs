@@ -108,7 +108,7 @@ impl Off {
         for (name, v) in table {
             match crate::names_bind::address(name) {
                 Ok(address) => out.push(Off { name: name.clone(), address, returns: *v as u32 }),
-                Err(e) => problems.push(match spelling(crate::names_bind::project_names(), name) {
+                Err(e) => problems.push(match spelling(&crate::names_bind::project_names(), name) {
                     Some(k) => format!("off {name:?}: {e} ({k}?)"),
                     None => format!("off {name:?}: {e}"),
                 }),
@@ -410,7 +410,7 @@ impl Running {
     pub fn step(&mut self, info: &StepInfo, m: &mut Machine) {
         let Some(f) = &mut self.flow else { return };
         f.step(info, &m.bus.sio0);
-        self.read |= !f.take_reads().is_empty();
+        self.read |= f.take_reads().iter().any(|r| !r.in_handler);
         if m.bus.frames != self.field {
             self.field = m.bus.frames;
             // A field ended: a change latched before it began and still

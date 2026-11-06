@@ -27,6 +27,7 @@ pub(crate) fn byte_name(pos: u8) -> &'static str {
 
 #[derive(Default)]
 struct Reader {
+    in_handler: bool,
     count: u64,
     bytes: BTreeSet<u8>,
     addresses: BTreeSet<u32>,
@@ -70,8 +71,9 @@ impl PadReads {
             self.read_this_field = false;
         }
         for r in self.flow.take_reads() {
-            self.read_this_field = true;
+            self.read_this_field |= !r.in_handler;
             let e = self.readers.entry(r.pc).or_default();
+            e.in_handler |= r.in_handler;
             e.count += 1;
             e.bytes.extend(r.marks.iter().map(|k| k.pos));
             e.addresses.insert(r.addr);
@@ -84,10 +86,12 @@ impl PadReads {
                 .map(|b| json!({"address": format!("0x{:08X}", b.addr), "byte": byte_name(b.pos)}))
                 .collect::<Vec<_>>()
         };
+        // The game's main code first, then reads inside a handler.
         let mut top: Vec<(&u32, &Reader)> = self.readers.iter().collect();
-        top.sort_by_key(|(pc, r)| (std::cmp::Reverse(r.count), **pc));
+        top.sort_by_key(|(pc, r)| (r.in_handler, std::cmp::Reverse(r.count), **pc));
         json!({
             "buffer": bytes(self.flow.buffer()),
+            "handler_copies": bytes(self.flow.handler_copies()),
             "copies": bytes(self.flow.copies()),
             "polls": self.polls,
             "fields": self.fields,
@@ -95,6 +99,7 @@ impl PadReads {
             "readers": top.iter().take(16).map(|(pc, r)| json!({
                 "pc": format!("0x{pc:08X}"),
                 "function": crate::final_name(scopes, **pc, Some(&m.bus.ram)),
+                "in_handler": r.in_handler,
                 "count": r.count,
                 "bytes": r.bytes.iter().map(|p| byte_name(*p)).collect::<Vec<_>>(),
                 "addresses": r.addresses.iter().take(8).map(|a| format!("0x{a:08X}")).collect::<Vec<_>>(),

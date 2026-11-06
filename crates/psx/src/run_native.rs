@@ -427,7 +427,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             let global = r["address"]
                 .as_str()
                 .and_then(psx_media::memmap::parse_hex)
-                .and_then(|a| crate::names_bind::global_at(crate::names_bind::project_names(), a));
+                .and_then(|a| crate::names_bind::global_at(&crate::names_bind::project_names(), a));
             if let Some(g) = global {
                 r["global"] = json!(g);
             }
@@ -681,7 +681,7 @@ fn attach_observers(m: &mut Machine, a: &RunArgs) -> crate::Result<()> {
 fn annotate_hit(h: &psx_core::observe::WriteHit) -> Value {
     let mut v = serde_json::to_value(h).unwrap();
     v["region"] = json!(region(h.address));
-    if let Some(g) = crate::names_bind::global_at(crate::names_bind::project_names(), h.address) {
+    if let Some(g) = crate::names_bind::global_at(&crate::names_bind::project_names(), h.address) {
         v["global"] = json!(g);
     }
     let w = h.width as usize;

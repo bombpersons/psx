@@ -1223,7 +1223,7 @@ pub fn view(paths: &[PathBuf], addr: &str, len: usize, fmt: &str, same: bool) ->
             off += w;
             continue;
         }
-        let global = crate::names_bind::global_at(crate::names_bind::project_names(), addr_of(off));
+        let global = crate::names_bind::global_at(&crate::names_bind::project_names(), addr_of(off));
         let mut row = json!({
             "address": hex(addr_of(off)), "offset": format!("+0x{:X}", off - start),
             "values": vals.iter().map(|&v| fmt.json(v)).collect::<Vec<_>>(), "differs": differs,
