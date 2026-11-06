@@ -236,11 +236,11 @@ enum StatesAction {
 
 #[derive(clap::Subcommand)]
 enum PortAction {
-    /// Write a port's workspace: the Bevy template, the goal, the catalogue, the disc and
+    /// Write a port's workspace: the template, the goal, the catalogue, the disc and
     /// BIOS linked in, and psx's MCP server for the agent working there. --existing adds
     /// them to a template workspace made earlier.
     Init(port::PortInitArgs),
-    /// Replace untouched psx-bevy/ and vendor/ files with this build's; report edits and
+    /// Replace untouched vendor/ files with this build's; report edits and
     /// seeded changes.
     Update(template::TemplateUpdateArgs),
     /// Show the goal's features, their closure and any problems; with --yes, record the

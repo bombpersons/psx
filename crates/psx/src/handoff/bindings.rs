@@ -57,7 +57,7 @@ impl Default for Bindings {
     fn default() -> Self {
         let some = |names: [&str; 17]| names.map(|n| (!n.is_empty()).then(|| n.to_string()));
         Bindings {
-            // The template's defaults (psx-bevy controller bindings).
+            // The defaults a port's shell copies, so a person plays the port with the same keys.
             keyboard: some([
                 "Up",
                 "Down",

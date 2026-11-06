@@ -1,0 +1,16 @@
+# Importers: the player's disc -> the port's asset formats. A library (the
+# game, or the disc-import add-on, runs it on the player's disc) and a command
+# for running it by hand. The original's raw formats live only here.
+[package]
+name = "import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+psx-media.workspace = true
+psx-assets.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ron.workspace = true

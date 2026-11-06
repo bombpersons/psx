@@ -252,7 +252,7 @@ pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&
     }))
 }
 
-/// The frame's 2D layout for the Bevy template (`psx::scene`), in draw order:
+/// The frame's layout, in draw order:
 /// - `sprite`: a textured rect or axis-aligned textured quad, i.e. an image
 ///   sub-rectangle at a screen rectangle (with flips), or an untextured fill;
 /// - `mesh3d`: a polygon whose vertices the capture lifted back to GTE view

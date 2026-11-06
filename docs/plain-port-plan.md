@@ -232,13 +232,13 @@ the showcase.
 
 Each phase ends with psx's tests and the templates' tests passing.
 
-1. **The runner in psx-scenario.** Move the runner, `Pad`, `Observation`
-   and the replay driver. Change the generated `Observed`. Make
+1. **The runner in psx-scenario.** Move the runner, `Pad` and
+   `Observation`. Change the generated `Observed`. Make
    `psx-bevy` an adapter over them. Check: the Bevy template's tests and
    the scenario reports for the Croc example and GT2 (on a scratch copy,
    after `port update`) are byte for byte the same as before.
-2. **The base template and psx's side.** The template, `port init`
-   writing it, the web's replay check, and the wording in the guide, tool
+2. **The base template and psx's side.** The replay driver, the
+   template, `port init` writing it, the web's replay check, and the wording in the guide, tool
    descriptions and port next. Check: `cargo test --workspace` on a fresh
    `port init` builds in well under a minute cold. A scenario recorded
    from a disc passes against a launcher written for the test.
@@ -254,6 +254,14 @@ Each phase ends with psx's tests and the templates' tests passing.
    wrote.
 5. **The other add-ons**, in the order ports ask for them, starting with
    dev-mcp. The Croc example moves to `full` here.
+
+After this plan, maybe: ports in other languages. What ties a port to
+Rust is that the runner and `--replay` run inside it through cargo, that
+`Observed` is generated as Rust, and that psx-fixed and psx-gte are Rust
+libraries. The way out would be psx running the runner itself and driving
+the port as a process (JSON lines on stdin and stdout: launch, tick,
+observe, screen), with the manifest naming the build, run and import
+commands. Not planned yet.
 
 Phase 1 is a refactor on its own and worth doing first: it lets a port
 leave Bevy without psx noticing.

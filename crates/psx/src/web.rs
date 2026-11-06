@@ -1020,6 +1020,7 @@ fn port_key(root: &Path, id: &str, name: &str) -> String {
         "HEAD",
         "--",
         "game",
+        "addons",
         "psx-bevy",
         "tools",
         "vendor",
@@ -1031,16 +1032,12 @@ fn port_key(root: &Path, id: &str, name: &str) -> String {
 }
 
 /// The port drawing the recording, as `replay` the original: the port's
-/// game with `--replay` (psx_bevy::frames), built and run with cargo in the
+/// game with `--replay` (psx_scenario::replay), built and run with cargo in the
 /// project, a PNG a tick into `.psx/port-frames/<key>/`. `key` names the
 /// frames for `port_frame`.
 fn port_replay(st: &State, root: &Path, id: &str, name: &str, start: bool) -> Value {
     if !root.join("game/Cargo.toml").is_file() {
         return json!({"error": {"code": "invalid", "message": "no port here (game/Cargo.toml)"}});
-    }
-    // Older ports start their game as usual, which never ends headless.
-    if !root.join("psx-bevy/src/frames.rs").is_file() {
-        return json!({"error": {"code": "invalid", "message": "the port's psx-bevy has no --replay yet: psx port update brings it"}});
     }
     let jobs_key = format!("port:{}:{id}:{name}", root.display());
     // Held until this request has its job and has marked it running, so two

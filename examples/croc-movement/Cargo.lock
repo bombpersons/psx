@@ -4325,6 +4325,7 @@ dependencies = [
 name = "psx-scenario"
 version = "0.8.0"
 dependencies = [
+ "png",
  "proc-macro2",
  "quote",
  "schemars",

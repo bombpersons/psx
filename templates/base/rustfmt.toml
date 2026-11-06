@@ -1,0 +1,5 @@
+max_width = 120
+use_small_heuristics = "Max"
+# The same style as psx's own crates, so the vendored files format
+# identically in each.
+style_edition = "2024"

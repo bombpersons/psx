@@ -1,5 +1,5 @@
 //! A port: one workspace where one agent investigates the original and
-//! builds the port in Bevy (docs/port-design.md). `port init` writes it.
+//! builds the port (docs/port-design.md). `port init` writes it.
 //! The goal (`goal.toml`) says which features the person wants, the
 //! catalogue (`catalogue/F-NNNN.md`) describes the game's features in game
 //! terms with their dependencies, and `port confirm` records the person's

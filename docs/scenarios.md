@@ -19,8 +19,8 @@ The files:
 - `crates/psx/src/scenario.rs`: `psx scenario record`, `psx scenario check`,
   `psx scenario show` and the facts `port next` reads; `crates/psx/src/binding.rs` builds and
   loads the glossary's binding.
-- The template's `psx_bevy::scenario`: a Bevy app as a `Port`, with the
-  launcher and observer registry its plugins fill.
+- `crates/psx-scenario/src/replay.rs`: `--replay`, a recording drawn by
+  the port a PNG per tick for `psx web`.
 
 ## 1. The glossary: `glossary/`
 
@@ -337,31 +337,37 @@ recording again with the same input:
 The game's build generates `Observed` from the glossary (`game/build.rs`
 calls `psx_scenario::rust::write_observed("../glossary")`; `game::observed`
 includes it): one `Option` per quantity, of its type in the glossary crate,
-in the original's raw units. Each feature's plugin registers its launchers,
-and a function that fills the quantities it keeps
-(`psx_bevy::scenario::ScenarioApp`):
+in the original's raw units. The game implements `psx_scenario::Port`:
+it lists the scenario kinds it can launch, builds the world for one from
+its parameters, runs a tick with a pad, and fills the quantities it keeps:
 
 ```rust
 use crate::observed::Observed;
 
-app.register_scenario("level", |app, p| { /* build the level named p["level"] */ Ok(()) })
-    .observe(|w: &mut World| Observed {
-        croc_x: w.query::<&Croc>().iter(w).next().map(|c| c.x),
-        ..Observed::none()
-    });
+impl Port for Game {
+    type Observed = Observed;
+    fn kinds(&self) -> Vec<String> { vec!["level".into()] }
+    fn launch(&mut self, kind: &str, p: &Parameters) -> Result<(), String> {
+        /* build the level named p["level"] */ Ok(())
+    }
+    fn tick(&mut self, pad: &Pad) { /* the game's rules, once */ }
+    fn observe(&mut self) -> Result<Observed, String> {
+        Ok(Observed { croc_x: Some(self.croc.x), ..Observed::none() })
+    }
+}
 ```
 
 - A misspelt or removed quantity is a compile error.
 - A quantity left `None` is one the port has no such thing for (yet); a
   scenario that compares it fails at that tick and says so.
-- Several plugins may each observe their own quantities; one that two
-  observe is a failure.
+- A quantity given twice in the observation is a failure. (A Bevy port's
+  `psx_bevy::scenario` is a `Port` whose plugins each observe their own.)
 
 The game's `tests/scenarios.rs` gives the runner a function that makes a
-fresh headless app with the features' logic plugins. For each recording,
-the runner:
+fresh headless game with every feature's rules. For each recording, the
+runner:
 
-1. makes an app and calls the scenario's launcher;
+1. makes a game and launches the scenario;
 2. compares the observed quantities with `initial`;
 3. runs one tick per line with the line's pad, and compares again.
 
@@ -369,12 +375,11 @@ Each quantity's first tick out of tolerance is reported.
 
 The game draws the same replay with its renderer for the person to watch:
 `cargo run -p game -- --replay scenarios/<id>/<name>.jsonl --frames DIR`
-(`psx_bevy::frames`) builds the whole game headless, calls the launcher,
-runs the recording's ticks and saves the screen after each as
-`DIR/<tick>.png`. `psx web` runs it beside the original's replay. The
-game's own opening (its title, its first level) skips itself while
-`psx_bevy::frames::Replaying` is in the world, as the launcher builds
-the world instead.
+(`psx_scenario::replay`, called first in the game's `main`) makes a
+headless game, launches the scenario, runs the recording's ticks and saves
+`Port::screen` after each as `DIR/<tick>.png`. `psx web` runs it beside
+the original's replay. A port that draws nothing yet writes `frames.json`
+with `no_screen`, and psx web says so.
 
 `psx port check` runs that test and writes each feature's scenario verdict.
 **A feature passes when:**

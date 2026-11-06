@@ -1,0 +1,26 @@
+[package]
+name = "game"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The port is a library so that the scenarios in `tests/` and any tools can
+# drive it; `src/main.rs` is the thin executable, named after the game.
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "psx-game"
+path = "src/main.rs"
+
+[dependencies]
+# The glossary's quantities (glossary/), which the port observes for the
+# scenarios as `Observed` (src/lib.rs, build.rs).
+glossary = { path = "../glossary" }
+psx-scenario.workspace = true
+psx-fixed.workspace = true
+psx-gte.workspace = true
+
+[build-dependencies]
+psx-scenario.workspace = true

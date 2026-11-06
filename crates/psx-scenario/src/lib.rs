@@ -8,12 +8,14 @@
 //! is psx's. The formats are defined in psx's `docs/scenarios.md`.
 
 pub mod release;
+pub mod replay;
 pub mod runner;
 pub mod rust;
 pub mod scenario;
 pub mod value;
 
 pub use release::Release;
+pub use replay::Frame;
 pub use runner::{Button, Observation, Pad, Parameters, Port, Scenarios};
 pub use scenario::{Glossary, Recording, Scenario};
 pub use value::{Field, Type, Value, Values};

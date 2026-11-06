@@ -974,7 +974,7 @@ impl Facts {
                 Some(&f.id),
                 format!("the port cannot replay its recordings: {}", first_lines(&f.unbuilt).join("; ")),
                 "the last psx port check at HEAD finds a launcher for each of its scenarios' kinds and each quantity they compare observed",
-                "register the scenario kind's launcher, building the world from the scenario's parameters with the port's own loading, and observe the compared quantities (psx_bevy::scenario); commit and run psx port check",
+                "launch the scenario kind in the port, building the world from the scenario's parameters with the port's own loading, and observe the compared quantities (the port's psx_scenario::Port); commit and run psx port check",
             );
         }
         // 2. The code: unpacked whole, then each feature's found.
@@ -1058,7 +1058,7 @@ impl Facts {
                 ),
                 _ => (
                     "no psx port check has judged it".into(),
-                    "write the feature from the original's code (citing each rule), register its scenario launchers and what it observes (psx_bevy::scenario), commit, and run psx port check",
+                    "write the feature from the original's code (citing each rule), launch its scenario kinds and observe their quantities (the port's psx_scenario::Port), commit, and run psx port check",
                 ),
             };
             return Item::agent("Implement", Some(&f.id), why, "psx port check has judged it at HEAD", how);

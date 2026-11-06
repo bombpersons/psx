@@ -48,12 +48,14 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
       - run: cargo fmt --all --check
-      - run: cargo fmt --all --check --manifest-path templates/psx-bevy/Cargo.toml
+      - run: cargo fmt --all --check --manifest-path templates/base/Cargo.toml
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # Gamepads (gilrs) and sound (cpal) in the handoff window link libudev and ALSA on Linux.
       - run: sudo apt-get update && sudo apt-get install -y libudev-dev libasound2-dev pkg-config
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # The port template on its own: no Bevy, quick to build.
+      - run: cargo test --workspace --locked --manifest-path templates/base/Cargo.toml
 
   build:
     needs: check

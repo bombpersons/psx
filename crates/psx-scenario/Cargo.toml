@@ -12,6 +12,8 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 toml = "1"
 sha2 = { workspace = true }
+# --replay's screens.
+png = "0.18"
 # The glossary, written as Rust, read from source without building it.
 syn = { version = "2", features = ["full", "visit"] }
 quote = "1"

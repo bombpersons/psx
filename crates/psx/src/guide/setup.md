@@ -48,12 +48,13 @@ update, rebuild, then replace=true, then scenario_check.
 
 ## The template
 
-port_update replaces untouched psx-bevy/ and vendor/ files with this build's,
-writes <file>.psx-new beside ones the port changed (merge it, keeping the
-change listed in docs/template.md, then delete it) and puts changed seeded
-files under .psx/template-update/ to merge; removed_upstream lists seeded
-files the template dropped. Keep each project's cargo target directory to
-itself.
+port_update replaces untouched vendor/ files with this build's, writes
+<file>.psx-new beside ones the port changed (merge it, keeping the port's
+change, then delete it) and puts changed seeded files under
+.psx/template-update/ to merge; removed_upstream lists seeded files the
+template dropped. A workspace from the older Bevy template keeps its
+psx-bevy/ as its own code (released counts the files no longer tracked).
+Keep each project's cargo target directory to itself.
 
 ## When results look wrong
 

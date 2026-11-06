@@ -171,7 +171,7 @@ Custom formats need a parser. Every finding is evidence to check, not a guarante
 
 - `psx guide` and `psx <command> --help`: every command and flag.
 - [docs/port-design.md](docs/port-design.md): porting by recordings.
-- [templates/psx-bevy](templates/psx-bevy/README.md): the game template.
+- [templates/base](templates/base/README.md): the port template.
 - [docs/ghidra-integration.md](docs/ghidra-integration.md): Ghidra analysis and symbol export.
 - [docs/compatibility.md](docs/compatibility.md): how far each game gets on the native core, and known emulation issues.
 - [research/](research/): emulator, format and case-study notes.

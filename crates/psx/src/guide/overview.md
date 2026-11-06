@@ -1,6 +1,6 @@
 psx reads a PlayStation game: it runs the disc on its own emulator core and
 measures what the game does, reads its code and decodes its data. A port is
-the game, or a part of it, rewritten as ordinary Rust and Bevy and checked
+the game, or a part of it, rewritten as ordinary, modern Rust and checked
 against recordings of the original. This guide is the whole method; the
 topics run, code, assets and setup hold the details of the commands.
 
@@ -14,12 +14,12 @@ recorded, not that the game reached gameplay or that a hypothesis holds.
 
 ## A port
 
-psx port init DEST --media GAME.cue writes the workspace: the Bevy
-template (psx-bevy/, game/, tools/import/, vendor/), glossary/, goal.toml,
-catalogue/, formats/, the disc and BIOS linked in, .mcp.json for psx, and
-git. Pass fields_per_tick from the original's main loop; the region comes
-from the disc. Its AGENTS.md and game/AGENTS.md say what the port's code is
-held to; this guide says how the work goes.
+psx port init DEST --media GAME.cue writes the workspace: the template
+(game/, a psx_scenario Port with no engine; tools/import/, glossary/,
+vendor/), goal.toml, catalogue/, formats/, the disc and BIOS linked in,
+.mcp.json for psx, and git. Pass fields_per_tick from the original's main
+loop; the region comes from the disc. Its AGENTS.md says what the port's
+code is held to; this guide says how the work goes.
 
 In a workspace, start each session with port_next: one item, why it is
 due, done_when (the fact that will show it done) and how. Do it until

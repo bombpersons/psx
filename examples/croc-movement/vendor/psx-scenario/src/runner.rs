@@ -210,6 +210,13 @@ pub trait Port {
     /// The glossary's quantities the port keeps, now, as
     /// `Observed { …, ..Observed::none() }`.
     fn observe(&mut self) -> Result<Self::Observed, String>;
+
+    /// The screen after the last tick (or the launch), at the game's own
+    /// resolution, for `--replay` ([`crate::replay`]). None while the port
+    /// draws nothing.
+    fn screen(&mut self) -> Option<crate::replay::Frame> {
+        None
+    }
 }
 
 /// The scenarios' results, written to `$PSX_SCENARIO_REPORT` for psx.
