@@ -1,5 +1,5 @@
 //! `port check`, which runs the features' scenarios against the port (the
-//! game's `tests/scenarios.rs`, `psx_bevy::scenario`) and writes their
+//! game's `tests/scenarios.rs`, `psx_scenario::runner`) and writes their
 //! scenario verdicts.
 
 use std::collections::BTreeMap;
@@ -14,7 +14,7 @@ use super::{Entry, Port, assets};
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 
-/// `psx_bevy::scenario::Report`, as the harness writes it.
+/// `psx_scenario::runner::Report`, as the runner writes it.
 #[derive(Debug, Default, Deserialize)]
 pub struct ScenarioReport {
     #[serde(default)]

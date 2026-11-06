@@ -10,15 +10,17 @@ The files:
 
 - `crates/psx-scenario`: the scenario file and recording formats, the
   glossary read from its crate (`rust.rs`) and the generators for its
-  binding's glue and the port's `Observed`, their checks, and JSON Schemas
-  in `crates/psx-scenario/schemas/`.
+  binding's glue and the port's `Observed`, their checks, JSON Schemas
+  in `crates/psx-scenario/schemas/`, and the runner (`runner.rs`): the
+  `Port` trait a port implements and the replay of each recording against
+  it, used by the game's `tests/scenarios.rs`.
 - `crates/psx-capture`: the `Glossary` trait the glossary's binding
   implements.
 - `crates/psx/src/scenario.rs`: `psx scenario record`, `psx scenario check`,
   `psx scenario show` and the facts `port next` reads; `crates/psx/src/binding.rs` builds and
   loads the glossary's binding.
-- The template's `psx_bevy::scenario`: the launcher and observer registry
-  and the runner, used by the game's `tests/scenarios.rs`.
+- The template's `psx_bevy::scenario`: a Bevy app as a `Port`, with the
+  launcher and observer registry its plugins fill.
 
 ## 1. The glossary: `glossary/`
 

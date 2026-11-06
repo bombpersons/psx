@@ -607,7 +607,7 @@ pub fn write_glossary_glue(glossary_dir: impl AsRef<std::path::Path>) {
 /// The port's view of the glossary (docs/scenarios.md): `Observed`, each
 /// quantity as an `Option` of its type in the glossary crate, `None` where
 /// the port has no such thing, with `Observed::none()` and its values in
-/// the recording's encoding for `psx_bevy::scenario`.
+/// the recording's encoding for [`crate::runner`].
 pub fn observed(c: &Crate) -> Result<String, Vec<String>> {
     let (_, krate, file) = glossary_items(c)?;
     let items = Items::of(&file);
@@ -632,7 +632,7 @@ pub fn observed(c: &Crate) -> Result<String, Vec<String>> {
          /// Nothing observed: the start of `Observed {{ player_x: …, ..Observed::none() }}`.\n    \
          pub fn none() -> Observed {{\n        Observed {{\n{}\n        }}\n    }}\n}}\n\n\
          #[allow(unused_variables, unused_parens, clippy::all)]\n\
-         impl psx_bevy::scenario::Observation for Observed {{\n    \
+         impl psx_scenario::Observation for Observed {{\n    \
          fn values(&self) -> Vec<(&'static str, Option<psx_scenario::Value>)> {{\n        vec![\n{}\n        ]\n    }}\n}}\n",
         fields.join("\n"),
         nones.join("\n"),

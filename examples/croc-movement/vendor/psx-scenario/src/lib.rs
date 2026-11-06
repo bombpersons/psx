@@ -1,17 +1,20 @@
 //! The formats for porting by recordings: the glossary written as Rust
 //! (read by [`rust`]), scenario files and their recordings, with their checks
 //! and the JSON Schemas of the files that are not Rust; and the glue the
-//! glossary's binding and the port generate from the glossary.
+//! glossary's binding and the port generate from the glossary; and the
+//! [`runner`] that checks a port against the recordings.
 //!
 //! This is the platform-free side: what a binding reads on the PlayStation
 //! is psx's. The formats are defined in psx's `docs/scenarios.md`.
 
 pub mod release;
+pub mod runner;
 pub mod rust;
 pub mod scenario;
 pub mod value;
 
 pub use release::Release;
+pub use runner::{Button, Observation, Pad, Parameters, Port, Scenarios};
 pub use scenario::{Glossary, Recording, Scenario};
 pub use value::{Field, Type, Value, Values};
 

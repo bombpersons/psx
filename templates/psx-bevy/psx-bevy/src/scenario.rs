@@ -45,8 +45,9 @@
 //! each observe their own quantities; a quantity two of them observe is a
 //! failure.
 //!
-//! For each recording (`scenarios/<id>/<name>.jsonl`, made by `psx scenario
-//! record`) the runner makes a fresh app, launches the scenario, compares
+//! The runner is `psx_scenario::runner`'s, which runs any port; this module
+//! is how a Bevy app is one. For each recording (`scenarios/<id>/<name>.jsonl`,
+//! made by `psx scenario record`) the runner makes a fresh app, launches the scenario, compares
 //! the quantities with the recording's initial values (the end of the
 //! original's first tick), then runs one tick per line with the line's pad,
 //! the pad's mode ([`crate::controller::ControllerState::analog`]) and sticks
@@ -63,26 +64,15 @@
 //! from the recording after that tick may be chance.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use bevy::prelude::*;
 use psx_scenario::Value;
-use psx_scenario::scenario::SourceKind;
-use psx_scenario::scenario::{Recording, Scenario};
-use serde::Serialize;
+pub use psx_scenario::runner::{Observation, Parameters, RecordingReport, Report, ScenarioReport};
+use psx_scenario::runner::{Pad, Port};
 
-use crate::testing::TickApp;
-
-/// A scenario's `[parameters]`: what its launcher builds the world from.
-pub type Parameters = serde_json::Map<String, serde_json::Value>;
-
-/// The glossary's quantities as the port has them: `Observed`, generated
-/// from `glossary/` by the game's build (`psx_scenario::rust::write_observed`).
-pub trait Observation: Send + Sync + 'static {
-    /// Each quantity by name, in the recording's encoding, or `None`.
-    fn values(&self) -> Vec<(&'static str, Option<Value>)>;
-}
+use crate::testing::{TickApp, TickInput};
 
 type Launcher = Arc<dyn Fn(&mut App, &Parameters) -> Result<(), String> + Send + Sync>;
 type Observer = Arc<dyn Fn(&mut World) -> Vec<(&'static str, Option<Value>)> + Send + Sync>;
@@ -103,18 +93,9 @@ impl ScenarioRegistry {
         self.launchers.get(kind).cloned()
     }
 
-    /// Every quantity some observer has now: by name, or why not.
-    fn observe(&self, w: &mut World) -> Result<BTreeMap<&'static str, Value>, String> {
-        let mut out = BTreeMap::new();
-        for o in &self.observers {
-            for (name, v) in o(w) {
-                let Some(v) = v else { continue };
-                if out.insert(name, v).is_some() {
-                    return Err(format!("{name} is observed by two functions: observe each in one place"));
-                }
-            }
-        }
-        Ok(out)
+    /// Every observer's quantities, in the order they were registered.
+    fn observe(&self, w: &mut World) -> Vec<(&'static str, Option<Value>)> {
+        self.observers.iter().flat_map(|o| o(w)).collect()
     }
 }
 
@@ -152,51 +133,43 @@ impl ScenarioApp for App {
     }
 }
 
-/// The scenarios' results, written to `$PSX_SCENARIO_REPORT` for psx.
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct Report {
-    /// The scenario kinds the app's plugins registered launchers for.
-    pub kinds: Vec<String>,
-    /// The quantities the port observed in any scenario it launched.
-    pub quantities: Vec<String>,
-    pub scenarios: Vec<ScenarioReport>,
+/// A Bevy app as the runner's port: the launchers and observers its
+/// plugins registered, and one tick per [`TickApp::run_input`].
+pub struct AppPort {
+    pub app: App,
+    registry: ScenarioRegistry,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct ScenarioReport {
-    pub id: String,
-    pub kind: String,
-    /// What stops the scenario from running at all.
-    pub problems: Vec<String>,
-    pub recordings: Vec<RecordingReport>,
-}
-
-impl ScenarioReport {
-    pub fn passed(&self) -> bool {
-        self.problems.is_empty() && self.recordings.iter().all(|r| r.failures.is_empty())
+impl AppPort {
+    pub fn new(mut app: App) -> AppPort {
+        let registry = registry(&mut app);
+        AppPort { app, registry }
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct RecordingReport {
-    pub name: String,
-    /// Recorded from the original (the rest are examples).
-    pub captured: bool,
-    pub ticks: usize,
-    /// The first tick each quantity differs at, or why the run stopped.
-    pub failures: Vec<String>,
-    /// When a quantity differed: the compared quantities the port had,
-    /// initially and after each tick it ran (`psx web` plots them beside
-    /// the recording's).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub values: Vec<psx_scenario::Values>,
+impl Port for AppPort {
+    type Observed = Vec<(&'static str, Option<Value>)>;
+
+    fn kinds(&self) -> Vec<String> {
+        self.registry.kinds()
+    }
+
+    fn launch(&mut self, kind: &str, p: &Parameters) -> Result<(), String> {
+        let launch = self.registry.launcher(kind).ok_or(format!("no launcher registered for scenario kind {kind}"))?;
+        launch(&mut self.app, p)
+    }
+
+    fn tick(&mut self, pad: &Pad) {
+        self.app.run_input(&pad_input(pad));
+    }
+
+    fn observe(&mut self) -> Result<Self::Observed, String> {
+        Ok(self.registry.observe(self.app.world_mut()))
+    }
 }
 
 /// The scenarios of a workspace, run against apps `app` makes.
-pub struct Scenarios {
-    root: PathBuf,
-    app: Box<dyn Fn() -> App>,
-}
+pub struct Scenarios(psx_scenario::Scenarios<AppPort>);
 
 impl Scenarios {
     /// `root` is the workspace (it has `scenarios/`); `app` makes a fresh
@@ -204,316 +177,34 @@ impl Scenarios {
     /// observers ([`crate::testing::headless_app`] and the features' logic
     /// plugins).
     pub fn new(root: impl Into<PathBuf>, app: impl Fn() -> App + 'static) -> Scenarios {
-        Scenarios { root: root.into(), app: Box::new(app) }
+        Scenarios(psx_scenario::Scenarios::new(root, move || AppPort::new(app())))
     }
 
     pub fn report(&self) -> Report {
-        let registry = registry(&mut (self.app)());
-        let mut report = Report { kinds: registry.kinds(), quantities: Vec::new(), scenarios: Vec::new() };
-        let dir = self.root.join("scenarios");
-        let mut ids: Vec<String> = std::fs::read_dir(&dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| e.file_name().to_str()?.strip_suffix(".toml").map(String::from))
-            .collect();
-        ids.sort();
-        let mut observed = std::collections::BTreeSet::new();
-        for id in ids {
-            report.scenarios.push(self.scenario(&dir, &id, &registry, &mut observed));
-        }
-        report.quantities = observed.into_iter().collect();
-        report
-    }
-
-    fn scenario(
-        &self,
-        dir: &Path,
-        id: &str,
-        registry: &ScenarioRegistry,
-        observed: &mut std::collections::BTreeSet<String>,
-    ) -> ScenarioReport {
-        let mut r = ScenarioReport { id: id.into(), ..default() };
-        let s = match read(&dir.join(format!("{id}.toml"))).and_then(|t| Scenario::parse(&t)) {
-            Ok(s) => s,
-            Err(e) => {
-                r.problems.push(e);
-                return r;
-            }
-        };
-        r.kind = s.kind.clone();
-        if !registry.launchers.contains_key(&s.kind) {
-            r.problems.push(format!("no launcher registered for scenario kind {}", s.kind));
-        }
-        let mut files: Vec<PathBuf> = std::fs::read_dir(dir.join(id))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
-            .collect();
-        files.sort();
-        for f in files {
-            let name = f.file_stem().and_then(|n| n.to_str()).unwrap_or_default().to_string();
-            let rec = read(&f).and_then(|t| Recording::parse(&t)).and_then(|rec| {
-                let p = rec.check(id);
-                if p.is_empty() { Ok(rec) } else { Err(p.join("; ")) }
-            });
-            r.recordings.push(match rec {
-                Ok(rec) if r.problems.is_empty() => self.recording(&name, &s, &rec, observed),
-                Ok(rec) => RecordingReport {
-                    name,
-                    captured: rec.header.source.kind == SourceKind::Captured,
-                    ticks: rec.rows.len(),
-                    failures: vec!["not run: the scenario has problems".into()],
-                    ..default()
-                },
-                Err(e) => RecordingReport { name, failures: vec![e], ..default() },
-            });
-        }
-        r
-    }
-
-    /// Replays one recording. A panic in the port (its launcher, a tick or
-    /// an observer) fails this recording, at the tick it happened, and the
-    /// rest still run and reach the report.
-    fn recording(
-        &self,
-        name: &str,
-        s: &Scenario,
-        rec: &Recording,
-        observed: &mut std::collections::BTreeSet<String>,
-    ) -> RecordingReport {
-        let run = |observed: &mut std::collections::BTreeSet<String>| {
-            let mut at = String::from("the launcher");
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.replay(name, s, rec, observed, &mut at)))
-                .map_err(|p| (at, panic_message(&p)))
-        };
-        let (mut out, first) = match run(observed) {
-            Ok(r) => r,
-            Err((at, why)) => {
-                return RecordingReport {
-                    name: name.into(),
-                    captured: rec.header.source.kind == SourceKind::Captured,
-                    ticks: rec.rows.len(),
-                    failures: vec![format!("{at} panicked: {why}")],
-                    ..default()
-                };
-            }
-        };
-        // Again in a fresh app: the port's own determinism. The differences
-        // from the recording stay the first run's; this adds where the two
-        // runs part (a difference after it may be chance).
-        let line = match run(&mut Default::default()) {
-            Err((at, why)) => Some(format!("{at}: the port is not deterministic: only the second run panicked: {why}")),
-            Ok((_, second)) => parting(&first, &second),
-        };
-        if let Some(line) = line {
-            out.failures.insert(0, line);
-            out.failures.sort_by_key(|l| tick_of(l));
-        }
-        out
-    }
-
-    /// `at` says where the replay is, for a panic's failure. Also gives
-    /// every quantity the port had at each moment it ran, for
-    /// [`parting`].
-    fn replay(
-        &self,
-        name: &str,
-        s: &Scenario,
-        rec: &Recording,
-        observed: &mut std::collections::BTreeSet<String>,
-        at: &mut String,
-    ) -> (RecordingReport, Trail) {
-        let mut out = RecordingReport {
-            name: name.into(),
-            captured: rec.header.source.kind == SourceKind::Captured,
-            ticks: rec.rows.len(),
-            failures: Vec::new(),
-            values: Vec::new(),
-        };
-        let mut app = (self.app)();
-        let registry = registry(&mut app);
-        if let Err(e) = (registry.launchers[&s.kind])(&mut app, &s.parameters) {
-            out.failures.push(format!("the launcher failed: {e}"));
-            return (out, Trail::new());
-        }
-        let compared: Vec<(&String, i128)> = rec
-            .header
-            .quantities
-            .keys()
-            .filter_map(|q| {
-                let tol = match s.compare.get(q)? {
-                    Value::Int(t) => *t,
-                    _ => 0,
-                };
-                Some((q, tol))
-            })
-            .collect();
-        // A quantity [compare] names that the recording lacks would never be
-        // compared, and with none in common the replay would pass unrun.
-        let unrecorded: Vec<&String> = s.compare.keys().filter(|q| !rec.header.quantities.contains_key(*q)).collect();
-        if !unrecorded.is_empty() || compared.is_empty() {
-            out.failures.push(if unrecorded.is_empty() {
-                "none of the quantities in [compare] is in the recording".to_string()
-            } else {
-                format!(
-                    "[compare] names {}, which the recording does not hold: record it again",
-                    unrecorded.iter().map(|q| q.as_str()).collect::<Vec<_>>().join(", ")
-                )
-            });
-            return (out, Trail::new());
-        }
-        let mut differed: BTreeMap<String, String> = BTreeMap::new();
-        let mut trail: Vec<psx_scenario::Values> = Vec::new();
-        let mut had = Trail::new();
-        let mut check =
-            |app: &mut App, at: &str, values: &psx_scenario::Values, differed: &mut BTreeMap<String, String>| {
-                let now = match registry.observe(app.world_mut()) {
-                    Ok(now) => now,
-                    Err(e) => return Some(format!("{at}: {e}")),
-                };
-                observed.extend(now.keys().map(|q| q.to_string()));
-                trail.push(
-                    compared.iter().filter_map(|(q, _)| Some(((*q).clone(), now.get(q.as_str())?.clone()))).collect(),
-                );
-                had.push((at.to_string(), now.clone()));
-                for (q, tol) in &compared {
-                    if differed.contains_key(q.as_str()) {
-                        continue;
-                    }
-                    let Some(want) = values.get(*q) else { continue };
-                    let line = match now.get(q.as_str()) {
-                        None => Some(format!("{at} {q}: expected {}, the port has none", show(want))),
-                        Some(got) if !differs(got, want, *tol) => None,
-                        Some(got) => Some(format!("{at} {q}: expected {}, got {}", show(want), show(got))),
-                    };
-                    if let Some(l) = line {
-                        differed.insert((*q).clone(), l);
-                    }
-                }
-                None
-            };
-        *at = "initial".into();
-        if let Some(e) = check(&mut app, "initial", &rec.header.initial, &mut differed) {
-            out.failures.push(e);
-            return (out, had);
-        }
-        for t in rec.expand() {
-            if differed.len() == compared.len() {
-                break;
-            }
-            *at = format!("tick {}", t.tick);
-            match tick_input(&t) {
-                Ok(input) => app.run_input(&input),
-                Err(e) => {
-                    out.failures.push(e);
-                    return (out, had);
-                }
-            }
-            if let Some(e) = check(&mut app, &format!("tick {}", t.tick), &t.values, &mut differed) {
-                out.failures.push(e);
-                return (out, had);
-            }
-        }
-        if !differed.is_empty() {
-            out.values = trail;
-        }
-        // In the order they first differed.
-        let mut lines: Vec<String> = differed.into_values().collect();
-        lines.sort_by_key(|l| tick_of(l));
-        out.failures = lines;
-        (out, had)
+        self.0.report()
     }
 
     /// Runs every scenario, prints the results, writes them to
     /// `$PSX_SCENARIO_REPORT` when it is set, and panics when one fails.
     pub fn run(self) {
-        let report = self.report();
-        if let Some(p) = std::env::var_os("PSX_SCENARIO_REPORT") {
-            std::fs::write(&p, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
-        }
-        let mut failed = Vec::new();
-        for s in &report.scenarios {
-            let ticks: usize = s.recordings.iter().map(|r| r.ticks).sum();
-            println!(
-                "{} ({}): {} recordings, {ticks} ticks, {}",
-                s.id,
-                s.kind,
-                s.recordings.len(),
-                if s.passed() { "pass" } else { "FAIL" }
-            );
-            failed.extend(s.problems.iter().map(|p| format!("{}: {p}", s.id)));
-            for r in &s.recordings {
-                failed.extend(r.failures.iter().map(|f| format!("{} {}: {f}", s.id, r.name)));
-            }
-        }
-        assert!(failed.is_empty(), "scenarios failed:\n{}", failed.join("\n"));
+        self.0.run()
     }
 }
 
+/// The runner's pad as the app's tick input: the buttons psx-bevy's
+/// controller has, the mode and the sticks.
+pub(crate) fn pad_input(pad: &Pad) -> TickInput {
+    let buttons = pad.buttons.iter().filter_map(|b| crate::testing::trajectory::button(b.name())).collect();
+    TickInput { buttons, analog: Some(pad.analog), sticks: Some(pad.sticks), ..default() }
+}
+
 /// A recording's tick as input: its pad, mode and sticks.
-pub(crate) fn tick_input(t: &psx_scenario::scenario::Full) -> Result<crate::testing::TickInput, String> {
-    let buttons = t
-        .pad
-        .iter()
-        .map(|b| crate::testing::trajectory::button(b).ok_or(format!("tick {}: no button {b:?}", t.tick)))
-        .collect::<Result<Vec<_>, String>>()?;
-    Ok(crate::testing::TickInput { buttons, analog: Some(t.analog), sticks: Some(t.sticks), ..default() })
-}
-
-/// Every quantity the port had at each moment of a replay: `initial`,
-/// `tick N`.
-type Trail = Vec<(String, BTreeMap<&'static str, Value>)>;
-
-/// Where two runs of one recording first part: the moment and the first
-/// quantity (by name) that differs.
-fn parting(first: &Trail, second: &Trail) -> Option<String> {
-    let Some((at, a, b)) = first.iter().zip(second).find(|((_, a), (_, b))| a != b).map(|((at, a), (_, b))| (at, a, b))
-    else {
-        // The same as far as both went: one stopping sooner is a parting too.
-        let end = |t: &Trail| t.last().map_or("before initial".to_string(), |(at, _)| format!("after {at}"));
-        return (first.len() != second.len()).then(|| {
-            format!("the port is not deterministic: the first run stopped {}, the second {}", end(first), end(second))
-        });
-    };
-    let q = a.keys().chain(b.keys()).filter(|q| a.get(*q) != b.get(*q)).min()?;
-    let had = |m: &BTreeMap<&str, Value>| m.get(q).map_or("none".into(), show);
-    Some(format!("{at} {q}: the port is not deterministic: first run {}, second run {}", had(a), had(b)))
-}
-
-fn panic_message(p: &Box<dyn std::any::Any + Send>) -> String {
-    p.downcast_ref::<&str>()
-        .map(|m| m.to_string())
-        .or_else(|| p.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "no message".into())
+pub(crate) fn tick_input(t: &psx_scenario::scenario::Full) -> Result<TickInput, String> {
+    Pad::of(t).map(|p| pad_input(&p))
 }
 
 pub(crate) fn registry(app: &mut App) -> ScenarioRegistry {
     app.world_mut().get_resource_or_insert_with(ScenarioRegistry::default).clone()
-}
-
-/// Whether `got` is further from `want` than `tolerance` (raw units, for
-/// numbers; anything else is compared exactly).
-fn differs(got: &Value, want: &Value, tolerance: i128) -> bool {
-    match (got, want) {
-        (Value::Int(a), Value::Int(b)) => (a - b).abs() > tolerance,
-        _ => got != want,
-    }
-}
-
-fn show(v: &Value) -> String {
-    serde_json::to_string(v).unwrap_or_default()
-}
-
-/// A failure line's tick: 0 for `initial`.
-fn tick_of(line: &str) -> u64 {
-    line.strip_prefix("tick ").and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or(0)
-}
-
-fn read(p: &Path) -> Result<String, String> {
-    std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
 #[cfg(test)]

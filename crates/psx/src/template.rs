@@ -149,6 +149,7 @@ pub(crate) const FILES: &[(&str, &str)] = files![
     "vendor/psx-scenario/Cargo.toml",
     "vendor/psx-scenario/src/lib.rs",
     "vendor/psx-scenario/src/release.rs",
+    "vendor/psx-scenario/src/runner.rs",
     "vendor/psx-scenario/src/rust.rs",
     "vendor/psx-scenario/src/scenario.rs",
     "vendor/psx-scenario/src/value.rs",
