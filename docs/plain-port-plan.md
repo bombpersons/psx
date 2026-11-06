@@ -492,6 +492,9 @@ About phase 1 and phase 2 of this plan together, mostly on psx's side.
   `serve`), with a `--psx` branch in `main`. Done when each one's
   `port check` verdicts are the same as before the move. Done between
   agent runs, not during one.
+  Left to the user, who moves them by hand (perhaps off Bevy as well);
+  until then they keep their psx-bevy runner and `port check` cannot
+  run them.
 
 Start with the contract and the C example alone; templates for other
 languages can come later if ports ask for them.
