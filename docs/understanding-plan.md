@@ -8,11 +8,15 @@ number:
 1. A failing recording is reported as failing, with the quantities that
    differ and where to look, not as "matches up to tick N" with the
    values it missed by.
-2. Features' dependencies come from what their recordings run as well as
-   from what the catalogue says.
-3. Features that depend on each other are worked together, as a group.
-4. The catalogue changes as the agent learns the game: features merge,
-   split and revise their code without losing what the person confirmed.
+2. A feature is what the player could name and the recordings that
+   show it; its code is the agent's current reading, revised freely, and
+   every function the goal's recordings run is some feature's or marked
+   not ported, so code nobody claimed is work psx can point at.
+3. Dependencies come from what the recordings run, not from the
+   catalogue; features that depend on each other are worked together, as
+   a group.
+4. Features merge and split without losing what the person confirmed,
+   and progress is measured in ways that do not change with the cut.
 5. Probes (docs/probes-plan.md) stop at the original's side.
 6. The agent sees the port's screen beside the original's, to
    understand what drawing does; what it shows that can be checked
@@ -76,6 +80,24 @@ revised, and Locate asks only while it is empty. So `code` stays the
 first guess, though the agent understands the game better later: the
 pointer at 404dbb7 found the collision response in no feature's code.
 
+**Code no feature lists is invisible.** Locate asks for a feature's code
+once; after that, a function the recordings run that no entry lists is
+seen only if the pointer happens on it. Library code and the drivers
+(CD, sound, the GPU's command lists) are no feature's either, and
+nothing says so, so an agent cannot tell the code it set aside from the
+code it missed.
+
+**Progress counts features as cut.** Features exist to say how much of
+the port is done and to point the agent at what is not. Counting
+features done makes the first depend on the catalogue's cut: GT2's car
+as five features or one changes the count, not the port.
+
+**The person cannot judge engineering.** What is a feature's code, what
+is library code, what depends on what: the person cannot tell whether
+the agent has it right, so a confirmation of them only stops the agent
+revising. The person can judge the game: what they want, a reason in
+game terms why no recording can reach a branch, the held-out plays.
+
 **Nothing shows the agent its port's screen.** psx web draws the port's
 frames beside the original's for the person; no result gives them to
 the agent, and the guide never says to look. The reviewer's report on
@@ -123,30 +145,70 @@ starts the debugger itself (debug_start with the recording) and finds
 the moment, by a pc stop at a function, a watch on the quantity or the
 code.
 
-### Dependencies: declared and seen
+### A feature: what the player could name, and its recordings
 
-A feature's dependencies are its `depends` and the features whose code its
-recordings run (each recording's coverage against the catalogue's
-`code`). Declared ones still order the work before there are recordings
-and make the goal's closure. A dependency seen and not declared is a
-catalogue item: add it, or say why the code it reaches is not that
-feature's (shared library code, a function catalogued in the wrong
-feature).
+A feature is a capability in game terms (catalogue/README.md's rule: a
+feature stands alone when its recordings can show it without its
+neighbours) with the recordings that show it. It is the unit the person
+names in the goal, plays held-out recordings for and calls done.
+Everything else in an entry is the agent's reading of the original,
+revised as it learns, with nothing for the person to confirm.
+
+### Code: claimed by a feature, or not ported
+
+A feature's `code` is the agent's current reading of where its rules
+are: a function added when the pointer or a watch shows the feature's
+quantities come from it, one taken out when it turns out to be
+another's. A function may be several features' (a state machine jump
+and climb share); its branches are covered once, by any of their
+recordings.
+
+Code that is no feature's is listed in `catalogue/not_ported.toml`, by
+function or address range, each with why: library code (memcpy, the
+libgte helpers), the CD and sound drivers, the GPU's command building,
+debug code. The port has its own of those, or none. It is the agent's
+judgement, not confirmed: the pointer says when code listed there
+writes a differing quantity ("marked not ported, and it writes
+car_speed"), and the person's held-out plays fail where a rule was set
+aside.
+
+The goal's code is every function the goal's recordings run (work and
+held-out, their coverage against the inventory). Each is claimed (some
+feature's code) or not ported; one that is neither is work port next
+gives (Locate), those writing a compared quantity (the pointer's
+writers) first. A feature is reviewed only once the code its own
+recordings run is all claimed or not ported.
+
+Revising costs no more than it must. Code taken out of a feature takes
+its wont_reach entries with it, and that is not a change to confirm;
+code moved to another feature takes its confirmed entries along. Code
+added needs its branches covered (that shows it understood). wont_reach
+stays the person's to confirm: its reasons are in game terms.
+
+### Dependencies: from the recordings
+
+A feature depends on the features whose code its recordings run (each
+recording's coverage against the catalogue's `code`). `depends` goes:
+before there are recordings, order hardly matters (Locate and Record
+wait on no other feature), and once there are, what the recordings run
+is the better account. A goal's closure is its features and those their
+recordings depend on; the person sees a feature added to it as now.
+Existing workspaces: port update moves each feature only `depends`
+brought into the closure into goal.toml's features, so the confirmed
+list keeps it.
 
 ### Work by group
 
-Features joined in a cycle of dependencies, either kind, form a group.
-port next gives a group's items as one: the features, their recordings
-together, and port_check over all of them. Groups come in dependency
-order. Each feature is still judged and finished on its own recordings;
-the group is the unit of work, not of judgement.
+Features joined in a cycle of dependencies form a group; a cycle is no
+longer a catalogue problem. port next gives a group's items as one: the
+features, their recordings together, and port_check over all of them.
+Groups come in dependency order. Each feature is still judged and
+finished on its own recordings; the group is the unit of work, not of
+judgement.
 
-### The catalogue changes as the agent learns
+### Merging and splitting
 
-catalogue/README.md's rule becomes one the recordings can check: a
-feature stands alone when its recordings can show it without its
-neighbours. Two features whose recordings each run the other's code are
-one of:
+Two features whose recordings each run the other's code are one of:
 
 - separate features that share code: a recording of one could avoid the
   other's code (a character controller's jump and climb, one state
@@ -168,22 +230,13 @@ goal shrinking. Recordings (work and held_out, the person's plays) and
 wont_reach confirmations move with the recordings and code they belong
 to; the new features are judged again by port_check.
 
-A feature's `code` is the agent's current reading of where its rules
-are, revised as it learns: a function added when the pointer or a watch
-shows the feature's quantities come from it, one taken out when it
-turns out to be another's or shared. port next asks when a feature's
-recordings run code that writes its compared quantities and no feature
-lists (add it to one, or say why it is none's). Revising costs no more
-than it must:
+### Progress the cut does not change
 
-- code taken out takes its wont_reach entries with it, which is not a
-  change to confirm; code moved to another feature takes its confirmed
-  entries along, as merges and splits do;
-- a function more than one feature lists is shared: its branches are
-  covered once, by any of those features' recordings;
-- code added still needs its branches covered (that is what shows it
-  understood), and wont_reach entries added or changed on code that
-  stays are still the person's to confirm.
+Beside the features by stage, psx web's Stats and port status plain
+(the person's) show three shares that no cut changes: the goal's
+recordings passing (held-out ones once reviewed), the goal's code
+claimed or not ported, and the claimed code's branches resolved. The
+agent is given items, not the shares: a share is a number to push.
 
 ### Screens: for understanding, beside the quantities
 
@@ -223,14 +276,18 @@ until, watch, debug_show value and debug_go's write and read take
   known there; it does not show which side of the port is wrong.
 - **The agent starts the debugger.** The pointer is a place in code and
   features, not a moment; finding the moment is reading the code.
-- **Seen dependencies add to declared ones**; they do not replace them,
-  since nothing is seen before the recordings.
+- **Dependencies are seen, not declared.** Before the recordings order
+  hardly matters; after, the recordings say.
 - **Groups are computed; merges are the agent's.** A group says what is
   worked together; whether it is one feature is a judgement in game
   terms.
-- **`code` is the agent's to revise.** It is a reading of the original,
-  not a commitment; the person confirms what cannot be shown (wont_reach),
-  not where the agent draws a feature's edges.
+- **The engineering is the agent's.** `code`, not_ported, merges and
+  splits are its reading of the original, not confirmed: the person
+  could not tell if they were wrong. The pointer and the held-out plays
+  catch code set aside that holds a rule. The person confirms what they
+  can judge: the goal, and wont_reach's reasons in game terms.
+- **Every function the goal runs is accounted for.** Claimed or not
+  ported, so code nobody claimed is work, not a gap no one sees.
 - **Screens are looked at, not scored.** A pixel difference would be a
   number to fit and would push the port's renderer toward the PS1's GPU;
   what drawing shows that matters is a quantity.
@@ -312,18 +369,36 @@ called first, is 0x800340A4, the trial's collision response
 (0x80034134), in no feature's code. The whole check took 95 s. Script
 code (Croc's) shows as the interpreter's functions.
 
-### 4. Dependencies seen
+### 4. Dependencies from the recordings
 
-Per feature, the features whose code its recordings run; port next's
-catalogue item for one not declared; port status shows both kinds. port
-next's item for code its recordings run that writes its compared
-quantities (the pointer's writers) and no feature lists.
+Per feature, the features whose code its recordings run, as its
+dependencies; `depends` no longer read (the README, the guide and port
+add drop it; an entry that has it is told so); the closure from the
+goal's features and theirs; dependency order from them, a cycle ordered
+together rather than a problem; port status shows each feature's; port
+update moves features only `depends` brought in into goal.toml.
 
-*Done when* GT2's catalogue shows F-0010's recordings depending on F-0007
-and port next asks for it, and at 404dbb7 asks where the collision
-response belongs.
+*Done when* GT2's F-0010 and F-0007 each show the other, the catalogue
+has no cycle problem, and after port update its closure and confirmation
+are as before.
 
-### 5. Groups
+### 5. Code claimed or not ported
+
+`catalogue/not_ported.toml` (function or range = why); the goal's code
+(what its recordings run) each claimed or not ported, else port next's
+Locate for it, the pointer's writers first; reviewed waits on its own
+recordings' code being accounted for; the pointer's evidence for not
+ported code that writes a differing quantity; a function several
+features list covered once; wont_reach entries leaving with code taken
+out without a confirmation and following code moved; catalogue/README.md
+and the guide say `code` is revised as the agent learns.
+
+*Done when* on GT2 at 404dbb7 port next asks where 0x800340A4 belongs, a
+range in not_ported answers for library code, and moving a function
+with a confirmed wont_reach entry to another feature, or taking it out,
+asks nothing of the person.
+
+### 6. Groups
 
 Cycles of dependencies as groups; port next's items by group, in
 dependency order; port_check over a group's recordings; the review and
@@ -333,24 +408,19 @@ progress name groups where they name features today.
 any cycle comes alone as now, and every port next test passes with
 groups of one.
 
-### 6. Merging and splitting
+### 7. Merging, splitting and progress
 
 `replaces` and `from` in catalogue entries; confirmation through them;
 verdicts (.psx/verdicts/<id>/), reviews' feature lists, progress.jsonl
-and port next's history read through them; a catalogue item when a group
-forms. Revising `code`: wont_reach entries leave with code taken out
-without a confirmation, follow code moved to another feature, and a
-function several features list is covered once. catalogue/README.md's
-rule, and that refining features and their code is expected; the guide
-says so too.
+and port next's history read through them; port next's item when a
+group forms. The three shares in psx web's Stats and port status plain.
 
 *Done when* merging two confirmed features into one keeps the goal
 confirmed, keeps their held_out recordings, and port next judges the new
-feature; a split likewise; and moving a function with a confirmed
-wont_reach entry from one feature to another, or taking it out, asks
-nothing of the person.
+feature; a split likewise; and the shares are the same before and after
+a merge.
 
-### 7. Screens
+### 8. Screens
 
 An argument on an existing command (the tool budget is full) giving the
 original's and the port's frames at chosen ticks of a recording, or a
@@ -364,11 +434,11 @@ drawing shows becomes quantities (camera, animation, HUD).
 games' screens at the same ticks, a port that does not draw says so, and
 the Review brief asks the reviewer to look.
 
-### 8. A trial on Gran Turismo 2
+### 9. A trial on Gran Turismo 2
 
 A fresh session from port_next, with the handling features as a group:
-whether it merges them, revises their code, how it uses the pointer, and
-its feedback file.
+whether it merges them, revises their code and not_ported, how it uses
+the pointer, and its feedback file.
 
 *Done when* its feedback says whether the pointer led it to the rule
 without the tick, whether it worked on a number at any point, and
