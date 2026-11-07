@@ -131,8 +131,9 @@ function is replaced only while its entry holds what its check saw.
 The result names the functions replaced with their calls, those left out
 and why, and share_in_c, the instructions run in the C. scenario_check
 and port_check replay each recording with it: diverges_with_c, with
-first_tick, is a recording that replays as recorded without the C and
-not with it.
+the quantities that differ (differs_in), is a recording that replays as
+recorded without the C and not with it: a function it replaces does not
+do what the original's does there.
 
 fixes/ holds C that changes what the game does on purpose, most often so
 the game takes its input every tick where its driver delays it

@@ -535,7 +535,7 @@ mod tests {
                 .clone()
         };
         assert_eq!(failures("walk"), json!([]));
-        assert_eq!(failures("differs"), json!(["tick 1 x: expected 4200, got 4196"]));
+        assert_eq!(failures("differs"), json!(["differs from the recording in x"]));
         assert_eq!(failures("fragile"), json!(["tick 2 panicked: walked off the floor"]));
         assert_eq!(failures("unlaunched"), json!(["the launcher failed: x: a number"]));
         let _ = std::fs::remove_dir_all(root);

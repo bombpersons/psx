@@ -214,17 +214,9 @@ fn failing(rs: &[(String, Option<Vec<String>>)]) -> Vec<(&String, &Vec<String>)>
     rs.iter().filter_map(|(n, f)| f.as_ref().filter(|f| !f.is_empty()).map(|f| (n, f))).collect()
 }
 
-/// The tick a failure line names (`... tick 32 croc_y ...`), for the
-/// earliest divergence.
-fn tick_of(line: &str) -> u64 {
-    line.split_once("tick ")
-        .and_then(|(_, t)| t.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok())
-        .unwrap_or(u64::MAX)
-}
-
-/// The failing recording that diverges first, with its first failure.
-fn earliest(rs: &[(String, Option<Vec<String>>)]) -> Option<(String, String)> {
-    failing(rs).into_iter().filter_map(|(n, f)| Some((n.clone(), f.first()?.clone()))).min_by_key(|(_, l)| tick_of(l))
+/// The first failing recording, with its failures.
+fn first_failing(rs: &[(String, Option<Vec<String>>)]) -> Option<(String, String)> {
+    failing(rs).into_iter().next().map(|(n, f)| (n.clone(), f.join("; ")))
 }
 
 impl Feature {
@@ -267,7 +259,7 @@ impl Feature {
         let pass = self.work.iter().filter(|(_, f)| f.as_ref().is_some_and(Vec::is_empty)).count();
         let checked = self.work.iter().all(|(_, f)| f.is_some());
         let mut v = json!({"total": self.work.len(), "pass": checked.then_some(pass)});
-        if let Some((r, first)) = earliest(&self.work) {
+        if let Some((r, first)) = first_failing(&self.work) {
             v["first_failure"] = json!(format!("{r}: {first}"));
         }
         v
@@ -280,7 +272,7 @@ impl Feature {
         }
         let pass = self.held_out.iter().filter(|(_, f)| f.as_ref().is_some_and(Vec::is_empty)).count();
         let mut v = json!({"total": self.held_out.len(), "pass": pass});
-        if let Some((r, first)) = earliest(&self.held_out) {
+        if let Some((r, first)) = first_failing(&self.held_out) {
             v["first_failure"] = json!(format!("{r}: {first}"));
         }
         v
@@ -360,7 +352,7 @@ impl Feature {
         let pass = self.work.iter().filter(|(_, f)| f.as_ref().is_some_and(Vec::is_empty)).count();
         if self.work.iter().all(|(_, f)| f.is_some()) {
             let mut p = format!("{pass}/{} pass", self.work.len());
-            if let Some((r, first)) = earliest(&self.work) {
+            if let Some((r, first)) = first_failing(&self.work) {
                 p += &format!(" · first: {r} {first}");
             }
             parts.push(p);
@@ -1071,15 +1063,16 @@ impl Facts {
             };
             return Item::agent("Implement", Some(&f.id), why, "psx port check has judged it at HEAD", how);
         }
-        // 3. A failing recording, the earliest divergence first.
-        let failed = |f: &Feature| earliest(&f.work).or_else(|| earliest(&f.held_out).filter(|_| f.reviewed()));
+        // 3. A failing recording.
+        let failed =
+            |f: &Feature| first_failing(&f.work).or_else(|| first_failing(&f.held_out).filter(|_| f.reviewed()));
         if let Some((f, (r, first))) = self.features.iter().find_map(|f| Some((f, failed(f)?))) {
             return Item::agent(
                 "Fix",
                 Some(&f.id),
                 format!("{r} fails: {first}"),
                 "each of its recordings it is checked against passes at HEAD",
-                "find the rule the port gets wrong at that tick, reading the original's code there (psx scenario show gives the recording per tick); fix the port's code, commit, and run psx port check",
+                "a recording that differs means the original's rule for those quantities is not yet understood, or the feature needs another that is not done: find the original's code that writes them and understand it (the debugger on the recording, checked C), port the rule, commit, and run psx port check",
             );
         }
         // 3b. A system turned off that the port now has: the original's
@@ -1935,7 +1928,7 @@ mod tests {
         assert_eq!((item.item, item.feature.as_deref()), ("Restore", Some("F-0002")));
         assert!(item.why.contains("walk: enemy_update"), "{}", item.why);
         // Before it matches, the feature's own work comes first.
-        set(&mut f, "F-0002", |x| x.work = results(&[("walk/a", &["tick 2 x: expected 1, got 2"])]));
+        set(&mut f, "F-0002", |x| x.work = results(&[("walk/a", &["differs from the recording in x"])]));
         assert_eq!(f.next().item, "Fix");
     }
 
@@ -2063,10 +2056,12 @@ mod tests {
         });
         set(&mut f, "F-0002", |x| {
             x.verdict = current();
-            x.work =
-                results(&[("walk/b", &["tick 9 x: expected 1, got 2"]), ("walk/c", &["tick 4 y: expected 3, got 2"])]);
+            x.work = results(&[
+                ("walk/b", &["differs from the recording in x"]),
+                ("walk/c", &["differs from the recording in y"]),
+            ]);
             // Not reviewed: its held-out results neither fail it nor show.
-            x.held_out = results(&[("walk/h", &["tick 1 x: expected 0, got 1"])]);
+            x.held_out = results(&[("walk/h", &["differs from the recording in x"])]);
         });
         assert_eq!(f.stage("F-0001"), Some(Stage::Matching));
         // F-0001 matches: a review of it comes before more work.
@@ -2082,7 +2077,7 @@ mod tests {
         f.review_finished = vec!["F-0001".into()];
         let item = f.next();
         assert_eq!((item.item, item.feature.as_deref()), ("Fix", Some("F-0002")));
-        assert_eq!(item.why, "walk/c fails: tick 4 y: expected 3, got 2");
+        assert_eq!(item.why, "walk/b fails: differs from the recording in x");
         assert_eq!(f.features[1].held_out_json()["shown"], "once the code is reviewed");
         set(&mut f, "F-0002", |x| x.work = results(&[("walk/b", &[])]));
         f.review_finished = vec!["F-0001".into(), "F-0002".into()];
@@ -2393,7 +2388,7 @@ mod tests {
         let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
         finished(&mut f, vec![]);
         // F-0002 is still being built: a recording fails.
-        set(&mut f, "F-0002", |x| x.work = results(&[("walk/b", &["tick 9 x: expected 1, got 2"])]));
+        set(&mut f, "F-0002", |x| x.work = results(&[("walk/b", &["differs from the recording in x"])]));
         let next = |f: &Facts| (f.next().item, f.next().why, f.next().how);
         // A review that holds at HEAD saw the matching code: nothing to review.
         review(&mut f, Review::Holds { commit: "abc".into(), findings: 0 });

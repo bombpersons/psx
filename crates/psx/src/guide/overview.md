@@ -52,8 +52,10 @@ Rules:
 - Hold recordings out. A feature's held_out recordings are judged only
   once the code is reviewed; the person's play-throughs are the best ones. Their
   results stay hidden until then: don't tune to them.
-- The first tick that differs is where to look; the end state only
-  summarises.
+- A recording that differs is not a distance to close: the rule for
+  those quantities is not understood yet, or the feature needs another
+  not done. port_check names them, not where or by how much; understand
+  the original's code that writes them (the debugger, checked C).
 - The world a recording needs: a feature tested alone runs in a stand-in
   world (a flat floor), and only recordings that fit it count for it. The
   original's levels are a feature of their own.
@@ -206,7 +208,7 @@ port_next's items, in this order:
 - Locate: the entry names no code.
 - Record: its recordings are not ready.
 - Implement: no port_check has judged it at HEAD.
-- Fix: a recording fails; the earliest divergence first.
+- Fix: a recording fails, naming the quantities that differ.
 - Answer: an open question.
 - Cover: a branch of its code its recordings (and the other features'
   that pass at HEAD) never took one way, or a

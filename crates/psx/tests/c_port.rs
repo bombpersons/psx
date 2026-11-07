@@ -85,14 +85,14 @@ fn a_c_port_is_checked_through_its_manifest() {
     assert_eq!(v["verdicts"][0]["passed"], true, "{v}");
     assert_eq!(v["verdicts"][0]["work"]["hill/push"], serde_json::json!([]), "{v}");
 
-    // A port one unit out is caught at the tick it parts.
+    // A port one unit out is caught, by the quantities that differ.
     let sled = dir.join("game/src/sled.c");
     let text = std::fs::read_to_string(&sled).unwrap();
     std::fs::write(&sled, text.replace("#define SNOW 0xF00", "#define SNOW 0xEFF")).unwrap();
     commit(&dir, "the snow one unit out");
     let v = psx(&dir, &["port", "check"]);
     assert_eq!(v["verdicts"][0]["passed"], false, "{v}");
-    assert_eq!(v["verdicts"][0]["work"]["hill/push"][0], "tick 1 sled_speed: expected 720, got 719", "{v}");
+    assert_eq!(v["verdicts"][0]["work"]["hill/push"][0], "differs from the recording in sled_speed, sled_x", "{v}");
 
     // A port that does not build says why.
     std::fs::write(&sled, "not C\n").unwrap();

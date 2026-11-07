@@ -1276,31 +1276,34 @@ pub(crate) fn plot(root: &Path, id: &str, name: &str, last: &Json) -> crate::Res
         types.insert(q.clone(), t);
         quantities.push(row);
     }
-    // "tick 91 croc_x: expected 14990, got 15026" or "initial x: …".
-    let failures: Vec<Json> = reported
+    // Where each quantity first differed, for the plots: the failures
+    // name the quantities alone, the differences say where.
+    let mut failures: Vec<Json> = reported
         .as_ref()
-        .and_then(|r| r["failures"].as_array().cloned())
+        .and_then(|r| r["differences"].as_array().cloned())
         .unwrap_or_default()
         .iter()
-        .filter_map(Json::as_str)
-        .map(|line| {
-            let (tick, rest) = match line.strip_prefix("tick ").and_then(|r| r.split_once(' ')) {
-                Some((n, rest)) if n.parse::<u64>().is_ok() => (n.parse::<u64>().ok(), rest),
-                _ => (line.strip_prefix("initial ").map(|_| 0), line.strip_prefix("initial ").unwrap_or(line)),
-            };
-            let (q, what) = rest.split_once(": ").unwrap_or(("", rest));
-            let number = |s: &str| {
-                let v: psx_scenario::Value = serde_json::from_str(s).ok()?;
+        .map(|d| {
+            let (q, at) = (d["quantity"].as_str().unwrap_or(""), d["at"].as_str().unwrap_or(""));
+            let tick =
+                if at == "initial" { Some(0) } else { at.strip_prefix("tick ").and_then(|n| n.parse::<u64>().ok()) };
+            let number = |v: &Json| {
+                let v: psx_scenario::Value = serde_json::from_value(v.clone()).ok()?;
                 plotted(types.get(q)?, &v)
             };
-            let (expected, got) = match what.strip_prefix("expected ").and_then(|w| w.split_once(", got ")) {
-                Some((e, g)) => (number(e), number(g)),
-                None => (None, None),
-            };
+            let got = if d["got"].is_null() { "the port has none".to_string() } else { format!("got {}", d["got"]) };
             let known = types.contains_key(q);
-            json!({"text": line, "tick": tick.filter(|_| known), "quantity": known.then_some(q), "expected": expected, "got": got})
+            json!({"text": format!("{at} {q}: expected {}, {got}", d["expected"]), "tick": tick.filter(|_| known),
+                   "quantity": known.then_some(q), "expected": number(&d["expected"]), "got": number(&d["got"])})
         })
         .collect();
+    // The rest (a panic, the launcher) as they are.
+    let lines = reported.as_ref().and_then(|r| r["failures"].as_array().cloned()).unwrap_or_default();
+    for line in lines.iter().filter_map(Json::as_str) {
+        if !line.starts_with("differs from the recording in ") && !line.starts_with("the port has no ") {
+            failures.push(json!({"text": line, "tick": null, "quantity": null, "expected": null, "got": null}));
+        }
+    }
     let d = &rec.header.producer.details;
     Ok(json!({
         "scenario": id, "name": name, "description": rec.header.description,
@@ -1422,16 +1425,27 @@ pub(crate) fn replay(
     Ok((d, m))
 }
 
-/// The first tick a difference line names (`tick N ...`).
-fn first_tick(diffs: &[String]) -> Option<u64> {
-    diffs.iter().filter_map(|d| d.strip_prefix("tick ")?.split([' ', ':']).next()?.parse().ok()).min()
+/// The quantities difference lines name (`tick N q: ...`, `initial q:
+/// ...`), in their order, without where or the values.
+fn differing(diffs: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for d in diffs {
+        let rest = d.strip_prefix("initial ").or_else(|| d.strip_prefix("tick ")?.split_once(' ').map(|(_, r)| r));
+        if let Some((q, _)) = rest.and_then(|r| r.split_once(':')) {
+            if !out.iter().any(|o| o == q) {
+                out.push(q.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Each captured recording of scenario `id` (or those of `only`) replayed
 /// on the original with the agent's C replacing `d`'s functions
 /// (docs/decomp-plan.md, step 13). A recording that differs is replayed
 /// again without the C: one that then replays as recorded diverges with
-/// the C, from the first tick it differs. False when one diverges.
+/// the C, in the quantities it names (not where or by how much: the C is
+/// understood, not tuned). False when one diverges.
 pub(crate) fn with_c(
     ctx: &Ctx,
     id: &str,
@@ -1465,15 +1479,15 @@ pub(crate) fn with_c(
             if without.is_empty() {
                 ok = false;
                 r["status"] = json!("diverges_with_c");
-                r["first_tick"] = json!(first_tick(&diffs));
+                r["differs_in"] = json!(differing(&diffs));
                 r["how"] = json!(
-                    "the replay differs with the C and not without it: psx code check the functions it replaces, from a state at that tick (states save, then code check --state)"
+                    "the replay differs with the C and not without it: some function it replaces does not do what the original's does on this recording; code check them, and compare the C with the original's code where it writes these quantities (the debugger on the recording)"
                 );
             } else {
                 r["status"] = json!("differs_without_c_too");
                 r["without_c"] = json!(without);
+                r["differences"] = json!(diffs);
             }
-            r["differences"] = json!(diffs);
         }
         crate::decomp::log_run(
             &ctx.root,
@@ -2287,11 +2301,10 @@ pub struct Quantities {
     }
 
     #[test]
-    fn the_first_tick_a_difference_names() {
-        let d = ["initial x: recorded 1, the replay 2", "tick 40 y: recorded 1, the replay 2", "tick 7 pad mode: ..."]
+    fn the_quantities_differences_name() {
+        let d = ["initial x: recorded 1, the replay 2", "tick 40 y: recorded 1, the replay 2", "tick 41 x: ..."]
             .map(String::from);
-        assert_eq!(super::first_tick(&d), Some(7));
-        assert_eq!(super::first_tick(&d[..1]), None);
+        assert_eq!(super::differing(&d), ["x", "y"]);
     }
 
     #[test]
@@ -2849,7 +2862,8 @@ pub struct Quantities {
             [r#"{"tick":1,"field":2,"pad":["RIGHT"],"values":{"x":-4096,"m":"walk"}}"#, r#"{"tick":2,"field":4}"#];
         std::fs::write(root.join("scenarios/walk/w.jsonl"), format!("{header}\n{}\n", rows.join("\n"))).unwrap();
         let last = json!({"commit": "c0", "at": "t", "scenarios": {"scenarios": [{"id": "walk", "recordings": [{"name": "w",
-            "failures": ["tick 2 x: expected -4096, got -2048"],
+            "failures": ["differs from the recording in x"],
+            "differences": [{"quantity": "x", "at": "tick 2", "expected": -4096, "got": -2048}],
             "values": [{"x": -6144, "m": "idle"}, {"x": -4096, "m": "walk"}, {"x": -2048, "m": "walk"}]}]}]}});
         let v = plot(root, "walk", "w", &last).unwrap();
         assert_eq!(v["ticks"][0]["pad"], json!(["RIGHT"]));

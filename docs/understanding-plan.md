@@ -215,6 +215,15 @@ first tick say what a failure means.
 port_next carries a recording's first failing tick or a missed value,
 and psx web plots a failure as before.
 
+**Done** (2026-11-07). The runner's failures say "differs from the
+recording in a, b" (or that the port has no q); each difference's
+where and values go to the report's `differences`, which only psx
+web's plot reads. port_next's Fix says what a difference means and
+where to look, scenario_check's diverges_with_c gives differs_in. Kept
+with their tick: a port's panic and its own non-determinism (port
+faults, not differences), a replay that differs without the C too (the
+capture's fault), and scenario_adjust_check's stock against adjusted.
+
 ### 3. The pointer
 
 Per failing recording, from its replay: the binding's reads per

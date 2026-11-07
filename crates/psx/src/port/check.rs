@@ -335,7 +335,7 @@ mod tests {
     fn each_named_recording_gets_what_the_run_found() {
         let report: ScenarioReport = serde_json::from_value(json!({"scenarios": [
             {"id": "jump", "recordings": [{"name": "stomp", "failures": []},
-                                          {"name": "long", "failures": ["tick 4 croc_y: expected 3, got 2"]}]},
+                                          {"name": "long", "failures": ["differs from the recording in croc_y"]}]},
             {"id": "swim", "problems": ["no launcher registered for scenario kind water"]},
         ]}))
         .unwrap();
@@ -344,7 +344,7 @@ mod tests {
         e.recordings.held_out = vec!["swim/lap".into(), "walk/a".into()];
         let r = recording_results(&e, &report);
         assert_eq!(r["jump/stomp"], Vec::<String>::new());
-        assert_eq!(r["jump/long"], ["tick 4 croc_y: expected 3, got 2"]);
+        assert_eq!(r["jump/long"], ["differs from the recording in croc_y"]);
         assert_eq!(r["jump/gone"], ["not run: the scenarios have no such recording"]);
         assert_eq!(r["swim/lap"], ["no launcher registered for scenario kind water"]);
         assert_eq!(r["walk/a"], ["not run: no scenarios/walk.toml"]);
