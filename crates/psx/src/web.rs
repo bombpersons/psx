@@ -782,18 +782,12 @@ fn attention(root: &Path, status: &Value, progress: &[Value], calls: &[Value]) -
             "a change broke recordings that passed before: the progress history shows where".into(),
         );
     }
-    let questions: usize = status["areas"]
-        .as_object()
-        .into_iter()
-        .flat_map(|a| a.values())
-        .flat_map(|v| v.as_array().into_iter().flatten())
-        .map(|f| f["questions"].as_array().map_or(0, Vec::len))
-        .sum();
+    let questions = status["questions"].as_array().map_or(0, Vec::len);
     if questions > 0 {
         add(
             "info",
             format!("{questions} open question{}", if questions == 1 { "" } else { "s" }),
-            "in the catalogue's features".into(),
+            "in catalogue/questions.md".into(),
         );
     }
     // The same call failing again and again.

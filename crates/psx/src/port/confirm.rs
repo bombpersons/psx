@@ -1,15 +1,16 @@
-//! `port confirm`: the person's approval of the goal's list.
+//! `port confirm`: the person's approval of the goal: its description,
+//! assets, held-out plays and the branches no recording can reach.
 
 use serde_json::{Value, json};
 
 use super::next::Facts;
-use super::{Confirmed, GOAL, Goal, Stage};
+use super::{Confirmed, GOAL, Goal};
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 
 /// `goal.toml`'s text with `confirmed` set to `c`: an earlier confirmation
 /// (a line, or a `[confirmed]` table) replaced, everything else kept.
-fn with_confirmation(text: &str, c: &Confirmed) -> String {
+pub(super) fn with_confirmation(text: &str, c: &Confirmed) -> String {
     let mut lines: Vec<&str> = Vec::new();
     let mut in_table = false;
     for line in text.lines() {
@@ -26,12 +27,15 @@ fn with_confirmation(text: &str, c: &Confirmed) -> String {
         }
         lines.push(line);
     }
-    let mut line = format!("confirmed = {{ at = \"{}\", features = {}", c.at, c.features.to_toml());
+    let mut line = format!("confirmed = {{ at = \"{}\"", c.at);
     if let Some(d) = &c.description {
         line += &format!(", description = \"{d}\"");
     }
     if !c.assets.is_none() {
         line += &format!(", assets = {}", c.assets.to_toml());
+    }
+    if let Some(h) = &c.held_out {
+        line += &format!(", held_out = {}", toml::Value::from(h.clone()));
     }
     if !c.wont_reach.is_empty() {
         let v = toml::Value::try_from(&c.wont_reach).expect("strings serialise");
@@ -48,8 +52,9 @@ fn with_confirmation(text: &str, c: &Confirmed) -> String {
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PortConfirmArgs {
-    /// Record the confirmation. Without it, show the goal's features, the
-    /// closure and any problems: what would be confirmed.
+    /// Record the confirmation. Without it, show the goal, the person's
+    /// held-out plays, the wont_reach branches and any problems: what
+    /// would be confirmed.
     #[arg(long)]
     #[serde(default)]
     pub yes: bool,
@@ -61,13 +66,11 @@ impl PortConfirmArgs {
         let port = &facts.port;
         let mut out = json!({
             "description": port.goal.description,
-            "features": port.goal.features.to_json(),
             "assets": port.goal.assets.to_json(),
-            "closure": port.closure_json(&|id| facts.stage(id)),
+            "recordings": {"work": port.recordings.work.len(), "held_out": port.goal.held_out},
             "problems": port.problems,
-            "stages": Stage::ALL.map(Stage::name),
             "confirmation": port.confirmation_json(),
-            "wont_reach": port.wont_reach(),
+            "wont_reach": port.wont_reach,
         });
         let ranges = facts.wont_reach_ranges();
         if !ranges.is_empty() {
@@ -76,7 +79,7 @@ impl PortConfirmArgs {
         }
         if !self.yes {
             out["next"] = json!(if port.problems.is_empty() {
-                "if this is the list the person wants, and each wont_reach branch is one no recording can reach for its reason: psx port confirm --yes (the person runs it)"
+                "if this is the goal the person wants, the held-out plays theirs, and each wont_reach branch is one no recording can reach for its reason: psx port confirm --yes (the person runs it)"
             } else {
                 "the agent fixes the problems first"
             });
@@ -88,15 +91,13 @@ impl PortConfirmArgs {
                 port.problems.len()
             )));
         }
-        if port.goal_ids().is_empty() {
-            return Err(Error::invalid("the goal names no features, and no feature is catalogued"));
-        }
         let c = Confirmed {
             at: crate::stamp::utc_now(),
-            features: port.goal.features.clone(),
             description: Some(super::description_stamp(&port.goal.description)),
             assets: port.goal.assets.clone(),
-            wont_reach: port.wont_reach(),
+            wont_reach: port.wont_reach.clone(),
+            held_out: Some(port.goal.held_out.clone()),
+            features: None,
         };
         let path = ctx.root.join(GOAL);
         let text = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, e))?;
@@ -104,16 +105,13 @@ impl PortConfirmArgs {
         // What was written must read back as this confirmation.
         let check: Goal = toml::from_str(&new)
             .map_err(|e| Error::invalid(format!("{GOAL} rewritten unreadably: {}", e.message())))?;
-        if check.confirmed.as_ref().map(|k| (&k.at, &k.features, &k.assets, &k.wont_reach))
-            != Some((&c.at, &c.features, &c.assets, &c.wont_reach))
-        {
+        if check.confirmed.as_ref() != Some(&c) {
             return Err(Error::invalid(format!("{GOAL} rewritten without the confirmation; nothing written")));
         }
         crate::write_atomic(&path, new.as_bytes()).map_err(|e| Error::io(&path, e))?;
-        // What left the goal's recordings is accepted with it.
-        port.note_recordings(&ctx.root, true);
         out["confirmation"] = json!({"state": "covers", "at": c.at});
-        out["confirmed"] = json!({"at": c.at, "features": c.features.to_json(), "assets": c.assets.to_json(), "wont_reach": c.wont_reach});
+        out["confirmed"] =
+            json!({"at": c.at, "assets": c.assets.to_json(), "held_out": c.held_out, "wont_reach": c.wont_reach});
         Ok(out)
     }
 }
@@ -126,44 +124,39 @@ impl Op for PortConfirmArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Assets, Features, GOAL_TOML};
+    use super::super::{Assets, GOAL_TOML};
     use super::*;
+
+    fn confirmed(at: &str) -> Confirmed {
+        Confirmed {
+            at: at.into(),
+            description: None,
+            assets: Default::default(),
+            wont_reach: Default::default(),
+            held_out: None,
+            features: None,
+        }
+    }
 
     #[test]
     fn confirming_rewrites_only_the_confirmation() {
-        let c = Confirmed {
-            at: "2026-10-29T10:00:00Z".into(),
-            features: Features::List(vec!["F-0001".into()]),
-            description: None,
-            assets: Default::default(),
-            wont_reach: Default::default(),
-        };
-        let text = "# The goal.\ndescription = \"x\"\nfeatures = [\"F-0001\"]   # one\nconfirmed = { at = \"old\", features = [] }\n";
+        let c = confirmed("2026-10-29T10:00:00Z");
+        let text = "# The goal.\ndescription = \"x\"   # one\nconfirmed = { at = \"old\", features = [] }\n";
         assert_eq!(
             with_confirmation(text, &c),
-            "# The goal.\ndescription = \"x\"\nfeatures = [\"F-0001\"]   # one\nconfirmed = { at = \"2026-10-29T10:00:00Z\", features = [\"F-0001\"] }\n"
+            "# The goal.\ndescription = \"x\"   # one\nconfirmed = { at = \"2026-10-29T10:00:00Z\" }\n"
         );
-        let table = "features = \"all\"\n\n[confirmed]\nat = \"old\"\nfeatures = []\n";
-        let all = Confirmed {
-            at: "t".into(),
-            features: Features::All,
-            description: None,
-            assets: Default::default(),
-            wont_reach: Default::default(),
-        };
-        assert_eq!(
-            with_confirmation(table, &all),
-            "features = \"all\"\n\nconfirmed = { at = \"t\", features = \"all\" }\n"
-        );
+        let table = "description = \"x\"\n\n[confirmed]\nat = \"old\"\nfeatures = []\n";
+        assert_eq!(with_confirmation(table, &confirmed("t")), "description = \"x\"\n\nconfirmed = { at = \"t\" }\n");
         let goal: Goal = toml::from_str(&with_confirmation(GOAL_TOML, &c)).unwrap();
-        assert_eq!(goal.confirmed.unwrap().features, c.features);
-        // The won't-reach branches the person saw, reasons and all.
+        assert_eq!(goal.confirmed.unwrap(), c);
+        // The won't-reach branches the person saw, reasons and all, and their plays.
         let mut w = c.clone();
         w.assets = Assets::Names(vec!["format:level".into(), "/CROCFILE.1:CROC.*".into()]);
-        w.wont_reach.entry("F-0001".into()).or_default().insert("0x8002D820".into(), "under \"water\"".into());
+        w.wont_reach.insert("0x8002D820".into(), "under \"water\"".into());
+        w.held_out = Some(vec!["walk/free".into()]);
         let text = with_confirmation(GOAL_TOML, &w);
         let goal: Goal = toml::from_str(&text).unwrap();
-        let confirmed = goal.confirmed.unwrap();
-        assert_eq!((confirmed.wont_reach, confirmed.assets), (w.wont_reach, w.assets), "{text}");
+        assert_eq!(goal.confirmed.unwrap(), w, "{text}");
     }
 }

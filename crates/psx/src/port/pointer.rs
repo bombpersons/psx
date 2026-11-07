@@ -2,9 +2,9 @@
 //! recording, where in the original to look. Worked out on the recording's
 //! replay: the bytes the binding reads for each differing quantity, the
 //! code that stored into them near the first difference, the code the
-//! original ran there for the first time in the recording, the features
-//! that code belongs to and its checked C. It names code and features, not
-//! the moment: the agent finds that with the debugger.
+//! original ran there for the first time in the recording, whether the
+//! port's code cites it and its checked C. It names code, not the moment:
+//! the agent finds that with the debugger.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
@@ -13,7 +13,7 @@ use psx_core::Machine;
 use psx_core::cpu::StepInfo;
 use serde_json::{Value, json};
 
-use super::{Entry, Port};
+use super::Port;
 use crate::binding::Plugin;
 use crate::commands::Ctx;
 use crate::scenario::Described;
@@ -175,11 +175,11 @@ pub(crate) fn tick_of(at: &str) -> Option<u64> {
 }
 
 /// The original's functions, from the inventory, with their names and
-/// the features whose code lists them.
+/// those the port's code cites (an address in their range).
 pub(crate) struct Code {
     functions: Vec<(u32, Vec<(u32, u32)>)>,
     names: BTreeMap<u32, String>,
-    features: BTreeMap<u32, Vec<String>>,
+    cited: BTreeSet<u32>,
     /// Functions with C: whether its last check passed on this C and names.
     checked: BTreeMap<String, bool>,
     /// catalogue/not_ported.toml.
@@ -202,12 +202,12 @@ impl Code {
             }
         }
         let names = psx_symbols::names::load(&ctx.root);
-        let mut features: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-        for e in port.entries.values() {
-            for a in e.code.iter().filter_map(|c| super::entry_addr(c)) {
-                features.entry(crate::run::fold(a)).or_default().push(e.id.clone());
-            }
-        }
+        let cited_at: BTreeSet<u32> = port.cited.addresses.iter().map(|&a| crate::run::fold(a)).collect();
+        let cited = functions
+            .iter()
+            .filter(|(_, cs)| cs.iter().any(|&(s, e)| cited_at.range(s..e).next().is_some()))
+            .map(|(entry, _)| *entry)
+            .collect();
         let checked = crate::decomp::c_functions(&ctx.root)
             .into_iter()
             .map(|(f, _, _)| {
@@ -217,20 +217,20 @@ impl Code {
             })
             .collect();
         let names = names.functions.iter().map(|f| (crate::run::fold(f.address), f.name.text.clone())).collect();
-        Code { functions, names, features, checked, not_ported: port.not_ported.clone() }
+        Code { functions, names, cited, checked, not_ported: port.not_ported.clone() }
     }
 
     /// The function holding `pc` (folded): its entry. Where overlays share
-    /// the address, one a feature lists comes first.
+    /// the address, one the port cites comes first.
     fn holding(&self, pc: u32) -> Option<u32> {
         let mut found =
             self.functions.iter().filter(|(_, cs)| cs.iter().any(|&(s, e)| pc >= s && pc < e)).map(|(entry, _)| *entry);
         let first = found.next()?;
-        Some(std::iter::once(first).chain(found).find(|e| self.features.contains_key(e)).unwrap_or(first))
+        Some(std::iter::once(first).chain(found).find(|e| self.cited.contains(e)).unwrap_or(first))
     }
 
-    /// A function as the pointer names it: name, entry, the features
-    /// whose code lists it, and its C (checked, unchecked, or none).
+    /// A function as the pointer names it: name, entry, whether the port
+    /// cites it, and its C (checked, unchecked, or none).
     fn describe(&self, entry: u32) -> Value {
         let name = self.names.get(&entry);
         let c = match name.and_then(|n| self.checked.get(n)) {
@@ -240,24 +240,8 @@ impl Code {
         };
         json!({"function": name.cloned().unwrap_or_else(|| format!("{:#010X}", shown(entry))),
                "entry": format!("{:#010X}", shown(entry)),
-               "features": self.features.get(&entry).cloned().unwrap_or_default(), "c": c})
+               "cited": self.cited.contains(&entry), "c": c})
     }
-}
-
-/// The features other than `own` whose code the pointer `p` names, in
-/// the order it names them.
-pub fn features_named(p: &Value, own: &str) -> Vec<String> {
-    let qs = p["quantities"].as_array().into_iter().flatten();
-    let lists = qs.flat_map(|q| [&q["writers"], &q["written_before"]]).chain([&p["first_run"]]);
-    let mut out: Vec<String> = Vec::new();
-    for f in lists.flat_map(|l| l.as_array().into_iter().flatten()) {
-        for id in f["features"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-            if id != own && !out.iter().any(|o| o == id) {
-                out.push(id.to_string());
-            }
-        }
-    }
-    out
 }
 
 /// Byte addresses as spans: `0x800A9D58..0x800A9D5C`, the end excluded.
@@ -286,18 +270,15 @@ fn ranked(code: &Code, counts: BTreeMap<u32, u64>, what: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The pointer for feature `e`, from what the replay of `recording` saw
-/// for the `quantities` that differ. `done` says whether a feature passes
-/// at this check; `with_c` is the recording's replay with the checked C,
-/// when there was one.
+/// The pointer for `recording`, from what its replay saw for the
+/// `quantities` that differ; `with_c` is the recording's replay with the
+/// checked C, when there was one.
 pub(crate) fn pointer(
     code: &Code,
-    e: &Entry,
     recording: &str,
     quantities: &[String],
     seen: &Seen,
     with_c: Option<&Value>,
-    done: &dyn Fn(&str) -> bool,
 ) -> Value {
     let mut out = json!({"recording": recording});
     let mut evidence: Vec<String> = Vec::new();
@@ -384,46 +365,31 @@ pub(crate) fn pointer(
     if !unheld.is_empty() {
         out["outside_the_inventory"] = json!(unheld.iter().take(SHOWN).map(|&pc| unknown(pc)).collect::<Vec<_>>());
     }
-    // The evidence, by the functions shown: whose code each is.
+    // The evidence, by the functions shown: whether the port has each.
     let mut functions: BTreeSet<u32> = BTreeSet::new();
     let lists = qs.iter().flat_map(|q| [&q["writers"], &q["written_before"]]).chain([&out["first_run"]]);
     for f in lists.flat_map(|l| l.as_array().into_iter().flatten()) {
         functions.extend(crate::commands::addr_value(&f["entry"]).map(crate::run::fold));
     }
     let name = |f: u32| code.describe(f)["function"].as_str().unwrap_or_default().to_string();
-    let (mut own_unchecked, mut own_checked, mut nobody, mut set_aside) = (vec![], vec![], vec![], vec![]);
-    let mut others: BTreeMap<(bool, Vec<String>), Vec<String>> = BTreeMap::new();
+    let (mut unchecked, mut checked, mut nowhere, mut set_aside) = (vec![], vec![], vec![], vec![]);
     for &f in &functions {
-        let d = code.describe(f);
-        let fs: Vec<String> =
-            d["features"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect();
-        if fs.contains(&e.id) {
-            if d["c"] == "checked" { own_checked.push(name(f)) } else { own_unchecked.push(name(f)) }
-        } else if let Some(why) = fs.is_empty().then(|| super::not_ported_in(&code.not_ported, f)).flatten() {
+        if code.cited.contains(&f) {
+            if code.checked.get(&name(f)) == Some(&true) { checked.push(name(f)) } else { unchecked.push(name(f)) }
+        } else if let Some(why) = super::not_ported_in(&code.not_ported, f) {
             set_aside.push(format!("{} ({why})", name(f)));
-        } else if fs.is_empty() {
-            nobody.push(name(f));
         } else {
-            let all_done = fs.iter().all(|x| done(x));
-            others.entry((all_done, fs)).or_default().push(name(f));
+            nowhere.push(name(f));
         }
     }
-    if !own_unchecked.is_empty() {
+    if !unchecked.is_empty() {
         evidence.push(format!(
-            "{}: this feature's code, with no checked C: the original's rule there is not understood yet",
-            own_unchecked.join(", ")
+            "{}: the port's code cites it, with no checked C: the original's rule there is not understood yet",
+            unchecked.join(", ")
         ));
     }
-    for ((all_done, fs), fns) in &others {
-        let fs = fs.join(", ");
-        evidence.push(if *all_done {
-            format!("{}: code of {fs}, which pass: shared code, which may be given something else here", fns.join(", "))
-        } else {
-            format!("{}: code of {fs}, not done: the rule may be there", fns.join(", "))
-        });
-    }
-    if !nobody.is_empty() {
-        evidence.push(format!("{}: in no feature's code", nobody.join(", ")));
+    if !nowhere.is_empty() {
+        evidence.push(format!("{}: cited nowhere in the port: its rule may be missing", nowhere.join(", ")));
     }
     if !set_aside.is_empty() {
         evidence.push(format!(
@@ -438,9 +404,9 @@ pub(crate) fn pointer(
         }
         out["with_c"] = kept;
         match c["status"].as_str() {
-            Some("same") if !own_checked.is_empty() && own_unchecked.is_empty() => evidence.push(format!(
+            Some("same") if !checked.is_empty() && unchecked.is_empty() => evidence.push(format!(
                 "checked C covers {} and the recording replays with it: the original's rule is known there; the port may not follow the C, or what is around it differs (code on the path with no C, the data the C reads, the launch from the scenario's parameters, the order the tick calls things in)",
-                own_checked.join(", ")
+                checked.join(", ")
             )),
             Some("diverges_with_c") => evidence.push(
                 "the recording does not replay with the checked C: a function it replaces does not do what the original's does here".into(),
@@ -452,28 +418,26 @@ pub(crate) fn pointer(
     out
 }
 
-/// Pointers for the failing features: one recording each (its first work
-/// recording that differs), each recording replayed once, all within
-/// `budget`. `failing` gives each feature's recording, quantities and
-/// first tick; `done`, whether a feature passes at this check.
+/// Pointers for the failing recordings, in the order given (the earliest
+/// difference first), each replayed once, all within `budget`. `failing`
+/// gives each recording with its quantities and first tick; the pointers
+/// are by recording.
 pub(crate) fn pointers(
     ctx: &Ctx,
     port: &Port,
-    failing: &[(&Entry, String, Vec<String>, u64)],
-    done: &dyn Fn(&str) -> bool,
+    failing: &[(String, Vec<String>, u64)],
     budget: Duration,
 ) -> BTreeMap<String, Value> {
     let started = Instant::now();
     let code = Code::load(ctx, port);
     let replacement = crate::decomp::Replacement::new(&ctx.root, &[]).ok().filter(|r| !r.functions.is_empty());
-    let mut seen: BTreeMap<String, Result<(Seen, Option<Value>), String>> = BTreeMap::new();
     let mut out = BTreeMap::new();
-    for (e, recording, quantities, at) in failing {
+    for (recording, quantities, at) in failing {
         let left = budget.saturating_sub(started.elapsed());
         let Some((id, name)) = recording.split_once('/') else { continue };
-        let s = seen.entry(recording.clone()).or_insert_with(|| {
+        let s = (|| {
             if left.is_zero() {
-                return Err("no time left in this check for it".into());
+                return Err("no time left in this check for it".to_string());
             }
             let s = look(ctx, id, name, *at, left).map_err(|e| e.to_string())?;
             // The checked C, where the pointer's code has some.
@@ -483,12 +447,12 @@ pub(crate) fn pointers(
                 c["recordings"].get(0).cloned()
             });
             Ok((s, c))
-        });
+        })();
         let v = match s {
-            Ok((s, c)) => pointer(&code, e, recording, quantities, s, c.as_ref(), done),
+            Ok((s, c)) => pointer(&code, recording, quantities, &s, c.as_ref()),
             Err(why) => json!({"recording": recording, "evidence": [format!("no pointer: {why}")]}),
         };
-        out.insert(e.id.clone(), v);
+        out.insert(recording.clone(), v);
     }
     out
 }
@@ -505,11 +469,11 @@ mod tests {
     }
 
     #[test]
-    fn the_evidence_names_whose_code_it_is() {
+    fn the_evidence_says_whether_the_port_has_the_code() {
         let mut code = Code {
             functions: vec![(0x1000, vec![(0x1000, 0x1100)]), (0x2000, vec![(0x2000, 0x2100)])],
             names: [(0x1000, "grip".to_string()), (0x2000, "collide".to_string())].into(),
-            features: [(0x1000, vec!["F-0007".to_string()]), (0x2000, vec!["F-0010".to_string()])].into(),
+            cited: [0x1000].into(),
             checked: BTreeMap::new(),
             not_ported: BTreeMap::new(),
         };
@@ -517,35 +481,24 @@ mod tests {
         seen.reads.insert("speed".into(), vec![0x5000, 0x5001]);
         seen.stores.insert((0x1010, 0x5000), 3);
         seen.first_words = vec![0x2000, 0x2004];
-        let e = Entry { id: "F-0007".into(), ..Entry::default() };
-        let p = pointer(&code, &e, "b1/offroad", &["speed".into()], &seen, None, &|_| false);
+        let p = pointer(&code, "b1/offroad", &["speed".into()], &seen, None);
         assert_eq!(p["quantities"][0]["reads"], json!(["0x80005000..0x80005002"]));
         assert_eq!(p["quantities"][0]["writers"][0]["function"], "grip");
         assert_eq!(p["first_run"][0]["function"], "collide");
         assert_eq!(p["first_run"][0]["called_first"], true);
         let ev = p["evidence"].to_string();
-        assert!(ev.contains("collide: code of F-0010, not done"), "{ev}");
-        assert!(ev.contains("grip: this feature's code, with no checked C"), "{ev}");
-        // port next's Fix names the other features it finds.
-        assert_eq!(features_named(&p, "F-0007"), ["F-0010"]);
+        assert!(ev.contains("collide: cited nowhere in the port"), "{ev}");
+        assert!(ev.contains("grip: the port's code cites it, with no checked C"), "{ev}");
         // Checked C that replays the recording: the rule is known there.
         code.checked.insert("grip".into(), true);
         let c = json!({"status": "same", "share_in_c": 0.2});
-        let p = pointer(&code, &e, "b1/offroad", &["speed".into()], &seen, Some(&c), &|_| false);
+        let p = pointer(&code, "b1/offroad", &["speed".into()], &seen, Some(&c));
         assert!(p["evidence"].to_string().contains("checked C covers grip and the recording replays with it"));
         assert!(!p.to_string().contains("\"at\""), "{p}");
         // Code set aside as not ported that writes a differing quantity.
-        code.features.remove(&0x1000);
+        code.cited.clear();
         code.not_ported.insert("0x00000F00..0x00001100".into(), "libgte helpers".into());
-        let p = pointer(
-            &code,
-            &Entry { id: "F-0010".into(), ..Entry::default() },
-            "b1/offroad",
-            &["speed".into()],
-            &seen,
-            None,
-            &|_| false,
-        );
+        let p = pointer(&code, "b1/offroad", &["speed".into()], &seen, None);
         assert!(
             p["evidence"].to_string().contains("grip (libgte helpers): listed in catalogue/not_ported.toml"),
             "{}",

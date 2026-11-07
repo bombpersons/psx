@@ -1,7 +1,7 @@
 # A port in C
 
 The smallest port psx checks that is not Rust: a sled on a hill, written in
-C, with one feature (catalogue/F-0001.md), one scenario and one recording.
+C, with one scenario and one recording.
 It shows the contract a port in any language keeps (psx guide --topic
 setup, and --topic arithmetic for the numbers):
 
@@ -20,7 +20,7 @@ git init && git add -A && git commit -m sled && psx port check
 ```
 
 The recording (scenarios/hill/push.jsonl) is synthetic: computed by the
-feature's rules, not captured from a disc, so the example needs none. A
+sled's rules, not captured from a disc, so the example needs none. A
 real port records its scenarios from the original with `psx scenario
 record`, which needs the glossary's binding (glossary/binding/) as well.
 

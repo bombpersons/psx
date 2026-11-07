@@ -1,9 +1,10 @@
 //! A port: one workspace where one agent investigates the original and
 //! builds the port (docs/port-design.md). `port init` writes it.
-//! The goal (`goal.toml`) says which features the person wants, the
-//! catalogue (`catalogue/F-NNNN.md`) describes the game's features in game
-//! terms, and `port confirm` records the person's approval of the goal's
-//! list. The goal's features are its closure; each has a stage.
+//! The goal (`goal.toml`) says what the person wants in their words, the
+//! recordings under `scenarios/` are what the port is checked against,
+//! the catalogue holds what the agent has set aside (`not_ported.toml`),
+//! found unreachable (`wont_reach.toml`) or not understood yet
+//! (`questions.md`), and `port confirm` records the person's approval.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -19,6 +20,7 @@ pub mod check;
 mod confirm;
 mod init;
 pub mod manifest;
+pub(crate) mod migrate;
 pub mod next;
 mod pointer;
 pub mod process;
@@ -33,69 +35,27 @@ pub use next::{PortNextArgs, PortStatusArgs};
 
 pub const GOAL: &str = "goal.toml";
 pub const CATALOGUE: &str = "catalogue";
-/// The original's code no feature ports, by function or address range,
-/// with why.
+/// The original's code the port has no counterpart of, by function or
+/// address range, with why.
 pub const NOT_PORTED: &str = "catalogue/not_ported.toml";
+/// Branches no recording can reach, by address, range or script
+/// position, with why; the person confirms them.
+pub const WONT_REACH: &str = "catalogue/wont_reach.toml";
+/// What is not known yet: one question per `- ` line.
+pub const QUESTIONS: &str = "catalogue/questions.md";
+pub const SCENARIOS: &str = "scenarios";
+/// Where the port's code is, which cites the original by address.
+pub const SOURCES: [&str; 2] = ["game", "tools"];
 
 pub(crate) const GOAL_TOML: &str = "\
-# What the person wants from this port. The agent proposes the features
-# (catalogue/F-NNNN.md) and lists them here; the person confirms the list
-# with `psx port confirm --yes`, which writes `confirmed`. Features merge,
-# split and come and go after that as the agent learns; the description,
+# What the person wants from this port, in their words. The person confirms
+# it with `psx port confirm --yes`, which writes `confirmed`; the description,
 # the assets and the person's held-out plays changing needs confirming again.
 description = \"\"
-features = []   # feature ids, or \"all\"
 assets = false  # what to extract: true (every disc file), false, or names: [\"format:level\", \"/MAPS/*.WLD\"] (formats/README.md)
 # review_lines = 800  # a follow-up review once the code changed by this many lines since the last
-# held_out = []  # the goal's own plays, scenario/name, once every feature is reviewed
+# held_out = []  # the person's plays, scenario/name: judged, never worked on
 ";
-
-/// The features a goal names: a list, or every catalogued feature.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "FeaturesToml")]
-pub enum Features {
-    All,
-    List(Vec<String>),
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum FeaturesToml {
-    Word(String),
-    List(Vec<String>),
-}
-
-impl TryFrom<FeaturesToml> for Features {
-    type Error = String;
-    fn try_from(f: FeaturesToml) -> Result<Self, String> {
-        match f {
-            FeaturesToml::Word(w) if w == "all" => Ok(Features::All),
-            FeaturesToml::Word(w) => Err(format!("features is a list of feature ids or \"all\", not {w:?}")),
-            FeaturesToml::List(l) => Ok(Features::List(l)),
-        }
-    }
-}
-
-impl Default for Features {
-    fn default() -> Self {
-        Features::List(Vec::new())
-    }
-}
-
-impl Features {
-    pub(crate) fn to_json(&self) -> Value {
-        match self {
-            Features::All => json!("all"),
-            Features::List(l) => json!(l),
-        }
-    }
-    pub(crate) fn to_toml(&self) -> String {
-        match self {
-            Features::All => "\"all\"".into(),
-            Features::List(l) => toml::Value::from(l.clone()).to_string(),
-        }
-    }
-}
 
 /// The disc's assets a goal asks for: every file, or the files some names
 /// cover (none for `false`). A name is a disc path or archive entry, `*`
@@ -181,32 +141,33 @@ pub fn asset_name_problem(name: &str) -> Option<String> {
 pub struct Goal {
     #[serde(default)]
     pub description: String,
-    #[serde(default)]
-    pub features: Features,
     /// The disc's assets the person wants extracted: each file they cover
-    /// imported and checked, or unused. The goal's features bring in their
-    /// own besides.
+    /// imported and checked, or unused. The scenarios bring in their own
+    /// besides.
     #[serde(default)]
     pub assets: Assets,
     #[serde(default)]
     pub confirmed: Option<Confirmed>,
     /// A follow-up review comes due once the code has changed by this many
-    /// lines (added and removed) in the commits since the last review,
-    /// whatever the features do; [`REVIEW_LINES`] when unset.
+    /// lines (added and removed) in the commits since the last review;
+    /// [`REVIEW_LINES`] when unset.
     #[serde(default)]
     pub review_lines: Option<usize>,
-    /// The goal's own held-out plays (scenario/name), requested from its
-    /// description once every feature is reviewed: judged by a whole
-    /// psx port check as [`GOAL_ID`], and shown once they are.
+    /// The person's plays (scenario/name), held out from the work: judged
+    /// by a whole psx port check, never worked on.
     #[serde(default)]
     pub held_out: Vec<String>,
+    /// No longer read: the goal named features before recordings were the
+    /// unit. port update takes it out.
+    #[serde(default)]
+    pub features: Option<toml::Value>,
 }
 
-/// The verdict the goal's held-out plays are judged under.
+/// The id every verdict is kept under: the goal's.
 pub const GOAL_ID: &str = "goal";
 
 /// The lines of change that ask for a follow-up review when goal.toml does
-/// not say: on Croc, +931/-534 lines went unreviewed while no feature
+/// not say: on Croc, +931/-534 lines went unreviewed while nothing
 /// matched or finished.
 pub const REVIEW_LINES: usize = 800;
 
@@ -216,22 +177,28 @@ impl Goal {
     }
 }
 
-/// The person's confirmation: when, the list they confirmed, and the
-/// branches they agreed no recording can reach (feature, address, reason).
+/// The person's confirmation: when, the description and assets they
+/// confirmed, their held-out plays, and the branches they agreed no
+/// recording can reach (address = reason).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Confirmed {
     pub at: String,
-    /// The list first confirmed; ids leaving it later are the agent's cut.
-    pub features: Features,
     /// The description confirmed, as [`description_stamp`]: absent in
     /// confirmations made before it was kept.
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
     pub assets: Assets,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flat_wont_reach")]
     pub wont_reach: WontReach,
+    /// The person's held-out plays as confirmed: absent in confirmations
+    /// made before they were kept.
+    #[serde(default)]
+    pub held_out: Option<Vec<String>>,
+    /// No longer read: the list of features once confirmed.
+    #[serde(default)]
+    pub features: Option<toml::Value>,
 }
 
 /// The description as the confirmation keeps it: its sha256's first 16
@@ -240,65 +207,37 @@ pub fn description_stamp(d: &str) -> String {
     crate::stamp::sha256(d.trim().as_bytes())[..16].to_string()
 }
 
-/// The recordings the goal's features have named (`<scenario>/<name>` =
-/// work or held_out), as port next last saw them.
-pub const GOAL_RECORDINGS: &str = ".psx/goal_recordings.json";
+/// Branches no recording can reach, by address, with why.
+pub type WontReach = BTreeMap<String, String>;
 
-/// Branches no recording can reach, by feature, then address, with why.
-pub type WontReach = BTreeMap<String, BTreeMap<String, String>>;
-
-/// One catalogue entry: `catalogue/F-NNNN.md`, its TOML front matter
-/// between `+++` lines, then a paragraph in game terms.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Entry {
-    pub id: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub area: String,
-    /// No longer read: features have no dependencies (a failure's
-    /// pointer says whose code it is in). Kept so an entry that has it
-    /// loads; port update keeps the closure it made in the goal.
-    #[serde(default)]
-    pub depends: Vec<String>,
-    /// The original's functions that are the feature, by entry address:
-    /// found with psx (coverage diff, watches), each one the inventory has;
-    /// and stretches of script programs the glossary's binding names
-    /// (`croc+0x1803..0x18A0`).
-    #[serde(default)]
-    pub code: Vec<String>,
-    #[serde(default)]
-    pub recordings: Recordings,
-    /// The disc's assets its recordings need to replay, by name (as the
-    /// goal's `assets` names them): brought in whatever the goal asks.
-    #[serde(default)]
-    pub assets: Vec<String>,
-    /// Branches of its code no recording can reach, by address (or a
-    /// script position or stretch in one of its code's), and why; the
-    /// person confirms them (`port confirm`).
-    #[serde(default)]
-    pub wont_reach: BTreeMap<String, String>,
-    /// What is not known yet about the feature.
-    #[serde(default)]
-    pub questions: Vec<String>,
-    /// The paragraph after the front matter, in game terms.
-    #[serde(skip)]
-    pub description: String,
-    /// The file, relative to the workspace.
-    #[serde(skip)]
-    pub file: String,
+/// A confirmation's wont_reach: flat, or by feature as it was kept while
+/// there were features.
+fn flat_wont_reach<'de, D: serde::Deserializer<'de>>(d: D) -> Result<WontReach, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Item {
+        Why(String),
+        Feature(BTreeMap<String, String>),
+    }
+    let mut out = WontReach::new();
+    for (k, v) in BTreeMap::<String, Item>::deserialize(d)? {
+        match v {
+            Item::Why(w) => {
+                out.insert(k, w);
+            }
+            Item::Feature(m) => out.extend(m),
+        }
+    }
+    Ok(out)
 }
 
-/// The recordings a feature is checked against, as `<scenario>/<name>`.
-#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+/// The recordings under `scenarios/`, as `<scenario>/<name>`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Recordings {
-    /// Checked as the feature is built.
-    #[serde(default)]
+    /// Every recording goal.toml does not hold out: what the port is
+    /// built against.
     pub work: Vec<String>,
-    /// Checked only once the agent says the feature matches.
-    #[serde(default)]
+    /// The person's plays goal.toml holds out, on disk.
     pub held_out: Vec<String>,
 }
 
@@ -308,69 +247,118 @@ impl Recordings {
     }
 }
 
-impl Entry {
-    /// The scenarios its recordings come from, in the order first named.
-    pub fn scenarios(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for r in self.recordings.all() {
-            let s = r.split_once('/').map_or(r.as_str(), |(s, _)| s);
-            if !out.iter().any(|o| o == s) {
-                out.push(s.to_string());
-            }
-        }
-        out
-    }
+/// The scenario a recording (`<scenario>/<name>`) is of.
+pub fn scenario_of(r: &str) -> &str {
+    r.split_once('/').map_or(r, |(s, _)| s)
 }
 
-/// An address in an entry: `0x` and up to eight hex digits.
+/// The scenarios of some recordings, in the order first named.
+pub fn scenarios_of<'a>(recordings: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for r in recordings {
+        let s = scenario_of(r);
+        if !out.iter().any(|o| o == s) {
+            out.push(s.to_string());
+        }
+    }
+    out
+}
+
+/// An address in the catalogue: `0x` and up to eight hex digits.
 pub fn entry_addr(s: &str) -> Option<u32> {
     let h = s.strip_prefix("0x")?;
     (!h.is_empty() && h.len() <= 8).then(|| u32::from_str_radix(h, 16).ok()).flatten()
 }
 
-/// An address range in an entry: `0xSTART..0xEND`, the end excluded.
+/// An address range in the catalogue: `0xSTART..0xEND`, the end excluded.
 pub fn entry_range(s: &str) -> Option<(u32, u32)> {
     let (a, b) = s.split_once("..")?;
     let (a, b) = (entry_addr(a)?, entry_addr(b)?);
     (a < b).then_some((a, b))
 }
 
-/// A feature's stage (docs/port-design.md, section 5): each holds when its
-/// fact, read from the workspace's files, holds and so do the ones before it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Stage {
-    /// It has a catalogue entry.
-    Catalogued,
-    /// Its entry names its code.
-    Located,
-    /// It names work recordings, and their scenarios pass the determinism check.
-    Recorded,
-    /// Every work recording passes at HEAD.
-    Matching,
-    /// Every branch of its code covered or confirmed won't-reach, no question
-    /// open, and the code's review holds.
-    Reviewed,
-    /// Its held-out recordings pass, and no scenario turns off its code.
-    Done,
+/// What the port's sources (game/, tools/) cite of the original: code
+/// addresses (`0x8001_52A4`) and script stretches (`croc+0x1803..0x18A0`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Cited {
+    pub addresses: BTreeSet<u32>,
+    pub stretches: Vec<Stretch>,
 }
 
-impl Stage {
-    pub const ALL: [Stage; 6] =
-        [Stage::Catalogued, Stage::Located, Stage::Recorded, Stage::Matching, Stage::Reviewed, Stage::Done];
+/// Files larger than this are not the port's sources.
+const SOURCE_MAX: u64 = 1 << 20;
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Stage::Catalogued => "catalogued",
-            Stage::Located => "located",
-            Stage::Recorded => "recorded",
-            Stage::Matching => "matching",
-            Stage::Reviewed => "reviewed",
-            Stage::Done => "done",
+impl Cited {
+    /// What the text files under `root`'s [`SOURCES`] cite, `target/`
+    /// and `.git` aside.
+    pub fn read(root: &Path) -> Cited {
+        let mut out = Cited::default();
+        let mut todo: Vec<std::path::PathBuf> = SOURCES.iter().map(|s| root.join(s)).collect();
+        while let Some(dir) = todo.pop() {
+            let Ok(d) = std::fs::read_dir(&dir) else { continue };
+            for e in d.flatten() {
+                let (path, name) = (e.path(), e.file_name());
+                let Ok(t) = e.file_type() else { continue };
+                if t.is_dir() {
+                    if name != "target" && name != ".git" {
+                        todo.push(path);
+                    }
+                } else if t.is_file() && e.metadata().is_ok_and(|m| m.len() <= SOURCE_MAX) {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        out.scan(&text);
+                    }
+                }
+            }
+        }
+        out.stretches.sort();
+        out.stretches.dedup();
+        out
+    }
+
+    /// Adds what `text` cites: `0x8` and seven hex digits (underscores
+    /// between them allowed), and `name+0xA..0xB` or `name+0xA`.
+    pub fn scan(&mut self, text: &str) {
+        let b = text.as_bytes();
+        let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let mut i = 0;
+        while let Some(at) = text[i..].find("0x").map(|o| o + i) {
+            let mut end = at + 2;
+            while end < b.len() && (b[end].is_ascii_hexdigit() || b[end] == b'_') {
+                end += 1;
+            }
+            i = end;
+            // Not part of a word, and not a script position (`croc+0x..`).
+            if (at > 0 && (word(b[at - 1]) || b[at - 1] == b'+')) || (end < b.len() && word(b[end])) {
+                continue;
+            }
+            let digits: String = text[at + 2..end].chars().filter(|c| *c != '_').collect();
+            if digits.len() == 8 && digits.starts_with('8') {
+                if let Ok(a) = u32::from_str_radix(&digits, 16) {
+                    self.addresses.insert(a);
+                }
+            }
+        }
+        // Stretches: a name, `+`, a position or a range.
+        let mut i = 0;
+        while let Some(plus) = text[i..].find("+0x").map(|o| o + i) {
+            i = plus + 3;
+            let mut start = plus;
+            while start > 0 && (b[start - 1].is_ascii_alphanumeric() || b[start - 1] == b'_' || b[start - 1] == b'-') {
+                start -= 1;
+            }
+            let mut end = plus + 1;
+            while end < b.len() && (b[end].is_ascii_hexdigit() || b[end] == b'x' || b[end] == b'.') {
+                end += 1;
+            }
+            let token = text[start..end].trim_end_matches('.');
+            if let Some(s) = Stretch::parse(token) {
+                self.stretches.push(s);
+            }
         }
     }
 }
 
-/// Whether the person's confirmation covers the goal's list as it is now.
+/// Whether the person's confirmation covers the goal as it is now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Confirmation {
     /// Never confirmed.
@@ -390,27 +378,27 @@ pub struct Problem {
     pub problem: String,
 }
 
-/// A port workspace's goal and catalogue, read once.
+/// A port workspace's goal, recordings and catalogue, read once.
 #[derive(Debug)]
 pub struct Port {
     pub goal: Goal,
-    pub entries: BTreeMap<String, Entry>,
+    pub recordings: Recordings,
+    /// Each scenario's `assets`: the disc's assets its recordings need to
+    /// replay, by name (as the goal's `assets` names them).
+    pub scenario_assets: BTreeMap<String, Vec<String>>,
     /// `formats/<id>.md`: the disc's formats found so far.
     pub formats: BTreeMap<String, assets::Format>,
     /// `formats/unused.toml`: disc files the game never loads, with why.
     pub unused: BTreeMap<String, String>,
-    /// `catalogue/not_ported.toml`: the original's code no feature ports,
-    /// by function entry or address range, with why.
+    /// [`NOT_PORTED`], by function entry or address range.
     pub not_ported: BTreeMap<String, String>,
-    /// [`GOAL_RECORDINGS`]: every recording a goal feature has named, as
-    /// work or held_out (held_out once it was).
-    pub ledger: BTreeMap<String, String>,
+    /// [`WONT_REACH`], by branch address, range or script position.
+    pub wont_reach: WontReach,
+    /// [`QUESTIONS`], open.
+    pub questions: Vec<String>,
+    /// What game/ and tools/ cite.
+    pub cited: Cited,
     pub problems: Vec<Problem>,
-}
-
-/// `F-` and four or more digits.
-pub fn is_feature_id(id: &str) -> bool {
-    id.strip_prefix("F-").is_some_and(|d| d.len() >= 4 && d.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn problem(file: &str, problem: impl Into<String>) -> Problem {
@@ -438,68 +426,6 @@ pub(crate) fn split_front(text: &str) -> Result<(String, String), String> {
     Err("its front matter is never closed by a +++ line".into())
 }
 
-/// One catalogue file: its entry, or why it is not one.
-fn entry(file: &str, text: &str) -> Result<Entry, String> {
-    let (front, body) = split_front(text)?;
-    let mut e: Entry = toml::from_str(&front).map_err(|e| format!("front matter: {}", e.message()))?;
-    let stem = Path::new(file).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    if e.id != stem {
-        return Err(format!("its id is {:?}; a file's id is its name ({stem})", e.id));
-    }
-    e.description = body.trim().to_string();
-    e.file = file.to_string();
-    Ok(e)
-}
-
-/// What is wrong with an entry's own fields.
-fn entry_problems(e: &Entry, out: &mut Vec<Problem>) {
-    let f = &e.file;
-    let mut seen = BTreeSet::new();
-    for r in e.recordings.all() {
-        let ok = r.split_once('/').is_some_and(|(s, n)| {
-            [s, n].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-        });
-        if !ok {
-            out.push(problem(f, format!("recordings: {r:?} is not <scenario>/<name>")));
-        } else if !seen.insert(r) {
-            out.push(problem(f, format!("recordings: {r} is listed twice (work and held_out are apart)")));
-        }
-    }
-    let mut code = BTreeSet::new();
-    for c in &e.code {
-        match (entry_addr(c), Stretch::parse(c)) {
-            (None, None) => out.push(problem(
-                f,
-                format!("code: {c:?} is not an address (0x8002D810) or a script stretch (croc+0x1803..0x18A0)"),
-            )),
-            (Some(a), _) if !code.insert(a) => out.push(problem(f, format!("code: {c} is listed twice"))),
-            _ => {}
-        }
-    }
-    let script: Vec<Stretch> = e.code.iter().filter_map(|c| Stretch::parse(c)).collect();
-    for (a, why) in &e.wont_reach {
-        match (entry_addr(a).or(entry_range(a).map(|r| r.0)), Stretch::parse(a)) {
-            (None, None) if !crate::flow::is_test(a) => out.push(problem(
-                f,
-                format!(
-                    "wont_reach: {a:?} is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded), a test as port next gives it ([0x8007529C] == 2) or a script position or stretch (croc+0x18F0)"
-                ),
-            )),
-            (None, Some(w)) if !script.iter().any(|s| s.contains(&w)) => {
-                out.push(problem(f, format!("wont_reach: {a} is in no script stretch code lists")))
-            }
-            _ => {}
-        }
-        if why.trim().is_empty() {
-            out.push(problem(f, format!("wont_reach.{a}: no reason: why no recording can reach it")));
-        }
-    }
-    if e.questions.iter().any(|q| q.trim().is_empty()) {
-        out.push(problem(f, "questions: an empty question"));
-    }
-    asset_names_problems(f, &e.assets, out);
-}
-
 /// What is wrong with a list of asset names.
 fn asset_names_problems(file: &str, names: &[String], out: &mut Vec<Problem>) {
     let mut seen = BTreeSet::new();
@@ -512,10 +438,49 @@ fn asset_names_problems(file: &str, names: &[String], out: &mut Vec<Problem>) {
     }
 }
 
+/// A catalogue TOML file of key = reason, or the problem reading it.
+fn reasons(root: &Path, file: &str, problems: &mut Vec<Problem>) -> BTreeMap<String, String> {
+    match std::fs::read_to_string(root.join(file)) {
+        Ok(text) => toml::from_str::<BTreeMap<String, String>>(&text).unwrap_or_else(|e| {
+            problems.push(problem(file, format!("{} (each line: \"key\" = \"why\")", e.message())));
+            BTreeMap::new()
+        }),
+        Err(_) => BTreeMap::new(),
+    }
+}
+
+/// The open questions in questions.md's text: each `- ` line.
+pub fn questions_in(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            if l == "-" { Some(String::new()) } else { l.strip_prefix("- ").map(|q| q.trim().to_string()) }
+        })
+        .collect()
+}
+
+/// The recordings under `scenarios/`, by scenario, sorted.
+fn recordings_on_disk(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let Ok(d) = std::fs::read_dir(root.join(SCENARIOS)) else { return out };
+    for e in d.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())) {
+        let s = e.file_name().to_string_lossy().into_owned();
+        let Ok(files) = std::fs::read_dir(e.path()) else { continue };
+        for f in files.flatten() {
+            let n = f.file_name().to_string_lossy().into_owned();
+            if let Some(name) = n.strip_suffix(".jsonl") {
+                out.push(format!("{s}/{name}"));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 impl Port {
-    /// The goal and catalogue under `root`. An error when `root` is not a
-    /// port (no `goal.toml`) or the goal cannot be read; anything wrong in
-    /// the catalogue is a problem.
+    /// The goal, recordings and catalogue under `root`. An error when
+    /// `root` is not a port (no `goal.toml`) or the goal cannot be read;
+    /// anything wrong in the rest is a problem.
     pub fn load(root: &Path) -> crate::Result<Port> {
         let path = root.join(GOAL);
         let text = match std::fs::read_to_string(&path) {
@@ -530,7 +495,6 @@ impl Port {
         };
         let goal: Goal = toml::from_str(&text).map_err(|e| Error::invalid(format!("{GOAL}: {}", e.message())))?;
         let mut problems = Vec::new();
-        let mut entries = BTreeMap::new();
         let dir = root.join(CATALOGUE);
         let mut files: Vec<String> = match std::fs::read_dir(&dir) {
             Ok(d) => d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect(),
@@ -539,274 +503,156 @@ impl Port {
         };
         files.sort();
         for name in files.iter().filter(|n| n.starts_with("F-") && n.ends_with(".md")) {
-            let file = format!("{CATALOGUE}/{name}");
-            let text = std::fs::read_to_string(dir.join(name)).map_err(|e| Error::io(dir.join(name), e))?;
-            match entry(&file, &text) {
-                Ok(e) => {
-                    entries.insert(e.id.clone(), e);
-                }
-                Err(p) => problems.push(problem(&file, p)),
-            }
+            problems.push(problem(
+                &format!("{CATALOGUE}/{name}"),
+                "a feature's entry: there are no features now (the recordings are the unit); psx port update moves its questions, wont_reach, assets and held-out plays out",
+            ));
         }
         let (formats, unused) = assets::read_formats(root, &mut problems)?;
-        let not_ported = match std::fs::read_to_string(root.join(NOT_PORTED)) {
-            Ok(text) => toml::from_str::<BTreeMap<String, String>>(&text).unwrap_or_else(|e| {
-                problems.push(problem(NOT_PORTED, e.message()));
-                BTreeMap::new()
-            }),
-            Err(_) => BTreeMap::new(),
+        let not_ported = reasons(root, NOT_PORTED, &mut problems);
+        let wont_reach = reasons(root, WONT_REACH, &mut problems);
+        let questions = std::fs::read_to_string(root.join(QUESTIONS)).map(|t| questions_in(&t)).unwrap_or_default();
+        let on_disk = recordings_on_disk(root);
+        let recordings = Recordings {
+            work: on_disk.iter().filter(|r| !goal.held_out.contains(r)).cloned().collect(),
+            held_out: Vec::new(),
         };
-        for (k, why) in &not_ported {
-            if entry_addr(k).is_none() && entry_range(k).is_none() {
-                problems
-                    .push(problem(NOT_PORTED, format!("{k:?} is not a function's entry (0x…) or a range (0x…..0x…)")));
-            }
-            if why.trim().is_empty() {
-                problems
-                    .push(problem(NOT_PORTED, format!("{k}: no reason: what the code is, and why the port has none")));
+        let mut recordings = recordings;
+        for r in goal.held_out.iter().filter(|r| on_disk.contains(r)) {
+            if !recordings.held_out.contains(r) {
+                recordings.held_out.push(r.clone());
             }
         }
-        let ledger = std::fs::read(root.join(GOAL_RECORDINGS))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        let mut port = Port { goal, entries, formats, unused, not_ported, ledger, problems };
-        port.check();
-        port.check_ledger(root);
+        let mut scenario_assets = BTreeMap::new();
+        for s in scenarios_of(&on_disk) {
+            let file = format!("{SCENARIOS}/{s}.toml");
+            let Ok(text) = std::fs::read_to_string(root.join(&file)) else { continue };
+            let Ok(v) = toml::from_str::<toml::Table>(&text) else { continue };
+            let names: Vec<String> = match v.get("assets") {
+                None => continue,
+                Some(toml::Value::Array(a)) => a.iter().filter_map(|n| n.as_str().map(String::from)).collect(),
+                Some(_) => {
+                    problems.push(problem(&file, "assets: a list of asset names"));
+                    continue;
+                }
+            };
+            asset_names_problems(&file, &names, &mut problems);
+            scenario_assets.insert(s, names);
+        }
+        let cited = Cited::read(root);
+        let mut port = Port {
+            goal,
+            recordings,
+            scenario_assets,
+            formats,
+            unused,
+            not_ported,
+            wont_reach,
+            questions,
+            cited,
+            problems,
+        };
+        port.check(&on_disk);
         port.check_disk(root);
         Ok(port)
     }
 
-    /// What the entries name that the workspace does not have: recordings
-    /// not on disk, code that is not the inventory's.
-    fn check_disk(&mut self, root: &Path) {
-        let mut out = Vec::new();
-        for e in self.entries.values() {
-            for r in e.recordings.all().collect::<BTreeSet<_>>() {
-                let Some((s, n)) = r.split_once('/') else { continue };
-                if !root.join("scenarios").join(s).join(format!("{n}.jsonl")).is_file() {
-                    out.push(problem(
-                        &e.file,
-                        format!("recordings: no scenarios/{s}/{n}.jsonl (psx scenario record, or play)"),
-                    ));
-                }
-            }
-        }
-        // Script stretches are the binding's programs': only addresses are the inventory's.
-        let naming: Vec<&Entry> = self
-            .entries
-            .values()
-            .filter(|e| {
-                e.code
-                    .iter()
-                    .chain(e.wont_reach.keys())
-                    .any(|c| entry_addr(c).or(entry_range(c).map(|r| r.0)).is_some())
-            })
-            .collect();
-        let loaders: Vec<&assets::Format> = self.formats.values().filter(|f| !f.loader.is_empty()).collect();
-        if !naming.is_empty() || !loaders.is_empty() || !self.not_ported.is_empty() {
-            let ctx = crate::commands::Ctx { root: root.to_path_buf(), cancel: None };
-            let functions = crate::coverage::inventory(&ctx, None)
-                .and_then(|(_, inv)| crate::coverage::Functions::read(root, &inv));
-            if let Ok(fns) = &functions {
-                for k in self.not_ported.keys().filter(|k| entry_addr(k).is_some_and(|a| !fns.starts(a))) {
-                    out.push(problem(NOT_PORTED, format!("{k}: no function of the inventory starts there")));
-                }
-            }
-            for f in loaders {
-                match &functions {
-                    Err(err) => {
-                        out.push(problem(&f.file, format!("loader is checked against the inventory: {}", err.message)))
-                    }
-                    Ok(fns) => {
-                        for l in f.loader.iter().filter(|l| entry_addr(l).is_some_and(|a| !fns.starts(a))) {
-                            out.push(problem(&f.file, format!("loader: no function of the inventory starts at {l}")));
-                        }
-                    }
-                }
-            }
-            for e in naming {
-                let f = &e.file;
-                let fns = match &functions {
-                    Ok(fns) => fns,
-                    Err(err) => {
-                        out.push(problem(
-                            f,
-                            format!("code and wont_reach are checked against the inventory: {}", err.message),
-                        ));
-                        continue;
-                    }
-                };
-                let code: Vec<u32> = e.code.iter().filter_map(|c| entry_addr(c)).collect();
-                for c in &e.code {
-                    if entry_addr(c).is_some_and(|a| !fns.starts(a)) {
-                        out.push(problem(f, format!(
-                            "code: no function of the inventory starts at {c} (code coverage diff finds a feature's functions; take the inventory again with the run that has it)"
-                        )));
-                    }
-                }
-                let named = |holders: &[u32]| {
-                    let holders: Vec<String> = holders.iter().map(|h| format!("0x{h:08X}")).collect();
-                    if holders.is_empty() { "no function".to_string() } else { holders.join(", ") }
-                };
-                for a in e.wont_reach.keys() {
-                    if let Some((start, end)) = entry_range(a) {
-                        let branches = fns.branches_in(start, end);
-                        let outside: Vec<u32> = branches
-                            .iter()
-                            .filter(|(_, h)| !h.iter().any(|h| code.contains(h)))
-                            .flat_map(|(_, h)| h.iter().copied())
-                            .collect::<BTreeSet<u32>>()
-                            .into_iter()
-                            .collect();
-                        if branches.is_empty() {
-                            out.push(problem(
-                                f,
-                                format!("wont_reach: {a} holds no conditional branch of the inventory's code"),
-                            ));
-                        } else if branches.iter().any(|(_, h)| !h.iter().any(|h| code.contains(h))) {
-                            out.push(problem(
-                                f,
-                                format!(
-                                    "wont_reach: {a} holds branches of {}, which code does not list",
-                                    named(&outside)
-                                ),
-                            ));
-                        }
-                        continue;
-                    }
-                    let Some(addr) = entry_addr(a) else { continue };
-                    match fns.branch(addr) {
-                        None => out.push(problem(
-                            f,
-                            format!("wont_reach: {a} is not a conditional branch of the inventory's code"),
-                        )),
-                        Some(holders) if !holders.iter().any(|h| code.contains(h)) => out.push(problem(
-                            f,
-                            format!("wont_reach: {a} is in {}, which code does not list (code taken out takes its entries; moved, they go with it)", named(&holders)),
-                        )),
-                        Some(_) => {}
-                    }
-                }
-            }
-        }
-        self.problems.extend(out);
-    }
-
     /// The problems in what was read.
-    fn check(&mut self) {
+    fn check(&mut self, on_disk: &[String]) {
         let mut out = Vec::new();
-        for e in self.entries.values() {
-            let f = &e.file;
-            if !is_feature_id(&e.id) {
-                out.push(problem(f, format!("{} is not a feature id (F- and four digits)", e.id)));
-            }
-            for (k, v) in [("title", &e.title), ("area", &e.area)] {
-                if v.is_empty() {
-                    out.push(problem(f, format!("no {k}")));
-                }
-            }
-            if e.description.is_empty() {
-                out.push(problem(f, "no description: a paragraph in game terms after the front matter"));
-            }
-            entry_problems(e, &mut out);
-        }
         if self.goal.description.trim().is_empty() {
             out.push(problem(GOAL, "no description: the goal in the person's words"));
         }
-        if self.goal.features == Features::List(Vec::new()) {
-            out.push(problem(GOAL, "names no features: list the catalogue entries the goal needs, or \"all\""));
+        if self.goal.features.is_some() {
+            out.push(problem(
+                GOAL,
+                "features: no longer read (the recordings are the unit); psx port update takes it out",
+            ));
         }
         asset_names_problems(GOAL, self.goal.assets.names(), &mut out);
-        if let Features::List(l) = &self.goal.features {
-            let mut seen = BTreeSet::new();
-            for id in l {
-                if !seen.insert(id) {
-                    out.push(problem(GOAL, format!("{id} is listed twice")));
-                } else if !self.entries.contains_key(id) {
-                    out.push(problem(GOAL, format!("{id} has no catalogue entry")));
-                }
+        let mut seen = BTreeSet::new();
+        for r in &self.goal.held_out {
+            if !seen.insert(r) {
+                out.push(problem(GOAL, format!("held_out: {r} is listed twice")));
+            } else if !on_disk.contains(r) {
+                out.push(problem(GOAL, format!("held_out: {r}: no such recording (scenario/name, under scenarios/)")));
             }
+        }
+        for (k, why) in &self.not_ported {
+            if entry_addr(k).is_none() && entry_range(k).is_none() {
+                out.push(problem(NOT_PORTED, format!("{k:?} is not a function's entry (0x…) or a range (0x…..0x…)")));
+            }
+            if why.trim().is_empty() {
+                out.push(problem(NOT_PORTED, format!("{k}: no reason: what the code is, and why the port has none")));
+            }
+        }
+        for (a, why) in &self.wont_reach {
+            match (entry_addr(a).or(entry_range(a).map(|r| r.0)), Stretch::parse(a)) {
+                (None, None) if !crate::flow::is_test(a) => out.push(problem(
+                    WONT_REACH,
+                    format!(
+                        "{a:?} is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded), a test as port next gives it ([0x8007529C] == 2) or a script position or stretch (croc+0x18F0)"
+                    ),
+                )),
+                (None, Some(w)) if !self.cited.stretches.iter().any(|s| s.contains(&w)) => out.push(problem(
+                    WONT_REACH,
+                    format!("{a} is in no script stretch the port cites (game/, tools/)"),
+                )),
+                _ => {}
+            }
+            if why.trim().is_empty() {
+                out.push(problem(WONT_REACH, format!("{a}: no reason: why no recording can reach it")));
+            }
+        }
+        if self.questions.iter().any(|q| q.is_empty()) {
+            out.push(problem(QUESTIONS, "an empty question"));
         }
         self.problems.extend(out);
     }
 
-    /// The goal's recordings now: each named by a goal feature, as work or
-    /// held_out (held_out when any names it so).
-    pub fn goal_recordings(&self) -> BTreeMap<String, String> {
-        let mut out = BTreeMap::new();
-        for e in self.goal_ids().iter().filter_map(|id| self.entries.get(id)) {
-            for r in &e.recordings.work {
-                out.entry(r.clone()).or_insert_with(|| "work".to_string());
+    /// What the catalogue names that the inventory does not have.
+    fn check_disk(&mut self, root: &Path) {
+        let mut out = Vec::new();
+        // Script positions are the binding's programs': only addresses are the inventory's.
+        let branches = self.wont_reach.keys().any(|c| entry_addr(c).or(entry_range(c).map(|r| r.0)).is_some());
+        let loaders: Vec<&assets::Format> = self.formats.values().filter(|f| !f.loader.is_empty()).collect();
+        if !branches && loaders.is_empty() && self.not_ported.is_empty() {
+            return;
+        }
+        let ctx = crate::commands::Ctx { root: root.to_path_buf(), cancel: None };
+        let functions =
+            crate::coverage::inventory(&ctx, None).and_then(|(_, inv)| crate::coverage::Functions::read(root, &inv));
+        let fns = match &functions {
+            Ok(fns) => fns,
+            Err(err) => {
+                if branches {
+                    out.push(problem(WONT_REACH, format!("checked against the inventory: {}", err.message)));
+                }
+                for f in loaders {
+                    out.push(problem(&f.file, format!("loader is checked against the inventory: {}", err.message)));
+                }
+                self.problems.extend(out);
+                return;
             }
-            for r in &e.recordings.held_out {
-                out.insert(r.clone(), "held_out".to_string());
-            }
+        };
+        for k in self.not_ported.keys().filter(|k| entry_addr(k).is_some_and(|a| !fns.starts(a))) {
+            out.push(problem(NOT_PORTED, format!("{k}: no function of the inventory starts there")));
         }
-        for r in &self.goal.held_out {
-            out.insert(r.clone(), "held_out".to_string());
-        }
-        out
-    }
-
-    /// The ledger's recordings no goal feature names while their files are
-    /// there: a merge or a split moves recordings, never drops them.
-    fn check_ledger(&mut self, root: &Path) {
-        for r in &self.goal.held_out {
-            let file = r.split_once('/').map(|(s, n)| root.join("scenarios").join(s).join(format!("{n}.jsonl")));
-            let why = if !file.is_some_and(|f| f.is_file()) {
-                "held_out: no such recording (scenario/name, under scenarios/)"
-            } else if self.entries.values().any(|e| e.recordings.work.contains(r)) {
-                "held_out: also a feature's work recording; the goal's plays are held out from the work"
-            } else {
-                continue;
-            };
-            self.problems.push(problem(GOAL, format!("{r}: {why}")));
-        }
-        let now = self.goal_recordings();
-        for r in self.ledger.keys().filter(|r| !now.contains_key(*r)) {
-            let Some((s, n)) = r.split_once('/') else { continue };
-            if root.join("scenarios").join(s).join(format!("{n}.jsonl")).is_file() {
-                self.problems.push(problem(
-                    CATALOGUE,
-                    format!("{r}: a goal feature named it and none does now: name it under the recordings of the feature it shows (a merge or a split moves recordings)"),
-                ));
+        for f in loaders {
+            for l in f.loader.iter().filter(|l| entry_addr(l).is_some_and(|a| !fns.starts(a))) {
+                out.push(problem(&f.file, format!("loader: no function of the inventory starts at {l}")));
             }
         }
-    }
-
-    /// The person's held-out recordings that left the goal or held_out
-    /// since they confirmed: deleted, or moved to work.
-    pub fn held_out_dropped(&self) -> Vec<String> {
-        let now = self.goal_recordings();
-        self.ledger
-            .iter()
-            .filter(|(r, k)| *k == "held_out" && now.get(*r).map(String::as_str) != Some("held_out"))
-            .map(|(r, _)| r.clone())
-            .collect()
-    }
-
-    /// The ledger with the goal's recordings now added; a work recording
-    /// no feature names and whose file is gone leaves it. `confirmed`:
-    /// the person accepted what left, so it is the goal's recordings now.
-    pub(crate) fn note_recordings(&self, root: &Path, confirmed: bool) {
-        let now = self.goal_recordings();
-        let mut ledger = if confirmed { BTreeMap::new() } else { self.ledger.clone() };
-        ledger.retain(|r, k| {
-            let file = r.split_once('/').map(|(s, n)| root.join("scenarios").join(s).join(format!("{n}.jsonl")));
-            now.contains_key(r) || k == "held_out" || file.is_some_and(|f| f.is_file())
-        });
-        for (r, k) in now {
-            let e = ledger.entry(r).or_insert_with(|| k.clone());
-            if k == "held_out" {
-                *e = k;
+        for a in self.wont_reach.keys() {
+            if let Some((start, end)) = entry_range(a) {
+                if fns.branches_in(start, end).is_empty() {
+                    out.push(problem(WONT_REACH, format!("{a} holds no conditional branch of the inventory's code")));
+                }
+            } else if entry_addr(a).is_some_and(|addr| fns.branch(addr).is_none()) {
+                out.push(problem(WONT_REACH, format!("{a} is not a conditional branch of the inventory's code")));
             }
         }
-        if ledger != self.ledger {
-            let path = root.join(GOAL_RECORDINGS);
-            let _ = std::fs::create_dir_all(root.join(".psx"));
-            let _ = crate::write_atomic(&path, serde_json::to_string_pretty(&ledger).unwrap_or_default().as_bytes());
-        }
+        self.problems.extend(out);
     }
 
     /// Why the function at `entry` is not ported, when not_ported.toml
@@ -815,118 +661,35 @@ impl Port {
         not_ported_in(&self.not_ported, entry)
     }
 
-    /// The features whose code lists the function at `entry`.
-    pub fn claiming(&self, entry: u32) -> Vec<&str> {
-        let entry = entry & 0x1FFF_FFFF;
-        self.entries
-            .values()
-            .filter(|e| e.code.iter().filter_map(|c| entry_addr(c)).any(|a| a & 0x1FFF_FFFF == entry))
-            .map(|e| e.id.as_str())
-            .collect()
+    /// The scenarios of the work recordings, in order.
+    pub fn work_scenarios(&self) -> Vec<String> {
+        scenarios_of(&self.recordings.work)
     }
 
-    /// The goal's features as ids: its list, or every catalogued feature.
-    pub fn goal_ids(&self) -> BTreeSet<String> {
-        match &self.goal.features {
-            Features::All => self.entries.keys().cloned().collect(),
-            Features::List(l) => l.iter().cloned().collect(),
-        }
-    }
-
-    /// The goal's features, by id.
-    pub fn closure(&self) -> Vec<String> {
-        self.goal_ids().into_iter().collect()
-    }
-
-    /// The features the goal's list and the entries' `depends` brought in
-    /// before `depends` went, which the goal does not list: what port
-    /// update adds to it. None when the goal is every feature.
-    pub(crate) fn brought_by_depends(&self) -> Vec<String> {
-        let Features::List(listed) = &self.goal.features else { return Vec::new() };
-        let mut ids: BTreeSet<String> = BTreeSet::new();
-        let mut todo: Vec<String> = listed.clone();
-        while let Some(id) = todo.pop() {
-            if ids.insert(id.clone()) {
-                if let Some(e) = self.entries.get(&id) {
-                    todo.extend(
-                        e.depends.iter().filter(|d| !ids.contains(*d) && self.entries.contains_key(*d)).cloned(),
-                    );
-                }
-            }
-        }
-        ids.into_iter().filter(|id| !listed.contains(id)).collect()
-    }
-
-    /// Lists the features `depends` brought into the goal in goal.toml,
-    /// now that it is no longer read, so the goal and its confirmation keep
-    /// them; returns them. Nothing without a goal.toml.
-    pub(crate) fn keep_depends(root: &Path, dry_run: bool) -> crate::Result<Vec<String>> {
-        if !root.join(GOAL).is_file() {
-            return Ok(Vec::new());
-        }
-        let port = Port::load(root)?;
-        let brought = port.brought_by_depends();
-        let Features::List(listed) = &port.goal.features else { return Ok(brought) };
-        if brought.is_empty() || dry_run {
-            return Ok(brought);
-        }
-        let path = root.join(GOAL);
-        let text = std::fs::read_to_string(&path).map_err(|e| crate::Error::io(&path, e))?;
-        let all: Vec<String> = listed.iter().chain(&brought).cloned().collect();
-        let new = with_features(&text, &all);
-        let read: Goal = toml::from_str(&new)
-            .map_err(|e| crate::Error::invalid(format!("{GOAL} rewritten unreadably: {}", e.message())))?;
-        if read.features != Features::List(all) || read.confirmed != port.goal.confirmed {
-            return Err(crate::Error::invalid(format!("{GOAL}: its features could not be rewritten; nothing written")));
-        }
-        std::fs::write(&path, new).map_err(|e| crate::Error::io(&path, e))?;
-        Ok(brought)
+    /// The person's held-out plays confirmed that goal.toml no longer
+    /// holds out: deleted, or moved to work.
+    pub fn held_out_dropped(&self) -> Vec<String> {
+        let Some(c) = &self.goal.confirmed else { return Vec::new() };
+        c.held_out.iter().flatten().filter(|r| !self.goal.held_out.contains(r)).cloned().collect()
     }
 
     pub fn confirmation(&self) -> Confirmation {
         let Some(c) = &self.goal.confirmed else { return Confirmation::Missing };
         let at = c.at.clone();
-        // The cut is the agent's: ids leaving are not the goal shrinking;
-        // its description changing, or the person's plays leaving, is.
         let mut missing: Vec<String> = Vec::new();
         if c.description.as_ref().is_some_and(|d| *d != description_stamp(&self.goal.description)) {
             missing.push("description".into());
         }
         missing.extend(self.held_out_dropped().into_iter().map(|r| format!("held_out {r}")));
         // Every asset name the person confirmed is still asked for.
-        let assets: Vec<String> = match (&c.assets, &self.goal.assets) {
-            (_, Assets::All) => Vec::new(),
-            (Assets::All, _) => vec!["assets = true".into()],
+        match (&c.assets, &self.goal.assets) {
+            (_, Assets::All) => {}
+            (Assets::All, _) => missing.push("assets = true".into()),
             (Assets::Names(was), Assets::Names(now)) => {
-                was.iter().filter(|n| !now.contains(n)).map(|n| format!("assets {n}")).collect()
+                missing.extend(was.iter().filter(|n| !now.contains(n)).map(|n| format!("assets {n}")))
             }
-        };
-        let missing: Vec<String> = missing.into_iter().chain(assets).collect();
+        }
         if missing.is_empty() { Confirmation::Covers { at } } else { Confirmation::Shrunk { at, missing } }
-    }
-
-    /// The closure as the person reads it before confirming, with each
-    /// feature's stage.
-    pub fn closure_json(&self, stage: &dyn Fn(&str) -> Option<Stage>) -> Value {
-        let rows: Vec<Value> = self
-            .closure()
-            .iter()
-            .map(|id| {
-                let e = self.entries.get(id);
-                json!({
-                    "id": id,
-                    "title": e.map(|e| e.title.as_str()),
-                    "area": e.map(|e| e.area.as_str()),
-                    "stage": stage(id).map(Stage::name),
-                    "code": e.map(|e| &e.code),
-                    "recordings": e.map(|e| &e.recordings),
-                    "assets": e.map(|e| &e.assets),
-                    "wont_reach": e.map(|e| &e.wont_reach),
-                    "questions": e.map(|e| &e.questions),
-                })
-            })
-            .collect();
-        json!(rows)
     }
 
     pub(crate) fn confirmation_json(&self) -> Value {
@@ -942,35 +705,15 @@ impl Port {
         v
     }
 
-    /// The closure's won't-reach branches, as the entries give them now.
-    pub(crate) fn wont_reach(&self) -> WontReach {
-        self.closure()
-            .iter()
-            .filter_map(|id| self.entries.get(id))
-            .filter(|e| !e.wont_reach.is_empty())
-            .map(|e| (e.id.clone(), e.wont_reach.clone()))
-            .collect()
-    }
-
-    /// The closure's won't-reach branches the person has not confirmed as
-    /// they stand (`F-0003 0x8002D820`): new, or with another reason.
+    /// The won't-reach branches the person has not confirmed as they
+    /// stand: new, or with another reason.
     pub fn unconfirmed_wont_reach(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        for (id, branches) in self.wont_reach() {
-            for (a, why) in branches {
-                if !self.wont_reach_agreed(&a, &why) {
-                    out.push(format!("{id} {a}"));
-                }
-            }
-        }
-        out
+        self.wont_reach.iter().filter(|(a, why)| !self.wont_reach_agreed(a, why)).map(|(a, _)| a.clone()).collect()
     }
 
-    /// The person confirmed branch `key` with reason `why`, under any
-    /// feature: an entry follows its code from one feature to another.
+    /// The person confirmed branch `key` with reason `why`.
     pub fn wont_reach_agreed(&self, key: &str, why: &str) -> bool {
-        let confirmed = self.goal.confirmed.as_ref().map(|c| &c.wont_reach);
-        confirmed.is_some_and(|c| c.values().any(|b| b.get(key).is_some_and(|w| w == why)))
+        self.goal.confirmed.as_ref().is_some_and(|c| c.wont_reach.get(key).is_some_and(|w| w == why))
     }
 }
 
@@ -988,46 +731,19 @@ pub fn not_ported_in(map: &BTreeMap<String, String>, entry: u32) -> Option<&Stri
     })
 }
 
-/// `goal.toml`'s text with its top-level `features` set to `ids`, on one
-/// line where the key was (or before the first table), the rest kept.
-fn with_features(text: &str, ids: &[String]) -> String {
-    let line = format!("features = {}", toml::Value::from(ids.to_vec()));
-    let mut out: Vec<String> = Vec::new();
-    let (mut at, mut depth, mut in_table) = (None, 0i32, false);
-    for l in text.lines() {
-        let t = l.trim_start();
-        if depth > 0 {
-            depth += t.matches('[').count() as i32 - t.matches(']').count() as i32;
-            continue;
-        }
-        if t.starts_with('[') {
-            in_table = true;
-        }
-        if !in_table && t.split(['=', ' ', '\t']).next() == Some("features") {
-            at = Some(out.len());
-            let value = t.split_once('=').map(|(_, v)| v).unwrap_or("");
-            depth = value.matches('[').count() as i32 - value.matches(']').count() as i32;
-            continue;
-        }
-        out.push(l.to_string());
-    }
-    let at = at.unwrap_or_else(|| out.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(out.len()));
-    out.insert(at, line);
-    let mut s = out.join("\n");
-    s.push('\n');
-    s
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) fn workspace(goal: &str, entries: &[(&str, &str)]) -> (tempdir::Dir, Port) {
+    /// A workspace with goal.toml and `files` (relative path, text).
+    pub(crate) fn workspace(goal: &str, files: &[(&str, &str)]) -> (tempdir::Dir, Port) {
         let dir = tempdir::Dir::new();
         std::fs::write(dir.0.join(GOAL), goal).unwrap();
         std::fs::create_dir_all(dir.0.join(CATALOGUE)).unwrap();
-        for (name, text) in entries {
-            std::fs::write(dir.0.join(CATALOGUE).join(name), text).unwrap();
+        for (name, text) in files {
+            let p = dir.0.join(name);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
         }
         let port = Port::load(&dir.0).unwrap();
         (dir, port)
@@ -1049,283 +765,171 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn feature(id: &str, depends: &str) -> String {
-        let depends: Vec<String> = depends.split(", ").filter(|d| !d.is_empty()).map(|d| format!("\"{d}\"")).collect();
-        format!(
-            "+++\nid = \"{id}\"\ntitle = \"Feature {id}\"\narea = \"driving\"\ndepends = [{}]\n+++\nWhat it does.\n",
-            depends.join(", ")
-        )
+    fn problems(port: &Port) -> Vec<String> {
+        port.problems.iter().map(|p| format!("{}: {}", p.file, p.problem)).collect()
     }
 
     #[test]
-    fn the_closure_is_the_goal_and_depends_is_not_read() {
-        let (a, b, c, d) = (
-            feature("F-0001", ""),
-            feature("F-0002", "F-0001"),
-            feature("F-0003", "F-0002, F-0001"),
-            feature("F-0004", ""),
+    fn the_recordings_are_the_work_but_the_persons_plays() {
+        let goal = "description = \"x\"\nheld_out = [\"s/play\", \"s/gone\", \"s/play\"]\n";
+        let (_d, port) = workspace(
+            goal,
+            &[("scenarios/s/a.jsonl", ""), ("scenarios/s/play.jsonl", ""), ("scenarios/t/b.jsonl", "")],
         );
-        let (_dir, port) = workspace(
-            "description = \"x\"\nfeatures = [\"F-0003\"]\n",
+        assert_eq!(port.recordings.work, ["s/a", "t/b"]);
+        assert_eq!(port.recordings.held_out, ["s/play"]);
+        assert_eq!(port.work_scenarios(), ["s", "t"]);
+        assert_eq!(
+            problems(&port),
+            [
+                "goal.toml: held_out: s/gone: no such recording (scenario/name, under scenarios/)",
+                "goal.toml: held_out: s/play is listed twice",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_feature_left_over_asks_for_port_update() {
+        let (_d, port) = workspace(
+            "description = \"x\"\nfeatures = [\"F-0001\"]\n",
+            &[("catalogue/F-0001.md", "+++\nid = \"F-0001\"\n+++\n"), ("catalogue/README.md", "# not one")],
+        );
+        let p = problems(&port);
+        assert_eq!(p.len(), 2, "{p:?}");
+        assert!(
+            p[0].starts_with("catalogue/F-0001.md: a feature's entry")
+                && p[0].ends_with("psx port update moves its questions, wont_reach, assets and held-out plays out")
+        );
+        assert!(p[1].starts_with("goal.toml: features: no longer read"));
+    }
+
+    #[test]
+    fn the_catalogue_is_three_files() {
+        let np = "\"0x80010088\" = \"memcpy: the port has its own\"\n\"0x80050000..0x80060000\" = \"libgte\"\n\"main\" = \"x\"\n\"0x80070000\" = \" \"\n";
+        let wr = "\"0x8002D820\" = \"\"\n\"0x8002D860..0x8002D800\" = \"backwards\"\n\"croc+0x1890\" = \"wall contact\"\n\"croc+0x2000\" = \"elsewhere\"\n";
+        let qs = "# Questions\n\n- what resets the timer?\n-\n  - nested counts too\nnot a question\n";
+        let (_d, port) = workspace(
+            "description = \"x\"\n",
             &[
-                ("F-0001.md", &a),
-                ("F-0002.md", &b),
-                ("F-0003.md", &c),
-                ("F-0004.md", &d),
-                ("README.md", "# not an entry"),
+                (NOT_PORTED, np),
+                (WONT_REACH, wr),
+                (QUESTIONS, qs),
+                ("game/src/jump.rs", "// The wall check: croc+0x1803..0x18A0.\n"),
             ],
         );
-        assert_eq!(port.problems, []);
-        assert_eq!(port.closure(), ["F-0003"]);
-        let rows = port.closure_json(&|id| port.entries.contains_key(id).then_some(Stage::Catalogued));
-        assert_eq!(rows.as_array().unwrap().len(), 1);
-        assert_eq!(port.brought_by_depends(), ["F-0001", "F-0002"]);
+        assert_eq!(port.not_ported(0x0001_0088).map(String::as_str), Some("memcpy: the port has its own"));
+        assert_eq!(port.not_ported(0x8005_8000).map(String::as_str), Some("libgte"));
+        assert_eq!(port.not_ported(0x8006_0000), None);
+        assert_eq!(port.questions, ["what resets the timer?", "", "nested counts too"]);
+        let p = problems(&port);
+        assert_eq!(
+            p[..7],
+            [
+                "catalogue/not_ported.toml: 0x80070000: no reason: what the code is, and why the port has none",
+                "catalogue/not_ported.toml: \"main\" is not a function's entry (0x…) or a range (0x…..0x…)",
+                "catalogue/wont_reach.toml: 0x8002D820: no reason: why no recording can reach it",
+                "catalogue/wont_reach.toml: \"0x8002D860..0x8002D800\" is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded), a test as port next gives it ([0x8007529C] == 2) or a script position or stretch (croc+0x18F0)",
+                "catalogue/wont_reach.toml: croc+0x2000 is in no script stretch the port cites (game/, tools/)",
+                "catalogue/questions.md: an empty question",
+                "catalogue/wont_reach.toml: checked against the inventory: .psx/inventory.json: no inventory; take one with inventory first"
+                    .replace(".psx/inventory.json", &_d.0.join(".psx/inventory.json").display().to_string())
+                    .as_str(),
+            ]
+        );
     }
 
     #[test]
-    fn port_update_lists_what_depends_brought_in_and_keeps_the_confirmation() {
-        let (a, b, c) = (feature("F-0001", ""), feature("F-0002", "F-0001"), feature("F-0003", "F-0002"));
-        let goal = "description = \"x\"\nfeatures = [\n  \"F-0003\",\n]\nconfirmed = { at = \"t\", features = [\"F-0001\", \"F-0002\", \"F-0003\"] }\n# features: the goal's list\n";
-        let (dir, port) = workspace(goal, &[("F-0001.md", &a), ("F-0002.md", &b), ("F-0003.md", &c)]);
-        assert_eq!(port.closure(), ["F-0003"]);
-        assert_eq!(Port::keep_depends(&dir.0, true).unwrap(), ["F-0001", "F-0002"]);
-        assert_eq!(std::fs::read_to_string(dir.0.join(GOAL)).unwrap(), goal);
-        assert_eq!(Port::keep_depends(&dir.0, false).unwrap(), ["F-0001", "F-0002"]);
-        let text = std::fs::read_to_string(dir.0.join(GOAL)).unwrap();
-        assert!(text.contains("features = [\"F-0003\", \"F-0001\", \"F-0002\"]\nconfirmed"), "{text}");
-        assert!(text.ends_with("# features: the goal's list\n"), "{text}");
-        let port = Port::load(&dir.0).unwrap();
-        assert_eq!(port.confirmation(), Confirmation::Covers { at: "t".into() });
-        assert_eq!(Port::keep_depends(&dir.0, false).unwrap(), Vec::<String>::new());
-    }
-
-    #[test]
-    fn problems_name_the_file() {
-        let (a, b) = (feature("F-0001", "F-0002"), feature("F-0002", "F-0001"));
-        let (_dir, port) = workspace(
-            "description = \"x\"\nfeatures = [\"F-0001\", \"F-0007\", \"F-0001\"]\n",
+    fn the_port_cites_code_and_script_by_address() {
+        let mut c = Cited::default();
+        c.scan(
+            "t.store(0x800A_1C30, 4).by(0x8001_52A4); // 0x8001_52a8 and 0x80012345.\n\
+             // not: 0x1F800000, 0x800123, 0x8001234567, x0x80012345, y = 0x80099999z\n\
+             // croc+0x1803..0x18A0 and croc_2+0x10. and croc+zz",
+        );
+        assert_eq!(c.addresses, BTreeSet::from([0x8001_52A4, 0x8001_52A8, 0x800A_1C30, 0x8001_2345]));
+        assert_eq!(
+            c.stretches,
+            [Stretch::parse("croc+0x1803..0x18A0").unwrap(), Stretch::parse("croc_2+0x10").unwrap()]
+        );
+        // Scanned under game/ and tools/, target/ aside.
+        let (_d, port) = workspace(
+            "description = \"x\"\n",
             &[
-                ("F-0001.md", &a),
-                ("F-0002.md", &b),
-                ("F-0003.md", "+++\nid = \"F-0004\"\n+++\n"),
-                ("F-0005.md", "+++\nid = \"F-0005\"\ndepends = [\"F-0006\"]\n+++\n"),
+                ("game/src/a.rs", "// 0x80011000"),
+                ("tools/import/b.rs", "// 0x80022000"),
+                ("game/target/c.rs", "// 0x80033000"),
+                ("glossary/src/lib.rs", "// 0x80044000"),
             ],
         );
-        let p: Vec<String> = port.problems.iter().map(|p| format!("{}: {}", p.file, p.problem)).collect();
-        assert_eq!(
-            p,
-            [
-                "catalogue/F-0003.md: its id is \"F-0004\"; a file's id is its name (F-0003)",
-                "catalogue/F-0005.md: no title",
-                "catalogue/F-0005.md: no area",
-                "catalogue/F-0005.md: no description: a paragraph in game terms after the front matter",
-                "goal.toml: F-0007 has no catalogue entry",
-                "goal.toml: F-0001 is listed twice",
-            ]
-        );
-        // A cycle in depends is no problem: it is not read.
-        assert_eq!(port.closure(), ["F-0001", "F-0007"]);
+        assert_eq!(port.cited.addresses, BTreeSet::from([0x8001_1000, 0x8002_2000]));
     }
 
     #[test]
-    fn an_entry_names_recordings_code_and_branches_the_workspace_has() {
-        let entry = |extra: &str| {
-            format!("+++\nid = \"F-0001\"\ntitle = \"Jump\"\narea = \"player\"\n{extra}\n+++\nWhat it does.\n")
-        };
-        let goal = "description = \"x\"\nfeatures = [\"F-0001\"]\n";
-        let fields = "code = [\"0x8002D810\", \"jump\", \"0x8002D810\"]\nquestions = [\"\"]\n\
-            [recordings]\nwork = [\"jump/stomp\", \"jump\"]\nheld_out = [\"jump/stomp\"]\n\
-            [wont_reach]\n\"0x8002D820\" = \"\"\n\"0x8002D860..0x8002D800\" = \"backwards\"";
-        let (d, port) = workspace(goal, &[("F-0001.md", &entry(fields))]);
-        let p: Vec<&str> = port.problems.iter().map(|p| p.problem.as_str()).collect();
-        assert_eq!(
-            p,
-            [
-                "recordings: \"jump\" is not <scenario>/<name>",
-                "recordings: jump/stomp is listed twice (work and held_out are apart)",
-                "code: \"jump\" is not an address (0x8002D810) or a script stretch (croc+0x1803..0x18A0)",
-                "code: 0x8002D810 is listed twice",
-                "wont_reach.0x8002D820: no reason: why no recording can reach it",
-                "wont_reach: \"0x8002D860..0x8002D800\" is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded), a test as port next gives it ([0x8007529C] == 2) or a script position or stretch (croc+0x18F0)",
-                "questions: an empty question",
-                "recordings: no scenarios/jump/stomp.jsonl (psx scenario record, or play)",
-                "code and wont_reach are checked against the inventory: .psx/inventory.json: no inventory; take one with inventory first",
-            ]
-            .map(|l| l.replace(".psx/inventory.json", &d.0.join(".psx/inventory.json").display().to_string()))
+    fn a_scenario_names_the_assets_its_recordings_need() {
+        let (_d, port) = workspace(
+            "description = \"x\"\n",
+            &[
+                ("scenarios/s.toml", "moment = \"m\"\nassets = [\"format:level\", \"MAPS\"]\n"),
+                ("scenarios/s/a.jsonl", ""),
+                ("scenarios/t.toml", "assets = \"x\"\n"),
+                ("scenarios/t/a.jsonl", ""),
+            ],
         );
-        let e = &port.entries["F-0001"];
-        assert_eq!(e.scenarios(), ["jump"]);
-        // Script stretches need no inventory; a wont_reach in one lies in a stretch code lists.
-        let fields = "code = [\"croc+0x1803..0x18A0\"]\n[wont_reach]\n\"croc+0x1890\" = \"wall contact\"\n\
-            \"croc+0x2000\" = \"elsewhere\"\n\"croc+\" = \"bad\"";
-        let (_d, port) = workspace(goal, &[("F-0001.md", &entry(fields))]);
-        let p: Vec<&str> = port.problems.iter().map(|p| p.problem.as_str()).collect();
+        assert_eq!(port.scenario_assets["s"], ["format:level", "MAPS"]);
         assert_eq!(
-            p,
+            problems(&port),
             [
-                "wont_reach: \"croc+\" is not an address (0x8002D820), an address range (0x8002D800..0x8002D860, the end excluded), a test as port next gives it ([0x8007529C] == 2) or a script position or stretch (croc+0x18F0)",
-                "wont_reach: croc+0x2000 is in no script stretch code lists",
+                "scenarios/s.toml: assets: \"MAPS\" is not a disc path from / (/MAPS/*.WLD, /ARCHIVE:ENTRY) or format:<id>",
+                "scenarios/t.toml: assets: a list of asset names",
             ]
         );
-        // The old YAML front matter, and an unknown field, say what is wrong.
-        let (_d, port) = workspace(goal, &[("F-0001.md", "---\nid: F-0001\n---\n")]);
-        assert!(port.problems[0].problem.contains("TOML between +++ lines"), "{:?}", port.problems);
-        let (_d, port) = workspace(goal, &[("F-0001.md", &entry("scenarios = []"))]);
-        assert!(port.problems[0].problem.contains("unknown field `scenarios`"), "{:?}", port.problems);
     }
 
     #[test]
     fn wont_reach_branches_need_the_persons_confirmation_as_they_stand() {
-        let entry = |why: &str| {
-            format!(
-                "+++\nid = \"F-0001\"\ntitle = \"Jump\"\narea = \"player\"\n[wont_reach]\n\"0x8002D820\" = \"{why}\"\n+++\nWhat it does.\n"
-            )
-        };
-        let goal = "features = [\"F-0001\"]\nconfirmed = { at = \"t\", features = [\"F-0001\"], wont_reach = { \"F-0001\" = { \"0x8002D820\" = \"under water\" } } }\n";
-        let (_d, port) = workspace(goal, &[("F-0001.md", &entry("under water"))]);
+        let goal =
+            "description = \"x\"\nconfirmed = { at = \"t\", wont_reach = { \"0x8002D820\" = \"under water\" } }\n";
+        let wr = |why: &str| format!("\"0x8002D820\" = \"{why}\"\n");
+        let (_d, port) = workspace(goal, &[(WONT_REACH, &wr("under water"))]);
         assert_eq!(port.unconfirmed_wont_reach(), Vec::<String>::new());
-        let (_d, port) = workspace(goal, &[("F-0001.md", &entry("in a cutscene"))]);
-        assert_eq!(port.unconfirmed_wont_reach(), ["F-0001 0x8002D820"]);
-        assert_eq!(port.confirmation_json()["wont_reach_unconfirmed"], json!(["F-0001 0x8002D820"]));
-        // Moved with its code to another feature, the confirmation follows it.
-        let moved = entry("under water").replace("F-0001", "F-0002");
-        let goal2 = goal.replace("features = [\"F-0001\"]\n", "features = [\"F-0001\", \"F-0002\"]\n");
-        let bare = "+++\nid = \"F-0001\"\ntitle = \"Jump\"\narea = \"player\"\n+++\nWhat it does.\n";
-        let (_d, port) = workspace(&goal2, &[("F-0001.md", bare), ("F-0002.md", &moved)]);
+        let (_d, port) = workspace(goal, &[(WONT_REACH, &wr("in a cutscene"))]);
+        assert_eq!(port.unconfirmed_wont_reach(), ["0x8002D820"]);
+        assert_eq!(port.confirmation_json()["wont_reach_unconfirmed"], json!(["0x8002D820"]));
+        // Kept by feature before features went, it reads flat.
+        let old = "description = \"x\"\nconfirmed = { at = \"t\", features = [\"F-0001\"], wont_reach = { \"F-0001\" = { \"0x8002D820\" = \"under water\" } } }\n";
+        let (_d, port) = workspace(old, &[(WONT_REACH, &wr("under water"))]);
         assert_eq!(port.unconfirmed_wont_reach(), Vec::<String>::new());
     }
 
     #[test]
-    fn not_ported_lists_functions_and_ranges_with_why() {
-        let np = "\"0x80010088\" = \"memcpy: the port has its own\"\n\"0x80050000..0x80060000\" = \"libgte\"\n\"main\" = \"x\"\n\"0x80070000\" = \" \"\n";
-        let (_d, port) = workspace("description = \"x\"\nfeatures = \"all\"\n", &[("not_ported.toml", np)]);
-        assert_eq!(port.not_ported(0x0001_0088).map(String::as_str), Some("memcpy: the port has its own"));
-        assert_eq!(port.not_ported(0x8005_8000).map(String::as_str), Some("libgte"));
-        assert_eq!(port.not_ported(0x8006_0000), None);
-        let p: Vec<&str> = port.problems.iter().filter(|p| p.file == NOT_PORTED).map(|p| p.problem.as_str()).collect();
-        assert_eq!(
-            p[..2],
-            [
-                "0x80070000: no reason: what the code is, and why the port has none",
-                "\"main\" is not a function's entry (0x…) or a range (0x…..0x…)",
-            ]
-        );
-    }
-
-    #[test]
-    fn a_new_goal_asks_for_a_description_and_features() {
+    fn a_new_goal_asks_for_a_description() {
         let (_dir, port) = workspace(GOAL_TOML, &[]);
-        let p: Vec<&str> = port.problems.iter().map(|p| p.problem.as_str()).collect();
-        assert_eq!(
-            p,
-            [
-                "no description: the goal in the person's words",
-                "names no features: list the catalogue entries the goal needs, or \"all\""
-            ]
-        );
+        assert_eq!(problems(&port), ["goal.toml: no description: the goal in the person's words"]);
     }
 
     #[test]
-    fn a_confirmed_feature_only_depends_named_has_left_the_goal() {
-        let (a, b) = (feature("F-0001", ""), feature("F-0002", "F-0001"));
-        let goal = "features = [\"F-0002\"]\nconfirmed = { at = \"t\", features = [\"F-0001\", \"F-0002\"] }\n";
-        let (_d, port) = workspace(goal, &[("F-0001.md", &a), ("F-0002.md", &b)]);
-        assert_eq!(port.closure(), ["F-0002"]);
-        assert_eq!(port.brought_by_depends(), ["F-0001"]);
-    }
-
-    #[test]
-    fn a_confirmation_covers_the_agents_cut_but_not_the_description_or_the_persons_plays() {
-        let entries: Vec<(String, String)> =
-            (1..=3).map(|i| (format!("F-000{i}.md"), feature(&format!("F-000{i}"), ""))).collect();
-        let entries: Vec<(&str, &str)> = entries.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-        let confirmed = "confirmed = { at = \"2026-10-29T10:00:00Z\", features = [\"F-0001\", \"F-0002\"] }\n";
-        let (_d, port) = workspace("features = [\"F-0001\", \"F-0002\"]\n", &entries);
+    fn a_confirmation_covers_the_description_assets_and_the_persons_plays() {
+        let files = [("scenarios/s/a.jsonl", ""), ("scenarios/s/play.jsonl", "")];
+        let (_d, port) = workspace("description = \"drive\"\n", &files);
         assert_eq!(port.confirmation(), Confirmation::Missing);
-        let (_d, port) = workspace(&format!("features = [\"F-0001\", \"F-0002\", \"F-0003\"]\n{confirmed}"), &entries);
-        assert_eq!(port.confirmation(), Confirmation::Covers { at: "2026-10-29T10:00:00Z".into() });
-        let (_d, port) = workspace(&format!("features = \"all\"\n{confirmed}"), &entries);
-        assert!(matches!(port.confirmation(), Confirmation::Covers { .. }));
-        // An id leaving is the agent's cut, not the goal shrinking.
-        let (_d, port) = workspace(&format!("features = [\"F-0002\"]\n{confirmed}"), &entries);
-        assert!(matches!(port.confirmation(), Confirmation::Covers { .. }));
-        let all = "confirmed = { at = \"t\", features = \"all\" }\n";
-        let (_d, port) = workspace(&format!("features = [\"F-0001\"]\n{all}"), &entries);
-        assert!(matches!(port.confirmation(), Confirmation::Covers { .. }));
-        // The description the person confirmed, changed.
         let stamped = format!(
-            "description = \"drive\"\nfeatures = [\"F-0001\"]\nconfirmed = {{ at = \"t\", features = [\"F-0001\"], description = \"{}\" }}\n",
+            "description = \"drive\"\nheld_out = [\"s/play\"]\nconfirmed = {{ at = \"t\", description = \"{}\", held_out = [\"s/play\"] }}\n",
             description_stamp("drive")
         );
-        let (_d, port) = workspace(&stamped, &entries);
-        assert!(matches!(port.confirmation(), Confirmation::Covers { .. }));
-        let (_d, port) = workspace(&stamped.replacen("\"drive\"", "\"drive fast\"", 1), &entries);
+        let (_d, port) = workspace(&stamped, &files);
+        assert_eq!(port.confirmation(), Confirmation::Covers { at: "t".into() });
+        let (_d, port) = workspace(&stamped.replacen("\"drive\"", "\"drive fast\"", 1), &files);
         assert_eq!(port.confirmation(), Confirmation::Shrunk { at: "t".into(), missing: vec!["description".into()] });
-    }
-
-    #[test]
-    fn the_goal_keeps_its_recordings_through_a_merge() {
-        let held = |id: &str, work: &str, held: &str| {
-            format!(
-                "+++\nid = \"{id}\"\ntitle = \"t\"\narea = \"a\"\n[recordings]\nwork = [{work}]\nheld_out = [{held}]\n+++\nWhat it does.\n"
-            )
-        };
-        let goal = "description = \"x\"\nfeatures = [\"F-0001\", \"F-0002\"]\nconfirmed = { at = \"t\", features = [\"F-0001\", \"F-0002\"] }\n";
-        let (a, b) = (held("F-0001", "\"s/a\"", "\"s/play\""), held("F-0002", "\"s/b\"", ""));
-        let (d, port) = workspace(goal, &[("F-0001.md", &a), ("F-0002.md", &b)]);
-        std::fs::create_dir_all(d.0.join("scenarios/s")).unwrap();
-        for n in ["a", "b", "play"] {
-            std::fs::write(d.0.join(format!("scenarios/s/{n}.jsonl")), "").unwrap();
-        }
-        port.note_recordings(&d.0, false);
-        // Merged into F-0001 with every recording: the goal is as confirmed.
-        let merged = held("F-0001", "\"s/a\", \"s/b\"", "\"s/play\"");
-        let one = goal.replace("[\"F-0001\", \"F-0002\"]\nc", "[\"F-0001\"]\nc");
-        std::fs::write(d.0.join(GOAL), &one).unwrap();
-        std::fs::write(d.0.join("catalogue/F-0001.md"), &merged).unwrap();
-        std::fs::remove_file(d.0.join("catalogue/F-0002.md")).unwrap();
-        let port = Port::load(&d.0).unwrap();
-        assert_eq!((port.problems.clone(), port.confirmation()), (vec![], Confirmation::Covers { at: "t".into() }));
-        // A recording the merge left unnamed is a problem.
-        std::fs::write(d.0.join("catalogue/F-0001.md"), held("F-0001", "\"s/a\"", "\"s/play\"")).unwrap();
-        let port = Port::load(&d.0).unwrap();
-        assert_eq!(port.problems.len(), 1, "{:?}", port.problems);
-        assert!(port.problems[0].problem.starts_with("s/b: a goal feature named it and none does now"));
         // The person's play moved to work asks the person.
-        std::fs::write(d.0.join("catalogue/F-0001.md"), held("F-0001", "\"s/a\", \"s/b\", \"s/play\"", "")).unwrap();
-        let port = Port::load(&d.0).unwrap();
+        let (_d, port) = workspace(&stamped.replacen("held_out = [\"s/play\"]\n", "", 1), &files);
         assert_eq!(
             port.confirmation(),
             Confirmation::Shrunk { at: "t".into(), missing: vec!["held_out s/play".into()] }
         );
-        // Once confirmed, the goal's recordings are what it names now.
-        port.note_recordings(&d.0, true);
-        assert!(matches!(Port::load(&d.0).unwrap().confirmation(), Confirmation::Covers { .. }));
-        // A work recording deleted is gone.
-        std::fs::write(d.0.join("catalogue/F-0001.md"), held("F-0001", "\"s/a\", \"s/play\"", "")).unwrap();
-        std::fs::remove_file(d.0.join("scenarios/s/b.jsonl")).unwrap();
-        let port = Port::load(&d.0).unwrap();
-        assert!(port.problems.is_empty(), "{:?}", port.problems);
-        port.note_recordings(&d.0, false);
-        assert!(!Port::load(&d.0).unwrap().ledger.contains_key("s/b"));
-        // The goal's own play: a feature's work recording is not one, and
-        // one taken out of goal.toml asks the person.
-        std::fs::write(d.0.join(GOAL), one.replacen("features =", "held_out = [\"s/a\", \"s/gone\"]\nfeatures =", 1))
-            .unwrap();
-        let port = Port::load(&d.0).unwrap();
-        let p: Vec<&str> = port.problems.iter().map(|p| p.problem.as_str()).collect();
-        assert!(
-            p[0].starts_with("s/a: held_out: also a feature's work") && p[1].starts_with("s/gone: held_out: no such"),
-            "{p:?}"
-        );
-        std::fs::write(d.0.join("scenarios/s/g.jsonl"), "").unwrap();
-        std::fs::write(d.0.join(GOAL), one.replacen("features =", "held_out = [\"s/g\"]\nfeatures =", 1)).unwrap();
-        let port = Port::load(&d.0).unwrap();
-        assert!(port.problems.is_empty(), "{:?}", port.problems);
-        port.note_recordings(&d.0, true);
-        std::fs::write(d.0.join(GOAL), &one).unwrap();
-        let port = Port::load(&d.0).unwrap();
-        assert_eq!(port.confirmation(), Confirmation::Shrunk { at: "t".into(), missing: vec!["held_out s/g".into()] });
+        assert_eq!(port.recordings.work, ["s/a", "s/play"]);
+        // A confirmation from when there were features reads, its list unread.
+        let (_d, port) = workspace("description = \"x\"\nconfirmed = { at = \"t\", features = \"all\" }\n", &files);
+        assert_eq!(port.confirmation(), Confirmation::Covers { at: "t".into() });
     }
 
     #[test]
@@ -1335,37 +939,21 @@ pub(crate) mod tests {
         assert_eq!(goal("false").unwrap(), Assets::Names(vec![]));
         assert_eq!(goal("[\"format:level\"]").unwrap(), Assets::Names(vec!["format:level".into()]));
         assert!(goal("\"some\"").is_err());
+        assert!(toml::from_str::<Goal>("feature = []").is_err());
         assert_eq!(toml::from_str::<Goal>(GOAL_TOML).unwrap().assets, Assets::Names(vec![]));
-        let a = feature("F-0001", "").replace("depends = []", "depends = []\nassets = [\"MAPS/*.WLD\", \"format:\"]");
-        let confirmed =
-            "confirmed = { at = \"t\", features = [\"F-0001\"], assets = [\"format:level\", \"format:car\"] }\n";
-        let (_d, port) = workspace(
-            &format!("description = \"x\"\nfeatures = [\"F-0001\"]\nassets = [\"format:level\", \"lvl\"]\n{confirmed}"),
-            &[("F-0001.md", &a)],
-        );
-        let p: Vec<String> = port.problems.iter().map(|p| format!("{}: {}", p.file, p.problem)).collect();
+        let confirmed = "confirmed = { at = \"t\", assets = [\"format:level\", \"format:car\"] }\n";
+        let (_d, port) =
+            workspace(&format!("description = \"x\"\nassets = [\"format:level\", \"lvl\"]\n{confirmed}"), &[]);
         assert_eq!(
-            p,
-            [
-                "catalogue/F-0001.md: assets: \"MAPS/*.WLD\" is not a disc path from / (/MAPS/*.WLD, /ARCHIVE:ENTRY) or format:<id>",
-                "catalogue/F-0001.md: assets: \"format:\" is not format:<id>, a format doc's id (formats/<id>.md) or a standard format",
-                "goal.toml: assets: \"lvl\" is not a disc path from / (/MAPS/*.WLD, /ARCHIVE:ENTRY) or format:<id>",
-            ]
+            problems(&port),
+            ["goal.toml: assets: \"lvl\" is not a disc path from / (/MAPS/*.WLD, /ARCHIVE:ENTRY) or format:<id>"]
         );
         // A name the person confirmed taken out needs them again; every file covers it.
         assert_eq!(
             port.confirmation(),
             Confirmation::Shrunk { at: "t".into(), missing: vec!["assets format:car".into()] }
         );
-        let (_d, port) = workspace(&format!("features = [\"F-0001\"]\nassets = true\n{confirmed}"), &[]);
+        let (_d, port) = workspace(&format!("assets = true\n{confirmed}"), &[]);
         assert!(matches!(port.confirmation(), Confirmation::Covers { .. }));
-    }
-
-    #[test]
-    fn a_goal_reads_all_or_a_list_and_nothing_else() {
-        assert_eq!(toml::from_str::<Goal>("features = \"all\"").unwrap().features, Features::All);
-        assert!(toml::from_str::<Goal>("features = \"some\"").is_err());
-        assert!(toml::from_str::<Goal>("feature = []").is_err());
-        assert_eq!(toml::from_str::<Goal>(GOAL_TOML).unwrap().features, Features::List(vec![]));
     }
 }

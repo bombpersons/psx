@@ -198,8 +198,8 @@ pub fn summary(v: &Value) -> String {
         }
         // A status: what it hands out next.
         if let Some(item) = o.get("next").and_then(|n| n["item"].as_str()) {
-            let feature = o["next"]["feature"].as_str().map(|f| format!(" {f}")).unwrap_or_default();
-            parts.push(format!("next: {item}{feature}"));
+            let r = o["next"]["recording"].as_str().map(|r| format!(" {r}")).unwrap_or_default();
+            parts.push(format!("next: {item}{r}"));
         }
         let mut others: Vec<&str> =
             o.keys().map(String::as_str).filter(|k| !parts.iter().any(|p| p.starts_with(*k))).collect();
@@ -268,8 +268,8 @@ mod tests {
         assert!(root.join(RESULTS).join(format!("{id}.json")).is_file());
         assert_eq!(summary(&json!({"error": {"code": "timeout", "message": "too slow"}})), "timeout: too slow");
         assert_eq!(
-            summary(&json!({"git": {}, "next": {"item": "Fix", "feature": "F-0002"}})),
-            "next: Fix F-0002; [git]"
+            summary(&json!({"git": {}, "next": {"item": "Fix", "recording": "walk/a"}})),
+            "next: Fix walk/a; [git]"
         );
         let _ = std::fs::remove_dir_all(root);
     }

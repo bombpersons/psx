@@ -82,8 +82,8 @@ fn a_c_port_is_checked_through_its_manifest() {
 
     // It passes its recording.
     let v = psx(&dir, &["port", "check"]);
-    assert_eq!(v["verdicts"][0]["passed"], true, "{v}");
-    assert_eq!(v["verdicts"][0]["work"]["hill/push"], serde_json::json!([]), "{v}");
+    assert_eq!(v["verdict"]["passed"], true, "{v}");
+    assert_eq!(v["verdict"]["work"], serde_json::json!({"total": 1, "pass": 1}), "{v}");
 
     // A port one unit out is caught, by the quantities that differ.
     let sled = dir.join("game/src/sled.c");
@@ -91,14 +91,16 @@ fn a_c_port_is_checked_through_its_manifest() {
     std::fs::write(&sled, text.replace("#define SNOW 0xF00", "#define SNOW 0xEFF")).unwrap();
     commit(&dir, "the snow one unit out");
     let v = psx(&dir, &["port", "check"]);
-    assert_eq!(v["verdicts"][0]["passed"], false, "{v}");
-    assert_eq!(v["verdicts"][0]["work"]["hill/push"][0], "differs from the recording in sled_speed, sled_x", "{v}");
+    assert_eq!(v["verdict"]["passed"], false, "{v}");
+    let failing = &v["verdict"]["failing"][0];
+    assert_eq!(failing["recording"], "hill/push", "{v}");
+    assert_eq!(failing["differs"][0], "differs from the recording in sled_speed, sled_x", "{v}");
 
     // A port that does not build says why.
     std::fs::write(&sled, "not C\n").unwrap();
     commit(&dir, "no game");
     let v = psx(&dir, &["port", "check"]);
-    let why = v["verdicts"][0]["failures"][0].as_str().unwrap_or_default();
+    let why = v["verdict"]["failures"][0].as_str().unwrap_or_default();
     assert!(why.starts_with("the port did not build"), "{v}");
 
     let _ = std::fs::remove_dir_all(&dir);

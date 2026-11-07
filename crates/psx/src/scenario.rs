@@ -23,7 +23,6 @@ pub(crate) type OnTick<'a> = &'a mut dyn FnMut(&Full, &Machine);
 use crate::adjust::Adjustments;
 use crate::binding::{self, Plugin, Tick};
 use crate::commands::{Ctx, Op, Outcome};
-use crate::port::Entry;
 use crate::session::{LeadIn, Observer, Out, Session};
 
 /// The glossary crate, `glossary/`; its binding is `glossary/binding/`.
@@ -867,37 +866,15 @@ impl Prepared {
     }
 }
 
-/// Which catalogue entries name the recording `id/name`, or where it
-/// could go: the features naming the scenario's other recordings. None
-/// outside a port.
+/// What the recording `id/name` is to the port: the person's play held
+/// out (judged, never worked on) or a work recording. None outside a port.
 fn catalogue_note(root: &Path, id: &str, name: &str) -> Option<String> {
     let port = crate::port::Port::load(root).ok()?;
     let target = format!("{id}/{name}");
-    let named: Vec<String> = port
-        .entries
-        .values()
-        .flat_map(|e| {
-            let r = &e.recordings;
-            let w = r.work.contains(&target).then(|| format!("{} (work)", e.id));
-            let h = r.held_out.contains(&target).then(|| format!("{} (held_out)", e.id));
-            w.into_iter().chain(h)
-        })
-        .collect();
-    if !named.is_empty() {
-        return Some(format!("{target} is named by {}", named.join(", ")));
-    }
-    let using: Vec<&str> =
-        port.entries.values().filter(|e| e.scenarios().iter().any(|s| s == id)).map(|e| e.id.as_str()).collect();
-    Some(if using.is_empty() {
-        format!(
-            "{target} is in no catalogue entry's recordings: add it to recordings.work (or held_out) of the feature it is for"
-        )
+    Some(if port.goal.held_out.contains(&target) {
+        format!("{target} is held out (goal.toml's held_out): judged, not worked on")
     } else {
-        format!(
-            "{target} is in no catalogue entry's recordings; {} {} this scenario's other recordings: add it to recordings.work or held_out of the feature it is for",
-            using.join(", "),
-            if using.len() == 1 { "names" } else { "name" }
-        )
+        format!("{target} is a work recording: the port is checked against it")
     })
 }
 
@@ -1219,7 +1196,7 @@ fn adjust_check_cmd(ctx: &Ctx, a: ScenarioAdjustCheckArgs) -> crate::Result<(boo
         crate::write_atomic(&p, &serde_json::to_vec_pretty(&kept).unwrap_or_default()).map_err(|e| Error::io(&p, e))?;
         if r["status"] == "differs" {
             r["how"] = json!(
-                "an adjustment changed what the original did: a shift (the same values a tick or two earlier or later, as a press taking effect sooner under latch) is the adjustment's expected cost; a value the stock run never reaches is a rule that depends on what was adjusted: record that scenario --stock, and say why in the feature's notes"
+                "an adjustment changed what the original did: a shift (the same values a tick or two earlier or later, as a press taking effect sooner under latch) is the adjustment's expected cost; a value the stock run never reaches is a rule that depends on what was adjusted: record that scenario --stock, and say why in the notes"
             );
         }
         results.push(r);
@@ -1901,12 +1878,12 @@ pub enum Late {
     Fails,
 }
 
-/// The recordings of the feature's scenarios in which the original's own
-/// driver kept the tick's input from the game (`late_input`), each with
-/// how often and what it asks for.
-pub fn feature_late_input(root: &Path, e: &Entry) -> Vec<(Late, String)> {
+/// The recordings of `scenarios` in which the original's own driver kept
+/// the tick's input from the game (`late_input`), each with how often and
+/// what it asks for.
+pub fn scenarios_late_input(root: &Path, scenarios: &[String]) -> Vec<(Late, String)> {
     let now = crate::decomp::fixes_hash(root);
-    e.scenarios().iter().flat_map(|s| late_input(root, s, now.as_deref())).collect()
+    scenarios.iter().flat_map(|s| late_input(root, s, now.as_deref())).collect()
 }
 
 fn late_input(root: &Path, id: &str, fixes_now: Option<&str>) -> Vec<(Late, String)> {
@@ -1958,14 +1935,9 @@ fn late_input(root: &Path, id: &str, fixes_now: Option<&str>) -> Vec<(Late, Stri
     out
 }
 
-/// What stops the feature's scenarios (those its recordings come from)
-/// from counting toward stage 2; empty when it names a recording and each
-/// scenario is deterministic.
-pub fn feature_unready(root: &Path, e: &Entry) -> Vec<String> {
-    let scenarios = e.scenarios();
-    if scenarios.is_empty() {
-        return vec![format!("{}: names no recordings (recordings.work: <scenario>/<name>)", e.file)];
-    }
+/// What keeps `scenarios`' recordings from counting: each scenario's
+/// problems and determinism check.
+pub fn scenarios_unready(root: &Path, scenarios: &[String]) -> Vec<String> {
     scenarios.iter().flat_map(|s| unready(root, s)).collect()
 }
 

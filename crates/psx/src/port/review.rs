@@ -2,13 +2,14 @@
 //! someone who did not write it (docs/port-design.md, The review). It asks
 //! whether the code is what one would write for a new game, not whether it
 //! does what the original does (the recordings check that). TOML front
-//! matter between `+++` lines names the commit reviewed, the features
-//! matching then and those finished then; each finding is a `## ` section,
-//! answered by a `**Answer:**` line. The review holds while the code is
-//! unchanged since its commit and every finding has an answer. A review
-//! comes each time a feature comes to match its recordings, and again when
-//! it is finished (its branches resolved, no question open), so each reads
-//! about one feature's change.
+//! matter between `+++` lines names the commit reviewed and whether the
+//! goal's work recordings all passed then (`matching`) and its work was
+//! finished (`finished`); each finding is a `## ` section, answered by a
+//! `**Answer:**` line. The review holds while the code is unchanged since
+//! its commit and every finding has an answer. A review comes when the
+//! goal comes to match its recordings, again when it is finished (its
+//! branches resolved, no question open, all its code cited), and once
+//! enough of the code changed in between.
 
 use std::path::Path;
 
@@ -26,9 +27,37 @@ pub const CODE: [&str; 2] = ["game", "tools"];
 struct Front {
     commit: String,
     #[serde(default)]
-    features: Vec<String>,
+    matching: bool,
     #[serde(default)]
-    finished: Vec<String>,
+    finished: Flag,
+    /// What reviews wrote while there were features: the ones matching.
+    #[serde(default)]
+    features: Vec<String>,
+}
+
+/// `finished`: true or false, or as reviews wrote it while there were
+/// features, a list of those finished (some finished: true).
+#[derive(Debug, Default, Deserialize)]
+#[serde(untagged)]
+enum Flag {
+    #[default]
+    No,
+    Is(bool),
+    Listed(Vec<String>),
+}
+
+impl Front {
+    fn matching(&self) -> bool {
+        self.matching || !self.features.is_empty()
+    }
+
+    fn finished(&self) -> bool {
+        match &self.finished {
+            Flag::No => false,
+            Flag::Is(b) => *b,
+            Flag::Listed(l) => !l.is_empty(),
+        }
+    }
 }
 
 /// The review as it stands.
@@ -87,14 +116,14 @@ fn git(root: &Path, args: &[&str]) -> Option<std::process::Output> {
     std::process::Command::new("git").args(args).current_dir(root).output().ok()
 }
 
-/// The features the review lists as matching their recordings when it was
-/// written, and those it lists as finished; none without a readable review.
-pub fn features(root: &Path) -> (Vec<String>, Vec<String>) {
+/// Whether the review says the goal matched its recordings when it was
+/// written, and whether it was finished; neither without a readable review.
+pub fn says(root: &Path) -> (bool, bool) {
     std::fs::read_to_string(root.join(REVIEW))
         .ok()
         .and_then(|t| split_front(&t).ok())
         .and_then(|(front, _)| toml::from_str::<Front>(&front).ok())
-        .map(|f| (f.features, f.finished))
+        .map(|f| (f.matching(), f.finished()))
         .unwrap_or_default()
 }
 
@@ -216,7 +245,7 @@ pub fn rounds(root: &Path) -> serde_json::Value {
                 r["findings"] = json!(findings);
                 r["versions"].as_array_mut().unwrap().push(version);
             }
-            None => rounds.push(json!({"reviewed": f.commit, "features": f.features, "finished": f.finished,
+            None => rounds.push(json!({"reviewed": f.commit, "matching": f.matching(), "finished": f.finished(),
                 "findings": findings, "versions": [version]})),
         }
     }
@@ -295,7 +324,7 @@ mod tests {
         std::fs::create_dir_all(root.join("game/src")).unwrap();
         std::fs::write(root.join("game/src/jump.rs"), "fn jump() {}\n").unwrap();
         run(&["add", "."]);
-        run(&["commit", "-q", "-m", "F-0001: jump"]);
+        run(&["commit", "-q", "-m", "jump"]);
         assert_eq!(read(root), Review::Missing);
         let head = String::from_utf8(git(root, &["rev-parse", "HEAD"]).unwrap().stdout).unwrap().trim().to_string();
         let write =
@@ -304,22 +333,25 @@ mod tests {
         assert_eq!(read(root), Review::Open { unanswered: vec!["A finding".into()] });
         write("## A finding\nwhat and why\n**Answer:** done in the next commit\n");
         assert_eq!(read(root), Review::Holds { commit: head.clone(), findings: 1 });
-        assert_eq!(features(root), (vec![], vec![]));
+        assert_eq!(says(root), (false, false));
+        std::fs::write(root.join(REVIEW), format!("+++\ncommit = \"{head}\"\nmatching = true\n+++\n")).unwrap();
+        assert_eq!((read(root).holds(), says(root)), (true, (true, false)));
+        // As reviews wrote it while there were features.
         std::fs::write(
             root.join(REVIEW),
             format!("+++\ncommit = \"{head}\"\nfeatures = [\"F-0001\"]\nfinished = [\"F-0001\"]\n+++\n"),
         )
         .unwrap();
-        assert_eq!((read(root).holds(), features(root)), (true, (vec!["F-0001".into()], vec!["F-0001".into()])));
+        assert_eq!((read(root).holds(), says(root)), (true, (true, true)));
         // What is not code leaves it holding.
         std::fs::create_dir_all(root.join("catalogue")).unwrap();
-        std::fs::write(root.join("catalogue/F-0001.md"), "+++\n+++\n").unwrap();
+        std::fs::write(root.join("catalogue/questions.md"), "- why\n").unwrap();
         assert!(read(root).holds());
         std::fs::write(root.join("game/src/jump.rs"), "fn jump() { let _ = 1; }\n").unwrap();
         // Uncommitted: stale, with no lines committed since.
         let stale = |lines| Review::Stale { commit: head.clone(), changed: vec!["game/src/jump.rs".into()], lines };
         assert_eq!(read(root), stale(0));
-        run(&["commit", "-qam", "F-0001: jump"]);
+        run(&["commit", "-qam", "jump"]);
         assert_eq!(read(root), stale(2));
         std::fs::write(root.join(REVIEW), "---\ncommit: x\n---\n").unwrap();
         assert!(matches!(read(root), Review::Invalid(_)));

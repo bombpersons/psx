@@ -684,11 +684,6 @@ impl Needs {
         n
     }
 
-    /// Asks for nothing.
-    pub fn is_empty(&self) -> bool {
-        self.names.is_empty() && self.files.is_empty() && !self.unlisted
-    }
-
     /// Every file it covers checked or unused, and every name resolved.
     pub fn settled(&self) -> bool {
         !self.unlisted && self.unresolved.is_empty() && self.unsettled == 0

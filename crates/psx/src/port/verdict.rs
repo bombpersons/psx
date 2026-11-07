@@ -1,20 +1,20 @@
-//! Verdicts: what `port check` found for a feature's recordings, and the
+//! The verdict: what `port check` found for the recordings, and the
 //! commit it judged. A verdict counts only while that commit is the
 //! workspace's HEAD and the check ran with no uncommitted changes, where
 //! notes and the review do not count (they change nothing a check runs). psx
-//! writes them; nobody else does. They live in
-//! `.psx/verdicts/F-NNNN/scenario.json`, outside the commit, so recording
-//! one does not make it stale.
+//! writes it; nobody else does. It lives in `.psx/verdicts/goal/scenario.json`,
+//! outside the commit, so recording it does not make it stale.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// `.psx/verdicts/F-NNNN/scenario.json`.
+/// `.psx/verdicts/goal/scenario.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Verdict {
-    pub feature: String,
+    /// [`super::GOAL_ID`].
+    pub goal: String,
     /// The HEAD the check ran at.
     pub commit: String,
     /// Whether the workspace had no uncommitted changes then.
@@ -23,16 +23,50 @@ pub struct Verdict {
     /// Why no recording could run (the test did not build).
     #[serde(default)]
     pub failures: Vec<String>,
-    /// Each recording the entry names (`<scenario>/<name>`), with the
-    /// quantities that differ, or why it did not run; empty when it
-    /// passed.
+    /// Each recording checked (`<scenario>/<name>`), with the quantities
+    /// that differ, or why it did not run; empty when it passed.
     pub recordings: BTreeMap<String, Vec<String>>,
-    /// Where in the original to look, when it fails (the pointer).
+    /// Where each failing work recording first differs, for the order
+    /// port next gives them in; never shown.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub differs: BTreeMap<String, Differs>,
+    /// The failing recording Fix gives: the one it gave by the verdict
+    /// before while it still fails, so a fix is not left for another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pointer: Option<serde_json::Value>,
+    pub fixing: Option<String>,
+    /// Where in the original to look, by failing work recording (the
+    /// pointer).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pointers: BTreeMap<String, serde_json::Value>,
+}
+
+/// Where a recording first differs: the tick, and how many quantities
+/// differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Differs {
+    pub tick: u64,
+    pub quantities: usize,
 }
 
 impl Verdict {
+    /// Those of `work` that fail, in the order Fix gives them: the one
+    /// being fixed, then the earliest difference, the fewest quantities,
+    /// by name.
+    pub fn failing(&self, work: &[String]) -> Vec<String> {
+        let mut out: Vec<&String> = work.iter().filter(|r| !self.of(r).is_empty()).collect();
+        let key = |r: &&String| {
+            let d = self.differs.get(*r);
+            (
+                self.fixing.as_ref() != Some(*r),
+                d.map_or(u64::MAX, |d| d.tick),
+                d.map_or(usize::MAX, |d| d.quantities),
+                (*r).clone(),
+            )
+        };
+        out.sort_by_key(key);
+        out.into_iter().cloned().collect()
+    }
+
     /// The recording's failures; one saying so when the check did not run it.
     pub fn of(&self, recording: &str) -> Vec<String> {
         if !self.failures.is_empty() {
@@ -63,17 +97,17 @@ impl State {
     }
 }
 
-pub fn path(root: &Path, feature: &str) -> PathBuf {
-    root.join(".psx/verdicts").join(feature).join("scenario.json")
+pub fn path(root: &Path) -> PathBuf {
+    root.join(".psx/verdicts").join(super::GOAL_ID).join("scenario.json")
 }
 
-/// The feature's verdict at `head` (None: no commit yet). One written by an
-/// older psx reads as missing.
-pub fn state(root: &Path, feature: &str, head: Option<&str>) -> State {
-    let Some(v) = std::fs::read(path(root, feature))
+/// The verdict at `head` (None: no commit yet). One written by an older psx
+/// reads as missing.
+pub fn state(root: &Path, head: Option<&str>) -> State {
+    let Some(v) = std::fs::read(path(root))
         .ok()
         .and_then(|b| serde_json::from_slice::<Verdict>(&b).ok())
-        .filter(|v| v.feature == feature)
+        .filter(|v| v.goal == super::GOAL_ID)
     else {
         return State::Missing;
     };
@@ -97,7 +131,7 @@ pub fn judges(root: &Path, commit: &str, head: Option<&str>) -> bool {
 }
 
 pub fn write(root: &Path, v: &Verdict) -> crate::Result<()> {
-    let p = path(root, &v.feature);
+    let p = path(root);
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(|e| crate::Error::io(d, e))?;
     }

@@ -1,6 +1,6 @@
-//! `port check`, which runs the features' scenarios against the port (the
-//! port's program over the port protocol, `psx_scenario::runner`) and
-//! writes their scenario verdicts.
+//! `port check`, which runs the scenarios against the port (the port's
+//! program over the port protocol, `psx_scenario::runner`) and writes the
+//! verdict.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::next::Git;
 use super::verdict::{self, Verdict};
-use super::{Entry, Port, assets};
+use super::{Port, assets};
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 
@@ -54,31 +54,25 @@ pub struct Difference {
 /// How long a check spends on its pointers, all together.
 const POINTERS: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// The recording a pointer is worked out on for `e`: its first work
-/// recording whose quantities differ, with them (in the order they first
-/// differ) and the tick the first differs at.
-fn to_point_at(e: &Entry, report: &ScenarioReport) -> Option<(String, Vec<String>, u64)> {
-    e.recordings.work.iter().find_map(|r| {
-        let (id, name) = r.split_once('/')?;
-        let run = report.scenarios.iter().find(|s| s.id == id)?.recordings.iter().find(|x| x.name == name)?;
-        let mut ds: Vec<(u64, &str)> = run
-            .differences
-            .iter()
-            .filter_map(|d| Some((super::pointer::tick_of(&d.at)?, d.quantity.as_str())))
-            .collect();
-        ds.sort();
-        let at = ds.first()?.0;
-        let mut qs: Vec<String> = Vec::new();
-        for (_, q) in ds {
-            if !qs.iter().any(|x| x == q) {
-                qs.push(q.to_string());
-            }
+/// Where recording `r` (`<scenario>/<name>`) first differs in the report:
+/// its quantities in the order they first differ, and the tick.
+fn differences(r: &str, report: &ScenarioReport) -> Option<(Vec<String>, u64)> {
+    let (id, name) = r.split_once('/')?;
+    let run = report.scenarios.iter().find(|s| s.id == id)?.recordings.iter().find(|x| x.name == name)?;
+    let mut ds: Vec<(u64, &str)> =
+        run.differences.iter().filter_map(|d| Some((super::pointer::tick_of(&d.at)?, d.quantity.as_str()))).collect();
+    ds.sort();
+    let at = ds.first()?.0;
+    let mut qs: Vec<String> = Vec::new();
+    for (_, q) in ds {
+        if !qs.iter().any(|x| x == q) {
+            qs.push(q.to_string());
         }
-        Some((r.clone(), qs, at))
-    })
+    }
+    Some((qs, at))
 }
 
-/// Each recording the entry names, with what the scenario run found:
+/// Each recording named, with what the scenario run found:
 /// its failures, its scenario's problems, or that it did not run.
 fn recording_results<'a>(
     names: impl Iterator<Item = &'a String>,
@@ -100,16 +94,16 @@ fn recording_results<'a>(
     out
 }
 
-/// What the port has not registered for the feature, by the last check when
-/// it ran at `head`: a launcher for each of its scenarios' kinds, and each
-/// quantity they compare observed. Empty when every one is.
-pub fn unimplemented(root: &Path, e: &Entry, head: Option<&str>) -> Vec<String> {
+/// What the port has not registered for `scenarios`, by the last check
+/// when it ran at `head`: a launcher for each one's kind, and each quantity
+/// they compare observed. Empty when every one is.
+pub fn unimplemented(root: &Path, scenarios: &[String], head: Option<&str>) -> Vec<String> {
     let report = match last_report(root, head) {
         Ok(r) => r,
         Err(why) => return vec![why.into()],
     };
     let mut out = Vec::new();
-    for id in &e.scenarios() {
+    for id in scenarios {
         let Some(s) = crate::scenario::Loaded::load(root, id).scenario else {
             out.push(format!("{id}: no scenario file"));
             continue;
@@ -235,10 +229,11 @@ const LAST: &str = ".psx/port/last.json";
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PortCheckArgs {
-    /// The feature (F-NNNN); default every catalogued feature of the goal.
+    /// Point at the original only for this scenario's failing recordings,
+    /// and leave the importers; default every scenario.
     #[serde(default)]
-    pub feature: Option<String>,
-    /// Also replay the features' work recordings on the original with the
+    pub scenario: Option<String>,
+    /// Also replay the work recordings on the original with the
     /// agent's C (decomp/) in place of the functions it defines: alone,
     /// those whose last code check passed on this C and names;
     /// `--decomp=all` every one; `--decomp=a,b` those named. The verdicts
@@ -276,18 +271,19 @@ impl PortCheckArgs {
         let Some(head) = git.head.clone().filter(|_| git.clean) else {
             return Err(Error::invalid("commit first: a verdict counts only for a commit with no uncommitted changes"));
         };
-        let features: Vec<&Entry> = match &self.feature {
-            Some(id) => vec![port.entries.get(id).ok_or_else(|| Error::invalid(format!("{id} is not catalogued")))?],
-            None => port.closure().iter().filter_map(|id| port.entries.get(id)).collect(),
-        };
+        if let Some(id) = &self.scenario {
+            if !port.recordings.all().any(|r| super::scenario_of(r) == id) {
+                return Err(Error::invalid(format!("{id}: no recordings under scenarios/{id}/")));
+            }
+        }
         let scenarios_path = root.join(".psx/port/scenarios.json");
         std::fs::create_dir_all(scenarios_path.parent().unwrap()).map_err(|e| Error::io(&scenarios_path, e))?;
         let ran = run_tests(root, &scenarios_path)?;
         // The importers, when there is something to import: run on the disc
         // and their tests, judged at the same commit.
-        let imports = (self.feature.is_none()
+        let imports = (self.scenario.is_none()
             && (!port.goal.assets.is_none()
-                || port.entries.values().any(|e| !e.assets.is_empty())
+                || port.scenario_assets.values().any(|a| !a.is_empty())
                 || !port.formats.is_empty()))
         .then(|| run_importers(root, &head, &assets::archive_files(root, &port)))
         .transpose()?;
@@ -303,94 +299,79 @@ impl PortCheckArgs {
                           "scenarios": if ran.is_ok() { kept(&scenarios_path) } else { Value::Null }});
         let p = root.join(LAST);
         crate::write_atomic(&p, &serde_json::to_vec_pretty(&last).unwrap_or_default()).map_err(|e| Error::io(&p, e))?;
-        let mut verdicts = Vec::new();
-        let mut work_recordings: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for e in &features {
-            for r in &e.recordings.work {
-                if let Some((id, name)) = r.split_once('/') {
-                    work_recordings.entry(id.to_string()).or_default().push(name.to_string());
+        let work = &port.recordings.work;
+        let (failures, recordings) = match &ran {
+            Ok(r) => (Vec::new(), recording_results(port.recordings.all(), r)),
+            Err(why) => (vec![why.clone()], BTreeMap::new()),
+        };
+        let mut v = Verdict {
+            goal: super::GOAL_ID.into(),
+            commit: head.clone(),
+            clean: true,
+            at: crate::stamp::utc_now(),
+            failures,
+            recordings,
+            differs: BTreeMap::new(),
+            fixing: None,
+            pointers: BTreeMap::new(),
+        };
+        let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        if let Ok(r) = &ran {
+            let failed: Vec<&String> = work.iter().filter(|rec| !v.of(rec).is_empty()).collect();
+            for rec in failed {
+                if let Some((qs, tick)) = differences(rec, r) {
+                    v.differs.insert(rec.clone(), verdict::Differs { tick, quantities: qs.len() });
+                    found.insert(rec.clone(), qs);
                 }
             }
         }
-        let judged: Vec<(&Entry, Verdict)> = features
-            .iter()
-            .map(|e| {
-                let (failures, recordings) = match &ran {
-                    Ok(r) => (Vec::new(), recording_results(e.recordings.all(), r)),
-                    Err(why) => (vec![why.clone()], BTreeMap::new()),
-                };
-                let v = Verdict {
-                    feature: e.id.clone(),
-                    commit: head.clone(),
-                    clean: true,
-                    at: crate::stamp::utc_now(),
-                    failures,
-                    recordings,
-                    pointer: None,
-                };
-                (*e, v)
-            })
-            .collect();
-        let passes = |e: &Entry, v: &Verdict| {
-            !e.recordings.work.is_empty() && e.recordings.work.iter().all(|r| v.of(r).is_empty())
+        // Fix stays on the recording it gave while that still fails.
+        let before = match verdict::state(root, Some(&head)) {
+            verdict::State::Current(b) => Some(b),
+            _ => std::fs::read(verdict::path(root)).ok().and_then(|b| serde_json::from_slice::<Verdict>(&b).ok()),
         };
-        let passing: Vec<String> = judged.iter().filter(|(e, v)| passes(e, v)).map(|(e, _)| e.id.clone()).collect();
-        // Where to look, for each feature that fails: worked out on the original.
-        let mut pointers = match &ran {
-            Ok(r) => {
-                let failing: Vec<(&Entry, String, Vec<String>, u64)> = judged
-                    .iter()
-                    .filter(|(e, v)| !passes(e, v))
-                    .filter_map(|(e, _)| to_point_at(e, r).map(|(rec, qs, at)| (*e, rec, qs, at)))
-                    .collect();
-                let other_passing = port.entries.keys().filter(|id| {
-                    !judged.iter().any(|(e, _)| e.id == **id)
-                        && matches!(verdict::state(root, id, Some(&head)), verdict::State::Current(v)
-                            if port.entries[*id].recordings.work.iter().all(|r| v.of(r).is_empty()))
-                });
-                let done: Vec<String> = passing.iter().cloned().chain(other_passing.cloned()).collect();
-                super::pointer::pointers(ctx, &port, &failing, &|id| done.iter().any(|d| d == id), POINTERS)
+        let failing = v.failing(work);
+        v.fixing = before.and_then(|b| b.failing(work).into_iter().next()).filter(|r| failing.contains(r));
+        let failing = v.failing(work);
+        // Where to look, for each failing work recording, the first given first.
+        if ran.is_ok() {
+            let to_point: Vec<(String, Vec<String>, u64)> = failing
+                .iter()
+                .filter(|r| self.scenario.as_ref().is_none_or(|s| super::scenario_of(r) == s))
+                .filter_map(|r| Some((r.clone(), found.get(r)?.clone(), v.differs.get(r)?.tick)))
+                .collect();
+            v.pointers = super::pointer::pointers(ctx, &port, &to_point, POINTERS);
+        }
+        verdict::write(root, &v)?;
+        // Held-out plays are counted, not shown: port status shows them once
+        // the goal is reviewed.
+        let results: BTreeMap<&String, &Vec<String>> =
+            work.iter().filter_map(|r| Some((r, v.recordings.get(r)?))).collect();
+        let passing = work.iter().filter(|r| v.of(r).is_empty()).count();
+        let mut verdict = json!({"passed": failing.is_empty() && !work.is_empty() && v.failures.is_empty(),
+                                 "work": {"total": work.len(), "pass": passing},
+                                 "held_out": port.recordings.held_out.len()});
+        if !v.failures.is_empty() {
+            verdict["failures"] = json!(v.failures);
+        }
+        if let Some(r) = failing.first() {
+            verdict["failing"] = json!(
+                failing.iter().take(10).map(|r| json!({"recording": r, "differs": results.get(r)})).collect::<Vec<_>>()
+            );
+            if let Some(p) = v.pointers.get(r) {
+                verdict["pointer"] = p.clone();
             }
-            Err(_) => BTreeMap::new(),
+        }
+        let work_recordings: BTreeMap<String, Vec<String>> = {
+            let mut m: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for r in work {
+                if let Some((id, name)) = r.split_once('/') {
+                    m.entry(id.to_string()).or_default().push(name.to_string());
+                }
+            }
+            m
         };
-        for (e, mut v) in judged {
-            v.pointer = pointers.remove(&e.id);
-            verdict::write(root, &v)?;
-            // Held-out recordings are counted, not shown: port status shows
-            // them once the feature is reviewed.
-            let work: BTreeMap<&String, Vec<String>> = e.recordings.work.iter().map(|r| (r, v.of(r))).collect();
-            let mut row = json!({"feature": v.feature, "passed": work.values().all(Vec::is_empty) && !work.is_empty(),
-                                 "work": work, "held_out": e.recordings.held_out.len()});
-            if !v.failures.is_empty() {
-                row["failures"] = json!(v.failures);
-            }
-            if let Some(p) = &v.pointer {
-                row["pointer"] = p.clone();
-            }
-            verdicts.push(row);
-        }
-        // The goal's own plays, with the whole goal: counted, not shown,
-        // until every feature is reviewed.
-        if self.feature.is_none() && !port.goal.held_out.is_empty() {
-            let (failures, recordings) = match &ran {
-                Ok(r) => (Vec::new(), recording_results(port.goal.held_out.iter(), r)),
-                Err(why) => (vec![why.clone()], BTreeMap::new()),
-            };
-            verdict::write(
-                root,
-                &Verdict {
-                    feature: super::GOAL_ID.into(),
-                    commit: head.clone(),
-                    clean: true,
-                    at: crate::stamp::utc_now(),
-                    failures,
-                    recordings,
-                    pointer: None,
-                },
-            )?;
-            verdicts.push(json!({"goal": {"held_out": port.goal.held_out.len()}}));
-        }
-        let mut out = json!({"commit": head, "verdicts": verdicts});
+        let mut out = json!({"commit": head, "verdict": verdict});
         if let Some(r) = imports {
             let p = root.join(assets::REPORT);
             crate::write_atomic(&p, &serde_json::to_vec_pretty(&r).unwrap_or_default())
@@ -428,18 +409,19 @@ mod tests {
     fn each_named_recording_gets_what_the_run_found() {
         let report: ScenarioReport = serde_json::from_value(json!({"scenarios": [
             {"id": "jump", "recordings": [{"name": "stomp", "failures": []},
-                                          {"name": "long", "failures": ["differs from the recording in croc_y"]}]},
+                                          {"name": "long", "failures": ["differs from the recording in croc_y"],
+                                           "differences": [{"quantity": "croc_y", "at": "tick 9"}, {"quantity": "croc_x", "at": "tick 4"}]}]},
             {"id": "swim", "problems": ["no launcher registered for scenario kind water"]},
         ]}))
         .unwrap();
-        let mut e = Entry::default();
-        e.recordings.work = vec!["jump/stomp".into(), "jump/long".into(), "jump/gone".into()];
-        e.recordings.held_out = vec!["swim/lap".into(), "walk/a".into()];
-        let r = recording_results(e.recordings.all(), &report);
+        let names: Vec<String> =
+            ["jump/stomp", "jump/long", "jump/gone", "swim/lap", "walk/a"].iter().map(|s| s.to_string()).collect();
+        let r = recording_results(names.iter(), &report);
         assert_eq!(r["jump/stomp"], Vec::<String>::new());
         assert_eq!(r["jump/long"], ["differs from the recording in croc_y"]);
         assert_eq!(r["jump/gone"], ["not run: the scenarios have no such recording"]);
         assert_eq!(r["swim/lap"], ["no launcher registered for scenario kind water"]);
         assert_eq!(r["walk/a"], ["not run: no scenarios/walk.toml"]);
+        assert_eq!(differences("jump/long", &report), Some((vec!["croc_x".into(), "croc_y".into()], 4)));
     }
 }

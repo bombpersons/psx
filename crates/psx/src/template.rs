@@ -655,9 +655,9 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
     if !dry_run {
         manifest.write(dest)?;
     }
-    // Catalogue entries' `depends` is no longer read: the goal lists what
-    // it brought in.
-    let goal_features_added = crate::port::Port::keep_depends(dest, dry_run)?;
+    // A workspace from when there were features moves to the goal's
+    // recordings.
+    let moved_off_features = crate::port::migrate::run(dest, dry_run)?;
     Ok(json!({
         "dry_run": dry_run,
         "from": from,
@@ -670,7 +670,7 @@ pub fn update(dest: &Path, dry_run: bool) -> crate::Result<Value> {
         "conflicts": conflicts,
         "seeded_changes": seeded_changes,
         "released": released.len(),
-        "goal_features_added": goal_features_added,
+        "moved_off_features": moved_off_features,
         "next": if conflicts.is_empty() && seeded_changes.is_empty() {
             json!(["cargo test --workspace --all-features"])
         } else {

@@ -1,7 +1,7 @@
-//! What a port's goal needs next (docs/port-design.md, section 5): the facts, read once
-//! per call; the stages they give each feature in the goal's closure; and
-//! the items, each due on a fact and done on a fact the work leaves behind.
-//! `port status` shows the facts, `port next` gives the one item due.
+//! What a port's goal needs next (docs/understanding-plan.md, "Without
+//! features"): the facts, read once per call, and the items, each due on a
+//! fact and done on a fact the work leaves behind. `port status` shows the
+//! facts, `port next` gives the one item due.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use super::assets::{self, State as AssetState};
 use super::check;
 use super::review::{self, Review};
 use super::verdict::{self, State};
-use super::{Confirmation, Port, Stage};
+use super::{Confirmation, Port};
 use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 use crate::script_cover::Stretch;
@@ -164,233 +164,6 @@ fn hex(a: u32) -> String {
     format!("0x{a:08X}")
 }
 
-/// One feature of the closure, as the facts give it.
-#[derive(Debug, Clone)]
-pub struct Feature {
-    pub id: String,
-    pub catalogued: bool,
-    /// Its entry names its code.
-    pub located: bool,
-    /// The functions its recordings run that no feature's code lists and
-    /// not_ported.toml does not, by entry.
-    pub unclaimed: Vec<u32>,
-    /// Every function its own recordings run, by entry.
-    pub ran: BTreeSet<u32>,
-    /// What keeps it from being recorded: no work recordings, its
-    /// scenarios' problems or determinism checks, coverage psx cannot
-    /// count.
-    pub unrecorded: Vec<String>,
-    /// Its recordings in which the original's driver kept the tick's input
-    /// from the game, each with what it asks for (fix, record again, or
-    /// change a fix that does not work).
-    pub late: Vec<(crate::scenario::Late, String)>,
-    pub verdict: State,
-    /// Launchers and observers the port lacks for its scenarios, by the
-    /// last check at HEAD.
-    pub unbuilt: Vec<String>,
-    /// Each recording with its failures (empty: passed), by the verdict at
-    /// HEAD; None without one.
-    pub work: Vec<(String, Option<Vec<String>>)>,
-    pub held_out: Vec<(String, Option<Vec<String>>)>,
-    pub branches: Vec<Branch>,
-    /// The other features' recordings its branches also count (their work
-    /// recordings passing at HEAD), and how many branches only they
-    /// resolve.
-    pub borrowed: Vec<String>,
-    pub borrowed_resolved: usize,
-    pub questions: Vec<String>,
-    /// The code's review holds (one review covers every feature).
-    pub code_reviewed: bool,
-    /// The disc's assets its entry names, as the inventory has them.
-    pub assets: assets::Needs,
-    /// Its code a scenario turns off (`[off]`), as `scenario: function`:
-    /// it is not done while the original's recordings run without it.
-    pub off: Vec<String>,
-}
-
-/// Every recording passed.
-fn all_pass(rs: &[(String, Option<Vec<String>>)]) -> bool {
-    !rs.is_empty() && rs.iter().all(|(_, f)| f.as_ref().is_some_and(Vec::is_empty))
-}
-
-/// The failing recordings, each with its failures.
-fn failing(rs: &[(String, Option<Vec<String>>)]) -> Vec<(&String, &Vec<String>)> {
-    rs.iter().filter_map(|(n, f)| f.as_ref().filter(|f| !f.is_empty()).map(|f| (n, f))).collect()
-}
-
-/// The first failing recording, with its failures.
-fn first_failing(rs: &[(String, Option<Vec<String>>)]) -> Option<(String, String)> {
-    failing(rs).into_iter().next().map(|(n, f)| (n.clone(), f.join("; ")))
-}
-
-impl Feature {
-    /// Its own work is finished: matching, every branch resolved, no
-    /// question open.
-    pub fn finished(&self) -> bool {
-        self.matching() && self.branches_resolved() && self.questions.is_empty() && self.unclaimed.is_empty()
-    }
-
-    pub fn matching(&self) -> bool {
-        matches!(self.verdict, State::Current(_)) && all_pass(&self.work)
-    }
-
-    pub fn branches_resolved(&self) -> bool {
-        self.branches.iter().all(Branch::resolved)
-    }
-
-    /// The last stage whose fact holds, with every one before it; None
-    /// when the feature has no catalogue entry.
-    pub fn stage(&self) -> Option<Stage> {
-        if !self.catalogued {
-            return None;
-        }
-        let checks = [
-            self.located,
-            self.unrecorded.is_empty() && self.late.is_empty(),
-            self.matching(),
-            self.branches_resolved()
-                && self.questions.is_empty()
-                && self.unclaimed.is_empty()
-                && self.code_reviewed
-                && self.assets.settled(),
-            all_pass(&self.held_out) && self.off.is_empty(),
-        ];
-        Some(Stage::ALL[checks.iter().take_while(|c| **c).count()])
-    }
-
-    fn reviewed(&self) -> bool {
-        self.stage() >= Some(Stage::Reviewed)
-    }
-
-    /// Its work recordings, as status shows them.
-    fn work_json(&self) -> Value {
-        let pass = self.work.iter().filter(|(_, f)| f.as_ref().is_some_and(Vec::is_empty)).count();
-        let checked = self.work.iter().all(|(_, f)| f.is_some());
-        let mut v = json!({"total": self.work.len(), "pass": checked.then_some(pass)});
-        if let Some((r, first)) = first_failing(&self.work) {
-            v["first_failure"] = json!(format!("{r}: {first}"));
-        }
-        v
-    }
-
-    /// Its held-out recordings: how many, and once it is reviewed how they did.
-    fn held_out_json(&self) -> Value {
-        if !self.reviewed() {
-            return json!({"total": self.held_out.len(), "shown": "once the code is reviewed"});
-        }
-        let pass = self.held_out.iter().filter(|(_, f)| f.as_ref().is_some_and(Vec::is_empty)).count();
-        let mut v = json!({"total": self.held_out.len(), "pass": pass});
-        if let Some((r, first)) = first_failing(&self.held_out) {
-            v["first_failure"] = json!(format!("{r}: {first}"));
-        }
-        v
-    }
-
-    /// Its open branches by what they test and the outcome no recording
-    /// saw, the largest group first; a branch whose test psx cannot read
-    /// is a group of its own.
-    pub fn groups(&self) -> Vec<Vec<&Branch>> {
-        let mut out: Vec<(Option<String>, Vec<&Branch>)> = Vec::new();
-        for b in self.branches.iter().filter(|b| b.open()) {
-            let key = b.never_test();
-            match key.as_ref().and_then(|k| out.iter_mut().find(|g| g.0.as_ref() == Some(k))) {
-                Some(g) => g.1.push(b),
-                None => out.push((key, vec![b])),
-            }
-        }
-        out.sort_by_key(|g| std::cmp::Reverse(g.1.len()));
-        out.into_iter().map(|g| g.1).collect()
-    }
-
-    /// The branches, with the first five groups of open ones, or all of them.
-    fn branches_json(&self, all: bool) -> Value {
-        let unresolved = self.branches.iter().filter(|b| !b.resolved()).count();
-        let one = |b: &Branch| {
-            let mut v = b.json();
-            if b.wont_reach == Some(false) {
-                v["wont_reach"] = json!("not confirmed by the person");
-            }
-            let behind = self.branches.iter().filter(|x| x.behind.is_some() && x.behind == b.pc()).count();
-            if behind > 0 {
-                v["behind"] = json!(behind);
-            }
-            v
-        };
-        let groups = self.groups();
-        let uncovered: Vec<Value> = groups
-            .iter()
-            .take(if all { usize::MAX } else { 5 })
-            .map(|g| match g.as_slice() {
-                [b] => one(b),
-                g => {
-                    let t = g[0].test.as_ref().map(|t| t.key.clone());
-                    json!({"tests": g[0].never_test(), "branches": g.len(),
-                        "runs": g.iter().map(|b| b.runs).sum::<u64>(),
-                        "behind": g.iter().map(|b| self.branches.iter().filter(|x| x.behind.is_some() && x.behind == b.pc()).count()).sum::<usize>(),
-                        "wont_reach_key": t,
-                        "first": g.iter().take(3).map(|b| one(b)).collect::<Vec<_>>()})
-                }
-            })
-            .collect();
-        let mut v = json!({"total": self.branches.len(), "resolved": self.branches.len() - unresolved,
-               "open_groups": groups.len(), "unresolved": uncovered});
-        if self.borrowed_resolved > 0 {
-            v["resolved_by_others"] = json!({"branches": self.borrowed_resolved, "recordings": self.borrowed.len(),
-                "first": first_lines(&self.borrowed)});
-        }
-        if uncovered.len() < groups.len() {
-            v["more"] =
-                json!(format!("{} more groups: port_status feature {}", groups.len() - uncovered.len(), self.id));
-        }
-        v
-    }
-
-    /// One line for the person: recordings, held out, branches, review.
-    fn summary(&self) -> String {
-        if !self.located {
-            return "code not found yet".into();
-        }
-        if self.work.is_empty() {
-            return "no recordings".into();
-        }
-        if let Some(why) = self.unrecorded.first() {
-            return format!("{} recordings, not ready: {why}", self.work.len());
-        }
-        let mut parts = Vec::new();
-        let pass = self.work.iter().filter(|(_, f)| f.as_ref().is_some_and(Vec::is_empty)).count();
-        if self.work.iter().all(|(_, f)| f.is_some()) {
-            let mut p = format!("{pass}/{} pass", self.work.len());
-            if let Some((r, first)) = first_failing(&self.work) {
-                p += &format!(" · first: {r} {first}");
-            }
-            parts.push(p);
-        } else {
-            parts.push(format!("{} recordings, not checked at HEAD", self.work.len()));
-        }
-        parts.push(match (self.held_out.len(), self.reviewed()) {
-            (0, _) => "held out: none yet".into(),
-            (n, false) => format!("{n} held out"),
-            (n, true) => {
-                let p = self.held_out.iter().filter(|(_, f)| f.as_ref().is_some_and(Vec::is_empty)).count();
-                format!("held out {p}/{n} pass")
-            }
-        });
-        if !self.branches.is_empty() {
-            let r = self.branches.iter().filter(|b| b.resolved()).count();
-            let mut p = if r == self.branches.len() {
-                format!("branches {r}/{r} resolved")
-            } else {
-                format!("{r}/{} branches", self.branches.len())
-            };
-            if self.borrowed_resolved > 0 {
-                p += &format!(" ({} by other features' recordings)", self.borrowed_resolved);
-            }
-            parts.push(p);
-        }
-        parts.join(" · ")
-    }
-}
-
 /// Each scenario's functions turned off (`[off]` in `scenarios/<id>.toml`),
 /// as (scenario, name, address); a name that does not resolve is left out
 /// (recording that scenario reports it).
@@ -409,12 +182,6 @@ fn turned_off(root: &Path) -> Vec<(String, String, u32)> {
         }
     }
     out
-}
-
-/// Each feature's work recordings that pass at HEAD, by id (`of` gives
-/// them, None without a verdict at HEAD).
-fn passing(ids: &[String], of: impl Fn(&str) -> Option<Vec<String>>) -> Vec<(String, Vec<String>)> {
-    ids.iter().filter_map(|id| Some((id.clone(), of(id)?))).filter(|(_, r)| !r.is_empty()).collect()
 }
 
 /// The wont_reach key that answers for the code branch at `pc` its
@@ -462,21 +229,6 @@ fn ranges_run(wont_reach: &BTreeMap<String, String>, branches: &[Branch]) -> Vec
         .collect()
 }
 
-/// The recordings of the other features `passing` gives that `id`'s
-/// branches also count: not its own, each once.
-fn borrowed(id: &str, own: &[String], passing: &[(String, Vec<String>)]) -> Vec<String> {
-    let mut out: Vec<String> = passing
-        .iter()
-        .filter(|(other, _)| other != id)
-        .flat_map(|(_, r)| r)
-        .filter(|r| !own.contains(r))
-        .cloned()
-        .collect();
-    out.sort();
-    out.dedup();
-    out
-}
-
 /// Up to three lines, and how many more there are.
 fn first_lines(lines: &[String]) -> Vec<String> {
     let mut out: Vec<String> = lines.iter().take(3).cloned().collect();
@@ -513,7 +265,7 @@ impl Shares {
     fn plain(&self) -> String {
         let pct = |(n, of): (usize, usize)| (n * 100).checked_div(of).map_or("-".to_string(), |p| format!("{p}%"));
         format!(
-            "goal    recordings passing {}/{} ({}) · code claimed or not ported {}/{} ({}) · branches resolved {}/{} ({})\n",
+            "goal    recordings passing {}/{} ({}) · code cited or not ported {}/{} ({}) · branches resolved {}/{} ({})\n",
             self.recordings.0,
             self.recordings.1,
             pct(self.recordings),
@@ -527,15 +279,60 @@ impl Shares {
     }
 }
 
+/// Recordings, each with its failures (empty: passed) by the verdict at
+/// HEAD; None without one.
+pub type Results = Vec<(String, Option<Vec<String>>)>;
+
+/// Every recording passed.
+fn all_pass(rs: &Results) -> bool {
+    !rs.is_empty() && rs.iter().all(|(_, f)| f.as_ref().is_some_and(Vec::is_empty))
+}
+
+/// How many passed.
+fn passed(rs: &Results) -> usize {
+    rs.iter().filter(|(_, f)| f.as_ref().is_some_and(Vec::is_empty)).count()
+}
+
+/// A function a scenario turns off (`[off]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Off {
+    pub scenario: String,
+    pub name: String,
+    /// The port's code cites it: the port has it, so the original's
+    /// recordings can run with it again.
+    pub cited: bool,
+}
+
 /// Everything the items are decided on.
 pub struct Facts {
     pub port: Port,
     pub git: Git,
-    /// The goal's features, by id.
-    pub features: Vec<Feature>,
-    /// The goal's own held-out plays with their failures, by the goal's
-    /// verdict at HEAD (None without one).
-    pub goal_held_out: Vec<(String, Option<Vec<String>>)>,
+    pub verdict: State,
+    /// The work recordings and the person's held-out plays, by the
+    /// verdict at HEAD.
+    pub work: Results,
+    pub held_out: Results,
+    /// What keeps the work recordings from counting: none yet, their
+    /// scenarios' problems or determinism checks, coverage psx cannot
+    /// count.
+    pub unrecorded: Vec<String>,
+    /// Recordings in which the original's driver kept the tick's input
+    /// from the game, each with what it asks for (fix, record again, or
+    /// change a fix that does not work).
+    pub late: Vec<(crate::scenario::Late, String)>,
+    /// Launchers and observers the port lacks, by the last check at HEAD.
+    pub unbuilt: Vec<String>,
+    /// Every function the work recordings run, by entry.
+    pub ran: BTreeSet<u32>,
+    /// The code to port cited nowhere: functions the work recordings run
+    /// that not_ported.toml does not list and game/ and tools/ do not cite.
+    pub uncited: Vec<u32>,
+    /// The branches of the code to port, and of the script it cites.
+    pub branches: Vec<Branch>,
+    /// The functions the scenarios turn off.
+    pub off: Vec<Off>,
+    /// What each scenario's assets need, by scenario.
+    pub scenario_needs: Vec<(String, assets::Needs)>,
     /// Overlays the inventory knows only from the code that ran in them.
     pub unpack: Vec<String>,
     /// The disc's files by state, or why psx cannot list them.
@@ -544,10 +341,10 @@ pub struct Facts {
     pub needs: assets::Needs,
     /// The code's review.
     pub review: Review,
-    /// The features it lists as matching when it was written, and as
-    /// finished.
-    pub review_features: Vec<String>,
-    pub review_finished: Vec<String>,
+    /// Whether the review says the goal matched its work recordings, and
+    /// was finished, when it was written.
+    pub review_matching: bool,
+    pub review_finished: bool,
     /// The play requests in the queue (`scenario play`), oldest first.
     pub plays: Vec<crate::handoff::queue::Request>,
     /// Debug files `port init`'s scan found on the disc, until `code
@@ -589,209 +386,128 @@ impl Facts {
         };
         let mut problems = Vec::new();
         let goal_needs = needs(port.goal.assets.names(), port.goal.assets.is_all(), super::GOAL, &mut problems);
-        let closure = port.closure();
-        let passing = passing(&closure, |id| {
-            let e = port.entries.get(id)?;
-            match verdict::state(root, id, judged) {
-                State::Current(v) => Some(e.recordings.work.iter().filter(|n| v.of(n).is_empty()).cloned().collect()),
-                _ => None,
-            }
-        });
-        let path =
-            |r: &String| r.split_once('/').map(|(s, n)| root.join("scenarios").join(s).join(format!("{n}.jsonl")));
-        let turned_off = turned_off(root);
-        let features: Vec<Feature> = closure
-            .into_iter()
-            .map(|id| {
-                let Some(e) = port.entries.get(&id) else {
-                    return Feature {
-                        catalogued: false,
-                        located: false,
-                        unclaimed: Vec::new(),
-                        ran: BTreeSet::new(),
-                        unrecorded: Vec::new(),
-                        late: Vec::new(),
-                        verdict: State::Missing,
-                        unbuilt: Vec::new(),
-                        work: Vec::new(),
-                        held_out: Vec::new(),
-                        branches: Vec::new(),
-                        borrowed: Vec::new(),
-                        borrowed_resolved: 0,
-                        questions: Vec::new(),
-                        code_reviewed: false,
-                        assets: Default::default(),
-                        off: Vec::new(),
-                        id,
-                    };
-                };
-                let mut unrecorded = if e.recordings.work.is_empty() {
-                    vec![format!("{}: names no work recordings (recordings.work: <scenario>/<name>)", e.file)]
-                } else {
-                    crate::scenario::feature_unready(root, e)
-                };
-                let paths: Vec<PathBuf> = e.recordings.all().filter_map(path).collect();
-                let code: Vec<u32> = e.code.iter().filter_map(|c| super::entry_addr(c)).collect();
-                // A function several features list is covered once: any
-                // of their entries' wont_reach answers for its branches by
-                // address or range.
-                let mut shared = e.wont_reach.clone();
-                for o in port.entries.values().filter(|o| o.id != id) {
-                    let place = |k: &&String| super::entry_addr(k).or(super::entry_range(k).map(|r| r.0)).is_some();
-                    for (k, why) in o.wont_reach.iter().filter(|(k, _)| place(k)) {
-                        shared.entry(k.clone()).or_insert_with(|| why.clone());
-                    }
-                }
-                // The person confirmed the key as it stands.
-                let agreed = |k: &String| shared.get(k).is_some_and(|why| port.wont_reach_agreed(k, why));
-                let script: Vec<Stretch> = e.code.iter().filter_map(|c| Stretch::parse(c)).collect();
-                // The ways `paths` took the branches of its code, and what
-                // stops psx counting them.
-                let branches_of = |paths: &[PathBuf]| -> (Vec<Branch>, Vec<String>, BTreeSet<u32>) {
-                    let (mut branches, mut problems, mut ran) = (Vec::new(), Vec::new(), BTreeSet::new());
-                    if e.recordings.work.is_empty() {
-                        return (branches, problems, ran);
-                    }
-                    if let (Some(inv), false) = (&inv, code.is_empty()) {
-                        let fb = crate::coverage::feature_branches(&ctx, inv, paths, &code);
-                        problems.extend(fb.problems);
-                        ran = fb.ran;
-                        let mut found: Vec<Branch> = fb
-                            .branches
-                            .into_iter()
-                            .map(|c| {
-                                let key = code_key(&shared, c.pc, c.ways, c.test.as_ref().map(|t| t.key.as_str()));
-                                Branch {
-                                    test: c.test,
-                                    behind: c.behind,
-                                    runs: c.runs,
-                                    ..Branch::code(c.pc, c.function, c.ways, key.map(agreed))
-                                }
-                            })
-                            .collect();
-                        // A branch behind another's missed way is answered
-                        // as that way is, unless listed itself.
-                        let answered: BTreeMap<u32, Option<bool>> = found
-                            .iter()
-                            .filter_map(|b| match b.at {
-                                Place::Code { pc, .. } => Some((pc, b.wont_reach)),
-                                _ => None,
-                            })
-                            .collect();
-                        for b in found.iter_mut().filter(|b| b.wont_reach.is_none()) {
-                            if let Some(p) = b.behind {
-                                b.wont_reach = answered.get(&p).copied().flatten();
-                            }
-                        }
-                        branches.extend(found);
-                    }
-                    if !script.is_empty() {
-                        let (items, p) = crate::script_cover::items(&crate::script_cover::merged(paths), &script);
-                        problems.extend(p);
-                        branches.extend(items.into_iter().map(|i| {
-                            let key = shared.keys().find(|k| Stretch::parse(k).is_some_and(|w| w.contains(&i.at)));
-                            Branch {
-                                at: Place::Script { at: i.at, routine: i.routine },
-                                never: i.never,
-                                wont_reach: key.map(agreed),
-                                test: None,
-                                behind: None,
-                                runs: 0,
-                            }
-                        }));
-                    }
-                    (branches, problems, ran)
-                };
-                let (mut branches, uncounted, ran) = branches_of(&paths);
-                unrecorded.extend(uncounted);
-                // What its own recordings run that no feature claims and
-                // not_ported.toml does not list.
-                let unclaimed: Vec<u32> = ran
-                    .iter()
-                    .copied()
-                    .filter(|&f| port.claiming(f).is_empty() && port.not_ported(f).is_none())
-                    .collect();
-                // Code the other features' recordings run counts their
-                // ways too, once the port matches them (their problems
-                // are theirs).
-                let borrowed = borrowed(&id, &e.recordings.all().cloned().collect::<Vec<_>>(), &passing);
-                let mut borrowed_resolved = 0;
-                if !borrowed.is_empty() && !branches.is_empty() {
-                    let all: Vec<PathBuf> = paths.iter().cloned().chain(borrowed.iter().filter_map(path)).collect();
-                    let own = branches.iter().filter(|b| b.resolved()).count();
-                    branches = branches_of(&all).0;
-                    borrowed_resolved = branches.iter().filter(|b| b.resolved()).count().saturating_sub(own);
-                }
-                problems.extend(ranges_run(&e.wont_reach, &branches).into_iter().map(|p| super::problem(&e.file, p)));
-                if !code.is_empty() && inv.is_some() && !e.recordings.work.is_empty() {
-                    problems.extend(
-                        tests_unmatched(&e.wont_reach, &branches).into_iter().map(|p| super::problem(&e.file, p)),
-                    );
-                }
-                let verdict = verdict::state(root, &id, judged);
-                let results = |names: &[String]| -> Vec<(String, Option<Vec<String>>)> {
-                    names
-                        .iter()
-                        .map(|n| (n.clone(), if let State::Current(v) = &verdict { Some(v.of(n)) } else { None }))
-                        .collect()
-                };
-                let (work, held_out) = (results(&e.recordings.work), results(&e.recordings.held_out));
-                let unbuilt = if matches!(verdict, State::Current(_)) && !e.recordings.work.is_empty() {
-                    check::unimplemented(root, e, head)
-                } else {
-                    Vec::new()
-                };
-                Feature {
-                    catalogued: true,
-                    located: !e.code.is_empty(),
-                    unclaimed,
-                    ran,
-                    unrecorded,
-                    late: crate::scenario::feature_late_input(root, e),
-                    verdict,
-                    unbuilt,
-                    work,
-                    held_out,
-                    branches,
-                    borrowed,
-                    borrowed_resolved,
-                    questions: e.questions.clone(),
-                    code_reviewed: review.holds(),
-                    assets: needs(&e.assets, false, &e.file, &mut problems),
-                    off: turned_off
-                        .iter()
-                        .filter(|(_, _, a)| code.iter().any(|c| c & 0x1FFF_FFFF == a & 0x1FFF_FFFF))
-                        .map(|(s, n, _)| format!("{s}: {n}"))
-                        .collect(),
-                    id,
-                }
+        let scenario_needs: Vec<(String, assets::Needs)> = port
+            .scenario_assets
+            .iter()
+            .map(|(s, names)| {
+                (s.clone(), needs(names, false, &format!("{}/{s}.toml", super::SCENARIOS), &mut problems))
             })
             .collect();
+        let work_scenarios = port.work_scenarios();
+        let mut unrecorded = if port.recordings.work.is_empty() {
+            vec!["no work recordings under scenarios/ (psx scenario record)".into()]
+        } else {
+            crate::scenario::scenarios_unready(root, &work_scenarios)
+        };
+        let path =
+            |r: &String| r.split_once('/').map(|(s, n)| root.join(super::SCENARIOS).join(s).join(format!("{n}.jsonl")));
+        let paths: Vec<PathBuf> = port.recordings.work.iter().filter_map(path).collect();
+        // The person confirmed the key as it stands.
+        let agreed = |k: &String| port.wont_reach.get(k).is_some_and(|why| port.wont_reach_agreed(k, why));
+        let (mut branches, mut ran, mut cited) = (Vec::new(), BTreeSet::new(), BTreeSet::new());
+        if let Some(inv) = &inv {
+            let not_ported = |f: u32| port.not_ported(f).is_none();
+            let cb = crate::coverage::code_branches(&ctx, inv, &paths, &not_ported, &port.cited.addresses);
+            unrecorded.extend(cb.problems);
+            (ran, cited) = (cb.ran, cb.cited);
+            let mut found: Vec<Branch> = cb
+                .branches
+                .into_iter()
+                .map(|c| {
+                    let key = code_key(&port.wont_reach, c.pc, c.ways, c.test.as_ref().map(|t| t.key.as_str()));
+                    Branch {
+                        test: c.test,
+                        behind: c.behind,
+                        runs: c.runs,
+                        ..Branch::code(c.pc, c.function, c.ways, key.map(agreed))
+                    }
+                })
+                .collect();
+            // A branch behind another's missed way is answered as that
+            // way is, unless listed itself.
+            let answered: BTreeMap<u32, Option<bool>> = found
+                .iter()
+                .filter_map(|b| match b.at {
+                    Place::Code { pc, .. } => Some((pc, b.wont_reach)),
+                    _ => None,
+                })
+                .collect();
+            for b in found.iter_mut().filter(|b| b.wont_reach.is_none()) {
+                if let Some(p) = b.behind {
+                    b.wont_reach = answered.get(&p).copied().flatten();
+                }
+            }
+            branches.extend(found);
+        }
+        let script = &port.cited.stretches;
+        if !script.is_empty() && !paths.is_empty() {
+            let (items, p) = crate::script_cover::items(&crate::script_cover::merged(&paths), script);
+            unrecorded.extend(p);
+            branches.extend(items.into_iter().map(|i| {
+                let key = port.wont_reach.keys().find(|k| Stretch::parse(k).is_some_and(|w| w.contains(&i.at)));
+                Branch {
+                    at: Place::Script { at: i.at, routine: i.routine },
+                    never: i.never,
+                    wont_reach: key.map(agreed),
+                    test: None,
+                    behind: None,
+                    runs: 0,
+                }
+            }));
+        }
+        problems
+            .extend(ranges_run(&port.wont_reach, &branches).into_iter().map(|p| super::problem(super::WONT_REACH, p)));
+        if inv.is_some() && !paths.is_empty() {
+            problems.extend(
+                tests_unmatched(&port.wont_reach, &branches).into_iter().map(|p| super::problem(super::WONT_REACH, p)),
+            );
+        }
+        let uncited: Vec<u32> =
+            ran.iter().copied().filter(|&f| port.not_ported(f).is_none() && !cited.contains(&f)).collect();
+        let fold = |a: u32| a & 0x1FFF_FFFF;
+        let off = turned_off(root)
+            .into_iter()
+            .map(|(scenario, name, a)| Off { cited: cited.iter().any(|&c| fold(c) == fold(a)), scenario, name })
+            .collect();
+        let verdict = verdict::state(root, judged);
+        let results = |names: &[String]| -> Results {
+            names
+                .iter()
+                .map(|n| (n.clone(), if let State::Current(v) = &verdict { Some(v.of(n)) } else { None }))
+                .collect()
+        };
+        let (work, held_out) = (results(&port.recordings.work), results(&port.recordings.held_out));
+        let unbuilt = if matches!(verdict, State::Current(_)) && !work.is_empty() {
+            check::unimplemented(root, &work_scenarios, head)
+        } else {
+            Vec::new()
+        };
         port.problems.extend(problems);
         if let Ok(a) = &assets {
             port.problems.extend(a.problems.iter().cloned());
         }
-        let (review_features, review_finished) = review::features(root);
-        let goal_verdict = verdict::state(root, super::GOAL_ID, judged);
-        let goal_held_out = port
-            .goal
-            .held_out
-            .iter()
-            .map(|n| (n.clone(), if let State::Current(v) = &goal_verdict { Some(v.of(n)) } else { None }))
-            .collect();
-        let plays = crate::handoff::queue::list(root);
+        let (review_matching, review_finished) = review::says(root);
         Ok(Facts {
+            late: crate::scenario::scenarios_late_input(root, &work_scenarios),
             port,
             git,
-            features,
-            goal_held_out,
+            verdict,
+            work,
+            held_out,
+            unrecorded,
+            unbuilt,
+            ran,
+            uncited,
+            branches,
+            off,
+            scenario_needs,
             unpack,
             assets,
             needs: goal_needs,
             review,
-            review_features,
+            review_matching,
             review_finished,
-            plays,
+            plays: crate::handoff::queue::list(root),
             debug_files: crate::disc_names::unread(root),
             decomp: crate::decomp::counts(root),
             regressed: crate::decomp::regressed(root),
@@ -803,91 +519,152 @@ impl Facts {
         })
     }
 
-    /// How many never-ran code branches each wont_reach range answers
-    /// for, by feature.
-    pub fn wont_reach_ranges(&self) -> BTreeMap<String, BTreeMap<String, usize>> {
-        let mut out: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
-        for f in &self.features {
-            let Some(e) = self.port.entries.get(&f.id) else { continue };
-            for k in e.wont_reach.keys().filter(|k| super::entry_range(k).is_some()) {
-                let answers = |b: &&Branch| match b.at {
-                    Place::Code { pc, .. } => code_key(&e.wont_reach, pc, (b.never != "ran") as u8, None) == Some(k),
-                    _ => false,
-                };
-                out.entry(f.id.clone()).or_default().insert(k.clone(), f.branches.iter().filter(answers).count());
-            }
+    /// How many never-ran code branches each wont_reach range answers for.
+    pub fn wont_reach_ranges(&self) -> BTreeMap<String, usize> {
+        let mut out = BTreeMap::new();
+        for k in self.port.wont_reach.keys().filter(|k| super::entry_range(k).is_some()) {
+            let answers = |b: &&Branch| match b.at {
+                Place::Code { pc, .. } => {
+                    code_key(&self.port.wont_reach, pc, (b.never != "ran") as u8, None) == Some(k)
+                }
+                _ => false,
+            };
+            out.insert(k.clone(), self.branches.iter().filter(answers).count());
         }
         out
     }
 
-    pub fn stage(&self, id: &str) -> Option<Stage> {
-        self.features.iter().find(|f| f.id == id).and_then(Feature::stage)
+    /// Every work recording passes at HEAD.
+    pub fn matching(&self) -> bool {
+        matches!(self.verdict, State::Current(_)) && all_pass(&self.work)
     }
 
-    /// Every feature of the closure done.
+    pub fn branches_resolved(&self) -> bool {
+        self.branches.iter().all(Branch::resolved)
+    }
+
+    /// The work is finished: matching, every branch resolved, no question
+    /// open, all the code to port cited.
+    pub fn finished(&self) -> bool {
+        self.matching() && self.branches_resolved() && self.port.questions.is_empty() && self.uncited.is_empty()
+    }
+
+    /// Every asset the goal and the scenarios name is checked or unused.
+    fn assets_settled(&self) -> bool {
+        self.needs.settled() && self.scenario_needs.iter().all(|(_, n)| n.settled())
+    }
+
+    /// The goal is reviewed: finished, the review holds and the assets are
+    /// settled. The person's plays are shown from here.
+    pub fn reviewed(&self) -> bool {
+        self.finished() && self.review.holds() && self.assets_settled()
+    }
+
+    /// Reviewed, the person's plays pass, and no scenario turns off code.
     pub fn complete(&self) -> bool {
         self.port.confirmation() != Confirmation::Missing
-            && !self.features.is_empty()
-            && self.features.iter().all(|f| f.stage() == Some(Stage::Done))
-            && self.needs.settled()
-            && all_pass(&self.goal_held_out)
+            && self.reviewed()
+            && all_pass(&self.held_out)
+            && self.off.is_empty()
     }
 
-    /// The goal's three shares, each counted once however the features
-    /// cut it, so a merge or a split leaves them as they were: its
-    /// recordings passing (a held-out one once its feature is reviewed),
-    /// the functions they run that some feature claims or not_ported.toml
-    /// lists, and the claimed code's branches resolved (by any feature).
+    /// The work recordings that fail, in the order Fix gives them.
+    pub fn failing(&self) -> Vec<String> {
+        match &self.verdict {
+            State::Current(v) => v.failing(&self.work.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>()),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The goal's three shares: its recordings passing (the person's plays
+    /// once the goal is reviewed), the functions they run cited or not
+    /// ported, and the branches resolved.
     pub fn shares(&self) -> Shares {
-        let mut recordings: BTreeMap<&str, bool> = BTreeMap::new();
-        let mut branches: BTreeMap<String, bool> = BTreeMap::new();
-        let mut ran = BTreeSet::new();
-        for f in &self.features {
-            let reviewed = f.reviewed();
-            let held = f.held_out.iter().map(|r| (r, reviewed));
-            for ((name, failures), shown) in f.work.iter().map(|r| (r, true)).chain(held) {
-                let pass = shown && failures.as_ref().is_some_and(Vec::is_empty);
-                *recordings.entry(name).or_default() |= pass;
-            }
-            for b in &f.branches {
-                let key = match &b.at {
-                    Place::Code { pc, .. } => hex(*pc),
-                    Place::Script { at, .. } => at.to_string(),
-                };
-                *branches.entry(key).or_default() |= b.resolved();
-            }
-            ran.extend(f.ran.iter().copied());
-        }
-        let shown = self.all_reviewed();
-        for (name, failures) in &self.goal_held_out {
-            *recordings.entry(name).or_default() |= shown && failures.as_ref().is_some_and(Vec::is_empty);
-        }
-        let accounted =
-            ran.iter().filter(|&&a| !self.port.claiming(a).is_empty() || self.port.not_ported(a).is_some()).count();
-        let count = |vs: Vec<bool>| (vs.iter().filter(|v| **v).count(), vs.len());
+        let shown = self.reviewed();
+        let plays = if shown { passed(&self.held_out) } else { 0 };
+        let accounted = self.ran.len() - self.uncited.len();
+        let resolved = self.branches.iter().filter(|b| b.resolved()).count();
         Shares {
-            recordings: count(recordings.into_values().collect()),
-            code: (accounted, ran.len()),
-            branches: count(branches.into_values().collect()),
+            recordings: (passed(&self.work) + plays, self.work.len() + self.held_out.len()),
+            code: (accounted, self.ran.len()),
+            branches: (resolved, self.branches.len()),
         }
     }
 
-    /// Every feature of the goal reviewed: the goal's own plays are asked
-    /// for and shown.
-    fn all_reviewed(&self) -> bool {
-        !self.features.is_empty() && self.features.iter().all(Feature::reviewed)
+    /// The open branches by what they test and the outcome no recording
+    /// saw, the largest group first; a branch whose test psx cannot read
+    /// is a group of its own.
+    pub fn groups(&self) -> Vec<Vec<&Branch>> {
+        let mut out: Vec<(Option<String>, Vec<&Branch>)> = Vec::new();
+        for b in self.branches.iter().filter(|b| b.open()) {
+            let key = b.never_test();
+            match key.as_ref().and_then(|k| out.iter_mut().find(|g| g.0.as_ref() == Some(k))) {
+                Some(g) => g.1.push(b),
+                None => out.push((key, vec![b])),
+            }
+        }
+        out.sort_by_key(|g| std::cmp::Reverse(g.1.len()));
+        out.into_iter().map(|g| g.1).collect()
     }
 
-    /// The files the goal and its features need, by index, and how many
-    /// of them are checked or unused.
-    fn needed(&self) -> (std::collections::BTreeSet<usize>, usize) {
-        let files: std::collections::BTreeSet<usize> =
-            self.features.iter().flat_map(|f| &f.assets.files).chain(&self.needs.files).copied().collect();
-        let settled = match &self.assets {
-            Ok(a) => files.iter().filter(|&&i| a.files[i].state.settled()).count(),
-            Err(_) => 0,
+    /// The branches, with the first five groups of open ones, or all of them.
+    fn branches_json(&self, all: bool) -> Value {
+        let unresolved = self.branches.iter().filter(|b| !b.resolved()).count();
+        let behind = |b: &Branch| self.branches.iter().filter(|x| x.behind.is_some() && x.behind == b.pc()).count();
+        let one = |b: &Branch| {
+            let mut v = b.json();
+            if b.wont_reach == Some(false) {
+                v["wont_reach"] = json!("not confirmed by the person");
+            }
+            if behind(b) > 0 {
+                v["behind"] = json!(behind(b));
+            }
+            v
         };
-        (files, settled)
+        let groups = self.groups();
+        let uncovered: Vec<Value> = groups
+            .iter()
+            .take(if all { usize::MAX } else { 5 })
+            .map(|g| match g.as_slice() {
+                [b] => one(b),
+                g => {
+                    let t = g[0].test.as_ref().map(|t| t.key.clone());
+                    json!({"tests": g[0].never_test(), "branches": g.len(),
+                        "runs": g.iter().map(|b| b.runs).sum::<u64>(),
+                        "behind": g.iter().map(|b| behind(b)).sum::<usize>(),
+                        "wont_reach_key": t,
+                        "first": g.iter().take(3).map(|b| one(b)).collect::<Vec<_>>()})
+                }
+            })
+            .collect();
+        let mut v = json!({"total": self.branches.len(), "resolved": self.branches.len() - unresolved,
+               "open_groups": groups.len(), "unresolved": uncovered});
+        if uncovered.len() < groups.len() {
+            v["more"] = json!(format!("{} more groups: port_status branches", groups.len() - uncovered.len()));
+        }
+        v
+    }
+
+    /// The recordings by state, as status shows them: the person's plays
+    /// counted until the goal is reviewed.
+    fn recordings_json(&self) -> Value {
+        let checked = self.work.iter().all(|(_, f)| f.is_some());
+        let failing = self.failing();
+        let mut work = json!({"total": self.work.len(), "pass": checked.then(|| passed(&self.work)),
+                              "fail": failing.len()});
+        if !failing.is_empty() {
+            let of = |r: &String| {
+                let f = self.work.iter().find(|(n, _)| n == r).and_then(|(_, f)| f.clone()).unwrap_or_default();
+                format!("{r}: {}", f.join("; "))
+            };
+            work["failing"] = json!(failing.iter().take(10).map(of).collect::<Vec<_>>());
+        }
+        let held_out = if self.reviewed() {
+            json!({"total": self.held_out.len(), "pass": passed(&self.held_out)})
+        } else {
+            json!({"total": self.held_out.len(), "shown": "once the goal is reviewed"})
+        };
+        json!({"work": work, "held_out": held_out})
     }
 
     /// `port status --assets NAME`: the files a name covers, or why none.
@@ -917,34 +694,25 @@ impl Facts {
         })
     }
 
-    fn title(&self, id: &str) -> String {
-        self.port.entries.get(id).map(|e| e.title.clone()).unwrap_or_default()
+    /// The files the goal and the scenarios need, by index, and how many
+    /// of them are checked or unused.
+    fn needed(&self) -> (BTreeSet<usize>, usize) {
+        let files: BTreeSet<usize> =
+            self.scenario_needs.iter().flat_map(|(_, n)| &n.files).chain(&self.needs.files).copied().collect();
+        let settled = match &self.assets {
+            Ok(a) => files.iter().filter(|&&i| a.files[i].state.settled()).count(),
+            Err(_) => 0,
+        };
+        (files, settled)
     }
 
-    /// The item due now, in the order of docs/port-design.md, section 5.
     /// The play requests still waiting for the person.
     fn waiting_plays(&self) -> impl Iterator<Item = &crate::handoff::queue::Request> {
         self.plays.iter().filter(|r| !matches!(r.state, crate::handoff::queue::State::Answered(_)))
     }
 
-    /// The feature a play request is for: the first whose recordings name
-    /// it, or else use its scenario.
-    fn play_feature(&self, r: &crate::handoff::queue::Request) -> Option<&Feature> {
-        let rec = r.recording()?;
-        let scenario = r.args["id"].as_str()?;
-        let names = |f: &Feature| f.work.iter().chain(&f.held_out).map(|(n, _)| n.clone()).collect::<Vec<_>>();
-        self.features
-            .iter()
-            .find(|f| names(f).contains(&rec))
-            .or_else(|| self.features.iter().find(|f| names(f).iter().any(|n| n.split('/').next() == Some(scenario))))
-    }
-
-    /// The feature waits on a play request: what the agent would ask the
-    /// person for next is already asked.
-    fn waits(&self, f: &Feature) -> bool {
-        self.waiting_plays().any(|r| self.play_feature(r).is_some_and(|w| w.id == f.id))
-    }
-
+    /// The item due now, in the order of docs/understanding-plan.md,
+    /// "Without features".
     pub fn next(&self) -> Item {
         // An answer to a play request, read before anything else: the
         // recording is there to use, or the note says why not.
@@ -961,9 +729,8 @@ impl Facts {
                 }
                 _ => format!("failed: {}", report["error"]["message"].as_str().unwrap_or("")),
             };
-            return Item::agent(
+            let mut item = Item::agent(
                 "Read",
-                self.play_feature(r).map(|f| f.id.as_str()),
                 if r.args["person"] == true {
                     format!(
                         "the person played on their own (\"{}\"): {answer}",
@@ -977,16 +744,17 @@ impl Facts {
                 },
                 "the answer is read (scenario play --status returns it and marks it read)",
                 &format!(
-                    "read the answer: psx scenario play --status {}. When it is a recording, name it under the feature's recordings (the goal's play: goal.toml's held_out) and go on; when declined, the note says why: ask again in other words or from another start, list the branch under wont_reach with the note as why, or go on without it",
+                    "read the answer: psx scenario play --status {}. A recording is a work recording once it is there; one asked for from the goal's description goes under goal.toml's held_out. When declined, the note says why: ask again in other words or from another start, list the branch under wont_reach with the note as why, or go on without it",
                     r.dir.display()
                 ),
             );
+            item.recording = r.recording();
+            return item;
         }
         // Debug files the build left on the disc name what the agent would.
         if !self.debug_files.is_empty() {
             return Item::agent(
                 "Read",
-                None,
                 format!("the disc holds debug files its build left: {}", self.debug_files.join(", ")),
                 "code symbols on the disc has reported them",
                 "run psx code symbols on the disc: it imports those that describe an executable to .psx/names/ (every decompile and view then uses their names) and says why the others were not",
@@ -997,7 +765,6 @@ impl Facts {
         if let Some((f, commit, first)) = self.regressed.first() {
             return Item::agent(
                 "Fix",
-                None,
                 format!(
                     "{f}'s C passed its check{} and now fails: {first}",
                     commit.as_deref().map(|c| format!(" at {}", &c[..c.len().min(10)])).unwrap_or_default()
@@ -1008,16 +775,15 @@ impl Facts {
                 ),
             );
         }
-        // Until the person confirms the goal, the agent only investigates
-        // and catalogues; the person is asked once the list has no problems.
+        // Until the person confirms the goal, the agent only investigates;
+        // the person is asked once the goal and catalogue have no problems.
         if !self.port.problems.is_empty() {
             let n = self.port.problems.len();
             return Item::agent(
                 "Catalogue",
-                None,
                 format!("the goal or catalogue has {n} problems: {}", problems_line(&self.port)),
                 "the goal and catalogue have no problems",
-                "fix each problem (psx port status lists them); catalogue features the goal needs as catalogue/F-NNNN.md (catalogue/README.md)",
+                "fix each problem (psx port status lists them; catalogue/README.md has the catalogue's files)",
             );
         }
         if !matches!(self.port.confirmation(), Confirmation::Covers { .. }) {
@@ -1028,74 +794,44 @@ impl Facts {
                         missing.join(", ")
                     )
                 }
-                _ => "the person has not confirmed the goal's list".into(),
+                _ => "the person has not confirmed the goal".into(),
             };
             return Item::person(
                 "Confirm",
-                None,
                 why,
                 "goal.toml's confirmation covers the goal",
-                "the person reads psx port confirm and runs psx port confirm --yes; the agent waits, investigating and cataloguing only",
+                "the person reads psx port confirm and runs psx port confirm --yes; the agent waits, investigating only",
             );
         }
-        let find = |pred: &dyn Fn(&Feature) -> bool| self.features.iter().find(|f| pred(f));
-        let at = |f: &Feature, s: Stage| f.stage().is_some_and(|x| x >= s);
-        // A feature come to match its recordings since the last review, or
-        // finished since: a review of the change while it is fresh, so each
-        // reads about one feature's work (most of its code is written once
-        // it matches; what Cover adds, the review at its finish reads);
-        // findings are answered as they come.
-        let since = |listed: &[String], pred: fn(&Feature) -> bool| -> Vec<&str> {
-            self.features.iter().filter(|f| pred(f) && !listed.contains(&f.id)).map(|f| f.id.as_str()).collect()
-        };
-        let finished = since(&self.review_finished, Feature::finished);
-        // A feature that matches and finishes at once is said to finish.
-        let mut matched = since(&self.review_features, Feature::matching);
-        matched.retain(|id| !finished.contains(id));
-        // And when much of the code changed with no feature moving: a
-        // controller several features share can grow long before any of
-        // them matches.
+        // Findings are answered as they come; and a review of the code
+        // once much of it changed, so no review reads too much at once.
         let limit = self.port.goal.review_lines();
         let grown = match self.review {
             Review::Stale { lines, .. } if lines >= limit => Some(lines),
             _ => None,
         };
-        if matches!(self.review, Review::Open { .. } | Review::Invalid(_))
-            || ((!matched.is_empty() || !finished.is_empty()) && !self.review.holds())
-            || grown.is_some()
-        {
-            let mut why = Vec::new();
-            if !matched.is_empty() {
-                let their = if matched.len() == 1 { "its" } else { "their" };
-                why.push(format!("{} came to match {their} recordings", matched.join(", ")));
-            }
-            if !finished.is_empty() {
-                why.push(format!("{} finished (branches resolved, no question open)", finished.join(", ")));
-            }
-            if let Some(n) = grown.filter(|_| why.is_empty()) {
-                why.push(format!("{n} lines of the code changed (goal.toml's review_lines: {limit})"));
-            }
-            return self.review_item(format!("{} since the last review", why.join(", and ")));
+        if matches!(self.review, Review::Open { .. } | Review::Invalid(_)) {
+            return self.review_item(String::new());
         }
-        // 0. The assets a feature's recordings need to replay.
-        if let Some(item) = self.features.iter().find_map(|f| self.asset_item(Some(&f.id), &f.assets)) {
+        if let Some(n) = grown {
+            return self.review_item(format!("{n} lines of the code changed (goal.toml's review_lines: {limit})"));
+        }
+        // The assets a scenario's recordings need to replay.
+        if let Some(item) = self.scenario_needs.iter().find_map(|(s, n)| self.asset_item(Some(s), n)) {
             return item;
         }
-        // 1. The port cannot replay a recording.
-        if let Some(f) = find(&|f| at(f, Stage::Recorded) && !f.unbuilt.is_empty()) {
+        // The port cannot replay a recording.
+        if self.unrecorded.is_empty() && self.late.is_empty() && !self.unbuilt.is_empty() {
             return Item::agent(
                 "Build",
-                Some(&f.id),
-                format!("the port cannot replay its recordings: {}", first_lines(&f.unbuilt).join("; ")),
-                "the last psx port check at HEAD finds a launcher for each of its scenarios' kinds and each quantity they compare observed",
+                format!("the port cannot replay the recordings: {}", first_lines(&self.unbuilt).join("; ")),
+                "the last psx port check at HEAD finds a launcher for each scenario's kind and each quantity they compare observed",
                 "launch the scenario kind in the port, building the world from the scenario's parameters with the port's own loading, and observe the compared quantities (the port's psx_scenario::Port); commit and run psx port check",
             );
         }
-        // 2. The code: unpacked whole, then each feature's found.
         if !self.unpack.is_empty() {
             return Item::agent(
                 "Unpack",
-                None,
                 format!(
                     "the inventory knows these overlays only from the code that ran in them, so their functions are not all counted: {}",
                     first_lines(&self.unpack).join(", ")
@@ -1104,247 +840,229 @@ impl Facts {
                 "find what decompresses them, unpack them and take the inventory again with --unpacked (guide topic code, Decompressed code); record again any recording whose coverage the new inventory does not credit",
             );
         }
-        if let Some(f) = find(&|f| f.catalogued && !f.located) {
-            return Item::agent(
-                "Locate",
-                Some(&f.id),
-                "its entry names no code".into(),
-                "its catalogue entry lists the original's functions that are the feature under code",
-                "trace or record runs doing the thing and runs from the same state not doing it, run psx code coverage diff on them, read what only the first ran (code disasm, decompile), and list the feature's functions by entry address under code",
-            );
-        }
         // Input the original delays: fixed in fixes/, then recorded again.
         // A recording made with fixes/ as it is and still late says the fix
         // does not work; only a change to fixes/ asks for it again, so a fix
         // that does not work is changed, not recorded over and over.
         use crate::scenario::Late;
-        let late = |k: Late| move |f: &Feature| f.located && f.late.iter().any(|(x, _)| *x == k);
-        let lines = |f: &Feature, k: Late| -> Vec<String> {
-            f.late.iter().filter(|(x, _)| *x == k).map(|(_, l)| l.clone()).collect()
-        };
-        if let Some(f) = find(&late(Late::Fails)) {
+        let late =
+            |k: Late| -> Vec<String> { self.late.iter().filter(|(x, _)| *x == k).map(|(_, l)| l.clone()).collect() };
+        let done = "the recordings report no late_input";
+        if let ls @ [_, ..] = late(Late::Fails).as_slice() {
             return Item::agent(
                 "Fix input",
-                Some(&f.id),
-                format!("fixes/ does not stop the delay: {}", first_lines(&lines(f, Late::Fails)).join("; ")),
-                "its recordings report no late_input",
+                format!("fixes/ does not stop the delay: {}", first_lines(ls).join("; ")),
+                done,
                 "the recording ran with fixes/ as it is and its input still came late on those ticks. A replacement that never ran is not what the game calls there (another function, or another address than names/ gives); one that ran leaves another path that holds the input back. Read those ticks again (run with pad_reads, watch and trace there), change fixes/, and record the scenarios again (guide topic code, the fixes/ paragraphs)",
             );
         }
-        if let Some(f) = find(&late(Late::Unfixed)) {
+        if let ls @ [_, ..] = late(Late::Unfixed).as_slice() {
             return Item::agent(
                 "Fix input",
-                Some(&f.id),
-                format!(
-                    "the original's own driver delays its input: {}",
-                    first_lines(&lines(f, Late::Unfixed)).join("; ")
-                ),
-                "its recordings report no late_input",
+                format!("the original's own driver delays its input: {}", first_lines(ls).join("; ")),
+                done,
                 "the port takes its input every tick, so its recordings must too: find what keeps the poll or the game's read of the buttons back on those ticks (run with pad_reads, watch and trace around them), replace that function in fixes/ so the game takes the tick's input every field (guide topic code, the fixes/ paragraphs), then record the scenarios again; late_input left out with fix on is the fix working",
             );
         }
-        if let Some(f) = find(&late(Late::Before)) {
+        if let ls @ [_, ..] = late(Late::Before).as_slice() {
             return Item::agent(
                 "Record",
-                Some(&f.id),
-                format!(
-                    "recorded with input late and before fixes/ as it is: {}",
-                    first_lines(&lines(f, Late::Before)).join("; ")
-                ),
-                "its recordings report no late_input",
+                format!("recorded with input late and before fixes/ as it is: {}", first_lines(ls).join("; ")),
+                done,
                 "record those scenarios again (psx scenario record): a recording takes fixes/ as it is. late_input left out then is the fix working; still there, port next says the fix does not work",
             );
         }
-        if let Some(f) = find(&|f| f.located && !f.unrecorded.is_empty()) {
+        if !self.unrecorded.is_empty() {
             return Item::agent(
                 "Record",
-                Some(&f.id),
-                format!("its recordings are not ready: {}", first_lines(&f.unrecorded).join("; ")),
-                "it names work recordings, each scenario of its recordings passes psx scenario check, and their coverage counts",
-                "declare the quantities in glossary/ and bind them and the tick (the logic step) in glossary/binding/, write scenarios/<id>.toml from a psx states chain whose last run ends at a game moment (until), run psx scenario record, name the recording under recordings.work in the catalogue entry, then psx scenario check (psx guide, Recordings)",
+                format!("the recordings are not ready: {}", first_lines(&self.unrecorded).join("; ")),
+                "there are work recordings, each of their scenarios passes psx scenario check, and their coverage counts",
+                "declare the quantities in glossary/ and bind them and the tick (the logic step) in glossary/binding/, write scenarios/<id>.toml from a psx states chain whose last run ends at a game moment (until), run psx scenario record, then psx scenario check (psx guide, Recordings)",
             );
         }
-        if let Some(f) = find(&|f| at(f, Stage::Recorded) && !matches!(f.verdict, State::Current(_))) {
-            let (why, how) = match &f.verdict {
+        if !matches!(self.verdict, State::Current(_)) {
+            let (why, how) = match &self.verdict {
                 State::Stale { commit } if self.git.head.as_deref() == Some(commit.as_str()) => (
-                    "its verdict is from HEAD, and the workspace has changed since (uncommitted changes besides notes and the review)".into(),
+                    "the verdict is from HEAD, and the workspace has changed since (uncommitted changes besides notes and the review)".into(),
                     "commit the changes and run psx port check",
                 ),
                 State::Stale { commit } => (
                     format!(
-                        "its verdict is from {commit}, not HEAD with no uncommitted changes (notes and the review aside)"
+                        "the verdict is from {commit}, not HEAD with no uncommitted changes (notes and the review aside)"
                     ),
                     "commit the changes and run psx port check",
                 ),
                 _ => (
-                    "no psx port check has judged it".into(),
-                    "write the feature from the original's code (citing each rule), launch its scenario kinds and observe their quantities (the port's psx_scenario::Port), commit, and run psx port check",
+                    "no psx port check has judged the port".into(),
+                    "write the port from the original's code (citing each rule by address), launch the scenario kinds and observe their quantities (the port's psx_scenario::Port), commit, and run psx port check",
                 ),
             };
-            return Item::agent("Implement", Some(&f.id), why, "psx port check has judged it at HEAD", how);
+            return Item::agent("Implement", why, "psx port check has judged HEAD", how);
         }
-        // 3. A failing recording.
-        let failed =
-            |f: &Feature| first_failing(&f.work).or_else(|| first_failing(&f.held_out).filter(|_| f.reviewed()));
-        if let Some((f, (r, first))) = self.features.iter().find_map(|f| Some((f, failed(f)?))) {
+        // A failing work recording: one at a time, the one being fixed while
+        // it fails, else the one differing earliest.
+        let failing = self.failing();
+        if let Some(r) = failing.first() {
+            let first = self.work.iter().find(|(n, _)| n == r).and_then(|(_, f)| f.clone()).unwrap_or_default();
             let mut item = Item::agent(
                 "Fix",
-                Some(&f.id),
-                format!("{r} fails: {first}"),
-                "each of its recordings it is checked against passes at HEAD",
-                "a recording that differs means the original's rule for those quantities is not yet understood, or the feature needs another that is not done: the pointer names the code that writes them there, its features and its C; understand that code (the debugger on the recording, checked C), port the rule, commit, and run psx port check; once the feature draws, both games' screens at the recording's ticks (psx scenario show --screens) show what differs as well as the quantities do",
+                format!(
+                    "{r} fails: {}{}",
+                    first.join("; "),
+                    match failing.len() {
+                        1 => String::new(),
+                        n => format!(" ({n} of {} work recordings fail; this one first)", self.work.len()),
+                    }
+                ),
+                &format!("{r} passes at HEAD"),
+                "a recording that differs means the original's rule for those quantities is not yet understood, or the port lacks code the recording runs: the pointer names the code that writes them there, whether the port cites it and its C; understand that code (the debugger on the recording, checked C), port the rule and cite it, commit, and run psx port check; once the port draws, both games' screens at the recording's ticks (psx scenario show --screens) show what differs as well as the quantities do",
             );
-            if let State::Current(v) = &f.verdict {
-                item.pointer = v.pointer.clone().filter(|p| p["recording"] == r.as_str());
+            if let State::Current(v) = &self.verdict {
+                item.pointer = v.pointers.get(r).cloned();
             }
-            // The work may be in another feature's code: name it.
-            let others = item.pointer.as_ref().map(|p| super::pointer::features_named(p, &f.id)).unwrap_or_default();
-            if !others.is_empty() {
-                item.why += &format!("; the pointer finds code of {} there: the cut may not hold", others.join(", "));
-            }
+            item.recording = Some(r.clone());
             return item;
         }
-        // 3b. A system turned off that the port now has: the original's
+        // A system turned off that the port now has: the original's
         // recordings run with it again.
-        if let Some(f) = find(&|f| f.matching() && !f.off.is_empty()) {
+        let restored: Vec<String> =
+            self.off.iter().filter(|o| o.cited).map(|o| format!("{}: {}", o.scenario, o.name)).collect();
+        if !restored.is_empty() {
             return Item::agent(
                 "Restore",
-                Some(&f.id),
-                format!(
-                    "{} matches its recordings, and a scenario still turns off its code: {}",
-                    f.id,
-                    f.off.join(", ")
-                ),
-                "no scenario turns off the feature's code",
-                "take the function out of the scenario's [off] (scenarios/<id>.toml), record that scenario's recordings again (psx scenario record ... --replace) and check the port against them: they now run with the system the feature ports",
+                format!("the port's code cites what a scenario turns off: {}", restored.join(", ")),
+                "no scenario turns off code the port cites",
+                "take the function out of the scenario's [off] (scenarios/<id>.toml), record that scenario's recordings again (psx scenario record ... --replace) and check the port against them: they now run with the system the port has",
             );
         }
-        // 4. An open question.
-        if let Some(f) = find(&|f| !f.questions.is_empty()) {
+        if let Some(q) = self.port.questions.first() {
             return Item::agent(
                 "Answer",
-                Some(&f.id),
-                format!("open question: {}", f.questions[0]),
-                "its entry has no questions left",
-                "answer it from the original's code or a recording, cite the answer where the port's code uses it, and remove the question from the entry",
+                format!("open question: {q}"),
+                "catalogue/questions.md has no questions left",
+                "answer it from the original's code or a recording, cite the answer where the port's code uses it, and take the question out of catalogue/questions.md",
             );
         }
-        // 4b. Code its recordings run that no one has accounted for: a
-        // feature's, or not ported. Those the pointer shows first.
-        if let Some(f) = find(&|f| f.matching() && !f.unclaimed.is_empty()) {
-            let shown = self.unclaimed_shown(f);
-            let more = f.unclaimed.len().saturating_sub(shown.len());
+        // Code the work recordings run that the port has nothing of: ported
+        // and cited, or set aside.
+        if !self.uncited.is_empty() {
+            let shown = self.uncited_shown();
+            let more = self.uncited.len().saturating_sub(shown.len());
             return Item::agent(
                 "Locate",
-                Some(&f.id),
                 format!(
-                    "its recordings run {} functions no feature's code lists and catalogue/not_ported.toml does not: {}{}",
-                    f.unclaimed.len(),
+                    "the work recordings run {} functions the port's code (game/, tools/) cites nowhere and catalogue/not_ported.toml does not list: {}{}",
+                    self.uncited.len(),
                     shown.join(", "),
                     if more > 0 { format!(" and {more} more (port status lists them)") } else { String::new() }
                 ),
-                "every function its recordings run is in a feature's code or in catalogue/not_ported.toml",
-                "read each (code disasm, decompile, its callers and what it writes): one holding a rule the game follows goes under code of the feature it is, this one or another (a function may be several features'); code the port has its own of or none (library code, the CD and sound drivers, the GPU's command building, debug code) goes in catalogue/not_ported.toml, by entry or address range, with why. A feature's code is your reading of the original: revise it as you learn, and take out what turns out to be another's with its wont_reach entries",
+                "every function the work recordings run is cited in the port's code or listed in catalogue/not_ported.toml",
+                "read each (code disasm, decompile, its callers and what it writes): one holding a rule the game follows is ported, its rules cited by address where the port's code follows them; code the port has its own of or none (library code, the CD and sound drivers, the GPU's command building, debug code) goes in catalogue/not_ported.toml, by entry or address range, with why",
             );
         }
-        // 5. An uncovered branch: a recording that reaches it.
-        // Not one waiting on a play request: its answer may cover it.
-        let uncovered = |f: &Feature| {
-            let g = f.groups().into_iter().find(|g| g.iter().any(|b| b.wont_reach.is_none()))?;
-            let b = g.iter().find(|b| b.wont_reach.is_none())?;
-            (!self.waits(f)).then(|| ((*b).clone(), g.len()))
-        };
-        if let Some((f, (b, like))) = self.features.iter().find_map(|f| Some((f, uncovered(f)?))) {
-            let n = f.branches.iter().filter(|b| !b.resolved()).count();
-            let groups = f.groups().len();
+        // An uncovered branch: a recording that reaches it. As many groups as
+        // plays wait are left to them: an answer may cover one.
+        let waiting = self.waiting_plays().count();
+        let groups = self.groups();
+        let open: Vec<&Vec<&Branch>> =
+            groups.iter().filter(|g| g.iter().any(|b| b.wont_reach.is_none())).skip(waiting).collect();
+        if let Some(g) = open.first() {
+            let b = g.iter().find(|b| b.wont_reach.is_none()).expect("filtered");
+            let n = self.branches.iter().filter(|b| !b.resolved()).count();
             return Item::agent(
                 "Cover",
-                Some(&f.id),
                 format!(
-                    "{} in its recordings{}{}; {n} branches of its code are unresolved, in {groups} groups by what they test",
+                    "{} in the work recordings{}; {n} branches of the code to port are unresolved, in {} groups by what they test",
                     b.describe(),
-                    match f.borrowed.len() {
-                        0 => String::new(),
-                        k => format!(" or the {k} of other features that pass"),
-                    },
-                    match like {
+                    match g.len() {
                         1 => String::new(),
                         k => format!(", as {} other open branches", k - 1),
-                    }
+                    },
+                    groups.len()
                 ),
-                "every branch of its code is taken both ways by its recordings (or the other features' that pass at HEAD), or listed under wont_reach",
-                "read the branch's condition (code disasm; for a script's stretch or decision, your own reading of the program) and work out what reaches the other way in game terms; record that (psx scenario record) and name it under recordings, or when it cannot be scripted ask the person to play it (psx scenario play queues the request; go on with other work meanwhile); when no recording can reach it, list it under wont_reach with why (by its address, or by its group's test, which answers every branch testing it); a script decision no hook named needs a hook in the glossary binding that names its way, then the recordings made again",
+                "every branch of the code to port is taken both ways by the work recordings, or listed under wont_reach",
+                "read the branch's condition (code disasm; for a script's stretch or decision, your own reading of the program) and work out what reaches the other way in game terms; record that (psx scenario record), or when it cannot be scripted ask the person to play it (psx scenario play queues the request; go on with other work meanwhile); when no recording can reach it, list it in catalogue/wont_reach.toml with why (by its address, or by its group's test, which answers every branch testing it); a script decision no hook named needs a hook in the glossary binding that names its way, then the recordings made again",
             );
         }
-        if let Some(f) = find(&|f| f.branches.iter().any(|b| !b.resolved() && b.wont_reach.is_some())) {
+        if self.branches.iter().any(|b| !b.resolved() && b.wont_reach.is_some()) {
             return Item::person(
                 "Confirm",
-                Some(&f.id),
                 format!(
                     "branches listed under wont_reach the person has not confirmed: {}",
-                    self.port.unconfirmed_wont_reach().join(", ")
+                    first_lines(&self.port.unconfirmed_wont_reach()).join(", ")
                 ),
                 "the person confirmed each wont_reach branch as it stands",
                 "the person reads psx port confirm (each branch and why no recording can reach it) and runs psx port confirm --yes; the agent may go on with other work",
             );
         }
-        // 6. The assets the goal asks for.
         if let Some(item) = self.asset_item(None, &self.needs) {
             return item;
         }
-        // 7. The review of the code as a whole, once the rest of the
-        // goal's work is finished.
-        if self.features.iter().all(Feature::finished) && !self.review.holds() {
-            return self.review_item("the goal's features are finished".into());
+        // The goal come to match its recordings since the last review, or
+        // finished since, without a review that holds.
+        if !self.review.holds() {
+            let mut why = Vec::new();
+            if self.matching() && !self.review_matching {
+                why.push("the goal came to match its work recordings since the last review");
+            }
+            if self.finished() && !self.review_finished {
+                why.push(
+                    "its work is finished since the last review (branches resolved, no question open, its code cited)",
+                );
+            }
+            if why.is_empty() && self.finished() {
+                why.push("the goal's work is finished");
+            }
+            if !why.is_empty() {
+                return self.review_item(why.join(", and "));
+            }
         }
-        // 8. Held-out recordings, played by the person.
-        if let Some(f) = find(&|f| f.reviewed() && f.held_out.is_empty() && !self.waits(f)) {
-            return Item::person(
-                "Play",
-                Some(&f.id),
-                "the code is reviewed and it has no held-out recordings".into(),
-                "its entry names held-out recordings (recordings.held_out)",
-                "the agent starts psx scenario play on one of its scenarios with a request to play the feature freely and differently from its work recordings; the person plays it when they can, and the agent names the recording under recordings.held_out when port next gives its Read item",
-            );
-        }
-        // 9. The goal's own held-out plays, once every feature is reviewed.
-        if self.all_reviewed() && self.waiting_plays().next().is_none() {
-            if self.goal_held_out.is_empty() {
+        // The person's plays, once the goal is reviewed.
+        if self.reviewed() && self.waiting_plays().next().is_none() {
+            if self.held_out.is_empty() {
                 return Item::person(
                     "Play",
-                    None,
-                    "every feature is reviewed and the goal has no held-out plays of its own".into(),
+                    "the goal is reviewed and has no held-out plays".into(),
                     "goal.toml names held-out plays (held_out)",
                     &format!(
-                        "the agent starts psx scenario play with a request written from the goal's description, in game terms, as broad as it is (\"{}\"): not a feature's recordings again; the person plays it when they can, and the agent names the recording under goal.toml's held_out when port next gives its Read item",
+                        "the agent starts psx scenario play with a request written from the goal's description, in game terms, as broad as it is (\"{}\"): not the work recordings again; the person plays it when they can, and the agent names the recording under goal.toml's held_out when port next gives its Read item",
                         one_line(&self.port.goal.description)
                     ),
                 );
             }
-            if self.goal_held_out.iter().any(|(_, r)| r.is_none()) {
+            if let Some(r) = self.held_out.iter().find(|(_, f)| f.is_none()).map(|(r, _)| r) {
                 return Item::agent(
                     "Implement",
-                    None,
-                    "no psx port check of the whole goal has judged its held-out plays at HEAD".into(),
+                    format!("no psx port check has judged the play {r} at HEAD"),
                     "psx port check has judged the goal's plays at HEAD",
-                    "commit, and run psx port check without a feature: the goal's plays are judged with the whole goal",
+                    "commit, and run psx port check without a scenario",
                 );
             }
-            if let Some((r, first)) = first_failing(&self.goal_held_out) {
-                return Item::agent(
+            if let Some((r, f)) = self.held_out.iter().find(|(_, f)| f.as_ref().is_some_and(|f| !f.is_empty())) {
+                let mut item = Item::agent(
                     "Fix",
-                    None,
-                    format!("the goal's play {r} fails: {first}"),
+                    format!("the goal's play {r} fails: {}", f.as_deref().unwrap_or_default().join("; ")),
                     "the goal's held-out plays pass at HEAD",
-                    "the play shows what the features' recordings do not: find what in it the port does differently (scenario show on the play, code coverage of it against the features' recordings) and whose code that is; record what reaches it as that feature's work recording, fix it there, commit, and run psx port check; a play no feature's rule explains may mean the cut does not cover the goal",
+                    "the play shows what the work recordings do not: find what in it the port does differently (scenario show on the play, code coverage of it against the work recordings), record what reaches it as a work recording, fix it there, commit, and run psx port check",
                 );
+                item.recording = Some(r.clone());
+                return item;
             }
+        }
+        // Code a scenario turns off that the port has nothing of.
+        let left: Vec<String> = self.off.iter().map(|o| format!("{}: {}", o.scenario, o.name)).collect();
+        if self.reviewed() && all_pass(&self.held_out) && !left.is_empty() {
+            return Item::agent(
+                "Restore",
+                format!("scenarios still turn off code the port's code cites nowhere: {}", left.join(", ")),
+                "no scenario turns off code",
+                "port the function the scenario turns off and cite it (port next then gives Restore for it), or record the scenario's recordings again without the [off] once the port follows it without",
+            );
         }
         if self.complete() {
             return Item::person(
                 "Done",
-                None,
-                "every feature of the goal is done, and the goal's own plays pass".into(),
+                "the goal is reviewed, and the person's plays pass".into(),
                 "",
                 "the goal is complete; the person may set a new one",
             );
@@ -1356,7 +1074,6 @@ impl Facts {
             let asks: Vec<String> = plays.iter().map(|r| one_line(r.args["request"].as_str().unwrap_or(""))).collect();
             return Item::person(
                 "Wait",
-                plays.iter().find_map(|r| self.play_feature(r)).map(|f| f.id.as_str()),
                 format!(
                     "{n} play {} for the person: {}",
                     if n == 1 { "request waits" } else { "requests wait" },
@@ -1366,25 +1083,27 @@ impl Facts {
                 "the person answers them from psx web or psx play; the agent waits (port next gives a Read item for each answer)",
             );
         }
-        let left: Vec<String> = self
-            .features
-            .iter()
-            .filter(|f| f.stage() != Some(Stage::Done))
-            .map(|f| format!("{} is {}", f.id, f.stage().map(Stage::name).unwrap_or("not catalogued")))
-            .collect();
+        let s = self.shares();
         Item::person(
             "Stuck",
-            None,
-            format!("no item fits: {}", first_lines(&left).join("; ")),
+            format!(
+                "no item fits: recordings passing {}/{}, code accounted {}/{}, branches resolved {}/{}, review {}",
+                s.recordings.0,
+                s.recordings.1,
+                s.code.0,
+                s.code.1,
+                s.branches.0,
+                s.branches.1,
+                self.review.name()
+            ),
             "",
             "psx's port next has no item for this state: tell the person",
         )
     }
 
-    /// The next asset item of what `needs` covers, for `feature` or the
-    /// goal: a name that covers no files yet, then an unknown file, an
-    /// archive not listed, one not imported, one not checked.
-    fn asset_item(&self, feature: Option<&str>, needs: &assets::Needs) -> Option<Item> {
+    /// An item for assets `needs` brings in: a scenario's (`scenario`), or
+    /// the goal's.
+    fn asset_item(&self, scenario: Option<&str>, needs: &assets::Needs) -> Option<Item> {
         if needs.settled() {
             return None;
         }
@@ -1393,15 +1112,14 @@ impl Facts {
             Err(why) => {
                 return Some(Item::agent(
                     "Assets",
-                    feature,
                     format!("psx cannot list the disc's files: {why}"),
                     "psx port status lists the disc's files",
                     "save the workspace's disc image as its media: psx context --image media/<game>.cue --save",
                 ));
             }
         };
-        let asks = |name: &str| match feature {
-            Some(_) => format!("its entry's assets name {name}"),
+        let asks = |name: &str| match scenario {
+            Some(s) => format!("{}/{s}.toml's assets name {name}", super::SCENARIOS),
             None => format!("the goal's assets name {name}"),
         };
         for (name, why) in &needs.unresolved {
@@ -1409,7 +1127,6 @@ impl Facts {
                 assets::Unresolved::NoFormat(id) => {
                     return Some(Item::agent(
                         "Format",
-                        feature,
                         format!("{}, and {}", asks(name), why.describe()),
                         &format!("formats/{id}.md names the disc files in that format"),
                         "find which disc files these are: run the game where it loads one with trace_cd (loads.json gives each file's place in RAM), watch that buffer for the code that parses it, and read that code (code disasm, decompile); write the format doc (formats/README.md) naming the files and the loader",
@@ -1418,7 +1135,6 @@ impl Facts {
                 assets::Unresolved::Archive { path, documented: false } => {
                     return Some(Item::agent(
                         "Format",
-                        feature,
                         format!("{}, an entry of {path}, which no format doc says is an archive", asks(name)),
                         &format!("a format doc with archive = true covers {path}"),
                         "find the archive's index from the code that reads it (trace_cd, a watch on the buffer, code disasm), and write its format doc with archive = true (formats/README.md)",
@@ -1450,7 +1166,6 @@ impl Facts {
             let read = if f.loaded == Some(false) { "; no traced run loaded it" } else { "" };
             return Some(Item::agent(
                 "Format",
-                feature,
                 format!("{} has no format yet{read}; {n} files are unknown", f.path),
                 "every disc file is covered by a format doc, found whole as a standard format, or listed in formats/unused.toml",
                 "find what loads it: run with trace_cd (loads.json gives where each file goes in RAM), watch that buffer for the code that parses it, and read that code (code disasm, decompile); write formats/<id>.md (formats/README.md) naming the files and the loader; when no run ever loads it, list it in formats/unused.toml with the runs that show so",
@@ -1459,7 +1174,6 @@ impl Facts {
         if let Some(f) = unlisted.first() {
             return Some(Item::agent(
                 "Index",
-                feature,
                 format!(
                     "{} is an archive ({}) whose entries the importer does not list{stale}",
                     f.path,
@@ -1472,7 +1186,6 @@ impl Facts {
         if let (Some(c), Some(f)) = (&a.stale, files.iter().find(|f| f.imported_then)) {
             return Some(Item::agent(
                 "Import",
-                feature,
                 format!(
                     "{} was imported at {c}, the last psx port check, not at HEAD with no uncommitted changes",
                     f.path
@@ -1484,7 +1197,6 @@ impl Facts {
         if let Some(f) = first(AssetState::Found) {
             return Some(Item::agent(
                 "Import",
-                feature,
                 format!("{} ({}) is not imported{stale}", f.path, f.format.as_deref().unwrap_or("")),
                 "the importers' outputs name it in their provenance, at HEAD",
                 "write its importer in tools/import, converting exactly into the port's formats with Provenance naming the disc file; commit and run psx port check, which runs the importers on the disc",
@@ -1493,7 +1205,6 @@ impl Facts {
         first(AssetState::Imported).map(|f| {
             Item::agent(
                 "Check",
-                feature,
                 format!("{} is imported, not checked against what the game built", f.path),
                 "an importer test that compares it with what the game built marks it with import::checking and passes, at HEAD",
                 "write a test in tools/import comparing the importer's output with what the game built from that file (RAM after loading it, its VRAM uploads, a GPU capture of the same view: psx run with trace_cd, psx debug go --gpu), starting with let _checked = import::checking(\"/PATH\"); commit and run psx port check",
@@ -1501,23 +1212,9 @@ impl Facts {
         })
     }
 
-    /// The features matching their recordings now: what a review lists.
-    /// A feature's unclaimed functions as Locate shows them: the ones its
-    /// verdict's pointer names first, then by address, at most 20.
-    fn unclaimed_shown(&self, f: &Feature) -> Vec<String> {
-        let mut pointed: Vec<u32> = Vec::new();
-        if let State::Current(super::verdict::Verdict { pointer: Some(p), .. }) = &f.verdict {
-            let qs = p["quantities"].as_array().into_iter().flatten();
-            let lists = qs.flat_map(|q| [&q["writers"], &q["written_before"]]).chain([&p["first_run"]]);
-            for x in lists.flat_map(|l| l.as_array().into_iter().flatten()) {
-                if let Some(a) = crate::commands::addr_value(&x["entry"]) {
-                    pointed.push(a & 0x1FFF_FFFF);
-                }
-            }
-        }
-        let mut order: Vec<u32> = f.unclaimed.clone();
-        order.sort_by_key(|a| (!pointed.contains(&(a & 0x1FFF_FFFF)), *a));
-        order.into_iter().take(20).map(|a| self.function_name(a)).collect()
+    /// The uncited functions as Locate shows them: the first 20 by address.
+    fn uncited_shown(&self) -> Vec<String> {
+        self.uncited.iter().take(20).map(|&a| self.function_name(a)).collect()
     }
 
     /// A function as port next names it: its name and entry, or the entry.
@@ -1528,148 +1225,68 @@ impl Facts {
         }
     }
 
-    fn matching_ids(&self) -> Vec<String> {
-        self.features.iter().filter(|f| f.matching()).map(|f| f.id.clone()).collect()
-    }
-
-    /// The features finished now: what a review lists as finished.
-    fn finished_ids(&self) -> Vec<String> {
-        self.features.iter().filter(|f| f.finished()).map(|f| f.id.clone()).collect()
-    }
-
     /// The review item due, `why` it is due when the review is missing or
     /// stale.
     fn review_item(&self, why: String) -> Item {
-        let done = "the review holds: the code (game/, tools/) unchanged since its commit, every finding answered, its features and finished the ones matching and finished";
+        let done = "the review holds: the code (game/, tools/) unchanged since its commit, every finding answered, its matching and finished what the goal is";
         match &self.review {
             Review::Open { unanswered } => Item::agent(
                 "Review",
-                None,
                 format!("findings without an answer: {}", first_lines(unanswered).join("; ")),
                 done,
                 &format!(
-                    "answer each finding in {} with an **Answer:** line: done (restructure as it asks, keeping what the code does: psx port check must pass again), or kept and why; changed code has a follow-up review when the next feature matches or finishes, or once {} lines of it change",
+                    "answer each finding in {} with an **Answer:** line: done (restructure as it asks, keeping what the code does: psx port check must pass again), or kept and why; changed code has a follow-up review when the goal next comes to match or finish, or once {} lines of it change",
                     review::REVIEW,
                     self.port.goal.review_lines()
                 ),
             ),
             Review::Invalid(why) => Item::agent(
                 "Review",
-                None,
                 format!("{} is not a review: {why}", review::REVIEW),
                 done,
-                "write the review's front matter as the brief says: +++, commit, features, finished, +++",
+                "write the review's front matter as the brief says: +++, commit, matching, finished, +++",
             ),
             Review::Stale { commit, changed, .. } => Item::agent(
                 "Review",
-                None,
                 format!("{why}, and the code changed since the review: {}", first_lines(changed).join(", ")),
                 done,
                 &self.follow_up(commit),
             ),
-            _ => Item::agent("Review", None, format!("{why}, and the code has no review"), done, &self.brief()),
+            _ => Item::agent("Review", format!("{why}, and the code has no review"), done, &self.brief()),
         }
     }
+
+    /// The brief's front matter and the parts both briefs share.
+    fn front(&self) -> String {
+        format!(
+            "commit = \"{}\", matching = {} and finished = {}",
+            self.git.head.as_deref().unwrap_or("HEAD"),
+            self.matching(),
+            self.finished()
+        )
+    }
+
+    /// The brief's part on what the work recordings leave out, against the
+    /// goal's description.
+    fn breadth(&self) -> String {
+        format!(
+            " Then the goal: read {goal}'s description and the scenarios (scenarios/*.toml, what each records) and ask what the description asks for that no work recording shows, its breadth included; each is a finding, answered by a recording that shows it or kept with why.",
+            goal = super::GOAL,
+        )
+    }
+
+    /// What both briefs end with: the screens and the person's report.
+    const LOOK: &'static str = " Then, before writing how the port looks, look at it: both games' screens over a few recordings (psx scenario show ID --name NAME --screens), or that it does not draw yet. Then file a report for the person alone with report (psx report --text ...): how the port looks to you as a game in the making, what worries you about it and anything you would not put to the writer; the writer does not see it.";
 
     /// The Review item's brief, for a reviewer who has not seen the work.
     fn brief(&self) -> String {
         format!(
-            "Give this brief to a reviewer who has not seen the work (a sub-agent or a new session): review the port's code as a whole, {code} (git ls-files {code}). Its recordings already check that it does what the original does, so this review does not: for the code, leave the notes and the original's code unread. Ask instead: would you write a new game like this? Judge it as code written for a new game today, not as a port: how it is divided (modules, plugins, systems, components, data), names, how readily it takes more (another character, level or rule), duplication, and what is shaped by the original rather than chosen. AGENTS.md's \"The code\" says what the tools rely on. Write {review}: front matter between +++ lines with commit = \"{head}\", features = {features} and finished = {finished}, then one ## heading per finding: what you would change, the shape you would choose instead and why; what the code does stays as it is. The writer then answers each finding with an **Answer:** line.{cut} Then, before writing how the port looks, look at it: both games' screens over a few recordings (psx scenario show ID --name NAME --screens), or that it does not draw yet. Then file a report for the person alone with report (psx report --text ...): how the port looks to you as a game in the making, what worries you about it and anything you would not put to the writer; the writer does not see it.",
-            cut = self.cut(),
+            "Give this brief to a reviewer who has not seen the work (a sub-agent or a new session): review the port's code as a whole, {code} (git ls-files {code}). Its recordings already check that it does what the original does, so this review does not: for the code, leave the notes and the original's code unread. Ask instead: would you write a new game like this? Judge it as code written for a new game today, not as a port: how it is divided (modules, plugins, systems, components, data), names, how readily it takes more (another character, level or rule), duplication, and what is shaped by the original rather than chosen. AGENTS.md's \"The code\" says what the tools rely on. Write {review}: front matter between +++ lines with {front}, then one ## heading per finding: what you would change, the shape you would choose instead and why; what the code does stays as it is. The writer then answers each finding with an **Answer:** line.{breadth}{look}",
+            breadth = self.breadth(),
+            look = Self::LOOK,
             code = review::CODE.join(" "),
             review = review::REVIEW,
-            head = self.git.head.as_deref().unwrap_or("HEAD"),
-            features = toml::Value::from(self.matching_ids()),
-            finished = toml::Value::from(self.finished_ids()),
-        )
-    }
-
-    /// What psx sees of a cut that may not hold: features whose failures'
-    /// pointer finds other features' code, features with no recording of
-    /// their own, and functions several features claim whose recordings
-    /// each run code only another claims.
-    pub fn signs(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        for f in &self.features {
-            if let State::Current(super::verdict::Verdict { pointer: Some(p), .. }) = &f.verdict {
-                let others = super::pointer::features_named(p, &f.id);
-                if !others.is_empty() {
-                    out.push(format!(
-                        "{}'s recording {} fails, and the pointer finds code of {} there",
-                        f.id,
-                        p["recording"].as_str().unwrap_or("?"),
-                        others.join(", ")
-                    ));
-                }
-            }
-        }
-        let entry = |id: &str| self.port.entries.get(id);
-        let ids: Vec<&str> = self.features.iter().filter(|f| f.catalogued).map(|f| f.id.as_str()).collect();
-        for &id in &ids {
-            let own: Vec<&String> = entry(id).map(|e| e.recordings.all().collect()).unwrap_or_default();
-            let also = |r: &String| -> Vec<&str> {
-                let names = |o: &&str| entry(o).is_some_and(|e| e.recordings.all().any(|x| x == r));
-                ids.iter().copied().filter(|&o| o != id).filter(names).collect()
-            };
-            if !own.is_empty() && own.iter().all(|r| !also(r).is_empty()) {
-                let mut with: Vec<&str> = own.iter().flat_map(|r| also(r)).collect();
-                with.sort();
-                with.dedup();
-                out.push(format!("{id} has no recording of its own: each is also {}'s", with.join(", ")));
-            }
-        }
-        let code = |id: &str| -> BTreeSet<u32> {
-            entry(id)
-                .map(|e| e.code.iter().filter_map(|c| super::entry_addr(c)).map(|a| a & 0x1FFF_FFFF).collect())
-                .unwrap_or_default()
-        };
-        let mut shared: BTreeMap<Vec<&str>, Vec<u32>> = BTreeMap::new();
-        for a in ids.iter().flat_map(|&id| code(id)).collect::<BTreeSet<_>>() {
-            let by: Vec<&str> = ids.iter().copied().filter(|&id| code(id).contains(&a)).collect();
-            if by.len() > 1 {
-                shared.entry(by).or_default().push(a);
-            }
-        }
-        let ran = |id: &str| -> BTreeSet<u32> {
-            self.features
-                .iter()
-                .find(|f| f.id == id)
-                .map(|f| f.ran.iter().map(|a| a & 0x1FFF_FFFF).collect())
-                .unwrap_or_default()
-        };
-        for (by, fs) in shared {
-            let entwined = by.iter().all(|&a| {
-                let (mine, runs) = (code(a), ran(a));
-                by.iter().filter(|&&b| b != a).all(|&b| code(b).difference(&mine).any(|c| runs.contains(c)))
-            });
-            if entwined {
-                let names: Vec<String> = fs.iter().take(3).map(|&a| self.function_name(a | 0x8000_0000)).collect();
-                out.push(format!(
-                    "{} claim {} function{} together ({}{}), and each one's recordings run code only the other{} claim{}",
-                    by.join(", "),
-                    fs.len(),
-                    if fs.len() == 1 { "" } else { "s" },
-                    names.join(", "),
-                    if fs.len() > 3 { ", …" } else { "" },
-                    if by.len() > 2 { "s" } else { "" },
-                    if by.len() > 2 { "" } else { "s" },
-                ));
-            }
-        }
-        out
-    }
-
-    /// The Review brief's part on the cut, against the goal's description.
-    fn cut(&self) -> String {
-        let signs = self.signs();
-        let signs = if signs.is_empty() {
-            "psx sees no sign of one".to_string()
-        } else {
-            format!("psx's signs of one, which say where to look, not what to do: {}", signs.join("; "))
-        };
-        format!(
-            " Then the cut, against the goal: read {goal}'s description and the catalogue (catalogue/*.md, each entry's paragraph and recordings) and ask whether the features together cover what the description asks for, its breadth included (what their recordings show against what it names); whether each feature's recordings can show it without its neighbours; which should merge or split, and what is missing. Those are findings too, answered by recutting or kept with why. A cut that does not hold: {signs}.",
-            goal = super::GOAL,
+            front = self.front(),
         )
     }
 
@@ -1677,13 +1294,12 @@ impl Facts {
     /// what that review read is not read again.
     fn follow_up(&self, commit: &str) -> String {
         format!(
-            "Give this brief to a reviewer who did not write the changes (a sub-agent or a new session): a follow-up review of the port's code. The review at {commit} read the code then; read what changed since: git diff {commit} -- {code}, with the findings and answers in {review} (are the changes what the answers say?), and enough of the code around it to judge how the change fits the whole (how the code is divided, what a new feature reuses or duplicates). Ask what the review asked: would you write a new game like this? If the changes rewrite most of the code, review it whole. Leave the notes and the original's code unread: the recordings check what the code does. Keep the findings and answers already in {review}; set its commit to \"{head}\", its features to {features} and its finished to {finished}, and add one ## heading per new finding: what you would change, the shape you would choose instead and why; with none, the commit is all that changes. The writer then answers each new finding with an **Answer:** line.{cut} Then, before writing how the port looks, look at it: both games' screens over a few recordings (psx scenario show ID --name NAME --screens), or that it does not draw yet. Then file a report for the person alone with report (psx report --text ...): how the port looks to you as a game in the making, what worries you about it and anything you would not put to the writer; the writer does not see it.",
-            cut = self.cut(),
+            "Give this brief to a reviewer who did not write the changes (a sub-agent or a new session): a follow-up review of the port's code. The review at {commit} read the code then; read what changed since: git diff {commit} -- {code}, with the findings and answers in {review} (are the changes what the answers say?), and enough of the code around it to judge how the change fits the whole (how the code is divided, what new code reuses or duplicates). Ask what the review asked: would you write a new game like this? If the changes rewrite most of the code, review it whole. Leave the notes and the original's code unread: the recordings check what the code does. Keep the findings and answers already in {review}; set its front matter to {front}, and add one ## heading per new finding: what you would change, the shape you would choose instead and why; with none, the front matter is all that changes. The writer then answers each new finding with an **Answer:** line.{breadth}{look}",
+            breadth = self.breadth(),
+            look = Self::LOOK,
             code = review::CODE.join(" "),
             review = review::REVIEW,
-            head = self.git.head.as_deref().unwrap_or("HEAD"),
-            features = toml::Value::from(self.matching_ids()),
-            finished = toml::Value::from(self.finished_ids()),
+            front = self.front(),
         )
     }
 
@@ -1699,64 +1315,62 @@ impl Facts {
         }
     }
 
+    /// Where the goal is: matching, finished, reviewed, complete, or none.
+    fn state(&self) -> &'static str {
+        if self.complete() {
+            "complete"
+        } else if self.reviewed() {
+            "reviewed"
+        } else if self.finished() {
+            "finished"
+        } else if self.matching() {
+            "matching"
+        } else {
+            "working"
+        }
+    }
+
     /// `port status`.
     pub fn status(&self) -> Value {
-        let mut areas: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-        for f in &self.features {
-            let e = self.port.entries.get(&f.id);
-            let stage = f.stage().map(Stage::name).unwrap_or("not catalogued");
-            *counts.entry(stage).or_default() += 1;
-            let mut row = json!({
-                "id": f.id, "title": e.map(|e| e.title.as_str()), "stage": stage,
-                "code": e.map(|e| &e.code), "verdict": f.verdict.name(),
-                "work": f.work_json(), "held_out": f.held_out_json(), "branches": f.branches_json(false),
-                "questions": f.questions,
-            });
-            if !f.unrecorded.is_empty() && f.located {
-                row["unrecorded"] = json!(f.unrecorded);
-            }
-            if !f.late.is_empty() {
-                row["late_input"] = json!(f.late.iter().map(|(_, l)| l).collect::<Vec<_>>());
-            }
-            if !f.unbuilt.is_empty() {
-                row["unbuilt"] = json!(f.unbuilt);
-            }
-            if !f.off.is_empty() {
-                row["off"] = json!(f.off);
-            }
-            if !f.unclaimed.is_empty() {
-                row["unclaimed"] = json!(f.unclaimed.iter().map(|&a| self.function_name(a)).collect::<Vec<_>>());
-            }
-            if !f.assets.is_empty() {
-                row["assets"] = f.assets.json();
-            }
-            areas.entry(e.map(|e| e.area.clone()).unwrap_or_default()).or_default().push(row);
+        let accounted = self.ran.len() - self.uncited.len();
+        let not_ported = self.ran.iter().filter(|&&f| self.port.not_ported(f).is_some()).count();
+        let mut code = json!({"ran": self.ran.len(), "cited": accounted - not_ported, "not_ported": not_ported,
+                              "uncited": self.uncited.len()});
+        if !self.uncited.is_empty() {
+            code["first_uncited"] = json!(self.uncited_shown());
         }
         let mut v = json!({
             "description": self.port.goal.description,
-            "features": self.port.goal.features.to_json(),
+            "state": self.state(),
             "confirmation": self.port.confirmation_json(),
             "problems": self.port.problems,
-            "stages": counts,
-            "areas": areas,
+            "recordings": self.recordings_json(),
+            "verdict": self.verdict.name(),
+            "code": code,
+            "branches": self.branches_json(false),
+            "questions": self.port.questions,
             "review": self.review_json(),
             "complete": self.complete(),
             "git": {"head": self.git.head, "clean": self.git.clean},
             "decomp": self.decomp,
             "shares": self.shares().json(),
         });
-        let signs = self.signs();
-        if !signs.is_empty() {
-            v["signs"] = json!(signs);
+        if !self.unrecorded.is_empty() {
+            v["unrecorded"] = json!(self.unrecorded);
         }
-        if !self.goal_held_out.is_empty() {
-            v["held_out"] = if self.all_reviewed() {
-                let pass = self.goal_held_out.iter().filter(|(_, f)| f.as_ref().is_some_and(Vec::is_empty)).count();
-                json!({"total": self.goal_held_out.len(), "pass": pass})
-            } else {
-                json!({"total": self.goal_held_out.len(), "shown": "once every feature is reviewed"})
-            };
+        if !self.late.is_empty() {
+            v["late_input"] = json!(self.late.iter().map(|(_, l)| l).collect::<Vec<_>>());
+        }
+        if !self.unbuilt.is_empty() {
+            v["unbuilt"] = json!(self.unbuilt);
+        }
+        if !self.off.is_empty() {
+            v["off"] = json!(
+                self.off
+                    .iter()
+                    .map(|o| json!({"scenario": o.scenario, "function": o.name, "cited": o.cited}))
+                    .collect::<Vec<_>>()
+            );
         }
         v["assets"] = match &self.assets {
             Ok(a) => {
@@ -1766,6 +1380,11 @@ impl Facts {
                 j["needed"] = json!({"files": needed.len(), "settled": settled});
                 if !self.needs.unresolved.is_empty() {
                     j["goal"] = self.needs.json();
+                }
+                let scenarios: BTreeMap<&String, Value> =
+                    self.scenario_needs.iter().filter(|(_, n)| !n.settled()).map(|(s, n)| (s, n.json())).collect();
+                if !scenarios.is_empty() {
+                    j["scenarios"] = json!(scenarios);
                 }
                 j
             }
@@ -1779,13 +1398,7 @@ impl Facts {
             .plays
             .iter()
             .filter(|r| !r.read || !matches!(r.state, crate::handoff::queue::State::Answered(_)))
-            .map(|r| {
-                let mut j = r.json();
-                if let Some(f) = self.play_feature(r) {
-                    j["feature"] = json!(f.id);
-                }
-                j
-            })
+            .map(|r| r.json())
             .collect();
         if !open.is_empty() {
             v["plays"] = json!(open);
@@ -1797,13 +1410,20 @@ impl Facts {
     pub fn plain(&self) -> String {
         let mut s = String::new();
         let goal = &self.port.goal.description;
-        let done = self.features.iter().filter(|f| f.stage() == Some(Stage::Done)).count();
-        s.push_str(&format!(
-            "goal: {}    {done}/{} features done\n",
-            if goal.is_empty() { "(no description)" } else { goal },
-            self.features.len()
-        ));
+        s.push_str(&format!("goal: {}    {}\n", if goal.is_empty() { "(no description)" } else { goal }, self.state()));
         s.push_str(&self.shares().plain());
+        let failing = self.failing();
+        s.push_str(&format!(
+            "recordings  {} work, {} failing · {} held-out plays{}\n",
+            self.work.len(),
+            failing.len(),
+            self.held_out.len(),
+            if self.reviewed() {
+                format!(", {} passing", passed(&self.held_out))
+            } else {
+                " (shown once the goal is reviewed)".into()
+            }
+        ));
         if let Ok(a) = &self.assets {
             let (needed, settled) = self.needed();
             let all = format!(
@@ -1842,45 +1462,22 @@ impl Facts {
             }
             r => format!("code review: {}\n", r.name()),
         });
-        let width = self.features.iter().map(|f| self.title(&f.id).chars().count()).max().unwrap_or(0).min(32);
-        // By area, in the order areas first come in the closure; dependency
-        // order within each.
-        let area_of = |f: &Feature| self.port.entries.get(&f.id).map(|e| e.area.as_str()).unwrap_or("");
-        let mut areas: Vec<&str> = Vec::new();
-        for f in &self.features {
-            if !areas.contains(&area_of(f)) {
-                areas.push(area_of(f));
-            }
+        for r in failing.iter().take(3) {
+            s.push_str(&format!("  failing: {r}\n"));
         }
-        let mut features: Vec<&Feature> = self.features.iter().collect();
-        features.sort_by_key(|f| areas.iter().position(|a| *a == area_of(f)));
-        let mut area = None;
-        for f in features {
-            let e = self.port.entries.get(&f.id);
-            let a = e.map(|e| e.area.as_str()).unwrap_or("");
-            if area != Some(a) {
-                s.push_str(&format!("\n{}\n", if a.is_empty() { "(no area)" } else { a }));
-                area = Some(a);
-            }
-            let title: String = self.title(&f.id).chars().take(32).collect();
-            let title = if title.is_empty() { format!("{} (not catalogued)", f.id) } else { title };
-            let stage = f.stage().map(Stage::name).unwrap_or("-");
-            s.push_str(&format!("  {title:<width$}  {stage:<10} {}\n", f.summary()));
-            let indent = " ".repeat(width + 4);
-            if let Some(b) = f.groups().first().map(|g| g[0]) {
-                s.push_str(&format!("{indent}uncovered: {}\n", b.describe()));
-            }
-            for q in f.questions.iter().take(2) {
-                s.push_str(&format!("{indent}open: {q}\n"));
-            }
+        if let Some(b) = self.groups().first().map(|g| g[0]) {
+            s.push_str(&format!("  uncovered: {}\n", b.describe()));
+        }
+        for q in self.port.questions.iter().take(2) {
+            s.push_str(&format!("  open: {q}\n"));
         }
         if !self.port.problems.is_empty() {
             s.push_str(&format!("\n{} problems in the goal or catalogue.\n", self.port.problems.len()));
         }
         let item = self.next();
         s.push_str(&format!("\nNext: {}", item.item));
-        if let Some(f) = &item.feature {
-            s.push_str(&format!(" {f}"));
+        if let Some(r) = &item.recording {
+            s.push_str(&format!(" {r}"));
         }
         s.push_str(&format!(" ({}): {}\n", item.who, item.why));
         s
@@ -1915,7 +1512,8 @@ pub struct Item {
     pub item: &'static str,
     /// agent or person.
     pub who: &'static str,
-    pub feature: Option<String>,
+    /// The recording it is about (Fix, Read).
+    pub recording: Option<String>,
     /// The fact that makes it due.
     pub why: String,
     /// The fact that will show it done.
@@ -1926,25 +1524,20 @@ pub struct Item {
 }
 
 impl Item {
-    fn agent(item: &'static str, feature: Option<&str>, why: String, done_when: &str, how: &str) -> Item {
-        Item {
-            item,
-            who: "agent",
-            feature: feature.map(str::to_string),
-            why,
-            done_when: done_when.into(),
-            how: how.into(),
-            pointer: None,
-        }
+    fn agent(item: &'static str, why: String, done_when: &str, how: &str) -> Item {
+        Item { item, who: "agent", recording: None, why, done_when: done_when.into(), how: how.into(), pointer: None }
     }
 
-    fn person(item: &'static str, feature: Option<&str>, why: String, done_when: &str, how: &str) -> Item {
-        Item { who: "person", ..Item::agent(item, feature, why, done_when, how) }
+    fn person(item: &'static str, why: String, done_when: &str, how: &str) -> Item {
+        Item { who: "person", ..Item::agent(item, why, done_when, how) }
     }
 
     fn to_json(&self) -> Value {
-        let mut v = json!({"item": self.item, "who": self.who, "feature": self.feature, "why": self.why,
+        let mut v = json!({"item": self.item, "who": self.who, "why": self.why,
                "done_when": self.done_when, "how": self.how});
+        if let Some(r) = &self.recording {
+            v["recording"] = json!(r);
+        }
         if let Some(p) = &self.pointer {
             v["pointer"] = p.clone();
         }
@@ -1992,41 +1585,24 @@ fn progress(root: &Path, status: &Value) {
     }
 }
 
-/// The counts the progress line keeps: the goal's features by stage and
-/// verdict, their branches and work recordings, problems, questions, the
-/// review and the next item.
+/// The counts the progress line keeps: the goal's state and verdict, its
+/// branches and work recordings, problems, questions, the review and the
+/// next item.
 fn standing(status: &Value) -> Value {
-    let mut verdicts: BTreeMap<String, u64> = BTreeMap::new();
-    let (mut resolved, mut branches, mut passing, mut recordings, mut questions) = (0, 0, 0, 0, 0);
-    let mut features = 0;
-    for f in status["areas"]
-        .as_object()
-        .into_iter()
-        .flat_map(|a| a.values())
-        .flat_map(|v| v.as_array().into_iter().flatten())
-    {
-        features += 1;
-        *verdicts.entry(f["verdict"].as_str().unwrap_or("none").to_string()).or_default() += 1;
-        resolved += f["branches"]["resolved"].as_u64().unwrap_or(0);
-        branches += f["branches"]["total"].as_u64().unwrap_or(0);
-        passing += f["work"]["pass"].as_u64().unwrap_or(0);
-        recordings += f["work"]["total"].as_u64().unwrap_or(0);
-        questions += f["questions"].as_array().map_or(0, Vec::len);
-    }
     let next = &status["next"];
+    let work = &status["recordings"]["work"];
     json!({
         "head": status["git"]["head"],
-        "features": features,
-        "stages": status["stages"],
-        "verdicts": verdicts,
-        "branches": {"resolved": resolved, "total": branches},
-        "recordings": {"pass": passing, "total": recordings},
+        "state": status["state"],
+        "verdict": status["verdict"],
+        "branches": {"resolved": status["branches"]["resolved"], "total": status["branches"]["total"]},
+        "recordings": {"pass": work["pass"], "total": work["total"]},
         "shares": status["shares"],
         "problems": status["problems"].as_array().map_or(0, Vec::len),
-        "questions": questions,
+        "questions": status["questions"].as_array().map_or(0, Vec::len),
         "review": status["review"]["state"],
         "decomp": status["decomp"],
-        "next": {"item": next["item"], "feature": next["feature"], "who": next["who"], "times": next["times"]},
+        "next": {"item": next["item"], "recording": next["recording"], "who": next["who"], "times": next["times"]},
     })
 }
 
@@ -2047,7 +1623,7 @@ pub fn look(root: &Path) -> crate::Result<Value> {
 
 fn guarded(root: &Path, facts: &Facts, item: Item) -> crate::Result<Value> {
     let path = root.join(".psx/port/next.json");
-    let key = format!("{} {}", item.item, item.feature.as_deref().unwrap_or(""));
+    let key = format!("{} {}", item.item, item.recording.as_deref().unwrap_or(""));
     let fingerprint = facts.fingerprint(&item);
     let old: Guard = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let count = if old.item == key && old.fingerprint == fingerprint { old.count + 1 } else { 1 };
@@ -2069,10 +1645,10 @@ fn guarded(root: &Path, facts: &Facts, item: Item) -> crate::Result<Value> {
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PortStatusArgs {
-    /// One feature's unresolved branches, all of them.
+    /// Every unresolved branch, not only the first groups.
     #[arg(long)]
     #[serde(default)]
-    pub feature: Option<String>,
+    pub branches: bool,
     /// The disc files an asset name covers (/MAPS/*.WLD, /ARCHIVE:ENTRY,
     /// format:<id>), each with its format and state.
     #[arg(long)]
@@ -2086,14 +1662,11 @@ pub struct PortStatusArgs {
 
 impl Op for PortStatusArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
-        let plain = self.plain && self.feature.is_none() && self.assets.is_none();
+        let plain = self.plain && !self.branches && self.assets.is_none();
         Outcome::result_text(
             Facts::gather(&ctx.root).and_then(|f| {
-                if let Some(id) = &self.feature {
-                    let feature = f.features.iter().find(|x| &x.id == id);
-                    let feature =
-                        feature.ok_or_else(|| crate::Error::invalid(format!("feature {id}: not in the catalogue")))?;
-                    return Ok(json!({"feature": id, "branches": feature.branches_json(true)}));
+                if self.branches {
+                    return Ok(json!({"branches": f.branches_json(true)}));
                 }
                 if let Some(name) = &self.assets {
                     return f.assets_named(name);
@@ -2114,7 +1687,6 @@ pub struct PortNextArgs {}
 impl Op for PortNextArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::result(Facts::gather(&ctx.root).and_then(|f| {
-            f.port.note_recordings(&ctx.root, false);
             let next = guarded(&ctx.root, &f, f.next())?;
             let mut v = f.status();
             v["next"] = next.clone();
@@ -2126,27 +1698,58 @@ impl Op for PortNextArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{feature, workspace};
+    use super::super::tests::workspace;
     use super::*;
 
-    fn facts(goal: &str, ids: &[&str]) -> (super::super::tests::tempdir::Dir, Facts) {
-        let entries: Vec<(String, String)> = ids.iter().map(|id| (format!("{id}.md"), feature(id, ""))).collect();
-        let entries: Vec<(&str, &str)> = entries.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-        let (dir, _) = workspace(goal, &entries);
+    const CONFIRMED: &str = "description = \"x\"\nconfirmed = { at = \"t\" }\n";
+
+    fn facts(goal: &str, files: &[(&str, &str)]) -> (super::super::tests::tempdir::Dir, Facts) {
+        let (dir, _) = workspace(goal, files);
         let f = Facts::gather(&dir.0).unwrap();
         (dir, f)
     }
 
-    const CONFIRMED: &str = "description = \"x\"\nfeatures = [\"F-0001\", \"F-0002\"]\nconfirmed = { at = \"t\", features = [\"F-0001\", \"F-0002\"] }\n";
+    fn verdict(commit: &str, clean: bool, recordings: &[(&str, &[&str])]) -> verdict::Verdict {
+        verdict::Verdict {
+            goal: super::super::GOAL_ID.into(),
+            commit: commit.into(),
+            clean,
+            at: "t".into(),
+            failures: vec![],
+            recordings: recordings
+                .iter()
+                .map(|(n, f)| (n.to_string(), f.iter().map(|l| l.to_string()).collect()))
+                .collect(),
+            differs: BTreeMap::new(),
+            fixing: None,
+            pointers: BTreeMap::new(),
+        }
+    }
+
+    fn results(rs: &[(&str, &[&str])]) -> Results {
+        rs.iter().map(|(n, f)| (n.to_string(), Some(f.iter().map(|l| l.to_string()).collect()))).collect()
+    }
+
+    /// Facts for a goal whose work recordings all pass at HEAD, its code
+    /// cited and its branches resolved, the review missing.
+    fn matching() -> (super::super::tests::tempdir::Dir, Facts) {
+        let (d, mut f) = facts(CONFIRMED, &[]);
+        f.unrecorded.clear();
+        f.port.problems.clear();
+        f.verdict = State::Current(verdict("abc", true, &[("walk/a", &[]), ("walk/b", &[])]));
+        f.work = results(&[("walk/a", &[]), ("walk/b", &[])]);
+        f.ran = [0x8001_0000].into();
+        f.needs = assets::Needs::default();
+        (d, f)
+    }
 
     #[test]
     fn debug_files_on_the_disc_are_read_first_until_code_symbols_reports_them() {
-        let (d, _) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        let (d, _) = facts(CONFIRMED, &[]);
         let scan = json!({"debug_files": [{"at": "/GAME.SYM", "kind": "sym"}], "files_by_name": [
             {"path": "/GAME.SYM", "kind": "sym"}, {"path": "/README.C", "kind": "source"}]});
         crate::disc_names::record(&d.0, &scan, false).unwrap();
-        let f = Facts::gather(&d.0).unwrap();
-        let item = f.next();
+        let item = Facts::gather(&d.0).unwrap().next();
         assert_eq!((item.item, item.who), ("Read", "agent"));
         assert!(item.why.ends_with("/GAME.SYM (sym), /README.C (source)"), "{}", item.why);
         crate::disc_names::record(&d.0, &scan, true).unwrap();
@@ -2155,7 +1758,7 @@ mod tests {
 
     #[test]
     fn a_function_whose_c_passed_and_now_fails_is_fixed() {
-        let (d, _) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        let (d, _) = facts(CONFIRMED, &[]);
         let checks = d.0.join(crate::decomp::CHECKS);
         std::fs::create_dir_all(&checks).unwrap();
         std::fs::create_dir_all(d.0.join("decomp")).unwrap();
@@ -2169,15 +1772,13 @@ mod tests {
             )
             .unwrap();
         };
-        // Failing, never passed: not a regression.
         last("failed");
         std::fs::write(checks.join("checks.jsonl"), "{\"function\":\"step\",\"status\":\"failed\"}\n").unwrap();
         assert!(Facts::gather(&d.0).unwrap().regressed.is_empty());
         std::fs::write(checks.join("checks.jsonl"),
             "{\"function\":\"step\",\"status\":\"passed\",\"commit\":\"abcdef0123456\"}\n{\"function\":\"step\",\"status\":\"failed\"}\n").unwrap();
-        let f = Facts::gather(&d.0).unwrap();
-        let item = f.next();
-        assert_eq!((item.item, item.who, item.feature.as_deref()), ("Fix", "agent", None));
+        let item = Facts::gather(&d.0).unwrap().next();
+        assert_eq!((item.item, item.who, item.recording.as_deref()), ("Fix", "agent", None));
         assert_eq!(item.why, "step's C passed its check at abcdef0123 and now fails: v0: original 0x1, yours 0x2");
         last("passed");
         assert!(Facts::gather(&d.0).unwrap().regressed.is_empty());
@@ -2185,116 +1786,118 @@ mod tests {
 
     #[test]
     fn the_catalogue_comes_before_the_person_confirms() {
-        let (_d, f) = facts("description = \"x\"\nfeatures = [\"F-0001\", \"F-0002\"]\n", &["F-0001"]);
+        let (_d, f) = facts("description = \"\"\n", &[]);
         assert_eq!(f.next().item, "Catalogue");
-        let (_d, f) = facts("description = \"x\"\nfeatures = [\"F-0001\", \"F-0002\"]\n", &["F-0001", "F-0002"]);
-        let item = f.next();
-        assert_eq!((item.item, item.who), ("Confirm", "person"));
-        // A feature leaving the confirmed list is the agent's cut.
-        let (_d, f) = facts(
-            &CONFIRMED.replace("features = [\"F-0001\", \"F-0002\"]\nc", "features = [\"F-0002\"]\nc"),
-            &["F-0001", "F-0002"],
-        );
+        let (_d, f) = facts("description = \"x\"\n", &[]);
+        assert_eq!((f.next().item, f.next().who), ("Confirm", "person"));
+        // The description changed since: confirmed again.
+        let (_d, f) = facts("description = \"x\"\nconfirmed = { at = \"t\", description = \"0\" }\n", &[]);
+        assert_eq!(f.next().item, "Confirm");
+        let (_d, f) = facts(CONFIRMED, &[]);
         assert_ne!(f.next().item, "Confirm");
     }
 
-    fn set(f: &mut Facts, id: &str, change: impl FnOnce(&mut Feature)) {
-        change(f.features.iter_mut().find(|x| x.id == id).unwrap());
-    }
-
-    fn review(f: &mut Facts, r: Review) {
-        for x in f.features.iter_mut() {
-            x.code_reviewed = r.holds();
-        }
-        f.review = r;
-    }
-
-    fn current() -> State {
-        State::Current(verdict::Verdict {
-            feature: String::new(),
-            commit: "abc".into(),
-            clean: true,
-            at: "t".into(),
-            failures: vec![],
-            recordings: BTreeMap::new(),
-            pointer: None,
-        })
-    }
-
-    fn results(rs: &[(&str, &[&str])]) -> Vec<(String, Option<Vec<String>>)> {
-        rs.iter().map(|(n, f)| (n.to_string(), Some(f.iter().map(|l| l.to_string()).collect()))).collect()
+    #[test]
+    fn items_follow_the_goal() {
+        let (_d, mut f) = facts(CONFIRMED, &[]);
+        assert_eq!(f.next().item, "Record");
+        assert!(f.next().why.contains("no work recordings"), "{}", f.next().why);
+        f.unrecorded.clear();
+        f.work = vec![("walk/a".into(), None), ("walk/b".into(), None)];
+        assert_eq!(f.next().item, "Implement");
+        // Fix: the recording differing earliest first.
+        let mut v = verdict("abc", true, &[("walk/a", &["x differs"]), ("walk/b", &["y differs"])]);
+        v.differs.insert("walk/a".into(), verdict::Differs { tick: 90, quantities: 1 });
+        v.differs.insert("walk/b".into(), verdict::Differs { tick: 10, quantities: 3 });
+        f.verdict = State::Current(v.clone());
+        f.work = results(&[("walk/a", &["x differs"]), ("walk/b", &["y differs"])]);
+        let item = f.next();
+        assert_eq!((item.item, item.recording.as_deref()), ("Fix", Some("walk/b")));
+        assert!(item.why.starts_with("walk/b fails: y differs (2 of 2 work recordings fail"), "{}", item.why);
+        // While it still fails, the one being fixed stays first.
+        v.fixing = Some("walk/a".into());
+        f.verdict = State::Current(v);
+        assert_eq!(f.next().recording.as_deref(), Some("walk/a"));
+        // Passing: what the recordings run that the port does not cite.
+        let (_d, mut f) = matching();
+        f.ran = [0x8001_0000, 0x8001_0100].into();
+        f.uncited = vec![0x8001_0100];
+        let item = f.next();
+        assert_eq!(item.item, "Locate");
+        assert!(item.why.contains("run 1 functions") && item.why.ends_with("0x80010100"), "{}", item.why);
+        assert_eq!(f.shares().code, (1, 2));
+        // A question first.
+        f.port.questions = vec!["what is the slope limit?".into()];
+        assert_eq!(f.next().item, "Answer");
+        f.port.questions.clear();
+        f.uncited.clear();
+        // An open branch: Cover, unless as many groups wait on plays.
+        f.branches = vec![Branch::code(0x8001_0010, 0x8001_0000, 1, None)];
+        assert_eq!(f.next().item, "Cover");
+        f.branches[0].wont_reach = Some(false);
+        let item = f.next();
+        assert_eq!((item.item, item.who), ("Confirm", "person"));
+        f.branches[0].wont_reach = Some(true);
+        // Finished: the review.
+        let item = f.next();
+        assert_eq!(item.item, "Review");
+        assert!(
+            item.why.contains("came to match") && item.how.contains("matching = true and finished = true"),
+            "{item:?}"
+        );
+        f.review = Review::Holds { commit: "abc".into(), findings: 0 };
+        f.review_matching = true;
+        f.review_finished = true;
+        // Reviewed: the person's plays.
+        let item = f.next();
+        assert_eq!((item.item, item.who), ("Play", "person"));
+        f.held_out = results(&[("walk/play", &["x differs"])]);
+        let item = f.next();
+        assert_eq!((item.item, item.recording.as_deref()), ("Fix", Some("walk/play")));
+        f.held_out = results(&[("walk/play", &[])]);
+        assert!(f.complete());
+        assert_eq!(f.next().item, "Done");
+        assert_eq!(f.shares().recordings, (3, 3));
     }
 
     #[test]
-    fn a_system_turned_off_comes_back_once_its_feature_matches() {
-        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
-        for id in ["F-0001", "F-0002"] {
-            set(&mut f, id, |x| {
-                x.located = true;
-                x.unrecorded.clear();
-                x.verdict = current();
-                x.work = results(&[("walk/a", &[])]);
-                x.held_out = results(&[("walk/h", &[])]);
-                x.code_reviewed = true;
-            });
-        }
-        f.review_features = vec!["F-0001".into(), "F-0002".into()];
-        f.review_finished = vec!["F-0001".into(), "F-0002".into()];
-        assert_eq!(f.stage("F-0002"), Some(Stage::Done));
-        set(&mut f, "F-0002", |x| x.off = vec!["walk: enemy_update".into()]);
-        // Not done while the original's recordings run without its code.
-        assert_eq!(f.stage("F-0002"), Some(Stage::Reviewed));
+    fn a_system_turned_off_comes_back_once_the_port_cites_it() {
+        let (_d, mut f) = matching();
+        f.review = Review::Holds { commit: "abc".into(), findings: 0 };
+        f.held_out = results(&[("walk/play", &[])]);
+        f.off = vec![Off { scenario: "walk".into(), name: "enemy_update".into(), cited: false }];
+        assert!(!f.complete());
         let item = f.next();
-        assert_eq!((item.item, item.feature.as_deref()), ("Restore", Some("F-0002")));
-        assert!(item.why.contains("walk: enemy_update"), "{}", item.why);
-        // Before it matches, the feature's own work comes first.
-        set(&mut f, "F-0002", |x| x.work = results(&[("walk/a", &["differs from the recording in x"])]));
+        assert_eq!(item.item, "Restore");
+        assert!(item.why.starts_with("scenarios still turn off code"), "{}", item.why);
+        f.off[0].cited = true;
+        let item = f.next();
+        assert!(item.item == "Restore" && item.why.contains("walk: enemy_update"), "{item:?}");
+        // A failing recording comes first.
+        f.verdict = State::Current(verdict("abc", true, &[("walk/a", &["x"]), ("walk/b", &[])]));
+        f.work = results(&[("walk/a", &["x"]), ("walk/b", &[])]);
         assert_eq!(f.next().item, "Fix");
     }
 
     #[test]
     fn input_the_original_delays_is_fixed_before_the_port_is_written() {
         use crate::scenario::Late;
-        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
-        for id in ["F-0001", "F-0002"] {
-            set(&mut f, id, |x| {
-                x.located = true;
-                x.unrecorded.clear();
-            });
-        }
+        let (_d, mut f) = facts(CONFIRMED, &[]);
+        f.unrecorded.clear();
         let line = "scenarios/walk/a.jsonl: the game ran 3 ticks on input a tick old (ticks 4, 9, 12)";
-        let at = |f: &mut Facts, k: Late| set(f, "F-0001", |x| x.late = vec![(k, line.to_string())]);
-        at(&mut f, Late::Unfixed);
-        assert_eq!(f.stage("F-0001"), Some(Stage::Located));
-        let item = f.next();
-        assert_eq!((item.item, item.feature.as_deref()), ("Fix input", Some("F-0001")));
-        assert!(
-            item.why.contains("ticks 4, 9, 12") && item.how.contains("replace that function in fixes/"),
-            "{item:?}"
-        );
-        // A fix written: recorded again, the recording takes it.
-        at(&mut f, Late::Before);
-        let item = f.next();
-        assert_eq!((item.item, item.feature.as_deref()), ("Record", Some("F-0001")));
-        assert!(item.how.contains("record those scenarios again"), "{item:?}");
-        // Recorded with it and still late: the fix is changed, not recorded again.
-        at(&mut f, Late::Fails);
+        f.late = vec![(Late::Unfixed, line.into())];
         let item = f.next();
         assert_eq!(item.item, "Fix input");
-        assert!(
-            item.why.starts_with("fixes/ does not stop the delay") && item.how.contains("change fixes/"),
-            "{item:?}"
-        );
-        // One recording still to take the fix waits on the fix that fails.
-        set(&mut f, "F-0001", |x| x.late.push((Late::Before, line.to_string())));
+        assert!(item.why.contains("ticks 4, 9, 12") && item.how.contains("replace that function in fixes/"));
+        f.late = vec![(Late::Before, line.into())];
+        assert_eq!(f.next().item, "Record");
+        f.late = vec![(Late::Fails, line.into()), (Late::Before, line.into())];
         assert!(f.next().why.starts_with("fixes/ does not stop the delay"));
-        set(&mut f, "F-0001", |x| x.late.clear());
-        assert!(!["Fix input", "Record"].contains(&f.next().item));
     }
 
     #[test]
     fn uncommitted_changes_leave_a_verdict_at_head_stale() {
-        let (dir, _) = workspace(CONFIRMED, &[("F-0001.md", &feature("F-0001", ""))]);
+        let (dir, _) = workspace(CONFIRMED, &[("scenarios/walk/a.jsonl", "")]);
         let git = |args: &[&str]| {
             let ok = std::process::Command::new("git")
                 .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
@@ -2309,455 +1912,32 @@ mod tests {
         git(&["add", "-A"]);
         git(&["commit", "-qm", "c"]);
         let head = Git::read(&dir.0).head.unwrap();
-        let v = verdict::Verdict {
-            feature: "F-0001".into(),
-            commit: head.clone(),
-            clean: true,
-            at: "t".into(),
-            failures: vec![],
-            recordings: Default::default(),
-            pointer: None,
-        };
-        verdict::write(&dir.0, &v).unwrap();
-        let state = || Facts::gather(&dir.0).unwrap().features[0].verdict.clone();
+        verdict::write(&dir.0, &verdict(&head, true, &[("walk/a", &[])])).unwrap();
+        let state = || Facts::gather(&dir.0).unwrap().verdict;
         assert!(matches!(state(), State::Current(_)), "{:?}", state());
-        // Notes change nothing a check reads.
+        assert!(Facts::gather(&dir.0).unwrap().work == results(&[("walk/a", &[])]));
         std::fs::create_dir_all(dir.0.join("notes")).unwrap();
         std::fs::write(dir.0.join("notes/a.md"), "x").unwrap();
         assert!(matches!(state(), State::Current(_)));
-        // A recording made again does.
-        std::fs::create_dir_all(dir.0.join("scenarios/walk")).unwrap();
         std::fs::write(dir.0.join("scenarios/walk/a.jsonl"), "{}").unwrap();
         assert_eq!(state(), State::Stale { commit: head });
     }
 
     #[test]
-    fn the_feature_whose_code_a_scenario_turns_off_owns_it() {
-        let entry =
-            feature("F-0001", "").replace("area = \"driving\"\n", "area = \"driving\"\ncode = [\"0x80031F64\"]\n");
-        let (dir, _) = workspace(CONFIRMED, &[("F-0001.md", &entry), ("F-0002.md", &feature("F-0002", ""))]);
-        std::fs::create_dir_all(dir.0.join("scenarios")).unwrap();
-        std::fs::write(
-            dir.0.join("scenarios/walk.toml"),
-            "moment = \"m\"\nchain = \"c\"\nkind = \"level\"\n[compare]\nx = 0\n[off]\n\"0x80031F64\" = 0\n\"0x80040000\" = 1\n",
-        )
-        .unwrap();
-        let f = Facts::gather(&dir.0).unwrap();
-        let off = |id: &str| f.features.iter().find(|x| x.id == id).unwrap().off.clone();
-        assert_eq!(off("F-0001"), ["walk: 0x80031F64"]);
-        assert!(off("F-0002").is_empty());
-        let status = f.status().to_string();
-        assert!(status.contains(r#""off":["walk: 0x80031F64"]"#), "{status}");
-    }
-
-    #[test]
-    fn items_follow_the_stages() {
-        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
-        let next = |f: &Facts| {
-            let i = f.next();
-            (i.item, i.who, i.feature.unwrap_or_default())
-        };
-        assert_eq!(next(&f), ("Locate", "agent", "F-0001".into()));
-        for id in ["F-0001", "F-0002"] {
-            set(&mut f, id, |x| x.located = true);
-        }
-        assert_eq!(next(&f), ("Record", "agent", "F-0001".into()));
-        assert!(f.next().why.contains("names no work recordings"));
-        for id in ["F-0001", "F-0002"] {
-            set(&mut f, id, |x| {
-                x.unrecorded.clear();
-                x.work = vec![("walk/a".into(), None)];
-            });
-        }
-        assert_eq!(f.stage("F-0001"), Some(Stage::Recorded));
-        assert_eq!(next(&f), ("Implement", "agent", "F-0001".into()));
-        set(&mut f, "F-0001", |x| {
-            x.verdict = current();
-            x.work = results(&[("walk/a", &[])]);
-        });
-        set(&mut f, "F-0002", |x| {
-            x.verdict = current();
-            x.work = results(&[
-                ("walk/b", &["differs from the recording in x"]),
-                ("walk/c", &["differs from the recording in y"]),
-            ]);
-            // Not reviewed: its held-out results neither fail it nor show.
-            x.held_out = results(&[("walk/h", &["differs from the recording in x"])]);
-        });
-        assert_eq!(f.stage("F-0001"), Some(Stage::Matching));
-        // F-0001 matches: a review of it comes before more work.
-        let item = f.next();
-        assert_eq!(item.item, "Review");
+    fn verdicts_count_only_at_their_clean_commit() {
+        let (d, _) = facts(CONFIRMED, &[]);
+        let state = || verdict::state(&d.0, Some("abc"));
+        assert_eq!(state(), State::Missing);
+        verdict::write(&d.0, &verdict("abc", true, &[("walk/a", &["x"])])).unwrap();
+        let State::Current(now) = state() else { panic!("{:?}", state()) };
         assert_eq!(
-            item.why,
-            "F-0001 finished (branches resolved, no question open) since the last review, and the code has no review"
+            (now.of("walk/a"), now.of("walk/b")),
+            (vec!["x".to_string()], vec!["not run by the last psx port check".to_string()])
         );
-        assert!(item.how.contains("features = [\"F-0001\"]"), "{}", item.how);
-        // Once a review lists them, the review waits for the next feature to match or finish.
-        f.review_features = vec!["F-0001".into(), "F-0002".into()];
-        f.review_finished = vec!["F-0001".into()];
-        let item = f.next();
-        assert_eq!((item.item, item.feature.as_deref()), ("Fix", Some("F-0002")));
-        assert_eq!(item.why, "walk/b fails: differs from the recording in x");
-        assert_eq!(f.features[1].held_out_json()["shown"], "once the code is reviewed");
-        set(&mut f, "F-0002", |x| x.work = results(&[("walk/b", &[])]));
-        f.review_finished = vec!["F-0001".into(), "F-0002".into()];
-        set(&mut f, "F-0001", |x| x.unbuilt = vec!["walk: no launcher for scenario kind level".into()]);
-        assert_eq!(next(&f), ("Build", "agent", "F-0001".into()));
-        set(&mut f, "F-0001", |x| x.unbuilt.clear());
-        set(&mut f, "F-0002", |x| x.questions = vec!["does it snap while rising?".into()]);
-        assert_eq!(next(&f), ("Answer", "agent", "F-0002".into()));
-        set(&mut f, "F-0002", |x| x.questions.clear());
-        // Code its recordings run that nobody accounted for.
-        f.names.insert(0x0003_40A4, "collide".into());
-        set(&mut f, "F-0002", |x| x.unclaimed = vec![0x8001_0088, 0x8003_40A4]);
-        assert_eq!(f.stage("F-0002"), Some(Stage::Matching));
-        let item = f.next();
-        assert_eq!((item.item, item.feature.as_deref()), ("Locate", Some("F-0002")));
-        assert!(item.why.ends_with("not_ported.toml does not: 0x80010088, collide (0x800340A4)"), "{}", item.why);
-        assert_eq!(f.status()["areas"]["driving"][1]["unclaimed"][1], "collide (0x800340A4)", "{}", f.status());
-        set(&mut f, "F-0002", |x| x.unclaimed.clear());
-        let branch = |wont_reach| Branch::code(0x8002_D820, 0x8002_D810, 1, wont_reach);
-        set(&mut f, "F-0001", |x| x.branches = vec![branch(None); 7]);
-        let short = f.features[0].branches_json(false);
-        assert_eq!(
-            (short["unresolved"].as_array().unwrap().len(), &short["more"]),
-            (5, &json!("2 more groups: port_status feature F-0001"))
-        );
-        assert_eq!(f.features[0].branches_json(true)["unresolved"].as_array().unwrap().len(), 7);
-        set(&mut f, "F-0001", |x| x.branches = vec![branch(None)]);
-        assert_eq!(next(&f), ("Cover", "agent", "F-0001".into()));
-        assert!(f.next().why.starts_with("the branch at 0x8002D820 (in 0x8002D810) never fell through"));
-        // Asked of the person: the feature waits on the answer, then reads it.
-        let play = |state, read| crate::handoff::queue::Request {
-            dir: PathBuf::from("/q/1"),
-            args: json!({"request": "walk off the ledge", "id": "walk", "name": "ledge"}),
-            queued_unix_ms: 1,
-            after: None,
-            state,
-            read,
-        };
-        f.plays = vec![play(crate::handoff::queue::State::Queued, false)];
-        assert_eq!(next(&f), ("Wait", "person", "F-0001".into()));
-        assert!(
-            f.next().why.starts_with("1 play request waits for the person: walk off the ledge"),
-            "{}",
-            f.next().why
-        );
-        let declined = json!({"status": "declined", "note": "there is no ledge there"});
-        f.plays = vec![play(crate::handoff::queue::State::Answered(declined.clone()), false)];
-        assert_eq!(next(&f), ("Read", "agent", "F-0001".into()));
-        assert!(f.next().why.ends_with("declined: there is no ledge there"), "{}", f.next().why);
-        f.plays = vec![play(crate::handoff::queue::State::Answered(declined), true)];
-        assert_eq!(next(&f), ("Cover", "agent", "F-0001".into()));
-        f.plays.clear();
-        set(&mut f, "F-0001", |x| x.branches = vec![branch(Some(false))]);
-        assert_eq!(next(&f), ("Confirm", "person", "F-0001".into()));
-        let script = Branch {
-            at: Place::Script { at: Stretch::parse("croc+0x3..0x8").unwrap(), routine: None },
-            never: "read".into(),
-            wont_reach: None,
-            test: None,
-            behind: None,
-            runs: 0,
-        };
-        set(&mut f, "F-0001", |x| x.branches = vec![script]);
-        assert_eq!(next(&f), ("Cover", "agent", "F-0001".into()));
-        assert!(
-            f.next().why.starts_with("the script's bytes croc+0x3..0x8 were never read in its recordings"),
-            "{}",
-            f.next().why
-        );
-        assert_eq!(
-            f.features[0].branches_json(false)["unresolved"][0],
-            json!({"at": "croc+0x3..0x8", "never": "read"})
-        );
-        set(&mut f, "F-0001", |x| x.branches = vec![branch(Some(true))]);
-        // Every feature finished: one review of the code as a whole.
-        assert_eq!(next(&f), ("Review", "agent", String::new()));
-        let how = f.next().how;
-        assert!(how.contains("would you write a new game like this?") && how.contains("game tools"), "{how}");
-        assert!(how.contains("both games' screens over a few recordings (psx scenario show ID --name NAME --screens)"));
-        review(&mut f, Review::Stale { commit: "abc".into(), changed: vec!["game/src/jump.rs".into()], lines: 3 });
-        let how = f.next().how;
-        assert!(how.contains("a follow-up review") && how.contains("git diff abc -- game tools"), "{how}");
-        review(&mut f, Review::Open { unanswered: vec!["Stomp is a bool".into()] });
-        assert!(f.next().why.contains("Stomp is a bool"));
-        review(&mut f, Review::Holds { commit: "abc".into(), findings: 1 });
-        assert_eq!(f.stage("F-0001"), Some(Stage::Reviewed));
-        assert_eq!(next(&f), ("Fix", "agent", "F-0002".into()), "reviewed: its held-out failure shows");
-        set(&mut f, "F-0002", |x| x.held_out = results(&[("walk/h", &[])]));
-        assert_eq!(next(&f), ("Play", "person", "F-0001".into()));
-        set(&mut f, "F-0001", |x| x.held_out = results(&[("walk/i", &[])]));
-        // Every feature reviewed: the goal's own play, from its description.
-        assert!(!f.complete());
-        assert_eq!(next(&f), ("Play", "person", String::new()));
-        assert!(f.next().how.contains("written from the goal's description"), "{}", f.next().how);
-        f.goal_held_out = vec![("walk/g".into(), None)];
-        assert_eq!(next(&f), ("Implement", "agent", String::new()));
-        f.goal_held_out = results(&[("walk/g", &["player_x"])]);
-        assert_eq!(next(&f), ("Fix", "agent", String::new()));
-        assert_eq!(f.status()["held_out"], json!({"total": 1, "pass": 0}));
-        f.goal_held_out = results(&[("walk/g", &[])]);
-        assert!(f.complete());
-        assert_eq!(next(&f), ("Done", "person", String::new()));
-    }
-
-    /// Every feature of `f` done, with the given files on the disc.
-    fn finished(f: &mut Facts, files: Vec<assets::Asset>) {
-        for x in f.features.iter_mut() {
-            x.located = true;
-            x.unrecorded.clear();
-            x.verdict = current();
-            x.work = results(&[("walk/a", &[])]);
-            x.held_out = results(&[("walk/h", &[])]);
-        }
-        f.goal_held_out = results(&[("walk/g", &[])]);
-        review(f, Review::Holds { commit: "abc".into(), findings: 0 });
-        f.assets = Ok(assets::Inventory { files, ..Default::default() });
-        needs_again(f);
-    }
-
-    /// What the goal and the features need, read again from the inventory.
-    fn needs_again(f: &mut Facts) {
-        f.needs = assets::Needs::of(f.port.goal.assets.names(), f.port.goal.assets.is_all(), &f.port, &f.assets);
-        for x in f.features.iter_mut() {
-            let names = f.port.entries.get(&x.id).map(|e| e.assets.clone()).unwrap_or_default();
-            x.assets = assets::Needs::of(&names, false, &f.port, &f.assets);
-        }
-    }
-
-    fn file(path: &str, state: AssetState) -> assets::Asset {
-        assets::Asset { path: path.into(), state, ..Default::default() }
-    }
-
-    #[test]
-    fn assets_follow_the_features_when_the_goal_has_them() {
-        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
-        let archive =
-            assets::Asset { unlisted: true, format: Some("pak".into()), ..file("/DATA.PAK", AssetState::Found) };
-        finished(
-            &mut f,
-            vec![
-                file("/MAPS/L1.WLD", AssetState::Found),
-                assets::Asset { loaded: Some(false), ..file("/CUTS/BALL.AN2", AssetState::Unknown) },
-                archive,
-            ],
-        );
-        // Not in the goal: shown, not asked for.
-        assert!(f.complete());
-        assert!(f.plain().contains("(not in the goal)"), "{}", f.plain());
-        f.port.goal.assets = super::super::Assets::All;
-        needs_again(&mut f);
-        assert!(!f.complete());
-        let next = |f: &Facts| (f.next().item, f.next().why);
-        assert_eq!(next(&f).0, "Format");
-        assert!(next(&f).1.starts_with("/CUTS/BALL.AN2 has no format yet; no traced run loaded it"));
-        let set = |f: &mut Facts, i: usize, s| {
-            f.assets.as_mut().unwrap().files[i].state = s;
-            needs_again(f);
-        };
-        set(&mut f, 1, AssetState::Unused);
-        assert_eq!(next(&f).0, "Index");
-        assert!(next(&f).1.starts_with("/DATA.PAK is an archive (pak) whose entries the importer does not list"));
-        // Listed: its entries take its place.
-        f.assets.as_mut().unwrap().files[2] = file("/DATA.PAK:LEVEL1.DAT", AssetState::Unused);
-        needs_again(&mut f);
-        assert_eq!(next(&f).0, "Import");
-        assert!(next(&f).1.contains("no psx port check has run the importers"), "{}", next(&f).1);
-        // Imported by a check of an older commit: rerun it, no importer to write.
-        f.assets.as_mut().unwrap().stale = Some("6c91908".into());
-        f.assets.as_mut().unwrap().files[0].imported_then = true;
-        needs_again(&mut f);
-        assert_eq!(next(&f).0, "Import");
-        assert!(
-            next(&f).1.starts_with("/MAPS/L1.WLD was imported at 6c91908, the last psx port check"),
-            "{}",
-            next(&f).1
-        );
-        assert_eq!(f.next().how, "commit the changes and run psx port check");
-        f.assets.as_mut().unwrap().stale = None;
-        f.assets.as_mut().unwrap().files[0].imported_then = false;
-        set(&mut f, 0, AssetState::Imported);
-        assert_eq!(next(&f).0, "Check");
-        set(&mut f, 0, AssetState::Checked);
-        assert!(f.complete());
-        assert_eq!(next(&f).0, "Done");
-        assert!(f.plain().contains("assets  1/3 files checked · 2 unused · 0 formats · 0 unknown\n"), "{}", f.plain());
-    }
-
-    #[test]
-    fn a_feature_brings_in_the_assets_it_names_before_its_own_work() {
-        let level = "+++\nid = \"F-0002\"\ntitle = \"Slopes\"\narea = \"player\"\nassets = [\"/CROCFILE.1:MAP1*\"]\n+++\nOn slopes.\n";
-        let (d, _) = workspace(CONFIRMED, &[("F-0001.md", &feature("F-0001", "")), ("F-0002.md", level)]);
-        let mut f = Facts::gather(&d.0).unwrap();
-        let disc = vec![file("/CROCFILE.1", AssetState::Unknown), file("/MAPS/L2.WLD", AssetState::Unknown)];
-        finished(&mut f, disc);
-        let next = |f: &Facts| {
-            let i = f.next();
-            (i.item, i.feature.unwrap_or_default(), i.why)
-        };
-        // No format doc says CROCFILE.1 is an archive: the feature's item comes first.
-        let (item, feature, why) = next(&f);
-        assert_eq!((item, feature.as_str()), ("Format", "F-0002"));
-        assert!(why.contains("an entry of /CROCFILE.1, which no format doc says is an archive"), "{why}");
-        assert_eq!(f.stage("F-0002"), Some(Stage::Matching), "its assets keep it from Reviewed");
-        // An archive doc, not listed yet: Index.
-        f.port.formats.insert(
-            "crocfile".into(),
-            assets::Format {
-                id: "crocfile".into(),
-                files: vec!["/CROCFILE.1".into()],
-                archive: true,
-                ..Default::default()
-            },
-        );
-        f.assets.as_mut().unwrap().files[0] =
-            assets::Asset { unlisted: true, format: Some("crocfile".into()), ..file("/CROCFILE.1", AssetState::Found) };
-        needs_again(&mut f);
-        assert_eq!(next(&f).0, "Index");
-        // Listed: only the entries it names.
-        let files = &mut f.assets.as_mut().unwrap().files;
-        files[0] = assets::Asset { format: Some("level".into()), ..file("/CROCFILE.1:MAP1.GEO", AssetState::Found) };
-        files.push(file("/CROCFILE.1:CROC.MOD", AssetState::Found));
-        needs_again(&mut f);
-        assert_eq!(f.features[1].assets.files, [0]);
-        assert_eq!(next(&f).0, "Import");
-        f.assets.as_mut().unwrap().files[0].state = AssetState::Checked;
-        needs_again(&mut f);
-        // The goal asks for no assets: the files no feature names wait.
-        assert!(f.complete());
-        assert!(f.plain().contains("assets  1/1 needed files checked or unused · disc:"), "{}", f.plain());
-        // The goal asks for every level: a format with no doc yet is the agent's to find.
-        f.port.goal.assets = super::super::Assets::Names(vec!["format:level".into(), "format:car".into()]);
-        needs_again(&mut f);
-        let (item, feature, why) = next(&f);
-        assert_eq!((item, feature.as_str()), ("Format", ""));
-        assert!(why.contains("format:car, and no format doc (formats/car.md)"), "{why}");
-        f.port.goal.assets = super::super::Assets::Names(vec!["format:level".into()]);
-        needs_again(&mut f);
-        assert!(f.complete());
-        let named = f.assets_named("/CROCFILE.1:*").unwrap();
-        assert_eq!(named["count"], 2);
-        assert_eq!(
-            named["files"][1],
-            json!({"path": "/CROCFILE.1:CROC.MOD", "format": null, "state": "format found", "needed": false})
-        );
-        assert_eq!(
-            f.assets_named("/NOPE.*").unwrap()["unresolved"],
-            "matches no disc file or archive entry (code files are not assets)"
-        );
-    }
-
-    #[test]
-    fn branches_count_the_other_features_passing_recordings() {
-        let ids: Vec<String> = ["F-0001", "F-0002", "F-0003"].map(String::from).to_vec();
-        let of = |id: &str| match id {
-            "F-0001" => Some(vec!["walk/a".to_string()]),
-            "F-0002" => Some(vec!["run/a".to_string(), "walk/a".to_string()]),
-            _ => None,
-        };
-        // F-0003 has no verdict at HEAD: none of its recordings count.
-        let p = passing(&ids, of);
-        assert_eq!(p.len(), 2);
-        assert_eq!(borrowed("F-0001", &["walk/a".into()], &p), ["run/a"]);
-        assert_eq!(borrowed("F-0003", &["climb/a".into()], &p), ["run/a", "walk/a"]);
-        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
-        for id in ["F-0001", "F-0002"] {
-            set(&mut f, id, |x| {
-                x.located = true;
-                x.unrecorded.clear();
-                x.verdict = current();
-                x.work = results(&[("walk/a", &[])]);
-            });
-        }
-        set(&mut f, "F-0001", |x| {
-            x.branches =
-                vec![Branch::code(0x8002_D820, 0x8002_D810, 1, None), Branch::code(0x8002_D830, 0x8002_D810, 3, None)];
-            x.borrowed = vec!["run/a".into()];
-            x.borrowed_resolved = 1;
-        });
-        // Both matching and reviewed: F-0001's branch is what is left.
-        review(&mut f, Review::Holds { commit: "abc".into(), findings: 0 });
-        f.review_features = vec!["F-0001".into(), "F-0002".into()];
-        let x = &f.features[0];
-        assert!(x.summary().ends_with("1/2 branches (1 by other features' recordings)"), "{}", x.summary());
-        assert_eq!(x.branches_json(false)["resolved_by_others"]["branches"], 1);
-        assert_eq!(f.next().item, "Cover");
-        assert!(f.next().why.contains("in its recordings or the 1 of other features that pass;"), "{}", f.next().why);
-    }
-
-    #[test]
-    fn the_goals_shares_count_each_recording_function_and_branch_once() {
-        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
-        f.port.entries.get_mut("F-0001").unwrap().code = vec!["0x8002D810".into()];
-        f.port.entries.get_mut("F-0002").unwrap().code = vec!["0x8002D810".into(), "0x8002E000".into()];
-        set(&mut f, "F-0001", |x| {
-            x.verdict = current();
-            x.work = results(&[("walk/a", &[]), ("walk/b", &["x"])]);
-            x.held_out = results(&[("walk/c", &[])]);
-            x.branches =
-                vec![Branch::code(0x8002_D820, 0x8002_D810, 1, None), Branch::code(0x8002_D830, 0x8002_D810, 3, None)];
-            x.ran = [0x8002_D810, 0x8003_0000].into();
-        });
-        set(&mut f, "F-0002", |x| {
-            x.verdict = current();
-            x.work = results(&[("run/a", &[])]);
-            // The shared function's branch it took both ways resolves it
-            // for the goal.
-            x.branches = vec![Branch::code(0x8002_D820, 0x8002_D810, 3, None)];
-            x.ran = [0x8002_D810, 0x8002_E000].into();
-        });
-        let before = f.shares();
-        // The held-out play is not counted passing before the review.
-        assert_eq!(before.recordings, (2, 4));
-        assert_eq!(before.code, (2, 3));
-        assert_eq!(before.branches, (2, 2));
-        // Merged: F-0001 takes F-0002's code and recordings.
-        f.port.entries.get_mut("F-0001").unwrap().code = vec!["0x8002D810".into(), "0x8002E000".into()];
-        f.port.entries.remove("F-0002");
-        let gone = f.features.remove(1);
-        set(&mut f, "F-0001", |x| {
-            x.work.extend(gone.work);
-            x.branches =
-                vec![Branch::code(0x8002_D820, 0x8002_D810, 3, None), Branch::code(0x8002_D830, 0x8002_D810, 3, None)];
-            x.ran.extend(gone.ran);
-        });
-        assert_eq!(f.shares(), before);
-    }
-
-    #[test]
-    fn the_review_brief_gives_the_signs_of_a_cut_that_may_not_hold() {
-        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
-        assert!(f.brief().contains("psx sees no sign of one."), "{}", f.brief());
-        for (id, code, recs) in [
-            ("F-0001", ["0x8002D810", "0x8002E000"], vec!["walk/a"]),
-            ("F-0002", ["0x8002D810", "0x8002F000"], vec!["walk/a", "run/a"]),
-        ] {
-            let e = f.port.entries.get_mut(id).unwrap();
-            e.code = code.map(String::from).to_vec();
-            e.recordings.work = recs.into_iter().map(String::from).collect();
-        }
-        set(&mut f, "F-0001", |x| x.ran = [0x8002_D810, 0x8002_E000, 0x8002_F000].into());
-        set(&mut f, "F-0002", |x| x.ran = [0x8002_D810, 0x8002_F000].into());
-        // F-0002's recordings run none of F-0001's own code: not entwined.
-        assert_eq!(f.signs(), ["F-0001 has no recording of its own: each is also F-0002's"]);
-        set(&mut f, "F-0002", |x| {
-            x.ran.insert(0x8002_E000);
-            x.verdict = current();
-            if let State::Current(v) = &mut x.verdict {
-                v.pointer = Some(
-                    json!({"recording": "run/a", "quantities": [{"writers": [{"features": ["F-0001", "F-0002"]}]}]}),
-                );
-            }
-        });
-        let signs = f.signs();
-        assert_eq!(signs[0], "F-0002's recording run/a fails, and the pointer finds code of F-0001 there");
-        assert_eq!(
-            signs[2],
-            "F-0001, F-0002 claim 1 function together (0x8002D810), and each one's recordings run code only the other claims"
-        );
-        assert!(f.brief().contains("which should merge or split") && f.brief().contains(&signs[2]));
+        verdict::write(&d.0, &verdict("abc", false, &[])).unwrap();
+        assert_eq!(state(), State::Stale { commit: "abc".into() });
+        verdict::write(&d.0, &verdict("old", true, &[])).unwrap();
+        assert_eq!(verdict::state(&d.0, None), State::Stale { commit: "old".into() });
     }
 
     #[test]
@@ -2766,153 +1946,33 @@ mod tests {
             [("0x8002D800..0x8002D840", "the swim exit"), ("0x8002D830", "under water")]
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .into();
-        // Never ran, inside: the range. Ran one way: no key. Its own address wins.
         assert_eq!(code_key(&wont, 0x8002_D820, 0, None).map(String::as_str), Some("0x8002D800..0x8002D840"));
         assert_eq!(code_key(&wont, 0x8002_D820, 1, None), None);
         assert_eq!(code_key(&wont, 0x8002_D830, 0, None).map(String::as_str), Some("0x8002D830"));
-        assert_eq!(code_key(&wont, 0x8002_D840, 0, None), None);
-        // A test answers for every branch testing it, whichever way it missed.
         let mut tested = wont.clone();
         tested.insert("[0x8007529C] == 2".into(), "no analog pad".into());
-        assert_eq!(
-            code_key(&tested, 0x8002_D900, 1, Some("[0x8007529C] == 2")).map(String::as_str),
-            Some("[0x8007529C] == 2")
-        );
-        assert_eq!(code_key(&tested, 0x8002_D900, 1, Some("[0x8007529C] == 3")), None);
         let b = Branch {
             test: Some(crate::flow::Test { key: "[0x8007529C] == 2".into(), taken: false }),
             ..Branch::code(0x8002_D900, 0x8002_D810, 1, None)
         };
         assert!(tests_unmatched(&tested, std::slice::from_ref(&b)).is_empty());
         assert_eq!(tests_unmatched(&tested, &[]).len(), 1);
-        assert_eq!(b.never_test().as_deref(), Some("[0x8007529C] == 2 never true"));
-        // A recording that ran a branch in it says the range is wrong.
         let never_ran = Branch::code(0x8002_D820, 0x8002_D810, 0, Some(true));
-        assert_eq!(ranges_run(&wont, std::slice::from_ref(&never_ran)), Vec::<String>::new());
         let ran = Branch::code(0x8002_D824, 0x8002_D810, 1, None);
-        assert_eq!(
-            ranges_run(&wont, &[never_ran, ran]),
-            [
-                "wont_reach: 0x8002D800..0x8002D840 holds the branch at 0x8002D824, which a recording ran: a range holds only code no recording reaches"
-            ]
-        );
-    }
-
-    #[test]
-    fn a_review_comes_each_time_a_feature_matches_or_finishes() {
-        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
-        finished(&mut f, vec![]);
-        // F-0002 is still being built: a recording fails.
-        set(&mut f, "F-0002", |x| x.work = results(&[("walk/b", &["differs from the recording in x"])]));
-        let next = |f: &Facts| (f.next().item, f.next().why, f.next().how);
-        // A review that holds at HEAD saw the matching code: nothing to review.
-        review(&mut f, Review::Holds { commit: "abc".into(), findings: 0 });
-        assert_eq!(next(&f).0, "Fix");
-        // Changed since, and F-0001 not listed: a follow-up of the change.
-        review(&mut f, Review::Stale { commit: "abc".into(), changed: vec!["game/src/run.rs".into()], lines: 40 });
-        let (item, why, how) = next(&f);
-        assert_eq!(item, "Review");
-        assert!(
-            why.starts_with(
-                "F-0001 finished (branches resolved, no question open) since the last review, and the code changed"
-            ),
-            "{why}"
-        );
-        assert!(how.contains("git diff abc") && how.contains("its features to [\"F-0001\"]"), "{how}");
-        assert!(how.contains("its finished to [\"F-0001\"]"), "{how}");
-        // Listed as matching, not as finished (a review from before the
-        // finished list): its finish asks for one.
-        f.review_features = vec!["F-0001".into()];
-        let (item, why, _) = next(&f);
-        assert_eq!(item, "Review");
-        assert!(
-            why.starts_with("F-0001 finished (branches resolved, no question open) since the last review"),
-            "{why}"
-        );
-        // Listed: building F-0002 changes the code without a review each time.
-        f.review_finished = vec!["F-0001".into()];
-        assert_eq!(next(&f).0, "Fix");
-        // Unless much of it changes before F-0002 matches: a follow-up then.
-        let grown = |lines| Review::Stale { commit: "abc".into(), changed: vec!["game/src/run.rs".into()], lines };
-        review(&mut f, grown(800));
-        let (item, why, how) = next(&f);
-        assert_eq!(item, "Review");
-        assert!(
-            why.starts_with("800 lines of the code changed (goal.toml's review_lines: 800) since the last review"),
-            "{why}"
-        );
-        assert!(how.contains("git diff abc"), "{how}");
-        f.port.goal.review_lines = Some(1000);
-        assert_eq!(next(&f).0, "Fix");
-        f.port.goal.review_lines = None;
-        review(&mut f, grown(40));
-        // F-0002 matches, with branches still to cover: its review comes
-        // before the Cover work, not once that is done.
-        set(&mut f, "F-0002", |x| {
-            x.work = results(&[("walk/b", &[])]);
-            x.branches = vec![Branch::code(0x8002_D820, 0x8002_D810, 1, None)];
-        });
-        let (item, why, _) = next(&f);
-        assert_eq!(item, "Review");
-        assert!(why.starts_with("F-0002 came to match"), "{why}");
-        f.review_features = vec!["F-0001".into(), "F-0002".into()];
-        assert_eq!(next(&f).0, "Cover");
-        // Its branches covered: the review of what Cover added.
-        set(&mut f, "F-0002", |x| x.branches.clear());
-        let (item, why, _) = next(&f);
-        assert_eq!(item, "Review");
-        assert!(why.starts_with("F-0002 finished"), "{why}");
-        f.review_finished = vec!["F-0001".into(), "F-0002".into()];
-        review(&mut f, Review::Holds { commit: "abc".into(), findings: 0 });
-        assert_ne!(next(&f).0, "Review");
-        // Findings are answered as they come.
-        review(&mut f, Review::Open { unanswered: vec!["Run is a bool".into()] });
-        assert_eq!(next(&f).0, "Review");
-    }
-
-    #[test]
-    fn verdicts_count_only_at_their_clean_commit() {
-        let (d, _) = facts(CONFIRMED, &["F-0001"]);
-        let v = |commit: &str, clean| verdict::Verdict {
-            feature: "F-0001".into(),
-            commit: commit.into(),
-            clean,
-            at: "t".into(),
-            failures: vec![],
-            recordings: [("walk/a".to_string(), vec!["differs from the recording in x".to_string()])].into(),
-            pointer: None,
-        };
-        let state = || verdict::state(&d.0, "F-0001", Some("abc"));
-        assert_eq!(state(), State::Missing);
-        verdict::write(&d.0, &v("abc", true)).unwrap();
-        let State::Current(now) = state() else { panic!("{:?}", state()) };
-        assert_eq!(
-            (now.of("walk/a"), now.of("walk/b")),
-            (
-                vec!["differs from the recording in x".to_string()],
-                vec!["not run by the last psx port check".to_string()]
-            )
-        );
-        verdict::write(&d.0, &v("abc", false)).unwrap();
-        assert_eq!(state(), State::Stale { commit: "abc".into() });
-        verdict::write(&d.0, &v("old", true)).unwrap();
-        assert_eq!(state(), State::Stale { commit: "old".into() });
-        assert_eq!(verdict::state(&d.0, "F-0001", None), State::Stale { commit: "old".into() });
+        assert_eq!(ranges_run(&wont, std::slice::from_ref(&never_ran)), Vec::<String>::new());
+        assert_eq!(ranges_run(&wont, &[never_ran, ran]).len(), 1);
     }
 
     #[test]
     fn the_loop_guard_stops_an_unchanged_agent_item() {
-        let (d, f) = facts("description = \"x\"\nfeatures = [\"F-0001\", \"F-0002\"]\n", &["F-0001"]);
+        let (d, f) = facts("description = \"\"\n", &[]);
         let call = || guarded(&d.0, &f, f.next()).unwrap();
         assert_eq!(call()["item"], "Catalogue");
         assert_eq!(call()["item"], "Catalogue");
         let third = call();
         assert_eq!((third["item"].as_str(), third["stuck"]["item"].as_str()), (Some("Stuck"), Some("Catalogue")));
-        // Something changing hands the item out again.
-        std::fs::write(d.0.join("catalogue/F-0002.md"), feature("F-0002", "")).unwrap();
+        std::fs::write(d.0.join(super::super::GOAL), "description = \"x\"\n").unwrap();
         let f2 = Facts::gather(&d.0).unwrap();
-        assert_eq!(guarded(&d.0, &f2, f2.next()).unwrap()["item"], "Confirm");
-        // The person's items never trip it.
         for _ in 0..4 {
             assert_eq!(guarded(&d.0, &f2, f2.next()).unwrap()["item"], "Confirm");
         }

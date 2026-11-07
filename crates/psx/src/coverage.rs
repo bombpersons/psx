@@ -580,7 +580,7 @@ impl Functions {
     }
 }
 
-/// A conditional branch of a feature's code, as its recordings ran it.
+/// A conditional branch of the code to port, as the recordings ran it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodeBranch {
     pub pc: u32,
@@ -596,10 +596,10 @@ pub(crate) struct CodeBranch {
     pub behind: Option<u32>,
 }
 
-/// A feature's branches, as its recordings ran them.
+/// The branches of the code to port, as the recordings ran them.
 #[derive(Debug, Default)]
-pub(crate) struct FeatureBranches {
-    /// Each conditional branch in the feature's functions, but GCC's
+pub(crate) struct CodeBranches {
+    /// Each conditional branch in the functions to port, but GCC's
     /// division checks.
     pub branches: Vec<CodeBranch>,
     /// What keeps the count from being whole: recordings whose coverage
@@ -607,12 +607,22 @@ pub(crate) struct FeatureBranches {
     pub problems: Vec<String>,
     /// The entries of every function the recordings ran, in any code.
     pub ran: BTreeSet<u32>,
+    /// The entries of the inventory's functions holding an address the
+    /// port cites, ran or not.
+    pub cited: BTreeSet<u32>,
 }
 
-/// The conditional branches of the functions `code` (by entry) and the
-/// ways the `recordings` (`.jsonl` paths) took them.
-pub(crate) fn feature_branches(ctx: &Ctx, inv: &Value, recordings: &[PathBuf], code: &[u32]) -> FeatureBranches {
-    let mut out = FeatureBranches::default();
+/// The conditional branches of the functions the `recordings` (`.jsonl`
+/// paths) ran that `port` keeps (by entry), and the ways they took them;
+/// the functions holding a `cited` address.
+pub(crate) fn code_branches(
+    ctx: &Ctx,
+    inv: &Value,
+    recordings: &[PathBuf],
+    port: &dyn Fn(u32) -> bool,
+    cited: &BTreeSet<u32>,
+) -> CodeBranches {
+    let mut out = CodeBranches::default();
     let mut c = match images(&ctx.root, inv) {
         Ok(images) => Corpus {
             images,
@@ -646,9 +656,17 @@ pub(crate) fn feature_branches(ctx: &Ctx, inv: &Value, recordings: &[PathBuf], c
     for img in &c.images {
         out.ran.extend(img.functions.iter().zip(&img.runs).filter(|(_, r)| !r.is_empty()).map(|(f, _)| f.entry));
     }
+    let cited: BTreeSet<u32> = cited.iter().map(|a| a & 0x1FFF_FFFF).collect();
+    for img in &c.images {
+        for f in &img.functions {
+            if f.chunks.iter().any(|&(s, e)| cited.range(s & 0x1FFF_FFFF..e & 0x1FFF_FFFF).next().is_some()) {
+                out.cited.insert(f.entry);
+            }
+        }
+    }
     let mut seen = BTreeSet::new();
     for img in &c.images {
-        for f in img.functions.iter().filter(|f| code.contains(&f.entry)) {
+        for f in img.functions.iter().filter(|f| out.ran.contains(&f.entry) && port(f.entry)) {
             let (_, mut gaps) = img.gaps(f);
             for a in f.words() {
                 if img.word(a).is_some_and(conditional) && !gaps.checks.contains(&a) && seen.insert(a) {

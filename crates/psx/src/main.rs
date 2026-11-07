@@ -254,16 +254,16 @@ enum PortAction {
     /// Add a ready-made crate under addons/ (full: a window, a renderer with a PS1 and a
     /// modern look, the disc import and menus, wired into game/src/main.rs).
     Add(template::PortAddArgs),
-    /// Show the goal's features and any problems; with --yes, record the
-    /// person's confirmation of the list in goal.toml.
+    /// Show the goal, the person's held-out plays, the wont_reach branches and any problems;
+    /// with --yes, record the person's confirmation in goal.toml.
     Confirm(port::PortConfirmArgs),
-    /// The goal's features by stage and area, their verdicts, problems, and the item due now.
+    /// The goal's recordings by state, its code and branches, problems, and the item due now.
     Status(port::PortStatusArgs),
-    /// The one item due now: what, for which feature, why, and the fact that will show it done.
+    /// The one item due now: what, why, and the fact that will show it done.
     /// An agent item handed out three times with nothing changed is reported as stuck instead.
     Next(port::PortNextArgs),
-    /// Run the features' scenarios against the port (its program, over the port protocol) and
-    /// write their scenario verdicts for HEAD, which must have no uncommitted changes.
+    /// Replay the recordings against the port (its program, over the port protocol) and
+    /// write the goal's verdict for HEAD, which must have no uncommitted changes.
     Check(port::PortCheckArgs),
     /// Write test vectors for the original's integer arithmetic and the GTE, made by
     /// psx-fixed and psx-gte, for a port in any language to test its own against.
