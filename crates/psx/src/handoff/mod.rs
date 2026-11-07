@@ -450,10 +450,12 @@ fn read_json(p: &Path) -> Option<Value> {
 /// The emulated game and everything the person pressed.
 #[cfg_attr(not(feature = "window"), allow(dead_code))]
 pub(crate) struct Session {
-    pub m: Machine,
+    /// The machine run with the person as its driver, from where the
+    /// handoff started (run frames count from there).
+    pub run: crate::session::Session<'static>,
+    /// What the person holds, for the driver to apply at the next field.
+    pad: std::rc::Rc<std::cell::Cell<Option<Input>>>,
     bios: Vec<u8>,
-    /// Absolute frame the handoff started at; run frames count from here.
-    start_frame: u64,
     /// Complete pad states, one per change, at run frames.
     pub events: Vec<Input>,
     /// The quick save and the input recorded up to it.
@@ -465,37 +467,9 @@ pub(crate) struct Session {
     pub marks: Vec<Mark>,
     /// States every [`REWIND_EVERY`] frames along the current route, with
     /// the number of input events that reached each, for [`Session::rewind`].
-    history: std::collections::VecDeque<(u64, Vec<u8>, usize)>,
-    /// The adjustments the person plays with (a scenario's), run as
-    /// `scenario record` runs them.
-    adjust: Option<LiveAdjust>,
+    history: crate::session::Checkpoints<usize>,
     /// The agent's C, in a try with it.
     decomp: Option<crate::decomp::Replacement>,
-}
-
-/// Adjustments running in a play: the set, the game's tick, and their state.
-struct LiveAdjust {
-    set: crate::adjust::Adjustments,
-    /// What ends a tick: latch needs it, steady and off do not.
-    tick: Option<crate::binding::Tick>,
-    run: crate::adjust::Running,
-    ticks: u64,
-    /// Whether latch lets input through where no tick ends (a play from
-    /// power-on, whose boot and menus may not run the binding's tick).
-    fallback: bool,
-}
-
-impl LiveAdjust {
-    fn new(
-        set: crate::adjust::Adjustments,
-        tick: Option<crate::binding::Tick>,
-        m: &mut Machine,
-        fallback: bool,
-    ) -> Self {
-        let run = set.start(m);
-        let run = if fallback { run.falling_back() } else { run };
-        LiveAdjust { set, tick, run, ticks: 0, fallback }
-    }
 }
 
 /// Frames between rewind states (about 5 s), and how many are kept (2 minutes).
@@ -535,95 +509,77 @@ impl Mark {
 impl Session {
     /// The adjustments being played with, by name (none: the stock game).
     pub fn adjustments(&self) -> Vec<&'static str> {
-        self.adjust.as_ref().map(|a| a.set.names()).unwrap_or_default()
+        self.adjust().map(|a| a.names()).unwrap_or_default()
+    }
+
+    fn adjust(&self) -> Option<&crate::adjust::Adjustments> {
+        self.run.adjust.as_ref().map(|r| r.adjustments())
+    }
+
+    /// Play with these adjustments (a scenario's), run as `scenario record`
+    /// runs them, from here; latch on the binding's `tick`, and where
+    /// `fallback`, letting input through where no tick ends (a play from
+    /// power-on, whose boot and menus may not run it).
+    fn set_adjust(&mut self, set: &crate::adjust::Adjustments, tick: Option<crate::binding::Tick>, fallback: bool) {
+        let r = set.start(&mut self.run.m);
+        self.run.adjust = Some(if fallback { r.falling_back() } else { r });
+        // Steady and off are the machine's own settings: only latch needs the tick.
+        self.run.tick = tick.filter(|_| set.latch);
     }
 
     /// In a try with the agent's C: the functions replaced, their calls and
     /// the share of the play run in the C.
     pub fn with_c(&self) -> Option<Value> {
-        self.decomp.as_ref().map(|d| d.report(&self.m))
+        self.decomp.as_ref().map(|d| d.report(&self.run.m))
     }
 
     /// Where latch stands: holding input for ticks, or letting it through
     /// where none end (or None without latch).
     pub fn latch_state(&self) -> Option<&'static str> {
-        let a = self.adjust.as_ref().filter(|a| a.set.latch)?;
-        Some(if a.run.passing() { "no ticks, passing through" } else { "holding for ticks" })
+        let a = self.run.adjust.as_ref().filter(|a| a.adjustments().latch)?;
+        Some(if a.passing() { "no ticks, passing through" } else { "holding for ticks" })
     }
 
     pub fn rel(&self) -> u64 {
-        self.m.bus.frames - self.start_frame
+        self.run.rel()
     }
 
     /// Whether the game has switched a DualShock into analog mode.
     pub fn analog(&self) -> bool {
-        self.m.bus.sio0.pad.kind == psx_core::pad::PadKind::DualShock && self.m.bus.sio0.pad.analog
+        self.run.m.bus.sio0.pad.kind == psx_core::pad::PadKind::DualShock && self.run.m.bus.sio0.pad.analog
     }
 
     pub fn dualshock(&self) -> bool {
-        self.m.bus.sio0.pad.kind == psx_core::pad::PadKind::DualShock
+        self.run.m.bus.sio0.pad.kind == psx_core::pad::PadKind::DualShock
     }
 
     /// Run one frame with this pad state, recording it when it changed.
     /// Input applies at the frame boundary, exactly as `run --replay` applies it.
     pub fn frame(&mut self, buttons: u32, sticks: [u8; 4]) {
-        let rel = self.rel();
-        let input = Input { frame: rel, buttons, sticks };
-        let changed = self.events.last().is_none_or(|l| (l.buttons, l.sticks) != (buttons, sticks));
-        if changed {
+        let input = Input { frame: self.rel(), buttons, sticks };
+        if self.events.last().is_none_or(|l| (l.buttons, l.sticks) != (buttons, sticks)) {
             self.events.push(input);
+            self.pad.set(Some(input));
         }
-        let f = self.m.bus.frames;
-        match &mut self.adjust {
-            // Latch: step by step, as scenario record runs it.
-            Some(a) if a.set.latch && a.tick.is_some() => {
-                if changed {
-                    a.run.input(&mut self.m, &input);
-                }
-                let tick = a.tick.clone().unwrap();
-                while self.m.bus.frames == f {
-                    let info = self.m.step();
-                    a.run.step(&info, &mut self.m);
-                    if tick.ended_by(&info) {
-                        a.ticks += 1;
-                        a.run.tick_ended(a.ticks, &mut self.m);
-                    }
-                }
-                a.run.field_ended(self.m.bus.frames - self.start_frame, &mut self.m);
-            }
-            // Steady and off are the machine's own settings.
-            _ => {
-                if changed {
-                    crate::replay::apply(&mut self.m, &input);
-                }
-                while self.m.bus.frames == f {
-                    self.m.run_frame_steps(1 << 22);
-                }
-            }
-        }
-        let rel = self.rel();
-        if self.history.back().is_none_or(|h| rel >= h.0 + REWIND_EVERY) {
-            if self.history.len() == REWIND_KEEP {
-                self.history.pop_front();
-            }
-            self.history.push_back((rel, self.m.save_state(self.media_id.clone()), self.events.len()));
-        }
+        let target = self.run.m.bus.frames + 1;
+        // No observer stops it and there is no deadline: it runs the field.
+        let _ = self.run.advance(target, std::time::Instant::now(), Duration::MAX);
+        let n = self.events.len();
+        self.history.offer(&self.run, self.media_id.clone(), || n);
     }
 
     /// Back to the latest rewind state at least [`REWIND_MIN`] frames ago:
     /// the frames gone back, or None when there is none.
     pub fn rewind(&mut self) -> Result<Option<u64>, String> {
         let now = self.rel();
-        let Some(i) = self.history.iter().rposition(|h| h.0 + REWIND_MIN <= now) else { return Ok(None) };
-        self.history.truncate(i + 1);
-        let (rel, bytes, n) = self.history[i].clone();
+        let Some((rel, bytes, n)) = self.history.back(now, REWIND_MIN) else { return Ok(None) };
         let events = self.events[..n].to_vec();
         self.restore(&bytes, events)?;
         Ok(Some(now - rel))
     }
 
     pub fn quick_save(&mut self) {
-        self.quick = Some((self.m.save_state(self.media_id.clone()), self.events.clone()));
+        self.quick = Some((self.run.m.save_state(self.media_id.clone()), self.events.clone()));
     }
 
     /// Back to the quick save, if there is one.
@@ -647,18 +603,15 @@ impl Session {
     /// Restore a state of this session with the input that reached it, so the
     /// recording still replays to wherever play continues from here.
     fn restore(&mut self, bytes: &[u8], events: Vec<Input>) -> Result<(), String> {
-        let (_, mut m) = Machine::load_state(bytes, self.bios.clone()).map_err(|e| e.to_string())?;
-        m.bus.cdrom.disc = self.m.bus.cdrom.disc.take();
-        m.bus.spu.capture = self.m.bus.spu.capture;
-        self.m = m;
+        let decomp = &self.decomp;
+        self.run.restore(bytes, self.bios.clone(), |m| {
+            if let Some(d) = decomp {
+                d.install(m);
+            }
+        })?;
         self.events = events;
-        if let Some(d) = &self.decomp {
-            d.install(&mut self.m);
-        }
-        // A loaded machine is stock: the adjustments start again from here.
-        if let Some(a) = &mut self.adjust {
-            *a = LiveAdjust::new(a.set.clone(), a.tick.take(), &mut self.m, a.fallback);
-        }
+        // The pad the state holds is the route's: nothing new is pending.
+        self.pad.set(None);
         Ok(())
     }
 
@@ -672,15 +625,15 @@ impl Session {
             n,
             label: String::new(),
             rel: self.rel(),
-            frame: self.m.bus.frames,
+            frame: self.run.m.bus.frames,
             events: self.events.clone(),
             dir: mdir.clone(),
         };
         let write =
             |name: &str, bytes: &[u8]| std::fs::write(mdir.join(name), bytes).map_err(|e| format!("{name}: {e}"));
         std::fs::create_dir_all(&mdir).map_err(|e| format!("{}: {e}", mdir.display()))?;
-        write("state.bin", &self.m.save_state(self.media_id.clone()))?;
-        write("ram.bin", &self.m.bus.ram[..])?;
+        write("state.bin", &self.run.m.save_state(self.media_id.clone()))?;
+        write("ram.bin", &self.run.m.bus.ram[..])?;
         self.write_screen(&mdir.join("screen.png")).map_err(|e| format!("screen.png: {e}"))?;
         write("mark.json", mark.json().to_string().as_bytes())?;
         // The input up to the mark: with the handoff's start, how to make its state again.
@@ -704,13 +657,13 @@ impl Session {
     }
 
     fn write_screen(&self, p: &Path) -> std::io::Result<()> {
-        let (w, h, rgba) = self.m.bus.gpu.display_rgba();
+        let (w, h, rgba) = self.run.m.bus.gpu.display_rgba();
         crate::run::write_png(p, w, h, &rgba, png::ColorType::Rgba)
     }
 
     /// Progress for `scenario play --status`.
     pub fn write_live(&self, dir: &Path, state: &str) {
-        let v = json!({"status": state, "run_frame": self.rel(), "frame": self.m.bus.frames,
+        let v = json!({"status": state, "run_frame": self.rel(), "frame": self.run.m.bus.frames,
             "input_events": self.events.len(), "marks": self.marks.iter().map(Mark::json).collect::<Vec<_>>(),
             "pid": std::process::id(), "updated_unix_ms": crate::now_ms() as u64});
         let _ = crate::write_atomic(&dir.join("live.json"), v.to_string().as_bytes());
@@ -759,18 +712,18 @@ impl Session {
     fn new(m: Machine, bios: Vec<u8>, media_id: Option<MediaId>, start_frame: u64) -> Session {
         let start = m.save_state(media_id.clone());
         let start_ram = m.bus.ram.to_vec();
+        let (person, pad) = crate::session::Person::new();
         Session {
-            m,
+            run: crate::session::Session::new(m, start_frame, Box::new(person)),
+            pad,
             bios,
-            start_frame,
             events: Vec::new(),
             quick: None,
             start,
             start_ram,
             media_id,
             marks: Vec::new(),
-            history: Default::default(),
-            adjust: None,
+            history: crate::session::Checkpoints::new(REWIND_EVERY, REWIND_KEEP),
             decomp: None,
         }
     }
@@ -807,37 +760,48 @@ fn scenario_start(ctx: &Ctx, a: &mut HandoffArgs) -> crate::Result<(Session, cra
         }
     }
     let mut b = p.start(ctx, RECORD_TIMEOUT)?;
-    // The adjustments from where the recording starts, as scenario record
-    // starts them: the person plays the game the recording is made of.
-    let mut live = (!p.adjust.is_stock()).then(|| LiveAdjust::new(p.adjust.clone(), Some(p.tick()), &mut b.m, false));
-    let reached = match &mut live {
-        None => p.lead_in(&mut b.m, LEAD_FIELDS),
-        Some(l) => lead_in(&mut b.m, l, LEAD_FIELDS),
-    };
-    if !reached {
-        return Err(Error::invalid(format!(
-            "the glossary binding's tick did not end within {LEAD_FIELDS} fields of the start: check its tick, and that the scenario's state is in the game's logic"
-        )));
-    }
     // The report's identity, so run --from-state finds the media and BIOS.
     a.media = b.media.clone().map(|p| std::path::absolute(p).unwrap_or_default());
     a.bios = Some(std::path::absolute(&b.bios_path).unwrap_or_default());
     a.from_state = Some(std::path::absolute(&p.state).unwrap_or_default());
-    let frames = b.m.bus.frames;
-    let mut s = Session::new(b.m, b.bios, b.media_id, frames);
-    s.adjust = live;
+    // The pad released and the adjustments from where the recording starts,
+    // as scenario record starts them: the person plays the game the
+    // recording is made of.
+    crate::replay::apply(&mut b.m, &Input { frame: 0, buttons: 0, sticks: [128; 4] });
+    let mut run = crate::session::Session::new(b.m, u64::MAX, Box::new(crate::session::NoInput));
+    run.adjust = (!p.adjust.is_stock()).then(|| p.adjust.start(&mut run.m));
+    run.tick = Some(p.tick());
+    let limit = run.m.bus.frames + LEAD_FIELDS;
+    match run.lead_in(limit, std::time::Instant::now(), RECORD_TIMEOUT) {
+        crate::session::LeadIn::Ticked => {}
+        crate::session::LeadIn::Timeout => return Err(Error::new("timeout", "the scenario's start took too long")),
+        crate::session::LeadIn::NoTick => {
+            return Err(Error::invalid(format!(
+                "the glossary binding's tick did not end within {LEAD_FIELDS} fields of the start: check its tick, and that the scenario's state is in the game's logic"
+            )));
+        }
+    }
+    // The rest of the tick's field, whose ticks are the play's.
+    let _ = run.advance(run.start, std::time::Instant::now(), Duration::MAX);
+    let mut s = Session::new(run.m, b.bios, b.media_id, run.start);
+    s.run.adjust = run.adjust;
+    s.run.ticks = run.ticks;
+    s.run.tick = run.tick.filter(|_| p.adjust.latch);
     Ok((s, p))
 }
 
 /// A play from power-on or a state: the adjustments asked for, latch with
-/// the glossary binding's tick and the fallback where no tick ends.
-fn power_on_adjust(ctx: &Ctx, a: &HandoffArgs, m: &mut Machine) -> crate::Result<Option<LiveAdjust>> {
+/// the glossary binding's tick (and the fallback where no tick ends).
+fn power_on_adjust(
+    ctx: &Ctx,
+    a: &HandoffArgs,
+) -> crate::Result<Option<(crate::adjust::Adjustments, Option<crate::binding::Tick>)>> {
     let Some(chosen) = a.adjust.as_ref().filter(|c| !c.is_empty()) else { return Ok(None) };
     let has = |x: &str| chosen.iter().any(|c| c == x);
     let fix = if has("fix") { crate::decomp::fixes(&ctx.root)? } else { None };
     let set = crate::adjust::Adjustments { latch: has("latch"), steady: has("steady"), fix, ..Default::default() };
     let tick = if set.latch { Some(latch_tick(ctx)?) } else { None };
-    Ok(Some(LiveAdjust::new(set, tick, m, true)))
+    Ok(Some((set, tick)))
 }
 
 /// The glossary binding's tick, for latch in a play without a scenario.
@@ -851,38 +815,6 @@ fn latch_tick(ctx: &Ctx) -> crate::Result<crate::binding::Tick> {
         .with("problems", problems)
     })?;
     Ok(b.described().tick.clone())
-}
-
-/// [`crate::scenario::Prepared::lead_in`] with the adjustments running: the
-/// pad released until the first tick ends, then on to the next field.
-fn lead_in(m: &mut Machine, l: &mut LiveAdjust, fields: u64) -> bool {
-    let Some(tick) = l.tick.clone() else { return false };
-    l.run.input(m, &Input { frame: 0, buttons: 0, sticks: [128; 4] });
-    let (mut ticked, mut last_frame) = (false, m.bus.frames);
-    let limit = m.bus.frames + fields;
-    loop {
-        if m.bus.frames != last_frame {
-            last_frame = m.bus.frames;
-            if ticked {
-                return true;
-            }
-            if m.bus.frames >= limit {
-                return false;
-            }
-        }
-        let info = m.step();
-        l.run.step(&info, m);
-        if tick.ended_by(&info) {
-            // The first tick is the recording's initial moment (0); the play's count from 1.
-            if !ticked {
-                l.run.tick_ended(0, m);
-            } else {
-                l.ticks += 1;
-                l.run.tick_ended(l.ticks, m);
-            }
-            ticked = true;
-        }
-    }
 }
 
 /// Run `f` while keeping `live.json` fresh with `state`, so the status
@@ -946,7 +878,9 @@ fn run(
             Some(_) => alive(dir, "starting", || scenario_start(ctx, &mut a)).map(|(s, p)| (s, Some(p)))?,
             None => {
                 let mut s = start(&a)?;
-                s.adjust = power_on_adjust(ctx, &a, &mut s.m)?;
+                if let Some((set, tick)) = power_on_adjust(ctx, &a)? {
+                    s.set_adjust(&set, tick, true);
+                }
                 (s, None)
             }
         };
@@ -954,15 +888,15 @@ fn run(
             let d = crate::decomp::Replacement::new(&ctx.root, &[])?;
             if d.functions.is_empty() {
                 return Err(Error::invalid("no function's C has passed its check: psx code check one first")
-                    .with("left_out", d.report(&s.m)["left_out"].clone()));
+                    .with("left_out", d.report(&s.run.m)["left_out"].clone()));
             }
-            d.install(&mut s.m);
+            d.install(&mut s.run.m);
             s.decomp = Some(d);
         }
         let (end, note) = play(&mut s, text, dir).map_err(|e| Error::new("window_failed", e))?;
         if let Some(d) = &s.decomp {
             // Nothing is kept: what the try ran is all it reports.
-            return Ok(json!({"status": "tried", "frames": s.rel(), "decomp": d.report(&s.m),
+            return Ok(json!({"status": "tried", "frames": s.rel(), "decomp": d.report(&s.run.m),
                 "note": "a try with the agent's C: nothing was recorded, kept or answered"}));
         }
         if end == End::Closed {
@@ -972,7 +906,7 @@ fn run(
         // the files are written (and verify replays, which can take minutes).
         s.write_live(dir, "finishing");
         let (events, frames) = (s.events.clone(), s.rel());
-        let state = s.m.save_state(s.media_id.clone());
+        let state = s.run.m.save_state(s.media_id.clone());
         let adjust = s.adjustments();
         let mut v = finish(&a, s, end, note, dir)?;
         if scenario.is_none() && !adjust.is_empty() {
@@ -1074,7 +1008,7 @@ fn replay_json(events: &[Input]) -> String {
 
 fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> crate::Result<Value> {
     let frames = s.rel();
-    let state = s.m.save_state(s.media_id.clone());
+    let state = s.run.m.save_state(s.media_id.clone());
     let mut files = serde_json::Map::new();
     let mut put = |name: &str, bytes: &[u8]| -> crate::Result<()> {
         let p = dir.join(name);
@@ -1086,9 +1020,9 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> cr
     put("note.txt", note.as_bytes())
         .and_then(|_| put("state.bin", &state))
         .and_then(|_| put("input.json", replay.as_bytes()))
-        .and_then(|_| put("ram.bin", &s.m.bus.ram[..]))
+        .and_then(|_| put("ram.bin", &s.run.m.bus.ram[..]))
         .and_then(|_| {
-            for (slot, card) in s.m.bus.sio0.cards.iter().enumerate() {
+            for (slot, card) in s.run.m.bus.sio0.cards.iter().enumerate() {
                 if let Some(c) = card.as_ref().filter(|c| c.writes > 0) {
                     put(&format!("memcard{}.mcd", slot + 1), &c.data)?;
                 }
@@ -1114,7 +1048,7 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> cr
     // As played: run's own default is the port's adjustments.
     let adjust = s.adjustments();
     replay_args["adjust"] = if adjust.is_empty() { json!(["stock"]) } else { json!(adjust) };
-    if let Some(f) = s.adjust.as_ref().and_then(|l| l.set.fix_detail()) {
+    if let Some(f) = s.adjust().and_then(|l| l.fix_detail()) {
         let p = dir.join("fix.json");
         let text = serde_json::to_string_pretty(&f).unwrap_or_default();
         std::fs::write(&p, &text).map_err(|e| Error::io(&p, e))?;
@@ -1131,12 +1065,12 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> cr
             }
         }
     }
-    let verify = if a.verify && end != End::Closed { verify(a, &s.events, frames, &state, dir) } else { Value::Null };
+    let verify = if a.verify && end != End::Closed { verify(a, &s, frames, &state, dir) } else { Value::Null };
     if verify["matches"] == false {
         warnings.push("replaying input.json did not reproduce state.bin; continue from state.bin, and treat the replay as approximate".into());
     }
     let marks = marks_report(&s, a, frames, dir);
-    let expect = expect_report(a, &s.m, end);
+    let expect = expect_report(a, &s.run.m, end);
     if expect["ask_again"] == true && end == End::Done {
         warnings.push("the end state is not what was asked for (expect)".into());
     }
@@ -1155,13 +1089,13 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> cr
             "request": a.request,
             "note": note,
             "run_dir": dir,
-            "frames": {"reached": frames, "start": s.start_frame, "end": s.m.bus.frames, "unit": "vsync"},
+            "frames": {"reached": frames, "start": s.run.start, "end": s.run.m.bus.frames, "unit": "vsync"},
             "input": {"recorded_events": s.events.len(), "file": dir.join("input.json"), "frame_origin": "handoff_start",
                 "note": "Complete pad states at run frames from the handoff start, in run --replay format."},
-            "pad": {"kind": format!("{:?}", s.m.bus.sio0.pad.kind).to_lowercase(), "analog": s.m.bus.sio0.pad.analog, "locked": s.m.bus.sio0.pad.locked,
-                "buttons": crate::replay::button_names(s.m.bus.sio0.buttons.into()),
-                "sticks": s.m.bus.sio0.pad.axes(),
-                "motors": [s.m.bus.sio0.pad.motors.0, s.m.bus.sio0.pad.motors.1]},
+            "pad": {"kind": format!("{:?}", s.run.m.bus.sio0.pad.kind).to_lowercase(), "analog": s.run.m.bus.sio0.pad.analog, "locked": s.run.m.bus.sio0.pad.locked,
+                "buttons": crate::replay::button_names(s.run.m.bus.sio0.buttons.into()),
+                "sticks": s.run.m.bus.sio0.pad.axes(),
+                "motors": [s.run.m.bus.sio0.pad.motors.0, s.run.m.bus.sio0.pad.motors.1]},
             "files": files,
             "marks": marks,
             "expect": expect,
@@ -1237,29 +1171,28 @@ fn marks_report(s: &Session, a: &HandoffArgs, frames: u64, dir: &Path) -> Value 
     })
 }
 
-/// Replay the recording headless from the same start and compare the end state.
-/// Keeps `live.json` in `dir` fresh ("verifying") so the status keeps waiting.
-fn verify(a: &HandoffArgs, events: &[Input], frames: u64, expected: &[u8], dir: &Path) -> Value {
+/// Replay the recording headless from the same start, with the play's
+/// adjustments, and compare the end state. Keeps `live.json` in `dir` fresh
+/// ("verifying") so the status keeps waiting.
+fn verify(a: &HandoffArgs, play: &Session, frames: u64, expected: &[u8], dir: &Path) -> Value {
     let started = std::time::Instant::now();
     let mut s = match start(a) {
         Ok(s) => s,
         Err(e) => return e.to_value(),
     };
-    let mut next = 0;
-    let mut live_at = started;
-    while s.rel() < frames {
-        if live_at.elapsed() >= Duration::from_secs(1) {
-            live_at = std::time::Instant::now();
-            s.write_live(dir, "verifying");
-        }
-        while next < events.len() && events[next].frame <= s.rel() {
-            crate::replay::apply(&mut s.m, &events[next]);
-            next += 1;
-        }
-        s.m.run_frame_steps(1 << 22);
+    if let Some(set) = play.adjust() {
+        s.set_adjust(set, play.run.tick.clone(), true);
     }
-    let state = s.m.save_state(s.media_id.clone());
-    json!({"matches": state == expected, "ram_matches": s.m.bus.ram[..] == expected_ram(expected, &s.bios).unwrap_or_default()[..],
+    s.run.driver = Box::new(crate::session::ByField { events: play.events.clone(), next: 0 });
+    let end = s.run.start + frames;
+    while s.run.m.bus.frames < end {
+        s.write_live(dir, "verifying");
+        // A second's worth of fields at a time, so live.json stays fresh.
+        let target = end.min(s.run.m.bus.frames + 60);
+        let _ = s.run.advance(target, started, Duration::MAX);
+    }
+    let state = s.run.m.save_state(s.media_id.clone());
+    json!({"matches": state == expected, "ram_matches": s.run.m.bus.ram[..] == expected_ram(expected, &s.bios).unwrap_or_default()[..],
         "frames": frames, "wall_ms": started.elapsed().as_millis() as u64})
 }
 
@@ -1329,17 +1262,18 @@ mod tests {
         let set = crate::adjust::Adjustments { latch: true, ..Default::default() };
         // A tick no code ends: a store to the last word of RAM, from no instruction there is.
         let tick = crate::binding::Tick { at: 0x801F_FFFC, bytes: 4, pc: Some(0xBFC0_0000) };
-        s.adjust = Some(LiveAdjust::new(set, Some(tick), &mut s.m, true));
+        s.set_adjust(&set, Some(tick), true);
         assert_eq!(s.latch_state(), Some("holding for ticks"));
         s.frame(CROSS.into(), [0x80; 4]);
-        assert_eq!(s.m.bus.sio0.buttons & CROSS, 0, "held for the tick's end");
-        for _ in 0..crate::adjust::STALL_FIELDS {
+        assert_eq!(s.run.m.bus.sio0.buttons & CROSS, 0, "held for the tick's end");
+        // The field after STALL_FIELDS have ended without a tick begins passing through.
+        for _ in 0..=crate::adjust::STALL_FIELDS {
             s.frame(CROSS.into(), [0x80; 4]);
         }
         assert_eq!(s.latch_state(), Some("no ticks, passing through"));
-        assert_ne!(s.m.bus.sio0.buttons & CROSS, 0, "let through");
+        assert_ne!(s.run.m.bus.sio0.buttons & CROSS, 0, "let through");
         s.frame(START.into(), [0x80; 4]);
-        assert_eq!(s.m.bus.sio0.buttons & (CROSS | START), START, "at once while no tick ends");
+        assert_eq!(s.run.m.bus.sio0.buttons & (CROSS | START), START, "at once while no tick ends");
         assert_eq!(s.events.len(), 2, "the input is kept as pressed");
     }
 
@@ -1410,7 +1344,7 @@ mod tests {
         press(&mut s, 40, up);
         press(&mut s, 10, 0);
         let (events, frames) = (s.events.clone(), s.rel());
-        let state = s.m.save_state(s.media_id.clone());
+        let state = s.run.m.save_state(s.media_id.clone());
         let mut v = finish(&a, s, End::Done, String::new(), &dir).unwrap();
         scenario_report(&ctx, &a, &p, &mut v, End::Done, &events, frames, &state, &dir);
         assert_eq!(v["recording"]["matches_play"], true, "{}", v["recording"]);
@@ -1436,6 +1370,29 @@ mod tests {
             std::fs::remove_file(at(&format!("{n}.jsonl"))).unwrap();
             std::fs::remove_file(at(&format!("{n}.coverage.json"))).unwrap();
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A play with adjustments verifies by replaying with them. Needs a
+    /// disc, as above.
+    #[test]
+    #[ignore]
+    fn a_steady_play_verifies_steady() {
+        let Some(disc) = std::env::var_os("PSX_TEST_DISC") else { return };
+        let root = std::env::current_dir().unwrap().join("../..");
+        let r = crate::context::resolve(&root, Some(disc.into()), None, None, false).unwrap();
+        let mut a: HandoffArgs = serde_json::from_value(json!({"request": "test", "verify": true})).unwrap();
+        (a.media, a.bios) = (r.media, r.bios);
+        let mut s = start(&a).unwrap();
+        s.set_adjust(&crate::adjust::Adjustments { steady: true, ..Default::default() }, None, true);
+        let start_btn = psx_core::sio0::button::START;
+        for f in 0..400u64 {
+            s.frame(if (300..305).contains(&f) { start_btn.into() } else { 0 }, [0x80; 4]);
+        }
+        let dir = std::env::temp_dir().join(format!("psx-handoff-steady-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let v = finish(&a, s, End::Done, String::new(), &dir).unwrap();
+        assert_eq!(v["verify"]["matches"], true, "{}", v["verify"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

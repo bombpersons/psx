@@ -175,6 +175,65 @@ impl Driver for Ticks {
     }
 }
 
+/// A person at the pad: the state they hold now, applied at the field
+/// boundary when it changed. Whoever runs the session sets it before each
+/// advance through the handle [`Person::new`] returns.
+pub struct Person {
+    pad: std::rc::Rc<std::cell::Cell<Option<crate::replay::Input>>>,
+}
+
+impl Person {
+    pub fn new() -> (Person, std::rc::Rc<std::cell::Cell<Option<crate::replay::Input>>>) {
+        let pad = std::rc::Rc::new(std::cell::Cell::new(None));
+        (Person { pad: pad.clone() }, pad)
+    }
+}
+
+impl Driver for Person {
+    fn field(&mut self, _rel: u64, _ticks: u64, pad: &mut Pad) {
+        if let Some(i) = self.pad.take() {
+            pad.apply(&i);
+        }
+    }
+}
+
+/// States along a session's route, one every `every` run fields and the
+/// last `keep` of them, each with what its owner needs to go on from it.
+pub struct Checkpoints<T> {
+    every: u64,
+    keep: usize,
+    held: std::collections::VecDeque<(u64, Vec<u8>, T)>,
+}
+
+impl<T: Clone> Checkpoints<T> {
+    pub fn new(every: u64, keep: usize) -> Self {
+        Checkpoints { every, keep, held: Default::default() }
+    }
+
+    /// Take one here when it is due (the first at once).
+    pub fn offer(&mut self, s: &Session, media: Option<psx_core::state::MediaId>, with: impl FnOnce() -> T) {
+        let rel = s.rel();
+        if self.held.back().is_none_or(|h| rel >= h.0 + self.every) {
+            if self.held.len() == self.keep {
+                self.held.pop_front();
+            }
+            self.held.push_back((rel, s.m.save_state(media), with()));
+        }
+    }
+
+    /// The latest at least `min` fields before run field `now`, dropping
+    /// those after it: its field, state and what came with it.
+    pub fn back(&mut self, now: u64, min: u64) -> Option<(u64, Vec<u8>, T)> {
+        let i = self.held.iter().rposition(|h| h.0 + min <= now)?;
+        self.held.truncate(i + 1);
+        Some(self.held[i].clone())
+    }
+
+    pub fn clear(&mut self) {
+        self.held.clear();
+    }
+}
+
 /// How often the loop checks the deadline, in instructions.
 const CHECK: u64 = 1 << 20;
 
@@ -276,6 +335,25 @@ impl<'a> Session<'a> {
         }
     }
 
+    /// Go back to `state`, one taken on this session: the machine keeps its
+    /// disc and SPU capture, `prepare` sets it up as the session's start
+    /// did (the agent's C), then the adjustments start again from it (a
+    /// loaded machine is stock) and the tick count with them.
+    pub fn restore(&mut self, state: &[u8], bios: Vec<u8>, prepare: impl FnOnce(&mut Machine)) -> Result<(), String> {
+        let (_, mut m) = Machine::load_state(state, bios).map_err(|e| e.to_string())?;
+        m.bus.cdrom.disc = self.m.bus.cdrom.disc.take();
+        m.bus.spu.capture = self.m.bus.spu.capture;
+        self.m = m;
+        prepare(&mut self.m);
+        if let Some(a) = &mut self.adjust {
+            *a = a.restart(&mut self.m);
+        }
+        self.ticks = 0;
+        // No field has ended under the restarted adjustments yet.
+        self.last_field = u64::MAX;
+        Ok(())
+    }
+
     /// Run until absolute frame `target`, an observer's stop, or `deadline`
     /// after `started`.
     pub fn advance(&mut self, target: u64, started: Instant, deadline: Duration) -> crate::Result<Ended> {
@@ -286,10 +364,12 @@ impl<'a> Session<'a> {
             let frame = self.m.bus.frames;
             if frame != self.last_field && frame >= self.start {
                 // A field boundary, or the start: observe first, then intervene.
+                // A field ended, unless this is where the session started or was restored.
+                let ended = self.last_field != u64::MAX;
                 self.last_field = frame;
                 let rel = self.rel();
                 crate::live::field(&self.m);
-                if rel > 0 {
+                if rel > 0 && ended {
                     if let Some(a) = &mut self.adjust {
                         a.field_ended(rel, &mut self.m);
                     }

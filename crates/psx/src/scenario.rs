@@ -727,29 +727,6 @@ impl Prepared {
         self.b.described().tick.clone()
     }
 
-    /// Run `m` from where the recording starts to where its fields count
-    /// from: the pad released until the first tick ends, then on to the
-    /// next field. False when no tick ended within `fields`.
-    pub(crate) fn lead_in(&self, m: &mut Machine, fields: u64) -> bool {
-        crate::replay::apply(m, &crate::replay::Input { frame: 0, buttons: 0, sticks: [128; 4] });
-        let tick = &self.b.described().tick;
-        let (mut ticked, mut last_frame) = (false, m.bus.frames);
-        let limit = m.bus.frames + fields;
-        loop {
-            // As `record` counts fields: from the first field change after the tick.
-            if m.bus.frames != last_frame {
-                last_frame = m.bus.frames;
-                if ticked {
-                    return true;
-                }
-                if m.bus.frames >= limit {
-                    return false;
-                }
-            }
-            ticked |= tick.ended_by(&m.step());
-        }
-    }
-
     /// Record `frames` fields of `events` on `m` (where [`Prepared::start`]
     /// left it) and write the recording and its coverage.
     pub(crate) fn write(

@@ -209,7 +209,7 @@ impl Live {
 
     fn publish(&self, s: &Session, status: Option<Value>) {
         let mut o = self.out.lock().unwrap();
-        let (w, h, rgba) = s.m.bus.gpu.display_rgba();
+        let (w, h, rgba) = s.run.m.bus.gpu.display_rgba();
         (o.w, o.h, o.rgba) = (w, h, rgba);
         o.frame_seq += 1;
         if let Some(v) = status {
@@ -306,7 +306,7 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
                 }
                 Cmd::Rewind => match s.rewind() {
                     Ok(Some(f)) => {
-                        let secs = f as f64 * s.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64;
+                        let secs = f as f64 * s.run.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64;
                         say(format!("Went back {secs:.0} s. Rewind again goes further."));
                     }
                     Ok(None) => say("Nothing to rewind to yet.".into()),
@@ -382,7 +382,7 @@ fn play(s: &mut Session, text: &str, dir: &Path, live: &Live) -> Result<(End, St
         }
         changed = false;
 
-        let period = Duration::from_secs_f64(s.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64);
+        let period = Duration::from_secs_f64(s.run.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64);
         next += period;
         let now = Instant::now();
         if next > now {

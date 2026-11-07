@@ -280,6 +280,23 @@ step that keeps a state at field N becomes a step of N fields, and
 
    *Done when* a play recorded by a test gives the same
    recording as before, and web's play still rewinds.
+
+   *Done (2026-11-07).* The handoff's play is a session with the
+   `Person` driver (the pad the window or page holds, applied at the
+   field boundary when it changed); each frame is one advance. Rewind,
+   quick load and start over restore through `Session::restore`, which
+   starts the adjustments again (`Running::restart`), from
+   `session::Checkpoints`. A scenario play's start is the session's
+   lead-in, with the pad released as `scenario record` releases it, and
+   verify replays with the play's adjustments, not stock. A field
+   counts as ended at the next boundary, so latch's state shown in the
+   window turns one field later; the machine runs the same. The scenario
+   play test leaves the same recording, coverage, continuation and end
+   state before and after, on GT2's b1_brake (latched, steady, fixed)
+   and Croc's croc_animations (latched, steady). The disc test (rewind,
+   quick save and load, start over, verify) passes, and a new one checks
+   a steady play verifies. The web page calls the same rewind; it was
+   not tried in a browser.
 6. **The debugger.** Sessions on disk, the debug_* calls over MCP and
    CLI, and stops and shows as above.
 

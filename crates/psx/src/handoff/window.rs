@@ -90,8 +90,8 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
     }
     let audio = match Audio::open() {
         Ok(a) => {
-            s.m.bus.spu.capture = true;
-            s.m.bus.spu.take_samples();
+            s.run.m.bus.spu.capture = true;
+            s.run.m.bus.spu.take_samples();
             Some(a)
         }
         Err(e) => {
@@ -173,7 +173,8 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                         match s.rewind() {
                             Ok(Some(back)) => {
                                 audio.as_ref().inspect(|a| a.clear());
-                                let secs = back as f64 * s.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64;
+                                let secs =
+                                    back as f64 * s.run.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64;
                                 msg.show(format!("Went back {secs:.0} s. F2 again goes further."));
                             }
                             Ok(None) => msg.show("Nothing further back to rewind to."),
@@ -216,7 +217,7 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
                             s.frame(buttons, sticks);
                         }
                         // Fast forward plays no sound (four fields' worth would not fit).
-                        let samples = s.m.bus.spu.take_samples();
+                        let samples = s.run.m.bus.spu.take_samples();
                         if let Some(a) = audio.as_ref().filter(|_| !muted && !fast) {
                             a.push(&samples);
                         }
@@ -402,7 +403,7 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
         }
 
         // One field of the video timing (49.76 Hz PAL, 59.83 Hz NTSC).
-        let period = Duration::from_secs_f64(s.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64);
+        let period = Duration::from_secs_f64(s.run.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64);
         next += period;
         let now = Instant::now();
         if next > now {
@@ -561,7 +562,7 @@ impl Message {
 
 /// The displayed area stretched to the 4:3 game area.
 fn draw_game(buf: &mut [u32], s: &Session) {
-    let (w, h, rgba) = s.m.bus.gpu.display_rgba();
+    let (w, h, rgba) = s.run.m.bus.gpu.display_rgba();
     let (w, h) = (w as usize, h as usize);
     if w == 0 || h == 0 || rgba.len() < w * h * 4 {
         fill(buf, 0, 0, GW, GH, 0);

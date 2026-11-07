@@ -431,6 +431,18 @@ impl Running {
         self
     }
 
+    /// The adjustments these run.
+    pub fn adjustments(&self) -> &Adjustments {
+        &self.a
+    }
+
+    /// The same adjustments started again on `m`, a state loaded on the way
+    /// (a loaded machine is stock), falling back where these do.
+    pub fn restart(&self, m: &mut Machine) -> Running {
+        let r = self.a.start(m);
+        if self.fallback.is_some() { r.falling_back() } else { r }
+    }
+
     /// Whether input passes through now (no tick has ended for a while).
     pub fn passing(&self) -> bool {
         self.fallback.as_ref().is_some_and(|f| f.passing.is_some())
