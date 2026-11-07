@@ -184,7 +184,11 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
         s.adjust = Some(adjust.start(&mut s.m));
         s.tick = Some(tick.clone());
         let limit = s.m.bus.frames + *frames as u64;
-        if !s.lead_in(limit, started, deadline)? {
+        let led = s.lead_in(limit, started, deadline);
+        if led == crate::session::LeadIn::Timeout {
+            return Err(Error::new("timeout", "the recording's lead-in ran out of time"));
+        }
+        if led == crate::session::LeadIn::NoTick {
             return Err(Error::invalid(format!(
                 "{name}: no tick ended within its {frames} fields from where it starts: the glossary's tick is not the one it was recorded with"
             )));

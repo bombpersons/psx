@@ -133,6 +133,21 @@ impl Driver for NoInput {
     fn field(&mut self, _rel: u64, _ticks: u64, _pad: &mut Pad) {}
 }
 
+/// Complete pad states by run field: each from its field on.
+pub struct ByField {
+    pub events: Vec<crate::replay::Input>,
+    pub next: usize,
+}
+
+impl Driver for ByField {
+    fn field(&mut self, rel: u64, _ticks: u64, pad: &mut Pad) {
+        while let Some(e) = self.events.get(self.next).filter(|e| e.frame <= rel) {
+            pad.apply(e);
+            self.next += 1;
+        }
+    }
+}
+
 /// A recording's ticks: until a tick ends, the pad is the one that tick
 /// ended with, as the port's replay has it; the session stops when the last
 /// one ends.
@@ -163,12 +178,25 @@ impl Driver for Ticks {
 /// How often the loop checks the deadline, in instructions.
 const CHECK: u64 = 1 << 20;
 
-pub struct Session {
+/// How a recording's lead-in ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeadIn {
+    /// The first tick ended: the run's fields count from the next.
+    Ticked,
+    /// No tick ended before the limit.
+    NoTick,
+    /// The deadline passed.
+    Timeout,
+}
+
+/// Observers and drivers may borrow what outlives the session (`'a`): a
+/// recorder its binding and the recording it fills.
+pub struct Session<'a> {
     pub m: Machine,
     /// The absolute frame the session started at.
     pub start: u64,
-    pub observers: Vec<Box<dyn Observer>>,
-    pub driver: Box<dyn Driver>,
+    pub observers: Vec<Box<dyn Observer + 'a>>,
+    pub driver: Box<dyn Driver + 'a>,
     /// The binding's tick, when something watches ticks.
     pub tick: Option<crate::binding::Tick>,
     /// The adjustments while they run.
@@ -181,8 +209,8 @@ pub struct Session {
     last_field: u64,
 }
 
-impl Session {
-    pub fn new(m: Machine, start: u64, driver: Box<dyn Driver>) -> Session {
+impl<'a> Session<'a> {
+    pub fn new(m: Machine, start: u64, driver: Box<dyn Driver + 'a>) -> Session<'a> {
         Session {
             m,
             start,
@@ -196,7 +224,7 @@ impl Session {
         }
     }
 
-    pub fn observe(&mut self, o: impl Observer + 'static) {
+    pub fn observe(&mut self, o: impl Observer + 'a) {
         self.observers.push(Box::new(o));
     }
 
@@ -209,19 +237,21 @@ impl Session {
     /// released until the first tick ends (tick 0, the moment the port's
     /// launcher builds), then the run's fields count from the next field.
     /// Ticks that end in the rest of this field are the run's, in field 0.
-    /// False when no tick ends before absolute field `limit`.
-    pub fn lead_in(&mut self, limit: u64, started: Instant, deadline: Duration) -> crate::Result<bool> {
-        let Some(tick) = self.tick.clone() else { return Ok(false) };
+    /// Observers see each step, and the first tick's end as tick 0 of
+    /// run field 0, before the adjustments do; the limit is absolute field
+    /// `limit`.
+    pub fn lead_in(&mut self, limit: u64, started: Instant, deadline: Duration) -> LeadIn {
+        let Some(tick) = self.tick.clone() else { return LeadIn::NoTick };
         let mut last = self.m.bus.frames;
         loop {
             if self.m.bus.frames != last {
                 last = self.m.bus.frames;
                 crate::live::field(&self.m);
                 if last >= limit {
-                    return Ok(false);
+                    return LeadIn::NoTick;
                 }
                 if started.elapsed() > deadline {
-                    return Err(crate::Error::new("timeout", "the recording's lead-in ran out of time"));
+                    return LeadIn::Timeout;
                 }
             }
             let info = self.m.step();
@@ -229,13 +259,19 @@ impl Session {
             if let Some(a) = &mut self.adjust {
                 a.step(&info, &mut self.m);
             }
+            for o in &mut self.observers {
+                o.step(&info, &mut self.m);
+            }
             if tick.ended_by(&info) {
+                for o in &mut self.observers {
+                    o.tick(0, &mut self.m);
+                }
                 if let Some(a) = &mut self.adjust {
                     a.tick_ended(0, &mut self.m);
                 }
                 self.start = self.m.bus.frames + 1;
                 self.last_field = self.m.bus.frames;
-                return Ok(true);
+                return LeadIn::Ticked;
             }
         }
     }

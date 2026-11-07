@@ -24,6 +24,7 @@ use crate::adjust::Adjustments;
 use crate::binding::{self, Plugin, Tick};
 use crate::commands::{Ctx, Op, Outcome};
 use crate::port::Entry;
+use crate::session::{LeadIn, Observer, Out, Session};
 
 /// The glossary crate, `glossary/`; its binding is `glossary/binding/`.
 pub const GLOSSARY: &str = "glossary";
@@ -364,18 +365,10 @@ fn record(
     events: &[crate::replay::Input],
     ticks: Option<&[crate::replay::Input]>,
     deadline: Duration,
-    mut cover: Option<&mut Cover>,
-    mut on_tick: Option<OnTick<'_>>,
+    cover: Option<&mut Cover>,
+    on_tick: Option<OnTick<'_>>,
 ) -> Recorded {
     let started = Instant::now();
-    // The pad is released until the first tick ends: `initial` is the moment
-    // the port's launcher builds, before any input. The recording's fields
-    // (and the input's frames) count from the field after that tick.
-    crate::replay::apply(m, &crate::replay::Input { frame: 0, buttons: 0, sticks: [128; 4] });
-    let mut adjust = q.adjust.start(m);
-    let mut start: Option<u64> = None;
-    let mut target = u64::MAX;
-    let tick = &q.binding.described().tick;
     let mut out = Recorded {
         initial: None,
         ticks: Vec::new(),
@@ -385,52 +378,81 @@ fn record(
         unread_sticks: None,
         adjusted: None,
     };
-    let (mut next_event, mut last_frame) = (0, m.bus.frames);
-    let lead_limit = m.bus.frames + frames as u64;
-    if let Some(c) = cover.as_deref_mut() {
-        c.scripts.declare(q.binding, m);
-    }
-    while m.bus.frames < target {
-        if m.bus.frames != last_frame {
-            last_frame = m.bus.frames;
-            crate::live::field(m);
-            if out.initial.is_some() && start.is_none() {
-                start = Some(m.bus.frames);
+    // The pad is released until the first tick ends: `initial` is the moment
+    // the port's launcher builds, before any input. The recording's fields
+    // (and the input's frames) count from the field after that tick.
+    crate::replay::apply(m, &crate::replay::Input { frame: 0, buttons: 0, sticks: [128; 4] });
+    let driver: Box<dyn crate::session::Driver> = match ticks {
+        Some(t) => Box::new(crate::session::Ticks { recording: String::new(), pads: t.to_vec() }),
+        None => Box::new(crate::session::ByField { events: events.to_vec(), next: 0 }),
+    };
+    let machine = std::mem::replace(m, Machine::new(Vec::new()));
+    let (machine, timed_out, adjusted) = {
+        let mut s = Session::new(machine, u64::MAX, driver);
+        s.adjust = Some(q.adjust.start(&mut s.m));
+        s.tick = Some(q.binding.described().tick.clone());
+        if let Some(c) = cover {
+            c.scripts.declare(q.binding, &s.m);
+            s.observe(Covering { c, binding: q.binding });
+        }
+        s.observe(Recorder { q, out: &mut out, on_tick });
+        let lead_limit = s.m.bus.frames + frames as u64;
+        let mut timed_out = false;
+        match s.lead_in(lead_limit, started, deadline) {
+            LeadIn::Ticked => {
                 // Following ticks, the game may fall behind: room for it.
                 let slack = if ticks.is_some() { frames as u64 / 8 + 16 } else { 0 };
-                target = m.bus.frames + frames as u64 + slack;
+                let target = s.start + frames as u64 + slack;
+                // A stop is the driver's: the recording's last tick.
+                let ended = s.advance(target, started, deadline).unwrap_or(crate::session::Ended::Limit);
+                timed_out = ended == crate::session::Ended::Timeout;
             }
-            if let Some(start) = start {
-                let field = m.bus.frames - start;
-                if let Some(pad) = ticks.and_then(|t| t.get(out.ticks.len())) {
-                    adjust.input(m, pad);
-                }
-                while ticks.is_none() && next_event < events.len() && events[next_event].frame <= field {
-                    adjust.input(m, &events[next_event]);
-                    next_event += 1;
-                }
-            } else if m.bus.frames >= lead_limit {
-                // No tick within the recording's length: unrecorded() says so.
-                break;
-            }
-            if started.elapsed() > deadline {
-                out.timed_out = true;
-                break;
-            }
+            LeadIn::Timeout => timed_out = true,
+            // No tick within the recording's length: unrecorded() says so.
+            LeadIn::NoTick => {}
         }
-        let info = m.step();
-        adjust.step(&info, m);
-        if let Some(c) = cover.as_deref_mut() {
-            c.tracer.after_step(&info, &m.cpu, &m.bus);
-            c.scripts.step(&info, q.binding, m);
-        }
-        if !tick.ended_by(&info) {
-            continue;
-        }
-        if let Some(c) = cover.as_deref_mut() {
-            c.scripts.declare(q.binding, m);
-        }
-        // A tick ended: its quantities, as the store left them.
+        let adjusted = s.adjust.as_ref().and_then(|a| a.report(&s.m));
+        (s.m, timed_out, adjusted)
+    };
+    *m = machine;
+    out.timed_out = timed_out;
+    out.adjusted = adjusted;
+    out
+}
+
+/// The recording's coverage: every instruction run, and the scripts.
+struct Covering<'a> {
+    c: &'a mut Cover,
+    binding: &'a Plugin<Described>,
+}
+
+impl Observer for Covering<'_> {
+    fn per_step(&self) -> bool {
+        true
+    }
+    fn step(&mut self, info: &psx_core::cpu::StepInfo, m: &mut Machine) {
+        self.c.tracer.after_step(info, &m.cpu, &m.bus);
+        self.c.scripts.step(info, self.binding, m);
+    }
+    fn tick(&mut self, _rel: u64, m: &mut Machine) {
+        self.c.scripts.declare(self.binding, m);
+    }
+    fn finish(self: Box<Self>, _m: &Machine, _out: &mut Out) -> crate::Result<()> {
+        Ok(())
+    }
+}
+
+/// The recorder: each tick's quantities as the store left them, the first
+/// tick's as the recording's initial values.
+struct Recorder<'a, 'b> {
+    q: &'a Quantities<'a>,
+    out: &'a mut Recorded,
+    on_tick: Option<OnTick<'b>>,
+}
+
+impl Observer for Recorder<'_, '_> {
+    fn tick(&mut self, rel: u64, m: &mut Machine) {
+        let (q, out) = (self.q, &mut *self.out);
         let n = out.ticks.len() as u64 + out.initial.is_some() as u64;
         let mut values = Values::new();
         let mut refuse = |quantity: &str, problem: String| {
@@ -452,30 +474,25 @@ fn record(
         }
         if out.initial.is_none() {
             out.initial = Some(values);
-            adjust.tick_ended(n, m);
-        } else {
-            // A second tick in the first tick's field belongs to the lead-in
-            // field, which the recording counts as field 0.
-            let field = start.map_or(0, |s| m.bus.frames - s);
-            // The sticks as the game read them: centred unless the pad is in analog mode.
-            let pad = &m.bus.sio0.pad;
-            let sticks = if pad.analog { pad.axes() } else { format::CENTRED };
-            if !pad.analog && pad.axes() != format::CENTRED {
-                out.unread_sticks.get_or_insert(n);
-            }
-            let buttons = crate::replay::button_names(m.bus.sio0.buttons.into());
-            out.ticks.push(Full { tick: n, field, pad: buttons, analog: pad.analog, sticks, values });
-            if let Some(f) = on_tick.as_deref_mut() {
-                f(out.ticks.last().unwrap(), m);
-            }
-            adjust.tick_ended(n, m);
-            if ticks.is_some_and(|t| out.ticks.len() >= t.len()) {
-                break;
-            }
+            return;
+        }
+        // A second tick in the first tick's field belongs to the lead-in
+        // field, which the recording counts as field 0 (`rel` saturates).
+        // The sticks as the game read them: centred unless the pad is in analog mode.
+        let pad = &m.bus.sio0.pad;
+        let sticks = if pad.analog { pad.axes() } else { format::CENTRED };
+        if !pad.analog && pad.axes() != format::CENTRED {
+            out.unread_sticks.get_or_insert(n);
+        }
+        let buttons = crate::replay::button_names(m.bus.sio0.buttons.into());
+        out.ticks.push(Full { tick: n, field: rel, pad: buttons, analog: pad.analog, sticks, values });
+        if let Some(f) = self.on_tick.as_deref_mut() {
+            f(out.ticks.last().unwrap(), m);
         }
     }
-    out.adjusted = adjust.report(m);
-    out
+    fn finish(self: Box<Self>, _m: &Machine, _out: &mut Out) -> crate::Result<()> {
+        Ok(())
+    }
 }
 
 /// How many ticks took each number of fields, from the field each ended in
@@ -2119,7 +2136,7 @@ pub struct Quantities {
         s.adjust = Some(Adjustments::default_set().start(&mut s.m));
         s.tick = Some(tick);
         let (started, deadline) = (Instant::now(), Duration::from_secs(120));
-        assert!(s.lead_in(s.m.bus.frames + fields as u64, started, deadline).unwrap());
+        assert_eq!(s.lead_in(s.m.bus.frames + fields as u64, started, deadline), crate::session::LeadIn::Ticked);
         s.observe(TickSamples(sampler));
         let limit = s.start + fields as u64 * 2;
         let ended = s.advance(limit, started, deadline).unwrap();

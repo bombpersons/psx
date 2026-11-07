@@ -263,6 +263,18 @@ step that keeps a state at field N becomes a step of N fields, and
 
    *Done when* scenario_check passes on Croc's and GT2's
    recordings, and re-recording one gives the same file.
+
+   *Done (2026-11-07).* `scenario record` is a session: the adjustments'
+   `Running`, the `Ticks` driver (or `ByField`, events by field, without
+   a tick), a coverage observer and the recorder observer, which reads
+   the quantities at each tick end. `Session::lead_in` feeds the
+   observers too and says whether a tick ended (`LeadIn`). GT2's 8
+   scenarios check deterministic. Croc's check refuses its 42 recordings
+   as recorded before psx measured input every tick, as the old binary
+   does, so a re-record stands in: GT2's brake (latched, steady, fixed),
+   a stock GT2 recording and Croc's jump_and_stomp (latched, steady)
+   record the same rows, header and coverage as before, and the same
+   rows as their recorded files.
 5. **The handoff on the session.** The person as a driver, and rewind
    from the session's checkpoints.
 
