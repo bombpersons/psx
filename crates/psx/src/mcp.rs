@@ -170,6 +170,13 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::ram::RamViewArgs>("ram_view", "Show a RAM window (addr, len) from one or more snapshots side by side, decoded as u8..x32 or fxI.F, marking units that differ.").read_only(),
         def::<crate::run::RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames on the native core. Drive it with input/replay; observe with sample, watch, watch_reads, poke, trace, trace_cd, trace_spu or gpu_frame; save_state makes checkpoints. Returns run_dir and the report; brief or summary shorten it. See guide topic run.").heavy().screen(),
         def::<crate::states::StatesSaveArgs>("states_save", "Name a state an earlier run or handoff made; its chain from power-on comes from the runs' reports. See guide topic setup."),
+        def::<crate::debug::DebugStartArgs>("debug_start", "A run that stops between calls: starts where run would (media, from_state or recording, the port's adjustments), before its first field. Returns its id (other debug calls default to the latest). See guide topic debug.").heavy(),
+        def::<crate::debug::DebugGoArgs>("debug_go", "Go on to a new stop: pc, write, read, until, tick, fields, ticks or instructions. Returns why, where, the PC and its function.").heavy(),
+        def::<crate::debug::DebugShowArgs>("debug_show", "Look at the debugging session's stop: registers (default), values, bytes, history, screen, stops.").screen(),
+        def::<crate::debug::DebugSetArgs>("debug_set", "Poke memory, set a register or hold a pad state at the stop; a new stop, which debug_back undoes."),
+        def::<crate::debug::DebugBackArgs>("debug_back", "Go back to the stop this one came from, or to=N; every stop is kept until debug_end."),
+        def::<crate::debug::DebugSaveArgs>("debug_save", "Write the stop's machine state to a file, to continue from with run from_state (no name: save_as names states)."),
+        def::<crate::debug::DebugEndArgs>("debug_end", "End a debugging session and remove its files (its stops and checkpoints in .psx/debug/)."),
         def::<crate::states::StatesListArgs>("states_list", "The named start states: description, steps from power-on, and whether each is present.").read_only(),
         def::<crate::states::StatesRebuildArgs>("states_rebuild", "Replay start states' chains from power-on on this psx and compare: which step first differs, and named values old and new. replace puts rebuilt states in place. See guide topic setup.").heavy(),
         def::<crate::scenario::ScenarioRecordArgs>("scenario_record", "In a port's workspace: run from the scenario's state with input for frames and write scenarios/<id>/<name>.jsonl, the compared glossary quantities at each tick's end, and <name>.coverage.json beside it, what the original executed as the inventory's code (code_coverage takes the .jsonl; take code_inventory first). See the guide's Recordings.").heavy(),
@@ -285,6 +292,7 @@ fn screen_path(tool: &str, v: &Value) -> Option<String> {
             return listed.then(|| std::path::Path::new(dir).join("screen.png").to_string_lossy().into_owned());
         }
         "scenario_play" => &v["files"]["screen.png"]["path"],
+        "debug_show" => &v["screen"],
         "read" => &v["image"]["path"],
         _ => return None,
     };

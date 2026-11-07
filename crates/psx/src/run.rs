@@ -219,6 +219,54 @@ impl RunCmdArgs {
         Ok(())
     }
 
+    fn into_run_args(self, media: Option<PathBuf>, bios: PathBuf, recording: Option<FromRecording>) -> RunArgs {
+        let a = self;
+        RunArgs {
+            media,
+            bios,
+            frames: a.frames.unwrap_or_else(d_frames),
+            recording,
+            replay: a.replay,
+            input: a.input,
+            watches: a.watches,
+            from_state: a.from_state,
+            save_state: a.save_state,
+            out: a.out,
+            timeout_s: a.timeout,
+            trace_cd: a.trace_cd,
+            trace_bios: a.trace_bios,
+            trace_spu: a.trace_spu,
+            audio: a.audio,
+            profile: a.profile,
+            symbols: a.symbols,
+            max_events: a.max_events,
+            trace: a.trace,
+            cards: a.cards,
+            observe: a.observe,
+        }
+    }
+
+    /// What a run with these arguments starts from, resolved as run
+    /// resolves it (named states, a recording, the project's media and
+    /// BIOS): the debugger's start.
+    pub(crate) fn start_args(self, ctx: &Ctx) -> crate::Result<RunArgs> {
+        self.check()?;
+        let mut a = self;
+        let (states, _) = crate::states::Dirs::default().get(ctx);
+        a.from_state = a.from_state.map(|p| named_state(&states, p));
+        let recording = match a.recording.take() {
+            Some(r) => Some(from_recording(ctx, &mut a, r)?),
+            None => None,
+        };
+        let resolved =
+            crate::context::resolve(&ctx.root, a.media.take(), a.bios.take(), a.from_state.as_deref(), false)?;
+        if let Some(e) = resolved.setup_error() {
+            return Err(e);
+        }
+        let bios = resolved.bios.unwrap();
+        Ok(a.into_run_args(resolved.media, bios, recording))
+    }
+
     pub(crate) fn run(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
         self.check()?;
         let mut a = self;
@@ -251,32 +299,8 @@ impl RunCmdArgs {
         }
         let (short, summarise) = (a.brief, a.summary);
         let loads = a.trace_cd.then(|| (resolved.media.clone(), a.symbols.clone()));
-        let (mut complete, mut value) = run(
-            &ctx.root,
-            RunArgs {
-                media: resolved.media,
-                bios,
-                frames: a.frames.unwrap_or_else(d_frames),
-                recording,
-                replay: a.replay,
-                input: a.input,
-                watches: a.watches,
-                from_state: a.from_state,
-                save_state: a.save_state,
-                out: a.out,
-                timeout_s: a.timeout,
-                trace_cd: a.trace_cd,
-                trace_bios: a.trace_bios,
-                trace_spu: a.trace_spu,
-                audio: a.audio,
-                profile: a.profile,
-                symbols: a.symbols,
-                max_events: a.max_events,
-                trace: a.trace,
-                cards: a.cards,
-                observe: a.observe,
-            },
-        )?;
+        let args = a.into_run_args(resolved.media, bios, recording);
+        let (mut complete, mut value) = run(&ctx.root, args)?;
         value["build"] = crate::context::build();
         value["resolved"] = json!({"bios_selection":resolved.bios_reason});
         value["artifacts"] = json!(

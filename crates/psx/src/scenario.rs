@@ -430,12 +430,14 @@ impl Observer for Covering<'_> {
     fn per_step(&self) -> bool {
         true
     }
-    fn step(&mut self, info: &psx_core::cpu::StepInfo, m: &mut Machine) {
+    fn step(&mut self, info: &psx_core::cpu::StepInfo, m: &mut Machine) -> crate::session::Flow {
         self.c.tracer.after_step(info, &m.cpu, &m.bus);
         self.c.scripts.step(info, self.binding, m);
+        crate::session::Flow::Go
     }
-    fn tick(&mut self, _rel: u64, m: &mut Machine) {
+    fn tick(&mut self, _rel: u64, m: &mut Machine) -> crate::session::Flow {
         self.c.scripts.declare(self.binding, m);
+        crate::session::Flow::Go
     }
     fn finish(self: Box<Self>, _m: &Machine, _out: &mut Out) -> crate::Result<()> {
         Ok(())
@@ -451,7 +453,7 @@ struct Recorder<'a, 'b> {
 }
 
 impl Observer for Recorder<'_, '_> {
-    fn tick(&mut self, rel: u64, m: &mut Machine) {
+    fn tick(&mut self, rel: u64, m: &mut Machine) -> crate::session::Flow {
         let (q, out) = (self.q, &mut *self.out);
         let n = out.ticks.len() as u64 + out.initial.is_some() as u64;
         let mut values = Values::new();
@@ -474,7 +476,7 @@ impl Observer for Recorder<'_, '_> {
         }
         if out.initial.is_none() {
             out.initial = Some(values);
-            return;
+            return crate::session::Flow::Go;
         }
         // A second tick in the first tick's field belongs to the lead-in
         // field, which the recording counts as field 0 (`rel` saturates).
@@ -489,6 +491,7 @@ impl Observer for Recorder<'_, '_> {
         if let Some(f) = self.on_tick.as_deref_mut() {
             f(out.ticks.last().unwrap(), m);
         }
+        crate::session::Flow::Go
     }
     fn finish(self: Box<Self>, _m: &Machine, _out: &mut Out) -> crate::Result<()> {
         Ok(())
@@ -2084,8 +2087,9 @@ pub struct Quantities {
     struct TickSamples(crate::ram::Sampler);
 
     impl crate::session::Observer for TickSamples {
-        fn tick(&mut self, rel: u64, m: &mut Machine) {
+        fn tick(&mut self, rel: u64, m: &mut Machine) -> crate::session::Flow {
             self.0.tick(rel, m);
+            crate::session::Flow::Go
         }
         fn finish(self: Box<Self>, _m: &Machine, out: &mut crate::session::Out) -> crate::Result<()> {
             out.section("rows", json!(self.0.out));

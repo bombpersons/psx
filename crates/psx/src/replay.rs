@@ -87,7 +87,7 @@ impl std::str::FromStr for Events {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Input {
     pub frame: u64,
     /// The pad's buttons, and [`ANALOG`].

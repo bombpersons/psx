@@ -42,7 +42,7 @@ use psx_core::padflow::{BufferByte, PadFlow};
 use serde_json::{Value as Json, json};
 
 /// The adjustments a run is made with.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Adjustments {
     /// The pad changes only where a tick ends.
     pub latch: bool,
@@ -59,7 +59,7 @@ pub(crate) struct Adjustments {
 }
 
 #[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum TestAdjust {
     Nothing,
     /// When tick `tick` ends, the word at `addr` (in main RAM) goes up by 1.
@@ -70,7 +70,7 @@ pub(crate) enum TestAdjust {
 }
 
 /// fixes/ built (`fix`): the functions replaced and the build they go to.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Fixes {
     pub functions: Vec<Fixed>,
     /// Loaded at [`crate::decomp::FIX_BASE`].
@@ -81,7 +81,7 @@ pub(crate) struct Fixes {
 
 /// A game function the fixes replace: its entry, and where its
 /// replacement is.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Fixed {
     pub name: String,
     pub address: u32,
@@ -89,7 +89,7 @@ pub(crate) struct Fixed {
 }
 
 /// A function that returns at once (`off`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Off {
     /// As the scenario names it.
     pub name: String,
@@ -273,9 +273,9 @@ impl Adjustments {
         Adjustments { latch: false, steady: false, fix: None, ..self.clone() }
     }
 
-    /// What they keep while a run goes, made where the recording starts;
-    /// `steady` takes effect on `m` from here.
-    pub fn start(&self, m: &mut Machine) -> Running {
+    /// Their settings on the machine, which a saved state leaves out: the
+    /// CPU's clock, the GPU's timing, the functions off and the fixes.
+    fn install(&self, m: &mut Machine) {
         m.cpu.overclock = if self.steady { STEADY_OVERCLOCK } else { 0 };
         m.bus.gpu.timed = !self.steady;
         m.redirects.clear_returns();
@@ -288,6 +288,12 @@ impl Adjustments {
                 m.redirects.insert(x.address, psx_core::Redirect::To(x.at));
             }
         }
+    }
+
+    /// What they keep while a run goes, made where the recording starts;
+    /// `steady` takes effect on `m` from here.
+    pub fn start(&self, m: &mut Machine) -> Running {
+        self.install(m);
         Running {
             a: self.clone(),
             flow: self.latch.then(PadFlow::new),
@@ -316,7 +322,7 @@ pub(crate) const STALL_FIELDS: u64 = 10;
 
 /// `latch` where no tick ends for a while (the boot, a load, a menu the
 /// binding's tick does not see): input passes through to the controller.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Fallback {
     /// Fields ended since a tick last ended.
     since_tick: u64,
@@ -328,7 +334,9 @@ struct Fallback {
     rel: u64,
 }
 
-/// Adjustments while a run goes.
+/// Adjustments while a run goes: saved with a debugging session's
+/// checkpoints, and put back on the machine with [`Running::reinstall`].
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Running {
     a: Adjustments,
     /// `latch`: the pad buffer's search, and the game's reads.
@@ -373,7 +381,7 @@ pub(crate) struct Running {
 }
 
 /// Where a latched change stands (`latch`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Pending {
     /// Taken in, or nothing changed.
     No,
@@ -434,6 +442,13 @@ impl Running {
     /// The adjustments these run.
     pub fn adjustments(&self) -> &Adjustments {
         &self.a
+    }
+
+    /// Put these back on `m`, a state of the run they are part of loaded
+    /// again (a debugging session's checkpoint): their settings, which the
+    /// state leaves out, and nothing of where they stand.
+    pub fn reinstall(&self, m: &mut Machine) {
+        self.a.install(m);
     }
 
     /// The same adjustments started again on `m`, a state loaded on the way

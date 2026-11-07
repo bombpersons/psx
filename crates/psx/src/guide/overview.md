@@ -250,12 +250,16 @@ original's formats; the game reads the port's own.
 
 - context: the build, project root, media, BIOS and capabilities (setup).
 - bios_install: a local BIOS, or a pinned download for a region (setup).
-- guide: this text, or a topic: run, code, assets, setup, arithmetic.
+- guide: this text, or a topic: run, debug, code, assets, setup,
+  arithmetic.
 - read: a returned file, by pointer, rows, hex or image.
 - disc_info, disc_ls, disc_extract, disc_sector, disc_exe: the disc's
   tracks, files, sectors and executables (assets).
 - run: the game for N fields from power-on or a state, with input,
   watches, samples, traces, GPU captures and states (run).
+- debug_start, debug_go, debug_show, debug_set, debug_back, debug_save,
+  debug_end: a run that stops at a PC, a write or the tick, to look,
+  change and go on or back (debug).
 - ram_diff, ram_search, ram_view: values across snapshots (code).
 - code_disasm, code_xrefs, code_decompile, code_functions, code_symbols:
   reading code (code).

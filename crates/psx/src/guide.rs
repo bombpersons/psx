@@ -10,6 +10,7 @@ pub enum Topic {
     #[default]
     Overview,
     Run,
+    Debug,
     Code,
     Assets,
     Setup,
@@ -17,12 +18,14 @@ pub enum Topic {
 }
 
 impl Topic {
-    const ALL: [Self; 6] = [Self::Overview, Self::Run, Self::Code, Self::Assets, Self::Setup, Self::Arithmetic];
+    const ALL: [Self; 7] =
+        [Self::Overview, Self::Run, Self::Debug, Self::Code, Self::Assets, Self::Setup, Self::Arithmetic];
 
     fn title(self) -> &'static str {
         match self {
             Self::Overview => "Port a game by recordings: the loop, recordings, status and next, assets, commands",
             Self::Run => "Run the game: input, memory formats, observations, the tick, asking the person",
+            Self::Debug => "The debugger: stop at a PC, a write or the tick, look, change, go on or back",
             Self::Code => "Find and read the game's code: RAM search, disassembly, decompilation, coverage, unpacking",
             Self::Assets => "The disc and its data: standard formats, streams, archives, what the game built",
             Self::Setup => {
@@ -36,6 +39,7 @@ impl Topic {
         match self {
             Self::Overview => include_str!("guide/overview.md"),
             Self::Run => include_str!("guide/run.md"),
+            Self::Debug => include_str!("guide/debug.md"),
             Self::Code => include_str!("guide/code.md"),
             Self::Assets => include_str!("guide/assets.md"),
             Self::Setup => include_str!("guide/setup.md"),

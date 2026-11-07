@@ -231,8 +231,9 @@ impl Observer for PadFlow {
         true
     }
 
-    fn step(&mut self, info: &StepInfo, m: &mut Machine) {
+    fn step(&mut self, info: &StepInfo, m: &mut Machine) -> Flow {
         self.flow.step(info, m);
+        Flow::Go
     }
 
     fn finish(self: Box<Self>, m: &Machine, out: &mut Out) -> crate::Result<()> {
@@ -250,8 +251,9 @@ impl Observer for Samples {
         Ok(Flow::Go)
     }
 
-    fn tick(&mut self, rel: u64, m: &mut Machine) {
+    fn tick(&mut self, rel: u64, m: &mut Machine) -> Flow {
         self.0.tick(rel, m);
+        Flow::Go
     }
 
     fn last_field(&mut self, rel: u64, m: &mut Machine, complete: bool) -> crate::Result<()> {
@@ -340,8 +342,9 @@ impl Observer for Profile {
         true
     }
 
-    fn step(&mut self, info: &StepInfo, m: &mut Machine) {
+    fn step(&mut self, info: &StepInfo, m: &mut Machine) -> Flow {
         self.p.after_step(info, m.cpu.cycles);
+        Flow::Go
     }
 
     fn finish(self: Box<Self>, m: &Machine, out: &mut Out) -> crate::Result<()> {
@@ -370,8 +373,9 @@ impl Observer for Trace {
         true
     }
 
-    fn step(&mut self, info: &StepInfo, m: &mut Machine) {
+    fn step(&mut self, info: &StepInfo, m: &mut Machine) -> Flow {
         self.t.after_step(info, &m.cpu, &m.bus);
+        Flow::Go
     }
 
     fn finish(mut self: Box<Self>, m: &Machine, out: &mut Out) -> crate::Result<()> {
@@ -397,11 +401,11 @@ impl Observer for Reads {
         true
     }
 
-    fn step(&mut self, info: &StepInfo, m: &mut Machine) {
-        let Some(acc) = info.mem.filter(|acc| !acc.store) else { return };
+    fn step(&mut self, info: &StepInfo, m: &mut Machine) -> Flow {
+        let Some(acc) = info.mem.filter(|acc| !acc.store) else { return Flow::Go };
         let p = crate::run::fold(acc.addr);
         if !self.ranges.iter().any(|&(lo, hi)| p < hi && p + acc.width as u32 > lo) {
-            return;
+            return Flow::Go;
         }
         self.hits += 1;
         *self.readers.entry(info.pc).or_default() += 1;
@@ -417,6 +421,7 @@ impl Observer for Reads {
                 "value": acc.value, "value_hex": format!("0x{:0n$X}", acc.value, n = acc.width as usize * 2),
             }));
         }
+        Flow::Go
     }
 
     fn finish(mut self: Box<Self>, m: &Machine, out: &mut Out) -> crate::Result<()> {

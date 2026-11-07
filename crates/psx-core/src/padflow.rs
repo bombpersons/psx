@@ -27,7 +27,7 @@ use crate::cpu::StepInfo;
 use crate::sio0::Sio0;
 
 /// A byte of a poll's reply: its exchange and position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Mark {
     pub exchange: u64,
     pub pos: u8,
@@ -38,7 +38,7 @@ pub struct Mark {
 type Lanes = [Option<Mark>; 4];
 
 /// A RAM byte holding a reply byte.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Held {
     pub mark: Mark,
     /// Written by an exception handler (the poll's own copy), not the game's
@@ -51,7 +51,7 @@ pub struct Held {
 
 /// A read of the pad: a load of the bytes a handler stored from a poll, or
 /// of JOY_DATA outside a handler.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PadRead {
     pub pc: u32,
     /// The address read: a RAM address (KSEG0) or JOY_DATA's.
@@ -64,7 +64,7 @@ pub struct PadRead {
 }
 
 /// One byte of the pad buffer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BufferByte {
     /// KSEG0 for main RAM, the physical address for the scratchpad.
     pub addr: u32,
@@ -76,7 +76,7 @@ pub struct BufferByte {
 }
 
 /// Follows reply bytes from the serial port; feed it every step.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct PadFlow {
     regs: [Lanes; 32],
     /// By physical address (main RAM's mirrors folded).

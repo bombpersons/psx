@@ -19,6 +19,7 @@ mod calls;
 mod code;
 mod commands;
 mod context;
+mod debug;
 
 mod coverage;
 mod decomp;
@@ -134,6 +135,12 @@ enum Command {
     /// screen and registers, with watches, traces, GPU captures, samples and states.
     /// Input can be inline or replayed.
     Run(run::RunCmdArgs),
+    /// The debugger: a run that stops where you ask, to look, change and go on or back.
+    /// Sessions are files in .psx/debug/.
+    Debug {
+        #[command(subcommand)]
+        action: debug::DebugAction,
+    },
     /// Named start states, each with its chain of runs from power-on.
     States {
         #[command(subcommand)]
@@ -409,6 +416,7 @@ fn main() -> ExitCode {
         Command::Code { action } => action.exec(&ctx),
         Command::Run(a) => a.exec(&ctx),
         Command::Ram { action } => action.exec(&ctx),
+        Command::Debug { action } => action.exec(&ctx),
         Command::Scenario { action } => match action {
             ScenarioAction::Record(a) => a.exec(&ctx),
             ScenarioAction::Check(a) => a.exec(&ctx),

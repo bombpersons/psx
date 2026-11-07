@@ -26,7 +26,7 @@ fn sha256(bytes: &[u8]) -> String {
 
 /// The glossary's binding, for its quantities, its probes and its tick:
 /// built, loaded and checked against the run's media.
-fn glossary_quantities(root: &Path, media: &Option<MediaId>) -> crate::Result<crate::ram::Quantities> {
+pub(crate) fn glossary_quantities(root: &Path, media: &Option<MediaId>) -> crate::Result<crate::ram::Quantities> {
     let (types, binding) = crate::scenario::glossary_binding(root)?;
     let image = &binding.described().source.image_sha256;
     if media.as_ref().map(|m| &m.sha256) != Some(image) {
@@ -126,10 +126,41 @@ fn adjustments(
     Ok(c)
 }
 
-pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> crate::Result<(bool, Value)> {
+/// A run's start, which the debugger shares: the machine booted, restored or
+/// at a recording's start (after its lead-in), the decomp installed and the
+/// adjustments started, in a session whose driver the caller sets.
+pub(crate) struct Begun {
+    pub s: Session<'static>,
+    pub bios_sha: String,
+    pub media_id: Option<MediaId>,
+    pub decomp: Option<crate::decomp::Replacement>,
+    /// The recording run from: its name and pad by tick.
+    pub recording: Option<(String, Vec<crate::replay::Input>)>,
+    /// A run's own adjustments (not a recording's).
+    chosen: Option<Chosen>,
+    /// The adjustments' names.
+    pub adjusted: Option<Vec<&'static str>>,
+    glossary: Option<crate::Result<crate::ram::Quantities>>,
+    pub started: Instant,
+    pub deadline: std::time::Duration,
+}
+
+impl Begun {
+    /// Why any of the port's default adjustments did not apply.
+    pub fn unavailable(&self) -> Option<&serde_json::Map<String, Value>> {
+        self.chosen.as_ref().map(|c| &c.unavailable).filter(|u| !u.is_empty())
+    }
+
+    /// The fix build run, for a chain step to keep.
+    pub fn fix_detail(&self) -> Option<Value> {
+        self.chosen.as_ref().and_then(|c| c.set.fix_detail())
+    }
+}
+
+pub(crate) fn begin(root: &Path, a: &mut RunArgs, events: &[crate::replay::Input]) -> crate::Result<Begun> {
     let bios = match std::fs::read(&a.bios) {
         Ok(b) => b,
-        Err(e) => return Err(Error::io(a.bios, e)),
+        Err(e) => return Err(Error::io(&a.bios, e)),
     };
     let bios_sha = sha256(&bios);
     // Open the medium first: a restored state needs it to check identity.
@@ -153,7 +184,7 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
         None => Some(adjustments(root, &a.observe, &media_id, &mut glossary)?),
     };
     // Replay events: pad state from each frame (frames counted from the run start).
-    if crate::replay::uses_sticks(&events) && m.bus.sio0.pad.kind != psx_core::pad::PadKind::DualShock {
+    if crate::replay::uses_sticks(events) && m.bus.sio0.pad.kind != psx_core::pad::PadKind::DualShock {
         return Err(Error::new(
             "invalid_arguments",
             "input sticks require a dualshock pad (configure it at boot; checkpoint pads are restored)",
@@ -166,14 +197,7 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
     // was side-loaded; after --from-state they count from the restored state,
     // and from a recording from the field after its first tick.
     let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
-    let mut s = match &recording {
-        Some((name, _, pads, _, _)) => Session::new(
-            m,
-            start_frame,
-            Box::new(crate::session::Ticks { recording: name.clone(), pads: pads.clone() }),
-        ),
-        None => Session::new(m, start_frame, Box::new(observe::Events::new(events))),
-    };
+    let mut s = Session::new(m, start_frame, Box::new(crate::session::NoInput));
     if let Some(d) = &decomp {
         d.install(&mut s.m);
     }
@@ -201,6 +225,27 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
         s.tick = c.tick.clone();
         adjusted = Some(c.set.names());
     }
+    Ok(Begun {
+        s,
+        bios_sha,
+        media_id,
+        decomp,
+        recording: recording.map(|(name, _, pads, _, _)| (name, pads)),
+        chosen,
+        adjusted,
+        glossary,
+        started,
+        deadline,
+    })
+}
+
+pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> crate::Result<(bool, Value)> {
+    let b = begin(root, &mut a, &events)?;
+    let Begun { mut s, bios_sha, media_id, decomp, recording, chosen, adjusted, mut glossary, started, deadline } = b;
+    s.driver = match &recording {
+        Some((name, pads)) => Box::new(crate::session::Ticks { recording: name.clone(), pads: pads.clone() }),
+        None => Box::new(observe::Events::new(events)),
+    };
     let start_frame = s.start;
     let m = &mut s.m;
     attach_observers(m, &a)?;
@@ -354,17 +399,7 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
     s.finish(&mut out)?;
     let m = &s.m;
 
-    // Each register as a hex word.
-    let mut registers = serde_json::Map::new();
-    registers.insert("pc".into(), json!(hex(m.cpu.pc)));
-    for i in 0..32 {
-        registers.insert(reg(i as u32).into(), json!(hex(m.cpu.regs[i])));
-    }
-    registers.insert("hi".into(), json!(hex(m.cpu.hi)));
-    registers.insert("lo".into(), json!(hex(m.cpu.lo)));
-    registers.insert("cop0_sr".into(), json!(hex(m.cpu.cop0[12])));
-    registers.insert("cop0_cause".into(), json!(hex(m.cpu.cop0[13])));
-    registers.insert("cop0_epc".into(), json!(hex(m.cpu.cop0[14])));
+    let registers = registers(m);
     let from_state_sha256 = a.from_state.as_deref().and_then(|p| std::fs::read(p).ok()).map(|b| sha256(&b));
     // How the machine was set up at power-on (a state carries its cards and pad).
     let cards_at_power_on = if a.from_state.is_some() { Value::Null } else { json!(a.cards) };
@@ -424,6 +459,21 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
         report.insert("decomp".into(), d.report(m));
     }
     Ok((complete, Value::Object(report)))
+}
+
+/// Each register as a hex word.
+pub(crate) fn registers(m: &Machine) -> serde_json::Map<String, Value> {
+    let mut registers = serde_json::Map::new();
+    registers.insert("pc".into(), json!(hex(m.cpu.pc)));
+    for i in 0..32 {
+        registers.insert(reg(i as u32).into(), json!(hex(m.cpu.regs[i])));
+    }
+    registers.insert("hi".into(), json!(hex(m.cpu.hi)));
+    registers.insert("lo".into(), json!(hex(m.cpu.lo)));
+    registers.insert("cop0_sr".into(), json!(hex(m.cpu.cop0[12])));
+    registers.insert("cop0_cause".into(), json!(hex(m.cpu.cop0[13])));
+    registers.insert("cop0_epc".into(), json!(hex(m.cpu.cop0[14])));
+    registers
 }
 
 /// A write hit as JSON with hex strings next to the numbers and signed views
@@ -540,7 +590,7 @@ fn annotate_hit(h: &psx_core::observe::WriteHit) -> Value {
 /// Hex address (optionally 0x-prefixed), or a function's name from the
 /// project's names or --symbols, or any name `address` takes:
 /// `(start, end of the function if known)`.
-fn resolve(spec: &str, scopes: &[crate::ScopedSymbols]) -> crate::Result<(u32, Option<u32>)> {
+pub(crate) fn resolve(spec: &str, scopes: &[crate::ScopedSymbols]) -> crate::Result<(u32, Option<u32>)> {
     let bare = spec.trim_end_matches('?');
     if !spec.starts_with("0x") {
         if let Some(f) = scopes.iter().find_map(|s| s.table.find(bare).or_else(|| s.table.find(&format!("{bare}?")))) {

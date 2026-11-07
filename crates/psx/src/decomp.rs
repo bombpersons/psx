@@ -1501,7 +1501,7 @@ fn entry_bytes(m: &psx_core::Machine, entry: u32, body: Option<&[(u32, u32)]>) -
 }
 
 /// One function a whole run sends to the agent's C.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Replaced {
     pub name: String,
     pub entry: u32,
@@ -1513,7 +1513,7 @@ pub struct Replaced {
 
 /// The agent's C for a whole run (`--decomp`, docs/decomp-plan.md, step
 /// 13): the build, the functions it replaces, and those left out with why.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Replacement {
     pub image: Vec<u8>,
     pub functions: Vec<Replaced>,

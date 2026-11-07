@@ -82,10 +82,15 @@ pub trait Observer {
     fn field(&mut self, _rel: u64, _m: &mut Machine) -> crate::Result<Flow> {
         Ok(Flow::Go)
     }
-    /// The instruction `info` just ran.
-    fn step(&mut self, _info: &StepInfo, _m: &mut Machine) {}
+    /// The instruction `info` just ran; a stop ends the advance after it
+    /// (and after the tick it ended, if it ended one).
+    fn step(&mut self, _info: &StepInfo, _m: &mut Machine) -> Flow {
+        Flow::Go
+    }
     /// The binding's tick ended in run field `rel`.
-    fn tick(&mut self, _rel: u64, _m: &mut Machine) {}
+    fn tick(&mut self, _rel: u64, _m: &mut Machine) -> Flow {
+        Flow::Go
+    }
     /// The run's last boundary, the state its files capture; `complete` is
     /// false when it ended early (a timeout).
     fn last_field(&mut self, _rel: u64, _m: &mut Machine, _complete: bool) -> crate::Result<()> {
@@ -124,6 +129,11 @@ pub trait Driver {
     fn finish(self: Box<Self>, _m: &Machine, _out: &mut Out) -> crate::Result<()> {
         Ok(())
     }
+    /// Where it stands, for a debugging session's checkpoint (null when it
+    /// keeps nothing).
+    fn save(&self) -> Value {
+        Value::Null
+    }
 }
 
 /// No input: the pad stays as the machine has it.
@@ -134,6 +144,7 @@ impl Driver for NoInput {
 }
 
 /// Complete pad states by run field: each from its field on.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct ByField {
     pub events: Vec<crate::replay::Input>,
     pub next: usize,
@@ -146,11 +157,16 @@ impl Driver for ByField {
             self.next += 1;
         }
     }
+
+    fn save(&self) -> Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
 }
 
 /// A recording's ticks: until a tick ends, the pad is the one that tick
 /// ended with, as the port's replay has it; the session stops when the last
 /// one ends.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Ticks {
     pub recording: String,
     pub pads: Vec<crate::replay::Input>,
@@ -165,6 +181,10 @@ impl Driver for Ticks {
 
     fn tick(&mut self, ticks: u64) -> Flow {
         if ticks >= self.pads.len() as u64 { Flow::Stop("recording_ended") } else { Flow::Go }
+    }
+
+    fn save(&self) -> Value {
+        serde_json::to_value(self).unwrap_or_default()
     }
 
     fn finish(self: Box<Self>, _m: &Machine, out: &mut Out) -> crate::Result<()> {
@@ -266,6 +286,20 @@ pub struct Session<'a> {
     pub ticks: u64,
     /// The last field the loop saw begin (absolute).
     last_field: u64,
+    /// The driver has yet to set the pad for the field that began.
+    driver_due: bool,
+}
+
+/// Where a session stands besides its machine, its driver and its
+/// adjustments: what a debugging session's checkpoint keeps with them.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Place {
+    pub start: u64,
+    pub steps: u64,
+    pub ticks: u64,
+    pub last_field: u64,
+    pub driver_due: bool,
+    pub tick: Option<crate::binding::Tick>,
 }
 
 impl<'a> Session<'a> {
@@ -280,7 +314,34 @@ impl<'a> Session<'a> {
             steps: 0,
             ticks: 0,
             last_field: u64::MAX,
+            driver_due: false,
         }
+    }
+
+    pub fn place(&self) -> Place {
+        Place {
+            start: self.start,
+            steps: self.steps,
+            ticks: self.ticks,
+            last_field: self.last_field,
+            driver_due: self.driver_due,
+            tick: self.tick.clone(),
+        }
+    }
+
+    /// Stand at `p` again, the machine, driver and adjustments put back by the caller.
+    pub fn set_place(&mut self, p: Place) {
+        self.start = p.start;
+        self.steps = p.steps;
+        self.ticks = p.ticks;
+        self.last_field = p.last_field;
+        self.driver_due = p.driver_due;
+        self.tick = p.tick;
+    }
+
+    /// Set the pad now, as a driver would.
+    pub fn pad(&mut self, i: &crate::replay::Input) {
+        Pad { m: &mut self.m, adjust: self.adjust.as_mut() }.apply(i);
     }
 
     pub fn observe(&mut self, o: impl Observer + 'a) {
@@ -319,11 +380,11 @@ impl<'a> Session<'a> {
                 a.step(&info, &mut self.m);
             }
             for o in &mut self.observers {
-                o.step(&info, &mut self.m);
+                let _ = o.step(&info, &mut self.m);
             }
             if tick.ended_by(&info) {
                 for o in &mut self.observers {
-                    o.tick(0, &mut self.m);
+                    let _ = o.tick(0, &mut self.m);
                 }
                 if let Some(a) = &mut self.adjust {
                     a.tick_ended(0, &mut self.m);
@@ -351,6 +412,7 @@ impl<'a> Session<'a> {
         self.ticks = 0;
         // No field has ended under the restarted adjustments yet.
         self.last_field = u64::MAX;
+        self.driver_due = false;
         Ok(())
     }
 
@@ -376,9 +438,16 @@ impl<'a> Session<'a> {
                 }
                 for o in &mut self.observers {
                     if let Flow::Stop(why) = o.field(rel, &mut self.m)? {
+                        // The driver's input for this field is still due.
+                        self.driver_due = true;
                         return Ok(Ended::Stopped(why));
                     }
                 }
+                self.driver_due = true;
+            }
+            if self.driver_due {
+                self.driver_due = false;
+                let rel = self.rel();
                 self.driver.field(rel, self.ticks, &mut Pad { m: &mut self.m, adjust: self.adjust.as_mut() });
             }
             if per_step {
@@ -387,21 +456,29 @@ impl<'a> Session<'a> {
                 if let Some(a) = &mut self.adjust {
                     a.step(&info, &mut self.m);
                 }
+                let mut stop = None;
                 for o in &mut self.observers {
-                    o.step(&info, &mut self.m);
+                    if let Flow::Stop(why) = o.step(&info, &mut self.m) {
+                        stop = stop.or(Some(why));
+                    }
                 }
                 if self.tick.as_ref().is_some_and(|t| t.ended_by(&info)) {
                     let rel = self.rel();
                     for o in &mut self.observers {
-                        o.tick(rel, &mut self.m);
+                        if let Flow::Stop(why) = o.tick(rel, &mut self.m) {
+                            stop = stop.or(Some(why));
+                        }
                     }
                     self.ticks += 1;
                     if let Some(a) = &mut self.adjust {
                         a.tick_ended(self.ticks, &mut self.m);
                     }
                     if let Flow::Stop(why) = self.driver.tick(self.ticks) {
-                        return Ok(Ended::Stopped(why));
+                        stop = stop.or(Some(why));
                     }
+                }
+                if let Some(why) = stop {
+                    return Ok(Ended::Stopped(why));
                 }
             } else {
                 self.steps += self.m.run_frame_steps(CHECK - self.steps % CHECK);
@@ -423,6 +500,7 @@ impl<'a> Session<'a> {
             }
             self.driver.field(rel, self.ticks, &mut Pad { m: &mut self.m, adjust: self.adjust.as_mut() });
         }
+        self.driver_due = false;
         for o in &mut self.observers {
             o.last_field(rel, &mut self.m, complete)?;
         }

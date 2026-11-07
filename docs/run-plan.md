@@ -303,6 +303,36 @@ step that keeps a state at field N becomes a step of N fields, and
    *Done when* a test stops at a PC, at a write and at the
    tick, goes back one stop, and shows the same registers as the first
    time.
+
+   *Done (2026-11-07).* debug.rs: `psx debug start|go|show|set|back|save|end`
+   and the debug_* tools, with guide topic debug. debug_start is run's
+   start (`run_native::begin`, which run now uses too: media, state or
+   recording with its lead-in, decomp, the port's adjustments) with the
+   input by field (`ByField`, from replay) or the recording's ticks as
+   driver. A session is `.psx/debug/<id>/`: session.json (its start,
+   its stops, the one it is at) and per stop the machine state and a
+   point (`session::Place`, the adjustments' `Running` and the driver,
+   all serialisable now); loading a stop puts the decomp and the
+   adjustments back on the machine (`Running::reinstall`), which a state
+   leaves out. Observers' `step` and `tick` return `Flow`; a stop at a
+   field boundary leaves the driver's input due for the next advance.
+   debug_go stops at pc, write, read (CPU only), until, tick, fields,
+   ticks, instructions, with history=N, limit and timeout; debug_show
+   gives registers, values (sample's formats, quantities, probes),
+   bytes, history, screen and stops; debug_set pokes, sets registers or
+   the pad; debug_back moves to an earlier stop (stops are never
+   dropped); debug_save copies a stop's state. The test (from a
+   recording: tick, the tick's PC again, a write, back one, the same
+   write and registers) passes on Croc's jump_and_stomp and GT2's
+   brake. A GT2 session 20 fields into brake has run --recording's
+   registers, and ten fields in four calls leave the state one call
+   leaves (the instruction count differs by a few: the core's idle-loop
+   skipping is not in a state). GT2's b1_brake and b1_launch check
+   deterministic. Left for later: the observers kept for a whole
+   session (watch, sample, watch_reads), draw and gpu, trace, the call
+   stack and debug_show hardware (step 7 brings diagnose's); inline
+   input and memory cards at the start, to keep the tool list in its
+   budget.
 7. **The moves.** diagnose, the GPU capture options, trace_start,
    save_state_at, poke and brief come out of run; their uses go to the
    debugger (diagnose's report becomes debug_show hardware);
