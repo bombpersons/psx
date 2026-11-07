@@ -250,13 +250,30 @@ pub struct RecordingReport {
     /// Recorded from the original (the rest are examples).
     pub captured: bool,
     pub ticks: usize,
-    /// The first tick each quantity differs at, or why the run stopped.
+    /// Which quantities differ from the recording, or why the run
+    /// stopped: not where or by how much, so a failure points at the rule
+    /// and not at a number to move.
     pub failures: Vec<String>,
+    /// Where each differing quantity first differed and the values there,
+    /// for the person's view (`psx web` plots them); kept out of the
+    /// failures.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub differences: Vec<Difference>,
     /// When a quantity differed: the compared quantities the port had,
     /// initially and after each tick it ran (`psx web` plots them beside
     /// the recording's).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<Values>,
+}
+
+/// Where a quantity first differed from the recording: `initial` or
+/// `tick N`, the recorded value and the port's (none where it had none).
+#[derive(Clone, Debug, Serialize)]
+pub struct Difference {
+    pub quantity: String,
+    pub at: String,
+    pub expected: Value,
+    pub got: Option<Value>,
 }
 
 /// The scenarios of a workspace, run against ports `port` makes.
@@ -363,7 +380,6 @@ impl<P: Port> Scenarios<P> {
         };
         if let Some(line) = line {
             out.failures.insert(0, line);
-            out.failures.sort_by_key(|l| tick_of(l));
         }
         out
     }
@@ -384,6 +400,7 @@ impl<P: Port> Scenarios<P> {
             captured: rec.header.source.kind == SourceKind::Captured,
             ticks: rec.rows.len(),
             failures: Vec::new(),
+            differences: Vec::new(),
             values: Vec::new(),
         };
         let mut port = (self.port)();
@@ -417,10 +434,10 @@ impl<P: Port> Scenarios<P> {
             });
             return (out, Trail::new());
         }
-        let mut differed: BTreeMap<String, String> = BTreeMap::new();
+        let mut differed: Vec<Difference> = Vec::new();
         let mut trail: Vec<Values> = Vec::new();
         let mut had = Trail::new();
-        let mut check = |port: &mut P, at: &str, values: &Values, differed: &mut BTreeMap<String, String>| {
+        let mut check = |port: &mut P, at: &str, values: &Values, differed: &mut Vec<Difference>| {
             let now = match port.observe().and_then(|o| gather(o.values())) {
                 Ok(now) => now,
                 Err(e) => return Some(format!("{at}: {e}")),
@@ -431,17 +448,18 @@ impl<P: Port> Scenarios<P> {
             );
             had.push((at.to_string(), now.clone()));
             for (q, tol) in &compared {
-                if differed.contains_key(q.as_str()) {
+                if differed.iter().any(|d| &d.quantity == *q) {
                     continue;
                 }
                 let Some(want) = values.get(*q) else { continue };
-                let line = match now.get(q.as_str()) {
-                    None => Some(format!("{at} {q}: expected {}, the port has none", show(want))),
-                    Some(got) if !differs(got, want, *tol) => None,
-                    Some(got) => Some(format!("{at} {q}: expected {}, got {}", show(want), show(got))),
-                };
-                if let Some(l) = line {
-                    differed.insert((*q).clone(), l);
+                let got = now.get(q.as_str());
+                if got.is_none_or(|got| differs(got, want, *tol)) {
+                    differed.push(Difference {
+                        quantity: (*q).clone(),
+                        at: at.to_string(),
+                        expected: want.clone(),
+                        got: got.cloned(),
+                    });
                 }
             }
             None
@@ -471,10 +489,8 @@ impl<P: Port> Scenarios<P> {
         if !differed.is_empty() {
             out.values = trail;
         }
-        // In the order they first differed.
-        let mut lines: Vec<String> = differed.into_values().collect();
-        lines.sort_by_key(|l| tick_of(l));
-        out.failures = lines;
+        out.failures = failures(&differed);
+        out.differences = differed;
         (out, had)
     }
 
@@ -553,9 +569,20 @@ fn show(v: &Value) -> String {
     serde_json::to_string(v).unwrap_or_default()
 }
 
-/// A failure line's tick: 0 for `initial`.
-fn tick_of(line: &str) -> u64 {
-    line.strip_prefix("tick ").and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or(0)
+/// The failures differences make: the quantities that differ, in the
+/// order they first did, and those the port had none of where the
+/// recording had a value.
+fn failures(d: &[Difference]) -> Vec<String> {
+    let names = |missing: bool| d.iter().filter(move |d| d.got.is_none() == missing).map(|d| d.quantity.as_str());
+    let (differ, missing): (Vec<&str>, Vec<&str>) = (names(false).collect(), names(true).collect());
+    let mut out = Vec::new();
+    if !differ.is_empty() {
+        out.push(format!("differs from the recording in {}", differ.join(", ")));
+    }
+    if !missing.is_empty() {
+        out.push(format!("the port has no {} where the recording has a value", missing.join(", ")));
+    }
+    out
 }
 
 fn read(p: &Path) -> Result<String, String> {
@@ -682,15 +709,18 @@ mod tests {
     }
 
     #[test]
-    fn a_difference_names_the_tick_and_quantity() {
+    fn a_difference_names_the_quantity_and_keeps_where_for_the_plots() {
         let root = workspace(&SCENARIO.replace("x = 4096", "x = 4095 "), &RECORDING.replace("4296", "4300"));
         let r = Scenarios::new(&root, Walk::new).report();
-        assert_eq!(r.scenarios[0].recordings[0].failures, ["initial x: expected 4096, got 4095"]);
-        // Within the tolerance, the first tick past it is named.
+        assert_eq!(r.scenarios[0].recordings[0].failures, ["differs from the recording in x"]);
+        let d = &r.scenarios[0].recordings[0].differences[0];
+        assert_eq!((d.at.as_str(), &d.expected, &d.got), ("initial", &Value::Int(4096), &Some(Value::Int(4095))));
+        // Within the tolerance, the first tick past it is where.
         let tolerant = SCENARIO.replace("x = 0", "x = 3").replace("x = 4096", "x = 4095 ");
         let root2 = workspace(&tolerant, &RECORDING.replace("4296", "4300"));
         let r = Scenarios::new(&root2, Walk::new).report();
-        assert_eq!(r.scenarios[0].recordings[0].failures, ["tick 2 x: expected 4300, got 4295"]);
+        assert_eq!(r.scenarios[0].recordings[0].failures, ["differs from the recording in x"]);
+        assert_eq!(r.scenarios[0].recordings[0].differences[0].at, "tick 2");
         // What the port had, initially and after each tick it ran.
         let had: Vec<_> = r.scenarios[0].recordings[0].values.iter().map(|v| v["x"].clone()).collect();
         assert_eq!(had, [Value::Int(4095), Value::Int(4195), Value::Int(4295)]);

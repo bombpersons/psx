@@ -100,17 +100,36 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
     if files.is_empty() && goal.features.is_none() && !ledger && !confirmed_features {
         return Ok(Value::Null);
     }
+    // The goal's entries move; one outside it (not listed) goes with
+    // nothing moved: its questions are not the goal's.
+    let listed: Option<Vec<String>> = match &goal.features {
+        Some(toml::Value::Array(a)) => Some(a.iter().filter_map(|v| v.as_str().map(String::from)).collect()),
+        _ => None,
+    };
     let mut entries = Vec::new();
+    let mut outside = Vec::new();
     for name in &files {
+        let id = name.trim_end_matches(".md");
+        if listed.as_ref().is_some_and(|l| !l.iter().any(|x| x == id)) {
+            outside.push(format!("{CATALOGUE}/{name}"));
+            continue;
+        }
         let rel = format!("{CATALOGUE}/{name}");
         let text = read(root, &rel)?.unwrap_or_default();
         let (front, _) = super::split_front(&text).map_err(|why| Error::invalid(format!("{rel}: {why}")))?;
         let e: Entry = toml::from_str(&front).map_err(|e| Error::invalid(format!("{rel}: {}", e.message())))?;
         entries.push((rel, e));
     }
-    // The person's plays: held out already, confirmed as theirs, or what a
-    // play request recorded.
-    let played: Vec<String> = crate::handoff::queue::list(root).iter().filter_map(|r| r.recording()).collect();
+    // The person's plays: held out already, confirmed as theirs, what a
+    // play request recorded, or held out in the ledger the goal's
+    // features kept.
+    let mut played: Vec<String> = crate::handoff::queue::list(root).iter().filter_map(|r| r.recording()).collect();
+    if let Some(l) = std::fs::read(root.join(GOAL_RECORDINGS))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<BTreeMap<String, String>>(&b).ok())
+    {
+        played.extend(l.into_iter().filter(|(_, k)| k == "held_out").map(|(r, _)| r));
+    }
     let confirmed_plays: Vec<String> = goal.confirmed.as_ref().and_then(|c| c.held_out.clone()).unwrap_or_default();
     let mut held_out = goal.held_out.clone();
     let mut to_work = Vec::new();
@@ -148,6 +167,7 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
     assets.retain(|_, n| !n.is_empty());
     let out = json!({
         "entries_removed": files,
+        "outside_the_goal": outside,
         "questions": questions.len(),
         "wont_reach": wont_reach.len(),
         "scenario_assets": assets,
@@ -159,6 +179,13 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
     }
     // goal.toml: no features, the person's plays held out and confirmed.
     let mut text = set_key(&goal_text, "features", None);
+    // The opening comment, when it tells of features, becomes the template's.
+    let head = text.lines().take_while(|l| l.trim_start().starts_with('#')).count();
+    if text.lines().take(head).any(|l| l.contains("feature")) {
+        let template: Vec<&str> = super::GOAL_TOML.lines().take_while(|l| l.starts_with('#')).collect();
+        let rest: Vec<&str> = text.lines().skip(head).collect();
+        text = format!("{}\n{}\n", template.join("\n"), rest.join("\n"));
+    }
     let plays = toml::Value::from(held_out.clone());
     text = set_key(&text, "held_out", (!held_out.is_empty()).then_some(&plays));
     if let Some(c) = &goal.confirmed {
@@ -208,7 +235,7 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
         write(root, QUESTIONS, &t)?;
     }
     write(root, GOAL, &text)?;
-    for (rel, _) in &entries {
+    for rel in entries.iter().map(|(r, _)| r).chain(&outside) {
         let p = root.join(rel);
         std::fs::remove_file(&p).map_err(|e| Error::io(&p, e))?;
     }
@@ -227,8 +254,8 @@ mod tests {
 
     #[test]
     fn a_workspace_with_features_moves_to_the_goals_recordings() {
-        let entry = "+++\nid = \"F-0001\"\ntitle = \"Walk\"\narea = \"a\"\ncode = [\"0x80010000\"]\nassets = [\"/CROC.WAD\"]\nquestions = [\"what is the slope limit?\"]\n[recordings]\nwork = [\"walk/a\"]\nheld_out = [\"walk/b\", \"walk/c\"]\n[wont_reach]\n\"0x80010010\" = \"debug only\"\n+++\nWalking.\n";
-        let goal = "# The goal.\ndescription = \"walk\"\nfeatures = [\n  \"F-0001\",\n]\nconfirmed = { at = \"t\", features = [\"F-0001\"], held_out = [\"walk/c\"], wont_reach = { \"F-0001\" = { \"0x80010010\" = \"debug only\" } } }\n";
+        let entry = "+++\nid = \"F-0001\"\ntitle = \"Walk\"\narea = \"a\"\ncode = [\"0x80010000\"]\nassets = [\"/CROC.WAD\"]\nquestions = [\"what is the slope limit?\"]\n[recordings]\nwork = [\"walk/a\"]\nheld_out = [\"walk/b\", \"walk/c\", \"walk/d\"]\n[wont_reach]\n\"0x80010010\" = \"debug only\"\n+++\nWalking.\n";
+        let goal = "# The goal, as features.\ndescription = \"walk\"\nfeatures = [\n  \"F-0001\",\n]\nconfirmed = { at = \"t\", features = [\"F-0001\"], held_out = [\"walk/c\"], wont_reach = { \"F-0001\" = { \"0x80010010\" = \"debug only\" } } }\n";
         let (d, _) = workspace(
             goal,
             &[
@@ -237,25 +264,31 @@ mod tests {
                 ("scenarios/walk/a.jsonl", ""),
                 ("scenarios/walk/b.jsonl", ""),
                 ("scenarios/walk/c.jsonl", ""),
-                (".psx/goal_recordings.json", "{}"),
+                ("catalogue/F-0002.md", "+++\nid = \"F-0002\"\nquestions = [\"not the goal's\"]\n+++\n"),
+                (".psx/goal_recordings.json", "{\"walk/d\": \"held_out\"}"),
+                ("scenarios/walk/d.jsonl", ""),
             ],
         );
         let out = run(&d.0, false).unwrap();
-        assert_eq!(out["held_out"], json!(["walk/c"]));
+        assert_eq!(out["held_out"], json!(["walk/c", "walk/d"]));
+        assert_eq!(out["outside_the_goal"], json!(["catalogue/F-0002.md"]));
         assert_eq!(out["held_out_to_work"], json!(["walk/b"]));
         let port = Port::load(&d.0).unwrap();
         // Only the inventory, which this workspace has none of, is missing.
         assert!(port.problems.iter().all(|p| p.problem.contains("no inventory")), "{:?}", port.problems);
         assert_eq!(port.recordings.work, ["walk/a", "walk/b"]);
-        assert_eq!(port.recordings.held_out, ["walk/c"]);
+        assert_eq!(port.recordings.held_out, ["walk/c", "walk/d"]);
         assert_eq!(port.questions, ["what is the slope limit?"]);
         assert_eq!(port.wont_reach["0x80010010"], "debug only");
         assert!(port.wont_reach_agreed("0x80010010", "debug only"));
         assert_eq!(port.scenario_assets["walk"], ["/CROC.WAD"]);
         assert!(matches!(port.confirmation(), super::super::Confirmation::Covers { .. }));
-        assert!(!d.0.join("catalogue/F-0001.md").exists() && !d.0.join(GOAL_RECORDINGS).exists());
         let text = std::fs::read_to_string(d.0.join(GOAL)).unwrap();
-        assert!(text.starts_with("# The goal.\ndescription = \"walk\"\n"), "{text}");
+        assert!(
+            text.starts_with(super::super::GOAL_TOML.lines().next().unwrap()) && !text.contains("feature"),
+            "{text}"
+        );
+        assert!(!d.0.join("catalogue/F-0001.md").exists() && !d.0.join(GOAL_RECORDINGS).exists());
         // Moved once, nothing more moves.
         assert_eq!(run(&d.0, false).unwrap(), Value::Null);
     }

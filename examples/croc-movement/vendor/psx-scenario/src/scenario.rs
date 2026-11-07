@@ -92,6 +92,10 @@ pub struct Scenario {
     /// `[MODULE:]name` in names/), or its address in hex.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub off: BTreeMap<String, i64>,
+    /// The disc's assets its recordings need to replay, by name (a disc
+    /// path, archive entry or `format:<id>`), for the port's importers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<String>,
 }
 
 impl Scenario {

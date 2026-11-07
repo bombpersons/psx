@@ -50,6 +50,8 @@ pub const HOOK: u32 = 3;
 /// end]]}`).
 pub const MAP: u32 = 4;
 // 5 was INPUT, the game's own pad, retired for `latch`: not reused.
+// 6 was PROBES, values to compare with the port's, retired: a binding that
+// still answers it is never asked. Not reused.
 
 /// Returned: the answer was written.
 pub const OK: i32 = 0;
