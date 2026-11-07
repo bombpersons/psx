@@ -223,6 +223,34 @@ goal shrinking. Recordings (work and held_out, the person's plays) and
 wont_reach confirmations move with the recordings and code they belong
 to; the new features are judged again by port_check.
 
+### The cut, against the goal
+
+The first cut is a guess, made before the agent knows the game; nothing
+so far asks it to cut again. Two things do:
+
+- **The reviewer.** The Review brief also gives the goal's description
+  and the catalogue, and asks: do the features together cover what the
+  description asks for, its breadth included (GT2's "any car on any
+  track" against eleven features whose recordings are nearly all the
+  Vitz on the licence course); can each feature's recordings show it
+  without its neighbours; which should merge or split, and what is
+  missing. These are findings like any other, answered by recutting or
+  kept with why.
+- **Signs the cut is wrong**, found by psx and given to the agent where
+  it works, and to the reviewer in the brief: a feature whose failures'
+  pointer keeps finding other features' code (GT2's offroad finds
+  F-0002, F-0003, F-0004 and F-0007), said in Fix's why as "the cut may
+  not hold"; a feature with no recording of its own (each is also
+  another's); a function claimed by several features whose recordings
+  all run the others' code. They say where to look, not what to do.
+
+The goal has held-out plays of its own, beside the features': once every
+feature is reviewed, port next gives a Play item for the goal, and the
+agent writes the request from the description, in game terms ("a 4WD car
+on a dirt course, then an FR car on a street circuit"). The goal is done
+when those pass too. A request narrower than what was asked is something
+the person can see without judging code or a cut.
+
 ### Progress the cut does not change
 
 Beside the features by stage, psx web's Stats and port status plain
@@ -276,6 +304,10 @@ until, watch, debug_show value and debug_go's write and read take
   could not tell if they were wrong. The pointer and the held-out plays
   catch code set aside that holds a rule. The person confirms what they
   can judge: the goal, and wont_reach's reasons in game terms.
+- **The cut is revised against the goal.** The reviewer reads the
+  catalogue against the description, psx points at signs the cut is
+  wrong, and the goal's own held-out plays show its breadth to the
+  person; none decides the cut, the agent does.
 - **Every function the goal runs is accounted for.** Claimed or not
   ported, so code nobody claimed is work, not a gap no one sees.
 - **Screens are looked at, not scored.** A pixel difference would be a
@@ -405,12 +437,19 @@ asks nothing of the person.
 `replaces` and `from` in catalogue entries; confirmation through them;
 verdicts (.psx/verdicts/<id>/), reviews' feature lists, progress.jsonl
 and port next's history read through them. The three shares in psx
-web's Stats and port status plain.
+web's Stats and port status plain. The Review brief's questions on the
+cut against the goal's description, with the signs of a wrong cut (the
+pointer finding other features' code, a feature with no recording of
+its own, code claimed by several features that run each other's); Fix's
+why carries the first. The goal's held_out in goal.toml, port next's
+Play item for it once every feature is reviewed, and Done waiting on it.
 
 *Done when* merging two confirmed features into one keeps the goal
 confirmed, keeps their held_out recordings, and port next judges the new
-feature; a split likewise; and the shares are the same before and after
-a merge.
+feature; a split likewise; the shares are the same before and after a
+merge; on GT2's workspace the Review brief lists its signs (offroad's
+pointer, features sharing recordings); and a goal with every feature
+reviewed gets a Play item for the goal.
 
 ### 7. Screens
 
@@ -428,13 +467,16 @@ the Review brief asks the reviewer to look.
 
 ### 8. A trial on Gran Turismo 2
 
-A fresh session from port_next, on the handling features:
+A fresh session from port_next, on the handling features, on the
+simulation disc as the workspace is (the person moves the goal to the
+arcade disc afterwards, which suits "any car on any track" better):
 whether it merges them, revises their code and not_ported, how it uses
-the pointer, and its feedback file.
+the pointer and the review's findings on the cut, and its feedback file.
 
 *Done when* its feedback says whether the pointer led it to the rule
-without the tick, whether it worked on a number at any point, and
-whether it changed a feature's code when it learnt more.
+without the tick, whether it worked on a number at any point,
+whether it changed a feature's code when it learnt more, and whether it
+recut the features against the goal.
 
 ## Not in this plan
 
