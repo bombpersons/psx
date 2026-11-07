@@ -95,7 +95,9 @@ zeros left off; until takes = and != only) or a width 1/2/4.
   sample_every thins rows. sample_per tick takes a row where the glossary
   binding's tick ends, with a tick column; glossary names and ticks build
   the workspace's binding and need its media. Values are raw, as recordings
-  hold them.
+  hold them. A name the glossary does not have is one of the binding's
+  probes (its fn probes: values by any name, never recorded or judged), a
+  list's values joined by ;; probes_never_given lists names it never gave.
 - until ADDR:FMT=VALUE (also != < <= > >=; several must all hold) stops at
   the first field where it holds: until_met, and the report's until gives
   run_frame and the values. frames caps the wait; until.met false means it

@@ -47,7 +47,7 @@ Four pieces:
    fn probes(&self, m: &Machine, p: &mut Probes) {
        let car = m.u32(0x800A_2F18);
        for w in 0..4 {
-           p.i32(&format!("wheel_load_{w}"), m.i16(car + 0x6A4 + w * 0x40));
+           p.probe(format!("wheel_load_{w}"), m.i16(car + 0x6A4 + w * 0x40));
        }
    }
    ```
@@ -111,13 +111,19 @@ ran a different number of times).
 
 ### 1. Probes in the binding
 
-`psx_capture::Probes` (named integers, bools, fixed and float bit
-patterns, as quantities are encoded; repeated names kept as lists) and
+`psx_capture::Probes` (named integers and bools, as quantities are
+encoded; repeated names kept as lists) and
 `Glossary::probes` with an empty default. `export_glossary!` exports it;
 psx loads it when present, so bindings built before stay valid.
 
 *Done when* a test binding's probes are read at each tick of a run, and a
 binding without them loads as before.
+
+*Done (2026-11-07), the read per tick left to step 2:* `Probes::probe`
+takes an integer or a bool (a fixed-point value as its integer; the
+PlayStation has no floats), a repeated name making a list.
+`abi::PROBES` (6) asks for them; a binding built before answers
+`UNKNOWN`, which `Plugin::probes` takes as none, so ABI_VERSION stays 6.
 
 ### 2. Probes in run's sample
 
@@ -129,6 +135,11 @@ binding gives them, a repeated name as its list.
 *Done when* a run from a state samples a probe and a quantity per tick,
 and a probe reading the same memory as the quantity gives the same
 values.
+
+*Done (2026-11-07):* a sample name the glossary does not have is a
+probe; the report says each column's source, and names the binding
+never gave under probes_never_given, with the names it did give.
+Checked with a test binding; on a game, in step 7's trial.
 
 ### 3. run from a recording
 

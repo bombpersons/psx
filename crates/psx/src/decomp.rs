@@ -1325,17 +1325,19 @@ pub fn check_key(root: &Path, names: &Names, function: &str) -> (String, String)
         }
         todo.extend(more);
     }
-    let mut used = Names::default();
-    used.types = types.into_iter().map(|i| names.types[i].clone()).collect();
-    used.globals = globals.into_iter().map(|i| names.globals[i].clone()).collect();
-    used.functions = functions
-        .into_iter()
-        .map(|i| {
-            let mut f = names.functions[i].clone();
-            f.locals.clear();
-            f
-        })
-        .collect();
+    let used = Names {
+        types: types.into_iter().map(|i| names.types[i].clone()).collect(),
+        globals: globals.into_iter().map(|i| names.globals[i].clone()).collect(),
+        functions: functions
+            .into_iter()
+            .map(|i| {
+                let mut f = names.functions[i].clone();
+                f.locals.clear();
+                f
+            })
+            .collect(),
+        ..Default::default()
+    };
     let (h, ld, _) = header(&used);
     (sources, fnv([h.as_bytes(), ld.as_bytes()]))
 }
@@ -1439,7 +1441,8 @@ pub fn last_check(root: &Path, function: &str) -> Option<Value> {
 pub fn last_check_in(root: &Path, names: &Names, function: &str) -> Option<Value> {
     let mut k: Value = serde_json::from_slice(&std::fs::read(check_file(root, function)).ok()?).ok()?;
     let (sources, names_key) = check_key(root, names, function);
-    k["stale"] = json!(k["sources"].as_str() != Some(sources.as_str()) || k["names"].as_str() != Some(names_key.as_str()));
+    k["stale"] =
+        json!(k["sources"].as_str() != Some(sources.as_str()) || k["names"].as_str() != Some(names_key.as_str()));
     Some(k)
 }
 
@@ -1477,7 +1480,9 @@ pub fn counts(root: &Path) -> Value {
     let c = c_functions(root);
     let passing = c
         .iter()
-        .filter(|(n, _, _)| last_check_in(root, &names, n).is_some_and(|k| k["status"] == "passed" && k["stale"] == false))
+        .filter(|(n, _, _)| {
+            last_check_in(root, &names, n).is_some_and(|k| k["status"] == "passed" && k["stale"] == false)
+        })
         .count();
     json!({"named": names.functions.len(), "in_c": c.len(), "passing": passing})
 }
@@ -1845,7 +1850,13 @@ static int helper(int x)\n{\n    return x + 1;\n}\n\nvoid world_collide(Actor *a
         );
         // A check kept on this C passes until the C changes.
         assert_eq!(counts(&root)["passing"], 0);
-        save_check(&root, &Names::default(), "helper", &json!({}), &json!({"status": "passed", "passed": 3, "failed": 0}));
+        save_check(
+            &root,
+            &Names::default(),
+            "helper",
+            &json!({}),
+            &json!({"status": "passed", "passed": 3, "failed": 0}),
+        );
         assert_eq!(counts(&root), json!({"named": 0, "in_c": 2, "passing": 1}));
         assert_eq!(last_check(&root, "helper").unwrap()["stale"], false);
         let h = sources_hash(&root);

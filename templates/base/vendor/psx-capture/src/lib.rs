@@ -100,6 +100,20 @@
 //! }
 //! ```
 //!
+//! While a port parts from the original, the binding can also give probes
+//! ([`Glossary::probes`]): values by any name, read when a tick ends,
+//! never recorded or judged, so they come and go without touching the
+//! glossary (docs/probes-plan.md):
+//!
+//! ```ignore
+//! fn probes(&self, m: &Machine, p: &mut Probes) {
+//!     let car = m.u32(0x800A_2F18);
+//!     for w in 0..4 {
+//!         p.probe(format!("wheel_load_{w}"), m.i16(car + 0x6A4 + w * 0x40));
+//!     }
+//! }
+//! ```
+//!
 //! The boundary with psx is two C functions ([`abi`]), so a binding built
 //! by another Rust compiler than psx's loads all the same. Values cross it
 //! in the recording's JSON encoding.
@@ -113,7 +127,7 @@ pub const ABI_VERSION: u32 = 6;
 
 pub mod prelude {
     pub use crate::reg::*;
-    pub use crate::{Glossary, Hook, Hooks, Machine, Map, Programs, Script, Tick};
+    pub use crate::{Glossary, Hook, Hooks, Machine, Map, Probes, Programs, Script, Tick};
 }
 
 /// A CPU register, numbered as the R3000 numbers them; `HI` and `LO` are 32
@@ -282,6 +296,23 @@ impl Value {
     }
 }
 
+impl From<bool> for Value {
+    fn from(b: bool) -> Value {
+        Value::Bool(b)
+    }
+}
+
+macro_rules! int_values {
+    ($($t:ty),*) => {$(
+        impl From<$t> for Value {
+            fn from(n: $t) -> Value {
+                Value::Int(n as i128)
+            }
+        }
+    )*};
+}
+int_values!(i8, u8, i16, u16, i32, u32, i64, u64, isize, usize);
+
 /// A JSON string.
 fn string(s: &str) -> String {
     let mut out = String::from("\"");
@@ -371,6 +402,51 @@ pub trait Glossary {
     /// once per recording for each program and bytes [`Glossary::programs`]
     /// names. Positions are offsets into `code`. None by default.
     fn map(&self, _name: &str, _code: &[u8], _map: &mut Map) {}
+
+    /// Values to compare while chasing a divergence, read when a tick ends
+    /// as the quantities are, by names of the agent's choosing: not the
+    /// glossary's, not recorded, not judged (docs/probes-plan.md). None by
+    /// default.
+    fn probes(&self, _m: &Machine, _p: &mut Probes) {}
+}
+
+/// The probes read when a tick ends ([`Glossary::probes`]).
+#[derive(Default)]
+pub struct Probes {
+    list: Vec<(String, Value)>,
+}
+
+impl Probes {
+    /// The probe `name` is `value`, an integer or a bool. A name given
+    /// again in the same tick makes a list, in order.
+    pub fn probe(&mut self, name: impl Into<String>, value: impl Into<Value>) -> &mut Self {
+        self.list.push((name.into(), value.into()));
+        self
+    }
+
+    fn json(&self) -> String {
+        let mut names: Vec<&str> = Vec::new();
+        for (n, _) in &self.list {
+            if !names.contains(&n.as_str()) {
+                names.push(n);
+            }
+        }
+        let mut out = String::from("{");
+        for (i, n) in names.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&string(n));
+            out.push(':');
+            let values: Vec<&Value> = self.list.iter().filter(|(m, _)| m == n).map(|(_, v)| v).collect();
+            match values.as_slice() {
+                [one] => one.json(&mut out),
+                many => Value::List(many.iter().map(|v| (*v).clone()).collect()).json(&mut out),
+            }
+        }
+        out.push('}');
+        out
+    }
 }
 
 /// A program's structure ([`Glossary::map`]).
@@ -558,5 +634,13 @@ mod tests {
         let mut m = Map::default();
         m.statement(0, 3).statement(3, 4).decision(0, 2).routine("go", 0, 4);
         assert_eq!(m.json(), r#"{"statements":[[0,3],[3,4]],"decisions":[[0,2]],"routines":[["go",0,4]]}"#);
+    }
+
+    #[test]
+    fn probes_are_json_a_repeated_name_a_list() {
+        let mut p = Probes::default();
+        assert_eq!(p.json(), "{}");
+        p.probe("load", -3i16).probe("grip_0", 7u32).probe("load", 5i16).probe("slip", true);
+        assert_eq!(p.json(), r#"{"load":[-3,5],"grip_0":7,"slip":true}"#);
     }
 }

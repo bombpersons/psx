@@ -302,7 +302,7 @@ pub struct RunArgs {
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ObserveArgs {
     /// Sample a value into samples.csv at every frame boundary (vblank), or every tick
-    /// (--sample-per): a glossary quantity by name (croc_x), or RAM/scratchpad as
+    /// (--sample-per): a glossary quantity or the binding's probe by name (croc_x), or RAM/scratchpad as
     /// `ADDR:FMT[:NAME]`, FMT one of u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F (fx16.16, fx4.12),
     /// a byte string strN (str32) or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Repeatable.
     #[arg(long = "sample")]

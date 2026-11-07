@@ -594,8 +594,8 @@ impl std::str::FromStr for SampleSpec {
     }
 }
 
-/// A `samples.csv` column: memory, or a quantity of the glossary, read
-/// through its binding.
+/// A `samples.csv` column: memory, or a name the glossary's binding gives
+/// (a quantity of the glossary, or else one of its probes).
 #[derive(Clone, Debug)]
 pub enum Column {
     Memory(Sample),
@@ -665,12 +665,28 @@ pub enum SamplePer {
     Tick,
 }
 
-/// The glossary's binding, which reads the quantity columns.
+/// The glossary's binding, which reads the quantity and probe columns.
 pub struct Quantities {
     pub binding: crate::binding::Plugin<crate::scenario::Described>,
     pub types: std::collections::BTreeMap<String, psx_scenario::Type>,
     pub refusals: Vec<Value>,
     pub refusal_count: u64,
+    /// The names the binding gave as probes in any row.
+    pub probes_given: std::collections::BTreeSet<String>,
+}
+
+impl Quantities {
+    pub fn new(
+        binding: crate::binding::Plugin<crate::scenario::Described>,
+        types: std::collections::BTreeMap<String, psx_scenario::Type>,
+    ) -> Quantities {
+        Quantities { binding, types, refusals: Vec::new(), refusal_count: 0, probes_given: Default::default() }
+    }
+
+    /// Whether `name` is a glossary quantity; any other name is a probe.
+    pub fn is_quantity(&self, name: &str) -> bool {
+        self.types.contains_key(name)
+    }
 }
 
 /// The refusals a run's report lists.
@@ -724,8 +740,18 @@ impl Sampler {
 
     fn row(&mut self, mut line: String, m: &psx_core::Machine) {
         self.rows += 1;
-        let values = self.quantities.as_mut().filter(|_| self.columns.iter().any(|c| matches!(c, Column::Quantity(_))));
-        let values = values.and_then(|q| q.read(m, self.rows));
+        let named = |q: &Quantities, quantity: bool| {
+            self.columns.iter().any(|c| matches!(c, Column::Quantity(n) if q.is_quantity(n) == quantity))
+        };
+        let (mut values, mut probes) = (None, None);
+        if let Some(q) = self.quantities.as_mut() {
+            if named(q, true) {
+                values = q.read(m, self.rows);
+            }
+            if named(q, false) {
+                probes = q.probes(m, self.rows);
+            }
+        }
         for c in &self.columns {
             line.push(',');
             match c {
@@ -739,7 +765,12 @@ impl Sampler {
                     Some(psx_scenario::Value::Int(i)) => line += &i.to_string(),
                     Some(psx_scenario::Value::Variant(v)) => line += v,
                     // Tables, lists and records are not quantities.
-                    Some(_) | None => {}
+                    Some(_) => {}
+                    None => {
+                        if let Some(v) = probes.as_ref().and_then(|p| p.get(n)) {
+                            line += &probe_cell(v);
+                        }
+                    }
                 },
             }
         }
@@ -748,7 +779,33 @@ impl Sampler {
     }
 }
 
+/// A probe's cell: its value, a list's values joined by `;`.
+fn probe_cell(v: &Value) -> String {
+    match v {
+        Value::Array(a) => a.iter().map(probe_cell).collect::<Vec<_>>().join(";"),
+        Value::String(s) => s.clone(),
+        v => v.to_string(),
+    }
+}
+
 impl Quantities {
+    /// The probes now, or none when the binding refused (row `row`).
+    fn probes(&mut self, m: &psx_core::Machine, row: u64) -> Option<serde_json::Map<String, Value>> {
+        match self.binding.probes(m) {
+            Ok(p) => {
+                self.probes_given.extend(p.keys().cloned());
+                Some(p)
+            }
+            Err(e) => {
+                self.refusal_count += 1;
+                if self.refusals.len() < MAX_REFUSALS {
+                    self.refusals.push(json!({"row": row, "probes": true, "problem": e}));
+                }
+                None
+            }
+        }
+    }
+
     /// The quantities now, or none when the binding refused (row `row`).
     fn read(&mut self, m: &psx_core::Machine, row: u64) -> Option<psx_scenario::Values> {
         let problems = match self.binding.call(psx_capture::abi::QUANTITIES, m) {

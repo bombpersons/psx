@@ -21,16 +21,10 @@ fn sha256(bytes: &[u8]) -> String {
     psx_media::disc::sha256_bytes(bytes)
 }
 
-/// The glossary's binding, for the quantities `named` and its tick: built,
-/// loaded and checked against the run's media.
-fn glossary_quantities(root: &Path, named: &[&str], media: &Option<MediaId>) -> crate::Result<crate::ram::Quantities> {
+/// The glossary's binding, for its quantities, its probes and its tick:
+/// built, loaded and checked against the run's media.
+fn glossary_quantities(root: &Path, media: &Option<MediaId>) -> crate::Result<crate::ram::Quantities> {
     let (types, binding) = crate::scenario::glossary_binding(root)?;
-    if let Some(n) = named.iter().find(|n| !types.contains_key(**n)) {
-        let known: Vec<&String> = types.keys().collect();
-        return Err(
-            Error::invalid(format!("--sample {n}: the glossary has no such quantity")).with("quantities", json!(known))
-        );
-    }
     let image = &binding.described().source.image_sha256;
     if media.as_ref().map(|m| &m.sha256) != Some(image) {
         return Err(Error::new(
@@ -41,7 +35,7 @@ fn glossary_quantities(root: &Path, named: &[&str], media: &Option<MediaId>) -> 
             ),
         ));
     }
-    Ok(crate::ram::Quantities { binding, types, refusals: Vec::new(), refusal_count: 0 })
+    Ok(crate::ram::Quantities::new(binding, types))
 }
 
 pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate::Result<(bool, Value)> {
@@ -98,7 +92,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
         })
         .collect();
     let quantities = if per == crate::ram::SamplePer::Tick || !named.is_empty() {
-        Some(glossary_quantities(root, &named, &media_id)?)
+        Some(glossary_quantities(root, &media_id)?)
     } else {
         None
     };
@@ -380,7 +374,8 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
                 "per": if tick { "tick" } else { "field" },
                 "columns": s.columns.iter().map(|c| match c {
                     crate::ram::Column::Memory(c) => json!({"name": c.name, "address": hex(c.addr), "region": region(c.addr), "format": c.fmt.name()}),
-                    crate::ram::Column::Quantity(n) => json!({"name": n, "source": "glossary"}),
+                    crate::ram::Column::Quantity(n) => json!({"name": n, "source":
+                        if s.quantities.as_ref().is_some_and(|q| q.is_quantity(n)) { "glossary" } else { "probe" }}),
                 }).collect::<Vec<_>>(),
                 "timing": if tick {
                     "a row at the end of every tick of the game's logic (the glossary binding's tick store), as that store left memory; tick counts the ticks ended since the run start"
@@ -401,6 +396,25 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
                     r["quantities"] = json!(
                         "raw, as recordings hold them: a fixed's underlying integer, a float's bit pattern; an empty cell where the binding refused"
                     );
+                }
+                let probes: Vec<&String> = s
+                    .columns
+                    .iter()
+                    .filter_map(|c| match c {
+                        crate::ram::Column::Quantity(n) if !q.is_quantity(n) => Some(n),
+                        _ => None,
+                    })
+                    .collect();
+                if !probes.is_empty() {
+                    r["probes"] = json!(
+                        "the binding's probes (its fn probes), raw; a list's values joined by ;, an empty cell where the binding gave none or refused"
+                    );
+                    let never: Vec<&String> = probes.into_iter().filter(|n| !q.probes_given.contains(*n)).collect();
+                    if !never.is_empty() {
+                        r["probes_never_given"] = json!(never);
+                        r["probes_given"] = json!(q.probes_given);
+                        r["quantities_known"] = json!(q.types.keys().collect::<Vec<_>>());
+                    }
                 }
                 if q.refusal_count > 0 {
                     r["refusal_count"] = json!(q.refusal_count);
