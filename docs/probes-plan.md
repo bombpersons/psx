@@ -152,6 +152,9 @@ refuses latch and fix as now.
 *Done when* sampling a latched, fixed recording's quantities in run gives
 the recorded values on every tick.
 
+This is step 2 of docs/run-plan.md, which puts run, recording and the
+handoff on one loop first.
+
 ### 4. Probes in the port
 
 `psx_scenario::probe!` and its recorder; `launch` takes `"probes":true`;
