@@ -14,8 +14,10 @@ number:
    not ported, so code nobody claimed is work psx can point at.
 3. Features have no dependencies: the pointer says which feature's code
    a failure is in, and the work goes there.
-4. Features merge and split without losing what the person confirmed,
-   and progress is measured in ways that do not change with the cut.
+4. Features merge and split freely, against the goal: the person
+   confirms the goal, the cut after that is the agent's, and what guards
+   the goal is its recordings, not its ids; progress is measured in ways
+   that do not change with the cut.
 5. Probes (docs/probes-plan.md) stop at the original's side.
 6. The agent sees the port's screen beside the original's, to
    understand what drawing does; what it shows that can be checked
@@ -217,11 +219,23 @@ Two features whose recordings each run the other's code are one of:
 The agent decides which, from the pointer and the recordings it can
 make. The README says refining the catalogue is expected at any stage.
 
-A merged feature lists the ids it `replaces`; each part of a split names
-the id it came `from`. Confirmation follows them, so neither counts as the
-goal shrinking. Recordings (work and held_out, the person's plays) and
-wont_reach confirmations move with the recordings and code they belong
-to; the new features are judged again by port_check.
+No process for it: the agent edits the entries. A merge or split moves
+recordings (work and held_out, the person's plays among them) by naming
+them in the new entries, code with its wont_reach entries (their
+confirmations follow, step 5), and port_check judges the new features
+again. History by id (progress.jsonl, reviews' feature lists) shows old
+features ending and new ones starting; nothing reads it as a loss.
+
+The person confirms the goal: its description, its assets and the first
+list. After that the list of features is the agent's, so taking an id
+out is not the goal shrinking. What the goal must not lose is its
+recordings: psx keeps every recording a goal feature has named
+(.psx/goal_recordings, committed beside the verdicts), and one that no
+goal feature names any more while its file is there is a problem
+(Catalogue: name it again). A work recording deleted is gone (one
+recorded again replaces it); a held-out one, the person's play, deleted
+or moved out of held_out asks the person (Confirm), as an asset name
+taken out of the goal does.
 
 ### The cut, against the goal
 
@@ -300,10 +314,12 @@ until, watch, debug_show value and debug_go's write and read take
 - **No dependencies.** Neither the catalogue's guess nor what runs
   together says what a feature needs; the pointer does, per failure.
 - **The engineering is the agent's.** `code`, not_ported, merges and
-  splits are its reading of the original, not confirmed: the person
+  splits are its reading of the original, not confirmed, with no
+  process of their own: the person
   could not tell if they were wrong. The pointer and the held-out plays
   catch code set aside that holds a rule. The person confirms what they
-  can judge: the goal, and wont_reach's reasons in game terms.
+  can judge: the goal, its own held-out plays, and wont_reach's reasons
+  in game terms. The goal is guarded by its recordings, not its ids.
 - **The cut is revised against the goal.** The reviewer reads the
   catalogue against the description, psx points at signs the cut is
   wrong, and the goal's own held-out plays show its breadth to the
@@ -453,9 +469,13 @@ stay under 16 KiB.
 
 ### 6. Merging, splitting and progress
 
-`replaces` and `from` in catalogue entries; confirmation through them;
-verdicts (.psx/verdicts/<id>/), reviews' feature lists, progress.jsonl
-and port next's history read through them. The three shares in psx
+The confirmation covers the description, the assets and the first list:
+a feature id leaving the goal no longer needs confirming.
+.psx/goal_recordings, every recording a goal feature has named; one no
+goal feature names while its file is there is a Catalogue problem, a
+held-out one deleted or moved out of held_out is the person's to
+confirm. The guide and the README: merging and splitting are edits,
+the recordings and code moving with them. The three shares in psx
 web's Stats and port status plain. The Review brief's questions on the
 cut against the goal's description, with the signs of a wrong cut (the
 pointer finding other features' code, a feature with no recording of
@@ -463,9 +483,10 @@ its own, code claimed by several features that run each other's); Fix's
 why carries the first. The goal's held_out in goal.toml, port next's
 Play item for it once every feature is reviewed, and Done waiting on it.
 
-*Done when* merging two confirmed features into one keeps the goal
-confirmed, keeps their held_out recordings, and port next judges the new
-feature; a split likewise; the shares are the same before and after a
+*Done when* merging two confirmed features into one, their recordings
+moved to it, keeps the goal confirmed and port next judges the new
+feature; a merge that leaves a recording unnamed is a problem, and one
+that drops a held-out play asks the person; the shares are the same before and after a
 merge; on GT2's workspace the Review brief lists its signs (offroad's
 pointer, features sharing recordings); and a goal with every feature
 reviewed gets a Play item for the goal.
