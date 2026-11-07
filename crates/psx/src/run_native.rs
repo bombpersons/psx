@@ -41,7 +41,7 @@ fn glossary_quantities(root: &Path, media: &Option<MediaId>) -> crate::Result<cr
     Ok(crate::ram::Quantities::new(binding, types))
 }
 
-pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate::Result<(bool, Value)> {
+pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> crate::Result<(bool, Value)> {
     let bios = match std::fs::read(&a.bios) {
         Ok(b) => b,
         Err(e) => return Err(Error::io(a.bios, e)),
@@ -49,17 +49,26 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     let bios_sha = sha256(&bios);
     // Open the medium first: a restored state needs it to check identity.
     let Medium { exe, disc, id: media_id } = open_media(a.media.as_deref())?;
-    let mut m = boot(a.from_state.as_deref(), &a.cards, bios, exe.as_deref(), disc, &media_id)?;
+    let recording = a.recording.take();
+    let m = match recording.as_ref() {
+        Some(_) => None,
+        None => Some(boot(a.from_state.as_deref(), &a.cards, bios, exe.as_deref(), disc, &media_id)?),
+    };
+    let (m, recording) = match recording {
+        Some(r) => {
+            let crate::run::FromRecording { m, name, adjust, pads, tick, frames } = r;
+            (m, Some((name, adjust, pads, tick, frames)))
+        }
+        None => (m.unwrap(), None),
+    };
+    let mut steady = false;
     for name in &a.observe.adjust {
         match name.as_str() {
-            "steady" => {
-                m.cpu.overclock = crate::adjust::STEADY_OVERCLOCK;
-                m.bus.gpu.timed = false;
-            }
-            "latch" => {
-                return Err(Error::invalid(
-                    "adjust latch: the pad changes where a tick ends, so it needs the glossary binding's ticks and a recording's input: psx scenario record makes recordings latched",
-                ));
+            "steady" => steady = true,
+            "latch" | "fix" => {
+                return Err(Error::invalid(format!(
+                    "adjust {name}: latch changes the pad where a tick ends and fix is the build a recording kept, so both come from a recording: run with recording (SCENARIO/NAME) runs under its adjustments; psx scenario record makes recordings latched and fixed"
+                )));
             }
             other => return Err(Error::invalid(format!("adjust {other:?}: run knows steady"))),
         }
@@ -71,16 +80,49 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
             "input sticks require a dualshock pad (configure it at boot; checkpoint pads are restored)",
         ));
     }
-    attach_observers(&mut m, &a)?;
     let decomp = a.observe.decomp.as_ref().map(|w| crate::decomp::Replacement::new(root, w)).transpose()?;
+    let started = Instant::now();
+    let deadline = std::time::Duration::from_secs(a.timeout_s);
+    // Frames count from power-on, including any BIOS boot spent before an EXE
+    // was side-loaded; after --from-state they count from the restored state,
+    // and from a recording from the field after its first tick.
+    let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
+    let mut s = match &recording {
+        Some((name, _, pads, _, _)) => Session::new(
+            m,
+            start_frame,
+            Box::new(crate::session::Ticks { recording: name.clone(), pads: pads.clone() }),
+        ),
+        None => Session::new(m, start_frame, Box::new(observe::Events::new(events))),
+    };
     if let Some(d) = &decomp {
-        d.install(&mut m);
+        d.install(&mut s.m);
     }
+    let mut adjusted = None;
+    if let Some((name, adjust, _, tick, frames)) = &recording {
+        // As scenario record starts: the pad released, the adjustments on, the lead-in.
+        crate::replay::apply(&mut s.m, &crate::replay::Input { frame: 0, buttons: 0, sticks: [128; 4] });
+        s.adjust = Some(adjust.start(&mut s.m));
+        s.tick = Some(tick.clone());
+        let limit = s.m.bus.frames + *frames as u64;
+        if !s.lead_in(limit, started, deadline)? {
+            return Err(Error::invalid(format!(
+                "{name}: no tick ended within its {frames} fields from where it starts: the glossary's tick is not the one it was recorded with"
+            )));
+        }
+        adjusted = Some(adjust.names());
+    } else if steady {
+        let adjust = crate::adjust::Adjustments { steady: true, ..crate::adjust::Adjustments::stock() };
+        s.adjust = Some(adjust.start(&mut s.m));
+    }
+    let start_frame = s.start;
+    let m = &mut s.m;
+    attach_observers(m, &a)?;
     let obs = &a.observe;
     let cols = obs.samples.iter().map(|spec| spec.parse()).collect::<Result<Vec<_>, _>>().map_err(Error::invalid)?;
     let until = obs.until.iter().map(|s| crate::until::parse(s)).collect::<Result<Vec<_>, _>>();
     let until = until.map_err(Error::invalid)?;
-    let census = obs.find_tick.then(|| observe::Census::new(&mut m));
+    let census = obs.find_tick.then(|| observe::Census::new(m));
     let per = obs.sample_per.unwrap_or_default();
     if per == crate::ram::SamplePer::Tick && cols.is_empty() {
         return Err(Error::invalid("--sample-per tick: give the values to sample with --sample"));
@@ -111,24 +153,18 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return Err(Error::io(dir, e));
     }
-    let audio = if a.audio { Some(observe::Audio::new(&mut m, dir.join("audio.wav"))?) } else { None };
-    let profile = a.profile.then(|| observe::Profile::new(&m, scopes.clone()));
+    let audio = if a.audio { Some(observe::Audio::new(m, dir.join("audio.wav"))?) } else { None };
+    let profile = a.profile.then(|| observe::Profile::new(m, scopes.clone()));
     let tracer = if a.trace.trace { Some(make_tracer(&a, &scopes, m.bus.frames, &dir)?) } else { None };
-    let trace = tracer.map(|t| observe::Trace::new(&mut m, t, scopes.clone()));
+    let trace = tracer.map(|t| observe::Trace::new(m, t, scopes.clone()));
 
-    let started = Instant::now();
-    // Frames count from power-on, including any BIOS boot spent before an EXE
-    // was side-loaded; after --from-state they count from the restored state.
-    let start_frame = if a.from_state.is_some() { m.bus.frames } else { 0 };
     let gpu = GpuCapture::new(&a.trace, a.frames).map(|capture| observe::Gpu { capture, start: start_frame });
     let Some(target) = start_frame.checked_add(a.frames as u64) else {
         return Err(Error::invalid("run frame range overflows u64"));
     };
-    let deadline = std::time::Duration::from_secs(a.timeout_s);
 
     // At each boundary the observers look in this order, then the input applies.
-    let mut s = Session::new(m, start_frame, Box::new(observe::Events::new(events)));
-    s.tick = tick;
+    s.tick = s.tick.take().or(tick);
     if !until.is_empty() {
         s.observe(observe::Until { conds: until, met: None });
     }
@@ -186,7 +222,7 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     s.observe(observe::Logs { scopes });
 
     let termination = s.advance(target, started, deadline)?.termination();
-    let complete = termination == "frames_reached" || termination == "until_met";
+    let complete = matches!(termination, "frames_reached" | "until_met" | "recording_ended");
     s.last_field(complete)?;
     let wall_ms = started.elapsed().as_millis();
 
@@ -273,7 +309,11 @@ pub fn run(root: &Path, a: RunArgs, events: Vec<crate::replay::Input>) -> crate:
     if let Value::Object(core) = core {
         report.extend(core);
     }
-    if !obs.adjust.is_empty() {
+    if let Some(names) = adjusted {
+        report.insert("adjust".into(), json!(names));
+        report.insert("adjusted".into(), s.adjust.as_ref().and_then(|r| r.report(m)).unwrap_or(Value::Null));
+        report.insert("recording".into(), json!(recording.as_ref().map(|r| &r.0)));
+    } else if !obs.adjust.is_empty() {
         report.insert("adjust".into(), json!(obs.adjust));
     }
     if let Some(d) = &decomp {

@@ -27,10 +27,19 @@ pub struct RunCmdArgs {
     /// BIOS override; otherwise exact checkpoint identity, project defaults or regional local discovery.
     #[arg(long)]
     pub bios: Option<PathBuf>,
-    /// Frames (vsyncs) to run: from power-on, or from the restored state with --from-state.
-    #[arg(long, default_value_t = d_frames())]
-    #[serde(default = "d_frames")]
-    pub frames: u32,
+    /// Frames (vsyncs) to run: from power-on, or from the restored state with --from-state
+    /// (default 60). From a recording, its length unless this is less.
+    #[arg(long)]
+    #[serde(default)]
+    pub frames: Option<u32>,
+    /// Run from a captured recording, `SCENARIO/NAME`: the scenario's chain state (past the
+    /// recordings it continues), then the recording's pad by tick under its adjustments (latch,
+    /// steady, off, and fix with the build it kept). The run's fields and ticks count as the
+    /// recording's do, from its first tick. Leaves out media, from_state, input, replay,
+    /// adjust and the cards.
+    #[arg(long)]
+    #[serde(default)]
+    pub recording: Option<String>,
     /// Path to a JSON file containing complete pad states. Frames are relative to this run's start,
     /// including after --from-state. Use --input for an inline JSON array instead.
     #[arg(long)]
@@ -188,7 +197,25 @@ impl RunCmdArgs {
         needs(self.tail.is_some(), "tail", "diagnose", self.diagnose)?;
         needs(self.max_steps.is_some(), "max_steps", "diagnose", self.diagnose)?;
         needs(self.watch_after.is_some(), "watch_after", "diagnose", self.diagnose)?;
-        needs(self.trace.gpu_draw_filter.is_some(), "gpu_draw_filter", "gpu_next_draw", self.trace.gpu_next_draw)
+        needs(self.trace.gpu_draw_filter.is_some(), "gpu_draw_filter", "gpu_next_draw", self.trace.gpu_next_draw)?;
+        if self.recording.is_some() {
+            let given = [
+                ("media", self.media.is_some()),
+                ("from_state", self.from_state.is_some()),
+                ("input", self.input.is_some()),
+                ("replay", self.replay.is_some()),
+                ("adjust", !self.observe.adjust.is_empty()),
+                ("memcard1, memcard2 and pad", self.cards.given()),
+                ("save_as", self.save_as.is_some()),
+                ("diagnose", self.diagnose),
+            ];
+            if let Some((name, _)) = given.iter().find(|(_, g)| *g) {
+                return Err(Error::invalid(format!(
+                    "recording gives the run its start, its pad and its adjustments: leave out {name}"
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn run(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
@@ -197,6 +224,10 @@ impl RunCmdArgs {
         let dirs = crate::states::Dirs::default();
         let (states, chains) = dirs.get(ctx);
         a.from_state = a.from_state.map(|p| named_state(&states, p));
+        let recording = match a.recording.take() {
+            Some(r) => Some(from_recording(ctx, &mut a, r)?),
+            None => None,
+        };
         if let Some(name) = &a.save_as {
             crate::states::check_name(name)?;
             if a.description.as_deref().is_none_or(|d| d.trim().is_empty()) {
@@ -224,7 +255,8 @@ impl RunCmdArgs {
             RunArgs {
                 media: resolved.media,
                 bios,
-                frames: a.frames,
+                frames: a.frames.unwrap_or_else(d_frames),
+                recording,
                 replay: a.replay,
                 input: a.input,
                 watches: a.watches,
@@ -296,10 +328,40 @@ impl RunCmdArgs {
     }
 }
 
+/// A run from a recording: the machine where it starts, and how it goes on.
+pub struct FromRecording {
+    pub m: psx_core::Machine,
+    /// `SCENARIO/NAME`.
+    pub name: String,
+    pub adjust: crate::adjust::Adjustments,
+    pub pads: Vec<crate::replay::Input>,
+    pub tick: crate::binding::Tick,
+    /// Its fields.
+    pub frames: u32,
+}
+
+/// The recording `r` names, at its start; `a` gets its media, BIOS, state
+/// (for the report) and frames.
+fn from_recording(ctx: &Ctx, a: &mut RunCmdArgs, r: String) -> crate::Result<FromRecording> {
+    let Some((id, name)) = r.split_once('/') else {
+        return Err(Error::invalid(format!("recording {r:?}: SCENARIO/NAME, as scenario show names it")));
+    };
+    let c = crate::scenario::Captured::load(ctx, id, name)?;
+    let b = c.at_start(ctx, std::time::Duration::from_secs(a.timeout))?;
+    a.media = b.media;
+    a.bios = Some(b.bios_path);
+    a.from_state = Some(c.state().to_path_buf());
+    // As a replay of it follows its ticks: room for a game that falls behind.
+    let length = c.frames + c.frames / 8 + 16;
+    a.frames = Some(a.frames.map_or(length, |f| f.min(length)));
+    Ok(FromRecording { m: b.m, name: r, adjust: c.adjust.clone(), tick: c.tick(), frames: c.frames, pads: c.pads })
+}
+
 pub struct RunArgs {
     pub media: Option<PathBuf>,
     pub bios: PathBuf,
     pub frames: u32,
+    pub recording: Option<FromRecording>,
     pub replay: Option<PathBuf>,
     pub input: Option<crate::replay::Events>,
     pub watches: Vec<String>,
@@ -544,7 +606,11 @@ pub fn run(root: &Path, a: RunArgs) -> crate::Result<(bool, Value)> {
         return Err(Error::invalid("GPU search frame range overflows u64"));
     }
     let input_report = crate::replay::report(&events);
+    let from_recording = a.recording.is_some();
     let (complete, mut value) = crate::run_native::run(root, a, events)?;
+    if from_recording {
+        return Ok((complete, value));
+    }
     let application = value["input"]["application"].take();
     value["input"] = input_report;
     value["input"]["application"] = application;
@@ -568,8 +634,9 @@ fn diagnose(ctx: &Ctx, a: RunCmdArgs, bios: &Path, media: Option<&Path>) -> crat
         _ => return Err(Error::invalid("diagnose watches one address")),
     };
     let brk = a.brk.as_deref().map(|b| hex(b, "break")).transpose()?;
+    let frames = a.frames.unwrap_or_else(d_frames);
     let events =
-        crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64).map_err(Error::invalid)?;
+        crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), frames as u64).map_err(Error::invalid)?;
     let dir = a
         .out
         .map(|o| ctx.root.join(o))
@@ -580,7 +647,7 @@ fn diagnose(ctx: &Ctx, a: RunCmdArgs, bios: &Path, media: Option<&Path>) -> crat
     let (ok, mut v) = crate::native::run(crate::native::Options {
         bios,
         disc: media,
-        frames: a.frames as u64,
+        frames: frames as u64,
         max_steps: a.max_steps.unwrap_or_else(crate::native::d_max_steps),
         dump: Some(&dump),
         brk,
@@ -778,6 +845,11 @@ mod tests {
         assert!(args(json!({"gpu_draw_filter": "textured"})).check().is_err());
         assert!(args(json!({"frames": 10, "diagnose": true, "watch_after": 5})).check().is_ok());
         assert!(args(json!({"save_as": "x", "description": "d", "replace": true})).check().is_ok());
+        // A recording gives the start, the pad and the adjustments.
+        let e = args(json!({"recording": "s/r", "adjust": ["latch"]})).check().unwrap_err();
+        assert!(e.to_string().contains("leave out adjust"), "{e}");
+        assert!(args(json!({"recording": "s/r", "from_state": "x"})).check().is_err());
+        assert!(args(json!({"recording": "s/r", "frames": 10, "sample": ["x"]})).check().is_ok());
     }
 
     #[test]

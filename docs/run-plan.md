@@ -193,6 +193,20 @@ step that keeps a state at field N becomes a step of N fields, and
 
    *Done when* sampling a latched, fixed recording's quantities in run
    gives the recorded values on every tick.
+
+   *Done (2026-11-07).* `run --recording SCENARIO/NAME`: the session
+   holds the adjustments' `Running` (the driver sets the pad through it;
+   it sees each step and tick after the observers), a recording's lead-in
+   (`Session::lead_in`, `scenario record`'s: released until the first tick
+   ends, fields counted from the next) and the `Ticks` driver, which ends
+   the run at the recording's last tick (`recording_ended`).
+   `scenario::Captured` loads a recording for run and for check's replay
+   alike. Every captured recording in GT2 (8, latched, steady and fixed)
+   and Croc (42, latched and steady) gives its recorded values at every tick; a test
+   does the same on a latched test game and matches the replay's
+   adjustment report and RAM. adjust takes steady alone; latch and fix
+   come with a recording. frames is now optional (60, or the recording's
+   length).
 3. **record on the session.** The recorder observer, with lead_in and
    reach_end as advances of the same session.
 

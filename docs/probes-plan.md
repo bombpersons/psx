@@ -155,6 +155,8 @@ the recorded values on every tick.
 This is step 2 of docs/run-plan.md, which puts run, recording and the
 handoff on one loop first.
 
+*Done (2026-11-07)* as docs/run-plan.md's step 2: run's recording option.
+
 ### 4. Probes in the port
 
 `psx_scenario::probe!` and its recorder; `launch` takes `"probes":true`;

@@ -1304,6 +1304,76 @@ pub(crate) fn plot(root: &Path, id: &str, name: &str, last: &Json) -> crate::Res
     }))
 }
 
+/// A captured recording, ready to run again: its scenario, binding,
+/// adjustments, input and the pad each of its ticks ended with.
+pub(crate) struct Captured {
+    l: Loaded,
+    index: usize,
+    b: Plugin<Described>,
+    state: PathBuf,
+    chain: Json,
+    pub adjust: Adjustments,
+    /// Its fields, and its input by field.
+    pub frames: u32,
+    pub events: Vec<crate::replay::Input>,
+    /// The pad each of its ticks ended with.
+    pub pads: Vec<crate::replay::Input>,
+}
+
+impl Captured {
+    pub(crate) fn load(ctx: &Ctx, id: &str, name: &str) -> crate::Result<Captured> {
+        let root = &ctx.root;
+        check_name("id", id)?;
+        check_name("name", name)?;
+        let l = Loaded::load(root, id);
+        if !l.problems.is_empty() {
+            return Err(Error::invalid("the scenario or glossary has problems").with("problems", json!(l.problems)));
+        }
+        let Some(index) = l.recordings.iter().position(|(n, _, _)| n == name) else {
+            return Err(Error::invalid(format!("{name}: no recording of that name in {SCENARIOS}/{id}/")));
+        };
+        let rec = match &l.recordings[index] {
+            (_, _, Ok(r)) if r.header.source.kind == SourceKind::Captured => r,
+            (_, f, Ok(_)) => return Err(Error::invalid(format!("{}: not captured from the original", rel(root, f)))),
+            (_, f, Err(e)) => return Err(Error::malformed(format!("{}: {e}", rel(root, f)))),
+        };
+        let (s, g) = (l.scenario.as_ref().unwrap(), l.glossary.as_ref().unwrap());
+        let (state, chain) = crate::states::chain_state(ctx, &root.join(&s.chain))?;
+        let b = binding(root, g)?;
+        let adjust = Adjustments::from_details(&rec.header.producer.details).map_err(Error::malformed)?;
+        let (frames, events) = kept_input(name, rec).map_err(Error::malformed)?;
+        let pads = held_by_tick(&events, &rec.expand());
+        Ok(Captured { l, index, b, state, chain, adjust, frames, events, pads })
+    }
+
+    fn recording(&self) -> &Recording {
+        self.l.recordings[self.index].2.as_ref().unwrap()
+    }
+
+    /// The scenario's chain state.
+    pub(crate) fn state(&self) -> &Path {
+        &self.state
+    }
+
+    /// What ends one of the game's ticks, as the glossary binding says.
+    pub(crate) fn tick(&self) -> crate::binding::Tick {
+        self.b.described().tick.clone()
+    }
+
+    /// The machine where the recording starts: the scenario's state, past
+    /// the recordings it continues.
+    pub(crate) fn at_start(&self, ctx: &Ctx, timeout: Duration) -> crate::Result<Booted> {
+        let mut b = machine(ctx, &self.chain, &self.state, &self.b.described().source)?;
+        if let Some(from) = self.recording().header.producer.details.get("from").and_then(Json::as_str) {
+            let g = self.l.glossary.as_ref().unwrap();
+            let kept = self.l.compared().keys().cloned().collect();
+            let q = Quantities { binding: &self.b, types: g.types(), kept, adjust: self.adjust.clone() };
+            reach_end(&mut b.m, &self.l, &q, from, timeout)?;
+        }
+        Ok(b)
+    }
+}
+
 /// Replay a captured recording from the scenario's state, following its
 /// ticks as the port's replay does; `prepare` sees the machine once it is
 /// at the recording's start, and `on_tick` at the end of each tick. What
@@ -1317,34 +1387,20 @@ pub(crate) fn replay(
     on_tick: OnTick<'_>,
     prepare: Option<&mut dyn FnMut(&mut Machine)>,
 ) -> crate::Result<(Vec<String>, Machine)> {
-    let root = &ctx.root;
-    check_name("id", id)?;
-    check_name("name", name)?;
-    let l = Loaded::load(root, id);
-    if !l.problems.is_empty() {
-        return Err(Error::invalid("the scenario or glossary has problems").with("problems", json!(l.problems)));
-    }
-    let rec = match l.recordings.iter().find(|(n, _, _)| n == name) {
-        Some((_, _, Ok(r))) if r.header.source.kind == SourceKind::Captured => r,
-        Some((_, f, Ok(_))) => return Err(Error::invalid(format!("{}: not captured from the original", rel(root, f)))),
-        Some((_, f, Err(e))) => return Err(Error::malformed(format!("{}: {e}", rel(root, f)))),
-        None => return Err(Error::invalid(format!("{name}: no recording of that name in {SCENARIOS}/{id}/"))),
+    let c = Captured::load(ctx, id, name)?;
+    let rec = c.recording();
+    let g = c.l.glossary.as_ref().unwrap();
+    let q = Quantities {
+        binding: &c.b,
+        types: g.types(),
+        kept: c.l.compared().keys().cloned().collect(),
+        adjust: c.adjust.clone(),
     };
-    let (s, g) = (l.scenario.as_ref().unwrap(), l.glossary.as_ref().unwrap());
-    let (state, chain) = crate::states::chain_state(ctx, &root.join(&s.chain))?;
-    let b = binding(root, g)?;
-    let adjust = Adjustments::from_details(&rec.header.producer.details).map_err(Error::malformed)?;
-    let q = Quantities { binding: &b, types: g.types(), kept: l.compared().keys().cloned().collect(), adjust };
-    let (frames, events) = kept_input(name, rec).map_err(Error::malformed)?;
-    let mut m = machine(ctx, &chain, &state, &b.described().source)?.m;
-    if let Some(from) = rec.header.producer.details.get("from").and_then(Json::as_str) {
-        reach_end(&mut m, &l, &q, from, timeout)?;
-    }
-    let pads = held_by_tick(&events, &rec.expand());
+    let mut m = c.at_start(ctx, timeout)?.m;
     if let Some(prepare) = prepare {
         prepare(&mut m);
     }
-    let r = record(&mut m, &q, frames, &events, Some(&pads), timeout, None, Some(on_tick));
+    let r = record(&mut m, &q, c.frames, &c.events, Some(&c.pads), timeout, None, Some(on_tick));
     let d = match unrecorded(&r) {
         Some(why) => vec![format!("the replay gave no recording: {}", why["status"].as_str().unwrap_or(""))],
         None => {
@@ -1983,6 +2039,17 @@ pub struct Quantities {
     /// TwoReads' game, keeping its buffer as `keep` says, recorded for
     /// `fields` fields with CROSS pressed and released at each field.
     fn two_reads(keep: psx_core::padflow::test_program::Keep, adjust: Adjustments, fields: u32) -> Recorded {
+        let (mut m, b, types, events) = two_reads_game(keep, fields);
+        let q = Quantities { binding: &b, types, kept: vec!["x".into(), "dead".into()], adjust };
+        record(&mut m, &q, fields, &events, None, Duration::from_secs(120), None, None)
+    }
+
+    /// TwoReads' game, its binding and quantities' types, and input for `fields` fields.
+    #[allow(clippy::type_complexity)]
+    fn two_reads_game(
+        keep: psx_core::padflow::test_program::Keep,
+        fields: u32,
+    ) -> (Machine, Plugin<Described>, BTreeMap<String, Type>, Vec<crate::replay::Input>) {
         use psx_core::padflow::test_program::asm::*;
         const S1: u32 = 17;
         const T0: u32 = 8;
@@ -2004,11 +2071,10 @@ pub struct Quantities {
             j(0x8001_0000),
             NOP,
         ];
-        let mut m = psx_core::padflow::test_program::with_main(keep, &main, 0x8001_0030);
+        let m = psx_core::padflow::test_program::with_main(keep, &main, 0x8001_0030);
         let b: Plugin<Described> = Plugin::new(two_reads_call, None).unwrap();
         let types: BTreeMap<String, Type> =
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
-        let q = Quantities { binding: &b, types, kept: vec!["x".into(), "dead".into()], adjust };
         let cross = psx_core::sio0::button::CROSS;
         let events: Vec<crate::replay::Input> = (0..fields as u64)
             .map(|f| crate::replay::Input {
@@ -2017,7 +2083,82 @@ pub struct Quantities {
                 sticks: [128; 4],
             })
             .collect();
-        record(&mut m, &q, fields, &events, None, Duration::from_secs(120), None, None)
+        (m, b, types, events)
+    }
+
+    /// Samples per tick, as run's sample observer takes them.
+    struct TickSamples(crate::ram::Sampler);
+
+    impl crate::session::Observer for TickSamples {
+        fn tick(&mut self, rel: u64, m: &mut Machine) {
+            self.0.tick(rel, m);
+        }
+        fn finish(self: Box<Self>, _m: &Machine, out: &mut crate::session::Out) -> crate::Result<()> {
+            out.section("rows", json!(self.0.out));
+            Ok(())
+        }
+    }
+
+    /// run from a recording: the session, driven by the recording's ticks
+    /// under its adjustments, samples on every tick what was recorded there.
+    #[test]
+    fn a_latched_recording_run_again_samples_what_it_recorded() {
+        use crate::ram::{Column, SamplePer, Sampler};
+        use psx_core::padflow::test_program::Keep;
+        let fields = 30;
+        let recorded = two_reads(Keep::Bytes, Adjustments::default_set(), fields);
+        assert!(recorded.ticks.len() > 100, "{} ticks", recorded.ticks.len());
+        let (m, b, types, events) = two_reads_game(Keep::Bytes, fields);
+        let pads = held_by_tick(&events, &recorded.ticks);
+        let tick = b.described().tick.clone();
+        let cols = vec![Column::Quantity("x".into()), Column::Quantity("dead".into())];
+        let sampler = Sampler::new(cols, 1, SamplePer::Tick, Some(crate::ram::Quantities::new(b, types)));
+        let ticks = Box::new(crate::session::Ticks { recording: "two_reads/latched".into(), pads });
+        let mut s = crate::session::Session::new(m, 0, ticks);
+        crate::replay::apply(&mut s.m, &crate::replay::Input { frame: 0, buttons: 0, sticks: [128; 4] });
+        s.adjust = Some(Adjustments::default_set().start(&mut s.m));
+        s.tick = Some(tick);
+        let (started, deadline) = (Instant::now(), Duration::from_secs(120));
+        assert!(s.lead_in(s.m.bus.frames + fields as u64, started, deadline).unwrap());
+        s.observe(TickSamples(sampler));
+        let limit = s.start + fields as u64 * 2;
+        let ended = s.advance(limit, started, deadline).unwrap();
+        assert_eq!(ended, crate::session::Ended::Stopped("recording_ended"));
+        assert_eq!(s.ticks, recorded.ticks.len() as u64);
+        let mut want = String::from("run_frame,tick,x,dead\n");
+        for t in &recorded.ticks {
+            let (x, dead) = match (&t.values["x"], &t.values["dead"]) {
+                (psx_scenario::Value::Int(x), psx_scenario::Value::Bool(d)) => (*x, *d),
+                v => panic!("{v:?}"),
+            };
+            want += &format!("{},{},{x},{dead}\n", t.field, t.tick);
+        }
+        let (mut files, mut report) = (serde_json::Map::new(), serde_json::Map::new());
+        let dir = std::env::temp_dir();
+        let mut out =
+            crate::session::Out { dir: &dir, files: &mut files, report: &mut report, start: s.start, termination: "" };
+        s.finish(&mut out).unwrap();
+        // The absolute frame aside, the rows are the recording's ticks.
+        let rows = report["rows"].as_str().unwrap().lines().map(|l| {
+            let mut c: Vec<&str> = l.split(',').collect();
+            c.remove(1);
+            c.join(",") + "\n"
+        });
+        assert_eq!(rows.collect::<String>(), want);
+        // The adjustments did what they do in scenario check's replay, which
+        // also ends where the last tick does.
+        let (mut m, b, types, _) = two_reads_game(Keep::Bytes, fields);
+        let q = Quantities {
+            binding: &b,
+            types,
+            kept: vec!["x".into(), "dead".into()],
+            adjust: Adjustments::default_set(),
+        };
+        let pads = held_by_tick(&events, &recorded.ticks);
+        let replayed = record(&mut m, &q, fields, &events, Some(&pads), deadline, None, None);
+        assert_eq!(replayed.ticks.len(), recorded.ticks.len());
+        assert_eq!(s.adjust.as_ref().unwrap().report(&s.m), replayed.adjusted);
+        assert_eq!(s.m.bus.ram, m.bus.ram);
     }
 
     fn reads(r: &Recorded) -> Vec<(i128, bool)> {

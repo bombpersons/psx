@@ -3,16 +3,19 @@
 //!
 //! The loop counts run fields from the session's start. At each field
 //! boundary (and at the start) the observers look first, in the order they
-//! were attached, then the driver sets the pad. Between boundaries the
-//! machine runs a whole field at a time unless an observer needs every
-//! instruction, or the binding's tick is watched; then it steps, and each
-//! observer sees each step and each tick's end.
+//! were attached, then the driver sets the pad, through the adjustments
+//! when there are any. Between boundaries the machine runs a whole field at
+//! a time unless an observer or the adjustments need every instruction, or
+//! the binding's tick is watched; then it steps, and each observer sees
+//! each step and each tick's end, then the adjustments do.
 
 use std::time::{Duration, Instant};
 
 use psx_core::Machine;
 use psx_core::cpu::StepInfo;
 use serde_json::{Map, Value};
+
+use crate::adjust::Running;
 
 /// What an observer wants after it looked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,10 +95,31 @@ pub trait Observer {
     fn finish(self: Box<Self>, m: &Machine, out: &mut Out) -> crate::Result<()>;
 }
 
+/// The pad, as a driver sets it: through the adjustments (latch holds it
+/// for where the tick ends), or straight onto the controller.
+pub struct Pad<'a> {
+    pub m: &'a mut Machine,
+    adjust: Option<&'a mut Running>,
+}
+
+impl Pad<'_> {
+    pub fn apply(&mut self, i: &crate::replay::Input) {
+        match self.adjust.as_deref_mut() {
+            Some(a) => a.input(self.m, i),
+            None => crate::replay::apply(self.m, i),
+        }
+    }
+}
+
 /// What sets the pad.
 pub trait Driver {
-    /// Run field `rel` begins (after the observers looked).
-    fn field(&mut self, rel: u64, m: &mut Machine);
+    /// Run field `rel` begins (after the observers looked), with `ticks`
+    /// ticks ended since the session's start.
+    fn field(&mut self, rel: u64, ticks: u64, pad: &mut Pad);
+    /// Tick `ticks` (counted from the session's start) ended.
+    fn tick(&mut self, _ticks: u64) -> Flow {
+        Flow::Go
+    }
     /// What it applied, for the report.
     fn finish(self: Box<Self>, _m: &Machine, _out: &mut Out) -> crate::Result<()> {
         Ok(())
@@ -106,7 +130,34 @@ pub trait Driver {
 pub struct NoInput;
 
 impl Driver for NoInput {
-    fn field(&mut self, _rel: u64, _m: &mut Machine) {}
+    fn field(&mut self, _rel: u64, _ticks: u64, _pad: &mut Pad) {}
+}
+
+/// A recording's ticks: until a tick ends, the pad is the one that tick
+/// ended with, as the port's replay has it; the session stops when the last
+/// one ends.
+pub struct Ticks {
+    pub recording: String,
+    pub pads: Vec<crate::replay::Input>,
+}
+
+impl Driver for Ticks {
+    fn field(&mut self, _rel: u64, ticks: u64, pad: &mut Pad) {
+        if let Some(i) = self.pads.get(ticks as usize) {
+            pad.apply(i);
+        }
+    }
+
+    fn tick(&mut self, ticks: u64) -> Flow {
+        if ticks >= self.pads.len() as u64 { Flow::Stop("recording_ended") } else { Flow::Go }
+    }
+
+    fn finish(self: Box<Self>, _m: &Machine, out: &mut Out) -> crate::Result<()> {
+        out.section("input", serde_json::json!({"recording": self.recording, "ticks": self.pads.len(),
+            "application": {"observed": true, "by": "tick",
+                "note": "each tick's pad from the recording, on the controller until that tick ends (under latch, where the tick before it ends)"}}));
+        Ok(())
+    }
 }
 
 /// How often the loop checks the deadline, in instructions.
@@ -120,44 +171,101 @@ pub struct Session {
     pub driver: Box<dyn Driver>,
     /// The binding's tick, when something watches ticks.
     pub tick: Option<crate::binding::Tick>,
+    /// The adjustments while they run.
+    pub adjust: Option<Running>,
     /// Instructions run.
     pub steps: u64,
-    last_rel: u64,
+    /// Ticks ended since the start.
+    pub ticks: u64,
+    /// The last field the loop saw begin (absolute).
+    last_field: u64,
 }
 
 impl Session {
     pub fn new(m: Machine, start: u64, driver: Box<dyn Driver>) -> Session {
-        Session { m, start, observers: Vec::new(), driver, tick: None, steps: 0, last_rel: u64::MAX }
+        Session {
+            m,
+            start,
+            observers: Vec::new(),
+            driver,
+            tick: None,
+            adjust: None,
+            steps: 0,
+            ticks: 0,
+            last_field: u64::MAX,
+        }
     }
 
     pub fn observe(&mut self, o: impl Observer + 'static) {
         self.observers.push(Box::new(o));
     }
 
-    /// The run field the machine is in.
+    /// The run field the machine is in: 0 until the start, after a lead-in.
     pub fn rel(&self) -> u64 {
-        self.m.bus.frames - self.start
+        self.m.bus.frames.saturating_sub(self.start)
+    }
+
+    /// A recording's lead-in, from where the recording starts: the pad
+    /// released until the first tick ends (tick 0, the moment the port's
+    /// launcher builds), then the run's fields count from the next field.
+    /// Ticks that end in the rest of this field are the run's, in field 0.
+    /// False when no tick ends before absolute field `limit`.
+    pub fn lead_in(&mut self, limit: u64, started: Instant, deadline: Duration) -> crate::Result<bool> {
+        let Some(tick) = self.tick.clone() else { return Ok(false) };
+        let mut last = self.m.bus.frames;
+        loop {
+            if self.m.bus.frames != last {
+                last = self.m.bus.frames;
+                crate::live::field(&self.m);
+                if last >= limit {
+                    return Ok(false);
+                }
+                if started.elapsed() > deadline {
+                    return Err(crate::Error::new("timeout", "the recording's lead-in ran out of time"));
+                }
+            }
+            let info = self.m.step();
+            self.steps += 1;
+            if let Some(a) = &mut self.adjust {
+                a.step(&info, &mut self.m);
+            }
+            if tick.ended_by(&info) {
+                if let Some(a) = &mut self.adjust {
+                    a.tick_ended(0, &mut self.m);
+                }
+                self.start = self.m.bus.frames + 1;
+                self.last_field = self.m.bus.frames;
+                return Ok(true);
+            }
+        }
     }
 
     /// Run until absolute frame `target`, an observer's stop, or `deadline`
     /// after `started`.
     pub fn advance(&mut self, target: u64, started: Instant, deadline: Duration) -> crate::Result<Ended> {
-        let per_step = self.tick.is_some() || self.observers.iter().any(|o| o.per_step());
+        let per_step = self.tick.is_some()
+            || self.adjust.as_ref().is_some_and(Running::per_step)
+            || self.observers.iter().any(|o| o.per_step());
         while self.m.bus.frames < target {
-            let rel = self.rel();
-            if rel != self.last_rel {
+            let frame = self.m.bus.frames;
+            if frame != self.last_field && frame >= self.start {
                 // A field boundary, or the start: observe first, then intervene.
-                self.last_rel = rel;
+                self.last_field = frame;
+                let rel = self.rel();
                 crate::live::field(&self.m);
                 for o in &mut self.observers {
                     if let Flow::Stop(why) = o.field(rel, &mut self.m)? {
                         return Ok(Ended::Stopped(why));
                     }
                 }
-                self.driver.field(rel, &mut self.m);
+                self.driver.field(rel, self.ticks, &mut Pad { m: &mut self.m, adjust: self.adjust.as_mut() });
             }
             if per_step {
                 let info = self.m.step();
+                self.steps += 1;
+                if let Some(a) = &mut self.adjust {
+                    a.step(&info, &mut self.m);
+                }
                 for o in &mut self.observers {
                     o.step(&info, &mut self.m);
                 }
@@ -166,8 +274,14 @@ impl Session {
                     for o in &mut self.observers {
                         o.tick(rel, &mut self.m);
                     }
+                    self.ticks += 1;
+                    if let Some(a) = &mut self.adjust {
+                        a.tick_ended(self.ticks, &mut self.m);
+                    }
+                    if let Flow::Stop(why) = self.driver.tick(self.ticks) {
+                        return Ok(Ended::Stopped(why));
+                    }
                 }
-                self.steps += 1;
             } else {
                 self.steps += self.m.run_frame_steps(CHECK - self.steps % CHECK);
             }
@@ -183,7 +297,7 @@ impl Session {
     pub fn last_field(&mut self, complete: bool) -> crate::Result<()> {
         let rel = self.rel();
         if complete {
-            self.driver.field(rel, &mut self.m);
+            self.driver.field(rel, self.ticks, &mut Pad { m: &mut self.m, adjust: self.adjust.as_mut() });
         }
         for o in &mut self.observers {
             o.last_field(rel, &mut self.m, complete)?;

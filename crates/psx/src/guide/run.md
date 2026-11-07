@@ -80,6 +80,13 @@ the bytes on or a game reading its pad in a VSync callback, which look
 alike: a reader of handler_copies is usually the game.
 fields_without_read counts the fields with no read by main code.
 
+run with recording (SCENARIO/NAME) runs a captured recording again: the
+scenario's state, the pad of each recorded tick, its adjustments (fix with
+the build it kept), ending where its last tick does. Its fields and ticks
+count as the recording's, so sample with sample_per tick gives the
+recorded values beside whatever else it samples. adjust takes steady
+alone; latch and fix come only from a recording.
+
 ## Memory formats
 
 sample, until and poke read memory as ADDR:FMT. FMT is u8 i8 x8 u16 i16 x16

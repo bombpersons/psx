@@ -15,7 +15,7 @@ use super::{CapturedFrame, GpuCapture, sha256};
 use crate::Error;
 use crate::commands::addr_value;
 use crate::run::write_png;
-use crate::session::{Driver, Flow, Observer, Out};
+use crate::session::{Driver, Flow, Observer, Out, Pad};
 
 type Scopes = Rc<Vec<crate::ScopedSymbols>>;
 
@@ -63,12 +63,12 @@ impl Events {
 }
 
 impl Driver for Events {
-    fn field(&mut self, rel: u64, m: &mut Machine) {
+    fn field(&mut self, rel: u64, _ticks: u64, pad: &mut Pad) {
         while self.next < self.events.len() && self.events[self.next].frame <= rel {
             let e = &self.events[self.next];
-            crate::replay::apply(m, e);
+            pad.apply(e);
             self.applied.push(json!({"event_index":self.next,"scheduled_run_frame":e.frame,
-                "run_frame":rel,"frame":m.bus.frames,"buttons":crate::replay::button_names(e.buttons),
+                "run_frame":rel,"frame":pad.m.bus.frames,"buttons":crate::replay::button_names(e.buttons),
                 "sticks":e.sticks}));
             self.next += 1;
         }

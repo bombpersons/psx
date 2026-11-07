@@ -384,6 +384,11 @@ fn poke(m: &mut Machine, addr: u32, v: u8) {
 }
 
 impl Running {
+    /// Whether they need to see every instruction (latch watches the pad's reads).
+    pub fn per_step(&self) -> bool {
+        self.flow.is_some()
+    }
+
     /// Input from the recording's events or ticks: on the controller at
     /// once, or with `latch`, where the tick ends.
     pub fn input(&mut self, m: &mut Machine, i: &crate::replay::Input) {
