@@ -200,7 +200,7 @@ pub struct DebugShowArgs {
     #[arg(long)]
     #[serde(default)]
     pub registers: bool,
-    /// As run's sample: `ADDR:FMT[:NAME]` or a quantity or probe.
+    /// `ADDR:FMT[:NAME]`, a quantity or a probe.
     #[arg(long = "value")]
     #[serde(default, rename = "value")]
     pub values: Vec<crate::ram::SampleSpec>,
@@ -221,11 +221,14 @@ pub struct DebugShowArgs {
     #[arg(long)]
     #[serde(default)]
     pub gpu: bool,
-    /// The hardware now: CD commands, SPU, unhandled I/O, interrupts, and
-    /// the hot PCs and I/O of the next two fields.
+    /// CD, SPU, unhandled I/O, interrupts; the next two fields' hot PCs.
     #[arg(long)]
     #[serde(default)]
     pub hardware: bool,
+    /// Calls the stop is in.
+    #[arg(long)]
+    #[serde(default)]
+    pub stack: bool,
 }
 
 #[derive(clap::Args, Clone, Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
@@ -457,6 +460,84 @@ fn word_at(m: &Machine, pc: u32) -> Option<u32> {
         _ => return None,
     };
     mem.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+/// A word of code or data: RAM, BIOS or the scratchpad.
+fn data_word(m: &Machine, addr: u32) -> Option<u32> {
+    match addr & 0x1FFF_FFFF {
+        p @ 0x1F80_0000..0x1F80_0400 => {
+            let o = (p - 0x1F80_0000) as usize;
+            m.bus.scratch.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        }
+        _ => word_at(m, addr),
+    }
+}
+
+/// One call on the stack: where it is, its sp and frame size (None
+/// without one), and where it returns to.
+#[derive(Debug, PartialEq)]
+struct Frame {
+    pc: u32,
+    sp: u32,
+    size: Option<u32>,
+    returns_to: Option<u32>,
+}
+
+/// Walks the stack from a stop by the functions' prologues: back from each
+/// PC to its `addiu sp,sp,-N` (a `jr ra` or `addiu sp,sp,+N` first means
+/// no frame, ra still in its register), then on to the `sw ra,off(sp)`
+/// before the PC for the return address. Each caller's PC is its call
+/// (ra-8). Says why it ended.
+fn unwind(read: impl Fn(u32) -> Option<u32>, pc: u32, sp: u32, ra: u32) -> (Vec<Frame>, String) {
+    const DEPTH: usize = 32;
+    const SCAN: u32 = 4096;
+    let (mut pc, mut sp, mut ra) = (pc, sp, Some(ra));
+    let mut frames = Vec::new();
+    loop {
+        let mut prologue = None;
+        for i in 1..=SCAN {
+            let a = pc.wrapping_sub(4 * i);
+            let Some(w) = read(a) else { break };
+            if w == 0x03E0_0008 {
+                break;
+            }
+            if w >> 16 == 0x27BD {
+                if (w as i16) < 0 {
+                    prologue = Some((a, (w as i16).unsigned_abs() as u32));
+                }
+                break;
+            }
+        }
+        let (size, saved) = match prologue {
+            Some((at, size)) => {
+                let saved =
+                    (at..pc).step_by(4).find_map(|a| read(a).filter(|w| w >> 16 == 0xAFBF).map(|w| w as u16 as u32));
+                (Some(size), saved)
+            }
+            None => (None, None),
+        };
+        // An outer call without its own saved ra cannot be followed.
+        let back = match (saved, frames.is_empty()) {
+            (Some(off), _) => read(sp.wrapping_add(off)),
+            (None, true) => ra.take(),
+            (None, false) => None,
+        };
+        frames.push(Frame { pc, sp, size, returns_to: back });
+        let Some(back) = back else {
+            let why = if size.is_some() { "no saved ra in the frame" } else { "no frame and ra already used" };
+            return (frames, why.into());
+        };
+        let call = back.wrapping_sub(8);
+        let is_call = read(call).is_some_and(|w| w >> 26 == 3 || (w >> 26 == 0 && w & 0x3F == 9));
+        if !is_call {
+            return (frames, format!("{} is not after a call", hex(back)));
+        }
+        if frames.len() == DEPTH {
+            return (frames, format!("{DEPTH} frames"));
+        }
+        sp = sp.wrapping_add(size.unwrap_or(0));
+        pc = call;
+    }
 }
 
 impl Op for DebugStartArgs {
@@ -740,7 +821,7 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
         }
         for (k, keys) in [
             ("samples", &["rows", "file"][..]),
-            ("watch", &["hits", "recorded", "complete", "file", "first"]),
+            ("watch", &["hits", "recorded", "complete", "file", "writers", "first"]),
             ("read_watch", &["hits", "recorded", "complete", "file", "readers"]),
         ] {
             if let Some(r) = report.get(k) {
@@ -749,8 +830,10 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
                 if let Some(Value::Array(first)) = r.get_mut("first") {
                     first.truncate(8);
                 }
-                if let Some(Value::Array(readers)) = r.get_mut("readers") {
-                    readers.truncate(8);
+                for list in ["readers", "writers"] {
+                    if let Some(Value::Array(l)) = r.get_mut(list) {
+                        l.truncate(8);
+                    }
                 }
                 detail[k] = Value::Object(r);
             }
@@ -791,8 +874,14 @@ impl Op for DebugShowArgs {
 fn show(ctx: &Ctx, a: DebugShowArgs) -> crate::Result<Value> {
     let mut o = Open::load(&ctx.root, &a.which)?;
     let mut v = json!({"at": o.current()});
-    let nothing =
-        a.values.is_empty() && a.bytes.is_none() && !a.history && !a.screen && !a.stops && !a.gpu && !a.hardware;
+    let nothing = a.values.is_empty()
+        && a.bytes.is_none()
+        && !a.history
+        && !a.screen
+        && !a.stops
+        && !a.gpu
+        && !a.hardware
+        && !a.stack;
     if a.registers || nothing {
         v["registers"] = Value::Object(crate::run_native::registers(&o.s.m));
     }
@@ -822,6 +911,22 @@ fn show(ctx: &Ctx, a: DebugShowArgs) -> crate::Result<Value> {
     }
     if a.gpu {
         v["gpu"] = gpu_capture(&o)?;
+    }
+    if a.stack {
+        let m = &o.s.m;
+        let (frames, ended) = unwind(|addr| data_word(m, addr), m.cpu.pc, m.cpu.regs[29], m.cpu.regs[31]);
+        let frames: Vec<Value> = frames
+            .iter()
+            .map(|f| {
+                let mut v = json!({"pc": hex(f.pc), "function": crate::name_pc(&o.scopes, f.pc, Some(&m.bus.ram)).map(|n| n.0),
+                    "sp": hex(f.sp), "frame": f.size});
+                if let Some(ra) = f.returns_to {
+                    v["returns_to"] = json!(hex(ra));
+                }
+                v
+            })
+            .collect();
+        v["stack"] = json!({"frames": frames, "ended": ended});
     }
     if a.hardware {
         // Last: the two fields it looks ahead run on this copy of the stop.
@@ -1048,6 +1153,39 @@ fn end(ctx: &Ctx, a: DebugEndArgs) -> crate::Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// main calls f, which calls the leaf g; the stop is in g, past the ra
+    /// main's caller left.
+    #[test]
+    fn the_stack_unwinds_through_prologues_to_a_leaf() {
+        let mut mem = std::collections::HashMap::new();
+        let mut code = |at: u32, words: &[u32]| {
+            for (i, w) in words.iter().enumerate() {
+                mem.insert(at + 4 * i as u32, *w);
+            }
+        };
+        let jal = |to: u32| 0x0C00_0000 | (to >> 2 & 0x03FF_FFFF);
+        // 0x80010000 main: addiu sp,-24; sw ra,20(sp); nop; jal f; nop; ...
+        code(0x8001_0000, &[0x27BD_FFE8, 0xAFBF_0014, 0, jal(0x8001_0100), 0, 0x03E0_0008, 0]);
+        // 0x80010100 f: addiu sp,-32; sw ra,28(sp); jal g; nop; ...
+        code(0x8001_0100, &[0x27BD_FFE0, 0xAFBF_001C, jal(0x8001_0200), 0, 0x03E0_0008, 0]);
+        // 0x80010200 g: a leaf without a frame.
+        code(0x8001_0200, &[0, 0, 0x03E0_0008, 0]);
+        // Stack: main's frame at 0x801FFFE8 (ra 0xBFC00100, a BIOS return
+        // not after a call), f's at 0x801FFFC8.
+        mem.insert(0x801F_FFE8 + 20, 0xBFC0_0100);
+        mem.insert(0x801F_FFC8 + 28, 0x8001_0014);
+        let (frames, ended) = unwind(|a| Some(*mem.get(&a).unwrap_or(&0)), 0x8001_0204, 0x801F_FFC8, 0x8001_0110);
+        assert_eq!(
+            frames,
+            [
+                Frame { pc: 0x8001_0204, sp: 0x801F_FFC8, size: None, returns_to: Some(0x8001_0110) },
+                Frame { pc: 0x8001_0108, sp: 0x801F_FFC8, size: Some(32), returns_to: Some(0x8001_0014) },
+                Frame { pc: 0x8001_000C, sp: 0x801F_FFE8, size: Some(24), returns_to: Some(0xBFC0_0100) },
+            ]
+        );
+        assert_eq!(ended, "0xBFC00100 is not after a call");
+    }
 
     /// Stops at the tick, at a PC and at a write, goes back a stop and on
     /// again, from a recording in a port's workspace:

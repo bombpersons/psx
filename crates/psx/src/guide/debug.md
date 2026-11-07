@@ -22,6 +22,8 @@ a new stop:
   not seen.
 - until: a field boundary where conditions hold, as run's until.
 - tick: the binding's tick ends (the glossary's binding for this disc).
+  That is where a recording takes the tick's row: memory holds what the
+  recording has for tick N, and tick N+1's work comes after the stop.
 - draw: the end of the first whole field that draws (any, primitives or
   textured), captured as gpu captures it.
 - fields, ticks, instructions: after that many.
@@ -42,7 +44,8 @@ way in the stop's directory, stops/N/, as run's do:
 - watch_reads: reads.jsonl, every CPU load; it slows the go as read
   does.
 
-The stop lists the first stores and readers; the files hold up to
+The stop lists the first stores, and the writers and readers by PC with
+their counts; the files hold up to
 100000 each. A stop gives the field (frame
 absolute, run_frame from the start), the ticks, the PC, its function
 and instruction, and for write and read what was written or read and by
@@ -56,7 +59,11 @@ bytes gives memory as hex; history the instructions go kept; screen a
 PNG; stops every stop and the one the session is at; gpu the latest GPU
 capture (topic assets); hardware the CD controller's recent commands, the
 SPU, unhandled I/O reads, DMA and interrupts, and the PCs and I/O hottest
-over the next two fields, for psx's own development.
+over the next two fields, for psx's own development; stack the calls the
+stop is inside, innermost first, each with its function, sp, frame size
+and where it returns to, read from the functions' prologues (`addiu
+sp,sp,-N`, `sw ra`), so code that keeps its frame otherwise ends it
+early (ended says why).
 
 debug_set writes memory (poke `ADDR=VALUE[:WIDTH|:FMT]`), a register
 (pc, hi, lo or a register by name), or holds a pad state from here (not

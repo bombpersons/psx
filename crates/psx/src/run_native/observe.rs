@@ -514,10 +514,30 @@ impl Observer for Writes {
                 v
             })
             .collect();
+        // Every recorded store by its writer: the PC, or DMA without one.
+        let mut by: std::collections::HashMap<Option<u32>, (u64, &psx_core::observe::Writer)> = Default::default();
+        for h in m.bus.obs.hits.iter().filter(|h| !(self.changes_only && h.old.is_some() && h.old == h.value)) {
+            by.entry(h.pc).or_insert((0, &h.writer)).0 += 1;
+        }
+        let mut writers: Vec<_> = by.into_iter().collect();
+        writers.sort_by_key(|&(pc, (n, _))| (std::cmp::Reverse(n), pc));
+        let writers: Vec<Value> = writers
+            .iter()
+            .take(16)
+            .map(|&(pc, (n, w))| {
+                let mut v = json!({"count": n, "writer": w});
+                if let Some(pc) = pc {
+                    v["pc"] = json!(hex(pc));
+                    v["function"] = crate::final_name(&self.scopes, pc, Some(&m.bus.ram));
+                }
+                v
+            })
+            .collect();
         let obs = &m.bus.obs;
         out.section(
             "watch",
             json!({"enabled":self.enabled,"hits": obs.hit_count, "recorded": obs.hits.len(), "shown": shown.len(), "first": shown,
+                "writers": writers,
                 "emitted":hits.len(),"complete":obs.hit_count==obs.hits.len() as u64,
                 "truncated":obs.hit_count>obs.hits.len() as u64,
                 "file":self.enabled.then(||out.dir.join("writes.jsonl")),"changes_only":self.changes_only}),

@@ -1163,12 +1163,17 @@ fn the_debugger_stops_at_a_draw_and_captures_it() {
     assert_eq!(watch["hits"], 1, "{logged}");
     assert_eq!(watch["first"][0]["pc"], "0xBFC00018");
     assert_eq!((&watch["first"][0]["old"], &watch["first"][0]["value"]), (&json!(65280), &json!(0)));
+    assert_eq!((&watch["writers"][0]["pc"], &watch["writers"][0]["count"]), (&json!("0xBFC00018"), &json!(1)));
     assert_eq!(logged["detail"]["read_watch"]["readers"][0]["pc"], "0xBFC00008", "{logged}");
     let kept = std::path::PathBuf::from(logged["detail"]["dir"].as_str().unwrap());
     assert!(kept.join("writes.jsonl").exists() && kept.join("reads.jsonl").exists());
     // Row 0 is the stop the go started from, the last the field it ended at.
     let csv = std::fs::read_to_string(kept.join("samples.csv")).unwrap();
     assert_eq!(csv, "run_frame,frame,flag\n3,40,65280\n4,41,0\n5,42,0\n");
+    // The loop has no frame: the stack is the stop alone.
+    let (show, error, _) = rpc.tool("debug_show", json!({"stack":true,"registers":true}));
+    assert!(!error, "{show}");
+    assert_eq!(show["stack"]["frames"][0]["pc"], show["registers"]["pc"], "{show}");
     // show gpu walks back past stops without a capture.
     let (show, error, _) = rpc.tool("debug_show", json!({"gpu":true}));
     assert!(!error, "{show}");
