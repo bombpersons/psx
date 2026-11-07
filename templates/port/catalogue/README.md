@@ -84,5 +84,19 @@ confirmed; `psx port next` asks for them.
 
 `goal.toml` lists the features the person wants. `psx port confirm` shows
 the list, the won't-reach branches and any problems; the
-person confirms it with `psx port confirm --yes`. After that the list may
-grow; taking a feature out needs the person to confirm again.
+person confirms it with `psx port confirm --yes`. The first list is a
+guess made before you know the game: recut it as you learn.
+
+## Merging and splitting
+
+Merging and splitting are edits: write the new entries, move the
+recordings and the code (with their `wont_reach` entries) to them, and
+change `goal.toml`'s list. Every recording a goal feature has named stays
+named by one while its file is there (psx keeps the list in
+`.psx/goal_recordings.json`, and one left unnamed is a problem); a work
+recording no longer wanted is deleted. The person's held-out plays stay
+held out: one deleted or moved to work asks them to confirm again.
+Signs a cut may not hold: a feature's pointer keeps finding other
+features' code, a feature has no recording of its own, or features
+claiming the same functions each run code only the others claim. The
+review asks whether the features cover the goal's description.

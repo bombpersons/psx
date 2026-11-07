@@ -27,6 +27,9 @@ fn with_confirmation(text: &str, c: &Confirmed) -> String {
         lines.push(line);
     }
     let mut line = format!("confirmed = {{ at = \"{}\", features = {}", c.at, c.features.to_toml());
+    if let Some(d) = &c.description {
+        line += &format!(", description = \"{d}\"");
+    }
     if !c.assets.is_none() {
         line += &format!(", assets = {}", c.assets.to_toml());
     }
@@ -91,6 +94,7 @@ impl PortConfirmArgs {
         let c = Confirmed {
             at: crate::stamp::utc_now(),
             features: port.goal.features.clone(),
+            description: Some(super::description_stamp(&port.goal.description)),
             assets: port.goal.assets.clone(),
             wont_reach: port.wont_reach(),
         };
@@ -106,6 +110,8 @@ impl PortConfirmArgs {
             return Err(Error::invalid(format!("{GOAL} rewritten without the confirmation; nothing written")));
         }
         crate::write_atomic(&path, new.as_bytes()).map_err(|e| Error::io(&path, e))?;
+        // What left the goal's recordings is accepted with it.
+        port.note_recordings(&ctx.root, true);
         out["confirmation"] = json!({"state": "covers", "at": c.at});
         out["confirmed"] = json!({"at": c.at, "features": c.features.to_json(), "assets": c.assets.to_json(), "wont_reach": c.wont_reach});
         Ok(out)
@@ -128,6 +134,7 @@ mod tests {
         let c = Confirmed {
             at: "2026-10-29T10:00:00Z".into(),
             features: Features::List(vec!["F-0001".into()]),
+            description: None,
             assets: Default::default(),
             wont_reach: Default::default(),
         };
@@ -140,6 +147,7 @@ mod tests {
         let all = Confirmed {
             at: "t".into(),
             features: Features::All,
+            description: None,
             assets: Default::default(),
             wont_reach: Default::default(),
         };

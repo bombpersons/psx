@@ -2081,6 +2081,10 @@ function drawStats() {
     [num(calls), "psx calls", `${num(failed)} failed`],
     [num(c.hours.length), "hours with calls"],
     [dur(sum(c.tools, "ms")), "in psx calls"],
+    ...(st?.shares ? [["recordings_passing", "goal recordings passing", "each counted once; a held-out one once its feature is reviewed"],
+      ["code_accounted", "goal code claimed or not ported", "functions the goal's recordings run that a feature claims or not_ported.toml lists"],
+      ["branches_resolved", "claimed branches resolved", "each branch of the claimed code once, resolved by any feature"]]
+      .map(([k, l, t]) => [`${num(st.shares[k].n)} of ${num(st.shares[k].of)}`, l, t]) : []),
     ...(d.decomp ? [[num(d.decomp.named), "functions named", "in names/ and .psx/names/"],
       [`${num(d.decomp.passing)} of ${num(d.decomp.in_c)}`, "functions in C pass", "their last code check, on the current C and names"]] : []),
   ];
@@ -2088,7 +2092,7 @@ function drawStats() {
   // The standing over time.
   h += `<div class="card"><h2>Features by stage</h2>${prog.length > 1
     ? `<div class="legend">${STAGES.map(([k, v]) => `<span style="--c:var(${v})">${k}</span>`).join("")}</div><canvas class="chart tall" id="st-stage"></canvas>
-       <div class="grid2" style="margin-top:8px"><div><div class="quiet">recordings passing, of all</div><canvas class="chart" id="st-rec"></canvas></div><div><div class="quiet">branches resolved, of all</div><canvas class="chart" id="st-br"></canvas></div></div>
+       <div class="grid2" style="margin-top:8px"><div><div class="quiet">recordings passing, of all</div><canvas class="chart" id="st-rec"></canvas></div><div><div class="quiet">branches resolved, of all</div><canvas class="chart" id="st-br"></canvas></div><div><div class="quiet">code claimed or not ported, of all the goal runs</div><canvas class="chart" id="st-code-acc"></canvas></div></div>
        <div class="quiet" style="margin-top:4px">${prog.length} changes since ${fmtDate(prog[0].t)}, as port status and port next saw them</div>`
     : `<div class="quiet">This builds up as port status and port next see the standing change (from this version of psx on). The commits below go back to the start.</div>`}</div>`;
   // Activity.
@@ -2130,8 +2134,12 @@ function drawStats() {
   if (prog.length > 1) {
     const ts = prog.map(x => x.t);
     statStacked($("#st-stage"), ts, d.now, STAGES.map(([k, v]) => [x => x.stages?.[k] || 0, css(v)]), prog);
-    statLines($("#st-rec"), ts, d.now, prog, [[x => x.recordings?.pass, css("--st5")], [x => x.recordings?.total, css("--st0")]]);
-    statLines($("#st-br"), ts, d.now, prog, [[x => x.branches?.resolved, css("--st1")], [x => x.branches?.total, css("--st0")]]);
+    // The goal's shares where the line has them (counted once across
+    // features), the features' sums before.
+    const sh = (x, k, i) => x.shares?.[k]?.[i];
+    statLines($("#st-rec"), ts, d.now, prog, [[x => sh(x, "recordings_passing", "n") ?? x.recordings?.pass, css("--st5")], [x => sh(x, "recordings_passing", "of") ?? x.recordings?.total, css("--st0")]]);
+    statLines($("#st-br"), ts, d.now, prog, [[x => sh(x, "branches_resolved", "n") ?? x.branches?.resolved, css("--st1")], [x => sh(x, "branches_resolved", "of") ?? x.branches?.total, css("--st0")]]);
+    statLines($("#st-code-acc"), ts, d.now, prog, [[x => sh(x, "code_accounted", "n"), css("--st2")], [x => sh(x, "code_accounted", "of"), css("--st0")]]);
   }
   // Hours while the log is short, days once it spans more than three.
   const span = c.hours.length ? c.hours.at(-1).t - c.hours[0].t : 0, step = span > 3 * DAY ? DAY : HOUR;

@@ -230,7 +230,7 @@ The person confirms the goal: its description, its assets and the first
 list. After that the list of features is the agent's, so taking an id
 out is not the goal shrinking. What the goal must not lose is its
 recordings: psx keeps every recording a goal feature has named
-(.psx/goal_recordings, committed beside the verdicts), and one that no
+(.psx/goal_recordings.json, beside the verdicts and like them not committed), and one that no
 goal feature names any more while its file is there is a problem
 (Catalogue: name it again). A work recording deleted is gone (one
 recorded again replaces it); a held-out one, the person's play, deleted
@@ -490,6 +490,36 @@ that drops a held-out play asks the person; the shares are the same before and a
 merge; on GT2's workspace the Review brief lists its signs (offroad's
 pointer, features sharing recordings); and a goal with every feature
 reviewed gets a Play item for the goal.
+
+**Done** (2026-11-07). The confirmation stores the description's stamp
+(sha256, 16 digits; an older confirmation without one is not compared)
+and covers it, the assets and the person's held-out plays; ids leaving
+are the agent's. .psx/goal_recordings.json (work or held_out, uncommitted
+like the verdicts) is written by port next and by port confirm --yes,
+which starts it afresh; a recording in it no goal feature names while its
+file is there is a Catalogue problem, a work one whose file is gone
+leaves it. port status and psx web's Stats show the three shares, each
+counted once across features (a recording by name, a function by entry,
+a branch by place, resolved by any feature); the progress line keeps
+them. `Facts::signs`: a failing feature's pointer naming other features'
+code, a feature every recording of which another also names, functions
+several features claim whose recordings each run code only another
+claims; the Review brief (first and follow-up) asks the cut questions
+against goal.toml's description and lists them, port status gives them
+as `signs`, and Fix's why adds "the cut may not hold". goal.toml's
+`held_out` (problems: no such recording, or a feature's work recording)
+is judged by a whole port check as the verdict `goal`; once every feature
+is reviewed port next gives Play for the goal (its request from the
+description), Implement while no check judged them, Fix when one fails,
+and Done waits on them; the shares count them once shown. Merging,
+dropping a play, unnamed recordings and equal shares across a merge are
+tested; not tried as a merge on GT2, whose verdicts would go stale. On
+GT2 at 404dbb7 the signs are offroad's pointer (F-0002, F-0003, F-0004)
+and six others', eight features with no recording of their own, and
+F-0002/F-0003(/F-0004) entwined over shift_request, shift_machine,
+map_pedals and update_car; the shares are 3/8 recordings, 29/415
+functions, 198/598 branches. The guide's overview trimmed again to stay
+under 16 KiB.
 
 ### 7. Screens
 

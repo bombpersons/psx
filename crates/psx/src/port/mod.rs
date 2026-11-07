@@ -40,12 +40,14 @@ pub const NOT_PORTED: &str = "catalogue/not_ported.toml";
 pub(crate) const GOAL_TOML: &str = "\
 # What the person wants from this port. The agent proposes the features
 # (catalogue/F-NNNN.md) and lists them here; the person confirms the list
-# with `psx port confirm --yes`, which writes `confirmed`. The list may grow
-# after that; taking a feature out needs the person to confirm again.
+# with `psx port confirm --yes`, which writes `confirmed`. Features merge,
+# split and come and go after that as the agent learns; the description,
+# the assets and the person's held-out plays changing needs confirming again.
 description = \"\"
 features = []   # feature ids, or \"all\"
 assets = false  # what to extract: true (every disc file), false, or names: [\"format:level\", \"/MAPS/*.WLD\"] (formats/README.md)
 # review_lines = 800  # a follow-up review once the code changed by this many lines since the last
+# held_out = []  # the goal's own plays, scenario/name, once every feature is reviewed
 ";
 
 /// The features a goal names: a list, or every catalogued feature.
@@ -193,7 +195,15 @@ pub struct Goal {
     /// whatever the features do; [`REVIEW_LINES`] when unset.
     #[serde(default)]
     pub review_lines: Option<usize>,
+    /// The goal's own held-out plays (scenario/name), requested from its
+    /// description once every feature is reviewed: judged by a whole
+    /// psx port check as [`GOAL_ID`], and shown once they are.
+    #[serde(default)]
+    pub held_out: Vec<String>,
 }
+
+/// The verdict the goal's held-out plays are judged under.
+pub const GOAL_ID: &str = "goal";
 
 /// The lines of change that ask for a follow-up review when goal.toml does
 /// not say: on Croc, +931/-534 lines went unreviewed while no feature
@@ -212,12 +222,27 @@ impl Goal {
 #[serde(deny_unknown_fields)]
 pub struct Confirmed {
     pub at: String,
+    /// The list first confirmed; ids leaving it later are the agent's cut.
     pub features: Features,
+    /// The description confirmed, as [`description_stamp`]: absent in
+    /// confirmations made before it was kept.
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub assets: Assets,
     #[serde(default)]
     pub wont_reach: WontReach,
 }
+
+/// The description as the confirmation keeps it: its sha256's first 16
+/// hex digits, whitespace at the ends aside.
+pub fn description_stamp(d: &str) -> String {
+    crate::stamp::sha256(d.trim().as_bytes())[..16].to_string()
+}
+
+/// The recordings the goal's features have named (`<scenario>/<name>` =
+/// work or held_out), as port next last saw them.
+pub const GOAL_RECORDINGS: &str = ".psx/goal_recordings.json";
 
 /// Branches no recording can reach, by feature, then address, with why.
 pub type WontReach = BTreeMap<String, BTreeMap<String, String>>;
@@ -350,9 +375,11 @@ impl Stage {
 pub enum Confirmation {
     /// Never confirmed.
     Missing,
-    /// Every confirmed feature is still in the goal.
+    /// The description, the assets and the person's held-out plays are
+    /// as confirmed.
     Covers { at: String },
-    /// Features the person confirmed are no longer in the goal.
+    /// What changed since: the description, assets no longer asked for,
+    /// held-out plays deleted or moved to work.
     Shrunk { at: String, missing: Vec<String> },
 }
 
@@ -375,6 +402,9 @@ pub struct Port {
     /// `catalogue/not_ported.toml`: the original's code no feature ports,
     /// by function entry or address range, with why.
     pub not_ported: BTreeMap<String, String>,
+    /// [`GOAL_RECORDINGS`]: every recording a goal feature has named, as
+    /// work or held_out (held_out once it was).
+    pub ledger: BTreeMap<String, String>,
     pub problems: Vec<Problem>,
 }
 
@@ -536,8 +566,13 @@ impl Port {
                     .push(problem(NOT_PORTED, format!("{k}: no reason: what the code is, and why the port has none")));
             }
         }
-        let mut port = Port { goal, entries, formats, unused, not_ported, problems };
+        let ledger = std::fs::read(root.join(GOAL_RECORDINGS))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let mut port = Port { goal, entries, formats, unused, not_ported, ledger, problems };
         port.check();
+        port.check_ledger(root);
         port.check_disk(root);
         Ok(port)
     }
@@ -696,6 +731,84 @@ impl Port {
         self.problems.extend(out);
     }
 
+    /// The goal's recordings now: each named by a goal feature, as work or
+    /// held_out (held_out when any names it so).
+    pub fn goal_recordings(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for e in self.goal_ids().iter().filter_map(|id| self.entries.get(id)) {
+            for r in &e.recordings.work {
+                out.entry(r.clone()).or_insert_with(|| "work".to_string());
+            }
+            for r in &e.recordings.held_out {
+                out.insert(r.clone(), "held_out".to_string());
+            }
+        }
+        for r in &self.goal.held_out {
+            out.insert(r.clone(), "held_out".to_string());
+        }
+        out
+    }
+
+    /// The ledger's recordings no goal feature names while their files are
+    /// there: a merge or a split moves recordings, never drops them.
+    fn check_ledger(&mut self, root: &Path) {
+        for r in &self.goal.held_out {
+            let file = r.split_once('/').map(|(s, n)| root.join("scenarios").join(s).join(format!("{n}.jsonl")));
+            let why = if !file.is_some_and(|f| f.is_file()) {
+                "held_out: no such recording (scenario/name, under scenarios/)"
+            } else if self.entries.values().any(|e| e.recordings.work.contains(r)) {
+                "held_out: also a feature's work recording; the goal's plays are held out from the work"
+            } else {
+                continue;
+            };
+            self.problems.push(problem(GOAL, format!("{r}: {why}")));
+        }
+        let now = self.goal_recordings();
+        for r in self.ledger.keys().filter(|r| !now.contains_key(*r)) {
+            let Some((s, n)) = r.split_once('/') else { continue };
+            if root.join("scenarios").join(s).join(format!("{n}.jsonl")).is_file() {
+                self.problems.push(problem(
+                    CATALOGUE,
+                    format!("{r}: a goal feature named it and none does now: name it under the recordings of the feature it shows (a merge or a split moves recordings)"),
+                ));
+            }
+        }
+    }
+
+    /// The person's held-out recordings that left the goal or held_out
+    /// since they confirmed: deleted, or moved to work.
+    pub fn held_out_dropped(&self) -> Vec<String> {
+        let now = self.goal_recordings();
+        self.ledger
+            .iter()
+            .filter(|(r, k)| *k == "held_out" && now.get(*r).map(String::as_str) != Some("held_out"))
+            .map(|(r, _)| r.clone())
+            .collect()
+    }
+
+    /// The ledger with the goal's recordings now added; a work recording
+    /// no feature names and whose file is gone leaves it. `confirmed`:
+    /// the person accepted what left, so it is the goal's recordings now.
+    pub(crate) fn note_recordings(&self, root: &Path, confirmed: bool) {
+        let now = self.goal_recordings();
+        let mut ledger = if confirmed { BTreeMap::new() } else { self.ledger.clone() };
+        ledger.retain(|r, k| {
+            let file = r.split_once('/').map(|(s, n)| root.join("scenarios").join(s).join(format!("{n}.jsonl")));
+            now.contains_key(r) || k == "held_out" || file.is_some_and(|f| f.is_file())
+        });
+        for (r, k) in now {
+            let e = ledger.entry(r).or_insert_with(|| k.clone());
+            if k == "held_out" {
+                *e = k;
+            }
+        }
+        if ledger != self.ledger {
+            let path = root.join(GOAL_RECORDINGS);
+            let _ = std::fs::create_dir_all(root.join(".psx"));
+            let _ = crate::write_atomic(&path, serde_json::to_string_pretty(&ledger).unwrap_or_default().as_bytes());
+        }
+    }
+
     /// Why the function at `entry` is not ported, when not_ported.toml
     /// lists it or a range holding it.
     pub fn not_ported(&self, entry: u32) -> Option<&String> {
@@ -773,14 +886,13 @@ impl Port {
     pub fn confirmation(&self) -> Confirmation {
         let Some(c) = &self.goal.confirmed else { return Confirmation::Missing };
         let at = c.at.clone();
-        let missing: Vec<String> = match (&c.features, &self.goal.features) {
-            (Features::All, Features::All) => Vec::new(),
-            (Features::All, Features::List(_)) => vec!["all".into()],
-            (Features::List(was), _) => {
-                let now: BTreeSet<String> = self.closure().into_iter().collect();
-                was.iter().filter(|id| !now.contains(*id)).cloned().collect()
-            }
-        };
+        // The cut is the agent's: ids leaving are not the goal shrinking;
+        // its description changing, or the person's plays leaving, is.
+        let mut missing: Vec<String> = Vec::new();
+        if c.description.as_ref().is_some_and(|d| *d != description_stamp(&self.goal.description)) {
+            missing.push("description".into());
+        }
+        missing.extend(self.held_out_dropped().into_iter().map(|r| format!("held_out {r}")));
         // Every asset name the person confirmed is still asked for.
         let assets: Vec<String> = match (&c.assets, &self.goal.assets) {
             (_, Assets::All) => Vec::new(),
@@ -975,7 +1087,7 @@ pub(crate) mod tests {
         let (a, b, c) = (feature("F-0001", ""), feature("F-0002", "F-0001"), feature("F-0003", "F-0002"));
         let goal = "description = \"x\"\nfeatures = [\n  \"F-0003\",\n]\nconfirmed = { at = \"t\", features = [\"F-0001\", \"F-0002\", \"F-0003\"] }\n# features: the goal's list\n";
         let (dir, port) = workspace(goal, &[("F-0001.md", &a), ("F-0002.md", &b), ("F-0003.md", &c)]);
-        assert!(matches!(port.confirmation(), Confirmation::Shrunk { .. }));
+        assert_eq!(port.closure(), ["F-0003"]);
         assert_eq!(Port::keep_depends(&dir.0, true).unwrap(), ["F-0001", "F-0002"]);
         assert_eq!(std::fs::read_to_string(dir.0.join(GOAL)).unwrap(), goal);
         assert_eq!(Port::keep_depends(&dir.0, false).unwrap(), ["F-0001", "F-0002"]);
@@ -1118,11 +1230,12 @@ pub(crate) mod tests {
         let (a, b) = (feature("F-0001", ""), feature("F-0002", "F-0001"));
         let goal = "features = [\"F-0002\"]\nconfirmed = { at = \"t\", features = [\"F-0001\", \"F-0002\"] }\n";
         let (_d, port) = workspace(goal, &[("F-0001.md", &a), ("F-0002.md", &b)]);
-        assert_eq!(port.confirmation(), Confirmation::Shrunk { at: "t".into(), missing: vec!["F-0001".into()] });
+        assert_eq!(port.closure(), ["F-0002"]);
+        assert_eq!(port.brought_by_depends(), ["F-0001"]);
     }
 
     #[test]
-    fn a_confirmation_covers_a_list_that_grew_but_not_one_that_shrank() {
+    fn a_confirmation_covers_the_agents_cut_but_not_the_description_or_the_persons_plays() {
         let entries: Vec<(String, String)> =
             (1..=3).map(|i| (format!("F-000{i}.md"), feature(&format!("F-000{i}"), ""))).collect();
         let entries: Vec<(&str, &str)> = entries.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
@@ -1133,14 +1246,86 @@ pub(crate) mod tests {
         assert_eq!(port.confirmation(), Confirmation::Covers { at: "2026-10-29T10:00:00Z".into() });
         let (_d, port) = workspace(&format!("features = \"all\"\n{confirmed}"), &entries);
         assert!(matches!(port.confirmation(), Confirmation::Covers { .. }));
+        // An id leaving is the agent's cut, not the goal shrinking.
         let (_d, port) = workspace(&format!("features = [\"F-0002\"]\n{confirmed}"), &entries);
-        assert_eq!(
-            port.confirmation(),
-            Confirmation::Shrunk { at: "2026-10-29T10:00:00Z".into(), missing: vec!["F-0001".into()] }
-        );
+        assert!(matches!(port.confirmation(), Confirmation::Covers { .. }));
         let all = "confirmed = { at = \"t\", features = \"all\" }\n";
         let (_d, port) = workspace(&format!("features = [\"F-0001\"]\n{all}"), &entries);
-        assert!(matches!(port.confirmation(), Confirmation::Shrunk { .. }));
+        assert!(matches!(port.confirmation(), Confirmation::Covers { .. }));
+        // The description the person confirmed, changed.
+        let stamped = format!(
+            "description = \"drive\"\nfeatures = [\"F-0001\"]\nconfirmed = {{ at = \"t\", features = [\"F-0001\"], description = \"{}\" }}\n",
+            description_stamp("drive")
+        );
+        let (_d, port) = workspace(&stamped, &entries);
+        assert!(matches!(port.confirmation(), Confirmation::Covers { .. }));
+        let (_d, port) = workspace(&stamped.replacen("\"drive\"", "\"drive fast\"", 1), &entries);
+        assert_eq!(port.confirmation(), Confirmation::Shrunk { at: "t".into(), missing: vec!["description".into()] });
+    }
+
+    #[test]
+    fn the_goal_keeps_its_recordings_through_a_merge() {
+        let held = |id: &str, work: &str, held: &str| {
+            format!(
+                "+++\nid = \"{id}\"\ntitle = \"t\"\narea = \"a\"\n[recordings]\nwork = [{work}]\nheld_out = [{held}]\n+++\nWhat it does.\n"
+            )
+        };
+        let goal = "description = \"x\"\nfeatures = [\"F-0001\", \"F-0002\"]\nconfirmed = { at = \"t\", features = [\"F-0001\", \"F-0002\"] }\n";
+        let (a, b) = (held("F-0001", "\"s/a\"", "\"s/play\""), held("F-0002", "\"s/b\"", ""));
+        let (d, port) = workspace(goal, &[("F-0001.md", &a), ("F-0002.md", &b)]);
+        std::fs::create_dir_all(d.0.join("scenarios/s")).unwrap();
+        for n in ["a", "b", "play"] {
+            std::fs::write(d.0.join(format!("scenarios/s/{n}.jsonl")), "").unwrap();
+        }
+        port.note_recordings(&d.0, false);
+        // Merged into F-0001 with every recording: the goal is as confirmed.
+        let merged = held("F-0001", "\"s/a\", \"s/b\"", "\"s/play\"");
+        let one = goal.replace("[\"F-0001\", \"F-0002\"]\nc", "[\"F-0001\"]\nc");
+        std::fs::write(d.0.join(GOAL), &one).unwrap();
+        std::fs::write(d.0.join("catalogue/F-0001.md"), &merged).unwrap();
+        std::fs::remove_file(d.0.join("catalogue/F-0002.md")).unwrap();
+        let port = Port::load(&d.0).unwrap();
+        assert_eq!((port.problems.clone(), port.confirmation()), (vec![], Confirmation::Covers { at: "t".into() }));
+        // A recording the merge left unnamed is a problem.
+        std::fs::write(d.0.join("catalogue/F-0001.md"), held("F-0001", "\"s/a\"", "\"s/play\"")).unwrap();
+        let port = Port::load(&d.0).unwrap();
+        assert_eq!(port.problems.len(), 1, "{:?}", port.problems);
+        assert!(port.problems[0].problem.starts_with("s/b: a goal feature named it and none does now"));
+        // The person's play moved to work asks the person.
+        std::fs::write(d.0.join("catalogue/F-0001.md"), held("F-0001", "\"s/a\", \"s/b\", \"s/play\"", "")).unwrap();
+        let port = Port::load(&d.0).unwrap();
+        assert_eq!(
+            port.confirmation(),
+            Confirmation::Shrunk { at: "t".into(), missing: vec!["held_out s/play".into()] }
+        );
+        // Once confirmed, the goal's recordings are what it names now.
+        port.note_recordings(&d.0, true);
+        assert!(matches!(Port::load(&d.0).unwrap().confirmation(), Confirmation::Covers { .. }));
+        // A work recording deleted is gone.
+        std::fs::write(d.0.join("catalogue/F-0001.md"), held("F-0001", "\"s/a\", \"s/play\"", "")).unwrap();
+        std::fs::remove_file(d.0.join("scenarios/s/b.jsonl")).unwrap();
+        let port = Port::load(&d.0).unwrap();
+        assert!(port.problems.is_empty(), "{:?}", port.problems);
+        port.note_recordings(&d.0, false);
+        assert!(!Port::load(&d.0).unwrap().ledger.contains_key("s/b"));
+        // The goal's own play: a feature's work recording is not one, and
+        // one taken out of goal.toml asks the person.
+        std::fs::write(d.0.join(GOAL), one.replacen("features =", "held_out = [\"s/a\", \"s/gone\"]\nfeatures =", 1))
+            .unwrap();
+        let port = Port::load(&d.0).unwrap();
+        let p: Vec<&str> = port.problems.iter().map(|p| p.problem.as_str()).collect();
+        assert!(
+            p[0].starts_with("s/a: held_out: also a feature's work") && p[1].starts_with("s/gone: held_out: no such"),
+            "{p:?}"
+        );
+        std::fs::write(d.0.join("scenarios/s/g.jsonl"), "").unwrap();
+        std::fs::write(d.0.join(GOAL), one.replacen("features =", "held_out = [\"s/g\"]\nfeatures =", 1)).unwrap();
+        let port = Port::load(&d.0).unwrap();
+        assert!(port.problems.is_empty(), "{:?}", port.problems);
+        port.note_recordings(&d.0, true);
+        std::fs::write(d.0.join(GOAL), &one).unwrap();
+        let port = Port::load(&d.0).unwrap();
+        assert_eq!(port.confirmation(), Confirmation::Shrunk { at: "t".into(), missing: vec!["held_out s/g".into()] });
     }
 
     #[test]

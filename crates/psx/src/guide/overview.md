@@ -84,9 +84,9 @@ cut):
 Each function the goal's recordings run is some feature's code or in
 catalogue/not_ported.toml (entry or range = why: libraries, drivers). Features have no dependencies: a
 failure's pointer says whose code it is in. The person reviews the goal with psx port confirm and confirms it with
---yes, the wont_reach branches and their reasons included. The list may
-grow afterwards; taking a feature out or an asset name out of the goal, or
-a wont_reach added or changed, needs confirming again.
+--yes, the wont_reach branches and their reasons included. Merging and
+splitting are edits (catalogue/README.md); the description, an asset name taken out, a
+held-out play dropped or a wont_reach changed needs confirming again.
 
 ## Recordings
 
@@ -158,8 +158,7 @@ original ran as the inventory's code (no instructions, so it is committed):
 take code_inventory first, and unpack compressed overlays first (topic
 code). from starts at the end of another recording of the scenario, to
 split a long route. scenario_show reads a recording per tick, with each
-numeric quantity's change since the tick before (a walk's speed, a jump's
-gravity).
+numeric quantity's change since the tick before.
 
 scenario_check is the determinism check: it reaches each scenario again
 with idle fields added before the chain's last run and records again. A
@@ -188,18 +187,18 @@ A feature's stages, each holding with those before it:
 - recorded: work recordings, their scenarios deterministic, their coverage
   counted against the inventory.
 - matching: every work recording passes at HEAD.
-- reviewed: every branch of its code taken both ways by its recordings
-  (or the other goal features' that pass at HEAD) or a confirmed
-  wont_reach, no question open, the code its recordings run claimed or
-  not ported, its assets checked or unused, and the code's review holds.
+- reviewed: every branch of its code taken both ways (by its recordings
+  or the other features' passing ones) or a confirmed wont_reach, no
+  question open, the code its recordings run claimed or not ported, its
+  assets settled, and the review holds.
 - done: its held-out recordings pass.
 
 port_next's items, in this order:
 
 - Read: the person answered a play request.
 - Catalogue: goal.toml or the catalogue has problems; fix them.
-- Confirm (person): the list is unconfirmed or lost a feature; until it is,
-  only investigate and catalogue.
+- Confirm (person): the goal is unconfirmed or changed since; until it
+  is, only investigate and catalogue.
 - Format, Index, Import, Check: a feature's assets, before its work.
 - Build: the port has no launcher for a scenario kind, or does not observe
   a compared quantity.
@@ -211,26 +210,25 @@ port_next's items, in this order:
 - Answer: an open question.
 - Locate: functions its recordings run in no feature's code or
   not_ported.toml.
-- Cover: a branch of its code its recordings (and the other features'
-  that pass at HEAD) never took one way, a stretch of its script never
-  read or a decision's way never taken: record what reaches it, ask the person to
-  play it, or list it under wont_reach.
+- Cover: a branch its recordings (and the other features' that pass at
+  HEAD) never took one way, or script never read or a decision's way
+  never taken: record it, ask the person to play it, or list it under
+  wont_reach.
 - Confirm (person): wont_reach branches not confirmed as they stand.
 - Format, Index, Import, Check (the goal's assets): see Assets.
-- Review: a feature came to match its recordings or finished (branches
-  resolved, no question open) since the last review and the code (game/,
-  tools/) has no review that holds, or the commits since the review
-  changed review_lines lines of it (goal.toml, 800 by default); also
-  findings without an answer. It asks whether one would write
-  a new game like this, not whether it matches the original. how is the
-  brief for a reviewer who did not write it (a sub-agent or a fresh
-  session), who also files a report for the person alone (report).
-  review.md: TOML front matter (commit, features finished) between +++
-  lines, then one ## heading per finding, each answered with an
-  **Answer:** line: done, with port_check passing again, or kept and why.
+- Review: a feature matched or finished since the last review and the
+  code (game/, tools/) has no review that holds, or review_lines lines of
+  it changed since (goal.toml, 800 by default); also findings without an
+  answer. It asks whether one would write a new game like this, and
+  whether the features cover the goal's description. how is the brief
+  for a reviewer who did not write it, who also files a report for the person alone (report). review.md: TOML
+  front matter (commit, features, finished) between +++ lines, then one
+  ## heading per finding, each answered with an **Answer:** line: done,
+  with port_check passing again, or kept and why.
 - Play (person): a feature without held-out recordings, the code
   reviewed: start scenario_play; name its recording under held_out.
-- Done: every feature of the goal is done.
+  Then the goal's own, from its description (goal.toml's held_out).
+- Done: every feature done, and the goal's plays pass.
 - Wait (person): only unanswered play requests are left.
 - Stuck (person): the same item three times with nothing changed.
 

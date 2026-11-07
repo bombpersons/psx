@@ -174,6 +174,8 @@ pub struct Feature {
     /// The functions its recordings run that no feature's code lists and
     /// not_ported.toml does not, by entry.
     pub unclaimed: Vec<u32>,
+    /// Every function its own recordings run, by entry.
+    pub ran: BTreeSet<u32>,
     /// What keeps it from being recorded: no work recordings, its
     /// scenarios' problems or determinism checks, coverage psx cannot
     /// count.
@@ -493,12 +495,47 @@ fn one_line(s: &str) -> String {
     }
 }
 
+/// The goal's standing as one program: how many of each, of how many.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shares {
+    pub recordings: (usize, usize),
+    pub code: (usize, usize),
+    pub branches: (usize, usize),
+}
+
+impl Shares {
+    fn json(&self) -> Value {
+        let pair = |(n, of): (usize, usize)| json!({"n": n, "of": of});
+        json!({"recordings_passing": pair(self.recordings), "code_accounted": pair(self.code),
+               "branches_resolved": pair(self.branches)})
+    }
+
+    fn plain(&self) -> String {
+        let pct = |(n, of): (usize, usize)| (n * 100).checked_div(of).map_or("-".to_string(), |p| format!("{p}%"));
+        format!(
+            "goal    recordings passing {}/{} ({}) · code claimed or not ported {}/{} ({}) · branches resolved {}/{} ({})\n",
+            self.recordings.0,
+            self.recordings.1,
+            pct(self.recordings),
+            self.code.0,
+            self.code.1,
+            pct(self.code),
+            self.branches.0,
+            self.branches.1,
+            pct(self.branches)
+        )
+    }
+}
+
 /// Everything the items are decided on.
 pub struct Facts {
     pub port: Port,
     pub git: Git,
     /// The goal's features, by id.
     pub features: Vec<Feature>,
+    /// The goal's own held-out plays with their failures, by the goal's
+    /// verdict at HEAD (None without one).
+    pub goal_held_out: Vec<(String, Option<Vec<String>>)>,
     /// Overlays the inventory knows only from the code that ran in them.
     pub unpack: Vec<String>,
     /// The disc's files by state, or why psx cannot list them.
@@ -571,6 +608,7 @@ impl Facts {
                         catalogued: false,
                         located: false,
                         unclaimed: Vec::new(),
+                        ran: BTreeSet::new(),
                         unrecorded: Vec::new(),
                         late: Vec::new(),
                         verdict: State::Missing,
@@ -668,8 +706,11 @@ impl Facts {
                 unrecorded.extend(uncounted);
                 // What its own recordings run that no feature claims and
                 // not_ported.toml does not list.
-                let unclaimed: Vec<u32> =
-                    ran.into_iter().filter(|&f| port.claiming(f).is_empty() && port.not_ported(f).is_none()).collect();
+                let unclaimed: Vec<u32> = ran
+                    .iter()
+                    .copied()
+                    .filter(|&f| port.claiming(f).is_empty() && port.not_ported(f).is_none())
+                    .collect();
                 // Code the other features' recordings run counts their
                 // ways too, once the port matches them (their problems
                 // are theirs).
@@ -704,6 +745,7 @@ impl Facts {
                     catalogued: true,
                     located: !e.code.is_empty(),
                     unclaimed,
+                    ran,
                     unrecorded,
                     late: crate::scenario::feature_late_input(root, e),
                     verdict,
@@ -730,11 +772,19 @@ impl Facts {
             port.problems.extend(a.problems.iter().cloned());
         }
         let (review_features, review_finished) = review::features(root);
+        let goal_verdict = verdict::state(root, super::GOAL_ID, judged);
+        let goal_held_out = port
+            .goal
+            .held_out
+            .iter()
+            .map(|n| (n.clone(), if let State::Current(v) = &goal_verdict { Some(v.of(n)) } else { None }))
+            .collect();
         let plays = crate::handoff::queue::list(root);
         Ok(Facts {
             port,
             git,
             features,
+            goal_held_out,
             unpack,
             assets,
             needs: goal_needs,
@@ -780,6 +830,52 @@ impl Facts {
             && !self.features.is_empty()
             && self.features.iter().all(|f| f.stage() == Some(Stage::Done))
             && self.needs.settled()
+            && all_pass(&self.goal_held_out)
+    }
+
+    /// The goal's three shares, each counted once however the features
+    /// cut it, so a merge or a split leaves them as they were: its
+    /// recordings passing (a held-out one once its feature is reviewed),
+    /// the functions they run that some feature claims or not_ported.toml
+    /// lists, and the claimed code's branches resolved (by any feature).
+    pub fn shares(&self) -> Shares {
+        let mut recordings: BTreeMap<&str, bool> = BTreeMap::new();
+        let mut branches: BTreeMap<String, bool> = BTreeMap::new();
+        let mut ran = BTreeSet::new();
+        for f in &self.features {
+            let reviewed = f.reviewed();
+            let held = f.held_out.iter().map(|r| (r, reviewed));
+            for ((name, failures), shown) in f.work.iter().map(|r| (r, true)).chain(held) {
+                let pass = shown && failures.as_ref().is_some_and(Vec::is_empty);
+                *recordings.entry(name).or_default() |= pass;
+            }
+            for b in &f.branches {
+                let key = match &b.at {
+                    Place::Code { pc, .. } => hex(*pc),
+                    Place::Script { at, .. } => at.to_string(),
+                };
+                *branches.entry(key).or_default() |= b.resolved();
+            }
+            ran.extend(f.ran.iter().copied());
+        }
+        let shown = self.all_reviewed();
+        for (name, failures) in &self.goal_held_out {
+            *recordings.entry(name).or_default() |= shown && failures.as_ref().is_some_and(Vec::is_empty);
+        }
+        let accounted =
+            ran.iter().filter(|&&a| !self.port.claiming(a).is_empty() || self.port.not_ported(a).is_some()).count();
+        let count = |vs: Vec<bool>| (vs.iter().filter(|v| **v).count(), vs.len());
+        Shares {
+            recordings: count(recordings.into_values().collect()),
+            code: (accounted, ran.len()),
+            branches: count(branches.into_values().collect()),
+        }
+    }
+
+    /// Every feature of the goal reviewed: the goal's own plays are asked
+    /// for and shown.
+    fn all_reviewed(&self) -> bool {
+        !self.features.is_empty() && self.features.iter().all(Feature::reviewed)
     }
 
     /// The files the goal and its features need, by index, and how many
@@ -881,7 +977,7 @@ impl Facts {
                 },
                 "the answer is read (scenario play --status returns it and marks it read)",
                 &format!(
-                    "read the answer: psx scenario play --status {}. When it is a recording, name it under the feature's recordings and go on; when declined, the note says why: ask again in other words or from another start, list the branch under wont_reach with the note as why, or go on without it",
+                    "read the answer: psx scenario play --status {}. When it is a recording, name it under the feature's recordings (the goal's play: goal.toml's held_out) and go on; when declined, the note says why: ask again in other words or from another start, list the branch under wont_reach with the note as why, or go on without it",
                     r.dir.display()
                 ),
             );
@@ -928,7 +1024,7 @@ impl Facts {
             let why = match self.port.confirmation() {
                 Confirmation::Shrunk { missing, .. } => {
                     format!(
-                        "what the person confirmed is no longer in the goal or needed by it: {}",
+                        "what the person confirmed has changed since (the description, assets no longer asked for, their held-out plays deleted or moved to work): {}",
                         missing.join(", ")
                     )
                 }
@@ -938,7 +1034,7 @@ impl Facts {
                 "Confirm",
                 None,
                 why,
-                "goal.toml's confirmation covers its list",
+                "goal.toml's confirmation covers the goal",
                 "the person reads psx port confirm and runs psx port confirm --yes; the agent waits, investigating and cataloguing only",
             );
         }
@@ -1104,7 +1200,7 @@ impl Facts {
             // The work may be in another feature's code: name it.
             let others = item.pointer.as_ref().map(|p| super::pointer::features_named(p, &f.id)).unwrap_or_default();
             if !others.is_empty() {
-                item.why += &format!("; the pointer finds code of {} there", others.join(", "));
+                item.why += &format!("; the pointer finds code of {} there: the cut may not hold", others.join(", "));
             }
             return item;
         }
@@ -1211,11 +1307,44 @@ impl Facts {
                 "the agent starts psx scenario play on one of its scenarios with a request to play the feature freely and differently from its work recordings; the person plays it when they can, and the agent names the recording under recordings.held_out when port next gives its Read item",
             );
         }
+        // 9. The goal's own held-out plays, once every feature is reviewed.
+        if self.all_reviewed() && self.waiting_plays().next().is_none() {
+            if self.goal_held_out.is_empty() {
+                return Item::person(
+                    "Play",
+                    None,
+                    "every feature is reviewed and the goal has no held-out plays of its own".into(),
+                    "goal.toml names held-out plays (held_out)",
+                    &format!(
+                        "the agent starts psx scenario play with a request written from the goal's description, in game terms, as broad as it is (\"{}\"): not a feature's recordings again; the person plays it when they can, and the agent names the recording under goal.toml's held_out when port next gives its Read item",
+                        one_line(&self.port.goal.description)
+                    ),
+                );
+            }
+            if self.goal_held_out.iter().any(|(_, r)| r.is_none()) {
+                return Item::agent(
+                    "Implement",
+                    None,
+                    "no psx port check of the whole goal has judged its held-out plays at HEAD".into(),
+                    "psx port check has judged the goal's plays at HEAD",
+                    "commit, and run psx port check without a feature: the goal's plays are judged with the whole goal",
+                );
+            }
+            if let Some((r, first)) = first_failing(&self.goal_held_out) {
+                return Item::agent(
+                    "Fix",
+                    None,
+                    format!("the goal's play {r} fails: {first}"),
+                    "the goal's held-out plays pass at HEAD",
+                    "the play shows what the features' recordings do not: find what in it the port does differently (scenario show on the play, code coverage of it against the features' recordings) and whose code that is; record what reaches it as that feature's work recording, fix it there, commit, and run psx port check; a play no feature's rule explains may mean the cut does not cover the goal",
+                );
+            }
+        }
         if self.complete() {
             return Item::person(
                 "Done",
                 None,
-                "every feature of the goal is done".into(),
+                "every feature of the goal is done, and the goal's own plays pass".into(),
                 "",
                 "the goal is complete; the person may set a new one",
             );
@@ -1445,7 +1574,8 @@ impl Facts {
     /// The Review item's brief, for a reviewer who has not seen the work.
     fn brief(&self) -> String {
         format!(
-            "Give this brief to a reviewer who has not seen the work (a sub-agent or a new session): review the port's code as a whole, {code} (git ls-files {code}). Its recordings already check that it does what the original does, so this review does not: leave the catalogue, the notes and the original's code unread. Ask instead: would you write a new game like this? Judge it as code written for a new game today, not as a port: how it is divided (modules, plugins, systems, components, data), names, how readily it takes more (another character, level or rule), duplication, and what is shaped by the original rather than chosen. AGENTS.md's \"The code\" says what the tools rely on. Write {review}: front matter between +++ lines with commit = \"{head}\", features = {features} and finished = {finished}, then one ## heading per finding: what you would change, the shape you would choose instead and why; what the code does stays as it is. The writer then answers each finding with an **Answer:** line. Then file a report for the person alone with report (psx report --text ...): how the port looks to you as a game in the making, what worries you about it and anything you would not put to the writer; the writer does not see it.",
+            "Give this brief to a reviewer who has not seen the work (a sub-agent or a new session): review the port's code as a whole, {code} (git ls-files {code}). Its recordings already check that it does what the original does, so this review does not: for the code, leave the notes and the original's code unread. Ask instead: would you write a new game like this? Judge it as code written for a new game today, not as a port: how it is divided (modules, plugins, systems, components, data), names, how readily it takes more (another character, level or rule), duplication, and what is shaped by the original rather than chosen. AGENTS.md's \"The code\" says what the tools rely on. Write {review}: front matter between +++ lines with commit = \"{head}\", features = {features} and finished = {finished}, then one ## heading per finding: what you would change, the shape you would choose instead and why; what the code does stays as it is. The writer then answers each finding with an **Answer:** line.{cut} Then file a report for the person alone with report (psx report --text ...): how the port looks to you as a game in the making, what worries you about it and anything you would not put to the writer; the writer does not see it.",
+            cut = self.cut(),
             code = review::CODE.join(" "),
             review = review::REVIEW,
             head = self.git.head.as_deref().unwrap_or("HEAD"),
@@ -1454,11 +1584,101 @@ impl Facts {
         )
     }
 
+    /// What psx sees of a cut that may not hold: features whose failures'
+    /// pointer finds other features' code, features with no recording of
+    /// their own, and functions several features claim whose recordings
+    /// each run code only another claims.
+    pub fn signs(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for f in &self.features {
+            if let State::Current(super::verdict::Verdict { pointer: Some(p), .. }) = &f.verdict {
+                let others = super::pointer::features_named(p, &f.id);
+                if !others.is_empty() {
+                    out.push(format!(
+                        "{}'s recording {} fails, and the pointer finds code of {} there",
+                        f.id,
+                        p["recording"].as_str().unwrap_or("?"),
+                        others.join(", ")
+                    ));
+                }
+            }
+        }
+        let entry = |id: &str| self.port.entries.get(id);
+        let ids: Vec<&str> = self.features.iter().filter(|f| f.catalogued).map(|f| f.id.as_str()).collect();
+        for &id in &ids {
+            let own: Vec<&String> = entry(id).map(|e| e.recordings.all().collect()).unwrap_or_default();
+            let also = |r: &String| -> Vec<&str> {
+                let names = |o: &&str| entry(o).is_some_and(|e| e.recordings.all().any(|x| x == r));
+                ids.iter().copied().filter(|&o| o != id).filter(names).collect()
+            };
+            if !own.is_empty() && own.iter().all(|r| !also(r).is_empty()) {
+                let mut with: Vec<&str> = own.iter().flat_map(|r| also(r)).collect();
+                with.sort();
+                with.dedup();
+                out.push(format!("{id} has no recording of its own: each is also {}'s", with.join(", ")));
+            }
+        }
+        let code = |id: &str| -> BTreeSet<u32> {
+            entry(id)
+                .map(|e| e.code.iter().filter_map(|c| super::entry_addr(c)).map(|a| a & 0x1FFF_FFFF).collect())
+                .unwrap_or_default()
+        };
+        let mut shared: BTreeMap<Vec<&str>, Vec<u32>> = BTreeMap::new();
+        for a in ids.iter().flat_map(|&id| code(id)).collect::<BTreeSet<_>>() {
+            let by: Vec<&str> = ids.iter().copied().filter(|&id| code(id).contains(&a)).collect();
+            if by.len() > 1 {
+                shared.entry(by).or_default().push(a);
+            }
+        }
+        let ran = |id: &str| -> BTreeSet<u32> {
+            self.features
+                .iter()
+                .find(|f| f.id == id)
+                .map(|f| f.ran.iter().map(|a| a & 0x1FFF_FFFF).collect())
+                .unwrap_or_default()
+        };
+        for (by, fs) in shared {
+            let entwined = by.iter().all(|&a| {
+                let (mine, runs) = (code(a), ran(a));
+                by.iter().filter(|&&b| b != a).all(|&b| code(b).difference(&mine).any(|c| runs.contains(c)))
+            });
+            if entwined {
+                let names: Vec<String> = fs.iter().take(3).map(|&a| self.function_name(a | 0x8000_0000)).collect();
+                out.push(format!(
+                    "{} claim {} function{} together ({}{}), and each one's recordings run code only the other{} claim{}",
+                    by.join(", "),
+                    fs.len(),
+                    if fs.len() == 1 { "" } else { "s" },
+                    names.join(", "),
+                    if fs.len() > 3 { ", …" } else { "" },
+                    if by.len() > 2 { "s" } else { "" },
+                    if by.len() > 2 { "" } else { "s" },
+                ));
+            }
+        }
+        out
+    }
+
+    /// The Review brief's part on the cut, against the goal's description.
+    fn cut(&self) -> String {
+        let signs = self.signs();
+        let signs = if signs.is_empty() {
+            "psx sees no sign of one".to_string()
+        } else {
+            format!("psx's signs of one, which say where to look, not what to do: {}", signs.join("; "))
+        };
+        format!(
+            " Then the cut, against the goal: read {goal}'s description and the catalogue (catalogue/*.md, each entry's paragraph and recordings) and ask whether the features together cover what the description asks for, its breadth included (what their recordings show against what it names); whether each feature's recordings can show it without its neighbours; which should merge or split, and what is missing. Those are findings too, answered by recutting or kept with why. A cut that does not hold: {signs}.",
+            goal = super::GOAL,
+        )
+    }
+
     /// The brief for a review of what changed since the review at `commit`:
     /// what that review read is not read again.
     fn follow_up(&self, commit: &str) -> String {
         format!(
-            "Give this brief to a reviewer who did not write the changes (a sub-agent or a new session): a follow-up review of the port's code. The review at {commit} read the code then; read what changed since: git diff {commit} -- {code}, with the findings and answers in {review} (are the changes what the answers say?), and enough of the code around it to judge how the change fits the whole (how the code is divided, what a new feature reuses or duplicates). Ask what the review asked: would you write a new game like this? If the changes rewrite most of the code, review it whole. Leave the catalogue, the notes and the original's code unread: the recordings check what the code does. Keep the findings and answers already in {review}; set its commit to \"{head}\", its features to {features} and its finished to {finished}, and add one ## heading per new finding: what you would change, the shape you would choose instead and why; with none, the commit is all that changes. The writer then answers each new finding with an **Answer:** line. Then file a report for the person alone with report (psx report --text ...): how the port looks to you as a game in the making, what worries you about it and anything you would not put to the writer; the writer does not see it.",
+            "Give this brief to a reviewer who did not write the changes (a sub-agent or a new session): a follow-up review of the port's code. The review at {commit} read the code then; read what changed since: git diff {commit} -- {code}, with the findings and answers in {review} (are the changes what the answers say?), and enough of the code around it to judge how the change fits the whole (how the code is divided, what a new feature reuses or duplicates). Ask what the review asked: would you write a new game like this? If the changes rewrite most of the code, review it whole. Leave the notes and the original's code unread: the recordings check what the code does. Keep the findings and answers already in {review}; set its commit to \"{head}\", its features to {features} and its finished to {finished}, and add one ## heading per new finding: what you would change, the shape you would choose instead and why; with none, the commit is all that changes. The writer then answers each new finding with an **Answer:** line.{cut} Then file a report for the person alone with report (psx report --text ...): how the port looks to you as a game in the making, what worries you about it and anything you would not put to the writer; the writer does not see it.",
+            cut = self.cut(),
             code = review::CODE.join(" "),
             review = review::REVIEW,
             head = self.git.head.as_deref().unwrap_or("HEAD"),
@@ -1524,7 +1744,20 @@ impl Facts {
             "complete": self.complete(),
             "git": {"head": self.git.head, "clean": self.git.clean},
             "decomp": self.decomp,
+            "shares": self.shares().json(),
         });
+        let signs = self.signs();
+        if !signs.is_empty() {
+            v["signs"] = json!(signs);
+        }
+        if !self.goal_held_out.is_empty() {
+            v["held_out"] = if self.all_reviewed() {
+                let pass = self.goal_held_out.iter().filter(|(_, f)| f.as_ref().is_some_and(Vec::is_empty)).count();
+                json!({"total": self.goal_held_out.len(), "pass": pass})
+            } else {
+                json!({"total": self.goal_held_out.len(), "shown": "once every feature is reviewed"})
+            };
+        }
         v["assets"] = match &self.assets {
             Ok(a) => {
                 let mut j = a.json(self.port.formats.len());
@@ -1570,6 +1803,7 @@ impl Facts {
             if goal.is_empty() { "(no description)" } else { goal },
             self.features.len()
         ));
+        s.push_str(&self.shares().plain());
         if let Ok(a) = &self.assets {
             let (needed, settled) = self.needed();
             let all = format!(
@@ -1592,7 +1826,7 @@ impl Facts {
             Confirmation::Missing => "not confirmed yet\n".to_string(),
             Confirmation::Covers { at } => format!("confirmed {at}\n"),
             Confirmation::Shrunk { at, missing } => {
-                format!("confirmed {at}, but {} is no longer in the goal or needed by it\n", missing.join(", "))
+                format!("confirmed {at}, but changed since: {}\n", missing.join(", "))
             }
         });
         s.push_str(&match &self.review {
@@ -1787,6 +2021,7 @@ fn standing(status: &Value) -> Value {
         "verdicts": verdicts,
         "branches": {"resolved": resolved, "total": branches},
         "recordings": {"pass": passing, "total": recordings},
+        "shares": status["shares"],
         "problems": status["problems"].as_array().map_or(0, Vec::len),
         "questions": questions,
         "review": status["review"]["state"],
@@ -1879,6 +2114,7 @@ pub struct PortNextArgs {}
 impl Op for PortNextArgs {
     fn exec(self, ctx: &Ctx) -> Outcome {
         Outcome::result(Facts::gather(&ctx.root).and_then(|f| {
+            f.port.note_recordings(&ctx.root, false);
             let next = guarded(&ctx.root, &f, f.next())?;
             let mut v = f.status();
             v["next"] = next.clone();
@@ -1954,12 +2190,12 @@ mod tests {
         let (_d, f) = facts("description = \"x\"\nfeatures = [\"F-0001\", \"F-0002\"]\n", &["F-0001", "F-0002"]);
         let item = f.next();
         assert_eq!((item.item, item.who), ("Confirm", "person"));
+        // A feature leaving the confirmed list is the agent's cut.
         let (_d, f) = facts(
             &CONFIRMED.replace("features = [\"F-0001\", \"F-0002\"]\nc", "features = [\"F-0002\"]\nc"),
             &["F-0001", "F-0002"],
         );
-        assert_eq!(f.next().item, "Confirm");
-        assert!(f.next().why.contains("F-0001"));
+        assert_ne!(f.next().item, "Confirm");
     }
 
     fn set(f: &mut Facts, id: &str, change: impl FnOnce(&mut Feature)) {
@@ -2252,6 +2488,16 @@ mod tests {
         set(&mut f, "F-0002", |x| x.held_out = results(&[("walk/h", &[])]));
         assert_eq!(next(&f), ("Play", "person", "F-0001".into()));
         set(&mut f, "F-0001", |x| x.held_out = results(&[("walk/i", &[])]));
+        // Every feature reviewed: the goal's own play, from its description.
+        assert!(!f.complete());
+        assert_eq!(next(&f), ("Play", "person", String::new()));
+        assert!(f.next().how.contains("written from the goal's description"), "{}", f.next().how);
+        f.goal_held_out = vec![("walk/g".into(), None)];
+        assert_eq!(next(&f), ("Implement", "agent", String::new()));
+        f.goal_held_out = results(&[("walk/g", &["player_x"])]);
+        assert_eq!(next(&f), ("Fix", "agent", String::new()));
+        assert_eq!(f.status()["held_out"], json!({"total": 1, "pass": 0}));
+        f.goal_held_out = results(&[("walk/g", &[])]);
         assert!(f.complete());
         assert_eq!(next(&f), ("Done", "person", String::new()));
     }
@@ -2265,6 +2511,7 @@ mod tests {
             x.work = results(&[("walk/a", &[])]);
             x.held_out = results(&[("walk/h", &[])]);
         }
+        f.goal_held_out = results(&[("walk/g", &[])]);
         review(f, Review::Holds { commit: "abc".into(), findings: 0 });
         f.assets = Ok(assets::Inventory { files, ..Default::default() });
         needs_again(f);
@@ -2437,6 +2684,79 @@ mod tests {
         assert_eq!(x.branches_json(false)["resolved_by_others"]["branches"], 1);
         assert_eq!(f.next().item, "Cover");
         assert!(f.next().why.contains("in its recordings or the 1 of other features that pass;"), "{}", f.next().why);
+    }
+
+    #[test]
+    fn the_goals_shares_count_each_recording_function_and_branch_once() {
+        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        f.port.entries.get_mut("F-0001").unwrap().code = vec!["0x8002D810".into()];
+        f.port.entries.get_mut("F-0002").unwrap().code = vec!["0x8002D810".into(), "0x8002E000".into()];
+        set(&mut f, "F-0001", |x| {
+            x.verdict = current();
+            x.work = results(&[("walk/a", &[]), ("walk/b", &["x"])]);
+            x.held_out = results(&[("walk/c", &[])]);
+            x.branches =
+                vec![Branch::code(0x8002_D820, 0x8002_D810, 1, None), Branch::code(0x8002_D830, 0x8002_D810, 3, None)];
+            x.ran = [0x8002_D810, 0x8003_0000].into();
+        });
+        set(&mut f, "F-0002", |x| {
+            x.verdict = current();
+            x.work = results(&[("run/a", &[])]);
+            // The shared function's branch it took both ways resolves it
+            // for the goal.
+            x.branches = vec![Branch::code(0x8002_D820, 0x8002_D810, 3, None)];
+            x.ran = [0x8002_D810, 0x8002_E000].into();
+        });
+        let before = f.shares();
+        // The held-out play is not counted passing before the review.
+        assert_eq!(before.recordings, (2, 4));
+        assert_eq!(before.code, (2, 3));
+        assert_eq!(before.branches, (2, 2));
+        // Merged: F-0001 takes F-0002's code and recordings.
+        f.port.entries.get_mut("F-0001").unwrap().code = vec!["0x8002D810".into(), "0x8002E000".into()];
+        f.port.entries.remove("F-0002");
+        let gone = f.features.remove(1);
+        set(&mut f, "F-0001", |x| {
+            x.work.extend(gone.work);
+            x.branches =
+                vec![Branch::code(0x8002_D820, 0x8002_D810, 3, None), Branch::code(0x8002_D830, 0x8002_D810, 3, None)];
+            x.ran.extend(gone.ran);
+        });
+        assert_eq!(f.shares(), before);
+    }
+
+    #[test]
+    fn the_review_brief_gives_the_signs_of_a_cut_that_may_not_hold() {
+        let (_d, mut f) = facts(CONFIRMED, &["F-0001", "F-0002"]);
+        assert!(f.brief().contains("psx sees no sign of one."), "{}", f.brief());
+        for (id, code, recs) in [
+            ("F-0001", ["0x8002D810", "0x8002E000"], vec!["walk/a"]),
+            ("F-0002", ["0x8002D810", "0x8002F000"], vec!["walk/a", "run/a"]),
+        ] {
+            let e = f.port.entries.get_mut(id).unwrap();
+            e.code = code.map(String::from).to_vec();
+            e.recordings.work = recs.into_iter().map(String::from).collect();
+        }
+        set(&mut f, "F-0001", |x| x.ran = [0x8002_D810, 0x8002_E000, 0x8002_F000].into());
+        set(&mut f, "F-0002", |x| x.ran = [0x8002_D810, 0x8002_F000].into());
+        // F-0002's recordings run none of F-0001's own code: not entwined.
+        assert_eq!(f.signs(), ["F-0001 has no recording of its own: each is also F-0002's"]);
+        set(&mut f, "F-0002", |x| {
+            x.ran.insert(0x8002_E000);
+            x.verdict = current();
+            if let State::Current(v) = &mut x.verdict {
+                v.pointer = Some(
+                    json!({"recording": "run/a", "quantities": [{"writers": [{"features": ["F-0001", "F-0002"]}]}]}),
+                );
+            }
+        });
+        let signs = f.signs();
+        assert_eq!(signs[0], "F-0002's recording run/a fails, and the pointer finds code of F-0001 there");
+        assert_eq!(
+            signs[2],
+            "F-0001, F-0002 claim 1 function together (0x8002D810), and each one's recordings run code only the other claims"
+        );
+        assert!(f.brief().contains("which should merge or split") && f.brief().contains(&signs[2]));
     }
 
     #[test]

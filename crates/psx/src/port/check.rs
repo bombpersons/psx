@@ -80,9 +80,12 @@ fn to_point_at(e: &Entry, report: &ScenarioReport) -> Option<(String, Vec<String
 
 /// Each recording the entry names, with what the scenario run found:
 /// its failures, its scenario's problems, or that it did not run.
-fn recording_results(e: &Entry, report: &ScenarioReport) -> BTreeMap<String, Vec<String>> {
+fn recording_results<'a>(
+    names: impl Iterator<Item = &'a String>,
+    report: &ScenarioReport,
+) -> BTreeMap<String, Vec<String>> {
     let mut out = BTreeMap::new();
-    for name in e.recordings.all() {
+    for name in names {
         let (id, rec) = name.split_once('/').unwrap_or((name.as_str(), ""));
         let failures = match report.scenarios.iter().find(|s| s.id == id) {
             None => vec![format!("not run: no scenarios/{id}.toml")],
@@ -313,7 +316,7 @@ impl PortCheckArgs {
             .iter()
             .map(|e| {
                 let (failures, recordings) = match &ran {
-                    Ok(r) => (Vec::new(), recording_results(e, r)),
+                    Ok(r) => (Vec::new(), recording_results(e.recordings.all(), r)),
                     Err(why) => (vec![why.clone()], BTreeMap::new()),
                 };
                 let v = Verdict {
@@ -366,6 +369,27 @@ impl PortCheckArgs {
             }
             verdicts.push(row);
         }
+        // The goal's own plays, with the whole goal: counted, not shown,
+        // until every feature is reviewed.
+        if self.feature.is_none() && !port.goal.held_out.is_empty() {
+            let (failures, recordings) = match &ran {
+                Ok(r) => (Vec::new(), recording_results(port.goal.held_out.iter(), r)),
+                Err(why) => (vec![why.clone()], BTreeMap::new()),
+            };
+            verdict::write(
+                root,
+                &Verdict {
+                    feature: super::GOAL_ID.into(),
+                    commit: head.clone(),
+                    clean: true,
+                    at: crate::stamp::utc_now(),
+                    failures,
+                    recordings,
+                    pointer: None,
+                },
+            )?;
+            verdicts.push(json!({"goal": {"held_out": port.goal.held_out.len()}}));
+        }
         let mut out = json!({"commit": head, "verdicts": verdicts});
         if let Some(r) = imports {
             let p = root.join(assets::REPORT);
@@ -411,7 +435,7 @@ mod tests {
         let mut e = Entry::default();
         e.recordings.work = vec!["jump/stomp".into(), "jump/long".into(), "jump/gone".into()];
         e.recordings.held_out = vec!["swim/lap".into(), "walk/a".into()];
-        let r = recording_results(&e, &report);
+        let r = recording_results(e.recordings.all(), &report);
         assert_eq!(r["jump/stomp"], Vec::<String>::new());
         assert_eq!(r["jump/long"], ["differs from the recording in croc_y"]);
         assert_eq!(r["jump/gone"], ["not run: the scenarios have no such recording"]);
