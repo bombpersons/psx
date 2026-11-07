@@ -22,6 +22,11 @@ number:
 6. The agent sees the port's screen beside the original's, to
    understand what drawing does; what it shows that can be checked
    becomes quantities.
+7. Features go (2026-11-07, after steps 1 to 7): port next gives items
+   over the whole goal, the code to port is what the recordings run less
+   not_ported, the reviewer judges without planning, and the person
+   accepts the finished port. Points 2 to 4 are superseded; see "Without
+   features".
 
 Written 2026-11-07, after the GT2 debugger trial (docs/gt2-debugger-trial.md).
 
@@ -289,6 +294,126 @@ its frame, the model or sprite shown, the HUD's numbers. Camera,
 animation and HUD are features of their own, with their recordings. The
 person judges the whole look in psx web, as now.
 
+### Without features
+
+Superseded: the sections above on features, their code, dependencies,
+merging and splitting, and the cut. They are kept as the record of how
+the design got here. GT2 showed that the cut was the weakest part:
+eight of eleven features had no recording of their own, most pointers
+found other features' code, and three were entwined. Every step since
+step 4 has made features matter less, and the shares were built so the
+cut would not change them. Features go. port next stays the source of
+the agent's tasks, now over the whole goal. The reviewer judges and
+does not plan, so it is not judging a plan of its own. The person
+decides when the port is finished.
+
+**The workspace.**
+
+- goal.toml: the description, assets, the confirmation, review_lines
+  and held_out (the person's plays). `features` goes.
+- Every recording under scenarios/ is a work recording unless goal.toml
+  names it under held_out.
+- A scenario names the assets its recordings need to replay
+  (scenarios/<id>.toml's `assets`), as an entry did.
+- catalogue/ keeps not_ported.toml and gains wont_reach.toml (branch,
+  script position or range = why, confirmed by the person as now) and
+  questions.md (one open question per line, the agent's).
+- catalogue/F-NNNN.md goes, and so does the ledger
+  (.psx/goal_recordings.json): with no ids to lose recordings between,
+  a deleted held-out play is still the person's to confirm (Confirm), as
+  now.
+
+**The code to port** is worked out, not claimed: every function the
+work recordings run, minus not_ported.toml. Instead of a `code` list,
+the port's code cites the original by address, as the rules already
+ask. One function to port that is cited nowhere in game/ or tools/ is
+the Locate item ("port it or list it in not_ported"), those writing a
+compared quantity first. The reviewer judges whether the citations are
+real. Cover is over every branch of the code to port.
+
+**port next's items**, in order:
+
+- Read, Catalogue, Confirm (the goal), Build, Unpack, Wait and Stuck
+  stay as they are.
+- Format, Index, Import, Check: goal.toml's assets and the scenarios'.
+  A scenario's assets come before its recordings are checked.
+- Record: a recording that is not ready, or none at all.
+- Implement: no port_check has judged HEAD.
+- Fix: one failing work recording. It is the one that fails earliest in
+  its own run; psx knows that tick from the pointer, uses it only to
+  choose and never shows it. Ties go to fewer differing quantities,
+  then the name. Fix stays on that recording while it fails. It gives
+  what it gives now: the recording, the quantities that differ by name,
+  and the pointer, without the features it found.
+- Restore: a scenario's [off] function now cited in the port.
+- Answer: questions.md's first open question.
+- Locate: code to port that is cited nowhere (above).
+- Cover, then Confirm (wont_reach): over the code to port.
+- Review: as now, triggered by review_lines lines of game/ or tools/
+  changed, or a finding with no answer. The brief's cut questions become
+  one: what the description asks for that no work recording shows ("any
+  car": every recording is the Vitz). A finding like that is answered by
+  recording it, so the reviewer steers what is worked on without
+  planning it.
+- Play (person): once a review holds and the goal has no held-out plays
+  yet, or the reviewer asks for one. The agent writes the request from
+  the description, in game terms.
+- Fix (a play): a held-out play that fails, judged after each review
+  that holds (below).
+- Accept (person): everything above holds; the person runs psx port
+  accept and goal.toml records the commit accepted.
+- Done: the person accepted HEAD's state. Code changed after the
+  acceptance reopens the port (Implement, then Review, then Accept).
+
+**Held-out plays** are judged at each commit where a review holds, not
+only at the end. The agent and the reviewer see pass or fail per play,
+never the quantities, ticks or values. Beside it psx gives the code the
+plays run that no work recording runs (the coverage the plays already
+have against the inventory, named as functions): it says what to
+record next without showing a result. A play that fails while running
+no new code says so, and the agent records more like the play's request.
+
+**Verdicts** have one id, the goal's (.psx/verdicts/goal/), per
+recording; port_check takes one scenario instead of one feature.
+
+**Progress.** port status and psx web show the recordings by state and
+the three shares (recordings passing, code to port accounted for,
+branches resolved). There are no stages. The agent is still given items,
+not shares.
+
+**What goes:** stages, the signs of a wrong cut, catalogue/README.md's
+merging and cutting rules (it describes the three files), per-feature
+verdicts and held-out results, feature ids in commit messages, psx web's
+features view (recordings and shares instead), and the `feature`
+arguments of port_check and port_status (which also frees room in the
+tool budget).
+
+**What is lost, and what stands in:**
+
+- *Pacing.* Features made the agent finish one slice before the next.
+  Fix one recording at a time, earliest first, stands in: recordings are
+  the unit, and they always were what was checked.
+- *Held-out checks partway through.* Judged after every review that
+  holds, pass or fail only.
+- *Code nothing runs* (the 4WD path when every recording is 2WD). A
+  claimed function nothing ran used to show as uncovered branches, but
+  only if someone had claimed it. Now the reviewer's description
+  question, the plays' new code and the plays failing catch it.
+
+**Existing workspaces.** port update moves each entry out:
+
+- its questions to questions.md and its wont_reach entries to
+  wont_reach.toml, with their confirmations;
+- its assets to the scenarios its recordings are in;
+- held-out recordings that are the person's plays to goal.toml's
+  held_out; the agent's own held-out recordings become work recordings;
+- its description paragraph is dropped (git keeps it);
+- its `code` is dropped, and functions to port that are cited nowhere
+  come back as Locate.
+
+The Croc example's catalogue and port are moved and committed, with
+citations added where its code lacks them.
+
 ### Probes: the original's side only
 
 docs/probes-plan.md's steps 4 to 7 (probes in the port, the diff, the
@@ -311,7 +436,7 @@ until, watch, debug_show value and debug_go's write and read take
   known there; it does not show which side of the port is wrong.
 - **The agent starts the debugger.** The pointer is a place in code and
   features, not a moment; finding the moment is reading the code.
-- **No dependencies.** Neither the catalogue's guess nor what runs
+- **No dependencies** (moot without features). Neither the catalogue's guess nor what runs
   together says what a feature needs; the pointer does, per failure.
 - **The engineering is the agent's.** `code`, not_ported, merges and
   splits are its reading of the original, not confirmed, with no
@@ -320,7 +445,7 @@ until, watch, debug_show value and debug_go's write and read take
   catch code set aside that holds a rule. The person confirms what they
   can judge: the goal, its own held-out plays, and wont_reach's reasons
   in game terms. The goal is guarded by its recordings, not its ids.
-- **The cut is revised against the goal.** The reviewer reads the
+- **The cut is revised against the goal** (superseded: no features). The reviewer reads the
   catalogue against the description, psx points at signs the cut is
   wrong, and the goal's own held-out plays show its breadth to the
   person; none decides the cut, the agent does.
@@ -329,6 +454,15 @@ until, watch, debug_show value and debug_go's write and read take
 - **Screens are looked at, not scored.** A pixel difference would be a
   number to fit and would push the port's renderer toward the PS1's GPU;
   what drawing shows that matters is a quantity.
+
+- **No features.** The cut was a guess the rest kept correcting.
+  Recordings are the unit; port next orders them, the reviewer judges
+  coverage of the description, and the person accepts the port.
+- **The reviewer does not plan.** It would be judging its own plan.
+  Its findings are answered like any other, and a finding can ask for a
+  recording.
+- **Held-out plays: pass or fail only**, after each review that holds,
+  with the code they run that no work recording runs.
 
 ## Steps
 
@@ -552,18 +686,48 @@ disc) both games' screens come back at the same 8 ticks; GT2's port
 says it draws no screen yet. The tool budget took the flag by shortening
 scenario_show's docs; the guide's overview is at 16,333 of 16,384 bytes.
 
-### 8. A trial on Gran Turismo 2
+### 8. Features out
 
-A fresh session from port_next, on the handling features, on the
+The workspace, port next and port status as in "Without features":
+goal.toml without `features`, scenarios' `assets`, catalogue/'s three
+files, the code to port worked out and cited, Fix's order, Restore,
+Answer and Locate over the goal, one verdict id, port_check by scenario,
+the shares and recordings by state in status and psx web, the guide's
+overview, catalogue/README.md and the templates rewritten. port update
+moves an existing workspace; the Croc example is moved.
+
+*Done when* the Croc example, moved, gives the same next items as
+before in goal terms (its recordings passing, Review or Play due), no
+code or test names a feature, the guide fits under 16 KiB and the tool
+budget holds.
+
+### 9. Held-out plays, review and acceptance
+
+The goal's plays judged after each review that holds, shown pass or
+fail with the code they run that no work recording runs; the Review
+brief's description question; Play when there are none or the reviewer
+asks; psx port accept and the Accept and Done items, with code changed
+after reopening it.
+
+*Done when* on the Croc example a failing play shows only that it fails
+and the code it runs that the work recordings do not, a review finding
+asking for a recording becomes work, and Done follows only psx port
+accept at HEAD.
+
+### 10. A trial on Gran Turismo 2
+
+A fresh session from port_next, on the simulation goal, on the
 simulation disc as the workspace is (the person moves the goal to the
-arcade disc afterwards, which suits "any car on any track" better):
-whether it merges them, revises their code and not_ported, how it uses
-the pointer and the review's findings on the cut, and its feedback file.
+arcade disc afterwards, which suits "any car on any track" better),
+the workspace moved by port update: how it orders its work without
+features, how it uses the pointer, Locate and the review's findings on
+the description, what the plays' new code leads it to record, and its
+feedback file.
 
 *Done when* its feedback says whether the pointer led it to the rule
-without the tick, whether it worked on a number at any point,
-whether it changed a feature's code when it learnt more, and whether it
-recut the features against the goal.
+without the tick, whether it worked on a number at any point, whether
+it lost track of the goal's breadth without features, and whether the
+review's findings or the plays widened what it recorded.
 
 ## Not in this plan
 
