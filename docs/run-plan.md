@@ -369,6 +369,16 @@ step that keeps a state at field N becomes a step of N fields, and
    1500-field step (the press at 500 and release at 512 kept). The Mega
    Man 8 test's poke is a debugger poke now, but its state is an old
    format (8) that the core no longer loads, so it did not run.
+
+   *Added (2026-11-07).* debug_go takes sample (sample_every,
+   sample_per), watch (watch_changes_only) and watch_reads, as run's,
+   for the go: samples.csv (row 0 the stop it starts from, the last the
+   field it ends at), writes.jsonl (the core's write watches, so DMA
+   too) and reads.jsonl in the stop's directory, up to 100000 each, the
+   stop listing the first stores and readers. That is "watch from a
+   stop" above, which step 7 had left out. Samples look before the
+   stops, so a stop at a boundary has its row. The tool definitions
+   are at 71570 of 71600 bytes.
 8. **A trial.** GT2's agent chases a divergence with the debugger.
 
    *Done when* its feedback file says what it used and what it

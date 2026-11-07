@@ -159,6 +159,27 @@ pub struct DebugGoArgs {
     #[arg(long)]
     #[serde(default)]
     pub history: Option<usize>,
+    /// As run's, to the stop.
+    #[arg(long = "sample")]
+    #[serde(default, rename = "sample")]
+    pub samples: Vec<crate::ram::SampleSpec>,
+    #[arg(long)]
+    #[serde(default)]
+    pub sample_every: Option<u64>,
+    #[arg(long, value_enum)]
+    #[serde(default)]
+    pub sample_per: Option<crate::ram::SamplePer>,
+    /// As run's, to the stop.
+    #[arg(long)]
+    #[serde(default)]
+    pub watch: Vec<String>,
+    #[arg(long)]
+    #[serde(default)]
+    pub watch_changes_only: bool,
+    /// As run's, to the stop.
+    #[arg(long)]
+    #[serde(default)]
+    pub watch_reads: Vec<String>,
     /// At most this many fields (3600).
     #[arg(long)]
     #[serde(default)]
@@ -619,30 +640,63 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
         o.s.tick = Some(q.binding.described().tick.clone());
     }
     let found = stops.found.clone();
-    o.s.observe(stops);
     let limit = a.limit.unwrap_or(3600).max(1);
     let fields = a.fields.map_or(limit, |f| f.min(limit));
     // What the go keeps on its way goes beside the stop it makes.
     let n = o.book.stops.len();
     let kept = stop_dir(&o.dir, n);
-    let keeps = a.gpu || a.draw.is_some() || a.trace;
+    let keeps = a.gpu
+        || a.draw.is_some()
+        || a.trace
+        || !a.samples.is_empty()
+        || !a.watch.is_empty()
+        || !a.watch_reads.is_empty();
     if keeps {
         let _ = std::fs::remove_dir_all(&kept);
         std::fs::create_dir_all(&kept).map_err(|e| Error::io(&kept, e))?;
+    }
+    // A stop at a field's start (until, draw) leaves that field's look done:
+    // the observers that look at fields take it here, as the first from here.
+    let place = o.s.place();
+    let at_field = place.driver_due && place.last_field == o.s.m.bus.frames;
+    let scopes = Rc::new(crate::load_symbols(&[])?);
+    const MAX_EVENTS: usize = 100_000;
+    if !a.samples.is_empty() {
+        let mut sampler = sampler(ctx, &mut o, &a)?;
+        if at_field {
+            sampler.field(o.s.rel(), &o.s.m, true);
+        }
+        // Before the stops, so a stop at a boundary has its row.
+        o.s.observe(crate::run_native::observe::Samples(sampler));
+    }
+    o.s.observe(stops);
+    if !a.watch.is_empty() {
+        crate::run_native::watch(&mut o.s.m, &a.watch, MAX_EVENTS)?;
+        let changes_only = a.watch_changes_only;
+        o.s.observe(crate::run_native::observe::Writes { enabled: true, changes_only, scopes: scopes.clone() });
+    }
+    if !a.watch_reads.is_empty() {
+        let ranges = a.watch_reads.iter().map(|s| crate::run::parse_range_spec(s)).collect::<Result<Vec<_>, _>>();
+        o.s.observe(crate::run_native::observe::Reads {
+            ranges: ranges.map_err(|e| Error::invalid(format!("watch_reads: {e}")))?,
+            max: MAX_EVENTS,
+            start: o.s.start,
+            scopes: scopes.clone(),
+            reads: Vec::new(),
+            hits: 0,
+            readers: Default::default(),
+        });
     }
     if a.gpu || a.draw.is_some() {
         let n = u32::try_from(fields).unwrap_or(u32::MAX);
         let capture = crate::run_native::gpu_capture::GpuCapture::new(0, a.draw, n, n);
         let mut gpu = crate::run_native::observe::Gpu { capture, start: None, stop: a.draw.is_some() };
-        // A stop at a field's start (until, draw): that field is the first from here.
-        let place = o.s.place();
-        if place.driver_due && place.last_field == o.s.m.bus.frames {
+        if at_field {
             gpu.field(o.s.rel(), &mut o.s.m)?;
         }
         o.s.observe(gpu);
     }
     if a.trace {
-        let scopes = Rc::new(crate::load_symbols(&[])?);
         let trace = crate::run::TraceArgs { trace: true, ..Default::default() };
         let t = crate::run_native::tracer(&trace, 200_000, &scopes, o.s.m.bus.frames, &kept)?;
         let t = crate::run_native::observe::Trace::new(&mut o.s.m, t, scopes);
@@ -659,9 +713,13 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
     let found = std::mem::take(&mut *found.borrow_mut());
     let mut detail = found.detail;
     if keeps {
+        // Ended where a field starts: its look is the last one.
+        let place = o.s.place();
+        let complete =
+            matches!(ended, crate::session::Ended::Limit) || (place.driver_due && place.last_field == o.s.m.bus.frames);
         let rel = o.s.rel();
         for ob in &mut o.s.observers {
-            ob.last_field(rel, &mut o.s.m, false)?;
+            ob.last_field(rel, &mut o.s.m, complete)?;
         }
         let (mut files, mut report) = (serde_json::Map::new(), serde_json::Map::new());
         let start = o.s.start;
@@ -680,14 +738,33 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
             detail["gpu"] =
                 Value::Object(keys.iter().filter_map(|&k| g.get(k).map(|v| (k.into(), v.clone()))).collect());
         }
+        for (k, keys) in [
+            ("samples", &["rows", "file"][..]),
+            ("watch", &["hits", "recorded", "complete", "file", "first"]),
+            ("read_watch", &["hits", "recorded", "complete", "file", "readers"]),
+        ] {
+            if let Some(r) = report.get(k) {
+                let mut r: serde_json::Map<String, Value> =
+                    keys.iter().filter_map(|&k| r.get(k).map(|v| (k.into(), v.clone()))).collect();
+                if let Some(Value::Array(first)) = r.get_mut("first") {
+                    first.truncate(8);
+                }
+                if let Some(Value::Array(readers)) = r.get_mut("readers") {
+                    readers.truncate(8);
+                }
+                detail[k] = Value::Object(r);
+            }
+        }
         if let Some(t) = report.get("trace") {
             detail["trace"] = json!({"instructions": t["instructions"], "lines": t["lines"],
                 "lines_dropped": t["lines_dropped"], "file": kept.join("trace.txt")});
         }
     }
     o.s.observers.clear();
+    let sampled: Vec<String> = a.samples.iter().filter_map(|s| s.parse().ok()).map(|c| c.name().to_string()).collect();
     let call = json!({"go": {"pc": a.pc, "write": a.write, "read": a.read, "until": a.until, "tick": a.tick,
-        "draw": a.draw, "gpu": a.gpu, "trace": a.trace,
+        "draw": a.draw, "gpu": a.gpu, "trace": a.trace, "sample": sampled, "watch": a.watch,
+        "watch_reads": a.watch_reads,
         "fields": a.fields, "ticks": a.ticks, "instructions": a.instructions, "limit": a.limit}});
     let v = o.stop(why, call, detail)?;
     if !found.history.is_empty() {
@@ -773,6 +850,27 @@ fn gpu_capture(o: &Open) -> crate::Result<Value> {
         at = o.book.stops[n]["from"].as_u64().map(|f| f as usize);
     }
     Ok(json!("none: debug_go gpu or draw captures a field's GPU commands"))
+}
+
+/// The go's sampler: rows per field (or per tick, which takes the
+/// binding's tick) from here.
+fn sampler(ctx: &Ctx, o: &mut Open, a: &DebugGoArgs) -> crate::Result<crate::ram::Sampler> {
+    use crate::ram::{Column, SamplePer};
+    let cols = a.samples.iter().map(|s| s.parse()).collect::<Result<Vec<_>, _>>().map_err(Error::invalid)?;
+    if a.sample_every == Some(0) {
+        return Err(Error::invalid("sample_every takes N >= 1"));
+    }
+    let per = a.sample_per.unwrap_or_default();
+    let named = cols.iter().any(|c| matches!(c, Column::Quantity(_)));
+    let q = if named || per == SamplePer::Tick {
+        Some(crate::run_native::glossary_quantities(&ctx.root, &o.book.media_id)?)
+    } else {
+        None
+    };
+    if per == SamplePer::Tick && o.s.tick.is_none() {
+        o.s.tick = q.as_ref().map(|q| q.binding.described().tick.clone());
+    }
+    Ok(crate::ram::Sampler::new(cols, a.sample_every.unwrap_or(1), per, q))
 }
 
 /// Each value now, by name, as sample would write it.

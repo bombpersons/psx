@@ -29,10 +29,21 @@ a new stop:
 limit (fields, default 3600) and timeout (seconds, default 120) end a
 go that found none; its stop says why ("limit", "timeout",
 "recording_ended" when a recording's ticks run out). history=N keeps
-the last N instructions on the way, trace traces them as run's trace
-does (trace.txt, calls.json, coverage), and gpu captures the GPU commands
-of the first whole field from here (gpu_frame.json, its VRAM and PNGs);
-both go in the stop's directory, stops/N/. A stop gives the field (frame
+the last N instructions on the way. These keep what happens on the
+way in the stop's directory, stops/N/, as run's do:
+
+- trace: trace.txt, calls.json and coverage.
+- gpu: the GPU commands of the first whole field from here
+  (gpu_frame.json, its VRAM and PNGs).
+- sample (with sample_every, sample_per): samples.csv, row 0 the stop
+  the go starts from (or the next field, from a stop inside one), then
+  a row per field or tick to the stop it makes.
+- watch (watch_changes_only): writes.jsonl, every CPU and DMA store.
+- watch_reads: reads.jsonl, every CPU load; it slows the go as read
+  does.
+
+The stop lists the first stores and readers; the files hold up to
+100000 each. A stop gives the field (frame
 absolute, run_frame from the start), the ticks, the PC, its function
 and instruction, and for write and read what was written or read and by
 which instruction.

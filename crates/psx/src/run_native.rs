@@ -525,7 +525,23 @@ pub(crate) fn boot(
 
 /// Write watches and the CD/BIOS/SPU event logs the run asked for.
 fn attach_observers(m: &mut Machine, a: &RunArgs) -> crate::Result<()> {
-    for w in &a.watches {
+    watch(m, &a.watches, a.max_events as usize)?;
+    if a.trace_cd {
+        m.bus.obs.cd = Some(Vec::new());
+    }
+    if a.trace_bios {
+        m.bus.obs.bios = Some(Vec::new());
+    }
+    if a.trace_spu {
+        m.bus.obs.spu = Some(psx_core::observe::SpuLog::new(a.max_events as usize));
+    }
+    Ok(())
+}
+
+/// The core's write watches on `ADDR[:WIDTH]` (4 bytes by default), keeping
+/// at most `max` hits.
+pub(crate) fn watch(m: &mut Machine, specs: &[String], max: usize) -> crate::Result<()> {
+    for w in specs {
         let (addr, width) = crate::commands::split_width(w);
         let width = width.unwrap_or("4");
         let addr = crate::commands::addr_arg(addr, "watch address")?;
@@ -538,16 +554,7 @@ fn attach_observers(m: &mut Machine, a: &RunArgs) -> crate::Result<()> {
     }
     // Observer::watch has a diagnostic default; investigation runs honor the
     // caller's recording budget, including zero, just as read watches do.
-    m.bus.obs.max_hits = a.max_events as usize;
-    if a.trace_cd {
-        m.bus.obs.cd = Some(Vec::new());
-    }
-    if a.trace_bios {
-        m.bus.obs.bios = Some(Vec::new());
-    }
-    if a.trace_spu {
-        m.bus.obs.spu = Some(psx_core::observe::SpuLog::new(a.max_events as usize));
-    }
+    m.bus.obs.max_hits = max;
     Ok(())
 }
 

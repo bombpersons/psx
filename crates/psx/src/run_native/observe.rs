@@ -232,7 +232,7 @@ impl Observer for PadFlow {
 }
 
 /// `sample`: samples.csv, a row per field or per tick.
-pub(super) struct Samples(pub crate::ram::Sampler);
+pub(crate) struct Samples(pub crate::ram::Sampler);
 
 impl Observer for Samples {
     fn field(&mut self, rel: u64, m: &mut Machine) -> crate::Result<Flow> {
@@ -375,7 +375,7 @@ impl Observer for Trace {
 }
 
 /// `watch_reads`: CPU loads from the ranges, to reads.jsonl.
-pub(super) struct Reads {
+pub(crate) struct Reads {
     pub ranges: Vec<(u32, u32)>,
     pub max: usize,
     pub start: u64,
@@ -482,7 +482,7 @@ impl Observer for Screens {
 
 /// `watch`: the core's write watches, to writes.jsonl; the section is there
 /// without any.
-pub(super) struct Writes {
+pub(crate) struct Writes {
     pub enabled: bool,
     pub changes_only: bool,
     pub scopes: Scopes,
