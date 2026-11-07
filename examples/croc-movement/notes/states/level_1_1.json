@@ -12,8 +12,8 @@
   "state_sha256": "a6daa63016fed5f670374ad2d84e585f200e6331d47ce7340769380bce3896ec",
   "steps": [
     {
-      "emulator": "emu-b340ad5730f28af3",
-      "made_with": "0.8.0+src-3c1fa468d983506f-release",
+      "emulator": "emu-b7f75c848bb0bed6",
+      "made_with": "0.8.0+src-d807f96e284da251-debug",
       "run": {
         "frames": 1500,
         "input": []
@@ -22,8 +22,8 @@
       "state_sha256": "7195e54b650779964bedc8c0456f5eaad613f7824659d5a19d00cfab32d053a8"
     },
     {
-      "emulator": "emu-b340ad5730f28af3",
-      "made_with": "0.8.0+src-3c1fa468d983506f-release",
+      "emulator": "emu-b7f75c848bb0bed6",
+      "made_with": "0.8.0+src-d807f96e284da251-debug",
       "run": {
         "frames": 1000,
         "input": []
@@ -32,8 +32,8 @@
       "state_sha256": "307ad6dad3809905cb3733037c9ce5128d274c54a472eb0b331c55c77cc07857"
     },
     {
-      "emulator": "emu-b340ad5730f28af3",
-      "made_with": "0.8.0+src-3c1fa468d983506f-release",
+      "emulator": "emu-b7f75c848bb0bed6",
+      "made_with": "0.8.0+src-d807f96e284da251-debug",
       "run": {
         "frames": 1500,
         "input": [
@@ -103,8 +103,8 @@
       "state_sha256": "92456b26cef8995abdde8c5e3dcc81a1e41573473e443dcfbea7a24644921cf8"
     },
     {
-      "emulator": "emu-b340ad5730f28af3",
-      "made_with": "0.8.0+src-3c1fa468d983506f-release",
+      "emulator": "emu-b7f75c848bb0bed6",
+      "made_with": "0.8.0+src-d807f96e284da251-debug",
       "run": {
         "frames": 1200,
         "input": [
@@ -134,8 +134,8 @@
       "state_sha256": "2c4da41573a54eb7c984a8d23cf422c301f2e6238007992871d573cd52d1f813"
     },
     {
-      "emulator": "emu-b340ad5730f28af3",
-      "made_with": "0.8.0+src-3c1fa468d983506f-release",
+      "emulator": "emu-b7f75c848bb0bed6",
+      "made_with": "0.8.0+src-d807f96e284da251-debug",
       "run": {
         "frames": 700,
         "input": [

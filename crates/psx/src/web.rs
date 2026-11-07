@@ -1190,13 +1190,14 @@ fn frame(st: &State, root: &Path, id: &str, name: &str, tick: &str, decomp: bool
 /// the agent's C for the functions whose check passed), the screen at the
 /// end of each tick to `DIR/<tick>.png`, then (when it ran) `DIR/done.json`.
 pub fn replay_child(ctx: &Ctx, id: &str, name: &str, dir: &Path, decomp: bool) -> Outcome {
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        return Outcome::result(Err(crate::Error::io(dir, e)));
-    }
-    let c = match decomp.then(|| crate::decomp::Replacement::new(&ctx.root, &[])).transpose() {
-        Ok(c) => c,
-        Err(e) => return Outcome::result(Err(e)),
-    };
+    Outcome::result(replay_frames(ctx, id, name, dir, decomp))
+}
+
+/// The original's replay of the recording into `dir` (a PNG a tick, then
+/// `done.json` when it ran), as [`replay_child`] gives it.
+fn replay_frames(ctx: &Ctx, id: &str, name: &str, dir: &Path, decomp: bool) -> crate::Result<Value> {
+    std::fs::create_dir_all(dir).map_err(|e| crate::Error::io(dir, e))?;
+    let c = decomp.then(|| crate::decomp::Replacement::new(&ctx.root, &[])).transpose()?;
     let mut install = |m: &mut psx_core::Machine| {
         if let Some(c) = &c {
             c.install(m);
@@ -1233,7 +1234,80 @@ pub fn replay_child(ctx: &Ctx, id: &str, name: &str, dir: &Path, decomp: bool) -
     if v.get("error").is_none() {
         let _ = crate::write_atomic(&dir.join("done.json"), v.to_string().as_bytes());
     }
-    Outcome::result(Ok::<_, crate::Error>(v))
+    Ok(v)
+}
+
+/// `scenario show --screens`: the original's screen and the port's at
+/// each of `ticks`, copied into `out` as `<tick>-original.png` and
+/// `<tick>-port.png` from the frames psx web keeps (drawn first when they
+/// are not there). What kept either from drawing is said, not failed.
+pub(crate) fn screens(ctx: &Ctx, id: &str, name: &str, ticks: &[u64], out: &Path) -> crate::Result<Value> {
+    let root = &ctx.root;
+    std::fs::create_dir_all(out).map_err(|e| crate::Error::io(out, e))?;
+    let mut notes = serde_json::Map::new();
+    let original =
+        replay_dir(root, id, name, false).ok_or_else(|| crate::Error::invalid("no data directory for the replays"))?;
+    if !original.join("done.json").is_file() {
+        prune_replays(&original);
+        let v = replay_frames(ctx, id, name, &original, false).unwrap_or_else(|e| e.to_value());
+        if let Some(e) = v.get("error") {
+            notes.insert("original".into(), e["message"].clone());
+        }
+    }
+    let port = root.join(PORT_FRAMES).join(port_key(root, id, name));
+    let drawn =
+        |dir: &Path| std::fs::read(dir.join("frames.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    if !root.join(crate::port::manifest::FILE).is_file() && !root.join("game/Cargo.toml").is_file() {
+        notes.insert("port".into(), json!("no port here (psx-port.toml)"));
+    } else {
+        if drawn(&port).is_none_or(|v| v.get("error").is_some()) {
+            prune_replays(&port);
+            let _ = std::fs::remove_dir_all(&port);
+            let rec = root.join(crate::scenario::SCENARIOS).join(id).join(format!("{name}.jsonl"));
+            match crate::port::process::start(root) {
+                Err(e) => {
+                    notes.insert("port".into(), json!(e));
+                }
+                Ok(process) => {
+                    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        psx_scenario::replay::run_with(process.port(), &rec, &port, |_| {})
+                    }));
+                    if let Err(p) = run {
+                        notes.insert(
+                            "port".into(),
+                            json!(format!("the port panicked: {}", psx_scenario::runner::panic_message(&p))),
+                        );
+                    }
+                }
+            }
+        }
+        match drawn(&port) {
+            Some(v) if v["no_screen"] == true => {
+                notes.insert("port".into(), json!("the port draws no screen yet"));
+            }
+            Some(v) if v.get("error").is_some() => {
+                notes.entry("port").or_insert(json!(format!(
+                    "drew {} ticks, then: {}",
+                    v["drawn"],
+                    v["error"].as_str().unwrap_or("")
+                )));
+            }
+            _ => {}
+        }
+    }
+    let copy = |from: &Path, tick: u64, side: &str| {
+        let to = out.join(format!("{tick}-{side}.png"));
+        std::fs::copy(from.join(format!("{tick}.png")), &to).ok().map(|_| to.display().to_string())
+    };
+    let shots: Vec<Value> = ticks
+        .iter()
+        .map(|&t| json!({"tick": t, "original": copy(&original, t, "original"), "port": copy(&port, t, "port")}))
+        .collect();
+    let mut v = json!({"run_dir": out, "screens": shots});
+    if !notes.is_empty() {
+        v["not_drawn"] = Value::Object(notes);
+    }
+    Ok(v)
 }
 
 #[cfg(test)]

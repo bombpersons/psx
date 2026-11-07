@@ -61,6 +61,10 @@ the `[recordings]` and `[wont_reach]` tables.
   asks for them to be imported and checked before the feature's own work,
   whatever the goal says about the rest of the disc.
 - `questions` lists what is not known yet.
+- What drawing shows is checked through quantities, not screens: the
+  camera, animation and the HUD are features of their own, with their
+  quantities in the glossary and their recordings. `psx scenario show
+  --screens` puts both games' screens side by side for you to look at.
 
 ## Code no feature ports
 

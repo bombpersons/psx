@@ -4,8 +4,7 @@ the game, or a part of it, rewritten as an ordinary, modern program and checked
 against recordings of the original. This guide is the whole method; the
 topics run, code, assets and setup hold the details of the commands.
 
-Each command is an MCP tool named command_subcommand (code_disasm is psx
-code disasm). Addresses, PCs and registers are hex strings (0x80012345); a
+Each command is an MCP tool named command_subcommand. Addresses, PCs and registers are hex strings (0x80012345); a
 data address that could be anywhere has its region beside it (main_ram,
 scratchpad, io, bios). Large results are files in a run_dir: read them with
 read (JSON by RFC 6901 pointer, JSONL and CSV by rows and columns, hex, PNG
@@ -206,7 +205,8 @@ port_next's items, in this order:
 - Locate: the entry names no code.
 - Record: its recordings are not ready.
 - Implement: no port_check has judged it at HEAD.
-- Fix: a recording fails, with its quantities and the pointer.
+- Fix: a recording fails, with its quantities and the pointer; once
+  it draws, compare the screens (scenario_show screens=true).
 - Answer: an open question.
 - Locate: functions its recordings run in no feature's code or
   not_ported.toml.

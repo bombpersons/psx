@@ -535,6 +535,23 @@ drawing shows becomes quantities (camera, animation, HUD).
 games' screens at the same ticks, a port that does not draw says so, and
 the Review brief asks the reviewer to look.
 
+**Done** (2026-11-07). `psx scenario show ID --name NAME --screens`
+(scenario_show screens=true): the original's screen and the port's at up
+to 8 of the ticks shown, spread over them (tick 0 only alone: the
+original's replay draws after each tick), copied as `<tick>-original.png`
+and `<tick>-port.png` into a run_dir from the caches psx web keeps
+(`web::screens`, drawing them first when they are not there); what kept
+either from drawing comes back as `not_drawn` (the original's state
+missing, no port, the port's build failing, "the port draws no screen
+yet"). The guide's Fix, port next's Fix how, and the Review brief (first
+and follow-up: look before writing how the port looks) say to compare
+them once a feature draws; catalogue/README.md and the glossary template
+say what drawing shows becomes quantities. On the Croc example
+(start_1_1/air_turn_reverse, ticks 10..30, the state rebuilt from a local
+disc) both games' screens come back at the same 8 ticks; GT2's port
+says it draws no screen yet. The tool budget took the flag by shortening
+scenario_show's docs; the guide's overview is at 16,333 of 16,384 bytes.
+
 ### 8. A trial on Gran Turismo 2
 
 A fresh session from port_next, on the handling features, on the

@@ -1596,15 +1596,15 @@ pub struct ScenarioShowArgs {
     /// The recording: `scenarios/<ID>/<NAME>.jsonl`.
     #[arg(long)]
     pub name: String,
-    /// Quantities to show, comma-separated; default every one recorded.
+    /// Quantities to show, comma-separated; default all.
     #[arg(long, value_delimiter = ',')]
     #[serde(default)]
     pub quantities: Vec<String>,
-    /// Ticks to show, inclusive: `A..B`, `A..`, `..B` or `N` (0 is the initial moment).
+    /// Ticks to show, inclusive: `A..B`, `A..`, `..B` or `N`.
     #[arg(long)]
     #[serde(default)]
     pub ticks: Option<String>,
-    /// Values as recorded (a fixed's integer, a float's bits) instead of as numbers.
+    /// Values as recorded (a fixed's integer, a float's bits).
     #[arg(long)]
     #[serde(default)]
     pub raw: bool,
@@ -1612,7 +1612,14 @@ pub struct ScenarioShowArgs {
     #[arg(long)]
     #[serde(default)]
     pub text: bool,
+    /// Up to 8 of the shown ticks.
+    #[arg(long)]
+    #[serde(default)]
+    pub screens: bool,
 }
+
+/// How many screens `show --screens` gives, spread over the ticks shown.
+const SCREENS: usize = 8;
 
 /// `A..B`, `A..`, `..B` or `N`, inclusive.
 fn tick_range(s: &str) -> crate::Result<(u64, u64)> {
@@ -1775,6 +1782,19 @@ fn show_cmd(ctx: &Ctx, a: &ScenarioShowArgs) -> crate::Result<Json> {
     }
     if a.text {
         out["text"] = json!(table(&out));
+    }
+    if a.screens {
+        let mut shown: Vec<u64> = out["rows"].as_array().into_iter().flatten().filter_map(|r| r[0].as_u64()).collect();
+        // The original's replay draws after each tick it runs: tick 0, the
+        // initial moment, only when nothing else is shown.
+        if shown.len() > 1 {
+            shown.retain(|&t| t > 0);
+        }
+        let n = shown.len().min(SCREENS);
+        // Spread over them, the first and the last among them.
+        let ticks: Vec<u64> = (0..n).map(|i| shown[if n == 1 { 0 } else { i * (shown.len() - 1) / (n - 1) }]).collect();
+        let dir = ctx.root.join(".psx/runs").join(format!("{}-{}-screens", crate::now_ms(), std::process::id()));
+        out["screens"] = crate::web::screens(ctx, &a.id, &a.name, &ticks, &dir)?;
     }
     Ok(out)
 }
@@ -2855,6 +2875,7 @@ pub struct Quantities {
             ticks: ticks.map(Into::into),
             raw,
             text: true,
+            screens: false,
         };
         let out = show_cmd(&ctx, &args(None, false)).unwrap();
         assert_eq!(out["columns"], json!(["tick", "field", "pad", "m", "n", "Δn", "x", "Δx"]));
